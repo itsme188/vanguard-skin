@@ -3,8 +3,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import type { DataConfidence, DataAction, DimensionScore } from "@/lib/queries/data-confidence";
-import { PrivateText } from "@/lib/privacy/components";
+import type { IntegrityHit } from "@/lib/queries/integrity-checks";
+import { PrivateText, Money, Count } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
+import { Chip } from "./Chip";
 
 const LEVEL_CONFIG = {
   high: { color: "bg-up", label: "Data reliable" },
@@ -138,10 +140,16 @@ export function DataConfidenceIndicator() {
     <div className="relative" ref={popoverRef}>
       <button
         onClick={() => setShowPopover(!showPopover)}
-        className="relative flex items-center gap-2 text-[11px] text-ink-faint font-mono hover:text-ink-dim transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
-        title={`Data freshness: ${confidence.overallScore}% — an operational hint, not a certification — click for details`}
+        className={`relative flex items-center gap-2 text-[11px] font-mono transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-[''] ${
+          confidence.capReason ? "text-down hover:text-down/80" : "text-ink-faint hover:text-ink-dim"
+        }`}
+        title={
+          confidence.capReason
+            ? `Data freshness: ${confidence.overallScore}% — capped by an integrity check — click for details`
+            : `Data freshness: ${confidence.overallScore}% — an operational hint, not a certification — click for details`
+        }
       >
-        <span className={`w-2 h-2 rounded-full ${config.color}`} />
+        <span className={`w-2 h-2 rounded-full ${config.color} ${confidence.capReason ? "ring-2 ring-down/60" : ""}`} />
         <span>{confidence.overallScore}%</span>
       </button>
 
@@ -153,10 +161,13 @@ export function DataConfidenceIndicator() {
           {/* Header */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className={`w-2.5 h-2.5 rounded-full ${config.color}`} />
+              <span className={`w-2.5 h-2.5 rounded-full ${config.color} ${confidence.capReason ? "ring-2 ring-down/60" : ""}`} />
               <h3 className="text-sm font-medium text-ink">
                 Data Freshness: {confidence.overallScore}%
               </h3>
+              {confidence.capReason && (
+                <Chip tone="down" size="xs" uppercase>Capped</Chip>
+              )}
             </div>
             <Link
               href="/dashboard/data-health"
@@ -167,8 +178,18 @@ export function DataConfidenceIndicator() {
             </Link>
           </div>
           <p className="text-[10px] text-ink-faint">
-            Operational freshness hint — does not certify that every displayed number is correct (2026-08-21 audit).
+            {confidence.capReason
+              ? "Data freshness with integrity checks — not a numerical certification."
+              : "Operational freshness hint — does not certify that every displayed number is correct (2026-08-21 audit)."}
           </p>
+          {confidence.capReason && (
+            <div className="flex items-start gap-2 rounded-lg border border-down/40 bg-down/10 px-2.5 py-2">
+              <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-down shrink-0" aria-hidden="true" />
+              <p className="text-[10px] text-down leading-snug">
+                <PrivateText>{confidence.capReason}</PrivateText>
+              </p>
+            </div>
+          )}
 
           {/* Dimension bars */}
           <div className="space-y-2">
@@ -178,6 +199,22 @@ export function DataConfidenceIndicator() {
             <DimensionBar label="Enrichment" dim={confidence.enrichmentCompleteness} />
             <DimensionBar label="Valuations" dim={confidence.valuationCoverage} />
           </div>
+
+          {/* Integrity warnings — uncapped, informational only (Codex plan
+              review #15: warnings must stay visible even when nothing caps
+              the score). */}
+          <IntegrityWarningsRow warnings={confidence.integrity.warnings} />
+
+          {/* Cash timing residual — a live-snapshot (Plaid/TWS) day whose
+              cash delta is a measurement-timing artifact, not a confirmed
+              external flow (see TimingResidualNote in data-confidence.ts). */}
+          {confidence.cashAccuracy.timingResidual && (
+            <p className="text-[9px] text-ink-faint pt-1">
+              <PrivateText>{`Cash delta of `}</PrivateText>
+              <Money value={confidence.cashAccuracy.timingResidual.amount} />
+              <PrivateText>{` on ${confidence.cashAccuracy.timingResidual.date} in ${confidence.cashAccuracy.timingResidual.accountName} is a live-snapshot timing residual — not treated as an external flow.`}</PrivateText>
+            </p>
+          )}
 
           {/* Actions */}
           {confidence.actions.length > 0 && (
@@ -274,6 +311,36 @@ function DimensionBar({ label, dim }: { label: string; dim: DimensionScore }) {
             <PrivateText>{guidance}</PrivateText>
           </p>
         </div>
+      )}
+    </div>
+  );
+}
+
+function IntegrityWarningsRow({ warnings }: { warnings: IntegrityHit[] }) {
+  const [expanded, setExpanded] = useState(false);
+  if (warnings.length === 0) return null;
+
+  return (
+    <div className="space-y-1 pt-1">
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        className="w-full flex items-center justify-between hover:opacity-80 transition-opacity"
+        aria-expanded={expanded}
+      >
+        <span className="text-[10px] text-ink-dim font-medium flex items-center gap-1">
+          <span className="text-ink-faint text-[8px] w-2 inline-block">{expanded ? "▾" : "▸"}</span>
+          <Count value={warnings.length} /> integrity note{warnings.length === 1 ? "" : "s"}
+        </span>
+      </button>
+      {expanded && (
+        <ul className="pt-1 pl-3 space-y-1 border-l border-edge ml-0.5">
+          {warnings.map(w => (
+            <li key={w.key} className="text-[9px] text-ink-dim leading-snug list-none">
+              <PrivateText>{w.reason}</PrivateText>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
