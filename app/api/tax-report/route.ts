@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { generateTaxReport, generateForm8949CSV, generateTXF } from "@/lib/compute/tax-report";
+import {
+  generateTaxReport,
+  generateForm8949CSV,
+  generateTXF,
+  buildTaxReportFilename,
+} from "@/lib/compute/tax-report";
 
 export async function GET(request: NextRequest) {
   try {
@@ -21,20 +26,26 @@ export async function GET(request: NextRequest) {
 
     if (format === "csv") {
       const csv = generateForm8949CSV(report);
+      // Filename: buildTaxReportFilename appends "-NOT-FOR-FILING" unless
+      // report.filingReady (broker-acceptance marker covers this year) —
+      // single-sourced with TaxReportCard's client-side download name.
       return new NextResponse(csv, {
         headers: {
           "Content-Type": "text/csv",
-          "Content-Disposition": `attachment; filename="form-8949-${year}-NOT-FOR-FILING.csv"`,
+          "Content-Disposition": `attachment; filename="${buildTaxReportFilename("csv", year, report.filingReady)}"`,
         },
       });
     }
 
     if (format === "txf") {
       const txf = generateTXF(report);
+      // Filename: buildTaxReportFilename appends "-NOT-FOR-FILING" unless
+      // report.filingReady (broker-acceptance marker covers this year) —
+      // single-sourced with TaxReportCard's client-side download name.
       return new NextResponse(txf, {
         headers: {
           "Content-Type": "application/x-tax-exchange",
-          "Content-Disposition": `attachment; filename="tax-report-${year}-NOT-FOR-FILING.txf"`,
+          "Content-Disposition": `attachment; filename="${buildTaxReportFilename("txf", year, report.filingReady)}"`,
         },
       });
     }

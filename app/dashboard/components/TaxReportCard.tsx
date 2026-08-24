@@ -2,9 +2,12 @@
 
 import { useState, useEffect } from "react";
 import { PrivateText } from "@/lib/privacy/components";
+import { buildTaxReportFilename } from "@/lib/compute/tax-report";
 
 interface TaxReportSummary {
   year: number;
+  filingReady: boolean;
+  washSaleAdvisory: string;
   shortTermTotal: { proceeds: number; costBasis: number; adjustments: number; gainLoss: number };
   longTermTotal: { proceeds: number; costBasis: number; adjustments: number; gainLoss: number };
   shortTermRows: { length: number }[];
@@ -99,6 +102,7 @@ export function TaxReportCard({ year }: { year: number }) {
   }, [year]);
 
   async function handleDownload(format: "csv" | "txf") {
+    if (!report) return;
     const setter = format === "csv" ? setDownloading : setDownloadingTxf;
     setter(true);
     try {
@@ -107,7 +111,11 @@ export function TaxReportCard({ year }: { year: number }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `form-8949-${year}-NOT-FOR-FILING.${format}`;
+      // Filename: buildTaxReportFilename appends "-NOT-FOR-FILING" unless
+      // report.filingReady (broker-acceptance marker covers this year) —
+      // single-sourced with the API route's Content-Disposition
+      // (lib/compute/tax-report.ts).
+      a.download = buildTaxReportFilename(format, year, report.filingReady);
       a.click();
       URL.revokeObjectURL(url);
     } catch {
@@ -160,14 +168,23 @@ export function TaxReportCard({ year }: { year: number }) {
         </div>
       </div>
 
-      <div className="px-5 pt-4">
-        <div className="border border-amber-400/20 bg-amber-400/5 rounded-lg p-3">
-          <h4 className="text-xs font-medium text-amber-400">&#x26A0; Export not ready for filing</h4>
-          <p className="text-[10px] text-ink-faint mt-1">{FILING_WARNING_COPY}</p>
+      {/* Marker-gated: the containment banner only applies while filingReady
+          is false (no broker-acceptance stamp covering this year yet) —
+          see lib/compute/tax-report.ts generateTaxReport. */}
+      {!report.filingReady && (
+        <div className="px-5 pt-4">
+          <div className="border border-amber-400/20 bg-amber-400/5 rounded-lg p-3">
+            <h4 className="text-xs font-medium text-amber-400">&#x26A0; Export not ready for filing</h4>
+            <p className="text-[10px] text-ink-faint mt-1">{FILING_WARNING_COPY}</p>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="p-5 space-y-4">
+        {/* Wash-sale methodology disclosure — always shown, independent of
+            whether any wash sale was actually detected below. */}
+        <p className="text-[10px] text-ink-faint">{report.washSaleAdvisory}</p>
+
         {/* Summary grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">

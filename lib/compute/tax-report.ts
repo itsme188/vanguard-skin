@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { getClosedTaxLotSales, type TaxLotSaleWithDetails } from "@/lib/queries/tax-lots";
+import { getTaxConventionState, isYearAccepted } from "@/lib/compute/tax-convention";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -44,7 +45,27 @@ export interface TaxReportResult {
    * rows). The row arrays still carry them for the raw 8949 export.
    */
   excludedNonUsdSales: number;
+  /**
+   * Marker-gated filing readiness (number-trust durable fixes, WS1). True
+   * only when EVERY account with any tax_lot_sales activity this year (not
+   * just the filing-eligible rows) has a broker-acceptance stamp bound to
+   * the current tax-input generation. Fail-closed by construction — see
+   * generateTaxReport for the exact guard.
+   */
+  filingReady: boolean;
+  /** Static disclosure about the heuristic wash-sale (W-code) detection; see `washSaleAdvisory`. */
+  washSaleAdvisory: string;
 }
+
+/**
+ * detectWashSales flags same-security purchases within a 30-day window of a
+ * loss sale — a heuristic scan, not a broker-confirmed determination. This
+ * travels with every report (UI + CSV) so a reader never mistakes "W" codes
+ * for reconciled 1099-B adjustments. The TXF body stays untouched (a
+ * trailing comment line is not valid TXF).
+ */
+export const washSaleAdvisory =
+  "W adjustment codes are heuristic estimates (30-day same-security scan) pending 1099-B reconciliation — verify before filing.";
 
 // ─── Date helpers ───────────────────────────────────────────────
 
@@ -137,7 +158,9 @@ export function generateTaxReport(
   db: Database.Database,
   year: number
 ): TaxReportResult {
-  const sales = getClosedTaxLotSales(db, year);
+  // filingOnly: exclude premium-rollover option closes and engine-synthesized
+  // RECONCILE_CLOSE rows from anything destined for a filing surface (Task 5).
+  const sales = getClosedTaxLotSales(db, year, { filingOnly: true });
   const washWarnings = detectWashSales(db, sales, year);
 
   // Build wash sale lookup: saleId → warning
@@ -153,9 +176,14 @@ export function generateTaxReport(
     const wash = washBySaleId.get(sale.id);
     const isWash = !!wash;
 
+    // Short round-trip lots (is_short=1): the sale row's own "sale_date" IS
+    // the cover trade (the disposition IRS cares about) — the acquisition
+    // side is the SELL_TO_OPEN, which is not a purchase for 8949 purposes.
+    // Both 8949 date columns carry the cover date. holdingPeriodDays below
+    // is unchanged (already signed negative for shorts at the source).
     const row: Form8949Row = {
       description: `${sale.quantity_sold} sh ${sale.symbol}`,
-      dateAcquired: toMMDDYYYY(sale.acquisition_date),
+      dateAcquired: sale.is_short === 1 ? toMMDDYYYY(sale.sale_date) : toMMDDYYYY(sale.acquisition_date),
       dateSold: toMMDDYYYY(sale.sale_date),
       proceeds: sale.proceeds,
       costBasis: sale.cost_basis_allocated,
@@ -196,6 +224,28 @@ export function generateTaxReport(
     shortTermRows.filter((r) => r.currency !== "USD").length +
     longTermRows.filter((r) => r.currency !== "USD").length;
 
+  // filingReady, fail-closed against the EXPLICIT account universe (Codex
+  // plan review #12): derived straight from tax_lot_sales for the year —
+  // NOT from `sales` above, which is already filingOnly-filtered. An
+  // account whose only 2025 activity is a RECONCILE_CLOSE row must still
+  // be broker-accepted before the year is "ready"; and an empty universe
+  // must never satisfy `.every()` vacuously (isYearAccepted's own
+  // accountIds.every check would return true on an empty array).
+  const state = getTaxConventionState(db);
+  const accountIds = (
+    db
+      .prepare(
+        `SELECT DISTINCT tl.account_id FROM tax_lot_sales tls
+           JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+          WHERE tls.sale_date >= ? AND tls.sale_date <= ?`
+      )
+      .all(`${year}-01-01`, `${year}-12-31`) as { account_id: number }[]
+  ).map((r) => r.account_id);
+  const filingReady =
+    accountIds.length > 0 &&
+    state.recomputeCurrent &&
+    isYearAccepted(state, year, accountIds);
+
   return {
     year,
     shortTermRows,
@@ -204,6 +254,8 @@ export function generateTaxReport(
     longTermTotal: sumRows(longTermRows),
     washSaleWarnings: washWarnings,
     excludedNonUsdSales,
+    filingReady,
+    washSaleAdvisory,
   };
 }
 
@@ -268,7 +320,29 @@ export function generateForm8949CSV(report: TaxReportResult): string {
     );
   }
 
+  // Trailing disclosure footer (CSV/UI only — a trailing comment line is
+  // not valid TXF, so the TXF body stays untouched).
+  lines.push(`Note: ${report.washSaleAdvisory}`);
+
   return lines.join("\n");
+}
+
+// ─── Filename builder ────────────────────────────────────────────
+
+/**
+ * Single-sourced export filename for both the CSV and TXF downloads.
+ * Appends "-NOT-FOR-FILING" unless the report is marker-gated filingReady
+ * (see generateTaxReport). The route's Content-Disposition and
+ * TaxReportCard's client-side download both call this — never re-derive
+ * the name inline (Codex plan review #12).
+ */
+export function buildTaxReportFilename(
+  kind: "csv" | "txf",
+  year: number,
+  filingReady: boolean
+): string {
+  const base = kind === "csv" ? `form-8949-${year}` : `tax-report-${year}`;
+  return filingReady ? `${base}.${kind}` : `${base}-NOT-FOR-FILING.${kind}`;
 }
 
 // ─── TXF Export (TurboTax Tax Exchange Format) ──────────────────

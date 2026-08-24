@@ -8,6 +8,10 @@ function createTestDb(): Database.Database {
   db.pragma("foreign_keys = ON");
 
   db.exec(`
+    -- Required since generateTaxReport (Task 6, number-trust durable fixes)
+    -- reads getTaxConventionState for the filingReady marker gate.
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+
     CREATE TABLE accounts (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL
