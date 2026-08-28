@@ -26,6 +26,54 @@ export type ClearManualActualsResult =
   | { ok: false; status: 404; error: string }
   | { ok: false; status: 409; error: string; code: "not_manual" };
 
+const ET = "America/New_York";
+
+/** "Aug 27, 2026" in ET. */
+function etDateLabel(instant: Date): string {
+  return instant.toLocaleString("en-US", { timeZone: ET, dateStyle: "medium" });
+}
+
+/**
+ * The refusal message, worded for the basis that produced it — a slot floor
+ * and a release-time floor are different claims and must not be described
+ * with the same sentence.
+ */
+function prePrintMessage(
+  eventDate: string,
+  prePrint: ReturnType<typeof checkPrePrintFloor>,
+): string {
+  if (prePrint.basis === "slot" && prePrint.floor) {
+    const nowEtDate = new Intl.DateTimeFormat("en-CA", {
+      timeZone: ET,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    // Name the day too whenever "now" is not the print date, so a save two
+    // days early cannot read as "any minute now".
+    const nowLabel = new Date().toLocaleString("en-US", {
+      timeZone: ET,
+      ...(nowEtDate === eventDate
+        ? { timeStyle: "short" as const }
+        : { dateStyle: "medium" as const, timeStyle: "short" as const }),
+    });
+    return prePrint.slot === "amc"
+      ? `This is an after-close print — actuals can be accepted from 4:00 PM ET on ${etDateLabel(prePrint.floor)} (now ${nowLabel} ET). Confirm to save anyway.`
+      : `This is a before-open print — actuals can be accepted from 7:00 AM ET on ${etDateLabel(prePrint.floor)} (now ${nowLabel} ET). Confirm to save anyway.`;
+  }
+  if (prePrint.release) {
+    const releaseEt = prePrint.release.toLocaleString("en-US", {
+      timeZone: ET,
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    return `This event's release time (${releaseEt} ET) is still in the future — saving actuals now would record a print that hasn't happened. Confirm to save anyway.`;
+  }
+  // Unreachable while the caller gates on an anchor, but a refusal must never
+  // depend on a "!" to have a sentence.
+  return `This print does not look to have happened yet — saving actuals now would record a print that hasn't happened. Confirm to save anyway.`;
+}
+
 /**
  * Save (merge) a manual actuals entry onto a calendar_events row — the
  * BogeysEditModal "Save actuals" override for when enrichment misses or the
@@ -33,13 +81,21 @@ export type ClearManualActualsResult =
  *
  * Pre-print floor (QA finding
  * today-bogeys-actuals--future-print-actuals-accepted-no-guard): refuses
- * (409, code 'pre_print') when checkPrePrintFloor finds the event's release
- * instant still in the future, UNLESS opts.force is true. This mirrors the
- * reporter-recap road's pre-print guard (lib/earnings/reporter-recap.ts) —
- * same helper, same condition — so a manual actuals typo two days ahead of
- * the real print can no longer stamp enriched_at and arm the recap-send
- * gate, cockpit "act" chip, and Today releases list against a print that
- * hasn't happened.
+ * (409, code 'pre_print') when checkPrePrintFloor finds the print cannot have
+ * happened yet, UNLESS opts.force is true — so a manual actuals typo two days
+ * ahead of the real print can no longer stamp enriched_at and arm the
+ * recap-send gate, cockpit "act" chip, and Today releases list against a
+ * print that hasn't happened.
+ *
+ * This road (and the print-watch accept route, which reaches the floor ONLY
+ * through this function) uses the SLOT floor — 16:00 ET after-close, 07:00 ET
+ * before-open — rather than the recorded release_time. A human saving a
+ * number is holding the release; the stored release_time for an AMC name is
+ * very often the 5 PM CALL time, and refusing a genuine 16:12 ET accept
+ * against that fiction was the live 2026-08-26/27 defect. The background
+ * reporter-recap road (lib/earnings/reporter-recap.ts) keeps the
+ * release_time basis — it is asking a different question ("has the scheduled
+ * moment passed") and has no human holding evidence.
  */
 export function saveManualActuals(
   db: Database.Database,
@@ -47,10 +103,14 @@ export function saveManualActuals(
 ): SaveManualActualsResult {
   const event = db
     .prepare(
-      `SELECT id, event_date, release_time, actual_value FROM calendar_events WHERE id = ?`,
+      `SELECT id, event_date, release_time, event_time, raw_json, actual_value
+         FROM calendar_events WHERE id = ?`,
     )
     .get(input.eventId) as
-    | Pick<CalendarEvent, "id" | "event_date" | "release_time" | "actual_value">
+    | Pick<
+        CalendarEvent,
+        "id" | "event_date" | "release_time" | "event_time" | "raw_json" | "actual_value"
+      >
     | undefined;
   if (!event) {
     return { ok: false, status: 404, error: `Event ${input.eventId} not found.` };
@@ -65,19 +125,15 @@ export function saveManualActuals(
   }
 
   if (!input.force) {
-    const prePrint = checkPrePrintFloor(event);
-    if (prePrint.isPrePrint && prePrint.release) {
-      const releaseEt = prePrint.release.toLocaleString("en-US", {
-        timeZone: "America/New_York",
-        dateStyle: "medium",
-        timeStyle: "short",
-      });
+    const prePrint = checkPrePrintFloor(event, new Date(), { useSlotFloor: true });
+    const anchor = prePrint.floor ?? prePrint.release;
+    if (prePrint.isPrePrint && anchor) {
       return {
         ok: false,
         status: 409,
         code: "pre_print",
-        error: `This event's release time (${releaseEt} ET) is still in the future — saving actuals now would record a print that hasn't happened. Confirm to save anyway.`,
-        release: prePrint.release.toISOString(),
+        error: prePrintMessage(event.event_date, prePrint),
+        release: anchor.toISOString(),
       };
     }
   }

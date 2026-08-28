@@ -64,3 +64,137 @@ describe("checkPrePrintFloor", () => {
     expect(checkPrePrintFloor(farFuture).isPrePrint).toBe(true);
   });
 });
+
+/**
+ * Slot floor (owner report, live 2026-08-26/27): the stored release_time for
+ * an AMC name is frequently the CALL time, not the print time (the CRWD/RBRK
+ * trap — a vendor/web "17:00" is the 5 PM call). Accepting a print-watch line
+ * at 16:12 ET was refused as "still in the future" against that fiction.
+ * With useSlotFloor the guard asks the only question that is actually
+ * knowable ahead of the wire: has the slot's window opened at all — 16:00 ET
+ * for an after-close print, 07:00 ET for a before-open one.
+ *
+ * All ET instants below are August/November EDT (UTC-4) unless noted.
+ */
+describe("checkPrePrintFloor — slot floor", () => {
+  // A dominant-path vendor row: event_time NULL, slot only in raw_json,
+  // release_time carrying the suspect 17:00 call time.
+  const amcVendorRow = {
+    event_date: "2026-08-27",
+    release_time: "17:00",
+    event_time: null,
+    raw_json: JSON.stringify({ entry: { hour: "amc" } }),
+  };
+
+  it("blocks an AMC accept one minute before the 16:00 ET floor", () => {
+    const now = new Date("2026-08-27T19:59:00Z"); // 15:59 ET
+    const r = checkPrePrintFloor(amcVendorRow, now, { useSlotFloor: true });
+    expect(r.isPrePrint).toBe(true);
+    expect(r.basis).toBe("slot");
+    expect(r.slot).toBe("amc");
+    expect(r.floor?.toISOString()).toBe("2026-08-27T20:00:00.000Z"); // 16:00 ET
+    // release still carries the composed release_time instant for messaging
+    expect(r.release?.toISOString()).toBe("2026-08-27T21:00:00.000Z"); // 17:00 ET
+  });
+
+  it("passes an AMC accept exactly at the 16:00 ET floor", () => {
+    const now = new Date("2026-08-27T20:00:00Z"); // 16:00 ET
+    const r = checkPrePrintFloor(amcVendorRow, now, { useSlotFloor: true });
+    expect(r.isPrePrint).toBe(false);
+    expect(r.basis).toBe("slot");
+    expect(r.slot).toBe("amc");
+  });
+
+  it("passes the live 16:12 ET repro that the 17:00 release_time refused", () => {
+    const now = new Date("2026-08-27T20:12:00Z"); // 16:12 ET
+    expect(
+      checkPrePrintFloor(amcVendorRow, now, { useSlotFloor: true }).isPrePrint,
+    ).toBe(false);
+  });
+
+  it("reads an explicit AMC event_time marker the same way as raw_json", () => {
+    const now = new Date("2026-08-27T20:12:00Z"); // 16:12 ET
+    const r = checkPrePrintFloor(
+      { event_date: "2026-08-27", release_time: "17:00", event_time: "AMC", raw_json: null },
+      now,
+      { useSlotFloor: true },
+    );
+    expect(r.isPrePrint).toBe(false);
+    expect(r.slot).toBe("amc");
+  });
+
+  const bmoVendorRow = {
+    event_date: "2026-08-27",
+    release_time: "08:00",
+    event_time: null,
+    raw_json: JSON.stringify({ entry: { hour: "bmo" } }),
+  };
+
+  it("blocks a BMO accept one minute before the 07:00 ET floor", () => {
+    const now = new Date("2026-08-27T10:59:00Z"); // 06:59 ET
+    const r = checkPrePrintFloor(bmoVendorRow, now, { useSlotFloor: true });
+    expect(r.isPrePrint).toBe(true);
+    expect(r.basis).toBe("slot");
+    expect(r.slot).toBe("bmo");
+    expect(r.floor?.toISOString()).toBe("2026-08-27T11:00:00.000Z"); // 07:00 ET
+  });
+
+  it("passes a BMO accept exactly at the 07:00 ET floor, an hour before release_time", () => {
+    const now = new Date("2026-08-27T11:00:00Z"); // 07:00 ET
+    const r = checkPrePrintFloor(bmoVendorRow, now, { useSlotFloor: true });
+    expect(r.isPrePrint).toBe(false);
+    expect(r.basis).toBe("slot");
+  });
+
+  it("composes the floor DST-aware: an EST (November) AMC floor is 21:00Z", () => {
+    const row = { ...amcVendorRow, event_date: "2026-11-05" };
+    const r = checkPrePrintFloor(row, new Date("2026-11-05T20:59:00Z"), {
+      useSlotFloor: true,
+    });
+    expect(r.floor?.toISOString()).toBe("2026-11-05T21:00:00.000Z"); // 16:00 EST
+    expect(r.isPrePrint).toBe(true);
+  });
+
+  it("falls back to the release_time basis for a TAS row (no side of noon)", () => {
+    const tasRow = {
+      event_date: "2026-08-27",
+      release_time: "17:00",
+      event_time: "TAS",
+      raw_json: JSON.stringify({ entry: { hour: "amc" } }),
+    };
+    const r = checkPrePrintFloor(tasRow, new Date("2026-08-27T20:12:00Z"), {
+      useSlotFloor: true,
+    });
+    expect(r.slot).toBeNull();
+    expect(r.basis).toBe("release_time");
+    expect(r.isPrePrint).toBe(true); // 16:12 ET is still before the 17:00 release
+    expect(r.floor).toBeNull();
+  });
+
+  it("reports basis 'none' when neither a slot nor a release instant resolves", () => {
+    const r = checkPrePrintFloor(
+      { event_date: "2026-08-27", release_time: null, event_time: null, raw_json: null },
+      new Date("2026-08-27T20:12:00Z"),
+      { useSlotFloor: true },
+    );
+    expect(r.isPrePrint).toBe(false);
+    expect(r.basis).toBe("none");
+    expect(r.slot).toBeNull();
+    expect(r.floor).toBeNull();
+  });
+
+  it("without useSlotFloor the 17:00 release_time still blocks a 16:12 ET save (unchanged default)", () => {
+    const r = checkPrePrintFloor(amcVendorRow, new Date("2026-08-27T20:12:00Z"));
+    expect(r.isPrePrint).toBe(true);
+    expect(r.basis).toBe("release_time");
+    expect(r.floor).toBeNull();
+    expect(r.release?.toISOString()).toBe("2026-08-27T21:00:00.000Z");
+  });
+
+  it("without useSlotFloor a known slot is still reported, but never used as the floor", () => {
+    const r = checkPrePrintFloor(bmoVendorRow, new Date("2026-08-27T11:30:00Z")); // 07:30 ET
+    expect(r.slot).toBe("bmo");
+    expect(r.basis).toBe("release_time");
+    expect(r.isPrePrint).toBe(true); // 08:00 release_time still in the future
+  });
+});

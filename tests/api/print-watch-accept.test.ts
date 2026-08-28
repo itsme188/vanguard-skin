@@ -85,22 +85,26 @@ function insertCalendarEvent(opts: {
   eventDate: string;
   releaseTime?: string | null;
   symbol?: string;
+  /** Defaults to releaseTime (the historical shape of this helper). */
+  eventTime?: string | null;
+  rawJson?: string | null;
 }): number {
   const row = hoisted.db
     .prepare(
       `INSERT INTO calendar_events (
          source, event_type, event_date, event_time, release_time, title,
-         symbol, source_key
-       ) VALUES ('finnhub','earnings',?,?,?,?,?,?)
+         symbol, source_key, raw_json
+       ) VALUES ('finnhub','earnings',?,?,?,?,?,?,?)
        RETURNING id`,
     )
     .get(
       opts.eventDate,
-      opts.releaseTime ?? null,
+      opts.eventTime === undefined ? opts.releaseTime ?? null : opts.eventTime,
       opts.releaseTime ?? null,
       `${opts.symbol ?? "ACME"} earnings`,
       opts.symbol ?? "ACME",
       `finnhub:${opts.symbol ?? "ACME"}:${opts.eventDate}`,
+      opts.rawJson ?? null,
     ) as { id: number };
   return row.id;
 }
@@ -147,12 +151,20 @@ function makeLine(
  *  here, so callers control exact starting states per test). */
 function seedPrint(
   lines: PrintWatchLine[],
-  opts: { eventDate?: string; releaseTime?: string | null; symbol?: string } = {},
+  opts: {
+    eventDate?: string;
+    releaseTime?: string | null;
+    symbol?: string;
+    eventTime?: string | null;
+    rawJson?: string | null;
+  } = {},
 ): { eventId: number; printId: number } {
   const eventId = insertCalendarEvent({
     eventDate: opts.eventDate ?? "2026-08-10",
     releaseTime: opts.releaseTime ?? null,
     symbol: opts.symbol,
+    eventTime: opts.eventTime,
+    rawJson: opts.rawJson,
   });
   const printId = upsertPrint(hoisted.db, eventId, opts.symbol ?? "ACME", opts.eventDate ?? "2026-08-10", null);
   upsertLines(hoisted.db, printId, lines);
@@ -619,7 +631,8 @@ describe("POST /api/print-watch/accept", () => {
       expect(status).toBe(409);
       expect(json.success).toBe(false);
       expect(json.code).toBe("pre_print");
-      expect(json.error).toMatch(/future/i);
+      // Slot-floor wording (2026-08-28): a BMO row names its 07:00 ET floor.
+      expect(json.error).toMatch(/before-open print/);
 
       // Rolled back: neither accept write survives the aborted transaction.
       const sheet = getSheet(hoisted.db, printId);
@@ -655,6 +668,42 @@ describe("POST /api/print-watch/accept", () => {
       expect(status).toBe(200);
       expect(json.data!.promoted).not.toBeNull();
       expect(getSheet(hoisted.db, printId).find((l) => l.metric_id === "eps_adj_q")!.state).toBe("accepted");
+    });
+
+    /**
+     * The live 2026-08-26/27 trap: an AMC name whose stored release_time is
+     * the 17:00 CALL time refused a genuine 16:12 ET accept. The accept road
+     * has no pre-print check of its own — it inherits the slot floor purely
+     * through saveManualActuals, so this pins the inheritance.
+     */
+    it("promotes an AMC print at 16:12 ET despite a 17:00 call-time release_time (no force)", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-08-27T20:12:00Z")); // 16:12 ET
+
+      const { eventId, printId } = seedPrint(
+        [
+          makeLine("eps_adj_q", "agreed", 1.42),
+          makeLine("revenue_q", "agreed", 5_000_000),
+        ],
+        {
+          eventDate: "2026-08-27",
+          releaseTime: "17:00",
+          eventTime: null,
+          rawJson: JSON.stringify({ entry: { hour: "amc" } }),
+        },
+      );
+
+      const { status, json } = await callAccept({
+        eventId,
+        accept: ["eps_adj_q", "revenue_q"],
+        promoteHeadline: true,
+      });
+
+      expect(status).toBe(200);
+      expect(json.data!.promoted).not.toBeNull();
+      expect(getSheet(hoisted.db, printId).find((l) => l.metric_id === "eps_adj_q")!.state).toBe(
+        "accepted",
+      );
     });
   });
 

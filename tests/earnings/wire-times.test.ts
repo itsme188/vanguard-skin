@@ -12,7 +12,9 @@ import {
   clearUserReleaseTime,
   hasBoundedObservations,
   applyResolvedReleaseTimeToUpcomingEvents,
+  isSuspectAmcCallTime,
 } from "@/lib/earnings/wire-times";
+import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 
 let db: Database.Database;
 beforeEach(() => {
@@ -267,5 +269,128 @@ describe("applyResolvedReleaseTimeToUpcomingEvents", () => {
     expect(
       (db.prepare("SELECT release_time FROM calendar_events WHERE id = ?").get(done) as { release_time: string }).release_time,
     ).toBe("08:00");
+  });
+});
+
+/**
+ * The shared BMO/AMC slot resolver (lib/earnings/earnings-slot.ts) — one
+ * function now behind wire-times' cascade guard, verify-earnings-dates'
+ * candidate slot, and the pre-print slot floor.
+ */
+describe("deriveEarningsSlot", () => {
+  it("reads a literal BMO/AMC event_time marker, case-insensitively", () => {
+    expect(deriveEarningsSlot({ event_time: "BMO", raw_json: null })).toBe("bmo");
+    expect(deriveEarningsSlot({ event_time: "amc", raw_json: null })).toBe("amc");
+    expect(deriveEarningsSlot({ event_time: " Amc ", raw_json: null })).toBe("amc");
+  });
+
+  it("reads a clock event_time by side of noon", () => {
+    expect(deriveEarningsSlot({ event_time: "07:30", raw_json: null })).toBe("bmo");
+    expect(deriveEarningsSlot({ event_time: "11:59", raw_json: null })).toBe("bmo");
+    expect(deriveEarningsSlot({ event_time: "12:00", raw_json: null })).toBe("amc");
+    expect(deriveEarningsSlot({ event_time: "16:05", raw_json: null })).toBe("amc");
+  });
+
+  it("falls back to raw_json.entry.hour on the dominant vendor shape (event_time NULL)", () => {
+    expect(
+      deriveEarningsSlot({ event_time: null, raw_json: JSON.stringify({ entry: { hour: "amc" } }) }),
+    ).toBe("amc");
+    expect(
+      deriveEarningsSlot({ event_time: null, raw_json: JSON.stringify({ entry: { hour: "BMO" } }) }),
+    ).toBe("bmo");
+  });
+
+  it("returns null for dmh / unknown / missing / malformed raw_json", () => {
+    expect(
+      deriveEarningsSlot({ event_time: null, raw_json: JSON.stringify({ entry: { hour: "dmh" } }) }),
+    ).toBeNull();
+    expect(
+      deriveEarningsSlot({ event_time: null, raw_json: JSON.stringify({ entry: { hour: "unknown" } }) }),
+    ).toBeNull();
+    expect(deriveEarningsSlot({ event_time: null, raw_json: "{not json" })).toBeNull();
+    expect(deriveEarningsSlot({ event_time: null, raw_json: null })).toBeNull();
+  });
+
+  it("treats a literal TAS as 'no slot' and never infers one from raw_json", () => {
+    expect(
+      deriveEarningsSlot({ event_time: "TAS", raw_json: JSON.stringify({ entry: { hour: "amc" } }) }),
+    ).toBeNull();
+  });
+
+  it("ignores release_time unless the caller opts into the fallback", () => {
+    const row = { event_time: null, raw_json: null, release_time: "16:15" };
+    expect(deriveEarningsSlot(row)).toBeNull();
+    expect(deriveEarningsSlot(row, { allowReleaseTimeFallback: true })).toBe("amc");
+    expect(
+      deriveEarningsSlot({ ...row, release_time: "08:00" }, { allowReleaseTimeFallback: true }),
+    ).toBe("bmo");
+  });
+});
+
+/**
+ * Suspect AMC call time (owner report, live 2026-08-26/27): a web-sourced
+ * "17:00" for an after-close name is the CALL, not the print — CRWD/RBRK both
+ * printed ~16:05 while carrying a 17:00 web_verified time. Such a row is
+ * ignored by the cascade (layer 2 skipped) so observed/default wins. A USER
+ * row is never suspect: an explicit human decision stands.
+ */
+describe("isSuspectAmcCallTime", () => {
+  it("flags 17:00 and later on an AMC slot only", () => {
+    expect(isSuspectAmcCallTime("17:00", "amc")).toBe(true);
+    expect(isSuspectAmcCallTime("17:30", "amc")).toBe(true);
+    expect(isSuspectAmcCallTime("16:59", "amc")).toBe(false);
+    expect(isSuspectAmcCallTime("16:05", "amc")).toBe(false);
+  });
+
+  it("never flags a BMO or unknown slot, nor a missing/malformed time", () => {
+    expect(isSuspectAmcCallTime("17:00", "bmo")).toBe(false);
+    expect(isSuspectAmcCallTime("17:00", null)).toBe(false);
+    expect(isSuspectAmcCallTime(null, "amc")).toBe(false);
+    expect(isSuspectAmcCallTime("not-a-time", "amc")).toBe(false);
+  });
+});
+
+describe("resolveSymbolReleaseTime — suspect AMC call-time rows", () => {
+  it("ignores a web_verified 17:00 AMC row and falls through to the observed layer", () => {
+    upsertSymbolReleaseTime(db, { symbol: "CRWD", releaseTime: "17:00", source: "web_verified" });
+    seedBoundedObs("CRWD", "2026-05-05", "2026-05-05T20:20:00.000Z"); // 16:20 ET
+    // 16:20 − 10m → 16:10 (already on :05)
+    expect(resolveSymbolReleaseTime(db, "CRWD", "amc")).toEqual({
+      time: "16:10",
+      source: "observed",
+    });
+  });
+
+  it("ignores a web_verified 17:00 AMC row with no observations at all (→ null, caller defaults)", () => {
+    upsertSymbolReleaseTime(db, { symbol: "RBRK", releaseTime: "17:00", source: "web_verified" });
+    expect(resolveSymbolReleaseTime(db, "RBRK", "amc")).toBeNull();
+  });
+
+  it("honours a web_verified 16:05 AMC row (a plausible print time)", () => {
+    upsertSymbolReleaseTime(db, { symbol: "RBRK", releaseTime: "16:05", source: "web_verified" });
+    expect(resolveSymbolReleaseTime(db, "RBRK", "amc")).toEqual({
+      time: "16:05",
+      source: "web_verified",
+    });
+  });
+
+  it("honours a USER 17:00 AMC row — an explicit human decision is never suspect", () => {
+    upsertSymbolReleaseTime(db, { symbol: "RBRK", releaseTime: "17:00", source: "user" });
+    expect(resolveSymbolReleaseTime(db, "RBRK", "amc")).toEqual({
+      time: "17:00",
+      source: "user",
+    });
+  });
+
+  it("full cascade: a suspect web row leaves an AMC vendor row on the 16:15 default", () => {
+    upsertSymbolReleaseTime(db, { symbol: "RBRK", releaseTime: "17:00", source: "web_verified" });
+    expect(
+      resolveEarningsReleaseTime(db, {
+        event_type: "earnings",
+        event_time: null,
+        raw_json: JSON.stringify({ entry: { hour: "amc" } }),
+        symbol: "RBRK",
+      }),
+    ).toBe("16:15");
   });
 });
