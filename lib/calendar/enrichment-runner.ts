@@ -29,6 +29,10 @@ import {
   shouldSendEarningsEmail,
 } from "@/lib/queries/earnings-settings";
 import { runWireProbePass } from "./wire-probe";
+import {
+  checkPrePrintFloor,
+  type PrePrintFloorResult,
+} from "@/lib/earnings/pre-print-floor";
 import { recordWireObservation } from "@/lib/earnings/wire-times";
 
 // Macro releases (FRED/FOMC/nonfred): data is typically published within
@@ -70,6 +74,8 @@ interface EnrichmentCandidate {
   event_type: string;
   event_date: string;
   release_time: string | null;
+  /** 'BMO' | 'AMC' | 'TAS' | 'HH:MM' — slot evidence for the pre-print floor. */
+  event_time: string | null;
   symbol: string | null;
   title: string;
   consensus_estimate: string | null;
@@ -101,6 +107,16 @@ export interface EnrichOptions {
   upgradeReactionToTws?: boolean;
 }
 
+/**
+ * Diagnostic payload attached to a `reason: "pre_print"` result — the floor
+ * that refused the row, so a caller can explain the refusal in the user's
+ * terms (see describePrePrintFloor) instead of restating the condition.
+ */
+export interface EnrichmentPrePrintSkip extends PrePrintFloorResult {
+  /** The row's event_date — needed to word the refusal (same-day or not). */
+  eventDate: string;
+}
+
 export interface EnrichmentResult {
   eventId: number;
   source_key: string;
@@ -108,6 +124,8 @@ export interface EnrichmentResult {
   reaction: ReactionSnapshot | null;
   enriched: boolean;
   reason?: string;
+  /** Present exactly when `reason === "pre_print"`. */
+  prePrint?: EnrichmentPrePrintSkip;
 }
 
 /**
@@ -129,7 +147,7 @@ function findCandidates(
   if (opts.eventId != null) {
     const row = db
       .prepare(
-        `SELECT id, source, source_key, event_type, event_date, release_time,
+        `SELECT id, source, source_key, event_type, event_date, release_time, event_time,
                 symbol, title, consensus_estimate, raw_json, security_id,
                 actual_value, reaction_snapshot, enrichment_attempted_at,
                 wire_probe_empty_at
@@ -154,7 +172,7 @@ function findCandidates(
 
   const rows = db
     .prepare(
-      `SELECT id, source, source_key, event_type, event_date, release_time,
+      `SELECT id, source, source_key, event_type, event_date, release_time, event_time,
               symbol, title, consensus_estimate, raw_json, security_id,
               actual_value, reaction_snapshot, enrichment_attempted_at,
               wire_probe_empty_at
@@ -275,6 +293,47 @@ export async function runEnrichment(
 
   const limit = opts.limit ?? 20;
   const candidates = findCandidates(db, opts);
+
+  // ── Pre-print floor: the EXPLICIT-EVENT road only (2026-08-28) ──────
+  //
+  // findCandidates returns an explicitly-requested row WITHOUT the release
+  // window filter — that is the whole point of `eventId` (re-enrich an old
+  // row, compose a recap on demand). But it also means a human click BEFORE
+  // the print reaches the vendor fetch, and one erroneous early vendor
+  // actual then writes actual_value, stamps enriched_at (arming the recap
+  // send gate) and fires the print push — for a print that has not happened.
+  // The windowed sweep cannot do that: its filter already requires
+  // releaseInstant <= now - 5 min.
+  //
+  // Same condition as the manual-actuals save road, from the same helper
+  // (lib/earnings/pre-print-floor.ts) — never fork it. Earnings rows use the
+  // SLOT floor (16:00 ET after-close / 07:00 ET before-open): for an AMC name
+  // the stored release_time is very often the CALL time, not the print (the
+  // CRWD/RBRK trap), so the only knowable question is whether the window has
+  // opened at all. Non-earnings rows (FRED/FOMC/...) publish at a scheduled
+  // instant with no BMO/AMC notion, so they keep the release_time basis.
+  if (opts.eventId != null && candidates.length > 0) {
+    const event = candidates[0];
+    const isEarningsRow =
+      event.source === "finnhub" || event.event_type === "earnings";
+    const prePrint = checkPrePrintFloor(event, opts.now ?? new Date(), {
+      useSlotFloor: isEarningsRow,
+    });
+    if (prePrint.isPrePrint) {
+      return [
+        {
+          eventId: event.id,
+          source_key: event.source_key,
+          actual: null,
+          reaction: null,
+          enriched: false,
+          reason: "pre_print",
+          prePrint: { ...prePrint, eventDate: event.event_date },
+        },
+      ];
+    }
+  }
+
   for (const id of probePrinted) {
     if (candidates.some((c) => c.id === id)) continue;
     const row = findCandidates(db, { ...opts, eventId: id })[0];
@@ -498,7 +557,7 @@ async function runTwsReactionUpgrade(
 
   const row = db
     .prepare(
-      `SELECT id, source, source_key, event_type, event_date, release_time,
+      `SELECT id, source, source_key, event_type, event_date, release_time, event_time,
               symbol, title, consensus_estimate, raw_json, security_id,
               actual_value, reaction_snapshot, enrichment_attempted_at
        FROM calendar_events

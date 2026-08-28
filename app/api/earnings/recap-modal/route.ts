@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { runEnrichment } from "@/lib/calendar/enrichment-runner";
+import { describePrePrintFloor } from "@/lib/earnings/pre-print-floor";
 import {
   composeEarningsEmail,
   EarningsEmailError,
@@ -23,6 +24,12 @@ export const dynamic = "force-dynamic";
  * Returns:
  *   - 200 { success, html, title, eventDate, symbol, phase: "recap",
  *           markdown, enriched: { actual, reaction } | null }
+ *   - 409 { success: false, code: "pre_print", error } when the enrichment
+ *     runner refuses the row on the pre-print floor — clicking "Generate"
+ *     before the print window opens must not fetch, write, or push. No
+ *     force override is offered here: the row's actuals road (the bogeys
+ *     modal "Save actuals", which owns the force confirm) is where a human
+ *     asserts an early print, and nothing on this surface can.
  *   - 409 if actual_value still missing after enrichment attempt
  *   - 4xx for validation / not-found
  *
@@ -54,6 +61,22 @@ export async function POST(request: Request) {
     try {
       const results = await runEnrichment(db, { eventId });
       const r = results[0];
+      // Pre-print floor (2026-08-28): the runner fetched/wrote/pushed
+      // nothing. Refuse the compose too rather than narrating a print that
+      // has not happened — a recap composed off a stale or absent actual is
+      // exactly the wrong-numbers failure the floor exists to prevent.
+      if (r?.reason === "pre_print" && r.prePrint) {
+        return Response.json(
+          {
+            success: false,
+            code: "pre_print",
+            error:
+              describePrePrintFloor(r.prePrint.eventDate, r.prePrint) +
+              " Enrichment and the recap stay locked until then.",
+          },
+          { status: 409 },
+        );
+      }
       if (r) {
         enrichmentResult = {
           actual: r.actual,

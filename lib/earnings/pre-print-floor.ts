@@ -120,3 +120,62 @@ export function checkPrePrintFloor(
     slot,
   };
 }
+
+// ── Refusal copy ───────────────────────────────────────────────────────
+//
+// The floor SENTENCE lives with the floor: a slot floor and a release-time
+// floor are different claims and must never be described with the same
+// words. Callers append their own action clause ("Confirm to save anyway.",
+// "Enrichment and the recap stay locked until then.") so one floor reads
+// correctly on both the save road and the generate road.
+//
+// Sibling: lib/earnings/actuals.ts::prePrintMessage carries its own copy of
+// this wording for the manual-actuals save path (it predates this helper).
+// Collapse that one onto this function when that file is next touched — the
+// two must keep saying the same thing about the same floor.
+
+const ET_TZ = "America/New_York";
+
+/** "Aug 27, 2026" in ET. */
+function etDateLabel(instant: Date): string {
+  return instant.toLocaleString("en-US", { timeZone: ET_TZ, dateStyle: "medium" });
+}
+
+/**
+ * A basis-aware description of why the print cannot have happened yet.
+ * Carries no trailing action clause — the caller owns that sentence.
+ */
+export function describePrePrintFloor(
+  eventDate: string,
+  result: PrePrintFloorResult,
+  now: Date = new Date(),
+): string {
+  if (result.basis === "slot" && result.floor) {
+    const nowEtDate = new Intl.DateTimeFormat("en-CA", {
+      timeZone: ET_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(now);
+    // Name the day too whenever "now" is not the print date, so a click two
+    // days early cannot read as "any minute now".
+    const nowLabel = now.toLocaleString("en-US", {
+      timeZone: ET_TZ,
+      ...(nowEtDate === eventDate
+        ? { timeStyle: "short" as const }
+        : { dateStyle: "medium" as const, timeStyle: "short" as const }),
+    });
+    return result.slot === "amc"
+      ? `This is an after-close print — the window opens at 4:00 PM ET on ${etDateLabel(result.floor)} (now ${nowLabel} ET).`
+      : `This is a before-open print — the window opens at 7:00 AM ET on ${etDateLabel(result.floor)} (now ${nowLabel} ET).`;
+  }
+  if (result.release) {
+    const releaseEt = result.release.toLocaleString("en-US", {
+      timeZone: ET_TZ,
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    return `This event's release time (${releaseEt} ET) is still in the future.`;
+  }
+  return "This print does not look to have happened yet.";
+}
