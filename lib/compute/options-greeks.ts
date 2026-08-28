@@ -12,6 +12,7 @@
  */
 
 import type Database from "better-sqlite3";
+import { todayET } from "@/lib/calendar/date-utils";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
@@ -336,12 +337,12 @@ interface OptionHoldingRow {
  */
 export function computePortfolioGreeks(
   db: Database.Database,
-  options?: { accountId?: number; riskFreeRate?: number }
+  options?: { accountId?: number; riskFreeRate?: number; today?: string }
 ): PortfolioGreeks {
   // Risk-free rate flows from FRED's DGS3MO via the settings cache; falls
   // back to 0.045 if never fetched. See lib/queries/risk-free-rate.ts.
   const r = options?.riskFreeRate ?? getRiskFreeRate(db);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = options?.today ?? todayET();
 
   const accountFilter = options?.accountId
     ? "AND h.account_id = ?"

@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getExpiringOptions } from "@/lib/compute/options-expirations";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
 
 describe("getExpiringOptions", () => {
   let db: Database.Database;
@@ -15,18 +16,17 @@ describe("getExpiringOptions", () => {
     // Use account 1 (Vanguard Taxable) for these tests.
 
     // Three options: <30 days, 60 days, >90 days from today
-    const today = new Date();
-    const in15 = new Date(today); in15.setDate(today.getDate() + 15);
-    const in60 = new Date(today); in60.setDate(today.getDate() + 60);
-    const in120 = new Date(today); in120.setDate(today.getDate() + 120);
-    const expDate = (d: Date) => d.toISOString().slice(0, 10);
+    const today = todayET();
+    const in15 = addDays(today, 15);
+    const in60 = addDays(today, 60);
+    const in120 = addDays(today, 120);
 
     db.prepare(`INSERT INTO securities (id, symbol, security_type, option_type, strike_price, expiration_date, underlying_symbol, multiplier)
-                VALUES (100, 'AAPL  C200', 'Option', 'CALL', 200, ?, 'AAPL', 100)`).run(expDate(in15));
+                VALUES (100, 'AAPL  C200', 'Option', 'CALL', 200, ?, 'AAPL', 100)`).run(in15);
     db.prepare(`INSERT INTO securities (id, symbol, security_type, option_type, strike_price, expiration_date, underlying_symbol, multiplier)
-                VALUES (101, 'MSFT  C400', 'Option', 'CALL', 400, ?, 'MSFT', 100)`).run(expDate(in60));
+                VALUES (101, 'MSFT  C400', 'Option', 'CALL', 400, ?, 'MSFT', 100)`).run(in60);
     db.prepare(`INSERT INTO securities (id, symbol, security_type, option_type, strike_price, expiration_date, underlying_symbol, multiplier)
-                VALUES (102, 'GOOG  C150', 'Option', 'CALL', 150, ?, 'GOOG', 100)`).run(expDate(in120));
+                VALUES (102, 'GOOG  C150', 'Option', 'CALL', 150, ?, 'GOOG', 100)`).run(in120);
 
     db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
                 VALUES (1, 100, '2026-04-30', 1, 'vg-1')`).run();
@@ -34,6 +34,10 @@ describe("getExpiringOptions", () => {
                 VALUES (1, 101, '2026-04-30', 2, 'vg-2')`).run();
     db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
                 VALUES (1, 102, '2026-04-30', 3, 'vg-3')`).run();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("returns options expiring within the default 90-day window", () => {
@@ -73,5 +77,19 @@ describe("getExpiringOptions", () => {
   it("includes account name in result rows", () => {
     const result = getExpiringOptions(db);
     expect(result[0].accountName).toBe("Vanguard Taxable");
+  });
+
+  it("keeps an ET-today expiry at 0 DTE after UTC has advanced to tomorrow", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-28T23:30:00-04:00"));
+    expect(new Date().toISOString().slice(0, 10)).toBe("2026-08-29");
+
+    db.prepare(`INSERT INTO securities (id, symbol, security_type, option_type, strike_price, expiration_date, underlying_symbol, multiplier)
+                VALUES (300, 'SPY   260828P00600000', 'Option', 'PUT', 600, '2026-08-28', 'SPY', 100)`).run();
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
+                VALUES (1, 300, '2026-08-28', 1, 'et-today')`).run();
+
+    const result = getExpiringOptions(db, { daysWindow: 0 });
+    expect(result.find((row) => row.securityId === 300)?.daysToExpiry).toBe(0);
   });
 });

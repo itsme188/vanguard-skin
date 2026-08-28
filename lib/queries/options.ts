@@ -6,6 +6,7 @@
  */
 
 import type Database from "better-sqlite3";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
@@ -242,14 +243,10 @@ export function getOptionsByUnderlying(
 export function getExpiringOptions(
   db: Database.Database,
   daysAhead: number = 30,
-  accountId?: number
+  accountId?: number,
+  today: string = todayET()
 ): ExpiringOption[] {
-  const today = new Date().toISOString().slice(0, 10);
-  const cutoff = new Date(
-    Date.now() + daysAhead * 24 * 60 * 60 * 1000
-  )
-    .toISOString()
-    .slice(0, 10);
+  const cutoff = addDays(today, daysAhead);
 
   const accountFilter = accountId ? "AND h.account_id = ?" : "";
   const params: (string | string | number)[] = [today, cutoff];
