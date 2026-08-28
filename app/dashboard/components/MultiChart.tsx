@@ -66,7 +66,15 @@ export function MultiChart({
   );
 
   const gridCols = layout === "1" ? "grid-cols-1" : "grid-cols-2";
-  const chartHeight = layout === "4" ? "h-[350px]" : "h-[600px]";
+  // Panel height must fit the compact SecurityChart's laid-out content or
+  // the overflow-hidden panel silently clips the bottom — the date axis
+  // first, then the staleness footer. Measured in the browser (2026-08-28):
+  // toolbar 47 + "TWS not connected" banner 28 + chart area floor
+  // min-h-[300px] + footer 9 = 384px, plus the 32px per-panel picker header
+  // reserved via the wrapper's h-[calc(100%-32px)] = 416px. The old 350px
+  // 2x2 budget was already ~57px short before the footer existed (the
+  // recurring "2x2 clips the date axis" QA finding). 1x2 at 600px has slack.
+  const chartHeight = layout === "4" ? "h-[416px]" : "h-[628px]";
 
   return (
     <div className="space-y-3">
