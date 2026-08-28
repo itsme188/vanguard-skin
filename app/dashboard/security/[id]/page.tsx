@@ -21,6 +21,7 @@ import { Chip, type ChipTone } from "../../components/Chip";
 import { HoldingPeriodBadge } from "../../components/HoldingPeriodBadge";
 import { TranscriptsRefreshButton } from "./TranscriptsRefreshButton";
 import { FactorProfileSection } from "./FactorProfileSection";
+import { tradeGradeGroupCaption } from "./trade-grade-group";
 import { computeSecurityFactorShare } from "@/lib/compute/factors";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { QuoteStats } from "../../components/QuoteStats";
@@ -613,6 +614,7 @@ export default async function SecurityDetailPage(props: {
                   const assessment = tg.assessment;
                   const whatWorked = tg.what_went_well;
                   const whatDidnt = tg.what_went_wrong;
+                  const groupCaption = tradeGradeGroupCaption(tg.coversRoundtrips, tg.exit_date);
                   return (
                     <div key={i} className="text-sm leading-snug">
                       <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -624,6 +626,13 @@ export default async function SecurityDetailPage(props: {
                           {tg.entry_date} → {tg.exit_date}
                         </span>
                       </div>
+                      {/* One AI verdict covers every leg closed that day — say so,
+                          or the grade reads as a verdict on a single roundtrip. */}
+                      {groupCaption && (
+                        <p className="text-ink-faint mb-1" style={{ fontSize: "12px" }}>
+                          {groupCaption}
+                        </p>
+                      )}
                       {assessment && (
                         <p className="text-ink-dim mb-0.5">
                           <span

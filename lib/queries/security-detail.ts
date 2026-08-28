@@ -121,6 +121,14 @@ export interface TradeGradeEntry {
   what_went_well: string | null;
   what_went_wrong: string | null;
   review_period: string;
+  /**
+   * How many stored trade_roundtrips rows this card covers (1 when the card is
+   * a single roundtrip). The trade-review generator writes ONE AI verdict per
+   * (symbol, exit_date) and the storage step copies the grade letter plus all
+   * three prose fields onto every roundtrip row sharing that key, so the copies
+   * are folded into one card here — see getTradeGradesBySecurity.
+   */
+  coversRoundtrips: number;
 }
 
 // ─── Individual queries ────────────────────────────────────────
@@ -457,27 +465,131 @@ export function getKpisForSecurity(
 }
 
 /**
+ * Row shape read from trade_roundtrips before grouping. `entry_cost` never
+ * leaves this module — it is only the weight for the blended return.
+ */
+interface TradeGradeRow {
+  review_id: number;
+  grade: string | null;
+  entry_date: string;
+  exit_date: string;
+  entry_cost: number | null;
+  realized_pnl: number;
+  return_pct: number;
+  holding_days: number;
+  assessment: string | null;
+  what_went_well: string | null;
+  what_went_wrong: string | null;
+  review_period: string;
+}
+
+/**
  * Get AI trade grades for a specific security from trade_roundtrips.
- * Returns most recent grades (up to 10) with the review period they came from.
+ * Returns the most recent grades (up to 10 CARDS, not 10 rows).
+ *
+ * The trade-review generator produces ONE AI verdict per (symbol, exit_date)
+ * and the storage step copies the grade letter plus all three prose fields
+ * (assessment / what_went_well / what_went_wrong) onto EVERY trade_roundtrips
+ * row sharing that key. Rendering each copy as its own card attributed the
+ * group's verdict to individual legs — a +$62 / +1.0% QCOM roundtrip showed
+ * an "F" captioned "Worst trade of the month … trim at -22.3%".
+ *
+ * So rows sharing (review_id, exit_date, grade, assessment, what_went_well,
+ * what_went_wrong) collapse into ONE card. The grouping key carries the grade
+ * and both prose fields as well as the assessment: assessment alone is NULL on
+ * ungraded roundtrips, and a NULL key would merge legs whose grades differ.
+ *
+ * Aggregation over a group:
+ *  - realized_pnl  — summed.
+ *  - return_pct    — COST-WEIGHTED: SUM(realized_pnl) / SUM(entry_cost) × 100.
+ *                    entry_cost is a stored column and is exactly the
+ *                    denominator the generator used per leg
+ *                    (lib/compute/trade-roundtrips.ts), so the blend is the
+ *                    same number a single roundtrip over the whole group would
+ *                    have carried. A group whose entry costs net to zero
+ *                    (long + short legs) reports 0, matching the generator's
+ *                    own divide-by-zero convention. Single-row cards keep the
+ *                    stored return_pct untouched (no float drift).
+ *  - entry_date / holding_days — from the EARLIEST entry leg (the card spans
+ *                    from the first entry to the shared exit).
+ *  - prose + grade — carried once.
+ *  - coversRoundtrips — leg count; the UI captions any card above 1 so the
+ *                    grade is never read as a verdict on a single leg.
+ *
+ * ORDER BY exit_date DESC / LIMIT 10 semantics are preserved but applied AFTER
+ * grouping: 10 cards, newest exit first.
  */
 export function getTradeGradesBySecurity(
   db: Database.Database,
   securityId: number
 ): TradeGradeEntry[] {
-  return db
+  const rows = db
     .prepare(
       `SELECT
-        tr.grade, tr.entry_date, tr.exit_date,
-        tr.realized_pnl, tr.return_pct, tr.holding_days,
+        tr.review_id, tr.grade, tr.entry_date, tr.exit_date,
+        tr.entry_cost, tr.realized_pnl, tr.return_pct, tr.holding_days,
         tr.assessment, tr.what_went_well, tr.what_went_wrong,
         rv.period_start AS review_period
       FROM trade_roundtrips tr
       JOIN trade_reviews rv ON rv.id = tr.review_id
       WHERE tr.security_id = ?
-      ORDER BY tr.exit_date DESC
-      LIMIT 10`
+      ORDER BY tr.exit_date DESC, tr.id ASC`
     )
-    .all(securityId) as TradeGradeEntry[];
+    .all(securityId) as TradeGradeRow[];
+
+  // Rows arrive exit_date DESC and every row in a group shares that exit_date,
+  // so first-seen Map order is already newest-exit-first — no re-sort needed.
+  const groups = new Map<string, { entry: TradeGradeEntry; costSum: number }>();
+
+  for (const row of rows) {
+    const key = JSON.stringify([
+      row.review_id,
+      row.exit_date,
+      row.grade,
+      row.assessment,
+      row.what_went_well,
+      row.what_went_wrong,
+    ]);
+    const existing = groups.get(key);
+
+    if (!existing) {
+      groups.set(key, {
+        entry: {
+          grade: row.grade,
+          entry_date: row.entry_date,
+          exit_date: row.exit_date,
+          realized_pnl: row.realized_pnl,
+          return_pct: row.return_pct,
+          holding_days: row.holding_days,
+          assessment: row.assessment,
+          what_went_well: row.what_went_well,
+          what_went_wrong: row.what_went_wrong,
+          review_period: row.review_period,
+          coversRoundtrips: 1,
+        },
+        costSum: row.entry_cost ?? 0,
+      });
+      continue;
+    }
+
+    existing.entry.realized_pnl += row.realized_pnl;
+    existing.costSum += row.entry_cost ?? 0;
+    existing.entry.coversRoundtrips += 1;
+    if (row.entry_date < existing.entry.entry_date) {
+      existing.entry.entry_date = row.entry_date;
+      existing.entry.holding_days = row.holding_days;
+    }
+  }
+
+  const cards: TradeGradeEntry[] = [];
+  for (const { entry, costSum } of groups.values()) {
+    if (entry.coversRoundtrips > 1) {
+      entry.return_pct = costSum !== 0 ? (entry.realized_pnl / costSum) * 100 : 0;
+    }
+    cards.push(entry);
+    if (cards.length === 10) break;
+  }
+  return cards;
 }
 
 // ─── Aggregator ────────────────────────────────────────────────
