@@ -342,3 +342,36 @@ describe("sendReporterRecapEmail", () => {
     }
   });
 });
+
+/**
+ * A hand-entered actual (POST /api/earnings/actuals → manual_actuals_at) is
+ * the desk's own override, never a scrape failure — the read surfaces
+ * (EarningsHub / WeekAheadView / cockpit-stages) already skip the
+ * plausibility guard for it via lib/earnings/actuals-display.ts. The
+ * outbound roads must follow the same rule or a deliberate entry saves
+ * "successfully", shows on Today, and then silently withholds every email.
+ *
+ * Real fixture: consensus "EPS 1.74" vs a hand-entered "EPS -1.20" — the
+ * B19 sign-flip branch, which is exactly the GAAP-loss-vs-Street case a
+ * human types in on purpose.
+ */
+describe("reporterActualsUsable — manual override bypasses the plausibility guard", () => {
+  const base = { consensus_estimate: "EPS 1.74", consensus_value: null };
+  const STAMP = "2026-08-28 14:02:11";
+
+  it("an implausible tuple is usable once manually stamped, and not before", () => {
+    expect(reporterActualsUsable({ ...base, actual_value: "EPS -1.20" })).toBe(false);
+    expect(
+      reporterActualsUsable({ ...base, actual_value: "EPS -1.20", manual_actuals_at: STAMP }),
+    ).toBe(true);
+  });
+
+  it("the stamp does not resurrect an empty or unparseable actual", () => {
+    expect(
+      reporterActualsUsable({ ...base, actual_value: null, manual_actuals_at: STAMP }),
+    ).toBe(false);
+    expect(
+      reporterActualsUsable({ ...base, actual_value: "no figures here", manual_actuals_at: STAMP }),
+    ).toBe(false);
+  });
+});

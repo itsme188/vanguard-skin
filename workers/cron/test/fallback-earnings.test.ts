@@ -1491,3 +1491,47 @@ describe("mac-recent-earnings-sweep aliveness gate (2026-08-05)", () => {
     expect(result.details.some((d) => d.reason === "mac-recently-swept")).toBe(false);
   });
 });
+
+/**
+ * Manual-actuals override parity with the Mac (lib/earnings/actuals-display.ts
+ * ::actualsAreImplausible): a calendar_events row stamped manual_actuals_at was
+ * hand-entered by the desk through POST /api/earnings/actuals, so the
+ * plausibility guard — a defense against unattended vendor scrapes — must not
+ * blank it. Pre-fix the scoreboard blanked the user's own figure and told him
+ * to "Override via POST /api/earnings/actuals", the override it was ignoring.
+ */
+describe("recap safety gates — manual actuals override (Mac parity)", () => {
+  const stampedEvent = (stamp: string | null) =>
+    ({
+      id: 2, source: "finnhub", event_type: "earnings", event_date: EVENT_DATE,
+      event_time: "AMC", title: "ACME earnings", description: null, security_id: null,
+      symbol: "ACME", expected_impact: "high",
+      consensus_estimate: "EPS 1.74",
+      previous_value: null, raw_json: null,
+      consensus_value: null, actual_value: "EPS -1.20", reaction_snapshot: null,
+      manual_actuals_at: stamp,
+    }) as unknown as import("../src/state").CalendarEventRow;
+
+  it("unstamped sign-flip with no reaction → still send:false implausible-no-data-point", () => {
+    expect(evaluateRecapContent(stampedEvent(null), null)).toEqual({
+      send: false,
+      reason: "implausible-no-data-point",
+    });
+  });
+
+  it("manually stamped → sends, not flagged implausible", () => {
+    expect(evaluateRecapContent(stampedEvent("2026-08-28 14:02:11"), null)).toEqual({
+      send: true,
+      implausible: false,
+    });
+  });
+
+  it("a manually stamped row renders its actual with no ⚠ line", () => {
+    const ev = stampedEvent("2026-08-28 14:02:11");
+    const v = evaluateRecapContent(ev, null);
+    expect(v.send).toBe(true);
+    const md = renderScoreboard(ev, "recap", null, v.send ? v.implausible : true);
+    expect(md).toContain("-1.20");
+    expect(md).not.toContain("flagged as implausible");
+  });
+});

@@ -32,7 +32,7 @@ import {
 import { addDays } from "@/lib/calendar/date-utils";
 import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
 import type { CalendarEvent, EarningsTranscript } from "@/lib/types";
-import { isPlausibleEarnings } from "@/lib/earnings/plausibility";
+import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { getIntelForEvents, getReportHistoryForFamily } from "@/lib/queries/earnings-intel";
 import { summarizeHistory, type HistorySummary } from "@/lib/earnings/report-history";
 import { ensureIntelForEvents } from "@/lib/earnings/intel";
@@ -711,7 +711,18 @@ export function buildReadThroughEntries(
     //   - Revenue: stored ≥ 1.4× consensus OR ≤ 0.7× consensus
     // Keep the reporter when either field is null — partial data is OK,
     // but a multi-x divergence is almost always a bad scrape.
-    if (!isPlausibleEarnings(cons.eps, act.eps, cons.revenue, act.revenue)) {
+    // A manually-stamped actual is the desk's own override (POST
+    // /api/earnings/actuals -> manual_actuals_at), never a scrape failure —
+    // same rule the read surfaces apply
+    // (lib/earnings/actuals-display.ts::actualsAreImplausible). Consensus
+    // precedence here is deliberately left as-is (estimate first).
+    if (
+      actualsAreImplausible(
+        ev.consensus_estimate ?? ev.consensus_value,
+        ev.actual_value,
+        ev.manual_actuals_at,
+      )
+    ) {
       continue;
     }
 
@@ -1340,7 +1351,8 @@ ${rows.join("\n")}
 // read gives the user current consensus/actual/reaction values, not the
 // snapshot at email-send time.
 export function renderHeadlineTable(
-  event: Pick<CalendarEvent, "consensus_estimate" | "actual_value" | "consensus_value" | "reaction_snapshot">,
+  event: Pick<CalendarEvent, "consensus_estimate" | "actual_value" | "consensus_value" | "reaction_snapshot"> &
+    Partial<Pick<CalendarEvent, "manual_actuals_at">>,
   symbol: string,
   phase: "preview" | "recap",
   intel?: EarningsIntelView | null,
@@ -1362,11 +1374,15 @@ export function renderHeadlineTable(
   // affected actual cells; the table picks up an explicit "data flagged —
   // verify before relying" sub-line below the rows. Read-throughs already
   // guard at line 433; scoreboard now shares the rule.
-  const plausible = isPlausibleEarnings(
-    cons.eps,
-    rawActual.eps,
-    cons.revenue,
-    rawActual.revenue,
+  // …EXCEPT when the desk typed the figure in itself: a manual_actuals_at
+  // stamp (POST /api/earnings/actuals) is an override, never a scrape
+  // failure — identical rule to the read surfaces
+  // (lib/earnings/actuals-display.ts::actualsAreImplausible). Preview passes
+  // a null actual, so the gate stays a no-op there exactly as before.
+  const plausible = !actualsAreImplausible(
+    consSource,
+    phase === "recap" ? event.actual_value : null,
+    event.manual_actuals_at,
   );
   const actual = plausible ? rawActual : { eps: null, revenue: null };
 
@@ -1526,15 +1542,13 @@ export function renderRecapPrompt(ctx: RecapContext): string {
   // scoreboard blanks it with a ⚠ warning — feeding the same values into the
   // AI context makes the model's Line-by-line table restate exactly what the
   // scoreboard withheld, contradicting the warning directly above it.
-  const recapCons = parseFinnhubFigure(
-    ctx.event.consensus_value ?? ctx.event.consensus_estimate
-  );
-  const recapActual = parseFinnhubFigure(ctx.event.actual_value);
-  const actualsPlausible = isPlausibleEarnings(
-    recapCons.eps,
-    recapActual.eps,
-    recapCons.revenue,
-    recapActual.revenue
+  // A manually-stamped actual is the desk's own override (manual_actuals_at),
+  // never a scrape failure — the scoreboard renders it, so the AI context
+  // must carry it too (lib/earnings/actuals-display.ts::actualsAreImplausible).
+  const actualsPlausible = !actualsAreImplausible(
+    ctx.event.consensus_value ?? ctx.event.consensus_estimate,
+    ctx.event.actual_value,
+    ctx.event.manual_actuals_at
   );
 
   const actualBlock = !ctx.event.actual_value

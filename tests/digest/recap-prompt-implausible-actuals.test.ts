@@ -104,3 +104,32 @@ describe("renderRecapPrompt mirrors the scoreboard plausibility gate", () => {
     expect(prompt).toContain("Enrichment hasn't captured the actual yet");
   });
 });
+
+/**
+ * ...but a manually-stamped actual is the desk's own override (POST
+ * /api/earnings/actuals → manual_actuals_at), not a vendor scrape — the read
+ * surfaces already show it, and the scoreboard renders it, so the AI context
+ * must carry it too or the model would "verify" a figure the user typed in.
+ */
+describe("renderRecapPrompt — manual actuals override the plausibility gate", () => {
+  it("passes a manually-stamped implausible actual through as a reported actual", () => {
+    const prompt = renderRecapPrompt(
+      makeRecapCtx({
+        consensus_estimate: "EPS 1.74",
+        actual_value: "EPS -1.20",
+        manual_actuals_at: "2026-08-28 14:02:11",
+      })
+    );
+    expect(prompt).toContain("Reported actual (from enrichment runner)");
+    expect(prompt).toContain("EPS -1.20");
+    expect(prompt.toLowerCase()).not.toContain("flagged as implausible");
+  });
+
+  it("the same tuple without the stamp is still withheld", () => {
+    const prompt = renderRecapPrompt(
+      makeRecapCtx({ consensus_estimate: "EPS 1.74", actual_value: "EPS -1.20" })
+    );
+    expect(prompt).not.toContain("-1.20");
+    expect(prompt.toLowerCase()).toContain("implausible");
+  });
+});

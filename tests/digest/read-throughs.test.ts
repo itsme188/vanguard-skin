@@ -599,3 +599,35 @@ describe("isPlausibleEarnings", () => {
   });
 });
 
+
+/**
+ * Read-through builder vs. the desk's own override: a reporter row stamped
+ * manual_actuals_at was hand-entered through POST /api/earnings/actuals, so
+ * the Finnhub-drift guard must not drop it — same rule the read surfaces use
+ * (lib/earnings/actuals-display.ts::actualsAreImplausible).
+ */
+describe("buildReadThroughEntries — manual actuals bypass the plausibility guard", () => {
+  function seedStampedReporter(manualStamp: string | null): void {
+    db.prepare(
+      `INSERT INTO calendar_events
+         (source, event_type, event_date, title, source_key, fetched_at, created_at,
+          symbol, consensus_estimate, actual_value, reaction_snapshot, manual_actuals_at)
+       VALUES ('finnhub', 'earnings', '2026-04-29', 'RPT earnings', 'finnhub:RPT:2026-04-29',
+               datetime('now'), datetime('now'), 'RPT', 'EPS 1.74', 'EPS -1.20', ?, ?)`,
+    ).run(JSON.stringify(fullReaction(-6.2)), manualStamp);
+  }
+
+  it("skips the implausible sign-flip when nobody stamped it", () => {
+    seedPair({ reporter: "RPT", target: "APP" });
+    seedStampedReporter(null);
+    expect(buildReadThroughEntries(db, ["APP"], "2026-05-06")).toEqual([]);
+  });
+
+  it("keeps it once manual_actuals_at is set", () => {
+    seedPair({ reporter: "RPT", target: "APP" });
+    seedStampedReporter("2026-08-28 14:02:11");
+    const out = buildReadThroughEntries(db, ["APP"], "2026-05-06");
+    expect(out).toHaveLength(1);
+    expect(out[0].actualEps).toBe(-1.2);
+  });
+});
