@@ -298,7 +298,12 @@ describe("buildDefenseFingerprintInputs", () => {
     expect(after).not.toBe(before);
   });
 
-  it("changes when two exposures reorder (rank swap, same identities)", () => {
+  it("rank-swap-only (same identities, same rounded fields) does NOT change the hash", () => {
+    // hedging.ts ranks by exact dollar exposure with no tie-break, so two
+    // near-equal or tied positions can cross or swap order on a rerun with
+    // zero economic change. The fingerprint carries no ordinal `rank` field
+    // (only membership in the top-N set), so a pure order flip — same
+    // identities, same rounded fields — must NOT read as drift.
     const before = fingerprintNarrativeInputs(
       "defense",
       buildDefenseFingerprintInputs(
@@ -321,10 +326,10 @@ describe("buildDefenseFingerprintInputs", () => {
         }),
       ),
     );
-    expect(after).not.toBe(before);
+    expect(after).toBe(before);
   });
 
-  it("does NOT change when only a dollar exposure value moves (identity/rank/rounded fields unchanged)", () => {
+  it("does NOT change when only a dollar exposure value moves (identity/rounded fields unchanged)", () => {
     const a = buildDefenseFingerprintInputs(
       analysis({
         exposures: [
