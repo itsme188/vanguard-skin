@@ -318,16 +318,32 @@ export function ResearchFeedsView({
   // Gmail is unconfigured: the hook's pre-flight short-circuits BEFORE
   // stamping its localStorage debounce, so it re-fires on every mount exactly
   // when the manual sync is 400ing (qa: sync-feeds silent-400 regression).
+  //
+  // OWNERSHIP RULE for `bgSyncing` (review finding, 2026-08-28): the flag is
+  // owned by THIS hook alone, so its start may decline to SET it but its done
+  // must ALWAYS CLEAR it. The old code gated the clear on `!manualSyncRef
+  // .current` too: click Sync Feeds while a background pass is finishing and
+  // the clear was skipped, leaving the background spinner on forever (nothing
+  // else ever sets it false). Clearing unconditionally is safe precisely
+  // because onSyncStart is the only setter — a start that was skipped leaves
+  // the flag already false, and clearing false is a no-op. Only the FEEDBACK
+  // MESSAGE stays manual-guarded: that string is shared with the manual sync,
+  // whose progress/error line must not be erased by a background run.
   const manualSyncRef = useRef(false);
   useResearchSync({
     onSyncStart: () => {
+      // A background pass starting mid-manual-sync stays invisible: it must
+      // not flip the spinner on (the manual spinner is already showing) nor
+      // overwrite the manual progress line. Not setting it here is what makes
+      // the unconditional clear below correct.
       if (manualSyncRef.current) return;
       setBgSyncing(true);
       setSyncFeedback((prev) => nextFeedback(prev, progressFeedback("Refreshing in background…")));
     },
     onSyncDone: () => {
+      // ALWAYS clear the background-owned flag — see the ownership rule above.
+      setBgSyncing(false);
       if (!manualSyncRef.current) {
-        setBgSyncing(false);
         // Only clear the message this hook wrote — a manual sync's error is
         // sticky and must survive this cleanup.
         setSyncFeedback((prev) =>
