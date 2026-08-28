@@ -188,6 +188,47 @@ describe("getAnalysisTrustState", () => {
     expect(state.crossCheckedThru).toBe("2026-03-31");
   });
 
+  it("NOT_COMPARABLE ALONE DOES NOT CERTIFY: a chain made only of not_comparable months yields a null frontier (qa:analysis-trust-strip--cross-checked-claim-while-all-bands-not-comparable)", () => {
+    // Jan → Feb is a source seam, so Feb is not_comparable. Nothing was
+    // actually cross-checked, so the strip must NOT claim "cross-checked
+    // through 2026-02-28".
+    seedSnapshot(db, 1, "2026-01-31", 100_000, { source: "canonical" });
+    seedSnapshot(db, 1, "2026-02-28", 103_000, {
+      depositsWithdrawals: 0,
+      twr: 0.05,
+      source: "vanguard-pdf",
+    });
+
+    const state = getAnalysisTrustState(db, [1]);
+    const acct1 = state.perAccountReconciliation.find((r) => r.accountId === 1)!;
+
+    expect(acct1.bandHistory.map((b) => b.band)).toEqual(["not_comparable"]);
+    expect(state.crossCheckedThru).toBeNull();
+  });
+
+  it("TRAILING NOT_COMPARABLE DOES NOT EXTEND: the frontier is the last CONSISTENT month, not a later not_comparable one", () => {
+    // Feb agrees (consistent). Feb → Mar is a source seam, so Mar is
+    // not_comparable: it does not break the chain, but nothing was verified
+    // in March, so the frontier stays at February.
+    seedSnapshot(db, 1, "2026-01-31", 100_000, { source: "canonical" });
+    seedSnapshot(db, 1, "2026-02-28", 103_000, {
+      depositsWithdrawals: 0,
+      twr: 0.03, // dietz = 0.03 exactly → consistent
+      source: "canonical",
+    });
+    seedSnapshot(db, 1, "2026-03-31", 106_090, {
+      depositsWithdrawals: 0,
+      twr: 0.03,
+      source: "vanguard-pdf",
+    });
+
+    const state = getAnalysisTrustState(db, [1]);
+    const acct1 = state.perAccountReconciliation.find((r) => r.accountId === 1)!;
+
+    expect(acct1.bandHistory.map((b) => b.band)).toEqual(["consistent", "not_comparable"]);
+    expect(state.crossCheckedThru).toBe("2026-02-28");
+  });
+
   it("MISSING MONTH BREAKS: a calendar month with no statement row at all stops the chain there", () => {
     // Statement rows exist for Jan and Feb (chain start) and April (latest),
     // but March has NO monthly_snapshots row at all — the walk still visits

@@ -64,12 +64,18 @@ function nextMonthEndDate(monthEndDate: string): string {
  * have.
  *
  * Returns the walked bandHistory and this account's own crossCheckedThru
- * frontier: the latest month such that every walked month up to and
- * including it is "consistent" or "not_comparable". "investigate",
- * "insufficient", and a missing calendar month (no statement row for that
- * exact month) all break the chain at that point — null when the chain
- * breaks on the very first walked month, or when there's no second
- * statement month to start from at all ("chainless").
+ * frontier: the latest "consistent" month such that every walked month up
+ * to and including it is "consistent" or "not_comparable". A
+ * "not_comparable" month (seam-straddled) is pass-through — it does not
+ * break the chain, but it does not EXTEND the frontier either, because
+ * nothing was verified in it. "investigate", "insufficient", and a missing
+ * calendar month (no statement row for that exact month) all break the
+ * chain at that point — null when no "consistent" month precedes the first
+ * break (including a chain made only of not_comparable months), or when
+ * there's no second statement month to start from at all ("chainless").
+ * The UI copy "cross-checked through X" therefore always names a month in
+ * which the statement TWR and the independent Dietz return actually agreed
+ * (CLAUDE.md: never a blanket reconciled claim; gate on band === consistent).
  */
 function walkAccountChain(
   db: Database.Database,
@@ -112,8 +118,10 @@ function walkAccountChain(
 
   let crossCheckedThru: string | null = null;
   for (const entry of bandHistory) {
-    if (entry.band === "consistent" || entry.band === "not_comparable") {
+    if (entry.band === "consistent") {
       crossCheckedThru = entry.monthEndDate;
+    } else if (entry.band === "not_comparable") {
+      continue; // pass-through: does not break, does not certify
     } else {
       break;
     }
