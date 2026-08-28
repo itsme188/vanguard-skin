@@ -77,7 +77,17 @@ export function useResearchSync(options: {
       // and complete. We `read` the stream to drain it; we don't surface
       // the events. The user's manual sync UI in ResearchFeedsView handles
       // the verbose progress UI separately.
-      const res = await apiFetch("/api/research/sync", { method: "POST" });
+      // Label this pass as the BACKGROUND runner. The manual "Sync Feeds"
+      // button POSTs the same route without this header, and the route uses
+      // it to acquire the sync lock under the right owner — so a collision
+      // during this automatic pass says "a background refresh is running"
+      // instead of blaming the user for "a sync you already started".
+      // apiFetch builds a Headers from `init.headers` and only ADDS the CSRF
+      // token to it, so passing headers here can't drop that header.
+      const res = await apiFetch("/api/research/sync", {
+        method: "POST",
+        headers: { "X-Sync-Runner": "background" },
+      });
       if (res.ok && res.body) {
         const reader = res.body.getReader();
         // Drain the stream — we don't care about the contents here.
