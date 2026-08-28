@@ -33,6 +33,26 @@ export function upsertBeta(db: Database.Database, input: UpsertBetaInput): void 
 }
 
 /**
+ * Delete the cached beta for ONE (security, lookback window) pair.
+ *
+ * Used by the confidence gate in `lib/compute/beta-confidence.ts`: when a
+ * refreshed regression has no explanatory power (r² below the floor) or too
+ * few aligned pairs, the stale row must not keep publishing. `beta` is NOT
+ * NULL, so there is no "unknown" value to store — a MISSING row is what every
+ * consumer already reads as "no beta" (see the LEFT JOIN in
+ * `lib/digest/anomalies.ts`). Sibling lookback windows are left untouched.
+ */
+export function deleteBeta(
+  db: Database.Database,
+  securityId: number,
+  lookbackDays: number,
+): void {
+  db.prepare(
+    "DELETE FROM security_betas WHERE security_id = ? AND lookback_days = ?",
+  ).run(securityId, lookbackDays);
+}
+
+/**
  * Delete all beta rows for a given security across all lookback windows.
  *
  * Used when invalidating cached betas (e.g., data correction, security deletes).
