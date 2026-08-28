@@ -585,119 +585,123 @@ export function ManageSourcesModal({
               </p>
             ) : (
               <div className="space-y-1">
-                {sources.map((s) => (
-                  <div
-                    key={s.id}
-                    className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg bg-raised/50"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-ink">
-                        {s.name}
-                      </div>
-                      {s.sender_email ? (
-                        <div className="text-xs text-ink-faint font-mono truncate">
-                          {s.sender_email}
+                {sources.map((s) => {
+                  const articleCount = s.article_count ?? 0;
+                  const hasArticles = articleCount > 0;
+                  const deleteTitle = hasArticles
+                    ? `This source has ${articleCount} article${articleCount === 1 ? "" : "s"} — use the toggle above to deactivate it instead of deleting.`
+                    : "Delete source";
+                  return (
+                    <div
+                      key={s.id}
+                      className="flex flex-col gap-1 px-3 py-2.5 rounded-lg bg-raised/50"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium text-ink">
+                            {s.name}
+                          </div>
+                          {s.sender_email ? (
+                            <div className="text-xs text-ink-faint font-mono truncate">
+                              {s.sender_email}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-down/80">
+                              No email configured — use Discover or edit to add one
+                            </div>
+                          )}
                         </div>
-                      ) : (
-                        <div className="text-xs text-down/80">
-                          No email configured — use Discover or edit to add one
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {s.article_count != null && s.article_count > 0 && (
-                        <span className="text-xs text-ink-faint tabular-nums">
-                          {s.article_count}
-                        </span>
-                      )}
-                      {/* Off-topic filter exemption (migration 055 allow_off_topic) */}
-                      <button
-                        onClick={() => handleToggleOffTopic(s.id, s.allow_off_topic ?? 0)}
-                        className={`text-[10px] font-medium px-1.5 py-0.5 rounded border transition-colors ${
-                          s.allow_off_topic === 1
-                            ? "border-gold/40 text-gold-ink bg-gold/10"
-                            : "border-edge text-ink-faint hover:text-ink-dim"
-                        }`}
-                        title={
-                          s.allow_off_topic === 1
-                            ? "Off-topic exemption ON — everything from this source reaches digests, even articles the AI votes not portfolio-relevant. Click to re-enable filtering."
-                            : "Off-topic exemption OFF — articles the AI votes not portfolio-relevant are excluded from digests (visible under Research → Feeds → Filtered). Click to keep everything from this source."
-                        }
-                      >
-                        off-topic OK
-                      </button>
-                      {/* Earnings hierarchy (migration 068) — only offered
-                          while unranked; ranked sources are edited above. */}
-                      {s.earnings_rank == null && (
-                        <button
-                          type="button"
-                          onClick={() => void handleAddToHierarchy(s.id)}
-                          disabled={hierarchyBusy}
-                          aria-label={`Add ${s.name} to earnings hierarchy`}
-                          className="relative text-[10px] font-medium px-1.5 py-0.5 rounded border border-edge text-ink-faint hover:text-ink-dim disabled:opacity-30 transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
-                        >
-                          + earnings
-                        </button>
-                      )}
-                      {/* Toggle */}
-                      <button
-                        onClick={() => handleToggle(s.id, s.is_active)}
-                        className={`relative w-9 h-5 rounded-full transition-colors ${
-                          s.is_active ? "bg-gold" : "bg-muted"
-                        }`}
-                      >
-                        <div
-                          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                            s.is_active ? "translate-x-4" : "translate-x-0.5"
-                          }`}
-                        />
-                      </button>
-                      {/* Delete — always rendered so the control isn't
-                          unexplained-missing (deep-QA: research-sources--
-                          delete-only-on-zero-article-sources-unexplained).
-                          Disabled (not hidden) for sources with articles,
-                          with BOTH a title tooltip (desktop hover) and a
-                          visible caption (touch users can't hover) pointing
-                          at the active/inactive toggle as the alternative —
-                          no cascade, no detach, retention unchanged. Enabled
-                          delete still confirms first, matching the
-                          Notes/Documents delete flows (deep-QA: instant
-                          delete was jarring). */}
-                      {(() => {
-                        const articleCount = s.article_count ?? 0;
-                        const hasArticles = articleCount > 0;
-                        const deleteTitle = hasArticles
-                          ? `This source has ${articleCount} article${articleCount === 1 ? "" : "s"} — use the toggle above to deactivate it instead of deleting.`
-                          : "Delete source";
-                        return (
-                          <span className="flex items-center gap-1.5">
-                            {hasArticles && (
-                              <span className="text-[10px] text-ink-faint whitespace-nowrap">
-                                has {articleCount} article{articleCount === 1 ? "" : "s"} — deactivate instead
-                              </span>
-                            )}
+                        <div className="flex items-center gap-2 shrink-0">
+                          {s.article_count != null && s.article_count > 0 && (
+                            <span className="text-xs text-ink-faint tabular-nums">
+                              {s.article_count}
+                            </span>
+                          )}
+                          {/* Off-topic filter exemption (migration 055 allow_off_topic) */}
+                          <button
+                            onClick={() => handleToggleOffTopic(s.id, s.allow_off_topic ?? 0)}
+                            className={`text-[10px] font-medium px-1.5 py-0.5 rounded border transition-colors ${
+                              s.allow_off_topic === 1
+                                ? "border-gold/40 text-gold-ink bg-gold/10"
+                                : "border-edge text-ink-faint hover:text-ink-dim"
+                            }`}
+                            title={
+                              s.allow_off_topic === 1
+                                ? "Off-topic exemption ON — everything from this source reaches digests, even articles the AI votes not portfolio-relevant. Click to re-enable filtering."
+                                : "Off-topic exemption OFF — articles the AI votes not portfolio-relevant are excluded from digests (visible under Research → Feeds → Filtered). Click to keep everything from this source."
+                            }
+                          >
+                            off-topic OK
+                          </button>
+                          {/* Earnings hierarchy (migration 068) — only offered
+                              while unranked; ranked sources are edited above. */}
+                          {s.earnings_rank == null && (
                             <button
                               type="button"
-                              onClick={() => setPendingDeleteId(s.id)}
-                              disabled={hasArticles}
-                              aria-disabled={hasArticles}
-                              title={deleteTitle}
-                              className={
-                                hasArticles
-                                  ? "text-ink-faint/40 cursor-not-allowed"
-                                  : "text-ink-faint hover:text-down transition-colors"
-                              }
+                              onClick={() => void handleAddToHierarchy(s.id)}
+                              disabled={hierarchyBusy}
+                              aria-label={`Add ${s.name} to earnings hierarchy`}
+                              className="relative text-[10px] font-medium px-1.5 py-0.5 rounded border border-edge text-ink-faint hover:text-ink-dim disabled:opacity-30 transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
                             >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
-                              </svg>
+                              + earnings
                             </button>
+                          )}
+                          {/* Toggle */}
+                          <button
+                            onClick={() => handleToggle(s.id, s.is_active)}
+                            className={`relative w-9 h-5 rounded-full transition-colors ${
+                              s.is_active ? "bg-gold" : "bg-muted"
+                            }`}
+                          >
+                            <div
+                              className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                                s.is_active ? "translate-x-4" : "translate-x-0.5"
+                              }`}
+                            />
+                          </button>
+                          {/* Delete — always rendered so the control isn't
+                              unexplained-missing (deep-QA: research-sources--
+                              delete-only-on-zero-article-sources-unexplained).
+                              Disabled (not hidden) for sources with articles,
+                              with BOTH a title tooltip (desktop hover) and a
+                              visible caption (touch users can't hover) pointing
+                              at the active/inactive toggle as the alternative —
+                              no cascade, no detach, retention unchanged. Enabled
+                              delete still confirms first, matching the
+                              Notes/Documents delete flows (deep-QA: instant
+                              delete was jarring). The caption renders on its
+                              own line below the row (not inline here) so it
+                              never steals width from the name/email column
+                              (deep-QA: name/email crushed on every captioned
+                              row — clientWidth 34 vs scrollWidth 60/173). */}
+                          <button
+                            type="button"
+                            onClick={() => setPendingDeleteId(s.id)}
+                            disabled={hasArticles}
+                            aria-disabled={hasArticles}
+                            title={deleteTitle}
+                            className={
+                              hasArticles
+                                ? "text-ink-faint/40 cursor-not-allowed"
+                                : "text-ink-faint hover:text-down transition-colors"
+                            }
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                      {hasArticles && (
+                        <div className="flex justify-end">
+                          <span className="text-[10px] text-ink-faint whitespace-nowrap">
+                            has {articleCount} article{articleCount === 1 ? "" : "s"} — deactivate instead
                           </span>
-                        );
-                      })()}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

@@ -149,14 +149,28 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
   return (
     <div className="text-sm text-ink-dim italic border-l-2 border-gold/40 pl-3 my-3 leading-relaxed">
       {drifted && (
-        <p
+        <div
           role="status"
-          className="not-italic text-xs text-warn border border-warn/40 bg-warn/10 rounded px-2 py-1.5 mb-2 leading-snug"
+          className="not-italic text-xs text-warn border border-warn/40 bg-warn/10 rounded px-2 py-1.5 mb-2 leading-snug flex flex-wrap items-center gap-x-2 gap-y-1"
         >
-          Inputs changed since this was generated
-          {relativeAge ? ` ${relativeAge}` : ""} — {driftDetail(surfaceKey)}.
-          Refresh to regenerate.
-        </p>
+          <span>
+            Inputs changed since this was generated
+            {relativeAge ? ` ${relativeAge}` : ""} — {driftDetail(surfaceKey)}.
+          </span>
+          {/* Refresh right where the banner is read — the footer control
+              (below the full prose block) is ~128px away with the whole
+              narrative in between. Same handler/state as the footer button,
+              styled to match its underline-dotted convention. */}
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            aria-label="Refresh narrative now"
+            className="text-xs text-warn font-medium underline decoration-dotted underline-offset-2 hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {refreshing ? "Refreshing…" : "Refresh to regenerate"}
+          </button>
+        </div>
       )}
       {/* AI narrative embeds portfolio-derived figures at generation time, so
           the only correct mask is the whole prose block (same rule as the
