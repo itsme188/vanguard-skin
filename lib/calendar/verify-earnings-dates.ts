@@ -16,7 +16,9 @@ import {
   getSymbolReleaseTimeRow,
   upsertSymbolReleaseTime,
   applyResolvedReleaseTimeToUpcomingEvents,
+  isSuspectAmcCallTime,
 } from "@/lib/earnings/wire-times";
+import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 
 /**
  * Earnings date/slot verification — candidate selection, prompt building,
@@ -159,26 +161,24 @@ export function findDateVerificationCandidates(
 
 /**
  * Resolves the BMO/AMC slot a candidate's date should be verified against.
- * event_time carries the vendor's own BMO/AMC marker (preferred, case-
- * insensitive); when it's absent OR an unrecognized value (e.g. "TAS"),
- * falls back to release_time's clock hour (before noon ET → bmo, noon or
- * later → amc). Null when neither resolves to a slot.
+ *
+ * The shared resolver (lib/earnings/earnings-slot.ts) does the real work —
+ * one function now behind this, the wire-time cascade's side-of-noon guard,
+ * and the pre-print slot floor. THIS caller opts into the release_time
+ * fallback: its question is "which half of the day did the vendor mean", and
+ * a candidate with no marker but an 08:00 release_time plainly means morning.
+ * The pre-print floor deliberately does NOT opt in — there, release_time is
+ * the value under suspicion (the AMC call-time trap).
  */
 export function effectiveSlot(c: {
   event_time: string | null;
   release_time: string | null;
+  raw_json?: string | null;
 }): "bmo" | "amc" | null {
-  const et = c.event_time?.trim().toUpperCase();
-  if (et === "BMO") return "bmo";
-  if (et === "AMC") return "amc";
-
-  const rt = c.release_time;
-  if (rt && /^\d{2}:\d{2}/.test(rt)) {
-    const hour = parseInt(rt.slice(0, 2), 10);
-    if (!Number.isNaN(hour)) return hour < 12 ? "bmo" : "amc";
-  }
-
-  return null;
+  return deriveEarningsSlot(
+    { event_time: c.event_time, raw_json: c.raw_json ?? null, release_time: c.release_time },
+    { allowReleaseTimeFallback: true },
+  );
 }
 
 export function buildDateVerificationPrompt(
@@ -475,6 +475,13 @@ export function needsExactTime(
  * Task 2). Rejects an out-of-range or malformed time (defense in depth on
  * top of normalizeVerdict's own regex+range guard, since callers could in
  * principle construct a DateVerdict by hand).
+ *
+ * ALSO rejects a suspect AMC call time — a 17:00-or-later "exact time" for an
+ * after-close name is the earnings CALL, not the wire (owner report, live
+ * 2026-08-26/27: CRWD/RBRK both printed ~16:05 carrying a 17:00 web answer).
+ * Storing it would push every countdown, preview window and probe schedule an
+ * hour late. The re-resolve still runs afterwards so whatever the cascade
+ * DOES believe lands on the upcoming rows.
  */
 export function applyExactTimeVerdict(
   db: Database.Database,
@@ -486,6 +493,16 @@ export function applyExactTimeVerdict(
   if (t < EARLIEST_PLAUSIBLE_ET || t > LATEST_PLAUSIBLE_ET) return false;
   const existing = getSymbolReleaseTimeRow(db, verdict.symbol);
   if (existing?.source === "user") return false;
+
+  const slot = verdict.slot ?? effectiveSlot(candidate);
+  if (isSuspectAmcCallTime(t, slot)) {
+    console.warn(
+      `[verify-earnings-dates] suspect call time ${verdict.symbol} ${t} (AMC) — not stored as web_verified`,
+    );
+    applyResolvedReleaseTimeToUpcomingEvents(db, verdict.symbol);
+    return false;
+  }
+
   upsertSymbolReleaseTime(db, {
     symbol: verdict.symbol,
     releaseTime: t,

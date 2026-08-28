@@ -33,23 +33,27 @@ function seedEvent(opts: {
   eventDate: string;
   releaseTime: string | null;
   actual?: string | null;
+  /** Defaults to releaseTime (the historical shape of this helper). */
+  eventTime?: string | null;
+  rawJson?: string | null;
 }): number {
   const row = hoisted.db
     .prepare(
       `INSERT INTO calendar_events (
          source, event_type, event_date, event_time, release_time, title,
-         symbol, source_key, actual_value
-       ) VALUES ('finnhub','earnings',?,?,?,?,?,?,?)
+         symbol, source_key, actual_value, raw_json
+       ) VALUES ('finnhub','earnings',?,?,?,?,?,?,?,?)
        RETURNING id`,
     )
     .get(
       opts.eventDate,
-      opts.releaseTime,
+      opts.eventTime === undefined ? opts.releaseTime : opts.eventTime,
       opts.releaseTime,
       "XMTR earnings",
       "XMTR",
       `finnhub:XMTR:${opts.eventDate}`,
       opts.actual ?? null,
+      opts.rawJson ?? null,
     ) as { id: number };
   return row.id;
 }
@@ -75,7 +79,10 @@ describe("POST /api/earnings/actuals — pre-print floor", () => {
     expect(res.status).toBe(409);
     const body = (await res.json()) as { error: string; code: string };
     expect(body.code).toBe("pre_print");
-    expect(body.error).toMatch(/future/i);
+    // Slot floor wording (2026-08-28): the row is BMO, so the message names
+    // the 07:00 ET floor for the print date rather than the raw release_time.
+    expect(body.error).toMatch(/before-open print/);
+    expect(body.error).toContain("7:00 AM ET");
 
     const row = hoisted.db
       .prepare(`SELECT actual_value, enriched_at FROM calendar_events WHERE id = ?`)
@@ -150,6 +157,102 @@ describe("POST /api/earnings/actuals — pre-print floor", () => {
     const mod = await import("@/app/api/earnings/actuals/route");
     const res = await mod.POST(postReq({ event_id: eventId }));
     expect(res.status).toBe(400);
+  });
+});
+
+/**
+ * Slot floor — the AMC call-time trap (owner report, live 2026-08-26/27).
+ *
+ * A vendor/web release_time of 17:00 on an after-close name is almost always
+ * the CALL time, not the print: accepting a real 16:05 print at 16:12 ET was
+ * refused as "still in the future". saveManualActuals now floors on the slot
+ * (16:00 ET after-close, 07:00 ET before-open) instead of a time it does not
+ * trust, and names that basis in the refusal.
+ */
+describe("POST /api/earnings/actuals — slot floor (AMC call-time trap)", () => {
+  const AMC_RAW = JSON.stringify({ entry: { hour: "amc" } });
+
+  it("accepts an AMC print at 16:12 ET even though release_time carries the 17:00 call time", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-27T20:12:00Z")); // 16:12 ET
+    const eventId = seedEvent({
+      eventDate: "2026-08-27",
+      releaseTime: "17:00",
+      eventTime: null,
+      rawJson: AMC_RAW,
+    });
+
+    const mod = await import("@/app/api/earnings/actuals/route");
+    const res = await mod.POST(postReq({ event_id: eventId, eps_actual: 1.42 }));
+
+    expect(res.status).toBe(200);
+    const row = hoisted.db
+      .prepare(`SELECT actual_value, enriched_at FROM calendar_events WHERE id = ?`)
+      .get(eventId) as { actual_value: string | null; enriched_at: string | null };
+    expect(row.actual_value).toContain("1.42");
+    expect(row.enriched_at).not.toBeNull();
+  });
+
+  it("still refuses the same AMC print at 15:30 ET, naming the after-close floor", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-27T19:30:00Z")); // 15:30 ET
+    const eventId = seedEvent({
+      eventDate: "2026-08-27",
+      releaseTime: "17:00",
+      eventTime: null,
+      rawJson: AMC_RAW,
+    });
+
+    const mod = await import("@/app/api/earnings/actuals/route");
+    const res = await mod.POST(postReq({ event_id: eventId, eps_actual: 1.42 }));
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code: string };
+    expect(body.code).toBe("pre_print");
+    expect(body.error).toMatch(/after-close print/);
+    expect(body.error).toContain("4:00 PM ET");
+
+    const row = hoisted.db
+      .prepare(`SELECT actual_value, enriched_at FROM calendar_events WHERE id = ?`)
+      .get(eventId) as { actual_value: string | null; enriched_at: string | null };
+    expect(row.actual_value).toBeNull();
+    expect(row.enriched_at).toBeNull();
+  });
+
+  it("force:true still bypasses the slot floor", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-27T19:30:00Z")); // 15:30 ET
+    const eventId = seedEvent({
+      eventDate: "2026-08-27",
+      releaseTime: "17:00",
+      eventTime: null,
+      rawJson: AMC_RAW,
+    });
+
+    const mod = await import("@/app/api/earnings/actuals/route");
+    const res = await mod.POST(
+      postReq({ event_id: eventId, eps_actual: 1.42, force: true }),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("a slot-less (TAS) row keeps the release_time wording and floor", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-27T20:12:00Z")); // 16:12 ET
+    const eventId = seedEvent({
+      eventDate: "2026-08-27",
+      releaseTime: "17:00",
+      eventTime: "TAS",
+      rawJson: AMC_RAW,
+    });
+
+    const mod = await import("@/app/api/earnings/actuals/route");
+    const res = await mod.POST(postReq({ event_id: eventId, eps_actual: 1.42 }));
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code: string };
+    expect(body.code).toBe("pre_print");
+    expect(body.error).toMatch(/still in the future/);
   });
 });
 

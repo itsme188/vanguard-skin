@@ -13,7 +13,8 @@
  */
 import type Database from "better-sqlite3";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
-import { resolveReleaseTime, normalizeEarningsHour } from "@/lib/calendar/release-times";
+import { resolveReleaseTime } from "@/lib/calendar/release-times";
+import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 import { todayET } from "@/lib/calendar/date-utils";
 
 export const BOUNDED_MAX_GAP_MS = 30 * 60 * 1000;
@@ -120,7 +121,8 @@ export function getObservationsForFamily(
 //   1. user override (symbol_release_times, source='user')
 //   2. web_verified override — honored only while ZERO bounded
 //      observations exist for the symbol (a bounded observation is direct
-//      evidence and supersedes a stale web-sourced note)
+//      evidence and supersedes a stale web-sourced note), and never when it
+//      looks like an AMC CALL time rather than a print (isSuspectAmcCallTime)
 //   3. observed-derived — earliest bounded first_seen minus a 10-min
 //      margin, rounded DOWN to the nearest :05, floored at 04:00 ET
 //   4. legacy per-symbol constant / BMO-AMC default (resolveReleaseTime)
@@ -177,33 +179,31 @@ function sameSideOfNoon(hhmm: string, slot: "bmo" | "amc" | null): boolean {
 }
 
 /**
- * BMO/AMC slot for the sameSideOfNoon guard (I1 fix, 2026-08-04). An
- * explicit "BMO"/"AMC" event_time is authoritative when present (manual /
- * curated rows carry it directly), but the DOMINANT vendor path — Finnhub
- * (lib/calendar/finnhub.ts) and Nasdaq (lib/calendar/nasdaq.ts) — always
- * writes event_time: null and encodes the slot in raw_json.entry.hour
- * instead. Reading event_time alone left slot permanently null on every
- * vendor row, making the guard inert: a standing user override or
- * observation history could silently apply to the wrong half of the day
- * whenever a symbol flips BMO/AMC between quarters. "dmh"/unknown/missing
- * still resolve to null — correct, there genuinely is no side-of-noon to
- * guard against.
+ * Earliest ET time at which an "after-close" release_time stops being a
+ * plausible PRINT time and starts looking like the earnings CALL.
  */
-function deriveKnownSlot(row: {
-  event_time: string | null;
-  raw_json: string | null;
-}): "bmo" | "amc" | null {
-  const et = row.event_time?.trim().toUpperCase();
-  if (et === "BMO") return "bmo";
-  if (et === "AMC") return "amc";
-  if (!row.raw_json) return null;
-  try {
-    const parsed = JSON.parse(row.raw_json) as { entry?: { hour?: unknown } };
-    const hour = normalizeEarningsHour(parsed.entry?.hour);
-    return hour === "bmo" || hour === "amc" ? hour : null;
-  } catch {
-    return null;
-  }
+export const SUSPECT_AMC_CALL_TIME_ET = "17:00";
+
+/**
+ * True when an AMC release_time is almost certainly the earnings CALL, not
+ * the wire (owner report, live 2026-08-26/27). Companies that print after
+ * the close overwhelmingly cross the wire in the 16:00–16:30 window and hold
+ * the call at 17:00; a "17:00" answer from a web lookup is the schedule page
+ * quoting the call. Believing it poisons two things at once — the release
+ * cascade (every downstream countdown, preview window and probe schedule
+ * lands ~an hour late) and, before the 2026-08-28 slot floor, the accept
+ * guard, which refused a real 16:12 ET print as "still in the future".
+ *
+ * Applied ONLY to web_verified rows: a 'user' row at 17:00 is an explicit
+ * human decision about a company the user knows, and stands.
+ */
+export function isSuspectAmcCallTime(
+  time: string | null | undefined,
+  slot: "bmo" | "amc" | null,
+): boolean {
+  if (slot !== "amc") return false;
+  if (!time || !/^\d{2}:\d{2}$/.test(time)) return false;
+  return time >= SUSPECT_AMC_CALL_TIME_ET;
 }
 
 export function getSymbolReleaseTimeRow(
@@ -307,7 +307,12 @@ export function resolveSymbolReleaseTime(
   if (row?.source === "user" && sameSideOfNoon(row.release_time, slot)) {
     return { time: row.release_time, source: "user" };
   }
-  if (row?.source === "web_verified" && bounded.length === 0 && sameSideOfNoon(row.release_time, slot)) {
+  if (
+    row?.source === "web_verified" &&
+    bounded.length === 0 &&
+    sameSideOfNoon(row.release_time, slot) &&
+    !isSuspectAmcCallTime(row.release_time, slot)
+  ) {
     return { time: row.release_time, source: "web_verified" };
   }
   const times = bounded
@@ -346,7 +351,9 @@ export function resolveEarningsReleaseTime(
   // slot=null would otherwise bypass the sameSideOfNoon guard entirely.
   if (row.event_time?.trim().toUpperCase() === "TAS") return resolveReleaseTime(row);
 
-  const slot = deriveKnownSlot(row);
+  // release_time is deliberately not consulted for the slot here: the row's
+  // own release_time is the value this cascade is about to (re)compute.
+  const slot = deriveEarningsSlot(row);
 
   const fromSymbol = resolveSymbolReleaseTime(db, row.symbol, slot);
   if (fromSymbol?.source === "user" || fromSymbol?.source === "web_verified") {

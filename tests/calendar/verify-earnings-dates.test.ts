@@ -1078,6 +1078,72 @@ describe("exact-time jump-start (wire-time spec 2026-08-04)", () => {
       { ...candidate, symbol: "AAA" });
     expect(getSymbolReleaseTimeRow(db, "AAA")).toMatchObject({ release_time: "07:00", source: "user" });
   });
+
+  /**
+   * Suspect AMC call time (owner report, live 2026-08-26/27): the web answer
+   * for an after-close name is very often the 5 PM CALL, not the print —
+   * CRWD/RBRK both printed ~16:05 while the verified time said 17:00. Storing
+   * it as web_verified poisons the cascade AND the pre-print floor, so the
+   * writer refuses it outright; the re-resolve still runs so whatever the
+   * cascade DOES believe lands on the upcoming rows.
+   */
+  it("refuses to store a 17:00 AMC verified time (call time, not print) but still re-resolves upcoming rows", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const candidate = {
+      id: 2, symbol: "CRWD", event_date: "2026-11-05", event_time: "AMC",
+      release_time: "09:00", source: "finnhub",
+    };
+    // release_time deliberately wrong (09:00 on an AMC row) so a successful
+    // re-resolve is observable.
+    db.prepare(
+      `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, symbol, title, source_key, week_of)
+       VALUES ('finnhub','earnings','2026-11-05','AMC','09:00','CRWD','CRWD earnings','finnhub:CRWD:2026-11-05','2026-11-02')`,
+    ).run();
+
+    const ok = applyExactTimeVerdict(
+      db,
+      { symbol: "CRWD", confirmed_date: "2026-11-05", slot: "amc", confidence: "confirmed", source: "EarningsWhispers", exact_time: "17:00" },
+      candidate,
+    );
+
+    expect(ok).toBe(false);
+    expect(getSymbolReleaseTimeRow(db, "CRWD")).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    expect(String(warn.mock.calls[0][0])).toMatch(/suspect call time/i);
+    expect(String(warn.mock.calls[0][0])).toMatch(/CRWD/);
+
+    // The cascade still lands on the upcoming row: 09:00 → AMC default 16:15.
+    expect(
+      (db.prepare("SELECT release_time FROM calendar_events WHERE symbol='CRWD'").get() as { release_time: string }).release_time,
+    ).toBe("16:15");
+
+    // Slot can come from the candidate when the verdict carries none.
+    const ok2 = applyExactTimeVerdict(
+      db,
+      { symbol: "RBRK", confirmed_date: null, slot: null, confidence: "confirmed", source: "EarningsWhispers", exact_time: "17:15" },
+      { ...candidate, symbol: "RBRK", event_time: null, release_time: "16:15" },
+    );
+    expect(ok2).toBe(false);
+    expect(getSymbolReleaseTimeRow(db, "RBRK")).toBeNull();
+
+    warn.mockRestore();
+  });
+
+  it("still stores a plausible AMC print time (16:05) as web_verified", () => {
+    const candidate = {
+      id: 3, symbol: "DDOG", event_date: "2026-11-05", event_time: "AMC",
+      release_time: "16:15", source: "finnhub",
+    };
+    const ok = applyExactTimeVerdict(
+      db,
+      { symbol: "DDOG", confirmed_date: "2026-11-05", slot: "amc", confidence: "confirmed", source: "EarningsWhispers", exact_time: "16:05" },
+      candidate,
+    );
+    expect(ok).toBe(true);
+    expect(getSymbolReleaseTimeRow(db, "DDOG")).toMatchObject({
+      release_time: "16:05", source: "web_verified",
+    });
+  });
 });
 
 // Deferred minor (2026-08-07): defaultFetchDateVerdicts shares the exact
