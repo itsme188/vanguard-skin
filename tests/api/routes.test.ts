@@ -19,6 +19,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import { NextRequest } from "next/server";
 import {
   acquireResearchSyncLock,
+  currentResearchSyncRunner,
   __resetResearchSyncLockForTests,
 } from "@/lib/research/sync-lock";
 
@@ -189,11 +190,45 @@ describe("POST /api/levels/extract", () => {
 
 // ── POST /api/research/sync ────────────────────────────────────
 
+/**
+ * The route reads the runner off the request, so every call needs a real
+ * Request. `runner` mirrors what lib/hooks/useResearchSync.ts sends on its
+ * background pass; omit it for the manual "Sync Feeds" click.
+ */
+function syncRequest(runner?: string): Request {
+  return new NextRequest("http://localhost/api/research/sync", {
+    method: "POST",
+    headers: runner ? { "X-Sync-Runner": runner } : undefined,
+  });
+}
+
+/** Park the pipeline inside fetchNewArticles so the SSE stream keeps holding
+ *  the sync lock while the test fires a second, colliding request. Returns
+ *  the resolver that lets the parked run finish. */
+function parkPipeline(): () => void {
+  let release!: () => void;
+  hoisted.fetchNewArticles.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        release = () => resolve({ fetched: 0, sources: [] });
+      }),
+  );
+  return () => release();
+}
+
+async function drain(res: Response): Promise<void> {
+  const reader = res.body!.getReader();
+  for (;;) {
+    const { done } = await reader.read();
+    if (done) break;
+  }
+}
+
 describe("POST /api/research/sync", () => {
   it("returns 400 when Gmail isn't configured", async () => {
     hoisted.isGmailConfigured.mockReturnValueOnce(false);
     const mod = await import("@/app/api/research/sync/route");
-    const res = await mod.POST();
+    const res = await mod.POST(syncRequest());
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("Gmail OAuth not configured");
@@ -205,7 +240,7 @@ describe("POST /api/research/sync", () => {
     if (!held.ok) throw new Error("expected lock acquire to succeed");
 
     const mod = await import("@/app/api/research/sync/route");
-    const res = await mod.POST();
+    const res = await mod.POST(syncRequest());
     expect(res.status).toBe(409);
     const body = (await res.json()) as {
       success: boolean;
@@ -225,7 +260,7 @@ describe("POST /api/research/sync", () => {
     hoisted.getGmailClient.mockReturnValueOnce({} as unknown);
 
     const mod = await import("@/app/api/research/sync/route");
-    const res = await mod.POST();
+    const res = await mod.POST(syncRequest());
 
     expect(res.status).toBe(200);
     // SSE responses expose a ReadableStream body. Next's Response type
@@ -253,7 +288,7 @@ describe("POST /api/research/sync", () => {
     hoisted.getGmailClient.mockReturnValueOnce({} as unknown);
 
     const mod = await import("@/app/api/research/sync/route");
-    const res = await mod.POST();
+    const res = await mod.POST(syncRequest());
 
     // Drain the whole stream to completion.
     const reader = res.body!.getReader();
@@ -286,7 +321,7 @@ describe("POST /api/research/sync", () => {
     hoisted.extractBogeysFromNewArticles.mockRejectedValueOnce(new Error("claude down"));
 
     const mod = await import("@/app/api/research/sync/route");
-    const res = await mod.POST();
+    const res = await mod.POST(syncRequest());
 
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
@@ -301,5 +336,95 @@ describe("POST /api/research/sync", () => {
     expect(received).toContain('"message":"claude down"');
     // The sync must still reach completion.
     expect(received).toContain('"phase":"complete"');
+  });
+
+  // Review finding (2026-08-28): the route acquired the lock as "manual" for
+  // EVERY request, including the automatic background refresh from
+  // lib/hooks/useResearchSync.ts. A collision during that automatic pass then
+  // told the user "A sync you already started is still running" — a sync they
+  // never started. The hook now labels itself with `X-Sync-Runner: background`
+  // and the route acquires under that runner, so the 409 names the real owner.
+  describe("runner attribution (X-Sync-Runner)", () => {
+    it("acquires as 'background' when the hook's header is present, so a colliding request says so", async () => {
+      hoisted.isGmailConfigured.mockReturnValue(true);
+      hoisted.getGmailClient.mockReturnValue({} as unknown);
+      const release = parkPipeline();
+
+      const mod = await import("@/app/api/research/sync/route");
+      const bg = await mod.POST(syncRequest("background"));
+      expect(bg.status).toBe(200);
+      expect(currentResearchSyncRunner()).toBe("background");
+
+      // The user clicks Sync Feeds while that background pass is in flight.
+      const collide = await mod.POST(syncRequest());
+      expect(collide.status).toBe(409);
+      const body = (await collide.json()) as { error: string; code: string };
+      expect(body.code).toBe("already_running");
+      expect(body.error).toContain("background refresh");
+      expect(body.error).not.toContain("you already started");
+
+      release();
+      await drain(bg);
+      expect(currentResearchSyncRunner()).toBeNull();
+    });
+
+    it("acquires as 'manual' with no header — the collision message names the user's own sync", async () => {
+      hoisted.isGmailConfigured.mockReturnValue(true);
+      hoisted.getGmailClient.mockReturnValue({} as unknown);
+      const release = parkPipeline();
+
+      const mod = await import("@/app/api/research/sync/route");
+      const manual = await mod.POST(syncRequest());
+      expect(manual.status).toBe(200);
+      expect(currentResearchSyncRunner()).toBe("manual");
+
+      const collide = await mod.POST(syncRequest());
+      expect(collide.status).toBe(409);
+      const body = (await collide.json()) as { error: string };
+      expect(body.error).toContain("you already started");
+
+      release();
+      await drain(manual);
+    });
+
+    it.each(["cron", "manual", "BACKGROUND-ish", "", "not-a-runner"])(
+      "treats an unrecognized X-Sync-Runner value (%j) as 'manual'",
+      async (value) => {
+        hoisted.isGmailConfigured.mockReturnValue(true);
+        hoisted.getGmailClient.mockReturnValue({} as unknown);
+        const release = parkPipeline();
+
+        const mod = await import("@/app/api/research/sync/route");
+        const res = await mod.POST(syncRequest(value));
+        expect(res.status).toBe(200);
+        expect(currentResearchSyncRunner()).toBe("manual");
+
+        release();
+        await drain(res);
+      },
+    );
+  });
+
+  // Hardening (same review): the lock is taken BEFORE the SSE stream is
+  // built. A synchronous throw while constructing the encoder/stream would
+  // skip the stream's `finally` and strand the lock for the process's life —
+  // every later sync would 409 forever.
+  it("releases the lock when stream construction itself throws", async () => {
+    hoisted.isGmailConfigured.mockReturnValue(true);
+    const RealReadableStream = globalThis.ReadableStream;
+    globalThis.ReadableStream = class {
+      constructor() {
+        throw new Error("stream construction blew up");
+      }
+    } as unknown as typeof ReadableStream;
+
+    try {
+      const mod = await import("@/app/api/research/sync/route");
+      await expect(mod.POST(syncRequest())).rejects.toThrow("stream construction blew up");
+    } finally {
+      globalThis.ReadableStream = RealReadableStream;
+    }
+
+    expect(currentResearchSyncRunner()).toBeNull();
   });
 });
