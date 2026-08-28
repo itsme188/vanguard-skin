@@ -185,6 +185,42 @@ describe("getPriceFreshness", () => {
     expect(noprice!.daysStalePrices).toBeNull();
     expect(noprice!.priceCount).toBe(0);
   });
+
+  it("uses the per-(account, security) latest-holdings definition — a fund last restated on an older statement still counts as held (VHGEX regression)", () => {
+    const acct = seedAccount("Vanguard Taxable");
+    const vhgex = seedSecurity("VHGEX", "Mutual Fund");
+    const xom = seedSecurity("XOM");
+
+    // VHGEX's newest row is a statement from ~4 months ago; later live syncs
+    // only restate XOM, so the ACCOUNT's global max as_of_date is today.
+    seedHolding(acct, vhgex, 100, daysAgo(116));
+    seedHolding(acct, xom, 10, today);
+
+    seedPrice(vhgex, daysAgo(116), 30);
+    seedPrice(xom, daysAgo(24), 100);
+
+    const held = getPriceFreshness(db).filter((r) => r.hasHoldings);
+    expect(held.map((r) => r.symbol).sort()).toEqual(["VHGEX", "XOM"]);
+
+    // The stalest held security must be the one the Max Stale headline names.
+    expect(held[0].symbol).toBe("VHGEX");
+
+    // Panel universe == summary universe: one held-securities definition.
+    const summary = getDataHealthSummary(db);
+    expect(held.length).toBe(summary.totalSecurities);
+    expect(summary.worstStaleSymbol).toBe("VHGEX");
+  });
+
+  it("counts short positions as held (quantity != 0, matching the summary universe)", () => {
+    const acct = seedAccount("IBKR");
+    const shortSec = seedSecurity("SHRT");
+    seedHolding(acct, shortSec, -5, today);
+    seedPrice(shortSec, today, 50);
+
+    const held = getPriceFreshness(db).filter((r) => r.hasHoldings);
+    expect(held.map((r) => r.symbol)).toEqual(["SHRT"]);
+    expect(held.length).toBe(getDataHealthSummary(db).totalSecurities);
+  });
 });
 
 // ── getAccountCoverage ────────────────────────────────────────────
