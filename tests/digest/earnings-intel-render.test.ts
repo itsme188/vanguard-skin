@@ -89,3 +89,45 @@ describe("renderPastPrintsBlock", () => {
     expect(renderPastPrintsBlock([])).toBe("");
   });
 });
+
+/**
+ * Scoreboard plausibility gate vs. the desk's own override.
+ *
+ * renderHeadlineTable blanks actuals that isPlausibleEarnings flags (Finnhub
+ * drift defense) and appends a ⚠ line. A row stamped manual_actuals_at came
+ * from POST /api/earnings/actuals — a human typed it — so the guard must not
+ * apply, exactly as on the read surfaces (lib/earnings/actuals-display.ts).
+ * Fixture: consensus EPS 1.74 vs a hand-entered EPS -1.20 (sign-flip branch).
+ */
+describe("scoreboard plausibility gate", () => {
+  const IMPLAUSIBLE: ScoreboardEvent = {
+    consensus_estimate: "EPS 1.74", actual_value: "EPS -1.20",
+    consensus_value: null, reaction_snapshot: null,
+  };
+
+  it("blanks a scraped implausible actual and appends the ⚠ line (unchanged)", () => {
+    const md = renderHeadlineTable(IMPLAUSIBLE, "ACME", "recap");
+    expect(md).not.toContain("-1.20");
+    expect(md).toContain("flagged as implausible");
+  });
+
+  it("renders a manually-stamped actual verbatim with no ⚠ line", () => {
+    const md = renderHeadlineTable(
+      { ...IMPLAUSIBLE, manual_actuals_at: "2026-08-28 14:02:11" },
+      "ACME",
+      "recap",
+    );
+    expect(md).toContain("-1.20");
+    expect(md).not.toContain("flagged as implausible");
+  });
+
+  it("preview phase never shows actuals or the ⚠ line, stamped or not", () => {
+    const md = renderHeadlineTable(
+      { ...IMPLAUSIBLE, manual_actuals_at: "2026-08-28 14:02:11" },
+      "ACME",
+      "preview",
+    );
+    expect(md).not.toContain("-1.20");
+    expect(md).not.toContain("flagged as implausible");
+  });
+});

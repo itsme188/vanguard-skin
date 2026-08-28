@@ -888,12 +888,21 @@ export function evaluateRecapContent(
   const consRaw = effectiveConsensusRaw(event, payload);
   const cons = parseFinnhubFigure(consRaw);
   const act = parseFinnhubFigure(actualRaw);
-  const plausible = isPlausibleEarnings(
-    num(cons.eps),
-    num(act.eps),
-    num(cons.revenue),
-    num(act.revenue),
-  );
+  // PARITY (Mac: lib/earnings/actuals-display.ts::actualsAreImplausible):
+  // a manual_actuals_at stamp means the desk typed this figure in through
+  // POST /api/earnings/actuals — an override, never a scrape failure — so
+  // the plausibility guard, which exists to catch unattended vendor drift,
+  // must not blank it. (The Mac helper tests the stamp for truthiness; the
+  // column is only ever written as a timestamp by saveManualActuals, so
+  // `!= null` is the same test in practice.) Change both sides together.
+  const plausible =
+    (event.manual_actuals_at as string | null | undefined) != null ||
+    isPlausibleEarnings(
+      num(cons.eps),
+      num(act.eps),
+      num(cons.revenue),
+      num(act.revenue),
+    );
 
   // A real data point = at least one reaction delta the scoreboard would
   // actually render, not merely a truthy-but-empty payload (e.g. `{}`) —

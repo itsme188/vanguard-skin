@@ -25,8 +25,8 @@ import {
   renderHeadlineTable,
   getCrossAccountPositions,
   EarningsEmailError,
-  isPlausibleEarnings,
 } from "@/lib/digest/send-earnings-email";
+import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { getLiveReadThroughsForReporter } from "@/lib/alerts/read-through-push";
 import { formatPositionPresence } from "@/lib/digest/presence-only-position";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
@@ -61,15 +61,25 @@ export interface ReporterRecapContent {
  * than shipping a partially-blanked scoreboard. Better no email than a
  * wrong one; the benign not_ready retry ages out of the [yesterday, today]
  * window silently (see the console.warn at the send site).
+ *
+ * EXCEPT for a manually-stamped row: manual_actuals_at means the desk typed
+ * the figure in through POST /api/earnings/actuals, so it is an override,
+ * never a scrape failure — same rule the read surfaces apply
+ * (lib/earnings/actuals-display.ts::actualsAreImplausible). An empty or
+ * figure-less actual is still unusable, stamp or no stamp.
  */
 export function reporterActualsUsable(
-  event: Pick<CalendarEvent, "consensus_estimate" | "consensus_value" | "actual_value">,
+  event: Pick<CalendarEvent, "consensus_estimate" | "consensus_value" | "actual_value"> &
+    Partial<Pick<CalendarEvent, "manual_actuals_at">>,
 ): boolean {
   if (!event.actual_value) return false;
-  const cons = parseFinnhubFigure(event.consensus_value ?? event.consensus_estimate);
   const actual = parseFinnhubFigure(event.actual_value);
   if (actual.eps == null && actual.revenue == null) return false;
-  return isPlausibleEarnings(cons.eps, actual.eps, cons.revenue, actual.revenue);
+  return !actualsAreImplausible(
+    event.consensus_value ?? event.consensus_estimate,
+    event.actual_value,
+    event.manual_actuals_at,
+  );
 }
 
 function fmtEtClock(d: Date): string {
@@ -200,8 +210,10 @@ export async function sendReporterRecapEmail(
   const symbol = event.symbol.toUpperCase();
 
   if (!reporterActualsUsable(event)) {
-    // Benign: flagged/empty actuals retry on later ticks (a manual override
-    // or corrected Finnhub row re-opens the road). No audit row written.
+    // Benign: flagged/empty actuals retry on later ticks — a corrected
+    // Finnhub row re-opens the road, and so does a manual override, which
+    // stamps manual_actuals_at and therefore bypasses the plausibility gate
+    // outright (reporterActualsUsable). No audit row written.
     // Loud breadcrumb: a real basis-mismatch print would otherwise age out
     // of the [yesterday, today] window with zero operator trace (the
     // blocked-recap Pushover only covers held names).

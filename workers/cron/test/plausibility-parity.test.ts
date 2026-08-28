@@ -41,3 +41,35 @@ describe("plausibility parity (Worker mirror of lib/earnings/plausibility.ts)", 
     expect(isPlausibleEarnings(1.5, 0, null, null)).toBe(true);
   });
 });
+
+/**
+ * The plausibility CORE is byte-shared (above). Its manual-override BYPASS is
+ * not: the Mac routes through lib/earnings/actuals-display.ts
+ * ::actualsAreImplausible, the Worker inlines a `manual_actuals_at != null ||`
+ * short-circuit (it can't cross the Next.js path-alias boundary). A row the
+ * desk hand-entered via POST /api/earnings/actuals must never be blanked as a
+ * scrape failure — on ANY road. These source pins catch a one-sided revert.
+ */
+describe("manual-actuals bypass parity (outbound roads)", () => {
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+
+  it("the Worker recap gate short-circuits on manual_actuals_at and names the Mac helper", () => {
+    const wkr = read("../src/fallback-earnings.ts");
+    const start = wkr.indexOf("export function evaluateRecapContent");
+    expect(start).toBeGreaterThan(-1);
+    // Bound the slice to the function body so a match elsewhere in the file
+    // (e.g. renderScoreboard) can't stand in for the gate's own bypass.
+    const gate = wkr.slice(start, wkr.indexOf("function effectiveConsensusRaw", start));
+    expect(gate).toContain("manual_actuals_at");
+    // Parity breadcrumb: the Mac-side single source must be named at the site.
+    expect(gate).toContain("actualsAreImplausible");
+  });
+
+  it("the Mac outbound roads all route through actualsAreImplausible", () => {
+    expect(read("../../../lib/earnings/reporter-recap.ts")).toContain("actualsAreImplausible");
+    const email = read("../../../lib/digest/send-earnings-email.ts");
+    // Three guard sites: read-through builder, renderHeadlineTable, renderRecapPrompt.
+    const hits = email.split("actualsAreImplausible(").length - 1;
+    expect(hits).toBeGreaterThanOrEqual(3);
+  });
+});
