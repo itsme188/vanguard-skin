@@ -171,16 +171,6 @@ function roundToHalfPp(v: number | null | undefined): number | null {
 export const DEFENSE_TOP_EXPOSURES_N = 10;
 
 export interface DefenseFingerprintExposure {
-  /**
-   * Position within the prompt's ranked-exposure slice (0 = largest). WHICH
-   * identity holds a rank is itself narrative-relevant — the prompt is
-   * instructed to "name the largest UNPROTECTED exposures" — so unlike the
-   * other collections here, this array is intentionally NOT reordering-
-   * tolerant: two exposures swapping rank must change the hash even though
-   * canonicalJson sorts array members, because each element's own `rank`
-   * field travels with it into that sort.
-   */
-  rank: number;
   underlying: string;
   securityId: number | null;
   /** hedged_long | hedged_short | amplified | unhedged | speculative — the
@@ -206,13 +196,14 @@ export interface DefenseFingerprintInputs {
   /** Security ids of the standalone (unpaired) bets. */
   standaloneBetIds: number[];
   /**
-   * The top DEFENSE_TOP_EXPOSURES_N ranked exposures, in prompt order, with
-   * identity + the protection fields the prompt narrates about each one.
-   * Codex's finding: the prompt names the largest unprotected exposures, but
-   * the fingerprint had no field covering them — selling/replacing a top
-   * exposure left every hashed field unchanged while the cached prose still
-   * named the exited position. Dollar exposure/notional are deliberately
-   * excluded (portfolio noise the model is forbidden from quoting anyway).
+   * The top DEFENSE_TOP_EXPOSURES_N ranked exposures (membership only — no
+   * ordinal rank; see the field-construction comment below), with identity +
+   * the protection fields the prompt narrates about each one. Codex's first
+   * finding: the prompt names the largest unprotected exposures, but the
+   * fingerprint had no field covering them — selling/replacing a top exposure
+   * left every hashed field unchanged while the cached prose still named the
+   * exited position. Dollar exposure/notional are deliberately excluded
+   * (portfolio noise the model is forbidden from quoting anyway).
    */
   topExposures: DefenseFingerprintExposure[];
 }
@@ -256,13 +247,19 @@ export function buildDefenseFingerprintInputs(
     )
   ).sort((a, b) => a - b);
 
-  // Deliberately NOT sorted by identity — rank order IS the signal (see
-  // DefenseFingerprintExposure.rank doc). Sliced to the same N the prompt's
-  // `topExposures` uses, from the same rankedExposures the prompt reads.
+  // Sliced to the same N the prompt's `topExposures` uses, from the same
+  // rankedExposures the prompt reads. Deliberately NO ordinal rank field:
+  // hedging.ts's ranking orders by exact dollar exposure with no tie-break,
+  // so near-equal or tied positions can cross or swap order on a rerun with
+  // zero economic change (Codex finding) — an ordinal `rank` would hash that
+  // coin-flip as drift. canonicalJson already sorts array members by their
+  // own serialized form, so this array's canonical shape is a deterministic
+  // function of each exposure's identity + rounded fields, not of the input
+  // order — a materially different ranking still surfaces through pctOfBook
+  // (0.5pp grid) or through membership (a name entering/leaving the top N).
   const topExposures: DefenseFingerprintExposure[] = analysis.rankedExposures
     .slice(0, DEFENSE_TOP_EXPOSURES_N)
-    .map((r, rank) => ({
-      rank,
+    .map((r) => ({
       underlying: r.underlying,
       securityId: r.securityId,
       classification: r.classification,
