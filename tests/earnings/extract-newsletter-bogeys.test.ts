@@ -291,6 +291,21 @@ describe("parseExtractionResponse", () => {
     const out = parseExtractionResponse(JSON.stringify([{ symbol: "NVDA", guidance_notes: 42 }]));
     expect(out[0].guidance_notes).toBeNull();
   });
+
+  it("[Codex finding] a whitespace-only notes/guidance_notes normalizes to null, not a blank string", () => {
+    const out = parseExtractionResponse(
+      JSON.stringify([{ symbol: "NVDA", notes: "   ", guidance_notes: "\t\n" }]),
+    );
+    expect(out[0].notes).toBeNull();
+    expect(out[0].guidance_notes).toBeNull();
+  });
+
+  it("trims a string with meaningful content and surrounding whitespace", () => {
+    const out = parseExtractionResponse(
+      JSON.stringify([{ symbol: "NVDA", notes: "  buyside above the guide  " }]),
+    );
+    expect(out[0].notes).toBe("buyside above the guide");
+  });
 });
 
 describe("isSymbolMentioned (short-ticker collision guard)", () => {

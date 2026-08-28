@@ -173,12 +173,24 @@ export function parseExtractionResponse(raw: string): ExtractedBogey[] {
       revenue_consensus: coerceNumber(obj.revenue_consensus),
       revenue_whisper: coerceNumber(obj.revenue_whisper),
       expected_move_pct: coercePercent(obj.expected_move_pct),
-      guidance_notes:
-        typeof obj.guidance_notes === "string" ? obj.guidance_notes.slice(0, 500) : null,
-      notes: typeof obj.notes === "string" ? obj.notes.slice(0, 500) : null,
+      guidance_notes: normalizeStringField(obj.guidance_notes),
+      notes: normalizeStringField(obj.notes),
     });
   }
   return out;
+}
+
+/**
+ * Trim + collapse a blank/whitespace-only string to null. Feeds
+ * upsertBogey's preserveExisting has-content check downstream — a model
+ * response of `notes: ""` must read as "no content", not as a value that
+ * advances provenance while COALESCE-preserving the OLD notes forever
+ * (2026-08-28 fix; upsertBogey normalizes defensively too).
+ */
+function normalizeStringField(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const trimmed = v.trim();
+  return trimmed === "" ? null : trimmed.slice(0, 500);
 }
 
 function coerceNumber(v: unknown): number | null {

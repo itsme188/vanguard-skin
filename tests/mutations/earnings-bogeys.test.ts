@@ -291,6 +291,54 @@ describe("upsertBogey preserveExisting (newsletter re-scan)", () => {
     expect(rows[0].guidance_notes).toBe("FQ3 revenue guide $108.5B+ vs street $105B");
   });
 
+  it("[Codex finding] preserve mode: a blank-string notes on an all-null re-scan is treated as no content — skipped, notes + uploaded_at unchanged", () => {
+    const first = upsertBogey(db, {
+      event_id: 1,
+      source: "newsletter",
+      source_label: "TMT Breakout",
+      research_article_id: 1,
+      eps_consensus: 1.02,
+      revenue_consensus_usd: 46_000_000_000,
+      notes: "buyside leaning above the guide",
+      ai_extraction_model: "claude-old",
+    });
+    db.prepare(
+      "UPDATE earnings_bogeys SET uploaded_at = '2026-01-01 00:00:00' WHERE id = ?",
+    ).run(first.id);
+    const before = db
+      .prepare("SELECT * FROM earnings_bogeys WHERE id = ?")
+      .get(first.id) as Record<string, unknown>;
+
+    const second = upsertBogey(db, {
+      event_id: 1,
+      source: "newsletter",
+      source_label: "TMT Breakout",
+      research_article_id: 2,
+      eps_consensus: null,
+      eps_whisper: null,
+      revenue_consensus_usd: null,
+      revenue_whisper_usd: null,
+      expected_move_pct: null,
+      segment_breakdown_json: null,
+      guidance_notes: null,
+      // Blank string, not null — must still count as "no content".
+      notes: "",
+      ai_extraction_model: "claude-new",
+      preserveExisting: true,
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.created).toBe(false);
+    expect(second.skipped).toBe(true);
+
+    const after = db
+      .prepare("SELECT * FROM earnings_bogeys WHERE id = ?")
+      .get(first.id) as Record<string, unknown>;
+    expect(after).toEqual(before);
+    expect(after.notes).toBe("buyside leaning above the guide");
+    expect(after.uploaded_at).toBe("2026-01-01 00:00:00");
+  });
+
   it("preserve mode with no existing row and no content at all still inserts (nothing to protect)", () => {
     const r = upsertBogey(db, {
       event_id: 1,
