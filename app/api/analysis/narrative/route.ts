@@ -2,9 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import {
   generateNarrative,
+  computeNarrativeFingerprint,
   NARRATIVE_SURFACES,
 } from "@/lib/compute/analysis-narratives";
-import { getCachedNarrative } from "@/lib/queries/analysis-narratives";
+import {
+  getCachedNarrative,
+  isNarrativeDrifted,
+} from "@/lib/queries/analysis-narratives";
 import { mondayOf } from "@/lib/calendar/date-utils";
 
 export const dynamic = "force-dynamic";
@@ -20,6 +24,16 @@ export const dynamic = "force-dynamic";
  * (the existing force-regen path). The client fires POST when it needs to fill
  * an empty cache. This enforces the app's own "cached-AI GET-read / POST-regen"
  * convention (CLAUDE.md).
+ *
+ * The response also carries `drifted` (migration 087): the cache is keyed on
+ * (scope, surface, week), so Monday's prose is served all week even after the
+ * hedge book changes underneath it — the "narrative says 30% protected, card
+ * says 11%, and names a SPY put that no longer exists" finding. We recompute a
+ * fingerprint of TODAY's prompt inputs and compare it against the one stored
+ * with the prose. A mismatch (or a legacy NULL) sets `drifted` and the surface
+ * banners it. It deliberately does NOT auto-regenerate: staying read-only is
+ * the whole point of this route, and a paid model call must be an explicit
+ * POST the user asked for.
  */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
@@ -46,21 +60,37 @@ export async function GET(req: NextRequest) {
 
   const cached = getCachedNarrative(db, scope, surface, week);
   if (cached) {
+    // Compute-only (no model call, no write). If it throws — a malformed book,
+    // a compute regression — we pass null, which isNarrativeDrifted reads as
+    // "drifted": never claim the prose is current on evidence we couldn't
+    // gather. The read itself still succeeds; the prose stays on screen.
+    let currentFingerprint: string | null = null;
+    try {
+      currentFingerprint = computeNarrativeFingerprint(db, scope, surface);
+    } catch (e) {
+      console.error(
+        `[narrative] fingerprint compute failed for ${scope}/${surface}; treating cached prose as drifted:`,
+        e
+      );
+    }
     return NextResponse.json({
       success: true,
       narrativeMd: cached.narrativeMd,
       fromCache: true,
       generatedAt: cached.generatedAt,
+      drifted: isNarrativeDrifted(cached, currentFingerprint),
     });
   }
 
   // Cache miss — report "not generated yet" WITHOUT generating. The client
-  // POSTs to generate on demand.
+  // POSTs to generate on demand. Nothing stale is on screen, so nothing to
+  // flag as drifted.
   return NextResponse.json({
     success: true,
     narrativeMd: null,
     generatedAt: null,
     notGenerated: true,
+    drifted: false,
   });
 }
 
@@ -119,7 +149,9 @@ export async function POST(req: NextRequest) {
       weekOf: week,
       forceRegen: true,
     });
-    return NextResponse.json({ success: true, ...r });
+    // forceRegen above means `r` was just rendered from the inputs whose
+    // fingerprint it stored — fresh by construction.
+    return NextResponse.json({ success: true, ...r, drifted: false });
   } catch (e) {
     // Roll back the stamp: a transient AI failure must not burn the 24h
     // window — only the double-click guard above is the stamp's real job.

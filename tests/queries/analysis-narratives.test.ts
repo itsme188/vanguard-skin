@@ -4,6 +4,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import {
   getCachedNarrative,
   upsertNarrative,
+  isNarrativeDrifted,
 } from "@/lib/queries/analysis-narratives";
 
 describe("analysis-narratives cache", () => {
@@ -93,5 +94,115 @@ describe("analysis-narratives cache", () => {
       .prepare("SELECT COUNT(*) AS n FROM analysis_narratives")
       .get() as { n: number };
     expect(count.n).toBe(4);
+  });
+});
+
+describe("input_fingerprint drift detection", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    runMigrations(db);
+  });
+
+  it("round-trips the fingerprint written at generation time", () => {
+    upsertNarrative(db, {
+      scope: "all",
+      surfaceKey: "defense",
+      weekOf: "2026-08-24",
+      narrativeMd: "Roughly a fifth of the book is protected.",
+      modelUsed: "m",
+      inputFingerprint: "abc123",
+    });
+    const r = getCachedNarrative(db, "all", "defense", "2026-08-24");
+    expect(r?.inputFingerprint).toBe("abc123");
+  });
+
+  it("omitting the fingerprint stores NULL (legacy writer / unknown inputs)", () => {
+    upsertNarrative(db, {
+      scope: "all",
+      surfaceKey: "defense",
+      weekOf: "2026-08-24",
+      narrativeMd: "Legacy prose.",
+      modelUsed: "m",
+    });
+    const r = getCachedNarrative(db, "all", "defense", "2026-08-24");
+    expect(r?.inputFingerprint).toBeNull();
+  });
+
+  it("a re-generation overwrites the stored fingerprint", () => {
+    upsertNarrative(db, {
+      scope: "all",
+      surfaceKey: "defense",
+      weekOf: "2026-08-24",
+      narrativeMd: "v1",
+      modelUsed: "m",
+      inputFingerprint: "fp-1",
+    });
+    upsertNarrative(db, {
+      scope: "all",
+      surfaceKey: "defense",
+      weekOf: "2026-08-24",
+      narrativeMd: "v2",
+      modelUsed: "m",
+      inputFingerprint: "fp-2",
+    });
+    const r = getCachedNarrative(db, "all", "defense", "2026-08-24");
+    expect(r?.inputFingerprint).toBe("fp-2");
+  });
+
+  it("legacy row with a NULL fingerprint reads as drifted", () => {
+    upsertNarrative(db, {
+      scope: "all",
+      surfaceKey: "defense",
+      weekOf: "2026-08-24",
+      narrativeMd: "Legacy prose.",
+      modelUsed: "m",
+    });
+    const r = getCachedNarrative(db, "all", "defense", "2026-08-24");
+    expect(isNarrativeDrifted(r, "fp-current")).toBe(true);
+  });
+
+  it("matching fingerprint is NOT drifted", () => {
+    upsertNarrative(db, {
+      scope: "all",
+      surfaceKey: "defense",
+      weekOf: "2026-08-24",
+      narrativeMd: "Fresh prose.",
+      modelUsed: "m",
+      inputFingerprint: "fp-current",
+    });
+    const r = getCachedNarrative(db, "all", "defense", "2026-08-24");
+    expect(isNarrativeDrifted(r, "fp-current")).toBe(false);
+  });
+
+  it("mismatched fingerprint is drifted", () => {
+    upsertNarrative(db, {
+      scope: "all",
+      surfaceKey: "defense",
+      weekOf: "2026-08-24",
+      narrativeMd: "Stale prose about a SPY put that no longer exists.",
+      modelUsed: "m",
+      inputFingerprint: "fp-old",
+    });
+    const r = getCachedNarrative(db, "all", "defense", "2026-08-24");
+    expect(isNarrativeDrifted(r, "fp-current")).toBe(true);
+  });
+
+  it("no cached row is not drifted (nothing to contradict)", () => {
+    expect(isNarrativeDrifted(null, "fp-current")).toBe(false);
+  });
+
+  it("an uncomputable current fingerprint reads as drifted (never claim fresh unverified)", () => {
+    upsertNarrative(db, {
+      scope: "all",
+      surfaceKey: "defense",
+      weekOf: "2026-08-24",
+      narrativeMd: "Fresh prose.",
+      modelUsed: "m",
+      inputFingerprint: "fp-current",
+    });
+    const r = getCachedNarrative(db, "all", "defense", "2026-08-24");
+    expect(isNarrativeDrifted(r, null)).toBe(true);
   });
 });

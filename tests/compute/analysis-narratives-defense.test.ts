@@ -22,7 +22,15 @@ vi.mock("@/lib/ai/models", () => ({
   resolveFeatureModel: vi.fn(() => ({ provider: "anthropic", modelId: "claude-sonnet-4-6-20250219" })),
 }));
 
-import { NARRATIVE_SURFACES, generateNarrative } from "@/lib/compute/analysis-narratives";
+import {
+  NARRATIVE_SURFACES,
+  generateNarrative,
+  computeNarrativeFingerprint,
+} from "@/lib/compute/analysis-narratives";
+import {
+  getCachedNarrative,
+  isNarrativeDrifted,
+} from "@/lib/queries/analysis-narratives";
 
 describe("defense narrative surface", () => {
   let db: Database.Database;
@@ -41,5 +49,32 @@ describe("defense narrative surface", () => {
     expect(r.narrativeMd).toContain("protected");
     const again = await generateNarrative(db, { scope: "all", surfaceKey: "defense", weekOf: "2026-06-29" });
     expect(again.fromCache).toBe(true);
+  });
+
+  it("stores the input fingerprint alongside the prose, and it matches the current inputs", async () => {
+    await generateNarrative(db, { scope: "all", surfaceKey: "defense", weekOf: "2026-06-29" });
+    const row = getCachedNarrative(db, "all", "defense", "2026-06-29");
+    expect(row?.inputFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    const current = computeNarrativeFingerprint(db, "all", "defense");
+    expect(row?.inputFingerprint).toBe(current);
+    expect(isNarrativeDrifted(row, current)).toBe(false);
+  });
+
+  it("a legacy row written without a fingerprint reads as drifted against current inputs", () => {
+    db.prepare(
+      `INSERT INTO analysis_narratives (scope, surface_key, week_of, narrative_md, generated_at, model_used)
+       VALUES ('all','defense','2026-06-29','Legacy 30% claim.', datetime('now'), 'm')`,
+    ).run();
+    const row = getCachedNarrative(db, "all", "defense", "2026-06-29");
+    expect(isNarrativeDrifted(row, computeNarrativeFingerprint(db, "all", "defense"))).toBe(true);
+  });
+
+  it("computeNarrativeFingerprint is deterministic for unchanged inputs and covers every surface", () => {
+    for (const surface of NARRATIVE_SURFACES) {
+      const a = computeNarrativeFingerprint(db, "all", surface);
+      const b = computeNarrativeFingerprint(db, "all", surface);
+      expect(a).toMatch(/^[0-9a-f]{64}$/);
+      expect(a).toBe(b);
+    }
   });
 });

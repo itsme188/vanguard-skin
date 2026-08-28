@@ -11,6 +11,7 @@
  * landing"), not restatement of the numbers the surface already shows.
  */
 
+import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { resolveFeatureModel } from "@/lib/ai/models";
@@ -23,6 +24,7 @@ import { computeFactorAnalysis } from "@/lib/compute/factors";
 import { computeRiskMetrics, computePositionRisk } from "@/lib/compute/risk";
 import { getFactorHeatmap } from "@/lib/queries/analysis";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
+import type { DefenseAnalysis, HedgeBadge } from "@/lib/compute/hedging";
 
 // ─── Surface registry ────────────────────────────────────────────────────────
 
@@ -52,6 +54,8 @@ export interface NarrativeResult {
   narrativeMd: string;
   fromCache: boolean;
   generatedAt: string;
+  /** sha256 of the inputs this prose was rendered from; null for legacy rows. */
+  inputFingerprint: string | null;
 }
 
 // ─── Prompts ─────────────────────────────────────────────────────────────────
@@ -71,11 +75,163 @@ const SURFACE_PROMPTS: Record<NarrativeSurface, string> = {
     "You are reviewing the portfolio's defensive posture. In 2-4 sentences: state how much of the long book is protected and through what (same-name hedges vs index/sector puts), name the largest UNPROTECTED exposures, and flag any hedge that looks expensive or nearly decayed (use the badges). Plain prose, no headers, no advice to buy anything new. All ratio/pct fields in the context are decimal fractions (0.18 = 18%) — convert before narrating. A negative monthlyBleedPct means the hedge COLLECTS premium (short-option income), not a cost — never call it expensive.",
 };
 
+// ─── Input fingerprinting (cache-invalidation-on-drift) ──────────────────────
+
+/**
+ * The narrative cache is keyed on (scope, surface, week) only, so Monday's
+ * prose keeps being served all week even after the portfolio moves under it —
+ * the defect behind "cached Defense narrative says 30% protected while the card
+ * says 11%, and names a SPY put that no longer exists".
+ *
+ * The fix is a fingerprint over the inputs the PROMPT was rendered from. The
+ * general rule for every surface: fingerprint the same object that gets
+ * serialized into the prompt. The Defense surface narrows that to the
+ * materially narrative-relevant fields (below) so ordinary dollar/price drift
+ * doesn't cry wolf, while a changed hedge, badge, ratio, or bet does.
+ *
+ * Comparison happens on READ (see isNarrativeDrifted) and never regenerates —
+ * regeneration stays an explicit POST, because it costs a paid model call.
+ */
+
+/** Significant digits kept when hashing numbers. High enough that every real
+ *  change survives and integer ids stay exact; low enough that IEEE-754 tail
+ *  noise (0.1+0.2 === 0.30000000000000004) can't manufacture a false drift. */
+const NUMERIC_PRECISION_DIGITS = 12;
+
+/**
+ * Deterministic JSON serialization for hashing: object keys sorted, ARRAY
+ * MEMBERS sorted by their own canonical form, numbers precision-normalized.
+ *
+ * Sorting arrays is deliberate — a hedge book that comes back in a different
+ * SQL order is the same hedge book, and a re-ordering must never look like a
+ * change. It does mean element order carries no signal, which is correct here:
+ * nothing in these narratives depends on list order that isn't also captured by
+ * the values themselves.
+ */
+export function canonicalJson(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return "null";
+    return JSON.stringify(Number(value.toPrecision(NUMERIC_PRECISION_DIGITS)));
+  }
+  if (typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).sort().join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj)
+      .filter((k) => obj[k] !== undefined)
+      .sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(",")}}`;
+  }
+  // Functions/symbols never appear in these input objects.
+  return "null";
+}
+
+/**
+ * sha256 hex digest over (surfaceKey, canonicalized inputs). Pure — same
+ * inputs in any key/array order always yield the same digest. The surface key
+ * is part of the preimage so two surfaces that happen to build identical input
+ * objects still get distinct fingerprints.
+ */
+export function fingerprintNarrativeInputs(
+  surfaceKey: string,
+  inputs: unknown
+): string {
+  return createHash("sha256")
+    .update(`${surfaceKey}\u0000${canonicalJson(inputs)}`)
+    .digest("hex");
+}
+
+/** 1 / 0.005 — the rounding grid is half a percentage point. */
+const HALF_PP_STEPS_PER_UNIT = 200;
+
+/**
+ * Round a decimal-fraction ratio (0.18 = 18%) to the nearest 0.5pp. Coverage
+ * percentages tick with every price; only a half-point move is something a
+ * 2-4 sentence narrative could actually have said differently.
+ */
+function roundToHalfPp(v: number | null | undefined): number | null {
+  if (typeof v !== "number" || !Number.isFinite(v)) return null;
+  return Number(
+    (Math.round(v * HALF_PP_STEPS_PER_UNIT) / HALF_PP_STEPS_PER_UNIT).toFixed(3)
+  );
+}
+
+export interface DefenseFingerprintInputs {
+  /** Every hedge in the book: position id + its badge set. */
+  hedges: Array<{ id: number; badges: HedgeBadge[] }>;
+  /** Protection ratio, decimal fraction, rounded to 0.5pp. */
+  protectionRatio: number | null;
+  /** Per-sector coverage, decimal fractions rounded to 0.5pp. */
+  sectorCoverage: Array<{ sector: string; coveragePct: number | null }>;
+  /** Security ids of the standalone (unpaired) bets. */
+  standaloneBetIds: number[];
+}
+
+/**
+ * Reduce a DefenseAnalysis to just what the narrative can materially assert.
+ *
+ * Codex's amendment to the ids-plus-three-aggregates first cut: the badges
+ * matter as much as the ids, because "flag any hedge that looks expensive or
+ * nearly decayed" is literally in the prompt — a hedge that silently loses its
+ * `expensive` badge makes the cached prose wrong even though the book is
+ * otherwise identical.
+ *
+ * Uses the FULL hedgeScores list, not the top-15 slice the prompt sees: a
+ * hedge leaving the book is a book change regardless of where it ranked, and
+ * over-reporting drift only costs a banner (and an optional refresh), whereas
+ * under-reporting it reproduces the original finding.
+ *
+ * Deliberately EXCLUDED: raw dollar exposures, notionals, thetas, prices. They
+ * move every tick and the prompt forbids the model from quoting dollars anyway.
+ */
+export function buildDefenseFingerprintInputs(
+  analysis: DefenseAnalysis
+): DefenseFingerprintInputs {
+  const hedges = analysis.hedgeScores
+    .map((h) => ({ id: h.securityId, badges: [...h.badges].sort() }))
+    .sort((a, b) => a.id - b.id);
+
+  const sectorCoverage = analysis.sectorCoverage
+    .map((sc) => ({
+      sector: sc.sector,
+      coveragePct: roundToHalfPp(sc.coveragePct),
+    }))
+    .sort((a, b) => a.sector.localeCompare(b.sector));
+
+  const standaloneBetIds = Array.from(
+    new Set(
+      analysis.standaloneBets.flatMap((b) =>
+        b.instruments.map((i) => i.securityId)
+      )
+    )
+  ).sort((a, b) => a - b);
+
+  return {
+    hedges,
+    protectionRatio: roundToHalfPp(analysis.summary.protectionRatio),
+    sectorCoverage,
+    standaloneBetIds,
+  };
+}
+
 // ─── Per-surface context builder ─────────────────────────────────────────────
+
+interface SurfaceInputs {
+  /** The JSON blob rendered into the prompt. */
+  context: string;
+  /** What the fingerprint hashes — the prompt inputs (narrowed, for defense). */
+  fingerprintInput: unknown;
+}
 
 /**
  * Build a small JSON context blob for the surface. Targeted ~500-800 tokens
- * (under ~3000 chars per surface).
+ * (under ~3000 chars per surface), plus the fingerprint input for that same
+ * context so the two can never drift apart.
  *
  * Multi-account scope handling: every compute fn now takes the FULL resolved
  * account set via `accountIds` (undefined = "all" = whole portfolio), so the
@@ -83,26 +239,32 @@ const SURFACE_PROMPTS: Record<NarrativeSurface, string> = {
  * summed across the set before drawdown/vol/Sharpe; tilts/concentration/
  * heatmap filter with `IN (...)`. No per-account hedging preamble is needed.
  */
-function buildContextForSurface(
+function buildSurfaceInputs(
   db: Database.Database,
   scope: string,
   surface: NarrativeSurface
-): string {
+): SurfaceInputs {
   const accountIds = resolveScope(db, scope);
 
   const emptyMessage =
     "(no data available for this surface yet — likely a fresh portfolio without classifications)";
+  // An empty surface still needs a STABLE fingerprint: two consecutive reads of
+  // an empty book must agree, and the first real data must read as drift.
+  const empty: SurfaceInputs = {
+    context: emptyMessage,
+    fingerprintInput: { empty: surface },
+  };
 
   if (surface === "factor-analysis") {
     const result = computeFactorAnalysis(db, { accountIds });
-    if (!result) return emptyMessage;
-    return JSON.stringify(result, null, 2);
+    if (!result) return empty;
+    return { context: JSON.stringify(result, null, 2), fingerprintInput: result };
   }
 
   if (surface === "risk-metrics") {
     const result = computeRiskMetrics(db, { accountIds });
-    if (!result) return emptyMessage;
-    return JSON.stringify(result, null, 2);
+    if (!result) return empty;
+    return { context: JSON.stringify(result, null, 2), fingerprintInput: result };
   }
 
   if (surface === "position-risk") {
@@ -110,7 +272,7 @@ function buildContextForSurface(
     // topN=10) — a narrower topN here would silently drop true top risk
     // contributors that rank outside the top-5 by market value.
     const result = computePositionRisk(db, { accountIds, topN: 10 });
-    if (!result) return emptyMessage;
+    if (!result) return empty;
     // computePositionRisk's SQL selects candidates ORDER BY market_value
     // DESC (it must, to pick the topN subset before vol/corr can even be
     // computed) — but the table renders them sorted by riskContribution
@@ -123,33 +285,51 @@ function buildContextForSurface(
       if (b.riskContribution == null) return -1;
       return b.riskContribution - a.riskContribution;
     });
-    return JSON.stringify({ ...result, positions: rankedPositions }, null, 2);
+    const payload = { ...result, positions: rankedPositions };
+    return { context: JSON.stringify(payload, null, 2), fingerprintInput: payload };
   }
 
   if (surface === "factor-heatmap") {
     const result = getFactorHeatmap(db, accountIds);
-    if (!result || result.length === 0) return emptyMessage;
-    return JSON.stringify(result, null, 2);
+    if (!result || result.length === 0) return empty;
+    return { context: JSON.stringify(result, null, 2), fingerprintInput: result };
   }
 
   if (surface === "defense") {
     const result = computeDefenseAnalysis(db, accountIds);
-    if (result.summary.hedgeCount === 0 && result.summary.shortExposure === 0) return emptyMessage;
-    return JSON.stringify(
-      {
-        summary: result.summary,
-        sectorCoverage: result.sectorCoverage,
-        topExposures: result.rankedExposures.slice(0, 10),
-        hedgeScores: result.hedgeScores.slice(0, 15),
-        diagnostics: result.diagnostics,
-      },
-      null,
-      2
-    );
+    if (result.summary.hedgeCount === 0 && result.summary.shortExposure === 0) return empty;
+    const payload = {
+      summary: result.summary,
+      sectorCoverage: result.sectorCoverage,
+      topExposures: result.rankedExposures.slice(0, 10),
+      hedgeScores: result.hedgeScores.slice(0, 15),
+      diagnostics: result.diagnostics,
+    };
+    return {
+      context: JSON.stringify(payload, null, 2),
+      fingerprintInput: buildDefenseFingerprintInputs(result),
+    };
   }
 
   // Unreachable — surface is exhaustive.
-  return emptyMessage;
+  return empty;
+}
+
+/**
+ * Fingerprint of the CURRENT inputs for (scope, surface). Compute-only: it
+ * touches the DB but never the model and never writes, so a GET can safely call
+ * it to decide whether the cached prose still describes the portfolio.
+ */
+export function computeNarrativeFingerprint(
+  db: Database.Database,
+  scope: string,
+  surfaceKey: string
+): string {
+  if (!isNarrativeSurface(surfaceKey)) {
+    throw new Error(`unknown surface: ${surfaceKey}`);
+  }
+  const { fingerprintInput } = buildSurfaceInputs(db, scope, surfaceKey);
+  return fingerprintNarrativeInputs(surfaceKey, fingerprintInput);
 }
 
 // ─── Main entry point ────────────────────────────────────────────────────────
@@ -172,12 +352,16 @@ export async function generateNarrative(
         narrativeMd: cached.narrativeMd,
         fromCache: true,
         generatedAt: cached.generatedAt,
+        inputFingerprint: cached.inputFingerprint,
       };
     }
   }
 
-  // 3. Build per-surface context.
-  const context = buildContextForSurface(db, opts.scope, surface);
+  // 3. Build per-surface context AND the fingerprint of those same inputs, in
+  // one pass — the prose and its freshness stamp must describe the identical
+  // snapshot, so they can never be built from two different reads of the book.
+  const { context, fingerprintInput } = buildSurfaceInputs(db, opts.scope, surface);
+  const inputFingerprint = fingerprintNarrativeInputs(surface, fingerprintInput);
 
   // 4. Call Sonnet via AI Gateway. Wrap in try/catch so the caller can
   // distinguish AI errors (network / rate-limit / auth) from validation
@@ -233,11 +417,13 @@ export async function generateNarrative(
     weekOf: opts.weekOf,
     narrativeMd,
     modelUsed,
+    inputFingerprint,
   });
 
   return {
     narrativeMd,
     fromCache: false,
     generatedAt: new Date().toISOString(),
+    inputFingerprint,
   };
 }

@@ -7,12 +7,15 @@ vi.mock("@/lib/compute/analysis-narratives", () => ({
     "risk-metrics",
     "position-risk",
     "factor-heatmap",
+    "defense",
   ],
   generateNarrative: vi.fn().mockResolvedValue({
     narrativeMd: "Mocked narrative prose.",
     fromCache: false,
     generatedAt: "2026-05-10T22:00:00Z",
+    inputFingerprint: "fp-fresh",
   }),
+  computeNarrativeFingerprint: vi.fn(() => "fp-current"),
 }));
 
 // Mock the cache read so tests don't depend on the real production DB's
@@ -20,6 +23,14 @@ vi.mock("@/lib/compute/analysis-narratives", () => ({
 // override with mockReturnValueOnce to exercise the cache-hit path.
 vi.mock("@/lib/queries/analysis-narratives", () => ({
   getCachedNarrative: vi.fn(() => null),
+  isNarrativeDrifted: vi.fn(
+    (row: { inputFingerprint?: string | null } | null, current: string | null) => {
+      if (!row) return false;
+      if (row.inputFingerprint == null) return true;
+      if (current == null) return true;
+      return row.inputFingerprint !== current;
+    },
+  ),
 }));
 
 import {
@@ -28,7 +39,10 @@ import {
   __resetRateLimitForTests,
 } from "@/app/api/analysis/narrative/route";
 import { getCachedNarrative } from "@/lib/queries/analysis-narratives";
-import { generateNarrative } from "@/lib/compute/analysis-narratives";
+import {
+  generateNarrative,
+  computeNarrativeFingerprint,
+} from "@/lib/compute/analysis-narratives";
 
 describe("GET /api/analysis/narrative", () => {
   beforeEach(() => {
@@ -162,5 +176,113 @@ describe("GET /api/analysis/narrative repeated cache misses (no rate-limit, neve
     expect((await r1.json()).notGenerated).toBe(true);
     expect((await r2.json()).notGenerated).toBe(true);
     expect(generateNarrative).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/analysis/narrative drift flag (cache-invalidation-on-drift)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetRateLimitForTests();
+    (computeNarrativeFingerprint as ReturnType<typeof vi.fn>).mockReturnValue("fp-current");
+  });
+
+  const get = () =>
+    GET(
+      new Request(
+        "http://x/api/analysis/narrative?scope=all&surface=defense",
+      ) as never,
+    );
+
+  it("cached row whose fingerprint matches the current inputs is NOT drifted", async () => {
+    (getCachedNarrative as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+      narrativeMd: "Roughly a tenth of the book is protected.",
+      generatedAt: "2026-08-24 12:00:00",
+      inputFingerprint: "fp-current",
+    });
+    const body = await (await get()).json();
+    expect(body.drifted).toBe(false);
+    expect(body.narrativeMd).toContain("protected");
+    expect(generateNarrative).not.toHaveBeenCalled();
+  });
+
+  it("cached row whose fingerprint no longer matches is drifted — prose still returned", async () => {
+    (getCachedNarrative as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+      narrativeMd: "30% protected, including that SPY put.",
+      generatedAt: "2026-08-12 12:00:00",
+      inputFingerprint: "fp-stale",
+    });
+    const body = await (await get()).json();
+    expect(body.drifted).toBe(true);
+    // Stale prose stays visible — the banner explains it; GET never regenerates.
+    expect(body.narrativeMd).toBe("30% protected, including that SPY put.");
+    expect(body.generatedAt).toBe("2026-08-12 12:00:00");
+    expect(generateNarrative).not.toHaveBeenCalled();
+  });
+
+  it("legacy cached row with a NULL fingerprint is drifted", async () => {
+    (getCachedNarrative as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+      narrativeMd: "Pre-migration prose.",
+      generatedAt: "2026-08-12 12:00:00",
+      inputFingerprint: null,
+    });
+    const body = await (await get()).json();
+    expect(body.drifted).toBe(true);
+    expect(generateNarrative).not.toHaveBeenCalled();
+  });
+
+  it("a fingerprint compute failure reads as drifted, not as fresh, and still returns 200", async () => {
+    (computeNarrativeFingerprint as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error("hedging compute blew up");
+    });
+    (getCachedNarrative as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+      narrativeMd: "Some prose.",
+      generatedAt: "2026-08-24 12:00:00",
+      inputFingerprint: "fp-current",
+    });
+    const res = await get();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.drifted).toBe(true);
+    expect(generateNarrative).not.toHaveBeenCalled();
+  });
+
+  it("cache miss reports drifted:false (nothing stale is on screen)", async () => {
+    const body = await (await get()).json();
+    expect(body.notGenerated).toBe(true);
+    expect(body.drifted).toBe(false);
+  });
+
+  it("never computes a fingerprint when the surface is unknown (no wasted compute)", async () => {
+    const res = await GET(
+      new Request("http://x/api/analysis/narrative?scope=all&surface=bogus") as never,
+    );
+    expect(res.status).toBe(404);
+    expect(computeNarrativeFingerprint).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/analysis/narrative fingerprint", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetRateLimitForTests();
+  });
+
+  it("a fresh generation is reported as not drifted", async () => {
+    const res = await POST(
+      new Request("http://x/api/analysis/narrative", {
+        method: "POST",
+        body: JSON.stringify({ scope: "all", surface: "defense" }),
+        headers: { "Content-Type": "application/json" },
+      }) as never,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.drifted).toBe(false);
+    // POST is the only path allowed to burn a paid call.
+    expect(generateNarrative).toHaveBeenCalledTimes(1);
+    expect(
+      (generateNarrative as ReturnType<typeof vi.fn>).mock.calls[0][1],
+    ).toMatchObject({ forceRegen: true });
   });
 });
