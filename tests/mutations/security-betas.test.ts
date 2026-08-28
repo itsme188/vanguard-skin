@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { upsertBeta, deleteBetasForSecurity } from "@/lib/mutations/security-betas";
+import { upsertBeta, deleteBeta, deleteBetasForSecurity } from "@/lib/mutations/security-betas";
 import { getCachedBeta } from "@/lib/queries/security-betas";
 
 function seedSecurity(db: Database.Database, symbol: string): number {
@@ -84,6 +84,35 @@ describe("security-betas mutations", () => {
       expect(row.computed_at).toBeTruthy();
       // SQLite datetime('now') returns format like "2026-05-08 14:30:45"
       expect(row.computed_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    });
+  });
+
+  describe("deleteBeta", () => {
+    it("removes only the row for the given (security, lookback) pair", () => {
+      const secId = seedSecurity(db, "VTI");
+      const otherSecId = seedSecurity(db, "SPY");
+
+      upsertBeta(db, { securityId: secId, lookbackDays: 60, beta: 1.05 });
+      upsertBeta(db, { securityId: secId, lookbackDays: 30, beta: 1.10 });
+      upsertBeta(db, { securityId: otherSecId, lookbackDays: 60, beta: 0.99 });
+
+      deleteBeta(db, secId, 60);
+
+      expect(getCachedBeta(db, secId, 60)).toBeNull();
+      // Sibling windows and other securities are untouched.
+      expect(getCachedBeta(db, secId, 30)).toBe(1.10);
+      expect(getCachedBeta(db, otherSecId, 60)).toBe(0.99);
+    });
+
+    it("is a no-op when no row exists for that pair", () => {
+      const secId = seedSecurity(db, "VTI");
+
+      expect(() => deleteBeta(db, secId, 60)).not.toThrow();
+
+      const count = db
+        .prepare("SELECT COUNT(*) as cnt FROM security_betas")
+        .get() as { cnt: number };
+      expect(count.cnt).toBe(0);
     });
   });
 

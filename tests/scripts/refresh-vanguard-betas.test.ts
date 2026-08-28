@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { refreshVanguardBetas } from "@/scripts/refresh-vanguard-betas";
 import { getCachedBeta } from "@/lib/queries/security-betas";
+import { upsertBeta } from "@/lib/mutations/security-betas";
 
 function createTestDb(): Database.Database {
   const db = new Database(":memory:");
@@ -40,6 +41,50 @@ function seedPrices(
     db.prepare(
       "INSERT OR IGNORE INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'test')"
     ).run(securityId, dateStr, price);
+  }
+}
+
+/** Same shape as seedPrices but starting from an arbitrary date. */
+function seedPricesFrom(
+  db: Database.Database,
+  securityId: number,
+  startDate: string,
+  days: number,
+  base: number = 100,
+  trend: number = 0.1,
+  amplitude: number = 5
+): void {
+  const start = new Date(startDate + "T12:00:00Z");
+  for (let i = 0; i < days; i++) {
+    const d = new Date(start.getTime() + i * 86_400_000);
+    const dateStr = d.toISOString().slice(0, 10);
+    db.prepare(
+      "INSERT OR IGNORE INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'test')"
+    ).run(securityId, dateStr, base + i * trend + Math.sin(i) * amplitude);
+  }
+}
+
+/**
+ * Prices driven by a deterministic pseudo-random walk that is INDEPENDENT of
+ * the sin() series `seedPrices` uses — i.e. a security whose 60-day regression
+ * against the benchmark has essentially zero explanatory power.
+ */
+function seedIndependentPrices(
+  db: Database.Database,
+  securityId: number,
+  days: number,
+  base: number = 100
+): void {
+  const startDate = new Date("2025-01-01T12:00:00Z");
+  let price = base;
+  for (let i = 0; i < days; i++) {
+    const x = Math.sin((i + 1) * 12.9898 + 78.233) * 43758.5453;
+    const shock = 2 * (x - Math.floor(x)) - 1; // deterministic, in [-1, 1)
+    price *= Math.exp(0.02 * shock);
+    const d = new Date(startDate.getTime() + i * 86_400_000);
+    db.prepare(
+      "INSERT OR IGNORE INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'test')"
+    ).run(securityId, d.toISOString().slice(0, 10), price);
   }
 }
 
@@ -157,6 +202,126 @@ describe("refreshVanguardBetas", () => {
 
     const beta = getCachedBeta(db, newId, 60);
     expect(beta).toBeNull();
+  });
+
+  it("invalidates (deletes) a cached beta when the new regression has no explanatory power", async () => {
+    // qa: today-significant-moves--negative-noise-betas-published-as-fact.
+    // A 60-day window where the name moves independently of SPY produces a
+    // beta whose SIGN is noise (the live DB had 21/68 negative, incl. XLV).
+    // Publishing it mints false "direction flipped" badges — so the cached row
+    // must be DELETED, which is exactly what consumers already read as
+    // "no beta" (anomalies.ts LEFT JOIN → beta == null → skip).
+    const acctId = getAccountId(db, "Vanguard Taxable");
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('NOISY', 'Noisy Co', 'Stock')").run();
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('SPY', 'SPDR S&P 500 ETF', 'ETF')").run();
+    const noisyId = (db.prepare("SELECT id FROM securities WHERE symbol = 'NOISY'").get() as { id: number }).id;
+    const spyId = (db.prepare("SELECT id FROM securities WHERE symbol = 'SPY'").get() as { id: number }).id;
+
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (?, ?, ?, 100)"
+    ).run(acctId, noisyId, today);
+
+    seedPrices(db, spyId, 65, 400, 0.1, 5); // sin-driven benchmark
+    seedIndependentPrices(db, noisyId, 65, 100); // independent of the benchmark
+
+    // A previously cached (now unsupported) beta — the exact stale-row class.
+    upsertBeta(db, { securityId: noisyId, lookbackDays: 60, beta: -0.83, residualStd: 2.1 });
+    expect(getCachedBeta(db, noisyId, 60)).toBe(-0.83);
+
+    const result = await refreshVanguardBetas(db);
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.computed).toBe(0);
+    expect(result.invalidated).toHaveLength(1);
+    expect(result.invalidated[0].symbol).toBe("NOISY");
+    expect(result.invalidated[0].reason).toBe("low_r2");
+    expect(result.invalidated[0].rSquared).toBeLessThan(0.1);
+    expect(result.invalidated[0].pairs).toBeGreaterThanOrEqual(30);
+    // `invalidated` is counted separately from `skipped`.
+    expect(result.skipped).not.toContain("NOISY");
+    // The stale row is GONE — a missing row is what consumers treat as "no beta".
+    expect(getCachedBeta(db, noisyId, 60)).toBeNull();
+  });
+
+  it("invalidates a stale cached beta when too few dates align with SPY", async () => {
+    // The live XOM case: the nightly run SKIPPED it (24 aligned pairs < 30) but
+    // its 7-day-old β=−0.68 row kept publishing. Too few pairs must delete.
+    const acctId = getAccountId(db, "Vanguard Taxable");
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('THIN', 'Thin Co', 'Stock')").run();
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('SPY', 'SPDR S&P 500 ETF', 'ETF')").run();
+    const thinId = (db.prepare("SELECT id FROM securities WHERE symbol = 'THIN'").get() as { id: number }).id;
+    const spyId = (db.prepare("SELECT id FROM securities WHERE symbol = 'SPY'").get() as { id: number }).id;
+
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (?, ?, ?, 100)"
+    ).run(acctId, thinId, today);
+
+    // SPY: 2025-01-01 .. 2025-03-06. THIN has 40 rows (clears the raw-row floor)
+    // but only the first 20 dates overlap SPY → 19 aligned pairs.
+    seedPrices(db, spyId, 65, 400, 0.1, 5);
+    seedPrices(db, thinId, 20, 100, 0.1, 4);
+    seedPricesFrom(db, thinId, "2025-06-01", 20, 100, 0.1, 4);
+
+    upsertBeta(db, { securityId: thinId, lookbackDays: 60, beta: -0.68, residualStd: 1.7 });
+
+    const result = await refreshVanguardBetas(db);
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.computed).toBe(0);
+    expect(result.invalidated).toHaveLength(1);
+    expect(result.invalidated[0].symbol).toBe("THIN");
+    expect(result.invalidated[0].reason).toBe("few_pairs");
+    expect(result.invalidated[0].pairs).toBeLessThan(30);
+    expect(getCachedBeta(db, thinId, 60)).toBeNull();
+  });
+
+  it("deletes a stale cached beta when the security no longer has enough price history", async () => {
+    const acctId = getAccountId(db, "Vanguard Taxable");
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('SHORT', 'Short Co', 'Stock')").run();
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('SPY', 'SPDR S&P 500 ETF', 'ETF')").run();
+    const shortId = (db.prepare("SELECT id FROM securities WHERE symbol = 'SHORT'").get() as { id: number }).id;
+    const spyId = (db.prepare("SELECT id FROM securities WHERE symbol = 'SPY'").get() as { id: number }).id;
+
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (?, ?, ?, 10)"
+    ).run(acctId, shortId, today);
+
+    seedPrices(db, spyId, 65, 400, 0.1, 5);
+    seedPrices(db, shortId, 20, 50, 0.05, 2); // below the raw-row floor
+
+    upsertBeta(db, { securityId: shortId, lookbackDays: 60, beta: 1.42 });
+
+    const result = await refreshVanguardBetas(db);
+
+    expect(result.skipped).toContain("SHORT");
+    expect(result.computed).toBe(0);
+    // No evidence left → the row must not keep publishing.
+    expect(getCachedBeta(db, shortId, 60)).toBeNull();
+  });
+
+  it("keeps a high-r² beta and reports zero invalidations", async () => {
+    const acctId = getAccountId(db, "Vanguard Taxable");
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('VTI', 'Vanguard Total Market ETF', 'ETF')").run();
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('SPY', 'SPDR S&P 500 ETF', 'ETF')").run();
+    const vtiId = (db.prepare("SELECT id FROM securities WHERE symbol = 'VTI'").get() as { id: number }).id;
+    const spyId = (db.prepare("SELECT id FROM securities WHERE symbol = 'SPY'").get() as { id: number }).id;
+
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (?, ?, ?, 100)"
+    ).run(acctId, vtiId, today);
+
+    seedPrices(db, vtiId, 65, 200, 0.15, 8);
+    seedPrices(db, spyId, 65, 400, 0.1, 5);
+
+    const result = await refreshVanguardBetas(db);
+
+    expect(result.computed).toBe(1);
+    expect(result.invalidated).toHaveLength(0);
+    expect(getCachedBeta(db, vtiId, 60)).not.toBeNull();
   });
 
   it("skips IBKR and Roth holdings — only processes Vanguard Taxable", async () => {

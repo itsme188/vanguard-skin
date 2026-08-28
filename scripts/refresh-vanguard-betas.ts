@@ -14,15 +14,23 @@
  */
 
 import type Database from "better-sqlite3";
-import { upsertBeta } from "@/lib/mutations/security-betas";
+import { upsertBeta, deleteBeta } from "@/lib/mutations/security-betas";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { calendarDaysBetween } from "@/lib/calendar/date-utils";
 import { isSplitSignatureReturnPair } from "@/lib/compute/risk";
+import {
+  betaConfidenceVerdict,
+  type BetaConfidenceReason,
+} from "@/lib/compute/beta-confidence";
 
 // ─── Constants ────────────────────────────────────────────────────
 
 const LOOKBACK_DAYS = BETA_LOOKBACK_DAYS;
-const MIN_DATA_POINTS = 30; // skip securities with fewer aligned return pairs
+// Floor on RAW price rows before we bother regressing. The floor on ALIGNED
+// return pairs now lives in the publish gate (MIN_BETA_PAIRS in
+// lib/compute/beta-confidence.ts) so that a thin regression DELETES its
+// stale cached row instead of silently leaving last week's beta on screen.
+const MIN_DATA_POINTS = 30;
 const BENCHMARK_SYMBOL = "SPY";
 // Drop return pairs whose dates are more than ~a week apart. The prices table
 // mixes sparse month-end statement anchors with dense daily TWS rows, so an
@@ -34,9 +42,20 @@ const MAX_RETURN_GAP_DAYS = 7;
 
 // ─── Types ────────────────────────────────────────────────────────
 
+/** A regression that ran but failed the publish gate — its cached row is deleted. */
+export interface InvalidatedBeta {
+  symbol: string;
+  rSquared: number;
+  /** Aligned return pairs the regression used. */
+  pairs: number;
+  reason: BetaConfidenceReason;
+}
+
 export interface RefreshResult {
   computed: number;
-  skipped: string[]; // symbols with insufficient history
+  skipped: string[]; // symbols with insufficient history to regress at all
+  /** Symbols whose regression had no explanatory power → cached row DELETED. */
+  invalidated: InvalidatedBeta[];
   errors: { symbol: string; error: string }[];
 }
 
@@ -53,33 +72,42 @@ interface PriceRow {
 
 // ─── OLS beta helper ──────────────────────────────────────────────
 
-interface BetaResult {
+export interface BetaResult {
   beta: number;
   /** Residual std-dev of the regression, in PERCENT units (decimal x 100). */
   residualStdPct: number;
+  /** corr(stock, spy)² — the share of the name's variance the market explains. */
+  rSquared: number;
+  /** Aligned return pairs the regression actually used. */
+  pairs: number;
 }
 
 /**
  * Compute beta = cov(stock_returns, spy_returns) / var(spy_returns) using log
  * daily returns on the aligned date pairs, plus the residual standard deviation
- * (idiosyncratic daily volatility) of that regression.
+ * (idiosyncratic daily volatility) of that regression and its r².
  *
  * residual_i = (sLog_i - meanS) - beta x (bLog_i - meanB)
  * residualStd = sqrt( sum residual_i^2 / (n - 2) )   [n-2 = regression dof]
  * Returned in PERCENT units so the anomaly engine compares it directly to
  * simple-percent daily moves.
  *
- * Returns null when there are insufficient aligned data points.
+ * r² and the pair count are returned so the CALLER can decide whether the
+ * slope is publishable (`betaConfidenceVerdict`). The sample-size test lives
+ * in that gate, not here — a 12-pair regression must reach the gate as
+ * `few_pairs` (which DELETES the stale cached row) rather than vanish into a
+ * silent skip that leaves last week's beta on screen.
+ *
+ * Returns null only when no regression is defined at all: fewer than two
+ * usable pairs, or a benchmark series with zero variance.
  */
-function computeBeta(
+export function computeBeta(
   stockPrices: Map<string, number>,
   spyPrices: Map<string, number>
 ): BetaResult | null {
   const dates = [...stockPrices.keys()]
     .filter((d) => spyPrices.has(d))
     .sort();
-
-  if (dates.length < MIN_DATA_POINTS + 1) return null;
 
   const stockReturns: number[] = [];
   const spyReturns: number[] = [];
@@ -107,7 +135,7 @@ function computeBeta(
     }
   }
 
-  if (stockReturns.length < MIN_DATA_POINTS) return null;
+  if (stockReturns.length < 2) return null;
 
   const n = stockReturns.length;
   const meanS = stockReturns.reduce((s, v) => s + v, 0) / n;
@@ -115,17 +143,22 @@ function computeBeta(
 
   let covSB = 0;
   let varB = 0;
+  let varS = 0;
 
   for (let i = 0; i < n; i++) {
     const dS = stockReturns[i] - meanS;
     const dB = spyReturns[i] - meanB;
     covSB += dS * dB;
     varB += dB * dB;
+    varS += dS * dS;
   }
 
   if (varB === 0) return null;
 
   const beta = covSB / varB;
+  // r² = corr(stock, spy)². varS === 0 (a flat stock series) leaves it
+  // non-finite; the confidence gate fails closed on that.
+  const rSquared = (covSB * covSB) / (varS * varB);
 
   // Residual (idiosyncratic) std-dev around the regression line.
   let residSumSq = 0;
@@ -137,7 +170,7 @@ function computeBeta(
   const residualStd = dof > 0 ? Math.sqrt(residSumSq / dof) : 0; // decimal log-return
   const residualStdPct = residualStd * 100;
 
-  return { beta, residualStdPct };
+  return { beta, residualStdPct, rSquared, pairs: n };
 }
 
 // ─── Main refresh function ────────────────────────────────────────
@@ -147,7 +180,10 @@ function computeBeta(
  *
  * - Reads closing prices from the `prices` table (not `ohlcv_bars`).
  * - Matches SPY close dates pairwise.
- * - Skips securities with <30 aligned return pairs → adds to result.skipped.
+ * - Securities with too little raw price history to regress → result.skipped.
+ * - Regressions that fail the publish gate (r² < 0.10 or fewer than 30 aligned
+ *   pairs) → result.invalidated, and their cached row is DELETED so a
+ *   noise-signed beta never renders as fact on Significant Moves.
  * - Per-security errors are collected and do not abort the run.
  */
 export async function refreshVanguardBetas(
@@ -156,6 +192,7 @@ export async function refreshVanguardBetas(
   const result: RefreshResult = {
     computed: 0,
     skipped: [],
+    invalidated: [],
     errors: [],
   };
 
@@ -232,6 +269,9 @@ export async function refreshVanguardBetas(
         .all(sec.id, LOOKBACK_DAYS + 10) as PriceRow[];
 
       if (priceRows.length < MIN_DATA_POINTS) {
+        // No evidence to regress against — an older cached beta describes a
+        // window we can no longer reproduce, so it must stop publishing.
+        deleteBeta(db, sec.id, LOOKBACK_DAYS);
         result.skipped.push(sec.symbol);
         continue;
       }
@@ -244,8 +284,28 @@ export async function refreshVanguardBetas(
       const regression = computeBeta(stockPrices, spyPrices);
 
       if (regression === null) {
-        // Insufficient aligned data after matching with SPY dates
+        // No regression is defined (fewer than 2 aligned pairs, or a
+        // zero-variance benchmark) — same fail-closed treatment.
+        deleteBeta(db, sec.id, LOOKBACK_DAYS);
         result.skipped.push(sec.symbol);
+        continue;
+      }
+
+      // Publish gate: a slope with no explanatory power is noise, and its SIGN
+      // is what Significant Moves renders as a "Direction flipped" badge.
+      const verdict = betaConfidenceVerdict({
+        rSquared: regression.rSquared,
+        pairs: regression.pairs,
+      });
+
+      if (!verdict.ok) {
+        deleteBeta(db, sec.id, LOOKBACK_DAYS);
+        result.invalidated.push({
+          symbol: sec.symbol,
+          rSquared: regression.rSquared,
+          pairs: regression.pairs,
+          reason: verdict.reason!,
+        });
         continue;
       }
 
@@ -303,6 +363,13 @@ if (isMain) {
     const result = await refreshVanguardBetas(db);
     console.log(JSON.stringify(result, null, 2));
 
+    // One line per invalidated symbol: which gate it failed, with the evidence.
+    for (const inv of result.invalidated) {
+      console.log(
+        `  invalidated ${inv.symbol}: ${inv.reason} (r²=${inv.rSquared.toFixed(3)}, n=${inv.pairs}) — cached ${LOOKBACK_DAYS}d beta deleted`
+      );
+    }
+
     if (result.errors.length > 0) {
       console.error(
         `${new Date().toISOString()} — ${result.errors.length} error(s) encountered`
@@ -311,7 +378,7 @@ if (isMain) {
     }
 
     console.log(
-      `${new Date().toISOString()} — done: computed=${result.computed} skipped=${result.skipped.length}`
+      `${new Date().toISOString()} — done: computed=${result.computed} invalidated=${result.invalidated.length} skipped=${result.skipped.length}`
     );
     process.exit(0);
   })();
