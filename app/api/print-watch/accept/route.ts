@@ -71,6 +71,11 @@ const ACCEPTABLE_ACCEPT_STATES = new Set(["agreed", "flash", "single_source", "b
  *
  * A pending line with NO value is still refused, with the same message as
  * before: there is nothing to accept yet.
+ *
+ * ADMITTING that line is not the same as TRUSTING its number: the value is
+ * residue from the earlier acceptance and the candidates under it have kept
+ * moving, so the accept loop re-checks it against current evidence (the
+ * supersession gate below) before letting it back in.
  */
 function isAcceptableLine(line: PrintWatchLine): boolean {
   if (ACCEPTABLE_ACCEPT_STATES.has(line.state)) return true;
@@ -120,6 +125,22 @@ function divergentCandidates(line: PrintWatchLine): TaggedCandidate[] {
     if (c.not_disclosed || c.value === null) return false;
     return valuesDiverge(line.value, c.value) || valuesDiverge(line.value_high, c.value_high);
   });
+}
+
+/**
+ * The "metric (accepted N, later evidence M)" fragment BOTH supersession gates
+ * report — null when the evidence on this line still agrees with its number.
+ *
+ * Deliberately the single source of truth: the promote gate and the per-line
+ * accept gate below must never drift into two different ideas of "newer
+ * evidence disagrees", or the desk gets refused by one and waved through by
+ * the other for the same sheet.
+ */
+function supersessionDetail(line: PrintWatchLine): string | null {
+  const rivals = divergentCandidates(line);
+  if (rivals.length === 0) return null;
+  const values = Array.from(new Set(rivals.map((c) => String(c.value)))).slice(0, 3);
+  return `${line.metric_id} (accepted ${line.value}, later evidence ${values.join(", ")})`;
 }
 
 export async function POST(request: NextRequest) {
@@ -206,6 +227,37 @@ export async function POST(request: NextRequest) {
           error: `Cannot accept "${metricId}": its state is "${line.state}" — resolve the conflict, or wait for a source, before accepting.`,
         });
       }
+
+      // RULE (Codex HIGH, per-line accept): an un-accepted line — the only
+      // 'pending' line that can carry a number — is re-accepted ONLY if the
+      // evidence now on the sheet still agrees with that number.
+      //
+      // The number on such a line is RESIDUE: `clearLineAccepted` flips state
+      // and leaves `value` alone, while the reconciler kept refreshing
+      // `candidates_json` underneath the accepted lock the whole time
+      // (reconcile.ts rule 6). So a correction that landed while the line was
+      // accepted — an 8-K/A, a corrected drop — leaves exactly the shape this
+      // gate refuses: state 'pending', value stale, candidates newer. Without
+      // it, un-accept then re-accept was a laundering path back to a number
+      // the promote gate would have refused outright.
+      //
+      // Same comparison as the promote gate (`supersessionDetail`), same 409
+      // `superseded` envelope, same `forceSuperseded` override. Lines whose
+      // parsers agree (value == candidates) pass trivially: no rival, no
+      // fragment. Every OTHER acceptable state is untouched — 'agreed',
+      // 'flash', 'single_source' and 'blank' are the reconciler's own current
+      // reading of the candidate pool, not residue, and re-accepting an
+      // already-'accepted' line stays the harmless no-op it was.
+      if (!forceSuperseded && line.state === "pending" && line.value !== null) {
+        const detail = supersessionDetail(line);
+        if (detail) {
+          throw new RequestRefused(409, {
+            success: false,
+            code: "superseded",
+            error: `Newer evidence disagrees with the un-accepted number on ${detail}. That figure is left over from the earlier acceptance — the sheet has taken in evidence contradicting it since. Let the line reconcile and accept the corrected figure, or send forceSuperseded to accept the value as it stands.`,
+          });
+        }
+      }
     }
 
     for (const metricId of unacceptList) {
@@ -283,12 +335,8 @@ export async function POST(request: NextRequest) {
       if (!forceSuperseded) {
         const superseded: string[] = [];
         for (const line of [epsLine!, revLine!]) {
-          const rivals = divergentCandidates(line);
-          if (rivals.length === 0) continue;
-          const values = Array.from(new Set(rivals.map((c) => String(c.value)))).slice(0, 3);
-          superseded.push(
-            `${line.metric_id} (accepted ${line.value}, later evidence ${values.join(", ")})`,
-          );
+          const detail = supersessionDetail(line);
+          if (detail) superseded.push(detail);
         }
         if (superseded.length > 0) {
           throw new RequestRefused(409, {

@@ -110,6 +110,16 @@ export const PRE_GATE_DISCLOSURE =
 export const SUPERSEDED_CONFIRM_COPY =
   "Newer evidence disagrees with the accepted number — re-verify before promoting. Promote the accepted value anyway?";
 
+/**
+ * The ACCEPT-side twin (Codex HIGH). The route now runs the same supersession
+ * comparison when the desk re-accepts an un-accepted line whose number is
+ * residue, so this confirm can reach a click that said "accept", never
+ * "promote" — and a dialog that asks about promoting a value the user was not
+ * promoting is a misleading affordance, not a shortcut.
+ */
+export const SUPERSEDED_ACCEPT_CONFIRM_COPY =
+  "Newer evidence disagrees with the number left on this line — re-verify before accepting. Accept it as it stands anyway?";
+
 const HOT_STATES: ReadonlySet<PrintWatchState> = new Set(["window_open", "acquired"]);
 const HOT_POLL_MS = 2_000;
 const COOL_POLL_MS = 30_000;
@@ -760,12 +770,18 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
         // landed since (fix wave, finding B). Its own confirm, its own
         // override flag — never the pre-print `force`.
         if (res.status === 409 && data?.code === "superseded" && !body.forceSuperseded) {
+          // Both gates share the code; only the click that hit them differs.
+          const isPromote = body.promoteHeadline === true;
           const confirmed = window.confirm(
-            `${data.error ?? "Newer evidence disagrees with the accepted number."}\n\n${SUPERSEDED_CONFIRM_COPY}`,
+            `${data.error ?? "Newer evidence disagrees with the accepted number."}\n\n${
+              isPromote ? SUPERSEDED_CONFIRM_COPY : SUPERSEDED_ACCEPT_CONFIRM_COPY
+            }`,
           );
           if (confirmed) return postAccept({ ...body, forceSuperseded: true });
           setActionError(
-            "Promote cancelled — re-verify the superseded line against the release, then accept the corrected figure.",
+            isPromote
+              ? "Promote cancelled — re-verify the superseded line against the release, then accept the corrected figure."
+              : "Accept cancelled — re-verify this line against the release, then accept the corrected figure.",
           );
           return false;
         }
@@ -808,10 +824,12 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
   /** Per-line accept — the recovery path out of an un-accept, and the only
    *  way to accept a line the bulk button skips by design (single_source /
    *  flash, which the route allows as eyes-on overrides). Same route, same
-   *  body shape and the same 409 handling as the bulk path: an accept-only
-   *  request never reaches saveManualActuals, so pre_print/superseded cannot
-   *  fire on it today — it goes through `postAccept` anyway so a single
-   *  future change keeps every accept path honest. */
+   *  body shape and the same 409 handling as the bulk path. An accept-only
+   *  request never reaches saveManualActuals, so `pre_print` cannot fire on
+   *  it — but `superseded` NOW CAN: the route runs the promote gate's own
+   *  comparison when the line being accepted is an un-accepted one whose
+   *  number is residue, and `postAccept` answers it with the accept-side
+   *  confirm. */
   async function acceptLine(metricId: string) {
     if (acceptingId) return;
     setAcceptingId(metricId);

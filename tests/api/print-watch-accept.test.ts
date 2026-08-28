@@ -8,6 +8,9 @@
  *    called.
  *  - Unaccept clears accepted state back to 'pending' (Codex #15 re-verify
  *    path).
+ *  - Re-accepting an un-accepted line (the 'pending'-with-a-value residue)
+ *    runs the promote gate's supersession comparison: 409 'superseded' when
+ *    the refreshed candidates disagree, unless forceSuperseded (Codex HIGH).
  *  - promoteHeadline requires a COMPLETE pair: an accepted EPS line (adj
  *    preferred over gaap, basis named in the response) AND an accepted
  *    revenue_q — else 400 explaining the stale-merge risk.
@@ -320,6 +323,138 @@ describe("POST /api/print-watch/accept", () => {
     it("re-accepting an already-accepted line is a harmless no-op, not an error", async () => {
       const { eventId, printId } = seedPrint([makeLine("eps_adj_q", "agreed", 1.42)]);
       markLineAccepted(hoisted.db, printId, "eps_adj_q");
+
+      const { status } = await callAccept({ eventId, accept: ["eps_adj_q"] });
+
+      expect(status).toBe(200);
+      expect(getSheet(hoisted.db, printId)[0].state).toBe("accepted");
+    });
+  });
+
+  // Codex HIGH: the un-accept residue is a NUMBER, and the candidates under it
+  // kept moving while the line sat accepted (upsertLines refreshes
+  // candidates_json on an accepted row, reconcile.ts rule 6). So "pending with
+  // a value" can mean "the desk un-accepted a number the evidence has since
+  // contradicted" — and admitting that line without rechecking made
+  // un-accept/re-accept a laundering path back to a figure the promote gate
+  // refuses. The accept loop now runs the promote gate's own comparison.
+  describe("per-line accept — supersession recheck on the un-accept residue", () => {
+    function candidate(overrides: Partial<TaggedCandidate> = {}): TaggedCandidate {
+      return {
+        metric_id: "eps_adj_q",
+        value: 1.42,
+        value_high: null,
+        raw_text: "1.42",
+        snippet: "adjusted EPS of $1.42",
+        location_hint: null,
+        not_disclosed: false,
+        doc_id: 7,
+        representation: "repA",
+        weak_pair: false,
+        ...overrides,
+      };
+    }
+
+    /** The real production sequence: accept the line, let the watcher's next
+     *  reconcile refresh candidates_json underneath the accepted lock (value
+     *  stays locked at 1.42), then un-accept through the route — leaving
+     *  state 'pending' with the stale number and newer evidence beneath it. */
+    async function seedUnacceptedResidue(candidates: TaggedCandidate[]) {
+      const { eventId, printId } = seedPrint([
+        makeLine("eps_adj_q", "agreed", 1.42, {
+          candidates_json: JSON.stringify([candidate()]),
+        }),
+      ]);
+      markLineAccepted(hoisted.db, printId, "eps_adj_q");
+
+      // Watcher reconcile while accepted: candidates refresh, value does not.
+      upsertLines(hoisted.db, printId, [
+        makeLine("eps_adj_q", "agreed", 9.99, { candidates_json: JSON.stringify(candidates) }),
+      ]);
+
+      const cleared = await callAccept({ eventId, unaccept: ["eps_adj_q"] });
+      expect(cleared.status).toBe(200);
+      const line = getSheet(hoisted.db, printId)[0];
+      expect(line.state).toBe("pending");
+      expect(line.value).toBe(1.42); // residue: the accepted number survives
+
+      return { eventId, printId };
+    }
+
+    it("409s with code 'superseded' when the refreshed candidates disagree with the residue, writing nothing", async () => {
+      const { eventId, printId } = await seedUnacceptedResidue([
+        candidate(),
+        candidate({ value: 1.24, doc_id: 9, snippet: "adjusted EPS of $1.24" }),
+      ]);
+
+      const { status, json } = await callAccept({ eventId, accept: ["eps_adj_q"] });
+
+      expect(status).toBe(409);
+      expect(json.success).toBe(false);
+      expect(json.code).toBe("superseded");
+      expect(json.error).toMatch(/eps_adj_q/);
+      expect(json.error).toMatch(/1\.24/);
+
+      const line = getSheet(hoisted.db, printId)[0];
+      expect(line.state).toBe("pending"); // nothing written
+      expect(line.value).toBe(1.42);
+      expect(saveManualActuals).not.toHaveBeenCalled();
+    });
+
+    it("forceSuperseded: true accepts the residue anyway — the desk overriding with its own eyes", async () => {
+      const { eventId, printId } = await seedUnacceptedResidue([
+        candidate(),
+        candidate({ value: 1.24, doc_id: 9 }),
+      ]);
+
+      const { status, json } = await callAccept({
+        eventId,
+        accept: ["eps_adj_q"],
+        forceSuperseded: true,
+      });
+
+      expect(status).toBe(200);
+      expect(json.data!.accepted).toEqual(["eps_adj_q"]);
+      const line = getSheet(hoisted.db, printId)[0];
+      expect(line.state).toBe("accepted");
+      expect(line.value).toBe(1.42);
+    });
+
+    it("re-accepts normally when the refreshed candidates still agree with the residue", async () => {
+      const { eventId, printId } = await seedUnacceptedResidue([
+        candidate(),
+        candidate({ doc_id: 9, representation: "repB" }),
+      ]);
+
+      const { status } = await callAccept({ eventId, accept: ["eps_adj_q"] });
+
+      expect(status).toBe(200);
+      expect(getSheet(hoisted.db, printId)[0].state).toBe("accepted");
+    });
+
+    it("does NOT trip on a flash candidate that disagrees — wire rounding is noise, same as the promote gate", async () => {
+      const { eventId, printId } = await seedUnacceptedResidue([
+        candidate(),
+        candidate({ value: 1.4, doc_id: 9, representation: "flash" }),
+      ]);
+
+      const { status } = await callAccept({ eventId, accept: ["eps_adj_q"] });
+
+      expect(status).toBe(200);
+      expect(getSheet(hoisted.db, printId)[0].state).toBe("accepted");
+    });
+
+    it("leaves a non-residue line alone: an 'agreed' line accepts even with a diverging candidate beneath it", async () => {
+      // Structurally unreachable through the reconciler (strict unanimity
+      // would call that pool a conflict) — seeded to pin the SCOPE of the
+      // gate: only 'pending'-with-a-value is residue. Every other acceptable
+      // state is the reconciler's own current reading of the pool, and
+      // re-gating it would refuse lines the reconciler just endorsed.
+      const { eventId, printId } = seedPrint([
+        makeLine("eps_adj_q", "agreed", 1.42, {
+          candidates_json: JSON.stringify([candidate(), candidate({ value: 1.24, doc_id: 9 })]),
+        }),
+      ]);
 
       const { status } = await callAccept({ eventId, accept: ["eps_adj_q"] });
 
