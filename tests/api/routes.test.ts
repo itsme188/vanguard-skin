@@ -17,6 +17,10 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { NextRequest } from "next/server";
+import {
+  acquireResearchSyncLock,
+  __resetResearchSyncLockForTests,
+} from "@/lib/research/sync-lock";
 
 // ── Shared mocks ────────────────────────────────────────────────
 // All three routes import `@/lib/db`, which opens the production SQLite
@@ -90,6 +94,7 @@ beforeEach(() => {
   hoisted.db.pragma("foreign_keys = ON");
   runMigrations(hoisted.db);
   resetSyncState();
+  __resetResearchSyncLockForTests();
   vi.clearAllMocks();
 });
 
@@ -192,6 +197,27 @@ describe("POST /api/research/sync", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("Gmail OAuth not configured");
+  });
+
+  it("returns 409 already_running while a background pass holds the sync lock", async () => {
+    hoisted.isGmailConfigured.mockReturnValueOnce(true);
+    const held = acquireResearchSyncLock("background");
+    if (!held.ok) throw new Error("expected lock acquire to succeed");
+
+    const mod = await import("@/app/api/research/sync/route");
+    const res = await mod.POST();
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as {
+      success: boolean;
+      error: string;
+      code: string;
+    };
+    expect(body.success).toBe(false);
+    expect(body.code).toBe("already_running");
+    expect(body.error).toContain("background refresh");
+
+    // A refused request must never touch the pipeline.
+    expect(hoisted.getGmailClient).not.toHaveBeenCalled();
   });
 
   it("opens an SSE stream when Gmail IS configured", async () => {

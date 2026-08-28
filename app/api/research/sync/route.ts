@@ -8,6 +8,11 @@ import {
   reconcileCloudFetchedNewsletters,
   postMacRecentNewsletterSyncMarker,
 } from "@/lib/research/reconcile-cloud-fetched";
+import {
+  acquireResearchSyncLock,
+  releaseResearchSyncLock,
+  alreadyRunningMessage,
+} from "@/lib/research/sync-lock";
 
 /**
  * POST /api/research/sync — Fetch and process newsletter articles from Gmail.
@@ -21,6 +26,17 @@ export async function POST() {
     return Response.json(
       { success: false, error: "Gmail OAuth not configured" },
       { status: 400 }
+    );
+  }
+
+  // Refuse to start a second overlapping pass — the AI stages are
+  // select-then-spend, so two runs racing the same unprocessed batch pay
+  // for it twice. See lib/research/sync-lock.ts for the full rationale.
+  const lock = acquireResearchSyncLock("manual");
+  if (!lock.ok) {
+    return Response.json(
+      { success: false, error: alreadyRunningMessage(lock.heldBy), code: "already_running" },
+      { status: 409 }
     );
   }
 
@@ -162,6 +178,9 @@ export async function POST() {
           message: err instanceof Error ? err.message : "Sync failed",
         });
       } finally {
+        // Release BEFORE close — a throwing controller.close() must never
+        // strand the lock for the next caller.
+        releaseResearchSyncLock(lock.token);
         controller.close();
       }
     },
