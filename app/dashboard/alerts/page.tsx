@@ -20,6 +20,7 @@ import {
   STALE_PRICE_EXPLANATION,
   STALE_PRICE_LABEL,
   isLevelBeyondScanRange,
+  moveNeededPct,
   scanRangeDistancePct,
 } from "@/lib/levels/scan-range";
 import { useToast } from "../components/Toast";
@@ -1134,10 +1135,21 @@ function ArmedLevelsList({ levels }: { levels: ArmedLevelView[] }) {
 function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
   const typeLabel = LEVEL_TYPE_LABEL[l.level_type] ?? l.level_type;
   const isStatic = l.price_source === "static";
+  // `dist` is the scanner's OWN guard distance — measured against the LEVEL
+  // price (see lib/levels/scan-range.ts). It is deliberately NOT the move a
+  // trader cares about: a level far below current in $ terms but small in
+  // magnitude reads as a huge % against its own price ("120.2% away") even
+  // though the security page — which measures against spot — shows a modest
+  // "-22.2%" for the exact same level. Rendering only the guard figure here
+  // read as contradicting that page (qa:alerts-armed--distance-pct-uses-
+  // level-denominator-overstates-move). Show BOTH, clearly labeled, so they
+  // can never be misread as disagreeing: moveNeeded is the primary "what has
+  // to happen" figure (spot-denominator, matches the security page); dist
+  // stays as a secondary "(vs level)" tag documenting the scanner's own band.
   const dist = l.distance_pct;
-  // "X% away" reads cleanest as an absolute gap; the level type + direction +
-  // the live price column tell the user which side of the level price sits on.
-  const distanceLabel = dist === null ? null : `${formatPercent(Math.abs(dist) * 100)} away`;
+  const moveNeeded = moveNeededPct(l.current_price, l.effective_price ?? l.price);
+  const moveNeededLabel = moveNeeded === null ? null : `${formatPercent(moveNeeded)} move needed`;
+  const vsLevelLabel = dist === null ? null : `${formatPercent(Math.abs(dist) * 100)} vs level`;
   const near = dist !== null && Math.abs(dist) <= 0.02; // within 2% — about to fire
   // Armed in the DB, but the scanner skips it on every pass. Saying "171% away"
   // and nothing else read as live coverage — this row is not being monitored.
@@ -1185,10 +1197,26 @@ function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
               {l.direction}
             </span>
           )}
-          {distanceLabel && (
-            <Chip size="xs" tone={near ? "warn" : "neutral"}>
-              {distanceLabel}
+          {moveNeededLabel && (
+            <Chip
+              size="xs"
+              tone={near ? "warn" : "neutral"}
+              title={
+                vsLevelLabel
+                  ? `Move needed, measured from the current price (matches the security page). The scanner's own guard band measures distance from the level price instead: ${vsLevelLabel}.`
+                  : undefined
+              }
+            >
+              {moveNeededLabel}
             </Chip>
+          )}
+          {vsLevelLabel && (
+            <span
+              className="text-[10px] text-ink-faint"
+              title="The scanner's guard distance — measured from the LEVEL price, not spot. Shown so this can never read as disagreeing with the move-needed figure above."
+            >
+              ({vsLevelLabel})
+            </span>
           )}
           {beyondScanRange && (
             <Chip size="xs" tone="down" title={BEYOND_SCAN_RANGE_EXPLANATION}>

@@ -13,6 +13,8 @@ import { describe, it, expect } from "vitest";
 import {
   isLevelBeyondScanRange,
   LEVEL_PLAUSIBILITY_MAX_DISTANCE,
+  moveNeededPct,
+  scanRangeDistancePct,
 } from "@/lib/levels/scan-range";
 
 describe("isLevelBeyondScanRange", () => {
@@ -61,5 +63,42 @@ describe("isLevelBeyondScanRange", () => {
     expect(isLevelBeyondScanRange(null, 100, "stock")).toBe(false);
     expect(isLevelBeyondScanRange(300, null, "stock")).toBe(false);
     expect(isLevelBeyondScanRange(null, null, "stock")).toBe(false);
+  });
+});
+
+// Regression pin (qa:alerts-armed--distance-pct-uses-level-denominator-
+// overstates-move): the Armed tab quoted scanRangeDistancePct's LEVEL-
+// denominator figure as "away", which reads as a much bigger move than the
+// security page's own spot-denominator %. moveNeededPct uses CURRENT price
+// as the denominator so the Armed tab and the security page can never
+// disagree.
+describe("moveNeededPct", () => {
+  it("is positive for an upside target above current price", () => {
+    // level 130, current 100 → (130 - 100) / 100 = +30%
+    expect(moveNeededPct(100, 130)).toBeCloseTo(30, 10);
+  });
+
+  it("is negative for a downside target below current price", () => {
+    // level 45.4, current 100 → (45.4 - 100) / 100 = -54.6%
+    expect(moveNeededPct(100, 45.4)).toBeCloseTo(-54.6, 10);
+  });
+
+  it("differs from scanRangeDistancePct's level-denominator figure on the same inputs", () => {
+    // level 45.4, current 100: level-denominator distance is huge (120.2%),
+    // spot-denominator move needed is the modest, security-page-matching -54.6%.
+    const levelDenominator = scanRangeDistancePct(45.4, 100);
+    const spotDenominator = moveNeededPct(100, 45.4);
+    expect(levelDenominator).toBeCloseTo(120.26, 1);
+    expect(spotDenominator).toBeCloseTo(-54.6, 10);
+  });
+
+  it("returns null when current price is 0 (can't divide by spot)", () => {
+    expect(moveNeededPct(0, 130)).toBeNull();
+  });
+
+  it("returns null when either input is missing", () => {
+    expect(moveNeededPct(null, 130)).toBeNull();
+    expect(moveNeededPct(100, undefined)).toBeNull();
+    expect(moveNeededPct(null, null)).toBeNull();
   });
 });
