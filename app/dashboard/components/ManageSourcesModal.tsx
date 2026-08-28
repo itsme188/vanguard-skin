@@ -652,20 +652,49 @@ export function ManageSourcesModal({
                           }`}
                         />
                       </button>
-                      {/* Delete — only for sources with no articles.
-                          Confirm first, matching the Notes/Documents delete
-                          flows (deep-QA: instant delete was jarring). */}
-                      {(!s.article_count || s.article_count === 0) && (
-                        <button
-                          onClick={() => setPendingDeleteId(s.id)}
-                          className="text-ink-faint hover:text-down transition-colors"
-                          title="Delete source"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
-                          </svg>
-                        </button>
-                      )}
+                      {/* Delete — always rendered so the control isn't
+                          unexplained-missing (deep-QA: research-sources--
+                          delete-only-on-zero-article-sources-unexplained).
+                          Disabled (not hidden) for sources with articles,
+                          with BOTH a title tooltip (desktop hover) and a
+                          visible caption (touch users can't hover) pointing
+                          at the active/inactive toggle as the alternative —
+                          no cascade, no detach, retention unchanged. Enabled
+                          delete still confirms first, matching the
+                          Notes/Documents delete flows (deep-QA: instant
+                          delete was jarring). */}
+                      {(() => {
+                        const articleCount = s.article_count ?? 0;
+                        const hasArticles = articleCount > 0;
+                        const deleteTitle = hasArticles
+                          ? `This source has ${articleCount} article${articleCount === 1 ? "" : "s"} — use the toggle above to deactivate it instead of deleting.`
+                          : "Delete source";
+                        return (
+                          <span className="flex items-center gap-1.5">
+                            {hasArticles && (
+                              <span className="text-[10px] text-ink-faint whitespace-nowrap">
+                                has {articleCount} article{articleCount === 1 ? "" : "s"} — deactivate instead
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setPendingDeleteId(s.id)}
+                              disabled={hasArticles}
+                              aria-disabled={hasArticles}
+                              title={deleteTitle}
+                              className={
+                                hasArticles
+                                  ? "text-ink-faint/40 cursor-not-allowed"
+                                  : "text-ink-faint hover:text-down transition-colors"
+                              }
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                              </svg>
+                            </button>
+                          </span>
+                        );
+                      })()}
                     </div>
                   </div>
                 ))}
