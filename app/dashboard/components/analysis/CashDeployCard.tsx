@@ -1,8 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { Money } from "@/lib/privacy/components";
-import type { CashDeploySuggestion } from "@/lib/compute/cash-deploy";
+import { Money, Pct } from "@/lib/privacy/components";
+import {
+  equitySleeveCaptionLead,
+  type CashDeploySuggestion,
+} from "@/lib/compute/cash-deploy";
 
 interface Props {
   scope: string;
@@ -85,6 +88,32 @@ export function CashDeployCard({ scope }: Props) {
               <h4 className="text-[10px] text-ink-faint uppercase tracking-wider mb-2">
                 Sector Gaps (|≥ 2pp|)
               </h4>
+              {/*
+                Equity-only benchmark (QA finding
+                analysis-cash-deploy--fixed-income-gap-vs-equity-benchmark):
+                the gaps below are measured on the equity sleeve, so the
+                weights no longer sum to the portfolio. Name the sleeve that
+                was left out — its weights are portfolio-derived, so they
+                render through <Pct>.
+              */}
+              {result.excludedSleeve && (
+                <p className="text-[11px] text-ink-faint mb-2">
+                  {equitySleeveCaptionLead(result.benchmarkSymbol)}{" "}
+                  {result.excludedSleeve.buckets.map((b, i) => (
+                    <span key={b.sector}>
+                      {i > 0 && ", "}
+                      {b.sector} <Pct value={b.weightPct} digits={1} />
+                    </span>
+                  ))}
+                  {result.excludedSleeve.buckets.length > 1 && (
+                    <>
+                      {" "}(<Pct value={result.excludedSleeve.totalPct} digits={1} /> in
+                      total)
+                    </>
+                  )}
+                  .
+                </p>
+              )}
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-ink-faint">
@@ -99,7 +128,7 @@ export function CashDeployCard({ scope }: Props) {
                     <tr key={g.sector} className="border-t border-edge/30">
                       <td className="py-1 text-ink">{g.sector}</td>
                       <td className="text-right py-1 font-mono text-ink-dim">
-                        {(g.currentWeight * 100).toFixed(1)}%
+                        <Pct value={g.currentWeight * 100} digits={1} />
                       </td>
                       <td className="text-right py-1 font-mono text-ink-dim">
                         {(g.targetWeight * 100).toFixed(1)}%

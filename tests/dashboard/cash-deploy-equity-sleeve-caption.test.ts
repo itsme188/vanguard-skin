@@ -1,0 +1,52 @@
+/**
+ * Cash-Deploy card — equity-sleeve caption.
+ *
+ * QA finding `analysis-cash-deploy--fixed-income-gap-vs-equity-benchmark`:
+ * with an all-equity benchmark the solver now measures sector gaps on the
+ * equity sleeve. The table must SAY so and name the sleeve it dropped —
+ * otherwise the weights silently stop summing to the portfolio.
+ */
+import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { equitySleeveCaptionLead } from "@/lib/compute/cash-deploy";
+
+describe("equitySleeveCaptionLead", () => {
+  it("names the benchmark and what the sleeve excludes", () => {
+    expect(equitySleeveCaptionLead("VTI")).toBe(
+      "Sector gaps vs VTI are measured on the equity sleeve — VTI holds no fixed income or cash, so these are excluded from current weights and the rest renormalized to 100%:"
+    );
+  });
+
+  it("carries whichever benchmark the scope resolved to", () => {
+    expect(equitySleeveCaptionLead("QQQ")).toContain("vs QQQ");
+    expect(equitySleeveCaptionLead("QQQ")).toContain("QQQ holds no fixed income");
+  });
+});
+
+describe("CashDeployCard renders the caption", () => {
+  const src = readFileSync(
+    "app/dashboard/components/analysis/CashDeployCard.tsx",
+    "utf8"
+  );
+
+  it("imports the copy helper rather than inlining the sentence", () => {
+    expect(src).toContain("equitySleeveCaptionLead");
+    expect(src).toContain("equitySleeveCaptionLead(result.benchmarkSymbol)");
+  });
+
+  it("gates the caption on excludedSleeve being non-null", () => {
+    expect(src).toMatch(/result\.excludedSleeve\s*&&/);
+  });
+
+  it("renders the excluded-sleeve weights through <Pct> (portfolio-derived)", () => {
+    expect(src).toContain("<Pct value={b.weightPct}");
+    expect(src).toContain("value={result.excludedSleeve.totalPct}");
+    expect(src).toMatch(/import \{[^}]*Pct[^}]*\} from "@\/lib\/privacy\/components"/);
+  });
+
+  it("keeps the gap table's current weight portfolio-masked too", () => {
+    expect(src).toContain("<Pct value={g.currentWeight * 100}");
+    // Benchmark target weight is public market data — plain, by convention.
+    expect(src).toContain("{(g.targetWeight * 100).toFixed(1)}%");
+  });
+});
