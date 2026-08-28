@@ -112,6 +112,25 @@ export function chartEmptyStateMessage({
   return `No cached price history for ${symbol} — connect TWS to load bars.`;
 }
 
+/**
+ * Staleness footer text — "N bars · through YYYY-MM-DD" (or "No data" when
+ * barCount is 0). Shared by the Single-mode full footer and the
+ * compact/Watchlist slim footer so the two surfaces can never drift apart
+ * (deep-QA: charts-watchlist-panels--no-bars-through-date-staleness-footer —
+ * compact panels used to render NO staleness text at all, so a panel whose
+ * cache ended months ago was indistinguishable from a current one).
+ */
+export function chartFooterStalenessText({
+  barCount,
+  lastDate,
+}: {
+  barCount: number;
+  lastDate: string | null;
+}): string {
+  const base = barCount > 0 ? `${barCount} bars` : "No data";
+  return lastDate ? `${base} · through ${lastDate}` : base;
+}
+
 // Terminal Pro theme — dark Bloomberg-adjacent. Amber current-price, bright
 // emerald/rose for level treatments (strong, solid) so they can never be
 // confused with the amber current-price line.
@@ -1188,14 +1207,22 @@ export function SecurityChart({
         )}
       </div>
 
-      {/* Footer (hidden in compact/multi-panel mode) */}
-      {!compact && (
+      {/* Footer — full controls in Single mode. Compact/Watchlist panels get
+          a slim staleness-only line (same barCount/lastDate source, same
+          format via chartFooterStalenessText) so a panel whose cache is
+          months stale doesn't read as current (deep-QA: charts-watchlist-
+          panels--no-bars-through-date-staleness-footer). MultiChart reserves
+          extra fixed panel height for this bar — see chartHeight in
+          MultiChart.tsx, mirroring how it already reserves 32px for its own
+          per-panel picker header. */}
+      {compact ? (
+        <div className="chart-chrome px-3 py-1 border-t border-edge text-xs text-ink-faint truncate">
+          {chartFooterStalenessText({ barCount, lastDate })}
+        </div>
+      ) : (
         <div className="chart-chrome px-4 py-1.5 border-t border-edge flex items-center justify-between text-xs text-ink-faint gap-3 flex-wrap">
           <div className="flex items-center gap-3 flex-wrap">
-            <span>
-              {barCount > 0 ? `${barCount} bars` : "No data"}
-              {lastDate && ` \u00b7 through ${lastDate}`}
-            </span>
+            <span>{chartFooterStalenessText({ barCount, lastDate })}</span>
             {/* Level-type color key — maps chart overlay colors to what they mean. */}
             <div className="hidden sm:flex items-center gap-2 text-[10px] opacity-70">
               <LegendDot color="#ffb84d" label="last price" />
