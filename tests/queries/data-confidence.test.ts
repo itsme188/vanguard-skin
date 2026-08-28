@@ -170,6 +170,45 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
     expect(taxable!.source).toBe("statement");
   });
 
+  // Regression pin (qa:header-dataconfidence--holdings-date-is-oldest-
+  // position-not-latest): the drawer rendered ONLY the stalest position's
+  // date under the account name ("Vanguard Taxable: 2026-04-30"), which
+  // contradicted Data Health's own "Last holdings 2026-08-27" for the same
+  // account — the scoring dimension is deliberately stalest-first (weakest
+  // link), but the drawer must show BOTH figures, clearly labeled, so they
+  // can never read as disagreeing.
+  it("per-account detail carries the account's LATEST holdings date alongside the stalest position's symbol+date; scoring stays stalest-based", () => {
+    const fresh = insertSecurity(db, "FRESH");
+    const stale = insertSecurity(db, "STALE");
+    insertHolding(db, 1, fresh, 10, "2026-08-27", "canonical:hold:TAX:FRESH:2026-08-27");
+    insertHolding(db, 1, stale, 5, "2026-04-30", "canonical:hold:TAX:STALE:2026-04-30");
+
+    const now = new Date("2026-08-28T16:00:00Z");
+    const { holdingsRecency } = getDataConfidence(db, now);
+    const taxable = holdingsRecency.perAccount.find((a) => a.name === "Vanguard Taxable");
+    expect(taxable).toBeDefined();
+
+    // Scoring is UNCHANGED: still based on the stalest position (weakest link).
+    expect(taxable!.date).toBe("2026-04-30");
+    expect(taxable!.daysOld).toBe(120); // 2026-04-30 -> 2026-08-28
+    expect(taxable!.stalestSymbol).toBe("STALE");
+    expect(holdingsRecency.score).toBe(0); // 90+ days stale bucket, same as before this fix
+
+    // NEW: the account's latest (freshest) holdings date is carried too.
+    expect(taxable!.latestDate).toBe("2026-08-27");
+
+    // The composed detail string names both dates + the stalest symbol, so
+    // it can never disagree with Data Health's "Last holdings 2026-08-27".
+    expect(holdingsRecency.detail).toContain(
+      "Vanguard Taxable: latest: 2026-08-27 · stalest position: STALE 2026-04-30"
+    );
+
+    // The prescribed action names the position to refresh, not just "import
+    // a statement".
+    expect(holdingsRecency.guidance).toContain("STALE");
+    expect(holdingsRecency.guidance).toContain("Vanguard Taxable");
+  });
+
   it("valuation coverage sums per-account latest rows; an account with holdings but no valuation row counts as unpriced", () => {
     const aapl = insertSecurity(db, "AAPL");
     const msft = insertSecurity(db, "MSFT");

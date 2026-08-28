@@ -41,9 +41,20 @@ export interface PriceFreshnessScore extends DimensionScore {
 export interface HoldingsRecencyScore extends DimensionScore {
   perAccount: {
     name: string;
+    /** The STALEST held position's as_of_date — this is what the score is
+     *  based on (weakest-link), NOT the account's most recent import. */
     date: string | null;
     source: string | null;
     daysOld: number | null;
+    /** The stalest position's symbol, so the drawer/guidance can name
+     *  exactly what to refresh instead of just an age. */
+    stalestSymbol: string | null;
+    /** The account's LATEST held-position as_of_date (via
+     *  latestHoldingsPredicate, keyBy:"account") — shown alongside `date` so
+     *  this drawer can never contradict Data Health's "Last holdings"
+     *  figure (qa:header-dataconfidence--holdings-date-is-oldest-position-
+     *  not-latest). Scoring is unchanged — still based on `date`/`daysOld`. */
+    latestDate: string | null;
   }[];
 }
 
@@ -260,18 +271,39 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   // tie between two equally-stale positions deterministically keeps the
   // first row encountered.
   const holdingRows = db.prepare(`
-    SELECT h.account_id, h.as_of_date, h.source_key
+    SELECT h.account_id, h.as_of_date, h.source_key, s.symbol
     FROM holdings h
+    JOIN securities s ON s.id = h.security_id
     WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
     ORDER BY h.account_id, h.as_of_date ASC
-  `).all() as { account_id: number; as_of_date: string; source_key: string | null }[];
+  `).all() as { account_id: number; as_of_date: string; source_key: string | null; symbol: string }[];
 
-  const worstByAccount = new Map<number, { as_of_date: string; source_key: string | null }>();
+  const worstByAccount = new Map<
+    number,
+    { as_of_date: string; source_key: string | null; symbol: string }
+  >();
   for (const r of holdingRows) {
     if (!worstByAccount.has(r.account_id)) {
-      worstByAccount.set(r.account_id, { as_of_date: r.as_of_date, source_key: r.source_key });
+      worstByAccount.set(r.account_id, {
+        as_of_date: r.as_of_date,
+        source_key: r.source_key,
+        symbol: r.symbol,
+      });
     }
   }
+
+  // The account's LATEST (freshest) held-position as_of_date — via the same
+  // shared predicate (keyBy:"account" = per-account max, never a hand-rolled
+  // global MAX(as_of_date)) — so the drawer can quote a "latest" figure that
+  // agrees with Data Health's "Last holdings <date>" instead of only ever
+  // showing the stalest position's date under the account name.
+  const latestRows = db.prepare(`
+    SELECT h.account_id, MAX(h.as_of_date) AS latest_date
+    FROM holdings h
+    WHERE ${latestHoldingsPredicate({ keyBy: "account", includeShorts: true })}
+    GROUP BY h.account_id
+  `).all() as { account_id: number; latest_date: string }[];
+  const latestByAccount = new Map(latestRows.map(r => [r.account_id, r.latest_date]));
 
   const perAccount = accounts.map(a => {
     const worst = worstByAccount.get(a.id);
@@ -283,6 +315,8 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
       date: worst?.as_of_date ?? null,
       source: worst ? classifyHoldingSourceKey(worst.source_key) : null,
       daysOld,
+      stalestSymbol: worst?.symbol ?? null,
+      latestDate: latestByAccount.get(a.id) ?? null,
     };
   });
 
@@ -308,17 +342,35 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   else if (worstDays <= 90) score = 20;
   else score = 0;
 
+  // "<account>: latest: <date> · stalest position: SYM <date>" — both dates
+  // named and labeled so this line can never read as contradicting Data
+  // Health's own "Last holdings <date>" (which quotes the LATEST date, not
+  // the stalest position this dimension scores on).
   const parts = perAccount
     .filter(a => a.date)
-    .map(a => `${a.name}: ${a.daysOld != null && a.daysOld <= 1 ? "today" : a.date}`);
+    .map(a => {
+      const stalestDateLabel = a.daysOld != null && a.daysOld <= 1 ? "today" : a.date;
+      const stalestLabel = a.stalestSymbol ? `${a.stalestSymbol} ${stalestDateLabel}` : stalestDateLabel;
+      return `${a.name}: latest: ${a.latestDate ?? "—"} · stalest position: ${stalestLabel}`;
+    });
   const detail = parts.join(", ") || "No holdings imported";
+
+  // Names the specific stalest position so the prescribed action is
+  // actionable ("refresh X"), not just a generic "import a statement".
+  const worstAccount = perAccount.reduce<(typeof perAccount)[number] | null>(
+    (worst, a) => ((a.daysOld ?? -1) > (worst?.daysOld ?? -1) ? a : worst),
+    null
+  );
+  const worstPositionLabel = worstAccount?.stalestSymbol
+    ? `${worstAccount.stalestSymbol} in ${worstAccount.name}`
+    : (worstAccount?.name ?? "the affected account");
 
   const guidance =
     score >= 80
       ? "Holdings are current across accounts."
       : score >= 50
-        ? "Import the latest monthly statement (Vanguard) or sync TWS (IBKR)."
-        : "Holdings are weeks+ old — import latest statements or reconnect TWS now.";
+        ? `Refresh ${worstPositionLabel} — import the latest monthly statement (Vanguard) or sync TWS (IBKR).`
+        : `Holdings are weeks+ old — refresh ${worstPositionLabel} now (import latest statements or reconnect TWS).`;
 
   return { score, detail, whyMatters, guidance, perAccount };
 }
