@@ -238,6 +238,25 @@ async function tick(ms: number): Promise<void> {
   await flushIo();
 }
 
+/**
+ * The watcher's loop is a chained `while (live) { await pollOnce(); await
+ * sleep(CADENCE_MS) }` (lib/print-watch/watcher.ts, "the loop" — never
+ * setInterval), so the SECOND poll's `setTimeout` is only registered once the
+ * FIRST poll's async work — including real fs I/O for an acquired document —
+ * has actually resolved. A single `tick(11_000)` bets that the first poll's
+ * I/O finishes inside one `flushIo` window; under a loaded machine it
+ * sometimes doesn't, `advanceTimersByTimeAsync` returns having advanced no
+ * registered timer, and only one poll ever lands. Step the cadence forward
+ * one window at a time instead, re-checking after each step, so the
+ * outstanding I/O gets as many `flushIo` passes as it needs (bounded, so a
+ * genuine regression still fails instead of hanging).
+ */
+async function tickUntilSecondPoll(pollCount: () => number, maxSteps = 10): Promise<void> {
+  for (let i = 0; i < maxSteps && pollCount() <= 1; i += 1) {
+    await tick(11_000);
+  }
+}
+
 beforeEach(() => {
   // setImmediate stays REAL so fs promises can be flushed between fake ticks.
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
@@ -928,7 +947,7 @@ describe("source seen-sets", () => {
     };
 
     ensurePrintWatch(db);
-    await tick(11_000);
+    await tickUntilSecondPoll(() => fake.djSeen.length);
 
     // The poll that DELIVERED the release saw an empty set...
     expect(fake.djSeen[0]).toEqual([]);
@@ -1018,7 +1037,7 @@ describe("source seen-sets", () => {
     };
 
     ensurePrintWatch(db);
-    await tick(11_000);
+    await tickUntilSecondPoll(() => fake.edgarSeen.length);
 
     // The poll that DELIVERED the filing saw an empty set — the adapter never
     // marks what it returns...
