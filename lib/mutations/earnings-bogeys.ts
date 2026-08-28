@@ -94,6 +94,21 @@ function hasAnyContent(input: UpsertBogeyInput): boolean {
 }
 
 /**
+ * A blank/whitespace-only string is "no content" — same as null. Without
+ * this, a parser or caller that hands back `notes: ""` counts as content
+ * (2026-08-28: `!= null` treats "" as present), so `hasAnyContent` advances
+ * provenance on a genuinely-empty re-scan, and — because OVERWRITE_SQL binds
+ * the raw value and PRESERVE_SQL's COALESCE only skips actual NULLs — the
+ * blank string gets written over a real stored value instead of preserving
+ * it. Trim to null BEFORE both the has-content check and the SQL bind.
+ */
+function normalizeTextContent(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return value ?? null;
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+/**
  * Idempotent insert keyed on (event_id, source, source_label). Re-upload of
  * the same source PDF for the same event refreshes the numbers in place
  * rather than creating a duplicate row. uploaded_at bumps on conflict so
@@ -110,40 +125,50 @@ export function upsertBogey(
   db: Database.Database,
   input: UpsertBogeyInput,
 ): { id: number; created: boolean; skipped?: boolean } {
+  // Normalize the textual content columns (blank/whitespace-only -> null)
+  // BEFORE the has-content check and the SQL bind, for both modes — a blank
+  // string is "no content" and must never reach COALESCE or the row.
+  const normalized: UpsertBogeyInput = {
+    ...input,
+    segment_breakdown_json: normalizeTextContent(input.segment_breakdown_json),
+    guidance_notes: normalizeTextContent(input.guidance_notes),
+    notes: normalizeTextContent(input.notes),
+  };
+
   const before = db
     .prepare(
       `SELECT id FROM earnings_bogeys
         WHERE event_id = ? AND source = ? AND COALESCE(source_label, '') = COALESCE(?, '')`,
     )
     .get(
-      input.event_id,
-      input.source,
-      input.source_label ?? null,
+      normalized.event_id,
+      normalized.source,
+      normalized.source_label ?? null,
     ) as { id: number } | undefined;
 
-  if (input.preserveExisting && before && !hasAnyContent(input)) {
+  if (normalized.preserveExisting && before && !hasAnyContent(normalized)) {
     return { id: before.id, created: false, skipped: true };
   }
 
-  const stmt = db.prepare(input.preserveExisting ? PRESERVE_SQL : OVERWRITE_SQL);
+  const stmt = db.prepare(normalized.preserveExisting ? PRESERVE_SQL : OVERWRITE_SQL);
 
   const result = stmt.run(
-    input.event_id,
-    input.source,
-    input.source_label ?? null,
-    input.source_url ?? null,
-    input.raw_pdf_r2_key ?? null,
-    input.research_document_id ?? null,
-    input.research_article_id ?? null,
-    input.eps_consensus ?? null,
-    input.eps_whisper ?? null,
-    input.revenue_consensus_usd ?? null,
-    input.revenue_whisper_usd ?? null,
-    input.expected_move_pct ?? null,
-    input.segment_breakdown_json ?? null,
-    input.guidance_notes ?? null,
-    input.notes ?? null,
-    input.ai_extraction_model ?? null,
+    normalized.event_id,
+    normalized.source,
+    normalized.source_label ?? null,
+    normalized.source_url ?? null,
+    normalized.raw_pdf_r2_key ?? null,
+    normalized.research_document_id ?? null,
+    normalized.research_article_id ?? null,
+    normalized.eps_consensus ?? null,
+    normalized.eps_whisper ?? null,
+    normalized.revenue_consensus_usd ?? null,
+    normalized.revenue_whisper_usd ?? null,
+    normalized.expected_move_pct ?? null,
+    normalized.segment_breakdown_json ?? null,
+    normalized.guidance_notes ?? null,
+    normalized.notes ?? null,
+    normalized.ai_extraction_model ?? null,
   );
 
   if (before) {
