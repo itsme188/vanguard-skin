@@ -18,6 +18,18 @@ function makeDb(): Database.Database {
      VALUES
        (1, 'manual', 'earnings', '2026-04-28', 'GLW Earnings', 'manual:GLW:2026-04-28:earnings', datetime('now'), '2026-04-27')`,
   ).run();
+  // Two newsletter issues from one source — the FK targets for
+  // research_article_id in the preserve-mode tests below.
+  db.prepare(
+    `INSERT OR IGNORE INTO research_sources (id, name) VALUES (1, 'TMT Breakout')`,
+  ).run();
+  const article = db.prepare(
+    `INSERT INTO research_articles
+       (id, source_id, received_at, subject, sender, raw_text)
+     VALUES (?, 1, ?, ?, 'author@example.com', 'body')`,
+  );
+  article.run(1, '2026-04-26 08:00:00', 'Buyside Bogeys #1');
+  article.run(2, '2026-04-27 08:00:00', 'Buyside Bogeys #2');
   return db;
 }
 
@@ -118,5 +130,178 @@ describe("upsertBogey", () => {
     const ok = deleteBogey(db, r.id);
     expect(ok).toBe(true);
     expect(getBogeysForEvent(db, 1)).toHaveLength(0);
+  });
+});
+
+/**
+ * Regression suite for the 2026-08-26 live loss (NVDA + CRWD bogeys erased):
+ * a later issue of the same newsletter that mentioned the ticker WITHOUT
+ * numbers overwrote the earlier issue's extracted consensus with nulls,
+ * because the conflict clause copies `excluded.*` unconditionally.
+ */
+describe("upsertBogey preserveExisting (newsletter re-scan)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = makeDb();
+  });
+
+  it("preserve mode: a null-numbered re-scan keeps the existing numbers, updates notes + provenance", () => {
+    const first = upsertBogey(db, {
+      event_id: 1,
+      source: "newsletter",
+      source_label: "TMT Breakout",
+      research_article_id: 1,
+      eps_consensus: 1.02,
+      revenue_consensus_usd: 46_000_000_000,
+      notes: "buyside leaning above the guide",
+      ai_extraction_model: "claude-old",
+    });
+    db.prepare(
+      "UPDATE earnings_bogeys SET uploaded_at = '2026-01-01 00:00:00' WHERE id = ?",
+    ).run(first.id);
+
+    const second = upsertBogey(db, {
+      event_id: 1,
+      source: "newsletter",
+      source_label: "TMT Breakout",
+      research_article_id: 2,
+      eps_consensus: null,
+      eps_whisper: null,
+      revenue_consensus_usd: null,
+      revenue_whisper_usd: null,
+      expected_move_pct: null,
+      notes: "mentioned again, no numbers this issue",
+      ai_extraction_model: "claude-new",
+      preserveExisting: true,
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.created).toBe(false);
+    expect(second.skipped).toBeFalsy();
+
+    const rows = getBogeysForEvent(db, 1);
+    expect(rows).toHaveLength(1);
+    // Content: nulls never overwrite, non-nulls do.
+    expect(rows[0].eps_consensus).toBe(1.02);
+    expect(rows[0].revenue_consensus_usd).toBe(46_000_000_000);
+    expect(rows[0].notes).toBe("mentioned again, no numbers this issue");
+    // Provenance: always takes the incoming values.
+    expect(rows[0].research_article_id).toBe(2);
+    expect(rows[0].ai_extraction_model).toBe("claude-new");
+    expect(rows[0].uploaded_at).not.toBe("2026-01-01 00:00:00");
+  });
+
+  it("preserve mode: a re-scan with no content at all writes nothing (skipped), so provenance can't go stale-fresh", () => {
+    const first = upsertBogey(db, {
+      event_id: 1,
+      source: "newsletter",
+      source_label: "TMT Breakout",
+      research_article_id: 1,
+      eps_consensus: 1.02,
+      revenue_consensus_usd: 46_000_000_000,
+      notes: "buyside leaning above the guide",
+      ai_extraction_model: "claude-old",
+    });
+    db.prepare(
+      "UPDATE earnings_bogeys SET uploaded_at = '2026-01-01 00:00:00' WHERE id = ?",
+    ).run(first.id);
+    const before = db
+      .prepare("SELECT * FROM earnings_bogeys WHERE id = ?")
+      .get(first.id) as Record<string, unknown>;
+
+    const second = upsertBogey(db, {
+      event_id: 1,
+      source: "newsletter",
+      source_label: "TMT Breakout",
+      research_article_id: 2,
+      eps_consensus: null,
+      eps_whisper: null,
+      revenue_consensus_usd: null,
+      revenue_whisper_usd: null,
+      expected_move_pct: null,
+      segment_breakdown_json: null,
+      guidance_notes: null,
+      notes: null,
+      ai_extraction_model: "claude-new",
+      preserveExisting: true,
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.created).toBe(false);
+    expect(second.skipped).toBe(true);
+
+    const after = db
+      .prepare("SELECT * FROM earnings_bogeys WHERE id = ?")
+      .get(first.id) as Record<string, unknown>;
+    expect(after).toEqual(before);
+    expect(after.uploaded_at).toBe("2026-01-01 00:00:00");
+    expect(after.research_article_id).toBe(1);
+    expect(after.ai_extraction_model).toBe("claude-old");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM earnings_bogeys").get()).toEqual({ n: 1 });
+  });
+
+  it("overwrite mode (the default) still CLEARS fields with nulls — manual + PDF corrections depend on it", () => {
+    const first = upsertBogey(db, {
+      event_id: 1,
+      source: "manual",
+      source_label: "user note",
+      eps_consensus: 0.46,
+      eps_whisper: 0.5,
+      revenue_consensus_usd: 3_850_000_000,
+      guidance_notes: "FY26 guide $19.5-20.0B",
+      notes: "typed in a hurry",
+    });
+
+    const second = upsertBogey(db, {
+      event_id: 1,
+      source: "manual",
+      source_label: "user note",
+      eps_consensus: 0.48,
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.skipped).toBeFalsy();
+
+    const rows = getBogeysForEvent(db, 1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].eps_consensus).toBe(0.48);
+    expect(rows[0].eps_whisper).toBeNull();
+    expect(rows[0].revenue_consensus_usd).toBeNull();
+    expect(rows[0].guidance_notes).toBeNull();
+    expect(rows[0].notes).toBeNull();
+  });
+
+  it("preserve mode with no existing row inserts normally", () => {
+    const r = upsertBogey(db, {
+      event_id: 1,
+      source: "newsletter",
+      source_label: "TMT Breakout",
+      research_article_id: 1,
+      eps_consensus: 1.02,
+      guidance_notes: "FQ3 revenue guide $108.5B+ vs street $105B",
+      preserveExisting: true,
+    });
+
+    expect(r.created).toBe(true);
+    expect(r.skipped).toBeFalsy();
+
+    const rows = getBogeysForEvent(db, 1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].eps_consensus).toBe(1.02);
+    expect(rows[0].guidance_notes).toBe("FQ3 revenue guide $108.5B+ vs street $105B");
+  });
+
+  it("preserve mode with no existing row and no content at all still inserts (nothing to protect)", () => {
+    const r = upsertBogey(db, {
+      event_id: 1,
+      source: "newsletter",
+      source_label: "TMT Breakout",
+      research_article_id: 1,
+      preserveExisting: true,
+    });
+
+    expect(r.created).toBe(true);
+    expect(r.skipped).toBeFalsy();
+    expect(getBogeysForEvent(db, 1)).toHaveLength(1);
   });
 });

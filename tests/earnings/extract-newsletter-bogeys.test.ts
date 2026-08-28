@@ -163,6 +163,46 @@ describe("buildExtractionPrompt", () => {
     expect(prompt.length).toBeLessThan(35_000);
     expect(prompt).toContain("[truncated]");
   });
+
+  it("documents guidance_notes in the response schema", () => {
+    const prompt = buildExtractionPrompt(
+      {
+        id: 1,
+        source_name: "TMT Breakout",
+        subject: "Buyside Bogeys",
+        received_at: "2026-08-26 08:00:00",
+        raw_text: "NVDA reports Wednesday.",
+      },
+      [{ symbol: "NVDA", event_id: 5, event_date: "2026-08-27" }]
+    );
+    expect(prompt).toContain("guidance_notes");
+  });
+
+  it("teaches the TMTB 'Buyside Bogeys' layout in a KNOWN FORMATS block", () => {
+    const prompt = buildExtractionPrompt(
+      {
+        id: 1,
+        source_name: "TMT Breakout",
+        subject: "Buyside Bogeys",
+        received_at: "2026-08-26 08:00:00",
+        raw_text: "NVDA reports Wednesday.",
+      },
+      [{ symbol: "NVDA", event_id: 5, event_date: "2026-08-27" }]
+    );
+    expect(prompt).toContain("KNOWN FORMATS");
+    // The leading figure is the buyside/whisper number...
+    expect(prompt).toMatch(/leading figure/i);
+    // ..."Street @" is the sell-side consensus...
+    expect(prompt).toMatch(/Street @/);
+    // ..."guide of" is company guidance, never a bogey number...
+    expect(prompt).toMatch(/guide of/);
+    // ...ARR/cRPO/margins are commentary, not revenue_*/eps_*...
+    expect(prompt).toMatch(/ARR/);
+    expect(prompt).toMatch(/cRPO/);
+    // ...and the "4:15p / 5:00p" header is print time / call time.
+    expect(prompt).toMatch(/print time/i);
+    expect(prompt).toMatch(/call time/i);
+  });
 });
 
 describe("parseExtractionResponse", () => {
@@ -186,6 +226,7 @@ describe("parseExtractionResponse", () => {
       revenue_consensus: 40_200_000_000,
       revenue_whisper: null,
       expected_move_pct: null,
+      guidance_notes: null,
       notes: "street leaning higher",
     });
   });
@@ -214,6 +255,41 @@ describe("parseExtractionResponse", () => {
     const raw = JSON.stringify([{ symbol: "TSM", revenue_consensus: "$40.2B" }]);
     const out = parseExtractionResponse(raw);
     expect(out[0].revenue_consensus).toBe(40_200_000_000);
+  });
+
+  it("parses a TMTB 'Buyside Bogeys' NVDA block: whisper, consensus and guidance_notes", () => {
+    // Shaped like the model's output for:
+    //   NVDA - 4:15p / 5:00p
+    //   FQ2 Revenue: ~$95B vs. guide of $91B and Street @ $92.4B
+    //   FQ3 Revenue Guide: $108.5B+ vs. Street @ $105B
+    const raw = JSON.stringify([
+      {
+        symbol: "NVDA",
+        eps_consensus: null,
+        eps_whisper: null,
+        revenue_consensus: 92_400_000_000,
+        revenue_whisper: 95_000_000_000,
+        expected_move_pct: null,
+        guidance_notes: "FQ2 company guide $91B; buyside FQ3 revenue guide bogey $108.5B+ vs Street $105B",
+        notes: "buyside positioned above the guide",
+      },
+    ]);
+    const out = parseExtractionResponse(raw);
+    expect(out).toHaveLength(1);
+    expect(out[0].revenue_whisper).toBe(95_000_000_000);
+    expect(out[0].revenue_consensus).toBe(92_400_000_000);
+    expect(out[0].guidance_notes).toContain("108.5B");
+    expect(out[0].notes).toBe("buyside positioned above the guide");
+  });
+
+  it("defaults guidance_notes to null when the model omits it", () => {
+    const out = parseExtractionResponse(JSON.stringify([{ symbol: "NVDA", eps_consensus: 1.02 }]));
+    expect(out[0].guidance_notes).toBeNull();
+  });
+
+  it("ignores a non-string guidance_notes", () => {
+    const out = parseExtractionResponse(JSON.stringify([{ symbol: "NVDA", guidance_notes: 42 }]));
+    expect(out[0].guidance_notes).toBeNull();
   });
 });
 
@@ -482,6 +558,79 @@ describe("extractBogeysFromNewArticles", () => {
     const rows = db.prepare("SELECT * FROM earnings_bogeys").all() as Array<Record<string, unknown>>;
     expect(rows).toHaveLength(1); // upsert-in-place, not a duplicate
     expect(rows[0].eps_consensus).toBe(4.1); // latest write wins
+  });
+
+  it("6c. [regression 2026-08-26 NVDA/CRWD] a later numberless issue from the same source does NOT erase the earlier numbers", async () => {
+    const db = makeDb();
+    addSecurity(db, 1, "NVDA");
+    holdSecurity(db, 1);
+    addEvent(db, { id: 1, symbol: "NVDA", daysFromToday: 3 });
+    addArticle(db, {
+      subject: "Buyside Bogeys #1",
+      rawText: "NVDA reports Wednesday, numbers inside. " + "filler ".repeat(50),
+      receivedAt: daysAgoTimestamp(2),
+    });
+
+    generateTextMock.mockResolvedValueOnce({
+      text: JSON.stringify([
+        {
+          symbol: "NVDA",
+          eps_consensus: 1.02,
+          revenue_consensus: 92_400_000_000,
+          revenue_whisper: 95_000_000_000,
+          guidance_notes: "FQ3 revenue guide $108.5B+ vs Street $105B",
+          notes: "buyside above the guide",
+        },
+      ]),
+    });
+    await extractBogeysFromNewArticles(db, { batchSize: 10 });
+
+    // A second issue mentions NVDA but carries no numbers for it.
+    addArticle(db, {
+      subject: "Buyside Bogeys #2",
+      rawText: "NVDA still the whole market's tell this week. " + "filler ".repeat(50),
+      receivedAt: daysAgoTimestamp(1),
+    });
+    generateTextMock.mockResolvedValueOnce({
+      text: JSON.stringify([{ symbol: "NVDA", notes: "no fresh numbers, just positioning chatter" }]),
+    });
+    await extractBogeysFromNewArticles(db, { batchSize: 10 });
+
+    const rows = db.prepare("SELECT * FROM earnings_bogeys").all() as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].eps_consensus).toBe(1.02);
+    expect(rows[0].revenue_consensus_usd).toBe(92_400_000_000);
+    expect(rows[0].revenue_whisper_usd).toBe(95_000_000_000);
+    expect(rows[0].guidance_notes).toBe("FQ3 revenue guide $108.5B+ vs Street $105B");
+    expect(rows[0].notes).toBe("no fresh numbers, just positioning chatter");
+  });
+
+  it("6d. [regression 2026-08-26] an extraction with nothing at all for the symbol leaves the stored row untouched", async () => {
+    const db = makeDb();
+    addSecurity(db, 1, "NVDA");
+    holdSecurity(db, 1);
+    addEvent(db, { id: 1, symbol: "NVDA", daysFromToday: 3 });
+    addArticle(db, {
+      subject: "Buyside Bogeys #1",
+      rawText: "NVDA reports Wednesday, numbers inside. " + "filler ".repeat(50),
+      receivedAt: daysAgoTimestamp(2),
+    });
+    generateTextMock.mockResolvedValueOnce({
+      text: JSON.stringify([{ symbol: "NVDA", eps_consensus: 1.02, notes: "buyside above the guide" }]),
+    });
+    await extractBogeysFromNewArticles(db, { batchSize: 10 });
+    db.prepare("UPDATE earnings_bogeys SET uploaded_at = '2026-01-01 00:00:00'").run();
+    const before = db.prepare("SELECT * FROM earnings_bogeys").all();
+
+    addArticle(db, {
+      subject: "Buyside Bogeys #2",
+      rawText: "NVDA still the whole market's tell this week. " + "filler ".repeat(50),
+      receivedAt: daysAgoTimestamp(1),
+    });
+    generateTextMock.mockResolvedValueOnce({ text: JSON.stringify([{ symbol: "NVDA" }]) });
+    await extractBogeysFromNewArticles(db, { batchSize: 10 });
+
+    expect(db.prepare("SELECT * FROM earnings_bogeys").all()).toEqual(before);
   });
 
   it("7. a non-held reporter mention never triggers an AI call for that symbol set", async () => {
