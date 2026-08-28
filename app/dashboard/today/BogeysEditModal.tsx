@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { coercePercent, formatLargeUSD, parseLargeUSD } from "@/lib/format";
 import { parseActualsInput } from "@/lib/earnings/actuals-validation";
 import { formatBogeyFields, formatBogeyFieldLine } from "@/lib/earnings/format-bogey-fields";
+import { PrivateText } from "@/lib/privacy/components";
 import type { EarningsBogey } from "@/lib/queries/earnings-bogeys";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -409,7 +410,9 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                         without this the row renders as nothing but a source
                         label and looks like empty data. */}
                     {b.notes && (
-                      <p className="text-[12px] text-ink-dim mt-1 whitespace-pre-wrap">{b.notes}</p>
+                      <p className="text-[12px] text-ink-dim mt-1 whitespace-pre-wrap">
+                        <PrivateText>{b.notes}</PrivateText>
+                      </p>
                     )}
                   </li>
                 ))}
