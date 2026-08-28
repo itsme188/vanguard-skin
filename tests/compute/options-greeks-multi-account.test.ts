@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { computePortfolioGreeks } from "@/lib/compute/options-greeks";
@@ -38,6 +38,10 @@ describe("computePortfolioGreeks — multi-account data freshness", () => {
     // Account 3 (IBKR): MSFT option, as_of today (TWS auto-refresh)
     db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
                 VALUES (3, 101, ?, 1, 'tws-3')`).run(today);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("surfaces options from BOTH accounts despite different as_of_dates", () => {
@@ -122,5 +126,19 @@ describe("computePortfolioGreeks — multi-account data freshness", () => {
     expect(pos).toBeDefined();
     expect(pos!.greeks).not.toBeNull();
     expect(pos!.greeks!.iv).toBeNull(); // IV is null since solver failed
+  });
+
+  it("reports 0 DTE in late-evening ET after the previous UTC derivation has advanced to tomorrow", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-28T23:30:00-04:00"));
+    expect(new Date().toISOString().slice(0, 10)).toBe("2026-08-29");
+
+    db.prepare(`INSERT INTO securities (id, symbol, security_type, option_type, strike_price, expiration_date, underlying_symbol, multiplier)
+                VALUES (500, 'AAPL  260828C00200000', 'Option', 'CALL', 200, '2026-08-28', 'AAPL', 100)`).run();
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
+                VALUES (1, 500, '2026-08-28', 1, 'et-today')`).run();
+
+    const result = computePortfolioGreeks(db);
+    expect(result.positions.find((position) => position.securityId === 500)?.daysToExpiry).toBe(0);
   });
 });

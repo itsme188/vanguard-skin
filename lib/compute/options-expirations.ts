@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { todayET } from "@/lib/calendar/date-utils";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 export interface ExpiringOption {
@@ -17,13 +18,14 @@ export interface ExpiringOption {
 export interface GetExpiringOptionsOptions {
   accountIds?: number[];
   daysWindow?: number; // default 90
+  today?: string;
 }
 
 export function getExpiringOptions(
   db: Database.Database,
   options?: GetExpiringOptionsOptions
 ): ExpiringOption[] {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = options?.today ?? todayET();
   const daysWindow = options?.daysWindow ?? 90;
 
   const accountFilter = options?.accountIds?.length

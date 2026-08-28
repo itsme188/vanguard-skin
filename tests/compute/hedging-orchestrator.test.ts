@@ -59,9 +59,7 @@ function seedPrice(securityId: number, price: number, date = "2026-07-01") {
 }
 
 function daysFromNow(days: number): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
+  return addDays(todayET(), days);
 }
 
 describe("computeDefenseAnalysis", () => {
