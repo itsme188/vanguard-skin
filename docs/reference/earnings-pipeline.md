@@ -68,6 +68,11 @@ Finnhub `epsActual`/`revenueActual` drift both directions post-release, so `fetc
   files together**).
 - `scripts/audit-finnhub-actuals.ts` is read-only (`--fix` is a last resort, **NOT** a cron).
 - Use `POST /api/earnings/actuals` for overrides; `earnings_bogeys` is the user-curated alternative.
+- A manually-stamped actual (`calendar_events.manual_actuals_at`) bypasses the plausibility guard on
+  **outbound** roads too, not just reads — reporter-recap send gate, recap headline table, recap
+  prompt, and the Worker read-through builder all route through `actualsAreImplausible`
+  (`lib/earnings/actuals-display.ts`); the Worker's `evaluateRecapContent` carries the same bypass,
+  parity-pinned. `plausibility.ts` itself stays byte-parity (`23a8028`).
 
 ---
 
@@ -174,6 +179,22 @@ intent is stated by every caller, never defaulted.
 `parseSourceKey` routes `manual:SYM:DATE:earnings` down the Finnhub road — **BOTH sides** since
 2026-08-02 evening: the Worker mirror `workers/cron/src/enrich-actuals.ts` carries the same regex, so
 corrected rows capture actuals while the Mac sleeps.
+
+### Slot floors, not the stored release time (`154eb81`, 2026-08-28)
+
+`lib/earnings/earnings-slot.ts::deriveEarningsSlot` is the single BMO/AMC slot resolver — literal
+marker, HH:MM side-of-noon, `TAS` → unknown, `raw_json.entry.hour`; `release_time` is consulted only
+when a caller opts in. It now backs the wire-time cascade, this verification pass, and the pre-print
+floor.
+
+`checkPrePrintFloor(event, now, {useSlotFloor})` floors an accept-gate check at AMC 16:00 ET / BMO
+07:00 ET on the event date instead of the stored `release_time` — which for AMC names is often the
+CALL time, not the print (the CRWD/RBRK trap). `saveManualActuals` opts in (print-watch accept
+inherits it through its transactional call); reporter-recap keeps `release_time`-basis behavior.
+
+A `web_verified` AMC time ≥ 17:00 ET is a suspect call time: never stored going forward, and an
+existing one is ignored by the resolution cascade (`isSuspectAmcCallTime`; user-authored rows are
+exempt).
 
 ### Stamps and sync interaction
 
@@ -459,6 +480,11 @@ Worker reads snapshot **v10 `readThroughPairs`**, ≤v9 degrades to held/watchli
 read-through-only push flags its title "— read-through". Muting the REPORTER symbol still mutes its
 push.
 
+`compactRevenuePair` (`0fb693c`, 2026-08-28) renders an actual/expected revenue pair on ONE shared
+scale at the smallest precision (1–3dp) that keeps the two numbers visually distinct, plus a signed
+one-decimal surprise percent — fixes a beat collapsing to equal strings at a fixed 1dp (CRWD 8/26:
+$1,470.9M vs $1,468.8M both rendered "1.5B"). Worker mirror is byte-parity, parity-tested.
+
 ---
 
 ## 13. Print-sheet pipeline
@@ -532,6 +558,19 @@ table **code-built directly from `earnings_bogeys` rows — zero AI involvement*
 - The prompt tells the model **NOT** to re-list this table and to cite the source label in-cell
   whenever it uses a sheet value.
 
+### Newsletter re-scans preserve, never erase (`cb4e9ef`, 2026-08-28)
+
+`upsertBogey`'s conflict clause used to overwrite every field with the incoming extraction, nulls
+included — a later newsletter issue mentioning the ticker with no numbers erased the earlier issue's
+consensus in place. `preserveExisting` (newsletter re-scans only) COALESCEs content columns
+(`excluded` over stored); provenance columns still take the incoming write, and advance only when the
+scan actually contributed content. Manual entry and PDF upload keep full overwrite so a correction can
+still clear a field.
+
+The extraction prompt carries a KNOWN FORMATS block for the TMTB "Buyside Bogeys" shape (leading
+figure = buyside whisper, "Street @" = consensus, "guide of" → `guidance_notes`); `guidance_notes` now
+flows prompt → parser → upsert.
+
 ---
 
 ## 15. Notes-are-sacred across all earnings print roads
@@ -555,7 +594,9 @@ Live print-time surface: when an armed earnings event prints, the bogey sheet fi
 
 **Extraction.** Documents pass a doc-to-event gate (symbol/issuer + fiscal-period token; rejects stored as `rejected:<reason>`), then parse per representation (`lib/print-watch/representations.ts` + `extract.ts`, Sonnet tier via the registry) into candidates reconciled ACROSS the print's whole document set (`reconcile.ts`): agreed requires ALL non-flash value candidates unanimous plus one independent pair; any disagreement → conflict; single document → "single source — verify"; flash never greens. Bogey expected-values live in a parallel structure that never reaches a prompt.
 
-**Promote path.** Accepting on the panel + promote writes the complete headline pair (adj-preferred EPS + revenue, atomically, inside one transaction) through `saveManualActuals` — stamping `manual_actuals_at`, opening the recap window exactly like a hand-typed override; the clear-actuals control undoes it. Partial promotion is refused (mergeFinnhubActual would hybridize with stale fields).
+**Promote path.** Accepting on the panel + promote writes the complete headline pair (adj-preferred EPS + revenue, atomically, inside one transaction) through `saveManualActuals` — stamping `manual_actuals_at`, opening the recap window exactly like a hand-typed override; the clear-actuals control undoes it. Partial promotion is refused (mergeFinnhubActual would hybridize with stale fields). Accept floors on the AMC/BMO slot window rather than the stored `release_time` (§5 slot floors) — a stored call-time no longer blocks an on-time accept.
+
+**Per-line accept (`3ca73f3`, 2026-08-28).** Every line in `agreed`/`single_source`/`flash`/pending-with-value state carries an always-visible accept control (`canAcceptLine`); un-accepting a line parks it back on `pending` with its value intact instead of losing it, and the accept route now admits that pending-with-value shape (`isAcceptableLine`) — un-accept is no longer a one-way door until the next watcher poll.
 
 **Storage.** Documents/bytes under `resolveDbDir()/print-watch/<printId>/`; tables `print_watch_prints/documents/lines` (migration 085). Evidence survives calendar-event correction (no cascade).
 
