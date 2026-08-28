@@ -30,7 +30,7 @@ describe("print-push-message parity (Worker mirror of lib/alerts/print-push-mess
       reactionJson: null,
     });
     expect(out.title).toBe("TER reported");
-    expect(out.message).toBe("EPS 1.42 vs 1.35 est · Rev 775.2M vs 762.0M");
+    expect(out.message).toBe("EPS 1.42 vs 1.35 est · Rev 775.2M vs 762.0M (+1.7%)");
   });
 
   it("appends the reaction when present", () => {
@@ -46,7 +46,7 @@ describe("print-push-message parity (Worker mirror of lib/alerts/print-push-mess
       }),
     });
     expect(out.message).toBe(
-      "EPS 1.42 vs 1.35 est · Rev 775.2M vs 762.0M · TER +4.12% vs SPY +0.41% (T+2h)",
+      "EPS 1.42 vs 1.35 est · Rev 775.2M vs 762.0M (+1.7%) · TER +4.12% vs SPY +0.41% (T+2h)",
     );
   });
 
@@ -58,5 +58,69 @@ describe("print-push-message parity (Worker mirror of lib/alerts/print-push-mess
       reactionJson: null,
     });
     expect(out.message).toBe("EPS -0.24 vs 0.10 est");
+  });
+
+  // ── Revenue-pair precision fix (2026-08-28, CRWD 1dp-collapse bug) ───────
+
+  it("CRWD regression: fixed 1dp collapse erased the beat — now distinguishes at 3dp with a surprise%", () => {
+    const out = composePrintPushMessage({
+      symbol: "CRWD",
+      actualValue: "Rev 1,470,900,000",
+      consensusValue: "Rev 1,468,800,000",
+      reactionJson: null,
+    });
+    expect(out.message).toBe("Rev 1.471B vs 1.469B (+0.1%)");
+  });
+
+  it("1dp already distinguishes the pair → stays at 1dp", () => {
+    const out = composePrintPushMessage({
+      symbol: "MEGA",
+      actualValue: "Rev 46,500,000,000",
+      consensusValue: "Rev 46,000,000,000",
+      reactionJson: null,
+    });
+    expect(out.message).toBe("Rev 46.5B vs 46.0B (+1.1%)");
+  });
+
+  it("cross-scale pair: larger value's magnitude sets the shared scale for both", () => {
+    const out = composePrintPushMessage({
+      symbol: "XYZ",
+      actualValue: "Rev 1,020,000,000",
+      consensusValue: "Rev 995,000,000",
+      reactionJson: null,
+    });
+    expect(out.message).toBe("Rev 1.02B vs 0.99B (+2.5%)");
+  });
+
+  it("negative surprise (actual below consensus)", () => {
+    const out = composePrintPushMessage({
+      symbol: "MISS",
+      actualValue: "Rev 90,000,000",
+      consensusValue: "Rev 100,000,000",
+      reactionJson: null,
+    });
+    expect(out.message).toBe("Rev 90.0M vs 100.0M (-10.0%)");
+  });
+
+  it("consensus of 0 → no surprise fragment, and never Infinity/NaN in the message", () => {
+    const out = composePrintPushMessage({
+      symbol: "ZERO",
+      actualValue: "Rev 100,000",
+      consensusValue: "Rev 0",
+      reactionJson: null,
+    });
+    expect(out.message).toBe("Rev 100.0K vs 0.0K");
+    expect(out.message).not.toContain("Infinity");
+    expect(out.message).not.toContain("NaN");
+  });
+
+  it("genuinely equal values render equal strings with a +0.0% surprise", () => {
+    const out = composePrintPushMessage({
+      symbol: "FLAT",
+      actualValue: "Rev 500,000,000",
+      consensusValue: "Rev 500,000,000",
+      reactionJson: null,
+    });
+    expect(out.message).toBe("Rev 500.000M vs 500.000M (+0.0%)");
   });
 });

@@ -41,6 +41,67 @@ function pct(v: number): string {
   return v >= 0 ? `+${s}%` : `${s}%`;
 }
 
+/**
+ * Renders an actual/expected revenue pair on ONE shared scale (chosen from
+ * the larger magnitude) at the smallest decimal precision (1-3dp) that
+ * still keeps the two rendered numbers visually distinct — fixes the CRWD
+ * 2026-08-26 bug where compactRevenue's fixed 1dp rounded both the
+ * 1,468,800,000 estimate and the 1,470,900,000 actual to "1.5B", erasing
+ * the beat from the push. If the pair is STILL equal at 3dp, they
+ * genuinely are equal at that precision and render equal — no
+ * special-casing needed, the loop below lands there on its own.
+ *
+ * `surprise` uses a DEDICATED 1-decimal formatter (never the 2-decimal
+ * `pct()` used for the T+2h reaction line — that's a different number with
+ * a different job). It is null only when expected is 0 or non-finite,
+ * i.e. when a percent-of-expected can't be expressed at all. An EXACT
+ * match (actual === expected) still yields "+0.0%" — that's a real,
+ * well-defined (zero) surprise, not an unrepresentable one.
+ */
+function compactRevenuePair(
+  actual: number,
+  expected: number,
+): { actual: string; expected: string; surprise: string | null } {
+  const larger = Math.max(Math.abs(actual), Math.abs(expected));
+  let scale = 1;
+  let suffix = "";
+  if (larger >= 1e9) {
+    scale = 1e9;
+    suffix = "B";
+  } else if (larger >= 1e6) {
+    scale = 1e6;
+    suffix = "M";
+  } else if (larger >= 1e3) {
+    scale = 1e3;
+    suffix = "K";
+  }
+
+  let actualStr: string;
+  let expectedStr: string;
+  if (suffix === "") {
+    actualStr = actual.toFixed(0);
+    expectedStr = expected.toFixed(0);
+  } else {
+    const a = actual / scale;
+    const e = expected / scale;
+    actualStr = `${a.toFixed(1)}${suffix}`;
+    expectedStr = `${e.toFixed(1)}${suffix}`;
+    for (let d = 2; d <= 3 && actualStr === expectedStr; d++) {
+      actualStr = `${a.toFixed(d)}${suffix}`;
+      expectedStr = `${e.toFixed(d)}${suffix}`;
+    }
+  }
+
+  let surprise: string | null = null;
+  if (Number.isFinite(actual) && Number.isFinite(expected) && expected !== 0) {
+    const v = ((actual - expected) / expected) * 100;
+    const s = v.toFixed(1);
+    surprise = v >= 0 ? `+${s}%` : `${s}%`;
+  }
+
+  return { actual: actualStr, expected: expectedStr, surprise };
+}
+
 // Read-through lines (#13): target symbols + the user's own curated
 // hypothesis text — the ONLY non-public content the push may carry (never
 // quantities or values). Capped + truncated so a push stays glanceable.
@@ -73,11 +134,12 @@ export function composePrintPushMessage(input: {
     parts.push(cons.eps != null ? `EPS ${act.eps} vs ${cons.eps} est` : `EPS ${act.eps}`);
   }
   if (act.revenueRaw != null) {
-    parts.push(
-      cons.revenueRaw != null
-        ? `Rev ${compactRevenue(act.revenueRaw)} vs ${compactRevenue(cons.revenueRaw)}`
-        : `Rev ${compactRevenue(act.revenueRaw)}`,
-    );
+    if (cons.revenueRaw != null) {
+      const p = compactRevenuePair(act.revenueRaw, cons.revenueRaw);
+      parts.push(`Rev ${p.actual} vs ${p.expected}${p.surprise ? ` (${p.surprise})` : ""}`);
+    } else {
+      parts.push(`Rev ${compactRevenue(act.revenueRaw)}`);
+    }
   }
 
   if (input.reactionJson) {
