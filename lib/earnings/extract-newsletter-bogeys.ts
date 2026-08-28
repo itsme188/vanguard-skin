@@ -59,6 +59,8 @@ export interface ExtractedBogey {
   revenue_consensus: number | null;
   revenue_whisper: number | null;
   expected_move_pct: number | null;
+  /** Forward-looking company/author guidance prose — never a bogey number. */
+  guidance_notes: string | null;
   notes: string | null;
 }
 
@@ -106,8 +108,29 @@ export function buildExtractionPrompt(
     `  "revenue_consensus": number | null,   // RAW dollars, not abbreviated (e.g. 40200000000, not "$40.2B")`,
     `  "revenue_whisper": number | null,     // RAW dollars`,
     `  "expected_move_pct": number | null,   // expected/implied earnings move the author states, as an absolute percent ("±6%" -> 6)`,
+    `  "guidance_notes": string | null,      // forward-looking guidance/metrics as SHORT text: company guides, next-quarter guide bogeys, ARR/cRPO/margin bogeys. Never a bogey number field. <300 chars`,
     `  "notes": string | null                // brief paraphrase of the author's reasoning, <200 chars`,
     `}`,
+    ``,
+    `KNOWN FORMATS:`,
+    `Some authors (e.g. TMT Breakout's "Buyside Bogeys") post a compact per-ticker block:`,
+    ``,
+    `  CRWD — 4:10p / 5:00p`,
+    `  FQ2 NN ARR: ~$305M+ vs. guide of $285M`,
+    `  FQ3 ARR: slightly ahead vs. Street @ $6.122B (NN ARR $331M)`,
+    `  FY'27 Rev Guide: 23% vs street at 21-22%`,
+    `  NVDA — 4:15p / 5:00p`,
+    `  FQ2 Revenue: ~$95B vs. guide of $91B and Street @ $92.4B`,
+    `  FQ3 Revenue Guide: $108.5B+ vs. Street @ $105B`,
+    ``,
+    `Read that shape as follows:`,
+    `- The LEADING figure on a line is the buyside/whisper number — "FQ2 Revenue: ~$95B" means revenue_whisper = 95000000000.`,
+    `- "Street @" / "street at" / "consensus" is the SELL-SIDE consensus — "Street @ $92.4B" means revenue_consensus = 92400000000.`,
+    `- "guide of" / "prior guide" / "the guide" is COMPANY guidance, never a bogey number. Summarize it in guidance_notes.`,
+    `- ONLY the CURRENT-quarter Revenue and EPS lines map to revenue_*/eps_*. The current quarter is the one that is about to be reported.`,
+    `- NEXT-quarter guide lines ("FQ3 Revenue Guide", "FY'27 Rev Guide") and non-GAAP metric lines (ARR, NN ARR, cRPO, RPO, GM, gross/operating margin) go into guidance_notes as short text — they are forward-looking, not this quarter's print. Other commentary goes in notes.`,
+    `- A header like "4:15p / 5:00p" is the print time / call time. Ignore it — it is not a number to extract.`,
+    `- A block like this usually carries SEVERAL numbers per ticker. Capture every one of them: the whisper, the consensus, and each guide/metric line in guidance_notes.`,
     ``,
     `RULES:`,
     `- Only extract for the listed upcoming reporters.`,
@@ -150,6 +173,8 @@ export function parseExtractionResponse(raw: string): ExtractedBogey[] {
       revenue_consensus: coerceNumber(obj.revenue_consensus),
       revenue_whisper: coerceNumber(obj.revenue_whisper),
       expected_move_pct: coercePercent(obj.expected_move_pct),
+      guidance_notes:
+        typeof obj.guidance_notes === "string" ? obj.guidance_notes.slice(0, 500) : null,
       notes: typeof obj.notes === "string" ? obj.notes.slice(0, 500) : null,
     });
   }
@@ -366,8 +391,15 @@ export async function extractBogeysFromArticle(
       revenue_consensus_usd: bogey.revenue_consensus,
       revenue_whisper_usd: bogey.revenue_whisper,
       expected_move_pct: bogey.expected_move_pct,
+      guidance_notes: bogey.guidance_notes,
       notes: bogey.notes,
       ai_extraction_model: modelId,
+      // Newsletter rows key on (event, 'newsletter', source_name), so a LATER
+      // issue of the same newsletter conflicts with the earlier one. Live
+      // 2026-08-26: an issue that mentioned NVDA/CRWD without numbers erased
+      // the earlier issue's extracted consensus. Never let a re-scan's null
+      // overwrite a stored number.
+      preserveExisting: true,
     });
     bogeysStored++;
     eventsMatched++;

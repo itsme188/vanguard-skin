@@ -19,6 +19,78 @@ export interface UpsertBogeyInput {
   guidance_notes?: string | null;
   notes?: string | null;
   ai_extraction_model?: string | null;
+  /**
+   * Null-preserving conflict semantics for RE-SCAN callers (newsletter
+   * extraction). Default false = full overwrite, which manual + PDF-upload
+   * callers rely on to CLEAR a field the user removed.
+   *
+   * With true, an incoming NULL never overwrites a stored content value
+   * (COALESCE(excluded.col, earnings_bogeys.col)). Live 2026-08-26: a later
+   * issue of the same newsletter mentioned NVDA/CRWD without numbers and the
+   * unconditional `excluded.*` copy erased the earlier issue's extracted
+   * consensus, because newsletter rows key on (event, 'newsletter', source).
+   */
+  preserveExisting?: boolean;
+}
+
+/**
+ * Content columns — the extracted numbers + prose. In preserve mode these
+ * are COALESCEd so a null incoming value keeps what is already stored.
+ * Everything else (source_url, raw_pdf_r2_key, research_document_id,
+ * research_article_id, uploaded_at, ai_extraction_model) is PROVENANCE and
+ * always takes the incoming value: it describes the write, not the numbers.
+ */
+const CONTENT_COLUMNS = [
+  "eps_consensus",
+  "eps_whisper",
+  "revenue_consensus_usd",
+  "revenue_whisper_usd",
+  "expected_move_pct",
+  "segment_breakdown_json",
+  "guidance_notes",
+  "notes",
+] as const;
+
+const INSERT_SQL = `INSERT INTO earnings_bogeys (
+       event_id, source, source_label, source_url, raw_pdf_r2_key,
+       research_document_id, research_article_id, eps_consensus, eps_whisper,
+       revenue_consensus_usd, revenue_whisper_usd, expected_move_pct,
+       segment_breakdown_json, guidance_notes, notes, uploaded_at,
+       ai_extraction_model
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`;
+
+const PROVENANCE_UPDATE_SQL = `       source_url = excluded.source_url,
+       raw_pdf_r2_key = excluded.raw_pdf_r2_key,
+       research_document_id = excluded.research_document_id,
+       research_article_id = excluded.research_article_id`;
+
+/** Full overwrite — historical behaviour, byte-identical to pre-2026-08-28. */
+const OVERWRITE_SQL = `${INSERT_SQL}
+     ON CONFLICT(event_id, source, source_label) DO UPDATE SET
+${PROVENANCE_UPDATE_SQL},
+       eps_consensus = excluded.eps_consensus,
+       eps_whisper = excluded.eps_whisper,
+       revenue_consensus_usd = excluded.revenue_consensus_usd,
+       revenue_whisper_usd = excluded.revenue_whisper_usd,
+       expected_move_pct = excluded.expected_move_pct,
+       segment_breakdown_json = excluded.segment_breakdown_json,
+       guidance_notes = excluded.guidance_notes,
+       notes = excluded.notes,
+       uploaded_at = datetime('now'),
+       ai_extraction_model = excluded.ai_extraction_model`;
+
+/** Null-preserving — a re-scan that found nothing keeps the stored numbers. */
+const PRESERVE_SQL = `${INSERT_SQL}
+     ON CONFLICT(event_id, source, source_label) DO UPDATE SET
+${PROVENANCE_UPDATE_SQL},
+${CONTENT_COLUMNS.map(
+  (c) => `       ${c} = COALESCE(excluded.${c}, earnings_bogeys.${c})`,
+).join(",\n")},
+       uploaded_at = datetime('now'),
+       ai_extraction_model = excluded.ai_extraction_model`;
+
+function hasAnyContent(input: UpsertBogeyInput): boolean {
+  return CONTENT_COLUMNS.some((c) => input[c] != null);
 }
 
 /**
@@ -26,11 +98,18 @@ export interface UpsertBogeyInput {
  * the same source PDF for the same event refreshes the numbers in place
  * rather than creating a duplicate row. uploaded_at bumps on conflict so
  * "most recent first" ordering still reflects the latest upload.
+ *
+ * `preserveExisting: true` (newsletter re-scan only) makes an incoming NULL
+ * content value a no-op instead of an erase, and — when the incoming input
+ * carries NO content at all and a row already exists — skips the write
+ * entirely. Bumping uploaded_at / research_article_id there would make the
+ * preserved OLD numbers look freshly sourced to the newest-first readers in
+ * lib/queries/earnings-bogeys.ts.
  */
 export function upsertBogey(
   db: Database.Database,
   input: UpsertBogeyInput,
-): { id: number; created: boolean } {
+): { id: number; created: boolean; skipped?: boolean } {
   const before = db
     .prepare(
       `SELECT id FROM earnings_bogeys
@@ -42,30 +121,11 @@ export function upsertBogey(
       input.source_label ?? null,
     ) as { id: number } | undefined;
 
-  const stmt = db.prepare(
-    `INSERT INTO earnings_bogeys (
-       event_id, source, source_label, source_url, raw_pdf_r2_key,
-       research_document_id, research_article_id, eps_consensus, eps_whisper,
-       revenue_consensus_usd, revenue_whisper_usd, expected_move_pct,
-       segment_breakdown_json, guidance_notes, notes, uploaded_at,
-       ai_extraction_model
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
-     ON CONFLICT(event_id, source, source_label) DO UPDATE SET
-       source_url = excluded.source_url,
-       raw_pdf_r2_key = excluded.raw_pdf_r2_key,
-       research_document_id = excluded.research_document_id,
-       research_article_id = excluded.research_article_id,
-       eps_consensus = excluded.eps_consensus,
-       eps_whisper = excluded.eps_whisper,
-       revenue_consensus_usd = excluded.revenue_consensus_usd,
-       revenue_whisper_usd = excluded.revenue_whisper_usd,
-       expected_move_pct = excluded.expected_move_pct,
-       segment_breakdown_json = excluded.segment_breakdown_json,
-       guidance_notes = excluded.guidance_notes,
-       notes = excluded.notes,
-       uploaded_at = datetime('now'),
-       ai_extraction_model = excluded.ai_extraction_model`,
-  );
+  if (input.preserveExisting && before && !hasAnyContent(input)) {
+    return { id: before.id, created: false, skipped: true };
+  }
+
+  const stmt = db.prepare(input.preserveExisting ? PRESERVE_SQL : OVERWRITE_SQL);
 
   const result = stmt.run(
     input.event_id,
