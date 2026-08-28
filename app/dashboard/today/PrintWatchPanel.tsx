@@ -398,6 +398,38 @@ export function needsReverify(line: PrintWatchLine): boolean {
   return false;
 }
 
+/**
+ * True when the panel should offer a per-line "accept" control on this line.
+ *
+ * The recovery path out of an un-accept (QA finding
+ * `today-print-watch--unaccept-one-way-no-per-line-accept-promote-falls-to-gaap`):
+ * `clearLineAccepted` parks an un-accepted line on 'pending' while LEAVING
+ * its verified number in place, and the only other control that accepts
+ * anything is the bulk "Accept all agreed" button — which takes 'agreed'
+ * lines only. So an accidental un-accept was one-way until the watcher
+ * happened to reconcile that line again (and once the watch window closes it
+ * never does): the desk could watch a correct, still-rendered number sit on
+ * the sheet with no way to put it back, while Promote silently fell through
+ * to the GAAP basis.
+ *
+ * The rule mirrors the accept route's own state guard, minus the states that
+ * have no number to accept:
+ *   - 'accepted'  → false — the unaccept control renders instead.
+ *   - 'conflict'  → false — needs resolving, and the route refuses it too.
+ *   - value null  → false — nothing to lock in: a bare 'pending' line still
+ *                   waiting for a source, or a 'blank' ("not disclosed")
+ *                   line, which the route does allow but which carries no
+ *                   figure this control could promise.
+ *   - otherwise   → true — 'agreed', plus the eyes-on overrides the route
+ *                   already permits ('single_source', 'flash') and the
+ *                   un-accepted 'pending'-with-a-value case above.
+ */
+export function canAcceptLine(line: PrintWatchLine): boolean {
+  if (line.state === "accepted") return false;
+  if (line.state === "conflict") return false;
+  return line.value !== null;
+}
+
 // ── state chip presentation (text + icon — never color alone) ─────────
 
 interface ChipPresentation {
@@ -682,6 +714,7 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
   const [acceptingAll, setAcceptingAll] = useState(false);
   const [promoting, setPromoting] = useState(false);
   const [unacceptingId, setUnacceptingId] = useState<string | null>(null);
+  const [acceptingId, setAcceptingId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -769,6 +802,25 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
       if (ok) setActionNote("Promoted to the earnings recap scoreboard.");
     } finally {
       setPromoting(false);
+    }
+  }
+
+  /** Per-line accept — the recovery path out of an un-accept, and the only
+   *  way to accept a line the bulk button skips by design (single_source /
+   *  flash, which the route allows as eyes-on overrides). Same route, same
+   *  body shape and the same 409 handling as the bulk path: an accept-only
+   *  request never reaches saveManualActuals, so pre_print/superseded cannot
+   *  fire on it today — it goes through `postAccept` anyway so a single
+   *  future change keeps every accept path honest. */
+  async function acceptLine(metricId: string) {
+    if (acceptingId) return;
+    setAcceptingId(metricId);
+    setActionNote(null);
+    try {
+      const ok = await postAccept({ accept: [metricId] });
+      if (ok) setActionNote(`Accepted ${metricId} — verify it against the release before promoting.`);
+    } finally {
+      setAcceptingId(null);
     }
   }
 
@@ -918,6 +970,9 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
                 documents={print.documents}
                 onUnaccept={() => unaccept(line.metric_id)}
                 unaccepting={unacceptingId === line.metric_id}
+                onAccept={() => acceptLine(line.metric_id)}
+                accepting={acceptingId === line.metric_id}
+                noEventId={noEventId}
               />
             ))}
           </tbody>
@@ -963,11 +1018,17 @@ function LineRow({
   documents,
   onUnaccept,
   unaccepting,
+  onAccept,
+  accepting,
+  noEventId,
 }: {
   line: PrintWatchLine;
   documents: Record<number, string> | undefined;
   onUnaccept: () => void;
   unaccepting: boolean;
+  onAccept: () => void;
+  accepting: boolean;
+  noEventId: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const presentation = presentState(line);
@@ -1024,7 +1085,10 @@ function LineRow({
             <span className="mr-1">{presentation.icon}</span>
             {presentation.text}
           </Chip>
-          {line.state === "accepted" && (
+          {/* Accept / unaccept are the SAME cell and mutually exclusive: one
+              small always-visible text button under the state chip (never a
+              hover-only affordance — that is a tap-trap on touch). */}
+          {line.state === "accepted" ? (
             <button
               type="button"
               onClick={onUnaccept}
@@ -1033,7 +1097,21 @@ function LineRow({
             >
               {unaccepting ? "Un-accepting…" : "unaccept"}
             </button>
-          )}
+          ) : canAcceptLine(line) ? (
+            <button
+              type="button"
+              onClick={onAccept}
+              disabled={accepting || noEventId}
+              title={
+                noEventId
+                  ? "This print has no event reference from the server — cannot accept."
+                  : `Lock in the reported ${line.contract.label} as verified`
+              }
+              className="relative block mt-1 text-[11px] text-ink-dim hover:text-up disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+            >
+              {accepting ? "Accepting…" : "accept"}
+            </button>
+          ) : null}
         </td>
         <td className="py-2 align-top">
           {(line.snippet || candidates.length > 0) && (

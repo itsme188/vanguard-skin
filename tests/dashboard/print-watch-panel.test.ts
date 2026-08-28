@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   ladderText,
   promoteSummary,
   needsReverify,
+  canAcceptLine,
   deltaPct,
   printStateLabel,
   printCountLabel,
@@ -607,5 +609,90 @@ describe("promoteSummary", () => {
     expect(summary?.basisLabel).toBe("gaap");
     expect(summary?.epsValue).toBe(-0.12);
     expect(summary?.label).toBe("Promote EPS+Rev (gaap -$0.12 · $4.34B)");
+  });
+});
+
+// ── per-line accept control ────────────────────────────────────────────
+//
+// QA finding `today-print-watch--unaccept-one-way-no-per-line-accept-promote-
+// falls-to-gaap`: the panel rendered an "unaccept" button on accepted lines
+// and NOTHING on the others, while the bulk button takes only 'agreed' lines
+// and clearLineAccepted parks an un-accepted line on 'pending' — so an
+// accidental un-accept was one-way until the watcher polled again, and
+// Promote silently fell back to the GAAP basis meanwhile.
+
+describe("canAcceptLine", () => {
+  it("is false for an already-accepted line — the unaccept control renders there instead", () => {
+    expect(canAcceptLine(makeLine({ state: "accepted", value: 0.91 }))).toBe(false);
+  });
+
+  it("is true for an un-accepted line that still holds its number (the recovery case)", () => {
+    // Exactly what clearLineAccepted leaves behind: state back to 'pending',
+    // value untouched. The reconciler never produces this shape.
+    expect(canAcceptLine(makeLine({ state: "pending", value: 0.91 }))).toBe(true);
+  });
+
+  it("is false for a pending line with no number yet — nothing to accept", () => {
+    expect(canAcceptLine(makeLine({ state: "pending", value: null }))).toBe(false);
+  });
+
+  it("is true for an agreed line", () => {
+    expect(canAcceptLine(makeLine({ state: "agreed", value: 0.91 }))).toBe(true);
+  });
+
+  it("is true for the eyes-on overrides the accept route already allows", () => {
+    expect(canAcceptLine(makeLine({ state: "single_source", value: 0.91 }))).toBe(true);
+    expect(canAcceptLine(makeLine({ state: "flash", value: 0.9 }))).toBe(true);
+  });
+
+  it("is false for a conflict line — resolve the rival numbers first", () => {
+    expect(canAcceptLine(makeLine({ state: "conflict", value: 0.91 }))).toBe(false);
+  });
+
+  it("is false for a blank 'not disclosed' line — no figure the control could promise", () => {
+    expect(canAcceptLine(makeLine({ state: "blank", value: null }))).toBe(false);
+  });
+
+  it("agrees with promoteSummary about the recovery round-trip", () => {
+    // An un-accepted adjusted-EPS line drops the pair out of promotable range
+    // (adj no longer accepted) — and is exactly the line canAcceptLine offers
+    // back, so the desk can restore the adj basis without a watcher poll.
+    const unaccepted = makeLine({ state: "pending", value: 0.91 });
+    const revenue = makeLine({
+      metric_id: "revenue_q",
+      state: "accepted",
+      value: 4_340_000_000,
+      contract: makeContract({ metric_id: "revenue_q", label: "Revenue", unit: "usd" }),
+    });
+    expect(promoteSummary([unaccepted, revenue])).toBeNull();
+    expect(canAcceptLine(unaccepted)).toBe(true);
+  });
+});
+
+describe("per-line accept control (panel source)", () => {
+  const src = readFileSync("app/dashboard/today/PrintWatchPanel.tsx", "utf8");
+
+  it("renders an accept button for non-accepted lines, not only unaccept for accepted ones", () => {
+    expect(src).toMatch(/canAcceptLine\(line\)/);
+    expect(src).toMatch(/accepting \? "Accepting…" : "accept"/);
+  });
+
+  it("posts the single metric through the same accept route the bulk path uses", () => {
+    expect(src).toMatch(/postAccept\(\{ accept: \[metricId\] \}\)/);
+    // ...and the bulk path it mirrors, so both still go through the one
+    // postAccept helper that owns the pre_print / superseded 409 handling.
+    expect(src).toMatch(/postAccept\(\{ accept: agreedIds \}\)/);
+    expect(src).toMatch(/apiFetch\("\/api\/print-watch\/accept"/);
+  });
+
+  it("reverts the in-flight state and explains a failure rather than swallowing it", () => {
+    expect(src).toMatch(/setAcceptingId\(null\)/);
+    expect(src).toMatch(/if \(!res\.ok \|\| !data\?\.success\)/);
+    expect(src).not.toMatch(/catch \{\s*\}/);
+  });
+
+  it("keeps the control visible rather than hover-only (touch tap-trap rule)", () => {
+    expect(src).not.toMatch(/opacity-0/);
+    expect(src).toMatch(/disabled=\{accepting \|\| noEventId\}/);
   });
 });

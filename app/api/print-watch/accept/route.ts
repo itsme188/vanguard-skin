@@ -57,6 +57,26 @@ class RequestRefused extends Error {
 // waiting, not overriding.
 const ACCEPTABLE_ACCEPT_STATES = new Set(["agreed", "flash", "single_source", "blank", "accepted"]);
 
+/**
+ * Whether this line may be accepted.
+ *
+ * The state set above, PLUS the one 'pending' case that is not "still waiting
+ * for a source": an un-accepted line. `clearLineAccepted` parks a line back on
+ * 'pending' but LEAVES its verified value in place, while the reconciler never
+ * produces a 'pending' line carrying a value (no value-candidate and no flash
+ * → value null, every path). So `pending && value !== null` means exactly one
+ * thing — this desk un-accepted the line and the watcher has not reconciled it
+ * since — and refusing it made an accidental un-accept unrecoverable until the
+ * next poll, which after the watch window closes never comes.
+ *
+ * A pending line with NO value is still refused, with the same message as
+ * before: there is nothing to accept yet.
+ */
+function isAcceptableLine(line: PrintWatchLine): boolean {
+  if (ACCEPTABLE_ACCEPT_STATES.has(line.state)) return true;
+  return line.state === "pending" && line.value !== null;
+}
+
 /** Same relative tolerance the reconciler and the panel's re-verify chip use —
  *  two readings of the same printed number must agree to 1e-6. */
 function valuesDiverge(accepted: number | null, fresh: number | null): boolean {
@@ -180,7 +200,7 @@ export async function POST(request: NextRequest) {
           error: `Unknown metric "${metricId}" — no line on this print's sheet.`,
         });
       }
-      if (!ACCEPTABLE_ACCEPT_STATES.has(line.state)) {
+      if (!isAcceptableLine(line)) {
         throw new RequestRefused(400, {
           success: false,
           error: `Cannot accept "${metricId}": its state is "${line.state}" — resolve the conflict, or wait for a source, before accepting.`,

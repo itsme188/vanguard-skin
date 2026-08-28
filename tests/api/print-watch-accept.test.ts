@@ -270,6 +270,53 @@ describe("POST /api/print-watch/accept", () => {
       },
     );
 
+    // QA finding `today-print-watch--unaccept-one-way-no-per-line-accept-
+    // promote-falls-to-gaap`: clearLineAccepted parks an un-accepted line on
+    // 'pending' but LEAVES its value, and the reconciler never produces a
+    // pending line with a value — so pending+value is "the desk un-accepted
+    // this", not "still waiting for a source", and refusing it made an
+    // accidental un-accept unrecoverable until the next watcher poll.
+    it("accepts a 'pending' line that still carries its number (un-accept recovery)", async () => {
+      const { eventId, printId } = seedPrint([makeLine("eps_adj_q", "pending", 1.42)]);
+
+      const { status, json } = await callAccept({ eventId, accept: ["eps_adj_q"] });
+
+      expect(status).toBe(200);
+      expect(json.success).toBe(true);
+      expect(json.data!.accepted).toEqual(["eps_adj_q"]);
+      expect(getSheet(hoisted.db, printId)[0].state).toBe("accepted");
+    });
+
+    it("round-trips unaccept then re-accept in the same watch window, without a reconcile in between", async () => {
+      const { eventId, printId } = seedPrint([makeLine("eps_adj_q", "agreed", 1.42)]);
+      markLineAccepted(hoisted.db, printId, "eps_adj_q");
+
+      const cleared = await callAccept({ eventId, unaccept: ["eps_adj_q"] });
+      expect(cleared.status).toBe(200);
+      const afterUnaccept = getSheet(hoisted.db, printId)[0];
+      expect(afterUnaccept.state).toBe("pending");
+      expect(afterUnaccept.value).toBe(1.42); // the number survives the unaccept
+
+      const restored = await callAccept({ eventId, accept: ["eps_adj_q"] });
+      expect(restored.status).toBe(200);
+      expect(getSheet(hoisted.db, printId)[0].state).toBe("accepted");
+    });
+
+    it("still refuses a 'pending' line with no number — nothing to accept yet", async () => {
+      const { eventId, printId } = seedPrint([
+        makeLine("eps_adj_q", "agreed", 1.42),
+        makeLine("revenue_q", "pending", null),
+      ]);
+
+      const { status, json } = await callAccept({ eventId, accept: ["eps_adj_q", "revenue_q"] });
+
+      expect(status).toBe(400);
+      expect(json.error).toMatch(/revenue_q/);
+      expect(json.error).toMatch(/pending/);
+      const sheet = getSheet(hoisted.db, printId);
+      expect(sheet.find((l) => l.metric_id === "eps_adj_q")!.state).toBe("agreed"); // rolled back
+    });
+
     it("re-accepting an already-accepted line is a harmless no-op, not an error", async () => {
       const { eventId, printId } = seedPrint([makeLine("eps_adj_q", "agreed", 1.42)]);
       markLineAccepted(hoisted.db, printId, "eps_adj_q");
