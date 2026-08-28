@@ -795,7 +795,16 @@ export function computeXirr(
     totalInvested,
     totalWithdrawn,
     currentValue,
-    cashFlowCount: portfolioCashFlows.length,
+    // COUNT ONLY fix (qa:analysis-performance--all-accounts-cash-flow-count-
+    // below-single-member): portfolioCashFlows.length undercounts because the
+    // aggregate flow loops NET same-dated flows across accounts (GROUP BY
+    // month_end_date / trade_date) before pushing a cash flow — "All
+    // accounts" reported fewer flows than a single member account. The XIRR
+    // MATH above is untouched (same-dated flows netting linearly doesn't
+    // change the solved rate) — only this displayed count now sums each
+    // account's own (unnetted) cashFlowCount, so it can never read as less
+    // activity than its largest member.
+    cashFlowCount: perAccount.reduce((sum, a) => sum + a.cashFlowCount, 0),
     perAccount,
   };
 }
