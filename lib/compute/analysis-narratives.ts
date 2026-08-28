@@ -24,7 +24,7 @@ import { computeFactorAnalysis } from "@/lib/compute/factors";
 import { computeRiskMetrics, computePositionRisk } from "@/lib/compute/risk";
 import { getFactorHeatmap } from "@/lib/queries/analysis";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
-import type { DefenseAnalysis, HedgeBadge } from "@/lib/compute/hedging";
+import type { DefenseAnalysis, HedgeBadge, PairClassification } from "@/lib/compute/hedging";
 
 // ─── Surface registry ────────────────────────────────────────────────────────
 
@@ -161,6 +161,41 @@ function roundToHalfPp(v: number | null | undefined): number | null {
   );
 }
 
+/**
+ * How many ranked exposures the Defense prompt actually sees
+ * (`buildSurfaceInputs`'s `topExposures: result.rankedExposures.slice(0, N)`).
+ * Shared by the prompt payload and the fingerprint so the two can never drift
+ * out of sync again — the whole point of this fix was that the fingerprint had
+ * silently stopped covering a field the prompt was reading.
+ */
+export const DEFENSE_TOP_EXPOSURES_N = 10;
+
+export interface DefenseFingerprintExposure {
+  /**
+   * Position within the prompt's ranked-exposure slice (0 = largest). WHICH
+   * identity holds a rank is itself narrative-relevant — the prompt is
+   * instructed to "name the largest UNPROTECTED exposures" — so unlike the
+   * other collections here, this array is intentionally NOT reordering-
+   * tolerant: two exposures swapping rank must change the hash even though
+   * canonicalJson sorts array members, because each element's own `rank`
+   * field travels with it into that sort.
+   */
+  rank: number;
+  underlying: string;
+  securityId: number | null;
+  /** hedged_long | hedged_short | amplified | unhedged | speculative — the
+   *  literal protected/unprotected verdict the prompt narrates per exposure. */
+  classification: PairClassification;
+  hasAmplifiers: boolean;
+  /** Same-name (tier-1) hedge coverage, decimal fraction rounded to 0.5pp. */
+  tier1CoveragePct: number | null;
+  /** Sector/index-put coverage backing this exposure, rounded to 0.5pp. */
+  sectorProxyCoveragePct: number | null;
+  /** Share of the long book, decimal fraction rounded to 0.5pp — a ratio,
+   *  not a dollar figure, so ordinary price noise doesn't move it. */
+  pctOfBook: number | null;
+}
+
 export interface DefenseFingerprintInputs {
   /** Every hedge in the book: position id + its badge set. */
   hedges: Array<{ id: number; badges: HedgeBadge[] }>;
@@ -170,6 +205,16 @@ export interface DefenseFingerprintInputs {
   sectorCoverage: Array<{ sector: string; coveragePct: number | null }>;
   /** Security ids of the standalone (unpaired) bets. */
   standaloneBetIds: number[];
+  /**
+   * The top DEFENSE_TOP_EXPOSURES_N ranked exposures, in prompt order, with
+   * identity + the protection fields the prompt narrates about each one.
+   * Codex's finding: the prompt names the largest unprotected exposures, but
+   * the fingerprint had no field covering them — selling/replacing a top
+   * exposure left every hashed field unchanged while the cached prose still
+   * named the exited position. Dollar exposure/notional are deliberately
+   * excluded (portfolio noise the model is forbidden from quoting anyway).
+   */
+  topExposures: DefenseFingerprintExposure[];
 }
 
 /**
@@ -211,11 +256,28 @@ export function buildDefenseFingerprintInputs(
     )
   ).sort((a, b) => a - b);
 
+  // Deliberately NOT sorted by identity — rank order IS the signal (see
+  // DefenseFingerprintExposure.rank doc). Sliced to the same N the prompt's
+  // `topExposures` uses, from the same rankedExposures the prompt reads.
+  const topExposures: DefenseFingerprintExposure[] = analysis.rankedExposures
+    .slice(0, DEFENSE_TOP_EXPOSURES_N)
+    .map((r, rank) => ({
+      rank,
+      underlying: r.underlying,
+      securityId: r.securityId,
+      classification: r.classification,
+      hasAmplifiers: r.hasAmplifiers,
+      tier1CoveragePct: roundToHalfPp(r.tier1CoveragePct),
+      sectorProxyCoveragePct: roundToHalfPp(r.sectorProxyCoveragePct),
+      pctOfBook: roundToHalfPp(r.pctOfBook),
+    }));
+
   return {
     hedges,
     protectionRatio: roundToHalfPp(analysis.summary.protectionRatio),
     sectorCoverage,
     standaloneBetIds,
+    topExposures,
   };
 }
 
@@ -301,7 +363,7 @@ function buildSurfaceInputs(
     const payload = {
       summary: result.summary,
       sectorCoverage: result.sectorCoverage,
-      topExposures: result.rankedExposures.slice(0, 10),
+      topExposures: result.rankedExposures.slice(0, DEFENSE_TOP_EXPOSURES_N),
       hedgeScores: result.hedgeScores.slice(0, 15),
       diagnostics: result.diagnostics,
     };
