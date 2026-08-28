@@ -14,7 +14,7 @@
  */
 
 import type Database from "better-sqlite3";
-import { upsertBeta, deleteBeta } from "@/lib/mutations/security-betas";
+import { upsertBeta, deleteBeta, type UpsertBetaInput } from "@/lib/mutations/security-betas";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { calendarDaysBetween } from "@/lib/calendar/date-utils";
 import { isSplitSignatureReturnPair } from "@/lib/compute/risk";
@@ -50,6 +50,17 @@ export interface InvalidatedBeta {
   pairs: number;
   reason: BetaConfidenceReason;
 }
+
+/**
+ * A decided-but-not-yet-applied write for one security. The per-security
+ * loop only DECIDES (pure computation, no db writes); every decision is
+ * applied in a single transaction afterward so the table flips atomically —
+ * a crash mid-run must never leave early securities refreshed/deleted while
+ * later stale noise-signed rows remain published (2026-08-28 fix).
+ */
+type BetaDecision =
+  | { securityId: number; symbol: string; action: "upsert"; payload: UpsertBetaInput }
+  | { securityId: number; symbol: string; action: "delete" };
 
 export interface RefreshResult {
   computed: number;
@@ -255,7 +266,13 @@ export async function refreshVanguardBetas(
 
   // If no SPY data at all, every security will be skipped — that's correct.
 
-  // ── 4. Per-security beta computation ─────────────────────────────
+  // ── 4. Per-security beta computation — DECIDE ONLY, no writes yet ──
+  //    Every branch below chooses a decision (or an error) but does not
+  //    touch the database. Writes are applied together in step 5, inside a
+  //    single transaction, so a mid-run crash can't strand a half-refreshed
+  //    table (early securities updated, later stale rows left published).
+  const decisions: BetaDecision[] = [];
+
   for (const sec of securities) {
     try {
       // Load recent prices for this security
@@ -271,7 +288,7 @@ export async function refreshVanguardBetas(
       if (priceRows.length < MIN_DATA_POINTS) {
         // No evidence to regress against — an older cached beta describes a
         // window we can no longer reproduce, so it must stop publishing.
-        deleteBeta(db, sec.id, LOOKBACK_DAYS);
+        decisions.push({ securityId: sec.id, symbol: sec.symbol, action: "delete" });
         result.skipped.push(sec.symbol);
         continue;
       }
@@ -286,7 +303,7 @@ export async function refreshVanguardBetas(
       if (regression === null) {
         // No regression is defined (fewer than 2 aligned pairs, or a
         // zero-variance benchmark) — same fail-closed treatment.
-        deleteBeta(db, sec.id, LOOKBACK_DAYS);
+        decisions.push({ securityId: sec.id, symbol: sec.symbol, action: "delete" });
         result.skipped.push(sec.symbol);
         continue;
       }
@@ -299,7 +316,7 @@ export async function refreshVanguardBetas(
       });
 
       if (!verdict.ok) {
-        deleteBeta(db, sec.id, LOOKBACK_DAYS);
+        decisions.push({ securityId: sec.id, symbol: sec.symbol, action: "delete" });
         result.invalidated.push({
           symbol: sec.symbol,
           rSquared: regression.rSquared,
@@ -309,11 +326,16 @@ export async function refreshVanguardBetas(
         continue;
       }
 
-      upsertBeta(db, {
+      decisions.push({
         securityId: sec.id,
-        lookbackDays: LOOKBACK_DAYS,
-        beta: regression.beta,
-        residualStd: regression.residualStdPct,
+        symbol: sec.symbol,
+        action: "upsert",
+        payload: {
+          securityId: sec.id,
+          lookbackDays: LOOKBACK_DAYS,
+          beta: regression.beta,
+          residualStd: regression.residualStdPct,
+        },
       });
       result.computed++;
     } catch (err) {
@@ -322,6 +344,24 @@ export async function refreshVanguardBetas(
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  // ── 5. Apply every decision atomically — the table flips in one commit ──
+  //    If any single write throws, better-sqlite3 rolls back the WHOLE
+  //    transaction: securities decided earlier in this run are NOT left
+  //    half-applied, and this function's promise rejects so the caller
+  //    knows the refresh did not land.
+  if (decisions.length > 0) {
+    const applyDecisions = db.transaction((decs: BetaDecision[]) => {
+      for (const dec of decs) {
+        if (dec.action === "upsert") {
+          upsertBeta(db, dec.payload);
+        } else {
+          deleteBeta(db, dec.securityId, LOOKBACK_DAYS);
+        }
+      }
+    });
+    applyDecisions(decisions);
   }
 
   return result;
