@@ -127,6 +127,13 @@ from an API.
 → silent skip. Applies to any "last X done" timestamp two paths can update mid-process. Test:
 `tests/digest/send-digest-race.test.ts`.
 
+**Research sync lock (`4788ce0`, `c63c1a5`, 2026-08-28)**: the three research-sync entry points
+(manual button, background auto-refresh, 90-min cron) all run the same select-then-spend AI stages —
+an overlapping run pays for and reprocesses the identical unprocessed batch. `lib/research/sync-lock.ts`
+is a module-scoped, token-gated lock (single Next process, no DB row needed); a second caller gets 409
+`already_running`. The `X-Sync-Runner` request header lets the route tell background from manual so the
+409 message names the right holder.
+
 ---
 
 ## B. Dates, times and time zones
@@ -137,6 +144,9 @@ from an API.
   `new Date().toISOString().slice(0,10)` for a user-facing today (that's UTC). Every outbound-email
   date string passes `timeZone:"America/New_York"` to `toLocaleDateString`; the Worker briefing
   `weekOf` uses `briefingWeekOf()`. **The Mac travels, the Worker is UTC.**
+- **Option expiry "today" is ET-anchored** (`2b2d310`, 2026-08-28): `computePortfolioGreeks` /
+  `getExpiringOptions` take an injectable `today` defaulting to `todayET()` — never derive it from
+  `toISOString()`, which reads a day early overnight and shows runway as -1d.
 
 ---
 
@@ -613,6 +623,12 @@ sectors by weight (single-bucket fallback otherwise). Currently wired ONLY into 
 (`loadCurrentHoldings`); reuse it for any sector-allocation surface rather than dumping ETFs in one
 bucket.
 
+**Cash-deploy equity-sleeve gaps (`8e837e2`, 2026-08-28)**: an all-equity benchmark has no Fixed
+Income / Cash bucket, so those buckets are excluded from the current-weight side of the gap table and
+the remaining sectors renormalize (the per-name construction cap still targets the full projected
+total) — otherwise the table showed an uncloseable "Fixed Income +N pp" gap. Blended/heuristic
+benchmarks are unchanged.
+
 ### fund_category vocabulary normalization (single source)
 
 `lib/securities/normalize-fund-category.ts::normalizeFundCategory(raw)` maps bare-sector synonyms
@@ -752,6 +768,15 @@ Any other call site that assembles Claude `text` blocks from a `web_search`-enab
 join with `""` — **`lib/securities/verify-sector-tags.ts` and `lib/calendar/verify-earnings-dates.ts`
 share this exact `join("\n")` shape and have NOT been fixed** (masked so far by the existing JSON
 control-char retry in `lib/ai/extract-json.ts`, filed as a TODO item).
+
+### Narrative cache carries an input fingerprint (migration 087, `490c48f`, 2026-08-28)
+
+`analysis_narratives.input_fingerprint` is a hash of the SAME inputs the prompt was rendered from —
+Defense narrows to the materially narrative-relevant fields (hedge ids + badge states, protection
+ratio, sector coverage at 0.5pp, standalone-bet ids) so ordinary dollar/price drift doesn't cry wolf;
+other surfaces fingerprint the exact prompt input. `GET` is **read-only**: it compares and returns
+`drifted` (NULL = drifted) but never regenerates — regeneration only happens on the explicit `POST`
+(a paid model call must stay an explicit action, never a side effect of a cache read).
 
 ---
 
@@ -924,6 +949,15 @@ tie-break) in `workers/cron/src/fallback-evening.ts::evaluateAnomalies` (parity-
 
 `residual_std` on `security_betas` (**migration 056**, PERCENT); null/≤epsilon → a 3% floor only. The
 email + card render `Nσ` and show ALL flags.
+
+### Beta confidence gate (`627caf4`, 2026-08-28)
+
+A cached OLS beta only publishes when the regression can carry the claim: `betaConfidenceVerdict`
+requires r² ≥ 0.10 (`MIN_BETA_R_SQUARED`) and ≥ 30 aligned return pairs (`MIN_BETA_PAIRS`). Failing
+either **DELETES** the `security_betas` row rather than storing a marker — `beta` is NOT NULL, and
+every consumer (including the Worker snapshot) already treats a missing row as "no beta". Live finding:
+negative betas at r² ≈ 0 were statistically insignificant regressions, not bad prices — no data repair
+needed, just a publish gate. `refresh-vanguard-betas.ts` applies decisions in one transaction.
 
 ---
 
@@ -1423,6 +1457,14 @@ suggested S/R dotted 1px @50%; axis pills via `axisLabelColor` / `axisLabelTextC
 on `applyOptions`. Reactive state (e.g. `isPrivate`) needs an explicit `useEffect([state])` calling
 `chart.applyOptions(...)` + `volumeSeries.applyOptions(...)` + re-rendering markers. Precedent:
 `SecurityChart.tsx`.
+
+### Trade-grade cards group by assessment, never by leg (`8439737`, 2026-08-28)
+
+The review generator writes ONE grade per (symbol, exit_date); storage copies it onto every roundtrip
+leg sharing that key. `getTradeGradesBySecurity` groups legs sharing (review, exit_date, grade,
+assessment, prose) into one card — summed P&L, cost-weighted blended return, earliest entry, prose
+shown once — captioned "covers N roundtrips" when N > 1, instead of rendering each copy as its own
+card (a +1% winner had been carrying a copy of a −22% loss's "F" grade).
 
 ---
 

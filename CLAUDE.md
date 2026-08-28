@@ -121,6 +121,7 @@ Detail: `docs/reference/conventions-detail.md`, `docs/reference/earnings-pipelin
 - Never inline a model id — `lib/claude-models.ts` / `resolveFeatureModel(key)`.
 - Guard `generateObject` array fields with `Array.isArray` before `.slice/.map/.join`; sanitize model prose + array fields at storage AND render.
 - Parse LLM JSON via `extractJsonArray` + the C0-control-char retry. Join `web_search` text blocks with `""`, never `"\n"`.
+- Cached AI narratives (`analysis_narratives`) carry an `input_fingerprint`; GET is read-only and reports drift (NULL = drifted) — regeneration only via explicit POST, never on a cache read.
 
 **Privacy**
 - Portfolio-derived numbers use `<Money>`/`<Pct>`/`<Shares>`/`<Count>`; public market data uses plain `formatUSD`/`formatPercent`. Wrap AI prose in `<PrivateText>`.
@@ -140,6 +141,7 @@ Detail: `docs/reference/conventions-detail.md`, `docs/reference/earnings-pipelin
 - Corporate actions have TWO modes keyed on `corporate_actions.source` (2026-08-12, #37): `'import'` rows are REPLAY-mode — `computeTaxLots` applies them chronologically (end-of-day: split-date sells process first), history is never rewritten, rows leave only via import-batch undo (manual DELETE 403s); `'manual'` rows are legacy REWRITE-mode and are EXCLUDED from the replay (replaying them would double-apply). Never convert one mode to the other in place. CA-only imports must not trigger the holdings-snapshot sweeps (`parsed.holdings.length > 0` gate). The delta cross-check persists to `reconcile_delta` (NULL = clean, refreshed every recompute) and renders via `<Shares>`.
 - Preview-phase `earnings_emails`/`earnings_email_skips` rows only repoint to an event their send date could cover (`date(sent_at) >= date(event_date,'-1 day')`) — a preview is a promise about a specific print; dragging a stale one blocks `findEmailCandidates` forever. Recaps/bogeys repoint unconditionally.
 - Level approval routes through `approveLevelGuarded` (409 `would_fire_immediately` + `force`); the guard and the scanner share `checkLevelTriggerState` — never fork the trigger-condition logic.
+- Earnings accept-gate floors on the BMO/AMC slot (`deriveEarningsSlot`, AMC 16:00 ET / BMO 07:00 ET), never the stored `release_time` — an AMC name's release_time is often the CALL time. A `web_verified` AMC time ≥17:00 is a suspect call time and is never stored or trusted.
 
 ## Bug Fixes
 
@@ -159,6 +161,7 @@ When fixing bugs, verify the fix against the actual data/edge cases before decla
 - **Plaid/TWS-day cash is a timing residual, not literal cash** — `computeCashFlowResiduals` classifies those points `live-anchor-residual` (precedence: `source-seam` first); they are labeled, never score-capped, and NEVER proposal candidates for flow synthesis.
 - **Real-figure docs go to `docs/private/` (gitignored) — the repo is PUBLIC.** Committed docs stay direction-only; repair constants (DB ids, amounts, source keys) live in gitignored `data/repair-configs/*.json` with synthetic fixtures in committed tests. Never undo import batches 56/58 (their undo deletes the 2026-08-23 repaired coupon rows).
 - Guard any Finnhub `actual_value` surface with `isPlausibleEarnings`.
+- Cached OLS betas (`security_betas`) publish only past a confidence gate — r² ≥ 0.10 and ≥30 return pairs (`betaConfidenceVerdict`); failing either DELETES the row rather than storing a marker (beta is NOT NULL; a missing row already means "no beta" to every consumer).
 - TWS historical bars are SPLIT-ADJUSTED to today's share basis; statement-sourced prices/quantities are statement-date basis. Never mix bases: any bars→prices backfill must compare statement rows against same-date bar closes (integer ratio = a split) and normalize product-preserving (`scripts/repair-split-basis-2024-year-end.ts` precedent; generalized guarded form: `scripts/repair-split-basis-audit.ts`).
 - Underlying splits RE-SYMBOL the listed options (strike re-struck: IBKR 4:1 140P→35P, XLU 2:1 100C→50C) — the activity report prints split legs under the ORIGINAL symbols, the statements under the new ones. Never leave a pre-split option row on the old symbol: move + normalize via `OPTION_RESYMBOL_TARGETS` in `scripts/repair-mistyped-option-legs.ts`.
 - REDEMPTION rows (bond/bill maturity) carry NO per-share price — principal lives in `amount`; `computeTaxLots` derives the close price as `|amount|/qty×100` on the per-100-face bond basis (a bill redeeming at cost realizes $0 — the discount is INTEREST, not gain). Statement transcriptions must keep that shape (qty + amount, price empty).
