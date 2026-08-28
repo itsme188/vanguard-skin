@@ -141,7 +141,7 @@ export function getEarningsForWeekDeduped(
               security_id, symbol, ib_con_id, expected_impact, consensus_estimate,
               previous_value, raw_json, source_key, week_of, fetched_at, created_at,
               release_time, actual_value, consensus_value, reaction_snapshot, enriched_at,
-              date_status, date_conflict_with
+              date_status, date_conflict_with, manual_actuals_at
          FROM ranked
         WHERE rn = 1
         ORDER BY event_date ASC, release_time ASC NULLS LAST, symbol ASC`,

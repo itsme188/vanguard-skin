@@ -40,6 +40,10 @@ export interface StageEventInputs {
   consensus_estimate: string | null;
   consensus_value: string | null;
   reaction_snapshot: string | null;
+  /** Migration 084 — set when actual_value was a manual save (POST
+   *  /api/earnings/actuals). A manual override always bypasses the
+   *  plausibility guard below (see lib/earnings/actuals-display.ts). */
+  manual_actuals_at?: string | null;
 }
 
 export function deriveEventStages(
@@ -80,11 +84,17 @@ export function deriveEventStages(
   // ── actual ──
   let actual: ActualStageState;
   if (ev.actual_value) {
-    const cons = parseFinnhubFigure(ev.consensus_value ?? ev.consensus_estimate);
-    const act = parseFinnhubFigure(ev.actual_value);
-    actual = isPlausibleEarnings(cons.eps, act.eps, cons.revenue, act.revenue)
-      ? "captured"
-      : "implausible";
+    if (ev.manual_actuals_at) {
+      // Manual override (POST /api/earnings/actuals) — always captured,
+      // never run through the scrape-failure guard.
+      actual = "captured";
+    } else {
+      const cons = parseFinnhubFigure(ev.consensus_value ?? ev.consensus_estimate);
+      const act = parseFinnhubFigure(ev.actual_value);
+      actual = isPlausibleEarnings(cons.eps, act.eps, cons.revenue, act.revenue)
+        ? "captured"
+        : "implausible";
+    }
   } else if (
     hasReleased &&
     (instant

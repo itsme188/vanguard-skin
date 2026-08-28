@@ -3,7 +3,7 @@ import type { CalendarEvent } from "@/lib/types";
 import { addDays, formatWeekRange, todayET, getCurrentMonday } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
-import { actualsAreImplausible } from "./EarningsHub";
+import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { EnrichmentRowSummary } from "../components/calendar/EnrichmentChips";
 // This is a Server Component (no "use client"): parseReactionSnapshot /
 // snapshotCoversEventDate must come from the dependency-free
@@ -191,7 +191,7 @@ function DayCard({ day, todayIso }: DayCardProps) {
 // consensus line always renders when available so beat/miss is judgeable.
 export function eventFigureDisplays(
   event: Pick<CalendarEvent, "event_type" | "consensus_estimate" | "actual_value"> &
-    Partial<Pick<CalendarEvent, "consensus_value">>,
+    Partial<Pick<CalendarEvent, "consensus_value" | "manual_actuals_at">>,
 ): { consensusDisplay: string | null; actualDisplay: string | null } {
   const isEarnings = event.event_type === "earnings";
   const consensus = effectiveConsensus(event);
@@ -202,7 +202,7 @@ export function eventFigureDisplays(
     : null;
   const implausible =
     isEarnings &&
-    actualsAreImplausible(consensus, event.actual_value);
+    actualsAreImplausible(consensus, event.actual_value, event.manual_actuals_at);
   const actualDisplay =
     event.actual_value && !implausible
       ? isEarnings

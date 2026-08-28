@@ -241,6 +241,11 @@ export interface CalendarEvent {
   date_status?: "confirmed" | "conflict" | "single" | "user_confirmed" | null;
   date_conflict_with?: string | null;
   superseded?: number | null;
+  // Migration 084 — provenance stamp for a manually-saved earnings actual
+  // (POST /api/earnings/actuals). Optional so other constructors don't
+  // break; non-null/non-empty means the display-layer plausibility guard
+  // (lib/earnings/actuals-display.ts) must bypass, never withhold.
+  manual_actuals_at?: string | null;
 }
 
 export interface CalendarBriefing {

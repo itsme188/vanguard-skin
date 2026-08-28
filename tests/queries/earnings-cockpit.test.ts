@@ -189,6 +189,29 @@ describe("buildCockpitPayload", () => {
     expect(row.actual).toContain("$0.21");
   });
 
+  // QA finding today-earningshub-actuals--manual-override-silently-suppressed-by-plausibility-guard:
+  // a manually-saved actual (calendar_events.manual_actuals_at stamped by
+  // saveManualActuals) must render even when it fails the plausibility guard
+  // — the guard is for unattended scrape failures, not a deliberate entry.
+  it("keeps a manually-stamped actual on the figures line even when it fails the ratio guard", () => {
+    seedAccountAndHolding("AMN");
+    const ev = seedEvent({
+      symbol: "AMN",
+      eventDate: "2026-07-08",
+      eventTime: "BMO",
+      releaseTime: "08:00",
+      actual: "EPS -1.20",
+    });
+    db.prepare(
+      "UPDATE calendar_events SET consensus_estimate = ?, manual_actuals_at = datetime('now') WHERE id = ?",
+    ).run("EPS 1.74", ev);
+
+    const payload = buildCockpitPayload(db, NOW);
+    const row = payload.lanes.bmo[0];
+    expect(row.stages.actual).toBe("captured");
+    expect(row.actual).toContain("-$1.20");
+  });
+
   it("returns empty lanes + null nextRelease on a quiet day", () => {
     const payload = buildCockpitPayload(db, NOW);
     expect(payload.lanes.bmo).toEqual([]);
