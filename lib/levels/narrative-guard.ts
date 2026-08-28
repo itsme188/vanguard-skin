@@ -87,8 +87,18 @@ const CLAIM_RE =
 // hedge/article words between them ("the", "a", "its", "current", "price of",
 // "around", …) are what make "above current 207" and "above the current price
 // of 207" one case instead of several.
+//
+// GROUP 2 IS AN OUTER GROUP AROUND THE WHOLE REPETITION — deliberately, and it
+// must stay that way. A repeated CAPTURE (`(word\s+){0,4}`) keeps only its
+// LAST iteration, so "above the current price of 250.40" used to capture just
+// "of ": `refersToCurrent` came back false, the claim was then allowed to match
+// either known price, it matched the LEVEL (250.40), and a sentence asserting
+// the CURRENT price is 250.40 on a security trading at 278.91 passed the guard
+// (and could be persisted as a thesis on ACCEPT). Wrapping the repetition in an
+// outer group with a NON-capturing alternation inside keeps the complete hedge
+// phrase, which is what the "current"/"currently" test below reads.
 const WORD_FIRST_CLAIM_RE =
-  /\b(above|below)\s+((?:the|a|an|its|current|currently|price|prices|level|levels|of|at|around|near|about|roughly|approximately|nearly|some)\s+){0,4}(\$)?(\d[\d,]*(?:\.\d+)?)\s*(%|pts?\.?|points?)?/gi;
+  /\b(above|below)\s+((?:(?:the|a|an|its|current|currently|price|prices|level|levels|of|at|around|near|about|roughly|approximately|nearly|some)\s+){0,4})(\$)?(\d[\d,]*(?:\.\d+)?)\s*(%|pts?\.?|points?)?/gi;
 
 // A number in the word-first position is only a PRICE assertion when it isn't
 // really a lookback window ("above the 50-day average", "above its 20-week

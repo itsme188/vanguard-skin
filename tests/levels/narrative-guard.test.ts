@@ -139,6 +139,52 @@ describe("word-first price claims ('above <number>', not '<number> above')", () 
     ).toBe(true);
   });
 
+  // Review finding (2026-08-28): WORD_FIRST_CLAIM_RE's hedge group was a
+  // REPEATED capture — `(?:the|a|current|price|of|...)\s+){0,4}` — so it kept
+  // only its LAST iteration. For "above the current price of 250.40" the
+  // captured hedge was just "of ", `refersToCurrent` came back false, and the
+  // claim was then allowed to match EITHER known price. It matched the level
+  // (250.40) and passed — even though the sentence asserts the CURRENT price
+  // is 250.40 while the security actually trades at 278.91. That false
+  // current-price sentence could be persisted verbatim as a thesis on ACCEPT.
+  const MULTI_HEDGE_BAD =
+    "Buyers keep stepping in here, establishing a floor above the current price of 250.40.";
+
+  it("captures the COMPLETE hedge phrase, not just its last word", () => {
+    const claims = extractNarrativeClaims(MULTI_HEDGE_BAD, LIVE_LEVEL_PRICE);
+    expect(claims).toHaveLength(1);
+    expect(claims[0].kind).toBe("price");
+    expect(claims[0].claimedPrice).toBeCloseTo(250.4, 5);
+    expect(claims[0].refersToCurrent).toBe(true);
+  });
+
+  it("flags 'above the current price of 250.40' when current is 278.91", () => {
+    const result = checkNarrativePlausibility(
+      MULTI_HEDGE_BAD,
+      LIVE_CURRENT_PRICE,
+      LIVE_LEVEL_PRICE,
+    );
+    expect(result.plausible).toBe(false);
+    expect(result.reason).toContain("current price");
+  });
+
+  it("never persists the multi-hedge false current-price sentence as a thesis", () => {
+    const thesis = resolveAcceptedThesis(
+      { ...LIVE_LEVEL, confidence: "high", narrative: MULTI_HEDGE_BAD },
+      LIVE_CURRENT_PRICE,
+    );
+    expect(thesis).not.toContain("floor above the current price");
+    expect(thesis).toContain("2026-01-14");
+  });
+
+  it("still accepts a multi-hedge claim that states the REAL current price", () => {
+    const good =
+      "Buyers keep stepping in here, with the shelf sitting below the current price of 278.91.";
+    expect(
+      checkNarrativePlausibility(good, LIVE_CURRENT_PRICE, LIVE_LEVEL_PRICE).plausible,
+    ).toBe(true);
+  });
+
   it("still catches a word-first PERCENT claim in the wrong magnitude", () => {
     const bad = "Price sits above 1619% of this historical level.";
     expect(checkNarrativePlausibility(bad, CURRENT_PRICE, LEVEL_PRICE).plausible).toBe(false);
