@@ -192,7 +192,13 @@ interface Section {
 function buildHeadlineRows(delta: ExposureDelta): Row[] {
   return [
     {
-      label: "Total Value",
+      // exposure-delta.ts's snapshot() sums HOLDINGS market value only
+      // (never account cash) — an unqualified "Total Value" reads as the
+      // whole account, understating it by the cash balance. Caption it so
+      // this row can't be mistaken for a full-account total, matching the
+      // Diagnostics "of holdings" precedent (AnalysisView's Net exposure
+      // label). Math/weights are unchanged — label only.
+      label: "Total Value (holdings only — excludes account cash)",
       before: <Money value={delta.before.totalValue} />,
       after: <Money value={delta.after.totalValue} />,
       diff: formatDeltaUsd(delta.after.totalValue - delta.before.totalValue),
