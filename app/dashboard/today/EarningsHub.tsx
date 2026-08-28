@@ -22,9 +22,9 @@ import { db } from "@/lib/db";
 import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
 import { getSymbolStatus, type SymbolStatus } from "@/lib/queries/briefing-symbols";
 import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
-import { formatFinnhubFigure, parseFinnhubFigure } from "@/lib/format/finnhub-figure";
+import { formatFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
-import { isPlausibleEarnings } from "@/lib/digest/send-earnings-email";
+import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import type { CalendarEvent } from "@/lib/types";
 import { SymbolLink } from "../components/SymbolLink";
 import { EarningsHubAddForm } from "./EarningsHubAddForm";
@@ -102,21 +102,11 @@ function deltaToneClass(delta: { sign: 1 | -1 | 0 } | null): string {
   return "text-ink-dim";
 }
 
-/**
- * Run the same plausibility guard the email scoreboard uses, so a bogus
- * Finnhub actual (e.g. the GOOGL Q1 2026 5.11-vs-2.70 EPS scrape failure)
- * doesn't render verbatim on the Today view. Pre-release rows (no actual)
- * always pass — the guard is consensus-vs-actual.
- */
-export function actualsAreImplausible(
-  consensus: string | null,
-  actual: string | null,
-): boolean {
-  if (!actual) return false;
-  const c = parseFinnhubFigure(consensus);
-  const a = parseFinnhubFigure(actual);
-  return !isPlausibleEarnings(c.eps, a.eps, c.revenue, a.revenue);
-}
+// Re-exported so existing importers (WeekAheadView, tests) keep working —
+// the guard itself now lives in lib/earnings/actuals-display.ts alongside
+// its manual-override bypass (QA finding
+// today-earningshub-actuals--manual-override-silently-suppressed-by-plausibility-guard).
+export { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 
 const IMPLAUSIBLE_TOOLTIP =
   "Reported actuals flagged as implausible vs. consensus — see email scoreboard for details.";
@@ -317,7 +307,7 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
   const cons = formatFinnhubFigure(consensus);
   const isPostRelease = !!event.enriched_at && !!event.actual_value;
   const implausible =
-    isPostRelease && actualsAreImplausible(consensus, event.actual_value);
+    isPostRelease && actualsAreImplausible(consensus, event.actual_value, event.manual_actuals_at);
   const actRaw = isPostRelease
     ? formatFinnhubFigure(event.actual_value)
     : { eps: null, revenue: null, fallback: null };
@@ -464,7 +454,7 @@ function MobileCard({ event }: { event: EnrichedRow }) {
   const cons = formatFinnhubFigure(consensus);
   const isPostRelease = !!event.enriched_at && !!event.actual_value;
   const implausible =
-    isPostRelease && actualsAreImplausible(consensus, event.actual_value);
+    isPostRelease && actualsAreImplausible(consensus, event.actual_value, event.manual_actuals_at);
   const actRaw = isPostRelease
     ? formatFinnhubFigure(event.actual_value)
     : { eps: null, revenue: null, fallback: null };

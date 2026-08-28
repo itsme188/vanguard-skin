@@ -26,6 +26,19 @@ describe("eventFigureDisplays (WeekAheadView Next-releases card)", () => {
     expect(d.consensusDisplay).not.toBeNull();
   });
 
+  // QA finding today-earningshub-actuals--manual-override-silently-suppressed-by-plausibility-guard:
+  // a manually-saved actual (calendar_events.manual_actuals_at) must render
+  // even when it would otherwise trip the sign-flip/ratio guard.
+  it("shows a manually-saved actual even when it fails the plausibility guard", () => {
+    const d = eventFigureDisplays({
+      event_type: "earnings",
+      consensus_estimate: "EPS 1.74",
+      actual_value: "EPS -1.20",
+      manual_actuals_at: "2026-08-28 12:00:00",
+    });
+    expect(d.actualDisplay).not.toBeNull();
+  });
+
   it("shows a plausible earnings actual", () => {
     const d = eventFigureDisplays(
       earningsEvent("EPS 0.41 · Rev 280000000", "EPS 0.45 · Rev 285000000"),

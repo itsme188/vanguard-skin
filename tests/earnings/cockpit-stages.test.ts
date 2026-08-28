@@ -79,6 +79,15 @@ describe("deriveEventStages", () => {
     expect(implausible.actual).toBe("implausible");
   });
 
+  it("a manually-stamped actual (manual_actuals_at set) is captured even when it fails the plausibility guard", () => {
+    const now = new Date("2026-07-08T21:00:00Z");
+    const manual = deriveEventStages(
+      { ...AMC_EVENT, actual_value: "EPS 2.82 · Rev 44500000000", manual_actuals_at: "2026-07-08 17:05:00" },
+      NO_EMAILS, NO_SKIPS, false, now, TODAY
+    );
+    expect(manual.actual).toBe("captured");
+  });
+
   it("reaction captured surfaces source; malformed JSON stays pending", () => {
     const now = new Date("2026-07-09T01:00:00Z");
     const captured = deriveEventStages(

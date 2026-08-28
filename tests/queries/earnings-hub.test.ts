@@ -318,6 +318,27 @@ describe("getEarningsForWeekDeduped", () => {
     expect(events[0].date_conflict_with).toBe("finnhub:2026-04-30");
   });
 
+  it("surfaces manual_actuals_at — null by default, the stamped value after a manual save", () => {
+    const eventId = seedEarningsEvent({
+      symbol: "TER",
+      source: "manual",
+      eventDate: "2026-04-28",
+      weekOf: "2026-04-27",
+    });
+
+    const before = getEarningsForWeekDeduped(db, "2026-04-27");
+    expect(before).toHaveLength(1);
+    expect(before[0].manual_actuals_at).toBeNull();
+
+    db.prepare(
+      "UPDATE calendar_events SET actual_value = 'EPS -1.20', manual_actuals_at = '2026-04-28 12:00:00' WHERE id = ?",
+    ).run(eventId);
+
+    const after = getEarningsForWeekDeduped(db, "2026-04-27");
+    expect(after).toHaveLength(1);
+    expect(after[0].manual_actuals_at).toBe("2026-04-28 12:00:00");
+  });
+
   it("countEarningsDateConflicts counts only in-window, non-superseded conflicts", () => {
     const mkConflict = (sym: string, date: string, superseded = 0) => {
       const id = seedEarningsEvent({ symbol: sym, source: "nasdaq", eventDate: date, weekOf: "2026-06-08" });

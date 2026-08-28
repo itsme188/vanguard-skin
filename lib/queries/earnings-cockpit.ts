@@ -75,6 +75,7 @@ interface RawEventRow {
   consensus_value: string | null;
   actual_value: string | null;
   reaction_snapshot: string | null;
+  manual_actuals_at: string | null;
 }
 
 function laneFor(row: RawEventRow): "bmo" | "amc" | "unknown" {
@@ -110,7 +111,7 @@ export function buildCockpitPayload(
        )
        SELECT id, source, event_date, event_time, release_time, title, symbol,
               security_id, consensus_estimate, consensus_value, actual_value,
-              reaction_snapshot
+              reaction_snapshot, manual_actuals_at
          FROM ranked
         WHERE rn = 1
         ORDER BY event_date ASC, release_time ASC NULLS LAST, symbol ASC`
