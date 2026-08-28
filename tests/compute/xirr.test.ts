@@ -378,4 +378,77 @@ describe("XIRR computation", () => {
       expect(combined!.currentValue).toBe(240000);
     });
   });
+
+  // ─── Aggregate cashFlowCount COUNT-ONLY fix (qa:analysis-performance--all-
+  // accounts-cash-flow-count-below-single-member) ────────────────────────
+  //
+  // The aggregate path used to report portfolioCashFlows.length, which comes
+  // from month-NETTED flow rows (GROUP BY month_end_date across all
+  // accounts) — so "All accounts" undercounted relative to the sum of its
+  // members' own (unnetted) cashFlowCounts. The fix touches ONLY the
+  // returned count field; portfolioCashFlows / portfolioXirr are untouched.
+  describe("aggregate cashFlowCount (COUNT-ONLY fix)", () => {
+    // ACCT_2's every cash flow (start value, monthly deposit, end value) is
+    // exactly half of ACCT_1's, at the SAME dates. Two useful properties
+    // fall out of that: (1) the aggregate's month-netted SQL query merges
+    // both accounts' same-month deposits into ONE row, reproducing the
+    // undercount; (2) because the combined cash-flow stream is just a scaled
+    // sum of two proportional streams at identical dates, its XIRR must
+    // equal each member's own XIRR (NPV is linear in amounts, so a nonzero
+    // scalar multiple of NPV(r) has the same root) — an independently
+    // derivable expected value, not a snapshot of pre-fix behavior.
+    function seedProportionalAccounts(): void {
+      const ACCT_2 = 2;
+      seedSnapshot(db, ACCT_1, "2024-12-31", 100000);
+      seedSnapshot(db, ACCT_2, "2024-12-31", 50000);
+      seedSnapshot(db, ACCT_1, "2025-01-31", 102000, { depositsWithdrawals: 2000 });
+      seedSnapshot(db, ACCT_2, "2025-01-31", 51000, { depositsWithdrawals: 1000 });
+      seedSnapshot(db, ACCT_1, "2025-02-28", 104000, { depositsWithdrawals: 2000 });
+      seedSnapshot(db, ACCT_2, "2025-02-28", 52000, { depositsWithdrawals: 1000 });
+      seedSnapshot(db, ACCT_1, "2025-03-31", 108000, { depositsWithdrawals: 2000 });
+      seedSnapshot(db, ACCT_2, "2025-03-31", 54000, { depositsWithdrawals: 1000 });
+    }
+
+    it("aggregate cashFlowCount equals the sum of per-account counts, not the netted flow-row count", () => {
+      seedProportionalAccounts();
+      const range = { startDate: "2025-01-01", endDate: "2025-03-31" };
+      const combined = computeXirr(db, range);
+      const r1 = computeXirr(db, { ...range, accountId: 1 });
+      const r2 = computeXirr(db, { ...range, accountId: 2 });
+
+      expect(combined).not.toBeNull();
+      expect(r1).not.toBeNull();
+      expect(r2).not.toBeNull();
+
+      // Each account: 1 start flow + 3 monthly deposits + 1 terminal = 5.
+      expect(r1!.cashFlowCount).toBe(5);
+      expect(r2!.cashFlowCount).toBe(5);
+
+      // Fixed: aggregate sums the members (10) — not the month-netted SQL
+      // row count (which would be 1 start + 3 netted deposits + 1 terminal
+      // = 5, i.e. equal to a SINGLE member despite covering two accounts).
+      expect(combined!.cashFlowCount).toBe(r1!.cashFlowCount + r2!.cashFlowCount);
+      expect(combined!.cashFlowCount).toBe(10);
+    });
+
+    it("does not change the aggregate XIRR value (same-dated flows still net linearly)", () => {
+      seedProportionalAccounts();
+      const range = { startDate: "2025-01-01", endDate: "2025-03-31" };
+      const combined = computeXirr(db, range);
+      const r1 = computeXirr(db, { ...range, accountId: 1 });
+      const r2 = computeXirr(db, { ...range, accountId: 2 });
+
+      expect(combined).not.toBeNull();
+      expect(r1).not.toBeNull();
+      expect(r2).not.toBeNull();
+
+      // Proportional cash-flow streams at identical dates share one XIRR
+      // root — an independent check that the (untouched) aggregate XIRR
+      // math still reflects the true combined economics after the
+      // count-only fix, not a fixture-specific coincidence.
+      expect(combined!.xirr).toBeCloseTo(r1!.xirr, 6);
+      expect(combined!.xirr).toBeCloseTo(r2!.xirr, 6);
+      expect(combined!.currentValue).toBe(162000);
+    });
+  });
 });
