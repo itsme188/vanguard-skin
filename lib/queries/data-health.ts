@@ -111,16 +111,14 @@ export function getPriceFreshness(db: Database.Database): PriceFreshness[] {
       LEFT JOIN (
         SELECT security_id, COUNT(*) AS cnt FROM prices GROUP BY security_id
       ) pc ON pc.security_id = s.id
-      -- Has current holdings (latest per-account snapshot)
+      -- Has current holdings — same per-(account, security) definition as
+      -- getDataHealthSummary's heldCte, so the Max Stale headline and this
+      -- panel can never disagree on the held universe
       LEFT JOIN (
-        SELECT security_id, COUNT(*) AS cnt
+        SELECT h.security_id, COUNT(*) AS cnt
         FROM holdings h
-        WHERE as_of_date = (
-          SELECT MAX(h2.as_of_date) FROM holdings h2
-          WHERE h2.account_id = h.account_id
-        )
-        AND quantity > 0
-        GROUP BY security_id
+        WHERE ${latestHoldingsPredicate()}
+        GROUP BY h.security_id
       ) hc ON hc.security_id = s.id
       WHERE hc.cnt > 0 OR pc.cnt > 0
       ORDER BY
