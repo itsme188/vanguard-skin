@@ -17,6 +17,9 @@ describe("migration 052: analysis_narratives", () => {
       pk: number;
     }>;
 
+    // runMigrations applies EVERY migration, so this list is the table's
+    // present-day shape, not 052's original one. 087 appended the nullable
+    // input_fingerprint column (cache-invalidation-on-drift).
     expect(cols.map((c) => c.name)).toEqual([
       "id",
       "scope",
@@ -25,6 +28,7 @@ describe("migration 052: analysis_narratives", () => {
       "narrative_md",
       "generated_at",
       "model_used",
+      "input_fingerprint",
     ]);
 
     // Verify id is primary key

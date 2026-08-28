@@ -1,0 +1,31 @@
+-- 087_analysis_narratives_input_fingerprint.sql
+--
+-- Cache-invalidation-on-drift for the cached Analysis narratives (QA finding
+-- analysis-defense--narrative-cached-contradicts-metrics-regression-2, 3rd
+-- occurrence; the 2026-08-12 design deliberately deferred invalidation).
+--
+-- analysis_narratives is keyed on (scope, surface_key, week_of) ONLY, so a row
+-- generated on Monday keeps being served all week even after the portfolio
+-- moves underneath it. Live symptom: the Defense narrative asserted a 30%
+-- protection ratio while the card computed 11%, and gave advice about a SPY
+-- put that had already left the hedge book.
+--
+-- input_fingerprint stores a sha256 hex digest over the MATERIALLY
+-- narrative-relevant inputs the prompt was rendered from (see
+-- fingerprintNarrativeInputs in lib/compute/analysis-narratives.ts). On read
+-- we recompute the fingerprint of TODAY's inputs and compare: a mismatch means
+-- the prose no longer describes the book, and the surface renders a
+-- "inputs changed — refresh to regenerate" banner above the (still visible)
+-- stale prose.
+--
+-- Nullable, no backfill: the inputs a pre-migration row was generated from were
+-- never recorded and cannot be reconstructed, so NULL is read as "drifted"
+-- (unknown inputs) — fail-safe, never silently "fresh". Every legacy row
+-- therefore shows the banner once, and clears it on the next explicit refresh.
+--
+-- Deliberately NOT part of the UNIQUE key: one row per (scope, surface, week)
+-- stays the cache shape; the fingerprint is a freshness attribute, not
+-- identity. Regeneration is an explicit POST — a GET never regenerates, so a
+-- drifted row can never burn AI budget on its own.
+
+ALTER TABLE analysis_narratives ADD COLUMN input_fingerprint TEXT;

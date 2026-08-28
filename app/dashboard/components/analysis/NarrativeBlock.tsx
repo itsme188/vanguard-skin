@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { PrivateText } from "@/lib/privacy/components";
-import { formatGeneratedAt } from "@/lib/calendar/date-utils";
+import { formatGeneratedAt, parseDbTimestamp } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
@@ -11,6 +11,40 @@ interface Props {
 }
 
 const MS_PER_HOUR = 60 * 60 * 1000;
+const MS_PER_MINUTE = 60 * 1000;
+
+/**
+ * Age of the cached prose in plain relative language ("3 days ago"). Used only
+ * in the drift banner, where "how stale is this" is the point — the neutral
+ * caption below the prose keeps the absolute ET date.
+ *
+ * Returns null for an unparseable stamp so the caller can drop the clause
+ * rather than print "Invalid Date".
+ */
+function formatRelativeAge(raw: string | null): string | null {
+  if (!raw) return null;
+  const d = parseDbTimestamp(raw);
+  if (!d) return null;
+  const minutes = Math.floor((Date.now() - d.getTime()) / MS_PER_MINUTE);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+/**
+ * What actually stopped matching. The defense surface gets the concrete
+ * wording from the finding that prompted this (the cached narrative asserted
+ * 30% protection against an 11% card, and advised on a SPY put that had left
+ * the book); every other surface gets the general form.
+ */
+function driftDetail(surfaceKey: Props["surfaceKey"]): string {
+  return surfaceKey === "defense"
+    ? "the hedge book or coverage numbers no longer match"
+    : "the numbers on this card no longer match";
+}
 
 /**
  * Render the POST route's 429 `retryAfter` (ms) as domain language instead
@@ -33,6 +67,10 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  // The cached prose was generated from inputs that have since changed
+  // (migration 087). We keep showing it — hiding it would trade a stale
+  // reading for no reading — but say so plainly, right above it.
+  const [drifted, setDrifted] = useState(false);
 
   // POST is the generate path (#35 task 5): GET is a cache-read that returns
   // { notGenerated: true } on a miss and NEVER generates. handleRefresh is
@@ -51,6 +89,9 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
       if (res.ok && data.success) {
         setText(data.narrativeMd);
         setGeneratedAt(data.generatedAt ?? null);
+        // Regenerated against the current book — the banner has to clear, or
+        // the user refreshes forever chasing a warning that never goes away.
+        setDrifted(data.drifted === true);
       } else if (res.status === 429) {
         // The bare "rate-limited" token means nothing to a user — explain the
         // 24h window in domain language and surface the actual wait time.
@@ -72,6 +113,7 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
     let alive = true;
     setLoading(true);
     setRefreshError(null); // don't let a prior scope's refresh error bleed onto the new scope
+    setDrifted(false); // ...nor a prior scope's drift banner onto the new scope
     fetch(`/api/analysis/narrative?scope=${scope}&surface=${surfaceKey}`)
       .then((r) => r.json())
       .then((data) => {
@@ -79,6 +121,7 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
         if (data.success && data.narrativeMd) {
           setText(data.narrativeMd);
           setGeneratedAt(data.generatedAt ?? null);
+          setDrifted(data.drifted === true);
         } else if (data.success && data.notGenerated) {
           // Cache is empty — auto-generate once via the POST path (GET no
           // longer generates-on-miss). Same call the Refresh button makes.
@@ -101,9 +144,20 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
   // formatGeneratedAt returns null for an unparseable timestamp — hide the
   // caption rather than render "Invalid Date".
   const generatedLabel = generatedAt ? formatGeneratedAt(generatedAt) : null;
+  const relativeAge = formatRelativeAge(generatedAt);
 
   return (
     <div className="text-sm text-ink-dim italic border-l-2 border-gold/40 pl-3 my-3 leading-relaxed">
+      {drifted && (
+        <p
+          role="status"
+          className="not-italic text-xs text-warn border border-warn/40 bg-warn/10 rounded px-2 py-1.5 mb-2 leading-snug"
+        >
+          Inputs changed since this was generated
+          {relativeAge ? ` ${relativeAge}` : ""} — {driftDetail(surfaceKey)}.
+          Refresh to regenerate.
+        </p>
+      )}
       {/* AI narrative embeds portfolio-derived figures at generation time, so
           the only correct mask is the whole prose block (same rule as the
           interpretation sentences). */}
