@@ -7,7 +7,10 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { checkPrePrintFloor } from "@/lib/earnings/pre-print-floor";
+import {
+  checkPrePrintFloor,
+  describePrePrintFloor,
+} from "@/lib/earnings/pre-print-floor";
 
 describe("checkPrePrintFloor", () => {
   it("flags a release instant that is still in the future", () => {
@@ -196,5 +199,58 @@ describe("checkPrePrintFloor — slot floor", () => {
     expect(r.slot).toBe("bmo");
     expect(r.basis).toBe("release_time");
     expect(r.isPrePrint).toBe(true); // 08:00 release_time still in the future
+  });
+});
+
+describe("describePrePrintFloor", () => {
+  const now = new Date("2026-08-27T19:30:00Z"); // 15:30 ET
+
+  it("names the 4:00 PM ET window for an AMC slot floor", () => {
+    const r = checkPrePrintFloor(
+      { event_date: "2026-08-27", release_time: "17:00", event_time: "AMC" },
+      now,
+      { useSlotFloor: true },
+    );
+    const msg = describePrePrintFloor("2026-08-27", r, now);
+    expect(msg).toMatch(/after-close print/);
+    expect(msg).toContain("4:00 PM ET");
+    expect(msg).toContain("Aug 27, 2026");
+    // Same-day click: the "now" label is a time only, no second date.
+    expect(msg).toContain("(now 3:30 PM ET)");
+  });
+
+  it("names the 7:00 AM ET window for a BMO slot floor, dating 'now' when it is another day", () => {
+    const r = checkPrePrintFloor(
+      { event_date: "2026-08-27", release_time: "08:00", event_time: "BMO" },
+      now,
+      { useSlotFloor: true },
+    );
+    // "now" is 2026-08-27 in ET but the print is dated a day later here, so
+    // the label must carry the date — a click a day early cannot be allowed
+    // to read as "any minute now".
+    const msg = describePrePrintFloor("2026-08-28", r, now);
+    expect(msg).toMatch(/before-open print/);
+    expect(msg).toContain("7:00 AM ET");
+    expect(msg).toContain("Aug 27, 2026, 3:30 PM ET");
+  });
+
+  it("names the recorded release instant on the release_time basis", () => {
+    const r = checkPrePrintFloor(
+      { event_date: "2026-08-27", release_time: "17:00", event_time: "TAS" },
+      now,
+      { useSlotFloor: true },
+    );
+    expect(r.basis).toBe("release_time");
+    const msg = describePrePrintFloor("2026-08-27", r, now);
+    expect(msg).toContain("Aug 27, 2026, 5:00 PM ET");
+    expect(msg).toMatch(/still in the future/);
+  });
+
+  it("still forms a sentence when no anchor could be composed", () => {
+    const r = checkPrePrintFloor({ event_date: "2026-08-27", release_time: null }, now);
+    expect(r.basis).toBe("none");
+    expect(describePrePrintFloor("2026-08-27", r, now)).toMatch(
+      /does not look to have happened yet/,
+    );
   });
 });

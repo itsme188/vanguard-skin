@@ -71,6 +71,9 @@ function insertEvent(
     security_id?: number | null;
     consensus_estimate?: string | null;
     raw_json?: string | null;
+    /** 'BMO' | 'AMC' | 'TAS' | 'HH:MM'. Defaults to release_time (the
+     *  historical shape of this helper). */
+    event_time?: string | null;
   },
 ) {
   return db.prepare(
@@ -82,7 +85,7 @@ function insertEvent(
     opts.source ?? "claude_macro",
     opts.event_type,
     opts.event_date,
-    opts.release_time,
+    opts.event_time === undefined ? opts.release_time : opts.event_time,
     opts.release_time,
     "Test event",
     opts.symbol ?? null,
@@ -1134,5 +1137,248 @@ describe("push-at-print hook (Wave 1 §2)", () => {
     await runEnrichment(db, { now });
 
     expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+  });
+});
+
+// ── Pre-print floor on the explicit-event road (Codex blocker, 2026-08-28) ──
+//
+// `runEnrichment(db, { eventId })` deliberately bypasses the release-window
+// filter — that is what makes "re-enrich this row" and the EarningsHub
+// "Generate" button possible. It also meant a click BEFORE the print could
+// fetch an erroneous early vendor actual, write it, stamp enriched_at (which
+// arms the recap send gate) and fire the print push. These pin the floor:
+// nothing is fetched, written, or pushed before the print window opens, and
+// the WINDOWED sweep is untouched by it.
+describe("runEnrichment — pre-print floor on the explicit-event road", () => {
+  let db: Database.Database;
+
+  // 2026-08-27 is EDT, so ET = UTC−4 throughout this block.
+  const EVENT_DATE = "2026-08-27";
+  const ET_1530 = new Date("2026-08-27T19:30:00Z");
+  const ET_1612 = new Date("2026-08-27T20:12:00Z");
+  const ET_0659 = new Date("2026-08-27T10:59:00Z");
+  const ET_0700 = new Date("2026-08-27T11:00:00Z");
+  const ET_1705 = new Date("2026-08-27T21:05:00Z");
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    vi.stubGlobal("fetch", vi.fn());
+    process.env.FINNHUB_API_KEY = "test_finnhub_key";
+    mockSendEarningsPrintPush.mockClear();
+    mockSendEarningsPrintPush.mockResolvedValue({ pushed: true });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.FINNHUB_API_KEY;
+  });
+
+  /** Held so the print-push gate is genuinely open — a "no push" assertion
+   *  is only meaningful when the same row WOULD push after the floor. */
+  function seedHeld(securityId: number, symbol: string) {
+    seedSecurity(db, securityId, symbol, "Technology");
+    db.prepare(`INSERT INTO accounts (id, name) VALUES (?, ?)`).run(
+      securityId,
+      `Acct ${symbol}`,
+    );
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 100, ?, ?)`,
+    ).run(securityId, securityId, EVENT_DATE, `test:${symbol}`);
+  }
+
+  function mockFinnhubActual(symbol: string) {
+    (global.fetch as ReturnType<typeof vi.fn>).mockReset();
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          {
+            symbol,
+            date: EVENT_DATE,
+            epsActual: 1.42,
+            epsEstimate: 1.35,
+          },
+        ],
+      }),
+    });
+  }
+
+  function seedEarnings(opts: {
+    securityId: number;
+    symbol: string;
+    releaseTime: string | null;
+    eventTime?: string | null;
+    rawJson?: string | null;
+  }): number {
+    seedHeld(opts.securityId, opts.symbol);
+    mockFinnhubActual(opts.symbol);
+    const { lastInsertRowid } = insertEvent(db, {
+      source: "finnhub",
+      source_key: `finnhub:${opts.symbol}:${EVENT_DATE}`,
+      event_type: "earnings",
+      event_date: EVENT_DATE,
+      release_time: opts.releaseTime,
+      event_time: opts.eventTime,
+      raw_json: opts.rawJson ?? null,
+      symbol: opts.symbol,
+      security_id: opts.securityId,
+    });
+    return Number(lastInsertRowid);
+  }
+
+  function getRow(id: number) {
+    return db
+      .prepare(
+        `SELECT actual_value, enriched_at, enrichment_attempted_at
+           FROM calendar_events WHERE id = ?`,
+      )
+      .get(id) as {
+      actual_value: string | null;
+      enriched_at: string | null;
+      enrichment_attempted_at: string | null;
+    };
+  }
+
+  it("AMC row clicked at 15:30 ET: writes nothing, pushes nothing, reports the 16:00 slot floor", async () => {
+    // release_time says 17:00 — for an AMC name that is very often the CALL
+    // time, not the print. The floor asks the knowable question instead.
+    const eventId = seedEarnings({
+      securityId: 400,
+      symbol: "CRWX",
+      releaseTime: "17:00",
+      eventTime: "AMC",
+    });
+
+    const results = await runEnrichment(db, { eventId, now: ET_1530 });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].reason).toBe("pre_print");
+    expect(results[0].enriched).toBe(false);
+    expect(results[0].actual).toBeNull();
+    expect(results[0].prePrint?.basis).toBe("slot");
+    expect(results[0].prePrint?.slot).toBe("amc");
+    expect(results[0].prePrint?.floor?.toISOString()).toBe(
+      "2026-08-27T20:00:00.000Z", // 16:00 ET
+    );
+    expect(results[0].prePrint?.eventDate).toBe(EVENT_DATE);
+
+    const row = getRow(eventId);
+    expect(row.actual_value).toBeNull();
+    expect(row.enriched_at).toBeNull();
+    expect(row.enrichment_attempted_at).toBeNull(); // never even attempted
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("same AMC row at 16:12 ET: proceeds exactly as before (actual written, push fired)", async () => {
+    const eventId = seedEarnings({
+      securityId: 401,
+      symbol: "CRWY",
+      releaseTime: "17:00",
+      eventTime: "AMC",
+    });
+
+    const results = await runEnrichment(db, { eventId, now: ET_1612 });
+
+    expect(results[0].reason).toBeUndefined();
+    expect(getRow(eventId).actual_value).toContain("EPS 1.42");
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledTimes(1);
+  });
+
+  it("derives the AMC slot from the vendor raw_json hour when event_time is null", async () => {
+    const eventId = seedEarnings({
+      securityId: 402,
+      symbol: "CRWZ",
+      releaseTime: "17:00",
+      eventTime: null,
+      rawJson: JSON.stringify({ entry: { hour: "amc" } }),
+    });
+
+    const results = await runEnrichment(db, { eventId, now: ET_1530 });
+    expect(results[0].reason).toBe("pre_print");
+    expect(results[0].prePrint?.slot).toBe("amc");
+  });
+
+  it("BMO row: refused at 06:59 ET, allowed at 07:00 ET", async () => {
+    const eventId = seedEarnings({
+      securityId: 403,
+      symbol: "BMOX",
+      releaseTime: "08:00",
+      eventTime: "BMO",
+    });
+
+    const early = await runEnrichment(db, { eventId, now: ET_0659 });
+    expect(early[0].reason).toBe("pre_print");
+    expect(early[0].prePrint?.slot).toBe("bmo");
+    expect(early[0].prePrint?.floor?.toISOString()).toBe(
+      "2026-08-27T11:00:00.000Z", // 07:00 ET
+    );
+    expect(getRow(eventId).enrichment_attempted_at).toBeNull();
+
+    const onFloor = await runEnrichment(db, { eventId, now: ET_0700 });
+    expect(onFloor[0].reason).toBeUndefined();
+    expect(getRow(eventId).actual_value).toContain("EPS 1.42");
+  });
+
+  it("TAS row falls back to release_time behaviour (no slot to floor on)", async () => {
+    const eventId = seedEarnings({
+      securityId: 404,
+      symbol: "TASX",
+      releaseTime: "17:00",
+      eventTime: "TAS",
+    });
+
+    const before = await runEnrichment(db, { eventId, now: ET_1612 });
+    expect(before[0].reason).toBe("pre_print");
+    expect(before[0].prePrint?.basis).toBe("release_time");
+    expect(before[0].prePrint?.slot).toBeNull();
+    expect(before[0].prePrint?.release?.toISOString()).toBe(
+      "2026-08-27T21:00:00.000Z", // 17:00 ET
+    );
+
+    const after = await runEnrichment(db, { eventId, now: ET_1705 });
+    expect(after[0].reason).toBeUndefined();
+    expect(getRow(eventId).actual_value).toContain("EPS 1.42");
+  });
+
+  it("a macro row keeps release_time semantics (no BMO/AMC notion to floor on)", async () => {
+    const { lastInsertRowid } = insertEvent(db, {
+      source: "claude_macro",
+      source_key: `fred:10:${EVENT_DATE}`,
+      event_type: "cpi",
+      event_date: EVENT_DATE,
+      release_time: "08:30",
+    });
+    const eventId = Number(lastInsertRowid);
+
+    // 06:59 ET — before the 08:30 release. A slot read of "08:30" would have
+    // called this a BMO row and let it through on the 07:00 floor.
+    const results = await runEnrichment(db, { eventId, now: ET_0659 });
+    expect(results[0].reason).toBe("pre_print");
+    expect(results[0].prePrint?.basis).toBe("release_time");
+    expect(getRow(eventId).enrichment_attempted_at).toBeNull();
+  });
+
+  it("REGRESSION: the windowed sweep is NOT floored — an early print pulled to 06:30 still enriches", async () => {
+    // The wire probe pulls release_time to the observed print instant when a
+    // BMO name prints early. That row is past its release and inside the
+    // sweep window; the slot floor (07:00) must not reach it.
+    const eventId = seedEarnings({
+      securityId: 405,
+      symbol: "EARL",
+      releaseTime: "06:30",
+      eventTime: "BMO",
+    });
+
+    const results = await runEnrichment(db, {
+      now: new Date("2026-08-27T10:40:00Z"), // 06:40 ET, 10 min after the print
+    });
+
+    expect(results.map((r) => r.eventId)).toContain(eventId);
+    expect(results.find((r) => r.eventId === eventId)?.reason).toBeUndefined();
+    expect(getRow(eventId).actual_value).toContain("EPS 1.42");
   });
 });
