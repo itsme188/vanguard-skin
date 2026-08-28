@@ -43,6 +43,17 @@ export interface CashDeployPick {
   exposureDelta: ExposureDelta;
 }
 
+/**
+ * The non-equity sleeve that an equity benchmark comparison leaves out.
+ * `weightPct` / `totalPct` are percentages OF THE PROJECTED PORTFOLIO
+ * (holdings + cash to deploy) — i.e. the same weight the gap table used to
+ * show for those buckets — so the caption quotes a number the user recognizes.
+ */
+export interface ExcludedSleeve {
+  buckets: Array<{ sector: string; weightPct: number }>;
+  totalPct: number;
+}
+
 export interface CashDeploySuggestion {
   scope: string;
   cashAmount: number;
@@ -53,9 +64,56 @@ export interface CashDeploySuggestion {
   totalAllocated: number;
   cashRemaining: number;
   notes: string[];
+  /**
+   * Non-null only when the benchmark is equity-only AND the portfolio
+   * actually holds one of the excluded buckets — the sleeve the gaps were
+   * measured WITHOUT. Null means the table is a full-portfolio comparison.
+   */
+  excludedSleeve: ExcludedSleeve | null;
 }
 
 const GAP_THRESHOLD_PP = 2.0; // surface gaps of |2pp| or more
+
+/**
+ * Sector buckets that are NOT part of the equity sleeve.
+ *
+ * These are bucket LABELS as they reach the gap table, not raw vendor
+ * strings: `explodeHoldingBySector` buckets sectorless bonds as
+ * "Fixed Income", `normalizeSector` passes "Fixed Income" through as a
+ * canonical non-GICS label, and money-market sweep funds carry either that
+ * sector or a Cash/Cash Equivalent/Money Market label from the
+ * fund_category vocabulary (lib/mutations/securities.ts,
+ * lib/compute/cash-equivalents.ts).
+ *
+ * Deliberately NOT here: "Unknown" (unclassified EQUITIES — excluding it
+ * would silently shrink the sleeve) and "Diversified" (broad equity funds).
+ */
+const NON_EQUITY_SECTOR_BUCKETS = new Set([
+  "fixed income",
+  "cash",
+  "cash equivalent",
+  "money market",
+]);
+
+/** True when a gap-table sector bucket is fixed income or cash. */
+export function isNonEquitySectorBucket(sector: string): boolean {
+  return NON_EQUITY_SECTOR_BUCKETS.has(sector.trim().toLowerCase());
+}
+
+/**
+ * An equity benchmark is one whose composition carries NO weight in any
+ * fixed-income / cash bucket (VTI, SPY, QQQ, DIA all qualify). A blended
+ * benchmark — one with a real bond sleeve — keeps the full-universe
+ * comparison. An EMPTY map is heuristic mode: there is no benchmark to
+ * classify, so nothing is excluded.
+ */
+function isEquityOnlyBenchmark(benchmarkMap: Map<string, number>): boolean {
+  if (benchmarkMap.size === 0) return false;
+  for (const [sector, weight] of benchmarkMap) {
+    if (weight > 0 && isNonEquitySectorBucket(sector)) return false;
+  }
+  return true;
+}
 
 interface CurrentHoldingSummary {
   totalValue: number;
@@ -159,15 +217,55 @@ function loadWatchlistCandidates(
     .all(groupPattern) as WatchlistCandidate[];
 }
 
+interface SectorGapResult {
+  gaps: SectorGap[];
+  excludedSleeve: ExcludedSleeve | null;
+  /**
+   * Denominator every gap weight and dollar figure is measured against —
+   * the projected total, minus the excluded sleeve when the benchmark is
+   * equity-only. Callers that move dollars into a gap must use THIS total,
+   * not the portfolio total, or the post-allocation gapPp drifts.
+   */
+  gapBasisTotal: number;
+}
+
 function computeSectorGaps(
   current: CurrentHoldingSummary,
   benchmarkMap: Map<string, number>,
   cashAmount: number
-): SectorGap[] {
+): SectorGapResult {
   // Project current weights AFTER adding cash to the denominator —
   // otherwise gaps are measured against the pre-deploy total, which
   // overweights the cash-receiving sector after the fact.
   const projectedTotal = current.totalValue + cashAmount;
+
+  // Against an all-equity index, fixed income and cash can never be closed
+  // by deploying cash (target is structurally 0%), and leaving those dollars
+  // in the denominator understates every equity sector's weight. Measure the
+  // equity sleeve on its own and renormalize to 100%.
+  const equityOnly = isEquityOnlyBenchmark(benchmarkMap);
+  const excludedBuckets: Array<{ sector: string; weightPct: number }> = [];
+  let excludedDollars = 0;
+  if (equityOnly) {
+    for (const [sector, value] of current.sectorValue) {
+      if (!isNonEquitySectorBucket(sector) || value <= 0) continue;
+      excludedDollars += value;
+      excludedBuckets.push({
+        sector,
+        weightPct: projectedTotal > 0 ? (value / projectedTotal) * 100 : 0,
+      });
+    }
+    excludedBuckets.sort((a, b) => b.weightPct - a.weightPct);
+  }
+  const gapBasisTotal = projectedTotal - excludedDollars;
+  const excludedSleeve: ExcludedSleeve | null =
+    excludedBuckets.length > 0
+      ? {
+          buckets: excludedBuckets,
+          totalPct: excludedBuckets.reduce((s, b) => s + b.weightPct, 0),
+        }
+      : null;
+
   const gaps: SectorGap[] = [];
 
   const allSectors = new Set<string>([
@@ -176,11 +274,17 @@ function computeSectorGaps(
   ]);
 
   for (const sector of allSectors) {
+    // Excluded sleeve buckets leave the table entirely — a 0% target they
+    // can never close is not an actionable gap. Buckets the index genuinely
+    // holds at 0% (a GICS sector outside the index, e.g. QQQ's Financials)
+    // stay, because cash CAN close those.
+    if (equityOnly && isNonEquitySectorBucket(sector)) continue;
+
     const currentDollars = current.sectorValue.get(sector) ?? 0;
-    const currentWeight = projectedTotal > 0 ? currentDollars / projectedTotal : 0;
+    const currentWeight = gapBasisTotal > 0 ? currentDollars / gapBasisTotal : 0;
     const targetWeight = benchmarkMap.get(sector) ?? 0;
     const gapPp = (currentWeight - targetWeight) * 100;
-    const dollarGap = projectedTotal * (targetWeight - currentWeight);
+    const dollarGap = gapBasisTotal * (targetWeight - currentWeight);
 
     if (Math.abs(gapPp) >= GAP_THRESHOLD_PP) {
       gaps.push({
@@ -196,7 +300,16 @@ function computeSectorGaps(
 
   // Sort by largest underweight first (most negative gapPp = best target)
   gaps.sort((a, b) => a.gapPp - b.gapPp);
-  return gaps;
+  return { gaps, excludedSleeve, gapBasisTotal };
+}
+
+/**
+ * Caption lead-in for the gap table when the comparison ran on the equity
+ * sleeve. The bucket weights themselves are portfolio-derived, so the
+ * component renders them through `<Pct>` rather than baking them in here.
+ */
+export function equitySleeveCaptionLead(benchmarkSymbol: string): string {
+  return `Sector gaps vs ${benchmarkSymbol} are measured on the equity sleeve — ${benchmarkSymbol} holds no fixed income or cash, so these are excluded from current weights and the rest renormalized to 100%:`;
 }
 
 
@@ -239,6 +352,7 @@ export function suggestAllocation(
       totalAllocated: 0,
       cashRemaining: cashAmount,
       notes: [...notes, "No cash to deploy."],
+      excludedSleeve: null,
     };
   }
   if (watchlist.length === 0) {
@@ -247,7 +361,11 @@ export function suggestAllocation(
     );
   }
 
-  const rawGaps = computeSectorGaps(current, benchmarkMap, cashAmount);
+  const {
+    gaps: rawGaps,
+    excludedSleeve,
+    gapBasisTotal,
+  } = computeSectorGaps(current, benchmarkMap, cashAmount);
   // Apply theme-aware boost to gapClosureScore before ranking candidates.
   const gaps = applyThemeAwareBoost(rawGaps, opts.activeThemes ?? []);
 
@@ -278,6 +396,9 @@ export function suggestAllocation(
       // keep default
     }
   }
+  // The per-name cap is a PORTFOLIO construction rule ("no single position
+  // above top1_max of the book"), so it keeps the full projected total even
+  // when the gaps themselves are measured on the equity sleeve.
   const projectedTotal = current.totalValue + cashAmount;
   const perNameCap = projectedTotal * top1Cap;
 
@@ -311,7 +432,9 @@ export function suggestAllocation(
     // dollarGap is POSITIVE for an underweight sector (dollars needed to close);
     // gapPp is NEGATIVE — both move toward 0 as cash lands in the sector.
     matchingGap.dollarGap -= allocation;
-    matchingGap.gapPp += (allocation / projectedTotal) * 100;
+    // Same denominator the gap was measured against (the equity sleeve when
+    // the benchmark is equity-only), otherwise the gap only partly unwinds.
+    if (gapBasisTotal > 0) matchingGap.gapPp += (allocation / gapBasisTotal) * 100;
   }
 
   const totalAllocated = picks.reduce((s, p) => s + p.allocationDollars, 0);
@@ -333,6 +456,7 @@ export function suggestAllocation(
     totalAllocated,
     cashRemaining,
     notes,
+    excludedSleeve,
   };
 }
 
