@@ -67,6 +67,27 @@ export function scanRangeDistancePct(
   return ((currentPrice - levelPrice) / levelPrice) * 100;
 }
 
+/**
+ * Signed percent move the CURRENT price must make to reach the level — the
+ * move a trader actually cares about, using spot (not the level) as the
+ * denominator. This is the SAME convention the security-detail page uses for
+ * its own "X% away" figure, and deliberately differs from
+ * scanRangeDistancePct above (which measures against the level price on
+ * purpose, to match the scanner's own guard). A level far below current in
+ * price but small in magnitude reads as a huge % against the level
+ * denominator and a modest % against spot — surfaces that show both numbers
+ * side by side must label which is which; see ArmedLevelRow.
+ *
+ * Null when either side is missing or current is 0 (can't divide by spot).
+ */
+export function moveNeededPct(
+  currentPrice: number | null | undefined,
+  levelPrice: number | null | undefined,
+): number | null {
+  if (currentPrice == null || levelPrice == null || currentPrice === 0) return null;
+  return ((levelPrice - currentPrice) / currentPrice) * 100;
+}
+
 /** Chip / warning copy, so every surface words the disclosure identically. */
 export const BEYOND_SCAN_RANGE_LABEL = "outside scan range";
 
