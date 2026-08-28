@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { refreshVanguardBetas } from "@/scripts/refresh-vanguard-betas";
 import { getCachedBeta } from "@/lib/queries/security-betas";
 import { upsertBeta } from "@/lib/mutations/security-betas";
+import * as securityBetaMutations from "@/lib/mutations/security-betas";
 
 function createTestDb(): Database.Database {
   const db = new Database(":memory:");
@@ -94,6 +95,10 @@ describe("refreshVanguardBetas", () => {
   beforeEach(() => {
     db = createTestDb();
     // Migration 002 seeds: 'Vanguard Taxable', 'Vanguard Roth IRA', 'IBKR'
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("computes betas for held Vanguard securities with sufficient history", async () => {
@@ -322,6 +327,59 @@ describe("refreshVanguardBetas", () => {
     expect(result.computed).toBe(1);
     expect(result.invalidated).toHaveLength(0);
     expect(getCachedBeta(db, vtiId, 60)).not.toBeNull();
+  });
+
+  it("[atomic apply] rolls back ALL writes when a later security's write throws mid-transaction", async () => {
+    // Reproduces the progressive-write bug: without a single wrapping
+    // transaction, a crash on the SECOND security's write would leave the
+    // FIRST security's write already committed while later stale rows stay
+    // published. The fix computes every decision first, then applies them
+    // all inside one better-sqlite3 transaction — so a failure anywhere in
+    // the apply phase must roll back EVERYTHING, including writes for
+    // securities decided earlier in this same run.
+    const acctId = getAccountId(db, "Vanguard Taxable");
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('FIRSTCO', 'First Co', 'Stock')").run();
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('SECONDCO', 'Second Co', 'Stock')").run();
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('SPY', 'SPDR S&P 500 ETF', 'ETF')").run();
+    const firstId = (db.prepare("SELECT id FROM securities WHERE symbol = 'FIRSTCO'").get() as { id: number }).id;
+    const secondId = (db.prepare("SELECT id FROM securities WHERE symbol = 'SECONDCO'").get() as { id: number }).id;
+    const spyId = (db.prepare("SELECT id FROM securities WHERE symbol = 'SPY'").get() as { id: number }).id;
+
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (?, ?, ?, 100)"
+    ).run(acctId, firstId, today);
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (?, ?, ?, 100)"
+    ).run(acctId, secondId, today);
+
+    // Both securities regress cleanly against SPY — both decide "upsert",
+    // and `securities` is queried ORDER BY symbol, so FIRSTCO's write is
+    // the 1st upsertBeta call and SECONDCO's is the 2nd.
+    seedPrices(db, spyId, 65, 400, 0.1, 5);
+    seedPrices(db, firstId, 65, 200, 0.15, 8);
+    seedPrices(db, secondId, 65, 210, 0.12, 7);
+
+    // Pre-existing stale row for FIRSTCO — must be untouched if the run
+    // aborts, i.e. its write must NOT land even though it was decided (and
+    // would normally be applied) before SECONDCO's failing write.
+    upsertBeta(db, { securityId: firstId, lookbackDays: 60, beta: 0.05, residualStd: 9.9 });
+
+    const originalUpsertBeta = securityBetaMutations.upsertBeta;
+    let callCount = 0;
+    vi.spyOn(securityBetaMutations, "upsertBeta").mockImplementation((database, input) => {
+      callCount++;
+      if (callCount === 2) {
+        throw new Error("simulated crash mid-write");
+      }
+      return originalUpsertBeta(database, input);
+    });
+
+    await expect(refreshVanguardBetas(db)).rejects.toThrow("simulated crash mid-write");
+
+    // FIRSTCO's stale pre-existing row is unchanged — the transaction that
+    // would have overwritten it with the fresh regression never committed.
+    expect(getCachedBeta(db, firstId, 60)).toBe(0.05);
   });
 
   it("skips IBKR and Roth holdings — only processes Vanguard Taxable", async () => {
