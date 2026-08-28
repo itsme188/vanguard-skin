@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { parseImport, commitImport } from "@/lib/import/engine";
 import type { CommitResult } from "@/lib/import/engine";
 import { validateParsedResult } from "@/lib/import/validate";
+import { classifyImportError } from "@/lib/import/error-classify";
 import {
   commitDonations,
   type DonationCommitOutcome,
@@ -308,9 +309,10 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
+    const { status, userMessage } = classifyImportError(message);
     return NextResponse.json(
-      { success: false, error: message },
-      { status: 500 }
+      { success: false, error: userMessage },
+      { status }
     );
   }
 }
