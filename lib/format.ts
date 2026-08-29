@@ -48,6 +48,36 @@ export function parseStoredTimestamp(value: string): Date {
   return new Date(iso);
 }
 
+const enrichedAtFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
+});
+
+/**
+ * Format a SQLite `datetime('now')`-style UTC stamp (e.g. an
+ * `earnings_actuals.enriched_at`) as ET wall-clock with an explicit zone
+ * label — e.g. "Aug 29, 2026, 2:57 AM ET".
+ *
+ * A raw `.slice(0, 16)` on the stored string prints the UTC characters
+ * unlabeled (an accept at 02:57 ET showed "06:57" with no zone —
+ * qa:today-earningshub-bogeys--enriched-stamp-raw-utc-no-zone-label).
+ * Parses via `parseStoredTimestamp` (same UTC-safe handling used for every
+ * other `enriched_at`/`sent_at` stamp in the codebase) so DST is resolved
+ * automatically. Falls back to the raw string when it doesn't parse, and to
+ * "" for null (caller guards render on truthiness).
+ */
+export function formatEnrichedAtET(raw: string | null): string {
+  if (!raw) return "";
+  const d = parseStoredTimestamp(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  return `${enrichedAtFormatter.format(d)} ET`;
+}
+
 export function formatUSDPrecise(value: number): string {
   const out = currencyPreciseFormatter.format(value);
   return rendersAsZero(out) ? currencyPreciseFormatter.format(0) : out;

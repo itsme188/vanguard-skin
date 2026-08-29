@@ -107,6 +107,37 @@ describe("parseStoredTimestamp", () => {
   });
 });
 
+// ── ET-anchored enrichment stamp ─────────────────────────────────────
+// enriched_at is stored as a space-separated UTC string (SQLite
+// datetime('now')), e.g. "2026-08-29 06:57:47". BogeysEditModal used to
+// hand-slice it (`.slice(0, 16)`), rendering the raw UTC characters with no
+// zone label — a 02:57 ET accept showed "06:57" (qa:today-earningshub-
+// bogeys--enriched-stamp-raw-utc-no-zone-label). Must ET-anchor via
+// parseStoredTimestamp + Intl, never re-slice.
+describe("formatEnrichedAtET", () => {
+  it("converts a UTC SQLite stamp to ET wall-clock with a zone label (non-DST, EST = UTC-5)", () => {
+    expect(formatEnrichedAtET("2026-01-15 06:57:47")).toBe("Jan 15, 2026, 1:57 AM ET");
+  });
+
+  it("converts a UTC SQLite stamp to ET wall-clock with a zone label (DST, EDT = UTC-4)", () => {
+    // The regression example: an accept at 02:57 ET (06:57 UTC) must never
+    // render the bare UTC digits "06:57" with no zone.
+    expect(formatEnrichedAtET("2026-08-29 06:57:47")).toBe("Aug 29, 2026, 2:57 AM ET");
+  });
+
+  it("is idempotent for an explicit ISO-Z timestamp", () => {
+    expect(formatEnrichedAtET("2026-08-29T06:57:47Z")).toBe("Aug 29, 2026, 2:57 AM ET");
+  });
+
+  it("falls back to empty string for null", () => {
+    expect(formatEnrichedAtET(null)).toBe("");
+  });
+
+  it("falls back to the raw string for unparseable input", () => {
+    expect(formatEnrichedAtET("not-a-date")).toBe("not-a-date");
+  });
+});
+
 describe("formatLargeUSD", () => {
   it("scales billions to 2 decimal places", () => {
     expect(formatLargeUSD(4_345_870_107)).toBe("$4.35B");

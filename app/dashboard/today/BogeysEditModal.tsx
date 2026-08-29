@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
-import { coercePercent, formatLargeUSD, parseLargeUSD } from "@/lib/format";
+import { coercePercent, formatEnrichedAtET, formatLargeUSD, parseLargeUSD } from "@/lib/format";
 import { parseActualsInput } from "@/lib/earnings/actuals-validation";
 import { formatBogeyFields, formatBogeyFieldLine } from "@/lib/earnings/format-bogey-fields";
 import { PrivateText } from "@/lib/privacy/components";
@@ -428,7 +428,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
               </h3>
               {actualsEnrichedAt && (
                 <span className="text-[10px] font-mono text-ink-faint">
-                  enriched {actualsEnrichedAt.slice(0, 16)}
+                  enriched {formatEnrichedAtET(actualsEnrichedAt)}
                 </span>
               )}
             </div>
