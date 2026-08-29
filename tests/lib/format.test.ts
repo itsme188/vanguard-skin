@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   coercePercent,
+  displaySecurityName,
   formatCompactOptionSymbol,
   formatCompactUSD,
+  formatEnrichedAtET,
   formatHoldingPeriod,
   formatLargeNumber,
   formatProfitFactor,
@@ -395,5 +397,24 @@ describe("formatShares fractional default", () => {
   });
   it("non-finite stays em dash", () => {
     expect(formatShares(Number.NaN)).toBe("—");
+  });
+});
+
+// ── Security-name display fallback ──────────────────────────────────
+// securities.name can be the EMPTY STRING (not NULL) — e.g. some IBKR-synced
+// rows. `holding.security_name ?? "—"` only catches null/undefined, so an
+// empty-string name rendered a blank cell instead of the em-dash fallback
+// (QA qa:accounts-holdings--blank-name-column-qqq-rsp-ibkr-regression-2).
+
+describe("displaySecurityName", () => {
+  it("falls back to em dash for null, undefined, empty, and whitespace-only names", () => {
+    expect(displaySecurityName(null)).toBe("—");
+    expect(displaySecurityName(undefined)).toBe("—");
+    expect(displaySecurityName("")).toBe("—");
+    expect(displaySecurityName("   ")).toBe("—");
+  });
+
+  it("passes through a real name unchanged", () => {
+    expect(displaySecurityName("Invesco QQQ Trust")).toBe("Invesco QQQ Trust");
   });
 });

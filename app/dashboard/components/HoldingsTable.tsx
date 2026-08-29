@@ -1,4 +1,5 @@
 import type { HoldingWithSecurity } from "@/lib/queries/holdings";
+import { displaySecurityName } from "@/lib/format";
 import { ScrollFade } from "./ScrollFade";
 import { SymbolLink } from "./SymbolLink";
 import { Money, Shares } from "@/lib/privacy/components";
@@ -87,7 +88,7 @@ export function HoldingsTable({
                     )}
                   </td>
                   <td className="hidden md:table-cell px-4 py-3 text-ink-dim truncate max-w-[200px]">
-                    {holding.security_name ?? "\u2014"}
+                    {displaySecurityName(holding.security_name)}
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
                     <Shares value={holding.quantity} digits={qtyDigits} />
