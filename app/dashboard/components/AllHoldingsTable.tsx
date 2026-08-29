@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { unrealizedGainRatio } from "@/lib/format";
+import { displaySecurityName, unrealizedGainRatio } from "@/lib/format";
 import { SymbolLink } from "./SymbolLink";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
@@ -177,7 +177,7 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                     <SymbolLink securityId={h.security_id} symbol={h.symbol} />
                   </td>
                   <td className="px-4 py-3 text-ink-dim text-xs max-w-[200px] truncate">
-                    {h.security_name ?? "\u2014"}
+                    {displaySecurityName(h.security_name)}
                   </td>
                   <td className="px-4 py-3 text-ink-dim text-xs">{h.account_name}</td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">

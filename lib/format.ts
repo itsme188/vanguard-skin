@@ -64,6 +64,15 @@ export function formatPercent(value: number, digits = 1): string {
   return rendersAsZero(out) ? `${(0).toFixed(digits)}%` : out;
 }
 
+// Name-column fallback for holdings tables. `securities.name` can be the
+// EMPTY STRING (not NULL) on some IBKR-synced rows — a bare `?? "—"` only
+// catches null/undefined and left the cell blank instead of the em-dash
+// fallback (QA qa:accounts-holdings--blank-name-column-qqq-rsp-ibkr-
+// regression-2). Whitespace-only names are treated the same way.
+export function displaySecurityName(name: string | null | undefined): string {
+  return name != null && name.trim() !== "" ? name : "—";
+}
+
 export function formatShares(value: number, digits = 0): string {
   if (!Number.isFinite(value)) return "—";
   if (digits === 0) {
