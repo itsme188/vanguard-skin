@@ -31,6 +31,14 @@ export interface SectorGap {
   gapPp: number; // signed percentage-point gap: negative = underweight (deploy target)
   dollarGap: number; // signed dollar amount to fully close gap
   gapClosureScore: number; // |gapPp|, optionally boosted by theme-aware logic
+  /**
+   * Post-allocation residuals: what is still open after the suggested picks
+   * land. `gapPp`/`dollarGap` stay the PRE-allocation figures the table and
+   * the pick rationale show — only these residual fields move as the greedy
+   * allocation loop spends cash against a sector.
+   */
+  residualGapPp: number;
+  residualDollarGap: number;
 }
 
 export interface CashDeployPick {
@@ -294,6 +302,8 @@ function computeSectorGaps(
         gapPp,
         dollarGap,
         gapClosureScore: Math.abs(gapPp),
+        residualGapPp: gapPp,
+        residualDollarGap: dollarGap,
       });
     }
   }
@@ -407,9 +417,9 @@ export function suggestAllocation(
 
   for (const candidate of ranked) {
     if (cashRemaining <= 0) break;
-    const matchingGap = gaps.find((g) => g.sector === candidate.sectorTarget && g.gapPp < 0);
+    const matchingGap = gaps.find((g) => g.sector === candidate.sectorTarget && g.residualGapPp < 0);
     if (!matchingGap) continue;
-    const dollarGap = Math.abs(matchingGap.dollarGap);
+    const dollarGap = Math.abs(matchingGap.residualDollarGap);
     const allocation = Math.min(cashRemaining, dollarGap, perNameCap);
     if (allocation <= 0) continue;
 
@@ -428,13 +438,16 @@ export function suggestAllocation(
     });
 
     cashRemaining -= allocation;
-    // Reduce the gap so subsequent candidates targeting the same sector don't double-fill.
-    // dollarGap is POSITIVE for an underweight sector (dollars needed to close);
-    // gapPp is NEGATIVE — both move toward 0 as cash lands in the sector.
-    matchingGap.dollarGap -= allocation;
+    // Reduce the RESIDUAL gap so subsequent candidates targeting the same
+    // sector don't double-fill. gapPp/dollarGap (what the table and the
+    // rationale string show) never change after computeSectorGaps returns.
+    // residualDollarGap is POSITIVE for an underweight sector (dollars still
+    // needed to close); residualGapPp is NEGATIVE — both move toward 0 as
+    // cash lands in the sector.
+    matchingGap.residualDollarGap -= allocation;
     // Same denominator the gap was measured against (the equity sleeve when
     // the benchmark is equity-only), otherwise the gap only partly unwinds.
-    if (gapBasisTotal > 0) matchingGap.gapPp += (allocation / gapBasisTotal) * 100;
+    if (gapBasisTotal > 0) matchingGap.residualGapPp += (allocation / gapBasisTotal) * 100;
   }
 
   const totalAllocated = picks.reduce((s, p) => s + p.allocationDollars, 0);
