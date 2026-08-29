@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { todayET } from "@/lib/calendar/date-utils";
+import { defaultDateWithinWeek } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
@@ -17,11 +17,11 @@ interface Props {
 
 type Slot = "BMO" | "AMC";
 
-export function EarningsHubAddForm({ weekOf: _weekOf }: Props) {
+export function EarningsHubAddForm({ weekOf }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [symbol, setSymbol] = useState("");
-  const [date, setDate] = useState(today());
+  const [date, setDate] = useState(() => defaultDateWithinWeek(weekOf));
   const [slot, setSlot] = useState<Slot>("AMC");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,7 +68,13 @@ export function EarningsHubAddForm({ weekOf: _weekOf }: Props) {
     return (
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          // The hub can navigate weeks without remounting this form, so the
+          // date must be re-derived from the CURRENT weekOf each time the
+          // form opens, not just at mount.
+          setDate(defaultDateWithinWeek(weekOf));
+          setOpen(true);
+        }}
         className="text-[14px] font-medium text-gold-ink hover:text-gold"
       >
         + Add ticker
@@ -122,10 +128,4 @@ export function EarningsHubAddForm({ weekOf: _weekOf }: Props) {
       {error && <span className="text-[11px] text-down w-full">{error}</span>}
     </form>
   );
-}
-
-function today(): string {
-  // ET-anchored: the date picker defaults to the ET market day, not the
-  // browser's local day (matters for non-ET users / late-night edits).
-  return todayET();
 }
