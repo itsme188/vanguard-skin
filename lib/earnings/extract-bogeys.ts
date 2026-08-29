@@ -18,6 +18,7 @@
 import { APIError } from "@anthropic-ai/sdk";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
+import { classifyAnthropicError } from "@/lib/ai/classify-anthropic-error";
 import { coercePercent, parseLargeUSD } from "@/lib/format";
 import { extractJsonArray } from "@/lib/ai/extract-json";
 
@@ -190,16 +191,30 @@ export async function extractBogeysFromUpload(
   try {
     response = await stream.finalMessage();
   } catch (err) {
-    // The only user-supplied input in this call is the file itself, so an
-    // upstream 400 means the document/image was rejected (corrupt/unreadable).
     console.error("Bogeys extraction upstream error:", err);
     if (err instanceof APIError && err.status === 400) {
+      // An upstream 400 is NOT always "the document/image was rejected" —
+      // Anthropic also returns 400 for account-level faults (billing, bad
+      // key, org limits). Only treat it as a file problem when the error
+      // body actually talks about the document/image/media itself; a
+      // billing 400 sent down the "try a clearer screenshot" path is a
+      // retry loop that can never succeed.
+      const classification = classifyAnthropicError(err);
+      if (classification?.kind === "content") {
+        throw new BogeysExtractionError(
+          isImage
+            ? "That image couldn't be read — try a clearer screenshot (PNG/JPEG) and upload again."
+            : "That file couldn't be read as a PDF — try re-exporting it and uploading again.",
+          400,
+          "invalid_pdf",
+        );
+      }
       throw new BogeysExtractionError(
-        isImage
-          ? "That image couldn't be read — try a clearer screenshot (PNG/JPEG) and upload again."
-          : "That file couldn't be read as a PDF — try re-exporting it and uploading again.",
-        400,
-        "invalid_pdf",
+        classification?.kind === "billing"
+          ? classification.userMessage
+          : "The AI extraction service failed (upstream 400). Try again in a minute.",
+        502,
+        "upstream",
       );
     }
     throw new BogeysExtractionError(
