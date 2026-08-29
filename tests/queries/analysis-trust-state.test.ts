@@ -162,6 +162,8 @@ describe("getAnalysisTrustState", () => {
 
     expect(acct1.bandHistory.map((b) => b.band)).toEqual(["consistent", "investigate"]);
     expect(state.crossCheckedThru).toBe("2026-02-28");
+    expect(acct1.crossCheckedThru).toBe("2026-02-28");
+    expect(acct1.chainBreak).toEqual({ monthEndDate: "2026-03-31", band: "investigate" });
   });
 
   it("NOT_COMPARABLE CONTINUES: a not_comparable month does not stop the chain — a later consistent month still counts", () => {
@@ -186,6 +188,8 @@ describe("getAnalysisTrustState", () => {
     expect(acct1.bandHistory.map((b) => b.band)).toEqual(["not_comparable", "consistent"]);
     // The chain survives PAST the not_comparable month, reaching March.
     expect(state.crossCheckedThru).toBe("2026-03-31");
+    expect(acct1.crossCheckedThru).toBe("2026-03-31");
+    expect(acct1.chainBreak).toBeNull();
   });
 
   it("NOT_COMPARABLE ALONE DOES NOT CERTIFY: a chain made only of not_comparable months yields a null frontier (qa:analysis-trust-strip--cross-checked-claim-while-all-bands-not-comparable)", () => {
@@ -258,6 +262,8 @@ describe("getAnalysisTrustState", () => {
     expect(acct1.bandHistory[0].band).toBe("consistent");
     expect(acct1.bandHistory[1].band).toBe("missing");
     expect(state.crossCheckedThru).toBe("2026-02-28");
+    expect(acct1.crossCheckedThru).toBe("2026-02-28");
+    expect(acct1.chainBreak).toEqual({ monthEndDate: "2026-03-31", band: "missing" });
   });
 
   it("headline row fields (statementTwr/dietzReturn/divergenceBp/band) reflect the LATEST statement month", () => {
@@ -317,6 +323,13 @@ describe("getAnalysisTrustState", () => {
     const state = getAnalysisTrustState(db, [1, 3]);
 
     expect(state.crossCheckedThru).toBe("2026-03-31");
+
+    const acct1 = state.perAccountReconciliation.find((r) => r.accountId === 1)!;
+    const acct3 = state.perAccountReconciliation.find((r) => r.accountId === 3)!;
+    expect(acct1.crossCheckedThru).toBe("2026-03-31");
+    // Account 3's own chain reaches further than the rollup frontier.
+    expect(acct3.crossCheckedThru).toBe("2026-04-30");
+    expect(acct3.crossCheckedThru! > state.crossCheckedThru!).toBe(true);
   });
 
   it("returns per-account reconciliation rows covering every scoped account", () => {
