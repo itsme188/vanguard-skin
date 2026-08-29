@@ -281,6 +281,48 @@ describe("getAccountCoverage", () => {
     expect(vt!.totalHoldings).toBe(2);
     expect(vt!.holdingsWithCostBasis).toBe(1); // VTI via fallback; BRK/B genuinely missing
   });
+
+  it("counts short positions in the held universe", () => {
+    // Pre-fix the hand-rolled join filtered on `h.quantity > 0`, so a short
+    // position (a legitimate IBKR holding) silently dropped out of both the
+    // numerator and denominator — an account holding 12 positions including
+    // 4 shorts read "8/8 priced" instead of "12/12".
+    const acct = seedAccount("IBKR");
+    const long = seedSecurity("AAPL");
+    const short = seedSecurity("TSLA");
+
+    seedHolding(acct, long, 10, today);
+    seedHolding(acct, short, -400, today);
+    seedPrice(long, today, 150);
+    seedPrice(short, today, 250);
+
+    const result = getAccountCoverage(db);
+    const ibkr = result.find((r) => r.accountName === "IBKR");
+    expect(ibkr!.totalHoldings).toBe(2);
+    expect(ibkr!.pricedHoldings).toBe(2);
+  });
+
+  it("keeps a position whose latest row predates the account's newest snapshot", () => {
+    // Pre-fix the denominator was gated on a single global MAX(as_of_date)
+    // per account, so a security whose own latest holdings row is older
+    // than the account's newest snapshot date (e.g. a fund only revalued on
+    // statement day while other positions get daily Plaid rows) dropped out
+    // entirely — exactly the securities the Max Stale card names.
+    const acct = seedAccount("Vanguard Taxable");
+    const vhgex = seedSecurity("VHGEX");
+    const xom = seedSecurity("XOM");
+
+    seedHolding(acct, vhgex, 100, daysAgo(116));
+    seedPrice(vhgex, daysAgo(120), 50);
+    seedHolding(acct, xom, 10, today);
+    seedPrice(xom, today, 110);
+
+    const result = getAccountCoverage(db);
+    const vt = result.find((r) => r.accountName === "Vanguard Taxable");
+    expect(vt!.totalHoldings).toBe(2);
+    expect(vt!.pricedHoldings).toBe(1);
+    expect(vt!.coveragePct).toBe(50);
+  });
 });
 
 // ── getDataGaps ───────────────────────────────────────────────────
