@@ -211,6 +211,58 @@ describe("extractBogeysFromPdf upstream error mapping", () => {
     expect(err.message).not.toContain("invalid_request_error");
   });
 
+  // QA: today-earningshub-upload--billing-400-misattributed-to-unreadable-image
+  //
+  // Anthropic returns 400 for account-level faults (billing, bad key, org
+  // limits) as well as for genuinely bad file content. A billing 400 must
+  // NOT be told to the user as "try a clearer screenshot" — that's a retry
+  // loop that can never succeed since the account, not the file, is broken.
+  it("maps a billing-account 400 (credit balance too low) to a non-file message", async () => {
+    const rawPayload = {
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message:
+          "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
+      },
+      request_id: "req_011Cd5TESTBILLING",
+    };
+    mockStreamRejecting(
+      new APIError(400, rawPayload, `400 ${JSON.stringify(rawPayload)}`, new Headers()),
+    );
+
+    const err = await extractBogeysFromPdf(new Uint8Array([1, 2, 3])).catch((e) => e);
+    expect(err).toBeInstanceOf(BogeysExtractionError);
+    expect(err.status).toBe(502);
+    expect(err.code).toBe("upstream");
+    // Must NOT be the "your file is unreadable" message — the account is
+    // the problem, not the upload.
+    expect(err.message).not.toMatch(/couldn't be read/i);
+    expect(err.message).not.toContain("req_011Cd5TESTBILLING");
+    expect(err.message.toLowerCase()).toContain("billing");
+  });
+
+  // A genuine "could not process image" 400 must still map to the file
+  // message — this is the companion case to the billing test above, pinning
+  // that the fix didn't overcorrect into never showing the file message.
+  it("still maps a genuine 'could not process image' 400 to the file message", async () => {
+    const rawPayload = {
+      type: "error",
+      error: { type: "invalid_request_error", message: "image could not be processed" },
+      request_id: "req_011Cd5TESTIMG",
+    };
+    mockStreamRejecting(
+      new APIError(400, rawPayload, `400 ${JSON.stringify(rawPayload)}`, new Headers()),
+    );
+
+    const err = await extractBogeysFromPdf(new Uint8Array([1, 2, 3])).catch((e) => e);
+    expect(err).toBeInstanceOf(BogeysExtractionError);
+    expect(err.status).toBe(400);
+    expect(err.code).toBe("invalid_pdf");
+    expect(err.message).toMatch(/couldn't be read/i);
+    expect(err.message).not.toContain("req_011Cd5TESTIMG");
+  });
+
   it("maps other upstream API errors to a sanitized 502", async () => {
     const rawPayload = {
       type: "error",
