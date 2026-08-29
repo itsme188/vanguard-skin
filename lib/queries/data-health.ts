@@ -176,11 +176,7 @@ export function getAccountCoverage(db: Database.Database): AccountCoverage[] {
         MAX(h.as_of_date) AS latestHoldingsDate
       FROM accounts a
       LEFT JOIN holdings h ON h.account_id = a.id
-        AND h.as_of_date = (
-          SELECT MAX(h2.as_of_date) FROM holdings h2
-          WHERE h2.account_id = a.id
-        )
-        AND h.quantity > 0
+        AND ${latestHoldingsPredicate()}
       LEFT JOIN (
         SELECT security_id, MAX(date) AS latest_date
         FROM prices GROUP BY security_id
