@@ -194,7 +194,7 @@ export function FactorProfileSection({
           </p>
         ) : (
           <>
-            <div style={{ display: "flex", marginTop: "8px" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", marginTop: "8px" }}>
               <KpiCell
                 label="Beta"
                 value={regression.beta.toFixed(2)}
