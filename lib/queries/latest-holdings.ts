@@ -3,9 +3,12 @@
  * coexist:
  *
  *   - keyBy: "account"          — picks the latest as_of_date per account
- *                                 across ALL securities. Used by allocation
- *                                 queries (analysis.ts) where stale
- *                                 per-security rows wash out via outer SUM.
+ *                                 across ALL securities. LEGACY shape: as of
+ *                                 the 2026-08-30 holdings-latest sweep its
+ *                                 only deliberate user is the data-confidence
+ *                                 freshness READOUT (data-confidence.ts) —
+ *                                 never use it to select positions (it drops
+ *                                 statement-only rows; see DECISIONS.md).
  *
  *   - keyBy: "account_security" — picks the latest as_of_date per (account,
  *                                 security) pair. Required by per-position

@@ -180,7 +180,7 @@ export function getLatestPriceForSecurity(
 
 /**
  * Get current positions across all accounts for a security.
- * Uses latest holdings date per account.
+ * Latest per (account, security) via latestHoldingsPredicate.
  */
 export function getHoldingsBySecurity(
   db: Database.Database,
