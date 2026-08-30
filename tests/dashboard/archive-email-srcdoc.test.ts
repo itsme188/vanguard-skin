@@ -129,6 +129,47 @@ describe("withExternalLinkTarget", () => {
   it("returns empty input unchanged", () => {
     expect(withExternalLinkTarget("")).toBe("");
   });
+
+  // Codex finding: the tag regex ran over raw HTML and rewrote tag-like
+  // strings INSIDE <script>…</script> and <style>…</style> — a probe turned
+  // `const x="<a target=\"_self\">"` (JS string literal text, not markup)
+  // into broken text, and rewrote a CSS `content:"<a target=_top>"` literal
+  // too. Scripts never execute in this frame (no allow-scripts in
+  // EMAIL_FRAME_SANDBOX), but the rewrite must still leave non-markup text
+  // inside those regions byte-for-byte untouched.
+  it("does not rewrite target-attribute-looking text inside a <script> block, but still rewrites a real <a> tag after it", () => {
+    const html =
+      '<html><head></head><body>' +
+      '<script>const x = "<a target=\\"_self\\">";</script>' +
+      '<a href="https://evil.test" target="_self">go</a>' +
+      "</body></html>";
+    const out = withExternalLinkTarget(html);
+    // The script's text content is untouched, hostile target and all.
+    expect(out).toContain('<script>const x = "<a target=\\"_self\\">";</script>');
+    // The real anchor after the script IS rewritten.
+    expect(out).toContain('<a href="https://evil.test" target="_blank">go</a>');
+  });
+
+  it("does not rewrite a <style> block's CSS content literal that looks like a hostile tag", () => {
+    const html =
+      "<html><head><style>a::after { content: \"<a target=_top>\"; }</style></head>" +
+      '<body><a href="https://evil.test" target="_self">go</a></body></html>';
+    const out = withExternalLinkTarget(html);
+    // The CSS content literal is untouched.
+    expect(out).toContain('a::after { content: "<a target=_top>"; }');
+    // The real anchor in the body IS still rewritten.
+    expect(out).toContain('<a href="https://evil.test" target="_blank">go</a>');
+  });
+
+  it("still injects <base target=\"_blank\"> in the head even when the body carries a <script>/<style> block", () => {
+    const html =
+      "<html><head><style>.x { content: \"<a target=_top>\"; }</style></head>" +
+      "<body><script>var y = '<base target=\"_top\">';</script><p>hi</p></body></html>";
+    const out = withExternalLinkTarget(html);
+    expect(out).toContain('<head><base target="_blank">');
+    // The script text's fake <base target> is untouched, not neutralised.
+    expect(out).toContain("var y = '<base target=\"_top\">';");
+  });
 });
 
 describe("EMAIL_FRAME_SANDBOX", () => {

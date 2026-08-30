@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
-import { Money } from "@/lib/privacy/components";
 import { formatUSDPrecise } from "@/lib/format";
 
 interface PreviewAlert {
@@ -258,15 +257,11 @@ export function NotificationBell() {
                             {formatRelative(l.created_at)}
                           </span>
                         </div>
-                        <p className="text-[10px] text-ink-faint mt-0.5">
-                          {l.level_type.replace("_", " ")} @{" "}
-                          <Money value={l.price} precise />
-                          {l.source_author && (
-                            <span className="text-ink-faint italic">
-                              {" "}— {l.source_author}
-                            </span>
-                          )}
-                        </p>
+                        <ReviewLevelLine
+                          levelType={l.level_type}
+                          price={l.price}
+                          sourceAuthor={l.source_author}
+                        />
                       </Link>
                     </li>
                   ))
@@ -330,6 +325,39 @@ export function AlertLevelLine({
       {level.source_author && (
         <span className="text-ink-faint italic">
           {" "}— {level.source_author}
+        </span>
+      )}
+    </p>
+  );
+}
+
+/**
+ * The "@ $price — author" line under a levels-to-review preview row.
+ * Extracted as its own component (rather than inlined in the `.map()`), the
+ * same way `AlertLevelLine` was — module-level export, never a component
+ * defined inside another component's body — so it can be rendered directly
+ * with fixture data in tests.
+ *
+ * A newsletter-suggested level price is PUBLIC market data (the same figure
+ * `AlertLevelLine` above and `/dashboard/alerts` already render unmasked
+ * with `formatUSDPrecise`) — never wrap it in `<Money>`.
+ */
+export function ReviewLevelLine({
+  levelType,
+  price,
+  sourceAuthor,
+}: {
+  levelType: string;
+  price: number;
+  sourceAuthor: string | null;
+}) {
+  return (
+    <p className="text-[10px] text-ink-faint mt-0.5">
+      {levelType.replace("_", " ")} @{" "}
+      {formatUSDPrecise(price)}
+      {sourceAuthor && (
+        <span className="text-ink-faint italic">
+          {" "}— {sourceAuthor}
         </span>
       )}
     </p>

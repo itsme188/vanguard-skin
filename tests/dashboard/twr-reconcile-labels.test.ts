@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { countNotComparableThrough } from "@/app/dashboard/components/analysis/TrustStripDrawer";
+import type { PerAccountReconciliation } from "@/lib/queries/analysis-trust-state";
 
 describe("TWR surfaces disclose an independent Dietz cross-check, not a reconciled checkmark (2026-08-23 durable-fixes update)", () => {
   it("PerformanceView shows the Modified Dietz cross-check disclosure and drops all 'reconciled' language", () => {
@@ -90,6 +92,67 @@ describe("TrustStripDrawer copy is honest about what was actually cross-checked"
     // The unconditional trust claim must still exist when nothing was skipped.
     expect(src).toContain(
       "the earliest month every account's contiguous chain of consistent months reaches"
+    );
+  });
+});
+
+// Codex finding: countNotComparableThrough summed account-month observations,
+// not distinct months — one seam month straddling three accounts read as "3
+// not-comparable months skipped" even though it was a single calendar month.
+// It must dedupe by monthEndDate across accounts, and the count that reaches
+// the DOM must go through <Count> (privacy invariant — every user-facing
+// count renders through lib/privacy/components.tsx).
+describe("countNotComparableThrough counts DISTINCT not-comparable months, not per-account observations", () => {
+  const src = readFileSync("app/dashboard/components/analysis/TrustStripDrawer.tsx", "utf8");
+
+  function row(
+    accountId: number,
+    bandHistory: PerAccountReconciliation["bandHistory"]
+  ): PerAccountReconciliation {
+    return {
+      accountId,
+      accountName: `Account ${accountId}`,
+      monthEndDate: null,
+      statementTwr: null,
+      dietzReturn: null,
+      divergenceBp: null,
+      band: null,
+      bandHistory,
+      crossCheckedThru: null,
+      chainBreak: null,
+    };
+  }
+
+  it("three accounts sharing one not-comparable month count as 1, not 3", () => {
+    const shared = [{ monthEndDate: "2026-05-31", band: "not_comparable" as const, divergenceBp: null }];
+    const accounts = [row(1, shared), row(2, shared), row(3, shared)];
+    expect(countNotComparableThrough(accounts, "2026-12-31")).toBe(1);
+  });
+
+  it("two distinct not-comparable months (even split across accounts) count as 2", () => {
+    const accounts = [
+      row(1, [{ monthEndDate: "2026-04-30", band: "not_comparable" as const, divergenceBp: null }]),
+      row(2, [{ monthEndDate: "2026-05-31", band: "not_comparable" as const, divergenceBp: null }]),
+    ];
+    expect(countNotComparableThrough(accounts, "2026-12-31")).toBe(2);
+  });
+
+  it("stops counting past the `through` frontier and ignores non-not_comparable bands", () => {
+    const accounts = [
+      row(1, [
+        { monthEndDate: "2026-04-30", band: "not_comparable" as const, divergenceBp: null },
+        { monthEndDate: "2026-05-31", band: "consistent" as const, divergenceBp: 10 },
+        { monthEndDate: "2026-06-30", band: "not_comparable" as const, divergenceBp: null },
+      ]),
+    ];
+    expect(countNotComparableThrough(accounts, "2026-05-31")).toBe(1);
+  });
+
+  it("TrustStripDrawer renders the not-comparable-skipped count through <Count>, not a raw string interpolation", () => {
+    expect(src).toContain("<Count");
+    // The Count import must be pulled from the shared privacy primitives.
+    expect(src).toMatch(
+      /import\s*\{[^}]*\bCount\b[^}]*\}\s*from\s*["']@\/lib\/privacy\/components["']/
     );
   });
 });

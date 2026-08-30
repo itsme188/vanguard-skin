@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { NearbyLevelsCard } from "@/app/dashboard/components/NearbyLevelsCard";
-import { AlertLevelLine } from "@/app/dashboard/components/NotificationBell";
+import { AlertLevelLine, ReviewLevelLine } from "@/app/dashboard/components/NotificationBell";
 import { AlertPriceRow } from "@/app/dashboard/components/RecentAlertsPanel";
 import type { LevelNearPrice } from "@/lib/queries/briefing-levels";
 
@@ -109,6 +109,44 @@ describe("NotificationBell's AlertLevelLine renders public level/triggered price
   it("renders nothing when there is no level (guards the @-price line, not the whole row)", () => {
     const html = renderToStaticMarkup(<AlertLevelLine level={null} triggeredPrice={101.25} />);
     expect(html).toBe("");
+  });
+});
+
+// Codex finding (3rd confirmed): the "Levels to review" block still rendered
+// l.price through <Money> (portfolio-derived masking) even though a
+// newsletter-suggested level price is PUBLIC market data — the same class of
+// bug already fixed for AlertLevelLine/AlertPriceRow above. Extracted as its
+// own module-level component (never defined inside NotificationBell's body)
+// so it's directly renderable here, matching the AlertLevelLine pattern.
+describe("NotificationBell's ReviewLevelLine renders public review-level price unmasked under privacy mode", () => {
+  it("shows the level price in the clear, with no privacy mask", () => {
+    const html = renderToStaticMarkup(
+      <ReviewLevelLine levelType="resistance" price={100} sourceAuthor="J. Analyst" />
+    );
+    expect(html).toContain("$100.00");
+    expect(html).not.toContain(MASK);
+  });
+
+  it("renders without an author byline when source_author is null", () => {
+    const html = renderToStaticMarkup(
+      <ReviewLevelLine levelType="support" price={42.5} sourceAuthor={null} />
+    );
+    expect(html).toContain("$42.50");
+    expect(html).not.toContain(MASK);
+  });
+
+  it("does not import the masking primitives from lib/privacy/components anywhere in NotificationBell", () => {
+    // Static-scan backstop: the file no longer renders a portfolio-derived
+    // dollar figure, so it has no reason to import Money/Pct/etc. A comment
+    // may still reference "<Money>" by name as a warning (same style as
+    // AlertLevelLine's doc comment above) — this only pins the import.
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const source = fs.readFileSync(
+      path.join(process.cwd(), "app/dashboard/components/NotificationBell.tsx"),
+      "utf8"
+    );
+    expect(source).not.toMatch(/from ["']@\/lib\/privacy\/components["']/);
   });
 });
 
