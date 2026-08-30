@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { statementSourcedHoldingSql } from "@/lib/db/holding-sources";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 
 export interface ReconcileClosedEquityOptions {
   /** Scope to a single account. Omit to reconcile every account. */
@@ -55,19 +56,36 @@ const LIVE_PASS_CLASSES = [
  * The whole design turns on that completeness question, which is why the sweep
  * runs as three passes with different scopes:
  *
- *  1. STATEMENT pass (all security types). An imported broker statement is a
- *     complete book of everything the account holds — equities, options,
- *     bonds, mutual funds, sweep funds. So for each account with
- *     statement-sourced holdings rows (classified by `source_key` prefix via
- *     `statementSourcedHoldingSql`, never an inline LIKE), let S be the latest
- *     statement `as_of_date`: any position of ANY type whose latest row
- *     predates S is marked flat at S. This is the only pass that can retire a
- *     mutual fund or a bond, because no live source reports them (Plaid books
- *     carry neither) — real case: two Vanguard funds sold 2026-05-05 whose
- *     2026-04-30 statement rows stayed "latest" through three later statements
- *     that correctly omitted them. Its shrink guard compares statement to
- *     PRIOR STATEMENT, never statement to live snapshot — a Plaid book holds
- *     zero bonds/funds, so a cross-source comparison would read as a collapse.
+ *  1. STATEMENT pass (all security types EXCEPT cash equivalents). An
+ *     imported broker statement is a complete book of everything the account
+ *     holds — equities, options, bonds, mutual funds, sweep funds. So for
+ *     each account with statement-sourced holdings rows (classified by
+ *     `source_key` prefix via `statementSourcedHoldingSql`, never an inline
+ *     LIKE), let S be the latest statement `as_of_date`: any position whose
+ *     latest row predates S is marked flat at S. This is the only pass that
+ *     can retire a mutual fund or a bond, because no live source reports them
+ *     (Plaid books carry neither) — real case: two Vanguard funds sold
+ *     2026-05-05 whose 2026-04-30 statement rows stayed "latest" through
+ *     three later statements that correctly omitted them. Its shrink guard
+ *     compares statement to PRIOR STATEMENT, never statement to live
+ *     snapshot — a Plaid book holds zero bonds/funds, so a cross-source
+ *     comparison would read as a collapse.
+ *
+ *     EXCLUSION (Codex-flagged, 2026-08-30): a money-market sweep fund
+ *     (`isCashEquivalentSecurity`, lib/compute/cash-equivalents.ts) is
+ *     excluded from this pass, even though it can appear as a statement
+ *     holdings row. Some statements list the sweep fund as a line item;
+ *     others fold it straight into the cash balance and never emit a
+ *     position for it — a plumbing difference with no economic event behind
+ *     it (the same ambiguity `isCashEquivalentSecurity`'s doc comment
+ *     describes for Plaid vs. statement). Absent that exclusion, a statement
+ *     that folds the sweep fund into cash looks identical to a sold fund —
+ *     one row disappearing from a large statement, which the 50% shrink
+ *     guard does not catch — and `daily_valuations` counts sweep funds as
+ *     CASH, so a phantom tombstone here would corrupt the account's cash
+ *     balance. The filter is applied in TS against `isCashEquivalentSecurity`
+ *     (never a hand-rolled `money_market`/`VMFXX` string list — that
+ *     predicate is the single source of truth).
  *
  *  2. EQUITY pass against the latest snapshot of any source. Live syncs (TWS,
  *     Plaid) report the full equity book, so they can retire equities between
@@ -83,6 +101,17 @@ const LIVE_PASS_CLASSES = [
  * Bonds and mutual funds are deliberately NOT in the live passes: Plaid never
  * reports them, and their statement rows are carried forward onto live-snapshot
  * days by design (see daily-valuation's bond carry-forward).
+ *
+ * Cash equivalents are excluded from every pass, statement and live alike.
+ * The live passes' `typeSql` (stock/etf, option) already excludes a sweep
+ * fund whose `security_type` correctly reads 'Mutual Fund' or 'money_market'
+ * — but `isCashEquivalentSecurity`'s signal 2 (`fund_category = 'Cash
+ * Equivalent'`) is independent of `security_type`, and brokers routinely
+ * mislabel a sweep fund's `security_type` as plain 'Stock'. Left unfiltered,
+ * such a row would slide through the equity pass's typeSql. So every phantom
+ * candidate — statement pass and both live-pass classes — is filtered
+ * through `isCashEquivalentSecurity` in TS before tombstoning, making the
+ * exclusion explicit and pass-independent rather than an accident of typeSql.
  *
  * Every pass inserts a `quantity = 0` row at the snapshot date it reconciled
  * against. This is intentionally NON-DESTRUCTIVE (preserves the cost-basis /
@@ -142,6 +171,18 @@ export function reconcileClosedEquityHoldings(
   );
 
   /**
+   * A phantom candidate row, carrying the fields `isCashEquivalentSecurity`
+   * needs so callers can filter cash equivalents out in TS before tombstoning
+   * (never a hand-rolled `money_market`/`VMFXX` SQL string list — the
+   * predicate in lib/compute/cash-equivalents.ts is the single source).
+   */
+  interface PhantomRow {
+    security_id: number;
+    security_type: string | null;
+    fund_category: string | null;
+  }
+
+  /**
    * Positions whose latest row predates `?3` and is non-zero — i.e. absent from
    * the snapshot at `?3`. `typeSql` narrows to a security class ("" = all).
    */
@@ -151,7 +192,9 @@ export function reconcileClosedEquityHoldings(
          FROM holdings WHERE account_id = ?
         GROUP BY security_id
      )
-     SELECT lps.security_id AS security_id
+     SELECT lps.security_id AS security_id,
+            s.security_type AS security_type,
+            s.fund_category AS fund_category
        FROM latest_per_sec lps
        JOIN holdings h
          ON h.account_id = ? AND h.security_id = lps.security_id AND h.as_of_date = lps.d
@@ -159,6 +202,10 @@ export function reconcileClosedEquityHoldings(
       WHERE lps.d < ?
         AND h.quantity != 0
         ${typeSql ? `AND ${typeSql}` : ""}`;
+
+  /** Cash equivalents are never eligible for tombstoning — see the pass-1 doc above. */
+  const excludingCashEquivalents = (rows: PhantomRow[]): PhantomRow[] =>
+    rows.filter((r) => !isCashEquivalentSecurity(r));
 
   const anyPhantomsStmt = db.prepare(phantomsSql(""));
   const classStmts = LIVE_PASS_CLASSES.map((cls) => ({
@@ -215,9 +262,9 @@ export function reconcileClosedEquityHoldings(
         ? (statementCountOnDateStmt.get(accountId, priorStmtDate) as { c: number }).c
         : 0;
       if (stmtCount > 0 && passesShrinkGuard(stmtCount, priorStmtCount)) {
-        const phantoms = anyPhantomsStmt.all(accountId, accountId, stmtDate) as {
-          security_id: number;
-        }[];
+        const phantoms = excludingCashEquivalents(
+          anyPhantomsStmt.all(accountId, accountId, stmtDate) as PhantomRow[],
+        );
         for (const p of phantoms) tombstone(accountId, p.security_id, stmtDate);
       }
     }
@@ -249,9 +296,9 @@ export function reconcileClosedEquityHoldings(
       // (dominated by another class) still looks healthy.
       if (!passesShrinkGuard(latestClassCount, priorClassCount)) continue;
 
-      const phantoms = cls.phantoms.all(accountId, accountId, latestDate) as {
-        security_id: number;
-      }[];
+      const phantoms = excludingCashEquivalents(
+        cls.phantoms.all(accountId, accountId, latestDate) as PhantomRow[],
+      );
       for (const p of phantoms) tombstone(accountId, p.security_id, latestDate);
     }
   }
