@@ -87,6 +87,55 @@ describe("holdings queries", () => {
       expect(holdings.map((h) => h.symbol).sort()).toEqual(["VTI", "XYZ"]);
     });
 
+    it("returns a security whose newest row predates the account's newest snapshot date", () => {
+      // QA finding accounts-holdings--global-max-as-of-date-drops-19-live-positions-72k-treasuries:
+      // "latest" is per-(account, security), never a per-account global
+      // MAX(as_of_date). A bond that only restates on the monthly statement
+      // must survive a daily broker/Plaid sync that rewrites the equity rows.
+      const vti = seedSecurity(db, "VTI");
+      const bond = seedSecurity(db, "BOND");
+      seedHolding(db, ACCOUNT_ID, bond, 40, "2025-01-31"); // only row, older date
+      seedHolding(db, ACCOUNT_ID, vti, 110, "2025-02-28"); // newer sync row
+
+      const holdings = getHoldingsByAccount(db, ACCOUNT_ID);
+      expect(holdings.map((h) => h.symbol)).toEqual(["BOND", "VTI"]);
+
+      const bondRow = holdings.find((h) => h.symbol === "BOND")!;
+      expect(bondRow.quantity).toBe(40);
+      expect(bondRow.as_of_date).toBe("2025-01-31");
+
+      const vtiRow = holdings.find((h) => h.symbol === "VTI")!;
+      expect(vtiRow.quantity).toBe(110);
+      expect(vtiRow.as_of_date).toBe("2025-02-28");
+    });
+
+    it("hides a security whose newest row is a quantity=0 tombstone above a non-zero older row", () => {
+      // Reconciler contract: the tombstone IS the latest row for the
+      // (account, security) pair, so per-pair latest + quantity != 0 still
+      // hides the closed position (it must not resurrect the older row).
+      const vti = seedSecurity(db, "VTI");
+      const acwv = seedSecurity(db, "ACWV");
+      seedHolding(db, ACCOUNT_ID, acwv, 75, "2025-01-31"); // was held
+      seedHolding(db, ACCOUNT_ID, acwv, 0, "2025-02-28"); // closure marker
+      seedHolding(db, ACCOUNT_ID, vti, 110, "2025-02-28");
+
+      const holdings = getHoldingsByAccount(db, ACCOUNT_ID);
+      expect(holdings.map((h) => h.symbol)).toEqual(["VTI"]);
+    });
+
+    it("renders a short whose newest row predates the account's newest snapshot date", () => {
+      const vti = seedSecurity(db, "VTI");
+      const shortSec = seedSecurity(db, "XYZ");
+      seedHolding(db, ACCOUNT_ID, shortSec, -25, "2025-01-31");
+      seedHolding(db, ACCOUNT_ID, vti, 110, "2025-02-28");
+
+      const holdings = getHoldingsByAccount(db, ACCOUNT_ID);
+      expect(holdings.map((h) => h.symbol)).toEqual(["VTI", "XYZ"]);
+      const shortRow = holdings.find((h) => h.symbol === "XYZ")!;
+      expect(shortRow.quantity).toBe(-25);
+      expect(shortRow.as_of_date).toBe("2025-01-31");
+    });
+
     it("returns holdings for a specific date", () => {
       const vti = seedSecurity(db, "VTI");
       seedHolding(db, ACCOUNT_ID, vti, 100, "2025-01-31");
@@ -159,6 +208,68 @@ describe("holdings queries", () => {
       const tltRow = rows.find((r) => r.symbol === "TLT")!;
       expect(tltRow.quantity).toBe(20);
       expect(tltRow.current_value).toBe(20 * 90);
+    });
+    it("includes a security whose newest row predates its account's newest snapshot date, and counts it in the totals", () => {
+      // QA finding accounts-holdings--global-max-as-of-date-drops-19-live-positions-72k-treasuries:
+      // pre-fix the per-account global MAX(as_of_date) dropped every position
+      // that only restates on the monthly statement, and the table's totals /
+      // allocation percentages were computed on the short list.
+      const vti = seedSecurity(db, "VTI");
+      seedHolding(db, TAXABLE_ID, vti, 100, TODAY);
+      seedPrice(db, vti, TODAY, 250);
+
+      // Statement-only position in the SAME account, older as_of_date.
+      const bond = seedSecurity(db, "BOND");
+      seedHolding(db, TAXABLE_ID, bond, 40, "2025-01-31");
+      seedPrice(db, bond, TODAY, 200);
+
+      // Second account, newest date — proves the fix is not account-scoped.
+      const tlt = seedSecurity(db, "TLT");
+      seedHolding(db, IBKR_ID, tlt, 20, TODAY);
+      seedPrice(db, tlt, TODAY, 90);
+
+      const rows = getAllHoldings(db);
+      expect(rows.map((r) => r.symbol).sort()).toEqual(["BOND", "TLT", "VTI"]);
+
+      const bondRow = rows.find((r) => r.symbol === "BOND")!;
+      expect(bondRow.quantity).toBe(40);
+      expect(bondRow.as_of_date).toBe("2025-01-31");
+      expect(bondRow.current_value).toBe(40 * 200);
+
+      const total = rows.reduce((sum, r) => sum + (r.current_value ?? 0), 0);
+      expect(total).toBe(100 * 250 + 40 * 200 + 20 * 90);
+    });
+
+    it("hides a security whose newest row is a quantity=0 tombstone above a non-zero older row", () => {
+      const vti = seedSecurity(db, "VTI");
+      seedHolding(db, TAXABLE_ID, vti, 100, TODAY);
+      seedPrice(db, vti, TODAY, 250);
+
+      const acwv = seedSecurity(db, "ACWV");
+      seedHolding(db, IBKR_ID, acwv, 75, "2025-01-31"); // was held
+      seedHolding(db, IBKR_ID, acwv, 0, TODAY); // closure marker
+      seedPrice(db, acwv, TODAY, 100);
+
+      const rows = getAllHoldings(db);
+      expect(rows.map((r) => r.symbol)).toEqual(["VTI"]);
+    });
+
+    it("renders a short whose newest row predates its account's newest snapshot date", () => {
+      const tlt = seedSecurity(db, "TLT");
+      seedHolding(db, IBKR_ID, tlt, 20, TODAY);
+      seedPrice(db, tlt, TODAY, 90);
+
+      const banc = seedSecurity(db, "BANC");
+      seedHolding(db, IBKR_ID, banc, -500, "2025-01-31");
+      seedPrice(db, banc, TODAY, 15);
+
+      const rows = getAllHoldings(db);
+      expect(rows.map((r) => r.symbol).sort()).toEqual(["BANC", "TLT"]);
+
+      const bancRow = rows.find((r) => r.symbol === "BANC")!;
+      expect(bancRow.quantity).toBe(-500);
+      expect(bancRow.as_of_date).toBe("2025-01-31");
+      expect(bancRow.current_value).toBe(-500 * 15);
     });
   });
 

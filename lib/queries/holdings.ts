@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { Holding } from "@/lib/types";
 import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 export interface HoldingWithSecurity extends Holding {
   symbol: string;
@@ -43,10 +44,12 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
   // NULL (Plaid's investments/holdings/get response has no reliable basis
   // field for every account type). Statement imports write the same
   // (account, security) pair with cost_basis populated on the period-end
-  // date. Pre-fix this query keyed off MAX(as_of_date) per account and
-  // silently dropped cost_basis whenever a Plaid row existed on a later
-  // date than the most recent statement — every Vanguard holding rendered
-  // "-" cost basis and NULL unrealized gain after the first Plaid sync.
+  // date, so the row this query displays — the per-(account, security)
+  // latest row, see the WHERE clause below — is usually the NULL-basis
+  // Plaid row. Without the fallback every Vanguard holding rendered "-"
+  // cost basis and NULL unrealized gain after the first Plaid sync. The
+  // inner alias is h3 so it stays distinct from the h2 that
+  // latestHoldingsPredicate uses inside its own subquery.
   // Mirrors the identical pattern in getCrossAccountPositions
   // (lib/digest/send-earnings-email.ts).
   const costBasisExpr = scaledCostBasisFallbackSQL("h", "h3");
@@ -76,19 +79,27 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
     LEFT JOIN prices p ON p.security_id = h.security_id
       AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = h.security_id)
     LEFT JOIN fx_rates fx ON fx.currency = s.currency
-    WHERE h.quantity != 0
-      AND h.as_of_date = (
-        SELECT MAX(h2.as_of_date) FROM holdings h2
-        WHERE h2.account_id = h.account_id
-      )
+    WHERE ${latestHoldingsPredicate()}
       AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
     ORDER BY current_value DESC NULLS LAST
   `;
-  // quantity != 0 (not > 0): shorts are real positions and must render, but
-  // the closed-equity reconciler's quantity=0 tombstone rows (written at the
-  // latest snapshot date to mark statement-disappeared positions) are not —
-  // mirrors getHoldingsByAccount below (QA 2026-07-11; All Accounts view was
-  // silently dropping every short, understating position count and Total).
+  // "Latest" is keyed per-(account, security) via latestHoldingsPredicate,
+  // never a per-account global MAX(as_of_date): a position that only
+  // restates on the monthly statement (Treasuries, mutual funds) carries an
+  // older as_of_date than the daily broker/Plaid rows, and the per-account
+  // MAX dropped it from the table entirely — with the table's totals and
+  // allocation percentages then computed on the short list. QA finding
+  // accounts-holdings--global-max-as-of-date-drops-19-live-positions-72k-treasuries.
+  //
+  // The predicate also carries quantity != 0 (not > 0), which is why the
+  // WHERE clause above does not repeat it: shorts are real positions and
+  // must render, but the closed-equity reconciler's quantity=0 tombstone
+  // rows (written at the latest snapshot date to mark statement-disappeared
+  // positions) are not. A tombstone IS the latest row for its (account,
+  // security) pair, so per-pair keying still hides the closed position
+  // rather than resurrecting the older non-zero row (QA 2026-07-11; All
+  // Accounts view was silently dropping every short, understating position
+  // count and Total).
 
   return db.prepare(sql).all() as AllHoldingsRow[];
 }
@@ -99,8 +110,10 @@ export function getHoldingsByAccount(
   asOfDate?: string
 ): HoldingWithSecurity[] {
   // Cost basis fallback — see getAllHoldings above for the Plaid-NULL
-  // rationale; same pattern as getCrossAccountPositions.
-  const costBasisExpr = scaledCostBasisFallbackSQL("h", "h2");
+  // rationale; same pattern as getCrossAccountPositions. Inner alias h3
+  // stays distinct from the h2 that latestHoldingsPredicate uses inside its
+  // own subquery.
+  const costBasisExpr = scaledCostBasisFallbackSQL("h", "h3");
 
   let sql = `
     SELECT h.*, s.symbol, s.name as security_name, s.security_type, a.name as account_name,
@@ -112,21 +125,35 @@ export function getHoldingsByAccount(
     JOIN accounts a ON a.id = h.account_id
     LEFT JOIN fx_rates fx ON fx.currency = s.currency
     WHERE h.account_id = ?
-      AND h.quantity != 0
   `;
-  // quantity != 0 (not > 0): shorts are real positions and must render, but
-  // the closed-equity reconciler's quantity=0 tombstone rows (written at the
-  // latest snapshot date to mark statement-disappeared positions) are not —
-  // pre-filter they surfaced as "0 shares · $0.00" holdings (QA 2026-07-11).
   const params: (number | string)[] = [accountId];
 
   if (asOfDate) {
-    sql += " AND h.as_of_date = ?";
+    // Explicit date = point-in-time snapshot: every row stamped that exact
+    // date. quantity != 0 (not > 0) is spelled out here because the default
+    // branch's predicate is not in play: shorts are real positions and must
+    // render, but the closed-equity reconciler's quantity=0 tombstone rows
+    // (written at the latest snapshot date to mark statement-disappeared
+    // positions) are not — pre-filter they surfaced as "0 shares" holdings
+    // (QA 2026-07-11).
+    sql += " AND h.quantity != 0 AND h.as_of_date = ?";
     params.push(asOfDate);
   } else {
-    sql +=
-      " AND h.as_of_date = (SELECT MAX(as_of_date) FROM holdings WHERE account_id = ?)";
-    params.push(accountId);
+    // Default read keys "latest" per-(account, security), never a
+    // per-account global MAX(as_of_date): a position that only restates on
+    // the monthly statement (Treasuries, mutual funds) carries an older
+    // as_of_date than the daily broker/Plaid rows, and the per-account MAX
+    // dropped it from the table entirely — with the table's totals and
+    // allocation percentages then computed on the short list. QA finding
+    // accounts-holdings--global-max-as-of-date-drops-19-live-positions-72k-treasuries.
+    //
+    // latestHoldingsPredicate carries the quantity != 0 clause itself (same
+    // shorts-yes / tombstones-no contract as above), so it is not repeated;
+    // a tombstone IS the latest row for its (account, security) pair, so
+    // per-pair keying still hides the closed position rather than
+    // resurrecting the older non-zero row. accountFilter is empty because
+    // the WHERE clause already binds h.account_id = ?.
+    sql += ` AND ${latestHoldingsPredicate({ accountFilter: "" })}`;
   }
 
   sql += " ORDER BY s.symbol";
