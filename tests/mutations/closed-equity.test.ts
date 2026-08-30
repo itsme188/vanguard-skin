@@ -26,6 +26,18 @@ function sec(symbol: string, type = "stock"): number {
     ).get(symbol, type) as { id: number }
   ).id;
 }
+/**
+ * A money-market sweep fund, in the live-production shape documented in
+ * lib/compute/cash-equivalents.ts: brokers call it a "Mutual Fund" and only
+ * `fund_category = 'Cash Equivalent'` (signal 2) marks it as cash.
+ */
+function secCash(symbol: string): number {
+  return (
+    db.prepare(
+      `INSERT INTO securities (symbol, security_type, fund_category) VALUES (?, 'Mutual Fund', 'Cash Equivalent') RETURNING id`,
+    ).get(symbol) as { id: number }
+  ).id;
+}
 function hold(a: number, s: number, qty: number, date: string, sourceKey?: string): void {
   db.prepare(
     `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
@@ -380,5 +392,47 @@ describe("reconcileClosedEquityHoldings — statement pass (complete-book, any s
     holdStmt(a, eq, 100, "2026-08-31");
     expect(livePositionIds(a)).toContain(fund);
     expect(reconcileClosedEquityHoldings(db)).toBe(0);
+  });
+
+  it("CASH-EQUIVALENT GUARD: does NOT tombstone a sweep fund folded into cash on a later statement", () => {
+    // Codex-flagged case: a statement that folds the money-market sweep fund
+    // into its cash balance instead of listing it as a holdings line looks,
+    // to the statement pass, exactly like a sold mutual fund — absent from
+    // the latest statement snapshot. But daily_valuations counts sweep funds
+    // as CASH (isCashEquivalentSecurity), so tombstoning it here would zero
+    // out the account's cash. The 50% shrink guard alone can't catch this —
+    // one row disappearing from a large statement doesn't trip it.
+    const a = acct("Vanguard Taxable");
+    const eq = sec("VTI", "etf");
+    const sweep = secCash("VMFXX");
+    // April statement: equity + sweep fund listed as a holding
+    holdStmt(a, eq, 100, "2026-04-30");
+    holdStmt(a, sweep, 5000, "2026-04-30");
+    // July statement: sweep fund folded into cash, no longer a holdings line
+    holdStmt(a, eq, 100, "2026-07-31");
+
+    expect(reconcileClosedEquityHoldings(db)).toBe(0);
+    expect(latestQty(a, sweep)).toEqual({ q: 5000, d: "2026-04-30" });
+    expect(livePositionIds(a)).toContain(sweep);
+  });
+
+  it("still tombstones a sold (non-cash) mutual fund absent from the later statement, alongside an untouched sweep fund", () => {
+    const a = acct("Vanguard Taxable");
+    // Several always-held equities keep the statement-vs-prior-statement
+    // shrink guard well clear of its 50% floor (dropping 2 of 6 rows, not 2
+    // of 3) — isolating the assertion to the cash-equivalent filter itself.
+    const eqs = Array.from({ length: 4 }, (_, i) => sec(`E${i}`, "etf"));
+    const sweep = secCash("VMFXX");
+    const fund = sec("VHGEX", "mutual_fund");
+    eqs.forEach((s) => holdStmt(a, s, 100, "2026-04-30"));
+    holdStmt(a, sweep, 5000, "2026-04-30");
+    holdStmt(a, fund, 50, "2026-04-30");
+    // July: sweep folded into cash AND the fund was actually sold
+    eqs.forEach((s) => holdStmt(a, s, 100, "2026-07-31"));
+
+    expect(reconcileClosedEquityHoldings(db)).toBe(1);
+    expect(latestQty(a, fund)).toEqual({ q: 0, d: "2026-07-31" });
+    expect(latestQty(a, sweep)).toEqual({ q: 5000, d: "2026-04-30" });
+    expect(livePositionIds(a)).toContain(sweep);
   });
 });
