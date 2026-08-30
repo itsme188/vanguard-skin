@@ -254,8 +254,129 @@ describe("classifyFactors — lenient JSON parsing (single-security batch)", () 
     const result = await classifyFactors(db);
 
     expect(result.classified).toBe(0);
-    expect(result.errors).toEqual(["Batch 1: AI reply was not a list of classifications"]);
+    expect(result.errors).toEqual(["Batch 1: AI reply was not a JSON list of classifications"]);
     expect(result.errors[0]).not.toMatch(/iterable/i);
     expect(result.errors[0]).not.toMatch(/SyntaxError/i);
+  });
+});
+
+// Adversarial-review regressions (2026-08-30). The element guard only checked
+// that `symbol` was a string, so a reply like {"symbol":"SILC"} (or one carrying
+// an `error` field instead of factors) wrote NINE NULL factor columns with
+// factor_source='auto' and reported classified:1. The candidate query only
+// re-offers securities with NO security_factors row, so that security was never
+// retried — a permanent silent hole.
+describe("classifyFactors — unusable AI elements never write a row", () => {
+  it("writes nothing and records a batch error for a symbol-only reply", async () => {
+    const db = makeDb();
+    const silcId = insertSecurity(db, { symbol: "SILC", security_type: "Stock" });
+    insertHolding(db, silcId);
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify({ symbol: "SILC" }),
+    });
+
+    const result = await classifyFactors(db);
+
+    expect(result.classified).toBe(0);
+    expect(result.errors).toEqual([
+      "Batch 1: AI reply contained no usable classifications for this batch",
+    ]);
+    expect(
+      db.prepare("SELECT security_id FROM security_factors WHERE security_id = ?").get(silcId)
+    ).toBeUndefined();
+  });
+
+  it("writes nothing for an element that carries only an error field", async () => {
+    const db = makeDb();
+    const silcId = insertSecurity(db, { symbol: "SILC", security_type: "Stock" });
+    insertHolding(db, silcId);
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify([{ symbol: "SILC", error: "unknown ticker" }]),
+    });
+
+    const result = await classifyFactors(db);
+
+    expect(result.classified).toBe(0);
+    expect(result.errors.length).toBe(1);
+    expect(
+      db.prepare("SELECT security_id FROM security_factors WHERE security_id = ?").get(silcId)
+    ).toBeUndefined();
+  });
+
+  it("records a batch error for a [null] reply instead of reporting success", async () => {
+    const db = makeDb();
+    const silcId = insertSecurity(db, { symbol: "SILC", security_type: "Stock" });
+    insertHolding(db, silcId);
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({ text: "[null]" });
+
+    const result = await classifyFactors(db);
+
+    expect(result.classified).toBe(0);
+    expect(result.errors).toEqual([
+      "Batch 1: AI reply contained no usable classifications for this batch",
+    ]);
+    expect(
+      db.prepare("SELECT security_id FROM security_factors WHERE security_id = ?").get(silcId)
+    ).toBeUndefined();
+  });
+
+  it('records a batch error for an {"errors":[...]} reply', async () => {
+    const db = makeDb();
+    const silcId = insertSecurity(db, { symbol: "SILC", security_type: "Stock" });
+    insertHolding(db, silcId);
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify({ errors: ["no data for SILC"] }),
+    });
+
+    const result = await classifyFactors(db);
+
+    expect(result.classified).toBe(0);
+    expect(result.errors.length).toBe(1);
+    expect(
+      db.prepare("SELECT security_id FROM security_factors WHERE security_id = ?").get(silcId)
+    ).toBeUndefined();
+  });
+
+  it("keeps the usable elements of a mixed reply and reports no error", async () => {
+    const db = makeDb();
+    const silcId = insertSecurity(db, { symbol: "SILC", security_type: "Stock" });
+    const vloId = insertSecurity(db, { symbol: "VLO", security_type: "Stock" });
+    insertHolding(db, silcId);
+    insertHolding(db, vloId);
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify([
+        { symbol: "SILC" },
+        { ...PANW_FACTORS, symbol: "VLO", sector: "Energy" },
+      ]),
+    });
+
+    const result = await classifyFactors(db);
+
+    expect(result.classified).toBe(1);
+    expect(result.errors).toEqual([]);
+    expect(
+      db.prepare("SELECT security_id FROM security_factors WHERE security_id = ?").get(silcId)
+    ).toBeUndefined();
+    expect(
+      db.prepare("SELECT growth_vs_value FROM security_factors WHERE security_id = ?").get(vloId)
+    ).toEqual({ growth_vs_value: "Growth" });
+  });
+
+  it("stores SQL NULL (not a stringified value) for a non-string factor value", async () => {
+    const db = makeDb();
+    const silcId = insertSecurity(db, { symbol: "SILC", security_type: "Stock" });
+    insertHolding(db, silcId);
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify([{ symbol: "SILC", ai_exposure: "High", cyclical: { level: 3 } }]),
+    });
+
+    const result = await classifyFactors(db);
+
+    expect(result.classified).toBe(1);
+    const row = db
+      .prepare("SELECT ai_exposure, cyclical FROM security_factors WHERE security_id = ?")
+      .get(silcId) as { ai_exposure: string | null; cyclical: string | null };
+    expect(row.ai_exposure).toBe("High");
+    expect(row.cyclical).toBeNull();
   });
 });

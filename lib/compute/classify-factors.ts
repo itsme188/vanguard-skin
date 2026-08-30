@@ -77,6 +77,15 @@ const SKIP_TYPES = new Set([
   "bond", "money_market", "money market", "forex", "forecast contracts by forecastex",
 ]);
 
+/**
+ * Read one factor column off a model-produced element, but only when it is
+ * actually a string. Anything else (missing, null, a number, a nested object)
+ * becomes SQL NULL rather than being written verbatim.
+ */
+function factorValue(result: Record<string, unknown>, col: FactorColumn): string | null {
+  return typeof result[col] === "string" ? (result[col] as string) : null;
+}
+
 export async function classifyFactors(
   db: Database.Database
 ): Promise<FactorClassifyResult> {
@@ -223,11 +232,12 @@ export async function classifyFactors(
       // prose preamble like "I need to ..." before the array), and tolerate a
       // single bare object or a {results:[...]}-style wrapper when the batch
       // has only one item (common one-item-prompt model behavior).
-      const results = parseJsonArrayLenient(text);
+      const results = parseJsonArrayLenient(text, "classifications");
 
       // Build symbol → security_id map for this batch
       const idMap = new Map(batch.map((s) => [s.symbol, s.id]));
 
+      let usableInBatch = 0;
       for (const raw of results) {
         if (
           typeof raw !== "object" ||
@@ -236,33 +246,51 @@ export async function classifyFactors(
         ) {
           continue;
         }
-        const result = raw as Record<string, string>;
-        const secId = idMap.get(result.symbol);
+        const result = raw as Record<string, unknown>;
+
+        // An element carrying a symbol but NO recognized factor key
+        // ({"symbol":"SILC"}, or {"symbol":"SILC","error":"unknown ticker"}) used
+        // to write nine NULL factor columns with factor_source='auto'. That is a
+        // permanent silent hole: the candidate query only re-offers securities
+        // with no security_factors row at all, so the security was never retried.
+        if (!FACTOR_COLUMNS.some((col) => typeof result[col] === "string")) continue;
+
+        const secId = idMap.get(result.symbol as string);
         if (!secId) continue;
 
         upsertFactor.run(
           secId,
-          result.interest_rate_sensitive ?? null,
-          result.growth_vs_value ?? null,
-          result.cyclical ?? null,
-          result.international_exposure ?? null,
-          result.geopolitical_onshoring ?? null,
-          result.tariff_exposure ?? null,
-          result.ai_exposure ?? null,
-          result.crypto_adjacent ?? null,
-          result.regulatory_risk ?? null,
+          factorValue(result, "interest_rate_sensitive"),
+          factorValue(result, "growth_vs_value"),
+          factorValue(result, "cyclical"),
+          factorValue(result, "international_exposure"),
+          factorValue(result, "geopolitical_onshoring"),
+          factorValue(result, "tariff_exposure"),
+          factorValue(result, "ai_exposure"),
+          factorValue(result, "crypto_adjacent"),
+          factorValue(result, "regulatory_risk"),
           "auto"
         );
 
         // Also update sector/industry on the securities table
-        if (result.sector || result.industry) {
-          const gics = normalizeSector(result.sector ?? null);
+        const sector = typeof result.sector === "string" ? result.sector : null;
+        const industry = typeof result.industry === "string" ? result.industry : null;
+        if (sector || industry) {
+          const gics = normalizeSector(sector);
           db.prepare(
             "UPDATE securities SET sector = COALESCE(?, sector), sector_source = CASE WHEN ? IS NOT NULL THEN 'ai_classify' ELSE sector_source END, industry = COALESCE(NULLIF(industry,''), ?) WHERE id = ?"
-          ).run(gics, gics, result.industry ?? result.sector ?? null, secId);
+          ).run(gics, gics, industry ?? sector, secId);
         }
 
         classified++;
+        usableInBatch++;
+      }
+
+      // A reply that PARSED but yielded nothing usable ([null], {"errors":[...]},
+      // or symbol-only objects) is an error, not a zero-classification success:
+      // reporting success leaves the batch un-retried and hides the failure.
+      if (results.length > 0 && usableInBatch === 0) {
+        throw new Error("AI reply contained no usable classifications for this batch");
       }
     } catch (err) {
       if (err instanceof AIRefusalError) {

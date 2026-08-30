@@ -49,13 +49,80 @@ describe("parseJsonArrayLenient", () => {
 
   it("throws a plain-English error for a prose-only reply", () => {
     expect(() => parseJsonArrayLenient("The inputs appear to be timestamps, not securities.")).toThrow(
-      "AI reply was not a list of classifications"
+      "AI reply was not a JSON list of classifications"
     );
   });
 
   it("throws a plain-English error for an object with no symbol key and no list inside", () => {
     expect(() => parseJsonArrayLenient('{"foo":1}')).toThrow(
-      "AI reply was not a list of classifications"
+      "AI reply was not a JSON list of classifications"
+    );
+  });
+});
+
+// Adversarial-review regressions (2026-08-30). `parseJsonArrayLenient` used to
+// call `extractJsonArray` FIRST, which slices first-`[` … last-`]` before any
+// parse — so the object branches below were dead code reached only by accident,
+// and a single object carrying a nested array silently collapsed to that nested
+// array. It also lacked the C0-control-character retry every sibling parse site
+// carries (CLAUDE.md: "extractJsonArray + the C0-control-char retry").
+describe("parseJsonArrayLenient — shape handling and control-char retry", () => {
+  it("still isolates a real array when an object and prose precede it and elements nest objects", () => {
+    const text =
+      'Context: {"note":"batch 1"}\nHere is the result:\n' +
+      '[{"symbol":"AVGO","meta":{"confidence":"high"}},{"symbol":"SILC","meta":{"confidence":"low"}}]\n' +
+      "Let me know if you need more.";
+    expect(parseJsonArrayLenient(text)).toEqual([
+      { symbol: "AVGO", meta: { confidence: "high" } },
+      { symbol: "SILC", meta: { confidence: "low" } },
+    ]);
+  });
+
+  it("unwraps a wrapper object through the OBJECT branch, not the bracket slice", () => {
+    // The wrapper carries a `[` inside a string value BEFORE the real array and
+    // nested arrays inside the elements, so the first-`[` … last-`]` slice
+    // produces invalid JSON. Only whole-text parsing recovers this.
+    const text =
+      '{"note":"batch [1] of 2","results":[{"symbol":"AVGO","tags":["ai","semis"]},{"symbol":"SILC","tags":["smallcap"]}]}';
+    expect(parseJsonArrayLenient(text)).toEqual([
+      { symbol: "AVGO", tags: ["ai", "semis"] },
+      { symbol: "SILC", tags: ["smallcap"] },
+    ]);
+  });
+
+  it("wraps a single object that carries a nested array (never returns the nested array)", () => {
+    const text = '{"symbol":"SILC","sector":"Technology","notes":["thin float","illiquid"]}';
+    expect(parseJsonArrayLenient(text)).toEqual([
+      { symbol: "SILC", sector: "Technology", notes: ["thin float", "illiquid"] },
+    ]);
+  });
+
+  it("recovers from a raw C0 control character inside a string literal (array reply)", () => {
+    const rawNewline = String.fromCharCode(10);
+    const text = `[{"symbol":"XLE","industry":"Oil${rawNewline}& Gas"}]`;
+    expect(parseJsonArrayLenient(text)).toEqual([{ symbol: "XLE", industry: "Oil & Gas" }]);
+  });
+
+  it("recovers from a raw C0 control character inside a string literal (single-object reply)", () => {
+    const rawNewline = String.fromCharCode(10);
+    const text = `{"symbol":"XLE","industry":"Oil${rawNewline}& Gas"}`;
+    expect(parseJsonArrayLenient(text)).toEqual([{ symbol: "XLE", industry: "Oil & Gas" }]);
+  });
+
+  it("keeps the original parse error as `cause` when even the retry fails", () => {
+    let caught: unknown;
+    try {
+      parseJsonArrayLenient('[{"symbol":"XLE","fund_category":"US Sector Equity (Ener');
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as Error).message).toBe("AI reply was not a JSON list of classifications");
+    expect((caught as Error).cause).toBeInstanceOf(SyntaxError);
+  });
+
+  it("names the caller's domain in the error message", () => {
+    expect(() => parseJsonArrayLenient("No sectors could be determined.", "sector classifications")).toThrow(
+      "AI reply was not a JSON list of sector classifications"
     );
   });
 });

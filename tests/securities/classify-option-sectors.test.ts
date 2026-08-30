@@ -69,3 +69,56 @@ describe("classify-option-sectors", () => {
     expect(res.errors.length).toBeGreaterThan(0);
   });
 });
+
+describe("classify-option-sectors — lenient JSON parsing", () => {
+  // Regression (2026-08-30): the parse was `JSON.parse(extractJsonArray(text))`,
+  // so a one-ticker batch answered with a bare object threw
+  // "results is not iterable" and lost the whole batch.
+  it("classifies a one-ticker batch answered with a single bare JSON object", async () => {
+    generateTextMock.mockResolvedValue({ text: JSON.stringify({ symbol: "CRWD", sector: "Technology" }) });
+    const db = makeDb();
+    const res = await classifyOptionSectors(db);
+    expect(res.errors).toEqual([]);
+    expect(res.classified).toBe(2);
+    expect((db.prepare("SELECT sector FROM securities WHERE id=1").get() as any).sector).toBe("Technology");
+  });
+
+  it("classifies a {results:[...]} wrapper reply", async () => {
+    generateTextMock.mockResolvedValue({
+      text: JSON.stringify({ results: [{ symbol: "CRWD", sector: "Technology" }] }),
+    });
+    const db = makeDb();
+    const res = await classifyOptionSectors(db);
+    expect(res.classified).toBe(2);
+  });
+
+  it("recovers from a raw control character inside a string value", async () => {
+    const rawNewline = String.fromCharCode(10);
+    generateTextMock.mockResolvedValue({
+      text: `[{"symbol":"CRWD","sector":"Technology","note":"cyber${rawNewline}security"}]`,
+    });
+    const db = makeDb();
+    const res = await classifyOptionSectors(db);
+    expect(res.errors).toEqual([]);
+    expect(res.classified).toBe(2);
+  });
+
+  it("records a plain-English batch error (never a raw iterable/SyntaxError) for a prose reply", async () => {
+    generateTextMock.mockResolvedValue({ text: "I could not determine sectors for these tickers." });
+    const db = makeDb();
+    const res = await classifyOptionSectors(db);
+    expect(res.classified).toBe(0);
+    expect(res.errors).toEqual(["Batch 1: AI reply was not a JSON list of sector classifications"]);
+    expect(res.errors[0]).not.toMatch(/iterable/i);
+  });
+
+  it("skips a null element instead of crashing the batch", async () => {
+    generateTextMock.mockResolvedValue({
+      text: JSON.stringify([null, { symbol: "CRWD", sector: "Technology" }]),
+    });
+    const db = makeDb();
+    const res = await classifyOptionSectors(db);
+    expect(res.errors).toEqual([]);
+    expect(res.classified).toBe(2);
+  });
+});

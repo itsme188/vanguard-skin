@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { normalizeSector, GICS_SECTORS } from "@/lib/securities/normalize-sector";
-import { extractJsonArray } from "@/lib/ai/extract-json";
+import { parseJsonArrayLenient } from "@/lib/ai/extract-json";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 export interface OptionSectorResult { classified: number; errors: string[]; }
@@ -53,9 +53,15 @@ export async function classifyOptionSectors(db: Database.Database): Promise<Opti
     try {
       // No `temperature` — tier-resolved models can reject it as deprecated (QA 2026-07-07).
       const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 2000, system: SYSTEM, prompt });
-      const results = JSON.parse(extractJsonArray(text)) as Array<Record<string, string>>;
-      for (const r of results) {
-        const gics = normalizeSector(r.sector);
+      // Lenient parse: tolerates a prose preamble, a single bare object (common
+      // for a one-ticker batch), a {results:[...]} wrapper, and raw C0 control
+      // characters inside string literals. A reply that is none of those throws
+      // a plain-English error instead of "results is not iterable".
+      const results = parseJsonArrayLenient(text, "sector classifications");
+      for (const raw of results) {
+        if (typeof raw !== "object" || raw === null) continue;
+        const r = raw as Record<string, unknown>;
+        const gics = normalizeSector(typeof r.sector === "string" ? r.sector : null);
         // Strict: only write a canonical GICS-11 sector. normalizeSector also
         // passes through non-GICS labels ("Diversified"/"Fixed Income") which must
         // never become an option's sector.
