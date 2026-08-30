@@ -3,7 +3,10 @@ import {
   getCachedRegression,
   upsertRegression,
 } from "@/lib/queries/security-regressions";
-import { computeSecurityRegression } from "@/lib/compute/security-regression";
+import {
+  computeSecurityRegression,
+  regressionBetaVerdict,
+} from "@/lib/compute/security-regression";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +31,12 @@ function benchmarkOf(request: Request): string {
  * Returns null body when neither cache nor compute produces a result
  * (insufficient price history).
  *
+ * The envelope also carries `betaVerdict` whenever `data` is non-null — the
+ * read-time publish gate for the beta (r² >= 0.10 and >= 30 return pairs, see
+ * `regressionBetaVerdict`). The raw statistics are always returned; the verdict
+ * tells the caller whether the slope may be rendered as a number. Derived per
+ * response, so rows cached before the gate existed are covered too.
+ *
  * 400 on non-integer id. Defaults benchmark to SPY when missing.
  */
 export async function GET(
@@ -48,12 +57,22 @@ export async function GET(
   try {
     const cached = getCachedRegression(db, securityId, benchmark);
     if (cached) {
-      return Response.json({ success: true, data: cached, fromCache: true });
+      return Response.json({
+        success: true,
+        data: cached,
+        fromCache: true,
+        betaVerdict: regressionBetaVerdict(cached),
+      });
     }
 
     const fresh = computeSecurityRegression(db, securityId, benchmark);
     // NOTE: intentionally no cache write here — the persist lives on POST.
-    return Response.json({ success: true, data: fresh ?? null, fromCache: false });
+    return Response.json({
+      success: true,
+      data: fresh ?? null,
+      fromCache: false,
+      ...(fresh ? { betaVerdict: regressionBetaVerdict(fresh) } : {}),
+    });
   } catch (e) {
     return Response.json(
       {
@@ -95,7 +114,12 @@ export async function POST(
         benchmarkSymbol: benchmark,
         result: fresh,
       });
-      return Response.json({ success: true, data: fresh, fromCache: false });
+      return Response.json({
+        success: true,
+        data: fresh,
+        fromCache: false,
+        betaVerdict: regressionBetaVerdict(fresh),
+      });
     }
     // Insufficient price history — null body, 200 status (not an error).
     return Response.json({ success: true, data: null, fromCache: false });

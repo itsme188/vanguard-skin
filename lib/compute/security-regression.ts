@@ -1,4 +1,8 @@
 import type Database from "better-sqlite3";
+import {
+  betaConfidenceVerdict,
+  type BetaConfidenceResult,
+} from "@/lib/compute/beta-confidence";
 
 const TRADING_DAYS_PER_YEAR = 252;
 const MIN_DATA_POINTS = 10;
@@ -109,4 +113,29 @@ export function computeSecurityRegression(
   const vol = dailyVol * Math.sqrt(TRADING_DAYS_PER_YEAR);
 
   return { beta, vol, correlation, rSquared, dataPoints: n };
+}
+
+/**
+ * Should this regression's beta be PUBLISHED as a number?
+ *
+ * qa: security-detail-factor-profile--regression-card-publishes-betas-failing-confidence-gate
+ *
+ * `computeSecurityRegression` only refuses to regress at all below
+ * MIN_DATA_POINTS (10) — deliberately loose, because the backfill and the
+ * `security_regressions` cache want the raw statistics whatever they say. But
+ * a slope estimated over a dozen observations with r² near zero is noise, and
+ * rendering it as an emphasised "Beta 17.4" states a fact the data cannot
+ * carry.
+ *
+ * So the publish decision is derived at READ time from the same gate cached
+ * OLS betas already pass through (`betaConfidenceVerdict`: r² ≥ 0.10 and ≥ 30
+ * return pairs). Deriving rather than storing means rows cached before this
+ * gate existed are covered too — no schema change, no backfill.
+ *
+ * Pure: takes only the two statistics the gate scores.
+ */
+export function regressionBetaVerdict(
+  r: Pick<SecurityRegression, "rSquared" | "dataPoints">
+): BetaConfidenceResult {
+  return betaConfidenceVerdict({ rSquared: r.rSquared, pairs: r.dataPoints });
 }
