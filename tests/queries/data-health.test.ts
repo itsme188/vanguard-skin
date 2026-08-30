@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
+import { todayET } from "@/lib/calendar/date-utils";
 import {
   getPriceFreshness,
   getAccountCoverage,
@@ -12,8 +13,8 @@ import {
 
 let db: Database.Database;
 
-/** Today's date in YYYY-MM-DD. */
-const today = new Date().toISOString().split("T")[0];
+/** Today's date in YYYY-MM-DD (ET, matching the production code under test). */
+const today = todayET();
 
 /** N days ago in YYYY-MM-DD. */
 function daysAgo(n: number): string {
@@ -378,6 +379,61 @@ describe("getDataGaps", () => {
 
     const gaps = getDataGaps(db);
     expect(gaps.staleHoldings.length).toBe(0);
+  });
+
+  it("lists a fund whose own latest row is stale even though other holdings in the same account are fresher (VHGEX regression)", () => {
+    // Pre-fix, staleHoldings gated on a single global MAX(as_of_date) per
+    // account. VHGEX's own latest row is 116 days old, but XOM's row today
+    // makes the ACCOUNT's global max "today" — so `h.as_of_date = (account
+    // global max)` was never true for VHGEX and it could never appear here,
+    // even though Account Coverage (latestHoldingsPredicate) counts it as a
+    // current, stale-priced holding.
+    const acct = seedAccount("Vanguard Taxable");
+    const vhgex = seedSecurity("VHGEX", "Mutual Fund");
+    const xom = seedSecurity("XOM");
+
+    seedHolding(acct, vhgex, 100, daysAgo(116));
+    seedHolding(acct, xom, 10, today);
+
+    const gaps = getDataGaps(db);
+    expect(gaps.staleHoldings.map((g) => g.symbol)).toEqual(["VHGEX"]);
+    expect(gaps.staleHoldings[0].daysSince).toBeGreaterThanOrEqual(115);
+  });
+
+  it("excludes a sold position (latest row is a quantity=0 tombstone) from securitiesNoPrices and securitiesNoTransactions", () => {
+    // Pre-fix, both gap queries joined on a bare `h.quantity > 0` with no
+    // latest-row filter, so a security's OLD non-zero row kept it flagged as
+    // a gap forever, even after a newer qty=0 row closed the position out.
+    const acct = seedAccount("Test");
+    const sold = seedSecurity("SOLDX");
+
+    seedHolding(acct, sold, 25, daysAgo(60)); // once held, never priced/transacted in this fixture
+    seedHolding(acct, sold, 0, daysAgo(30)); // closed a month ago — this is the latest row
+
+    const gaps = getDataGaps(db);
+    expect(gaps.securitiesNoPrices.some((g) => g.symbol === "SOLDX")).toBe(
+      false,
+    );
+    expect(
+      gaps.securitiesNoTransactions.some((g) => g.symbol === "SOLDX"),
+    ).toBe(false);
+  });
+
+  it("still flags a CURRENTLY held security (latest row non-zero) with no prices or transactions", () => {
+    // Companion to the sold-position test above: confirms the latest-row
+    // scoping doesn't over-correct and swallow genuine, currently-held gaps.
+    const acct = seedAccount("Test");
+    const held = seedSecurity("HELDX");
+    seedHolding(acct, held, 25, daysAgo(60));
+    seedHolding(acct, held, 30, daysAgo(5)); // still held — latest row is non-zero
+
+    const gaps = getDataGaps(db);
+    expect(gaps.securitiesNoPrices.some((g) => g.symbol === "HELDX")).toBe(
+      true,
+    );
+    expect(
+      gaps.securitiesNoTransactions.some((g) => g.symbol === "HELDX"),
+    ).toBe(true);
   });
 });
 
