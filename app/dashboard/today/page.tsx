@@ -14,6 +14,7 @@ import { NearbyLevelsCard } from "../components/NearbyLevelsCard";
 import { OpenChatButton } from "../components/OpenChatButton";
 import { SignificantMovesCard } from "./SignificantMovesCard";
 import { Money, Pct, PrivateText, Shares } from "@/lib/privacy/components";
+import { formatUSDPrecise } from "@/lib/format";
 import { TodayReleases } from "../components/TodayReleases";
 import { MomentumPulse } from "../components/MomentumPulse";
 import { computeMomentumPulse } from "@/lib/compute/momentum-spread";
@@ -454,10 +455,16 @@ function AlertGroup({
               <span className="flex-1 text-ink-dim">
                 <span className="uppercase">{a.level_type?.replace("_", " ") ?? "level"}</span>
                 {" @ "}
-                <Money value={a.level_price} precise className="text-ink" />
+                {/* Newsletter/level prices are public market data, not portfolio-derived —
+                    rendered unmasked under privacy mode per the privacy-masks-portfolio-only
+                    rule, matching /dashboard/alerts (QA: today-alerts-nearby-levels--privacy-
+                    masks-public-level-prices-inbox-shows-clear). */}
+                <span className="text-ink">
+                  {a.level_price !== null ? formatUSDPrecise(a.level_price) : "—"}
+                </span>
                 {a.level_price !== null && a.triggered_price != null && (
                   <span className="text-ink-faint">
-                    {" "}(hit <Money value={a.triggered_price} precise />)
+                    {" "}(hit {formatUSDPrecise(a.triggered_price)})
                   </span>
                 )}
                 {a.source_author && (
