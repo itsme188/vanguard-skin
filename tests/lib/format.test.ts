@@ -115,18 +115,36 @@ describe("parseStoredTimestamp", () => {
 // bogeys--enriched-stamp-raw-utc-no-zone-label). Must ET-anchor via
 // parseStoredTimestamp + Intl, never re-slice.
 describe("formatEnrichedAtET", () => {
+  // ICU-hardened (2026-08-30 landing-review nit): en-US Intl punctuation
+  // drifts across ICU versions (", " vs " at ", U+202F narrow no-break
+  // space before AM/PM), so assert the semantic parts — the ET wall-clock
+  // digits, the meridiem, the zone label — never the exact formatted string.
+  const norm = (s: string) => s.replace(/\s+/g, " ");
+
   it("converts a UTC SQLite stamp to ET wall-clock with a zone label (non-DST, EST = UTC-5)", () => {
-    expect(formatEnrichedAtET("2026-01-15 06:57:47")).toBe("Jan 15, 2026, 1:57 AM ET");
+    const out = norm(formatEnrichedAtET("2026-01-15 06:57:47"));
+    expect(out).toContain("Jan 15");
+    expect(out).toContain("2026");
+    expect(out).toContain("1:57");
+    expect(out).toContain("AM");
+    expect(out).toMatch(/ ET$/);
   });
 
   it("converts a UTC SQLite stamp to ET wall-clock with a zone label (DST, EDT = UTC-4)", () => {
     // The regression example: an accept at 02:57 ET (06:57 UTC) must never
     // render the bare UTC digits "06:57" with no zone.
-    expect(formatEnrichedAtET("2026-08-29 06:57:47")).toBe("Aug 29, 2026, 2:57 AM ET");
+    const out = norm(formatEnrichedAtET("2026-08-29 06:57:47"));
+    expect(out).toContain("Aug 29");
+    expect(out).toContain("2:57");
+    expect(out).toContain("AM");
+    expect(out).toMatch(/ ET$/);
+    expect(out).not.toContain("06:57");
   });
 
   it("is idempotent for an explicit ISO-Z timestamp", () => {
-    expect(formatEnrichedAtET("2026-08-29T06:57:47Z")).toBe("Aug 29, 2026, 2:57 AM ET");
+    const out = norm(formatEnrichedAtET("2026-08-29T06:57:47Z"));
+    expect(out).toContain("2:57");
+    expect(out).toMatch(/ ET$/);
   });
 
   it("falls back to empty string for null", () => {

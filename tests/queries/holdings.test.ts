@@ -87,6 +87,25 @@ describe("holdings queries", () => {
       expect(holdings.map((h) => h.symbol).sort()).toEqual(["VTI", "XYZ"]);
     });
 
+    it("hides a matured bond by default but keeps it in a point-in-time snapshot", () => {
+      // Parity with getAllHoldings (2026-08-30 landing-review nit): a
+      // matured bond/bill that escaped purgeMaturedBondHoldings must not
+      // surface as a live position under per-pair "latest" keying. The
+      // explicit-asOfDate branch deliberately keeps it — on that date the
+      // bond had not yet matured.
+      const vti = seedSecurity(db, "VTI");
+      const bill = seedSecurity(db, "MATURED-BILL");
+      db.prepare("UPDATE securities SET maturity_date = '2025-02-15' WHERE id = ?").run(bill);
+      seedHolding(db, ACCOUNT_ID, vti, 100, "2025-01-31");
+      seedHolding(db, ACCOUNT_ID, bill, 10, "2025-01-31");
+
+      const latest = getHoldingsByAccount(db, ACCOUNT_ID);
+      expect(latest.map((h) => h.symbol)).toEqual(["VTI"]);
+
+      const snapshot = getHoldingsByAccount(db, ACCOUNT_ID, "2025-01-31");
+      expect(snapshot.map((h) => h.symbol).sort()).toEqual(["MATURED-BILL", "VTI"]);
+    });
+
     it("returns a security whose newest row predates the account's newest snapshot date", () => {
       // QA finding accounts-holdings--global-max-as-of-date-drops-19-live-positions-72k-treasuries:
       // "latest" is per-(account, security), never a per-account global

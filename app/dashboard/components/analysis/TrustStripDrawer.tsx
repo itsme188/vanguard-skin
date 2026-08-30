@@ -319,7 +319,7 @@ function PerformanceContent({ state }: { state: AnalysisTrustState }) {
       <p className="text-sm text-ink">
         {crossCheckedThru ? (
           <>
-            {`Independently cross-checked (Modified Dietz) through ${crossCheckedThru} — the earliest month every account's contiguous chain of consistent months reaches`}
+            {`Independently cross-checked (Modified Dietz) through ${crossCheckedThru} — the latest month reached by every account's contiguous chain of consistent months (an account's own chain may reach further; see below)`}
             {skippedNotComparable > 0 && (
               <>
                 {" ("}

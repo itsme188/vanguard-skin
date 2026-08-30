@@ -91,7 +91,7 @@ describe("TrustStripDrawer copy is honest about what was actually cross-checked"
     expect(src).toContain("skipped along the way, not cross-checked");
     // The unconditional trust claim must still exist when nothing was skipped.
     expect(src).toContain(
-      "the earliest month every account's contiguous chain of consistent months reaches"
+      "the latest month reached by every account's contiguous chain of consistent months"
     );
   });
 });

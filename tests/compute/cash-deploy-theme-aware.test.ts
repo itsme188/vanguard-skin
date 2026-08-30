@@ -34,10 +34,14 @@ beforeEach(() => {
 });
 
 describe("applyThemeAwareBoost", () => {
+  // Sign convention matches the engine (lib/compute/cash-deploy.ts):
+  // gapPp NEGATIVE for an underweight sector, dollarGap/residualDollarGap
+  // POSITIVE (dollars still needed to close). The fixture previously used
+  // the opposite dollar sign (2026-08-30 landing-review nit).
   const baseGaps: SectorGap[] = [
-    { sector: "Technology", currentWeight: 0.20, targetWeight: 0.30, gapPp: -10, dollarGap: -10000, gapClosureScore: 0, residualGapPp: -10, residualDollarGap: -10000 },
-    { sector: "Healthcare", currentWeight: 0.05, targetWeight: 0.15, gapPp: -10, dollarGap: -10000, gapClosureScore: 0, residualGapPp: -10, residualDollarGap: -10000 },
-    { sector: "Energy", currentWeight: 0.08, targetWeight: 0.05, gapPp: 3, dollarGap: 3000, gapClosureScore: 0, residualGapPp: 3, residualDollarGap: 3000 },
+    { sector: "Technology", currentWeight: 0.20, targetWeight: 0.30, gapPp: -10, dollarGap: 10000, gapClosureScore: 0, residualGapPp: -10, residualDollarGap: 10000 },
+    { sector: "Healthcare", currentWeight: 0.05, targetWeight: 0.15, gapPp: -10, dollarGap: 10000, gapClosureScore: 0, residualGapPp: -10, residualDollarGap: 10000 },
+    { sector: "Energy", currentWeight: 0.08, targetWeight: 0.05, gapPp: 3, dollarGap: -3000, gapClosureScore: 0, residualGapPp: 3, residualDollarGap: -3000 },
   ];
 
   it("no boost when activeThemes is empty", () => {

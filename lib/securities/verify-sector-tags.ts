@@ -247,8 +247,10 @@ export async function defaultFetchVerdicts(batch: SweepCandidate[]): Promise<str
   // fixed 2026-08-07 (lib/digest/send-earnings-email.ts::joinClaudeTextBlocks):
   // web_search plants a text-block boundary mid-sentence at every citation,
   // and "\n" turns that into a bare newline INSIDE the JSON string content.
-  // Currently masked here by extractJsonArray's C0-control-char retry, but
-  // that's a safety net, not a reason to leave the root cause in place.
+  // Currently masked here by parseVerdicts' own inline C0-control-char
+  // retry (extractJsonArray only slices the array text out — it never
+  // parses; the shared lib/ai/extract-json.ts parse helpers carry the same
+  // retry). A safety net, not a reason to leave the root cause in place.
   return stripCodeFences(textBlocks.map((b) => b.text).join(""));
 }
 
