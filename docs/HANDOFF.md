@@ -25,7 +25,7 @@
 - **Decisions** (in `docs/DECISIONS.md` 2026-08-30): statements are complete books → statement pass any type; options only with presence evidence; cash equivalents never reconciled; own-origin `_blank` → child window. Rejected: landing the per-pair fix alone (visible phantom value), reverting to per-account MAX (drops every statement-only Treasury), denying own-origin (dead Reconnect click).
 - **First live run of the reconciler is a watch item** (TODO): expect ~10 marks on the next Plaid/TWS sync or import; inspect `holdings WHERE source_key LIKE 'recon:closed-equity:%'` if materially more.
 - **Filed, not done:** ~15 sibling `MAX(as_of_date)` call sites (Today holdings, portfolio summary, chat tools, briefing, options, R2 snapshot) still disagree with Accounts on statement-only Treasuries — its own review round (TODO). Reviewer nits batched in one TODO entry.
-- **Owner action still pending from 8/28:** Anthropic credit balance (`[levels/extract] … credit balance is too low` in the live log) — every AI feature degrades until topped up.
+- Anthropic credits: topped up by the owner (confirmed 2026-08-30 session end); the 8/28 `credit balance is too low` log lines are resolved. Today's lone auto-refresh error is the level-plausibility guard skipping a mis-scaled level (working as designed).
 - 8 `needs-decision` QA findings remain in `qa/findings/DECISIONS-PENDING.md` (1 HIGH: Tax Lots account filter ignored by TAX REPORT card + exports).
 
 ## 4. Uncommitted changes / live-process state (post-deploy)
