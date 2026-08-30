@@ -121,6 +121,9 @@ export function CashDeployCard({ scope }: Props) {
                     <th className="text-right py-1">Current</th>
                     <th className="text-right py-1">Target</th>
                     <th className="text-right py-1">Gap</th>
+                    {result.picks.length > 0 && (
+                      <th className="text-right py-1">After picks</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
@@ -148,6 +151,22 @@ export function CashDeployCard({ scope }: Props) {
                         */}
                         <PrivateText>{`${g.gapPp >= 0 ? "+" : ""}${g.gapPp.toFixed(1)}pp`}</PrivateText>
                       </td>
+                      {/*
+                        Residual gap AFTER the suggested picks below are
+                        applied (suggestAllocation walks residualGapPp /
+                        residualDollarGap toward 0 as it allocates). Only
+                        rendered when there ARE picks — with none the column
+                        would duplicate Gap. Same <PrivateText> masking as
+                        Gap: target is public, so an unmasked residual would
+                        leak the masked current weight (2026-08-30
+                        landing-review nit: fields were computed but never
+                        rendered).
+                      */}
+                      {result.picks.length > 0 && (
+                        <td className={`text-right py-1 font-mono ${g.residualGapPp < 0 ? "text-gold-ink" : "text-ink-dim"}`}>
+                          <PrivateText>{`${g.residualGapPp >= 0 ? "+" : ""}${g.residualGapPp.toFixed(1)}pp`}</PrivateText>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

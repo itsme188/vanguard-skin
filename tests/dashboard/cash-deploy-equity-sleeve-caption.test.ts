@@ -13,7 +13,7 @@ import { equitySleeveCaptionLead } from "@/lib/compute/cash-deploy";
 describe("equitySleeveCaptionLead", () => {
   it("names the benchmark and what the sleeve excludes", () => {
     expect(equitySleeveCaptionLead("VTI")).toBe(
-      "Sector gaps vs VTI are measured on the equity sleeve — VTI holds no fixed income or cash, so these are excluded from current weights and the rest renormalized to 100%:"
+      "Sector gaps vs VTI are measured on the equity sleeve — VTI holds no fixed income or cash, so those are excluded from current weights, which are shares of the equity sleeve plus the cash being deployed:"
     );
   });
 

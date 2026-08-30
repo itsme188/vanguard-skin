@@ -250,7 +250,9 @@ function computeSectorGaps(
   // Against an all-equity index, fixed income and cash can never be closed
   // by deploying cash (target is structurally 0%), and leaving those dollars
   // in the denominator understates every equity sector's weight. Measure the
-  // equity sleeve on its own and renormalize to 100%.
+  // equity sleeve on its own (the cash being deployed stays in the basis, so
+  // sector weights are shares of equity sleeve + deploy cash — see
+  // equitySleeveCaptionLead, which must say the same thing).
   const equityOnly = isEquityOnlyBenchmark(benchmarkMap);
   const excludedBuckets: Array<{ sector: string; weightPct: number }> = [];
   let excludedDollars = 0;
@@ -319,7 +321,7 @@ function computeSectorGaps(
  * component renders them through `<Pct>` rather than baking them in here.
  */
 export function equitySleeveCaptionLead(benchmarkSymbol: string): string {
-  return `Sector gaps vs ${benchmarkSymbol} are measured on the equity sleeve — ${benchmarkSymbol} holds no fixed income or cash, so these are excluded from current weights and the rest renormalized to 100%:`;
+  return `Sector gaps vs ${benchmarkSymbol} are measured on the equity sleeve — ${benchmarkSymbol} holds no fixed income or cash, so those are excluded from current weights, which are shares of the equity sleeve plus the cash being deployed:`;
 }
 
 

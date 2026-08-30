@@ -154,6 +154,12 @@ export function getHoldingsByAccount(
     // resurrecting the older non-zero row. accountFilter is empty because
     // the WHERE clause already binds h.account_id = ?.
     sql += ` AND ${latestHoldingsPredicate({ accountFilter: "" })}`;
+    // Parity with getAllHoldings: a matured bond/bill that escaped
+    // purgeMaturedBondHoldings must not surface as a live position under
+    // per-pair "latest" keying (2026-08-30 landing-review nit). The explicit
+    // asOfDate branch above deliberately keeps it — a point-in-time snapshot
+    // legitimately shows a bond that had not matured on that date.
+    sql += " AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))";
   }
 
   sql += " ORDER BY s.symbol";

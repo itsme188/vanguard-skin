@@ -14,6 +14,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
+import { classifyAnthropicError } from "@/lib/ai/classify-anthropic-error";
 import {
   normalizeMetadata,
   parseClaudeResponse,
@@ -81,7 +82,21 @@ function defaultDeps(): ForwardedExtractDeps {
         tools: tools as any,
         messages: [{ role: "user", content: blocks }],
       });
-      const response = await stream.finalMessage();
+      let response;
+      try {
+        response = await stream.finalMessage();
+      } catch (err) {
+        // Same boundary as lib/research-documents/extract.ts: an Anthropic
+        // SDK APIError's .message embeds the raw JSON body (request_id +
+        // internals). Classify it into a plain-language message HERE so the
+        // background inbox path never logs/propagates the raw envelope.
+        console.error("Forwarded-article extraction upstream error:", err);
+        const classification = classifyAnthropicError(err);
+        if (classification) {
+          throw new ResearchPdfExtractionError(classification.userMessage, "");
+        }
+        throw err;
+      }
       // With a server tool (web_fetch), the response carries multiple text
       // blocks — a pre-fetch preamble then the final answer. Take the LAST
       // text block, which is the model's final JSON output.

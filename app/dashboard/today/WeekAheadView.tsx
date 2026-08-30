@@ -228,7 +228,15 @@ export function actualChipClass(
     Partial<Pick<CalendarEvent, "consensus_value" | "manual_actuals_at">>,
 ): string {
   if (event.event_type !== "earnings") return CHIP_TONE_NEUTRAL;
-  const delta = epsDelta(effectiveConsensus(event), event.actual_value);
+  const consensus = effectiveConsensus(event);
+  // Same plausibility gate as eventFigureDisplays: today the chip only
+  // renders when actualDisplay is non-null (already gated), but the helper
+  // must be safe standalone — an implausible actual (bad Finnhub scrape)
+  // must never color a beat/miss (2026-08-30 landing-review nit).
+  if (actualsAreImplausible(consensus, event.actual_value, event.manual_actuals_at)) {
+    return CHIP_TONE_NEUTRAL;
+  }
+  const delta = epsDelta(consensus, event.actual_value);
   if (delta == null || delta.sign === 0) return CHIP_TONE_NEUTRAL;
   return delta.sign === 1 ? CHIP_TONE_UP : CHIP_TONE_DOWN;
 }

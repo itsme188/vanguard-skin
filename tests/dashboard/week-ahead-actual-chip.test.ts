@@ -31,6 +31,24 @@ describe("actualChipClass (WeekAheadView EventRow)", () => {
     expect(cls).not.toContain("text-up");
   });
 
+  it("is neutral for an implausible actual even though the raw delta would read as a beat", () => {
+    // Same gate as eventFigureDisplays (2026-08-30 landing-review nit —
+    // actualChipClass must be safe standalone, not only via its call site).
+    // EPS 5.11 vs consensus 2.70 is 1.89x — the documented GOOGL bogus-scrape
+    // case isPlausibleEarnings rejects.
+    const cls = actualChipClass(earningsEvent("EPS 2.70", "EPS 5.11"));
+    expect(cls).not.toContain("text-up");
+    expect(cls).not.toContain("text-down");
+  });
+
+  it("a manual override (manual_actuals_at) bypasses the plausibility gate and colors normally", () => {
+    const cls = actualChipClass({
+      ...earningsEvent("EPS 2.70", "EPS 5.11"),
+      manual_actuals_at: "2026-08-30 12:00:00",
+    });
+    expect(cls).toContain("text-up");
+  });
+
   it("is neutral when the print is in-line (within 0.05%)", () => {
     const cls = actualChipClass(earningsEvent("EPS 1.00", "EPS 1.0001"));
     expect(cls).not.toContain("text-up");
