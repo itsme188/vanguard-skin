@@ -125,4 +125,66 @@ describe("getCashEstimates — cash-equivalent exclusion", () => {
     expect(row!.holdings_total).toBeCloseTo(20_000, 2);
     expect(row!.estimated_cash).toBeCloseTo(10_000, 2);
   });
+
+  // ─── holdings-latest-sweep: per-(account, security) LEFT JOIN (Codex F3) ──
+
+  it("does not double-count a sweep fund once per-(account, security) keying includes its own latest row (disappearance case)", () => {
+    // VMFXX's only row is January; AAPL restates in February. Under the
+    // old per-account MAX(as_of_date) correlation, the LEFT JOIN's single
+    // as_of_date per account would have been February, so VMFXX's January
+    // row was never joined in at all (it simply "disappeared" from the
+    // query). Under per-(account, security) keying, VMFXX's own latest row
+    // (January) IS joined in alongside AAPL's — the excludeCashEquivSql
+    // filter in the CASE expressions must still keep it out of
+    // holdings_total so its value isn't double-counted (once as "cash" via
+    // the snapshot residual, and again as a holding).
+    const sweep = seedSecurity(db, "VMFXX", {
+      security_type: "Mutual Fund",
+      fund_category: "Cash Equivalent",
+      currency: "USD",
+    });
+    seedHolding(db, 1, sweep, 5000, "2025-01-31");
+    seedPrice(db, sweep, "2025-01-31", 1); // $5,000, never restated
+
+    const aapl = seedSecurity(db, "AAPL", { security_type: "Stock", currency: "USD" });
+    seedHolding(db, 1, aapl, 100, TODAY, 15000);
+    seedPrice(db, aapl, TODAY, 250); // $25,000
+
+    seedSnapshot(db, 1, TODAY, 40_000);
+
+    const estimates = getCashEstimates(db);
+    const row = estimates.find((e) => e.account_name === "Vanguard Taxable");
+
+    expect(row).toBeDefined();
+    // holdings_total must be AAPL only — the sweep's January row, though
+    // now visible to the join, is filtered by excludeCashEquivSql.
+    expect(row!.holdings_total).toBeCloseTo(25_000, 2);
+    // estimated_cash = 40,000 - 25,000 = 15,000 (the sweep's $5,000 stays
+    // folded into cash via the residual, never subtracted a second time).
+    expect(row!.estimated_cash).toBeCloseTo(15_000, 2);
+  });
+
+  it("keeps a genuinely tombstoned (quantity=0) non-cash security out of holdings_total (sale, not disappearance)", () => {
+    // MSFT is sold: its January row (qty 30) is superseded by a real
+    // quantity=0 tombstone in February. Per-(account, security) keying
+    // must land on the tombstone (the true latest row for that pair) and
+    // must NOT resurrect the older non-zero row into holdings_total.
+    const msft = seedSecurity(db, "MSFT", { security_type: "Stock", currency: "USD" });
+    seedHolding(db, 1, msft, 30, "2025-01-31", 9000);
+    seedPrice(db, msft, "2025-01-31", 400); // $12,000 if wrongly resurrected
+    seedHolding(db, 1, msft, 0, TODAY, 0); // tombstone
+
+    const aapl = seedSecurity(db, "AAPL", { security_type: "Stock", currency: "USD" });
+    seedHolding(db, 1, aapl, 50, TODAY, 7500);
+    seedPrice(db, aapl, TODAY, 250); // $12,500
+
+    seedSnapshot(db, 1, TODAY, 20_000);
+
+    const estimates = getCashEstimates(db);
+    const row = estimates.find((e) => e.account_name === "Vanguard Taxable");
+
+    expect(row).toBeDefined();
+    expect(row!.holdings_total).toBeCloseTo(12_500, 2);
+    expect(row!.estimated_cash).toBeCloseTo(7_500, 2);
+  });
 });
