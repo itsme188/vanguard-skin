@@ -400,6 +400,12 @@ describe("getAllocationBreakdown", () => {
   });
 
   it("excludes a genuinely tombstoned (quantity=0) position from the allocation total", () => {
+    // NOTE: because MSFT's tombstone lands on the same date as the
+    // account's overall max (control's 2025-02-28), this test does not
+    // discriminate per-account vs per-(account, security) keying — a
+    // qty=0 row at the account's max date is picked up and excluded by
+    // the quantity guard under BOTH correlations. It still guards against
+    // MSFT's older non-zero row (2025-01-31) being wrongly resurrected.
     const secC = seedSecurity(db, "MSFT", { asset_class: "equity" });
     const control = seedSecurity(db, "AAPL", { asset_class: "equity" });
     seedHolding(db, 1, secC, 30, "2025-01-31", 9000);
@@ -811,6 +817,13 @@ describe("maturity-aware holdings", () => {
     // sale) rather than simple absence. Per-(account, security) keying
     // must land on the tombstone (the true latest row) and hide MSFT —
     // never resurrect the older non-zero row.
+    //
+    // NOTE: because the tombstone lands on the same date as AAPL's
+    // restatement (the account's overall max), this test does not
+    // discriminate per-account vs per-(account, security) keying — a
+    // qty=0 row at the account's max date is picked up and excluded by
+    // "h.quantity > 0" under BOTH correlations. It still guards against
+    // MSFT's older non-zero row being wrongly resurrected.
     const aapl = seedSecurity(db, "AAPL");
     const msft = seedSecurity(db, "MSFT");
 
