@@ -26,6 +26,40 @@ describe("epsDelta", () => {
     expect(epsDelta("EPS 0.41", null)).toBeNull();
     expect(epsDelta("Rev 4305870107", "EPS 0.45")).toBeNull();
   });
+
+  it("BEATs when both EPS are negative and the actual loss is smaller than the estimated loss", () => {
+    // A narrower loss than expected (-0.30 vs -0.50 estimated) is a beat —
+    // the naive (a - c) sign flip without dividing by |c| would get this
+    // backwards for negative consensus.
+    const d = epsDelta("EPS -0.50", "EPS -0.30");
+    expect(d).not.toBeNull();
+    expect(d?.sign).toBe(1);
+    expect(d?.label).toBe("+40.0%");
+  });
+
+  it("MISSes when both EPS are negative and the actual loss is larger than the estimated loss", () => {
+    // A wider loss than expected (-0.50 vs -0.30 estimated) is a miss.
+    const d = epsDelta("EPS -0.30", "EPS -0.50");
+    expect(d).not.toBeNull();
+    expect(d?.sign).toBe(-1);
+    expect(d?.label).toBe("-66.7%");
+  });
+
+  it("returns null when the estimate is exactly 0 (division-by-zero guard, not a comparable percent)", () => {
+    const d = epsDelta("EPS 0.00", "EPS 0.45");
+    expect(d).toBeNull();
+  });
+
+  it("does not swallow a genuine $0.00 actual as missing when the estimate is non-zero", () => {
+    // formatFinnhubFigure renders a real zero EPS as the string "$0.00" —
+    // truthy, not null/undefined — so the `!act.eps` presence check must
+    // not misread it as "no actual reported". A collapse to exactly zero
+    // EPS against a positive estimate is a genuine, steep miss.
+    const d = epsDelta("EPS 0.45", "EPS 0.00");
+    expect(d).not.toBeNull();
+    expect(d?.sign).toBe(-1);
+    expect(d?.label).toBe("-100.0%");
+  });
 });
 
 describe("deltaToneClass", () => {
