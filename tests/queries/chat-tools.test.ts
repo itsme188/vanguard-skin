@@ -970,6 +970,127 @@ describe("executeTool dispatcher", () => {
   });
 });
 
+describe("executeTool query_options_greeks — per-account strategy grouping (holdings-latest-sweep Task 2)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    // migration 002_seed_accounts.sql seeds id=1 Vanguard Taxable, id=2
+    // Vanguard Roth IRA — reused below, no need to insert.
+  });
+
+  function seedStockSecurity(id: number, symbol: string): void {
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, currency) VALUES (?, ?, 'stock', 'USD')`
+    ).run(id, symbol);
+  }
+
+  function seedCallOption(
+    id: number,
+    symbol: string,
+    underlying: string,
+    strike: number
+  ): void {
+    db.prepare(
+      `INSERT INTO securities
+         (id, symbol, security_type, option_type, strike_price, expiration_date, underlying_symbol, multiplier, currency)
+       VALUES (?, ?, 'option', 'CALL', ?, '2027-01-15', ?, 100, 'USD')`
+    ).run(id, symbol, strike, underlying);
+  }
+
+  function seedHolding(
+    accountId: number,
+    securityId: number,
+    quantity: number,
+    asOfDate: string,
+    sourceKey: string
+  ): void {
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (?, ?, ?, 0, ?, ?)`
+    ).run(accountId, securityId, quantity, asOfDate, sourceKey);
+  }
+
+  it("includes the trailing-account stock leg and excludes the tombstoned stock leg from strategy detection", async () => {
+    // Account 1: AAA stock (only row, dated well before the table's global
+    // newest date) + a short call on AAA (dated later, mixing dates within
+    // the account per fixture 1) — should form a covered call. Under the
+    // OLD chat/tools.ts code (a single GLOBAL MAX(as_of_date) across the
+    // whole holdings table, no account/security correlation, no quantity
+    // filter), AAA's stock row would have been dropped entirely because
+    // its as_of_date isn't the table-wide max.
+    seedStockSecurity(500, "AAA");
+    seedHolding(1, 500, 100, "2025-01-31", "aaa-stock-1");
+    seedCallOption(501, "AAA  270115C00220000", "AAA", 220);
+    seedHolding(1, 501, -1, "2025-02-15", "aaa-call-1");
+
+    // Account 2: BBB stock is the "trailing account" fixture — its only row
+    // predates account 1's rows — paired with its own short call. Should
+    // also form a covered call, proving the trailing account's stock leg
+    // was not dropped.
+    seedStockSecurity(502, "BBB");
+    seedHolding(2, 502, 100, "2025-01-31", "bbb-stock-1");
+    seedCallOption(503, "BBB  270115C00150000", "BBB", 150);
+    seedHolding(2, 503, -1, "2025-01-31", "bbb-call-1");
+
+    // CCC: tombstoned stock in account 1, paired with its own short call.
+    // The tombstone (quantity=0) row is dated 2025-03-31 — the newest
+    // as_of_date in the whole table. Under the OLD global-MAX code this is
+    // EXACTLY the row that would have matched (no quantity filter existed),
+    // resurrecting a closed position as strategy collateral. The fixed
+    // code excludes it via getStockLegsForStrategyDetection.
+    seedStockSecurity(504, "CCC");
+    seedHolding(1, 504, 10, "2025-01-31", "ccc-stock-1");
+    seedHolding(1, 504, 0, "2025-03-31", "ccc-stock-2");
+    seedCallOption(505, "CCC  270115C00090000", "CCC", 90);
+    seedHolding(1, 505, -1, "2025-03-01", "ccc-call-1");
+
+    const result = (await executeTool(db, "query_options_greeks", {})) as {
+      data: { strategies: Array<{ type: string; underlying: string }> };
+    };
+
+    const coveredCallUnderlyings = result.data.strategies
+      .filter((s) => s.type === "covered_call")
+      .map((s) => s.underlying)
+      .sort();
+    expect(coveredCallUnderlyings).toEqual(["AAA", "BBB"]);
+
+    // The tombstoned stock never covers its call — no covered_call for CCC.
+    expect(
+      result.data.strategies.some((s) => s.underlying === "CCC" && s.type === "covered_call")
+    ).toBe(false);
+    // Its short call surfaces as naked instead (no valid stock leg to pair it with).
+    expect(
+      result.data.strategies.some((s) => s.underlying === "CCC" && s.type === "naked_call")
+    ).toBe(true);
+  });
+
+  it("cross-account regression: a short call in account 1 is NOT covered by 100 shares held only in account 2", async () => {
+    // Codex F4: lib/compute/options-strategy.ts's detectStrategies assumes
+    // account-local positions. Feeding it a combined cross-account leg list
+    // would let account 2's shares wrongly "cover" account 1's call.
+    seedCallOption(600, "SPY   270115C00500000", "SPY", 500);
+    seedHolding(1, 600, -1, "2025-02-15", "spy-call-1");
+
+    seedStockSecurity(601, "SPY");
+    seedHolding(2, 601, 100, "2025-02-15", "spy-stock-1");
+
+    const result = (await executeTool(db, "query_options_greeks", {})) as {
+      data: { strategies: Array<{ type: string; underlying: string }> };
+    };
+
+    expect(
+      result.data.strategies.some((s) => s.underlying === "SPY" && s.type === "covered_call")
+    ).toBe(false);
+    // Uncovered in its own account — surfaces as a naked call instead.
+    expect(
+      result.data.strategies.some((s) => s.underlying === "SPY" && s.type === "naked_call")
+    ).toBe(true);
+  });
+});
+
 describe("buildSystemPrompt", () => {
   it("includes current date and portfolio context", () => {
     const prompt = buildSystemPrompt("## Test Context\nSome data here", "2025-01-31");

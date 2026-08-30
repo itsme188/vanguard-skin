@@ -20,7 +20,7 @@ import { getCompanyFinancials, getCompanyInfo, getRecentFilings, getInsiderTrans
 import { getTranscriptForChat } from "@/lib/transcripts/fetch";
 import { getTradeReviews, getTradeReviewByPeriod, getTradeRoundtrips } from "@/lib/queries/trade-reviews";
 import { computePortfolioGreeks } from "@/lib/compute/options-greeks";
-import { getOptionPositions } from "@/lib/queries/options";
+import { getOptionPositions, getStockLegsForStrategyDetection } from "@/lib/queries/options";
 import { detectStrategies, type PositionLeg } from "@/lib/compute/options-strategy";
 import { getActiveLevels, getAlerts, getLevelsForSecurity } from "@/lib/queries/security-levels";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
@@ -1328,36 +1328,32 @@ export async function executeTool(
           positions = positions.filter((p) => p.underlying === und);
         }
 
-        // Detect strategies from option positions + stock holdings
+        // Detect strategies from option positions + stock holdings.
+        // Stock legs via the shared per-(account,security) helper — see lib/queries/options.ts.
         const optionPositions = getOptionPositions(db, accountId);
-        const stockHoldings = db
-          .prepare(
-            `SELECT s.symbol, h.quantity, s.security_type,
-                    (SELECT p.close_price FROM prices p WHERE p.security_id = s.id
-                     ORDER BY p.date DESC LIMIT 1) AS current_price
-             FROM holdings h
-             JOIN securities s ON s.id = h.security_id
-             WHERE LOWER(s.security_type) IN ('stock', 'etf')
-               AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2)
-               ${accountId ? "AND h.account_id = ?" : ""}`
-          )
-          .all(...(accountId ? [accountId] : [])) as Array<{
-          symbol: string;
-          quantity: number;
-          security_type: string;
-          current_price: number | null;
-        }>;
+        const stockHoldings = getStockLegsForStrategyDetection(db, accountId);
 
-        const positionLegs: PositionLeg[] = [
-          ...stockHoldings.map((s) => ({
+        // detectStrategies assumes account-local positions
+        // (lib/compute/options-strategy.ts) — group legs by account and
+        // concatenate the per-account results.
+        const legsByAccount = new Map<number, PositionLeg[]>();
+        const pushLeg = (acct: number, leg: PositionLeg) => {
+          const legs = legsByAccount.get(acct);
+          if (legs) legs.push(leg);
+          else legsByAccount.set(acct, [leg]);
+        };
+        for (const s of stockHoldings) {
+          pushLeg(s.account_id, {
             symbol: s.symbol,
             underlying: s.symbol,
             securityType: "stock" as const,
             quantity: s.quantity,
             multiplier: 1,
             currentPrice: s.current_price,
-          })),
-          ...optionPositions.map((o) => ({
+          });
+        }
+        for (const o of optionPositions) {
+          pushLeg(o.accountId, {
             symbol: o.symbol,
             underlying: o.underlying,
             securityType: "option" as const,
@@ -1367,10 +1363,12 @@ export async function executeTool(
             quantity: o.quantity,
             multiplier: o.multiplier,
             currentPrice: o.currentPrice,
-          })),
-        ];
+          });
+        }
 
-        const strategies = detectStrategies(positionLegs);
+        const strategies = Array.from(legsByAccount.values()).flatMap((legs) =>
+          detectStrategies(legs)
+        );
 
         rawResult = {
           portfolio: {
