@@ -800,7 +800,7 @@ export default async function SecurityDetailPage(props: {
              FROM holdings h
              JOIN securities s ON s.id = h.security_id
              WHERE s.underlying_symbol = ?
-               AND s.security_type = 'option'
+               AND LOWER(s.security_type) = 'option'
                AND ${latestHoldingsPredicate()}
              ORDER BY s.expiration_date, s.strike_price`
           )
