@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Money, Pct } from "@/lib/privacy/components";
+import { Money, Pct, PrivateText } from "@/lib/privacy/components";
 import {
   equitySleeveCaptionLead,
   type CashDeploySuggestion,
@@ -134,7 +134,19 @@ export function CashDeployCard({ scope }: Props) {
                         {(g.targetWeight * 100).toFixed(1)}%
                       </td>
                       <td className={`text-right py-1 font-mono ${g.gapPp < 0 ? "text-gold-ink" : "text-ink-dim"}`}>
-                        {g.gapPp >= 0 ? "+" : ""}{g.gapPp.toFixed(1)}pp
+                        {/*
+                          Privacy leak (review finding): gap = current − target.
+                          currentWeight renders through <Pct> (masked in privacy
+                          mode) and targetWeight is public benchmark data left
+                          plain, but the gap itself was rendered RAW — since
+                          target is public, a masked current weight is exactly
+                          recoverable from an unmasked gap. <Pct> has no "pp"
+                          style (it always appends "%"), so this keeps the "pp"
+                          unit and masks the whole string via <PrivateText>
+                          instead, matching the template-string masking idiom
+                          already used elsewhere in TrustStripDrawer.
+                        */}
+                        <PrivateText>{`${g.gapPp >= 0 ? "+" : ""}${g.gapPp.toFixed(1)}pp`}</PrivateText>
                       </td>
                     </tr>
                   ))}

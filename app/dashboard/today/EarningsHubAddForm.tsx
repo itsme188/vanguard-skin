@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { defaultDateWithinWeek } from "@/lib/calendar/date-utils";
+import { addDays, defaultDateWithinWeek, mondayOf } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
@@ -16,6 +16,24 @@ interface Props {
 }
 
 type Slot = "BMO" | "AMC";
+
+/**
+ * Copy for a non-blocking notice shown after a successful save whose date
+ * falls outside the week the hub currently displays ([weekOf, weekOf+6]).
+ * The date input has no min/max — saving to another week is a legitimate
+ * action (e.g. adding a ticker that reports next week) — but the new row
+ * then silently vanishes from view after `router.refresh()` re-queries the
+ * deduped-for-this-week list, which reads as the save having failed.
+ * Returns null when `date` IS within the shown week (no note needed).
+ */
+export function outOfWeekSaveNote(date: string, weekOf: string): string | null {
+  const weekEnd = addDays(weekOf, 6);
+  if (date >= weekOf && date <= weekEnd) return null;
+  // mondayOf(date), not weekOf itself — this names the week the row will
+  // ACTUALLY file under (POST /api/calendar/events stores
+  // week_of: mondayOf(body.event_date)), so the note points somewhere real.
+  return `Saved to the week of ${mondayOf(date)} — not the week shown here.`;
+}
 
 export function EarningsHubAddForm({ weekOf }: Props) {
   const router = useRouter();
@@ -25,6 +43,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
   const [slot, setSlot] = useState<Slot>("AMC");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [outOfWeekNote, setOutOfWeekNote] = useState<string | null>(null);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -53,6 +72,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
       }
       // Reset + close + reload server component; the cockpit is a client
       // poller and needs its own signal to pick up the new reporter now.
+      setOutOfWeekNote(outOfWeekSaveNote(date, weekOf));
       setSymbol("");
       setOpen(false);
       window.dispatchEvent(new Event("earnings-data-changed"));
@@ -66,19 +86,30 @@ export function EarningsHubAddForm({ weekOf }: Props) {
 
   if (!open) {
     return (
-      <button
-        type="button"
-        onClick={() => {
-          // The hub can navigate weeks without remounting this form, so the
-          // date must be re-derived from the CURRENT weekOf each time the
-          // form opens, not just at mount.
-          setDate(defaultDateWithinWeek(weekOf));
-          setOpen(true);
-        }}
-        className="text-[14px] font-medium text-gold-ink hover:text-gold"
-      >
-        + Add ticker
-      </button>
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          type="button"
+          onClick={() => {
+            // NOT because the hub can navigate weeks without remounting
+            // this form — EarningsHub.tsx hardcodes
+            // `weekOf = getCurrentMonday()` per render, so weekOf itself is
+            // fixed for the page's lifetime. The real reason: this form's
+            // client state can persist across a long-lived tab, and
+            // defaultDateWithinWeek reads "today" at CALL time — re-deriving
+            // on every open (not just at mount) picks up a day rollover
+            // (tab left open past midnight) instead of defaulting to a
+            // stale mount-time date.
+            setDate(defaultDateWithinWeek(weekOf));
+            setOpen(true);
+          }}
+          className="text-[14px] font-medium text-gold-ink hover:text-gold"
+        >
+          + Add ticker
+        </button>
+        {outOfWeekNote && (
+          <span className="text-[11px] text-ink-faint italic">{outOfWeekNote}</span>
+        )}
+      </div>
     );
   }
 
