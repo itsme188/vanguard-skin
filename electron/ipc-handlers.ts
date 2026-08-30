@@ -8,6 +8,7 @@ import path from "node:path";
 import { getSettings, saveSettings, getSanitizedSettings } from "./settings-store";
 import type { PasswordChangeResult } from "./password-change";
 import type { RotateCredentialResult } from "./credential-rotation";
+import { isExternalUrlAllowed } from "./external-url";
 
 /**
  * Dependencies injected by main.ts — the change-password + credential-rotation
@@ -36,8 +37,18 @@ export function setupIpcHandlers(deps: IpcHandlerDeps): void {
     await shell.openPath(dataPath);
   });
 
+  // Same allow-list as main.ts's setWindowOpenHandler (electron/external-url.ts)
+  // — this was previously a second, un-allowlisted path to shell.openExternal.
+  // Never forward an unparseable/disallowed-scheme/own-loopback-origin URL to
+  // the OS.
   ipcMain.handle("open-external", async (_event, url: string) => {
-    await shell.openExternal(url);
+    if (!isExternalUrlAllowed(url)) {
+      console.warn(`[electron] blocked open-external for disallowed URL: ${url}`);
+      return;
+    }
+    await shell.openExternal(url).catch((err: unknown) => {
+      console.warn("[electron] openExternal failed:", err);
+    });
   });
 
   ipcMain.handle("get-settings", () => {
