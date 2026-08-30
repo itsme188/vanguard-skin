@@ -34,6 +34,14 @@ import { classifyAnthropicErrorMessage } from "@/lib/ai/classify-anthropic-error
 
 const PARSE_JSON_PREFIX = "Failed to parse Claude response as JSON: ";
 
+// Same shape `classifyAnthropicErrorMessage` matches against
+// (`"<3-digit-status> <body>"`, the literal form `APIError.message` takes).
+// Used below to catch upstream envelopes that DIDN'T classify as a
+// recognized Anthropic JSON error body — an HTML gateway page, plain text,
+// or JSON with an unexpected shape — so the raw body never leaks through
+// the generic passthrough branch.
+const STATUS_PREFIX_PATTERN = /^(\d{3})\s([\s\S]+)$/;
+
 // Phrases Claude actually uses (observed in QA sweeps, e.g.
 // "This document is not a Vanguard brokerage statement — …",
 // "The provided PDF is not a Vanguard brokerage statement — …") when it's
@@ -84,6 +92,13 @@ export function truncateAtWordBoundary(text: string, maxLength: number): string 
  *   auth, rate-limit, overloaded, unknown) is a service-side condition, not
  *   the user's document, so it's a 500 — same as an unrelated passthrough
  *   error.
+ * - The message LOOKS like an upstream "<status> <body>" envelope (matches
+ *   the same 3-digit-status-prefix shape `classifyAnthropicErrorMessage`
+ *   checks) but that classifier returned null because the body isn't a
+ *   recognizable Anthropic JSON error (an HTML gateway page, plain gateway
+ *   text, or unexpected JSON) → a generic plain-English 500. The raw body
+ *   is never passed through here — it can carry arbitrary upstream content
+ *   (an HTML error page, stack trace, etc.) that must not reach the UI.
  */
 export function classifyImportError(message: string): ImportErrorClassification {
   const anthropicClassification = classifyAnthropicErrorMessage(message);
@@ -91,6 +106,14 @@ export function classifyImportError(message: string): ImportErrorClassification 
     return {
       status: anthropicClassification.kind === "content" ? 400 : 500,
       userMessage: anthropicClassification.userMessage,
+    };
+  }
+
+  const statusPrefixMatch = message.match(STATUS_PREFIX_PATTERN);
+  if (statusPrefixMatch) {
+    return {
+      status: 500,
+      userMessage: `The AI service returned an unexpected response (HTTP ${statusPrefixMatch[1]}). Try again in a minute.`,
     };
   }
 

@@ -165,4 +165,40 @@ describe("classifyImportError", () => {
     expect(result.status).toBe(400);
     expect(result.userMessage).not.toContain("req_importCONTENTTEST");
   });
+
+  // Confirmed Codex finding: classifyAnthropicErrorMessage returns null for
+  // any "<status> <body>" envelope whose body isn't a recognizable Anthropic
+  // JSON error (HTML gateway pages, plain gateway text, etc.) — and the old
+  // code fell straight through to the generic passthrough branch, leaking
+  // the raw upstream body (HTML markup, request internals, ...) to the
+  // Import tab verbatim.
+  it("replaces a non-JSON HTML upstream body with a generic message, never the raw HTML", () => {
+    const message = "502 <html><body>Bad gateway</body></html>";
+    const result = classifyImportError(message);
+
+    expect(result.status).toBe(500);
+    expect(result.userMessage).toContain("502");
+    expect(result.userMessage).not.toContain("<html");
+    expect(result.userMessage).not.toContain("Bad gateway");
+  });
+
+  it("replaces a non-JSON plain-text upstream body with a generic message, never the raw body", () => {
+    const message = "401 upstream said no";
+    const result = classifyImportError(message);
+
+    expect(result.status).toBe(500);
+    expect(result.userMessage).not.toContain("upstream said no");
+  });
+
+  it("still leaves a genuine wrong-document classification unchanged (not caught by the status-prefix guard)", () => {
+    const message =
+      "Failed to parse Claude response as JSON: This document is not a Vanguard brokerage statement — it appears to be a printer test page.";
+
+    const result = classifyImportError(message);
+
+    expect(result.status).toBe(400);
+    expect(result.userMessage.startsWith(
+      "This file doesn't look like a Vanguard brokerage statement."
+    )).toBe(true);
+  });
 });
