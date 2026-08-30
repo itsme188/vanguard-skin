@@ -12,6 +12,11 @@ import {
   getFactorColor,
   type FactorColumn,
 } from "@/lib/factors";
+import {
+  MIN_BETA_PAIRS,
+  MIN_BETA_R_SQUARED,
+  type BetaConfidenceReason,
+} from "@/lib/compute/beta-confidence";
 import { Pct } from "@/lib/privacy/components";
 
 /**
@@ -53,10 +58,21 @@ interface RegressionData {
   dataPoints: number;
 }
 
+/**
+ * Read-time publish gate for the beta (see `regressionBetaVerdict`). OPTIONAL:
+ * a response from before the gate existed carries no verdict, and is treated
+ * as ok — the card keeps rendering the beta rather than blanking it.
+ */
+interface BetaVerdict {
+  ok: boolean;
+  reason?: BetaConfidenceReason;
+}
+
 interface ApiResponse {
   success: boolean;
   data: RegressionData | null;
   fromCache?: boolean;
+  betaVerdict?: BetaVerdict;
   error?: string;
 }
 
@@ -83,6 +99,7 @@ export function FactorProfileSection({
   factorShare: FactorShareEntry[];
 }) {
   const [regression, setRegression] = useState<RegressionData | null>(null);
+  const [betaVerdict, setBetaVerdict] = useState<BetaVerdict | null>(null);
   const [regLoaded, setRegLoaded] = useState(false);
   const [regError, setRegError] = useState<string | null>(null);
 
@@ -90,6 +107,7 @@ export function FactorProfileSection({
     let cancelled = false;
     setRegLoaded(false);
     setRegError(null);
+    setBetaVerdict(null);
     fetch(`/api/security/${securityId}/regression?benchmark=SPY`)
       .then((r) => r.json() as Promise<ApiResponse>)
       .then((body) => {
@@ -100,6 +118,8 @@ export function FactorProfileSection({
           return;
         }
         setRegression(body.data);
+        // Missing verdict = old response shape → publish (backward compatible).
+        setBetaVerdict(body.betaVerdict ?? { ok: true });
         setRegLoaded(true);
       })
       .catch((err) => {
@@ -111,6 +131,9 @@ export function FactorProfileSection({
       cancelled = true;
     };
   }, [securityId]);
+
+  // ---------- Block 2: publish gate ----------
+  const betaWithheld = betaVerdict !== null && !betaVerdict.ok;
 
   // ---------- Block 1: qualitative chips ----------
   const presentFactors = factors
@@ -195,10 +218,15 @@ export function FactorProfileSection({
         ) : (
           <>
             <div style={{ display: "flex", marginTop: "8px" }}>
+              {/* qa finding: regression-card-publishes-betas-failing-confidence-gate.
+                  A slope the regression cannot support renders as "—" in the
+                  neutral tone, never as an emphasised (and colour-coded)
+                  number. Vol / R² / Correlation describe the series itself and
+                  stand on their own, so they keep rendering. */}
               <KpiCell
                 label="Beta"
-                value={regression.beta.toFixed(2)}
-                tone={betaTone(regression.beta)}
+                value={betaWithheld ? "—" : regression.beta.toFixed(2)}
+                tone={betaWithheld ? undefined : betaTone(regression.beta)}
               />
               <KpiCell
                 label="Vol (ann)"
@@ -217,7 +245,7 @@ export function FactorProfileSection({
                 marginTop: 0,
               }}
             >
-              over {regression.dataPoints} daily observations
+              {regressionCaption(regression.dataPoints, betaVerdict)}
             </p>
           </>
         )}
@@ -301,6 +329,26 @@ const emptyTextStyle: React.CSSProperties = {
   color: "#888",
   margin: 0,
 };
+
+/**
+ * Caption under the regression cells. Always states the sample size; when the
+ * publish gate withholds the beta it also says WHY, in the reader's terms —
+ * a blank cell with no explanation reads as a bug. Thresholds come from the
+ * gate module so the copy can never drift from the rule it describes.
+ */
+function regressionCaption(
+  dataPoints: number,
+  verdict: BetaVerdict | null
+): string {
+  const base = `over ${dataPoints} daily observations`;
+  if (verdict === null || verdict.ok) return base;
+  if (verdict.reason === "few_pairs") {
+    return `${base} · beta withheld: fewer than ${MIN_BETA_PAIRS} return pairs`;
+  }
+  return `${base} · beta withheld: r² below ${MIN_BETA_R_SQUARED.toFixed(
+    2
+  )} — the market explains too little of this name's variance`;
+}
 
 /** Soft tint for beta — emerald when ≤1, amber when >1.5, neutral between. */
 function betaTone(beta: number): string {
