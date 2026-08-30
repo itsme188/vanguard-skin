@@ -7,7 +7,7 @@ import type {
   PerAccountReconciliation,
 } from "@/lib/queries/analysis-trust-state";
 import { DIETZ_CONSISTENT_BP, type DietzBand } from "@/lib/compute/dietz";
-import { PrivateText, Pct } from "@/lib/privacy/components";
+import { PrivateText, Pct, Count } from "@/lib/privacy/components";
 import { Chip, type ChipTone } from "@/app/dashboard/components/Chip";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -273,10 +273,17 @@ function BandHistoryStrip({ history }: { history: BandHistoryEntry[] }) {
 }
 
 /**
- * Count of "not_comparable" months (seam-straddled — pass-through: they
- * neither certify nor break a chain, a deliberate 2026-08-28 decision, see
- * walkAccountChain in lib/queries/analysis-trust-state.ts) at or before
- * `through`, summed across every account's own walked bandHistory.
+ * Count of DISTINCT calendar months that are "not_comparable" (seam-
+ * straddled — pass-through: they neither certify nor break a chain, a
+ * deliberate 2026-08-28 decision, see walkAccountChain in
+ * lib/queries/analysis-trust-state.ts) at or before `through`, deduped by
+ * `monthEndDate` ACROSS every account's own walked bandHistory.
+ *
+ * Codex finding: this used to sum account-month observations, not distinct
+ * months — one seam month straddling three accounts read as "3
+ * not-comparable months skipped" in the headline, when it was a single
+ * calendar month. Exported for direct unit testing (pure function, no
+ * React/DOM dependency).
  *
  * Review finding: the rollup headline below claims a "contiguous chain of
  * consistent months" through the frontier, but a not_comparable month inside
@@ -285,20 +292,20 @@ function BandHistoryStrip({ history }: { history: BandHistoryEntry[] }) {
  * counts as the frontier (no logic change here or in
  * analysis-trust-state.ts — `crossCheckedThru`/`chainBreak` are unchanged).
  */
-function countNotComparableThrough(
+export function countNotComparableThrough(
   perAccountReconciliation: PerAccountReconciliation[],
   through: string
 ): number {
-  let n = 0;
+  const months = new Set<string>();
   for (const row of perAccountReconciliation) {
     // bandHistory is walked in ascending monthEndDate order (see
     // walkAccountChain), so this can stop at the first month past `through`.
     for (const entry of row.bandHistory) {
       if (entry.monthEndDate > through) break;
-      if (entry.band === "not_comparable") n++;
+      if (entry.band === "not_comparable") months.add(entry.monthEndDate);
     }
   }
-  return n;
+  return months.size;
 }
 
 function PerformanceContent({ state }: { state: AnalysisTrustState }) {
@@ -310,15 +317,23 @@ function PerformanceContent({ state }: { state: AnalysisTrustState }) {
   return (
     <div className="space-y-4">
       <p className="text-sm text-ink">
-        {crossCheckedThru
-          ? `Independently cross-checked (Modified Dietz) through ${crossCheckedThru} — the earliest month every account's contiguous chain of consistent months reaches${
-              skippedNotComparable > 0
-                ? ` (${skippedNotComparable} not-comparable month${
-                    skippedNotComparable === 1 ? "" : "s"
-                  } skipped along the way, not cross-checked)`
-                : ""
-            }. Where each chain stopped, and the latest statement month's own band, are below.`
-          : "No account has a contiguous independent cross-check yet — see per-account detail below."}
+        {crossCheckedThru ? (
+          <>
+            {`Independently cross-checked (Modified Dietz) through ${crossCheckedThru} — the earliest month every account's contiguous chain of consistent months reaches`}
+            {skippedNotComparable > 0 && (
+              <>
+                {" ("}
+                <Count value={skippedNotComparable} />
+                {` not-comparable month${
+                  skippedNotComparable === 1 ? "" : "s"
+                } skipped along the way, not cross-checked)`}
+              </>
+            )}
+            {". Where each chain stopped, and the latest statement month's own band, are below."}
+          </>
+        ) : (
+          "No account has a contiguous independent cross-check yet — see per-account detail below."
+        )}
       </p>
 
       {perAccountReconciliation.length > 0 && (

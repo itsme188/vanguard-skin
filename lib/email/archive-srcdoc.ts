@@ -73,6 +73,21 @@ const HOSTILE_TARGET_VALUE = /^(?:_self|_parent|_top)$/i;
 /** `<base>`, `<a>`, `<area>`, `<form>` opening tags — the elements HTML gives a `target` attribute. */
 const TARGETABLE_TAG_OPEN = /<(base|a|area|form)\b[^>]*>/gi;
 
+/**
+ * A `<script>…</script>` or `<style>…</style>` region — text content that
+ * looks like markup here is NOT markup (a JS string literal containing
+ * `<a target="_self">`, a CSS `content: "<a target=_top>"` literal) and
+ * must never be touched by the tag regex below. Non-greedy body match,
+ * case-insensitive; the `\1` backreference (also case-insensitive under the
+ * `i` flag) pairs the close tag with its own open tag name so `<SCRIPT>`
+ * only closes on `</script>`/`</SCRIPT>`, never on an unrelated `</style>`.
+ *
+ * Scripts never execute in this frame — `EMAIL_FRAME_SANDBOX` grants no
+ * `allow-scripts` — so this is purely about not corrupting non-markup text
+ * while doing a regex-based (not HTML-parser-based) rewrite.
+ */
+const SCRIPT_OR_STYLE_BLOCK = /<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+
 /** A `target` attribute in any of the three legal syntaxes: `="x"`, `='x'`, `=x`. */
 const TARGET_ATTR = /target\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
 
@@ -111,11 +126,32 @@ function forceTargetBlank(tag: string, always: boolean): string {
  * Regex-based and conservative, like the rest of this module: only the
  * `target` attribute's value is touched, everything else in the tag is
  * copied through verbatim.
+ *
+ * The tag regex is applied only OUTSIDE `<script>…</script>` and
+ * `<style>…</style>` regions — reassembled byte-for-byte otherwise — so a
+ * tag-like string inside a script's JS or a style's CSS is never mistaken
+ * for real markup (Codex finding: a probe turned `const x="<a
+ * target=\"_self\">"` into broken text and rewrote a CSS `content:`
+ * literal).
  */
-function neutralizeHostileTargets(html: string): string {
-  return html.replace(TARGETABLE_TAG_OPEN, (tag, tagName: string) =>
+function rewriteTargetsInSegment(segment: string): string {
+  return segment.replace(TARGETABLE_TAG_OPEN, (tag, tagName: string) =>
     forceTargetBlank(tag, tagName.toLowerCase() === "base"),
   );
+}
+
+function neutralizeHostileTargets(html: string): string {
+  SCRIPT_OR_STYLE_BLOCK.lastIndex = 0;
+  let out = "";
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = SCRIPT_OR_STYLE_BLOCK.exec(html))) {
+    out += rewriteTargetsInSegment(html.slice(lastIndex, match.index));
+    out += match[0]; // script/style region copied through untouched
+    lastIndex = match.index + match[0].length;
+  }
+  out += rewriteTargetsInSegment(html.slice(lastIndex));
+  return out;
 }
 
 /**
