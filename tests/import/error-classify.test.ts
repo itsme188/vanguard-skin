@@ -104,4 +104,65 @@ describe("classifyImportError", () => {
 
     expect(result).toEqual({ status: 500, userMessage: message });
   });
+
+  // Confirmed review finding (b88b95d/aea6a51): classifyAnthropicErrorMessage
+  // was exported, tested, and documented as being for this module — but
+  // never actually called. When the Claude call fails before the parser
+  // ever runs (billing/auth/rate-limit/overload), the caught error's
+  // .message IS the raw Anthropic envelope, not the parser's "Failed to
+  // parse..." shape — the old passthrough branch rendered it verbatim,
+  // request_id and all.
+  it("classifies a raw Anthropic error envelope (auth) as a plain message, not the raw envelope, and not a 400", () => {
+    const payload = {
+      type: "error",
+      error: { type: "authentication_error", message: "invalid x-api-key" },
+      request_id: "req_importAUTHTEST",
+    };
+    const message = `401 ${JSON.stringify(payload)}`;
+
+    const result = classifyImportError(message);
+
+    // Auth is a server-side configuration problem, not the user's document.
+    expect(result.status).toBe(500);
+    expect(result.userMessage).not.toContain("request_id");
+    expect(result.userMessage).not.toContain("req_importAUTHTEST");
+    expect(result.userMessage).not.toContain('"type":"error"');
+    expect(result.userMessage.toLowerCase()).toContain("authentication");
+  });
+
+  it("classifies a raw Anthropic error envelope (billing) as a 500 plain message, not the raw envelope", () => {
+    const payload = {
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message:
+          "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
+      },
+      request_id: "req_importBILLINGTEST",
+    };
+    const message = `400 ${JSON.stringify(payload)}`;
+
+    const result = classifyImportError(message);
+
+    expect(result.status).toBe(500);
+    expect(result.userMessage).not.toContain("req_importBILLINGTEST");
+    expect(result.userMessage.toLowerCase()).toContain("billing");
+  });
+
+  it("classifies a raw Anthropic error envelope (content rejection) as a 400, same as the wrong-document case", () => {
+    const payload = {
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: "messages.0.content.0.pdf: The PDF specified was not valid.",
+      },
+      request_id: "req_importCONTENTTEST",
+    };
+    const message = `400 ${JSON.stringify(payload)}`;
+
+    const result = classifyImportError(message);
+
+    expect(result.status).toBe(400);
+    expect(result.userMessage).not.toContain("req_importCONTENTTEST");
+  });
 });

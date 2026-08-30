@@ -74,7 +74,49 @@ function truncate(text: string, maxLength: number): string {
   return `${cut.trimEnd()}…`;
 }
 
-function classify(status: number, text: string): AnthropicErrorClassification {
+const AUTH_MESSAGE =
+  "The AI service rejected the request (API key/authentication problem). This is a server-side configuration issue, not a problem with your file.";
+const RATE_LIMIT_MESSAGE =
+  "The AI service is rate-limiting requests right now. Try again in a minute.";
+const OVERLOADED_MESSAGE = "The AI service is temporarily overloaded. Try again in a minute.";
+
+// Error `type` discriminators Anthropic's own error body carries — checked
+// BEFORE the prose-substring patterns below, which exist only for shapes
+// that don't carry (or didn't preserve) a `type` field at all.
+const AUTH_ERROR_TYPES = new Set(["authentication_error", "permission_error"]);
+const RATE_LIMIT_ERROR_TYPES = new Set(["rate_limit_error"]);
+const OVERLOADED_ERROR_TYPES = new Set(["overloaded_error"]);
+
+interface ClassifyOptions {
+  /** `error.error.type` from a well-formed Anthropic error body, when present. */
+  errorType?: string | null;
+  /**
+   * True when the caller could NOT recover a well-formed `error.error.message`
+   * string (a non-JSON body — e.g. a gateway HTML page — or a JSON body
+   * missing that field). `text` is empty in that case: a 400 with no other
+   * signal falls back to a generic (non-embedding) content-kind message
+   * rather than pattern-matching or quoting untrusted raw upstream text.
+   */
+  assumeContentFallback?: boolean;
+}
+
+function classify(
+  status: number,
+  text: string,
+  options: ClassifyOptions = {},
+): AnthropicErrorClassification {
+  const { errorType = null, assumeContentFallback = false } = options;
+
+  if (errorType && AUTH_ERROR_TYPES.has(errorType)) {
+    return { kind: "auth", status, userMessage: AUTH_MESSAGE };
+  }
+  if (errorType && RATE_LIMIT_ERROR_TYPES.has(errorType)) {
+    return { kind: "rate_limit", status, userMessage: RATE_LIMIT_MESSAGE };
+  }
+  if (errorType && OVERLOADED_ERROR_TYPES.has(errorType)) {
+    return { kind: "overloaded", status, userMessage: OVERLOADED_MESSAGE };
+  }
+
   if (BILLING_PATTERNS.some((p) => p.test(text))) {
     return {
       kind: "billing",
@@ -84,33 +126,32 @@ function classify(status: number, text: string): AnthropicErrorClassification {
     };
   }
   if (status === 401 || AUTH_PATTERNS.some((p) => p.test(text))) {
-    return {
-      kind: "auth",
-      status,
-      userMessage:
-        "The AI service rejected the request (API key/authentication problem). This is a server-side configuration issue, not a problem with your file.",
-    };
+    return { kind: "auth", status, userMessage: AUTH_MESSAGE };
   }
   if (status === 429) {
-    return {
-      kind: "rate_limit",
-      status,
-      userMessage: "The AI service is rate-limiting requests right now. Try again in a minute.",
-    };
+    return { kind: "rate_limit", status, userMessage: RATE_LIMIT_MESSAGE };
   }
   if (status === 529) {
-    return {
-      kind: "overloaded",
-      status,
-      userMessage: "The AI service is temporarily overloaded. Try again in a minute.",
-    };
+    return { kind: "overloaded", status, userMessage: OVERLOADED_MESSAGE };
   }
-  if (status === 400 && CONTENT_PATTERNS.some((p) => p.test(text))) {
-    return {
-      kind: "content",
-      status,
-      userMessage: `The AI service couldn't process this file: ${truncate(text, MAX_UPSTREAM_TEXT)}`,
-    };
+  if (status === 400) {
+    if (CONTENT_PATTERNS.some((p) => p.test(text))) {
+      return {
+        kind: "content",
+        status,
+        userMessage: `The AI service couldn't process this file: ${truncate(text, MAX_UPSTREAM_TEXT)}`,
+      };
+    }
+    // No well-formed message to pattern-match (and nothing safe to quote) —
+    // still the most likely bucket for a bare 400, but with generic wording
+    // only; never fall back to embedding the raw (possibly non-JSON) body.
+    if (assumeContentFallback) {
+      return {
+        kind: "content",
+        status,
+        userMessage: "The AI service couldn't process this file. Try again in a minute.",
+      };
+    }
   }
   return {
     kind: "unknown",
@@ -129,10 +170,17 @@ function classify(status: number, text: string): AnthropicErrorClassification {
 export function classifyAnthropicError(err: unknown): AnthropicErrorClassification | null {
   if (!(err instanceof APIError)) return null;
   const status = err.status ?? 0;
-  const body = err.error as { error?: { message?: unknown } } | undefined;
-  const nested = body?.error?.message;
-  const text = typeof nested === "string" ? nested : err.message;
-  return classify(status, text);
+  const body = err.error as { error?: { type?: unknown; message?: unknown } } | undefined;
+  const nestedMessage = body?.error?.message;
+  const nestedType = body?.error?.type;
+  const hasWellFormedMessage = typeof nestedMessage === "string";
+  // `err.error` is undefined when the upstream body wasn't JSON at all (a
+  // gateway HTML page, per the SDK) — `err.message` in that case is the raw
+  // "<status> <body>" text, which must never be pattern-matched or quoted
+  // back to the user (it can carry arbitrary upstream content).
+  const text = hasWellFormedMessage ? (nestedMessage as string) : "";
+  const errorType = typeof nestedType === "string" ? nestedType : null;
+  return classify(status, text, { errorType, assumeContentFallback: !hasWellFormedMessage });
 }
 
 /**
@@ -149,14 +197,20 @@ export function classifyAnthropicErrorMessage(message: string): AnthropicErrorCl
   const status = parseInt(match[1], 10);
   const rest = match[2];
 
-  let nested: string | null = null;
+  let parsed: { type?: unknown; error?: { type?: unknown; message?: unknown } };
   try {
-    const parsed = JSON.parse(rest) as { type?: unknown; error?: { message?: unknown } };
-    if (parsed?.type !== "error") return null;
-    if (typeof parsed.error?.message === "string") nested = parsed.error.message;
+    parsed = JSON.parse(rest);
   } catch {
     return null;
   }
+  if (parsed?.type !== "error") return null;
 
-  return classify(status, nested ?? rest);
+  const nestedMessage = parsed.error?.message;
+  const nestedType = parsed.error?.type;
+  const hasWellFormedMessage = typeof nestedMessage === "string";
+  // Same rule as classifyAnthropicError: never fall back to the raw envelope
+  // text (`rest`) for pattern-matching/quoting — it carries the request_id.
+  const text = hasWellFormedMessage ? (nestedMessage as string) : "";
+  const errorType = typeof nestedType === "string" ? nestedType : null;
+  return classify(status, text, { errorType, assumeContentFallback: !hasWellFormedMessage });
 }
