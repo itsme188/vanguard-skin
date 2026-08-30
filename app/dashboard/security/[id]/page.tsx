@@ -28,6 +28,7 @@ import { QuoteStats } from "../../components/QuoteStats";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import { computeLotCoverageGaps } from "@/lib/compute/lot-coverage";
 import type { EarningsTranscript } from "@/lib/types";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 function gainClass(value: number | null): string {
   if (value == null) return "text-ink-dim";
@@ -783,6 +784,15 @@ export default async function SecurityDetailPage(props: {
 
       {/* Related Options (for stock securities that have option positions) */}
       {security.security_type?.toLowerCase() !== "option" && (() => {
+        // "Latest" is keyed per-(account, security) via latestHoldingsPredicate,
+        // never a global MAX(as_of_date) across ALL holdings: the prior global
+        // MAX picked one as_of_date for the entire table, so an account whose
+        // newest row trailed another account's contributed zero related-option
+        // rows regardless of whether it actually held any. Per-pair keying also
+        // adds the default quantity != 0 clause (a deliberate behavior fix —
+        // this query previously had no quantity filter at all, so a closed
+        // option position's quantity=0 tombstone row could render as a related
+        // option with 0 qty).
         const relatedOptions = db
           .prepare(
             `SELECT s.id, s.symbol, s.option_type, s.strike_price, s.expiration_date,
@@ -791,7 +801,7 @@ export default async function SecurityDetailPage(props: {
              JOIN securities s ON s.id = h.security_id
              WHERE s.underlying_symbol = ?
                AND s.security_type = 'option'
-               AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2)
+               AND ${latestHoldingsPredicate()}
              ORDER BY s.expiration_date, s.strike_price`
           )
           .all(security.symbol) as Array<{
