@@ -428,9 +428,32 @@ async function createWindow(): Promise<void> {
   // Start maximized — the dashboard is designed for full-width viewports
   mainWindow.maximize();
 
-  // Open external links in the default browser
+  // Open external links in the default browser.
+  //
+  // This is the single exit for every `target="_blank"` in the app — INCLUDING
+  // links inside archived email / newsletter bodies, which are foreign markup
+  // rendered in a sandboxed iframe (lib/email/archive-srcdoc.ts). Those bodies
+  // can carry any href, so the scheme is allow-listed before it reaches
+  // shell.openExternal: that call hands the URL to the OS, and a `file:` or a
+  // registered custom scheme would launch a local file or another application.
+  // http/https cover every real link; mailto is kept because newsletter
+  // unsubscribe footers use it.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    let scheme: string;
+    try {
+      scheme = new URL(url).protocol;
+    } catch {
+      return { action: "deny" }; // unparseable — never forward it to the OS
+    }
+    if (scheme === "http:" || scheme === "https:" || scheme === "mailto:") {
+      // Fire-and-forget, but never leave the rejection unhandled: a failed
+      // hand-off to the OS must not take down the main process.
+      void shell.openExternal(url).catch((err: unknown) => {
+        console.warn("[electron] openExternal failed:", err);
+      });
+    } else {
+      console.warn(`[electron] blocked window.open for non-external scheme: ${scheme}`);
+    }
     return { action: "deny" };
   });
 

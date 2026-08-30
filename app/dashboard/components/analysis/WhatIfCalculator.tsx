@@ -2,6 +2,7 @@
 
 import { Fragment, useState } from "react";
 import { Money, Pct } from "@/lib/privacy/components";
+import { rendersAsZero } from "@/lib/format";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import type { ExposureDelta, HypotheticalLeg } from "@/lib/compute/exposure-delta";
 import { ScrollFade } from "../ScrollFade";
@@ -324,9 +325,15 @@ function DeltaTable({ delta }: { delta: ExposureDelta }) {
   );
 }
 
-function signed(n: number, digits: number): string {
+// A delta that rounds to zero at `digits` (e.g. -0.0004 -> toFixed(2) ===
+// "-0.00") must never render a signed negative zero — the "no material
+// change" case gets a plain unsigned "0.00", matching rendersAsZero's
+// negative-zero guard used everywhere else in lib/format.ts
+// (qa:analysis-whatif--portfolio-beta-delta-renders-negative-zero).
+export function signed(n: number, digits: number): string {
   const v = n.toFixed(digits);
-  return n >= 0 ? `+${v}` : v;
+  if (rendersAsZero(v)) return (0).toFixed(digits);
+  return n > 0 ? `+${v}` : v;
 }
 
 function signedPp(n: number): string {

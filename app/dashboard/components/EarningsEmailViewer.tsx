@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { ScrollFade } from "./ScrollFade";
+import { EMAIL_FRAME_SANDBOX, withExternalLinkTarget } from "@/lib/email/archive-srcdoc";
 
 interface EmailContentResponse {
   title: string;
@@ -44,6 +45,10 @@ interface EarningsEmailViewerProps {
  * AI prose from earnings_emails.ai_output_md) is fetched on open and
  * srcDoc'd into an iframe so the email-specific styling stays isolated
  * from the app's global CSS.
+ *
+ * Source links inside the archived body open in the system browser / a new
+ * tab, never in the frame — see lib/email/archive-srcdoc.ts for why the
+ * sandbox alone could not prevent that.
  */
 export function EarningsEmailViewer({
   eventId,
@@ -186,10 +191,10 @@ export function EarningsEmailViewer({
             <ScrollFade>
               <iframe
                 title={data.title}
-                srcDoc={data.fullHtml}
+                srcDoc={withExternalLinkTarget(data.fullHtml)}
                 className="w-full min-w-[860px] block border-0 rounded-b-xl"
                 style={{ height: "75dvh", backgroundColor: "#1a1a1a" }}
-                sandbox="allow-same-origin"
+                sandbox={EMAIL_FRAME_SANDBOX}
               />
             </ScrollFade>
           )}

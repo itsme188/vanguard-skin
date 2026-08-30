@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   coercePercent,
+  displaySecurityName,
   formatCompactOptionSymbol,
   formatCompactUSD,
+  formatEnrichedAtET,
   formatHoldingPeriod,
   formatLargeNumber,
   formatProfitFactor,
@@ -102,6 +104,37 @@ describe("parseStoredTimestamp", () => {
   it("respects an explicit UTC offset", () => {
     const d = parseStoredTimestamp("2026-06-04T21:49:38-04:00");
     expect(d.getTime()).toBe(Date.UTC(2026, 5, 5, 1, 49, 38));
+  });
+});
+
+// ── ET-anchored enrichment stamp ─────────────────────────────────────
+// enriched_at is stored as a space-separated UTC string (SQLite
+// datetime('now')), e.g. "2026-08-29 06:57:47". BogeysEditModal used to
+// hand-slice it (`.slice(0, 16)`), rendering the raw UTC characters with no
+// zone label — a 02:57 ET accept showed "06:57" (qa:today-earningshub-
+// bogeys--enriched-stamp-raw-utc-no-zone-label). Must ET-anchor via
+// parseStoredTimestamp + Intl, never re-slice.
+describe("formatEnrichedAtET", () => {
+  it("converts a UTC SQLite stamp to ET wall-clock with a zone label (non-DST, EST = UTC-5)", () => {
+    expect(formatEnrichedAtET("2026-01-15 06:57:47")).toBe("Jan 15, 2026, 1:57 AM ET");
+  });
+
+  it("converts a UTC SQLite stamp to ET wall-clock with a zone label (DST, EDT = UTC-4)", () => {
+    // The regression example: an accept at 02:57 ET (06:57 UTC) must never
+    // render the bare UTC digits "06:57" with no zone.
+    expect(formatEnrichedAtET("2026-08-29 06:57:47")).toBe("Aug 29, 2026, 2:57 AM ET");
+  });
+
+  it("is idempotent for an explicit ISO-Z timestamp", () => {
+    expect(formatEnrichedAtET("2026-08-29T06:57:47Z")).toBe("Aug 29, 2026, 2:57 AM ET");
+  });
+
+  it("falls back to empty string for null", () => {
+    expect(formatEnrichedAtET(null)).toBe("");
+  });
+
+  it("falls back to the raw string for unparseable input", () => {
+    expect(formatEnrichedAtET("not-a-date")).toBe("not-a-date");
   });
 });
 
@@ -395,5 +428,24 @@ describe("formatShares fractional default", () => {
   });
   it("non-finite stays em dash", () => {
     expect(formatShares(Number.NaN)).toBe("—");
+  });
+});
+
+// ── Security-name display fallback ──────────────────────────────────
+// securities.name can be the EMPTY STRING (not NULL) — e.g. some IBKR-synced
+// rows. `holding.security_name ?? "—"` only catches null/undefined, so an
+// empty-string name rendered a blank cell instead of the em-dash fallback
+// (QA qa:accounts-holdings--blank-name-column-qqq-rsp-ibkr-regression-2).
+
+describe("displaySecurityName", () => {
+  it("falls back to em dash for null, undefined, empty, and whitespace-only names", () => {
+    expect(displaySecurityName(null)).toBe("—");
+    expect(displaySecurityName(undefined)).toBe("—");
+    expect(displaySecurityName("")).toBe("—");
+    expect(displaySecurityName("   ")).toBe("—");
+  });
+
+  it("passes through a real name unchanged", () => {
+    expect(displaySecurityName("Invesco QQQ Trust")).toBe("Invesco QQQ Trust");
   });
 });
