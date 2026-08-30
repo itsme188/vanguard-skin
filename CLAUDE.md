@@ -90,7 +90,7 @@ Detail: `docs/reference/conventions-detail.md`, `docs/reference/earnings-pipelin
 - Transaction types are UPPERCASE (BUY/SELL/DIVIDEND/…); `computeTaxLots` matches uppercase.
 - Always `COALESCE(s.multiplier, 1)` — SQLite DEFAULT is bypassed by explicit `INSERT NULL`.
 - Compare timestamps with `datetime()` on BOTH sides (`datetime('now')` is space-separated, `toISOString()` uses `T`).
-- Latest holdings: `latestHoldingsPredicate` (`lib/queries/latest-holdings.ts`), per-(account, security) + `quantity != 0`. Never a global `MAX(as_of_date)`.
+- Latest holdings: `latestHoldingsPredicate` (`lib/queries/latest-holdings.ts`), per-(account, security) + `quantity != 0`. Never a global `MAX(as_of_date)`. Sweep completed 2026-08-30 (merge `893f8c0`) — a per-occurrence static guard (`tests/repo/no-handrolled-latest-holdings.test.ts`) now fails the suite on any new hand-rolled holdings MAX; add allowlist entries only with a justification.
 - Statement wins over TWS/live rows in snapshot + holdings upserts; history reads exclude live sources via `excludeLiveSnapshotsSql()`.
 
 **Dates & time**
