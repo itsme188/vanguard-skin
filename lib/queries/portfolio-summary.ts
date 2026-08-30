@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { formatUSD, formatNumber } from "@/lib/format";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 const CONVENTION_PENDING_NOTE =
   "Note: cost-basis figures are pending a recompute under the corrected dollar convention and may be unit-inconsistent.";
@@ -132,11 +133,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         JOIN securities s ON s.id = h.security_id
         LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
         LEFT JOIN fx_rates fx ON fx.currency = s.currency
-        WHERE h.as_of_date = (
-          SELECT MAX(h2.as_of_date) FROM holdings h2
-          WHERE h2.account_id = h.account_id
-        )
-        AND h.quantity > 0
+        WHERE ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
         AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
         ${holdingsFilter}
       )
@@ -161,11 +158,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
        JOIN securities s ON s.id = h.security_id
        LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
-       WHERE h.as_of_date = (
-         SELECT MAX(h2.as_of_date) FROM holdings h2
-         WHERE h2.account_id = h.account_id
-       )
-       AND h.quantity > 0
+       WHERE ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
        AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
        ${holdingsFilter}
        ORDER BY market_value DESC`
@@ -208,11 +201,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
         LEFT JOIN fx_rates fx ON fx.currency = s.currency
         WHERE lp.close_price IS NOT NULL
-          AND h.as_of_date = (
-            SELECT MAX(h2.as_of_date) FROM holdings h2
-            WHERE h2.account_id = h.account_id
-          )
-          AND h.quantity > 0
+          AND ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
           AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
           ${holdingsFilter}
       )
@@ -252,11 +241,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
         LEFT JOIN fx_rates fx ON fx.currency = s.currency
         WHERE lp.close_price IS NOT NULL
-          AND h.as_of_date = (
-            SELECT MAX(h2.as_of_date) FROM holdings h2
-            WHERE h2.account_id = h.account_id
-          )
-          AND h.quantity > 0
+          AND ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
           AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
           ${holdingsFilter}
       )
