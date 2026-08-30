@@ -35,9 +35,9 @@ beforeEach(() => {
 
 describe("applyThemeAwareBoost", () => {
   const baseGaps: SectorGap[] = [
-    { sector: "Technology", currentWeight: 0.20, targetWeight: 0.30, gapPp: -10, dollarGap: -10000, gapClosureScore: 0 },
-    { sector: "Healthcare", currentWeight: 0.05, targetWeight: 0.15, gapPp: -10, dollarGap: -10000, gapClosureScore: 0 },
-    { sector: "Energy", currentWeight: 0.08, targetWeight: 0.05, gapPp: 3, dollarGap: 3000, gapClosureScore: 0 },
+    { sector: "Technology", currentWeight: 0.20, targetWeight: 0.30, gapPp: -10, dollarGap: -10000, gapClosureScore: 0, residualGapPp: -10, residualDollarGap: -10000 },
+    { sector: "Healthcare", currentWeight: 0.05, targetWeight: 0.15, gapPp: -10, dollarGap: -10000, gapClosureScore: 0, residualGapPp: -10, residualDollarGap: -10000 },
+    { sector: "Energy", currentWeight: 0.08, targetWeight: 0.05, gapPp: 3, dollarGap: 3000, gapClosureScore: 0, residualGapPp: 3, residualDollarGap: 3000 },
   ];
 
   it("no boost when activeThemes is empty", () => {

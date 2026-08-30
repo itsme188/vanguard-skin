@@ -275,7 +275,7 @@ function PerformanceContent({ state }: { state: AnalysisTrustState }) {
     <div className="space-y-4">
       <p className="text-sm text-ink">
         {crossCheckedThru
-          ? `Independently cross-checked (Modified Dietz) through ${crossCheckedThru}.`
+          ? `Independently cross-checked (Modified Dietz) through ${crossCheckedThru} — the earliest month every account's contiguous chain of consistent months reaches. Where each chain stopped, and the latest statement month's own band, are below.`
           : "No account has a contiguous independent cross-check yet — see per-account detail below."}
       </p>
 
@@ -288,15 +288,22 @@ function PerformanceContent({ state }: { state: AnalysisTrustState }) {
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="text-sm text-ink truncate">{row.accountName}</span>
-                {row.band ? (
-                  <Chip tone={BAND_TONE[row.band]} size="xs" title={BAND_LABEL[row.band]}>
-                    {BAND_LABEL[row.band]}
-                  </Chip>
-                ) : (
-                  <Chip tone="neutral" size="xs" title="No statement on file for this account">
-                    No statement
-                  </Chip>
-                )}
+                <div className="flex flex-col items-end gap-0.5">
+                  {row.monthEndDate && (
+                    <span className="text-[10px] text-ink-faint uppercase tracking-wide">
+                      Latest month {row.monthEndDate}
+                    </span>
+                  )}
+                  {row.band ? (
+                    <Chip tone={BAND_TONE[row.band]} size="xs" title={BAND_LABEL[row.band]}>
+                      {BAND_LABEL[row.band]}
+                    </Chip>
+                  ) : (
+                    <Chip tone="neutral" size="xs" title="No statement on file for this account">
+                      No statement
+                    </Chip>
+                  )}
+                </div>
               </div>
               <div className="flex items-center gap-4 text-xs font-mono tabular-nums">
                 <div>
@@ -349,6 +356,23 @@ function PerformanceContent({ state }: { state: AnalysisTrustState }) {
                   />
                 </div>
               </div>
+              <p className="text-[11px] text-ink-dim">
+                Cross-checked through{" "}
+                <span className="font-mono tabular-nums">{row.crossCheckedThru ?? "—"}</span>
+                {row.chainBreak && (
+                  <>
+                    {" "}
+                    · chain stopped{" "}
+                    <span className="font-mono tabular-nums">
+                      {row.chainBreak.monthEndDate}
+                    </span>
+                    {`: ${BAND_DOT_LABEL[row.chainBreak.band]}`}
+                  </>
+                )}
+                {row.crossCheckedThru === null &&
+                  row.monthEndDate !== null &&
+                  " · no contiguous consistent month yet"}
+              </p>
               {row.bandHistory.length > 0 && <BandHistoryStrip history={row.bandHistory} />}
             </li>
           ))}

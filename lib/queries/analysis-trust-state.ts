@@ -15,6 +15,15 @@ export interface BandHistoryEntry {
   divergenceBp: number | null;
 }
 
+/** The first walked month that broke an account's chain (band investigate,
+ *  insufficient, or a missing calendar month) — null when the walk never
+ *  broke (including a "chainless" account with no 2nd statement month to
+ *  start from, or one whose chain is unbroken through its latest month). */
+export interface ChainBreak {
+  monthEndDate: string;
+  band: DietzBand | "missing";
+}
+
 export interface PerAccountReconciliation {
   accountId: number;
   accountName: string;
@@ -24,6 +33,8 @@ export interface PerAccountReconciliation {
   divergenceBp: number | null;
   band: DietzBand | null; // null when the account has no statement row at all
   bandHistory: BandHistoryEntry[]; // the walked sequence, 2nd statement month through the latest
+  crossCheckedThru: string | null; // this account's OWN chain frontier (see walkAccountChain) — may reach further than the rollup crossCheckedThru
+  chainBreak: ChainBreak | null; // where and why this account's own chain stopped, if it did
 }
 
 export interface AnalysisTrustState {
@@ -76,11 +87,22 @@ function nextMonthEndDate(monthEndDate: string): string {
  * The UI copy "cross-checked through X" therefore always names a month in
  * which the statement TWR and the independent Dietz return actually agreed
  * (CLAUDE.md: never a blanket reconciled claim; gate on band === consistent).
+ *
+ * Also returns `chainBreak`: the FIRST walked month whose band is
+ * "investigate", "insufficient", or "missing" — i.e. the month where (and
+ * why) the chain actually stopped. "not_comparable" is pass-through (see
+ * above) and is never a break. null when the walk never broke (including
+ * the chainless case, and the case where the chain runs unbroken all the
+ * way through the latest statement month).
  */
 function walkAccountChain(
   db: Database.Database,
   accountId: number
-): { bandHistory: BandHistoryEntry[]; crossCheckedThru: string | null } {
+): {
+  bandHistory: BandHistoryEntry[];
+  crossCheckedThru: string | null;
+  chainBreak: ChainBreak | null;
+} {
   const stmtMonths = (
     db
       .prepare(
@@ -92,7 +114,7 @@ function walkAccountChain(
   ).map((r) => r.month_end_date);
 
   if (stmtMonths.length < 2) {
-    return { bandHistory: [], crossCheckedThru: null };
+    return { bandHistory: [], crossCheckedThru: null, chainBreak: null };
   }
 
   const chainStart = stmtMonths[1];
@@ -117,17 +139,19 @@ function walkAccountChain(
   }
 
   let crossCheckedThru: string | null = null;
+  let chainBreak: ChainBreak | null = null;
   for (const entry of bandHistory) {
     if (entry.band === "consistent") {
       crossCheckedThru = entry.monthEndDate;
     } else if (entry.band === "not_comparable") {
       continue; // pass-through: does not break, does not certify
     } else {
+      chainBreak = { monthEndDate: entry.monthEndDate, band: entry.band };
       break;
     }
   }
 
-  return { bandHistory, crossCheckedThru };
+  return { bandHistory, crossCheckedThru, chainBreak };
 }
 
 export function getAnalysisTrustState(
@@ -253,7 +277,7 @@ export function getAnalysisTrustState(
       )
       .get(acct.id) as { month_end_date: string } | undefined;
 
-    const { bandHistory, crossCheckedThru } = walkAccountChain(db, acct.id);
+    const { bandHistory, crossCheckedThru, chainBreak } = walkAccountChain(db, acct.id);
 
     if (!latestStmt) {
       // No statement row at all — nothing to reconcile, and the rollup
@@ -267,6 +291,8 @@ export function getAnalysisTrustState(
         divergenceBp: null,
         band: null,
         bandHistory,
+        crossCheckedThru: null,
+        chainBreak: null,
       });
       anyChainless = true;
       continue;
@@ -287,6 +313,8 @@ export function getAnalysisTrustState(
       divergenceBp: headline?.divergenceBp ?? null,
       band: headline?.band ?? null,
       bandHistory,
+      crossCheckedThru,
+      chainBreak,
     });
 
     if (crossCheckedThru === null) {

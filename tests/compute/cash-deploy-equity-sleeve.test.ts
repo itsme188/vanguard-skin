@@ -157,9 +157,12 @@ describe("equity-sleeve sector gaps (equity benchmark)", () => {
     expect(result.picks.length).toBeGreaterThan(0);
     expect(result.totalAllocated).toBeCloseTo(expected, 6);
     expect(result.notes.join(" ")).not.toMatch(/couldn't match watchlist names/i);
-    // Gap fully closed by the allocation — never left double-filled.
-    expect(Math.abs(gapFor(result, "Healthcare")!.dollarGap)).toBeLessThan(0.01);
-    expect(Math.abs(gapFor(result, "Healthcare")!.gapPp)).toBeLessThan(0.01);
+    // Gap fully closed by the allocation — never left double-filled. The
+    // don't-double-fill guard lives on the residual fields; gapPp/dollarGap
+    // themselves stay the PRE-allocation figures the table shows.
+    expect(Math.abs(gapFor(result, "Healthcare")!.residualDollarGap)).toBeLessThan(0.01);
+    expect(Math.abs(gapFor(result, "Healthcare")!.residualGapPp)).toBeLessThan(0.01);
+    expect(gapFor(result, "Healthcare")!.gapPp).toBeLessThan(-1);
   });
 
   it("matches, gap for gap, the same equities held with no fixed income at all", () => {
