@@ -281,6 +281,57 @@ describe("getHoldingsForChat", () => {
     const result = getHoldingsForChat(db, { limit: 3 });
     expect(result).toHaveLength(3);
   });
+
+  // ─── includeShorts (Task 6) ─────────────────────────────────────
+  // Opt-in only; every existing call site (query_holdings tool,
+  // market-snapshot's buildUniverse, and every call above in this file)
+  // omits the option and must keep seeing the long-only book.
+
+  it("excludes shorts by default (existing behavior pinned)", () => {
+    const long = seedSecurity(db, "LONGCO");
+    const short = seedSecurity(db, "SHORTCO");
+    seedHolding(db, 1, long, 10, "2025-01-31", 900);
+    seedHolding(db, 1, short, -5, "2025-01-31", 400);
+    seedPrice(db, long, "2025-01-31", 100);
+    seedPrice(db, short, "2025-01-31", 100);
+
+    const result = getHoldingsForChat(db);
+    expect(result.map((h) => h.symbol)).toEqual(["LONGCO"]);
+    // Long-only book: the plain signed denominator equals the one long
+    // position's own market value, so its weight is 100%.
+    expect(result[0].position_weight_pct).toBeCloseTo(100, 5);
+  });
+
+  it("includeShorts: true returns the short with a gross-denominator, all-positive weight", () => {
+    const long = seedSecurity(db, "LONGCO");
+    const short = seedSecurity(db, "SHORTCO");
+    seedHolding(db, 1, long, 10, "2025-01-31", 900); // mv = 1000
+    seedHolding(db, 1, short, -5, "2025-01-31", 400); // mv = -500
+    seedPrice(db, long, "2025-01-31", 100);
+    seedPrice(db, short, "2025-01-31", 100);
+
+    const result = getHoldingsForChat(db, { includeShorts: true });
+    expect(result).toHaveLength(2);
+
+    const longRow = result.find((h) => h.symbol === "LONGCO")!;
+    const shortRow = result.find((h) => h.symbol === "SHORTCO")!;
+
+    // Signed market value is preserved (a short's mv is genuinely negative).
+    expect(longRow.market_value).toBe(1000);
+    expect(shortRow.market_value).toBe(-500);
+
+    // Gross-exposure weights: denominator = ABS(1000) + ABS(-500) = 1500.
+    expect(longRow.position_weight_pct).toBeCloseTo((1000 / 1500) * 100, 5);
+    expect(shortRow.position_weight_pct).toBeCloseTo((500 / 1500) * 100, 5);
+
+    // Every weight is positive (never a negative short weight) and the set
+    // sums to exactly 100%.
+    for (const row of result) {
+      expect(row.position_weight_pct).toBeGreaterThan(0);
+    }
+    const totalWeight = result.reduce((sum, h) => sum + (h.position_weight_pct ?? 0), 0);
+    expect(totalWeight).toBeCloseTo(100, 5);
+  });
 });
 
 describe("getPriceHistory", () => {

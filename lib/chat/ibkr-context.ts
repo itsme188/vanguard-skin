@@ -63,8 +63,11 @@ export function computeIbkrTradingContext(
   // 3. Bullishness score
   const bullishnessScore = computeBullishness(cashPct, portfolioBeta);
 
-  // 4. Holdings — position count, sector tilts, long/short summary
-  const holdings = getHoldingsForChat(db, { account_name: accountName, limit: 100 });
+  // 4. Holdings — position count, sector tilts, long/short summary. Opts
+  // into includeShorts: the shortPositions/longShortSummary section below
+  // can only ever populate from a `!= 0` row set (getHoldingsForChat's
+  // default excludes shorts entirely for every other consumer).
+  const holdings = getHoldingsForChat(db, { account_name: accountName, limit: 100, includeShorts: true });
   const activePositionCount = holdings.length;
 
   // Sector tilts: aggregate market value by sector
