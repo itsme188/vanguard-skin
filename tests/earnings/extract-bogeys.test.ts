@@ -277,8 +277,37 @@ describe("extractBogeysFromPdf upstream error mapping", () => {
     expect(err).toBeInstanceOf(BogeysExtractionError);
     expect(err.status).toBe(502);
     expect(err.code).toBe("upstream");
-    expect(err.message).toContain("upstream 529");
+    // The classifier's own plain-English "overloaded" message, not the old
+    // bare "upstream 529" template — see the auth 401 test below for why.
+    expect(err.message.toLowerCase()).toContain("overloaded");
     expect(err.message).not.toContain("req_011Cd5TEST2");
+  });
+
+  // Confirmed review finding (b88b95d/aea6a51): the old code only special-
+  // cased classification.kind === "billing"; a 400/401 classified "auth"
+  // (rotated/invalid ANTHROPIC_API_KEY) fell to the generic "upstream N"
+  // message — an unwinnable retry loop, the very bug this whole module
+  // exists to prevent. Every non-"content" kind must use the classifier's
+  // own userMessage.
+  it("maps an auth 401 (rotated/invalid API key) to the classifier's auth message, not a generic retry", async () => {
+    const rawPayload = {
+      type: "error",
+      error: { type: "authentication_error", message: "invalid x-api-key" },
+      request_id: "req_011Cd5TESTAUTH",
+    };
+    mockStreamRejecting(
+      new APIError(401, rawPayload, `401 ${JSON.stringify(rawPayload)}`, new Headers()),
+    );
+
+    const err = await extractBogeysFromPdf(new Uint8Array([1, 2, 3])).catch((e) => e);
+    expect(err).toBeInstanceOf(BogeysExtractionError);
+    expect(err.status).toBe(502);
+    expect(err.code).toBe("upstream");
+    expect(err.message).not.toBe(
+      "The AI extraction service failed (upstream 401). Try again in a minute.",
+    );
+    expect(err.message.toLowerCase()).toContain("authentication");
+    expect(err.message).not.toContain("req_011Cd5TESTAUTH");
   });
 
   it("maps connection failures to a sanitized 502", async () => {

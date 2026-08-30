@@ -20,7 +20,17 @@
  * a caught error (never the parser internals) and decides which case applies.
  * Kept separate from the parser and from app/api/import/route.ts so it's
  * independently unit-testable.
+ *
+ * A THIRD case lives here too: the Claude call itself can fail before the
+ * parser ever runs (billing, rotated/invalid API key, rate-limit, overload —
+ * see lib/ai/classify-anthropic-error.ts). When that happens, the message
+ * that reaches this module IS the raw Anthropic error envelope
+ * (`'400 {"type":"error","error":{...},"request_id":"req_..."}'`), not the
+ * parser's "Failed to parse..." shape — so it's checked first, via
+ * `classifyAnthropicErrorMessage`, before the wrong-document logic below.
  */
+
+import { classifyAnthropicErrorMessage } from "@/lib/ai/classify-anthropic-error";
 
 const PARSE_JSON_PREFIX = "Failed to parse Claude response as JSON: ";
 
@@ -67,8 +77,23 @@ export function truncateAtWordBoundary(text: string, maxLength: number): string 
  *   domain-first message, embedded explanation word-boundary-truncated.
  * - The parser's JSON-parse-failure shape, but no such explanation (genuinely
  *   malformed AI JSON) → stays 500, same prefix, word-boundary-truncated.
+ * - The message IS a raw Anthropic API error envelope (the Claude call
+ *   failed before parsing ever started) → the classifier's plain-English
+ *   message. "content" (Claude rejected the document/image itself) keeps a
+ *   400 like the wrong-document case above; every other kind (billing,
+ *   auth, rate-limit, overloaded, unknown) is a service-side condition, not
+ *   the user's document, so it's a 500 — same as an unrelated passthrough
+ *   error.
  */
 export function classifyImportError(message: string): ImportErrorClassification {
+  const anthropicClassification = classifyAnthropicErrorMessage(message);
+  if (anthropicClassification) {
+    return {
+      status: anthropicClassification.kind === "content" ? 400 : 500,
+      userMessage: anthropicClassification.userMessage,
+    };
+  }
+
   if (!message.startsWith(PARSE_JSON_PREFIX)) {
     return { status: 500, userMessage: message };
   }

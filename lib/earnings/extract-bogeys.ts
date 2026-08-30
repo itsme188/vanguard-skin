@@ -192,13 +192,15 @@ export async function extractBogeysFromUpload(
     response = await stream.finalMessage();
   } catch (err) {
     console.error("Bogeys extraction upstream error:", err);
-    if (err instanceof APIError && err.status === 400) {
-      // An upstream 400 is NOT always "the document/image was rejected" —
-      // Anthropic also returns 400 for account-level faults (billing, bad
-      // key, org limits). Only treat it as a file problem when the error
-      // body actually talks about the document/image/media itself; a
-      // billing 400 sent down the "try a clearer screenshot" path is a
-      // retry loop that can never succeed.
+    if (err instanceof APIError) {
+      // Anthropic returns 400 both for the document/image itself being
+      // rejected AND for account-level faults (billing, bad key, org
+      // limits) — and other statuses (401 auth, 429 rate-limit, 529
+      // overloaded) are never a file problem at all. Only "content" should
+      // point the user at their upload; every other kind is a service-side
+      // condition and must surface the classifier's own plain-English
+      // message — not a generic "try again" that sends an unwinnable retry
+      // loop (e.g. a rotated/invalid API key).
       const classification = classifyAnthropicError(err);
       if (classification?.kind === "content") {
         throw new BogeysExtractionError(
@@ -210,15 +212,15 @@ export async function extractBogeysFromUpload(
         );
       }
       throw new BogeysExtractionError(
-        classification?.kind === "billing"
+        classification
           ? classification.userMessage
-          : "The AI extraction service failed (upstream 400). Try again in a minute.",
+          : `The AI extraction service failed (upstream ${err.status || "error"}). Try again in a minute.`,
         502,
         "upstream",
       );
     }
     throw new BogeysExtractionError(
-      `The AI extraction service failed (${err instanceof APIError && err.status ? `upstream ${err.status}` : "connection error"}). Try again in a minute.`,
+      "The AI extraction service failed (connection error). Try again in a minute.",
       502,
       "upstream",
     );
