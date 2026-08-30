@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { Money } from "@/lib/privacy/components";
+import { formatUSDPrecise } from "@/lib/format";
 
 interface PreviewAlert {
   id: number;
@@ -221,20 +222,7 @@ export function NotificationBell() {
                             {formatRelative(a.triggered_at)}
                           </span>
                         </div>
-                        {a.level && (
-                          <p className="text-[10px] text-ink-faint mt-0.5">
-                            {a.level.level_type.replace("_", " ")} @{" "}
-                            <Money value={a.level.price} precise />
-                            <span className="ml-1.5 text-ink-dim">
-                              hit <Money value={a.triggered_price} precise />
-                            </span>
-                            {a.level.source_author && (
-                              <span className="text-ink-faint italic">
-                                {" "}— {a.level.source_author}
-                              </span>
-                            )}
-                          </p>
-                        )}
+                        <AlertLevelLine level={a.level} triggeredPrice={a.triggered_price} />
                       </Link>
                     </li>
                   ))
@@ -310,6 +298,41 @@ export function NotificationBell() {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The "@ $price hit $triggered_price — author" line under a pending-alert
+ * preview row. Extracted as its own component (rather than inlined in the
+ * `.map()`) so it can be rendered directly with fixture data in tests —
+ * NotificationBell itself only populates `previewAlerts` via a hover-gated
+ * fetch effect, which react-dom/server's renderToStaticMarkup never runs.
+ *
+ * Level price / triggered price are PUBLIC market data (same figures
+ * /dashboard/alerts and LevelsPanel already render unmasked with
+ * formatUSDPrecise) — never wrap these in <Money>.
+ */
+export function AlertLevelLine({
+  level,
+  triggeredPrice,
+}: {
+  level: PreviewAlert["level"];
+  triggeredPrice: number;
+}) {
+  if (!level) return null;
+  return (
+    <p className="text-[10px] text-ink-faint mt-0.5">
+      {level.level_type.replace("_", " ")} @{" "}
+      {formatUSDPrecise(level.price)}
+      <span className="ml-1.5 text-ink-dim">
+        hit {formatUSDPrecise(triggeredPrice)}
+      </span>
+      {level.source_author && (
+        <span className="text-ink-faint italic">
+          {" "}— {level.source_author}
+        </span>
+      )}
+    </p>
   );
 }
 

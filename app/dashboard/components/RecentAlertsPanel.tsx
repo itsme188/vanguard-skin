@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { LevelAlert, AlertResponse } from "@/lib/types";
-import { Money } from "@/lib/privacy/components";
+import { formatUSDPrecise } from "@/lib/format";
 import { Section } from "./Section";
 import { Chip, type ChipTone } from "./Chip";
 
@@ -32,6 +32,54 @@ function formatPriceSourceLabel(source: string): string {
   const m = /^(sma|ema)_(\d+)$/.exec(source);
   if (!m) return source;
   return `${m[1].toUpperCase()} ${m[2]}`;
+}
+
+/**
+ * The "SUPPORT @ $100.00 [SMA 50] hit $99.50 — author" row for one alert.
+ * Extracted as its own component so it can be rendered directly with
+ * fixture data in tests — RecentAlertsPanel itself only populates `alerts`
+ * via a fetch effect, which react-dom/server's renderToStaticMarkup never
+ * runs.
+ *
+ * Level price / triggered price are PUBLIC market data (same figures
+ * /dashboard/alerts and LevelsPanel already render unmasked with
+ * formatUSDPrecise) — never wrap these in <Money>.
+ */
+export function AlertPriceRow({
+  level,
+  triggeredPrice,
+}: {
+  level: EnrichedAlert["level"];
+  triggeredPrice: number;
+}) {
+  return (
+    <span className="flex-1 min-w-0 flex items-baseline gap-2.5 flex-wrap">
+      {level && (
+        <>
+          <span
+            className="font-mono uppercase text-ink-dim"
+            style={{ fontSize: "11px", letterSpacing: "0.18em" }}
+          >
+            {level.level_type.replace("_", " ")}
+          </span>
+          <span className="font-mono text-ink tabular-nums">
+            @ {formatUSDPrecise(level.price)}
+          </span>
+          {level.price_source && level.price_source !== "static" && (
+            <Chip tone="neutral" size="xs" uppercase>
+              {formatPriceSourceLabel(level.price_source)}
+            </Chip>
+          )}
+        </>
+      )}
+      <span className="font-mono text-ink-dim tabular-nums">
+        hit {formatUSDPrecise(triggeredPrice)}
+      </span>
+      {level?.source_author && (
+        <span className="text-ink-faint">— {level.source_author}</span>
+      )}
+    </span>
+  );
 }
 
 /**
@@ -89,32 +137,7 @@ export function RecentAlertsPanel({ securityId }: { securityId: number }) {
               >
                 {when}
               </span>
-              <span className="flex-1 min-w-0 flex items-baseline gap-2.5 flex-wrap">
-                {a.level && (
-                  <>
-                    <span
-                      className="font-mono uppercase text-ink-dim"
-                      style={{ fontSize: "11px", letterSpacing: "0.18em" }}
-                    >
-                      {a.level.level_type.replace("_", " ")}
-                    </span>
-                    <span className="font-mono text-ink tabular-nums">
-                      @ <Money value={a.level.price} precise />
-                    </span>
-                    {a.level.price_source && a.level.price_source !== "static" && (
-                      <Chip tone="neutral" size="xs" uppercase>
-                        {formatPriceSourceLabel(a.level.price_source)}
-                      </Chip>
-                    )}
-                  </>
-                )}
-                <span className="font-mono text-ink-dim tabular-nums">
-                  hit <Money value={a.triggered_price} precise />
-                </span>
-                {a.level?.source_author && (
-                  <span className="text-ink-faint">— {a.level.source_author}</span>
-                )}
-              </span>
+              <AlertPriceRow level={a.level} triggeredPrice={a.triggered_price} />
               <span className="flex-shrink-0">
                 <Chip tone={resp.tone} size="xs" uppercase>{resp.label}</Chip>
               </span>

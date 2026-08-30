@@ -116,4 +116,37 @@ describe("holdings cost_basis fallback (F1)", () => {
     expect(row!.cost_basis).toBeNull();
     expect(row!.unrealized_gain).toBeNull();
   });
+
+  it("returns a statement-only bond/fund position with its own cost_basis, even when other securities in the same account have newer Plaid rows", () => {
+    // VBTLX only ever has ONE holdings row — a statement-sourced bond/mutual
+    // fund position that never picked up a later Plaid/TWS row. Before the
+    // per-(account, security) latestHoldingsPredicate fix (QA finding
+    // accounts-holdings--global-max-as-of-date-drops-19-live-positions-72k-
+    // treasuries), a naive per-account MAX(as_of_date) would have dropped
+    // this row entirely — VTI's newer Plaid date would win the account-wide
+    // max and VBTLX's single, older-dated row would fall out of the result
+    // set. Keying "latest" per-(account, security) instead of per-account
+    // means VBTLX's single row IS the latest row for its own pair, so it
+    // must surface with its own statement cost_basis untouched — no
+    // fallback subquery needed since the row itself is non-null.
+    const vbtlx = seedSecurity(db, "VBTLX");
+    seedHolding(db, ACCOUNT_ID, vbtlx, 200, "2026-06-30", 20000, "canonical:hold:VBTLX:2026-06-30");
+
+    const vti = seedSecurity(db, "VTI");
+    seedHolding(db, ACCOUNT_ID, vti, 105, "2026-07-10", null, "plaid:hold:VTI:2026-07-10");
+
+    const allRows = getAllHoldings(db);
+    const bndAll = allRows.find((r) => r.symbol === "VBTLX");
+    expect(bndAll).toBeTruthy();
+    expect(bndAll!.quantity).toBe(200);
+    expect(bndAll!.as_of_date).toBe("2026-06-30");
+    expect(bndAll!.cost_basis).toBeCloseTo(20000, 6);
+
+    const acctRows = getHoldingsByAccount(db, ACCOUNT_ID);
+    const bndAcct = acctRows.find((r) => r.symbol === "VBTLX");
+    expect(bndAcct).toBeTruthy();
+    expect(bndAcct!.quantity).toBe(200);
+    expect(bndAcct!.as_of_date).toBe("2026-06-30");
+    expect(bndAcct!.cost_basis).toBeCloseTo(20000, 6);
+  });
 });
