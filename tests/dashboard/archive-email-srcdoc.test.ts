@@ -42,10 +42,16 @@ describe("withExternalLinkTarget", () => {
     expect(withExternalLinkTarget(once)).toBe(once);
   });
 
-  it("leaves a document that already declares a <base target> in its head untouched", () => {
+  it("rewrites an already-present <base target> to _blank instead of leaving it alone", () => {
+    // A <base target="_top"> in the head would otherwise navigate the whole
+    // top-level document out from under the app — the early-return-unchanged
+    // behavior this used to have reproduced the same in-frame-navigation bug
+    // for any email carrying its own <base target>.
     const authored =
       '<!DOCTYPE html><html><head><base href="https://example.test/" target="_top"><title>x</title></head><body>hi</body></html>';
-    expect(withExternalLinkTarget(authored)).toBe(authored);
+    const expected =
+      '<!DOCTYPE html><html><head><base href="https://example.test/" target="_blank"><title>x</title></head><body>hi</body></html>';
+    expect(withExternalLinkTarget(authored)).toBe(expected);
   });
 
   it("does not treat an href-only <base> as a target declaration", () => {
@@ -67,20 +73,57 @@ describe("withExternalLinkTarget", () => {
     expect(out).toBe('<base target="_blank"><p><a href=\'https://x.test\'>x</a></p>');
   });
 
-  it("wins over a hostile <base target=\"_self\"> planted in the email body (head is first in tree order)", () => {
+  it("wins over a hostile <base target=\"_self\"> planted in the email body (head is first in tree order, and the body base is rewritten too)", () => {
     const hostile =
       '<!DOCTYPE html><html><head><title>x</title></head><body><base target="_self"><a href="https://evil.test">go</a></body></html>';
     const out = withExternalLinkTarget(hostile);
     expect(out).toContain('<head><base target="_blank">');
-    expect(out.indexOf('<base target="_blank">')).toBeLessThan(out.indexOf('<base target="_self">'));
+    // The body's own <base target> no longer says _self either — every
+    // <base target> in the document is neutralised, not just the one we
+    // inject into the head.
+    expect(out).not.toContain("_self");
+    expect(out).toContain('<base target="_blank"><a href="https://evil.test">go</a>');
   });
 
-  it("rewrites no anchors at all — mailto: and href-less anchors survive verbatim", () => {
+  it("rewrites href-less anchors and mailto: links only if they carry a hostile target — otherwise verbatim", () => {
     const body =
       '<a href="mailto:unsubscribe@x.test">unsub</a><a name="top"></a><a>plain</a>';
     const out = withExternalLinkTarget(`<html><head></head><body>${body}</body></html>`);
     expect(out).toContain(body);
     expect(out).not.toContain("noopener");
+  });
+
+  it("rewrites an anchor's own target=\"_self\" to _blank (a per-element target overrides <base target>)", () => {
+    const out = withExternalLinkTarget(
+      '<html><head></head><body><a href="https://evil.test" target="_self">go</a></body></html>',
+    );
+    expect(out).toContain('<a href="https://evil.test" target="_blank">go</a>');
+    expect(out).not.toContain('target="_self"');
+  });
+
+  it("rewrites target=_top (unquoted) and TARGET='_parent' (uppercase attr, single-quoted) to _blank", () => {
+    const outTop = withExternalLinkTarget(
+      "<html><head></head><body><a href='https://evil.test' target=_top>go</a></body></html>",
+    );
+    expect(outTop).toContain('target="_blank"');
+    expect(outTop).not.toContain("_top");
+
+    const outParent = withExternalLinkTarget(
+      "<html><head></head><body><form action='https://evil.test' TARGET='_parent'></form></body></html>",
+    );
+    expect(outParent).toContain('target="_blank"');
+    expect(outParent).not.toContain("_parent");
+  });
+
+  it("never touches target=\"_blank\" or a named target like target=\"print\"", () => {
+    const out = withExternalLinkTarget(
+      '<html><head></head><body>' +
+        '<a href="https://a.test" target="_blank">a</a>' +
+        '<a href="https://b.test" target="print">b</a>' +
+        "</body></html>",
+    );
+    expect(out).toContain('target="_blank">a<');
+    expect(out).toContain('target="print">b<');
   });
 
   it("returns empty input unchanged", () => {
@@ -89,9 +132,12 @@ describe("withExternalLinkTarget", () => {
 });
 
 describe("EMAIL_FRAME_SANDBOX", () => {
-  it("permits the escaping popup but never scripts or top-level navigation", () => {
+  it("permits the escaping popup but never scripts, own-origin, or top-level navigation", () => {
     const tokens = EMAIL_FRAME_SANDBOX.split(" ");
-    expect(tokens).toContain("allow-same-origin");
+    // Neither EarningsEmailViewer nor DigestEmailViewer reads
+    // `contentDocument` (both use a fixed 75dvh/75vh frame height), so
+    // there is no reason to grant the frame its parent's origin.
+    expect(tokens).not.toContain("allow-same-origin");
     expect(tokens).toContain("allow-popups");
     expect(tokens).toContain("allow-popups-to-escape-sandbox");
     expect(tokens).not.toContain("allow-scripts");

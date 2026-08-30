@@ -13,6 +13,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { setupIpcHandlers } from "./ipc-handlers";
 import { createTray } from "./tray";
+import { isExternalUrlAllowed } from "./external-url";
 import {
   getSettings,
   bootstrapFromEnvLocal,
@@ -433,26 +434,22 @@ async function createWindow(): Promise<void> {
   // This is the single exit for every `target="_blank"` in the app — INCLUDING
   // links inside archived email / newsletter bodies, which are foreign markup
   // rendered in a sandboxed iframe (lib/email/archive-srcdoc.ts). Those bodies
-  // can carry any href, so the scheme is allow-listed before it reaches
-  // shell.openExternal: that call hands the URL to the OS, and a `file:` or a
-  // registered custom scheme would launch a local file or another application.
-  // http/https cover every real link; mailto is kept because newsletter
-  // unsubscribe footers use it.
+  // can carry any href, so the URL is allow-listed (scheme + not-our-own-origin)
+  // before it reaches shell.openExternal: that call hands the URL to the OS,
+  // and a `file:` or a registered custom scheme would launch a local file or
+  // another application, while the app's own localhost/127.0.0.1 route would
+  // ship into a browser session that has no Electron session cookie. The
+  // decision is shared with ipc-handlers.ts's "open-external" IPC handler via
+  // isExternalUrlAllowed (electron/external-url.ts) — never fork it.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    let scheme: string;
-    try {
-      scheme = new URL(url).protocol;
-    } catch {
-      return { action: "deny" }; // unparseable — never forward it to the OS
-    }
-    if (scheme === "http:" || scheme === "https:" || scheme === "mailto:") {
+    if (isExternalUrlAllowed(url)) {
       // Fire-and-forget, but never leave the rejection unhandled: a failed
       // hand-off to the OS must not take down the main process.
       void shell.openExternal(url).catch((err: unknown) => {
         console.warn("[electron] openExternal failed:", err);
       });
     } else {
-      console.warn(`[electron] blocked window.open for non-external scheme: ${scheme}`);
+      console.warn(`[electron] blocked window.open for disallowed URL: ${url}`);
     }
     return { action: "deny" };
   });
