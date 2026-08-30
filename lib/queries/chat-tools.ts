@@ -42,6 +42,16 @@ export interface HoldingsFilters {
   sector?: string;
   sort_by?: "market_value" | "unrealized_gain" | "position_weight" | "symbol";
   limit?: number;
+  /**
+   * Opt-in shorts inclusion (default false — every existing consumer, incl.
+   * the query_holdings chat tool and the market-snapshot universe, stays on
+   * the long-book predicate and long-book denominator unchanged). Only
+   * lib/chat/ibkr-context.ts passes `true`, because its shortPositions /
+   * longShortSummary section can only ever populate from a `!= 0` row set.
+   * See the position_weight_pct comment below for the gross-exposure
+   * convention this flips on.
+   */
+  includeShorts?: boolean;
 }
 
 export interface TaxLotFilters {
@@ -172,7 +182,30 @@ export function getHoldingsForChat(
   db: Database.Database,
   filters: HoldingsFilters = {}
 ): HoldingResult[] {
-  const { account_name, symbol, security_type, sector, sort_by = "market_value", limit = 50 } = filters;
+  const {
+    account_name,
+    symbol,
+    security_type,
+    sector,
+    sort_by = "market_value",
+    limit = 50,
+    includeShorts = false,
+  } = filters;
+
+  // The denominator for position_weight_pct. Long-only (default): a plain
+  // signed SUM is correct because every included row's market value is
+  // already positive (quantity > 0). Shorts-included: a short's market value
+  // is negative, so a signed SUM would net shorts AGAINST longs rather than
+  // sizing the book — this must be a GROSS (ABS) exposure denominator, paired
+  // with a GROSS numerator below, or short weights would come out negative.
+  const denominatorMvExpr = adjustedMarketValueSQL(
+    "h.quantity",
+    "lp.close_price",
+    "s.security_type",
+    "s.multiplier",
+    "COALESCE(fx.usd_per_unit, 1)"
+  );
+  const grossDenominatorMvExpr = includeShorts ? `ABS(${denominatorMvExpr})` : denominatorMvExpr;
 
   // First compute total portfolio value for position weights
   const totalRow = db
@@ -185,14 +218,14 @@ export function getHoldingsForChat(
       )
       SELECT COALESCE(SUM(
         CASE WHEN lp.close_price IS NOT NULL
-          THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+          THEN ${grossDenominatorMvExpr}
           ELSE 0 END
       ), 0) AS total
       FROM holdings h
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
-      WHERE ${latestHoldingsPredicate({ includeShorts: false })}
+      WHERE ${latestHoldingsPredicate({ includeShorts })}
       AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))`
     )
     .get() as { total: number };
@@ -201,7 +234,7 @@ export function getHoldingsForChat(
 
   // Build filtered query
   const conditions: string[] = [
-    latestHoldingsPredicate({ includeShorts: false }),
+    latestHoldingsPredicate({ includeShorts }),
     "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
   ];
   const params: (string | number)[] = [];
@@ -256,8 +289,13 @@ export function getHoldingsForChat(
       CASE WHEN lp.close_price IS NOT NULL AND h.cost_basis IS NOT NULL AND h.cost_basis > 0
         THEN (${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (h.cost_basis * COALESCE(fx.usd_per_unit, 1))) * 100.0 / (h.cost_basis * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain_pct,
+      -- Gross-exposure convention: when includeShorts is true, both this
+      -- numerator and the denominator above (totalPortfolioValue) are ABS(mv)
+      -- — a short's market value is negative, so a signed numerator over a
+      -- gross denominator would produce a negative weight. Wrapping both in
+      -- ABS() makes every weight positive and the set sum to 100%.
       CASE WHEN lp.close_price IS NOT NULL
-        THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} * 100.0 / ${totalPortfolioValue}
+        THEN ${grossDenominatorMvExpr} * 100.0 / ${totalPortfolioValue}
         ELSE NULL END AS position_weight_pct,
       s.maturity_date,
       CASE WHEN s.maturity_date IS NOT NULL
