@@ -34,7 +34,18 @@ export function AccountDetail({
   // Surfacing the snapshot age here makes that boundary explicit (vs IBKR
   // which has a sibling refresh button that already shows live sync state).
   const isVanguard = selectedAccount.name.toLowerCase().includes("vanguard");
-  const snapshotDate = holdings[0]?.as_of_date ?? null;
+  // getHoldingsByAccount's default (no explicit asOfDate) branch keys
+  // "latest" per (account, security) — NOT a single account-wide date — and
+  // orders by symbol, not date. So holdings[0] can be a statement-only bond
+  // still carrying an older as_of_date (e.g. 2026-07-31) while the rest of
+  // the account synced days later (2026-08-28); reading holdings[0] alone
+  // painted a false "stale" snapshot-age chip. Dates are YYYY-MM-DD, so a
+  // plain string max across the rows gives the true latest date without a
+  // second DB round trip (this is a client component — no `db` access).
+  const snapshotDate = holdings.reduce<string | null>(
+    (latest, h) => (latest === null || h.as_of_date > latest ? h.as_of_date : latest),
+    null
+  );
 
   return (
     <div className="space-y-6">

@@ -15,6 +15,7 @@ import {
 } from "recharts";
 import type { ConcentrationMetrics, ClassificationCoverage } from "@/lib/queries/analysis";
 import { interpretHHI } from "@/lib/analysis/interpret";
+import { displaySecurityName } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
@@ -183,7 +184,7 @@ export function ClassificationCard({ concentration, coverage }: Props) {
                   {coverage.unclassified_securities.map((s) => (
                     <tr key={s.id} className="border-b border-edge/30">
                       <td className="py-1 pr-2 font-mono text-ink">{s.symbol}</td>
-                      <td className="py-1 pr-2 text-ink-faint truncate max-w-xs">{s.name ?? "—"}</td>
+                      <td className="py-1 pr-2 text-ink-faint truncate max-w-xs">{displaySecurityName(s.name)}</td>
                       <td className="py-1 text-ink-faint">{s.security_type ?? "—"}</td>
                     </tr>
                   ))}

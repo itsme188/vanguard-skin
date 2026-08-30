@@ -336,16 +336,23 @@ export function signed(n: number, digits: number): string {
   return n > 0 ? `+${v}` : v;
 }
 
-function signedPp(n: number): string {
+// Same negative-zero guard as `signed` above: a pp delta that rounds to
+// "0.0" at 1 digit must never keep a stray "-" sign.
+export function signedPp(n: number): string {
   const pp = n * 100;
   const v = pp.toFixed(1);
-  return pp >= 0 ? `+${v}pp` : `${v}pp`;
+  if (rendersAsZero(v)) return `${(0).toFixed(1)}pp`;
+  return pp > 0 ? `+${v}pp` : `${v}pp`;
 }
 
-function formatDeltaUsd(n: number): string {
-  const sign = n >= 0 ? "+" : "-";
+// Same guard: a dollar delta that rounds to "$0" at its display precision
+// (e.g. -$0.30 -> "$0") must never render as "-$0".
+export function formatDeltaUsd(n: number): string {
   const abs = Math.abs(n);
-  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(0)}K`;
-  return `${sign}$${abs.toFixed(0)}`;
+  let body: string;
+  if (abs >= 1_000_000) body = `$${(abs / 1_000_000).toFixed(1)}M`;
+  else if (abs >= 1_000) body = `$${(abs / 1_000).toFixed(0)}K`;
+  else body = `$${abs.toFixed(0)}`;
+  if (rendersAsZero(body)) return body;
+  return n >= 0 ? `+${body}` : `-${body}`;
 }
