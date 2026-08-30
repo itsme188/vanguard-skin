@@ -1,9 +1,9 @@
 /**
  * Smoke-test for A2 (issuer-family combined positions in briefing).
  * Reads the live DB, builds combined-position rosters for week-of 2026-04-27,
- * and prints what each Mag-cap-tech earnings event will see — verifies
- * GOOGL earnings now rolls up the user's 65 sh GOOG common alongside the
- * GOOGL LEAP option.
+ * and prints what each Mag-cap-tech earnings event will see — verifies an
+ * issuer-family earnings event now rolls up the user's common-stock
+ * position alongside a same-family option position.
  *
  * Run: npx tsx scripts/verify-a2-combined-positions.ts
  */
@@ -30,7 +30,7 @@ const holdings = db
     `SELECT DISTINCT s.symbol FROM holdings h
      JOIN securities s ON s.id = h.security_id
      WHERE h.quantity > 0
-       AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)`,
+       AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id)`,
   )
   .all() as { symbol: string }[];
 
@@ -42,7 +42,7 @@ const expiringOptions = db
      FROM holdings h JOIN securities s ON s.id = h.security_id JOIN accounts a ON a.id = h.account_id
      WHERE LOWER(s.security_type) = 'option' AND h.quantity != 0
        AND s.expiration_date BETWEEN '2026-04-27' AND '2026-05-03'
-       AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)`,
+       AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id)`,
   )
   .all() as {
   symbol: string;
