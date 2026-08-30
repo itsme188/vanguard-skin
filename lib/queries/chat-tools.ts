@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 /**
  * Chat sector-FILTER-only alias, on top of normalizeSector. normalizeSector
@@ -191,11 +192,7 @@ export function getHoldingsForChat(
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
-      WHERE h.as_of_date = (
-        SELECT MAX(h2.as_of_date) FROM holdings h2
-        WHERE h2.account_id = h.account_id
-      )
-      AND h.quantity > 0
+      WHERE ${latestHoldingsPredicate({ includeShorts: false })}
       AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))`
     )
     .get() as { total: number };
@@ -204,11 +201,7 @@ export function getHoldingsForChat(
 
   // Build filtered query
   const conditions: string[] = [
-    `h.as_of_date = (
-      SELECT MAX(h2.as_of_date) FROM holdings h2
-      WHERE h2.account_id = h.account_id
-    )`,
-    "h.quantity > 0",
+    latestHoldingsPredicate({ includeShorts: false }),
     "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
   ];
   const params: (string | number)[] = [];
@@ -357,11 +350,7 @@ export function getAllocationBreakdown(
     : "";
 
   const conditions: string[] = [
-    `h.as_of_date = (
-      SELECT MAX(h2.as_of_date) FROM holdings h2
-      WHERE h2.account_id = h.account_id
-    )`,
-    "h.quantity > 0",
+    latestHoldingsPredicate({ includeShorts: false }),
     "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
   ];
   const params: (string | number)[] = [];
@@ -794,7 +783,8 @@ export function getCashEstimates(db: Database.Database): CashEstimate[] {
       LEFT JOIN monthly_snapshots ms ON ms.account_id = a.id
         AND ms.month_end_date = (SELECT MAX(ms2.month_end_date) FROM monthly_snapshots ms2 WHERE ms2.account_id = a.id)
       LEFT JOIN holdings h ON h.account_id = a.id
-        AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = a.id)
+        -- per-(account, security) latest; inline because latestHoldingsPredicate's quantity clause would defeat the LEFT JOIN (CASE below already guards quantity)
+        AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = a.id AND h2.security_id = h.security_id)
       LEFT JOIN securities s ON s.id = h.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
