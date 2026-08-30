@@ -223,3 +223,39 @@ describe("classifyFactors — option underlying coverage", () => {
     expect(result.errors).toEqual([]);
   });
 });
+
+describe("classifyFactors — lenient JSON parsing (single-security batch)", () => {
+  it("classifies a one-security batch when the model replies with a single JSON object (no array brackets)", async () => {
+    const db = makeDb();
+    const silcId = insertSecurity(db, { symbol: "SILC", security_type: "Stock" });
+    insertHolding(db, silcId);
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify({ ...PANW_FACTORS, symbol: "SILC" }),
+    });
+
+    const result = await classifyFactors(db);
+
+    expect(result.classified).toBe(1);
+    expect(result.errors).toEqual([]);
+    const row = db
+      .prepare("SELECT security_id FROM security_factors WHERE security_id = ?")
+      .get(silcId);
+    expect(row).toBeDefined();
+  });
+
+  it("reports a plain-English error (never a raw iterable/SyntaxError message) when the model replies with prose only", async () => {
+    const db = makeDb();
+    const silcId = insertSecurity(db, { symbol: "SILC", security_type: "Stock" });
+    insertHolding(db, silcId);
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: "I'm unable to classify this security without more information.",
+    });
+
+    const result = await classifyFactors(db);
+
+    expect(result.classified).toBe(0);
+    expect(result.errors).toEqual(["Batch 1: AI reply was not a list of classifications"]);
+    expect(result.errors[0]).not.toMatch(/iterable/i);
+    expect(result.errors[0]).not.toMatch(/SyntaxError/i);
+  });
+});
