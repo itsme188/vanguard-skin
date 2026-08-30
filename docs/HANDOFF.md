@@ -30,7 +30,7 @@
 
 ## 4. Uncommitted changes / live-process state (post-deploy)
 
-- Branch `land-2026-08-30` fast-forward-merged to main (32 commits) and pushed — see the session-end commit for the SHA and the Electron deploy result (verify-bundle + packaged-app checks on :3099).
+- Branch `land-2026-08-30` fast-forward-merged to main (32 commits) and pushed (`16ff141..19bf652`, TODO reconcile `649c6fb`); PRs #57 and #58 auto-marked MERGED. DEPLOY: `npm run electron:deploy` green — notarization successful, `verify-bundle: OK`, installed + relaunched. Packaged-app checks on :3099: `/login` 200; authenticated `/api/summary`, `/dashboard/today`, `/dashboard/accounts` (+`?id=1`, snapshot chip "Aug 28"), `/dashboard/analysis` all 200 via a temporary QA session (revoked). FIRST LIVE RUN of the three-pass reconciler fired on launch: `[auto-refresh] Reconciled 10 closed equity holdings` — exactly the rehearsed set (VHGEX, VIPSX at 7/31; NOK/WIX/AMZN/IGV/ICL/NBIS/HOOD/XOM options at 8/28). The `1 errors` in the auto-refresh summary is pre-existing (same on 8/28).
 - QA branches whose commits are now on main: `qa-auto-fixes-2026-08-29`, `qa-auto-fixes-2026-08-30`, `qa-deep-fixes-2026-08-29`, `qa-deep-fixes-2026-08-30`, plus the local twins `qa-fix-work-20260829/30` (same subjects, different hashes). Branch deletion left to the owner (destructive). Fixer worktree `../vanguard-skin-qa-fix` untouched.
 - The :3095 sandbox server was stopped; its DB copy lives only in the session scratchpad.
 
