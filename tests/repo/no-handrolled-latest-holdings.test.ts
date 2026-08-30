@@ -16,10 +16,21 @@
  * Design (see .superpowers/sdd/sleepy-bouncing-raven/task-13-brief.md +
  * shared-constraints.md):
  *  - EVERY occurrence is validated individually, never a whole file — a bad
- *    query added to an already-allowlisted file must still fail. This is
- *    why the allowlist matches per-occurrence, using a tightly-scoped
- *    "enclosing string/template literal" as the match unit (never a
- *    file-wide or fixed-character-window exemption).
+ *    query added to an already-allowlisted file must still fail.
+ *  - The ALLOWLIST match unit is the enclosing string/template literal
+ *    (`Occurrence.context`) — a per-occurrence anchor substring, never a
+ *    file-wide or fixed-character-window exemption.
+ *  - The STRUCTURAL PER-PAIR MARKER match unit is deliberately narrower
+ *    (`Occurrence.markerWindow`, fix round 1): the match's own innermost
+ *    enclosing paren span (plus a bounded extension for the
+ *    derived-table-JOIN shape), never the whole literal. A big multi-clause
+ *    literal can legitimately contain an unrelated `X.security_id =
+ *    h.security_id` join for a totally different purpose (a cost-basis
+ *    fallback subquery, an unrelated price JOIN, ...); testing the whole
+ *    literal let that unrelated marker "launder" a separate, genuinely
+ *    uncorrelated MAX(as_of_date) elsewhere in the same literal as if it
+ *    were per-pair correlated. See buildMarkerWindow's doc comment and the
+ *    fix-round-1 section of task-13-report.md.
  *  - Comments are excluded from the scan (a tiny lexer tracks comment vs.
  *    string/template regions) so prose that merely *mentions*
  *    `MAX(as_of_date)` — of which this codebase has many, documenting why
@@ -43,7 +54,18 @@ const REPO_ROOT = path.resolve(__dirnameLocal, "../..");
 // are still applied in case a stray nested dir of one of those names ever
 // appears.
 
-const SCAN_ROOTS = ["lib", "app", "scripts"];
+// lib/ and scripts/ are pure TS (no JSX) — per the task brief's
+// `lib/**/*.ts` / `scripts/**/*.ts` globs. lib/ does have two .tsx files
+// (privacy/components.tsx, privacy/context.tsx) but they are React
+// rendering helpers, not SQL, so they're deliberately excluded (fix
+// round 1). app/ needs both: route.ts files (e.g.
+// app/api/summary/route.ts) AND page.tsx server components (e.g.
+// app/dashboard/today/page.tsx) both contain real holdings queries.
+const SCAN_ROOTS: Array<{ dir: string; extRe: RegExp }> = [
+  { dir: "lib", extRe: /\.ts$/ },
+  { dir: "app", extRe: /\.(ts|tsx)$/ },
+  { dir: "scripts", extRe: /\.ts$/ },
+];
 const EXCLUDED_SEGMENTS = new Set([
   "tests",
   "node_modules",
@@ -53,7 +75,7 @@ const EXCLUDED_SEGMENTS = new Set([
   ".git",
 ]);
 
-function collectFiles(dir: string, out: string[] = []): string[] {
+function collectFiles(dir: string, extRe: RegExp, out: string[] = []): string[] {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -64,8 +86,8 @@ function collectFiles(dir: string, out: string[] = []): string[] {
     if (EXCLUDED_SEGMENTS.has(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      collectFiles(full, out);
-    } else if (entry.isFile() && /\.(ts|tsx)$/.test(entry.name)) {
+      collectFiles(full, extRe, out);
+    } else if (entry.isFile() && extRe.test(entry.name)) {
       out.push(full);
     }
   }
@@ -74,8 +96,8 @@ function collectFiles(dir: string, out: string[] = []): string[] {
 
 function collectTargetFiles(): string[] {
   const out: string[] = [];
-  for (const root of SCAN_ROOTS) {
-    collectFiles(path.join(REPO_ROOT, root), out);
+  for (const { dir, extRe } of SCAN_ROOTS) {
+    collectFiles(path.join(REPO_ROOT, dir), extRe, out);
   }
   return out;
 }
@@ -203,10 +225,104 @@ const MAX_AS_OF_DATE_RE = /MAX\(\s*(?:[A-Za-z_$][\w$]*\.)?as_of_date\s*\)/g;
 const PER_PAIR_MARKER_RE =
   /\b\w+\.security_id\s*=\s*h\.security_id\b|\bh\.security_id\s*=\s*\w+\.security_id\b/;
 
+/**
+ * Fix round 1 (CRITICAL): find the innermost enclosing balanced-parenthesis
+ * span around `matchIndex` within `text`. Scans backward for the nearest
+ * UNMATCHED `(` before the match (any fully-balanced paren pair it passes
+ * over cancels out and is skipped), then forward from there for its
+ * matching `)`. Returns null when the match sits at the "top level" of the
+ * literal — no wrapping parens at all.
+ */
+function findEnclosingParenSpan(
+  text: string,
+  matchIndex: number,
+): { start: number; end: number } | null {
+  let depth = 0;
+  let start = -1;
+  for (let i = matchIndex - 1; i >= 0; i--) {
+    const c = text[i];
+    if (c === ")") depth++;
+    else if (c === "(") {
+      if (depth === 0) {
+        start = i;
+        break;
+      }
+      depth--;
+    }
+  }
+  if (start === -1) return null;
+
+  let d2 = 0;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (c === "(") d2++;
+    else if (c === ")") {
+      d2--;
+      if (d2 === 0) return { start, end: i + 1 };
+    }
+  }
+  return null; // unbalanced — defensive; never happens on valid TS source
+}
+
+// A derived-table JOIN's correlation lives just past its closing paren:
+// `) alias\n  ON alias.security_id = h.security_id ...`. Both real sites of
+// this shape (finnhub-dividend-yield.ts, security-quotes.ts,
+// probe-ibkr-optbond-snapshot.ts) put the whole ON clause within ~100
+// chars of the close; 250 leaves margin without reaching into an unrelated
+// later clause of a big query.
+const JOIN_ALIAS_ON_RE = /^\s*([A-Za-z_]\w*\s+)?ON\b/;
+const JOIN_EXTENSION_CHARS = 250;
+
+/**
+ * Fix round 1 (CRITICAL): the text a per-pair marker check is allowed to
+ * look at for ONE specific MAX(as_of_date) match — never the whole
+ * enclosing literal. That was the bug a Task 13 review caught: a big
+ * multi-clause template literal can legitimately contain an UNRELATED
+ * `alias.security_id = h.security_id` join somewhere (a cost-basis
+ * fallback subquery, an unrelated price JOIN, a reconciler's later JOIN
+ * clause, ...) that has nothing to do with a separate, genuinely
+ * uncorrelated MAX(as_of_date) elsewhere in the same literal — testing the
+ * whole literal let that unrelated marker "launder" the uncorrelated
+ * subquery through as if it were per-pair correlated. Four real
+ * occurrences were accidentally auto-passing this way, making their
+ * explicit ALLOWLIST entries dead code (never actually exercised) — see
+ * the fix-round-1 section of task-13-report.md for the full list.
+ *
+ * Every real per-pair correlation in this codebase takes one of two
+ * shapes, and BOTH always nest the MAX(...) call inside a paren:
+ *   - correlated subquery: `x = (SELECT MAX(...) ... WHERE h2.security_id = h.security_id)`
+ *     — the marker is INSIDE the same parens as the MAX() call.
+ *   - derived-table JOIN:  `JOIN (SELECT ... MAX(...) ...) alias ON alias.security_id = h.security_id`
+ *     — the marker is just OUTSIDE the parens, in the immediately
+ *       following `alias ON ...` clause.
+ * So: find the innermost enclosing paren span; if its close is immediately
+ * followed by `[identifier] ON`, extend a bounded distance past it to catch
+ * that ON clause — otherwise the window is exactly the paren span. A
+ * MAX(...) with NO enclosing paren at all (a flat top-level statement, e.g.
+ * `SELECT MAX(as_of_date) AS latest FROM holdings`) can never structurally
+ * self-prove per-pair correlation — there is nothing to correlate against
+ * at the top level — so it always falls through to the explicit allowlist;
+ * the window returned in that case is just the match text itself, which is
+ * structurally incapable of containing the marker.
+ */
+function buildMarkerWindow(text: string, matchIndex: number, matchLength: number): string {
+  const span = findEnclosingParenSpan(text, matchIndex);
+  if (!span) {
+    return text.slice(matchIndex, matchIndex + matchLength);
+  }
+  let { start, end } = span;
+  const after = text.slice(end, end + 50);
+  if (JOIN_ALIAS_ON_RE.test(after)) {
+    end = Math.min(text.length, end + JOIN_EXTENSION_CHARS);
+  }
+  return text.slice(start, end);
+}
+
 interface Occurrence {
   file: string; // repo-relative, forward-slash
   line: number;
-  context: string; // the enclosing string/template literal text
+  context: string; // the enclosing string/template literal text — allowlist match unit
+  markerWindow: string; // tightly-scoped text around this specific match — structural-marker match unit (see buildMarkerWindow)
 }
 
 function findOccurrences(absFile: string, src: string): Occurrence[] {
@@ -222,7 +338,12 @@ function findOccurrences(absFile: string, src: string): Occurrence[] {
     while ((m = MAX_AS_OF_DATE_RE.exec(text))) {
       const absIdx = seg.start + m.index;
       const line = src.slice(0, absIdx).split("\n").length;
-      out.push({ file: relFile, line, context: text });
+      out.push({
+        file: relFile,
+        line,
+        context: text,
+        markerWindow: buildMarkerWindow(text, m.index, m[0].length),
+      });
     }
   }
   return out;
@@ -269,7 +390,7 @@ const ALLOWLIST: AllowlistEntry[] = [
     file: "lib/queries/holdings.ts",
     anchor: "SELECT MAX(as_of_date) as latest FROM holdings WHERE account_id = ?",
     justification:
-      "getLatestHoldingsDate — returns a bare per-account max date for an 'as of' label; callers use it for display only, never to filter which holdings rows render (verified: no caller feeds this into a WHERE clause).",
+      "getLatestHoldingsDate — returns a bare per-account max date for an 'as of' label. Grep-verified: it currently has no callers outside its own unit test (tests/queries/holdings.test.ts), so nothing today feeds it into a WHERE clause; if a caller is added, it must stay a display-only read, never a holdings row filter.",
   },
   {
     file: "lib/queries/dashboard.ts",
@@ -383,7 +504,7 @@ const ALLOWLIST: AllowlistEntry[] = [
     file: "lib/compute/tax-lots.ts",
     anchor: "SELECT MAX(h2.as_of_date) FROM holdings h2\n                 WHERE h2.account_id = tl.account_id AND h2.security_id = tl.security_id",
     justification:
-      "Deliberate quantity=0 tombstone detector for orphaned open tax lots — correlated per-(account, security) same as latestHoldingsPredicate, but keyed against the tax_lots alias `tl` rather than an outer holdings alias `h` (there is no outer holdings row here to equate against), so the generic h.security_id structural marker does not match; verified the correlation columns (account_id, security_id) are the same pair the predicate uses.",
+      "Deliberate quantity=0 tombstone detector for orphaned open tax lots — correlated per-(account, security), same relationship latestHoldingsPredicate uses, but keyed against the tax_lots alias (`tl.account_id`/`tl.security_id`), never against a bare holdings alias `h.security_id`. The structural marker (which specifically requires the literal alias `h`) correctly does not match once it is scoped to this MAX()'s own enclosing subquery span (fix round 1: `h2.security_id = tl.security_id` is inside that span; the earlier, WRONG version of this justification claimed the marker 'deliberately does not match' when in fact, pre-fix, the whole-literal marker check DID match here — via an unrelated `h.security_id = tl.security_id` JOIN condition a few lines above this subquery in the same template literal. That JOIN condition is now correctly excluded by the paren-scoped window.)",
   },
 ];
 
@@ -395,7 +516,7 @@ function isAllowlisted(occ: Occurrence): boolean {
 }
 
 function isPerPairMarked(occ: Occurrence): boolean {
-  return PER_PAIR_MARKER_RE.test(occ.context);
+  return PER_PAIR_MARKER_RE.test(occ.markerWindow);
 }
 
 function classify(occ: Occurrence): { ok: boolean; reason: string } {
@@ -420,9 +541,10 @@ describe("no hand-rolled latest-holdings MAX(as_of_date) subqueries", () => {
     const occurrences = scanRepo(files);
     // Sanity: the scan is actually finding the known real sites (guards
     // against the tokenizer/regex silently matching nothing). At the end
-    // of the holdings-latest-sweep there are 39 real occurrences (20
-    // structurally per-pair-marked, 19 allowlisted); a loose floor here
-    // avoids the test being brittle against a future legitimate addition.
+    // of the holdings-latest-sweep + fix round 1 there are 39 real
+    // occurrences (16 structurally per-pair-marked via their own scoped
+    // markerWindow, 23 allowlisted); a loose floor here avoids the test
+    // being brittle against a future legitimate addition.
     expect(occurrences.length).toBeGreaterThan(30);
 
     const violations: string[] = [];
@@ -444,6 +566,55 @@ describe("no hand-rolled latest-holdings MAX(as_of_date) subqueries", () => {
     expect(violations).toEqual([]);
   });
 
+  it("regression (fix round 1): the four sites that leaked past the whole-literal marker bug now classify via their allowlist entries, not the structural marker", () => {
+    // Each of these has an unrelated `X.security_id = h.security_id`-shaped
+    // join/subquery elsewhere in the SAME template literal, which a
+    // whole-literal marker check incorrectly matched against — making their
+    // ALLOWLIST entries dead code (never actually exercised). This test
+    // pins both halves of the fix: the structural marker must NOT fire for
+    // these, and the allowlist entry must be what actually validates them.
+    const targets: Array<{ file: string; anchorFragment: string; leakSource: string }> = [
+      {
+        file: "lib/mutations/closed-equity.ts",
+        anchorFragment: "SELECT security_id, MAX(as_of_date) AS d",
+        leakSource: "phantomsSql's later JOIN ON h.security_id = lps.security_id",
+      },
+      {
+        file: "lib/queries/data-health.ts",
+        anchorFragment: "MAX(h.as_of_date) AS latestHoldingsDate",
+        leakSource: "the h3 cost-basis-fallback subquery's h3.security_id = h.security_id",
+      },
+      {
+        file: "lib/compute/tax-lots.ts",
+        anchorFragment: "SELECT MAX(h2.as_of_date) FROM holdings h2",
+        leakSource: "the outer JOIN's h.security_id = tl.security_id",
+      },
+      {
+        file: "lib/queries/analysis.ts",
+        anchorFragment: "MAX(h.as_of_date) AS latest_date",
+        leakSource: "the LEFT JOIN latest_prices lp.security_id = h.security_id",
+      },
+    ];
+    const files = collectTargetFiles();
+    const occurrences = scanRepo(files);
+    for (const t of targets) {
+      const occ = occurrences.find(
+        (o) => o.file === t.file && norm(o.context).includes(norm(t.anchorFragment)),
+      );
+      expect(occ, `expected to find a ${t.file} occurrence matching "${t.anchorFragment}"`).toBeDefined();
+      // The whole literal DOES still contain marker-shaped text (from the
+      // unrelated join named in leakSource) — confirms this is the real
+      // adversarial case, not one that happens to have no marker anywhere.
+      expect(occ!.context, `${t.file}: expected whole-literal marker text from ${t.leakSource}`).toMatch(
+        PER_PAIR_MARKER_RE,
+      );
+      // But the scoped window must not, so classification falls to the
+      // allowlist rather than the (now-correctly-inert) structural marker.
+      expect(isPerPairMarked(occ!), `${t.file} should NOT auto-pass via the structural marker`).toBe(false);
+      expect(classify(occ!)).toMatchObject({ ok: true, reason: "allowlisted" });
+    }
+  });
+
   it("self-test: the scanner finds a planted per-pair-correlated query and passes it", () => {
     const good = `
       const rows = db.prepare(\`
@@ -459,6 +630,36 @@ describe("no hand-rolled latest-holdings MAX(as_of_date) subqueries", () => {
     const occs = findOccurrences("planted/good.ts", good);
     expect(occs.length).toBe(1);
     expect(classify(occs[0])).toMatchObject({ ok: true, reason: "per-pair correlation marker present" });
+  });
+
+  it("self-test (fix round 1, CRITICAL): an uncorrelated MAX(as_of_date) is still flagged even when the SAME literal also contains an unrelated per-pair join", () => {
+    // Adversarial case that exposed the original bug: a single template
+    // literal legitimately contains a per-pair `X.security_id = h.security_id`
+    // join for an UNRELATED purpose (here: `other_table`), plus a separate,
+    // genuinely uncorrelated MAX(as_of_date) subquery (correlated only on
+    // account_id, not security_id) elsewhere in that same literal. Testing
+    // the whole literal for the marker incorrectly "launders" the
+    // uncorrelated subquery through the unrelated join's marker text — the
+    // fix scopes the marker check to each match's own enclosing paren span,
+    // so this must still fail.
+    const planted = `
+      const rows = db.prepare(\`
+        SELECT * FROM holdings h
+        JOIN other_table o ON o.security_id = h.security_id
+        WHERE h.as_of_date = (
+          SELECT MAX(as_of_date) FROM holdings WHERE account_id = h.account_id
+        )
+      \`).all();
+    `;
+    const occs = findOccurrences("lib/queries/planted-laundering.ts", planted);
+    expect(occs.length).toBe(1);
+    // Sanity: the marker text IS present somewhere in the literal — proves
+    // this is a genuine adversarial case, not an accidental pass because the
+    // marker was simply absent from the file.
+    expect(occs[0].context).toMatch(PER_PAIR_MARKER_RE);
+    // But this specific match's own scoped window must NOT contain it.
+    expect(occs[0].markerWindow).not.toMatch(PER_PAIR_MARKER_RE);
+    expect(classify(occs[0])).toMatchObject({ ok: false, reason: "unmarked, unallowlisted" });
   });
 
   it("self-test: the scanner flags a planted GLOBAL MAX(as_of_date) with no per-pair correlation and no allowlist entry, with file:line and a pointer to latestHoldingsPredicate", () => {
