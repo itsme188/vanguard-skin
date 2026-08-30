@@ -4,6 +4,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import {
   getBriefingHoldings,
   buildCombinedPositionsForEvents,
+  getExpiringOptions,
 } from "@/lib/calendar/briefing";
 import type { CalendarEvent } from "@/lib/types";
 
@@ -119,6 +120,103 @@ describe("getBriefingHoldings — IBKR exclusion (U4: 'holds QQQ outright' bug)"
 
     expect(getBriefingHoldings(db)).toHaveLength(0);
   });
+
+  // ── per-(account, security) "latest" keying ──────────────────────
+  //
+  // The old query keyed "latest" off a per-ACCOUNT MAX(as_of_date). A
+  // position that only restates on the monthly statement (Treasuries,
+  // mutual funds) carries an older as_of_date than the daily Plaid/TWS rows
+  // written for other securities in the same account, so the per-account
+  // MAX silently dropped it from the briefing prompt entirely.
+
+  it("keeps a statement-lag position when a newer row exists for another security in the same account", () => {
+    // VWIUX only restates on the monthly statement (2025-01-31); VTI gets a
+    // daily Plaid row (2025-02-28) in the SAME account.
+    const vwiux = seedEtf("VWIUX");
+    seedHolding(vwiux, VANGUARD_TAXABLE, 500, "2025-01-31");
+    const vti = seedEtf("VTI");
+    seedHolding(vti, VANGUARD_TAXABLE, 100, "2025-02-28");
+
+    const symbols = getBriefingHoldings(db).map((h) => h.symbol);
+    // Under per-account MAX, VWIUX vanished from the prompt.
+    expect(symbols).toContain("VWIUX");
+    expect(symbols).toContain("VTI");
+  });
+
+  it("hides a closed position whose latest row is a quantity=0 tombstone", () => {
+    // The closed-position reconciler writes a quantity=0 row at the latest
+    // snapshot date. That tombstone IS the latest row for its (account,
+    // security) pair, so per-pair keying must not resurrect the older
+    // non-zero row.
+    const closed = seedStock("CLOSED", "Technology");
+    seedHolding(closed, VANGUARD_TAXABLE, 10, "2025-01-31");
+    seedHolding(closed, VANGUARD_TAXABLE, 0, "2025-02-28");
+    const vti = seedEtf("VTI");
+    seedHolding(vti, VANGUARD_TAXABLE, 100, "2025-02-28");
+
+    const symbols = getBriefingHoldings(db).map((h) => h.symbol);
+    expect(symbols).not.toContain("CLOSED");
+    expect(symbols).toContain("VTI");
+  });
+
+  it("does not flip a net-LONG book to NET SHORT when one account's long leg lags (net_qty sign)", () => {
+    // net_qty is a cross-account SUM, so a dropped leg does not merely
+    // shrink the number — it can invert its SIGN. formatHoldingsList then
+    // stamps "NET SHORT" on a net-long position in an outbound, cc'd email.
+    const x = seedStock("X", "Technology");
+
+    // Vanguard Taxable: long 100, but the X row is the older statement date.
+    seedHolding(x, VANGUARD_TAXABLE, 100, "2025-01-31");
+    // A newer daily row for a DIFFERENT security pushes Taxable's
+    // per-account MAX past the X row → the old query dropped the long leg.
+    const vti = seedEtf("VTI");
+    seedHolding(vti, VANGUARD_TAXABLE, 5, "2025-02-28");
+    // Roth: short 40 at Roth's own latest date → survived the old query.
+    seedHolding(x, VANGUARD_ROTH, -40, "2025-02-28");
+
+    const row = getBriefingHoldings(db).find((h) => h.symbol === "X");
+    expect(row).toBeDefined();
+    // Old per-account MAX: 0 + (-40) = -40 → "NET SHORT 40".
+    // Per-pair keying: 100 + (-40) = 60 → net long, which is the truth.
+    expect(row!.net_qty).toBe(60);
+  });
+});
+
+describe("getExpiringOptions — IBKR exclusion + per-(account, security) latest keying", () => {
+  it("excludes IBKR option legs from the expiry roster", () => {
+    const qqqPut = seedOption("QQQ 260612P00715000", "QQQ", 715, "2026-06-12");
+    seedHolding(qqqPut, IBKR, -5);
+    const vgPut = seedOption("SPY 260612P00500000", "SPY", 500, "2026-06-12");
+    seedHolding(vgPut, VANGUARD_TAXABLE, -1);
+
+    const rows = getExpiringOptions(db, "2026-06-08", "2026-06-14");
+    expect(rows.map((r) => r.underlying_symbol)).toEqual(["SPY"]);
+  });
+
+  it("keeps a statement-lag option leg when a newer row exists for another security in the same account", () => {
+    // The option leg last restated on the monthly statement; a daily Plaid
+    // row for the underlying stock moved the account's MAX past it.
+    const put = seedOption("SPY 260612P00500000", "SPY", 500, "2026-06-12");
+    seedHolding(put, VANGUARD_TAXABLE, -1, "2025-01-31");
+    const vti = seedEtf("VTI");
+    seedHolding(vti, VANGUARD_TAXABLE, 100, "2025-02-28");
+
+    const rows = getExpiringOptions(db, "2026-06-08", "2026-06-14");
+    // Under per-account MAX this expiring short put was invisible to the
+    // briefing — the user got no warning that it expires this week.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].underlying_symbol).toBe("SPY");
+    expect(rows[0].quantity).toBe(-1);
+    expect(rows[0].account_name).toBe("Vanguard Taxable");
+  });
+
+  it("hides a closed option leg whose latest row is a quantity=0 tombstone", () => {
+    const put = seedOption("SPY 260612P00500000", "SPY", 500, "2026-06-12");
+    seedHolding(put, VANGUARD_TAXABLE, -1, "2025-01-31");
+    seedHolding(put, VANGUARD_TAXABLE, 0, "2025-02-28");
+
+    expect(getExpiringOptions(db, "2026-06-08", "2026-06-14")).toHaveLength(0);
+  });
 });
 
 describe("buildCombinedPositionsForEvents — IBKR exclusion", () => {
@@ -165,5 +263,31 @@ describe("buildCombinedPositionsForEvents — IBKR exclusion", () => {
       quantity: 5,
       account: "Vanguard Roth IRA",
     });
+  });
+
+  it("keeps a statement-lag Vanguard leg when a newer row exists for another security in the same account", () => {
+    const nvda = seedStock("NVDA", "Technology");
+    seedHolding(nvda, VANGUARD_ROTH, 5, "2025-01-31");
+    // Newer daily row for a different security in the same account.
+    const vti = seedEtf("VTI");
+    seedHolding(vti, VANGUARD_ROTH, 100, "2025-02-28");
+
+    const event = {
+      id: 3,
+      source: "finnhub",
+      event_type: "earnings",
+      event_date: "2026-06-18",
+      title: "NVDA earnings",
+      symbol: "NVDA",
+      source_key: "finnhub:NVDA:2026-06-18",
+    } as CalendarEvent;
+
+    const out = buildCombinedPositionsForEvents(db, [event], new Map());
+    const cp = out.get(3);
+    // Under per-account MAX the roster was empty and the briefing framed
+    // the earnings print as "no position."
+    expect(cp).toBeDefined();
+    expect(cp!.stockPositions).toHaveLength(1);
+    expect(cp!.stockPositions[0].quantity).toBe(5);
   });
 });
