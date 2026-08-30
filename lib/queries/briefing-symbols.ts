@@ -1,9 +1,10 @@
 import type Database from "better-sqlite3";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 /**
  * Returns distinct stock symbols currently held across all accounts (latest
- * holdings date per account, quantity > 0). Excludes ETFs, bonds, options,
+ * per (account, security), quantity > 0). Excludes ETFs, bonds, options,
  * and mutual funds — only individual equities where an earnings release is
  * a meaningful event.
  *
@@ -16,14 +17,10 @@ export function getHeldStockSymbols(db: Database.Database): string[] {
       `SELECT DISTINCT s.symbol
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
-       WHERE h.quantity > 0
-         AND LOWER(COALESCE(s.security_type, '')) IN ('stock', 'common stock')
+       WHERE LOWER(COALESCE(s.security_type, '')) IN ('stock', 'common stock')
          AND s.symbol IS NOT NULL
          AND s.symbol != ''
-         AND h.as_of_date = (
-           SELECT MAX(h2.as_of_date) FROM holdings h2
-           WHERE h2.account_id = h.account_id
-         )
+         AND ${latestHoldingsPredicate({ includeShorts: false })}
        ORDER BY s.symbol`
     )
     .all() as { symbol: string }[];
