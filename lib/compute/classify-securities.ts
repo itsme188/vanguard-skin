@@ -212,6 +212,19 @@ function str(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+/**
+ * Fields the AI-fallback UPDATE writes (fund_category, geography,
+ * market_cap_category, style) — an element is "usable" only if the model
+ * actually supplied at least one of these as a string. Mirrors
+ * FACTOR_COLUMNS in lib/compute/classify-factors.ts.
+ */
+const CLASSIFICATION_FIELDS = [
+  "fund_category",
+  "geography",
+  "market_cap_category",
+  "style",
+] as const;
+
 export async function classifyUnresolvedWithClaude(
   db: Database.Database,
   unresolved: Array<{ id: number; symbol: string; security_type: string | null }>
@@ -249,11 +262,26 @@ export async function classifyUnresolvedWithClaude(
       // instead of throwing "results is not iterable".
       const results = parseJsonArrayLenient(text, "security classifications");
       const idMap = new Map(batch.map((s) => [s.symbol, s.id]));
+      let usableInBatch = 0;
       for (const raw of results) {
         if (typeof raw !== "object" || raw === null) continue;
         const r = raw as Record<string, unknown>;
         const id = typeof r.symbol === "string" ? idMap.get(r.symbol) : undefined;
         if (!id) continue;
+
+        // An element carrying a symbol but no usable classification field at
+        // all ({"symbol":"XLE"}, or a symbol plus an "error" note) used to
+        // write four NULL classification columns with
+        // classification_source='auto_ai'. That's a silent permanent hole:
+        // the candidate query only re-offers securities with no
+        // classification_source, so a security written this way was never
+        // retried. Mirrors the same fix in classify-factors.ts.
+        if (
+          !CLASSIFICATION_FIELDS.some((field) => typeof r[field] === "string")
+        ) {
+          continue;
+        }
+
         update.run(
           normalizeFundCategory(str(r.fund_category)),
           cleanEnumValue(str(r.geography)),
@@ -262,6 +290,15 @@ export async function classifyUnresolvedWithClaude(
           id
         );
         classified++;
+        usableInBatch++;
+      }
+
+      // A reply that PARSED but yielded nothing usable ([null], symbol-only
+      // objects, {"errors":[...]}, ...) is an error, not a zero-classification
+      // success: reporting success leaves the batch un-retried and hides the
+      // failure. A legitimately empty `[]` reply stays a no-op, no error.
+      if (results.length > 0 && usableInBatch === 0) {
+        throw new Error("AI reply contained no usable security classifications for this batch");
       }
     } catch (err) {
       if (err instanceof AIRefusalError) {

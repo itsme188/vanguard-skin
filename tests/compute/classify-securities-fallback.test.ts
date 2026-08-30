@@ -213,3 +213,68 @@ describe("classifyUnresolvedWithClaude — lenient JSON parsing", () => {
     expect(res.errors[0]).not.toMatch(/iterable/i);
   });
 });
+
+// Confirmed Codex finding: with whole-text lenient parsing, a symbol-only
+// reply like `{"symbol":"XLE"}` is iterable and used to slip past the old
+// code with no minimum-usable-field guard — writing NULL fund_category /
+// geography / market_cap_category / style with classification_source
+// 'auto_ai'. Once classification_source is set, the candidate query never
+// re-offers the security, so it silently stayed unclassified forever.
+// Mirrors the fix already shipped for classify-factors.ts.
+describe("classifyUnresolvedWithClaude — no-usable-field guard", () => {
+  it("does not write NULL columns for a symbol-only reply, and records a batch error", async () => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify([{ symbol: "XLE" }]),
+    });
+    const db = makeDb();
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+
+    expect(res.classified).toBe(0);
+    expect(res.errors).toEqual([
+      "Batch 1: AI reply contained no usable security classifications for this batch",
+    ]);
+    const row = db.prepare("SELECT * FROM securities WHERE symbol='XLE'").get() as any;
+    expect(row.classification_source).toBeNull();
+    expect(row.fund_category).toBeNull();
+  });
+
+  it("records a batch error for a [null] reply instead of a silent no-op", async () => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify([null]),
+    });
+    const db = makeDb();
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+
+    expect(res.classified).toBe(0);
+    expect(res.errors).toEqual([
+      "Batch 1: AI reply contained no usable security classifications for this batch",
+    ]);
+    const row = db.prepare("SELECT * FROM securities WHERE symbol='XLE'").get() as any;
+    expect(row.classification_source).toBeNull();
+  });
+
+  it("still classifies a valid single object with at least one usable field", async () => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify({ symbol: "XLE", fund_category: "Sector Equity" }),
+    });
+    const db = makeDb();
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+
+    expect(res.classified).toBe(1);
+    expect(res.errors).toEqual([]);
+    const row = db.prepare("SELECT * FROM securities WHERE symbol='XLE'").get() as any;
+    expect(row.fund_category).toBe("Sector Equity");
+    expect(row.classification_source).toBe("auto_ai");
+  });
+
+  it("treats a legitimately empty array reply as a no-op, not an error", async () => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify([]),
+    });
+    const db = makeDb();
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+
+    expect(res.classified).toBe(0);
+    expect(res.errors).toEqual([]);
+  });
+});
