@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { AnalysisTrustState, BandHistoryEntry } from "@/lib/queries/analysis-trust-state";
+import type {
+  AnalysisTrustState,
+  BandHistoryEntry,
+  PerAccountReconciliation,
+} from "@/lib/queries/analysis-trust-state";
 import { DIETZ_CONSISTENT_BP, type DietzBand } from "@/lib/compute/dietz";
 import { PrivateText, Pct } from "@/lib/privacy/components";
 import { Chip, type ChipTone } from "@/app/dashboard/components/Chip";
@@ -268,14 +272,52 @@ function BandHistoryStrip({ history }: { history: BandHistoryEntry[] }) {
   );
 }
 
+/**
+ * Count of "not_comparable" months (seam-straddled — pass-through: they
+ * neither certify nor break a chain, a deliberate 2026-08-28 decision, see
+ * walkAccountChain in lib/queries/analysis-trust-state.ts) at or before
+ * `through`, summed across every account's own walked bandHistory.
+ *
+ * Review finding: the rollup headline below claims a "contiguous chain of
+ * consistent months" through the frontier, but a not_comparable month inside
+ * that span was never actually cross-checked — it was skipped, not verified.
+ * This count powers an honest parenthetical rather than changing what
+ * counts as the frontier (no logic change here or in
+ * analysis-trust-state.ts — `crossCheckedThru`/`chainBreak` are unchanged).
+ */
+function countNotComparableThrough(
+  perAccountReconciliation: PerAccountReconciliation[],
+  through: string
+): number {
+  let n = 0;
+  for (const row of perAccountReconciliation) {
+    // bandHistory is walked in ascending monthEndDate order (see
+    // walkAccountChain), so this can stop at the first month past `through`.
+    for (const entry of row.bandHistory) {
+      if (entry.monthEndDate > through) break;
+      if (entry.band === "not_comparable") n++;
+    }
+  }
+  return n;
+}
+
 function PerformanceContent({ state }: { state: AnalysisTrustState }) {
   const { crossCheckedThru, perAccountReconciliation } = state;
+  const skippedNotComparable = crossCheckedThru
+    ? countNotComparableThrough(perAccountReconciliation, crossCheckedThru)
+    : 0;
 
   return (
     <div className="space-y-4">
       <p className="text-sm text-ink">
         {crossCheckedThru
-          ? `Independently cross-checked (Modified Dietz) through ${crossCheckedThru} — the earliest month every account's contiguous chain of consistent months reaches. Where each chain stopped, and the latest statement month's own band, are below.`
+          ? `Independently cross-checked (Modified Dietz) through ${crossCheckedThru} — the earliest month every account's contiguous chain of consistent months reaches${
+              skippedNotComparable > 0
+                ? ` (${skippedNotComparable} not-comparable month${
+                    skippedNotComparable === 1 ? "" : "s"
+                  } skipped along the way, not cross-checked)`
+                : ""
+            }. Where each chain stopped, and the latest statement month's own band, are below.`
           : "No account has a contiguous independent cross-check yet — see per-account detail below."}
       </p>
 
@@ -371,7 +413,16 @@ function PerformanceContent({ state }: { state: AnalysisTrustState }) {
                 )}
                 {row.crossCheckedThru === null &&
                   row.monthEndDate !== null &&
-                  " · no contiguous consistent month yet"}
+                  (row.bandHistory.length === 0 && row.chainBreak === null
+                    ? // Review finding: an account with exactly ONE statement
+                      // month never had a cross-check attempted at all
+                      // (walkAccountChain needs a 2nd statement month to
+                      // start walking — see its bandHistory: [] early
+                      // return). "no contiguous consistent month yet" reads
+                      // as "we checked and it failed", which is false here —
+                      // nothing was checked yet.
+                      " · needs a second statement month before a cross-check can start"
+                    : " · no contiguous consistent month yet")}
               </p>
               {row.bandHistory.length > 0 && <BandHistoryStrip history={row.bandHistory} />}
             </li>
