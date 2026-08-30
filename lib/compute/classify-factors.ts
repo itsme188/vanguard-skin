@@ -8,7 +8,7 @@ import type Database from "better-sqlite3";
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
-import { extractJsonArray } from "@/lib/ai/extract-json";
+import { parseJsonArrayLenient } from "@/lib/ai/extract-json";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 export interface FactorClassifyResult {
@@ -220,15 +220,23 @@ export async function classifyFactors(
       });
 
       // Strip fences + isolate the JSON array (the model sometimes prepends a
-      // prose preamble like "I need to ..." before the array).
-      const jsonText = extractJsonArray(text);
-
-      const results = JSON.parse(jsonText) as Array<Record<string, string>>;
+      // prose preamble like "I need to ..." before the array), and tolerate a
+      // single bare object or a {results:[...]}-style wrapper when the batch
+      // has only one item (common one-item-prompt model behavior).
+      const results = parseJsonArrayLenient(text);
 
       // Build symbol → security_id map for this batch
       const idMap = new Map(batch.map((s) => [s.symbol, s.id]));
 
-      for (const result of results) {
+      for (const raw of results) {
+        if (
+          typeof raw !== "object" ||
+          raw === null ||
+          typeof (raw as Record<string, unknown>).symbol !== "string"
+        ) {
+          continue;
+        }
+        const result = raw as Record<string, string>;
         const secId = idMap.get(result.symbol);
         if (!secId) continue;
 
