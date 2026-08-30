@@ -196,6 +196,73 @@ describe("buildCombinedPositionsForEvents", () => {
     );
     expect(out.size).toBe(0);
   });
+
+  // ── per-(account, security) "latest" keying ──────────────────────
+  //
+  // The old query keyed "latest" off a per-ACCOUNT MAX(as_of_date), so a
+  // position whose newest row is an older monthly-statement date lost to a
+  // same-account daily Plaid/TWS row written for some other security. The
+  // earnings roster then said "no position" for a name the user holds.
+
+  it("keeps a statement-lag stock leg when a newer row exists for another security in the same account", () => {
+    const goog = seedStock("GOOG", "Alphabet Inc Cl C");
+    seedHolding(goog, 1, 65.5, "2026-03-31"); // monthly statement row
+    const vti = seedStock("VTI");
+    seedHolding(vti, 1, 100, "2026-04-27"); // newer daily row, same account
+
+    const out = buildCombinedPositionsForEvents(
+      db,
+      [makeEvent(1, "GOOGL")],
+      new Map(),
+    );
+    const cp = out.get(1);
+    expect(cp).toBeDefined();
+    expect(cp!.stockPositions).toHaveLength(1);
+    expect(cp!.stockPositions[0]).toMatchObject({ symbol: "GOOG", quantity: 65.5 });
+  });
+
+  it("keeps a statement-lag option leg when a newer row exists for another security in the same account", () => {
+    const googlLeap = seedOption(
+      "GOOGL 270115C00220000",
+      "GOOGL",
+      220,
+      "2027-01-15",
+    );
+    seedHolding(googlLeap, 1, 1, "2026-03-31"); // monthly statement row
+    const vti = seedStock("VTI");
+    seedHolding(vti, 1, 100, "2026-04-27"); // newer daily row, same account
+
+    const out = buildCombinedPositionsForEvents(
+      db,
+      [makeEvent(1, "GOOGL")],
+      new Map(),
+    );
+    const cp = out.get(1);
+    expect(cp).toBeDefined();
+    expect(cp!.optionPositions).toHaveLength(1);
+    expect(cp!.optionPositions[0]).toMatchObject({
+      underlying: "GOOGL",
+      quantity: 1,
+    });
+  });
+
+  it("hides a closed leg whose latest row is a quantity=0 tombstone", () => {
+    // A tombstone IS the latest row for its (account, security) pair, so
+    // per-pair keying must not resurrect the older non-zero row.
+    const goog = seedStock("GOOG");
+    seedHolding(goog, 1, 65.5, "2026-03-31");
+    seedHolding(goog, 1, 0, "2026-04-27");
+    const googCall = seedOption("GOOG  260320C00250000", "GOOG", 250, "2026-03-20");
+    seedHolding(googCall, 1, 2, "2026-03-31");
+    seedHolding(googCall, 1, 0, "2026-04-27");
+
+    const out = buildCombinedPositionsForEvents(
+      db,
+      [makeEvent(1, "GOOGL")],
+      new Map(),
+    );
+    expect(out.has(1)).toBe(false);
+  });
 });
 
 describe("formatCombinedPosition", () => {

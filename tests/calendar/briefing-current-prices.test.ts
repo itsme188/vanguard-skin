@@ -170,6 +170,49 @@ describe("buildCurrentPrices", () => {
 
     expect(out.get("XOM")?.close).toBe(149.54);
   });
+
+  // ── per-(account, security) "latest" keying ──────────────────────
+  //
+  // The option-underlyings sub-query keyed "latest" off a per-ACCOUNT
+  // MAX(as_of_date). A LEAP that only restates on the monthly statement lost
+  // to a same-account daily row for another security, so the underlying was
+  // never discovered — and Opus, handed no price, fabricated one.
+
+  it("discovers an option underlying whose leg lags behind a newer row for another security in the same account", () => {
+    const ter = seedStock("TER");
+    seedPrice(ter, 420.0);
+    const terCall = seedOption("TER  280121C00180000", "TER", 180, "2028-01-21");
+    seedHolding(terCall, 1, 1, "2026-03-31"); // monthly statement row
+    const aapl = seedStock("AAPL");
+    seedHolding(aapl, 1, 100, "2026-04-27"); // newer daily row, same account
+
+    const out = buildCurrentPrices(db, {
+      holdings: [], // TER stock is not held — discovery is via the option
+      expiringOptions: [],
+      portfolioEarnings: [],
+      wshEarnings: [],
+    });
+
+    expect(out.has("TER")).toBe(true);
+    expect(out.get("TER")?.close).toBe(420.0);
+  });
+
+  it("does not discover an underlying whose option leg is a quantity=0 tombstone", () => {
+    const ter = seedStock("TER");
+    seedPrice(ter, 420.0);
+    const terCall = seedOption("TER  280121C00180000", "TER", 180, "2028-01-21");
+    seedHolding(terCall, 1, 1, "2026-03-31");
+    seedHolding(terCall, 1, 0, "2026-04-27"); // closed-position tombstone
+
+    const out = buildCurrentPrices(db, {
+      holdings: [],
+      expiringOptions: [],
+      portfolioEarnings: [],
+      wshEarnings: [],
+    });
+
+    expect(out.has("TER")).toBe(false);
+  });
 });
 
 describe("formatCurrentPricesBlock", () => {
