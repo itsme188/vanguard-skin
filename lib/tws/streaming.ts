@@ -3,6 +3,7 @@ import { MarketDataType, SecType, IBApiTickType } from "@stoqey/ib";
 import type { Subscription } from "rxjs";
 import { getIbApi } from "./client";
 import { mapSecurityType } from "./security-type-map";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -137,15 +138,36 @@ export function startStreaming(
       )
       .all(...options.securityIds) as typeof securities;
   } else {
-    // Stream all securities with positions and ib_con_id
+    // Stream all securities with positions and ib_con_id. Latest is keyed
+    // per-(account, security) via latestHoldingsPredicate (default
+    // keyBy/includeShorts), replacing the prior aliasless, account-only
+    // `MAX(as_of_date) ... WHERE account_id = h.account_id` subquery — which
+    // (a) dropped positions that only restate on monthly statements
+    // whenever a daily sync wrote newer rows for other securities in the
+    // same account, and (b) carried NO quantity guard at all, so a
+    // quantity=0 tombstone (closed/sold position) still consumed one of the
+    // 50 IB streaming slots. `includeShorts` default (`quantity != 0`) is a
+    // deliberate behavior fix: tombstoned securities must not stream.
+    //
+    // Because the query still joins holdings to securities, a security held
+    // in MULTIPLE accounts yields one row per account's latest holding —
+    // GROUP BY s.id collapses those back to one row per security. The
+    // priority rule for the LIMIT 50 cutoff (Codex F9: a bare
+    // `ORDER BY h.as_of_date` was ambiguous under `SELECT DISTINCT` once a
+    // security could appear via more than one account row) is
+    // freshest-anywhere-first: a multi-account security ranks by whichever
+    // account has the MOST RECENT latest-holding date (MAX(h.as_of_date)
+    // across its rows), with symbol as the deterministic tiebreak.
     securities = db
       .prepare(
-        `SELECT DISTINCT s.id, s.symbol, s.security_type, s.ib_con_id, s.currency
+        `SELECT s.id, s.symbol, s.security_type, s.ib_con_id, s.currency
          FROM securities s
          JOIN holdings h ON h.security_id = s.id
          WHERE s.ib_con_id IS NOT NULL
-           AND h.as_of_date = (SELECT MAX(as_of_date) FROM holdings WHERE account_id = h.account_id)
+           AND ${latestHoldingsPredicate()}
            AND (s.security_type IS NULL OR s.security_type NOT IN ('mutual_fund'))
+         GROUP BY s.id
+         ORDER BY MAX(h.as_of_date) DESC, s.symbol
          LIMIT 50`
       )
       .all() as typeof securities;
