@@ -149,8 +149,67 @@ describe("classifyUnresolvedWithClaude", () => {
     const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
     expect(res.classified).toBe(0);
     expect(res.errors.length).toBe(1);
-    expect(res.errors[0]).toMatch(/Unterminated string|Bad control character|Unexpected end/i);
+    // Since 2026-08-30 the parse runs through parseJsonArrayLenient, which
+    // reports a plain-English message and keeps the SyntaxError (the
+    // "Unterminated string" truncation signature) on `error.cause` for logs
+    // rather than leaking it into a user-facing error string.
+    expect(res.errors[0]).toBe("Batch 1: AI reply was not a JSON list of security classifications");
     const row = db.prepare("SELECT * FROM securities WHERE symbol='XLE'").get() as any;
     expect(row.classification_source).toBeNull();
+  });
+});
+
+describe("classifyUnresolvedWithClaude — lenient JSON parsing", () => {
+  // Regression (2026-08-30): `JSON.parse(extractJsonArray(text))` threw
+  // "results is not iterable" when a one-symbol batch came back as a bare object.
+  it("classifies a one-symbol batch answered with a single bare JSON object", async () => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify({
+        symbol: "XLE",
+        fund_category: "Sector Equity",
+        geography: "US",
+        market_cap_category: "Large",
+        style: "Value",
+      }),
+    });
+    const db = makeDb();
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+    expect(res.errors).toEqual([]);
+    expect(res.classified).toBe(1);
+    const row = db.prepare("SELECT * FROM securities WHERE symbol='XLE'").get() as any;
+    expect(row.fund_category).toBe("Sector Equity");
+    expect(row.classification_source).toBe("auto_ai");
+  });
+
+  it("classifies a {results:[...]} wrapper reply", async () => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify({
+        results: [{ symbol: "XLE", fund_category: "Sector Equity", geography: "US", market_cap_category: "Large", style: "Value" }],
+      }),
+    });
+    const db = makeDb();
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+    expect(res.classified).toBe(1);
+  });
+
+  it("skips a null element instead of crashing the batch", async () => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify([null, { symbol: "XLE", fund_category: "Sector Equity", geography: "US" }]),
+    });
+    const db = makeDb();
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+    expect(res.errors).toEqual([]);
+    expect(res.classified).toBe(1);
+  });
+
+  it("reports a plain-English batch error for a prose-only reply", async () => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: "These symbols are not recognizable securities.",
+    });
+    const db = makeDb();
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+    expect(res.classified).toBe(0);
+    expect(res.errors).toEqual(["Batch 1: AI reply was not a JSON list of security classifications"]);
+    expect(res.errors[0]).not.toMatch(/iterable/i);
   });
 });

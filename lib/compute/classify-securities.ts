@@ -14,7 +14,7 @@
 import type Database from "better-sqlite3";
 import { SECURITY_CLASSIFICATIONS } from "@/lib/data/security-classifications";
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
-import { extractJsonArray } from "@/lib/ai/extract-json";
+import { parseJsonArrayLenient } from "@/lib/ai/extract-json";
 import { normalizeFundCategory } from "@/lib/securities/normalize-fund-category";
 import { normalizeMarketCapCategory } from "@/lib/securities/normalize-market-cap";
 
@@ -207,6 +207,11 @@ function cleanEnumValue(value: string | null | undefined): string | null {
   return trimmed;
 }
 
+/** Model elements are unknown-typed after the lenient parse — take strings only. */
+function str(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
 export async function classifyUnresolvedWithClaude(
   db: Database.Database,
   unresolved: Array<{ id: number; symbol: string; security_type: string | null }>
@@ -234,33 +239,26 @@ export async function classifyUnresolvedWithClaude(
       // this has ample headroom for the longer "US Sector Equity (<Sector>)"
       // values that were pushing 4000 past the edge.
       const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 8000, system: AI_CLASSIFY_SYSTEM, prompt });
-      const json = extractJsonArray(text);
-      // The model intermittently emits raw control characters (unescaped
-      // newlines) INSIDE string literals, which JSON.parse rejects
-      // ("Unterminated string in JSON" / "Bad control character") — same
-      // defense as lib/securities/verify-sector-tags.ts::parseVerdicts and
-      // lib/compute/macro-themes.ts::parseThemesJson. Retry with C0 controls
-      // collapsed to spaces: legal JSON only carries them between tokens as
-      // whitespace, so valid input is unaffected.
-      let results: Array<Record<string, string>>;
-      try {
-        results = JSON.parse(json) as Array<Record<string, string>>;
-      } catch (parseErr) {
-        try {
-          results = JSON.parse(json.replace(/[\u0000-\u001f]+/g, " ")) as Array<Record<string, string>>;
-        } catch {
-          throw parseErr;
-        }
-      }
+      // Lenient parse (lib/ai/extract-json.ts): fence-strip, whole-text parse,
+      // then the first-`[` … last-`]` fallback — each with the C0-control-char
+      // retry the model needs (it intermittently emits raw newlines INSIDE string
+      // literals: "Bad control character in string literal"; a genuinely
+      // truncated response — "Unterminated string" — is unrecoverable and
+      // surfaces as a clean per-batch domain error with the SyntaxError as
+      // `cause`). Also tolerates a single bare object / {results:[...]} wrapper
+      // instead of throwing "results is not iterable".
+      const results = parseJsonArrayLenient(text, "security classifications");
       const idMap = new Map(batch.map((s) => [s.symbol, s.id]));
-      for (const r of results) {
-        const id = idMap.get(r.symbol);
+      for (const raw of results) {
+        if (typeof raw !== "object" || raw === null) continue;
+        const r = raw as Record<string, unknown>;
+        const id = typeof r.symbol === "string" ? idMap.get(r.symbol) : undefined;
         if (!id) continue;
         update.run(
-          normalizeFundCategory(r.fund_category),
-          cleanEnumValue(r.geography),
-          normalizeMarketCapCategory(cleanEnumValue(r.market_cap_category)),
-          cleanEnumValue(r.style),
+          normalizeFundCategory(str(r.fund_category)),
+          cleanEnumValue(str(r.geography)),
+          normalizeMarketCapCategory(cleanEnumValue(str(r.market_cap_category))),
+          cleanEnumValue(str(r.style)),
           id
         );
         classified++;
