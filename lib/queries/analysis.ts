@@ -474,9 +474,7 @@ export function getClassificationCoverage(
     active_securities AS (
       SELECT DISTINCT h.security_id
       FROM holdings h
-      WHERE h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)
-        AND h.quantity > 0
-        ${holdingsFilter}
+      WHERE ${latestHoldingsPredicate({ accountFilter: "", includeShorts: true })} ${holdingsFilter}
     )
   `;
 
