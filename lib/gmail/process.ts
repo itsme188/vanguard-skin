@@ -8,6 +8,7 @@ import { sanitizeModelSummary, sanitizeThemeList } from "@/lib/gmail/theme-sanit
 import { subjectSymbolBackstop } from "@/lib/gmail/subject-symbol-backstop";
 import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
 import { getActiveWatchlistStockSymbols } from "@/lib/queries/watchlist";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 interface UnprocessedArticle {
   id: number;
@@ -78,14 +79,20 @@ export async function processUnprocessedArticles(
 
   if (articles.length === 0) return { processed: 0, failed: 0 };
 
-  // Get current holdings for portfolio context
+  // Get current holdings for portfolio context. Latest is keyed per-(account,
+  // security) via latestHoldingsPredicate (default keyBy/includeShorts:
+  // false to preserve this site's existing quantity > 0 semantics), never a
+  // per-account global MAX(as_of_date): a position that only restates on the
+  // monthly statement (Treasuries, mutual funds) carried an older
+  // as_of_date than the daily broker/Plaid rows for OTHER securities in the
+  // same account, so the old per-account MAX silently dropped it from the
+  // AI prompt's portfolio context entirely (holdings-latest-sweep task 10).
   const holdings = db
     .prepare(
       `SELECT DISTINCT s.symbol, s.name
        FROM holdings h
        JOIN securities s ON h.security_id = s.id
-       WHERE h.quantity > 0
-         AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)
+       WHERE ${latestHoldingsPredicate({ includeShorts: false })}
        ORDER BY s.symbol`
     )
     .all() as { symbol: string; name: string | null }[];

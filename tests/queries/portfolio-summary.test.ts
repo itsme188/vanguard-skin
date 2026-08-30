@@ -159,6 +159,47 @@ describe("getPortfolioSummaryForChat", () => {
     expect(summary).toContain("$5,000");
   });
 
+  it("keeps a statement-only Treasury (older as_of_date) in the holdings block and the allocation/weight denominators when another security in the same account has a newer as_of_date", () => {
+    // Statement-only row: TBOND never restates outside the monthly Vanguard
+    // statement, so its only holdings row stays at 2025-01-31.
+    const bond = seedSecurity(db, "TBOND", "US Treasury Bond", "bond");
+    seedHolding(db, ACCOUNT_ID, bond, 10000, "2025-01-31");
+    seedPrice(db, bond, "2025-01-31", 98.5);
+
+    // AAPL gets a newer live-sync row in the SAME account. Under a
+    // per-account global MAX(as_of_date), this newer date would push the
+    // account's "latest" cursor past TBOND's only row and drop it from both
+    // the holdings list and the allocation/weight denominators.
+    const stock = seedSecurity(db, "AAPL", "Apple Inc", "stock");
+    seedHolding(db, ACCOUNT_ID, stock, 100, "2025-02-28");
+    seedPrice(db, stock, "2025-02-28", 250);
+
+    const summary = getPortfolioSummaryForChat(db);
+
+    // Holdings block: the Treasury survives.
+    expect(summary).toContain("TBOND");
+    expect(summary).toContain("MV:$9,850"); // 10000 * 98.5 / 100
+
+    // Allocation denominator: the bond's $9,850 is folded into the
+    // portfolio total and the asset-allocation bucket sum, not excluded.
+    expect(summary).toContain("bond: $9,850");
+    // Weight denominator: AAPL's position weight is diluted by the bond
+    // ($25,000 / $34,850 = 71.7%), not 100% as it would be if the bond
+    // were silently dropped from portfolio_total.
+    expect(summary).toContain("(71.7%)");
+    expect(summary).toContain("(28.3%)"); // TBOND's own weight: $9,850 / $34,850
+  });
+
+  it("keeps a closed-position tombstone (latest row quantity=0) hidden from holdings", () => {
+    const sec = seedSecurity(db, "CLOSEDCO", "Closed Co", "stock");
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2025-01-31");
+    seedHolding(db, ACCOUNT_ID, sec, 0, "2025-02-28"); // reconciler tombstone
+    seedPrice(db, sec, "2025-01-31", 50);
+
+    const summary = getPortfolioSummaryForChat(db);
+    expect(summary).not.toContain("CLOSEDCO");
+  });
+
   it("includes tax summary when lots exist", () => {
     const sec = seedSecurity(db, "VTI");
     db.prepare(

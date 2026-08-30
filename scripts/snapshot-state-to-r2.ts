@@ -31,6 +31,7 @@ import {
 } from "@/lib/storage/r2";
 import { getModelCatalog } from "@/lib/ai/model-catalog";
 import { getBriefingHoldings } from "@/lib/calendar/briefing";
+import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
 import { getReportHistoryForFamily } from "@/lib/queries/earnings-intel";
 import { summarizeHistory } from "@/lib/earnings/report-history";
 
@@ -207,26 +208,6 @@ function openReadOnly(): Database.Database {
   const dataDir = process.env.VANGUARD_DB_DIR || path.join(process.cwd(), "data");
   const dbPath = path.join(dataDir, "vanguard.db");
   return new Database(dbPath, { readonly: true, fileMustExist: true });
-}
-
-function getHeldStockSymbolsRO(db: Database.Database): string[] {
-  const rows = db
-    .prepare(
-      `SELECT DISTINCT s.symbol
-       FROM holdings h
-       JOIN securities s ON s.id = h.security_id
-       WHERE h.quantity > 0
-         AND LOWER(COALESCE(s.security_type, '')) IN ('stock', 'common stock')
-         AND s.symbol IS NOT NULL
-         AND s.symbol != ''
-         AND h.as_of_date = (
-           SELECT MAX(h2.as_of_date) FROM holdings h2
-           WHERE h2.account_id = h.account_id
-         )
-       ORDER BY s.symbol`
-    )
-    .all() as { symbol: string }[];
-  return rows.map((r) => r.symbol);
 }
 
 /**
@@ -524,7 +505,7 @@ function buildSnapshot(db: Database.Database): Snapshot {
   }));
 
   // Phase 4 — earnings cloud-fallback context. Cross-account latest holdings
-  // (matches per-account MAX(as_of_date) per CLAUDE.md), full securities table
+  // (latest per (account, security) — CLAUDE.md mandates per-pair), full securities table
   // (Worker needs underlying_symbol to roll options into family positions),
   // accounts (id → name for the position block), audit rows (so Worker can
   // skip events Mac already fired), and earnings settings (master toggle +
@@ -629,7 +610,7 @@ function buildSnapshot(db: Database.Database): Snapshot {
     schemaVersion: 10,
     snapshotDate: today(),
     generatedAt: new Date().toISOString(),
-    heldSymbols: getHeldStockSymbolsRO(db),
+    heldSymbols: getHeldStockSymbols(db),
     settings: {
       last_digest_sent_at: getSettingValue(db, "last_digest_sent_at"),
       last_briefing_sent_at: getSettingValue(db, "last_briefing_sent_at"),

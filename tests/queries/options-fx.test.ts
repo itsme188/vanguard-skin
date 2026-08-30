@@ -14,7 +14,11 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
-import { getOptionPositions, getOptionsPnL } from "@/lib/queries/options";
+import {
+  getOptionPositions,
+  getOptionsPnL,
+  getStockLegsForStrategyDetection,
+} from "@/lib/queries/options";
 import { stampTaxLotsConvention } from "@/lib/compute/tax-convention";
 
 describe("getOptionPositions FX conversion", () => {
@@ -198,5 +202,176 @@ describe("getOptionsPnL closed trades — v2 dollar convention + conventionPendi
 
     const after = getOptionsPnL(db);
     expect(after.conventionPending).toBe(false);
+  });
+});
+
+/**
+ * getOptionPositions / getExpiringOptions per-pair "latest" holdings —
+ * holdings-latest-sweep Task 1. Both queries previously keyed "latest" off
+ * a fully GLOBAL MAX(as_of_date) subquery (no account/security correlation
+ * at all) with no quantity filter — worse than a per-account MAX: any
+ * statement-lag position (Treasuries, mutual funds — not options in
+ * practice, but the query shape was shared) or trailing account lost its
+ * rows entirely, and a reconciler quantity=0 tombstone could surface as an
+ * open position. `latestHoldingsPredicate({ accountFilter: "" })` fixes
+ * both: per-(account, security) "latest" plus quantity != 0.
+ */
+describe("getOptionPositions — per-pair latest holdings (holdings-latest-sweep Task 1)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  function seedOption(
+    id: number,
+    underlying: string,
+    expiration: string
+  ): void {
+    db.prepare(
+      `INSERT INTO securities
+         (id, symbol, security_type, option_type, strike_price, expiration_date, underlying_symbol, multiplier, currency)
+       VALUES (?, ?, 'option', 'CALL', 50, ?, ?, 100, 'USD')`
+    ).run(id, `${underlying}  260117C00050000`, expiration, underlying);
+  }
+
+  it("fixture 1: statement-lag row survives — security A's only row is older than security B's, same account, both returned", () => {
+    seedOption(300, "AAA", "2026-01-17");
+    seedOption(301, "BBB", "2026-02-21");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (1, 300, 1, 100, '2025-01-31', 'a-1')`
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (1, 301, 1, 100, '2025-02-28', 'b-1')`
+    ).run();
+
+    const positions = getOptionPositions(db);
+    const underlyings = positions.map((p) => p.underlying).sort();
+    expect(underlyings).toEqual(["AAA", "BBB"]);
+  });
+
+  it("fixture 2: tombstone hides — security C's newest row is a quantity=0 tombstone, absent from both getOptionPositions and getOptionsPnL sums", () => {
+    seedOption(302, "CCC", "2026-03-20");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (1, 302, 10, 500, '2025-01-31', 'c-1')`
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (1, 302, 0, 0, '2025-02-28', 'c-2')`
+    ).run();
+
+    const positions = getOptionPositions(db);
+    expect(positions.find((p) => p.underlying === "CCC")).toBeUndefined();
+    expect(positions).toHaveLength(0);
+
+    const pnl = getOptionsPnL(db);
+    expect(pnl.openPositions).toHaveLength(0);
+    expect(pnl.totalUnrealizedPnl).toBe(0);
+  });
+
+  it("fixture 3: trailing account survives — account 2's only row predates account 1's latest, both returned", () => {
+    seedOption(303, "XXX", "2026-04-17");
+    seedOption(304, "YYY", "2026-05-15");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (1, 303, 1, 100, '2025-02-28', 'x-1')`
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (2, 304, 1, 100, '2025-01-31', 'y-1')`
+    ).run();
+
+    const positions = getOptionPositions(db);
+    const underlyings = positions.map((p) => p.underlying).sort();
+    expect(underlyings).toEqual(["XXX", "YYY"]);
+  });
+});
+
+describe("getStockLegsForStrategyDetection — per-pair latest holdings (holdings-latest-sweep Task 1)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  function seedStock(id: number, symbol: string): void {
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, currency) VALUES (?, ?, 'stock', 'USD')`
+    ).run(id, symbol);
+  }
+
+  it("fixture 1: statement-lag row survives — stock A's only row is older than stock B's, same account, both returned", () => {
+    seedStock(400, "AAA");
+    seedStock(401, "BBB");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (1, 400, 10, 1000, '2025-01-31', 'a-stock-1')`
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (1, 401, 10, 1000, '2025-02-28', 'b-stock-1')`
+    ).run();
+
+    const legs = getStockLegsForStrategyDetection(db);
+    const symbols = legs.map((l) => l.symbol).sort();
+    expect(symbols).toEqual(["AAA", "BBB"]);
+    expect(legs.every((l) => typeof l.account_id === "number")).toBe(true);
+  });
+
+  it("fixture 2: tombstone hides — stock C's newest row is a quantity=0 tombstone, absent from the helper", () => {
+    seedStock(402, "CCC");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (1, 402, 10, 1000, '2025-01-31', 'c-stock-1')`
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (1, 402, 0, 0, '2025-02-28', 'c-stock-2')`
+    ).run();
+
+    const legs = getStockLegsForStrategyDetection(db);
+    expect(legs.find((l) => l.symbol === "CCC")).toBeUndefined();
+    expect(legs).toHaveLength(0);
+  });
+
+  it("fixture 3: trailing account survives — account 2's only row predates account 1's latest, both returned", () => {
+    seedStock(403, "XXX");
+    seedStock(404, "YYY");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (1, 403, 10, 1000, '2025-02-28', 'x-stock-1')`
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (2, 404, 10, 1000, '2025-01-31', 'y-stock-1')`
+    ).run();
+
+    const legs = getStockLegsForStrategyDetection(db);
+    const symbols = legs.map((l) => l.symbol).sort();
+    expect(symbols).toEqual(["XXX", "YYY"]);
+    expect(legs.find((l) => l.symbol === "YYY")?.account_id).toBe(2);
+  });
+
+  it("accountId filter still scopes to a single account (existing contract preserved)", () => {
+    seedStock(405, "ZZZ");
+    seedStock(406, "WWW");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (1, 405, 10, 1000, '2025-02-28', 'z-stock-1')`
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (2, 406, 10, 1000, '2025-02-28', 'w-stock-1')`
+    ).run();
+
+    const legs = getStockLegsForStrategyDetection(db, 1);
+    expect(legs.map((l) => l.symbol)).toEqual(["ZZZ"]);
   });
 });

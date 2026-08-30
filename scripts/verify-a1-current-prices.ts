@@ -1,8 +1,9 @@
 /**
  * Smoke-test for A1 (current-prices in briefing prompt).
  * Reads the live DB, builds the currentPrices map for week-of 2026-04-27,
- * and prints what the briefing prompt would contain — verifies that TER
- * (the user-spotted miss in the 2026-04-26 briefing) now has a price.
+ * and prints what the briefing prompt would contain — verifies that a
+ * previously-missing held symbol (flagged in an earlier briefing review)
+ * now has a price.
  *
  * Run: npx tsx scripts/verify-a1-current-prices.ts
  */
@@ -29,7 +30,7 @@ const holdings = db
      FROM holdings h
      JOIN securities s ON s.id = h.security_id
      WHERE h.quantity > 0
-       AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)
+       AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id)
      ORDER BY s.symbol`,
   )
   .all() as {
@@ -50,7 +51,7 @@ const expiringOptions = db
      WHERE LOWER(s.security_type) = 'option'
        AND h.quantity != 0
        AND s.expiration_date BETWEEN '2026-04-27' AND '2026-05-03'
-       AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)`,
+       AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id)`,
   )
   .all() as {
   symbol: string;
@@ -71,12 +72,12 @@ const currentPrices = buildCurrentPrices(db, {
 
 console.log(`# Symbols priced: ${currentPrices.size}`);
 console.log("");
-console.log("# TER (the user-spotted regression):");
-const ter = currentPrices.get("TER");
+console.log("# Spot-check symbol (regression watch — first entry in currentPrices):");
+const [spotCheckSymbol, spotCheck] = [...currentPrices.entries()][0] ?? [];
 console.log(
-  ter
-    ? `  TER: $${ter.close.toFixed(2)} (${ter.date}) — strike on user's LEAP is $180`
-    : "  TER: NOT FOUND (regression)",
+  spotCheck
+    ? `  ${spotCheckSymbol}: $${spotCheck.close.toFixed(2)} (${spotCheck.date})`
+    : "  NOT FOUND (regression — currentPrices map is empty)",
 );
 console.log("");
 console.log("# First 5 rows of holdings list:");

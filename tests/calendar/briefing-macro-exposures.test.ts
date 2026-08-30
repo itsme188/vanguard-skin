@@ -175,6 +175,53 @@ describe("buildMacroExposures", () => {
     const exp = out.get(1);
     expect(exp!.symbols).toEqual(["XMTR"]);
   });
+
+  // ── per-(account, security) "latest" keying ──────────────────────
+  //
+  // The sector-cluster query keyed "latest" off a per-ACCOUNT
+  // MAX(as_of_date), which is the same silent-omission class the XMTR bug
+  // above is about: a name whose newest row is an older monthly-statement
+  // date lost to a same-account daily row for another security and dropped
+  // out of the §6 exposure list entirely.
+
+  it("keeps a statement-lag sector name when a newer row exists for another security in the same account", () => {
+    const xmtr = seedSec("XMTR", "Industrials");
+    seedHolding(xmtr, 600, "2026-03-31"); // monthly statement row
+    const csx = seedSec("CSX", "Industrials");
+    seedHolding(csx, 50, "2026-04-27"); // newer daily row, same account
+
+    const out = buildMacroExposures(db, [makeMacro(1, "pmi", "ISM Manufacturing")]);
+    const exp = out.get(1);
+    expect(exp).toBeDefined();
+    expect(exp!.symbols).toContain("XMTR");
+    expect(exp!.symbols).toContain("CSX");
+  });
+
+  it("hides a sector name whose latest row is a quantity=0 tombstone", () => {
+    const xmtr = seedSec("XMTR", "Industrials");
+    seedHolding(xmtr, 600, "2026-03-31");
+    seedHolding(xmtr, 0, "2026-04-27"); // closed-position tombstone
+    const csx = seedSec("CSX", "Industrials");
+    seedHolding(csx, 50, "2026-04-27");
+
+    const out = buildMacroExposures(db, [makeMacro(1, "pmi", "ISM Manufacturing")]);
+    const exp = out.get(1);
+    expect(exp!.symbols).toEqual(["CSX"]);
+  });
+
+  it("still excludes shorts from sector exposure (long-only rule preserved)", () => {
+    // The sector cluster narrates positive exposure; an anti-correlated
+    // short must not read as a same-direction sector bet. The rule now lives
+    // in latestHoldingsPredicate({ includeShorts: false }).
+    const xmtr = seedSec("XMTR", "Industrials");
+    seedHolding(xmtr, -600, "2026-03-31"); // short, statement-date row
+    const csx = seedSec("CSX", "Industrials");
+    seedHolding(csx, 50, "2026-04-27");
+
+    const out = buildMacroExposures(db, [makeMacro(1, "pmi", "ISM Manufacturing")]);
+    const exp = out.get(1);
+    expect(exp!.symbols).toEqual(["CSX"]);
+  });
 });
 
 describe("§6 prompt directive — exposure-list verbatim rule", () => {
