@@ -224,4 +224,32 @@ describe("getIbkrTodayHoldings", () => {
     expect(n.today_pct).toBeNull();
     expect(n.current_price).toBeCloseTo(50, 2);
   });
+
+  // holdings-latest-sweep Task 3: per-(account, security) latest holdings,
+  // not a per-account global MAX(as_of_date). A statement-only position
+  // (Treasuries, mutual funds) that only restates monthly must survive a
+  // same-account sync that writes a newer row for a different security.
+  it("keeps a statement-lag security whose only row predates another security's newer row", () => {
+    const acct = ibkrAccountId();
+    const lag = seedSecurity("TLAG");
+    const fresh = seedSecurity("FRESH");
+    hold(acct, lag, 10, "2025-01-31"); // only row, older date
+    hold(acct, fresh, 5, "2025-02-28"); // newer sync row, same account
+
+    const rows = getIbkrTodayHoldings(db, acct);
+    expect(rows.map((r) => r.symbol).sort()).toEqual(["FRESH", "TLAG"]);
+  });
+
+  // Reconciler contract: the quantity=0 tombstone IS the latest row for the
+  // (account, security) pair, so per-pair latest still hides the closed
+  // position rather than resurrecting the older non-zero row.
+  it("hides a security whose newest row is a quantity=0 tombstone above a non-zero older row", () => {
+    const acct = ibkrAccountId();
+    const closed = seedSecurity("GONE");
+    hold(acct, closed, 10, "2025-01-31"); // was held
+    hold(acct, closed, 0, "2025-02-28"); // closure marker
+
+    const rows = getIbkrTodayHoldings(db, acct);
+    expect(rows.find((r) => r.symbol === "GONE")).toBeUndefined();
+  });
 });

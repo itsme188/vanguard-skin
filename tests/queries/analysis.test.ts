@@ -273,4 +273,34 @@ describe("getClassificationCoverage", () => {
     const allCoverage = getClassificationCoverage(db);
     expect(allCoverage.total).toBe(2); // VTI + SPY
   });
+
+  it("counts a statement-only security whose as_of_date lags a newer holding in the same account", () => {
+    const acctId = seedAccount(db, "Test Account");
+    const staleId = seedSecurity(db, "STALE_BOND", { security_type: "bond" });
+    const freshId = seedSecurity(db, "VTI", { security_type: "etf" });
+
+    // STALE_BOND only restates on the monthly statement; VTI has a newer
+    // daily-sync row in the same account. A per-account MAX(as_of_date)
+    // would drop STALE_BOND entirely — per-(account, security) latest must
+    // keep it.
+    seedHolding(db, acctId, staleId, 10000, 9800, "2025-01-31");
+    seedHolding(db, acctId, freshId, 100, 10000, "2025-02-28");
+
+    classifySecurities(db);
+
+    const coverage = getClassificationCoverage(db);
+    expect(coverage.total).toBe(2);
+    expect(coverage.classified).toBe(2);
+  });
+
+  it("counts a short-position security in coverage", () => {
+    const acctId = seedAccount(db, "Test Account");
+    const shortId = seedSecurity(db, "SHORTED_STOCK");
+
+    seedHolding(db, acctId, shortId, -50, -5000);
+
+    const coverage = getClassificationCoverage(db);
+    expect(coverage.total).toBe(1);
+    expect(coverage.unclassified_securities[0].symbol).toBe("SHORTED_STOCK");
+  });
 });

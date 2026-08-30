@@ -19,7 +19,7 @@ for (const sym of earningsSymbols) {
        JOIN accounts a ON a.id = h.account_id
        WHERE (UPPER(s.symbol) IN (${placeholders})
            OR UPPER(COALESCE(s.underlying_symbol, '')) IN (${placeholders}))
-         AND h.as_of_date = (SELECT MAX(as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)
+         AND h.as_of_date = (SELECT MAX(as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id)
          AND h.quantity != 0`
     )
     .all(...family, ...family) as Array<{

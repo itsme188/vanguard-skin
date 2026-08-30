@@ -17,6 +17,7 @@ import { resolveFeatureModel } from "@/lib/ai/models";
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { mondayOf } from "@/lib/calendar/date-utils";
 import {
   findSelfAdmissions,
@@ -461,7 +462,22 @@ interface ExpiringOption {
   account_name: string;
 }
 
-function getExpiringOptions(
+/**
+ * Options expiring inside [startDate, endDate] that the user actually holds.
+ *
+ * "Latest" is keyed per-(account, security) via latestHoldingsPredicate,
+ * never a per-account global MAX(as_of_date): an option leg that only
+ * restates on the monthly statement carries an older as_of_date than the
+ * daily broker/Plaid rows, and the per-account MAX dropped it from the
+ * expiry roster entirely — the briefing then never warned about it. The
+ * predicate carries `quantity != 0` itself (shorts are real option
+ * positions and must surface; the closed-position reconciler's quantity=0
+ * tombstone IS the latest row for its pair, so per-pair keying still hides
+ * a closed leg rather than resurrecting the older non-zero row).
+ *
+ * Exported for unit test (module-private otherwise).
+ */
+export function getExpiringOptions(
   db: Database.Database,
   startDate: string,
   endDate: string
@@ -475,13 +491,9 @@ function getExpiringOptions(
        JOIN securities s ON s.id = h.security_id
        JOIN accounts a ON a.id = h.account_id
        WHERE LOWER(s.security_type) = 'option'
-         AND h.quantity != 0
          AND ${BRIEFING_EXCLUDE_IBKR_SQL}
          AND s.expiration_date BETWEEN ? AND ?
-         AND h.as_of_date = (
-           SELECT MAX(h2.as_of_date) FROM holdings h2
-           WHERE h2.account_id = h.account_id
-         )
+         AND ${latestHoldingsPredicate()}
        ORDER BY s.expiration_date, s.underlying_symbol`
     )
     .all(startDate, endDate) as ExpiringOption[];
@@ -623,6 +635,14 @@ function querySymbolsBySectors(
   // mislead Opus into framing anti-correlated positions as same-direction
   // sector bets. The main-holdings query at the top of this file does
   // surface shorts (A7) — this sector-cluster context is the exception.
+  // That long-only rule is now expressed as `includeShorts: false` on
+  // latestHoldingsPredicate, which emits the same `h.quantity > 0` clause.
+  //
+  // "Latest" is keyed per-(account, security), never a per-account global
+  // MAX(as_of_date): a sector name that only restates on the monthly
+  // statement carries an older as_of_date than the daily broker/Plaid rows,
+  // and the per-account MAX dropped it from the §6 exposure list — exactly
+  // the silent-omission class this helper exists to prevent (the XMTR bug).
   if (sectors.length === 0) {
     // Broad / all-equity case
     const rows = db
@@ -630,13 +650,10 @@ function querySymbolsBySectors(
         `SELECT DISTINCT s.symbol
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
-         WHERE h.quantity > 0
-           AND ${BRIEFING_EXCLUDE_IBKR_SQL}
+         WHERE ${BRIEFING_EXCLUDE_IBKR_SQL}
            AND LOWER(s.security_type) IN ('stock','common stock','etf')
            AND s.sector IS NOT NULL
-           AND h.as_of_date = (
-             SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id
-           )
+           AND ${latestHoldingsPredicate({ includeShorts: false })}
          ORDER BY s.symbol`,
       )
       .all() as { symbol: string }[];
@@ -648,13 +665,10 @@ function querySymbolsBySectors(
       `SELECT DISTINCT s.symbol
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
-       WHERE h.quantity > 0
-         AND ${BRIEFING_EXCLUDE_IBKR_SQL}
+       WHERE ${BRIEFING_EXCLUDE_IBKR_SQL}
          AND LOWER(s.security_type) IN ('stock','common stock','etf')
          AND s.sector IN (${placeholders})
-         AND h.as_of_date = (
-           SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id
-         )
+         AND ${latestHoldingsPredicate({ includeShorts: false })}
        ORDER BY s.symbol`,
     )
     .all(...sectors) as { symbol: string }[];
@@ -688,8 +702,20 @@ export const BRIEFING_EXCLUDE_IBKR_SQL =
 /**
  * Portfolio holdings that feed the briefing's prompt — Vanguard accounts only
  * (IBKR excluded, see BRIEFING_EXCLUDE_IBKR_SQL). `quantity != 0` so net
- * shorts surface; `net_qty` is the cross-account (Vanguard Taxable + Roth)
- * sum. Extracted from generateWeeklyBriefing for unit testability.
+ * shorts surface (carried by latestHoldingsPredicate, which is why the WHERE
+ * clause does not repeat it); `net_qty` is the cross-account (Vanguard
+ * Taxable + Roth) sum. Extracted from generateWeeklyBriefing for unit
+ * testability.
+ *
+ * "Latest" is keyed per-(account, security), never a per-account global
+ * MAX(as_of_date). This is the highest-stakes site in the sweep because
+ * net_qty is a SUM across accounts: when one account's long leg only
+ * restates on the monthly statement and another account's short leg gets a
+ * newer daily row, the per-account MAX dropped the long and left net_qty
+ * NEGATIVE — formatHoldingsList then narrated a net-long book as
+ * "NET SHORT" in an outbound, cc'd email. Per-pair keying sums the true
+ * latest row for each (account, security) pair instead. Tombstones still
+ * hide closed positions: a quantity=0 row IS the latest row for its pair.
  */
 export function getBriefingHoldings(
   db: Database.Database,
@@ -700,9 +726,8 @@ export function getBriefingHoldings(
               SUM(h.quantity) AS net_qty
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
-       WHERE h.quantity != 0
-         AND ${BRIEFING_EXCLUDE_IBKR_SQL}
-         AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)
+       WHERE ${BRIEFING_EXCLUDE_IBKR_SQL}
+         AND ${latestHoldingsPredicate()}
        GROUP BY s.id
        ORDER BY s.symbol`,
     )
@@ -801,11 +826,8 @@ export function buildCombinedPositionsForEvents(
          JOIN accounts a ON a.id = h.account_id
          WHERE s.symbol IN (${placeholders})
            AND LOWER(s.security_type) != 'option'
-           AND h.quantity != 0
            AND ${BRIEFING_EXCLUDE_IBKR_SQL}
-           AND h.as_of_date = (
-             SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id
-           )`,
+           AND ${latestHoldingsPredicate()}`,
       )
       .all(...family) as { symbol: string; quantity: number; account: string }[];
 
@@ -826,11 +848,8 @@ export function buildCombinedPositionsForEvents(
          JOIN accounts a ON a.id = h.account_id
          WHERE LOWER(s.security_type) = 'option'
            AND s.underlying_symbol IN (${placeholders})
-           AND h.quantity != 0
            AND ${BRIEFING_EXCLUDE_IBKR_SQL}
-           AND h.as_of_date = (
-             SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id
-           )`,
+           AND ${latestHoldingsPredicate()}`,
       )
       .all(...family) as CombinedOptionPosition[];
 
@@ -908,12 +927,9 @@ export function buildCurrentPrices(
       `SELECT DISTINCT s.underlying_symbol AS sym
        FROM holdings h JOIN securities s ON s.id = h.security_id
        WHERE LOWER(s.security_type) = 'option'
-         AND h.quantity != 0
          AND ${BRIEFING_EXCLUDE_IBKR_SQL}
          AND s.underlying_symbol IS NOT NULL
-         AND h.as_of_date = (
-           SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id
-         )`
+         AND ${latestHoldingsPredicate()}`
     )
     .all() as { sym: string }[];
   for (const u of optUnderlyings) if (u.sym) symbols.add(u.sym);

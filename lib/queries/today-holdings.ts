@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "../valuation";
 import { resolveTradingDayPair } from "../digest/anomalies";
+import { latestHoldingsPredicate } from "./latest-holdings";
 
 export interface TodayHolding {
   security_id: number;
@@ -148,8 +149,7 @@ export function getIbkrTodayHoldings(
        LEFT JOIN prices pu_prior ON pu_prior.security_id = s_u.id AND pu_prior.date = ?
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE h.account_id = ?
-         AND h.quantity > 0
-         AND h.as_of_date = (SELECT MAX(as_of_date) FROM holdings WHERE account_id = ?)
+         AND ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
          AND (s.maturity_date IS NULL OR s.maturity_date >= date('now')
               OR LOWER(s.security_type) = 'bond')
        ORDER BY ABS(COALESCE(today_gain, 0)) DESC`,
@@ -159,7 +159,6 @@ export function getIbkrTodayHoldings(
       pairPrior,
       pairLatest,
       pairPrior,
-      accountId,
       accountId,
     ) as TodayHoldingRow[];
 

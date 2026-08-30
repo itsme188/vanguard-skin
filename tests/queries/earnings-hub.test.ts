@@ -361,6 +361,19 @@ describe("getEarningsForWeekDeduped", () => {
     seedHolding(vt, b, 50);
     expect(getHeldStockSymbols(db).sort()).toEqual(["AAPL", "MSFT"]);
   });
+
+  it("getHeldStockSymbols surfaces a statement-lag holding: a security whose only row is older than another security's newer row in the same account", () => {
+    // Per-(account, security) "latest" keying (latestHoldingsPredicate) must
+    // not drop AAPL just because MSFT's row in the same account is newer —
+    // a per-account global MAX(as_of_date) would compute IBKR's max as
+    // 2025-02-28 (from MSFT) and silently exclude AAPL's only row.
+    const ibkr = getAccount("IBKR");
+    const a = seedSecurity("AAPL");
+    const b = seedSecurity("MSFT");
+    seedHolding(ibkr, a, 100, "2025-01-31");
+    seedHolding(ibkr, b, 50, "2025-02-28");
+    expect(getHeldStockSymbols(db).sort()).toEqual(["AAPL", "MSFT"]);
+  });
 });
 
 describe("EarningsHub chip source — getSentPhasesForEvents tri-state filter", () => {

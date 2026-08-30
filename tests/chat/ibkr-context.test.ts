@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { computeBullishness, computeIbkrTradingContext } from "@/lib/chat/ibkr-context";
+import { getHoldingsForChat } from "@/lib/queries/chat-tools";
 
 describe("computeBullishness", () => {
   it("returns 1 for very high cash (>=50%)", () => {
@@ -163,5 +164,69 @@ describe("computeIbkrTradingContext — avgHoldingDays", () => {
   it("returns null when there are no closed lots in the window", () => {
     const ctx = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
     expect(ctx.avgHoldingDays).toBeNull();
+  });
+});
+
+// ─── Long/short summary — includeShorts opt-in (Task 6) ───────────────────
+
+describe("computeIbkrTradingContext — shorts visibility", () => {
+  let db: Database.Database;
+  const IBKR_ACCOUNT_ID = 3; // seeded by migration 002_seed_accounts.sql
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  function seedSecurity(symbol: string, sector?: string): number {
+    const r = db
+      .prepare(
+        "INSERT INTO securities (symbol, name, security_type) VALUES (?, ?, 'stock')"
+      )
+      .run(symbol, symbol);
+    const id = r.lastInsertRowid as number;
+    if (sector) db.prepare("UPDATE securities SET sector = ? WHERE id = ?").run(sector, id);
+    return id;
+  }
+
+  function seedHolding(securityId: number, quantity: number, price: number): void {
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(IBKR_ACCOUNT_ID, securityId, quantity, Math.abs(quantity) * price * 0.9, "2025-01-31", `k-${securityId}`);
+    db.prepare(
+      "INSERT OR REPLACE INTO prices (security_id, date, close_price) VALUES (?, ?, ?)"
+    ).run(securityId, "2025-01-31", price);
+  }
+
+  it("computeIbkrTradingContext (includeShorts: true) surfaces the short in longShortSummary", () => {
+    const long = seedSecurity("LONGCO", "Technology");
+    const short = seedSecurity("SHRTCO", "Energy");
+    seedHolding(long, 10, 100); // long, mv = 1000
+    seedHolding(short, -5, 100); // short, mv = -500
+
+    const ctx = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
+
+    expect(ctx.activePositionCount).toBe(2);
+    expect(ctx.longShortSummary).toContain("Long: 1 positions");
+    expect(ctx.longShortSummary).toContain("Short: 1 positions");
+    expect(ctx.longShortSummary).toContain("SHRTCO");
+  });
+
+  it("default-consumer surfaces (e.g. market-snapshot's plain getHoldingsForChat(db) call) stay long-only, unaffected by ibkr-context's opt-in", () => {
+    const long = seedSecurity("LONGCO");
+    const short = seedSecurity("SHRTCO");
+    seedHolding(long, 10, 100);
+    seedHolding(short, -5, 100);
+
+    // computeIbkrTradingContext internally opts into includeShorts: true...
+    const ctx = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
+    expect(ctx.longShortSummary).toContain("Short: 1 positions");
+
+    // ...but a default call (the shape every other consumer — query_holdings
+    // tool, market-snapshot's buildUniverse — uses) still excludes the short.
+    const defaultHoldings = getHoldingsForChat(db, { account_name: "IBKR" });
+    expect(defaultHoldings.map((h) => h.symbol)).toEqual(["LONGCO"]);
   });
 });

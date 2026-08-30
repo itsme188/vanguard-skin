@@ -281,6 +281,57 @@ describe("getHoldingsForChat", () => {
     const result = getHoldingsForChat(db, { limit: 3 });
     expect(result).toHaveLength(3);
   });
+
+  // ─── includeShorts (Task 6) ─────────────────────────────────────
+  // Opt-in only; every existing call site (query_holdings tool,
+  // market-snapshot's buildUniverse, and every call above in this file)
+  // omits the option and must keep seeing the long-only book.
+
+  it("excludes shorts by default (existing behavior pinned)", () => {
+    const long = seedSecurity(db, "LONGCO");
+    const short = seedSecurity(db, "SHORTCO");
+    seedHolding(db, 1, long, 10, "2025-01-31", 900);
+    seedHolding(db, 1, short, -5, "2025-01-31", 400);
+    seedPrice(db, long, "2025-01-31", 100);
+    seedPrice(db, short, "2025-01-31", 100);
+
+    const result = getHoldingsForChat(db);
+    expect(result.map((h) => h.symbol)).toEqual(["LONGCO"]);
+    // Long-only book: the plain signed denominator equals the one long
+    // position's own market value, so its weight is 100%.
+    expect(result[0].position_weight_pct).toBeCloseTo(100, 5);
+  });
+
+  it("includeShorts: true returns the short with a gross-denominator, all-positive weight", () => {
+    const long = seedSecurity(db, "LONGCO");
+    const short = seedSecurity(db, "SHORTCO");
+    seedHolding(db, 1, long, 10, "2025-01-31", 900); // mv = 1000
+    seedHolding(db, 1, short, -5, "2025-01-31", 400); // mv = -500
+    seedPrice(db, long, "2025-01-31", 100);
+    seedPrice(db, short, "2025-01-31", 100);
+
+    const result = getHoldingsForChat(db, { includeShorts: true });
+    expect(result).toHaveLength(2);
+
+    const longRow = result.find((h) => h.symbol === "LONGCO")!;
+    const shortRow = result.find((h) => h.symbol === "SHORTCO")!;
+
+    // Signed market value is preserved (a short's mv is genuinely negative).
+    expect(longRow.market_value).toBe(1000);
+    expect(shortRow.market_value).toBe(-500);
+
+    // Gross-exposure weights: denominator = ABS(1000) + ABS(-500) = 1500.
+    expect(longRow.position_weight_pct).toBeCloseTo((1000 / 1500) * 100, 5);
+    expect(shortRow.position_weight_pct).toBeCloseTo((500 / 1500) * 100, 5);
+
+    // Every weight is positive (never a negative short weight) and the set
+    // sums to exactly 100%.
+    for (const row of result) {
+      expect(row.position_weight_pct).toBeGreaterThan(0);
+    }
+    const totalWeight = result.reduce((sum, h) => sum + (h.position_weight_pct ?? 0), 0);
+    expect(totalWeight).toBeCloseTo(100, 5);
+  });
 });
 
 describe("getPriceHistory", () => {
@@ -375,6 +426,70 @@ describe("getAllocationBreakdown", () => {
     const alloc = getAllocationBreakdown(db, "sector");
     expect(alloc).toHaveLength(1);
     expect(alloc[0].group_name).toBe("Unknown");
+  });
+
+  it("keeps a statement-lag position (no tombstone) in the allocation total", () => {
+    // Security A's only row predates security B's newer row in the same
+    // account. Per-(account, security) keying must keep A's value in the
+    // total rather than dropping it because the account's newest date
+    // belongs to B.
+    const secA = seedSecurity(db, "TBILL2", { security_type: "bond", asset_class: "fixed_income" });
+    const secB = seedSecurity(db, "AAPL", { asset_class: "equity" });
+    seedHolding(db, 1, secA, 10000, "2025-01-31", 9800);
+    seedHolding(db, 1, secB, 100, "2025-02-28", 15000);
+    seedPrice(db, secA, "2025-01-31", 98);
+    seedPrice(db, secB, "2025-02-28", 200);
+
+    const alloc = getAllocationBreakdown(db, "asset_class");
+    const fixedIncome = alloc.find((a) => a.group_name === "fixed_income");
+    const equity = alloc.find((a) => a.group_name === "equity");
+    expect(fixedIncome).toBeDefined();
+    expect(equity).toBeDefined();
+    // Bond: 10000 * 98 / 100 = 9800
+    expect(fixedIncome!.total_market_value).toBeCloseTo(9800, 2);
+    expect(equity!.total_market_value).toBeCloseTo(20000, 2);
+  });
+
+  it("excludes a genuinely tombstoned (quantity=0) position from the allocation total", () => {
+    // NOTE: because MSFT's tombstone lands on the same date as the
+    // account's overall max (control's 2025-02-28), this test does not
+    // discriminate per-account vs per-(account, security) keying — a
+    // qty=0 row at the account's max date is picked up and excluded by
+    // the quantity guard under BOTH correlations. It still guards against
+    // MSFT's older non-zero row (2025-01-31) being wrongly resurrected.
+    const secC = seedSecurity(db, "MSFT", { asset_class: "equity" });
+    const control = seedSecurity(db, "AAPL", { asset_class: "equity" });
+    seedHolding(db, 1, secC, 30, "2025-01-31", 9000);
+    seedHolding(db, 1, secC, 0, "2025-02-28", 0); // tombstone
+    seedHolding(db, 1, control, 50, "2025-02-28", 7500);
+    seedPrice(db, secC, "2025-01-31", 400);
+    seedPrice(db, control, "2025-02-28", 200);
+
+    const alloc = getAllocationBreakdown(db, "asset_class");
+    const equity = alloc.find((a) => a.group_name === "equity");
+    expect(equity).toBeDefined();
+    // Only the control position (50*200=10000); MSFT's tombstone excludes
+    // it and its older non-zero row must not be resurrected.
+    expect(equity!.total_market_value).toBeCloseTo(10000, 2);
+    expect(equity!.position_count).toBe(1);
+  });
+
+  it("keeps a trailing account's only row when another account has a newer max date", () => {
+    const acct1Sec = seedSecurity(db, "AAPL", { asset_class: "equity" });
+    const acct2Sec = seedSecurity(db, "VTI", { asset_class: "equity" });
+
+    seedHolding(db, 1, acct1Sec, 50, "2025-02-28", 7500);
+    seedPrice(db, acct1Sec, "2025-02-28", 200);
+
+    seedHolding(db, 2, acct2Sec, 20, "2025-01-31", 4000);
+    seedPrice(db, acct2Sec, "2025-01-31", 200);
+
+    const alloc = getAllocationBreakdown(db, "asset_class");
+    const equity = alloc.find((a) => a.group_name === "equity");
+    expect(equity).toBeDefined();
+    // AAPL: 50*200=10000, VTI: 20*200=4000
+    expect(equity!.total_market_value).toBeCloseTo(14000, 2);
+    expect(equity!.position_count).toBe(2);
   });
 });
 
@@ -720,22 +835,80 @@ describe("maturity-aware holdings", () => {
     expect(holdings[0].quantity).toBe(50);
   });
 
-  it("excludes positions absent from latest statement", () => {
+  it("keeps a position that didn't restate on the latest statement (no tombstone) — statement-lag row survives", () => {
+    // MSFT's only row predates AAPL's newer row in the same account. A
+    // per-account MAX(as_of_date) would drop MSFT entirely (it has no row
+    // on the account's newest date); per-(account, security) keying keeps
+    // it, because MSFT was never zeroed out — it just didn't restate on
+    // the February statement (e.g. a Treasury/mutual fund that only
+    // restates monthly). Absence without a quantity=0 tombstone is NOT the
+    // same as a closed position — see latestHoldingsPredicate contract.
     const aapl = seedSecurity(db, "AAPL");
     const msft = seedSecurity(db, "MSFT");
 
     // January: both held
     seedHolding(db, 1, aapl, 50, "2025-01-31", 7500);
     seedHolding(db, 1, msft, 30, "2025-01-31", 9000);
-    // February: only AAPL held (MSFT was sold)
+    // February: only AAPL restates (MSFT simply doesn't appear — no tombstone)
     seedHolding(db, 1, aapl, 50, "2025-02-28", 7500);
     seedPrice(db, aapl, "2025-02-28", 200);
-    seedPrice(db, msft, "2025-02-28", 400);
+    seedPrice(db, msft, "2025-01-31", 400);
 
     const holdings = getHoldingsForChat(db);
-    // Per-account MAX = 2025-02-28. Only AAPL has a holding on that date.
+    expect(holdings).toHaveLength(2);
+    const symbols = holdings.map((h) => h.symbol).sort();
+    expect(symbols).toEqual(["AAPL", "MSFT"]);
+    const msftRow = holdings.find((h) => h.symbol === "MSFT");
+    expect(msftRow!.quantity).toBe(30);
+  });
+
+  it("excludes a position with a genuine quantity=0 tombstone even though an older non-zero row exists", () => {
+    // Same shape as above, but MSFT's February row is an explicit
+    // quantity=0 tombstone (the closed-equity reconciler's mark of a real
+    // sale) rather than simple absence. Per-(account, security) keying
+    // must land on the tombstone (the true latest row) and hide MSFT —
+    // never resurrect the older non-zero row.
+    //
+    // NOTE: because the tombstone lands on the same date as AAPL's
+    // restatement (the account's overall max), this test does not
+    // discriminate per-account vs per-(account, security) keying — a
+    // qty=0 row at the account's max date is picked up and excluded by
+    // "h.quantity > 0" under BOTH correlations. It still guards against
+    // MSFT's older non-zero row being wrongly resurrected.
+    const aapl = seedSecurity(db, "AAPL");
+    const msft = seedSecurity(db, "MSFT");
+
+    seedHolding(db, 1, aapl, 50, "2025-01-31", 7500);
+    seedHolding(db, 1, msft, 30, "2025-01-31", 9000);
+    seedHolding(db, 1, aapl, 50, "2025-02-28", 7500);
+    seedHolding(db, 1, msft, 0, "2025-02-28", 0); // tombstone
+    seedPrice(db, aapl, "2025-02-28", 200);
+    seedPrice(db, msft, "2025-01-31", 400);
+
+    const holdings = getHoldingsForChat(db);
     expect(holdings).toHaveLength(1);
     expect(holdings[0].symbol).toBe("AAPL");
+  });
+
+  it("keeps a trailing account's only row when another account has a newer max date", () => {
+    // Account 1's holdings restate through February; account 2's only row
+    // is January. Both accounts have always been individually correlated
+    // here (WHERE h2.account_id = h.account_id), so per-(account, security)
+    // keying changes nothing about cross-account behavior — this is a
+    // regression guard, not a behavior change.
+    const acct1Sec = seedSecurity(db, "AAPL");
+    const acct2Sec = seedSecurity(db, "VTI");
+
+    seedHolding(db, 1, acct1Sec, 50, "2025-02-28", 7500);
+    seedPrice(db, acct1Sec, "2025-02-28", 200);
+
+    seedHolding(db, 2, acct2Sec, 20, "2025-01-31", 4000);
+    seedPrice(db, acct2Sec, "2025-01-31", 200);
+
+    const holdings = getHoldingsForChat(db);
+    expect(holdings).toHaveLength(2);
+    const symbols = holdings.map((h) => h.symbol).sort();
+    expect(symbols).toEqual(["AAPL", "VTI"]);
   });
 });
 
@@ -858,6 +1031,127 @@ describe("executeTool dispatcher", () => {
     }) as { data: Array<{ total_dividends: number }> };
     expect(result.data).toHaveLength(1);
     expect(result.data[0].total_dividends).toBe(100);
+  });
+});
+
+describe("executeTool query_options_greeks — per-account strategy grouping (holdings-latest-sweep Task 2)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    // migration 002_seed_accounts.sql seeds id=1 Vanguard Taxable, id=2
+    // Vanguard Roth IRA — reused below, no need to insert.
+  });
+
+  function seedStockSecurity(id: number, symbol: string): void {
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, currency) VALUES (?, ?, 'stock', 'USD')`
+    ).run(id, symbol);
+  }
+
+  function seedCallOption(
+    id: number,
+    symbol: string,
+    underlying: string,
+    strike: number
+  ): void {
+    db.prepare(
+      `INSERT INTO securities
+         (id, symbol, security_type, option_type, strike_price, expiration_date, underlying_symbol, multiplier, currency)
+       VALUES (?, ?, 'option', 'CALL', ?, '2027-01-15', ?, 100, 'USD')`
+    ).run(id, symbol, strike, underlying);
+  }
+
+  function seedHolding(
+    accountId: number,
+    securityId: number,
+    quantity: number,
+    asOfDate: string,
+    sourceKey: string
+  ): void {
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (?, ?, ?, 0, ?, ?)`
+    ).run(accountId, securityId, quantity, asOfDate, sourceKey);
+  }
+
+  it("includes the trailing-account stock leg and excludes the tombstoned stock leg from strategy detection", async () => {
+    // Account 1: AAA stock (only row, dated well before the table's global
+    // newest date) + a short call on AAA (dated later, mixing dates within
+    // the account per fixture 1) — should form a covered call. Under the
+    // OLD chat/tools.ts code (a single GLOBAL MAX(as_of_date) across the
+    // whole holdings table, no account/security correlation, no quantity
+    // filter), AAA's stock row would have been dropped entirely because
+    // its as_of_date isn't the table-wide max.
+    seedStockSecurity(500, "AAA");
+    seedHolding(1, 500, 100, "2025-01-31", "aaa-stock-1");
+    seedCallOption(501, "AAA  270115C00220000", "AAA", 220);
+    seedHolding(1, 501, -1, "2025-02-15", "aaa-call-1");
+
+    // Account 2: BBB stock is the "trailing account" fixture — its only row
+    // predates account 1's rows — paired with its own short call. Should
+    // also form a covered call, proving the trailing account's stock leg
+    // was not dropped.
+    seedStockSecurity(502, "BBB");
+    seedHolding(2, 502, 100, "2025-01-31", "bbb-stock-1");
+    seedCallOption(503, "BBB  270115C00150000", "BBB", 150);
+    seedHolding(2, 503, -1, "2025-01-31", "bbb-call-1");
+
+    // CCC: tombstoned stock in account 1, paired with its own short call.
+    // The tombstone (quantity=0) row is dated 2025-03-31 — the newest
+    // as_of_date in the whole table. Under the OLD global-MAX code this is
+    // EXACTLY the row that would have matched (no quantity filter existed),
+    // resurrecting a closed position as strategy collateral. The fixed
+    // code excludes it via getStockLegsForStrategyDetection.
+    seedStockSecurity(504, "CCC");
+    seedHolding(1, 504, 10, "2025-01-31", "ccc-stock-1");
+    seedHolding(1, 504, 0, "2025-03-31", "ccc-stock-2");
+    seedCallOption(505, "CCC  270115C00090000", "CCC", 90);
+    seedHolding(1, 505, -1, "2025-03-01", "ccc-call-1");
+
+    const result = (await executeTool(db, "query_options_greeks", {})) as {
+      data: { strategies: Array<{ type: string; underlying: string }> };
+    };
+
+    const coveredCallUnderlyings = result.data.strategies
+      .filter((s) => s.type === "covered_call")
+      .map((s) => s.underlying)
+      .sort();
+    expect(coveredCallUnderlyings).toEqual(["AAA", "BBB"]);
+
+    // The tombstoned stock never covers its call — no covered_call for CCC.
+    expect(
+      result.data.strategies.some((s) => s.underlying === "CCC" && s.type === "covered_call")
+    ).toBe(false);
+    // Its short call surfaces as naked instead (no valid stock leg to pair it with).
+    expect(
+      result.data.strategies.some((s) => s.underlying === "CCC" && s.type === "naked_call")
+    ).toBe(true);
+  });
+
+  it("cross-account regression: a short call in account 1 is NOT covered by 100 shares held only in account 2", async () => {
+    // Codex F4: lib/compute/options-strategy.ts's detectStrategies assumes
+    // account-local positions. Feeding it a combined cross-account leg list
+    // would let account 2's shares wrongly "cover" account 1's call.
+    seedCallOption(600, "SPY   270115C00500000", "SPY", 500);
+    seedHolding(1, 600, -1, "2025-02-15", "spy-call-1");
+
+    seedStockSecurity(601, "SPY");
+    seedHolding(2, 601, 100, "2025-02-15", "spy-stock-1");
+
+    const result = (await executeTool(db, "query_options_greeks", {})) as {
+      data: { strategies: Array<{ type: string; underlying: string }> };
+    };
+
+    expect(
+      result.data.strategies.some((s) => s.underlying === "SPY" && s.type === "covered_call")
+    ).toBe(false);
+    // Uncovered in its own account — surfaces as a naked call instead.
+    expect(
+      result.data.strategies.some((s) => s.underlying === "SPY" && s.type === "naked_call")
+    ).toBe(true);
   });
 });
 

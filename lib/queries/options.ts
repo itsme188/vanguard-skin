@@ -10,6 +10,7 @@ import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 /**
  * Whether the current tax-lot convention state is pending a recompute (WS1
@@ -88,6 +89,22 @@ export interface ClosedOptionTrade {
   isSyntheticClose: boolean;
 }
 
+/**
+ * Stock/ETF legs for options-strategy detection (covered calls, collars).
+ * Single source for the two former hand-copies (chat query_options_greeks
+ * and /api/compute/options-strategies) — the chat copy had drifted to a
+ * GLOBAL MAX(as_of_date) with no quantity filter, so a trailing account
+ * lost its legs and reconciler tombstones surfaced as 0-share positions.
+ */
+export interface StockLegRow {
+  symbol: string;
+  quantity: number;
+  security_type: string | null;
+  current_price: number | null;
+  /** Required by callers: strategy detection partitions legs per account. */
+  account_id: number;
+}
+
 export interface OptionsPnL {
   openPositions: OptionPosition[];
   closedTrades: ClosedOptionTrade[];
@@ -146,9 +163,7 @@ export function getOptionPositions(
          AND s.expiration_date IS NOT NULL
          AND s.option_type IS NOT NULL
          AND s.underlying_symbol IS NOT NULL
-         AND h.as_of_date = (
-           SELECT MAX(h2.as_of_date) FROM holdings h2
-         )
+         AND ${latestHoldingsPredicate({ accountFilter: "" })}
          ${accountFilter}
        ORDER BY s.underlying_symbol, s.expiration_date, s.strike_price`
     )
@@ -269,7 +284,7 @@ export function getExpiringOptions(
        WHERE LOWER(s.security_type) = 'option'
          AND s.expiration_date >= ?
          AND s.expiration_date <= ?
-         AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2)
+         AND ${latestHoldingsPredicate({ accountFilter: "" })}
          ${accountFilter}
        ORDER BY s.expiration_date, s.underlying_symbol`
     )
@@ -382,6 +397,25 @@ export function getOptionsPnL(
     totalRealizedPnl,
     conventionPending: isConventionPending(db),
   };
+}
+
+export function getStockLegsForStrategyDetection(
+  db: Database.Database,
+  accountId?: number
+): StockLegRow[] {
+  const accountFilter = accountId ? "AND h.account_id = ?" : "";
+  return db
+    .prepare(
+      `SELECT s.symbol, h.quantity, s.security_type, h.account_id,
+              (SELECT p.close_price FROM prices p WHERE p.security_id = s.id
+               ORDER BY p.date DESC LIMIT 1) AS current_price
+       FROM holdings h
+       JOIN securities s ON s.id = h.security_id
+       WHERE LOWER(s.security_type) IN ('stock', 'etf')
+         AND ${latestHoldingsPredicate({ accountFilter: "" })}
+         ${accountFilter}`
+    )
+    .all(...(accountId ? [accountId] : [])) as StockLegRow[];
 }
 
 // ─── Helpers ────────────────────────────────────────────────────

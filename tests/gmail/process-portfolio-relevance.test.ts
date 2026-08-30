@@ -242,3 +242,72 @@ describe("D3 portfolio-relevance gate", () => {
     expect(row.excluded_reason.length).toBe(280);
   });
 });
+
+describe("holdings-latest-sweep task 10 — 'Current portfolio holdings' prompt context", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("includes a statement-lag holding (older as_of_date, its only row) alongside a fresher same-account holding", async () => {
+    const db = makeDb(0);
+    insertUnprocessed(db);
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type) VALUES (1, 'TLAG', 'Statement Lag Corp', 'stock')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type) VALUES (2, 'FRESH', 'Fresh Corp', 'stock')`,
+    ).run();
+    // TLAG's only row is a month older than FRESH's, same account. The old
+    // per-account global MAX(as_of_date) subquery only kept rows dated the
+    // account's single newest date (FRESH's 2025-02-28), so TLAG was
+    // dropped from the AI prompt's portfolio-context string entirely —
+    // this is Codex F8's seam: the holdings query result reaches
+    // extractWithClaude's prompt via holdingsContext.
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (1, 1, 10, '2025-01-31')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (1, 2, 20, '2025-02-28')`,
+    ).run();
+
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      object: RELEVANT_RESPONSE,
+    });
+
+    await processUnprocessedArticles(db);
+
+    expect(generateObjectForFeature).toHaveBeenCalledTimes(1);
+    const [, callArgs] = (generateObjectForFeature as ReturnType<typeof vi.fn>).mock.calls[0];
+    const prompt = (callArgs as { prompt: string }).prompt;
+
+    expect(prompt).toContain("Current portfolio holdings:");
+    expect(prompt).toContain("TLAG");
+    expect(prompt).toContain("FRESH");
+  });
+
+  it("excludes a tombstoned security (quantity=0 latest row) from the holdings prompt context", async () => {
+    const db = makeDb(0);
+    insertUnprocessed(db);
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type) VALUES (1, 'GONE', 'Closed Corp', 'stock')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (1, 1, 10, '2025-01-31')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (1, 1, 0, '2025-02-28')`,
+    ).run();
+
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      object: RELEVANT_RESPONSE,
+    });
+
+    await processUnprocessedArticles(db);
+
+    const [, callArgs] = (generateObjectForFeature as ReturnType<typeof vi.fn>).mock.calls[0];
+    const prompt = (callArgs as { prompt: string }).prompt;
+
+    expect(prompt).toContain("Current portfolio holdings: (none loaded)");
+    expect(prompt).not.toContain("GONE");
+  });
+});
