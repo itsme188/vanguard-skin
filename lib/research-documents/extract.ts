@@ -23,6 +23,7 @@
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
+import { classifyAnthropicError } from "@/lib/ai/classify-anthropic-error";
 
 export const RESEARCH_DOC_PDF_MAX_BYTES = 32 * 1024 * 1024; // 32 MB
 
@@ -245,7 +246,23 @@ async function callClaudeWithPdf(
     ],
   });
 
-  const response = await stream.finalMessage();
+  let response;
+  try {
+    response = await stream.finalMessage();
+  } catch (err) {
+    // QA: research-documents-upload--500-renders-raw-anthropic-envelope.
+    // An Anthropic SDK APIError's `.message` embeds the raw JSON body
+    // (request_id + internals) — that must never reach the client verbatim.
+    // Classify it into a plain-language message HERE, at the boundary,
+    // before it can propagate up to the route's generic catch-all (which
+    // otherwise stringifies err.message straight into the response).
+    console.error("Research PDF extraction upstream error:", err);
+    const classification = classifyAnthropicError(err);
+    if (classification) {
+      throw new ResearchPdfExtractionError(classification.userMessage, "");
+    }
+    throw err;
+  }
   const textBlock = response.content.find((b) => b.type === "text");
   if (!textBlock || textBlock.type !== "text") {
     throw new ResearchPdfExtractionError(

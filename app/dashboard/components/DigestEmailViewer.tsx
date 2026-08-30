@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import apiFetch from "@/lib/http/apiFetch";
+import { EMAIL_FRAME_SANDBOX, withExternalLinkTarget } from "@/lib/email/archive-srcdoc";
 
 type Layout = "structured" | "by_source" | "by_company";
 
@@ -194,10 +195,10 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
           {data && !data.empty && activeHtml && (
             <iframe
               title="Morning Research Digest"
-              srcDoc={activeHtml}
+              srcDoc={withExternalLinkTarget(activeHtml)}
               className="w-full block border-0 rounded-b-xl"
               style={{ height: "75vh", backgroundColor: "#1a1a1a" }}
-              sandbox="allow-same-origin"
+              sandbox={EMAIL_FRAME_SANDBOX}
             />
           )}
           {data && !data.empty && !activeHtml && layout === "structured" && genLoading && (

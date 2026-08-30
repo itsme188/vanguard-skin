@@ -217,7 +217,7 @@ export function FactorProfileSection({
           </p>
         ) : (
           <>
-            <div style={{ display: "flex", marginTop: "8px" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", marginTop: "8px" }}>
               {/* qa finding: regression-card-publishes-betas-failing-confidence-gate.
                   A slope the regression cannot support renders as "—" in the
                   neutral tone, never as an emphasised (and colour-coded)

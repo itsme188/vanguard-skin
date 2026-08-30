@@ -1,9 +1,18 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { APIError } from "@anthropic-ai/sdk";
 import {
   normalizeExtracted,
   parseClaudeResponse,
   parseMetadataResponse,
+  extractResearchMetadata,
+  ResearchPdfExtractionError,
 } from "@/lib/research-documents/extract";
+import { getRawAnthropicClient } from "@/lib/ai/provider";
+
+vi.mock("@/lib/ai/provider", () => ({ getRawAnthropicClient: vi.fn() }));
+vi.mock("@/lib/ai/models", () => ({
+  resolveFeatureModel: vi.fn(() => ({ modelId: "claude-test-model" })),
+}));
 
 describe("normalizeExtracted", () => {
   it("normalizes a well-formed Claude payload", () => {
@@ -214,5 +223,84 @@ describe("parseMetadataResponse (metadata-only)", () => {
     // parseMetadataResponse should be OK with metadata that has no raw_text
     const raw = `{"title":"T","document_type":"article"}`;
     expect(() => parseMetadataResponse(raw, "m")).not.toThrow();
+  });
+});
+
+// QA: research-documents-upload--500-renders-raw-anthropic-envelope
+//
+// Previously, an Anthropic SDK APIError thrown while extracting metadata
+// propagated unclassified to the route's generic catch-all, which rendered
+// `err.message` — the raw upstream JSON envelope (embeds request_id +
+// internals) — verbatim into the client-facing `{error}` response. The fix
+// classifies the APIError at this lib boundary into a plain-language
+// ResearchPdfExtractionError before it can reach the route.
+describe("extractResearchMetadata upstream error mapping", () => {
+  function mockStreamRejecting(err: unknown) {
+    vi.mocked(getRawAnthropicClient).mockReturnValue({
+      messages: { stream: () => ({ finalMessage: () => Promise.reject(err) }) },
+    } as never);
+  }
+
+  it("maps a billing-account 400 to a plain message, never the raw JSON envelope", async () => {
+    const rawPayload = {
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message:
+          "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
+      },
+      request_id: "req_011Cd5RESEARCH1",
+    };
+    mockStreamRejecting(
+      new APIError(400, rawPayload, `400 ${JSON.stringify(rawPayload)}`, new Headers()),
+    );
+
+    const err = await extractResearchMetadata(new Uint8Array([1, 2, 3])).catch((e) => e);
+    expect(err).toBeInstanceOf(ResearchPdfExtractionError);
+    expect(err.message).not.toContain("req_011Cd5RESEARCH1");
+    expect(err.message).not.toContain('"type":"error"');
+    expect(err.message.toLowerCase()).toContain("billing");
+  });
+
+  it("maps a rate-limit 429 to a plain retry message, never the raw JSON envelope", async () => {
+    const rawPayload = {
+      type: "error",
+      error: { type: "rate_limit_error", message: "Number of request tokens has exceeded your rate limit." },
+      request_id: "req_011Cd5RESEARCH2",
+    };
+    mockStreamRejecting(
+      new APIError(429, rawPayload, `429 ${JSON.stringify(rawPayload)}`, new Headers()),
+    );
+
+    const err = await extractResearchMetadata(new Uint8Array([1, 2, 3])).catch((e) => e);
+    expect(err).toBeInstanceOf(ResearchPdfExtractionError);
+    expect(err.message).not.toContain("req_011Cd5RESEARCH2");
+    expect(err.message.toLowerCase()).toContain("rate-limiting");
+  });
+
+  it("maps an overloaded 529 to a plain message, never the raw JSON envelope", async () => {
+    const rawPayload = {
+      type: "error",
+      error: { type: "overloaded_error", message: "Overloaded" },
+      request_id: "req_011Cd5RESEARCH3",
+    };
+    mockStreamRejecting(
+      new APIError(529, rawPayload, `529 ${JSON.stringify(rawPayload)}`, new Headers()),
+    );
+
+    const err = await extractResearchMetadata(new Uint8Array([1, 2, 3])).catch((e) => e);
+    expect(err).toBeInstanceOf(ResearchPdfExtractionError);
+    expect(err.message).not.toContain("req_011Cd5RESEARCH3");
+    expect(err.message.toLowerCase()).toContain("overloaded");
+  });
+
+  it("still surfaces a genuine parse failure (no text block) as before", async () => {
+    vi.mocked(getRawAnthropicClient).mockReturnValue({
+      messages: { stream: () => ({ finalMessage: () => Promise.resolve({ content: [] }) }) },
+    } as never);
+
+    const err = await extractResearchMetadata(new Uint8Array([1, 2, 3])).catch((e) => e);
+    expect(err).toBeInstanceOf(ResearchPdfExtractionError);
+    expect(err.message).toMatch(/no text block/i);
   });
 });
