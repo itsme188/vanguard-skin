@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { todayET } from "@/lib/calendar/date-utils";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -83,7 +84,7 @@ export interface DataHealthSummary {
  * Sorted by staleness (most stale first).
  */
 export function getPriceFreshness(db: Database.Database): PriceFreshness[] {
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayET();
 
   return db
     .prepare(
@@ -139,7 +140,7 @@ export function getPriceFreshness(db: Database.Database): PriceFreshness[] {
  * "Cost basis: 0/N" while the Accounts tab rendered real statement values.
  */
 export function getAccountCoverage(db: Database.Database): AccountCoverage[] {
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayET();
 
   return db
     .prepare(
@@ -197,29 +198,34 @@ export function getAccountCoverage(db: Database.Database): AccountCoverage[] {
  * accounts without snapshots, stale holdings.
  */
 export function getDataGaps(db: Database.Database): DataGaps {
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayET();
 
-  // Securities with current holdings but no prices at all
+  // Securities with CURRENT holdings (latest per-(account,security) row,
+  // shorts included) but no prices at all. A bare `h.quantity > 0` with no
+  // latest-row filter would keep flagging a position sold years ago (its old
+  // non-zero rows still match) even after a qty=0 tombstone row supersedes it.
   const securitiesNoPrices = db
     .prepare(
       `
       SELECT DISTINCT s.id, s.symbol, s.security_type AS securityType
       FROM securities s
-      JOIN holdings h ON h.security_id = s.id AND h.quantity > 0
+      JOIN holdings h ON h.security_id = s.id AND ${latestHoldingsPredicate()}
       WHERE NOT EXISTS (SELECT 1 FROM prices p WHERE p.security_id = s.id)
       ORDER BY s.symbol
       `,
     )
     .all() as DataGaps["securitiesNoPrices"];
 
-  // Securities with holdings but no transactions (can't compute tax lots).
+  // Securities with CURRENT holdings but no transactions (can't compute tax
+  // lots). Same latest-row scoping as securitiesNoPrices above — a security
+  // that was sold long ago must not resurface here via a stale non-zero row.
   // Excludes cash positions and money market funds (no transactions expected).
   const securitiesNoTransactions = db
     .prepare(
       `
       SELECT DISTINCT s.id, s.symbol, s.security_type AS securityType
       FROM securities s
-      JOIN holdings h ON h.security_id = s.id AND h.quantity > 0
+      JOIN holdings h ON h.security_id = s.id AND ${latestHoldingsPredicate()}
       WHERE NOT EXISTS (SELECT 1 FROM transactions t WHERE t.security_id = s.id)
         AND LOWER(COALESCE(s.security_type, '')) NOT IN ('cash', 'money_market', 'money market')
         AND s.symbol NOT LIKE 'CUSIP:%'
@@ -242,7 +248,12 @@ export function getDataGaps(db: Database.Database): DataGaps {
     )
     .all() as DataGaps["accountsNoSnapshots"];
 
-  // Holdings where the latest snapshot is >90 days old
+  // Holdings whose OWN latest row (per (account, security), shorts included —
+  // see latestHoldingsPredicate) is >90 days old. A global account-wide
+  // MAX(as_of_date) would hide a fund that only gets restated on statement
+  // day while other positions in the same account get daily Plaid rows — the
+  // fund never equals the account's newest date, so it could never surface
+  // here even though it IS the stale position Account Coverage counts.
   const staleHoldings = db
     .prepare(
       `
@@ -252,11 +263,7 @@ export function getDataGaps(db: Database.Database): DataGaps {
       FROM holdings h
       JOIN securities s ON s.id = h.security_id
       JOIN accounts a ON a.id = h.account_id
-      WHERE h.as_of_date = (
-        SELECT MAX(h2.as_of_date) FROM holdings h2
-        WHERE h2.account_id = h.account_id
-      )
-      AND h.quantity > 0
+      WHERE ${latestHoldingsPredicate()}
       AND CAST(julianday(?) - julianday(h.as_of_date) AS INTEGER) > 90
       ORDER BY daysSince DESC
       `,
@@ -413,7 +420,7 @@ export function getSectorDisagreements(db: Database.Database): SectorDisagreemen
 export function getDataHealthSummary(
   db: Database.Database,
 ): DataHealthSummary {
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayET();
 
   const heldCte = `held AS (
         SELECT DISTINCT h.security_id FROM holdings h
