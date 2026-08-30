@@ -9,6 +9,7 @@ import {
   weekAgo,
   todayET,
   resolveWeekOfParam,
+  defaultDateWithinWeek,
 } from "@/lib/calendar/date-utils";
 
 // ── getCurrentMonday ─────────────────────────────────────────────
@@ -228,5 +229,34 @@ describe("resolveWeekOfParam", () => {
     expect(resolveWeekOfParam("not-a-date")).toBe(getCurrentMonday());
     expect(resolveWeekOfParam("2026-13-99")).toBe(getCurrentMonday());
     expect(resolveWeekOfParam("")).toBe(getCurrentMonday());
+  });
+});
+
+// ── defaultDateWithinWeek ────────────────────────────────────────
+
+describe("defaultDateWithinWeek", () => {
+  // qa: today-earningshub-add-ticker--other-week-saves-silently-unreachable-regression-3
+  // The Earnings Hub "+ Add ticker" form must default to a date inside the
+  // week the hub is currently showing, even when getCurrentMonday() has
+  // already rolled the displayed week forward over a weekend.
+
+  it("uses today when today falls inside the week", () => {
+    expect(defaultDateWithinWeek("2026-08-24", "2026-08-26")).toBe("2026-08-26");
+  });
+
+  it("uses the Monday when today is a Saturday and the hub shows next week", () => {
+    expect(defaultDateWithinWeek("2026-08-31", "2026-08-29")).toBe("2026-08-31");
+  });
+
+  it("uses weekOf when today is before the week starts", () => {
+    expect(defaultDateWithinWeek("2026-09-07", "2026-09-01")).toBe("2026-09-07");
+  });
+
+  it("uses weekOf when today is after the week ends", () => {
+    expect(defaultDateWithinWeek("2026-08-17", "2026-08-26")).toBe("2026-08-17");
+  });
+
+  it("uses today at the boundary (today is the week's Sunday)", () => {
+    expect(defaultDateWithinWeek("2026-08-24", "2026-08-30")).toBe("2026-08-30");
   });
 });

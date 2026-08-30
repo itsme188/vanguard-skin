@@ -167,6 +167,18 @@ export function weekAgo(dateStr: string): string {
 }
 
 /**
+ * Default date for a form that adds an event to the week starting `weekOf`
+ * (a Monday): today when today falls inside [weekOf, weekOf+6], otherwise
+ * weekOf itself — so on a weekend, when the hub already shows NEXT week,
+ * the default never lands on a date the hub cannot display.
+ */
+export function defaultDateWithinWeek(weekOf: string, today: string = todayET()): string {
+  const weekEnd = addDays(weekOf, 6);
+  if (today >= weekOf && today <= weekEnd) return today;
+  return weekOf;
+}
+
+/**
  * Resolve a user-supplied ?weekOf= query param to a Monday. Forgiving by
  * design (it arrives from a URL, not a form): any valid date snaps to its
  * week's Monday via mondayOf; absent or unparseable input falls back to the
