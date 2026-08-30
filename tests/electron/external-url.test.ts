@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isExternalUrlAllowed } from "@/electron/external-url";
+import { classifyWindowOpenUrl, isExternalUrlAllowed } from "@/electron/external-url";
 
 /**
  * Code-review finding on commit 97a4524: a second, un-allowlisted path to
@@ -66,5 +66,25 @@ describe("isExternalUrlAllowed", () => {
   it("still allows real remote https/http/mailto when ownOrigins is omitted", () => {
     expect(isExternalUrlAllowed("https://www.investing.com/news/x")).toBe(true);
     expect(isExternalUrlAllowed("mailto:someone@example.test")).toBe(true);
+  });
+});
+
+describe("classifyWindowOpenUrl", () => {
+  it("routes an allowed external URL to the system browser", () => {
+    expect(classifyWindowOpenUrl("https://example.com/x")).toBe("external");
+    expect(classifyWindowOpenUrl("mailto:a@b.c")).toBe("external");
+  });
+
+  it("routes the app's own loopback origin to an in-session child window", () => {
+    expect(classifyWindowOpenUrl("http://localhost:3099/dashboard/plaid-link?mode=reauth")).toBe("own");
+    expect(classifyWindowOpenUrl("http://127.0.0.1:3000/dashboard/plaid-link")).toBe("own");
+    expect(classifyWindowOpenUrl("https://app.example.test/x", ["app.example.test"])).toBe("own");
+  });
+
+  it("denies everything else", () => {
+    expect(classifyWindowOpenUrl("file:///etc/passwd")).toBe("deny");
+    expect(classifyWindowOpenUrl("javascript:alert(1)")).toBe("deny");
+    expect(classifyWindowOpenUrl("custom-scheme://localhost/x")).toBe("deny");
+    expect(classifyWindowOpenUrl("not a url")).toBe("deny");
   });
 });
