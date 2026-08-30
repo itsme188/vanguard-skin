@@ -13,7 +13,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { setupIpcHandlers } from "./ipc-handlers";
 import { createTray } from "./tray";
-import { isExternalUrlAllowed } from "./external-url";
+import { classifyWindowOpenUrl } from "./external-url";
 import {
   getSettings,
   bootstrapFromEnvLocal,
@@ -440,9 +440,16 @@ async function createWindow(): Promise<void> {
   // another application, while the app's own localhost/127.0.0.1 route would
   // ship into a browser session that has no Electron session cookie. The
   // decision is shared with ipc-handlers.ts's "open-external" IPC handler via
-  // isExternalUrlAllowed (electron/external-url.ts) — never fork it.
+  // classifyWindowOpenUrl / isExternalUrlAllowed (electron/external-url.ts) — never fork it.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isExternalUrlAllowed(url)) {
+    const kind = classifyWindowOpenUrl(url);
+    if (kind === "own") {
+      // An in-app route opened with target="_blank" (Settings → Plaid Link).
+      // A child window shares this window's session partition, so the desktop
+      // session cookie is present; the OS browser would not have it.
+      return { action: "allow" };
+    }
+    if (kind === "external") {
       // Fire-and-forget, but never leave the rejection unhandled: a failed
       // hand-off to the OS must not take down the main process.
       void shell.openExternal(url).catch((err: unknown) => {

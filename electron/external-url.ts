@@ -16,10 +16,8 @@
  *   `localhost` / `127.0.0.1` on any port. Forwarding one of these to the
  *   system browser ships the app's own route outside the Electron session,
  *   where the desktop session cookie does not exist, so it just 404s/bounces
- *   to a login the browser can't satisfy. (PlaidSection.tsx currently opens
- *   a relative in-app route with target=_blank and hits this today — that
- *   component is out of scope here; this only makes the handler deny+log it
- *   instead of silently shipping it to the browser.)
+ *   to a login the browser can't satisfy. `setWindowOpenHandler` routes those
+ *   to an in-session child window instead — see `classifyWindowOpenUrl`.
  *
  * @param ownOrigins Extra hostnames (lowercase, no port) to treat as the
  *   app's own origin in addition to the built-in `localhost` / `127.0.0.1`
@@ -53,4 +51,37 @@ export function isExternalUrlAllowed(url: string, ownOrigins?: string[]): boolea
   }
 
   return true;
+}
+
+/**
+ * Three-way classification for `setWindowOpenHandler`, which — unlike the
+ * IPC `open-external` path — can also ALLOW a window instead of only
+ * forwarding or denying:
+ *
+ * - "external": an allowed external URL → hand to the system browser.
+ * - "own": an http(s) URL on the app's own loopback origin (an in-app route
+ *   opened with target="_blank", e.g. the Plaid Link page from Settings).
+ *   Forwarding it to the OS browser strands it outside the Electron session;
+ *   denying it makes the link a dead click. The right outcome is an Electron
+ *   child window, which shares this window's session partition (cookies).
+ * - "deny": everything else (file:, javascript:, custom schemes, unparseable).
+ */
+export function classifyWindowOpenUrl(
+  url: string,
+  ownOrigins?: string[]
+): "external" | "own" | "deny" {
+  if (isExternalUrlAllowed(url, ownOrigins)) return "external";
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "deny";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "deny";
+  const hostname = parsed.hostname.toLowerCase();
+  const own =
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    (ownOrigins?.some((o) => o.toLowerCase() === hostname) ?? false);
+  return own ? "own" : "deny";
 }
