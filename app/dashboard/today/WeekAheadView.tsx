@@ -4,6 +4,7 @@ import { addDays, formatWeekRange, todayET, getCurrentMonday } from "@/lib/calen
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
+import { epsDelta } from "@/lib/earnings/eps-delta";
 import { EnrichmentRowSummary } from "../components/calendar/EnrichmentChips";
 // This is a Server Component (no "use client"): parseReactionSnapshot /
 // snapshotCoversEventDate must come from the dependency-free
@@ -212,6 +213,25 @@ export function eventFigureDisplays(
   return { consensusDisplay, actualDisplay };
 }
 
+const CHIP_TONE_UP = "text-up bg-up/10";
+const CHIP_TONE_DOWN = "text-down bg-down/10";
+const CHIP_TONE_NEUTRAL = "text-ink-dim bg-raised border border-edge";
+
+// QA finding today-week-ahead--actual-chip-always-green-miss-reads-as-beat-regression-3:
+// the "actual …" chip used to be hard-coded to the up/green tone, so an
+// earnings MISS painted the same as a beat. Color it by print-vs-consensus
+// instead, reusing EarningsHub's epsDelta so the two surfaces never disagree
+// on sign. Macro events (CPI, jobs, FOMC, …) have no "higher is better"
+// direction — a hot CPI print is not a beat — so they always render neutral.
+export function actualChipClass(
+  event: Pick<CalendarEvent, "event_type" | "consensus_estimate" | "actual_value"> &
+    Partial<Pick<CalendarEvent, "consensus_value" | "manual_actuals_at">>,
+): string {
+  if (event.event_type !== "earnings") return CHIP_TONE_NEUTRAL;
+  const delta = epsDelta(effectiveConsensus(event), event.actual_value);
+  if (delta == null || delta.sign === 0) return CHIP_TONE_NEUTRAL;
+  return delta.sign === 1 ? CHIP_TONE_UP : CHIP_TONE_DOWN;
+}
 
 // A date correction can carry a prior print's actual_value / reaction_snapshot
 // onto a FUTURE row. This is a forward-looking planning surface: post-release
@@ -263,7 +283,9 @@ function EventRow({ event, todayIso }: { event: CalendarEvent; todayIso: string 
             user's holdings, so they render unmasked per the
             privacy-masks-portfolio-only rule (B16 sibling). */}
         {actualDisplay && (
-          <span className="text-[11px] font-mono text-up bg-up/10 rounded px-1.5 py-0.5 ml-auto shrink-0 whitespace-nowrap">
+          <span
+            className={`text-[11px] font-mono rounded px-1.5 py-0.5 ml-auto shrink-0 whitespace-nowrap ${actualChipClass(event)}`}
+          >
             actual {actualDisplay}
           </span>
         )}

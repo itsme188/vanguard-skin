@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { LevelNearPrice } from "@/lib/queries/briefing-levels";
-import { Money, Pct } from "@/lib/privacy/components";
+import { formatPercent, formatUSDPrecise } from "@/lib/format";
 
 /**
  * Overview card surfacing active levels within ~5% of the current price.
@@ -41,13 +41,19 @@ export function NearbyLevelsCard({ levels }: { levels: LevelNearPrice[] }) {
               <span className="text-ink-dim uppercase">
                 {l.level_type.replace("_", " ")}
               </span>
-              <span className="text-ink font-mono">@ <Money value={l.level_price} precise /></span>
+              {/* Newsletter level price is public market data, not portfolio-derived —
+                  rendered unmasked under privacy mode per the privacy-masks-portfolio-only
+                  rule, matching /dashboard/alerts (QA: today-alerts-nearby-levels--privacy-
+                  masks-public-level-prices-inbox-shows-clear). */}
+              <span className="text-ink font-mono">@ {formatUSDPrecise(l.level_price)}</span>
               {l.source_author && (
                 <span className="text-ink-faint italic">— {l.source_author}</span>
               )}
             </span>
+            {/* Distance-to-level is derived from the current market price, not the
+                portfolio — public market data, unmasked (same rule as above). */}
             <span className={`font-mono shrink-0 ${distanceColor(l.distance_pct)}`}>
-              {l.distance_pct > 0 ? "↑" : "↓"} <Pct value={Math.abs(l.distance_pct) * 100} digits={1} />
+              {l.distance_pct > 0 ? "↑" : "↓"} {formatPercent(Math.abs(l.distance_pct) * 100, 1)}
             </span>
           </li>
         ))}

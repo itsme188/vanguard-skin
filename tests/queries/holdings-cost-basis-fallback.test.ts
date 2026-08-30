@@ -5,10 +5,11 @@ import { getAllHoldings, getHoldingsByAccount } from "@/lib/queries/holdings";
 
 /**
  * F1 (final-review): Plaid holdings rows write cost_basis NULL. Because
- * getAllHoldings/getHoldingsByAccount key on the per-account latest
- * as_of_date, the first Plaid sync makes every subsequent read pick the
- * NULL-cost-basis Plaid row over the real statement-sourced cost basis —
- * every Vanguard holding renders "-" cost basis and NULL unrealized gain.
+ * getAllHoldings/getHoldingsByAccount display the per-(account, security)
+ * latest as_of_date row, the first Plaid sync makes every subsequent read
+ * pick the NULL-cost-basis Plaid row over the real statement-sourced cost
+ * basis — every Vanguard holding renders "-" cost basis and NULL
+ * unrealized gain.
  *
  * Fix mirrors the COALESCE-to-latest-non-null-statement-row pattern from
  * getCrossAccountPositions (lib/digest/send-earnings-email.ts): quantity /
