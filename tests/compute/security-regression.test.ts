@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
-import { computeSecurityRegression } from "@/lib/compute/security-regression";
+import {
+  computeSecurityRegression,
+  regressionBetaVerdict,
+} from "@/lib/compute/security-regression";
+import {
+  MIN_BETA_PAIRS,
+  MIN_BETA_R_SQUARED,
+} from "@/lib/compute/beta-confidence";
 import {
   getCachedRegression,
   upsertRegression,
@@ -202,5 +209,81 @@ describe("computeSecurityRegression", () => {
     expect(got!.computedAtDay).toBe("2026-05-01");
     expect(got!.beta).toBeCloseTo(1.7, 6);
     expect(got!.dataPoints).toBe(200);
+  });
+});
+
+/**
+ * qa: security-detail-factor-profile--regression-card-publishes-betas-failing-confidence-gate
+ *
+ * `computeSecurityRegression` keeps its raw statistics (the backfill and the
+ * cache want them), so the PUBLISH decision is a separate read-time verdict:
+ * the same gate `scripts/refresh-vanguard-betas.ts` applies to `security_betas`,
+ * mapped onto the regression's own field names (dataPoints = aligned pairs).
+ */
+describe("regressionBetaVerdict", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    db.prepare(`INSERT INTO securities (id, symbol) VALUES (1, 'AAPL')`).run();
+  });
+
+  it("withholds the beta when the market explains too little of the variance", () => {
+    expect(
+      regressionBetaVerdict({ rSquared: 0.05, dataPoints: 250 })
+    ).toEqual({ ok: false, reason: "low_r2" });
+  });
+
+  it("withholds the beta when there are too few return pairs", () => {
+    expect(regressionBetaVerdict({ rSquared: 0.9, dataPoints: 13 })).toEqual({
+      ok: false,
+      reason: "few_pairs",
+    });
+  });
+
+  it("reports few_pairs first when BOTH gates fail (sample size is the deeper defect)", () => {
+    expect(regressionBetaVerdict({ rSquared: 0.05, dataPoints: 13 })).toEqual({
+      ok: false,
+      reason: "few_pairs",
+    });
+  });
+
+  it("publishes the beta when both gates clear", () => {
+    expect(regressionBetaVerdict({ rSquared: 0.72, dataPoints: 220 })).toEqual({
+      ok: true,
+    });
+  });
+
+  it("treats both thresholds as inclusive boundaries", () => {
+    expect(
+      regressionBetaVerdict({
+        rSquared: MIN_BETA_R_SQUARED,
+        dataPoints: MIN_BETA_PAIRS,
+      })
+    ).toEqual({ ok: true });
+    expect(
+      regressionBetaVerdict({
+        rSquared: MIN_BETA_R_SQUARED - 1e-9,
+        dataPoints: 250,
+      })
+    ).toEqual({ ok: false, reason: "low_r2" });
+    expect(
+      regressionBetaVerdict({
+        rSquared: 0.9,
+        dataPoints: MIN_BETA_PAIRS - 1,
+      })
+    ).toEqual({ ok: false, reason: "few_pairs" });
+  });
+
+  it("agrees with the compute output it is meant to gate (perfectly correlated 30d series)", () => {
+    // 30 seeded prices -> 29 aligned return pairs: r² clears, pairs do not.
+    seedSyntheticPair(db, 1, "SPY", 30, 1.5);
+    const result = computeSecurityRegression(db, 1, "SPY")!;
+    expect(result.rSquared).toBeGreaterThan(MIN_BETA_R_SQUARED);
+    expect(result.dataPoints).toBeLessThan(MIN_BETA_PAIRS);
+    expect(regressionBetaVerdict(result)).toEqual({
+      ok: false,
+      reason: "few_pairs",
+    });
   });
 });
