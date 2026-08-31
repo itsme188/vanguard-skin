@@ -20,7 +20,17 @@ export function epsDelta(
   // formatFinnhubFigure returns "$0.91"-style — strip $ to get number
   const c = Number(cons.eps.replace(/[$,]/g, ""));
   const a = Number(act.eps.replace(/[$,]/g, ""));
-  if (!Number.isFinite(c) || !Number.isFinite(a) || c === 0) return null;
+  if (!Number.isFinite(c) || !Number.isFinite(a)) return null;
+  if (c === 0) {
+    // A $0.00 estimate makes the surprise PERCENT undefined (÷0), but the
+    // beat/miss DIRECTION is still well-defined. Returning null here rendered
+    // a real 1-cent miss on a neutral chip (QA finding
+    // week-ahead-chips--zero-consensus-eps-miss-renders-neutral-not-red), so
+    // label the delta in absolute dollars instead of a percent.
+    const zSign: 1 | -1 | 0 = a === 0 ? 0 : a > 0 ? 1 : -1;
+    if (zSign === 0) return { label: "in-line", sign: zSign };
+    return { label: `${a > 0 ? "+" : "-"}$${Math.abs(a).toFixed(2)}`, sign: zSign };
+  }
   const pct = ((a - c) / Math.abs(c)) * 100;
   const sign: 1 | -1 | 0 = Math.abs(pct) < 0.05 ? 0 : pct > 0 ? 1 : -1;
   if (sign === 0) return { label: "in-line", sign };

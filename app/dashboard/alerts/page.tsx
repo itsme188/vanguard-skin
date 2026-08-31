@@ -1633,7 +1633,15 @@ function ReviewRow({
   onCancelConfirm?: (id: number) => void;
 }) {
   const busy = busyId === level.id;
+  // Same two-figure presentation as ArmedLevelRow: the bare guard-band
+  // distance used to render here as "-42.4% vs $89.25" for a resistance
+  // 73.7% ABOVE spot — wrong denominator (÷level) AND opposite sign to the
+  // move needed, on the surface where the user decides whether to arm
+  // (QA finding alerts-review--distance-pct-wrong-denominator-and-sign-all-rows).
+  // Both helpers return percent here (not the API's fraction).
   const distVal = distancePct(level.price, level.current_price);
+  const moveNeeded = moveNeededPct(level.current_price, level.price);
+  const nearReview = moveNeeded !== null && Math.abs(moveNeeded) <= 2;
   // Pre-decision disclosure: a mis-scaled extracted level (SPX prices on SPY)
   // used to look like any other pending row and approve silently into coverage
   // the scanner skips forever. Static levels only — an MA level's effective
@@ -1676,11 +1684,29 @@ function ReviewRow({
                 {formatPriceSourceLabel(level.price_source)}
               </span>
             )}
+            {moveNeeded !== null && (
+              <Chip
+                size="xs"
+                tone={nearReview ? "warn" : "neutral"}
+                title={
+                  distVal !== null
+                    ? `Move needed, measured from the current price (matches the security page). The scanner's own guard band measures distance from the level price instead: ${formatPercent(Math.abs(distVal), 1)} vs level.`
+                    : undefined
+                }
+              >
+                {formatPercent(moveNeeded)} move needed
+              </Chip>
+            )}
             {distVal !== null && (
-              <span className="text-[11px] text-ink-faint font-mono">
-                {distVal >= 0 ? "+" : ""}
-                {formatPercent(distVal, 1)} vs{" "}
-                {level.current_price != null ? formatUSDPrecise(level.current_price) : "—"}
+              <span
+                className="text-[10px] text-ink-faint"
+                title="The scanner's guard distance — measured from the LEVEL price, not spot. Shown so this can never read as disagreeing with the move-needed figure above."
+              >
+                ({formatPercent(Math.abs(distVal), 1)} vs level
+                {level.current_price != null
+                  ? ` · now ${formatUSDPrecise(level.current_price)}`
+                  : ""}
+                )
               </span>
             )}
             {beyondScanRange && (
