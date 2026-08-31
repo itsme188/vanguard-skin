@@ -153,6 +153,14 @@ export function saveManualActuals(
     };
   }
 
+  // Stamps THIS row only, deliberately. Fanning the stamp out to the print's
+  // other twins here would mark rows the user never saw — a twin can carry a
+  // different vendor actual_value, and stamping it would hand a scrape a
+  // human's authority (and make it clearable through clearManualActuals).
+  // The acceptance still survives a canonical twin flip: reads resolve the
+  // stamp across the cluster keyed on the accepted FIGURE
+  // (lib/queries/manual-actuals-cluster.ts), and reconcileEarningsDates
+  // carries it forward with the figure it describes.
   db.prepare(
     `UPDATE calendar_events
         SET actual_value = ?,

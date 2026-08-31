@@ -32,6 +32,10 @@ import {
 import { getModelCatalog } from "@/lib/ai/model-catalog";
 import { getBriefingHoldings } from "@/lib/calendar/briefing";
 import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
+import {
+  applyClusterManualActuals,
+  type ClusterActualsRow,
+} from "@/lib/queries/manual-actuals-cluster";
 import { getReportHistoryForFamily } from "@/lib/queries/earnings-intel";
 import { summarizeHistory } from "@/lib/earnings/report-history";
 
@@ -450,6 +454,13 @@ function buildSnapshot(db: Database.Database): Snapshot {
          ORDER BY event_date, event_time`
     )
     .all(daysAgo(1), daysAhead(CALENDAR_LOOKAHEAD_DAYS)) as Record<string, unknown>[];
+
+  // The Worker's fallback recap gate mirrors actualsAreImplausible and reads
+  // manual_actuals_at off whichever twin its own family dedup keeps — so the
+  // acceptance must already be resolved cluster-wide in the snapshot, exactly
+  // as the Mac's read surfaces resolve it
+  // (lib/queries/manual-actuals-cluster.ts). Parity, not a second rule.
+  applyClusterManualActuals(db, calendarEvents as unknown as ClusterActualsRow[]);
 
   const researchSources = db
     .prepare(

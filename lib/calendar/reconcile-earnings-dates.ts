@@ -39,6 +39,7 @@ interface EarningsRow {
   consensus_value: string | null;
   reaction_snapshot: string | null;
   enriched_at: string | null;
+  manual_actuals_at: string | null;
 }
 
 function addDaysUTC(date: string, days: number): string {
@@ -162,10 +163,18 @@ function resolveCluster(rows: EarningsRow[], today: string): Resolution {
  * Reconcile all held/watchlist earnings rows in a window around `today`.
  * Pure given `today`; idempotent (re-running yields the same marks); never
  * mutates a user_confirmed/manual cluster's canonical date.
+ *
+ * `opts.symbols` narrows the pass to the named issuer FAMILIES (dual-class
+ * siblings ride along, since the clustering key is the family). It exists so
+ * a single-symbol event change — e.g. deleting the manual row that was
+ * superseding a vendor date, lib/mutations/calendar.ts::deleteCalendarEvent —
+ * can re-resolve just that name's clusters through this one implementation
+ * instead of a second, divergent copy of the supersede rules. An omitted or
+ * EMPTY list means "no scope" — the whole-window pass sync.ts runs.
  */
 export function reconcileEarningsDates(
   db: Database.Database,
-  opts: { today: string },
+  opts: { today: string; symbols?: string[] },
 ): ReconcileResult {
   const { today } = opts;
   const start = addDaysUTC(today, -GATHER_BACK_DAYS);
@@ -174,17 +183,24 @@ export function reconcileEarningsDates(
   const rows = db
     .prepare(
       `SELECT id, source, symbol, event_date, raw_json, actual_value, date_status,
-              consensus_estimate, consensus_value, reaction_snapshot, enriched_at
+              consensus_estimate, consensus_value, reaction_snapshot, enriched_at,
+              manual_actuals_at
        FROM calendar_events
        WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
        ORDER BY event_date ASC`,
     )
     .all(start, end) as EarningsRow[];
 
+  const scopedFamilies =
+    opts.symbols && opts.symbols.length > 0
+      ? new Set(opts.symbols.map((s) => familyKey(s)).filter((k) => k !== ""))
+      : null;
+
   // Group by issuer family, then proximity-cluster within each family.
   const byFamily = new Map<string, EarningsRow[]>();
   for (const r of rows) {
     const key = familyKey(r.symbol);
+    if (scopedFamilies && !scopedFamilies.has(key)) continue;
     if (!byFamily.has(key)) byFamily.set(key, []);
     byFamily.get(key)!.push(r);
   }
@@ -207,10 +223,25 @@ export function reconcileEarningsDates(
   // by send-date plausibility (see the repointPreviewEmails/Skips comment
   // below). UPDATE OR IGNORE keeps the canonical's own row on a UNIQUE
   // collision, leaving the superseded-side duplicate in place for audit.
+  // manual_actuals_at rides along ONLY with the figure it describes: the
+  // desk's acceptance is a statement about one number, so it may land on the
+  // canonical when the canonical is about to adopt (or already shows) exactly
+  // that actual_value — never when the canonical keeps a different vendor
+  // figure the user never saw. SQLite evaluates every RHS against the
+  // pre-UPDATE row, so `actual_value IS NULL` here means "about to inherit
+  // the donor's". Read-side twin healing (lib/queries/manual-actuals-cluster.ts)
+  // is the guarantee; this is defense in depth at the exact write that
+  // stranded RBRK's acceptance (QA finding
+  // today-week-ahead--accepted-actuals-vanish-after-superseded-twin-flip).
   const carryEnrichment = db.prepare(
     `UPDATE calendar_events SET
        consensus_estimate = COALESCE(consensus_estimate, ?),
        consensus_value = COALESCE(consensus_value, ?),
+       manual_actuals_at = CASE
+         WHEN actual_value IS NULL OR actual_value = ?
+           THEN COALESCE(manual_actuals_at, ?)
+         ELSE manual_actuals_at
+       END,
        actual_value = COALESCE(actual_value, ?),
        reaction_snapshot = COALESCE(reaction_snapshot, ?),
        enriched_at = COALESCE(enriched_at, ?)
@@ -286,9 +317,14 @@ export function reconcileEarningsDates(
           .sort((a, b) => (b.enriched_at ?? "").localeCompare(a.enriched_at ?? ""));
         for (const r of superseded) {
           setSuperseded.run(r.id);
+          // Positional (better-sqlite3 binds `?` only positionally, so the
+          // donor's actual_value is passed TWICE — once for the
+          // manual_actuals_at CASE test, once for its own COALESCE).
           carryEnrichment.run(
             r.consensus_estimate,
             r.consensus_value,
+            r.actual_value,
+            r.manual_actuals_at,
             r.actual_value,
             r.reaction_snapshot,
             r.enriched_at,

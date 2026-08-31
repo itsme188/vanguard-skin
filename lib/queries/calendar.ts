@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { CalendarEvent, CalendarBriefing } from "@/lib/types";
 import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
+import { applyClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { addDays } from "@/lib/calendar/date-utils";
 
 // ─── Filter types ─────────────────────────────────────────────────
@@ -87,7 +88,10 @@ export function getEventsByWeek(
       e.security_id = getSecurityIdForSymbolWithSiblings(db, e.symbol);
     }
   }
-  return events;
+  // WeekAheadView runs the plausibility gate on these rows, so the manual
+  // acceptance must be read cluster-wide — the stamp often sits on a
+  // superseded twin (lib/queries/manual-actuals-cluster.ts).
+  return applyClusterManualActuals(db, events);
 }
 
 export function getEventsForSecurity(
@@ -157,7 +161,10 @@ export function getEarningsForWeekDeduped(
       e.security_id = getSecurityIdForSymbolWithSiblings(db, e.symbol);
     }
   }
-  return events;
+  // The dedup above picks ONE twin per print; the desk's manual-actuals
+  // acceptance may live on any of them (EarningsHub + the email sweep both
+  // gate on it). Read it cluster-wide.
+  return applyClusterManualActuals(db, events);
 }
 
 /**
