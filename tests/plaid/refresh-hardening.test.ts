@@ -158,6 +158,52 @@ describe("writePlaidHoldings — directional supersession + transaction bumps", 
     expect(genAfter).toBe(genBefore);
   });
 
+  it("a same-day stale-row cleanup that reverts a superseded tombstone bumps the generation", () => {
+    // X's only prior row is a :live tombstone at D-5 (closed a while ago).
+    // Y is present in both intraday syncs below purely to keep the account
+    // non-empty and to give removeStaleSameDayTwsHoldings's shrink guard a
+    // denominator (1 of 2 same-day plaid rows surviving clears the 50%
+    // floor) — it is never itself touched by the tombstone logic.
+    upsertSecurity(db, { symbol: "Y", securityType: "Stock" });
+    const xId = upsertSecurity(db, { symbol: "X", securityType: "Stock" });
+    holdTombstone(taxableId, xId, D_MINUS_5, RECON_LIVE_SUFFIX);
+
+    // Intraday sync #1: X supersedes the D-5 tombstone via a fresh INSERT at
+    // TODAY (newer-date supersession) — bumps once, as already covered by
+    // the "newer-date supersession" test above.
+    const genBefore = getTaxInputGeneration(db);
+    writePlaidHoldings(
+      db,
+      mappedResult([pos("Y", 10), pos("X", 4)]),
+      { pTax: taxableId },
+      TODAY,
+    );
+    const genAfterFirst = getTaxInputGeneration(db);
+    expect(rowAt(taxableId, xId, TODAY)?.quantity).toBe(4); // sanity: supersession landed
+    expect(genAfterFirst).toBe(genBefore + 1);
+
+    // Intraday sync #2, SAME day: X drops out of the book entirely (sold
+    // intraday, or a transient omission). removeStaleSameDayTwsHoldings
+    // deletes X's now-stale plaid:% row at TODAY — the pair's latest row
+    // reverts to the D-5 :live tombstone, a genuine RECONCILE_CLOSE-input
+    // transition. This is NOT a write (newerDateSupersession never fires,
+    // since no upsertHolding.run happens for X this call) and touches no
+    // recon:% row directly (the same-date recon-count channel never fires
+    // either, since only plaid:% rows are deleted) — only the
+    // deletion-aware bump catches it. X's post-deletion latest row is the
+    // D-5 tombstone itself (quantity 0), which is not a NEW phantom for
+    // reconcileClosedEquityHoldings to (re)mark, so this isolates the fix's
+    // bump from the reconciler's own bump channel.
+    writePlaidHoldings(db, mappedResult([pos("Y", 10)]), { pTax: taxableId }, TODAY);
+    const genAfterSecond = getTaxInputGeneration(db);
+
+    expect(rowAt(taxableId, xId, TODAY)).toBeUndefined();
+    const reverted = latestHoldingRow(taxableId, xId);
+    expect(reverted.as_of_date).toBe(D_MINUS_5);
+    expect(reverted.quantity).toBe(0);
+    expect(genAfterSecond).toBe(genAfterFirst + 1);
+  });
+
   it("plaid does NOT supersede a legacy unsuffixed tombstone (statement-grade), and does not bump", () => {
     const xId = upsertSecurity(db, { symbol: "X", securityType: "Stock" });
     hold(taxableId, xId, 5, D_MINUS_10);

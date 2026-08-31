@@ -183,6 +183,16 @@ export function writePlaidHoldings(
         sourceKeyLike: "plaid:%",
       });
       staleRemoved += stale.deleted;
+      // A same-day cleanup delete can itself be a RECONCILE_CLOSE-input
+      // transition: if an earlier intraday sync today wrote a security
+      // non-zero over a :live tombstone (or a newer-date supersession) and a
+      // later sync's book omits it, this deletes today's plaid row and the
+      // pair's latest reverts to an earlier tombstone/held row — neither the
+      // recon-row-count check below (only plaid:% rows are deleted here, not
+      // recon:% rows) nor newerDateSupersession (writes only) observes a
+      // deletion. Conservative: bump on any deletion (routine held-only
+      // syncs delete nothing, so this never fires there).
+      if (stale.deleted > 0) bumpTaxGenerationIfPresent(db);
 
       const total = mapped.totalByAccount[plaidAccountId];
       if (total != null) {
