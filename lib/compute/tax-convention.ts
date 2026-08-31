@@ -123,3 +123,38 @@ export function stampTaxLotsConventionIfPresent(db: Database.Database): void {
   if (!hasSettingsTable(db)) return;
   stampTaxLotsConvention(db);
 }
+
+/**
+ * Fail-closed price invalidation for synthetic closes (spec 2026-08-30
+ * reconciler-hardening §4). computeTaxLots' RECONCILE_CLOSE pass prices a
+ * broker-closed position off the latest `prices` row at-or-before the
+ * position's zero-quantity date — so a price write/delete in that window
+ * changes realized tax output. Callers pass the (securityId, date) pairs
+ * they mutated (capture BEFORE a delete); this bumps the generation once
+ * when any pair can affect a synthetic close. Held securities (latest
+ * holdings row non-zero) never match, so routine daily price syncs never
+ * bump. Deliberately over-approximate: an older-than-selected price for a
+ * tombstoned security still bumps — over-bump is fail-closed and cheap.
+ */
+export function bumpIfPricesAffectSyntheticCloses(
+  db: Database.Database,
+  pairs: { securityId: number; date: string }[],
+): boolean {
+  if (pairs.length === 0) return false;
+  const stmt = db.prepare(
+    `SELECT 1 AS hit FROM holdings h
+      WHERE h.security_id = ? AND h.quantity = 0
+        AND h.as_of_date >= ?
+        AND h.as_of_date = (
+          SELECT MAX(h2.as_of_date) FROM holdings h2
+           WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id)
+      LIMIT 1`,
+  );
+  for (const p of pairs) {
+    if (stmt.get(p.securityId, p.date) != null) {
+      bumpTaxGenerationIfPresent(db);
+      return true;
+    }
+  }
+  return false;
+}

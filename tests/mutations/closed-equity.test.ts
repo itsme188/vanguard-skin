@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { reconcileClosedEquityHoldings } from "@/lib/mutations/closed-equity";
+import {
+  reconcileClosedEquityHoldings,
+  zeroLatestSecurityIds,
+  countReconRowsOnDate,
+} from "@/lib/mutations/closed-equity";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
 
 let db: Database.Database;
 
@@ -207,8 +212,9 @@ describe("reconcileClosedEquityHoldings — options (live-snapshot pass, evidenc
     expect(s.d).toBe("2026-08-20");
     expect(latestQty(a, o1).q).toBe(5);
     // the tombstone keeps the engine-owned recon prefix (holding-sources.ts)
+    // and carries the :live suffix — this is the equity/option live pass.
     expect(sourceKeyOf(a, sold, "2026-08-20")).toBe(
-      `recon:closed-equity:${a}:${sold}:2026-08-20`,
+      `recon:closed-equity:${a}:${sold}:2026-08-20:live`,
     );
     // and the position stops rendering as live
     expect(livePositionIds(a)).not.toContain(sold);
@@ -321,8 +327,9 @@ describe("reconcileClosedEquityHoldings — statement pass (complete-book, any s
     for (const f of [f1, f2]) {
       expect(latestQty(a, f).q).toBe(0);
       expect(latestQty(a, f).d).toBe("2026-07-31"); // the statement date, not today
+      // :stmt suffix — this is the statement pass.
       expect(sourceKeyOf(a, f, "2026-07-31")).toBe(
-        `recon:closed-equity:${a}:${f}:2026-07-31`,
+        `recon:closed-equity:${a}:${f}:2026-07-31:stmt`,
       );
     }
     const live = livePositionIds(a);
@@ -434,5 +441,129 @@ describe("reconcileClosedEquityHoldings — statement pass (complete-book, any s
     expect(latestQty(a, fund)).toEqual({ q: 0, d: "2026-07-31" });
     expect(latestQty(a, sweep)).toEqual({ q: 5000, d: "2026-04-30" });
     expect(livePositionIds(a)).toContain(sweep);
+  });
+});
+
+describe("tombstone provenance + ownership", () => {
+  it("statement-pass tombstones carry :stmt suffix; live-pass carry :live", () => {
+    const a = acct("A1");
+    const x = sec("XONE");
+    const y = sec("YTWO", "etf");
+    const z = sec("ZFOUR", "etf");
+    // statement book at D1 has X, Y, Z; statement book at D2 has only Y, Z → X
+    // phantom (stmt pass, tombstoned :stmt).
+    hold(a, x, 5, "2026-07-31", "canonical:hold:x1");
+    hold(a, y, 5, "2026-07-31", "canonical:hold:y1");
+    hold(a, z, 5, "2026-07-31", "canonical:hold:z1");
+    hold(a, y, 5, "2026-08-29", "canonical:hold:y2");
+    hold(a, z, 5, "2026-08-29", "canonical:hold:z2");
+    // A later live (Plaid) snapshot on 08-30 reports only Y → Z is a phantom
+    // under the live equity pass (Z was present on the latest statement, so
+    // the statement pass alone never catches it — only the live pass does,
+    // tombstoned :live).
+    hold(a, y, 5, "2026-08-30", "plaid:1:9:2026-08-30");
+    reconcileClosedEquityHoldings(db);
+    const stmtTomb = db
+      .prepare(`SELECT source_key FROM holdings WHERE quantity = 0 AND security_id = ?`)
+      .get(x) as { source_key: string };
+    expect(stmtTomb.source_key.startsWith("recon:closed-equity:")).toBe(true);
+    expect(stmtTomb.source_key.endsWith(":stmt")).toBe(true);
+    const liveTomb = db
+      .prepare(`SELECT source_key FROM holdings WHERE quantity = 0 AND security_id = ?`)
+      .get(z) as { source_key: string };
+    expect(liveTomb.source_key.startsWith("recon:closed-equity:")).toBe(true);
+    expect(liveTomb.source_key.endsWith(":live")).toBe(true);
+  });
+
+  it("stamps import_batch_id only for owned accounts", () => {
+    const a1 = acct("A1");
+    const a2 = acct("A2");
+    const x = sec("XONE");
+    const z = sec("ZTHR");
+    const batchId = (
+      db.prepare(`INSERT INTO import_batches (source_type) VALUES ('canonical-csv') RETURNING id`).get() as { id: number }
+    ).id;
+    // both accounts have a phantom vs their latest statement snapshots
+    hold(a1, x, 5, "2026-07-31", "canonical:hold:1");
+    hold(a1, sec("KEEP1"), 5, "2026-08-29", "canonical:hold:2");
+    hold(a2, z, 5, "2026-07-31", "canonical:hold:3");
+    hold(a2, sec("KEEP2"), 5, "2026-08-29", "canonical:hold:4");
+    reconcileClosedEquityHoldings(db, { importBatchId: batchId, ownedAccountIds: [a1] });
+    const owned = db.prepare(`SELECT import_batch_id FROM holdings WHERE quantity=0 AND account_id=?`).get(a1) as { import_batch_id: number | null };
+    const unowned = db.prepare(`SELECT import_batch_id FROM holdings WHERE quantity=0 AND account_id=?`).get(a2) as { import_batch_id: number | null };
+    expect(owned.import_batch_id).toBe(batchId);
+    expect(unowned.import_batch_id).toBeNull();
+  });
+
+  it("bumps the tax generation when it marks anything, not when it marks nothing", () => {
+    const a = acct("A1");
+    hold(a, sec("XONE"), 5, "2026-07-31", "canonical:hold:1");
+    hold(a, sec("KEEP1"), 5, "2026-08-29", "canonical:hold:2");
+    const g0 = getTaxInputGeneration(db);
+    expect(reconcileClosedEquityHoldings(db)).toBeGreaterThan(0);
+    const g1 = getTaxInputGeneration(db);
+    expect(g1).toBe(g0 + 1);
+    expect(reconcileClosedEquityHoldings(db)).toBe(0); // idempotent second run
+    expect(getTaxInputGeneration(db)).toBe(g1);        // no bump on no-op
+  });
+});
+
+describe("run atomicity", () => {
+  it("a mid-run failure leaves zero tombstones from that run (fault injected mid-run, no outer transaction)", () => {
+    // Discriminating version: NO outer transaction wraps the call — the fault
+    // is injected via a TEMP TRIGGER that aborts a specific INSERT partway
+    // through the reconciler's own run. Single account, so pass ordering is
+    // deterministic from the algorithm's structure (not from row-ordering of
+    // a multi-account query): pass 1 (statement) tombstones GONE1 and
+    // completes FIRST; pass 2 (live equity), which runs after pass 1 for the
+    // same account, then tries to tombstone GONE2 — the trigger aborts that
+    // insert. If reconcileClosedEquityHoldings did not wrap the whole run in
+    // its own transaction, GONE1's already-committed tombstone from pass 1
+    // would survive the throw (this is exactly what the removed non-
+    // discriminating version of this test could not catch, since it wrapped
+    // the call in the CALLER's own transaction, which rolls back regardless
+    // of whether the function has an inner transaction of its own).
+    const a = acct("A1");
+    const gone1 = sec("GONE1");
+    const keep1 = sec("KEEP1");
+    const gone2 = sec("GONE2");
+    // April statement: GONE1 + KEEP1. July statement: KEEP1 + GONE2 (GONE1
+    // absent → pass-1 phantom, tombstoned first).
+    hold(a, gone1, 5, "2026-07-31", "canonical:hold:1");
+    hold(a, keep1, 5, "2026-07-31", "canonical:hold:2");
+    hold(a, keep1, 5, "2026-08-29", "canonical:hold:3");
+    hold(a, gone2, 5, "2026-08-29", "canonical:hold:4");
+    // A later live snapshot reports only KEEP1 → GONE2 is a pass-2 (live
+    // equity) phantom, tombstoned second (after pass 1 has already run).
+    hold(a, keep1, 5, "2026-08-30", "plaid:1:9:2026-08-30");
+
+    db.exec(
+      `CREATE TEMP TRIGGER boom BEFORE INSERT ON holdings WHEN NEW.security_id = ${gone2} BEGIN SELECT RAISE(ABORT,'boom'); END`,
+    );
+    expect(() => reconcileClosedEquityHoldings(db)).toThrow();
+    // GONE1's pass-1 tombstone must have rolled back along with the aborted
+    // pass-2 insert — zero tombstones survive the failed run.
+    expect(db.prepare(`SELECT COUNT(*) c FROM holdings WHERE quantity=0`).get()).toEqual({ c: 0 });
+  });
+});
+
+describe("detection helpers", () => {
+  it("zeroLatestSecurityIds returns securities whose latest row is quantity 0", () => {
+    const a = acct("A1");
+    const x = sec("XONE");
+    const y = sec("YTWO");
+    hold(a, x, 5, "2026-07-01", "canonical:hold:1");
+    hold(a, x, 0, "2026-08-01", "recon:closed-equity:t1:stmt");
+    hold(a, y, 5, "2026-08-01", "canonical:hold:2");
+    const s = zeroLatestSecurityIds(db, a);
+    expect(s.has(x)).toBe(true);
+    expect(s.has(y)).toBe(false);
+  });
+  it("countReconRowsOnDate counts recon rows for (account, date)", () => {
+    const a = acct("A1");
+    hold(a, sec("XONE"), 0, "2026-08-01", "recon:closed-equity:t1:live");
+    hold(a, sec("YTWO"), 5, "2026-08-01", "canonical:hold:1");
+    expect(countReconRowsOnDate(db, a, "2026-08-01")).toBe(1);
+    expect(countReconRowsOnDate(db, a, "2026-08-02")).toBe(0);
   });
 });

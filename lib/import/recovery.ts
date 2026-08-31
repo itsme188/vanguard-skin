@@ -33,7 +33,8 @@ import { undoImport } from "./engine";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
 import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
-import { LIVE_HOLDING_SOURCE_PREFIXES } from "@/lib/db/holding-sources";
+import { statementOverwritableHoldingSql, RECON_HOLDING_SOURCE_PREFIX } from "@/lib/db/holding-sources";
+import { removeOrphanedReconTombstones, reconcileClosedEquityHoldings } from "@/lib/mutations/closed-equity";
 import { resolveDbDir, type EnvLike } from "@/lib/db/db-path";
 import { appendArtifactSuffix } from "@/lib/mutations/donation-links";
 
@@ -318,11 +319,10 @@ export function readRecoveryManifest(filePath: string): RecoveryManifest {
  * tables (holdings, prices, monthly_snapshots) re-insert with the SAME
  * conflict guards commitImport uses, so a restore preserves the
  * statement-authoritative invariant: a manifested statement row overwrites a
- * live row that occupies its slot, but never the reverse.
+ * live row OR a recon tombstone that occupies its slot, but never the
+ * reverse. Parity with commitImport is now by construction — both call
+ * statementOverwritableHoldingSql.
  */
-const LIVE_HOLDING_GUARD = LIVE_HOLDING_SOURCE_PREFIXES.map(
-  (p) => `holdings.source_key LIKE '${p}%'`,
-).join(" OR ");
 
 // Mirror of commitImport step 5's source-priority CASE (lib/import/engine.ts).
 // Parity-pinned: if that CASE changes, this must change with it.
@@ -354,7 +354,7 @@ function restoreSpec(table: RecoverySourceTable): RestoreSpec {
             cost_basis = excluded.cost_basis,
             import_batch_id = excluded.import_batch_id,
             source_key = excluded.source_key
-          WHERE ${LIVE_HOLDING_GUARD}`,
+          WHERE ${statementOverwritableHoldingSql("holdings.source_key")}`,
       };
     case "prices":
       return {
@@ -547,6 +547,16 @@ export function restoreImportBatch(db: Database.Database, manifest: RecoveryMani
       const spec = restoreSpec(table);
       let n = 0;
       for (const row of manifest.payload.tables[table]) {
+        // Tombstones are DERIVED rows (spec §3): never restored from a manifest —
+        // the post-restore reconcile re-derives any still-justified ones. Filtering
+        // at restore time (not capture) keeps stored checksums valid.
+        if (
+          table === "holdings" &&
+          typeof (row as Record<string, unknown>).source_key === "string" &&
+          ((row as Record<string, unknown>).source_key as string).startsWith(RECON_HOLDING_SOURCE_PREFIX)
+        ) {
+          continue;
+        }
         // Strip the child id so AUTOINCREMENT assigns a fresh one (see
         // stripRowId) — the FK import_batch_id is preserved inside the row.
         insertCapturedRow(db, table, stripRowId(row), spec);
@@ -588,14 +598,33 @@ export function restoreImportBatch(db: Database.Database, manifest: RecoveryMani
     // getTaxConventionState reports "pending" until the recompute below
     // re-stamps it (fail-closed: if that recompute throws, readers still see
     // stale rather than silently trusting pre-restore figures).
+    const holdingsOrPricesRestored =
+      (manifest.payload.tables.holdings?.length ?? 0) > 0 ||
+      (manifest.payload.tables.prices?.length ?? 0) > 0;
     if (
       restored.transactions > 0 ||
       restored.corporate_actions > 0 ||
       donationsRestored > 0 ||
       restored.donation_leg_links > 0 ||
-      restored.donation_lots > 0
+      restored.donation_lots > 0 ||
+      holdingsOrPricesRestored // spec §3: holdings/prices ARE tax inputs (RECONCILE_CLOSE)
     ) {
       bumpTaxGenerationIfPresent(db);
+    }
+    // Tombstone rebuild (spec §3): restored real rows may re-justify or orphan
+    // tombstones; re-derive rather than trust the pre-undo state. Scoped to the
+    // accounts the manifest's holdings actually touched (mirrors undoImport's
+    // affectedAccountIds scoping) — orphan cleanup first (history-preserving),
+    // then an unowned re-reconcile so tombstones still justified by the
+    // restored + surviving snapshots come back at their original dates.
+    const restoredAccountIds = [
+      ...new Set(
+        (manifest.payload.tables.holdings ?? []).map((r) => (r as { account_id: number }).account_id),
+      ),
+    ];
+    if (restoredAccountIds.length > 0) {
+      removeOrphanedReconTombstones(db, { accountIds: restoredAccountIds });
+      reconcileClosedEquityHoldings(db);
     }
   })();
 

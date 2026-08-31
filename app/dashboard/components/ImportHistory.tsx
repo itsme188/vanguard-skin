@@ -126,11 +126,13 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
                   key={batch.id}
                   className="border-b border-edge last:border-0 hover:bg-panel/50 transition-colors"
                 >
-                  <td
-                    className="px-4 py-3 text-ink"
-                    title={batch.filename ?? undefined}
-                  >
+                  <td className="px-4 py-3 text-ink" title={batch.filename ?? undefined}>
                     {batch.filename ?? "—"}
+                    {batch.summary && (
+                      <div className="text-xs text-ink-faint truncate max-w-[26rem]" title={batch.summary}>
+                        {batch.summary}
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">
                     <span className="text-xs px-2 py-0.5 rounded bg-blue/20 text-blue font-mono font-medium">

@@ -15,7 +15,16 @@ import {
 } from "@/lib/queries/plaid-settings";
 import { upsertSecurity } from "@/lib/mutations/securities";
 import { removeStaleSameDayTwsHoldings } from "@/lib/mutations/same-day-tws-holdings";
-import { reconcileClosedEquityHoldings } from "@/lib/mutations/closed-equity";
+import {
+  reconcileClosedEquityHoldings,
+  zeroLatestSecurityIds,
+  countReconRowsOnDate,
+} from "@/lib/mutations/closed-equity";
+import { liveOverwritableHoldingSql } from "@/lib/db/holding-sources";
+import {
+  bumpTaxGenerationIfPresent,
+  bumpIfPricesAffectSyntheticCloses,
+} from "@/lib/compute/tax-convention";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
 import { todayET } from "@/lib/calendar/date-utils";
 import { isMarketClosed } from "@/lib/calendar/market-holidays";
@@ -58,6 +67,10 @@ export function writePlaidHoldings(
   staleRemoved: number;
   securitiesCreated: string[];
 } {
+  // A live writer may only claim live rows and live-origin tombstones — never
+  // a :stmt or legacy (unsuffixed) tombstone, which is statement-grade
+  // closure evidence a live sync cannot re-derive if masked (spec 2026-08-31
+  // reconciler-hardening §directional supersession).
   const upsertHolding = db.prepare(
     `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
      VALUES (?, ?, ?, NULL, ?, ?)
@@ -65,7 +78,7 @@ export function writePlaidHoldings(
        quantity = excluded.quantity,
        cost_basis = excluded.cost_basis,
        source_key = excluded.source_key
-     WHERE holdings.source_key LIKE 'tws-%' OR holdings.source_key LIKE 'plaid:%'`,
+     WHERE ${liveOverwritableHoldingSql()}`,
   );
   const upsertSnapshot = db.prepare(
     `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, cash_value, source)
@@ -106,72 +119,114 @@ export function writePlaidHoldings(
     if (positions.length === 0) continue;
     accountsSynced++;
 
-    const syncedSecurityIds: number[] = [];
-    for (const p of positions) {
-      let symbol = p.symbol;
-      let existed = checkExistingSecurity.get(symbol) !== undefined;
-      // Share-class form drift: statements store BRK/B, Plaid says BRK.B.
-      // Creating the dotted twin makes the reconciler phantom-close the
-      // real slash-form row (observed live 2026-07-11) — resolve onto the
-      // existing security instead.
-      if (!existed && symbol.includes(".")) {
-        const slashForm = symbol.replace(/\./g, "/");
-        if (checkExistingSecurity.get(slashForm) !== undefined) {
-          symbol = slashForm;
-          existed = true;
+    // Whole per-account DB-mutation block (pre-state reads through the
+    // trailing reconcile) is ONE transaction (spec 2026-08-31
+    // reconciler-hardening §5): a mid-write failure must not leave a
+    // superseded tombstone half-written with no matching tax-generation
+    // bump, or vice versa. reconcileClosedEquityHoldings nests as a
+    // savepoint — better-sqlite3 supports nested db.transaction() calls.
+    db.transaction(() => {
+      // Pre-state reads INSIDE the transaction so they reflect exactly the
+      // book this account's writes are about to mutate.
+      const zeroLatest = zeroLatestSecurityIds(db, localAccountId);
+      const reconBefore = countReconRowsOnDate(db, localAccountId, today);
+      // Set only when the upsert ACTUALLY changed a row (res.changes > 0)
+      // AND the write is non-zero AND the security's latest row was a
+      // tombstone — a re-bought position superseding an OLDER-dated
+      // tombstone. A write BLOCKED by a same-date :stmt/legacy tombstone
+      // changes nothing and must never set this.
+      let newerDateSupersession = false;
+
+      const syncedSecurityIds: number[] = [];
+      for (const p of positions) {
+        let symbol = p.symbol;
+        let existed = checkExistingSecurity.get(symbol) !== undefined;
+        // Share-class form drift: statements store BRK/B, Plaid says BRK.B.
+        // Creating the dotted twin makes the reconciler phantom-close the
+        // real slash-form row (observed live 2026-07-11) — resolve onto the
+        // existing security instead.
+        if (!existed && symbol.includes(".")) {
+          const slashForm = symbol.replace(/\./g, "/");
+          if (checkExistingSecurity.get(slashForm) !== undefined) {
+            symbol = slashForm;
+            existed = true;
+          }
+        }
+        const securityId = upsertSecurity(db, {
+          symbol,
+          name: p.name ?? undefined,
+          securityType: p.securityType,
+          underlyingSymbol: p.underlyingSymbol,
+          strikePrice: p.strikePrice,
+          expirationDate: p.expirationDate,
+          optionType: p.optionType,
+        });
+        if (!existed) securitiesCreated.push(symbol);
+        syncedSecurityIds.push(securityId);
+        const res = upsertHolding.run(
+          localAccountId,
+          securityId,
+          p.quantity,
+          today,
+          `plaid:${localAccountId}:${securityId}:${today}`,
+        );
+        if (res.changes > 0) holdingsWritten++;
+        if (res.changes > 0 && p.quantity !== 0 && zeroLatest.has(securityId)) {
+          newerDateSupersession = true;
         }
       }
-      const securityId = upsertSecurity(db, {
-        symbol,
-        name: p.name ?? undefined,
-        securityType: p.securityType,
-        underlyingSymbol: p.underlyingSymbol,
-        strikePrice: p.strikePrice,
-        expirationDate: p.expirationDate,
-        optionType: p.optionType,
+
+      const stale = removeStaleSameDayTwsHoldings(db, {
+        accountId: localAccountId,
+        asOfDate: today,
+        syncedSecurityIds,
+        sourceKeyLike: "plaid:%",
       });
-      if (!existed) securitiesCreated.push(symbol);
-      syncedSecurityIds.push(securityId);
-      const res = upsertHolding.run(
-        localAccountId,
-        securityId,
-        p.quantity,
-        today,
-        `plaid:${localAccountId}:${securityId}:${today}`,
-      );
-      if (res.changes > 0) holdingsWritten++;
-    }
+      staleRemoved += stale.deleted;
+      // A same-day cleanup delete can itself be a RECONCILE_CLOSE-input
+      // transition: if an earlier intraday sync today wrote a security
+      // non-zero over a :live tombstone (or a newer-date supersession) and a
+      // later sync's book omits it, this deletes today's plaid row and the
+      // pair's latest reverts to an earlier tombstone/held row — neither the
+      // recon-row-count check below (only plaid:% rows are deleted here, not
+      // recon:% rows) nor newerDateSupersession (writes only) observes a
+      // deletion. Conservative: bump on any deletion (routine held-only
+      // syncs delete nothing, so this never fires there).
+      if (stale.deleted > 0) bumpTaxGenerationIfPresent(db);
 
-    const stale = removeStaleSameDayTwsHoldings(db, {
-      accountId: localAccountId,
-      asOfDate: today,
-      syncedSecurityIds,
-      sourceKeyLike: "plaid:%",
-    });
-    staleRemoved += stale.deleted;
+      const total = mapped.totalByAccount[plaidAccountId];
+      if (total != null) {
+        upsertSnapshot.run(
+          localAccountId,
+          today,
+          total,
+          mapped.cashByAccount[plaidAccountId] ?? null,
+        );
+      }
 
-    const total = mapped.totalByAccount[plaidAccountId];
-    if (total != null) {
-      upsertSnapshot.run(
-        localAccountId,
-        today,
-        total,
-        mapped.cashByAccount[plaidAccountId] ?? null,
-      );
-    }
+      const pricePairs: { securityId: number; date: string }[] = [];
+      for (const mf of mapped.mutualFundPrices.filter((m) => m.plaidAccountId === plaidAccountId)) {
+        const sec = db.prepare(`SELECT id FROM securities WHERE symbol = ?`).get(mf.symbol) as
+          | { id: number }
+          | undefined;
+        if (!sec) continue;
+        const priceDate = mf.asOf ?? today;
+        const res = upsertPrice.run(sec.id, priceDate, mf.price);
+        if (res.changes > 0) pricesWritten++;
+        pricePairs.push({ securityId: sec.id, date: priceDate });
+      }
 
-    for (const mf of mapped.mutualFundPrices.filter((m) => m.plaidAccountId === plaidAccountId)) {
-      const sec = db.prepare(`SELECT id FROM securities WHERE symbol = ?`).get(mf.symbol) as
-        | { id: number }
-        | undefined;
-      if (!sec) continue;
-      const res = upsertPrice.run(sec.id, mf.asOf ?? today, mf.price);
-      if (res.changes > 0) pricesWritten++;
-    }
+      const reconAfter = countReconRowsOnDate(db, localAccountId, today);
+      // Tombstone consumption is a RECONCILE_CLOSE input change (spec §4):
+      // same-date (a recon row on `today` was replaced by this write) or
+      // newer-date (a previously-zero-latest security re-bought today).
+      if (reconAfter < reconBefore || newerDateSupersession) bumpTaxGenerationIfPresent(db);
+      bumpIfPricesAffectSyntheticCloses(db, pricePairs);
 
-    // Snapshot-diff closure sweep: equities absent from today's full book
-    // get quantity=0 rows (non-destructive, shrink-guarded).
-    reconcileClosedEquityHoldings(db, { accountId: localAccountId });
+      // Snapshot-diff closure sweep: equities absent from today's full book
+      // get quantity=0 rows (non-destructive, shrink-guarded).
+      reconcileClosedEquityHoldings(db, { accountId: localAccountId });
+    })();
   }
 
   return { accountsSynced, holdingsWritten, pricesWritten, staleRemoved, securitiesCreated };

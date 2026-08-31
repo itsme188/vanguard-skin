@@ -4,6 +4,7 @@ import type { Subscription } from "rxjs";
 import { getIbApi } from "./client";
 import { mapSecurityType } from "./security-type-map";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { bumpIfPricesAffectSyntheticCloses } from "@/lib/compute/tax-convention";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -273,13 +274,16 @@ export function snapshotToDb(db: Database.Database): number {
 
   let count = 0;
   const tx = db.transaction(() => {
+    const pairs: { securityId: number; date: string }[] = [];
     for (const [secId, quote] of state.cache) {
       const price = quote.last ?? quote.bid;
       if (price != null && price > 0) {
         upsert.run(secId, today, price);
         count++;
+        pairs.push({ securityId: secId, date: today });
       }
     }
+    bumpIfPricesAffectSyntheticCloses(db, pairs);
   });
   tx();
 
