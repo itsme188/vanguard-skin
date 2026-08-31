@@ -497,12 +497,23 @@ function DocumentRow({
               )}
             </div>
             <div className="flex items-center gap-2 flex-wrap text-[11px] text-ink-faint">
-              {doc.source && <span>{doc.source}</span>}
-              {doc.author && <span>· {doc.author}</span>}
-              {doc.document_type && (
-                <span>· {DOC_TYPE_LABELS[doc.document_type]}</span>
-              )}
-              {doc.publication_date && <span>· {doc.publication_date}</span>}
+              {/* Separators only BETWEEN present fields — a missing source/author
+                  used to leak a leading "·" ("· Other"). */}
+              {[
+                doc.source,
+                doc.author,
+                doc.document_type
+                  ? (DOC_TYPE_LABELS[doc.document_type] ?? doc.document_type)
+                  : null,
+                doc.publication_date,
+              ]
+                .filter((part): part is string => !!part)
+                .map((part, i) => (
+                  <span key={`${i}-${part}`}>
+                    {i > 0 && "· "}
+                    {part}
+                  </span>
+                ))}
             </div>
             {doc.processing_state === "pending_body" && (
               <div className="flex items-center gap-1.5 mt-1.5 text-[11px] font-medium text-gold-ink">
