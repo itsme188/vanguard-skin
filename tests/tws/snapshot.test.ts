@@ -478,6 +478,17 @@ describe("fetchSnapshotPrices — synthetic-close price bump (reconciler-hardeni
   it("a DB-level abort rolls back every deferred price write in the batch together (merged write+bump transaction — fails against the old per-security immediate-write structure)", async () => {
     const secA = seedSecurity(db, "AAA", { conId: 111 });
     const secB = seedSecurity(db, "BBB", { conId: 222 });
+    // Tombstone AAA at TRADING_DAY (review fix): without this, no tombstoned
+    // holdings row exists at all, so a "generation unchanged" assertion
+    // proves nothing about bump rollback — it would pass even if the bump
+    // call were never wired up. With it, AAA's price write ALONE would have
+    // bumped the generation had it persisted.
+    const acctId = ensureAccount(db);
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:live')`,
+    ).run(acctId, secA, TRADING_DAY);
+    const before = getTaxInputGeneration(db);
 
     const mockApi = {
       setMarketDataType: vi.fn(),
@@ -503,6 +514,7 @@ describe("fetchSnapshotPrices — synthetic-close price bump (reconciler-hardeni
     // both writes and any bump they might have triggered share one transaction.
     const priceCount = db.prepare("SELECT COUNT(*) c FROM prices").get() as { c: number };
     expect(priceCount.c).toBe(0);
+    expect(getTaxInputGeneration(db)).toBe(before);
   });
 });
 

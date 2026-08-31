@@ -238,4 +238,67 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
     expect(netRows).toEqual([{ quantity: 0 }]);
     expect(getTaxInputGeneration(db)).toBe(before);
   });
+
+  it("ghost-row cleanup that reverts a pair to an underlying tombstone bumps — neither the recon count nor newerDateSupersession sees this (review fix)", async () => {
+    const acctId = ibkrAccountId();
+    const secId = seedSecurity("X");
+    seedTombstone(acctId, secId, "2000-01-01"); // pre-existing tombstone, older date
+
+    // Sync 1 (intraday): X reported non-zero today — a re-buy over the
+    // tombstone. This itself is a newerDateSupersession bump.
+    mockApi!.getAccountUpdates.mockReturnValue(
+      mockObservable(
+        makeAccountUpdate([{ symbol: "X", pos: 10, avgCost: 5, marketPrice: 6, conId: 555 }], 1000, 500),
+      ),
+    );
+    const syncPortfolio = await getSyncPortfolio();
+    await syncPortfolio(db);
+    const afterSync1 = getTaxInputGeneration(db);
+
+    // Sync 2 (same day, later intraday): X no longer reported — closed out
+    // intraday. Ghost-row cleanup deletes X's today row (absent from this
+    // sync's position set), reverting X's latest holdings row back to the
+    // OLDER tombstone underneath it — a held→closed transition that neither
+    // detector above sees (the delete only touches tws-% rows, so recon
+    // counts on today's date are unaffected; newerDateSupersession only
+    // fires on a write, and X has no write in this sync at all).
+    mockApi!.getAccountUpdates.mockReturnValue(
+      mockObservable(
+        makeAccountUpdate([{ symbol: "OTHER", pos: 1, avgCost: 1, marketPrice: 1, conId: 999 }], 1000, 500),
+      ),
+    );
+    const result2 = await syncPortfolio(db);
+
+    expect(result2.staleRowsRemoved).toBe(1); // X's ghost row was deleted
+    expect(getTaxInputGeneration(db)).toBe(afterSync1 + 1);
+
+    const xRows = db
+      .prepare(`SELECT quantity FROM holdings WHERE security_id = ? ORDER BY as_of_date`)
+      .all(secId) as { quantity: number }[];
+    // The tombstone from 2000-01-01 is latest again; today's re-buy row is gone.
+    expect(xRows.map((r) => r.quantity)).toEqual([0]);
+  });
+
+  it("routine two-sync held-only cycle does not bump (ghost-cleanup control — nothing closes, nothing deletes)", async () => {
+    mockApi!.getAccountUpdates.mockReturnValue(
+      mockObservable(
+        makeAccountUpdate([{ symbol: "HELD", pos: 100, avgCost: 150, marketPrice: 175, conId: 777 }], 1000, 500),
+      ),
+    );
+    const syncPortfolio = await getSyncPortfolio();
+    await syncPortfolio(db);
+    const afterSync1 = getTaxInputGeneration(db);
+
+    // Second intraday sync, same day, same position reported again —
+    // nothing closed, so ghost-row cleanup deletes nothing.
+    mockApi!.getAccountUpdates.mockReturnValue(
+      mockObservable(
+        makeAccountUpdate([{ symbol: "HELD", pos: 100, avgCost: 150, marketPrice: 176, conId: 777 }], 1000, 500),
+      ),
+    );
+    const result2 = await syncPortfolio(db);
+
+    expect(result2.staleRowsRemoved).toBe(0);
+    expect(getTaxInputGeneration(db)).toBe(afterSync1);
+  });
 });

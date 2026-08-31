@@ -461,6 +461,16 @@ describe("fetchHistoricalPrices — synthetic-close price bump (reconciler-harde
 
   it("a throw inside a security's write transaction rolls back that security's bars AND its bump together", async () => {
     const secId = seedSecurity(db, "BOOM", "stock");
+    // Seed a tombstone dated AFTER the first bar's date so that, had the
+    // first bar's write persisted, it WOULD have bumped (review fix: without
+    // this, no tombstoned holdings row exists at all, so the generation
+    // assertion below proves nothing about bump rollback — it would pass
+    // even if the bump call were never wired up).
+    const acctId = seedAccount("T");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 0, '2026-02-15', 'recon:closed-equity:g:live')`,
+    ).run(acctId, secId);
 
     const mockApi = {
       getHistoricalData: vi.fn().mockResolvedValue([
@@ -488,6 +498,8 @@ describe("fetchHistoricalPrices — synthetic-close price bump (reconciler-harde
       c: number;
     };
     expect(priceCount.c).toBe(0);
+    // The first bar's write (which alone would have bumped, given the
+    // tombstone above) must not have persisted its bump either.
     expect(getTaxInputGeneration(db)).toBe(before);
   });
 });
