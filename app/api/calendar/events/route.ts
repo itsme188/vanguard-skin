@@ -169,7 +169,11 @@ export async function PATCH(request: Request) {
  *
  * Body: { id }
  *
- * Manual rows delete directly. Sync-owned EARNINGS rows (finnhub/nasdaq/wsh)
+ * Manual rows delete directly — and, for earnings, hand the print back: the
+ * mutation re-runs the reconciler for that issuer family so any vendor row the
+ * manual date was superseding becomes visible again (a removed "+ Add ticker"
+ * row must not take the company's real date down with it).
+ * Sync-owned EARNINGS rows (finnhub/nasdaq/wsh)
  * delete via suppression (migration 070): the (symbol, date, type) tuple is
  * recorded so the next sync sweep can't re-insert the same wrong date — the
  * user correction path for a mis-dated source row (NET Jul 30 vs Aug 6).

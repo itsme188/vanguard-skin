@@ -7,7 +7,8 @@ import type {
 import { resolveReleaseTime, SYMBOL_RELEASE_TIMES_ET } from "@/lib/calendar/release-times";
 import { resolveEarningsReleaseTime, resolveSymbolReleaseTime } from "@/lib/earnings/wire-times";
 import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
-import { mondayOf } from "@/lib/calendar/date-utils";
+import { mondayOf, todayET } from "@/lib/calendar/date-utils";
+import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
 
 // ─── Result types ─────────────────────────────────────────────────
 
@@ -711,19 +712,65 @@ export function updateCalendarEvent(
   return result.changes > 0;
 }
 
-/** Returns true if a manual row was deleted, false otherwise. */
+/**
+ * Returns true if a manual row was deleted, false otherwise.
+ *
+ * Hand-back on delete (qa:today-earningshub-add-ticker--manual-add-supersedes-
+ * vendor-date-delete-never-restores): a manual/user_confirmed earnings row is
+ * rung 1 of resolveCluster, so while it exists it supersedes every vendor row
+ * in its cluster — by design, the user's date wins. Deleting it used to leave
+ * those vendor rows at superseded=1 forever, and since every calendar surface
+ * filters `COALESCE(superseded,0) = 0`, the company's real earnings date
+ * disappeared with no path back (ORCL: manual Sep 2 added, Finnhub's Sep 7
+ * superseded, manual row removed, Sep 7 gone).
+ *
+ * So after removing an earnings row we re-run the reconciler scoped to that
+ * issuer family, which re-resolves the surviving cluster exactly as if the
+ * manual row had never been added. Re-using the reconciler rather than
+ * hand-rolling an un-supersede is what keeps the restore honest: a twin that
+ * is superseded for its OWN reason (a Nasdaq duplicate of a surviving,
+ * agreeing Finnhub row) stays superseded, and other symbols are never touched.
+ *
+ * NOTE the deliberate asymmetry with deleteAndSuppressCalendarEvent: no
+ * suppression is written here. Sync never re-emits a `source='manual'` row, so
+ * there is nothing to suppress — and a suppression would be scoped to the
+ * MANUAL row's date anyway, never the vendor date being restored.
+ *
+ * `opts.today` is the ET anchor for the reconcile pass (past-with-actuals vs
+ * future logic); it defaults to todayET() and exists for tests/callers that
+ * already hold an ET date. The restore inherits the reconciler's own gather
+ * window, which is the same window the supersession was decided in.
+ */
 export function deleteCalendarEvent(
   db: Database.Database,
   id: number,
+  opts: { today?: string } = {},
 ): boolean {
   const existing = db
-    .prepare("SELECT source FROM calendar_events WHERE id = ?")
-    .get(id) as { source: string } | undefined;
+    .prepare("SELECT source, event_type, symbol FROM calendar_events WHERE id = ?")
+    .get(id) as
+    | { source: string; event_type: string; symbol: string | null }
+    | undefined;
   if (!existing) return false;
   if (existing.source !== "manual") return false;
-  return db
-    .prepare("DELETE FROM calendar_events WHERE id = ? AND source = 'manual'")
-    .run(id).changes > 0;
+
+  const restoreSymbol =
+    existing.event_type === "earnings" && existing.symbol ? existing.symbol : null;
+
+  const txn = db.transaction(() => {
+    const deleted =
+      db
+        .prepare("DELETE FROM calendar_events WHERE id = ? AND source = 'manual'")
+        .run(id).changes > 0;
+    if (deleted && restoreSymbol) {
+      reconcileEarningsDates(db, {
+        today: opts.today ?? todayET(),
+        symbols: [restoreSymbol],
+      });
+    }
+    return deleted;
+  });
+  return txn();
 }
 
 function deriveReleaseTime(

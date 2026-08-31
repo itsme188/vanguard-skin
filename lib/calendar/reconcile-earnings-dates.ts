@@ -162,10 +162,18 @@ function resolveCluster(rows: EarningsRow[], today: string): Resolution {
  * Reconcile all held/watchlist earnings rows in a window around `today`.
  * Pure given `today`; idempotent (re-running yields the same marks); never
  * mutates a user_confirmed/manual cluster's canonical date.
+ *
+ * `opts.symbols` narrows the pass to the named issuer FAMILIES (dual-class
+ * siblings ride along, since the clustering key is the family). It exists so
+ * a single-symbol event change — e.g. deleting the manual row that was
+ * superseding a vendor date, lib/mutations/calendar.ts::deleteCalendarEvent —
+ * can re-resolve just that name's clusters through this one implementation
+ * instead of a second, divergent copy of the supersede rules. An omitted or
+ * EMPTY list means "no scope" — the whole-window pass sync.ts runs.
  */
 export function reconcileEarningsDates(
   db: Database.Database,
-  opts: { today: string },
+  opts: { today: string; symbols?: string[] },
 ): ReconcileResult {
   const { today } = opts;
   const start = addDaysUTC(today, -GATHER_BACK_DAYS);
@@ -181,10 +189,16 @@ export function reconcileEarningsDates(
     )
     .all(start, end) as EarningsRow[];
 
+  const scopedFamilies =
+    opts.symbols && opts.symbols.length > 0
+      ? new Set(opts.symbols.map((s) => familyKey(s)).filter((k) => k !== ""))
+      : null;
+
   // Group by issuer family, then proximity-cluster within each family.
   const byFamily = new Map<string, EarningsRow[]>();
   for (const r of rows) {
     const key = familyKey(r.symbol);
+    if (scopedFamilies && !scopedFamilies.has(key)) continue;
     if (!byFamily.has(key)) byFamily.set(key, []);
     byFamily.get(key)!.push(r);
   }
