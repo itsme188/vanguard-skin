@@ -12,6 +12,15 @@
  * consensus) silently renders as "—" even though the save reported success.
  *
  * QA finding: today-earningshub-actuals--manual-override-silently-suppressed-by-plausibility-guard
+ *
+ * `manualActualsAt` is CLUSTER-SCOPED, not row-scoped. One print carries
+ * several twin rows (finnhub / nasdaq / manual) and which one is canonical
+ * can flip after the acceptance, stranding the stamp on a superseded twin —
+ * so every caller must source it through
+ * lib/queries/manual-actuals-cluster.ts (the query layer already does this
+ * for the shipped read surfaces) rather than off the rendered row's own
+ * column. QA finding:
+ * today-week-ahead--accepted-actuals-vanish-after-superseded-twin-flip.
  */
 import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { isPlausibleEarnings } from "@/lib/earnings/plausibility";

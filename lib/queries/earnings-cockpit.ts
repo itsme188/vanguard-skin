@@ -16,6 +16,7 @@ import {
 } from "@/lib/queries/briefing-symbols";
 import { getEarningsSettings } from "@/lib/queries/earnings-settings";
 import { getCallNotePresenceForEvents } from "@/lib/queries/earnings-call-notes";
+import { applyClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { getNetExposureForSymbolFamilies } from "@/lib/compute/exposure";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
@@ -117,6 +118,12 @@ export function buildCockpitPayload(
         ORDER BY event_date ASC, release_time ASC NULLS LAST, symbol ASC`
     )
     .all(today, yesterday) as RawEventRow[];
+
+  // deriveEventStages runs the plausibility guard on manual_actuals_at, and
+  // the dedup above keeps only one twin per print — resolve the acceptance
+  // across the whole cluster so a canonical flip can't re-hide an actual the
+  // desk accepted (lib/queries/manual-actuals-cluster.ts).
+  applyClusterManualActuals(db, raw);
 
   if (raw.length === 0) {
     return {

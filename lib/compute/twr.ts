@@ -410,10 +410,12 @@ export function computeTwr(
     const firstDate =
       snapshots[0].month_end_date;
     const lastDate = snapshots[snapshots.length - 1].month_end_date;
-    const totalDays = daysBetween(
-      priorRow ? monthStartDate(firstDate) : firstDate,
-      lastDate
-    );
+    // Measured from firstDate (the month-END anchor) — this is the same
+    // date the UI displays as START (see startDate below). Measuring from
+    // monthStartDate(firstDate) instead (as this used to do whenever a
+    // priorRow existed) silently added ~30 days that never showed up in
+    // the displayed START, so DAYS didn't reconcile with START→END.
+    const totalDays = daysBetween(firstDate, lastDate);
 
     perAccount.push({
       accountId: account.id,
@@ -709,12 +711,9 @@ export function computeTwr(
     coveredSnapshots.length > 0
       ? coveredSnapshots[coveredSnapshots.length - 1].month_end_date
       : effectiveEnd;
-  const portfolioTotalDays = daysBetween(
-    aggPriorRow?.total_value
-      ? monthStartDate(portfolioFirstDate)
-      : portfolioFirstDate,
-    portfolioLastDate
-  );
+  // Same reasoning as the per-account totalDays above: measured from
+  // portfolioFirstDate (the displayed START anchor), not its month-start.
+  const portfolioTotalDays = daysBetween(portfolioFirstDate, portfolioLastDate);
 
   return {
     startDate: portfolioFirstDate,

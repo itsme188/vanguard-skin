@@ -52,6 +52,7 @@ import {
   EarningsEmailError,
 } from "@/lib/digest/send-earnings-email";
 import { sendEmail } from "@/lib/email";
+import { withClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import {
   checkEarningsCloudMarker,
@@ -344,10 +345,14 @@ function releaseFreshClaims(db: Database.Database, claims: Claimed[]): void {
 }
 
 function getEventRow(db: Database.Database, id: number): CalendarEvent | null {
-  return (
-    (db.prepare(`SELECT * FROM calendar_events WHERE id = ?`).get(id) as
+  // Cluster-scoped acceptance stamp — the wrap scoreboard runs the
+  // plausibility gate, and the stamp can sit on a superseded twin of this
+  // same print (lib/queries/manual-actuals-cluster.ts).
+  return withClusterManualActuals(
+    db,
+    db.prepare(`SELECT * FROM calendar_events WHERE id = ?`).get(id) as
       | CalendarEvent
-      | undefined) ?? null
+      | undefined,
   );
 }
 
