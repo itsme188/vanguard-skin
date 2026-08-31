@@ -11,7 +11,7 @@
  * manual_actuals_at was NULL, so actualsAreImplausible put the accepted print
  * back behind the scrape guard and the week-ahead card withheld it entirely.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
@@ -22,13 +22,27 @@ import { getEventsByWeek, getEarningsForWeekDeduped } from "@/lib/queries/calend
 import { buildCockpitPayload } from "@/lib/queries/earnings-cockpit";
 import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
 import { eventFigureDisplays } from "@/app/dashboard/today/WeekAheadView";
+import { clearManualActuals } from "@/lib/earnings/actuals";
 import type { CalendarEvent } from "@/lib/types";
+
+// The editor GET route (app/api/earnings/actuals/route.ts) imports the DB
+// singleton directly rather than taking `db` as a parameter — mirror the
+// mock pattern from tests/api/earnings-actuals-route.test.ts so the route
+// module under test reads/writes the SAME in-memory db as the rest of this
+// file (assigned in beforeEach below).
+const routeDb = vi.hoisted(() => ({ db: null as unknown as Database.Database }));
+vi.mock("@/lib/db", () => ({
+  get db() {
+    return routeDb.db;
+  },
+}));
 
 let db: Database.Database;
 
 beforeEach(() => {
   db = new Database(":memory:");
   runMigrations(db);
+  routeDb.db = db;
 });
 
 // RBRK's live figures: consensus EPS 0.04, accepted actual EPS 0.20 — a 5x
@@ -313,5 +327,139 @@ describe("type shape", () => {
     seedRbrkShape();
     const events: CalendarEvent[] = getEventsByWeek(db, WEEK_OF);
     expect(applyClusterManualActuals(db, events)).toBe(events);
+  });
+});
+
+/**
+ * Finding A (task-4 brief): the twin-flip healing above is read-side and
+ * covered the display surfaces, but the actuals editor GET
+ * (app/api/earnings/actuals/route.ts) read `manual_actuals_at` raw off the
+ * addressed row — in the stranded-stamp shape (canonical row healed from a
+ * superseded twin) the editor showed un-accepted while every other surface
+ * showed accepted. The GET handler now heals through `clusterManualActualsAt`.
+ */
+describe("GET /api/earnings/actuals — editor healing (Finding A)", () => {
+  function getReq(eventId: number): Request {
+    return new Request(`http://test/api/earnings/actuals?eventId=${eventId}`);
+  }
+
+  it("reports accepted with the healed figure for a canonical row with a stranded stamp", async () => {
+    const { canonical } = seedRbrkShape();
+    const mod = await import("@/app/api/earnings/actuals/route");
+    const res = await mod.GET(getReq(canonical));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      manual_actuals_at: string | null;
+      actual_value_raw: string | null;
+    };
+    expect(body.manual_actuals_at).toBe(STAMP);
+    expect(body.actual_value_raw).toBe(ACCEPTED);
+  });
+
+  it("reports un-accepted when nothing in the cluster was ever accepted", async () => {
+    const canonical = seedTwin({ symbol: "RBRK", source: "nasdaq", actual: ACCEPTED });
+    seedTwin({ symbol: "RBRK", source: "finnhub", superseded: 1, actual: ACCEPTED });
+    const mod = await import("@/app/api/earnings/actuals/route");
+    const res = await mod.GET(getReq(canonical));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { manual_actuals_at: string | null };
+    expect(body.manual_actuals_at).toBeNull();
+  });
+});
+
+/**
+ * Finding A (task-4 brief, continued): `clearManualActuals` 409'd unless the
+ * ADDRESSED row's own stamp was set, so a stranded acceptance (stamp lives
+ * on a superseded twin, addressed row is the healed canonical) was
+ * permanently un-clearable from the UI. Clear now resolves the cluster
+ * first and, once it finds a stamp anywhere in the cluster, nulls it
+ * wherever it lives — never leaving a stamp stranded on a sibling twin.
+ */
+describe("clearManualActuals — cluster-wide clear (Finding A)", () => {
+  it("clears the stamp cluster-wide when addressed via the healed canonical row; subsequent GET reports un-accepted", async () => {
+    const { canonical, stamped } = seedRbrkShape();
+
+    const result = clearManualActuals(db, { eventId: canonical });
+    expect(result.ok).toBe(true);
+
+    const stampedRow = db
+      .prepare(
+        `SELECT actual_value, enriched_at, manual_actuals_at, actual_missing_alerted_at
+           FROM calendar_events WHERE id = ?`,
+      )
+      .get(stamped) as {
+      actual_value: string | null;
+      enriched_at: string | null;
+      manual_actuals_at: string | null;
+      actual_missing_alerted_at: string | null;
+    };
+    expect(stampedRow.manual_actuals_at).toBeNull();
+    expect(stampedRow.actual_value).toBeNull();
+    expect(stampedRow.enriched_at).toBeNull();
+    expect(stampedRow.actual_missing_alerted_at).toBeNull();
+
+    // The canonical row itself carried its own (vendor-sourced) actual_value
+    // with no stamp — clearing must not touch data the user never entered.
+    const canonicalRow = db
+      .prepare(`SELECT actual_value, manual_actuals_at FROM calendar_events WHERE id = ?`)
+      .get(canonical) as { actual_value: string | null; manual_actuals_at: string | null };
+    expect(canonicalRow.actual_value).toBe(ACCEPTED);
+    expect(canonicalRow.manual_actuals_at).toBeNull();
+
+    // No stamp survives anywhere in the cluster — a subsequent GET on the
+    // canonical row (still healed through the cluster helper) now reports
+    // un-accepted, matching the "genuinely un-stamped" state.
+    const mod = await import("@/app/api/earnings/actuals/route");
+    const res = await mod.GET(
+      new Request(`http://test/api/earnings/actuals?eventId=${canonical}`),
+    );
+    const body = (await res.json()) as { manual_actuals_at: string | null };
+    expect(body.manual_actuals_at).toBeNull();
+  });
+
+  it("still 409s clearing a truly-unstamped cluster (no stamp anywhere)", () => {
+    const canonical = seedTwin({ symbol: "RBRK", source: "nasdaq", actual: ACCEPTED });
+    seedTwin({ symbol: "RBRK", source: "finnhub", superseded: 1, actual: ACCEPTED });
+
+    const result = clearManualActuals(db, { eventId: canonical });
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.status === 409) {
+      expect(result.code).toBe("not_manual");
+    } else {
+      throw new Error(`expected a 409 not_manual refusal, got ${JSON.stringify(result)}`);
+    }
+
+    const row = db
+      .prepare(`SELECT actual_value FROM calendar_events WHERE id = ?`)
+      .get(canonical) as { actual_value: string | null };
+    expect(row.actual_value).toBe(ACCEPTED);
+  });
+
+  it("still clears normally when addressed directly via the row that carries its own stamp", () => {
+    const eventId = seedTwin({
+      symbol: "RBRK",
+      source: "nasdaq",
+      actual: ACCEPTED,
+      manualAt: STAMP,
+    });
+
+    const result = clearManualActuals(db, { eventId });
+    expect(result.ok).toBe(true);
+
+    const row = db
+      .prepare(
+        `SELECT actual_value, enriched_at, manual_actuals_at, actual_missing_alerted_at
+           FROM calendar_events WHERE id = ?`,
+      )
+      .get(eventId) as {
+      actual_value: string | null;
+      enriched_at: string | null;
+      manual_actuals_at: string | null;
+      actual_missing_alerted_at: string | null;
+    };
+    expect(row.actual_value).toBeNull();
+    expect(row.enriched_at).toBeNull();
+    expect(row.manual_actuals_at).toBeNull();
+    expect(row.actual_missing_alerted_at).toBeNull();
   });
 });
