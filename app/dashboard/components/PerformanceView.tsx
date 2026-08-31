@@ -401,7 +401,12 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
               </div>
               <div>
                 <dt className="text-[11px] uppercase tracking-widest text-ink-faint">Days</dt>
-                <dd className="text-ink font-mono">{twrResult?.totalDays ?? "—"}</dd>
+                {/* displayDays, not totalDays: this cell sits between the
+                    Start and End cells above, so it must be THEIR span.
+                    totalDays is the (usually ~30 days longer) window the
+                    return was really earned over — it anchors the
+                    annualized figure, not this label. */}
+                <dd className="text-ink font-mono">{twrResult?.displayDays ?? "—"}</dd>
               </div>
               <div>
                 <dt className="text-[11px] uppercase tracking-widest text-ink-faint">Cash flows</dt>
