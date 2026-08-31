@@ -2,6 +2,11 @@ import type Database from "better-sqlite3";
 import type { CalendarEvent } from "@/lib/types";
 import { mergeFinnhubActual } from "@/lib/format/finnhub-figure";
 import { checkPrePrintFloor } from "@/lib/earnings/pre-print-floor";
+import {
+  clusterManualActualsAt,
+  clusterStampedEventIds,
+  type ClusterActualsRow,
+} from "@/lib/queries/manual-actuals-cluster";
 
 export interface SaveManualActualsInput {
   eventId: number;
@@ -178,13 +183,27 @@ export function saveManualActuals(
  * today-earningshub-bogeys--save-actuals-empty-silent-noop-cannot-clear,
  * decided 2026-08-03; re-confirmed 2026-08-20, DECISIONS-PENDING Option 2).
  *
- * Guarded on calendar_events.manual_actuals_at (migration 084): only rows a
- * human explicitly saved through saveManualActuals can be cleared. A row
- * whose actual_value came from the enrichment pipeline (Finnhub/FRED/Claude)
- * has manual_actuals_at NULL and refuses with 409 — sync-owned actuals stay
- * protected from an accidental wipe.
+ * Guarded on the stamp being findable ANYWHERE in the print's twin cluster
+ * (lib/queries/manual-actuals-cluster.ts), not only on the addressed row: a
+ * canonical-twin flip can strand the stamp on a now-superseded row while the
+ * addressed (canonical) row reads healed-accepted everywhere else — 409ing
+ * on the addressed row's own (NULL) stamp made that acceptance permanently
+ * un-clearable from the UI (task-4 brief, Finding A). A cluster with NO
+ * stamp at all — sync-owned actuals (Finnhub/FRED/Claude enrichment) — still
+ * refuses with 409, protected from an accidental wipe.
  *
- * Nulls four columns in one transaction so the pipeline fully re-arms:
+ * Once a stamp is found, CLEARS CLUSTER-WIDE: every row in the cluster that
+ * carries its own manual_actuals_at (the addressed row, a superseded twin,
+ * or both) is nulled in one transaction — an acceptance is a statement about
+ * the PRINT, so undoing it must not leave a stamp stranded on a sibling twin
+ * carrying the identical accepted figure (it would just heal itself back
+ * into view on the next read). A twin's independently-vendor-sourced
+ * actual_value that never carried its OWN stamp is left untouched — the user
+ * never entered that number, so clearing has nothing of theirs to remove
+ * from it; losing the (now unstamped) figure's healed status is exactly the
+ * "genuinely un-stamped" state clearing is supposed to produce.
+ *
+ * Nulls four columns per cleared row so the pipeline fully re-arms:
  *  - actual_value / enriched_at — the retry-until-complete enrichment road
  *    (lib/calendar/enrichment-runner.ts, `WHERE enriched_at IS NULL`)
  *    re-fetches the next tick while the event is still inside its window.
@@ -199,13 +218,19 @@ export function clearManualActuals(
   input: ClearManualActualsInput,
 ): ClearManualActualsResult {
   const event = db
-    .prepare(`SELECT id, manual_actuals_at FROM calendar_events WHERE id = ?`)
-    .get(input.eventId) as { id: number; manual_actuals_at: string | null } | undefined;
+    .prepare(
+      `SELECT id, symbol, event_date, event_type, actual_value, manual_actuals_at
+         FROM calendar_events WHERE id = ?`,
+    )
+    .get(input.eventId) as
+    | (ClusterActualsRow & { id: number })
+    | undefined;
   if (!event) {
     return { ok: false, status: 404, error: `Event ${input.eventId} not found.` };
   }
 
-  if (event.manual_actuals_at == null) {
+  const healedStamp = clusterManualActualsAt(db, event);
+  if (healedStamp == null) {
     return {
       ok: false,
       status: 409,
@@ -215,14 +240,20 @@ export function clearManualActuals(
     };
   }
 
-  db.prepare(
+  const stampedIds = clusterStampedEventIds(db, event);
+  const targetIds = stampedIds.length > 0 ? stampedIds : [event.id];
+
+  const clearOne = db.prepare(
     `UPDATE calendar_events
         SET actual_value = NULL,
             enriched_at = NULL,
             manual_actuals_at = NULL,
             actual_missing_alerted_at = NULL
       WHERE id = ?`,
-  ).run(input.eventId);
+  );
+  db.transaction((ids: number[]) => {
+    for (const id of ids) clearOne.run(id);
+  })(targetIds);
 
   return { ok: true };
 }

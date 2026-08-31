@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import type { CalendarEvent } from "@/lib/types";
 import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { saveManualActuals, clearManualActuals } from "@/lib/earnings/actuals";
+import { clusterManualActualsAt } from "@/lib/queries/manual-actuals-cluster";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +45,14 @@ interface PostBody {
  * GET /api/earnings/actuals?eventId=NN — returns the parsed current
  * actual_value as { eps_actual, revenue_actual_usd }, plus manual_actuals_at
  * (non-null only for a manual override) so the modal can pre-populate and
- * decide whether to show the "Clear actuals" control.
+ * decide whether to show the "Clear actuals" control. manual_actuals_at is
+ * HEALED through the twin cluster (lib/queries/manual-actuals-cluster.ts)
+ * before it is returned: a canonical-twin flip can strand the acceptance
+ * stamp on a now-superseded row, and without healing here the editor showed
+ * "un-accepted" while every other surface (Today, EarningsHub, cockpit)
+ * showed accepted — and "Clear actuals" 409'd as a result (task-4 brief,
+ * Finding A). actual_value_raw stays the addressed row's own value; healing
+ * only ever moves the STAMP, never lends a different row's figure.
  */
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -57,10 +65,20 @@ export async function GET(request: Request) {
   }
   const event = db
     .prepare(
-      `SELECT id, actual_value, consensus_value, enriched_at, manual_actuals_at FROM calendar_events WHERE id = ?`,
+      `SELECT id, actual_value, consensus_value, enriched_at, manual_actuals_at, symbol, event_date, event_type
+         FROM calendar_events WHERE id = ?`,
     )
     .get(eventId) as
-    | (Pick<CalendarEvent, "id" | "actual_value" | "consensus_value" | "enriched_at"> & {
+    | (Pick<
+        CalendarEvent,
+        | "id"
+        | "actual_value"
+        | "consensus_value"
+        | "enriched_at"
+        | "symbol"
+        | "event_date"
+        | "event_type"
+      > & {
         manual_actuals_at: string | null;
       })
     | undefined;
@@ -76,8 +94,9 @@ export async function GET(request: Request) {
     enriched_at: event.enriched_at,
     // Threaded so the BogeysEditModal can show "Clear actuals" only for a
     // manually-saved override — sync-owned actuals stay protected (see
-    // clearManualActuals).
-    manual_actuals_at: event.manual_actuals_at,
+    // clearManualActuals). Healed across the twin cluster so a stranded
+    // stamp still shows accepted here.
+    manual_actuals_at: clusterManualActualsAt(db, event),
   });
 }
 
