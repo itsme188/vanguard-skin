@@ -6,6 +6,7 @@ import {
   loadIntelView,
 } from "@/lib/digest/send-earnings-email";
 import { getEmailAudit } from "@/lib/queries/earnings-emails";
+import { withClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { parseDbTimestamp } from "@/lib/calendar/date-utils";
 import { repairCitationLineBreaks } from "@/lib/earnings/repair-citation-linebreaks";
 import type { CalendarEvent } from "@/lib/types";
@@ -56,9 +57,15 @@ export async function GET(request: Request) {
     );
   }
 
-  const event = db
-    .prepare(`SELECT * FROM calendar_events WHERE id = ?`)
-    .get(eventId) as CalendarEvent | undefined;
+  // Cluster-scoped acceptance stamp: the scoreboard below runs the
+  // plausibility gate, and the stamp can sit on a superseded twin of this
+  // same print (lib/queries/manual-actuals-cluster.ts).
+  const event = withClusterManualActuals(
+    db,
+    db.prepare(`SELECT * FROM calendar_events WHERE id = ?`).get(eventId) as
+      | CalendarEvent
+      | undefined,
+  );
   if (!event || !event.symbol) {
     return Response.json(
       { error: `Event ${eventId} not found or has no symbol.` },
