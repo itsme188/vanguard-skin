@@ -89,7 +89,11 @@ describe("statement-wins guards cover plaid rows", () => {
     // behind fixture accidents.
     const src = fs.readFileSync(path.join(__dirname, "..", "..", "lib", "import", "engine.ts"), "utf-8");
     expect(src).toMatch(/monthly_snapshots\.source IN \('tws', 'manual', 'plaid'\)/);
-    expect(src).toMatch(/holdings\.source_key LIKE 'tws-%' OR holdings\.source_key LIKE 'plaid:%'/);
+    // The holdings upsert's overwritable class is no longer an inline LIKE
+    // pair: since the tombstone-supersession work (spec 2026-08-30 §1) it
+    // comes from the single-sourced helper, whose membership (tws-, plaid:,
+    // and any recon tombstone) is pinned in tests/db/holding-sources.test.ts.
+    expect(src).toMatch(/WHERE \$\{statementOverwritableHoldingSql\(\)\}/);
     expect(src.match(/WHEN 'plaid' THEN 3/g)?.length).toBe(2); // both CASE arms
   });
 });

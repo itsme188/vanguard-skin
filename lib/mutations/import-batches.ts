@@ -1,7 +1,10 @@
 import type Database from "better-sqlite3";
 import type { ImportBatch } from "@/lib/types";
 import { stripArtifactSuffix } from "@/lib/mutations/donation-links";
-import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
+import {
+  bumpTaxGenerationIfPresent,
+  bumpIfPricesAffectSyntheticCloses,
+} from "@/lib/compute/tax-convention";
 
 export function createImportBatch(
   db: Database.Database,
@@ -89,8 +92,19 @@ export function deleteImportBatch(db: Database.Database, batchId: number): void 
     db.prepare("DELETE FROM daily_valuations").run();
     // Delete source data in dependency order (children first)
     db.prepare("DELETE FROM raw_imports WHERE import_batch_id = ?").run(batchId);
+    // Capture what is about to vanish: a deleted price can re-strike the
+    // synthetic close computeTaxLots derives for a tombstoned security, so the
+    // pairs have to be read BEFORE the DELETE (spec 2026-08-30 §4). This lives
+    // here rather than in undoImport so DIRECT callers
+    // (scripts/rebuild-ibkr-ledger.ts) are covered too — a direct deletion must
+    // not be fail-open.
+    const deletedPricePairs = db
+      .prepare(`SELECT security_id AS securityId, date FROM prices WHERE import_batch_id = ?`)
+      .all(batchId) as { securityId: number; date: string }[];
     db.prepare("DELETE FROM prices WHERE import_batch_id = ?").run(batchId);
-    db.prepare("DELETE FROM holdings WHERE import_batch_id = ?").run(batchId);
+    const holdingsDeleted = db
+      .prepare("DELETE FROM holdings WHERE import_batch_id = ?")
+      .run(batchId);
     // Donations owned by THIS batch (e.g. a daf-contributions batch) must be
     // torn down BEFORE the transactions delete below: their links/lots
     // cascade via FK the moment the donation row goes, but a routing_artifact
@@ -149,9 +163,14 @@ export function deleteImportBatch(db: Database.Database, batchId: number): void 
     if (
       transactionsDeleted.changes > 0 ||
       corporateActionsDeleted.changes > 0 ||
-      donationLinkLotCount > 0
+      donationLinkLotCount > 0 ||
+      holdingsDeleted.changes > 0 // holdings feed RECONCILE_CLOSE synthesis (spec §4)
     ) {
       bumpTaxGenerationIfPresent(db);
     }
+    // Price rows feed the synthetic close's selected price — evaluated AFTER
+    // the holdings delete so the tombstone state it tests reflects the
+    // post-delete book. A second bump here is harmless (fail-closed).
+    bumpIfPricesAffectSyntheticCloses(db, deletedPricePairs);
   })();
 }

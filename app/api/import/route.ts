@@ -240,8 +240,12 @@ export async function POST(request: NextRequest) {
         // Classification failure shouldn't block import
       }
 
+      // Corporate-action evidence is counted explicitly — never inferred from
+      // `warnings.length` (spec 2026-08-30 §5). Post-commit sweep failures push
+      // domain warnings of their own, and those must not masquerade as CA
+      // activity and conjure a replay status out of nothing.
       const hadCorporateActions = commitResultsRaw.some(
-        (r) => (r.newCorporateActions ?? 0) > 0 || (r.warnings ?? []).length > 0,
+        (r) => (r.newCorporateActions ?? 0) > 0 || (r.corporateActionWarningCount ?? 0) > 0,
       );
       try {
         const lotResult = computeTaxLots(db);

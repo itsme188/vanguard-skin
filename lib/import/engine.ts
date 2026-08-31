@@ -28,9 +28,16 @@ import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
 import { purgeExpiredOptionHoldings } from "@/lib/mutations/expired-options";
 import { purgeMaturedBondHoldings } from "@/lib/mutations/matured-bonds";
-import { reconcileClosedEquityHoldings } from "@/lib/mutations/closed-equity";
+import {
+  reconcileClosedEquityHoldings,
+  removeOrphanedReconTombstones,
+} from "@/lib/mutations/closed-equity";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
-import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
+import { statementOverwritableHoldingSql } from "@/lib/db/holding-sources";
+import {
+  bumpTaxGenerationIfPresent,
+  bumpIfPricesAffectSyntheticCloses,
+} from "@/lib/compute/tax-convention";
 
 // ── IBKR exchange-suffixed symbol resolution ────────────────────────
 //
@@ -220,6 +227,14 @@ export interface CommitResult {
   skippedDuplicates: number;
   unmatchedFactors?: string[];
   warnings: string[];
+  /**
+   * How many of `warnings` are corporate-action warnings (unresolved symbol,
+   * ratio collision). The import route uses this — never `warnings.length` —
+   * to decide whether the request carried corporate-action activity worth
+   * reporting a tax-lot replay status for: post-commit sweep failures also
+   * push warnings, and those are not CA evidence (spec §5).
+   */
+  corporateActionWarningCount: number;
 }
 
 // Map the parser's sourceType to the price.source value used by step 5's
@@ -266,6 +281,7 @@ export function commitImport(
   let newDonations = 0;
   let updatedDonations = 0;
   let skippedDuplicates = 0;
+  let corporateActionWarningCount = 0;
   const warnings: string[] = [];
 
   const result = db.transaction(() => {
@@ -441,6 +457,7 @@ export function commitImport(
         warnings.push(
           `Corporate action skipped: no known security for symbol ${ca.symbol} — import the trades/holdings that establish it first`,
         );
+        corporateActionWarningCount++;
         continue;
       }
       const accountId = getAccountId(ca.accountName);
@@ -458,6 +475,7 @@ export function commitImport(
             `${existing.action_type} ${existing.ratio_numerator}:${existing.ratio_denominator} vs statement ` +
             `${ca.actionType} ${ca.ratioNumerator}:${ca.ratioDenominator} — resolve manually`,
           );
+          corporateActionWarningCount++;
         }
         skippedDuplicates++;
         continue;
@@ -482,6 +500,13 @@ export function commitImport(
     //    statement holdings whenever TWS had already written an intra-day row.
     //    For IBKR April: 18 of 19 statement holdings were lost this way (only 1
     //    new option position survived because TWS hadn't seen it yet).
+    //
+    //    Includes recon tombstones — statement evidence supersedes any
+    //    tombstone at the same date (spec 2026-08-30). A tombstone is a
+    //    DERIVED row, never authority: without this, a corrected same-date
+    //    statement re-import could not restore a phantom-closed position.
+    //    The overwritable class is single-sourced in lib/db/holding-sources.ts
+    //    (shared with the recovery restore guard) — never an inline LIKE.
     const insertHolding = db.prepare(`
       INSERT INTO holdings
         (account_id, security_id, quantity, cost_basis, as_of_date, import_batch_id, source_key)
@@ -491,7 +516,7 @@ export function commitImport(
         cost_basis = excluded.cost_basis,
         import_batch_id = excluded.import_batch_id,
         source_key = excluded.source_key
-      WHERE holdings.source_key LIKE 'tws-%' OR holdings.source_key LIKE 'plaid:%'
+      WHERE ${statementOverwritableHoldingSql()}
     `);
 
     for (const h of parsed.holdings) {
@@ -580,8 +605,14 @@ export function commitImport(
       END
     `);
 
+    // Every (security, date) this loop writes — fed to the synthetic-close
+    // invalidation below. A statement price backfill for a sold-out security
+    // changes the price its RECONCILE_CLOSE sale is struck at, which is a tax
+    // output (spec §4).
+    const pricePairs: { securityId: number; date: string }[] = [];
     for (const p of parsed.prices) {
       const securityId = getSecurityId(p.symbol);
+      pricePairs.push({ securityId, date: p.date });
 
       const res = insertPrice.run(
         securityId,
@@ -597,6 +628,11 @@ export function commitImport(
         skippedDuplicates++;
       }
     }
+    // One pass over the pairs, inside this transaction so a rollback takes the
+    // bump with it. Held securities never match (their latest holdings row is
+    // non-zero), so an ordinary price-carrying statement import doesn't bump
+    // on this account.
+    bumpIfPricesAffectSyntheticCloses(db, pricePairs);
 
     // 6. Upsert monthly snapshots. UNIQUE(account_id, month_end_date) means there
     //    can only be one row per (account, month). Statement data (source ∈
@@ -804,7 +840,13 @@ export function commitImport(
     // re-import (all rows collide on source_key) must NOT bump — the
     // generation is a "did tax inputs change" signal, not "did an import
     // run".
-    if (newTransactions > 0 || newCorporateActions > 0) {
+    //
+    // Holdings count too (spec 2026-08-30 §4): computeTaxLots synthesizes a
+    // RECONCILE_CLOSE sale from a security whose LATEST holdings row is
+    // quantity 0, so writing a holdings row can create or destroy a realized
+    // tax event. The monthly-statement over-bump this implies is moot — such
+    // an import carries transactions, which already bump.
+    if (newTransactions > 0 || newCorporateActions > 0 || newHoldings > 0) {
       bumpTaxGenerationIfPresent(db);
     }
 
@@ -823,6 +865,7 @@ export function commitImport(
       skippedDuplicates,
       unmatchedFactors: unmatchedFactors.length > 0 ? unmatchedFactors : undefined,
       warnings,
+      corporateActionWarningCount,
     };
   })();
 
@@ -874,6 +917,26 @@ export function commitImport(
     parsed.holdings.length > 0 &&
     (HOLDINGS_SNAPSHOT_SOURCES.includes(parsed.sourceType) ||
       parsed.sourceType === "canonical-csv");
+
+  // Fail-CLOSED surfacing (spec 2026-08-30 §5): a swallowed sweep failure used
+  // to report as a clean import, so the book silently kept phantom positions.
+  // Each failure now says so in STABLE DOMAIN LANGUAGE on the result (the raw
+  // exception stays in the server log — it can carry file paths and driver
+  // noise) and leaves a marker on the batch summary, which persists in Import
+  // History long after the response is gone.
+  const recordSweepFailure = (
+    label: string,
+    domainWarning: string,
+    err: unknown,
+  ): void => {
+    console.error(`[commit] ${label} error:`, err instanceof Error ? err.message : err);
+    // Stable domain language only — raw error text stays in the server log.
+    result.warnings.push(domainWarning);
+    db.prepare(
+      `UPDATE import_batches SET summary = COALESCE(summary || '; ', '') || ? WHERE id = ?`,
+    ).run(`${label} failed — retries next sync`, result.batchId);
+  };
+
   if (hasHoldingsSnapshot) {
     try {
       const purged = purgeExpiredOptionHoldings(db);
@@ -881,9 +944,10 @@ export function commitImport(
         console.log(`[commit] Purged ${purged} expired option holdings`);
       }
     } catch (err) {
-      console.error(
-        "[commit] Expired-option purge error:",
-        err instanceof Error ? err.message : err,
+      recordSweepFailure(
+        "expired-option purge",
+        "Post-import expired-option purge failed — expired options may still show as open positions. It will retry on the next sync.",
+        err,
       );
     }
     try {
@@ -892,23 +956,51 @@ export function commitImport(
         console.log(`[commit] Purged ${purged} matured bond holdings`);
       }
     } catch (err) {
-      console.error(
-        "[commit] Matured-bond purge error:",
-        err instanceof Error ? err.message : err,
+      recordSweepFailure(
+        "matured-bond purge",
+        "Post-import matured-bond purge failed — matured bonds may still show as held. It will retry on the next sync.",
+        err,
       );
     }
     try {
-      // Snapshot-diff: a stock/ETF absent from the just-imported holdings
+      // Snapshot-diff: a position absent from the just-imported holdings
       // snapshot was sold/covered — mark it flat (zero-row). Guarded against a
       // partial/under-extracted snapshot wiping the book. See closed-equity.ts.
-      const reconciled = reconcileClosedEquityHoldings(db);
+      //
+      // Batch ownership (spec §2) is cleanup hygiene: a tombstone this commit
+      // mints for one of ITS OWN accounts carries this batch id, so undoing
+      // the batch takes the tombstone with it. The account set comes from
+      // `parsed.holdings` — NOT from rows stamped with this batch id — because
+      // a fully-deduped retry stamps nothing (every upsert no-ops) yet still
+      // runs this reconcile and must own whatever it mints. Every account name
+      // resolves here: the commit above created/resolved them all.
+      const holdingAccountNames = [
+        ...new Set(parsed.holdings.map((h) => h.accountName)),
+      ];
+      // (`hasHoldingsSnapshot` already implies a non-empty list; the guard
+      // keeps an empty `IN ()` from ever being rendered if that gate changes.)
+      const ownedAccountIds =
+        holdingAccountNames.length === 0
+          ? []
+          : (
+              db
+                .prepare(
+                  `SELECT id FROM accounts WHERE name IN (${holdingAccountNames.map(() => "?").join(",")})`,
+                )
+                .all(...holdingAccountNames) as { id: number }[]
+            ).map((r) => r.id);
+      const reconciled = reconcileClosedEquityHoldings(db, {
+        importBatchId: result.batchId,
+        ownedAccountIds,
+      });
       if (reconciled > 0) {
         console.log(`[commit] Reconciled ${reconciled} closed equity holdings`);
       }
     } catch (err) {
-      console.error(
-        "[commit] Closed-equity reconcile error:",
-        err instanceof Error ? err.message : err,
+      recordSweepFailure(
+        "closed-position reconcile",
+        "Post-import closed-position reconcile failed — recently sold positions may still show as open. It will retry on the next sync.",
+        err,
       );
     }
   }
@@ -930,13 +1022,35 @@ export function undoImport(db: Database.Database, batchId: number): void {
   if (refs.links > 0 || refs.lots > 0) {
     throw new Error(donationReferenceRefusalMessage(refs));
   }
-  deleteImportBatch(db, batchId);
+  // Capture BEFORE deletion: which accounts' tombstone evidence this undo can
+  // orphan. A tombstone's date IS its reference snapshot's date, so deleting
+  // this batch's holdings can strand tombstones that batch justified —
+  // including NULL-batch (sync-minted) ones this delete cannot reach.
+  const affectedAccountIds = (
+    db
+      .prepare(`SELECT DISTINCT account_id AS id FROM holdings WHERE import_batch_id = ?`)
+      .all(batchId) as { id: number }[]
+  ).map((r) => r.id);
+  // Deletion + tombstone rebuild are ONE transaction (spec §3): if the rebuild
+  // fails, the undo refuses whole rather than leaving a half-consistent book.
+  // Orphan cleanup first (history-preserving — never a wholesale rebuild, which
+  // would re-land tombstones on current reference dates), then an unowned
+  // re-reconcile so tombstones that are still justified by the SURVIVING
+  // snapshots come back at their original dates.
+  db.transaction(() => {
+    deleteImportBatch(db, batchId);
+    if (affectedAccountIds.length > 0) {
+      removeOrphanedReconTombstones(db, { accountIds: affectedAccountIds });
+      reconcileClosedEquityHoldings(db);
+    }
+  })();
   // deleteImportBatch clears the derived layer (tax_lots, tax_lot_sales,
   // daily_valuations) wholesale on the assumption that the caller regenerates
   // it — do that here so every undo path leaves the derived data consistent
   // with the surviving source records. Best-effort, mirroring the post-commit
-  // recompute in the import route: a recompute failure must not un-delete the
-  // batch or surface as an undo failure.
+  // recompute in the import route (pre-existing deliberate decision): a
+  // recompute failure must not un-delete the batch or surface as an undo
+  // failure, and the already-bumped generation keeps tax fail-closed meanwhile.
   try {
     computeTaxLots(db);
   } catch (err) {
