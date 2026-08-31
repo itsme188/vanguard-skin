@@ -605,14 +605,23 @@ export function commitImport(
       END
     `);
 
-    // Every (security, date) this loop writes — fed to the synthetic-close
-    // invalidation below. A statement price backfill for a sold-out security
-    // changes the price its RECONCILE_CLOSE sale is struck at, which is a tax
-    // output (spec §4).
+    // Every (security, date) this loop actually WROTE — fed to the
+    // synthetic-close invalidation below. A statement price backfill for a
+    // sold-out security changes the price its RECONCILE_CLOSE sale is struck
+    // at, which is a tax output (spec §4).
+    //
+    // Collected only when the upsert changed a row. A write the source-priority
+    // WHERE rejected (or that collided as a duplicate) leaves the stored price
+    // row byte-identical, so no synthetic close can move — collecting it would
+    // be fail-CLOSED noise with a real cost: a fully-deduped statement
+    // re-import carrying market-value-derived prices would bump the generation
+    // (the helper scans EVERY account, so a security held here but tombstoned
+    // in another matches) and clear a filing-ready acceptance stamp. The
+    // "a fully-deduped re-import never bumps" invariant outranks the
+    // over-approximation doctrine here.
     const pricePairs: { securityId: number; date: string }[] = [];
     for (const p of parsed.prices) {
       const securityId = getSecurityId(p.symbol);
-      pricePairs.push({ securityId, date: p.date });
 
       const res = insertPrice.run(
         securityId,
@@ -624,6 +633,7 @@ export function commitImport(
 
       if (res.changes > 0) {
         newPrices++;
+        pricePairs.push({ securityId, date: p.date });
       } else {
         skippedDuplicates++;
       }
@@ -932,9 +942,24 @@ export function commitImport(
     console.error(`[commit] ${label} error:`, err instanceof Error ? err.message : err);
     // Stable domain language only — raw error text stays in the server log.
     result.warnings.push(domainWarning);
-    db.prepare(
-      `UPDATE import_batches SET summary = COALESCE(summary || '; ', '') || ? WHERE id = ?`,
-    ).run(`${label} failed — retries next sync`, result.batchId);
+    // The marker write is BEST-EFFORT and needs its own guard. The dominant
+    // sweep-failure mode IS a database error (a locked/busy db, a disk error)
+    // — precisely the state in which this UPDATE also throws. Unguarded, that
+    // throw escapes the sweep's catch, propagates out of commitImport, and
+    // fails an already-committed (possibly multi-file) import: fail-open
+    // turned into fail-loud, the opposite of what this surfacing work is for.
+    // The warning has already reached result.warnings, so the user is told
+    // either way; only the persisted history line is lost.
+    try {
+      db.prepare(
+        `UPDATE import_batches SET summary = COALESCE(summary || '; ', '') || ? WHERE id = ?`,
+      ).run(`${label} failed — retries next sync`, result.batchId);
+    } catch (markerErr) {
+      console.error(
+        `[commit] ${label} summary-marker write failed:`,
+        markerErr instanceof Error ? markerErr.message : markerErr,
+      );
+    }
   };
 
   if (hasHoldingsSnapshot) {
@@ -973,7 +998,8 @@ export function commitImport(
       // `parsed.holdings` — NOT from rows stamped with this batch id — because
       // a fully-deduped retry stamps nothing (every upsert no-ops) yet still
       // runs this reconcile and must own whatever it mints. Every account name
-      // resolves here: the commit above created/resolved them all.
+      // resolves here: getAccountId THROWS on an unknown account, so an
+      // unresolvable name would already have aborted the commit above.
       const holdingAccountNames = [
         ...new Set(parsed.holdings.map((h) => h.accountName)),
       ];
