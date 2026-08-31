@@ -8,7 +8,8 @@ vi.mock("@/lib/tws/client", () => ({
 }));
 
 import { getIbApi } from "@/lib/tws/client";
-import { startStreaming, stopStreaming } from "@/lib/tws/streaming";
+import { startStreaming, stopStreaming, getQuoteCache, snapshotToDb } from "@/lib/tws/streaming";
+import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
 
 const mockedGetIbApi = vi.mocked(getIbApi);
 
@@ -256,5 +257,92 @@ describe("startStreaming — all-securities branch (no securityIds)", () => {
     expect(streamedConIdSet.has(1050)).toBe(false); // S50
     expect(streamedConIdSet.has(2001)).toBe(false); // OLD1
     expect(streamedConIdSet.has(2002)).toBe(false); // OLD2
+  });
+});
+
+describe("snapshotToDb — synthetic-close price bump (reconciler-hardening, spec §4)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    stopStreaming();
+    getQuoteCache().clear();
+    db = new Database(":memory:");
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  function cacheQuote(securityId: number, symbol: string, last: number): void {
+    getQuoteCache().set(securityId, {
+      securityId,
+      symbol,
+      last,
+      bid: null,
+      ask: null,
+      close: null,
+      change: null,
+      changePercent: null,
+      volume: null,
+      timestamp: Date.now(),
+    });
+  }
+
+  it("does not bump for a held-only cache flush (routine)", () => {
+    const acctId = seedAccount(db, "T");
+    const secId = seedSecurity(db, "AAPL", { conId: 1 });
+    insertHolding(db, acctId, secId, 100, "2026-01-01"); // held, no tombstone
+    cacheQuote(secId, "AAPL", 190);
+    const before = getTaxInputGeneration(db);
+
+    const count = snapshotToDb(db);
+
+    expect(count).toBe(1);
+    expect(getTaxInputGeneration(db)).toBe(before);
+  });
+
+  it("bumps when the cached quote prices a tombstoned security — isolated PRICE path (Codex plan-review F8): snapshotToDb never writes to `holdings`", () => {
+    const acctId = seedAccount(db, "T");
+    const secId = seedSecurity(db, "GONE", { conId: 2 });
+    // snapshotToDb stamps `new Date().toISOString().slice(0,10)` as the write
+    // date — the tombstone must be dated at-or-after that for the price
+    // write to fall inside the synthetic-close window.
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:live')`,
+    ).run(acctId, secId, today);
+    cacheQuote(secId, "GONE", 12.34);
+    const before = getTaxInputGeneration(db);
+
+    const count = snapshotToDb(db);
+
+    expect(count).toBe(1);
+    const holdingsCount = db.prepare("SELECT COUNT(*) c FROM holdings").get() as { c: number };
+    expect(holdingsCount.c).toBe(1); // unchanged — snapshotToDb never touches holdings
+    expect(getTaxInputGeneration(db)).toBe(before + 1);
+  });
+
+  it("a throw inside the transaction rolls back writes AND bump together", () => {
+    const acctId = seedAccount(db, "T");
+    const goneId = seedSecurity(db, "GONE", { conId: 2 });
+    const boomId = seedSecurity(db, "BOOM", { conId: 3 });
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:live')`,
+    ).run(acctId, goneId, today);
+    cacheQuote(goneId, "GONE", 12.34);
+    cacheQuote(boomId, "BOOM", 999999);
+    const before = getTaxInputGeneration(db);
+
+    db.exec(
+      `CREATE TEMP TRIGGER boom BEFORE INSERT ON prices WHEN NEW.close_price = 999999 BEGIN SELECT RAISE(ABORT,'boom'); END`,
+    );
+
+    expect(() => snapshotToDb(db)).toThrow();
+
+    const priceCount = db.prepare("SELECT COUNT(*) c FROM prices").get() as { c: number };
+    expect(priceCount.c).toBe(0); // GONE's write rolled back with BOOM's aborted insert
+    expect(getTaxInputGeneration(db)).toBe(before);
   });
 });

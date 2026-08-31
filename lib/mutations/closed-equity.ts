@@ -1,6 +1,12 @@
 import type Database from "better-sqlite3";
-import { statementSourcedHoldingSql } from "@/lib/db/holding-sources";
+import {
+  RECON_HOLDING_SOURCE_PREFIX,
+  RECON_STMT_SUFFIX,
+  RECON_LIVE_SUFFIX,
+  statementSourcedHoldingSql,
+} from "@/lib/db/holding-sources";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
 
 export interface ReconcileClosedEquityOptions {
   /** Scope to a single account. Omit to reconcile every account. */
@@ -11,6 +17,13 @@ export interface ReconcileClosedEquityOptions {
    * sync or an under-extracted statement PDF wiping the book. Default 0.5.
    */
   shrinkFloor?: number;
+  /**
+   * Batch-ownership hygiene (spec §2): when set, tombstones minted for
+   * accounts in `ownedAccountIds` are stamped with this batch id so
+   * undoImport removes them. NEVER stamps other accounts' tombstones.
+   */
+  importBatchId?: number;
+  ownedAccountIds?: number[];
 }
 
 /** Security types the live-snapshot pass may mark flat, and their eligibility rule. */
@@ -128,6 +141,21 @@ const LIVE_PASS_CLASSES = [
  * under-reconcile — that self-heals on the next cycle, once the prior snapshot
  * is itself the small one — than to flatten a live book, which does not.
  *
+ * Tombstone model (spec: 2026-08-31 reconciler-hardening): a tombstone is
+ * SUPERSEDABLE (a later real row on a newer date wins, see SELF-HEALING
+ * above) and DERIVED (never authority — see `statementOverwritableHoldingSql`
+ * / `liveOverwritableHoldingSql`). Every tombstone this function mints is
+ * ORIGIN-SUFFIXED with which pass minted it — `RECON_STMT_SUFFIX` for pass 1,
+ * `RECON_LIVE_SUFFIX` for passes 2/3 — so `removeOrphanedReconTombstones`
+ * (below) can apply the right evidence rule per origin; legacy unsuffixed
+ * rows are treated as statement-grade. And when `opts.importBatchId` is set,
+ * a tombstone minted for an account in `opts.ownedAccountIds` is BATCH-OWNED
+ * (stamped with that batch id) so `undoImport` removes it with the rest of
+ * the batch — never stamped for an account outside that set.
+ *
+ * The whole run (every pass, every account, plus the tax-generation bump) is
+ * one transaction: a mid-run failure leaves zero tombstones from that run.
+ *
  * Returns the number of positions marked flat.
  */
 export function reconcileClosedEquityHoldings(
@@ -220,8 +248,8 @@ export function reconcileClosedEquityHoldings(
   }));
 
   const insertZeroStmt = db.prepare(
-    `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
-     VALUES (?, ?, 0, 0, ?, ?)`,
+    `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key, import_batch_id)
+     VALUES (?, ?, 0, 0, ?, ?, ?)`,
   );
 
   let marked = 0;
@@ -229,14 +257,24 @@ export function reconcileClosedEquityHoldings(
    * `recon:closed-equity:` is the engine-owned tombstone prefix — historical
    * name, now covering every class this reconciler retires. It sits outside the
    * statement/live taxonomy in lib/db/holding-sources.ts (always quantity = 0,
-   * so inert for value predicates); do not rename it.
+   * so inert for value predicates); do not rename it. Every tombstone now
+   * carries an origin suffix (`RECON_STMT_SUFFIX` / `RECON_LIVE_SUFFIX`) and,
+   * for an owned account, a batch stamp — see the "Tombstone model" doc above.
    */
-  const tombstone = (accountId: number, securityId: number, date: string): void => {
+  const ownedAccounts = new Set(opts.ownedAccountIds ?? []);
+  const tombstone = (
+    accountId: number,
+    securityId: number,
+    date: string,
+    origin: typeof RECON_STMT_SUFFIX | typeof RECON_LIVE_SUFFIX,
+  ): void => {
+    const owned = opts.importBatchId != null && ownedAccounts.has(accountId);
     insertZeroStmt.run(
       accountId,
       securityId,
       date,
-      `recon:closed-equity:${accountId}:${securityId}:${date}`,
+      `${RECON_HOLDING_SOURCE_PREFIX}${accountId}:${securityId}:${date}${origin}`,
+      owned ? opts.importBatchId! : null,
     );
     marked++;
   };
@@ -245,63 +283,143 @@ export function reconcileClosedEquityHoldings(
   const passesShrinkGuard = (count: number, priorCount: number): boolean =>
     priorCount <= 0 || count >= priorCount * shrinkFloor;
 
-  for (const { id: accountId } of accounts) {
-    // ── Pass 1: statement snapshot (complete book, every security type) ──
-    // Runs FIRST so its tombstones (dated at the statement date) are already in
-    // place when the live passes look for phantoms — a position retired here is
-    // zero-quantity and therefore invisible to passes 2/3.
-    const stmtDate = (latestStatementDateStmt.get(accountId) as { d: string | null }).d;
-    if (stmtDate) {
-      const stmtCount = (
-        statementCountOnDateStmt.get(accountId, stmtDate) as { c: number }
-      ).c;
-      const priorStmtDate = (
-        priorStatementDateStmt.get(accountId, stmtDate) as { d: string | null }
-      ).d;
-      const priorStmtCount = priorStmtDate
-        ? (statementCountOnDateStmt.get(accountId, priorStmtDate) as { c: number }).c
+  db.transaction(() => {
+    for (const { id: accountId } of accounts) {
+      // ── Pass 1: statement snapshot (complete book, every security type) ──
+      // Runs FIRST so its tombstones (dated at the statement date) are already in
+      // place when the live passes look for phantoms — a position retired here is
+      // zero-quantity and therefore invisible to passes 2/3.
+      const stmtDate = (latestStatementDateStmt.get(accountId) as { d: string | null }).d;
+      if (stmtDate) {
+        const stmtCount = (
+          statementCountOnDateStmt.get(accountId, stmtDate) as { c: number }
+        ).c;
+        const priorStmtDate = (
+          priorStatementDateStmt.get(accountId, stmtDate) as { d: string | null }
+        ).d;
+        const priorStmtCount = priorStmtDate
+          ? (statementCountOnDateStmt.get(accountId, priorStmtDate) as { c: number }).c
+          : 0;
+        if (stmtCount > 0 && passesShrinkGuard(stmtCount, priorStmtCount)) {
+          const phantoms = excludingCashEquivalents(
+            anyPhantomsStmt.all(accountId, accountId, stmtDate) as PhantomRow[],
+          );
+          for (const p of phantoms) tombstone(accountId, p.security_id, stmtDate, RECON_STMT_SUFFIX);
+        }
+      }
+
+      // ── Passes 2 & 3: latest snapshot of any source ──────────────────────
+      const latestDate = (latestDateStmt.get(accountId) as { d: string | null }).d;
+      if (!latestDate) continue;
+
+      const latestCount = (countOnDateStmt.get(accountId, latestDate) as { c: number }).c;
+      if (latestCount === 0) continue; // no real snapshot landed
+
+      const priorDate = (priorDateStmt.get(accountId, latestDate) as { d: string | null }).d;
+      const priorCount = priorDate
+        ? (countOnDateStmt.get(accountId, priorDate) as { c: number }).c
         : 0;
-      if (stmtCount > 0 && passesShrinkGuard(stmtCount, priorStmtCount)) {
+      // Account-wide guard: the latest snapshot looks partial/failed as a whole.
+      if (!passesShrinkGuard(latestCount, priorCount)) continue;
+
+      for (const cls of classStmts) {
+        const latestClassCount = (
+          cls.countOnDate.get(accountId, latestDate) as { c: number }
+        ).c;
+        // Presence evidence: this snapshot must prove it reports the class.
+        if (cls.requirePresence && latestClassCount === 0) continue;
+        const priorClassCount = priorDate
+          ? (cls.countOnDate.get(accountId, priorDate) as { c: number }).c
+          : 0;
+        // Per-class guard: this class collapsed even if the account-wide count
+        // (dominated by another class) still looks healthy.
+        if (!passesShrinkGuard(latestClassCount, priorClassCount)) continue;
+
         const phantoms = excludingCashEquivalents(
-          anyPhantomsStmt.all(accountId, accountId, stmtDate) as PhantomRow[],
+          cls.phantoms.all(accountId, accountId, latestDate) as PhantomRow[],
         );
-        for (const p of phantoms) tombstone(accountId, p.security_id, stmtDate);
+        for (const p of phantoms) tombstone(accountId, p.security_id, latestDate, RECON_LIVE_SUFFIX);
       }
     }
-
-    // ── Passes 2 & 3: latest snapshot of any source ──────────────────────
-    const latestDate = (latestDateStmt.get(accountId) as { d: string | null }).d;
-    if (!latestDate) continue;
-
-    const latestCount = (countOnDateStmt.get(accountId, latestDate) as { c: number }).c;
-    if (latestCount === 0) continue; // no real snapshot landed
-
-    const priorDate = (priorDateStmt.get(accountId, latestDate) as { d: string | null }).d;
-    const priorCount = priorDate
-      ? (countOnDateStmt.get(accountId, priorDate) as { c: number }).c
-      : 0;
-    // Account-wide guard: the latest snapshot looks partial/failed as a whole.
-    if (!passesShrinkGuard(latestCount, priorCount)) continue;
-
-    for (const cls of classStmts) {
-      const latestClassCount = (
-        cls.countOnDate.get(accountId, latestDate) as { c: number }
-      ).c;
-      // Presence evidence: this snapshot must prove it reports the class.
-      if (cls.requirePresence && latestClassCount === 0) continue;
-      const priorClassCount = priorDate
-        ? (cls.countOnDate.get(accountId, priorDate) as { c: number }).c
-        : 0;
-      // Per-class guard: this class collapsed even if the account-wide count
-      // (dominated by another class) still looks healthy.
-      if (!passesShrinkGuard(latestClassCount, priorClassCount)) continue;
-
-      const phantoms = excludingCashEquivalents(
-        cls.phantoms.all(accountId, accountId, latestDate) as PhantomRow[],
-      );
-      for (const p of phantoms) tombstone(accountId, p.security_id, latestDate);
-    }
-  }
+    // Tombstone creation changes RECONCILE_CLOSE synthesis in computeTaxLots —
+    // a tax event regardless of caller (spec §4). Inside the transaction so a
+    // rollback takes the bump with it.
+    if (marked > 0) bumpTaxGenerationIfPresent(db);
+  })();
 
   return marked;
+}
+
+/**
+ * Deletes recon tombstones whose justifying same-date evidence is gone
+ * (spec §2, origin-aware): a tombstone's date IS its reference snapshot's
+ * date, so validity requires a surviving same-(account, date) real row —
+ * statement-sourced for `:stmt`/legacy tombstones (a same-date live row is
+ * NOT statement evidence), any non-recon row for `:live`. History-preserving
+ * by design: never a wholesale rebuild, which would re-land tombstones on
+ * current reference dates and silently move historical close dates.
+ * Bumps the tax generation when it deletes. Returns rows deleted.
+ */
+export function removeOrphanedReconTombstones(
+  db: Database.Database,
+  opts: { accountIds?: number[] } = {},
+): number {
+  const ids = opts.accountIds ?? [];
+  const acctFilter = ids.length > 0 ? `AND account_id IN (${ids.map(() => "?").join(",")})` : "";
+  return db.transaction(() => {
+    const res = db
+      .prepare(
+        `DELETE FROM holdings
+          WHERE source_key LIKE '${RECON_HOLDING_SOURCE_PREFIX}%'
+            ${acctFilter}
+            AND CASE WHEN source_key LIKE '%${RECON_LIVE_SUFFIX}'
+              THEN NOT EXISTS (
+                SELECT 1 FROM holdings h2
+                 WHERE h2.account_id = holdings.account_id
+                   AND h2.as_of_date = holdings.as_of_date
+                   AND h2.source_key NOT LIKE '${RECON_HOLDING_SOURCE_PREFIX}%')
+              ELSE NOT EXISTS (
+                SELECT 1 FROM holdings h2
+                 WHERE h2.account_id = holdings.account_id
+                   AND h2.as_of_date = holdings.as_of_date
+                   AND ${statementSourcedHoldingSql("h2.source_key")})
+            END`,
+      )
+      .run(...ids);
+    if (res.changes > 0) bumpTaxGenerationIfPresent(db);
+    return res.changes;
+  })();
+}
+
+/**
+ * Securities whose LATEST holdings row for `accountId` is quantity 0 — the
+ * tombstone state computeTaxLots' RECONCILE_CLOSE pass keys on. Live
+ * writers snapshot this BEFORE writing: a non-zero write for one of these
+ * is a newer-date tombstone supersession (re-bought position) and must bump
+ * the tax generation (spec §4).
+ */
+export function zeroLatestSecurityIds(db: Database.Database, accountId: number): Set<number> {
+  const rows = db
+    .prepare(
+      `SELECT h.security_id AS id FROM holdings h
+        WHERE h.account_id = ? AND h.quantity = 0
+          AND h.as_of_date = (
+            SELECT MAX(h2.as_of_date) FROM holdings h2
+             WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id)`,
+    )
+    .all(accountId) as { id: number }[];
+  return new Set(rows.map((r) => r.id));
+}
+
+/** Recon tombstones for (account, date) — same-date supersession detection. */
+export function countReconRowsOnDate(db: Database.Database, accountId: number, date: string): number {
+  return (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM holdings
+          WHERE account_id = ? AND as_of_date = ?
+            AND source_key LIKE '${RECON_HOLDING_SOURCE_PREFIX}%'`,
+      )
+      .get(accountId, date) as { c: number }
+  ).c;
 }

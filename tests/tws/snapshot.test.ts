@@ -10,6 +10,7 @@ vi.mock("@/lib/tws/client", () => ({
 
 import { getIbApi } from "@/lib/tws/client";
 import { fetchSnapshotPrices, tickPriorityFor } from "@/lib/tws/snapshot";
+import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
 
 const mockedGetIbApi = vi.mocked(getIbApi);
 
@@ -419,6 +420,101 @@ describe("fetchSnapshotPrices", () => {
     const count = db.prepare("SELECT COUNT(*) as c FROM prices").get() as { c: number };
     expect(count.c).toBe(0);
     expect(mockApi.getMarketDataSnapshot).not.toHaveBeenCalled();
+  });
+});
+
+describe("fetchSnapshotPrices — synthetic-close price bump (reconciler-hardening, spec §4)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    vi.clearAllMocks();
+  });
+
+  it("does not bump for a routine snapshot of a held (non-tombstoned) security", async () => {
+    const secId = seedSecurity(db, "AAPL", { conId: 265598 }); // seeds one qty=100 holding
+    const before = getTaxInputGeneration(db);
+
+    const mockApi = {
+      setMarketDataType: vi.fn(),
+      getMarketDataSnapshot: vi.fn().mockResolvedValue(
+        mockMarketData([{ type: IBApiTickType.LAST, value: 195.5 }]),
+      ),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    await fetchSnapshotPrices(db, { securityIds: [secId], asOfDate: TRADING_DAY });
+
+    expect(getTaxInputGeneration(db)).toBe(before);
+  });
+
+  it("bumps when the snapshot price lands at/before a tombstoned security's zero date — isolated PRICE path (Codex plan-review F8): fetchSnapshotPrices never writes to `holdings`", async () => {
+    const secId = seedSecurity(db, "GONE", { conId: 999 }); // auto-seeds a held row on 2026-01-01
+    const acctId = ensureAccount(db);
+    // Sold since: a NEWER row makes the latest holdings row for GONE a tombstone.
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:live')`,
+    ).run(acctId, secId, TRADING_DAY);
+    const before = getTaxInputGeneration(db);
+
+    const mockApi = {
+      setMarketDataType: vi.fn(),
+      getMarketDataSnapshot: vi.fn().mockResolvedValue(
+        mockMarketData([{ type: IBApiTickType.LAST, value: 12.34 }]),
+      ),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    const results = await fetchSnapshotPrices(db, { securityIds: [secId], asOfDate: TRADING_DAY });
+
+    expect(results[0].price).toBe(12.34);
+    expect(getTaxInputGeneration(db)).toBe(before + 1);
+  });
+
+  it("a DB-level abort rolls back every deferred price write in the batch together (merged write+bump transaction — fails against the old per-security immediate-write structure)", async () => {
+    const secA = seedSecurity(db, "AAA", { conId: 111 });
+    const secB = seedSecurity(db, "BBB", { conId: 222 });
+    // Tombstone AAA at TRADING_DAY (review fix): without this, no tombstoned
+    // holdings row exists at all, so a "generation unchanged" assertion
+    // proves nothing about bump rollback — it would pass even if the bump
+    // call were never wired up. With it, AAA's price write ALONE would have
+    // bumped the generation had it persisted.
+    const acctId = ensureAccount(db);
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:live')`,
+    ).run(acctId, secA, TRADING_DAY);
+    const before = getTaxInputGeneration(db);
+
+    const mockApi = {
+      setMarketDataType: vi.fn(),
+      getMarketDataSnapshot: vi.fn().mockImplementation((contract: { conId?: number }) =>
+        Promise.resolve(
+          mockMarketData([
+            { type: IBApiTickType.LAST, value: contract.conId === 111 ? 100 : 999999 },
+          ]),
+        ),
+      ),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    db.exec(
+      `CREATE TEMP TRIGGER boom BEFORE INSERT ON prices WHEN NEW.close_price = 999999 BEGIN SELECT RAISE(ABORT,'boom'); END`,
+    );
+
+    await expect(
+      fetchSnapshotPrices(db, { securityIds: [secA, secB], asOfDate: TRADING_DAY }),
+    ).rejects.toThrow();
+
+    // AAA's price must have rolled back together with BBB's aborted insert —
+    // both writes and any bump they might have triggered share one transaction.
+    const priceCount = db.prepare("SELECT COUNT(*) c FROM prices").get() as { c: number };
+    expect(priceCount.c).toBe(0);
+    expect(getTaxInputGeneration(db)).toBe(before);
   });
 });
 

@@ -1,9 +1,15 @@
 import { describe, it, expect } from "vitest";
+import Database from "better-sqlite3";
 import {
   STATEMENT_HOLDING_SOURCE_PREFIXES,
   LIVE_HOLDING_SOURCE_PREFIXES,
   statementSourcedHoldingSql,
   isPlaidSourcedHolding,
+  RECON_HOLDING_SOURCE_PREFIX,
+  RECON_STMT_SUFFIX,
+  RECON_LIVE_SUFFIX,
+  statementOverwritableHoldingSql,
+  liveOverwritableHoldingSql,
 } from "@/lib/db/holding-sources";
 
 describe("holdings source_key provenance vocabulary", () => {
@@ -66,5 +72,52 @@ describe("holdings source_key provenance vocabulary", () => {
     expect(isPlaidSourcedHolding("tws-1-2-2026-08-03")).toBe(false);
     expect(isPlaidSourcedHolding("canonical:hold:TAX:AAPL:2026-07-31")).toBe(false);
     expect(isPlaidSourcedHolding(null)).toBe(false);
+  });
+});
+
+describe("recon tombstone constants", () => {
+  it("prefix and suffixes contain no LIKE wildcards or quotes", () => {
+    for (const s of [RECON_HOLDING_SOURCE_PREFIX, RECON_STMT_SUFFIX, RECON_LIVE_SUFFIX]) {
+      expect(s).not.toMatch(/[%_'"]/);
+    }
+    expect(RECON_HOLDING_SOURCE_PREFIX).toBe("recon:closed-equity:");
+  });
+});
+
+describe("overwritable holding SQL", () => {
+  // Behavioral pin via a real SQLite round-trip, not string equality.
+  function matches(sql: string, sourceKey: string): boolean {
+    const db = new Database(":memory:");
+    try {
+      return (
+        db.prepare(`SELECT 1 AS hit WHERE ${sql.replace(/holdings\.source_key/g, "?")}`)
+          // every occurrence binds the same value
+          .get(...Array(sql.split("holdings.source_key").length - 1).fill(sourceKey)) != null
+      );
+    } finally {
+      db.close();
+    }
+  }
+  const stmtSql = statementOverwritableHoldingSql();
+  const liveSql = liveOverwritableHoldingSql();
+
+  it("statement writers may overwrite live rows and ANY tombstone", () => {
+    for (const k of ["tws-1-2-2026-08-01", "plaid:1:2:2026-08-01",
+      "recon:closed-equity:1:2:2026-08-01:stmt", "recon:closed-equity:1:2:2026-08-01:live",
+      "recon:closed-equity:1:2:2026-08-01"]) {
+      expect(matches(stmtSql, k)).toBe(true);
+    }
+    expect(matches(stmtSql, "canonical:hold:x")).toBe(false);
+    expect(matches(stmtSql, "vanguard-pdf:holding:x")).toBe(false);
+  });
+
+  it("live writers may overwrite live rows and ONLY :live tombstones", () => {
+    expect(matches(liveSql, "tws-1-2-2026-08-01")).toBe(true);
+    expect(matches(liveSql, "plaid:1:2:2026-08-01")).toBe(true);
+    expect(matches(liveSql, "recon:closed-equity:1:2:2026-08-01:live")).toBe(true);
+    expect(matches(liveSql, "recon:closed-equity:1:2:2026-08-01:stmt")).toBe(false);
+    // legacy unsuffixed = statement-grade (conservative)
+    expect(matches(liveSql, "recon:closed-equity:1:2:2026-08-01")).toBe(false);
+    expect(matches(liveSql, "canonical:hold:x")).toBe(false);
   });
 });

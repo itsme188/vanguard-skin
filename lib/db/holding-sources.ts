@@ -33,7 +33,8 @@
  * reconciliation rows — always quantity=0, so inert for the bond
  * carry-forward and every value predicate) and 'demo-hold-'
  * (scripts/seed-demo.ts dev-only seed data). Do not add them to either
- * list above.
+ * list above. Supersession of recon rows is directional — see
+ * statementOverwritableHoldingSql / liveOverwritableHoldingSql.
  */
 
 /** Every prefix an importer stamps on a statement-sourced holdings row. */
@@ -90,4 +91,38 @@ export function classifyHoldingSourceKey(sourceKey: string | null): "statement" 
     return "statement";
   }
   return "live";
+}
+
+/**
+ * Engine-owned tombstone prefix (reconcileClosedEquityHoldings; always
+ * quantity = 0). A tombstone is a DERIVED row, never authority: any real
+ * row may supersede it, subject to the directional rules below. New
+ * tombstones append an origin suffix recording the minting pass; legacy
+ * rows have none and are treated as statement-grade (conservative).
+ */
+export const RECON_HOLDING_SOURCE_PREFIX = "recon:closed-equity:";
+export const RECON_STMT_SUFFIX = ":stmt"; // minted by the statement pass
+export const RECON_LIVE_SUFFIX = ":live"; // minted by the equity/option live passes
+
+/**
+ * SQL fragment: rows a STATEMENT-authority writer (import commit, recovery
+ * restore) may overwrite in a same-slot upsert — live rows plus ANY
+ * tombstone. Statement evidence outranks every tombstone origin.
+ * Parenthesized; constants carry no wildcards/quotes (pinned by tests), so
+ * direct interpolation stays safe in reused prepared statements.
+ */
+export function statementOverwritableHoldingSql(col = "holdings.source_key"): string {
+  const live = LIVE_HOLDING_SOURCE_PREFIXES.map((p) => `${col} LIKE '${p}%'`);
+  return `(${[...live, `${col} LIKE '${RECON_HOLDING_SOURCE_PREFIX}%'`].join(" OR ")})`;
+}
+
+/**
+ * SQL fragment: rows a LIVE writer (Plaid) may overwrite — live rows plus
+ * only live-origin tombstones. A live row must never erase statement-derived
+ * closure evidence: the statement pass's `latest < stmtDate` phantom test
+ * cannot re-derive a tombstone masked by a same-date live row.
+ */
+export function liveOverwritableHoldingSql(col = "holdings.source_key"): string {
+  const live = LIVE_HOLDING_SOURCE_PREFIXES.map((p) => `${col} LIKE '${p}%'`);
+  return `(${[...live, `${col} LIKE '${RECON_HOLDING_SOURCE_PREFIX}%${RECON_LIVE_SUFFIX}'`].join(" OR ")})`;
 }

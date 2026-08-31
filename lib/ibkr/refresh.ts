@@ -13,6 +13,8 @@ import { computeDailyValuations } from "../compute/daily-valuation";
 import { todayET } from "../calendar/date-utils";
 import { isMarketClosed } from "../calendar/market-holidays";
 import { upsertFxRate } from "../mutations/fx-rates";
+import { zeroLatestSecurityIds, countReconRowsOnDate } from "../mutations/closed-equity";
+import { bumpTaxGenerationIfPresent, bumpIfPricesAffectSyntheticCloses } from "../compute/tax-convention";
 import { loadIbkrConfig } from "./config";
 import {
   openSession,
@@ -129,6 +131,14 @@ export function writeIbkrHoldings(
   let pricesWritten = 0;
 
   db.transaction(() => {
+    // Pre-state reads (spec §4, T3): captured at the TOP of the transaction,
+    // before any write, so a same-run REPLACE or re-buy is measured against
+    // the state that existed before this sync started.
+    const zeroLatest = zeroLatestSecurityIds(db, accountId);
+    const reconBefore = countReconRowsOnDate(db, accountId, today);
+    let newerDateSupersession = false;
+    const pricePairs: { securityId: number; date: string }[] = [];
+
     for (const m of snapshot.positions) {
       if (m.quantity === 0) continue; // mirror TWS: skip closed
       const securityId = upsertSecurity(db, {
@@ -145,9 +155,11 @@ export function writeIbkrHoldings(
       if (m.conid != null) updateConId.run(m.conid, securityId);
       upsertHolding.run(accountId, securityId, m.quantity, m.costBasis, today, `tws-${accountId}-${securityId}-${today}`);
       positionsWritten++;
+      if (zeroLatest.has(securityId)) newerDateSupersession = true;
       if (m.mktPrice != null && m.mktPrice > 0) {
         upsertPrice.run(securityId, today, m.mktPrice);
         pricesWritten++;
+        pricePairs.push({ securityId, date: today });
       }
 
       // Foreign-currency positions: the Web API's per-position `mktValue` is
@@ -165,6 +177,16 @@ export function writeIbkrHoldings(
         }
       }
     }
+
+    // Transition detection + bump — inside the same transaction as the
+    // writes (spec §4, atomicity rule): a mid-loop throw rolls both back
+    // together. `INSERT OR REPLACE` consumes a same-date tombstone by
+    // replacing it, so reconAfter < reconBefore catches that case; a
+    // non-zero write hitting a security whose prior latest row was a
+    // tombstone (newerDateSupersession) catches the newer-date re-buy case.
+    const reconAfter = countReconRowsOnDate(db, accountId, today);
+    if (reconAfter < reconBefore || newerDateSupersession) bumpTaxGenerationIfPresent(db);
+    bumpIfPricesAffectSyntheticCloses(db, pricePairs);
   })();
 
   if (snapshot.netLiq != null) {
@@ -370,6 +392,7 @@ export async function fetchAndStoreQuotes(
   let securitiesUpdated = 0;
   let pricesWritten = 0;
   db.transaction(() => {
+    const pricePairs: { securityId: number; date: string }[] = [];
     for (const q of quotes) {
       if (q.conid == null) continue;
       const candidate = candidateByConid.get(q.conid);
@@ -395,8 +418,12 @@ export async function fetchAndStoreQuotes(
       if (isTradingDay && q.last != null && q.last > 0) {
         upsertPrice.run(securityId, asOf, q.last);
         pricesWritten++;
+        pricePairs.push({ securityId, date: asOf });
       }
     }
+    // This function never writes to `holdings` — a bump here is entirely
+    // explained by the price path (spec §4).
+    bumpIfPricesAffectSyntheticCloses(db, pricePairs);
   })();
 
   return { conidsRequested: conids.length, securitiesUpdated, pricesWritten };

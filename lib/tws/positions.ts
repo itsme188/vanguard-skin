@@ -6,9 +6,11 @@ import type { AccountUpdate } from "@stoqey/ib/dist/api-next/account/account-upd
 import { getIbApi } from "./client";
 import { upsertSecurity } from "../mutations/securities";
 import { removeStaleSameDayTwsHoldings } from "../mutations/same-day-tws-holdings";
+import { zeroLatestSecurityIds, countReconRowsOnDate } from "../mutations/closed-equity";
 import { computeDailyValuations } from "../compute/daily-valuation";
 import { upsertFxRate } from "../mutations/fx-rates";
 import { deriveUsdPerUnit } from "../ibkr/map-positions";
+import { bumpTaxGenerationIfPresent, bumpIfPricesAffectSyntheticCloses } from "../compute/tax-convention";
 import type { PositionSyncProgress, PositionSyncResult } from "./types";
 
 // ── Type mappings ────────────────────────────────────────────────
@@ -268,6 +270,15 @@ export async function syncPortfolio(
   let staleRowsRemoved = 0;
 
   db.transaction(() => {
+    // Pre-state reads (spec §4, T3): captured at the TOP of the transaction,
+    // before any write, so a same-run REPLACE or re-buy is measured against
+    // the state that existed before this sync started. This account only
+    // syncs the single IBKR `accountId` looked up above.
+    const zeroLatest = zeroLatestSecurityIds(db, accountId);
+    const reconBefore = countReconRowsOnDate(db, accountId, today);
+    let newerDateSupersession = false;
+    const pricePairs: { securityId: number; date: string }[] = [];
+
     for (let i = 0; i < positions.length; i++) {
       const pos = positions[i];
 
@@ -325,6 +336,7 @@ export async function syncPortfolio(
       const sourceKey = `tws-${accountId}-${securityId}-${today}`;
       upsertHolding.run(accountId, securityId, pos.pos, costBasis, today, sourceKey);
       syncedSecurityIds.push(securityId);
+      if (zeroLatest.has(securityId)) newerDateSupersession = true;
 
       // Collect market prices from getAccountUpdates() (not available from getPositions)
       if (pos.marketPrice != null && pos.marketPrice > 0) {
@@ -373,6 +385,17 @@ export async function syncPortfolio(
       syncedSecurityIds,
     });
     staleRowsRemoved = cleanup.deleted;
+    // A ghost-row delete can revert a pair's latest row back to an OLDER
+    // tombstone underneath it (an earlier intraday sync today wrote a
+    // non-zero row over a tombstone, then a later same-day sync no longer
+    // reports that security — the delete removes today's non-zero row and
+    // the tombstone becomes latest again): a held→closed transition neither
+    // detector above sees (the delete only touches tws-% rows, so recon
+    // counts are unchanged; newerDateSupersession only fires on writes).
+    // Conservative by design — bump on ANY deletion, not just this exact
+    // case. Routine held-only syncs delete nothing, so the daily-no-bump
+    // property is preserved.
+    if (cleanup.deleted > 0) bumpTaxGenerationIfPresent(db);
     if (cleanup.skipped) {
       console.warn(
         `[syncPortfolio] Same-day ghost cleanup skipped — sync returned ${syncedSecurityIds.length} positions vs existing tws rows (partial sync suspected)`
@@ -380,21 +403,32 @@ export async function syncPortfolio(
     } else if (cleanup.deleted > 0) {
       console.log(`[syncPortfolio] Removed ${cleanup.deleted} same-day ghost holdings row(s)`);
     }
-  })();
 
-  // Phase 2.5: Save market prices (included in getAccountUpdates response)
-  if (priceMap.size > 0) {
-    onProgress?.({ phase: "prices", message: `Saving ${priceMap.size} market prices...` });
-
-    db.transaction(() => {
+    // Phase 2.5: Save market prices (included in getAccountUpdates response).
+    // MERGED into this same transaction (spec §4, atomicity rule) — this used
+    // to be a separate db.transaction() run after this one committed, which
+    // meant a price-write failure could not roll back an already-committed
+    // holdings/tombstone-supersession write from the same sync.
+    if (priceMap.size > 0) {
+      onProgress?.({ phase: "prices", message: `Saving ${priceMap.size} market prices...` });
       for (const [securityId, price] of priceMap) {
         upsertPrice.run(securityId, today, price);
         pricesSaved++;
+        pricePairs.push({ securityId, date: today });
       }
-    })();
+      console.log(`[syncPortfolio] Saved ${pricesSaved} market prices from getAccountUpdates()`);
+    }
 
-    console.log(`[syncPortfolio] Saved ${pricesSaved} market prices from getAccountUpdates()`);
-  }
+    // Transition detection + bump — inside the same transaction as the
+    // writes: a mid-transaction throw rolls both back together. `INSERT OR
+    // REPLACE` consumes a same-date tombstone by replacing it, so
+    // reconAfter < reconBefore catches that case; newerDateSupersession
+    // catches a non-zero write landing on a security whose prior latest row
+    // was a tombstone (re-buy on a newer date).
+    const reconAfter = countReconRowsOnDate(db, accountId, today);
+    if (reconAfter < reconBefore || newerDateSupersession) bumpTaxGenerationIfPresent(db);
+    bumpIfPricesAffectSyntheticCloses(db, pricePairs);
+  })();
 
   // Phase 3: Save account summary (already fetched via getAccountUpdates)
   const { netLiquidation, cashBalance } = accountData;
