@@ -386,6 +386,34 @@ describe("deleteCalendarEvent — the hand-back must not cascade the audit trail
     expect(previewsOnVendor.n).toBe(0);
   });
 
+  it("re-clusters the survivors — a BRIDGE row's children go to the nearest print, not across the gap", () => {
+    // 09-13 → 09-14 → 09-28 chains into ONE proximity cluster only because the
+    // manual row bridges the 15-day gap (each hop <= CLUSTER_PROXIMITY_DAYS).
+    // Once it is gone the two vendors are 15 days apart — two different prints.
+    // Resolving the survivors as one cluster (rung 4, Nasdaq provisional) would
+    // hand the audit to the row 14 days away instead of the one 1 day away.
+    const near = seedVendor("finnhub", "ORCL", "2026-09-13");
+    const far = seedVendor("nasdaq", "ORCL", "2026-09-28");
+
+    confirmEarningsDate(db, {
+      symbol: "ORCL",
+      confirmedDate: "2026-09-14",
+      confirmedTime: "amc",
+      today: TODAY,
+    });
+    const manual = manualRowId("ORCL");
+    const bogey = addBogey(manual);
+    expect(state(near)!.superseded).toBe(1);
+    expect(state(far)!.superseded).toBe(1);
+
+    deleteCalendarEvent(db, manual, { today: TODAY });
+
+    // Both vendors are canonical again, each its own print.
+    expect(state(near)!.date_status).toBe("single");
+    expect(state(far)!.date_status).toBe("single");
+    expect(bogeyEventId(bogey)).toBe(near);
+  });
+
   it("leaves children alone when the deleted manual row has no surviving twin", () => {
     confirmEarningsDate(db, {
       symbol: "ORCL",
@@ -466,6 +494,50 @@ describe("deleteAndSuppressCalendarEvent — sync-owned delete hands the print b
       event_type: "earnings",
     });
     expect(state(finn)).toBeUndefined();
+  });
+
+  it("does not re-surface a same-date twin sitting on the tuple it just suppressed", () => {
+    // Two vendors agreeing on the SAME wrong date is the likeliest reason a
+    // user reaches for the ✕. The suppression asserts "this tuple is wrong";
+    // the scoped reconcile must not answer by promoting the other vendor's row
+    // on that identical date — the delete would look like it did nothing.
+    const finn = seedVendor("finnhub", "ORCL", "2026-09-04");
+    const nas = seedVendor("nasdaq", "ORCL", "2026-09-04");
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(state(finn)!.date_status).toBe("confirmed"); // agreement → Finnhub canonical
+    expect(state(nas)!.superseded).toBe(1);
+
+    const result = deleteAndSuppressCalendarEvent(db, finn, { today: TODAY });
+
+    expect(result.suppressed).toEqual({
+      symbol: "ORCL",
+      event_date: "2026-09-04",
+      event_type: "earnings",
+    });
+    expect(state(nas)!.superseded).toBe(1);
+    expect(state(nas)!.date_status).toBeNull();
+    expect(getUpcomingEvents(db, { startDate: TODAY, endDate: "2026-09-30" })).toHaveLength(0);
+  });
+
+  it("does not drag a preview onto a twin whose print it could not have covered", () => {
+    const finn = seedVendor("finnhub", "ORCL", "2026-09-07");
+    const nas = seedVendor("nasdaq", "ORCL", "2026-09-04");
+    reconcileEarningsDates(db, { today: TODAY }); // nasdaq provisional canonical
+    const bogey = addBogey(nas);
+    // Sent for the 09-04 slot; it says nothing about the 09-07 print, and
+    // dragging it there would block the genuine 09-07 preview forever.
+    const stale = addEmail(nas, "preview", "2026-09-04 06:00:00");
+
+    deleteAndSuppressCalendarEvent(db, nas, { today: TODAY });
+
+    expect(bogeyEventId(bogey)).toBe(finn); // unconditional
+    expect(emailEventId(stale)).toBeUndefined();
+    const previewsOnTwin = db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM earnings_emails WHERE event_id = ? AND phase = 'preview'",
+      )
+      .get(finn) as { n: number };
+    expect(previewsOnTwin.n).toBe(0);
   });
 
   it("does not re-resolve unrelated symbols", () => {

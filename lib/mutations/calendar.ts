@@ -7,6 +7,7 @@ import type {
 import { resolveReleaseTime, SYMBOL_RELEASE_TIMES_ET } from "@/lib/calendar/release-times";
 import { resolveEarningsReleaseTime, resolveSymbolReleaseTime } from "@/lib/earnings/wire-times";
 import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 import {
   reconcileEarningsDates,
@@ -268,6 +269,58 @@ function getSuppressedEventTuples(db: Database.Database): Set<string> {
 }
 
 /**
+ * Re-hide any SYNC-OWNED earnings row in this issuer family that the scoped
+ * reconcile just promoted onto a SUPPRESSED (symbol, event_date, event_type)
+ * tuple.
+ *
+ * Without this, deleting one of two vendors that AGREE on a wrong date — the
+ * likeliest reason a user reaches for the ✕ — writes the suppression for that
+ * exact tuple and then, in the same transaction, lets the reconcile promote
+ * the other vendor's row sitting on the identical date. The delete looks like
+ * it did nothing, and the suppression ("this tuple is wrong") is contradicted
+ * by the row it left on screen.
+ *
+ * `source='manual'` rows are exempt: correctEarningsEventDate's same-date slot
+ * fix deliberately mints a manual row on the very tuple it suppresses, and
+ * that row IS the user's answer — the suppression only ever spoke about the
+ * sync sources.
+ */
+function resuppressSuppressedTuples(db: Database.Database, symbol: string): number {
+  const suppressed = getSuppressedEventTuples(db);
+  if (suppressed.size === 0) return 0;
+
+  const family = issuerSiblings(symbol).map((s) => s.trim().toUpperCase());
+  if (family.length === 0) return 0;
+  const rows = db
+    .prepare(
+      `SELECT id, symbol, event_date, event_type
+         FROM calendar_events
+        WHERE event_type = 'earnings'
+          AND source != 'manual'
+          AND symbol IS NOT NULL
+          AND COALESCE(superseded, 0) = 0
+          AND UPPER(symbol) IN (${family.map(() => "?").join(", ")})`,
+    )
+    .all(...family) as {
+    id: number;
+    symbol: string;
+    event_date: string;
+    event_type: string;
+  }[];
+
+  const hide = db.prepare(
+    "UPDATE calendar_events SET superseded = 1, date_status = NULL, date_conflict_with = NULL WHERE id = ?",
+  );
+  let hidden = 0;
+  for (const r of rows) {
+    if (!suppressed.has(suppressionKey(r.symbol, r.event_date, r.event_type))) continue;
+    hide.run(r.id);
+    hidden++;
+  }
+  return hidden;
+}
+
+/**
  * Delete a SYNC-OWNED event and suppress its tuple so the next sweep can't
  * re-insert it — the user correction path for a wrong sync-sourced earnings
  * date (delete the wrong row here, add the right one via insertCalendarEvent).
@@ -280,7 +333,9 @@ function getSuppressedEventTuples(db: Database.Database): Set<string> {
  * until the next syncCalendarForWeek. Its dependent audit rows (bogeys, sent
  * emails, skips) CASCADEd away with it too. So: repoint the children onto the
  * row that becomes canonical BEFORE the delete, then re-run the reconciler
- * scoped to that issuer family — all inside the delete+suppress transaction.
+ * scoped to that issuer family — all inside the delete+suppress transaction,
+ * followed by resuppressSuppressedTuples so the reconcile can never answer the
+ * delete by promoting a sibling row onto the tuple just suppressed.
  *
  * `opts.handBack: false` opts out, for a caller that owns the cluster
  * resolution itself: correctEarningsEventDate deletes a BATCH of wrong rows
@@ -320,7 +375,12 @@ export function deleteAndSuppressCalendarEvent(
     });
     if (handBack) repointDependentsBeforeDelete(db, { eventId: id, today });
     db.prepare("DELETE FROM calendar_events WHERE id = ?").run(id);
-    if (handBack) reconcileEarningsDates(db, { today, symbols: [symbol] });
+    if (handBack) {
+      reconcileEarningsDates(db, { today, symbols: [symbol] });
+      // …but never onto a tuple the user has declared wrong, including the one
+      // suppressed two statements ago.
+      resuppressSuppressedTuples(db, symbol);
+    }
   });
   txn();
 
