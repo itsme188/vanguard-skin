@@ -266,6 +266,74 @@ describe("TWR computation", () => {
     expect(acct.annualizedReturn).toBeNull();
   });
 
+  it("measures totalDays from the displayed START anchor (month-end), not the month-start of the first included snapshot", () => {
+    // Anchor snapshot before the requested window so a priorRow exists —
+    // this is the case that previously diverged: totalDays was measured
+    // from monthStartDate(firstDate) (a synthetic "day 1 of the month")
+    // while the UI always displays firstDate itself (the month-END anchor)
+    // as START. Mirrors the QA repro: 6M window, Jan 31 2026 → Jun 30 2026.
+    seedSnapshot(db, ACCT_1, "2025-12-31", 100000);
+    const months = [
+      "2026-01-31",
+      "2026-02-28",
+      "2026-03-31",
+      "2026-04-30",
+      "2026-05-31",
+      "2026-06-30",
+    ];
+    let v = 100000;
+    for (const m of months) {
+      v *= 1.01;
+      seedSnapshot(db, ACCT_1, m, v);
+    }
+
+    const result = computeTwr(db, {
+      startDate: "2026-01-01",
+      endDate: "2026-06-30",
+    });
+    expect(result).not.toBeNull();
+
+    const acct = result!.perAccount[0];
+    expect(acct.startDate).toBe("2026-01-31");
+    expect(acct.endDate).toBe("2026-06-30");
+    // Jan 31 → Jun 30 2026 (non-leap) = 28 + 31 + 30 + 31 + 30 = 150 days,
+    // NOT 180 (which is what Jan 1 → Jun 30 — the old month-start anchor —
+    // would give). START/END/DAYS must reconcile for the same displayed
+    // window.
+    expect(acct.totalDays).toBe(150);
+  });
+
+  it("measures portfolio-wide totalDays from the same displayed START/END anchors as the per-account result", () => {
+    // Same shape as above but exercised through the portfolio-wide
+    // (multi-account) aggregation branch, which has its own independent
+    // totalDays computation.
+    const ACCT_2 = 2;
+    for (const acctId of [ACCT_1, ACCT_2]) {
+      seedSnapshot(db, acctId, "2025-12-31", 100000);
+      let v = 100000;
+      for (const m of [
+        "2026-01-31",
+        "2026-02-28",
+        "2026-03-31",
+        "2026-04-30",
+        "2026-05-31",
+        "2026-06-30",
+      ]) {
+        v *= 1.01;
+        seedSnapshot(db, acctId, m, v);
+      }
+    }
+
+    const result = computeTwr(db, {
+      startDate: "2026-01-01",
+      endDate: "2026-06-30",
+    });
+    expect(result).not.toBeNull();
+    expect(result!.startDate).toBe("2026-01-31");
+    expect(result!.endDate).toBe("2026-06-30");
+    expect(result!.totalDays).toBe(150);
+  });
+
   it("handles negative returns correctly", () => {
     seedSnapshot(db, ACCT_1, "2025-01-31", 100000);
     seedSnapshot(db, ACCT_1, "2025-02-28", 90000); // -10%
