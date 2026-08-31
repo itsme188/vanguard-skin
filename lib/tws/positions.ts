@@ -385,6 +385,17 @@ export async function syncPortfolio(
       syncedSecurityIds,
     });
     staleRowsRemoved = cleanup.deleted;
+    // A ghost-row delete can revert a pair's latest row back to an OLDER
+    // tombstone underneath it (an earlier intraday sync today wrote a
+    // non-zero row over a tombstone, then a later same-day sync no longer
+    // reports that security — the delete removes today's non-zero row and
+    // the tombstone becomes latest again): a held→closed transition neither
+    // detector above sees (the delete only touches tws-% rows, so recon
+    // counts are unchanged; newerDateSupersession only fires on writes).
+    // Conservative by design — bump on ANY deletion, not just this exact
+    // case. Routine held-only syncs delete nothing, so the daily-no-bump
+    // property is preserved.
+    if (cleanup.deleted > 0) bumpTaxGenerationIfPresent(db);
     if (cleanup.skipped) {
       console.warn(
         `[syncPortfolio] Same-day ghost cleanup skipped — sync returned ${syncedSecurityIds.length} positions vs existing tws rows (partial sync suspected)`
