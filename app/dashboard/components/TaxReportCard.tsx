@@ -6,6 +6,8 @@ import { buildTaxReportFilename } from "@/lib/compute/tax-report";
 
 interface TaxReportSummary {
   year: number;
+  /** Scope echoed by /api/tax-report — accounts.name, or null for all accounts. */
+  accountName: string | null;
   filingReady: boolean;
   washSaleAdvisory: string;
   shortTermTotal: { proceeds: number; costBasis: number; adjustments: number; gainLoss: number };
@@ -54,6 +56,22 @@ export function shouldShowWashSaleAddBack(adjustments: number): boolean {
   return adjustments !== 0;
 }
 
+// Scope labels. The Tax Lots ?account= filter narrows this card and its
+// downloads (QA:
+// tax-lots--account-filter-ignored-by-tax-report-card-and-exports), so both
+// the heading and the not-ready banner must NAME the account — a partial
+// report that reads "Tax Report — 2022" is indistinguishable from the full
+// one. Pure helpers so they're testable without a rendering harness.
+export function taxReportCardTitle(year: number, accountName?: string | null): string {
+  return accountName ? `Tax Report — ${year} · ${accountName}` : `Tax Report — ${year}`;
+}
+
+export function filingBannerHeading(accountName?: string | null): string {
+  return accountName
+    ? `Export not ready for filing — PARTIAL EXPORT: ${accountName} only`
+    : "Export not ready for filing";
+}
+
 // Keyed to where the add-back actually landed (shortTermTotal/longTermTotal
 // .adjustments from sumRows(), USD rows only per their own term), never to
 // washSaleWarnings.length alone: detectWashSales flags losses regardless of
@@ -85,37 +103,50 @@ export function washSalesCaption(
   return "None detected";
 }
 
-export function TaxReportCard({ year }: { year: number }) {
+export function TaxReportCard({
+  year,
+  accountName,
+}: {
+  year: number;
+  /** Tax Lots ?account= filter. Undefined/empty = all accounts. */
+  accountName?: string;
+}) {
   const [report, setReport] = useState<TaxReportSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
   const [downloadingTxf, setDownloadingTxf] = useState(false);
 
+  // Same query string for the card fetch and both downloads — the card can
+  // never display one account's totals while handing over another's file.
+  const accountParam = accountName ? `&account=${encodeURIComponent(accountName)}` : "";
+
   useEffect(() => {
-    fetch(`/api/tax-report?year=${year}`)
+    setLoading(true);
+    fetch(`/api/tax-report?year=${year}${accountParam}`)
       .then((r) => r.json())
       .then((json) => {
         if (json.success) setReport(json.data);
+        else setReport(null);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [year]);
+  }, [year, accountParam]);
 
   async function handleDownload(format: "csv" | "txf") {
     if (!report) return;
     const setter = format === "csv" ? setDownloading : setDownloadingTxf;
     setter(true);
     try {
-      const res = await fetch(`/api/tax-report?year=${year}&format=${format}`);
+      const res = await fetch(`/api/tax-report?year=${year}&format=${format}${accountParam}`);
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       // Filename: buildTaxReportFilename appends "-NOT-FOR-FILING" unless
-      // report.filingReady (broker-acceptance marker covers this year) —
-      // single-sourced with the API route's Content-Disposition
-      // (lib/compute/tax-report.ts).
-      a.download = buildTaxReportFilename(format, year, report.filingReady);
+      // report.filingReady (broker-acceptance marker covers this account and
+      // year) and carries the account slug when scoped — single-sourced with
+      // the API route's Content-Disposition (lib/compute/tax-report.ts).
+      a.download = buildTaxReportFilename(format, year, report.filingReady, accountName);
       a.click();
       URL.revokeObjectURL(url);
     } catch {
@@ -145,9 +176,14 @@ export function TaxReportCard({ year }: { year: number }) {
   return (
     <div className="rounded-xl border border-edge bg-panel overflow-hidden">
       <div className="px-5 py-3 border-b border-edge flex items-center justify-between">
-        <div>
-          <h3 className="text-xs font-medium text-ink-faint uppercase tracking-wider">
-            Tax Report — {year}
+        <div className="min-w-0">
+          {/* truncate (not wrap) keeps the scope on one line next to the
+              download buttons; the full name stays available on hover. */}
+          <h3
+            className="text-xs font-medium text-ink-faint uppercase tracking-wider truncate"
+            title={taxReportCardTitle(year, report.accountName ?? accountName)}
+          >
+            {taxReportCardTitle(year, report.accountName ?? accountName)}
           </h3>
         </div>
         <div className="flex gap-2">
@@ -174,7 +210,9 @@ export function TaxReportCard({ year }: { year: number }) {
       {!report.filingReady && (
         <div className="px-5 pt-4">
           <div className="border border-amber-400/20 bg-amber-400/5 rounded-lg p-3">
-            <h4 className="text-xs font-medium text-amber-400">&#x26A0; Export not ready for filing</h4>
+            <h4 className="text-xs font-medium text-amber-400">
+              &#x26A0; {filingBannerHeading(report.accountName ?? accountName)}
+            </h4>
             <p className="text-[10px] text-ink-faint mt-1">{FILING_WARNING_COPY}</p>
           </div>
         </div>
