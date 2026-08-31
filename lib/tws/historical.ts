@@ -8,6 +8,7 @@ import {
 } from "./security-type-map";
 import { getIbApi } from "./client";
 import { RateLimiter } from "./rate-limiter";
+import { bumpIfPricesAffectSyntheticCloses } from "../compute/tax-convention";
 import type { PriceFetchResult, PriceFetchProgress } from "./types";
 
 const rateLimiter = new RateLimiter();
@@ -180,6 +181,7 @@ export async function fetchHistoricalPrices(
     let skipped = 0;
 
     db.transaction(() => {
+      const pairs: { securityId: number; date: string }[] = [];
       for (const bar of bars) {
         if (!bar.time || bar.close == null) {
           skipped++;
@@ -187,9 +189,16 @@ export async function fetchHistoricalPrices(
         }
         const date = formatBarDate(bar.time);
         const result = upsertPrice.run(sec.id, date, bar.close);
-        if (result.changes > 0) inserted++;
-        else skipped++;
+        if (result.changes > 0) {
+          inserted++;
+          pairs.push({ securityId: sec.id, date });
+        } else {
+          skipped++;
+        }
       }
+      // Same transaction as the writes above (spec §4) — this security's
+      // bars + its synthetic-close bump roll back together on a throw.
+      bumpIfPricesAffectSyntheticCloses(db, pairs);
     })();
 
     const fetchResult: PriceFetchResult = {

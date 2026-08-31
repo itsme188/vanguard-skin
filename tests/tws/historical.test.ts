@@ -19,6 +19,7 @@ vi.mock("@/lib/tws/rate-limiter", () => ({
 import { getIbApi } from "@/lib/tws/client";
 import { fetchHistoricalPrices } from "@/lib/tws/historical";
 import type { Bar } from "@stoqey/ib";
+import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
 
 const mockedGetIbApi = vi.mocked(getIbApi);
 
@@ -400,5 +401,93 @@ describe("fetchHistoricalPrices", () => {
       const durationArg = mockApi.getHistoricalData.mock.calls[0][2];
       expect(durationArg).toBe("6 M");
     });
+  });
+});
+
+describe("fetchHistoricalPrices — synthetic-close price bump (reconciler-hardening, spec §4)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    vi.clearAllMocks();
+  });
+
+  function seedAccount(name: string): number {
+    return (
+      db.prepare(`INSERT INTO accounts (name) VALUES (?) RETURNING id`).get(name) as { id: number }
+    ).id;
+  }
+
+  it("does not bump for a held-only fetch (routine sync, no tombstone anywhere)", async () => {
+    const secId = seedSecurity(db, "AAPL", "stock");
+    const before = getTaxInputGeneration(db);
+
+    const mockApi = {
+      getHistoricalData: vi.fn().mockResolvedValue([
+        { time: "20260201", open: 190, high: 195, low: 189, close: 193.5, volume: 1000 },
+      ]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    await fetchHistoricalPrices(db, { securityIds: [secId] });
+
+    expect(getTaxInputGeneration(db)).toBe(before);
+  });
+
+  it("bumps when a fetched bar lands at/before a tombstoned security's zero date — isolated PRICE path (Codex plan-review F8): fetchHistoricalPrices never writes to `holdings`", async () => {
+    const secId = seedSecurity(db, "GONE", "stock");
+    const acctId = seedAccount("T");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 0, '2026-02-01', 'recon:closed-equity:g:live')`,
+    ).run(acctId, secId);
+    const before = getTaxInputGeneration(db);
+
+    const mockApi = {
+      getHistoricalData: vi.fn().mockResolvedValue([
+        { time: "20260201", open: 10, high: 11, low: 9, close: 10.5, volume: 500 },
+      ]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    const results = await fetchHistoricalPrices(db, { securityIds: [secId] });
+
+    expect(results[0].barsInserted).toBe(1);
+    expect(getTaxInputGeneration(db)).toBe(before + 1);
+  });
+
+  it("a throw inside a security's write transaction rolls back that security's bars AND its bump together", async () => {
+    const secId = seedSecurity(db, "BOOM", "stock");
+
+    const mockApi = {
+      getHistoricalData: vi.fn().mockResolvedValue([
+        { time: "20260201", open: 190, high: 195, low: 189, close: 193.5, volume: 1000 },
+        { time: "20260202", open: 193, high: 198, low: 192, close: 999999, volume: 1200 },
+      ]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    // No outer transaction wraps this call. The sentinel close price aborts
+    // the second bar's insert, after the first bar of the SAME security has
+    // already been written in the same per-security transaction.
+    db.exec(
+      `CREATE TEMP TRIGGER boom BEFORE INSERT ON prices WHEN NEW.close_price = 999999 BEGIN SELECT RAISE(ABORT,'boom'); END`,
+    );
+
+    const before = getTaxInputGeneration(db);
+    const results = await fetchHistoricalPrices(db, { securityIds: [secId] });
+
+    // The per-security fetch error is caught by the batch's .catch() wrapper
+    // (matching "handles errors per-security without aborting batch"), so the
+    // call itself resolves — but NONE of BOOM's bars should have persisted.
+    expect(results[0].error).toBeTruthy();
+    const priceCount = db.prepare("SELECT COUNT(*) c FROM prices WHERE security_id = ?").get(secId) as {
+      c: number;
+    };
+    expect(priceCount.c).toBe(0);
+    expect(getTaxInputGeneration(db)).toBe(before);
   });
 });
