@@ -4,6 +4,7 @@ import { getIbApi } from "./client";
 import { mapSecurityType } from "./security-type-map";
 import { todayET, nowET } from "@/lib/calendar/date-utils";
 import { isMarketClosed } from "@/lib/calendar/market-holidays";
+import { bumpIfPricesAffectSyntheticCloses } from "@/lib/compute/tax-convention";
 import type { PriceFetchProgress, SnapshotPriceResult } from "./types";
 
 /**
@@ -141,6 +142,11 @@ export async function fetchSnapshotPrices(
   const results: SnapshotPriceResult[] = [];
   const onProgress = options?.onProgress;
   let doneCount = 0;
+  // Collected across all batches; the actual DB write is deferred to ONE
+  // synchronous transaction after every async fetch has settled (spec §4,
+  // atomicity rule) — do not write per-security as each promise resolves,
+  // or a later security's write failure can't roll back an earlier one.
+  const pendingWrites: { securityId: number; date: string; price: number }[] = [];
 
   // Process in parallel batches
   for (let batchStart = 0; batchStart < securities.length; batchStart += BATCH_SIZE) {
@@ -198,7 +204,7 @@ export async function fetchSnapshotPrices(
         };
 
         if (price !== null) {
-          upsertPrice.run(sec.id, today, price);
+          pendingWrites.push({ securityId: sec.id, date: today, price });
         }
 
         doneCount++;
@@ -252,6 +258,19 @@ export async function fetchSnapshotPrices(
         results.push(settled.value);
       }
     }
+  }
+
+  // Persist every accumulated write + the synthetic-close bump in one
+  // synchronous transaction (spec §4) — all fetches have already settled by
+  // this point, so this is a pure DB tail with no further awaiting.
+  if (pendingWrites.length > 0) {
+    db.transaction(() => {
+      for (const w of pendingWrites) upsertPrice.run(w.securityId, w.date, w.price);
+      bumpIfPricesAffectSyntheticCloses(
+        db,
+        pendingWrites.map(({ securityId, date }) => ({ securityId, date })),
+      );
+    })();
   }
 
   // Reset to real-time for subsequent requests

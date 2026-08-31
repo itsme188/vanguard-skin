@@ -5,6 +5,7 @@ import { fetchAndStoreQuotes } from "@/lib/ibkr/refresh";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import type { ParsedQuote } from "@/lib/ibkr/market-data";
 import type { IbkrOAuthConfig } from "@/lib/ibkr/oauth-client";
+import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
 
 let db: Database.Database;
 
@@ -247,5 +248,55 @@ describe("fetchAndStoreQuotes", () => {
     // IV/HV/52wk cache is dated metadata, not a close — still written.
     expect(res.securitiesUpdated).toBe(1);
     expect(getSecurityQuote(db, aapl)!.week52_high).toBe(316);
+  });
+});
+
+describe("fetchAndStoreQuotes — synthetic-close price bump (reconciler-hardening, spec §4)", () => {
+  it("does NOT bump for a held-only quote refresh (routine daily sync)", async () => {
+    const acct = getIbkrAccount();
+    const aapl = seedSecurity("AAPL", 265598);
+    hold(acct, aapl, 100); // held, non-zero, no tombstone anywhere
+    const before = getTaxInputGeneration(db);
+
+    const stub = async (): Promise<ParsedQuote[]> => [
+      { conid: 265598, last: 302.94, bid: null, ask: null, ivUnderlying: 0.24, hv30d: 0.23, week52High: 316, week52Low: 194 },
+    ];
+    await fetchAndStoreQuotes(db, CFG, "lst", {
+      asOfDate: "2026-06-08",
+      fetchSnapshot: stub,
+      fetchYields: async () => ({}),
+    });
+
+    expect(getTaxInputGeneration(db)).toBe(before);
+  });
+
+  it("bumps when the price write lands on a tombstoned-but-watchlisted security — proves the PRICE path, isolated from any holdings write (Codex plan-review F8): fetchAndStoreQuotes never writes to `holdings`", async () => {
+    const acct = getIbkrAccount();
+    // Control: a normal held security, unrelated to the tombstone.
+    const aapl = seedSecurity("AAPL", 265598);
+    hold(acct, aapl, 100);
+    // GONE: sold (latest — and only — holdings row is quantity 0), but still
+    // on the active watchlist, so it remains a quote candidate.
+    const gone = seedSecurity("GONE", 999111);
+    hold(acct, gone, 0);
+    watch(gone);
+
+    const before = getTaxInputGeneration(db);
+    const stub = async (): Promise<ParsedQuote[]> => [
+      { conid: 265598, last: 302.94, bid: null, ask: null, ivUnderlying: 0.24, hv30d: 0.23, week52High: 316, week52Low: 194 },
+      { conid: 999111, last: 12.34, bid: null, ask: null, ivUnderlying: null, hv30d: null, week52High: null, week52Low: null },
+    ];
+    const res = await fetchAndStoreQuotes(db, CFG, "lst", {
+      asOfDate: "2026-06-08",
+      fetchSnapshot: stub,
+      fetchYields: async () => ({}),
+    });
+
+    expect(res.pricesWritten).toBe(2);
+    // No holdings write happened at all in this function — the bump can only
+    // be explained by the price write, not a holdings-transition.
+    const holdingsCount = db.prepare("SELECT COUNT(*) c FROM holdings").get() as { c: number };
+    expect(holdingsCount.c).toBe(2); // exactly the two seeded rows, unchanged
+    expect(getTaxInputGeneration(db)).toBe(before + 1);
   });
 });
