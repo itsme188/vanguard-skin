@@ -72,20 +72,43 @@ export function filingBannerHeading(accountName?: string | null): string {
     : "Export not ready for filing";
 }
 
-// PR #59 review Finding A (stale-fetch race): the download filename's
-// -NOT-FOR-FILING marker and account slug must come from the SAME report
-// snapshot. The old call site read `report.filingReady` alongside the
-// `accountName` PROP, which is free to have moved on to a different account
-// by the time an out-of-order fetch response lands — pairing one account's
-// filingReady state with another account's name in the exported filename.
-// This helper has no accountName parameter, so that mispairing is
-// structurally impossible at the call site: everything comes from `report`.
+// PR #59 review Finding A (stale-fetch race): a minimal cancellation token
+// extracted out of the codebase's own `let cancelled = false` cleanup idiom
+// (see PlaidSection.tsx, LevelsPanel.tsx) so the out-of-order-resolution
+// guarantee is a reusable, directly-testable primitive instead of only a
+// bare closure variable pinned by a source regex. `cancel()` mirrors what
+// an effect's cleanup does when a newer run (e.g. an account switch) has
+// superseded this one; `isCancelled()` is checked before any state setter
+// reachable from a fetch's resolution.
+export function createFetchGuard() {
+  let cancelled = false;
+  return {
+    cancel(): void {
+      cancelled = true;
+    },
+    isCancelled(): boolean {
+      return cancelled;
+    },
+  };
+}
+
+// PR #59 review Finding A (stale-fetch race), hardened after a Critical
+// follow-up finding: the download filename's -NOT-FOR-FILING marker and
+// account slug must come from the SAME report snapshot as the downloaded
+// CONTENT. The original fix only closed the filename half — `handleDownload`
+// still fetched the actual file using the live `accountName`/`year` PROPS,
+// so a stale `report` (kept alive on screen by Finding B's fix, across a
+// failed refetch, with the download buttons still enabled) could pair
+// report A's filingReady/name in the FILENAME with report B's freshly
+// fetched CONTENT. This helper takes `report.year` too (not a separate
+// `year` param) and the caller (handleDownload) now sources its fetch URL
+// from `report` as well — every value in both the request and the filename
+// comes from one object, so the two can never describe different accounts.
 export function resolveDownloadFilename(
-  report: Pick<TaxReportSummary, "filingReady" | "accountName">,
-  format: "csv" | "txf",
-  year: number
+  report: Pick<TaxReportSummary, "filingReady" | "accountName" | "year">,
+  format: "csv" | "txf"
 ): string {
-  return buildTaxReportFilename(format, year, report.filingReady, report.accountName);
+  return buildTaxReportFilename(format, report.year, report.filingReady, report.accountName);
 }
 
 // PR #59 review Finding B (silent blanking): a failed refetch (e.g.
@@ -172,15 +195,17 @@ export function TaxReportCard({
     // soft navigation (deps [year, accountParam]) but the component itself
     // persists across the switch — an in-flight fetch for the PREVIOUS
     // account can resolve after the new account's fetch and overwrite
-    // `report` with stale data. Guard with the codebase's own cancelled-flag
-    // pattern (see PlaidSection.tsx, LevelsPanel.tsx): every state setter
-    // reachable from this fetch's resolution is gated on `cancelled`.
-    let cancelled = false;
+    // `report` with stale data. `createFetchGuard()` is the codebase's own
+    // cancelled-flag cleanup pattern (see PlaidSection.tsx, LevelsPanel.tsx)
+    // extracted so it's directly testable: every state setter reachable
+    // from this fetch's resolution is gated on `guard.isCancelled()`, and
+    // the cleanup below cancels this run's guard when a newer run starts.
+    const guard = createFetchGuard();
     setLoading(true);
     fetch(`/api/tax-report?year=${year}${accountParam}`)
       .then((r) => r.json())
       .then((json) => {
-        if (cancelled) return;
+        if (guard.isCancelled()) return;
         if (json.success) {
           setReport(json.data);
           setError(null);
@@ -195,15 +220,15 @@ export function TaxReportCard({
         }
       })
       .catch((err) => {
-        if (!cancelled) {
+        if (!guard.isCancelled()) {
           setError(err instanceof Error ? err.message : "Failed to load the tax report.");
         }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!guard.isCancelled()) setLoading(false);
       });
     return () => {
-      cancelled = true;
+      guard.cancel();
     };
   }, [year, accountParam]);
 
@@ -212,7 +237,20 @@ export function TaxReportCard({
     const setter = format === "csv" ? setDownloading : setDownloadingTxf;
     setter(true);
     try {
-      const res = await fetch(`/api/tax-report?year=${year}&format=${format}${accountParam}`);
+      // PR #59 review Finding A (Critical follow-up): both the fetched
+      // CONTENT's scope and the FILENAME must derive from the same
+      // `report` snapshot — never the live `year`/`accountName` props.
+      // Finding B deliberately keeps a stale `report` on screen (with the
+      // download buttons still enabled) across a failed refetch; if this
+      // fetch used the live props while the filename used `report`, an
+      // account switch racing a failed refetch could still download
+      // account B's content under account A's filingReady/name.
+      const reportAccountParam = report.accountName
+        ? `&account=${encodeURIComponent(report.accountName)}`
+        : "";
+      const res = await fetch(
+        `/api/tax-report?year=${report.year}&format=${format}${reportAccountParam}`
+      );
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -221,10 +259,7 @@ export function TaxReportCard({
       // report.filingReady (broker-acceptance marker covers this account and
       // year) and carries the account slug when scoped — single-sourced with
       // the API route's Content-Disposition (lib/compute/tax-report.ts).
-      // resolveDownloadFilename pulls BOTH filingReady and the account slug
-      // from `report` itself, never the accountName prop (PR #59 review
-      // Finding A) — see its own doc comment above.
-      a.download = resolveDownloadFilename(report, format, year);
+      a.download = resolveDownloadFilename(report, format);
       a.click();
       URL.revokeObjectURL(url);
     } catch {
