@@ -231,8 +231,16 @@ function createDependentRepointer(db: Database.Database) {
   const repointBogeys = db.prepare(
     "UPDATE OR IGNORE earnings_bogeys SET event_id = ? WHERE event_id = ?",
   );
+  // `error = 'in_progress'` is a LIVE claim (claimEarningsEmailSlot in
+  // lib/digest/send-earnings-email.ts) — a delete/reconcile racing an
+  // in-flight send must never move it onto the target event out from under
+  // the sender. earnings_emails.error is a tri-state and every reader
+  // already excludes 'in_progress'; this writer follows the same rule.
   const repointRecapEmails = db.prepare(
-    "UPDATE OR IGNORE earnings_emails SET event_id = ? WHERE event_id = ? AND phase = 'recap'",
+    `UPDATE OR IGNORE earnings_emails
+        SET event_id = ?
+      WHERE event_id = ? AND phase = 'recap'
+        AND (error IS NULL OR error != 'in_progress')`,
   );
   const repointRecapSkips = db.prepare(
     "UPDATE OR IGNORE earnings_email_skips SET event_id = ? WHERE event_id = ? AND phase = 'recap'",
@@ -240,7 +248,8 @@ function createDependentRepointer(db: Database.Database) {
   const repointPreviewEmails = db.prepare(
     `UPDATE OR IGNORE earnings_emails
         SET event_id = ?
-      WHERE event_id = ? AND phase = 'preview' AND date(sent_at) >= date(?, '-1 day')`,
+      WHERE event_id = ? AND phase = 'preview' AND date(sent_at) >= date(?, '-1 day')
+        AND (error IS NULL OR error != 'in_progress')`,
   );
   const repointPreviewSkips = db.prepare(
     `UPDATE OR IGNORE earnings_email_skips

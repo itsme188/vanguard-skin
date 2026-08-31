@@ -428,6 +428,41 @@ describe("deleteCalendarEvent — the hand-back must not cascade the audit trail
     // Nowhere to hand it to — the cascade is the only possible outcome.
     expect(bogeyEventId(bogey)).toBeUndefined();
   });
+
+  it("final-wave finding: never repoints a LIVE in_progress claim row onto the restored vendor row — a delete racing an in-flight send must not move the claim", () => {
+    // `error='in_progress'` marks a slot a send is actively holding
+    // (claimEarningsEmailSlot in lib/digest/send-earnings-email.ts). If a
+    // delete of the manual row races that in-flight send, the repoint UPDATE
+    // must not scoop the live claim onto the restored vendor event out from
+    // under the sender — every reader of earnings_emails.error already
+    // excludes 'in_progress' as a tri-state, and this writer must honor the
+    // same rule.
+    const vendor = seedVendor("finnhub", "ORCL", VENDOR_DATE);
+
+    confirmEarningsDate(db, {
+      symbol: "ORCL",
+      confirmedDate: MANUAL_DATE,
+      confirmedTime: "amc",
+      today: TODAY,
+    });
+    const manual = manualRowId("ORCL");
+
+    // A plausible-send-date preview claim on the doomed manual row — absent
+    // the guard this WOULD repoint onto the vendor row (see the "keeps the
+    // uploaded bogey..." test above, same date shape).
+    const claim = addEmail(manual, "preview", "2026-09-06 20:05:00");
+    db.prepare("UPDATE earnings_emails SET error = 'in_progress' WHERE id = ?").run(claim);
+
+    expect(deleteCalendarEvent(db, manual, { today: TODAY })).toBe(true);
+
+    // Not repointed onto the restored vendor row — and since it stayed on
+    // the now-deleted manual row, ON DELETE CASCADE takes it out with the
+    // parent. That's correct: the claim's own event is gone, which is
+    // exactly what the 30-min stale-claim reaper
+    // (reapStaleEarningsEmailClaims) exists to clean up — never silently
+    // jump a live claim onto a different event mid-send.
+    expect(emailEventId(claim)).toBeUndefined();
+  });
 });
 
 /**

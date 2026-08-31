@@ -149,6 +149,23 @@ describe("TaxReportCard scope wiring (source pin)", () => {
     expect(src).toContain("Showing last-loaded data — refresh failed");
     expect(src).toContain("{status.staleError}");
   });
+
+  it("final-wave finding (stale heading): the on-screen heading derives entirely from the `report` snapshot, never the live year/account props", () => {
+    // Regression: `scopeAccountName = report.accountName ?? accountName ??
+    // null` fell through to the live `accountName` prop whenever the stale
+    // `report` on screen was all-accounts (report.accountName === null),
+    // and the heading was built with the live `year` prop rather than
+    // `report.year`. Finding B deliberately keeps a stale report on screen
+    // across a failed refetch — so a scope/year switch whose refetch failed
+    // could show "Tax Report — 2023 · Roth" over 2022 all-accounts totals.
+    // The heading must come from the exact same snapshot as the totals.
+    const scopeMatch = src.match(/const scopeAccountName = ([^;]+);/);
+    expect(scopeMatch, "expected to find scopeAccountName's definition").not.toBeNull();
+    expect(scopeMatch![1].trim()).toBe("report.accountName");
+
+    expect(src).toMatch(/taxReportCardTitle\(report\.year,\s*scopeAccountName\)/);
+    expect(src).not.toMatch(/taxReportCardTitle\(year,/);
+  });
 });
 
 describe("createFetchGuard (Finding A / Important 2 follow-up: driving real out-of-order fetch resolution)", () => {
