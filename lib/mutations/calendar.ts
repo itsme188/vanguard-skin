@@ -8,7 +8,10 @@ import { resolveReleaseTime, SYMBOL_RELEASE_TIMES_ET } from "@/lib/calendar/rele
 import { resolveEarningsReleaseTime, resolveSymbolReleaseTime } from "@/lib/earnings/wire-times";
 import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
 import { mondayOf, todayET } from "@/lib/calendar/date-utils";
-import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
+import {
+  reconcileEarningsDates,
+  repointDependentsBeforeDelete,
+} from "@/lib/calendar/reconcile-earnings-dates";
 
 // ─── Result types ─────────────────────────────────────────────────
 
@@ -268,8 +271,22 @@ function getSuppressedEventTuples(db: Database.Database): Set<string> {
  * Delete a SYNC-OWNED event and suppress its tuple so the next sweep can't
  * re-insert it — the user correction path for a wrong sync-sourced earnings
  * date (delete the wrong row here, add the right one via insertCalendarEvent).
- * Dependent audit rows (earnings_emails / skips / bogeys) CASCADE away with
- * the row — acceptable, since the event was wrong to begin with.
+ *
+ * Hands the print back, exactly like deleteCalendarEvent (2026-08-31 review,
+ * finding B): the deleted row is usually the CANONICAL of its conflict cluster
+ * — that is why it was on screen to be deleted — so removing it silently left
+ * the other vendor's twin at `superseded = 1`, and every calendar surface
+ * filters `COALESCE(superseded,0) = 0`. The name vanished from the calendar
+ * until the next syncCalendarForWeek. Its dependent audit rows (bogeys, sent
+ * emails, skips) CASCADEd away with it too. So: repoint the children onto the
+ * row that becomes canonical BEFORE the delete, then re-run the reconciler
+ * scoped to that issuer family — all inside the delete+suppress transaction.
+ *
+ * `opts.handBack: false` opts out, for a caller that owns the cluster
+ * resolution itself: correctEarningsEventDate deletes a BATCH of wrong rows
+ * after migrating their children onto the corrected row, and a per-row
+ * reconcile mid-batch could repoint those children onto a sibling row that the
+ * loop is about to delete — reintroducing the very cascade this fixes.
  *
  * Throws on a symbol-less event: suppressions are symbol-keyed, and macro
  * rows are corrected through their own source pipelines, never this path.
@@ -277,6 +294,7 @@ function getSuppressedEventTuples(db: Database.Database): Set<string> {
 export function deleteAndSuppressCalendarEvent(
   db: Database.Database,
   id: number,
+  opts: { today?: string; handBack?: boolean } = {},
 ): { deleted: boolean; suppressed: { symbol: string; event_date: string; event_type: string } | null } {
   const row = db
     .prepare("SELECT symbol, event_date, event_type, source FROM calendar_events WHERE id = ?")
@@ -291,6 +309,8 @@ export function deleteAndSuppressCalendarEvent(
   }
 
   const symbol = row.symbol.trim().toUpperCase();
+  const handBack = opts.handBack !== false && row.event_type === "earnings";
+  const today = opts.today ?? todayET();
   const txn = db.transaction(() => {
     suppressCalendarEvent(db, {
       symbol,
@@ -298,7 +318,9 @@ export function deleteAndSuppressCalendarEvent(
       event_type: row.event_type,
       reason: `user-deleted ${row.source} row #${id}`,
     });
+    if (handBack) repointDependentsBeforeDelete(db, { eventId: id, today });
     db.prepare("DELETE FROM calendar_events WHERE id = ?").run(id);
+    if (handBack) reconcileEarningsDates(db, { today, symbols: [symbol] });
   });
   txn();
 
@@ -560,9 +582,14 @@ export function correctEarningsEventDate(
     }
 
     // ── 3. Delete the wrong rows + suppress the tuple ──────────────────────
+    // handBack:false — step 2 already migrated every child onto newEventId,
+    // and this is a BATCH delete: letting each delete re-run the reconciler
+    // mid-loop could repoint those children onto a sibling doomed row that a
+    // later iteration then deletes, cascading them away. The cluster settles
+    // on the next reconcile pass, with all the wrong rows already gone.
     const deletedIds: number[] = [];
     for (const row of doomedRows) {
-      deleteAndSuppressCalendarEvent(db, row.id);
+      deleteAndSuppressCalendarEvent(db, row.id, { handBack: false });
       deletedIds.push(row.id);
     }
 
@@ -746,27 +773,42 @@ export function deleteCalendarEvent(
   id: number,
   opts: { today?: string } = {},
 ): boolean {
-  const existing = db
-    .prepare("SELECT source, event_type, symbol FROM calendar_events WHERE id = ?")
-    .get(id) as
-    | { source: string; event_type: string; symbol: string | null }
-    | undefined;
-  if (!existing) return false;
-  if (existing.source !== "manual") return false;
+  const today = opts.today ?? todayET();
 
-  const restoreSymbol =
-    existing.event_type === "earnings" && existing.symbol ? existing.symbol : null;
+  // The read sits INSIDE the transaction with the writes it authorizes: the
+  // hand-back below moves child rows before the DELETE, so a row that turns
+  // out not to be deletable must not leave those moves behind.
+  const txn = db.transaction((): boolean => {
+    const existing = db
+      .prepare("SELECT source, event_type, symbol FROM calendar_events WHERE id = ?")
+      .get(id) as
+      | { source: string; event_type: string; symbol: string | null }
+      | undefined;
+    if (!existing) return false;
+    if (existing.source !== "manual") return false;
 
-  const txn = db.transaction(() => {
+    const restoreSymbol =
+      existing.event_type === "earnings" && existing.symbol ? existing.symbol : null;
+
+    // BEFORE the DELETE: earnings_bogeys / earnings_emails /
+    // earnings_email_skips are ON DELETE CASCADE on event_id (migrations
+    // 042/043/045), and the reconcile pass that made THIS row canonical had
+    // already moved the whole cluster's children onto it. Deleting first would
+    // destroy the user's uploaded bogeys and the sent-email audit trail, and
+    // leave the restored vendor row with no preview-phase row — which
+    // findEmailCandidates reads as "never emailed", re-opening the print to a
+    // duplicate send. Hand them to the row that is about to become canonical
+    // instead, under the reconciler's own repoint rules.
+    if (restoreSymbol) {
+      repointDependentsBeforeDelete(db, { eventId: id, today });
+    }
+
     const deleted =
       db
         .prepare("DELETE FROM calendar_events WHERE id = ? AND source = 'manual'")
         .run(id).changes > 0;
     if (deleted && restoreSymbol) {
-      reconcileEarningsDates(db, {
-        today: opts.today ?? todayET(),
-        symbols: [restoreSymbol],
-      });
+      reconcileEarningsDates(db, { today, symbols: [restoreSymbol] });
     }
     return deleted;
   });
