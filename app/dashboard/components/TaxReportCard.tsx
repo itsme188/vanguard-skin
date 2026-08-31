@@ -72,6 +72,52 @@ export function filingBannerHeading(accountName?: string | null): string {
     : "Export not ready for filing";
 }
 
+// PR #59 review Finding A (stale-fetch race): the download filename's
+// -NOT-FOR-FILING marker and account slug must come from the SAME report
+// snapshot. The old call site read `report.filingReady` alongside the
+// `accountName` PROP, which is free to have moved on to a different account
+// by the time an out-of-order fetch response lands — pairing one account's
+// filingReady state with another account's name in the exported filename.
+// This helper has no accountName parameter, so that mispairing is
+// structurally impossible at the call site: everything comes from `report`.
+export function resolveDownloadFilename(
+  report: Pick<TaxReportSummary, "filingReady" | "accountName">,
+  format: "csv" | "txf",
+  year: number
+): string {
+  return buildTaxReportFilename(format, year, report.filingReady, report.accountName);
+}
+
+// PR #59 review Finding B (silent blanking): a failed refetch (e.g.
+// transient SQLITE_BUSY while Recompute writes) must never silently
+// unmount a previously-good card — that violates the project's
+// no-silent-failure convention. This is the single decision point for what
+// the card renders given (loading, report, error):
+//   - "loading"  — a fetch is in flight; ignore report/error, show the spinner.
+//   - "empty"    — settled, no report, no error: genuinely nothing to show
+//                  (e.g. a brand-new account/year with no sales yet).
+//   - "error"    — settled, no report AND an error: the FIRST load failed;
+//                  explain it, don't blank.
+//   - "ready"    — settled, a report exists (possibly from an earlier
+//                  successful fetch); `staleError` carries a non-fatal
+//                  notice when the MOST RECENT refetch failed but earlier
+//                  good data is still on screen.
+export type TaxReportCardStatus =
+  | { kind: "loading" }
+  | { kind: "empty" }
+  | { kind: "error"; message: string }
+  | { kind: "ready"; staleError: string | null };
+
+export function resolveTaxReportCardStatus(
+  loading: boolean,
+  report: TaxReportSummary | null,
+  error: string | null
+): TaxReportCardStatus {
+  if (loading) return { kind: "loading" };
+  if (!report) return error ? { kind: "error", message: error } : { kind: "empty" };
+  return { kind: "ready", staleError: error };
+}
+
 // Keyed to where the add-back actually landed (shortTermTotal/longTermTotal
 // .adjustments from sumRows(), USD rows only per their own term), never to
 // washSaleWarnings.length alone: detectWashSales flags losses regardless of
@@ -112,6 +158,7 @@ export function TaxReportCard({
   accountName?: string;
 }) {
   const [report, setReport] = useState<TaxReportSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
   const [downloadingTxf, setDownloadingTxf] = useState(false);
@@ -121,15 +168,43 @@ export function TaxReportCard({
   const accountParam = accountName ? `&account=${encodeURIComponent(accountName)}` : "";
 
   useEffect(() => {
+    // PR #59 review Finding A: this effect re-fires on every `?account=`
+    // soft navigation (deps [year, accountParam]) but the component itself
+    // persists across the switch — an in-flight fetch for the PREVIOUS
+    // account can resolve after the new account's fetch and overwrite
+    // `report` with stale data. Guard with the codebase's own cancelled-flag
+    // pattern (see PlaidSection.tsx, LevelsPanel.tsx): every state setter
+    // reachable from this fetch's resolution is gated on `cancelled`.
+    let cancelled = false;
     setLoading(true);
     fetch(`/api/tax-report?year=${year}${accountParam}`)
       .then((r) => r.json())
       .then((json) => {
-        if (json.success) setReport(json.data);
-        else setReport(null);
+        if (cancelled) return;
+        if (json.success) {
+          setReport(json.data);
+          setError(null);
+        } else {
+          // PR #59 review Finding B: never null the report here — a
+          // transient failure (e.g. SQLITE_BUSY while Recompute writes)
+          // must not silently unmount a previously-good card. Surface the
+          // failure in domain language instead; resolveTaxReportCardStatus
+          // decides whether that's a hard error state (no report yet) or a
+          // stale/error notice over the last-good report.
+          setError(json.error || "Failed to load the tax report.");
+        }
       })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load the tax report.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [year, accountParam]);
 
   async function handleDownload(format: "csv" | "txf") {
@@ -146,7 +221,10 @@ export function TaxReportCard({
       // report.filingReady (broker-acceptance marker covers this account and
       // year) and carries the account slug when scoped — single-sourced with
       // the API route's Content-Disposition (lib/compute/tax-report.ts).
-      a.download = buildTaxReportFilename(format, year, report.filingReady, accountName);
+      // resolveDownloadFilename pulls BOTH filingReady and the account slug
+      // from `report` itself, never the accountName prop (PR #59 review
+      // Finding A) — see its own doc comment above.
+      a.download = resolveDownloadFilename(report, format, year);
       a.click();
       URL.revokeObjectURL(url);
     } catch {
@@ -156,7 +234,9 @@ export function TaxReportCard({
     }
   }
 
-  if (loading) {
+  const status = resolveTaxReportCardStatus(loading, report, error);
+
+  if (status.kind === "loading") {
     return (
       <div className="rounded-xl border border-edge bg-panel p-4">
         <div className="text-sm text-ink-faint animate-pulse">Loading tax report...</div>
@@ -164,6 +244,23 @@ export function TaxReportCard({
     );
   }
 
+  if (status.kind === "empty") return null;
+
+  if (status.kind === "error") {
+    // PR #59 review Finding B: the first fetch for this scope failed and
+    // there is no earlier good report to fall back on — explain the
+    // failure instead of returning null (which would render nothing at
+    // all, indistinguishable from "no tax report needed this year").
+    return (
+      <div className="rounded-xl border border-down/40 bg-down/20 p-4">
+        <div className="text-sm text-down">Unable to load tax report: {status.message}</div>
+      </div>
+    );
+  }
+
+  // status.kind === "ready" — resolveTaxReportCardStatus only returns
+  // "ready" when `report` is non-null; this check just satisfies TS
+  // narrowing (report's type is TaxReportSummary | null).
   if (!report) return null;
 
   const totalSales =
@@ -172,6 +269,9 @@ export function TaxReportCard({
 
   const totalGainLoss = report.shortTermTotal.gainLoss + report.longTermTotal.gainLoss;
   const hasWashSales = report.washSaleWarnings.length > 0;
+  // PR #59 review minor: this was computed three times (title x2 + banner
+  // heading) — derive once and reuse.
+  const scopeAccountName = report.accountName ?? accountName ?? null;
 
   return (
     <div className="rounded-xl border border-edge bg-panel overflow-hidden">
@@ -181,9 +281,9 @@ export function TaxReportCard({
               download buttons; the full name stays available on hover. */}
           <h3
             className="text-xs font-medium text-ink-faint uppercase tracking-wider truncate"
-            title={taxReportCardTitle(year, report.accountName ?? accountName)}
+            title={taxReportCardTitle(year, scopeAccountName)}
           >
-            {taxReportCardTitle(year, report.accountName ?? accountName)}
+            {taxReportCardTitle(year, scopeAccountName)}
           </h3>
         </div>
         <div className="flex gap-2">
@@ -204,6 +304,22 @@ export function TaxReportCard({
         </div>
       </div>
 
+      {/* PR #59 review Finding B: the report on screen may be stale — the
+          MOST RECENT refetch (e.g. after switching accounts) failed and we
+          kept showing the last-good data rather than blanking the card.
+          Say so explicitly instead of silently letting the figures go
+          out of sync with the current scope. */}
+      {status.staleError && (
+        <div className="px-5 pt-4">
+          <div className="border border-down/40 bg-down/20 rounded-lg p-3">
+            <h4 className="text-xs font-medium text-down">
+              &#x26A0; Showing last-loaded data — refresh failed
+            </h4>
+            <p className="text-[10px] text-ink-faint mt-1">{status.staleError}</p>
+          </div>
+        </div>
+      )}
+
       {/* Marker-gated: the containment banner only applies while filingReady
           is false (no broker-acceptance stamp covering this year yet) —
           see lib/compute/tax-report.ts generateTaxReport. */}
@@ -211,7 +327,7 @@ export function TaxReportCard({
         <div className="px-5 pt-4">
           <div className="border border-amber-400/20 bg-amber-400/5 rounded-lg p-3">
             <h4 className="text-xs font-medium text-amber-400">
-              &#x26A0; {filingBannerHeading(report.accountName ?? accountName)}
+              &#x26A0; {filingBannerHeading(scopeAccountName)}
             </h4>
             <p className="text-[10px] text-ink-faint mt-1">{FILING_WARNING_COPY}</p>
           </div>
