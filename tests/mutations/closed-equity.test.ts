@@ -3,7 +3,6 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
   reconcileClosedEquityHoldings,
-  removeOrphanedReconTombstones,
   zeroLatestSecurityIds,
   countReconRowsOnDate,
 } from "@/lib/mutations/closed-equity";
@@ -450,16 +449,30 @@ describe("tombstone provenance + ownership", () => {
     const a = acct("A1");
     const x = sec("XONE");
     const y = sec("YTWO", "etf");
-    // statement book at D1 has both; statement book at D2 has only Y → X phantom (stmt pass)
+    const z = sec("ZFOUR", "etf");
+    // statement book at D1 has X, Y, Z; statement book at D2 has only Y, Z → X
+    // phantom (stmt pass, tombstoned :stmt).
     hold(a, x, 5, "2026-07-31", "canonical:hold:x1");
     hold(a, y, 5, "2026-07-31", "canonical:hold:y1");
+    hold(a, z, 5, "2026-07-31", "canonical:hold:z1");
     hold(a, y, 5, "2026-08-29", "canonical:hold:y2");
+    hold(a, z, 5, "2026-08-29", "canonical:hold:z2");
+    // A later live (Plaid) snapshot on 08-30 reports only Y → Z is a phantom
+    // under the live equity pass (Z was present on the latest statement, so
+    // the statement pass alone never catches it — only the live pass does,
+    // tombstoned :live).
+    hold(a, y, 5, "2026-08-30", "plaid:1:9:2026-08-30");
     reconcileClosedEquityHoldings(db);
-    const tomb = db
+    const stmtTomb = db
       .prepare(`SELECT source_key FROM holdings WHERE quantity = 0 AND security_id = ?`)
       .get(x) as { source_key: string };
-    expect(tomb.source_key.startsWith("recon:closed-equity:")).toBe(true);
-    expect(tomb.source_key.endsWith(":stmt")).toBe(true);
+    expect(stmtTomb.source_key.startsWith("recon:closed-equity:")).toBe(true);
+    expect(stmtTomb.source_key.endsWith(":stmt")).toBe(true);
+    const liveTomb = db
+      .prepare(`SELECT source_key FROM holdings WHERE quantity = 0 AND security_id = ?`)
+      .get(z) as { source_key: string };
+    expect(liveTomb.source_key.startsWith("recon:closed-equity:")).toBe(true);
+    expect(liveTomb.source_key.endsWith(":live")).toBe(true);
   });
 
   it("stamps import_batch_id only for owned accounts", () => {
@@ -496,18 +509,40 @@ describe("tombstone provenance + ownership", () => {
 });
 
 describe("run atomicity", () => {
-  it("a mid-run failure leaves zero tombstones from that run", () => {
-    // The run is transactional (savepoint when nested): a throw after the
-    // reconcile inside an outer transaction must roll its tombstones back.
+  it("a mid-run failure leaves zero tombstones from that run (fault injected mid-run, no outer transaction)", () => {
+    // Discriminating version: NO outer transaction wraps the call — the fault
+    // is injected via a TEMP TRIGGER that aborts a specific INSERT partway
+    // through the reconciler's own run. Single account, so pass ordering is
+    // deterministic from the algorithm's structure (not from row-ordering of
+    // a multi-account query): pass 1 (statement) tombstones GONE1 and
+    // completes FIRST; pass 2 (live equity), which runs after pass 1 for the
+    // same account, then tries to tombstone GONE2 — the trigger aborts that
+    // insert. If reconcileClosedEquityHoldings did not wrap the whole run in
+    // its own transaction, GONE1's already-committed tombstone from pass 1
+    // would survive the throw (this is exactly what the removed non-
+    // discriminating version of this test could not catch, since it wrapped
+    // the call in the CALLER's own transaction, which rolls back regardless
+    // of whether the function has an inner transaction of its own).
     const a = acct("A1");
-    hold(a, sec("XONE"), 5, "2026-07-31", "canonical:hold:1");
-    hold(a, sec("KEEP1"), 5, "2026-08-29", "canonical:hold:2");
-    expect(() =>
-      db.transaction(() => {
-        reconcileClosedEquityHoldings(db);
-        throw new Error("injected");
-      })(),
-    ).toThrow("injected");
+    const gone1 = sec("GONE1");
+    const keep1 = sec("KEEP1");
+    const gone2 = sec("GONE2");
+    // April statement: GONE1 + KEEP1. July statement: KEEP1 + GONE2 (GONE1
+    // absent → pass-1 phantom, tombstoned first).
+    hold(a, gone1, 5, "2026-07-31", "canonical:hold:1");
+    hold(a, keep1, 5, "2026-07-31", "canonical:hold:2");
+    hold(a, keep1, 5, "2026-08-29", "canonical:hold:3");
+    hold(a, gone2, 5, "2026-08-29", "canonical:hold:4");
+    // A later live snapshot reports only KEEP1 → GONE2 is a pass-2 (live
+    // equity) phantom, tombstoned second (after pass 1 has already run).
+    hold(a, keep1, 5, "2026-08-30", "plaid:1:9:2026-08-30");
+
+    db.exec(
+      `CREATE TEMP TRIGGER boom BEFORE INSERT ON holdings WHEN NEW.security_id = ${gone2} BEGIN SELECT RAISE(ABORT,'boom'); END`,
+    );
+    expect(() => reconcileClosedEquityHoldings(db)).toThrow();
+    // GONE1's pass-1 tombstone must have rolled back along with the aborted
+    // pass-2 insert — zero tombstones survive the failed run.
     expect(db.prepare(`SELECT COUNT(*) c FROM holdings WHERE quantity=0`).get()).toEqual({ c: 0 });
   });
 });
