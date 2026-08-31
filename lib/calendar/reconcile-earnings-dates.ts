@@ -54,6 +54,32 @@ function daysBetween(a: string, b: string): number {
   return Math.abs(Math.round((da - db_) / 86_400_000));
 }
 
+/** The columns every resolution step reads. Shared by both gather queries. */
+const EARNINGS_ROW_COLUMNS = `id, source, symbol, event_date, raw_json, actual_value, date_status,
+        consensus_estimate, consensus_value, reaction_snapshot, enriched_at,
+        manual_actuals_at`;
+
+/**
+ * Greedy proximity clustering of ONE issuer family's rows (already sorted by
+ * event_date ASC): consecutive rows within CLUSTER_PROXIMITY_DAYS of each
+ * other describe the same reporting event.
+ */
+function clusterByProximity(familyRows: EarningsRow[]): EarningsRow[][] {
+  const clusters: EarningsRow[][] = [];
+  for (const r of familyRows) {
+    const last = clusters[clusters.length - 1];
+    if (
+      last &&
+      daysBetween(last[last.length - 1].event_date, r.event_date) <= CLUSTER_PROXIMITY_DAYS
+    ) {
+      last.push(r);
+    } else {
+      clusters.push([r]);
+    }
+  }
+  return clusters;
+}
+
 /** Canonical family key so dual-class siblings (GOOG/GOOGL) share a cluster. */
 function familyKey(symbol: string | null): string {
   if (!symbol) return "";
@@ -159,6 +185,195 @@ function resolveCluster(rows: EarningsRow[], today: string): Resolution {
   return { canonicalId: only.id, status: "single", conflictWith: null };
 }
 
+/** Child audit rows moved by one repoint hop. */
+export interface RepointCounts {
+  bogeys: number;
+  emails: number;
+  skips: number;
+}
+
+/**
+ * Build the ONE implementation of "move an earnings row's dependent audit rows
+ * onto another row". Both callers share it: the reconcile pass below (donor =
+ * a row it just superseded) and `repointDependentsBeforeDelete` (donor = a row
+ * about to be DELETEd, whose children would otherwise CASCADE away).
+ *
+ * Bogeys and recap-phase rows repoint UNCONDITIONALLY. A bogey is the user's
+ * own uploaded numbers for the issuer's print; a recap is written post-print,
+ * so wherever it lives it genuinely documents that release — audit follows the
+ * print.
+ *
+ * Preview rows are different: a preview is a PROMISE about a specific future
+ * release, sent 105-135 minutes before it (PREVIEW_WINDOW_MIN/MAX_MS in
+ * enrichment-runner.ts), so a genuine preview's send DATE always equals the
+ * event's print date (+/- 1 day for UTC sent_at vs ET event_date). Only
+ * repoint one when the send date could plausibly have covered the TARGET's
+ * print (>= print date minus 1 day — later-than-print sends still count,
+ * documenting a post-print stale-slot notice). A preview sent for an earlier
+ * phantom date has no relationship to a print that resolves later and must
+ * stay behind: findEmailCandidates treats ANY existing preview-phase row on an
+ * event as "already handled" (`ee.id IS NULL AND es.id IS NULL`), so dragging
+ * a stale preview onto the target would both fabricate a "preview sent" for a
+ * print the email never covered AND permanently block the genuine preview from
+ * ever firing (qa/NBIS 2026-08-10: a preview sent for finnhub's 7/29 phantom
+ * date got dragged onto the real 8/12 print when reconcile resolved it 14 days
+ * later).
+ *
+ * UPDATE OR IGNORE keeps the target's own row on a UNIQUE (event_id, phase)
+ * collision, leaving the donor-side duplicate where it is. When the donor is
+ * merely SUPERSEDED that leaves the leftover archived and invisible to
+ * canonical readers (superseded rows referenced by earnings_emails are
+ * delete-protected — see deleteUnenrichedEventsForWeek); when the donor is
+ * being deleted the leftover dies with it, which is the deliberate price of
+ * the preview invariant.
+ */
+function createDependentRepointer(db: Database.Database) {
+  const repointBogeys = db.prepare(
+    "UPDATE OR IGNORE earnings_bogeys SET event_id = ? WHERE event_id = ?",
+  );
+  const repointRecapEmails = db.prepare(
+    "UPDATE OR IGNORE earnings_emails SET event_id = ? WHERE event_id = ? AND phase = 'recap'",
+  );
+  const repointRecapSkips = db.prepare(
+    "UPDATE OR IGNORE earnings_email_skips SET event_id = ? WHERE event_id = ? AND phase = 'recap'",
+  );
+  const repointPreviewEmails = db.prepare(
+    `UPDATE OR IGNORE earnings_emails
+        SET event_id = ?
+      WHERE event_id = ? AND phase = 'preview' AND date(sent_at) >= date(?, '-1 day')`,
+  );
+  const repointPreviewSkips = db.prepare(
+    `UPDATE OR IGNORE earnings_email_skips
+        SET event_id = ?
+      WHERE event_id = ? AND phase = 'preview' AND date(skipped_at) >= date(?, '-1 day')`,
+  );
+
+  return function repoint(
+    fromEventId: number,
+    toEventId: number,
+    toEventDate: string,
+  ): RepointCounts {
+    return {
+      bogeys: repointBogeys.run(toEventId, fromEventId).changes,
+      emails:
+        repointRecapEmails.run(toEventId, fromEventId).changes +
+        repointPreviewEmails.run(toEventId, fromEventId, toEventDate).changes,
+      skips:
+        repointRecapSkips.run(toEventId, fromEventId).changes +
+        repointPreviewSkips.run(toEventId, fromEventId, toEventDate).changes,
+    };
+  };
+}
+
+export interface HandBackResult extends RepointCounts {
+  /** The row the children were handed to; null when the row has no twin. */
+  targetId: number | null;
+}
+
+function minDate(a: string, b: string): string {
+  return a < b ? a : b;
+}
+
+function maxDate(a: string, b: string): string {
+  return a > b ? a : b;
+}
+
+/**
+ * Hand an earnings row's dependent audit rows to the row that will become
+ * canonical once it is GONE — call this BEFORE the DELETE, in the same
+ * transaction.
+ *
+ * `earnings_bogeys` / `earnings_emails` / `earnings_email_skips` all declare
+ * `ON DELETE CASCADE` on event_id (migrations 042/043/045), so deleting an
+ * earnings row silently destroys the user's uploaded bogeys and the sent-email
+ * audit trail hanging off it. That matters most on exactly the rows a delete
+ * targets: a reconcile pass MOVES those children onto whichever row it makes
+ * canonical, so the manual "+ Add ticker" row a user later removes, and the
+ * provisional vendor row a user later corrects, are precisely where the whole
+ * cluster's audit has accumulated. Losing a preview-phase row also re-opens
+ * the print as a findEmailCandidates candidate — a duplicate-send risk, not
+ * just missing history.
+ *
+ * The target is resolved through the same clustering + `resolveCluster` rules
+ * the post-delete reconcile pass will apply, so the children land where that
+ * pass would have put them anyway; if the pass then supersedes the target for
+ * some other reason it carries them onward through the same repoint helper.
+ * No-ops (targetId null) when the row is not an earnings row, has no symbol,
+ * has no dependents, or has no surviving twin in its cluster.
+ */
+export function repointDependentsBeforeDelete(
+  db: Database.Database,
+  opts: { eventId: number; today: string },
+): HandBackResult {
+  const none: HandBackResult = { targetId: null, bogeys: 0, emails: 0, skips: 0 };
+
+  const doomed = db
+    .prepare(
+      `SELECT ${EARNINGS_ROW_COLUMNS}
+         FROM calendar_events
+        WHERE id = ? AND event_type = 'earnings'`,
+    )
+    .get(opts.eventId) as EarningsRow | undefined;
+  if (!doomed) return none;
+
+  const key = familyKey(doomed.symbol);
+  if (!key) return none;
+
+  const dependents = db
+    .prepare(
+      `SELECT (SELECT COUNT(*) FROM earnings_bogeys WHERE event_id = ?)
+            + (SELECT COUNT(*) FROM earnings_emails WHERE event_id = ?)
+            + (SELECT COUNT(*) FROM earnings_email_skips WHERE event_id = ?) AS n`,
+    )
+    .get(opts.eventId, opts.eventId, opts.eventId) as { n: number };
+  if (dependents.n === 0) return none;
+
+  // The reconciler's own gather window, widened so a doomed row parked outside
+  // it (a manual date months out) still gathers its cluster.
+  const lo = minDate(
+    addDaysUTC(opts.today, -GATHER_BACK_DAYS),
+    addDaysUTC(doomed.event_date, -CLUSTER_PROXIMITY_DAYS),
+  );
+  const hi = maxDate(
+    addDaysUTC(opts.today, GATHER_FWD_DAYS),
+    addDaysUTC(doomed.event_date, CLUSTER_PROXIMITY_DAYS),
+  );
+
+  const familyRows = (
+    db
+      .prepare(
+        `SELECT ${EARNINGS_ROW_COLUMNS}
+           FROM calendar_events
+          WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
+          ORDER BY event_date ASC`,
+      )
+      .all(lo, hi) as EarningsRow[]
+  ).filter((r) => familyKey(r.symbol) === key);
+
+  const cluster = clusterByProximity(familyRows).find((c) =>
+    c.some((r) => r.id === doomed.id),
+  );
+  const survivors = (cluster ?? []).filter((r) => r.id !== doomed.id);
+  if (survivors.length === 0) return none;
+
+  // Resolve the surviving rows exactly as the post-delete pass will. A split
+  // (a second manual row alongside an already-reported print) can yield more
+  // than one canonical; the doomed row's audit belongs with the nearest print.
+  const canonicals = splitReportedFromManualCluster(survivors, opts.today).map((sub) => {
+    const res = resolveCluster(sub, opts.today);
+    return sub.find((r) => r.id === res.canonicalId)!;
+  });
+  const target = canonicals.sort(
+    (a, b) =>
+      daysBetween(a.event_date, doomed.event_date) -
+        daysBetween(b.event_date, doomed.event_date) ||
+      a.event_date.localeCompare(b.event_date),
+  )[0];
+
+  const moved = createDependentRepointer(db)(doomed.id, target.id, target.event_date);
+  return { targetId: target.id, ...moved };
+}
+
 /**
  * Reconcile all held/watchlist earnings rows in a window around `today`.
  * Pure given `today`; idempotent (re-running yields the same marks); never
@@ -182,9 +397,7 @@ export function reconcileEarningsDates(
 
   const rows = db
     .prepare(
-      `SELECT id, source, symbol, event_date, raw_json, actual_value, date_status,
-              consensus_estimate, consensus_value, reaction_snapshot, enriched_at,
-              manual_actuals_at
+      `SELECT ${EARNINGS_ROW_COLUMNS}
        FROM calendar_events
        WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
        ORDER BY event_date ASC`,
@@ -219,10 +432,9 @@ export function reconcileEarningsDates(
   // duplicate preview). Enrichment COALESCEs forward onto the canonical
   // (never overwriting its own non-NULL values — same "sync may only ADD
   // data" invariant as the enrichment-runner), and child audit rows re-point
-  // — bogeys and recap-phase rows unconditionally, preview-phase rows gated
-  // by send-date plausibility (see the repointPreviewEmails/Skips comment
-  // below). UPDATE OR IGNORE keeps the canonical's own row on a UNIQUE
-  // collision, leaving the superseded-side duplicate in place for audit.
+  // via createDependentRepointer — bogeys and recap-phase rows
+  // unconditionally, preview-phase rows gated by send-date plausibility (the
+  // rules live in that helper's comment, shared with the pre-delete hand-back).
   // manual_actuals_at rides along ONLY with the figure it describes: the
   // desk's acceptance is a statement about one number, so it may land on the
   // canonical when the canonical is about to adopt (or already shows) exactly
@@ -247,65 +459,13 @@ export function reconcileEarningsDates(
        enriched_at = COALESCE(enriched_at, ?)
      WHERE id = ?`,
   );
-  const repointBogeys = db.prepare(
-    "UPDATE OR IGNORE earnings_bogeys SET event_id = ? WHERE event_id = ?",
-  );
-  // Recap rows are written post-print, so wherever they live they genuinely
-  // document that row's release — repointing them onto the surviving
-  // canonical is just "audit follows the print", unconditional like bogeys.
-  const repointRecapEmails = db.prepare(
-    "UPDATE OR IGNORE earnings_emails SET event_id = ? WHERE event_id = ? AND phase = 'recap'",
-  );
-  const repointRecapSkips = db.prepare(
-    "UPDATE OR IGNORE earnings_email_skips SET event_id = ? WHERE event_id = ? AND phase = 'recap'",
-  );
-  // Preview rows are different: a preview is a PROMISE about a specific
-  // future release, sent 105-135 minutes before it (PREVIEW_WINDOW_MIN/MAX_MS
-  // in enrichment-runner.ts), so a genuine preview's send DATE always equals
-  // the event's print date (+/- 1 day for UTC sent_at vs ET event_date). If
-  // the row it's currently on gets superseded, only repoint it onto the new
-  // canonical when the send date could plausibly have covered THAT event's
-  // print (>= print date minus 1 day — later-than-print sends still count,
-  // documenting a post-print stale-slot notice). A preview sent for an
-  // earlier phantom date has no relationship to a print that resolves later
-  // and must stay behind on the superseded row: findEmailCandidates treats
-  // ANY existing preview-phase row on an event as "already handled" (`ee.id
-  // IS NULL AND es.id IS NULL`), so dragging a stale preview onto the
-  // canonical would both fabricate a "preview sent" for a print the email
-  // never covered AND permanently block the genuine preview from ever firing
-  // (qa/NBIS 2026-08-10: a preview sent for finnhub's 7/29 phantom date got
-  // dragged onto the real 8/12 print when reconcile resolved it 14 days
-  // later). Superseded rows referenced by earnings_emails are already
-  // delete-protected (lib/mutations/calendar.ts
-  // deleteUnenrichedEventsForWeek), so leaving the row behind keeps it
-  // archived and invisible to canonical readers rather than losing it.
-  const repointPreviewEmails = db.prepare(
-    `UPDATE OR IGNORE earnings_emails
-        SET event_id = ?
-      WHERE event_id = ? AND phase = 'preview' AND date(sent_at) >= date(?, '-1 day')`,
-  );
-  const repointPreviewSkips = db.prepare(
-    `UPDATE OR IGNORE earnings_email_skips
-        SET event_id = ?
-      WHERE event_id = ? AND phase = 'preview' AND date(skipped_at) >= date(?, '-1 day')`,
-  );
+  const repointDependents = createDependentRepointer(db);
 
   const result: ReconcileResult = { confirmed: 0, conflict: 0, single: 0, userConfirmed: 0 };
 
   const apply = db.transaction(() => {
     for (const familyRows of byFamily.values()) {
-      // Greedy proximity clustering (rows already sorted by date).
-      const clusters: EarningsRow[][] = [];
-      for (const r of familyRows) {
-        const last = clusters[clusters.length - 1];
-        if (last && daysBetween(last[last.length - 1].event_date, r.event_date) <= CLUSTER_PROXIMITY_DAYS) {
-          last.push(r);
-        } else {
-          clusters.push([r]);
-        }
-      }
-
-      for (const proximityCluster of clusters) {
+      for (const proximityCluster of clusterByProximity(familyRows)) {
       for (const cluster of splitReportedFromManualCluster(proximityCluster, today)) {
         const res = resolveCluster(cluster, today);
         setCanonical.run(res.status, res.conflictWith, res.canonicalId);
@@ -330,11 +490,7 @@ export function reconcileEarningsDates(
             r.enriched_at,
             res.canonicalId,
           );
-          repointBogeys.run(res.canonicalId, r.id);
-          repointRecapEmails.run(res.canonicalId, r.id);
-          repointRecapSkips.run(res.canonicalId, r.id);
-          repointPreviewEmails.run(res.canonicalId, r.id, canonicalEventDate);
-          repointPreviewSkips.run(res.canonicalId, r.id, canonicalEventDate);
+          repointDependents(r.id, res.canonicalId, canonicalEventDate);
         }
         if (res.status === "confirmed") result.confirmed++;
         else if (res.status === "conflict") result.conflict++;

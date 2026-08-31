@@ -22,7 +22,10 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { confirmEarningsDate } from "@/lib/mutations/confirm-earnings-date";
-import { deleteCalendarEvent } from "@/lib/mutations/calendar";
+import {
+  deleteAndSuppressCalendarEvent,
+  deleteCalendarEvent,
+} from "@/lib/mutations/calendar";
 import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 
@@ -81,6 +84,59 @@ function manualRowId(symbol: string): number {
       )
       .get(symbol) as { id: number }
   ).id;
+}
+
+// ── Dependent-audit-row helpers (the ON DELETE CASCADE children) ──────────
+
+function addBogey(eventId: number, label = "TMT weekly"): number {
+  return db
+    .prepare(
+      `INSERT INTO earnings_bogeys (event_id, source, source_label, eps_consensus)
+       VALUES (?, 'pdf_upload', ?, 1.23)`,
+    )
+    .run(eventId, label).lastInsertRowid as number;
+}
+
+function addEmail(eventId: number, phase: "preview" | "recap", sentAt: string): number {
+  return db
+    .prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at)
+       VALUES (?, ?, 'desk@example.com', ?)`,
+    )
+    .run(eventId, phase, sentAt).lastInsertRowid as number;
+}
+
+function addSkip(eventId: number, phase: "preview" | "recap", skippedAt: string): number {
+  return db
+    .prepare(
+      `INSERT INTO earnings_email_skips (event_id, phase, skipped_at) VALUES (?, ?, ?)`,
+    )
+    .run(eventId, phase, skippedAt).lastInsertRowid as number;
+}
+
+/** Where a child row lives now — undefined once CASCADE has eaten it. */
+function bogeyEventId(id: number): number | undefined {
+  return (
+    db.prepare("SELECT event_id FROM earnings_bogeys WHERE id = ?").get(id) as
+      | { event_id: number }
+      | undefined
+  )?.event_id;
+}
+
+function emailEventId(id: number): number | undefined {
+  return (
+    db.prepare("SELECT event_id FROM earnings_emails WHERE id = ?").get(id) as
+      | { event_id: number }
+      | undefined
+  )?.event_id;
+}
+
+function skipEventId(id: number): number | undefined {
+  return (
+    db.prepare("SELECT event_id FROM earnings_email_skips WHERE id = ?").get(id) as
+      | { event_id: number }
+      | undefined
+  )?.event_id;
 }
 
 describe("deleteCalendarEvent — manual earnings row hands the print back", () => {
@@ -235,3 +291,210 @@ describe("reconcileEarningsDates — symbols scope", () => {
     expect(state(orcl)!.date_status).toBe("single");
   });
 });
+
+/**
+ * Finding A of the 2026-08-31 PR #59 review: the hand-back above ran AFTER the
+ * DELETE. `earnings_bogeys` / `earnings_emails` / `earnings_email_skips` all
+ * carry `ON DELETE CASCADE` on event_id (migrations 042/043/045), and the
+ * reconcile pass that made the manual row canonical had already MOVED those
+ * child rows onto it — so the delete destroyed the user's uploaded bogeys and
+ * the sent-email audit trail on its way out. Worse, the restored vendor event
+ * then carried no preview-phase row at all, and findEmailCandidates reads
+ * "no preview row" as "never emailed" — the sweep could re-send a duplicate.
+ *
+ * The children must be handed to the row that becomes canonical BEFORE the
+ * parent goes, inside the same transaction, under the reconciler's own repoint
+ * rules: bogeys and recap-phase rows unconditionally, preview-phase rows only
+ * when their send date could plausibly have covered the target's print
+ * (`date(sent_at) >= date(event_date,'-1 day')`).
+ */
+describe("deleteCalendarEvent — the hand-back must not cascade the audit trail away", () => {
+  it("keeps the uploaded bogey, the recap skip and a plausible preview email, all repointed onto the restored vendor row", () => {
+    const vendor = seedVendor("finnhub", "ORCL", VENDOR_DATE);
+    const bogey = addBogey(vendor);
+    // Sent the evening before the 09-07 print: plausible for BOTH the manual
+    // 09-02 row (>= 09-01) and the vendor 09-07 row (>= 09-06).
+    const preview = addEmail(vendor, "preview", "2026-09-06 20:05:00");
+    const recapSkip = addSkip(vendor, "recap", "2026-08-25 12:00:00");
+
+    confirmEarningsDate(db, {
+      symbol: "ORCL",
+      confirmedDate: MANUAL_DATE,
+      confirmedTime: "amc",
+      today: TODAY,
+    });
+    const manual = manualRowId("ORCL");
+
+    // Precondition: reconcile moved every child onto the manual row, so the
+    // delete is aimed straight at them.
+    expect(bogeyEventId(bogey)).toBe(manual);
+    expect(emailEventId(preview)).toBe(manual);
+    expect(skipEventId(recapSkip)).toBe(manual);
+
+    expect(deleteCalendarEvent(db, manual, { today: TODAY })).toBe(true);
+
+    expect(state(vendor)!.superseded).toBe(0);
+    expect(bogeyEventId(bogey)).toBe(vendor);
+    expect(emailEventId(preview)).toBe(vendor);
+    expect(skipEventId(recapSkip)).toBe(vendor);
+  });
+
+  it("repoints a recap email unconditionally, however old its send date", () => {
+    const vendor = seedVendor("finnhub", "ORCL", VENDOR_DATE);
+    // A recap documents a print that already happened; wherever it lives it is
+    // honest audit, so it follows the surviving row with no date gate.
+    const recap = addEmail(vendor, "recap", "2026-08-18 21:30:00");
+
+    confirmEarningsDate(db, {
+      symbol: "ORCL",
+      confirmedDate: MANUAL_DATE,
+      confirmedTime: "amc",
+      today: TODAY,
+    });
+    deleteCalendarEvent(db, manualRowId("ORCL"), { today: TODAY });
+
+    expect(emailEventId(recap)).toBe(vendor);
+  });
+
+  it("does NOT drag a preview whose send date could not cover the restored print", () => {
+    const vendor = seedVendor("finnhub", "ORCL", VENDOR_DATE);
+    const bogey = addBogey(vendor);
+    // Sent for the manual 09-02 date. It is no evidence about the 09-07 print,
+    // and dragging it there would block the genuine 09-07 preview forever
+    // (findEmailCandidates treats ANY preview row as "already handled").
+    const stalePreview = addEmail(vendor, "preview", "2026-09-01 20:05:00");
+
+    confirmEarningsDate(db, {
+      symbol: "ORCL",
+      confirmedDate: MANUAL_DATE,
+      confirmedTime: "amc",
+      today: TODAY,
+    });
+    expect(emailEventId(stalePreview)).toBe(manualRowId("ORCL"));
+
+    deleteCalendarEvent(db, manualRowId("ORCL"), { today: TODAY });
+
+    // Bogeys are unconditional — the user's uploaded numbers survive.
+    expect(bogeyEventId(bogey)).toBe(vendor);
+    // The stale preview does not follow, and — critically — the restored
+    // vendor event carries no preview row, so the real preview can still fire.
+    const previewsOnVendor = db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM earnings_emails WHERE event_id = ? AND phase = 'preview'",
+      )
+      .get(vendor) as { n: number };
+    expect(previewsOnVendor.n).toBe(0);
+  });
+
+  it("leaves children alone when the deleted manual row has no surviving twin", () => {
+    confirmEarningsDate(db, {
+      symbol: "ORCL",
+      confirmedDate: MANUAL_DATE,
+      confirmedTime: "amc",
+      today: TODAY,
+    });
+    const manual = manualRowId("ORCL");
+    const bogey = addBogey(manual);
+
+    expect(deleteCalendarEvent(db, manual, { today: TODAY })).toBe(true);
+    // Nowhere to hand it to — the cascade is the only possible outcome.
+    expect(bogeyEventId(bogey)).toBeUndefined();
+  });
+});
+
+/**
+ * Finding B of the same review: `deleteAndSuppressCalendarEvent` — the DELETE
+ * route's branch for SYNC-owned rows — got no hand-back at all. Deleting the
+ * canonical of a conflict cluster left the other vendor's twin at
+ * `superseded = 1`, and every calendar surface filters
+ * `COALESCE(superseded,0) = 0`, so the name silently vanished from the
+ * calendar until the next syncCalendarForWeek. Its children cascaded away too.
+ */
+describe("deleteAndSuppressCalendarEvent — sync-owned delete hands the print back", () => {
+  it("un-supersedes the surviving twin of a conflict cluster and still writes the suppression", () => {
+    const finn = seedVendor("finnhub", "ORCL", "2026-09-07");
+    const nas = seedVendor("nasdaq", "ORCL", "2026-09-04");
+    reconcileEarningsDates(db, { today: TODAY });
+
+    // Genuine disagreement → Nasdaq is provisional canonical, Finnhub hidden.
+    expect(state(nas)!.date_status).toBe("conflict");
+    expect(state(nas)!.superseded).toBe(0);
+    expect(state(finn)!.superseded).toBe(1);
+
+    const result = deleteAndSuppressCalendarEvent(db, nas, { today: TODAY });
+
+    expect(result.deleted).toBe(true);
+    expect(result.suppressed).toEqual({
+      symbol: "ORCL",
+      event_date: "2026-09-04",
+      event_type: "earnings",
+    });
+    // The bug: this stayed 1 until the next weekly sync.
+    expect(state(finn)!.superseded).toBe(0);
+    expect(state(finn)!.date_status).toBe("single");
+
+    const visible = getUpcomingEvents(db, { startDate: TODAY, endDate: "2026-09-30" });
+    expect(visible.map((e) => e.id)).toEqual([finn]);
+  });
+
+  it("hands the deleted canonical's bogeys + audit rows to the twin before the cascade", () => {
+    const finn = seedVendor("finnhub", "ORCL", "2026-09-07");
+    const nas = seedVendor("nasdaq", "ORCL", "2026-09-04");
+    reconcileEarningsDates(db, { today: TODAY });
+
+    const bogey = addBogey(nas);
+    const recap = addEmail(nas, "recap", "2026-09-05 21:00:00");
+    const preview = addSkip(nas, "preview", "2026-09-07 06:00:00");
+
+    deleteAndSuppressCalendarEvent(db, nas, { today: TODAY });
+
+    expect(bogeyEventId(bogey)).toBe(finn);
+    expect(emailEventId(recap)).toBe(finn);
+    expect(skipEventId(preview)).toBe(finn);
+  });
+
+  it("still deletes + suppresses a lone sync row with no twin to hand back to", () => {
+    const finn = seedVendor("finnhub", "ORCL", "2026-09-07");
+    reconcileEarningsDates(db, { today: TODAY });
+
+    const result = deleteAndSuppressCalendarEvent(db, finn, { today: TODAY });
+
+    expect(result.deleted).toBe(true);
+    expect(result.suppressed).toEqual({
+      symbol: "ORCL",
+      event_date: "2026-09-07",
+      event_type: "earnings",
+    });
+    expect(state(finn)).toBeUndefined();
+  });
+
+  it("does not re-resolve unrelated symbols", () => {
+    const finn = seedVendor("finnhub", "ORCL", "2026-09-07");
+    seedVendor("nasdaq", "ORCL", "2026-09-04");
+    const msft = seedVendor("finnhub", "MSFT", "2026-09-09");
+    reconcileEarningsDates(db, { today: TODAY });
+    db.prepare("UPDATE calendar_events SET superseded = 1, date_status = NULL WHERE id = ?").run(
+      msft,
+    );
+
+    deleteAndSuppressCalendarEvent(db, manualFreeCanonical("ORCL"), { today: TODAY });
+
+    expect(state(finn)!.superseded).toBe(0);
+    expect(state(msft)!.superseded).toBe(1);
+    expect(state(msft)!.date_status).toBeNull();
+  });
+});
+
+/** The non-superseded (canonical) sync row for a symbol. */
+function manualFreeCanonical(symbol: string): number {
+  return (
+    db
+      .prepare(
+        `SELECT id FROM calendar_events
+          WHERE symbol = ? AND event_type = 'earnings'
+            AND source != 'manual' AND COALESCE(superseded, 0) = 0
+          ORDER BY id ASC`,
+      )
+      .get(symbol) as { id: number }
+  ).id;
+}
