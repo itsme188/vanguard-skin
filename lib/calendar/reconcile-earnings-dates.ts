@@ -356,13 +356,21 @@ export function repointDependentsBeforeDelete(
   const survivors = (cluster ?? []).filter((r) => r.id !== doomed.id);
   if (survivors.length === 0) return none;
 
-  // Resolve the surviving rows exactly as the post-delete pass will. A split
-  // (a second manual row alongside an already-reported print) can yield more
-  // than one canonical; the doomed row's audit belongs with the nearest print.
-  const canonicals = splitReportedFromManualCluster(survivors, opts.today).map((sub) => {
-    const res = resolveCluster(sub, opts.today);
-    return sub.find((r) => r.id === res.canonicalId)!;
-  });
+  // Resolve the surviving rows exactly as the post-delete pass will — which
+  // means RE-CLUSTERING them first. The doomed row can be the proximity BRIDGE
+  // that chained two groups into one cluster (finnhub 09-13 → manual 09-14 →
+  // nasdaq 09-28: every hop <= 14 days, the ends 15 apart). Resolving the
+  // leftovers as one cluster would treat two different prints as a
+  // finnhub/nasdaq disagreement and hand the audit to the far row. Splits can
+  // also come from splitReportedFromManualCluster (a second manual row beside
+  // an already-reported print), so both fan out here and the doomed row's
+  // audit goes with the NEAREST resulting print.
+  const canonicals = clusterByProximity(survivors)
+    .flatMap((group) => splitReportedFromManualCluster(group, opts.today))
+    .map((sub) => {
+      const res = resolveCluster(sub, opts.today);
+      return sub.find((r) => r.id === res.canonicalId)!;
+    });
   const target = canonicals.sort(
     (a, b) =>
       daysBetween(a.event_date, doomed.event_date) -
