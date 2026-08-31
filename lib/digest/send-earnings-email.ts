@@ -33,6 +33,10 @@ import { addDays } from "@/lib/calendar/date-utils";
 import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
 import type { CalendarEvent, EarningsTranscript } from "@/lib/types";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
+import {
+  applyClusterManualActuals,
+  withClusterManualActuals,
+} from "@/lib/queries/manual-actuals-cluster";
 import { getIntelForEvents, getReportHistoryForFamily } from "@/lib/queries/earnings-intel";
 import { summarizeHistory, type HistorySummary } from "@/lib/earnings/report-history";
 import { ensureIntelForEvents } from "@/lib/earnings/intel";
@@ -427,10 +431,14 @@ function getEventByIdRow(
   db: Database.Database,
   id: number,
 ): CalendarEvent | null {
-  return (
-    (db
-      .prepare(`SELECT * FROM calendar_events WHERE id = ?`)
-      .get(id) as CalendarEvent | undefined) ?? null
+  // Cluster-scoped acceptance stamp: renderHeadlineTable + renderRecapPrompt
+  // both gate on manual_actuals_at, which can sit on a superseded twin of
+  // this same print (lib/queries/manual-actuals-cluster.ts).
+  return withClusterManualActuals(
+    db,
+    db.prepare(`SELECT * FROM calendar_events WHERE id = ?`).get(id) as
+      | CalendarEvent
+      | undefined,
   );
 }
 
@@ -686,6 +694,10 @@ export function buildReadThroughEntries(
        ORDER BY event_date DESC`,
     )
     .all(...reporters, fromDate, eventDate) as CalendarEvent[];
+
+  // The read-through gate below runs actualsAreImplausible — resolve each
+  // reporter's manual acceptance across its twin cluster first.
+  applyClusterManualActuals(db, reporterEvents);
 
   // Dedup: keep the most-recent print per reporter symbol.
   const seen = new Set<string>();
