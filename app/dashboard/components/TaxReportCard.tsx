@@ -306,7 +306,13 @@ export function TaxReportCard({
   const hasWashSales = report.washSaleWarnings.length > 0;
   // PR #59 review minor: this was computed three times (title x2 + banner
   // heading) — derive once and reuse.
-  const scopeAccountName = report.accountName ?? accountName ?? null;
+  // Final-wave finding: this MUST come only from `report` (not `?? accountName`).
+  // Finding B keeps a stale `report` on screen across a failed refetch — if a
+  // scope/year switch's refetch failed while the stale report was
+  // all-accounts (report.accountName === null), falling through to the live
+  // `accountName` prop would build a heading naming the NEW scope over the
+  // OLD totals ("Tax Report — 2023 · Roth" over 2022 all-accounts figures).
+  const scopeAccountName = report.accountName;
 
   return (
     <div className="rounded-xl border border-edge bg-panel overflow-hidden">
@@ -316,9 +322,9 @@ export function TaxReportCard({
               download buttons; the full name stays available on hover. */}
           <h3
             className="text-xs font-medium text-ink-faint uppercase tracking-wider truncate"
-            title={taxReportCardTitle(year, scopeAccountName)}
+            title={taxReportCardTitle(report.year, scopeAccountName)}
           >
-            {taxReportCardTitle(year, scopeAccountName)}
+            {taxReportCardTitle(report.year, scopeAccountName)}
           </h3>
         </div>
         <div className="flex gap-2">
