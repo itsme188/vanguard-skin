@@ -38,6 +38,7 @@ import {
   RECOVERY_SOURCE_TABLES,
 } from "@/lib/import/recovery";
 import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
+import { RECON_HOLDING_SOURCE_PREFIX } from "@/lib/db/holding-sources";
 import {
   issueUndoToken,
   consumeUndoToken,
@@ -315,12 +316,19 @@ describe("import-undo recovery — restore", () => {
     expect(getTaxInputGeneration(db)).toBeGreaterThan(genBeforeRestore);
   });
 
-  it("does NOT bump the tax-input generation for a holdings/prices-only restore (no transactions/CAs/donations)", () => {
+  // Spec 2026-08-30 §3/§4 (T4): holdings/prices are now RECONCILE_CLOSE tax
+  // inputs (deleteImportBatch bumps on holdings/price deletion; see
+  // lib/mutations/import-batches.ts). This inverts the OLD premise this test
+  // used to assert ("holdings/prices-only restore is NOT a tax input") — a
+  // holdings/prices-only restore must bump too, deliberately over-bumping
+  // relative to whether anything actually CHANGED (fail-closed, not a
+  // `.changes`-idempotence claim).
+  it("restore bumps the generation when the manifest carries holdings or prices", () => {
     const res = commitImport(db, sampleParsed());
     const manifest = buildRecoveryManifest(db, res.batchId);
     // Strip the transaction + corporate-action rows so this restore carries
-    // ONLY holdings/prices/snapshots — never a tax input — and re-seal the
-    // checksum over the edited payload (mirrors the tampering pattern above).
+    // ONLY holdings/prices/snapshots — and re-seal the checksum over the
+    // edited payload (mirrors the tampering pattern above).
     manifest.payload.tables.transactions = [];
     manifest.payload.tables.corporate_actions = [];
     manifest.checksum = computeManifestChecksum(manifest.payload);
@@ -332,7 +340,7 @@ describe("import-undo recovery — restore", () => {
     expect(result.restored.transactions).toBe(0);
     expect(result.restored.holdings).toBe(2);
 
-    expect(getTaxInputGeneration(db)).toBe(genBeforeRestore);
+    expect(getTaxInputGeneration(db)).toBeGreaterThan(genBeforeRestore);
   });
 });
 
@@ -497,6 +505,148 @@ describe("import-undo recovery — restore hardening (fix round)", () => {
 
     expect(existsSync(freshPath)).toBe(true);
     expect(readdirSync(dir).filter((f) => f.endsWith(".json")).length).toBe(25);
+  });
+});
+
+/**
+ * T7 (2026-08-31 reconciler-hardening spec §3): recon tombstones are DERIVED
+ * rows (lib/db/holding-sources.ts, lib/mutations/closed-equity.ts) — never
+ * authority, always supersedable by statement evidence, and never something
+ * a manifest restore should re-insert verbatim. These tests pin the three
+ * new behaviors: the restore-side supersession guard now shares
+ * statementOverwritableHoldingSql with commitImport (so a manifested
+ * statement row overwrites a tombstone occupying its slot); the restore loop
+ * skips recon-prefixed manifest rows at INSERT time (never re-inserting a
+ * DERIVED row verbatim); and a post-restore rebuild (orphan cleanup +
+ * re-reconcile, scoped to the restored holdings' accounts) re-derives
+ * whichever tombstones are still justified by the restored state.
+ */
+describe("import-undo recovery — tombstone-aware restore (T7)", () => {
+  let db: Database.Database;
+  let dir: string;
+
+  beforeEach(() => {
+    db = fresh();
+    dir = mkdtempSync(join(tmpdir(), "undo-recovery-"));
+  });
+  afterEach(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("restore overwrites a tombstone occupying a manifested statement row's slot", () => {
+    const res = commitImport(db, sampleParsed());
+    const manifest = buildRecoveryManifest(db, res.batchId);
+    const aaaId = (db.prepare("SELECT id FROM securities WHERE symbol = 'AAA'").get() as { id: number }).id;
+    const ibkrId = (db.prepare("SELECT id FROM accounts WHERE name = 'IBKR'").get() as { id: number }).id;
+
+    undoImportWithRecovery(db, res.batchId, { manifestDir: dir });
+
+    // Between undo and restore, a recon tombstone (e.g. minted by an
+    // intervening sync's reconcile pass) occupies the exact slot the
+    // manifested statement row will restore into.
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, 0, 0, ?, ?)"
+    ).run(ibkrId, aaaId, "2025-01-31", `${RECON_HOLDING_SOURCE_PREFIX}${ibkrId}:${aaaId}:2025-01-31:live`);
+
+    restoreImportBatch(db, manifest);
+
+    // The statement row must WIN over the tombstone: exactly one row for the
+    // slot, carrying the statement quantity + statement source_key.
+    const rows = db
+      .prepare("SELECT quantity, source_key FROM holdings WHERE account_id = ? AND security_id = ? AND as_of_date = '2025-01-31'")
+      .all(ibkrId, aaaId) as { quantity: number; source_key: string }[];
+    expect(rows.length).toBe(1);
+    expect(rows[0].quantity).toBe(10);
+    expect(rows[0].source_key).toBe("ibkr:pos:AAA:2025-01-31");
+  });
+
+  it("restore never re-inserts recon manifest rows; re-reconcile re-derives justified ones", () => {
+    // First snapshot: AAA + BBB held (from sampleParsed's default IBKR batch).
+    const first = commitImport(db, sampleParsed());
+    void first;
+    const ibkrId = (db.prepare("SELECT id FROM accounts WHERE name = 'IBKR'").get() as { id: number }).id;
+    const aaaId = (db.prepare("SELECT id FROM securities WHERE symbol = 'AAA'").get() as { id: number }).id;
+
+    // Second snapshot (later date): AAA no longer reported. The statement
+    // pass of the post-commit reconcile mints a tombstone for AAA, OWNED by
+    // this second batch (spec §2 batch-ownership hygiene) because IBKR is
+    // one of this batch's own accounts.
+    const secondParsed = sampleParsed();
+    secondParsed.holdings = [
+      {
+        accountName: "IBKR",
+        symbol: "BBB",
+        quantity: 5,
+        costBasis: 250,
+        asOfDate: "2025-02-28",
+        sourceKey: "ibkr:pos:BBB:2025-02-28",
+      },
+    ] as unknown as ParsedImportResult["holdings"];
+    secondParsed.transactions = [];
+    secondParsed.corporateActions = [];
+    secondParsed.prices = [];
+    secondParsed.snapshots = [];
+    const second = commitImport(db, secondParsed);
+
+    const tombstoneSourceKey = `${RECON_HOLDING_SOURCE_PREFIX}${ibkrId}:${aaaId}:2025-02-28:stmt`;
+    const minted = db
+      .prepare("SELECT import_batch_id FROM holdings WHERE source_key = ?")
+      .get(tombstoneSourceKey) as { import_batch_id: number } | undefined;
+    // Setup sanity check: the reconcile really did mint a batch-owned
+    // tombstone for AAA — otherwise the rest of the test proves nothing.
+    expect(minted?.import_batch_id).toBe(second.batchId);
+
+    const manifest = buildRecoveryManifest(db, second.batchId);
+    expect(
+      manifest.payload.tables.holdings.some(
+        (r) => (r as Record<string, unknown>).source_key === tombstoneSourceKey,
+      ),
+    ).toBe(true);
+
+    undoImportWithRecovery(db, second.batchId, { manifestDir: dir });
+
+    restoreImportBatch(db, manifest);
+
+    const rows = db
+      .prepare(
+        "SELECT quantity, source_key, import_batch_id FROM holdings WHERE account_id = ? AND security_id = ? AND as_of_date = '2025-02-28'",
+      )
+      .all(ibkrId, aaaId) as { quantity: number; source_key: string; import_batch_id: number | null }[];
+    // Exactly one tombstone for the slot — no duplicate from a restore-loop
+    // insert plus a re-derived one.
+    expect(rows.length).toBe(1);
+    expect(rows[0].quantity).toBe(0);
+    expect(rows[0].source_key.startsWith(RECON_HOLDING_SOURCE_PREFIX)).toBe(true);
+    // Decisive: a restore-loop insert would carry the manifest's captured
+    // import_batch_id (second.batchId, preserved verbatim). NULL here proves
+    // this row came from the post-restore re-reconcile (unowned, like every
+    // other unowned reconcileClosedEquityHoldings(db) call), not from the
+    // manifest row the restore loop skipped.
+    expect(rows[0].import_batch_id).toBeNull();
+  });
+
+  it("double restore corrupts no uniquely-keyed table", () => {
+    const res = commitImport(db, sampleParsed());
+    const manifest = buildRecoveryManifest(db, res.batchId);
+    undoImportWithRecovery(db, res.batchId, { manifestDir: dir });
+
+    restoreImportBatch(db, manifest);
+    restoreImportBatch(db, manifest);
+
+    // raw_imports duplication under a double restore is pre-existing and out
+    // of scope (not asserted here) — this pins the uniquely-keyed tables:
+    // holdings (account_id, security_id, as_of_date), transactions
+    // (source_key), prices (security_id, date).
+    expect(
+      (db.prepare("SELECT COUNT(*) c FROM holdings WHERE import_batch_id = ?").get(res.batchId) as { c: number }).c,
+    ).toBe(2);
+    expect(
+      (db.prepare("SELECT COUNT(*) c FROM transactions WHERE import_batch_id = ?").get(res.batchId) as { c: number }).c,
+    ).toBe(1);
+    expect(
+      (db.prepare("SELECT COUNT(*) c FROM prices WHERE import_batch_id = ?").get(res.batchId) as { c: number }).c,
+    ).toBe(1);
   });
 });
 
