@@ -110,6 +110,8 @@ const D = "2026-06-30";
 
 const HOLDINGS_HEADER =
   "account,as_of_date,symbol,security_name,security_type,quantity,cost_basis";
+/** Same shape plus market_value, which makes the commit derive `prices` rows. */
+const HOLDINGS_HEADER_WITH_VALUES = `${HOLDINGS_HEADER},market_value`;
 
 interface Pos {
   symbol: string;
@@ -120,13 +122,20 @@ const A: Pos = { symbol: "SYNA", quantity: 10 };
 const B: Pos = { symbol: "SYNB", quantity: 20 };
 const C: Pos = { symbol: "SYNC", quantity: 30 };
 
-function holdingsCsv(asOfDate: string, rows: Pos[], account = TAXABLE): string {
+interface CsvOpts {
+  account?: string;
+  /** Emit market_value so the commit derives one price row per holding. */
+  withMarketValues?: boolean;
+}
+
+function holdingsCsv(asOfDate: string, rows: Pos[], opts: CsvOpts = {}): string {
+  const account = opts.account ?? TAXABLE;
   return [
-    HOLDINGS_HEADER,
-    ...rows.map(
-      (r) =>
-        `${account},${asOfDate},${r.symbol},${r.symbol} Corp,Stock,${r.quantity},${r.quantity * 100}`,
-    ),
+    opts.withMarketValues ? HOLDINGS_HEADER_WITH_VALUES : HOLDINGS_HEADER,
+    ...rows.map((r) => {
+      const base = `${account},${asOfDate},${r.symbol},${r.symbol} Corp,Stock,${r.quantity},${r.quantity * 100}`;
+      return opts.withMarketValues ? `${base},${r.quantity * 110}` : base;
+    }),
   ].join("\n");
 }
 
@@ -134,9 +143,9 @@ async function importHoldings(
   db: Database.Database,
   asOfDate: string,
   rows: Pos[],
-  opts: { account?: string; filename?: string } = {},
+  opts: CsvOpts & { filename?: string } = {},
 ) {
-  const csv = holdingsCsv(asOfDate, rows, opts.account);
+  const csv = holdingsCsv(asOfDate, rows, opts);
   const parsed = await parseImport(csv, opts.filename ?? `holdings-${asOfDate}.csv`);
   expect(parsed.sourceType).toBe("canonical-csv");
   return commitImport(db, parsed);
@@ -481,6 +490,30 @@ describe("post-commit sweep failures", () => {
     expect(res.warnings).toEqual([]);
     expect(batchSummary(db, res.batchId)).not.toContain("failed");
   });
+
+  it("a failed summary-marker write does not fail the import (marker is best-effort)", async () => {
+    // The sweeps' dominant failure mode IS a database error, and that is
+    // exactly when the marker UPDATE fails too. If that write were unguarded,
+    // its throw would escape the sweep's catch and fail an already-committed
+    // import. Here the marker write is blocked at the SQL level while the
+    // sweep itself also fails.
+    await importHoldings(db, D0, [A, B, C]);
+    db.exec(
+      `CREATE TRIGGER block_sweep_marker BEFORE UPDATE ON import_batches
+       WHEN NEW.summary LIKE '%retries next sync%'
+       BEGIN SELECT RAISE(ABORT, 'disk I/O error: /Users/private/vanguard.db'); END`,
+    );
+    hoisted.reconcileThrows = true;
+
+    const res = await importHoldings(db, D, [A, C]); // must not throw
+
+    expect(res.newHoldings).toBe(2); // the import still committed…
+    const joined = res.warnings.join("\n");
+    expect(joined).toContain("closed-position reconcile failed"); // …and still reports
+    expect(joined).not.toContain("disk I/O error");
+    // Only the persisted history line was lost.
+    expect(batchSummary(db, res.batchId)).not.toContain("retries next sync");
+  });
 });
 
 // ── 5. tax generation bumps ─────────────────────────────────────────────
@@ -497,6 +530,45 @@ describe("tax input generation", () => {
     const again = await importHoldings(db, D0, [A, B, C], { filename: "again.csv" });
     expect(again.newHoldings).toBe(0);
     expect(getTaxInputGeneration(db)).toBe(before + 1);
+  });
+
+  it("a fully-deduped re-import carrying derived prices never bumps, even for a security tombstoned in ANOTHER account", async () => {
+    // The hazard: `bumpIfPricesAffectSyntheticCloses` scans every account, so
+    // a security this account still holds but another account has retired is
+    // in tombstone state globally. If the commit collected price pairs it
+    // never actually wrote, a verbatim statement re-import would bump the
+    // generation and clear a filing-ready acceptance stamp.
+    const roth = accountId(db, ROTH);
+    const a = seedSecurity(db, "SYNA");
+    const b = seedSecurity(db, "SYNB");
+    const c = seedSecurity(db, "SYNC");
+    for (const sec of [a, b, c]) seedHolding(db, roth, sec, 5, D0);
+    seedHolding(db, roth, a, 5, D);
+    seedHolding(db, roth, c, 5, D);
+    expect(reconcileClosedEquityHoldings(db)).toBe(1); // SYNB retired in ROTH at D
+    expect(holdingRow(db, "SYNB", D, ROTH)!.quantity).toBe(0);
+
+    // A higher-priority live price already owns (SYNB, D), so the statement's
+    // derived price for SYNB is REJECTED by the source-priority WHERE on both
+    // imports — the stored row never changes, so no synthetic close can move.
+    db.prepare(
+      "INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'tws')",
+    ).run(b, D, 99);
+
+    // Taxable still holds all three, and the file carries market values.
+    const first = await importHoldings(db, D, [A, B, C], { withMarketValues: true });
+    expect(first.newHoldings).toBe(3);
+    expect(first.newPrices).toBe(2); // SYNA + SYNC; SYNB's is rejected
+
+    const before = getTaxInputGeneration(db);
+    const again = await importHoldings(db, D, [A, B, C], {
+      withMarketValues: true,
+      filename: "again.csv",
+    });
+
+    expect(again.newHoldings).toBe(0); // fully deduped on the holdings side
+    expect(again.newPrices).toBe(2); // equal-priority rewrites of held names
+    expect(getTaxInputGeneration(db)).toBe(before);
   });
 
   it("bumps when an imported price can change a tombstoned security's synthetic close", async () => {
