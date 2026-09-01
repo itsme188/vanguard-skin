@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { actualChipClass } from "@/app/dashboard/today/WeekAheadView";
 import type { CalendarEvent } from "@/lib/types";
 
@@ -82,5 +83,36 @@ describe("actualChipClass (WeekAheadView EventRow)", () => {
     });
     expect(cls).toContain("text-down");
     expect(cls).not.toContain("text-up");
+  });
+});
+
+// QA finding today-week-ahead--actual-chip-overflows-card-4th-recurrence:
+// the chip's TONE never overflowed — its WIDTH did. shrink-0 + whitespace-nowrap
+// kept the chip's intrinsic width (~157px) intact even in day columns as
+// narrow as ~130px (5-up grid, chat rail open at >=1280px), so the neighboring
+// column painted over it and truncated the figure mid-number. actualChipClass
+// only owns the tone classes (asserted above); the layout classes are static
+// JSX on the <span> in WeekAheadView.tsx, so pin them by source inspection —
+// same technique as tests/dashboard/security-trade-grade-group-caption.test.ts.
+describe("WeekAheadView actual chip — width contract (source-pinned)", () => {
+  const src = readFileSync("app/dashboard/today/WeekAheadView.tsx", "utf8");
+  const match = src.match(
+    /actualDisplay && \(\s*<span\s*\n\s*className=\{`([^`]*)\$\{actualChipClass\(event\)\}`\}/,
+  );
+
+  it("finds the actual chip's className template in the source", () => {
+    expect(match).not.toBeNull();
+  });
+
+  it("caps the chip to the card width and lets it wrap instead of overflow", () => {
+    const cls = match?.[1] ?? "";
+    expect(cls).toContain("max-w-full");
+    expect(cls).not.toContain("whitespace-nowrap");
+    expect(cls).not.toContain("shrink-0");
+  });
+
+  it("keeps the drop-to-own-line alignment (ml-auto) untouched", () => {
+    const cls = match?.[1] ?? "";
+    expect(cls).toContain("ml-auto");
   });
 });

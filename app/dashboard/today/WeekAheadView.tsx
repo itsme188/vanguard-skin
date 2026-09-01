@@ -284,15 +284,21 @@ function EventRow({ event, todayIso }: { event: CalendarEvent; todayIso: string 
             Macro
           </span>
         )}
-        {/* shrink-0 + nowrap: the row flex-wraps, so a long actual value drops
-            to its own line — never clipped to "actual…". */}
+        {/* The row flex-wraps, so a long actual value drops to its own
+            line — never clipped to "actual…". Day columns can be as
+            narrow as ~130px (5-up grid with the chat rail open), so the
+            chip is also capped to max-w-full and allowed to wrap its own
+            text (no whitespace-nowrap/shrink-0) instead of overflowing
+            the card border into the neighboring column; break-words is a
+            last-resort guard for the rare single figure wider than the
+            column. */}
         {/* Consensus / actual values are PUBLIC market data (macro
             prints, street EPS/Rev) — they reveal nothing about the
             user's holdings, so they render unmasked per the
             privacy-masks-portfolio-only rule (B16 sibling). */}
         {actualDisplay && (
           <span
-            className={`text-[11px] font-mono rounded px-1.5 py-0.5 ml-auto shrink-0 whitespace-nowrap ${actualChipClass(event)}`}
+            className={`text-[11px] font-mono rounded px-1.5 py-0.5 ml-auto max-w-full break-words ${actualChipClass(event)}`}
           >
             actual {actualDisplay}
           </span>
