@@ -552,8 +552,8 @@ export function restoreImportBatch(db: Database.Database, manifest: RecoveryMani
         // at restore time (not capture) keeps stored checksums valid.
         if (
           table === "holdings" &&
-          typeof (row as Record<string, unknown>).source_key === "string" &&
-          ((row as Record<string, unknown>).source_key as string).startsWith(RECON_HOLDING_SOURCE_PREFIX)
+          typeof row.source_key === "string" &&
+          row.source_key.startsWith(RECON_HOLDING_SOURCE_PREFIX)
         ) {
           continue;
         }

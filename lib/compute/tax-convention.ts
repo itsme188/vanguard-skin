@@ -135,6 +135,15 @@ export function stampTaxLotsConventionIfPresent(db: Database.Database): void {
  * holdings row non-zero) never match, so routine daily price syncs never
  * bump. Deliberately over-approximate: an older-than-selected price for a
  * tombstoned security still bumps — over-bump is fail-closed and cheap.
+ *
+ * The zero-quantity check below is deliberately NOT filtered to stock/ETF,
+ * even though RECONCILE_CLOSE itself only synthesizes for stock/ETF
+ * (`computeTaxLots`' orphan query, `lib/compute/tax-lots.ts`). This is an
+ * invalidation trigger, not the synthesis query — matching a bond/fund/option
+ * tombstone here just costs an occasional harmless extra bump. Never narrow
+ * this to stock/ETF to "fix" the mismatch: that would risk a fail-OPEN hole
+ * if RECONCILE_CLOSE's own scope ever widens without this trigger widening
+ * in lockstep.
  */
 export function bumpIfPricesAffectSyntheticCloses(
   db: Database.Database,

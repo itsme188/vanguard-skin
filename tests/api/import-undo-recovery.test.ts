@@ -631,8 +631,11 @@ describe("import-undo recovery — tombstone-aware restore (T7)", () => {
     const manifest = buildRecoveryManifest(db, res.batchId);
     undoImportWithRecovery(db, res.batchId, { manifestDir: dir });
 
+    const genBeforeFirstRestore = getTaxInputGeneration(db);
     restoreImportBatch(db, manifest);
+    const genAfterFirstRestore = getTaxInputGeneration(db);
     restoreImportBatch(db, manifest);
+    const genAfterSecondRestore = getTaxInputGeneration(db);
 
     // raw_imports duplication under a double restore is pre-existing and out
     // of scope (not asserted here) — this pins the uniquely-keyed tables:
@@ -647,6 +650,16 @@ describe("import-undo recovery — tombstone-aware restore (T7)", () => {
     expect(
       (db.prepare("SELECT COUNT(*) c FROM prices WHERE import_batch_id = ?").get(res.batchId) as { c: number }).c,
     ).toBe(1);
+
+    // Generation rule (spec §3, R3-F5, "simplified"): restore bumps whenever
+    // its manifest carries holdings or prices rows — NOT gated on `.changes`
+    // (a double restore's second pass is a no-op via OR IGNORE / unique-key
+    // skips, but the manifest still carries holdings+prices rows). Per §6,
+    // "a double restore ... MAY bump again — that over-bump is the specified
+    // behavior, asserted as such": both calls bump, including the second
+    // no-op one.
+    expect(genAfterFirstRestore).toBe(genBeforeFirstRestore + 1);
+    expect(genAfterSecondRestore).toBe(genAfterFirstRestore + 1);
   });
 });
 

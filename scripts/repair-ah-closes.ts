@@ -46,6 +46,14 @@
  * Downstream: this script does NOT recompute valuations or betas itself —
  * see the printed reminder after `--apply` for the exact commands.
  *
+ * TAX-GENERATION NOTE: this script writes `prices` directly and does NOT call
+ * `bumpIfPricesAffectSyntheticCloses` — a repaired price at-or-before a
+ * sold-out (tombstoned) security's zero-quantity date can move that
+ * security's RECONCILE_CLOSE strike without the tax generation bumping. After
+ * running `--apply` against any security that could be tombstoned, re-run
+ * `scripts/reconcile-tax-report-vs-broker.ts --stamp` for the affected
+ * (account, year)s before trusting a filing-ready export.
+ *
  * Usage:
  *   npx tsx scripts/repair-ah-closes.ts                       # dry-run (default)
  *   npx tsx scripts/repair-ah-closes.ts --threshold=0.5        # tighter threshold (%)

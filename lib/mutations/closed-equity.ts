@@ -262,19 +262,24 @@ export function reconcileClosedEquityHoldings(
    * for an owned account, a batch stamp — see the "Tombstone model" doc above.
    */
   const ownedAccounts = new Set(opts.ownedAccountIds ?? []);
+  // Hoisted once (not re-asserted per tombstone call): coerces `undefined` to
+  // `null` up front so the closure below can branch on `owned` without a
+  // non-null assertion — `importBatchId` is already `number | null`, which is
+  // exactly what the `owned ? importBatchId : null` ternary needs either way.
+  const importBatchId: number | null = opts.importBatchId ?? null;
   const tombstone = (
     accountId: number,
     securityId: number,
     date: string,
     origin: typeof RECON_STMT_SUFFIX | typeof RECON_LIVE_SUFFIX,
   ): void => {
-    const owned = opts.importBatchId != null && ownedAccounts.has(accountId);
+    const owned = importBatchId != null && ownedAccounts.has(accountId);
     insertZeroStmt.run(
       accountId,
       securityId,
       date,
       `${RECON_HOLDING_SOURCE_PREFIX}${accountId}:${securityId}:${date}${origin}`,
-      owned ? opts.importBatchId! : null,
+      owned ? importBatchId : null,
     );
     marked++;
   };
@@ -397,6 +402,15 @@ export function removeOrphanedReconTombstones(
  * writers snapshot this BEFORE writing: a non-zero write for one of these
  * is a newer-date tombstone supersession (re-bought position) and must bump
  * the tax generation (spec §4).
+ *
+ * Deliberately NOT filtered to stock/ETF, even though RECONCILE_CLOSE itself
+ * only synthesizes for stock/ETF (`computeTaxLots`' orphan query). This is
+ * an invalidation trigger, not the synthesis query — over-including a
+ * bond/fund/option tombstone here just means an occasional harmless extra
+ * generation bump (fail-closed doctrine, spec §4 precision note). Do not
+ * "fix" the mismatch by narrowing this to stock/ETF: that would risk a
+ * fail-OPEN hole if RECONCILE_CLOSE's own scope ever widens without this
+ * trigger widening in lockstep.
  */
 export function zeroLatestSecurityIds(db: Database.Database, accountId: number): Set<number> {
   const rows = db
@@ -411,7 +425,12 @@ export function zeroLatestSecurityIds(db: Database.Database, accountId: number):
   return new Set(rows.map((r) => r.id));
 }
 
-/** Recon tombstones for (account, date) — same-date supersession detection. */
+/**
+ * Recon tombstones for (account, date) — same-date supersession detection.
+ * Prepares a fresh statement per call: fine at today's call sites (once per
+ * account/date per sync, not per row); a future caller that loops this
+ * per-row should hoist the prepare out of its loop.
+ */
 export function countReconRowsOnDate(db: Database.Database, accountId: number, date: string): number {
   return (
     db

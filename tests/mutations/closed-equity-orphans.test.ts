@@ -53,6 +53,12 @@ describe("removeOrphanedReconTombstones", () => {
     hold(a, sec("OTHER"), 5, "2026-08-01", "plaid:1:9:2026-08-01");
     expect(removeOrphanedReconTombstones(db)).toBe(1);
   });
+  it("legacy unsuffixed tombstone survives while a same-date STATEMENT row exists", () => {
+    const a = acct("A1");
+    hold(a, sec("XONE"), 0, "2026-08-01", "recon:closed-equity:1:2:2026-08-01");
+    hold(a, sec("OTHER"), 5, "2026-08-01", "canonical:hold:1");
+    expect(removeOrphanedReconTombstones(db)).toBe(0);
+  });
   it(":live tombstone survives on ANY same-date non-recon row, orphans when none remains", () => {
     const a = acct("A1");
     hold(a, sec("XONE"), 0, "2026-08-01", "recon:closed-equity:t:live");
