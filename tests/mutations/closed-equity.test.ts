@@ -513,6 +513,27 @@ describe("tombstone provenance + ownership", () => {
     expect(tomb.import_batch_id).toBeNull();
   });
 
+  it("a real importBatchId never stamps a tombstone for an account NOT in ownedAccountIds", () => {
+    // Mirror of the half-condition above: this time importBatchId != null is
+    // TRUE (a real batch id is supplied) but ownedAccounts.has(accountId) is
+    // FALSE for the account under test (a2 is omitted from ownedAccountIds).
+    // `owned` must still be false — if the closure's && were an || (or the
+    // guard were dropped), a2's tombstone would wrongly pick up the batch id.
+    const a1 = acct("A1"); // owned
+    const a2 = acct("A2"); // NOT owned — account under test
+    const y = sec("YTWO");
+    const batchId = (
+      db.prepare(`INSERT INTO import_batches (source_type) VALUES ('canonical-csv') RETURNING id`).get() as { id: number }
+    ).id;
+    hold(a2, y, 5, "2026-07-31", "canonical:hold:1");
+    hold(a2, sec("KEEP2"), 5, "2026-08-29", "canonical:hold:2");
+    reconcileClosedEquityHoldings(db, { importBatchId: batchId, ownedAccountIds: [a1] });
+    const tomb = db
+      .prepare(`SELECT import_batch_id FROM holdings WHERE quantity=0 AND account_id=? AND security_id=?`)
+      .get(a2, y) as { import_batch_id: number | null };
+    expect(tomb.import_batch_id).toBeNull();
+  });
+
   it("bumps the tax generation when it marks anything, not when it marks nothing", () => {
     const a = acct("A1");
     hold(a, sec("XONE"), 5, "2026-07-31", "canonical:hold:1");
