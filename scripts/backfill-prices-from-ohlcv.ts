@@ -39,6 +39,14 @@
  * `prices` row, so a re-run over the same range finds nothing missing for
  * that security (0 inserted, all "already present").
  *
+ * TAX-GENERATION NOTE: this script writes `prices` directly and does NOT call
+ * `bumpIfPricesAffectSyntheticCloses` — a repaired price at-or-before a
+ * sold-out (tombstoned) security's zero-quantity date can move that
+ * security's RECONCILE_CLOSE strike without the tax generation bumping. After
+ * running `--apply` against any security that could be tombstoned, re-run
+ * `scripts/reconcile-tax-report-vs-broker.ts --stamp` for the affected
+ * (account, year)s before trusting a filing-ready export.
+ *
  * Usage:
  *   npx tsx scripts/backfill-prices-from-ohlcv.ts --account 3 --from 2024-12-31 --to 2026-01-31
  *   npx tsx scripts/backfill-prices-from-ohlcv.ts --securities 12,45,88 --from 2025-01-01 --to 2025-12-31
