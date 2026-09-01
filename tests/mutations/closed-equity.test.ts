@@ -495,6 +495,24 @@ describe("tombstone provenance + ownership", () => {
     expect(unowned.import_batch_id).toBeNull();
   });
 
+  it("ownedAccountIds without importBatchId never stamps (half-condition) and still reconciles", () => {
+    // opts.importBatchId is the AND-partner of `ownedAccounts.has(accountId)`
+    // in the tombstone closure — omitting it must leave every tombstone
+    // unstamped, even for an account named in ownedAccountIds, and must not
+    // throw despite ownedAccountIds being non-empty.
+    const a1 = acct("A1");
+    const x = sec("XONE");
+    hold(a1, x, 5, "2026-07-31", "canonical:hold:1");
+    hold(a1, sec("KEEP1"), 5, "2026-08-29", "canonical:hold:2");
+    expect(() =>
+      reconcileClosedEquityHoldings(db, { ownedAccountIds: [a1] }),
+    ).not.toThrow();
+    const tomb = db
+      .prepare(`SELECT import_batch_id FROM holdings WHERE quantity=0 AND account_id=? AND security_id=?`)
+      .get(a1, x) as { import_batch_id: number | null };
+    expect(tomb.import_batch_id).toBeNull();
+  });
+
   it("bumps the tax generation when it marks anything, not when it marks nothing", () => {
     const a = acct("A1");
     hold(a, sec("XONE"), 5, "2026-07-31", "canonical:hold:1");
