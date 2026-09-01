@@ -76,12 +76,18 @@ export function getNotesFiltered(
     // spells the ticker — one term, two different rules on one page.
     // UPPER() on both sides rather than relying on SQLite's ASCII-only
     // default LIKE folding.
+    // Tags are a JSON array in a TEXT column (e.g. `["AI","on-shoring"]`) —
+    // matched here as a plain substring against the JSON text. That means a
+    // search for a raw `"` or `[` will also hit every tagged note (JSON
+    // delimiters), which is an accepted looseness for a single-user local
+    // app with no tags index — not worth a real JSON search for this scale.
     conditions.push(
       `(UPPER(n.content) LIKE '%' || UPPER(?) || '%'
         OR UPPER(COALESCE(s.symbol, '')) LIKE '%' || UPPER(?) || '%'
-        OR UPPER(COALESCE(s.name, '')) LIKE '%' || UPPER(?) || '%')`
+        OR UPPER(COALESCE(s.name, '')) LIKE '%' || UPPER(?) || '%'
+        OR UPPER(COALESCE(n.tags, '')) LIKE '%' || UPPER(?) || '%')`
     );
-    params.push(search, search, search);
+    params.push(search, search, search, search);
   }
   if (filters.start_date) {
     conditions.push("n.event_date >= ?");
