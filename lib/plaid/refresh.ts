@@ -213,6 +213,17 @@ export function writePlaidHoldings(
         const priceDate = mf.asOf ?? today;
         const res = upsertPrice.run(sec.id, priceDate, mf.price);
         if (res.changes > 0) pricesWritten++;
+        // Collected UNCONDITIONALLY (unlike the import engine's Ruling-B gate
+        // on `res.changes > 0` — see the pricePairs comment in
+        // lib/import/engine.ts) — deliberate, not an asymmetry to close. This
+        // is a daily live sync: an over-bump here just costs one acceptance
+        // re-run (fail-closed doctrine — an under-bump risks a wrong filing).
+        // The engine's Ruling-B gate exists for a narrower, sharper reason: a
+        // fully-deduped statement RE-IMPORT writing byte-identical prices
+        // would otherwise clear a filing-ready acceptance stamp with zero
+        // data change. A daily Plaid sync has no analogous
+        // no-op-refetch-clears-acceptance shape worth guarding — it never
+        // claims "nothing changed" the way a re-import does.
         pricePairs.push({ securityId: sec.id, date: priceDate });
       }
 
