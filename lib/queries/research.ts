@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { escapeLikeTerm } from "./like-escape";
 
 export interface ResearchArticle {
   id: number;
@@ -114,8 +115,10 @@ export function getRecentArticles(
     params.push(options.endDateTime);
   }
   if (options?.search) {
-    conditions.push("(a.subject LIKE ? OR a.summary LIKE ? OR a.raw_text LIKE ? OR a.mentioned_symbols LIKE ?)");
-    const term = `%${options.search}%`;
+    conditions.push(
+      "(a.subject LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\' OR a.raw_text LIKE ? ESCAPE '\\' OR a.mentioned_symbols LIKE ? ESCAPE '\\')",
+    );
+    const term = `%${escapeLikeTerm(options.search)}%`;
     params.push(term, term, term, term);
   }
   if (options?.processedOnly) {
@@ -322,9 +325,9 @@ function buildFilteredArticlesWhere(
   // (D1/D2 short-circuit) have no summary, so subject/sender/reason matter.
   if (options?.search) {
     conditions.push(
-      "(a.subject LIKE ? OR a.sender LIKE ? OR a.summary LIKE ? OR a.excluded_reason LIKE ?)",
+      "(a.subject LIKE ? ESCAPE '\\' OR a.sender LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\' OR a.excluded_reason LIKE ? ESCAPE '\\')",
     );
-    const term = `%${options.search}%`;
+    const term = `%${escapeLikeTerm(options.search)}%`;
     params.push(term, term, term, term);
   }
 

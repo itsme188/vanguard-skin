@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { escapeLikeTerm } from "./like-escape";
 
 // ─── Filter types ─────────────────────────────────────────────────
 
@@ -77,11 +78,12 @@ export function getNotesFiltered(
     // UPPER() on both sides rather than relying on SQLite's ASCII-only
     // default LIKE folding.
     conditions.push(
-      `(UPPER(n.content) LIKE '%' || UPPER(?) || '%'
-        OR UPPER(COALESCE(s.symbol, '')) LIKE '%' || UPPER(?) || '%'
-        OR UPPER(COALESCE(s.name, '')) LIKE '%' || UPPER(?) || '%')`
+      `(UPPER(n.content) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
+        OR UPPER(COALESCE(s.symbol, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
+        OR UPPER(COALESCE(s.name, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\')`
     );
-    params.push(search, search, search);
+    const escaped = escapeLikeTerm(search);
+    params.push(escaped, escaped, escaped);
   }
   if (filters.start_date) {
     conditions.push("n.event_date >= ?");

@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { EarningsTranscript } from "@/lib/types";
+import { escapeLikeTerm } from "./like-escape";
 
 // ─── Result Types ───────────────────────────────────────────────
 
@@ -137,12 +138,13 @@ export function getTranscriptsSummary(
     // default LIKE folding — the same shape getNotesFiltered uses, so the
     // two halves of the Earnings tab can't drift on case handling.
     conditions.push(
-      `(UPPER(et.ticker) LIKE '%' || UPPER(?) || '%'
-        OR UPPER(COALESCE(s.name, '')) LIKE '%' || UPPER(?) || '%'
-        OR UPPER(COALESCE(et.summary, '')) LIKE '%' || UPPER(?) || '%'
-        OR UPPER(COALESCE(et.guidance, '')) LIKE '%' || UPPER(?) || '%')`
+      `(UPPER(et.ticker) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
+        OR UPPER(COALESCE(s.name, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
+        OR UPPER(COALESCE(et.summary, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
+        OR UPPER(COALESCE(et.guidance, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\')`
     );
-    params.push(search, search, search, search);
+    const escaped = escapeLikeTerm(search);
+    params.push(escaped, escaped, escaped, escaped);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
