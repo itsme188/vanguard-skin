@@ -184,7 +184,7 @@ export function TranscriptCard({
       {/* Full transcript modal */}
       {showFullTranscript && fullText && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm"
           onClick={() => setShowFullTranscript(false)}
         >
           <div
