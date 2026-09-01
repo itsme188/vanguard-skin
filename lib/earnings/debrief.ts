@@ -37,6 +37,7 @@ import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { loadIntelView, renderHeadlineTable } from "@/lib/digest/send-earnings-email";
 import { getCallNoteNearDateForFamily } from "@/lib/queries/earnings-call-notes";
+import { withClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { wrapSlotFor } from "@/lib/earnings/wrap";
 import { demoteEmbeddedHeadings, truncateAtWordBoundary } from "@/lib/digest/call-transcripts";
 import type { CalendarEvent } from "@/lib/types";
@@ -247,9 +248,15 @@ export function renderDebriefSections(
   unsent: DebriefCandidate[],
 ): DebriefSection[] {
   return unsent.map((candidate) => {
-    const event = db
-      .prepare(`SELECT * FROM calendar_events WHERE id = ?`)
-      .get(candidate.eventId) as CalendarEvent | undefined;
+    // Cluster-scoped acceptance stamp — the scoreboard runs the plausibility
+    // gate, and the stamp can sit on a superseded twin of this same print
+    // (lib/queries/manual-actuals-cluster.ts).
+    const event = withClusterManualActuals(
+      db,
+      db.prepare(`SELECT * FROM calendar_events WHERE id = ?`).get(candidate.eventId) as
+        | CalendarEvent
+        | undefined,
+    );
 
     if (!event) {
       // Should never happen — the candidate came straight from

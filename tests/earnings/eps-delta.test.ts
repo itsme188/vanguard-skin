@@ -45,9 +45,26 @@ describe("epsDelta", () => {
     expect(d?.label).toBe("-66.7%");
   });
 
-  it("returns null when the estimate is exactly 0 (division-by-zero guard, not a comparable percent)", () => {
-    const d = epsDelta("EPS 0.00", "EPS 0.45");
-    expect(d).toBeNull();
+  it("keeps the beat/miss SIGN when the estimate is exactly 0, labeling in absolute dollars (percent is undefined)", () => {
+    // Returning null here used to render a real miss on a neutral chip
+    // (QA finding week-ahead-chips--zero-consensus-eps-miss-renders-neutral-not-red:
+    // MP printed -$0.01 against a $0.00 consensus and looked in-line).
+    const beat = epsDelta("EPS 0.00", "EPS 0.45");
+    expect(beat).not.toBeNull();
+    expect(beat?.sign).toBe(1);
+    expect(beat?.label).toBe("+$0.45");
+
+    const miss = epsDelta("EPS 0.00", "EPS -0.01");
+    expect(miss).not.toBeNull();
+    expect(miss?.sign).toBe(-1);
+    expect(miss?.label).toBe("-$0.01");
+  });
+
+  it("stays in-line when both the estimate and the actual are exactly 0", () => {
+    const d = epsDelta("EPS 0.00", "EPS 0.00");
+    expect(d).not.toBeNull();
+    expect(d?.sign).toBe(0);
+    expect(d?.label).toBe("in-line");
   });
 
   it("does not swallow a genuine $0.00 actual as missing when the estimate is non-zero", () => {

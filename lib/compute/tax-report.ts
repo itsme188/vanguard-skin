@@ -55,6 +55,23 @@ export interface TaxReportResult {
   filingReady: boolean;
   /** Static disclosure about the heuristic wash-sale (W-code) detection; see `washSaleAdvisory`. */
   washSaleAdvisory: string;
+  /**
+   * The account this report is scoped to (`accounts.name`, matching the Tax
+   * Lots page's ?account= filter), or null for all accounts. Echoed back so
+   * every downstream surface — card heading, CSV scope note, TXF header,
+   * export filename — declares the same scope the numbers were computed
+   * under. A partial export must never be able to pass for the full report.
+   */
+  accountName: string | null;
+}
+
+export interface TaxReportOptions {
+  /**
+   * Narrow the report to one account by `accounts.name` (the Tax Lots page
+   * passes its ?account= value straight through). Empty/undefined = all
+   * accounts, byte-identical to the pre-filter behaviour.
+   */
+  accountName?: string | null;
 }
 
 /**
@@ -85,6 +102,13 @@ function daysBetween(dateA: string, dateB: string): number {
 /**
  * Detect potential wash sales by finding purchases of the same security
  * within 30 days before or after a loss sale.
+ *
+ * Account scope note: `sales` may already be narrowed to one account, but
+ * the PURCHASE scan deliberately is not — IRS wash-sale rules look across a
+ * taxpayer's accounts, and keeping the scan global also makes the flag for
+ * any given sale identical whether or not a filter is active (the
+ * conservation identity in tests/compute/tax-report-account-scope.test.ts:
+ * a scoped export is the same rows, filtered — never differently computed).
  */
 function detectWashSales(
   db: Database.Database,
@@ -156,11 +180,20 @@ function detectWashSales(
 
 export function generateTaxReport(
   db: Database.Database,
-  year: number
+  year: number,
+  opts?: TaxReportOptions
 ): TaxReportResult {
+  // Account scope is owned here, not by the route or the card: the Tax Lots
+  // page filters its tables on the same `account_name` string, so computing
+  // the report from that identical predicate is what keeps the TAX REPORT
+  // card, the tables and the CSV/TXF downloads describing one population.
+  const accountName = opts?.accountName ? opts.accountName : null;
+
   // filingOnly: exclude premium-rollover option closes and engine-synthesized
   // RECONCILE_CLOSE rows from anything destined for a filing surface (Task 5).
-  const sales = getClosedTaxLotSales(db, year, { filingOnly: true });
+  const allSales = getClosedTaxLotSales(db, year, { filingOnly: true });
+  const sales =
+    accountName == null ? allSales : allSales.filter((s) => s.account_name === accountName);
   const washWarnings = detectWashSales(db, sales, year);
 
   // Build wash sale lookup: saleId → warning
@@ -231,15 +264,28 @@ export function generateTaxReport(
   // be broker-accepted before the year is "ready"; and an empty universe
   // must never satisfy `.every()` vacuously (isYearAccepted's own
   // accountIds.every check would return true on an empty array).
+  //
+  // Under an account filter the universe narrows to THAT account — the gate
+  // is per (account, tax-year) by construction, so a Roth-scoped export
+  // clears exactly when the Roth account is broker-accepted for the year,
+  // and a Taxable acceptance can never launder it. Nothing is bypassed: an
+  // account name that matches nothing yields an empty universe, which the
+  // length guard below fails closed.
   const state = getTaxConventionState(db);
   const accountIds = (
     db
       .prepare(
         `SELECT DISTINCT tl.account_id FROM tax_lot_sales tls
            JOIN tax_lots tl ON tl.id = tls.tax_lot_id
-          WHERE tls.sale_date >= ? AND tls.sale_date <= ?`
+           ${accountName == null ? "" : "JOIN accounts a ON a.id = tl.account_id"}
+          WHERE tls.sale_date >= ? AND tls.sale_date <= ?
+            ${accountName == null ? "" : "AND a.name = ?"}`
       )
-      .all(`${year}-01-01`, `${year}-12-31`) as { account_id: number }[]
+      .all(
+        ...(accountName == null
+          ? [`${year}-01-01`, `${year}-12-31`]
+          : [`${year}-01-01`, `${year}-12-31`, accountName])
+      ) as { account_id: number }[]
   ).map((r) => r.account_id);
   const filingReady =
     accountIds.length > 0 &&
@@ -256,6 +302,7 @@ export function generateTaxReport(
     excludedNonUsdSales,
     filingReady,
     washSaleAdvisory,
+    accountName,
   };
 }
 
@@ -320,8 +367,18 @@ export function generateForm8949CSV(report: TaxReportResult): string {
     );
   }
 
+  // Scope disclosure: a single-account file holds a SUBSET of the year's
+  // dispositions, so the file itself says so — the filename slug alone can
+  // be lost to a rename. Emitted only when filtered, so the all-accounts
+  // CSV is byte-identical to before.
+  if (report.accountName) {
+    lines.push(
+      `Note: PARTIAL EXPORT — ${escapeCSV(report.accountName)} only. Not the complete Form 8949 for ${report.year}.`
+    );
+  }
+
   // Trailing disclosure footer (CSV/UI only — a trailing comment line is
-  // not valid TXF, so the TXF body stays untouched).
+  // not valid TXF, so the TXF body stays untouched). Stays the LAST line.
   lines.push(`Note: ${report.washSaleAdvisory}`);
 
   return lines.join("\n");
@@ -330,18 +387,41 @@ export function generateForm8949CSV(report: TaxReportResult): string {
 // ─── Filename builder ────────────────────────────────────────────
 
 /**
+ * Account name -> filename-safe slug: lowercase, non-alphanumeric runs
+ * collapsed to one hyphen, trimmed. Returns "" when nothing usable survives
+ * (the caller then falls back to the unscoped name rather than emitting a
+ * dangling separator). Never produces a path separator.
+ */
+export function slugifyAccountName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
  * Single-sourced export filename for both the CSV and TXF downloads.
  * Appends "-NOT-FOR-FILING" unless the report is marker-gated filingReady
  * (see generateTaxReport). The route's Content-Disposition and
  * TaxReportCard's client-side download both call this — never re-derive
  * the name inline (Codex plan review #12).
+ *
+ * `accountName` (the Tax Lots ?account= filter) inserts an account slug
+ * before the marker — form-8949-2022-vanguard-roth-ira-NOT-FOR-FILING.csv —
+ * so a single-account file can never sit on disk looking like the full
+ * year's Form 8949. The marker itself is unchanged: it still keys purely on
+ * filingReady, which generateTaxReport derives per (account, tax-year).
  */
 export function buildTaxReportFilename(
   kind: "csv" | "txf",
   year: number,
-  filingReady: boolean
+  filingReady: boolean,
+  accountName?: string | null
 ): string {
-  const base = kind === "csv" ? `form-8949-${year}` : `tax-report-${year}`;
+  const slug = accountName ? slugifyAccountName(accountName) : "";
+  const base =
+    (kind === "csv" ? `form-8949-${year}` : `tax-report-${year}`) + (slug ? `-${slug}` : "");
   return filingReady ? `${base}.${kind}` : `${base}-NOT-FOR-FILING.${kind}`;
 }
 
@@ -360,9 +440,16 @@ export function buildTaxReportFilename(
 export function generateTXF(report: TaxReportResult): string {
   const lines: string[] = [];
 
-  // TXF header
+  // TXF header. The `A` record is the free-text source name — when the
+  // report is account-scoped it carries that scope, so a partial file
+  // announces itself inside TurboTax too. (No trailing comment line: that
+  // is not valid TXF, so the record BODY stays untouched.)
   lines.push("V042"); // TXF version 042
-  lines.push(`APortfolio Desk`);
+  lines.push(
+    report.accountName
+      ? `APortfolio Desk — PARTIAL EXPORT: ${report.accountName} only`
+      : `APortfolio Desk`
+  );
   lines.push(`D${toMMDDYYYY(`${report.year}-12-31`)}`);
   lines.push("^"); // end of header
 
