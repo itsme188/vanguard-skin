@@ -155,7 +155,12 @@ export default async function TaxLotsPage(props: {
             </>
           )}
 
-          <TaxReportCard year={selectedYear} />
+          {/* The card + its CSV/TXF downloads honor the SAME ?account=
+              filter as the tables above (QA:
+              tax-lots--account-filter-ignored-by-tax-report-card-and-exports);
+              the ?security= narrowing is display-only and never scopes an
+              8949 export. */}
+          <TaxReportCard year={selectedYear} accountName={selectedAccount || undefined} />
           <OpenLotsTable lots={openLots} showAccount={!selectedAccount} />
           <ClosedSalesTable sales={closedSales} showAccount={!selectedAccount} />
         </>

@@ -20,7 +20,19 @@ export interface TwrResult {
   endDate: string;
   totalReturn: number; // decimal, e.g. 0.123 = 12.3%
   annualizedReturn: number | null; // null if period too short (<30 days)
+  /** The window `totalReturn` was actually earned over, in days: from the
+   *  anchor that opened the FIRST chained sub-period through `endDate`.
+   *  That anchor is usually EARLIER than `startDate` — a bounded window
+   *  (6M/1Y/…) chains its first month off the prior month-end snapshot, so
+   *  the return covers ~30 days more than `startDate → endDate` shows.
+   *  This — never `displayDays` — is the annualization denominator: feeding
+   *  a short denominator into `annualize()` inflates the headline figure
+   *  (2026-08-31 regression, ~15.6% reported for a true ~12.8%). */
   totalDays: number;
+  /** `startDate → endDate` in days — the span of the window the UI DISPLAYS,
+   *  so START/END/DAYS reconcile on screen. Presentation only: never do
+   *  return math with it. */
+  displayDays: number;
   monthsIncluded: number;
   isPartial: boolean; // true if some months had to be skipped
 }
@@ -30,7 +42,10 @@ export interface PortfolioTwrResult {
   endDate: string;
   totalReturn: number;
   annualizedReturn: number | null;
+  /** Measurement window — see TwrResult.totalDays. */
   totalDays: number;
+  /** Displayed START → END span — see TwrResult.displayDays. */
+  displayDays: number;
   perAccount: TwrResult[];
   isPartial: boolean; // true if some months had to be skipped from the chain (mirrors TwrResult.isPartial)
 }
@@ -229,9 +244,11 @@ export function computeTwr(
      ORDER BY trade_date ASC`
   );
 
-  // Also get the snapshot just before our range for V_start of first month
+  // Also get the snapshot just before our range for V_start of first month.
+  // month_end_date comes back too: when this row anchors the chain it is the
+  // date the measured period actually OPENS on (see totalDays).
   const priorSnapshotStmt = db.prepare(
-    `SELECT total_value
+    `SELECT month_end_date, total_value
      FROM monthly_snapshots
      WHERE account_id = ?
        AND month_end_date < ?
@@ -284,11 +301,16 @@ export function computeTwr(
 
     // Get prior snapshot for V_start of first month
     const priorRow = priorSnapshotStmt.get(account.id, effectiveStart) as
-      | { total_value: number }
+      | { month_end_date: string; total_value: number }
       | undefined;
 
     const subPeriodReturns: number[] = [];
     let isPartial = false;
+    // Date the FIRST sub-period that made it into the chain opens on — the
+    // start of the window `totalReturn` is actually measured over. Stays
+    // null until a sub-period is pushed, because leading months can be
+    // skipped (no usable V_start), which moves the real opening later.
+    let measurementStart: string | null = null;
 
     for (let i = 0; i < snapshots.length; i++) {
       const snap = snapshots[i];
@@ -305,6 +327,9 @@ export function computeTwr(
 
       // Use pre-computed TWR if available and NOT an annual summary
       if (snap.twr !== null && !isAnnualSummary) {
+        // A stored monthly TWR covers its whole calendar month, so this
+        // sub-period opens on that month's first day.
+        measurementStart ??= monthStartDate(snap.month_end_date);
         if (snap.source === 'ibkr-activity') {
           // IBKR stores TWR as percentage (e.g. 14.545 = 14.545%)
           subPeriodReturns.push(snap.twr / 100);
@@ -318,14 +343,20 @@ export function computeTwr(
       // Compute Modified Dietz for this month
       // Always prefer prior month's total_value as vStart (avoids annual starting_value)
       let vStart: number | null = null;
+      // The date vStart is valued AS OF — i.e. where this sub-period opens.
+      let vStartDate: string | null = null;
 
       if (i > 0) {
         vStart = snapshots[i - 1].total_value;
+        vStartDate = snapshots[i - 1].month_end_date;
       } else if (priorRow) {
         vStart = priorRow.total_value;
+        vStartDate = priorRow.month_end_date;
       } else if (snap.starting_value !== null && !isAnnualSummary) {
         // Only use starting_value as last resort for non-annual rows
         vStart = snap.starting_value;
+        // starting_value is the month's opening balance.
+        vStartDate = monthStartDate(snap.month_end_date);
       }
 
       if (vStart === null || vStart === 0) {
@@ -398,6 +429,7 @@ export function computeTwr(
         continue;
       }
 
+      measurementStart ??= vStartDate;
       subPeriodReturns.push(r);
     }
 
@@ -410,10 +442,16 @@ export function computeTwr(
     const firstDate =
       snapshots[0].month_end_date;
     const lastDate = snapshots[snapshots.length - 1].month_end_date;
-    const totalDays = daysBetween(
-      priorRow ? monthStartDate(firstDate) : firstDate,
-      lastDate
-    );
+    // Two different day counts, deliberately kept apart:
+    //   displayDays — firstDate (the month-END anchor the UI shows as START)
+    //     → lastDate, so the on-screen START/END/DAYS reconcile.
+    //   totalDays — where the chained return actually opens → lastDate.
+    //     Whenever the first sub-period was chained off a value from BEFORE
+    //     firstDate (a prior-window snapshot, or the month's own opening
+    //     balance), that is ~30 days earlier than firstDate. Annualizing a
+    //     return over the shorter display span inflates it.
+    const displayDays = daysBetween(firstDate, lastDate);
+    const totalDays = daysBetween(measurementStart ?? firstDate, lastDate);
 
     perAccount.push({
       accountId: account.id,
@@ -423,6 +461,7 @@ export function computeTwr(
       totalReturn,
       annualizedReturn: annualize(totalReturn, totalDays),
       totalDays,
+      displayDays,
       monthsIncluded: subPeriodReturns.length,
       isPartial,
     });
@@ -446,6 +485,7 @@ export function computeTwr(
       totalReturn: acct.totalReturn,
       annualizedReturn: acct.annualizedReturn,
       totalDays: acct.totalDays,
+      displayDays: acct.displayDays,
       perAccount,
       isPartial: acct.isPartial,
     };
@@ -504,12 +544,14 @@ export function computeTwr(
            AND ${excludeLiveSnapshotsSql("ms.source")}${scopeAnd("ms.account_id")}
          GROUP BY ms.month_end_date
        )
-       SELECT total_value FROM agg
+       SELECT month_end_date, total_value FROM agg
        WHERE present_accounts >= expected_accounts
        ORDER BY month_end_date DESC
        LIMIT 1`
     )
-    .get(...scopeParams, effectiveStart, ...scopeParams) as { total_value: number | null } | undefined;
+    .get(...scopeParams, effectiveStart, ...scopeParams) as
+    | { month_end_date: string; total_value: number | null }
+    | undefined;
 
   // All external flows for the range — scoped to just the named accounts
   // when a multi-account scope is active, otherwise every account.
@@ -600,6 +642,9 @@ export function computeTwr(
 
   const portfolioReturns: number[] = [];
   let portfolioPartial = false;
+  // Portfolio twin of the per-account `measurementStart` above: the date the
+  // first chained aggregate sub-period opens on.
+  let portfolioMeasurementStart: string | null = null;
 
   // Full-coverage filter: a month missing an already-born account's row is
   // statement lag — summing it would read the absent account's whole value
@@ -635,10 +680,13 @@ export function computeTwr(
     const snap = coveredSnapshots[i];
 
     let vStart: number | null = null;
+    let vStartDate: string | null = null;
     if (i > 0) {
       vStart = coveredSnapshots[i - 1].total_value;
+      vStartDate = coveredSnapshots[i - 1].month_end_date;
     } else if (aggPriorRow?.total_value) {
       vStart = aggPriorRow.total_value;
+      vStartDate = aggPriorRow.month_end_date;
     }
 
     if (vStart === null || vStart === 0) {
@@ -692,6 +740,7 @@ export function computeTwr(
       continue;
     }
 
+    portfolioMeasurementStart ??= vStartDate;
     portfolioReturns.push(r);
   }
 
@@ -709,10 +758,10 @@ export function computeTwr(
     coveredSnapshots.length > 0
       ? coveredSnapshots[coveredSnapshots.length - 1].month_end_date
       : effectiveEnd;
+  // Same display/measurement split as the per-account counts above.
+  const portfolioDisplayDays = daysBetween(portfolioFirstDate, portfolioLastDate);
   const portfolioTotalDays = daysBetween(
-    aggPriorRow?.total_value
-      ? monthStartDate(portfolioFirstDate)
-      : portfolioFirstDate,
+    portfolioMeasurementStart ?? portfolioFirstDate,
     portfolioLastDate
   );
 
@@ -722,6 +771,7 @@ export function computeTwr(
     totalReturn: portfolioTotalReturn,
     annualizedReturn: annualize(portfolioTotalReturn, portfolioTotalDays),
     totalDays: portfolioTotalDays,
+    displayDays: portfolioDisplayDays,
     perAccount,
     isPartial: portfolioPartial,
   };

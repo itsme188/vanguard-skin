@@ -266,6 +266,139 @@ describe("TWR computation", () => {
     expect(acct.annualizedReturn).toBeNull();
   });
 
+  it("reports displayDays from the displayed START anchor but annualizes over the real measurement window", () => {
+    // Anchor snapshot before the requested window so a priorRow exists —
+    // the chained return therefore OPENS at that prior anchor (2025-12-31),
+    // even though the UI displays the first in-window month end
+    // (2026-01-31) as START. Two distinct day counts fall out of that and
+    // must not be conflated:
+    //   displayDays — 2026-01-31 → 2026-06-30, what the "Days" cell shows
+    //                 so START/END/DAYS reconcile on screen.
+    //   totalDays   — 2025-12-31 → 2026-06-30, the window the return was
+    //                 actually earned over, and the ONLY correct
+    //                 annualization denominator.
+    // Mirrors the QA repro: 6M window, Jan 31 2026 → Jun 30 2026.
+    seedSnapshot(db, ACCT_1, "2025-12-31", 100000);
+    const months = [
+      "2026-01-31",
+      "2026-02-28",
+      "2026-03-31",
+      "2026-04-30",
+      "2026-05-31",
+      "2026-06-30",
+    ];
+    let v = 100000;
+    for (const m of months) {
+      v *= 1.01;
+      seedSnapshot(db, ACCT_1, m, v);
+    }
+
+    const result = computeTwr(db, {
+      startDate: "2026-01-01",
+      endDate: "2026-06-30",
+    });
+    expect(result).not.toBeNull();
+
+    const acct = result!.perAccount[0];
+    expect(acct.startDate).toBe("2026-01-31");
+    expect(acct.endDate).toBe("2026-06-30");
+    // Jan 31 → Jun 30 2026 (non-leap) = 28 + 31 + 30 + 31 + 30 = 150 days.
+    // START/END/DAYS must reconcile for the same displayed window.
+    expect(acct.displayDays).toBe(150);
+    // Six chained monthly sub-periods, the first of which runs from the
+    // 2025-12-31 anchor: Dec 31 → Jun 30 = 31+28+31+30+31+30 = 181 days.
+    expect(acct.totalDays).toBe(181);
+    expect(acct.monthsIncluded).toBe(6);
+
+    // 1.01^6 - 1 = 6.152% earned over 181 days.
+    const expectedTotalReturn = Math.pow(1.01, 6) - 1;
+    expect(acct.totalReturn).toBeCloseTo(expectedTotalReturn, 10);
+    const expectedAnnualized =
+      Math.pow(1 + expectedTotalReturn, 365.25 / 181) - 1;
+    expect(acct.annualizedReturn).not.toBeNull();
+    expect(acct.annualizedReturn!).toBeCloseTo(expectedAnnualized, 10);
+    // ≈ 12.80%. Annualizing the same return over the 150-day DISPLAY window
+    // would report ≈ 15.65% — the inflation this test exists to prevent.
+    expect(acct.annualizedReturn!).toBeCloseTo(0.128, 3);
+    expect(acct.annualizedReturn!).toBeLessThan(0.14);
+  });
+
+  it("splits portfolio-wide displayDays from the annualization window the same way", () => {
+    // Same shape as above but exercised through the portfolio-wide
+    // (multi-account) aggregation branch, which has its own independent
+    // day-count computation and its own prior-anchor lookup.
+    const ACCT_2 = 2;
+    for (const acctId of [ACCT_1, ACCT_2]) {
+      seedSnapshot(db, acctId, "2025-12-31", 100000);
+      let v = 100000;
+      for (const m of [
+        "2026-01-31",
+        "2026-02-28",
+        "2026-03-31",
+        "2026-04-30",
+        "2026-05-31",
+        "2026-06-30",
+      ]) {
+        v *= 1.01;
+        seedSnapshot(db, acctId, m, v);
+      }
+    }
+
+    const result = computeTwr(db, {
+      startDate: "2026-01-01",
+      endDate: "2026-06-30",
+    });
+    expect(result).not.toBeNull();
+    expect(result!.startDate).toBe("2026-01-31");
+    expect(result!.endDate).toBe("2026-06-30");
+    expect(result!.displayDays).toBe(150);
+    expect(result!.totalDays).toBe(181);
+    expect(result!.isPartial).toBe(false);
+
+    const expectedTotalReturn = Math.pow(1.01, 6) - 1;
+    expect(result!.totalReturn).toBeCloseTo(expectedTotalReturn, 8);
+    const expectedAnnualized =
+      Math.pow(1 + expectedTotalReturn, 365.25 / 181) - 1;
+    expect(result!.annualizedReturn).not.toBeNull();
+    expect(result!.annualizedReturn!).toBeCloseTo(expectedAnnualized, 8);
+    expect(result!.annualizedReturn!).toBeLessThan(0.14);
+  });
+
+  it("annualizes over the first included month when no prior anchor exists", () => {
+    // No snapshot before the window, but the first in-window month still
+    // contributes a sub-period (the statement carries its own monthly TWR).
+    // That sub-period covers the whole of January, so the measurement
+    // window opens at the month START — annualizing from the Jan 31 month
+    // END would shorten the denominator by a month and inflate the figure
+    // exactly as the prior-anchor case did.
+    seedSnapshot(db, ACCT_1, "2025-01-31", 101000, {
+      twr: 0.01,
+      source: "canonical",
+    });
+    seedSnapshot(db, ACCT_1, "2025-02-28", 102010, {
+      twr: 0.01,
+      source: "canonical",
+    });
+
+    const result = computeTwr(db);
+    expect(result).not.toBeNull();
+
+    const acct = result!.perAccount[0];
+    expect(acct.monthsIncluded).toBe(2);
+    // Displayed window: Jan 31 → Feb 28 = 28 days.
+    expect(acct.displayDays).toBe(28);
+    // Measured window: Jan 1 → Feb 28 = 58 days (both chained sub-periods).
+    expect(acct.totalDays).toBe(58);
+
+    const expectedTotalReturn = Math.pow(1.01, 2) - 1;
+    expect(acct.totalReturn).toBeCloseTo(expectedTotalReturn, 10);
+    expect(acct.annualizedReturn).not.toBeNull();
+    expect(acct.annualizedReturn!).toBeCloseTo(
+      Math.pow(1 + expectedTotalReturn, 365.25 / 58) - 1,
+      10
+    );
+  });
+
   it("handles negative returns correctly", () => {
     seedSnapshot(db, ACCT_1, "2025-01-31", 100000);
     seedSnapshot(db, ACCT_1, "2025-02-28", 90000); // -10%
