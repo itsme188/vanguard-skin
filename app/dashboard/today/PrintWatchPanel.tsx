@@ -17,6 +17,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, type DragEvent as ReactDragEvent } from "react";
+import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
 import { Chip, type ChipTone } from "../components/Chip";
 import { EmptySection } from "../components/EmptySection";
@@ -721,6 +722,7 @@ export default function PrintWatchPanel() {
 // ── per-print card ──────────────────────────────────────────────────────
 
 function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: () => Promise<void> }) {
+  const router = useRouter();
   const [acceptingAll, setAcceptingAll] = useState(false);
   const [promoting, setPromoting] = useState(false);
   const [unacceptingId, setUnacceptingId] = useState<string | null>(null);
@@ -815,7 +817,13 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
     setActionNote(null);
     try {
       const ok = await postAccept({ promoteHeadline: true });
-      if (ok) setActionNote("Promoted to the earnings recap scoreboard.");
+      if (ok) {
+        setActionNote("Promoted to the earnings recap scoreboard.");
+        // A promote writes calendar_events.actual_value, which the
+        // server-rendered hub / Today's releases / cockpit strip display —
+        // re-render them so the page doesn't keep showing superseded actuals.
+        router.refresh();
+      }
     } finally {
       setPromoting(false);
     }
