@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
   getTranscriptsSummary,
+  getTranscriptsForSecurity,
   getTickersWithTranscripts,
 } from "@/lib/queries/transcripts";
 import { upsertTranscript } from "@/lib/mutations/transcripts";
@@ -211,6 +212,52 @@ describe("getTranscriptsSummary source dedupe", () => {
     const tickers = new Set(results.map((r) => r.ticker));
     expect(tickers.size).toBe(3);
     expect(results.every((r) => r.source === "alpha_vantage")).toBe(true);
+  });
+});
+
+// ─── getTranscriptsForSecurity source dedupe ───────────────────────
+//
+// The security-detail page's EARNINGS TRANSCRIPTS section is fed by this
+// function, not by getTranscriptsSummary — so the list-view dedupe
+// (qa:research-transcripts-list--8k-cover-pages-labelled-transcript-duplicate-quarter-cards)
+// left this surface still rendering two "Q2 2026" rows with the 8-K cover
+// page FIRST (qa:security-detail-transcripts--duplicate-quarter-8k-cover-page-ranked-first,
+// re-confirmed by browser E2E 2026-09-02 after PR #61 landed). Same rule,
+// same ranking, applied here: one row per quarter, best source wins.
+
+describe("getTranscriptsForSecurity source dedupe", () => {
+  it("returns one row per quarter, preferring the real call transcript over the 8-K cover page", () => {
+    const intcId = seedSecurity(db, "INTC", "Intel Corp");
+    seedTranscript(db, intcId, "INTC", 2026, 2, undefined, "edgar_8k");
+    seedTranscript(db, intcId, "INTC", 2026, 2, undefined, "alpha_vantage");
+    seedTranscript(db, intcId, "INTC", 2026, 1, undefined, "alpha_vantage");
+
+    const rows = getTranscriptsForSecurity(db, intcId);
+    expect(rows.map((r) => [r.year, r.quarter, r.source])).toEqual([
+      [2026, 2, "alpha_vantage"],
+      [2026, 1, "alpha_vantage"],
+    ]);
+  });
+
+  it("keeps an edgar_8k-only quarter and orders newest quarter first", () => {
+    const sofiId = seedSecurity(db, "SOFI", "SoFi Technologies");
+    seedTranscript(db, sofiId, "SOFI", 2025, 4, undefined, "edgar_8k");
+    seedTranscript(db, sofiId, "SOFI", 2026, 1, undefined, "api_ninjas");
+
+    const rows = getTranscriptsForSecurity(db, sofiId);
+    expect(rows.map((r) => [r.year, r.quarter, r.source])).toEqual([
+      [2026, 1, "api_ninjas"],
+      [2025, 4, "edgar_8k"],
+    ]);
+  });
+
+  it("does not leak another security's rows", () => {
+    const aId = seedSecurity(db, "AAPL", "Apple Inc");
+    const bId = seedSecurity(db, "MSFT", "Microsoft Corp");
+    seedTranscript(db, aId, "AAPL", 2026, 2, undefined, "alpha_vantage");
+    seedTranscript(db, bId, "MSFT", 2026, 2, undefined, "alpha_vantage");
+
+    expect(getTranscriptsForSecurity(db, aId).map((r) => r.ticker)).toEqual(["AAPL"]);
   });
 });
 
