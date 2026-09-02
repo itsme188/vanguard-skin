@@ -188,3 +188,79 @@ describe("beta lookback matches the production beta writer", () => {
     expect(aapl!.beta).toBe(1.2);
   });
 });
+
+// Regression: a security held in multiple accounts must appear ONCE, with
+// its market_value SUMMED across accounts — not once PER (account, security)
+// row. Un-aggregated rows double the "TOP 10 BY RISK" list's occupancy for
+// any multi-account name, pushing a genuinely large single-account position
+// out of the top N entirely.
+// [qa:analysis-risk-drawer--top10-duplicates-per-account-rows-omits-top-risk-contributor]
+describe("multi-account security aggregation", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    // DUPX is held in TWO accounts (1 and 3), $1,500 each -> should collapse
+    // to ONE row with market_value = $3,000 once aggregated.
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, sector) VALUES (1, 'DUPX', 'Duplicate Corp', 'Stock', 'Discretionary')`
+    ).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (1, '2026-08-30', 100, 'tws')`).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 1, '2026-08-30', 15, 'dupx-acct1')`
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (3, 1, '2026-08-30', 15, 'dupx-acct3')`
+    ).run();
+
+    // 8 single-account securities, all worth clearly more than DUPX's
+    // aggregate ($3,000), so they always occupy ranks 1-8.
+    const highs = [95, 90, 85, 80, 75, 70, 65, 60]; // quantities @ $100 -> $9500..$6000
+    highs.forEach((qty, i) => {
+      const id = 10 + i;
+      const symbol = `HIGH${i + 1}`;
+      db.prepare(
+        `INSERT INTO securities (id, symbol, name, security_type, sector) VALUES (?, ?, ?, 'Stock', 'Discretionary')`
+      ).run(id, symbol, `${symbol} Inc.`);
+      db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (?, '2026-08-30', 100, 'tws')`).run(id);
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, ?, '2026-08-30', ?, ?)`
+      ).run(id, qty, `${symbol.toLowerCase()}-acct1`);
+    });
+
+    // OMITTED: single-account, $1,400 -- ranks 11th under the un-aggregated
+    // (12-row) ordering because DUPX's two $1,500 rows occupy ranks 9-10,
+    // but ranks 10th (last slot) once DUPX collapses to one $3,000 row.
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, sector) VALUES (99, 'OMITTED', 'Omitted Corp', 'Stock', 'Discretionary')`
+    ).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (99, '2026-08-30', 100, 'tws')`).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (2, 99, '2026-08-30', 14, 'omitted-acct2')`
+    ).run();
+  });
+
+  it("a security held in two accounts appears ONCE with market_value summed across accounts", () => {
+    const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 100 });
+    const dupxRows = rows.filter((r) => r.symbol === "DUPX");
+    expect(dupxRows).toHaveLength(1);
+    expect(dupxRows[0].marketValue).toBeCloseTo(3000, 5);
+    const total = rows.reduce((sum, r) => sum + r.marketValue, 0);
+    expect(dupxRows[0].weight).toBeCloseTo(3000 / total, 5);
+  });
+
+  it("kind:risk topN:10 returns 10 DISTINCT securityIds (no per-account duplicates)", () => {
+    const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
+    expect(rows).toHaveLength(10);
+    const distinctIds = new Set(rows.map((r) => r.securityId));
+    expect(distinctIds.size).toBe(10);
+  });
+
+  it("collapsing DUPX's duplicate rows frees a slot for the rank-11 contributor", () => {
+    const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
+    expect(rows.some((r) => r.symbol === "OMITTED")).toBe(true);
+  });
+});

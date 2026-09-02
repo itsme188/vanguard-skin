@@ -133,7 +133,7 @@ export function getHoldingsInBucket(
         s.symbol,
         s.name AS security_name,
         s.sector,
-        ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS market_value,
+        SUM(${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) AS market_value,
         sb.beta AS beta,
         ${factorSelect}
       FROM holdings h
@@ -151,6 +151,14 @@ export function getHoldingsInBucket(
       WHERE ${latestHoldingsPredicate({ accountFilter })}
         AND COALESCE(lp.close_price, 0) > 0
         ${extraWhere}
+      -- Aggregate per SECURITY, not per (account, security) row: a name held
+      -- in several accounts must appear once with its value summed, or it
+      -- both duplicates in the list AND eats two ranking slots in the
+      -- kind:"risk" LIMIT (pushing a real single-account contributor out of
+      -- the top N). symbol/name/sector/beta/factor columns are functionally
+      -- dependent on s.id (constant across the grouped rows), so bare-column
+      -- selection is safe here.
+      GROUP BY s.id
     )
     SELECT * FROM holdings_cte
     WHERE market_value > 0
