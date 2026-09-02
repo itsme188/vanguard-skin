@@ -32,7 +32,7 @@
 
 ## 4. Uncommitted changes / live-process state (post-deploy)
 
-- Main pushed through `69b58b4`. Working tree clean except this file.
+- Main pushed through `aa3522e` (CLAUDE.md gained the EDGAR acceptance-time invariant at session end). Working tree clean except this file.
 - Electron redeploy DONE 19:43 ET: signed + notarized, `verify-bundle: OK (no leaks, runtime pieces present)`, installed to /Applications, relaunched (server PID 31682), `/login` 200, TWS re-synced 10 positions on launch, print-watch lease re-acquired by the new process. The ZS print (event 1487, print 9588) is armed for 9/3 with a 16:05 ET release and the window opening at 15:35; the wire lane shows armed; the fixed EDGAR lane runs on the new bundle.
 - The `qa`-labelled session minted for the drop and status calls was revoked (0 qa rows remain).
 - Nightly chain: 02:00 smoke, 02:45 deep QA + fixer, unchanged; the fixer's own worktree `../vanguard-skin-qa-fix` remains.
