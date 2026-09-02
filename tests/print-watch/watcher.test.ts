@@ -87,6 +87,14 @@ interface FakeSeamState {
   /** `djState.seenArticleIds` as it looked at each DJ poll — the watcher owns
    *  it and must only add AFTER a release is ingested / a flash is batched. */
   djSeen: string[][];
+  /** The conId the DJ poll seam was handed, per poll. */
+  djConIds: number[];
+  /** securityIds handed to the conId resolver seam, in order. */
+  conIdCalls: number[];
+  /** What the conId resolver seam answers (null = TWS knows no such contract). */
+  conIdResult: number | null;
+  /** When set, the conId resolver seam throws with this message instead. */
+  conIdThrows: string | null;
 }
 
 let fake: FakeSeamState;
@@ -119,6 +127,10 @@ function installSeams(): void {
     sleepThrowsOnce: false,
     storageRoot: null,
     djSeen: [],
+    djConIds: [],
+    conIdCalls: [],
+    conIdResult: null,
+    conIdThrows: null,
   };
 
   _setTestSeams({
@@ -136,16 +148,22 @@ function installSeams(): void {
     }),
     pollDjNews: async (
       _ib: unknown,
-      _conId: number,
+      conId: number,
       _windowStartUtc: string,
       _nowUtc: string,
       state: { seenArticleIds: Set<string> },
     ) => {
       fake.djCalls += 1;
+      fake.djConIds.push(conId);
       fake.djSeen.push([...state.seenArticleIds]);
       return fake.dj();
     },
     resolveCik: async () => fake.cik,
+    resolveConId: async (_db: unknown, securityId: number) => {
+      fake.conIdCalls.push(securityId);
+      if (fake.conIdThrows) throw new Error(fake.conIdThrows);
+      return fake.conIdResult;
+    },
     pollEdgar: async (
       _cik: string,
       _startIso: string,
@@ -175,16 +193,23 @@ function seedArmedEvent(
     armed?: boolean;
     eventTime?: string;
     rawJson?: string | null;
+    /** false = no `securities` row at all, so nothing can resolve a conId. */
+    withSecurity?: boolean;
   } = {},
-): { eventId: number } {
+): { eventId: number; securityId: number | null } {
   const symbol = opts.symbol ?? "NVDA";
   const conId = opts.conId === undefined ? 4815747 : opts.conId;
 
-  const sec = db
-    .prepare(
-      `INSERT INTO securities (symbol, name, security_type, ib_con_id) VALUES (?, ?, 'Stock', ?)`,
-    )
-    .run(symbol, "NVIDIA Corporation", conId);
+  const securityId =
+    opts.withSecurity === false
+      ? null
+      : (Number(
+          db
+            .prepare(
+              `INSERT INTO securities (symbol, name, security_type, ib_con_id) VALUES (?, ?, 'Stock', ?)`,
+            )
+            .run(symbol, "NVIDIA Corporation", conId).lastInsertRowid,
+        ) as number);
 
   const ev = db
     .prepare(
@@ -197,7 +222,7 @@ function seedArmedEvent(
       opts.eventTime ?? "AMC",
       `${symbol} earnings`,
       symbol,
-      Number(sec.lastInsertRowid),
+      securityId,
       opts.rawJson === undefined ? JSON.stringify({ entry: { hour: "amc" } }) : opts.rawJson,
       `finnhub:${symbol}:${opts.eventDate ?? EVENT_DATE}`,
     );
@@ -212,7 +237,7 @@ function seedArmedEvent(
      VALUES (?, 'manual', 'desk consensus', 1.01, 46000000000)`,
   ).run(eventId);
 
-  return { eventId };
+  return { eventId, securityId };
 }
 
 function printIdFor(eventId: number): number {
@@ -745,13 +770,79 @@ describe("watch loop", () => {
   });
 
   it("notes a missing conId as wire-off coverage and never calls DJ", async () => {
-    seedArmedEvent({ conId: null });
+    // No securities row at all: nothing for the TWS resolver to look up.
+    seedArmedEvent({ conId: null, withSecurity: false });
 
     ensurePrintWatch(db);
     await tick(1);
 
     expect(fake.djCalls).toBe(0);
+    expect(fake.conIdCalls).toEqual([]);
     expect(getWatchStatus(db)[0].coverage).toContain("DJ: no conId — wire off");
+  });
+
+  it("resolves a missing conId through TWS once and arms the wire (the SNOW miss)", async () => {
+    const { securityId } = seedArmedEvent({ conId: null });
+    fake.conIdResult = 444884769;
+
+    ensurePrintWatch(db);
+    await tick(1);
+    await tick(11_000);
+
+    expect(fake.conIdCalls).toEqual([securityId]); // once per print, not per tick
+    expect(fake.djCalls).toBeGreaterThan(0);
+    expect(fake.djConIds).toContain(444884769);
+    const status = getWatchStatus(db);
+    expect(status[0].coverage).toContain("DJ: wire armed (conId resolved via TWS)");
+  });
+
+  it("waits for TWS before attempting the conId lookup, then attempts it", async () => {
+    const { securityId } = seedArmedEvent({ conId: null });
+    fake.twsUp = false;
+    fake.conIdResult = 444884769;
+
+    ensurePrintWatch(db);
+    await tick(1);
+
+    expect(fake.conIdCalls).toEqual([]); // TWS down is not a completed attempt
+    expect(getWatchStatus(db)[0].coverage).toContain("DJ: no conId — TWS offline, wire off");
+
+    fake.twsUp = true;
+    await tick(11_000);
+
+    expect(fake.conIdCalls).toEqual([securityId]);
+    expect(getWatchStatus(db)[0].coverage).toContain("DJ: wire armed (conId resolved via TWS)");
+  });
+
+  it("says so, once, when TWS cannot resolve the symbol", async () => {
+    seedArmedEvent({ conId: null });
+    fake.conIdResult = null;
+
+    ensurePrintWatch(db);
+    await tick(1);
+
+    expect(fake.conIdCalls).toHaveLength(1);
+    expect(fake.djCalls).toBe(0);
+    expect(getWatchStatus(db)[0].coverage).toContain(
+      "DJ: no conId — TWS could not resolve NVDA, wire off",
+    );
+
+    await tick(11_000);
+    expect(fake.conIdCalls).toHaveLength(1); // never re-asked
+  });
+
+  it("reports a throwing conId lookup and does not retry it", async () => {
+    seedArmedEvent({ conId: null });
+    fake.conIdThrows = "contract details timed out";
+
+    ensurePrintWatch(db);
+    await tick(1);
+
+    expect(fake.conIdCalls).toHaveLength(1);
+    expect(getWatchStatus(db)[0].sources.dj).toContain("contract details timed out");
+
+    await tick(11_000);
+    expect(fake.conIdCalls).toHaveLength(1);
   });
 });
 

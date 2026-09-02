@@ -30,6 +30,11 @@ export interface ArmedWorksheetEventRow {
   event_time: string | null;
   raw_json: string | null;
   con_id: number | null;
+  /** The `securities.id` the join resolved (null when the symbol has no row).
+   *  The watcher needs the ROW, not just its conId: an armed event on an
+   *  UNHELD name has `ib_con_id IS NULL` (contract enrichment only ever walks
+   *  held securities), and this id is what lets it ask TWS for one. */
+  security_id: number | null;
   issuer_name: string | null;
 }
 
@@ -42,8 +47,9 @@ export interface ArmedWorksheetEventRow {
  * is exactly the event that is about to report.
  *
  * `con_id` prefers the security's IB contract id and falls back to the one
- * denormalized on the event row; `issuer_name` feeds the watcher's
- * document-to-event gate. The securities join resolves through
+ * denormalized on the event row; `security_id` is the resolved securities row
+ * (the watcher's handle for a TWS conId lookup when both are NULL) and
+ * `issuer_name` feeds the watcher's document-to-event gate. The securities join resolves through
  * `security_id` first and only then by symbol, via a scalar subquery so a
  * duplicate symbol row can never fan this out into two rows per event.
  */
@@ -62,6 +68,7 @@ export function getArmedWorksheetEvents(
               ce.event_time                           AS event_time,
               ce.raw_json                             AS raw_json,
               COALESCE(s.ib_con_id, ce.ib_con_id)     AS con_id,
+              s.id                                    AS security_id,
               s.name                                  AS issuer_name
          FROM earnings_worksheet_flags f
          JOIN calendar_events ce ON ce.id = f.event_id
