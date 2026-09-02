@@ -38,6 +38,36 @@ export function getOhlcvBars(
 }
 
 /**
+ * Get the NEWEST `limit` bars for a security, still returned oldest-first
+ * (ascending `bar_date`) — the shape every pivot detector / narrator
+ * consumer expects. `getOhlcvBars({ limit })` above sorts ASC and THEN
+ * limits, which takes the OLDEST rows; that's correct for its other callers
+ * (a bounded-from-a-start-date read), but wrong for "give me a recent
+ * lookback window" — a security with more stored bars than `limit` would
+ * have its most recent months silently dropped. Implemented as an inner
+ * DESC-LIMIT subquery re-sorted ASC in SQL so both the trim and the final
+ * order happen in one prepared statement.
+ */
+export function getRecentOhlcvBars(
+  db: Database.Database,
+  securityId: number,
+  barSize: string = "1 day",
+  limit: number = 500,
+): OhlcvBar[] {
+  return db
+    .prepare(
+      `SELECT date, open, high, low, close, volume FROM (
+         SELECT bar_date as date, open, high, low, close, volume
+         FROM ohlcv_bars
+         WHERE security_id = ? AND bar_size = ?
+         ORDER BY bar_date DESC
+         LIMIT ?
+       ) ORDER BY date ASC`,
+    )
+    .all(securityId, barSize, limit) as OhlcvBar[];
+}
+
+/**
  * Get the latest bar date for a security+bar_size combo.
  * Used for incremental fetching (only fetch the gap).
  */
