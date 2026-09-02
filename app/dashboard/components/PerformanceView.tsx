@@ -11,6 +11,7 @@ import { computePeriodAttribution } from "@/lib/compute/period-attribution";
 import { resolveScope } from "@/lib/queries/accounts";
 import { todayET } from "@/lib/calendar/date-utils";
 import { getDailyValuationsByAccount, getDailyValuationsCombined } from "@/lib/queries/daily-valuations";
+import { fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
 import { Money, Pct } from "@/lib/privacy/components";
 import { formatPercent } from "@/lib/format";
 import {
@@ -186,12 +187,41 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
     )
     .all(BENCHMARK_SYMBOL, effectiveStart, today) as { date: string; close_price: number }[];
 
+  // Flow-adjusted, seam-bridged inputs for the portfolio leg of the curve —
+  // same accountIds scope as the daily-valuation load above (scopeAccountIds:
+  // undefined for "all", the resolved id list for a named scope), mirroring
+  // computeRiskMetrics' pattern (lib/compute/risk.ts) exactly. Without this,
+  // the curve plots raw total_value: a deposit/withdrawal reads as a market
+  // move and an anchor-source handoff (statement<->Plaid<->TWS) reads as a
+  // fake step (CLAUDE.md: "a metric must be invariant to depositing $1M and
+  // buying nothing").
+  const flows =
+    dailyVals.length >= 2
+      ? fetchNetFlowsByDate(
+          db,
+          scopeAccountIds,
+          dailyVals[0].valuation_date,
+          dailyVals[dailyVals.length - 1].valuation_date,
+        )
+      : [];
+  const seamDates =
+    dailyVals.length >= 2
+      ? fetchAnchorSourceSeamDates(
+          db,
+          scopeAccountIds,
+          dailyVals[0].valuation_date,
+          dailyVals[dailyVals.length - 1].valuation_date,
+        )
+      : [];
+
   // Both series indexed to 100 at the first PLOTTED date (pure helper —
   // basing the benchmark at the selected-period start let SPY carry
   // pre-window returns and contradict the alpha card on the same page).
   const equityCurveData: PerformanceCurveData[] = buildEquityCurveData(
     dailyVals,
     benchmarkRows,
+    flows,
+    seamDates,
   );
 
   // ── Period attribution ──────────────────────────────────────────
