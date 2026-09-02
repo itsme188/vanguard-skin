@@ -195,11 +195,17 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   // move and an anchor-source handoff (statement<->Plaid<->TWS) reads as a
   // fake step (CLAUDE.md: "a metric must be invariant to depositing $1M and
   // buying nothing").
+  // Pair the flow/seam scope with the SERIES above, not the raw scope list:
+  // dailyVals is the single-account series whenever accountId is set, so its
+  // flows must be that account's alone. Equivalent today (every named scope
+  // is one account), but a 2+-account scope would otherwise net every
+  // account's flows against one account's values.
+  const curveAccountIds = accountId !== undefined ? [accountId] : scopeAccountIds;
   const flows =
     dailyVals.length >= 2
       ? fetchNetFlowsByDate(
           db,
-          scopeAccountIds,
+          curveAccountIds,
           dailyVals[0].valuation_date,
           dailyVals[dailyVals.length - 1].valuation_date,
         )
@@ -208,7 +214,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
     dailyVals.length >= 2
       ? fetchAnchorSourceSeamDates(
           db,
-          scopeAccountIds,
+          curveAccountIds,
           dailyVals[0].valuation_date,
           dailyVals[dailyVals.length - 1].valuation_date,
         )

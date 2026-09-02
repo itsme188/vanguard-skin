@@ -155,12 +155,14 @@ export function MarketDataPanel({
             because text-overflow:ellipsis only renders on a block-level
             container whose OWN content overflows a line box — a flex
             container's children are flex items, not inline text, so
-            ellipsis silently no-ops when applied to the flex row directly. */}
+            ellipsis silently no-ops when applied to the flex row directly.
+            The inner pieces are inline text now, so the old gap-3 no longer
+            spaces them — ml-3 on each piece keeps the 12px separation. */}
         <div className="flex items-center gap-3 min-w-0">
           <span className="truncate">
             <span style={{ color: "#ffb84d", fontWeight: 600 }}>{symbol}</span>
-            {name && <span>· {name}</span>}
-            {typeLabel && <span style={{ color: "#8a8a8a" }}>· {typeLabel}</span>}
+            {name && <span className="ml-3">· {name}</span>}
+            {typeLabel && <span className="ml-3" style={{ color: "#8a8a8a" }}>· {typeLabel}</span>}
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
