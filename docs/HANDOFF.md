@@ -26,7 +26,7 @@ Branch `land-2026-09-02` (sibling worktree; the fixer was mid-run in its own wor
 - Worktree full suite: green on every run — after the three merges (7,263), after PR #61 (7,273), and after the two E2E fixes (7,276). Three `tests/ai/generate.test.ts` failures on the very first run were the worktree's missing `.env.local`, not code; a dummy `ANTHROPIC_API_KEY` reproduces main's environment.
 - Browser E2E on a secretless `:3095` dev server from the worktree (DB copy, minted session, `DATABASE_PATH` + `APP_EXTRA_HOSTS`): 10 checks, 8 passed first time, the 2 failures above were fixed and re-verified. Notable pass evidence: the equity curve endpoint sits within two index points of 100 + YTD TWR (was ~35 points high); suggested levels report `barsAnalyzed: 500` with a resistance above spot; `20%` search returns 4 literal matches, not every note; six actual chips all 33px inside their day column; risk drawer 10 distinct symbols.
 - E2E also surfaced two things now in the ledger: a sibling overflow (the week-ahead reaction line spills past its card, low, auto-fixable) and a dollar gap on the drill-down (panel rows sum below the breakdown row — look-through ETF slices absent), attached to the decided drill-down item as a test requirement.
-- Deploy: gated decision per DECISIONS 2026-08-28 (deploy after E2E is the user's call) — state at close is in the session summary.
+- Deploy: user-approved after E2E (gated per DECISIONS 2026-08-28). `npm run electron:deploy` at 14:45 ET — Next build ~9 min, signing + notarization successful, `verify-bundle: OK (no leaks, runtime pieces present)`, installed to /Applications and relaunched 14:57 ET; `/login` 200 on :3099 and the first TWS auto-refresh synced positions on relaunch. Three `Failed to copy traced files … .git/refs/heads/<branch> ENOENT` warnings were self-inflicted (branch/worktree cleanup ran concurrently with the build; the routes are present in the bundle) — filed in TODO, rule added to CLAUDE.md.
 
 ## 3. Open concerns / rejected approaches / decisions
 
@@ -36,7 +36,7 @@ Branch `land-2026-09-02` (sibling worktree; the fixer was mid-run in its own wor
 
 ## 4. Uncommitted changes / live-process state (post-deploy)
 
-- Landing worktree `../vanguard-skin-land` (branch `land-2026-09-02`) and the fixer's `../vanguard-skin-qa-fix` remain; the `:3095` E2E server is killed at close.
+- Main pushed through this handoff commit (`ac66c99..` this session, 25+ commits); PRs #60 and #61 read MERGED on GitHub. Landing worktree removed and the five merged local branches deleted; `qa-fix-work-20260901` (content-duplicate of PR #60, needs -D) and the two remote PR branches left by user choice; the fixer's `../vanguard-skin-qa-fix` worktree remains (detached HEAD, its own). The `:3095` E2E server is killed and the DB copy deleted. Live app = the 14:57 ET build.
 - Two `@playwright/mcp --isolated` processes from a still-running interactive Claude session dated 2026-09-01 15:14 were left alone (their parent is alive).
 - No August statements have arrived yet; the reconciler live-watch (TODO) and the first statement-over-tombstone exercise wait for them.
 
