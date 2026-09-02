@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { escapeLikeTerm } from "./like-escape";
 
 // ─── Filter types ─────────────────────────────────────────────────
 
@@ -82,12 +83,13 @@ export function getNotesFiltered(
     // delimiters), which is an accepted looseness for a single-user local
     // app with no tags index — not worth a real JSON search for this scale.
     conditions.push(
-      `(UPPER(n.content) LIKE '%' || UPPER(?) || '%'
-        OR UPPER(COALESCE(s.symbol, '')) LIKE '%' || UPPER(?) || '%'
-        OR UPPER(COALESCE(s.name, '')) LIKE '%' || UPPER(?) || '%'
-        OR UPPER(COALESCE(n.tags, '')) LIKE '%' || UPPER(?) || '%')`
+      `(UPPER(n.content) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
+        OR UPPER(COALESCE(s.symbol, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
+        OR UPPER(COALESCE(s.name, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
+        OR UPPER(COALESCE(n.tags, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\')`
     );
-    params.push(search, search, search, search);
+    const escaped = escapeLikeTerm(search);
+    params.push(escaped, escaped, escaped, escaped);
   }
   if (filters.start_date) {
     conditions.push("n.event_date >= ?");
