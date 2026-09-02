@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { resolveCik, pollEdgar, type EdgarFiling, type FetchLike } from "@/lib/print-watch/edgar-adapter";
+import {
+  resolveCik,
+  pollEdgar,
+  parseEdgarAcceptanceDateTime,
+  type EdgarFiling,
+  type FetchLike,
+} from "@/lib/print-watch/edgar-adapter";
 
 const SEC_UA = "PortfolioDesk contact@myportfoliodesk.com";
 const CIK = "0001045810";
@@ -66,15 +72,27 @@ function companyTickersFixture() {
   };
 }
 
-/** SGML filing header, HTML-escaped as SEC serves it inside a <PRE> block. */
-function indexHeadersFixture(exhibits: Array<{ type: string; filename: string }>): string {
+/**
+ * SGML filing header, HTML-escaped as SEC serves it inside a <PRE> block.
+ * `options.acceptanceDateTime`, when given, emits the header's own
+ * `<ACCEPTANCE-DATETIME>YYYYMMDDHHMMSS` field (always Eastern wall-clock per
+ * EDGAR's SGML header convention) — the authoritative value `pollEdgar` now
+ * checks ahead of the submissions JSON.
+ */
+function indexHeadersFixture(
+  exhibits: Array<{ type: string; filename: string }>,
+  options: { acceptanceDateTime?: string } = {},
+): string {
   const blocks = exhibits
     .map(
       (e) =>
         `&lt;DOCUMENT&gt;\n&lt;TYPE&gt;${e.type}\n&lt;SEQUENCE&gt;2\n&lt;FILENAME&gt;${e.filename}\n&lt;DESCRIPTION&gt;Exhibit\n&lt;/DOCUMENT&gt;`,
     )
     .join("\n");
-  return `&lt;SEC-DOCUMENT&gt;\n${blocks}\n&lt;/SEC-DOCUMENT&gt;`;
+  const header = options.acceptanceDateTime
+    ? `&lt;ACCEPTANCE-DATETIME&gt;${options.acceptanceDateTime}\n`
+    : "";
+  return `&lt;SEC-DOCUMENT&gt;\n&lt;SEC-HEADER&gt;\n${header}&lt;/SEC-HEADER&gt;\n${blocks}\n&lt;/SEC-DOCUMENT&gt;`;
 }
 
 const WINDOW_START = "2026-08-26T20:20:00.000Z";
@@ -90,12 +108,19 @@ function submissionsFixture() {
     filings: {
       recent: {
         form: ["8-K", "8-K", "6-K", "10-K"],
-        // Effective window floor = WINDOW_START - 15min = 20:05:00Z.
+        // Effective window floor (true UTC) = WINDOW_START - 15min = 20:05:00Z.
+        // The submissions JSON is DELIBERATELY MIXED here, matching the two
+        // shapes SEC actually serves (see the "ACCEPTANCE-TIME QUIRK" note in
+        // edgar-adapter.ts): OLD_8K/NEW_8K are EASTERN WALL-CLOCK mislabeled
+        // with a "Z" (a fresh filing's shape); NEW_6K is already TRUE UTC (an
+        // older/normalized filing's shape, Dell-style). Both shapes must
+        // survive the dual-reading prefilter and are then confirmed by each
+        // filing's own index-headers `<ACCEPTANCE-DATETIME>` (see buildRoutes).
         acceptanceDateTime: [
-          "2026-08-26T19:00:00Z", // old 8-K, before the window floor
-          "2026-08-26T20:22:00Z", // in-window 8-K
-          "2026-08-26T20:25:00Z", // in-window 6-K
-          "2026-08-26T20:30:00Z", // in-window but wrong form
+          "2026-08-26T15:00:00Z", // ET wall-clock; true UTC 19:00:00Z — old 8-K, before the window floor either way
+          "2026-08-26T16:22:00Z", // ET wall-clock; true UTC 20:22:00Z — in-window 8-K (Eastern-as-Z shape)
+          "2026-08-26T20:25:00Z", // already true UTC — in-window 6-K (normalized shape)
+          "2026-08-26T16:30:00Z", // ET wall-clock; true UTC 20:30:00Z — in-window but wrong form
         ],
         accessionNumber: [OLD_8K_ACCESSION, NEW_8K_ACCESSION, NEW_6K_ACCESSION, TENK_ACCESSION],
         primaryDocument: ["old8k.htm", "new8k.htm", "new6k.htm", "tenk.htm"],
@@ -116,17 +141,26 @@ function buildRoutes(): Record<string, MockRoute> {
 
   return {
     [submissionsUrl]: { json: submissionsFixture() },
+    // Header ACCEPTANCE-DATETIME below is the Eastern wall-clock equivalent
+    // of each filing's intended true-UTC instant (20:22:00Z and 20:25:00Z
+    // respectively, both EDT/UTC-4 on this August date) — it CONFIRMS the
+    // JSON's window placement regardless of which JSON shape carried it.
     [`${eightKBase}/${NEW_8K_ACCESSION}-index-headers.html`]: {
-      text: indexHeadersFixture([
-        { type: "EX-99.1", filename: "ex991.htm" },
-        { type: "EX-99.2", filename: "ex992.htm" },
-        { type: "EX-10.1", filename: "ex101.htm" }, // must NOT be picked up
-      ]),
+      text: indexHeadersFixture(
+        [
+          { type: "EX-99.1", filename: "ex991.htm" },
+          { type: "EX-99.2", filename: "ex992.htm" },
+          { type: "EX-10.1", filename: "ex101.htm" }, // must NOT be picked up
+        ],
+        { acceptanceDateTime: "20260826162200" },
+      ),
     },
     [`${eightKBase}/ex991.htm`]: { text: "<html>8-K press release body</html>" },
     [`${eightKBase}/ex992.htm`]: { text: "<html>8-K CFO commentary</html>" },
     [`${sixKBase}/${NEW_6K_ACCESSION}-index-headers.html`]: {
-      text: indexHeadersFixture([{ type: "EX-99.1", filename: "ex991.htm" }]),
+      text: indexHeadersFixture([{ type: "EX-99.1", filename: "ex991.htm" }], {
+        acceptanceDateTime: "20260826162500",
+      }),
     },
     [`${sixKBase}/ex991.htm`]: { text: "<html>6-K press release body</html>" },
   };
@@ -161,6 +195,35 @@ describe("resolveCik", () => {
     await resolveCik("NVDA", fetchFn);
     expect(calls).toHaveLength(1);
     expect(calls[0].headers["User-Agent"]).toBe(SEC_UA);
+  });
+});
+
+describe("parseEdgarAcceptanceDateTime", () => {
+  it("interprets an EDT-season timestamp as Eastern wall-clock, not literal UTC (today's Snowflake miss)", () => {
+    // SEC submissions JSON reported "2026-09-02T16:08:29.000Z" for a filing
+    // whose own -index-headers.html said <ACCEPTANCE-DATETIME>20260902160829
+    // — EDGAR headers are Eastern by definition. 16:08:29 ET on 2026-09-02
+    // (EDT, UTC-4) is 20:08:29 true UTC.
+    expect(parseEdgarAcceptanceDateTime("2026-09-02T16:08:29.000Z")).toBe(
+      Date.parse("2026-09-02T20:08:29.000Z"),
+    );
+  });
+
+  it("interprets an EST-season timestamp with the winter offset (UTC-5)", () => {
+    expect(parseEdgarAcceptanceDateTime("2026-01-15T16:08:00.000Z")).toBe(
+      Date.parse("2026-01-15T21:08:00.000Z"),
+    );
+  });
+
+  it("treats a raw value without a trailing Z the same way — the Z was never trustworthy anyway", () => {
+    expect(parseEdgarAcceptanceDateTime("2026-09-02T16:08:29.000")).toBe(
+      parseEdgarAcceptanceDateTime("2026-09-02T16:08:29.000Z"),
+    );
+  });
+
+  it("returns NaN for unparseable input", () => {
+    expect(Number.isNaN(parseEdgarAcceptanceDateTime("not-a-timestamp"))).toBe(true);
+    expect(Number.isNaN(parseEdgarAcceptanceDateTime(""))).toBe(true);
   });
 });
 
@@ -251,6 +314,158 @@ describe("pollEdgar", () => {
     // one is simply not reported, so the next poll retries it whole.
     expect(filings.map((f) => f.accession)).toEqual([NEW_6K_ACCESSION]);
     expect(seen.has(NEW_8K_ACCESSION)).toBe(false);
+  });
+
+  // Regression for the 2026-09-02 live miss: the submissions JSON's
+  // acceptanceDateTime is Eastern wall-clock mislabeled UTC (see the
+  // top-of-file comment and parseEdgarAcceptanceDateTime above). The armed
+  // window here mirrors a real watcher window: 15:45-17:00 ET expressed as
+  // true UTC ("2026-09-02T19:45:00Z".."2026-09-02T21:00:00Z").
+  describe("acceptanceDateTime Eastern-wall-clock quirk (2026-09-02 live miss)", () => {
+    const MISS_ACCESSION = "0001045810-26-000200";
+    const WINDOW_START_TODAY = "2026-09-02T19:45:00Z";
+    const WINDOW_END_TODAY = "2026-09-02T21:00:00Z";
+
+    function buildMissRoutes(acceptanceDateTime: string): Record<string, MockRoute> {
+      const submissionsUrl = `https://data.sec.gov/submissions/CIK${CIK}.json`;
+      const base = baseUrl(MISS_ACCESSION);
+      return {
+        [submissionsUrl]: {
+          json: {
+            filings: {
+              recent: {
+                form: ["8-K"],
+                acceptanceDateTime: [acceptanceDateTime],
+                accessionNumber: [MISS_ACCESSION],
+                primaryDocument: ["8k.htm"],
+              },
+            },
+          },
+        },
+        [`${base}/${MISS_ACCESSION}-index-headers.html`]: {
+          text: indexHeadersFixture([{ type: "EX-99.1", filename: "ex991.htm" }]),
+        },
+        [`${base}/ex991.htm`]: { text: "<html>Snowflake press release body</html>" },
+      };
+    }
+
+    it("returns the filing: JSON says acceptanceDateTime 16:08:29 'Z', which is really 16:08:29 ET = 20:08:29 UTC, inside the 19:45-21:00Z window", async () => {
+      const { fetchFn } = makeMockFetch(buildMissRoutes("2026-09-02T16:08:29.000Z"));
+      const filings = await pollEdgar(CIK, WINDOW_START_TODAY, WINDOW_END_TODAY, new Set(), fetchFn);
+
+      expect(filings).toHaveLength(1);
+      expect(filings[0].accession).toBe(MISS_ACCESSION);
+      expect(filings[0].exhibits).toHaveLength(1);
+      expect(filings[0].exhibits[0].html).toBe("<html>Snowflake press release body</html>");
+    });
+
+    it("still excludes a filing genuinely accepted before the window (11:00 ET wall-clock = 15:00 true UTC, well before the 19:30Z floor)", async () => {
+      const { fetchFn } = makeMockFetch(buildMissRoutes("2026-09-02T11:00:00.000Z"));
+      const filings = await pollEdgar(CIK, WINDOW_START_TODAY, WINDOW_END_TODAY, new Set(), fetchFn);
+
+      expect(filings).toHaveLength(0);
+    });
+  });
+
+  // The JSON alone is never trusted (see the corrected "ACCEPTANCE-TIME
+  // QUIRK" note in edgar-adapter.ts, 2026-09-02 evening): the submissions
+  // feed serves EITHER shape (fresh filing = Eastern-as-Z; older/normalized
+  // filing = true UTC), so pollEdgar prefilters on BOTH readings and then
+  // settles the decision from the filing's own index-headers
+  // <ACCEPTANCE-DATETIME>, which is always Eastern.
+  describe("authoritative acceptance check via the filing's own index-headers", () => {
+    const HDR_ACCESSION = "0001045810-26-000300";
+    const HDR_WINDOW_START = "2026-09-02T19:45:00Z";
+    const HDR_WINDOW_END = "2026-09-02T21:00:00Z";
+
+    function buildHeaderCheckRoutes(
+      jsonAcceptance: string,
+      headerAcceptance?: string,
+    ): Record<string, MockRoute> {
+      const submissionsUrl = `https://data.sec.gov/submissions/CIK${CIK}.json`;
+      const base = baseUrl(HDR_ACCESSION);
+      return {
+        [submissionsUrl]: {
+          json: {
+            filings: {
+              recent: {
+                form: ["8-K"],
+                acceptanceDateTime: [jsonAcceptance],
+                accessionNumber: [HDR_ACCESSION],
+                primaryDocument: ["8k.htm"],
+              },
+            },
+          },
+        },
+        [`${base}/${HDR_ACCESSION}-index-headers.html`]: {
+          text: indexHeadersFixture(
+            [{ type: "EX-99.1", filename: "ex991.htm" }],
+            headerAcceptance !== undefined ? { acceptanceDateTime: headerAcceptance } : {},
+          ),
+        },
+        [`${base}/ex991.htm`]: { text: "<html>press release body</html>" },
+      };
+    }
+
+    it("(a) fresh filing: JSON is Eastern-as-Z, header confirms — returned with a true-UTC acceptanceDateTime", async () => {
+      const routes = buildHeaderCheckRoutes("2026-09-02T16:08:29.000Z", "20260902160829");
+      const { fetchFn } = makeMockFetch(routes);
+      const filings = await pollEdgar(CIK, HDR_WINDOW_START, HDR_WINDOW_END, new Set(), fetchFn);
+
+      expect(filings).toHaveLength(1);
+      expect(filings[0].accession).toBe(HDR_ACCESSION);
+      expect(filings[0].exhibits).toHaveLength(1);
+      expect(filings[0].acceptanceDateTime).toBe("2026-09-02T20:08:29.000Z");
+    });
+
+    it("(b) normalized filing (Dell-style): JSON is already true UTC, header confirms the Eastern equivalent — returned with a true-UTC acceptanceDateTime", async () => {
+      const routes = buildHeaderCheckRoutes("2026-09-01T20:10:14.000Z", "20260901161014");
+      const { fetchFn } = makeMockFetch(routes);
+      const filings = await pollEdgar(
+        CIK,
+        "2026-09-01T19:45:00Z",
+        "2026-09-01T21:00:00Z",
+        new Set(),
+        fetchFn,
+      );
+
+      expect(filings).toHaveLength(1);
+      expect(filings[0].accession).toBe(HDR_ACCESSION);
+      expect(filings[0].acceptanceDateTime).toBe("2026-09-01T20:10:14.000Z");
+    });
+
+    it("(c) header overrules a lucky JSON reading: the JSON's Eastern reading looks in-window, but the header's true acceptance is not — never returned, exhibit never fetched", async () => {
+      const routes = buildHeaderCheckRoutes("2026-09-02T16:08:29.000Z", "20260902120829");
+      const { fetchFn, calls } = makeMockFetch(routes);
+      const filings = await pollEdgar(CIK, HDR_WINDOW_START, HDR_WINDOW_END, new Set(), fetchFn);
+
+      expect(filings).toHaveLength(0);
+      const base = baseUrl(HDR_ACCESSION);
+      expect(calls.some((c) => c.url === `${base}/ex991.htm`)).toBe(false);
+      // The header itself WAS fetched (the prefilter passed on the JSON's
+      // Eastern reading) — only the exhibit walk was skipped.
+      expect(calls.some((c) => c.url === `${base}/${HDR_ACCESSION}-index-headers.html`)).toBe(true);
+    });
+
+    it("(d) neither JSON reading lands in-window: skipped before any header fetch", async () => {
+      const routes = buildHeaderCheckRoutes("2026-09-02T11:00:00.000Z", "20260902110000");
+      const { fetchFn, calls } = makeMockFetch(routes);
+      const filings = await pollEdgar(CIK, HDR_WINDOW_START, HDR_WINDOW_END, new Set(), fetchFn);
+
+      expect(filings).toHaveLength(0);
+      const base = baseUrl(HDR_ACCESSION);
+      expect(calls.some((c) => c.url === `${base}/${HDR_ACCESSION}-index-headers.html`)).toBe(false);
+    });
+
+    it("(e) header missing/unparseable: falls back to whichever JSON reading was in-window, still returns the filing", async () => {
+      const routes = buildHeaderCheckRoutes("2026-09-02T16:08:29.000Z"); // no header acceptance field
+      const { fetchFn } = makeMockFetch(routes);
+      const filings = await pollEdgar(CIK, HDR_WINDOW_START, HDR_WINDOW_END, new Set(), fetchFn);
+
+      expect(filings).toHaveLength(1);
+      expect(filings[0].accession).toBe(HDR_ACCESSION);
+      expect(filings[0].acceptanceDateTime).toBe("2026-09-02T20:08:29.000Z");
+    });
   });
 });
 
