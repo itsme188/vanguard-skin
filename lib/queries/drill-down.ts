@@ -133,7 +133,7 @@ export function getHoldingsInBucket(
         s.symbol,
         s.name AS security_name,
         s.sector,
-        ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS market_value,
+        SUM(${adjustedMarketValueSQL("h.quantity", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) AS market_value,
         sb.beta AS beta,
         ${factorSelect}
       FROM holdings h
@@ -149,11 +149,27 @@ export function getHoldingsInBucket(
       ) lp ON lp.security_id = s.id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE ${latestHoldingsPredicate({ accountFilter })}
-        AND COALESCE(lp.close_price, 0) > 0
         ${extraWhere}
+      -- Aggregate per SECURITY, not per (account, security) row: a name held
+      -- in several accounts must appear once with its value summed, or it
+      -- both duplicates in the list AND eats two ranking slots in the
+      -- kind:"risk" LIMIT (pushing a real single-account contributor out of
+      -- the top N). symbol/name/sector/beta/factor columns are functionally
+      -- dependent on s.id (constant across the grouped rows), so bare-column
+      -- selection is safe here.
+      --
+      -- No close_price > 0 filter: the breakdown row this panel is opened
+      -- from (getAllocationByDimension / getSectorAllocationWithLookThrough
+      -- in lib/queries/analysis.ts) counts every latest-holdings row
+      -- regardless of price presence or sign, falling back to $0 when
+      -- unpriced. Filtering here made the panel show FEWER holdings than
+      -- the row's own "N positions" count. COALESCE(lp.close_price, 0)
+      -- above keeps an unpriced security's market_value at 0 instead of
+      -- NULL (rather than replicating analysis.ts's cost_basis fallback,
+      -- which this query has never carried).
+      GROUP BY s.id
     )
     SELECT * FROM holdings_cte
-    WHERE market_value > 0
     ORDER BY ${orderBy}
     ${limitClause}
   `;

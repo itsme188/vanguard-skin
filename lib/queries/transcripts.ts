@@ -2,6 +2,22 @@ import type Database from "better-sqlite3";
 import type { EarningsTranscript } from "@/lib/types";
 import { escapeLikeTerm } from "./like-escape";
 
+// ─── Shared source-preference ranking ────────────────────────────
+//
+// "The transcript for a quarter" is defined once, here, and shared by every
+// query that picks a single row per (ticker, year, quarter): the freshest,
+// most structured source wins (api_ninjas > alpha_vantage > motley_fool),
+// and an edgar_8k row (an SEC 8-K cover page, fetched only as a fallback)
+// loses to any of them. Inlining this CASE separately per query is how the
+// list view drifted from the single-transcript lookups
+// (qa:research-transcripts-list--8k-cover-pages-labelled-transcript-duplicate-quarter-cards).
+const SOURCE_RANK_SQL = `CASE source
+             WHEN 'api_ninjas' THEN 1
+             WHEN 'alpha_vantage' THEN 2
+             WHEN 'motley_fool' THEN 3
+             WHEN 'edgar_8k' THEN 4
+           END`;
+
 // ─── Result Types ───────────────────────────────────────────────
 
 export interface TranscriptSummaryEntry {
@@ -39,13 +55,7 @@ export function getCachedTranscript(
         `SELECT * FROM earnings_transcripts
          WHERE UPPER(ticker) = UPPER(?)
            AND year = ? AND quarter = ?
-         ORDER BY
-           CASE source
-             WHEN 'api_ninjas' THEN 1
-             WHEN 'alpha_vantage' THEN 2
-             WHEN 'motley_fool' THEN 3
-             WHEN 'edgar_8k' THEN 4
-           END
+         ORDER BY ${SOURCE_RANK_SQL}
          LIMIT 1`
       )
       .get(ticker.toUpperCase(), year, quarter) as EarningsTranscript) ?? null
@@ -64,13 +74,7 @@ export function getLatestCachedTranscript(
       .prepare(
         `SELECT * FROM earnings_transcripts
          WHERE UPPER(ticker) = UPPER(?)
-         ORDER BY year DESC, quarter DESC,
-           CASE source
-             WHEN 'api_ninjas' THEN 1
-             WHEN 'alpha_vantage' THEN 2
-             WHEN 'motley_fool' THEN 3
-             WHEN 'edgar_8k' THEN 4
-           END
+         ORDER BY year DESC, quarter DESC, ${SOURCE_RANK_SQL}
          LIMIT 1`
       )
       .get(ticker.toUpperCase()) as EarningsTranscript) ?? null
@@ -121,15 +125,22 @@ export function getTranscriptsSummary(
     limit?: number;
   }
 ): TranscriptSummaryEntry[] {
+  // Dedupe to one row per (ticker, year, quarter) BEFORE filtering/limiting —
+  // the same best-source preference `getCachedTranscript` and
+  // `getLatestCachedTranscript` already use, so the card wall never shows
+  // two cards (or the worse one first) for one quarter
+  // (qa:research-transcripts-list--8k-cover-pages-labelled-transcript-duplicate-quarter-cards).
+  // `et.id DESC` breaks ties deterministically when the same source is
+  // re-fetched under a new source_key.
   const conditions: string[] = [];
   const params: unknown[] = [];
 
   if (options?.securityId) {
-    conditions.push("et.security_id = ?");
+    conditions.push("security_id = ?");
     params.push(options.securityId);
   }
   if (options?.ticker) {
-    conditions.push("UPPER(et.ticker) = UPPER(?)");
+    conditions.push("UPPER(ticker) = UPPER(?)");
     params.push(options.ticker);
   }
   const search = options?.search?.trim();
@@ -138,39 +149,52 @@ export function getTranscriptsSummary(
     // default LIKE folding — the same shape getNotesFiltered uses, so the
     // two halves of the Earnings tab can't drift on case handling.
     conditions.push(
-      `(UPPER(et.ticker) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
-        OR UPPER(COALESCE(s.name, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
-        OR UPPER(COALESCE(et.summary, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
-        OR UPPER(COALESCE(et.guidance, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\')`
+      `(UPPER(ticker) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
+        OR UPPER(COALESCE(security_name, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
+        OR UPPER(COALESCE(summary, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\'
+        OR UPPER(COALESCE(guidance, '')) LIKE '%' || UPPER(?) || '%' ESCAPE '\\')`
     );
     const escaped = escapeLikeTerm(search);
     params.push(escaped, escaped, escaped, escaped);
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const extraWhere = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
   const limit = options?.limit || 50;
 
   return db
     .prepare(
-      `SELECT
-         et.id,
-         et.ticker,
-         s.name AS security_name,
-         et.year,
-         et.quarter,
-         et.call_date,
-         et.source,
-         et.summary,
-         et.guidance,
-         et.risk_factors,
-         et.sentiment_label,
-         et.sentiment_score,
-         CASE WHEN et.transcript IS NOT NULL AND LENGTH(et.transcript) > 100 THEN 1 ELSE 0 END AS has_full_transcript,
-         et.fetched_at
-       FROM earnings_transcripts et
-       LEFT JOIN securities s ON et.security_id = s.id
-       ${where}
-       ORDER BY et.year DESC, et.quarter DESC
+      `WITH ranked AS (
+         SELECT
+           et.id,
+           et.ticker,
+           et.security_id,
+           s.name AS security_name,
+           et.year,
+           et.quarter,
+           et.call_date,
+           et.source,
+           et.summary,
+           et.guidance,
+           et.risk_factors,
+           et.sentiment_label,
+           et.sentiment_score,
+           CASE WHEN et.transcript IS NOT NULL AND LENGTH(et.transcript) > 100 THEN 1 ELSE 0 END AS has_full_transcript,
+           et.fetched_at,
+           ROW_NUMBER() OVER (
+             PARTITION BY UPPER(et.ticker), et.year, et.quarter
+             ORDER BY ${SOURCE_RANK_SQL}, et.id DESC
+           ) AS rn
+         FROM earnings_transcripts et
+         LEFT JOIN securities s ON et.security_id = s.id
+       )
+       SELECT
+         id, ticker, security_name, year, quarter, call_date, source,
+         summary, guidance, risk_factors, sentiment_label, sentiment_score,
+         has_full_transcript, fetched_at
+       FROM ranked
+       WHERE rn = 1
+       ${extraWhere}
+       ORDER BY year DESC, quarter DESC, UPPER(ticker)
        LIMIT ?`
     )
     .all(...params, limit) as TranscriptSummaryEntry[];
