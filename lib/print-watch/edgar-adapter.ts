@@ -27,6 +27,39 @@
 // exhibits. Marking here meant a poll the watcher had abandoned on its source
 // timeout could still mutate the set from under it and retire a filing that
 // was never ingested.
+//
+// ACCEPTANCE-TIME QUIRK — the submissions JSON's `acceptanceDateTime` is
+// UNRELIABLE and must never decide the window alone (root-caused 2026-09-02;
+// corrected the same evening after spot-checking several filers live). It is
+// NOT one consistent quirk: a FRESH same-day filing carries its
+// America/New_York WALL-CLOCK value with a trailing `Z` that lies about the
+// zone — today's Snowflake 8-K gave JSON `acceptanceDateTime:
+// "2026-09-02T16:08:29.000Z"` against that SAME filing's own
+// `-index-headers.html`, `<ACCEPTANCE-DATETIME>20260902160829` (EDGAR SGML
+// headers are Eastern by definition — identical digits prove the JSON's `Z`
+// is bogus). But an OLDER filing gets normalized by SEC to genuine UTC by the
+// time it's polled: Dell's 2026-09-01 8-K read JSON
+// `"2026-09-01T20:10:14.000Z"` against the SAME header
+// `<ACCEPTANCE-DATETIME>20260901161014` (16:10:14 ET, matching the index
+// page's own "Accepted" stamp) — four hours apart from a literal reading.
+// Zscaler's recurring 8-Ks show the same drift across seasons (`20:08Z` in
+// summer vs `21:07Z` in winter for the same ~16:05 ET print). Parsing the
+// JSON as Eastern-only misses every already-normalized filing; parsing it as
+// literal UTC reproduces the original Snowflake miss.
+//
+// The only source that is ALWAYS Eastern wall-clock, unconditionally, is the
+// filing's own `-index-headers.html` `<ACCEPTANCE-DATETIME>YYYYMMDDHHMMSS`
+// (EDGAR SGML header convention) — `pollEdgar` already fetches that page for
+// every candidate to get its EX-99 exhibit list. So the JSON is used ONLY as
+// a cheap, no-fetch PREFILTER (a filing survives if EITHER the literal-UTC
+// reading via `Date.parse` OR the Eastern-wall-clock reading via
+// `parseEdgarAcceptanceDateTime` lands in the armed window); the header's
+// `<ACCEPTANCE-DATETIME>` — always parsed as Eastern via
+// `parseEdgarAcceptanceDateTime` — is the value that actually decides
+// inclusion and becomes the reported `acceptanceDateTime`. NEVER trust the
+// JSON reading alone for the window decision, and NEVER let `pollEdgar`
+// admit a filing without checking the header (falling back to the JSON only
+// when the header field itself is missing or unparseable).
 
 import {
   hardenedFetchJson,
@@ -60,9 +93,94 @@ const WINDOW_LOOKBACK_MS = 15 * 60 * 1000;
 
 const QUALIFYING_FORMS = new Set(["8-K", "6-K"]);
 
+const EDGAR_TIME_ZONE = "America/New_York";
+
+/** Formats a UTC instant's wall-clock reading in America/New_York, reused by
+ *  `parseEdgarAcceptanceDateTime` to resolve the correct EDT/EST offset for a
+ *  given calendar date without a timezone dependency. */
+const EDGAR_TZ_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: EDGAR_TIME_ZONE,
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
+/**
+ * For a UTC instant, returns how far ahead of UTC the America/New_York wall
+ * clock reads at that instant, in ms (negative: -4h during EDT, -5h during
+ * EST). Used to convert a wall-clock reading back to a true UTC instant.
+ */
+function newYorkOffsetMsAt(utcMs: number): number {
+  const parts = EDGAR_TZ_FORMATTER.formatToParts(new Date(utcMs));
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+  const localAsUtcMs = Date.UTC(
+    get("year"),
+    get("month") - 1,
+    get("day"),
+    get("hour"),
+    get("minute"),
+    get("second"),
+  );
+  return localAsUtcMs - utcMs;
+}
+
+const EDGAR_ACCEPTANCE_RE =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,3})?Z?$/;
+
+/**
+ * Parses an EDGAR `acceptanceDateTime` value as an America/New_York
+ * wall-clock timestamp (see the "ACCEPTANCE-TIME QUIRK" note at the top of
+ * this file — the field's trailing `Z` does not mean UTC) and returns the
+ * true UTC instant in ms since epoch. Accepts `YYYY-MM-DDTHH:MM:SS`,
+ * optionally with `.sss` and/or a trailing `Z` (ignored either way). Returns
+ * `NaN` for unparseable input.
+ *
+ * Method: read the wall-clock fields literally into a UTC-ms number (treating
+ * them as if they were already UTC — a placeholder, not the answer), then use
+ * that placeholder to look up what America/New_York's offset from UTC is on
+ * that calendar date (DST makes this -4h in summer, -5h in winter) and
+ * subtract it to land on the real UTC instant. A second lookup at the
+ * corrected instant re-derives the offset and re-applies it, so a wall-clock
+ * reading that falls right at a DST transition boundary still resolves using
+ * the offset that actually applies to it rather than the placeholder's.
+ */
+export function parseEdgarAcceptanceDateTime(raw: string): number {
+  const m = EDGAR_ACCEPTANCE_RE.exec(raw);
+  if (!m) return NaN;
+  const [, year, month, day, hour, minute, second, frac] = m;
+  const ms = frac ? Math.round(Number(frac) * 1000) : 0;
+
+  const wallAsUtcMs = Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+    ms,
+  );
+
+  const offset1 = newYorkOffsetMsAt(wallAsUtcMs);
+  const instant1 = wallAsUtcMs - offset1;
+
+  // Iterate once more: the offset that applies AT the resolved instant can
+  // differ from the offset guessed from the placeholder when the wall-clock
+  // reading sits near a DST transition.
+  const offset2 = newYorkOffsetMsAt(instant1);
+  return offset2 === offset1 ? instant1 : wallAsUtcMs - offset2;
+}
+
 export interface EdgarFiling {
   accession: string;
   form: string;
+  /** True-UTC ISO instant (`new Date(ms).toISOString()`), resolved from the
+   *  filing's authoritative `-index-headers.html` acceptance time — see the
+   *  "ACCEPTANCE-TIME QUIRK" note above. Never the raw submissions-JSON
+   *  value, which cannot be trusted alone. */
   acceptanceDateTime: string;
   exhibits: Array<{ name: string; url: string; html: string }>;
 }
@@ -126,17 +244,31 @@ async function fetchSubmissions(cik: string, fetchFn: FetchLike): Promise<Submis
   };
 }
 
+const EDGAR_HEADER_ACCEPTANCE_RE = /&lt;ACCEPTANCE-DATETIME&gt;\s*(\d{14})/;
+
+interface FilingHeader {
+  exhibits: Array<{ filename: string; url: string }>;
+  /** True-UTC ms resolved from the header's Eastern `<ACCEPTANCE-DATETIME>`,
+   *  or null when the field is missing or unparseable. */
+  acceptanceMs: number | null;
+}
+
 /**
- * Walk a filing's SGML header for its EX-99.* exhibits. The header
- * (`{accession}-index-headers.html`) carries HTML-escaped `<TYPE>`/
- * `<FILENAME>` pairs; the plain `index.json` for a filing does NOT expose
- * exhibit types, so it can't be used for this selection.
+ * Fetch a filing's SGML header (`{accession}-index-headers.html`) ONCE and
+ * pull both pieces of information it carries: the EX-99.* exhibit list (the
+ * header has HTML-escaped `<TYPE>`/`<FILENAME>` pairs; the plain
+ * `index.json` for a filing does NOT expose exhibit types, so it can't be
+ * used for this selection) and the header's own
+ * `<ACCEPTANCE-DATETIME>YYYYMMDDHHMMSS` field, which — unlike the submissions
+ * JSON — is ALWAYS Eastern wall-clock (see the "ACCEPTANCE-TIME QUIRK" note
+ * at the top of this file). That field is the authoritative answer to
+ * "is this filing actually in the armed window".
  */
-async function fetchExhibitList(
+async function fetchFilingHeader(
   cik: string,
   accession: string,
   fetchFn: FetchLike,
-): Promise<Array<{ filename: string; url: string }>> {
+): Promise<FilingHeader> {
   const cikNum = String(Number(cik));
   const accNoDash = accession.replace(/-/g, "");
   const base = `https://www.sec.gov/Archives/edgar/data/${cikNum}/${accNoDash}`;
@@ -147,14 +279,24 @@ async function fetchExhibitList(
     headers: { "User-Agent": SEC_USER_AGENT },
   });
 
-  const out: Array<{ filename: string; url: string }> = [];
-  const re = /&lt;TYPE&gt;([^\s<]+)[\s\S]*?&lt;FILENAME&gt;([^\s<]+)/g;
+  const exhibits: Array<{ filename: string; url: string }> = [];
+  const exhibitRe = /&lt;TYPE&gt;([^\s<]+)[\s\S]*?&lt;FILENAME&gt;([^\s<]+)/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(html)) !== null) {
+  while ((m = exhibitRe.exec(html)) !== null) {
     const [, type, filename] = m;
-    if (/^EX-99/i.test(type)) out.push({ filename, url: `${base}/${filename}` });
+    if (/^EX-99/i.test(type)) exhibits.push({ filename, url: `${base}/${filename}` });
   }
-  return out;
+
+  const acceptMatch = EDGAR_HEADER_ACCEPTANCE_RE.exec(html);
+  let acceptanceMs: number | null = null;
+  if (acceptMatch) {
+    const d = acceptMatch[1];
+    const iso = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}T${d.slice(8, 10)}:${d.slice(10, 12)}:${d.slice(12, 14)}`;
+    const ms = parseEdgarAcceptanceDateTime(iso);
+    acceptanceMs = Number.isNaN(ms) ? null : ms;
+  }
+
+  return { exhibits, acceptanceMs };
 }
 
 async function fetchExhibitHtml(url: string, fetchFn: FetchLike): Promise<string> {
@@ -167,9 +309,20 @@ async function fetchExhibitHtml(url: string, fetchFn: FetchLike): Promise<string
 }
 
 /**
- * Poll a CIK's submissions feed for new 8-K/6-K filings whose acceptance
- * timestamp falls in `[windowStartIso - 15min, windowEndIso]`, fetching
- * every EX-99.* exhibit for each qualifying filing.
+ * Poll a CIK's submissions feed for new 8-K/6-K filings.
+ *
+ * The window decision is TWO-STAGE (see the "ACCEPTANCE-TIME QUIRK" note
+ * above):
+ *   1. Cheap prefilter, no fetch — a filing survives only if EITHER reading
+ *      of the submissions JSON's `acceptanceDateTime` (literal UTC via
+ *      `Date.parse`, or Eastern wall-clock via `parseEdgarAcceptanceDateTime`)
+ *      lands in `[windowStartIso - 15min, windowEndIso]`.
+ *   2. Authoritative check — for survivors, fetch the filing's own
+ *      `-index-headers.html` ONCE (it also yields the EX-99 exhibit list) and
+ *      trust its `<ACCEPTANCE-DATETIME>` (always Eastern) over the JSON.
+ *      Outside the window there → skip without ever fetching an exhibit.
+ *      Missing/unparseable header → fall back to whichever JSON reading
+ *      passed stage 1.
  *
  * `seenAccessions` is READ ONLY here (finding F): an accession already in the
  * set is skipped, but nothing is ever added. The caller — which owns the set,
@@ -186,6 +339,7 @@ export async function pollEdgar(
 ): Promise<EdgarFiling[]> {
   const windowStartMs = Date.parse(windowStartIso) - WINDOW_LOOKBACK_MS;
   const windowEndMs = Date.parse(windowEndIso);
+  const inWindow = (ms: number) => !Number.isNaN(ms) && ms >= windowStartMs && ms <= windowEndMs;
 
   const recent = await fetchSubmissions(cik, fetchFn);
   const n = recent.accessionNumber.length;
@@ -198,23 +352,46 @@ export async function pollEdgar(
     const accession = recent.accessionNumber[i];
     if (seenAccessions.has(accession)) continue;
 
-    const acceptanceDateTime = recent.acceptanceDateTime[i];
-    const acceptedMs = Date.parse(acceptanceDateTime);
-    if (Number.isNaN(acceptedMs) || acceptedMs < windowStartMs || acceptedMs > windowEndMs) continue;
+    const rawAcceptance = recent.acceptanceDateTime[i];
+    const asUtcMs = Date.parse(rawAcceptance);
+    const asEtMs = parseEdgarAcceptanceDateTime(rawAcceptance);
+    const utcInWindow = inWindow(asUtcMs);
+    const etInWindow = inWindow(asEtMs);
+    if (!utcInWindow && !etInWindow) continue;
 
     // A filing is only added to the result once its exhibits are FULLY
-    // fetched. A transient failure on one filing's exhibit walk must neither
-    // poison the other filings collected in this same poll (we don't throw out
-    // of the loop) nor permanently drop the failed filing (it is never
+    // fetched. A transient failure on one filing's walk must neither poison
+    // the other filings collected in this same poll (we don't throw out of
+    // the loop) nor permanently drop the failed filing (it is never
     // reported, so the next poll retries it whole).
     try {
-      const exhibitList = await fetchExhibitList(cik, accession, fetchFn);
+      const header = await fetchFilingHeader(cik, accession, fetchFn);
+
+      let acceptedMs: number;
+      if (header.acceptanceMs !== null) {
+        // Authoritative: the header settles it, even if that contradicts a
+        // JSON reading that happened to land in-window.
+        if (!inWindow(header.acceptanceMs)) continue;
+        acceptedMs = header.acceptanceMs;
+      } else {
+        // Header field missing/unparseable: fall back to whichever JSON
+        // reading passed the prefilter. Prefer the Eastern reading when both
+        // somehow passed — the JSON's real failure mode is being mislabeled
+        // Eastern, not literal UTC.
+        acceptedMs = etInWindow ? asEtMs : asUtcMs;
+      }
+
       const exhibits: Array<{ name: string; url: string; html: string }> = [];
-      for (const ex of exhibitList) {
+      for (const ex of header.exhibits) {
         const html = await fetchExhibitHtml(ex.url, fetchFn);
         exhibits.push({ name: ex.filename, url: ex.url, html });
       }
-      out.push({ accession, form, acceptanceDateTime, exhibits });
+      out.push({
+        accession,
+        form,
+        acceptanceDateTime: new Date(acceptedMs).toISOString(),
+        exhibits,
+      });
     } catch {
       // Left unreported on purpose — retried whole on the next poll.
       continue;
