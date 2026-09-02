@@ -103,6 +103,30 @@ IBKR,,,BUY,,Missing,Stock,5,100,500,0,`;
     expect(result.transactions).toHaveLength(1);
   });
 
+  // QA finding `import-preview--blank-symbol-row-silently-dropped-no-skip-signal`:
+  // a row with symbol AND security_name both blank, or with a blank
+  // trade_date, was dropped via a bare `continue` with no warning pushed —
+  // the sibling branch a few lines up (blank symbol, non-blank
+  // security_name, resolution fails) DOES warn, but this path didn't. The
+  // drop itself is correct (there is nothing importable in either row); the
+  // bug was that the preview showed no sign the row was ever there.
+  it("reports blank-symbol and blank-trade_date drops as warnings, while still parsing the valid rows", () => {
+    const csv = `${header}
+IBKR,2025-03-01,,BUY,AAPL,Apple,Stock,10,150,1500,0,
+IBKR,2025-03-02,,BUY,,,Stock,5,100,500,0,
+IBKR,,,BUY,MSFT,Microsoft,Stock,3,400,1200,0,`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+
+    expect(result.transactions).toHaveLength(1);
+    expect(result.transactions[0].symbol).toBe("AAPL");
+
+    expect(result.warnings.some((w) => /blank symbol/i.test(w))).toBe(true);
+    expect(
+      result.warnings.some((w) => /MSFT/.test(w) && /blank trade_date/i.test(w))
+    ).toBe(true);
+  });
+
   it("extracts securities from transactions", () => {
     const csv = `${header}
 IBKR,2025-03-01,,BUY,AAPL,Apple Inc,Stock,10,150,1500,0,
