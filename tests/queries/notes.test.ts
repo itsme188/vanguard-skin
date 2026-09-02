@@ -291,6 +291,78 @@ describe("getNotesFiltered unified search", () => {
   });
 });
 
+// ─── Tags are searchable, not write-only ───────────────────────────
+//
+// `n.tags` is a TEXT column holding a JSON array (e.g. `["AI","semis",
+// "on-shoring"]`) and was already SELECTed but never matched in the search
+// predicate: a note tagged "on-shoring" with unrelated prose and no linked
+// security was invisible to a search for "on-shoring". JSON-substring LIKE
+// matching is the accepted approach for a single-user local app with no
+// tags index.
+
+describe("getNotesFiltered search matches tags", () => {
+  it("finds a note by tag when the content and security never mention it", () => {
+    createNote(db, {
+      note_type: "journal",
+      content: "Manufacturing base is shifting geographically",
+      event_date: "2026-03-10",
+      tags: ["AI", "semis", "on-shoring"],
+    });
+
+    const notes = getNotesFiltered(db, { search: "on-shoring" });
+    expect(notes.length).toBe(1);
+    expect(notes[0].content).toBe("Manufacturing base is shifting geographically");
+  });
+
+  it("is case-insensitive on tag matches", () => {
+    createNote(db, {
+      note_type: "journal",
+      content: "Manufacturing base is shifting geographically",
+      event_date: "2026-03-10",
+      tags: ["AI", "semis", "on-shoring"],
+    });
+
+    const notes = getNotesFiltered(db, { search: "ON-SHORING" });
+    expect(notes.length).toBe(1);
+  });
+
+  it("does not match a tagged note when the search term is absent from tags, content, and security", () => {
+    createNote(db, {
+      note_type: "journal",
+      content: "Manufacturing base is shifting geographically",
+      event_date: "2026-03-10",
+      tags: ["AI", "semis", "on-shoring"],
+    });
+
+    expect(getNotesFiltered(db, { search: "ZZZNOMATCH" })).toEqual([]);
+  });
+
+  it("agrees with getEarningsTimeline's count for a tag-only match (shared search path)", () => {
+    const googId = seedSecurity(db, "GOOG", "Alphabet Inc");
+    createNote(db, {
+      note_type: "earnings",
+      content: "Solid quarter, nothing notable in the prose",
+      event_date: "2026-01-30",
+      security_id: googId,
+      tags: ["on-shoring"],
+    });
+    createNote(db, {
+      note_type: "earnings",
+      content: "Unrelated note",
+      event_date: "2026-01-25",
+      security_id: googId,
+    });
+
+    const filtered = getNotesFiltered(db, { search: "on-shoring" });
+    const timeline = getEarningsTimeline(db, { search: "on-shoring" });
+
+    expect(filtered.length).toBe(1);
+    expect(timeline.length).toBe(1);
+    expect(timeline[0].notes.length).toBe(1);
+    expect(timeline[0].notes[0].content).toBe(filtered[0].content);
+  });
+});
+
 describe("getNotesForSecurity", () => {
   it("returns notes for a security in chronological order", () => {
     const secId = seedSecurity(db, "META", "Meta Platforms");
