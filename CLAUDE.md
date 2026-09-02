@@ -211,6 +211,7 @@ Detail: `docs/reference/ui-structure.md`
 - **Bundle integrity is gated (2026-08-21):** `electron:deploy` runs `scripts/verify-bundle.js` between pack and install — fails on repo-internal leaks (data/.git/qa/tests/docs — the REAL DB had shipped inside Resources/standalone since ≥8/19) or missing runtime pieces (next-server app-route runtime, @stoqey/ib/dist). NEVER add `outputFileTracingExcludes` to next.config.ts — its globs strip every NESTED dist/tests dir (gutted @stoqey/ib/dist → packaged black screen; next/dist runtimes → every API route 500). The bundle gate is the electron-builder.yml extraResources filter + the verify script; `electron:copy-static` also force-copies `next/dist/compiled/next-server/`.
 - `npmRebuild: false` in `electron-builder.yml` must stay — it protects the working better-sqlite3 binary.
 - Packaged-app server logs: `~/Library/Logs/Vanguard Dashboard/server.log` — first place to look for packaged-app issues.
+- **Never run git branch/worktree cleanup while `electron:deploy` is building (2026-09-02):** Next's output tracer copies `.git/**` refs for a few routes; deleting a branch mid-build logs `Failed to copy traced files … ENOENT` for each vanished ref. Harmless behind the bundle gate, but it muddies the deploy log — finish the deploy, then clean up.
 
 Detail (signing, notarization, entitlements, tray icons, settings): `docs/reference/electron-build.md`
 
