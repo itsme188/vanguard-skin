@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { getOhlcvBars, getLatestPriceNative } from "@/lib/queries/ohlcv";
+import { getRecentOhlcvBars, getLatestPriceNative } from "@/lib/queries/ohlcv";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { computeSuggestedLevels } from "@/lib/chart/suggested-levels";
 import {
@@ -9,7 +9,7 @@ import {
 } from "@/lib/chart/narrate-levels";
 import type { SuggestedLevel } from "@/lib/chart/suggested-levels";
 
-type Bars = ReturnType<typeof getOhlcvBars>;
+type Bars = ReturnType<typeof getRecentOhlcvBars>;
 
 /**
  * Shared compute (native-currency frame — see the long comment below). Returns
@@ -58,8 +58,11 @@ function computeBase(req: NextRequest): ComputeOutcome {
   const usdPerUnit = getUsdPerUnit(db, secRow?.currency ?? null);
 
   // Daily bars only for now; a ~500-bar lookback (~2 years) is plenty for
-  // pivot detection without pulling the entire history on every call.
-  const bars = getOhlcvBars(db, securityId, "1 day", { limit: 500 });
+  // pivot detection without pulling the entire history on every call. Must
+  // be the NEWEST 500 bars, not the oldest — getRecentOhlcvBars takes the
+  // tail end of bar_date (DESC + LIMIT, re-sorted ASC) so a security with
+  // >500 stored bars still gets analysed against its most recent months.
+  const bars = getRecentOhlcvBars(db, securityId, "1 day", 500);
   if (bars.length === 0) {
     return {
       kind: "response",
