@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getHoldingsInBucket } from "@/lib/queries/drill-down";
+import { getAllocationByDimension } from "@/lib/queries/analysis";
 
 // Migration 002 seeds: 1=Vanguard Taxable, 2=Vanguard Roth IRA, 3=IBKR.
 
@@ -262,5 +263,72 @@ describe("multi-account security aggregation", () => {
   it("collapsing DUPX's duplicate rows frees a slot for the rank-11 contributor", () => {
     const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
     expect(rows.some((r) => r.symbol === "OMITTED")).toBe(true);
+  });
+});
+
+// Regression: the panel must list every holding the breakdown row counted.
+// The CTE's `close_price > 0` filter and the outer `market_value > 0` filter
+// silently dropped unpriced holdings (no price row at all) and short legs
+// (negative market_value) even though `getAllocationByDimension`'s
+// position_count includes them — so the drill-down panel showed FEWER
+// holdings than the row's own count said it should.
+// [qa:analysis-sector-drilldown--holdings-count-disagrees-with-row-and-drops-shorts-regression-1]
+describe("panel lists every holding the breakdown row counted", () => {
+  let db: Database.Database;
+  const SECTOR = "DrillSectorX";
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, sector) VALUES (1, 'LONGX', 'Long Corp', 'Stock', ?)`
+    ).run(SECTOR);
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, sector) VALUES (2, 'NOPRICEX', 'No Price Corp', 'Stock', ?)`
+    ).run(SECTOR);
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, sector) VALUES (3, 'SHORTX', 'Short Corp', 'Stock', ?)`
+    ).run(SECTOR);
+
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (1, '2026-08-30', 50, 'tws')`).run();
+    // NOPRICEX intentionally has NO price row anywhere.
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (3, '2026-08-30', 20, 'tws')`).run();
+
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 1, '2026-08-30', 10, 'longx-acct1')`
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 2, '2026-08-30', 5, 'nopricex-acct1')`
+    ).run();
+    // Short leg: negative quantity, priced.
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 3, '2026-08-30', -8, 'shortx-acct1')`
+    ).run();
+  });
+
+  it("returns the priced long, the unpriced holding (marketValue 0), and the short leg (negative marketValue)", () => {
+    const rows = getHoldingsInBucket(db, "all", { kind: "sector", sector: SECTOR });
+    const symbols = rows.map((r) => r.symbol).sort();
+    expect(symbols).toEqual(["LONGX", "NOPRICEX", "SHORTX"]);
+
+    const longRow = rows.find((r) => r.symbol === "LONGX")!;
+    const noPriceRow = rows.find((r) => r.symbol === "NOPRICEX")!;
+    const shortRow = rows.find((r) => r.symbol === "SHORTX")!;
+
+    expect(longRow.marketValue).toBeCloseTo(500, 5);
+    expect(noPriceRow.marketValue).toBe(0);
+    expect(shortRow.marketValue).toBeCloseTo(-160, 5);
+    expect(shortRow.weight).toBeLessThan(0);
+  });
+
+  it("row count equals lib/queries/analysis.ts's position_count for the same sector bucket", () => {
+    const rows = getHoldingsInBucket(db, "all", { kind: "sector", sector: SECTOR });
+    const breakdown = getAllocationByDimension(db, "sector");
+    const bucket = breakdown.find((b) => b.group_name === SECTOR);
+    expect(bucket).toBeDefined();
+    expect(bucket!.position_count).toBe(3);
+    expect(rows.length).toBe(bucket!.position_count);
   });
 });
