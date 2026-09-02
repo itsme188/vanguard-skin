@@ -168,7 +168,19 @@ export function parseCanonicalCsv(
             continue;
           }
         }
-        if (!symbol || !row.trade_date) continue;
+        if (!symbol || !row.trade_date) {
+          // Silent before this fix: neither the resolvable-security_name
+          // branch above (which does warn) nor this one told the preview a
+          // row existed and was dropped — a symbol+security_name-both-blank
+          // row, or a row with an otherwise-valid symbol but a blank
+          // trade_date, just vanished with no skip signal.
+          warnings.push(
+            !symbol
+              ? "Skipped transaction: blank symbol"
+              : `Skipped transaction ${symbol}: blank trade_date`
+          );
+          continue;
+        }
         const tradeDateTrimmed = row.trade_date.trim();
         const type = (row.type || "").toUpperCase().trim();
         // Canonical convention: quantity is always positive, type carries direction
