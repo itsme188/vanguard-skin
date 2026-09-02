@@ -82,7 +82,15 @@ export function getLatestCachedTranscript(
 }
 
 /**
- * Get all cached transcripts for a security, ordered by date.
+ * Get the cached transcripts for a security, newest quarter first — ONE row
+ * per (ticker, year, quarter), best source winning (SOURCE_RANK_SQL), the
+ * same rule getTranscriptsSummary and the single-transcript lookups apply.
+ * This feeds the security-detail EARNINGS TRANSCRIPTS section, which kept
+ * rendering an 8-K cover page above the real call for the same quarter
+ * after the list view was deduped
+ * (qa:security-detail-transcripts--duplicate-quarter-8k-cover-page-ranked-first).
+ * Selecting by id from the ranked subquery keeps the row shape a plain
+ * EarningsTranscript (no leaked `rn` column).
  */
 export function getTranscriptsForSecurity(
   db: Database.Database,
@@ -91,7 +99,17 @@ export function getTranscriptsForSecurity(
   return db
     .prepare(
       `SELECT * FROM earnings_transcripts
-       WHERE security_id = ?
+       WHERE id IN (
+         SELECT id FROM (
+           SELECT id,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY UPPER(ticker), year, quarter
+                    ORDER BY ${SOURCE_RANK_SQL}, id DESC
+                  ) AS rn
+           FROM earnings_transcripts
+           WHERE security_id = ?
+         ) WHERE rn = 1
+       )
        ORDER BY year DESC, quarter DESC`
     )
     .all(securityId) as EarningsTranscript[];

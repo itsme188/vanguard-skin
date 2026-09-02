@@ -133,9 +133,15 @@ export function MarketDataPanel({
         "--scroll-fade-color": "#0a0a0a",
       } as CSSProperties}
     >
-      {/* Command strip — tiny ticker-tape context line at the very top */}
+      {/* Command strip — tiny ticker-tape context line at the very top.
+          flex-wrap below md: the right group (live dot + as-of stamp) is
+          shrink-0 and ~330px wide, so in a 350px phone strip it squeezed the
+          symbol/name group to zero width even with min-w-0 (measured live
+          2026-09-02). Wrapping lets the name take the full first line and
+          truncate there, with the stamp dropping to a second line; md and up
+          stays a single nowrap line. */}
       <div
-        className="flex items-center justify-between px-5 py-2"
+        className="flex flex-wrap md:flex-nowrap gap-x-3 gap-y-1 items-center justify-between px-5 py-2"
         style={{
           background: "#0d0d0d",
           borderBottom: "1px solid #1f1f1f",
