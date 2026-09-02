@@ -146,10 +146,22 @@ export function MarketDataPanel({
           color: "#8a8a8a",
         }}
       >
-        <div className="flex items-center gap-3 truncate">
-          <span style={{ color: "#ffb84d", fontWeight: 600 }}>{symbol}</span>
-          {name && <span>· {name}</span>}
-          {typeLabel && <span style={{ color: "#8a8a8a" }}>· {typeLabel}</span>}
+        {/* min-w-0 lets this flex child shrink below its content width (the
+            flex default is min-width:auto, which pins it at content size and
+            either overflows past the panel's own overflow-hidden edge — a
+            mid-word hard clip with no ellipsis — or, when space is too
+            tight, collapses to zero). The three parts are wrapped in one
+            child span (rather than truncate on the flex container itself)
+            because text-overflow:ellipsis only renders on a block-level
+            container whose OWN content overflows a line box — a flex
+            container's children are flex items, not inline text, so
+            ellipsis silently no-ops when applied to the flex row directly. */}
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="truncate">
+            <span style={{ color: "#ffb84d", fontWeight: 600 }}>{symbol}</span>
+            {name && <span>· {name}</span>}
+            {typeLabel && <span style={{ color: "#8a8a8a" }}>· {typeLabel}</span>}
+          </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span
