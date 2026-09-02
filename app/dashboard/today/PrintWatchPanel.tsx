@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState, type DragEvent as ReactDragEv
 import apiFetch from "@/lib/http/apiFetch";
 import { Chip, type ChipTone } from "../components/Chip";
 import { EmptySection } from "../components/EmptySection";
+import { ScrollFade } from "../components/ScrollFade";
 import { PrivateText } from "@/lib/privacy/components";
 import { formatLargeUSD, formatPercent } from "@/lib/format";
 import { reconcile } from "@/lib/print-watch/reconcile";
@@ -968,7 +969,7 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
       {actionError && <p className="text-[12px] text-down mb-2">{actionError}</p>}
       {actionNote && !actionError && <p className="text-[12px] text-up mb-2">{actionNote}</p>}
 
-      <div className="overflow-x-auto">
+      <ScrollFade>
         <table className="w-full text-[13px]" style={{ borderCollapse: "collapse" }}>
           <thead>
             <tr className="text-ink-faint font-mono uppercase" style={{ fontSize: "10px", letterSpacing: "0.14em" }}>
@@ -995,7 +996,7 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
             ))}
           </tbody>
         </table>
-      </div>
+      </ScrollFade>
 
       <div className="flex items-center gap-2 mt-3 flex-wrap">
         <button

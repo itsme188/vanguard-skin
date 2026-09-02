@@ -696,3 +696,23 @@ describe("per-line accept control (panel source)", () => {
     expect(src).toMatch(/disabled=\{accepting \|\| noEventId\}/);
   });
 });
+
+// QA finding `mobile-today-printsheet--detail-column-snippet-offscreen-no-scrollfade`:
+// the verify table was a bare `overflow-x-auto` div, so at narrow viewports
+// the DETAIL column (every "snippet ▾" evidence expander) sat off-screen
+// with no affordance hinting there was more to scroll to. Repo convention
+// for horizontally-scrolling tables is the shared <ScrollFade> wrapper
+// (see HoldingsTable/AllHoldingsTable) — this pins that it wraps the verify
+// table directly, not nested inside a second scroller.
+describe("verify table horizontal scroll affordance (panel source)", () => {
+  const src = readFileSync("app/dashboard/today/PrintWatchPanel.tsx", "utf8");
+
+  it("imports the shared ScrollFade component", () => {
+    expect(src).toMatch(/import \{ ScrollFade \} from "\.\.\/components\/ScrollFade"/);
+  });
+
+  it("wraps the verify table in ScrollFade rather than a bare overflow-x-auto div", () => {
+    expect(src).toMatch(/<ScrollFade>\s*<table className="w-full text-\[13px\]"/);
+    expect(src).not.toMatch(/<div className="overflow-x-auto">\s*<table className="w-full text-\[13px\]"/);
+  });
+});
