@@ -129,10 +129,28 @@ trap 'bash "$SCRIPT_DIR/sandbox.sh" down; rm -rf "$LOCK_DIR" 2>/dev/null; ab_cle
 # CALLABLE model as a concrete --model — mirrors the app-side model-catalog
 # "probe callability" approach (a pulled model is LISTED but uncallable) and
 # auto-returns to Fable the moment its probe passes again, no edit needed.
+# 2026-09-02: the probe ITSELF hung for ~6.5h. `claude -p "ok"` is a full
+# session (hooks, plugins, CLAUDE.md, the superpowers skill gate), and a
+# talkative model read "ok" as a work request, ran the session-start
+# checklist for hours, and the whole chain waited on it. Three guards now:
+#   1. a hard wall-clock cap via perl alarm+exec (macOS ships no coreutils
+#      `timeout`; perl is always present) — a timed-out probe counts as
+#      "not callable" and the loop falls through to the next rung;
+#   2. `--tools ""` — no tools at all, so nothing can turn the probe into a
+#      task (verified 2026-09-02: replies PONG in ~60s, exit 0);
+#   3. an un-taskable prompt.
+# NOT `--bare`: it switches auth to ANTHROPIC_API_KEY-only and the nightly
+# runs on the OAuth login ("Not logged in" — verified 2026-09-02).
+PROBE_TIMEOUT_SECS=180
+probe_model() {
+  perl -e 'alarm shift; exec @ARGV' "$PROBE_TIMEOUT_SECS" \
+    claude -p "Reply with the single word PONG." --model "$1" --tools "" \
+    >/dev/null 2>&1
+}
 pick_model() {
   local m
   for m in fable opus sonnet; do
-    if claude -p "ok" --model "$m" >/dev/null 2>&1; then echo "$m"; return 0; fi
+    if probe_model "$m"; then echo "$m"; return 0; fi
   done
   return 1
 }
