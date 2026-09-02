@@ -157,6 +157,11 @@ export interface ArmedEventDto {
   symbol: string;
   eventDate: string;
   conId: number | null;
+  /** The securities row behind the event, when there is one. An armed event on
+   *  an UNHELD name arrives with `conId === null` — contract enrichment only
+   *  ever walked HELD securities — and this is the handle the DJ lane uses to
+   *  ask TWS for the missing contract id (the 2026-09-02 SNOW miss). */
+  securityId: number | null;
   cik: string | null;
   /**
    * The BMO/AMC slot default backstops a missing resolution (Codex #19), with
@@ -238,6 +243,9 @@ export interface WatcherSeams {
     nowMs: number,
   ) => Promise<DjPollOutput>;
   resolveCik: (symbol: string) => Promise<string | null>;
+  /** Ask TWS for a security's IB contract id (and persist it). Null = TWS
+   *  answered but knows no contract for this row. */
+  resolveConId: (db: Database.Database, securityId: number) => Promise<number | null>;
   pollEdgar: (
     cik: string,
     windowStartIso: string,
@@ -275,6 +283,26 @@ async function defaultTwsConnection(): Promise<{ up: boolean; ib: IBApiLike | nu
   }
 }
 
+/**
+ * The conId backfill for an armed-but-unheld name. `enrichSecurities` is the
+ * app's ONE contract-details resolver (it persists `ib_con_id` on the row), so
+ * this asks it for exactly this security and then re-reads what it stored —
+ * no second resolver, and the fix sticks for intel and the reaction snapshot
+ * too. Imported lazily for the same reason as `defaultTwsConnection`: nothing
+ * should pull @stoqey/ib in just by importing this module.
+ */
+async function defaultResolveConId(
+  db: Database.Database,
+  securityId: number,
+): Promise<number | null> {
+  const { enrichSecurities } = await import("@/lib/tws/contracts");
+  await enrichSecurities(db, [securityId]);
+  const row = db.prepare(`SELECT ib_con_id FROM securities WHERE id = ?`).get(securityId) as
+    | { ib_con_id: number | null }
+    | undefined;
+  return row?.ib_con_id ?? null;
+}
+
 const DEFAULT_SEAMS: WatcherSeams = {
   now: () => Date.now(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -283,6 +311,7 @@ const DEFAULT_SEAMS: WatcherSeams = {
   pollDjNews: (ib, conId, windowStartUtc, nowUtc, state, nowMs) =>
     pollDjNews(ib, conId, windowStartUtc, nowUtc, state, nowMs),
   resolveCik: (symbol) => resolveCik(symbol),
+  resolveConId: (db, securityId) => defaultResolveConId(db, securityId),
   pollEdgar: (cik, startIso, endIso, seen) => pollEdgar(cik, startIso, endIso, seen),
   pollIrRss: (cfg, seenLinks, baseline) => pollIrRss(cfg, seenLinks, fetch, { baseline }),
   extractCandidates: (contracts, text) => extractCandidates(contracts, text),
@@ -330,6 +359,14 @@ interface PrintRuntime {
   flashHeadlines: string[];
   seenFlashKeys: Set<string>;
   cikAttempted: boolean;
+  /** Set only by a COMPLETED lookup with TWS up — a lookup skipped because
+   *  TWS was down is not an attempt, and is retried when it comes back. */
+  conIdAttempted: boolean;
+  /** True once this print's conId came from the TWS backfill rather than the
+   *  DB, so the coverage note can say where the wire got its contract. */
+  conIdViaTws: boolean;
+  /** Why a completed lookup failed, when it threw rather than answering. */
+  conIdError: string | null;
   /** Last observed TWS state, so a coverage refresh between polls doesn't
    *  briefly drop the "TWS offline" note the panel is showing. */
   lastTwsUp: boolean | null;
@@ -481,6 +518,7 @@ export function buildArmedEventDto(db: Database.Database, row: ArmedWorksheetEve
     symbol: row.symbol,
     eventDate: row.event_date,
     conId: row.con_id ?? null,
+    securityId: row.security_id ?? null,
     cik: cikCache.get(row.symbol.toUpperCase()) ?? null,
     releaseTimeEt,
   };
@@ -679,13 +717,32 @@ function refreshCoverage(rt: PrintRuntime, twsUp: boolean | null): void {
   }
 
   const notes: string[] = [];
-  notes.push(rt.dto.conId === null ? "DJ: no conId — wire off" : "DJ: wire armed");
+  notes.push(`DJ: ${djNote(rt)}`);
   if (rt.lastTwsUp === false) notes.push("TWS offline");
   if (rt.dto.cik) notes.push(`EDGAR: CIK ${rt.dto.cik}`);
   else notes.push(rt.cikAttempted ? "EDGAR: CIK unresolved" : "EDGAR: CIK pending");
   notes.push(irConfigFor(rt.dto.symbol) ? `RSS: ${rt.dto.symbol} IR feed` : "RSS: NVDA only");
   notes.push("drop: HTML/text");
   statusFor(rt.printId).coverage = notes;
+}
+
+/**
+ * What the DJ lane can actually do for this print, in one phrase — shared by
+ * the coverage list and `sources.dj` so the panel can never show two different
+ * stories about the same wire.
+ */
+function djNote(rt: PrintRuntime): string {
+  if (rt.dto.conId !== null) {
+    return rt.conIdViaTws ? "wire armed (conId resolved via TWS)" : "wire armed";
+  }
+  if (rt.conIdAttempted) {
+    return rt.conIdError
+      ? `no conId — TWS lookup failed for ${rt.dto.symbol}: ${rt.conIdError}, wire off`
+      : `no conId — TWS could not resolve ${rt.dto.symbol}, wire off`;
+  }
+  if (rt.dto.securityId === null) return "no conId — wire off";
+  if (rt.lastTwsUp === false) return "no conId — TWS offline, wire off";
+  return "no conId — TWS lookup pending, wire off";
 }
 
 function irConfigFor(symbol: string): IrRssConfig | null {
@@ -751,12 +808,17 @@ export function ensurePrintWatch(db: Database.Database): void {
         flashHeadlines: [],
         seenFlashKeys: new Set(),
         cikAttempted: false,
+        conIdAttempted: false,
+        conIdViaTws: false,
+        conIdError: null,
         lastTwsUp: null,
       };
       runtimes.set(printId, rt);
     } else {
-      // Keep the runtime's learned CIK; everything else re-derives.
-      rt.dto = { ...dto, cik: rt.dto.cik ?? dto.cik };
+      // Keep the runtime's learned CIK and conId; everything else re-derives.
+      // (The backfill persists `ib_con_id`, so `dto.conId` normally already
+      // carries it — this covers the sweep that races the write.)
+      rt.dto = { ...dto, cik: rt.dto.cik ?? dto.cik, conId: dto.conId ?? rt.dto.conId };
       rt.issuerName = row.issuer_name;
       rt.window = window;
     }
@@ -975,8 +1037,11 @@ async function pollDjSource(
 ): Promise<boolean | null> {
   const status = statusFor(rt.printId);
   if (rt.dto.conId === null) {
-    status.sources.dj = "no conId — wire off";
-    return null;
+    const twsUp = await backfillConId(db, rt);
+    if (rt.dto.conId === null) {
+      status.sources.dj = djNote(rt);
+      return twsUp;
+    }
   }
   try {
     const conn = await seams.twsConnection();
@@ -1036,6 +1101,51 @@ async function pollDjSource(
     status.sources.dj = errText(err);
     return null;
   }
+}
+
+/**
+ * Backfill a missing IB contract id for an armed print, ONCE per print per
+ * process (the `cikAttempted` pattern next door).
+ *
+ * WHY THIS EXISTS: contract enrichment only ever selects securities that JOIN
+ * holdings, so an armed earnings event on a name the desk does not own has
+ * `ib_con_id IS NULL` — and a null conId turns the Dow Jones wire lane off
+ * entirely. That is exactly what happened to SNOW on 2026-09-02: the panel
+ * read "DJ: no conId — wire off" and the print was missed.
+ *
+ * TWS DOWN IS NOT AN ATTEMPT. The flag is set only after a lookup that
+ * actually reached TWS, so a print armed while the socket is down still gets
+ * its wire the moment the connection returns.
+ *
+ * @returns the observed TWS state, or null when no lookup was possible at all
+ *          (already attempted, or there is no securities row to ask about).
+ */
+async function backfillConId(db: Database.Database, rt: PrintRuntime): Promise<boolean | null> {
+  if (rt.conIdAttempted) return null;
+  const securityId = rt.dto.securityId;
+  if (securityId === null) return null;
+
+  const conn = await seams.twsConnection();
+  if (!conn.up) {
+    rt.lastTwsUp = false;
+    return false;
+  }
+  rt.conIdAttempted = true;
+  try {
+    const conId = await withSourceTimeout("conId lookup", () =>
+      seams.resolveConId(db, securityId),
+    );
+    if (conId !== null) {
+      rt.dto.conId = conId;
+      rt.conIdViaTws = true;
+    }
+  } catch (err) {
+    // Left ATTEMPTED on purpose: a resolver that throws would otherwise be
+    // re-run every 10s for the whole window, and each run is a real
+    // contract-details round trip to TWS.
+    rt.conIdError = errText(err);
+  }
+  return true;
 }
 
 async function pollEdgarSource(
