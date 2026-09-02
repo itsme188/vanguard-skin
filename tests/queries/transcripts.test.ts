@@ -24,17 +24,18 @@ function seedTranscript(
   ticker: string,
   year = 2026,
   quarter = 2,
-  text?: { summary?: string; guidance?: string }
+  text?: { summary?: string; guidance?: string },
+  source: "api_ninjas" | "alpha_vantage" | "motley_fool" | "edgar_8k" = "api_ninjas"
 ): void {
   upsertTranscript(db, {
     security_id: securityId,
     ticker,
     year,
     quarter,
-    source: "api_ninjas",
+    source,
     summary: text?.summary ?? `${ticker} Q${quarter} summary`,
     guidance: text?.guidance ?? null,
-    source_key: `api_ninjas:${ticker}:${year}:${quarter}`,
+    source_key: `${source}:${ticker}:${year}:${quarter}`,
   });
 }
 
@@ -158,6 +159,58 @@ describe("getTranscriptsSummary search filter", () => {
 
     expect(getTranscriptsSummary(db, { search: "nflx" }).length).toBe(1);
     expect(getTranscriptsSummary(db, { search: "netflix" }).length).toBe(1);
+  });
+});
+
+// ─── getTranscriptsSummary source dedupe ───────────────────────────
+//
+// Regression pin (research-transcripts-list--8k-cover-pages-labelled-
+// transcript-duplicate-quarter-cards): earnings_transcripts legitimately
+// stores several rows per (ticker, year, quarter) from different sources
+// (api_ninjas / alpha_vantage / motley_fool / edgar_8k — the last an SEC
+// 8-K cover page fetched as a fallback). getCachedTranscript and
+// getLatestCachedTranscript already pick ONE best-source row per quarter;
+// getTranscriptsSummary must match that same preference so the card wall
+// never shows two cards — or the worse one first — for one quarter.
+
+describe("getTranscriptsSummary source dedupe", () => {
+  it("collapses edgar_8k + alpha_vantage for the same quarter into one row, preferring alpha_vantage", () => {
+    const nflxId = seedSecurity(db, "NFLX", "Netflix Inc");
+    seedTranscript(db, nflxId, "NFLX", 2026, 2, undefined, "edgar_8k");
+    seedTranscript(db, nflxId, "NFLX", 2026, 2, undefined, "alpha_vantage");
+
+    const results = getTranscriptsSummary(db, { ticker: "NFLX" });
+    expect(results.length).toBe(1);
+    expect(results[0].source).toBe("alpha_vantage");
+  });
+
+  it("still returns an edgar_8k row when it is the only source for that quarter", () => {
+    const sofiId = seedSecurity(db, "SOFI", "SoFi Technologies");
+    seedTranscript(db, sofiId, "SOFI", 2026, 1, undefined, "edgar_8k");
+
+    const results = getTranscriptsSummary(db, { ticker: "SOFI" });
+    expect(results.length).toBe(1);
+    expect(results[0].source).toBe("edgar_8k");
+  });
+
+  it("dedupes before applying the limit — 3 tickers x 2 sources with limit 3 yields 3 distinct tickers", () => {
+    const aId = seedSecurity(db, "AAPL", "Apple Inc");
+    const bId = seedSecurity(db, "MSFT", "Microsoft Corp");
+    const cId = seedSecurity(db, "GOOG", "Alphabet Inc");
+    for (const [id, ticker] of [
+      [aId, "AAPL"],
+      [bId, "MSFT"],
+      [cId, "GOOG"],
+    ] as const) {
+      seedTranscript(db, id, ticker, 2026, 2, undefined, "edgar_8k");
+      seedTranscript(db, id, ticker, 2026, 2, undefined, "alpha_vantage");
+    }
+
+    const results = getTranscriptsSummary(db, { limit: 3 });
+    expect(results.length).toBe(3);
+    const tickers = new Set(results.map((r) => r.ticker));
+    expect(tickers.size).toBe(3);
+    expect(results.every((r) => r.source === "alpha_vantage")).toBe(true);
   });
 });
 

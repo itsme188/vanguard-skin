@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getHoldingsInBucket } from "@/lib/queries/drill-down";
+import { getAllocationByDimension } from "@/lib/queries/analysis";
 
 // Migration 002 seeds: 1=Vanguard Taxable, 2=Vanguard Roth IRA, 3=IBKR.
 
@@ -186,5 +187,148 @@ describe("beta lookback matches the production beta writer", () => {
     const aapl = rows.find((r) => r.symbol === "AAPL");
     expect(aapl).toBeDefined();
     expect(aapl!.beta).toBe(1.2);
+  });
+});
+
+// Regression: a security held in multiple accounts must appear ONCE, with
+// its market_value SUMMED across accounts — not once PER (account, security)
+// row. Un-aggregated rows double the "TOP 10 BY RISK" list's occupancy for
+// any multi-account name, pushing a genuinely large single-account position
+// out of the top N entirely.
+// [qa:analysis-risk-drawer--top10-duplicates-per-account-rows-omits-top-risk-contributor]
+describe("multi-account security aggregation", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    // DUPX is held in TWO accounts (1 and 3), $1,500 each -> should collapse
+    // to ONE row with market_value = $3,000 once aggregated.
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, sector) VALUES (1, 'DUPX', 'Duplicate Corp', 'Stock', 'Discretionary')`
+    ).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (1, '2026-08-30', 100, 'tws')`).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 1, '2026-08-30', 15, 'dupx-acct1')`
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (3, 1, '2026-08-30', 15, 'dupx-acct3')`
+    ).run();
+
+    // 8 single-account securities, all worth clearly more than DUPX's
+    // aggregate ($3,000), so they always occupy ranks 1-8.
+    const highs = [95, 90, 85, 80, 75, 70, 65, 60]; // quantities @ $100 -> $9500..$6000
+    highs.forEach((qty, i) => {
+      const id = 10 + i;
+      const symbol = `HIGH${i + 1}`;
+      db.prepare(
+        `INSERT INTO securities (id, symbol, name, security_type, sector) VALUES (?, ?, ?, 'Stock', 'Discretionary')`
+      ).run(id, symbol, `${symbol} Inc.`);
+      db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (?, '2026-08-30', 100, 'tws')`).run(id);
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, ?, '2026-08-30', ?, ?)`
+      ).run(id, qty, `${symbol.toLowerCase()}-acct1`);
+    });
+
+    // OMITTED: single-account, $1,400 -- ranks 11th under the un-aggregated
+    // (12-row) ordering because DUPX's two $1,500 rows occupy ranks 9-10,
+    // but ranks 10th (last slot) once DUPX collapses to one $3,000 row.
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, sector) VALUES (99, 'OMITTED', 'Omitted Corp', 'Stock', 'Discretionary')`
+    ).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (99, '2026-08-30', 100, 'tws')`).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (2, 99, '2026-08-30', 14, 'omitted-acct2')`
+    ).run();
+  });
+
+  it("a security held in two accounts appears ONCE with market_value summed across accounts", () => {
+    const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 100 });
+    const dupxRows = rows.filter((r) => r.symbol === "DUPX");
+    expect(dupxRows).toHaveLength(1);
+    expect(dupxRows[0].marketValue).toBeCloseTo(3000, 5);
+    const total = rows.reduce((sum, r) => sum + r.marketValue, 0);
+    expect(dupxRows[0].weight).toBeCloseTo(3000 / total, 5);
+  });
+
+  it("kind:risk topN:10 returns 10 DISTINCT securityIds (no per-account duplicates)", () => {
+    const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
+    expect(rows).toHaveLength(10);
+    const distinctIds = new Set(rows.map((r) => r.securityId));
+    expect(distinctIds.size).toBe(10);
+  });
+
+  it("collapsing DUPX's duplicate rows frees a slot for the rank-11 contributor", () => {
+    const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
+    expect(rows.some((r) => r.symbol === "OMITTED")).toBe(true);
+  });
+});
+
+// Regression: the panel must list every holding the breakdown row counted.
+// The CTE's `close_price > 0` filter and the outer `market_value > 0` filter
+// silently dropped unpriced holdings (no price row at all) and short legs
+// (negative market_value) even though `getAllocationByDimension`'s
+// position_count includes them — so the drill-down panel showed FEWER
+// holdings than the row's own count said it should.
+// [qa:analysis-sector-drilldown--holdings-count-disagrees-with-row-and-drops-shorts-regression-1]
+describe("panel lists every holding the breakdown row counted", () => {
+  let db: Database.Database;
+  const SECTOR = "DrillSectorX";
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, sector) VALUES (1, 'LONGX', 'Long Corp', 'Stock', ?)`
+    ).run(SECTOR);
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, sector) VALUES (2, 'NOPRICEX', 'No Price Corp', 'Stock', ?)`
+    ).run(SECTOR);
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, sector) VALUES (3, 'SHORTX', 'Short Corp', 'Stock', ?)`
+    ).run(SECTOR);
+
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (1, '2026-08-30', 50, 'tws')`).run();
+    // NOPRICEX intentionally has NO price row anywhere.
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (3, '2026-08-30', 20, 'tws')`).run();
+
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 1, '2026-08-30', 10, 'longx-acct1')`
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 2, '2026-08-30', 5, 'nopricex-acct1')`
+    ).run();
+    // Short leg: negative quantity, priced.
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 3, '2026-08-30', -8, 'shortx-acct1')`
+    ).run();
+  });
+
+  it("returns the priced long, the unpriced holding (marketValue 0), and the short leg (negative marketValue)", () => {
+    const rows = getHoldingsInBucket(db, "all", { kind: "sector", sector: SECTOR });
+    const symbols = rows.map((r) => r.symbol).sort();
+    expect(symbols).toEqual(["LONGX", "NOPRICEX", "SHORTX"]);
+
+    const longRow = rows.find((r) => r.symbol === "LONGX")!;
+    const noPriceRow = rows.find((r) => r.symbol === "NOPRICEX")!;
+    const shortRow = rows.find((r) => r.symbol === "SHORTX")!;
+
+    expect(longRow.marketValue).toBeCloseTo(500, 5);
+    expect(noPriceRow.marketValue).toBe(0);
+    expect(shortRow.marketValue).toBeCloseTo(-160, 5);
+    expect(shortRow.weight).toBeLessThan(0);
+  });
+
+  it("row count equals lib/queries/analysis.ts's position_count for the same sector bucket", () => {
+    const rows = getHoldingsInBucket(db, "all", { kind: "sector", sector: SECTOR });
+    const breakdown = getAllocationByDimension(db, "sector");
+    const bucket = breakdown.find((b) => b.group_name === SECTOR);
+    expect(bucket).toBeDefined();
+    expect(bucket!.position_count).toBe(3);
+    expect(rows.length).toBe(bucket!.position_count);
   });
 });
