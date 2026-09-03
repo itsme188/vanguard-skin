@@ -5,11 +5,14 @@ import {
   SCENARIO_RECIPES,
   findRecipe,
   computeRecipeScenario,
+  applySectorFloor,
   FACTOR_SHOCK_SENSITIVITIES,
+  type ScenarioRecipe,
 } from "@/lib/compute/scenario-recipes";
 import { computeScenario, PRESET_SCENARIOS } from "@/lib/compute/scenarios";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 
 // Migration 002 seeds: 1=Vanguard Taxable, 2=Vanguard Roth IRA, 3=IBKR.
 
@@ -133,11 +136,14 @@ describe("computeRecipeScenario", () => {
     expect(jnj.changePercent).toBeCloseTo(0, 4);
   });
 
-  it("healthcare_reg_shock: Healthcare sector override applies regardless of regulatory bucket", () => {
+  it("healthcare_reg_shock: a healthcare name takes the full subject shock regardless of its regulatory bucket", () => {
     const result = computeRecipeScenario(db, findRecipe("healthcare_reg_shock")!);
     const jnj = result.positionImpacts.find((p) => p.symbol === "JNJ")!;
-    // Healthcare sector override: -0.10
-    expect(jnj.changePercent).toBeCloseTo(-0.10, 3);
+    // Healthcare IS this scenario's subject: the sector-membership floor (1.0x)
+    // beats JNJ's Moderate regulatory bucket (0.6x), so it takes the full -12%
+    // headline. Before 2026-09-03 a -10% sectorOverride REPLACED the factor
+    // path here, which made the subject sector the LEAST affected cohort.
+    expect(jnj.changePercent).toBeCloseTo(-0.12, 3);
   });
 
   it("options inherit the underlying's factor exposure with delta-based elasticity", () => {
@@ -203,9 +209,9 @@ describe("computeRecipeScenario", () => {
   });
 
   it("sector overrides look through ETFs by cached sector weights", () => {
-    // ETF holding 50% Healthcare / 50% Technology: healthcare_reg_shock's
-    // Healthcare override (-10%) should hit half the position; the other
-    // half falls back to the factor path (no factor row → 0).
+    // ETF holding 50% Healthcare / 50% Technology: the Healthcare slice is
+    // the scenario's SUBJECT (-12%); the Technology slice has no factor row,
+    // so its spillover leg is 0.
     const today = new Date().toISOString().slice(0, 10);
     db.prepare(`INSERT INTO securities (id, symbol, security_type, sector) VALUES (10, 'HLTHMIX', 'ETF', NULL)`).run();
     db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (10, ?, 100, 'tws')`).run(today);
@@ -215,7 +221,9 @@ describe("computeRecipeScenario", () => {
 
     const result = computeRecipeScenario(db, findRecipe("healthcare_reg_shock")!);
     const mix = result.positionImpacts.find((p) => p.symbol === "HLTHMIX")!;
-    expect(mix.changePercent).toBeCloseTo(-0.05, 3);
+    // Healthcare half rides the subject path (-12%), Tech half has no factor
+    // row so its spillover leg is 0 -> -6% blended.
+    expect(mix.changePercent).toBeCloseTo(-0.06, 3);
   });
 
   it("oil_shock_10dollar: Energy sector positive, defaulting falls back to cyclical bucket", () => {
@@ -394,6 +402,405 @@ describe("computeRecipeScenario", () => {
       const nvda = result.positionImpacts.find((p) => p.symbol === "NVDA")!;
       expect(nvda).toBeDefined();
       expect(nvda.changePercent).toBeCloseTo(-0.21, 3);
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Subject-first ranking — QA finding
+// `analysis-scenarios--generic-factor-bucket-subject-sector-least-impacted`
+// (2026-09-03).
+//
+// Before this fix every recipe pushed its whole move through ONE generic
+// factor bucket and treated `sectorOverrides` as a REPLACEMENT, so the
+// scenario's own subject was systematically the LEAST affected cohort:
+// healthcare names sat at the -10% "floor" in a healthcare shock while an
+// unrelated Very-High-regulatory-risk name took -16.8%; the semiconductor
+// pure-play took -10% in "Semi cycle -15%" while a mega-cap internet name
+// took -24%; the foreign ADR took 0.0% in "USD strength +5%".
+//
+// The engine now runs a SUBJECT path (the sector / industry / fund-category /
+// foreign-domicile / factor cohort the scenario is about, floored at the
+// headline move and scaled up by factor buckets) and a weaker per-recipe
+// SPILLOVER path for everything else, with sector floors applied worse-of.
+// ─────────────────────────────────────────────────────────────────────────
+
+const MAX_BUCKET: Record<FactorColumn, string> = {
+  interest_rate_sensitive: "Very High",
+  growth_vs_value: "Growth",
+  cyclical: "Very High",
+  international_exposure: "Very High",
+  geopolitical_onshoring: "Very High",
+  tariff_exposure: "Very High",
+  ai_exposure: "Very High",
+  crypto_adjacent: "Very High",
+  regulatory_risk: "Very High",
+};
+
+const NEUTRAL_BUCKET: Record<FactorColumn, string> = {
+  interest_rate_sensitive: "No",
+  growth_vs_value: "Value",
+  cyclical: "No",
+  international_exposure: "No",
+  geopolitical_onshoring: "No",
+  tariff_exposure: "No",
+  ai_exposure: "No",
+  crypto_adjacent: "No",
+  regulatory_risk: "No",
+};
+
+interface SeedName {
+  id: number;
+  symbol: string;
+  sector?: string | null;
+  industry?: string | null;
+  fundCategory?: string | null;
+  geography?: string | null;
+  securityType?: string;
+  durationYears?: number | null;
+  /** Omit entirely to model an unclassified name (no security_factors row). */
+  factors?: Record<FactorColumn, string>;
+}
+
+/** Synthetic $1,000 position (10 sh @ $100) — no real portfolio figures. */
+function seedName(db: Database.Database, name: SeedName) {
+  db.prepare(
+    `INSERT INTO securities (id, symbol, security_type, sector, industry, fund_category, geography, currency, duration_years)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'USD', ?)`
+  ).run(
+    name.id,
+    name.symbol,
+    name.securityType ?? "Stock",
+    name.sector ?? null,
+    name.industry ?? null,
+    name.fundCategory ?? null,
+    name.geography ?? "US",
+    name.durationYears ?? null
+  );
+  if (name.factors) {
+    const factors = name.factors;
+    db.prepare(
+      `INSERT INTO security_factors (security_id, ${FACTOR_COLUMNS.join(", ")})
+       VALUES (?, ${FACTOR_COLUMNS.map(() => "?").join(", ")})`
+    ).run(name.id, ...FACTOR_COLUMNS.map((c) => factors[c]));
+  }
+  db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, 100, 'tws')`).run(
+    name.id,
+    todayET()
+  );
+  db.prepare(
+    `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, ?, '2026-04-30', 10, ?)`
+  ).run(name.id, `h-${name.symbol}`);
+}
+
+describe("scenario subjects", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  describe("catalog invariants", () => {
+    it("every recipe declares a subject selector and a spillover fraction", () => {
+      for (const r of SCENARIO_RECIPES) {
+        expect(r.subject.label.length, `${r.id} subject label`).toBeGreaterThan(5);
+        const hasSelector = Boolean(
+          r.subject.sectors?.length ||
+            r.subject.industries?.length ||
+            r.subject.fundCategories?.length ||
+            r.subject.foreignDomiciled ||
+            r.subject.factors?.length
+        );
+        expect(hasSelector, `${r.id} has no subject selector`).toBe(true);
+        expect(Math.abs(r.spillover), `${r.id} spillover`).toBeGreaterThan(0);
+      }
+    });
+
+    it("spillover is always weaker than the weakest subject-membership floor", () => {
+      // This is what makes "the subject ranks first" a construction guarantee
+      // rather than a per-recipe coincidence: the spillover leg is capped at
+      // |shock x spillover| and the subject leg floors at |shock x floor|.
+      for (const r of SCENARIO_RECIPES) {
+        const floors = [
+          ...(r.subject.factors?.map((f) => f.minMultiplier) ?? []),
+          ...(r.subject.sectors?.length ||
+          r.subject.industries?.length ||
+          r.subject.fundCategories?.length ||
+          r.subject.foreignDomiciled
+            ? [1]
+            : []),
+        ];
+        const minFloor = Math.min(...floors);
+        expect(Math.abs(r.spillover), `${r.id} spillover vs floor`).toBeLessThan(minFloor);
+      }
+    });
+
+    it("no sector floor is harsher than the subject's own headline move", () => {
+      for (const r of SCENARIO_RECIPES) {
+        for (const [sector, floor] of Object.entries(r.sectorFloors ?? {})) {
+          if (Math.sign(floor) !== Math.sign(r.shockMagnitude)) continue;
+          expect(Math.abs(floor), `${r.id} floor ${sector}`).toBeLessThan(Math.abs(r.shockMagnitude));
+        }
+      }
+    });
+
+    it("no factor bucket the classifier can emit is silently unmapped (scores 0)", () => {
+      // A label the shared vocabulary (lib/factors.ts FACTOR_SORT_RANK) allows
+      // but the sensitivity table omits scores 0 and quietly exempts the name
+      // from its own scenario. "International" (35 live securities) was the
+      // "foreign ADR takes 0.0%" half of the 2026-09-03 QA finding.
+      expect(FACTOR_SHOCK_SENSITIVITIES.international_exposure["International"]).toBeGreaterThan(0);
+      expect(FACTOR_SHOCK_SENSITIVITIES.crypto_adjacent["Yes"]).toBeGreaterThan(0);
+      for (const level of ["No", "Low", "Moderate", "High", "Very High"]) {
+        for (const column of FACTOR_COLUMNS) {
+          if (column === "growth_vs_value") continue; // its own Growth/Value/Blend vocabulary
+          expect(
+            FACTOR_SHOCK_SENSITIVITIES[column][level],
+            `${column} is missing the ${level} bucket`
+          ).toBeTypeOf("number");
+        }
+      }
+    });
+
+    it("a name tagged with the International bucket takes the dollar shock, not 0%", () => {
+      seedName(db, {
+        id: 401,
+        symbol: "INTLTAG",
+        sector: "Technology",
+        geography: "US", // structurally domestic — only the factor label makes it foreign-revenue
+        factors: { ...NEUTRAL_BUCKET, international_exposure: "International" },
+      });
+      const result = computeRecipeScenario(db, findRecipe("usd_strength_5pct")!);
+      const tagged = result.positionImpacts.find((p) => p.symbol === "INTLTAG")!;
+      expect(tagged.changePercent).toBeCloseTo(-0.05, 4);
+      expect(tagged.subjectShare ?? 0).toBe(1);
+    });
+
+    it("every methodology string describes both the subject and the spillover path", () => {
+      for (const r of SCENARIO_RECIPES) {
+        expect(r.methodology.toLowerCase(), `${r.id} methodology`).toContain("subject");
+        expect(r.methodology.toLowerCase(), `${r.id} methodology`).toContain("spillover");
+      }
+    });
+  });
+
+  describe("every preset ranks its subject exposure first, by construction", () => {
+    function seedRecipePortfolio(recipe: ScenarioRecipe) {
+      const subjectFactors = new Set((recipe.subject.factors ?? []).map((f) => f.column));
+
+      // SUBJ — a clean pure-play of whatever this scenario is about.
+      const subjectRow = { ...NEUTRAL_BUCKET };
+      for (const c of subjectFactors) subjectRow[c] = MAX_BUCKET[c];
+      seedName(db, {
+        id: 101,
+        symbol: "SUBJ",
+        sector: recipe.subject.sectors?.[0] ?? "Financials",
+        industry: recipe.subject.industries?.[0] ?? null,
+        fundCategory: recipe.subject.fundCategories?.[0] ?? null,
+        geography: recipe.subject.foreignDomiciled ? "International" : "US",
+        factors: subjectRow,
+      });
+
+      // OTHERMAX — every factor pinned to its most extreme bucket EXCEPT the
+      // subject's membership factors. This is the QA symptom in test form.
+      const otherMax = { ...MAX_BUCKET };
+      for (const c of subjectFactors) otherMax[c] = NEUTRAL_BUCKET[c];
+      seedName(db, { id: 102, symbol: "OTHERMAX", sector: "Financials", factors: otherMax });
+
+      seedName(db, { id: 103, symbol: "NEUTRAL", sector: "Financials", factors: NEUTRAL_BUCKET });
+
+      const flooredSector = Object.keys(recipe.sectorFloors ?? {})[0];
+      if (flooredSector) {
+        seedName(db, { id: 104, symbol: "FLOORED", sector: flooredSector, factors: NEUTRAL_BUCKET });
+      }
+
+      seedName(db, {
+        id: 105,
+        symbol: "BOND5Y",
+        securityType: "Bond",
+        sector: null,
+        durationYears: 5,
+        factors: NEUTRAL_BUCKET,
+      });
+    }
+
+    for (const recipe of SCENARIO_RECIPES) {
+      it(`${recipe.id}: ${recipe.subject.label} moves furthest`, () => {
+        seedRecipePortfolio(recipe);
+        const result = computeRecipeScenario(db, recipe);
+        const subj = result.positionImpacts.find((p) => p.symbol === "SUBJ");
+        expect(subj, `${recipe.id}: subject position missing`).toBeDefined();
+
+        // The subject always takes at least the recipe's headline move ...
+        expect(Math.abs(subj!.changePercent), `${recipe.id}: subject below headline`).toBeGreaterThanOrEqual(
+          Math.abs(recipe.shockMagnitude) - 1e-9
+        );
+        expect(subj!.subjectShare ?? 0, `${recipe.id}: subjectShare`).toBeGreaterThan(0);
+
+        // ... and nothing else moves further in the shock's direction.
+        for (const other of result.positionImpacts.filter((p) => p.symbol !== "SUBJ")) {
+          if (recipe.shockMagnitude < 0) {
+            expect(subj!.changePercent, `${recipe.id}: SUBJ vs ${other.symbol}`).toBeLessThan(other.changePercent);
+          } else {
+            expect(subj!.changePercent, `${recipe.id}: SUBJ vs ${other.symbol}`).toBeGreaterThan(other.changePercent);
+          }
+        }
+      });
+    }
+  });
+
+  describe("sector floors are a floor, never a replacement", () => {
+    it("applySectorFloor: negative floors take the worse of, positive floors the better of", () => {
+      expect(applySectorFloor(-0.02, -0.10)).toBeCloseTo(-0.10, 6); // milder engine result -> floor binds
+      expect(applySectorFloor(-0.25, -0.10)).toBeCloseTo(-0.25, 6); // harsher engine result survives
+      expect(applySectorFloor(0.03, 0.12)).toBeCloseTo(0.12, 6); // upside floor lifts
+      expect(applySectorFloor(0.20, 0.12)).toBeCloseTo(0.20, 6); // better upside survives
+      expect(applySectorFloor(-0.04, undefined)).toBeCloseTo(-0.04, 6); // no floor for this sector
+    });
+
+    it("semi_cycle: a non-subject Tech name lands on the -10% Tech floor", () => {
+      seedName(db, { id: 201, symbol: "TECHCO", sector: "Technology", factors: NEUTRAL_BUCKET });
+      const result = computeRecipeScenario(db, findRecipe("semi_cycle_minus_15pct")!);
+      const tech = result.positionImpacts.find((p) => p.symbol === "TECHCO")!;
+      expect(tech.changePercent).toBeCloseTo(-0.10, 4);
+      expect(tech.subjectShare ?? 0).toBe(0);
+    });
+
+    it("semi_cycle: a semiconductor name harsher than the floor keeps the harsher number", () => {
+      seedName(db, {
+        id: 202,
+        symbol: "SEMICO",
+        sector: "Technology",
+        industry: "Semiconductors",
+        factors: { ...NEUTRAL_BUCKET, tariff_exposure: "Very High", ai_exposure: "Very High" },
+      });
+      const result = computeRecipeScenario(db, findRecipe("semi_cycle_minus_15pct")!);
+      const semi = result.positionImpacts.find((p) => p.symbol === "SEMICO")!;
+      // blend = tariff 1.40 + 0.6 x ai 1.40 = 2.24 -> -33.6%; the -10% floor never lifts it.
+      expect(semi.changePercent).toBeCloseTo(-0.336, 3);
+      expect(semi.changePercent).toBeLessThan(-0.10);
+    });
+
+    it("semi_cycle: an unclassified semiconductor still takes the full -15% subject shock", () => {
+      seedName(db, {
+        id: 203,
+        symbol: "PLAINSEMI",
+        sector: "Technology",
+        industry: "Semiconductors",
+        factors: NEUTRAL_BUCKET,
+      });
+      const result = computeRecipeScenario(db, findRecipe("semi_cycle_minus_15pct")!);
+      const semi = result.positionImpacts.find((p) => p.symbol === "PLAINSEMI")!;
+      expect(semi.changePercent).toBeCloseTo(-0.15, 4);
+      expect(semi.subjectShare ?? 0).toBe(1);
+    });
+
+    it("oil_shock: a defensive utility keeps the -4% floor rather than its milder spillover gain", () => {
+      seedName(db, {
+        id: 204,
+        symbol: "UTILCO",
+        sector: "Utilities",
+        factors: { ...NEUTRAL_BUCKET, cyclical: "Defensive" },
+      });
+      const result = computeRecipeScenario(db, findRecipe("oil_shock_10dollar")!);
+      const util = result.positionImpacts.find((p) => p.symbol === "UTILCO")!;
+      // Spillover leg = +0.12 x (-1/3) x (-0.50 Defensive) = +2%; the -4% floor is worse, so it binds.
+      expect(util.changePercent).toBeCloseTo(-0.04, 4);
+    });
+  });
+
+  describe("bonds and cash sit out of the equity spillover channel", () => {
+    it("a Treasury does not drift in a semiconductor scenario, but still moves on the rate shock", () => {
+      // The classifier hangs Low buckets on Treasuries (tariff Low, ai Low),
+      // which used to leak a second-order hit into every equity scenario.
+      seedName(db, {
+        id: 402,
+        symbol: "TBILL",
+        securityType: "Bond",
+        sector: null,
+        durationYears: 5,
+        factors: { ...NEUTRAL_BUCKET, tariff_exposure: "Low", ai_exposure: "Low", interest_rate_sensitive: "High" },
+      });
+      const semi = computeRecipeScenario(db, findRecipe("semi_cycle_minus_15pct")!);
+      expect(semi.positionImpacts.find((p) => p.symbol === "TBILL")!.changePercent).toBe(0);
+
+      const rate = computeRecipeScenario(db, findRecipe("rate_shock_up_25bp")!);
+      // Still the SUBJECT of a rate shock: 5y duration x 25bp = -1.25%.
+      expect(rate.positionImpacts.find((p) => p.symbol === "TBILL")!.changePercent).toBeCloseTo(-0.0125, 4);
+    });
+
+    it("a money-market sweep fund takes no scenario P&L at all", () => {
+      seedName(db, {
+        id: 403,
+        symbol: "SWEEPFUND",
+        securityType: "Mutual Fund",
+        sector: null,
+        fundCategory: "Cash Equivalent",
+        factors: { ...NEUTRAL_BUCKET, regulatory_risk: "Moderate" },
+      });
+      const result = computeRecipeScenario(db, findRecipe("healthcare_reg_shock")!);
+      expect(result.positionImpacts.find((p) => p.symbol === "SWEEPFUND")!.changePercent).toBe(0);
+    });
+  });
+
+  describe("QA regression — the three symptoms observed on the sandbox", () => {
+    it("healthcare_reg_shock: healthcare loses more than an unrelated Very-High-regulatory-risk name", () => {
+      seedName(db, {
+        id: 301,
+        symbol: "HEALTHCO",
+        sector: "Healthcare",
+        factors: { ...NEUTRAL_BUCKET, regulatory_risk: "Low" },
+      });
+      seedName(db, {
+        id: 302,
+        symbol: "REGHEAVY",
+        sector: "Financials",
+        factors: { ...NEUTRAL_BUCKET, regulatory_risk: "Very High" },
+      });
+      const result = computeRecipeScenario(db, findRecipe("healthcare_reg_shock")!);
+      const health = result.positionImpacts.find((p) => p.symbol === "HEALTHCO")!;
+      const reg = result.positionImpacts.find((p) => p.symbol === "REGHEAVY")!;
+      expect(health.changePercent).toBeCloseTo(-0.12, 4);
+      expect(reg.changePercent).toBeCloseTo(-0.12 * 0.15, 4); // spillover only
+      expect(health.changePercent).toBeLessThan(reg.changePercent);
+    });
+
+    it("semi_cycle_minus_15pct: the semiconductor pure-play loses more than a mega-cap internet name", () => {
+      seedName(db, {
+        id: 303,
+        symbol: "SEMIPURE",
+        sector: "Technology",
+        industry: "Semiconductors",
+        factors: NEUTRAL_BUCKET,
+      });
+      seedName(db, {
+        id: 304,
+        symbol: "NETCO",
+        sector: "Technology",
+        industry: "Internet",
+        factors: { ...NEUTRAL_BUCKET, tariff_exposure: "Very High", ai_exposure: "Very High" },
+      });
+      const result = computeRecipeScenario(db, findRecipe("semi_cycle_minus_15pct")!);
+      const semi = result.positionImpacts.find((p) => p.symbol === "SEMIPURE")!;
+      const net = result.positionImpacts.find((p) => p.symbol === "NETCO")!;
+      expect(semi.changePercent).toBeLessThan(net.changePercent);
+      expect(net.changePercent).toBeCloseTo(-0.10, 4); // Tech floor, not a -24% factor blowout
+    });
+
+    it("usd_strength_5pct: an unclassified foreign ADR takes the dollar hit; the domestic name is flat", () => {
+      // No security_factors row at all — the ADR's international exposure is
+      // structural (non-US domicile), which is exactly what the LLM factor
+      // pass had missed on the sandbox.
+      seedName(db, { id: 305, symbol: "FORADR", sector: "Consumer Staples", geography: "International" });
+      seedName(db, { id: 306, symbol: "DOMCO", sector: "Consumer Staples", factors: NEUTRAL_BUCKET });
+      const result = computeRecipeScenario(db, findRecipe("usd_strength_5pct")!);
+      const adr = result.positionImpacts.find((p) => p.symbol === "FORADR")!;
+      const dom = result.positionImpacts.find((p) => p.symbol === "DOMCO")!;
+      expect(adr.changePercent).toBeCloseTo(-0.05, 4);
+      expect(dom.changePercent).toBeCloseTo(0, 4);
+      expect(adr.changePercent).toBeLessThan(dom.changePercent);
     });
   });
 });

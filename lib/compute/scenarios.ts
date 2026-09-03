@@ -37,6 +37,14 @@ export interface PositionImpact {
   estimatedNewValue: number;
   changePercent: number;
   beta: number; // used beta (1.0 if unknown)
+  /**
+   * Fraction of this position that sat on the scenario's SUBJECT path (the
+   * sector / industry / factor cohort the scenario is about) rather than the
+   * weaker spillover path. Set by the recipe engine only — the legacy
+   * beta-heuristic path leaves it undefined. 0.5 = half an ETF's look-through
+   * value was in the subject sector.
+   */
+  subjectShare?: number;
 }
 
 export interface ScenarioResult {
