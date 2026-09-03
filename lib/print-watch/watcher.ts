@@ -79,7 +79,7 @@ import {
   type IBApiLike,
 } from "./dj-adapter";
 import { pollEdgar, resolveCik, type EdgarFiling } from "./edgar-adapter";
-import { extractCandidates } from "./extract";
+import { extractCandidates, extractCandidatesFromPdf } from "./extract";
 import { IR_RSS_CONFIGS, pollIrRss, type IrRssConfig } from "./ir-rss-adapter";
 import { reconcile } from "./reconcile";
 import { htmlToRawText, htmlToTablesRepresentation } from "./representations";
@@ -102,6 +102,16 @@ import {
 } from "./store";
 import { recordDelivery, sha256Hex, type DeliveryInput } from "./delivery";
 import { classifyBytes } from "./url-fetch";
+import {
+  checkPdfBytes,
+  checkPdfText,
+  resolvePdftotextPath,
+  runPdftotext,
+  textPathFor,
+  PdfEncryptedError,
+  PdfToolMissingError,
+  PDFTOTEXT_SETTING_KEY,
+} from "./pdf";
 import type {
   DocumentRow,
   LineContract,
@@ -219,9 +229,11 @@ export interface WatchStatusRow {
  *                  lie the desk could not see through — the sheet had not
  *                  moved and nothing on screen said so.
  *  - `refused`   — NOTHING was stored (plan M11): the bytes are not a document
- *                  this subsystem can read at all (binary, or a PDF before
- *                  PDF support lands). A refusal is about the FILE, so there
- *                  is no document row to point at and `docId` is 0.
+ *                  this subsystem can read at all — binary, or a PDF that is
+ *                  encrypted, oversize, over 60 pages, image-only, or that
+ *                  poppler is not installed to read. A refusal is about the
+ *                  FILE, so there is no document row to point at and `docId`
+ *                  is 0.
  *  - `parse_failed` — stored and eligible, the parse ATTEMPT ran and failed
  *                  (M15). `rejectReason` carries the durable
  *                  `parse_last_error`, and the document is queued for another
@@ -279,6 +291,11 @@ export interface WatcherSeams {
     baseline: boolean,
   ) => Promise<Array<{ title: string; link: string; html: string }>>;
   extractCandidates: (contracts: LineContract[], representationText: string) => Promise<ParseCandidate[]>;
+  /** Reading ONE of a PDF: poppler's text layer for the file at `pdfPath`.
+   *  Takes the db because WHERE poppler lives is a setting. */
+  pdfToText: (db: Database.Database, pdfPath: string) => Promise<string>;
+  /** Reading TWO of a PDF: the bytes themselves, as a Claude document block. */
+  extractCandidatesFromPdf: (contracts: LineContract[], bytes: Buffer) => Promise<ParseCandidate[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +353,16 @@ const DEFAULT_SEAMS: WatcherSeams = {
   pollEdgar: (cik, startIso, endIso, seen) => pollEdgar(cik, startIso, endIso, seen),
   pollIrRss: (cfg, seenLinks, baseline) => pollIrRss(cfg, seenLinks, fetch, { baseline }),
   extractCandidates: (contracts, text) => extractCandidates(contracts, text),
+  pdfToText: async (db, pdfPath) => {
+    const binary = resolvePdftotextPath(db);
+    if (!binary) {
+      throw new PdfToolMissingError(
+        `pdftotext not found — install poppler (brew install poppler) or set settings.${PDFTOTEXT_SETTING_KEY}`,
+      );
+    }
+    return runPdftotext(binary, pdfPath);
+  },
+  extractCandidatesFromPdf: (contracts, bytes) => extractCandidatesFromPdf(contracts, bytes),
 };
 
 let seams: WatcherSeams = { ...DEFAULT_SEAMS };
@@ -1248,7 +1275,7 @@ export async function ingestDocument(
       rejectReason: "binary content — print-watch reads HTML, plain text, or PDF",
     };
   }
-  if (shape === "pdf") return refusePdf();
+  if (shape === "pdf") return ingestPdf(db, print, kind, source, url, buf);
 
   const sha = sha256Hex(buf);
   const ext = shape === "html" ? "html" : "txt";
@@ -1262,19 +1289,75 @@ export async function ingestDocument(
 }
 
 /**
- * PDF acquisition (poppler text + a native reading, provisionally a weak pair)
- * is the next slice-B task. Until it lands a PDF is REFUSED rather than
- * stored: a document nothing can read would sit on the sheet forever, stamped
- * `parsed` with no candidates, which is worse than no document at all.
+ * The PDF road (Task 10). A PDF becomes a document only once poppler has
+ * produced a text layer we can actually gate and read: the gate runs on that
+ * TEXT, not on the bytes, and the text is persisted beside the bytes so the
+ * parse (and Task 13's merge) never re-spawns poppler for the same file.
+ *
+ * REFUSALS LEAVE NOTHING BEHIND (plan M11/M14). The bytes have to be on disk
+ * before poppler can read them, so a refusal that happens after that write
+ * removes both files: no row references them, and a later delivery of the
+ * same bytes rewrites them content-addressed. Each refusal keeps its own
+ * message — encrypted, oversize, too many pages, image-only, poppler missing
+ * — because they are four different things for the desk to do about it.
  */
-function refusePdf(): IngestResult {
-  return {
-    docId: 0,
-    isNew: false,
-    outcome: "refused",
-    rejectReason:
-      "PDFs aren't readable here yet — open the release page and save it as HTML, then drop that file instead.",
+async function ingestPdf(
+  db: Database.Database,
+  print: PrintRow,
+  kind: PrintWatchDocKind,
+  source: string,
+  url: string | null,
+  buf: Buffer,
+): Promise<IngestResult> {
+  const bytesCheck = checkPdfBytes(buf);
+  if (!bytesCheck.ok) {
+    return { docId: 0, isNew: false, outcome: "refused", rejectReason: bytesCheck.reason };
+  }
+
+  const sha = sha256Hex(buf);
+  const bytesPath = await writeBytes(print.id, sha, "pdf", buf);
+  const refused = async (reason: string): Promise<IngestResult> => {
+    // ONLY when nothing owns these bytes. The path is content-addressed, so a
+    // RE-delivery of a PDF already in hand (poppler since uninstalled, a
+    // pdftotext timeout) writes the very file an existing document row points
+    // at — deleting it there would strand that row's bytes and its text, and
+    // every later re-parse of it would ENOENT.
+    const owner = db
+      .prepare(`SELECT id FROM print_watch_documents WHERE print_id = ? AND sha256 = ?`)
+      .get(print.id, sha) as { id: number } | undefined;
+    if (!owner) {
+      await fsp.rm(bytesPath, { force: true });
+      await fsp.rm(textPathFor(bytesPath), { force: true });
+    }
+    return { docId: 0, isNew: false, outcome: "refused", rejectReason: reason };
   };
+
+  let text: string;
+  try {
+    text = await seams.pdfToText(db, bytesPath);
+  } catch (err) {
+    if (err instanceof PdfToolMissingError || err instanceof PdfEncryptedError) {
+      return refused(err.message);
+    }
+    return refused(`could not read the PDF's text layer: ${errText(err)}`);
+  }
+
+  const textCheck = checkPdfText(text);
+  if (!textCheck.ok) return refused(textCheck.reason);
+
+  // Temp file + atomic rename, same as the bytes: a half-written text file
+  // would parse as a truncated release, which is worse than no file at all.
+  const textPath = textPathFor(bytesPath);
+  tmpCounter += 1;
+  const tmpTextPath = `${textPath}.tmp-${process.pid}-${tmpCounter}`;
+  await fsp.writeFile(tmpTextPath, text, "utf8");
+  await fsp.rename(tmpTextPath, textPath);
+
+  return finishIngest(db, print, kind, source, url, buf, {
+    bytesPath,
+    text,
+    gateCtx: gateContextFor(db, print),
+  });
 }
 
 /**
@@ -1635,6 +1718,31 @@ type ParsePassResult =
   | { state: "parsed"; error: null }
   | { state: "queued"; error: string };
 
+/**
+ * The two readings of one PDF: poppler's persisted text through the ordinary
+ * text extractor, and the PDF bytes themselves as a Claude document block.
+ *
+ * BOTH are tagged `weak_pair` with `pair_note: "pdf-weak"` — the gate
+ * pre-registered in `docs/DECISIONS.md` (2026-09-02). Nothing has measured
+ * whether these two readings fail independently, so agreement between them is
+ * NOT the independent corroboration the reconciler greens on: a PDF alone
+ * caps at single_source and can only green by agreeing with a DIFFERENT
+ * document. Flipping either flag needs the holdout in that decision record.
+ */
+async function pdfCandidates(
+  contracts: LineContract[],
+  doc: DocumentRow,
+): Promise<TaggedCandidate[]> {
+  const text = await fsp.readFile(textPathFor(doc.bytes_path), "utf8");
+  const fromText = await seams.extractCandidates(contracts, text);
+  const bytes = await fsp.readFile(doc.bytes_path);
+  const fromNative = await seams.extractCandidatesFromPdf(contracts, bytes);
+  return [
+    ...tag(fromText, doc.id, "pdfText", true, "pdf-weak"),
+    ...tag(fromNative, doc.id, "pdfNative", true, "pdf-weak"),
+  ];
+}
+
 async function processDocument(
   db: Database.Database,
   printId: number,
@@ -1647,10 +1755,7 @@ async function processDocument(
 
   const fresh: TaggedCandidate[] = [];
   if (doc.bytes_path.endsWith(".pdf")) {
-    // Unreachable while `refusePdf` turns every PDF away at ingest — and a
-    // THROW rather than an empty reading on purpose: a document that "parsed"
-    // to zero candidates would be stamped `parsed` and never looked at again.
-    throw new Error("print-watch cannot read PDF documents yet");
+    fresh.push(...(await pdfCandidates(contracts, doc)));
   } else {
     const raw = await fsp.readFile(doc.bytes_path, "utf8");
     if (doc.bytes_path.endsWith(".html")) {
