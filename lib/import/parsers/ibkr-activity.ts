@@ -470,30 +470,89 @@ export function parseIbkrActivity(
     }
   }
 
-  // Parse Interest
-  for (const row of rows) {
-    if (
-      row.section === "Interest" &&
-      row.discriminator === "Data" &&
-      row.fields[0] !== "Total"
-    ) {
-      // fields: Currency, Account, Date, Description, Amount
-      const currency = row.fields[0];
-      const date = row.fields[2];
-      const description = row.fields[3];
-      const amount = parseFloat(row.fields[4]);
+  // Parse Interest — one block per currency: the native rows, a "Total" line
+  // in that currency, then IBKR's own "Total in USD" conversion of the block.
+  // The USD block ends with the grand "Total Interest in USD" line instead.
+  // Non-USD rows are stored in USD, scaled by the block's Total-in-USD ratio
+  // (2026-09-03: a KRW 36,461.73 debit-interest row had landed as -$36,461.73).
+  // The source key keeps the printed native figure so a re-import of an older
+  // statement dedupes against the row it already wrote.
+  {
+    type NativeInterestRow = {
+      currency: string;
+      date: string;
+      description: string;
+      amount: number;
+    };
+    let block: NativeInterestRow[] = [];
+    let blockNativeTotal: number | null = null;
 
-      if (isNaN(amount) || currency === "Total") continue;
-
+    const emit = (r: NativeInterestRow, usdAmount: number, converted: boolean) => {
       transactions.push({
         accountName: "IBKR",
-        tradeDate: date,
+        tradeDate: r.date,
         type: "INTEREST",
-        amount,
-        notes: description,
-        sourceKey: `ibkr:int:${date}:${amount}:${description}`,
+        amount: usdAmount,
+        notes: converted
+          ? `${r.description} (${r.currency} ${r.amount} converted at IBKR's Total-in-USD rate)`
+          : r.description,
+        sourceKey: `ibkr:int:${r.date}:${r.amount}:${r.description}`,
       });
+    };
+
+    const flush = (usdTotal: number | null) => {
+      if (block.length === 0) return;
+      const currency = block[0].currency;
+      const nativeTotal =
+        blockNativeTotal ?? block.reduce((sum, r) => sum + r.amount, 0);
+      if (currency === "USD") {
+        for (const r of block) emit(r, r.amount, false);
+      } else if (usdTotal == null) {
+        warnings.push(
+          `Interest: skipped ${block.length} ${currency} row(s) (native total ${nativeTotal}) — ` +
+            `no "Total in USD" line follows the block, so they cannot be converted`
+        );
+      } else {
+        const ratio = nativeTotal === 0 ? 0 : usdTotal / nativeTotal;
+        for (const r of block) emit(r, r.amount * ratio, true);
+      }
+      block = [];
+      blockNativeTotal = null;
+    };
+
+    for (const row of rows) {
+      if (row.section !== "Interest" || row.discriminator !== "Data") continue;
+      // fields: Currency, Account, Date, Description, Amount
+      const label = row.fields[0];
+      const amount = parseFloat(row.fields[4]);
+
+      if (label === "Total") {
+        if (!isNaN(amount)) blockNativeTotal = amount;
+        continue;
+      }
+      if (label === "Total in USD") {
+        flush(isNaN(amount) ? null : amount);
+        continue;
+      }
+      if (/^Total\b/.test(label)) {
+        // "Total Interest in USD" — the grand total across currencies, not a
+        // per-block conversion: closes a USD block, never scales one.
+        flush(null);
+        continue;
+      }
+
+      const currency = label;
+      const date = row.fields[2];
+      const description = row.fields[3];
+      if (isNaN(amount)) continue;
+
+      // A currency change without an intervening "Total in USD" line means
+      // the previous block never got its conversion — flush it (warns if
+      // non-USD) before starting the new one.
+      if (block.length > 0 && block[0].currency !== currency) flush(null);
+      block.push({ currency, date, description, amount });
     }
+    flush(null);
   }
 
   // Parse Fees

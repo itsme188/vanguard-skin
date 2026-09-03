@@ -60,6 +60,7 @@ export const SECURITY_CLASSIFICATIONS: Record<string, SecurityClassification> = 
   VMFXX: { fund_category: "Cash Equivalent", geography: "US", fix_security_type: "money_market" },
   VFFXX: { fund_category: "Cash Equivalent", geography: "US", fix_security_type: "money_market" },
   VFMXX: { fund_category: "Cash Equivalent", geography: "US", fix_security_type: "money_market" },
+  VUSXX: { fund_category: "Cash Equivalent", geography: "US", fix_security_type: "money_market" },
   "VANGUARD FEDERAL MONEY MARKET FUND": { fund_category: "Cash Equivalent", geography: "US", fix_security_type: "money_market" },
 
   // ─── iShares / BlackRock ETFs ───────────────────────────────────
