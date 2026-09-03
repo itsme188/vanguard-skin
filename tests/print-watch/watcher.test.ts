@@ -5,8 +5,16 @@ import os from "node:os";
 import path from "node:path";
 
 import { runMigrations } from "@/lib/db/migrate";
-import { getSheet, listDocuments, getPrintByEventId } from "@/lib/print-watch/store";
-import type { LineContract, ParseCandidate } from "@/lib/print-watch/types";
+import {
+  claimDocumentParse,
+  getDocument,
+  getPrintByEventId,
+  getSheet,
+  listDocumentRoads,
+  listDocuments,
+} from "@/lib/print-watch/store";
+import { recordDelivery } from "@/lib/print-watch/delivery";
+import type { LineContract, ParseCandidate, TaggedCandidate } from "@/lib/print-watch/types";
 import {
   ensurePrintWatch,
   getWatchStatus,
@@ -95,6 +103,16 @@ interface FakeSeamState {
   conIdResult: number | null;
   /** When set, the conId resolver seam throws with this message instead. */
   conIdThrows: string | null;
+  /**
+   * The watcher's clock, as an OFFSET on the (faked) system time rather than
+   * an absolute stamp: reading it gives what `seams.now()` returns, and
+   * `fake.nowMs += 60_000` pushes the watcher's clock forward WITHOUT
+   * advancing the fake timer queue — which is how a test can walk past a
+   * retry-spacing or claim-staleness threshold without also running every
+   * parked loop timer in between. Default offset 0, so every existing test
+   * sees exactly `Date.now()`.
+   */
+  nowMs: number;
 }
 
 let fake: FakeSeamState;
@@ -131,9 +149,23 @@ function installSeams(): void {
     conIdCalls: [],
     conIdResult: null,
     conIdThrows: null,
+    nowMs: 0, // replaced below by the offset accessor
   };
 
+  // `nowMs` reads as an absolute stamp and writes as an offset, so
+  // `fake.nowMs += 60_000` shifts the watcher's clock without touching the
+  // fake timer queue.
+  let nowOffsetMs = 0;
+  Object.defineProperty(fake, "nowMs", {
+    get: () => Date.now() + nowOffsetMs,
+    set: (next: number) => {
+      nowOffsetMs = next - Date.now();
+    },
+    configurable: true,
+  });
+
   _setTestSeams({
+    now: () => fake.nowMs,
     storageRoot: () => fake.storageRoot ?? tmpRoot,
     sleep: (ms: number) => {
       if (fake.sleepThrowsOnce) {
@@ -195,10 +227,15 @@ function seedArmedEvent(
     rawJson?: string | null;
     /** false = no `securities` row at all, so nothing can resolve a conId. */
     withSecurity?: boolean;
+    /** The issuer the gate matches on. Defaults to NVIDIA to match `symbol`'s
+     *  default; a test that seeds another ticker should name its issuer too,
+     *  or the gate reads a document from a company nobody armed. */
+    issuerName?: string;
   } = {},
 ): { eventId: number; securityId: number | null } {
   const symbol = opts.symbol ?? "NVDA";
   const conId = opts.conId === undefined ? 4815747 : opts.conId;
+  const issuerName = opts.issuerName ?? "NVIDIA Corporation";
 
   const securityId =
     opts.withSecurity === false
@@ -208,7 +245,7 @@ function seedArmedEvent(
             .prepare(
               `INSERT INTO securities (symbol, name, security_type, ib_con_id) VALUES (?, ?, 'Stock', ?)`,
             )
-            .run(symbol, "NVIDIA Corporation", conId).lastInsertRowid,
+            .run(symbol, issuerName, conId).lastInsertRowid,
         ) as number);
 
   const ev = db
@@ -280,6 +317,23 @@ async function tickUntilSecondPoll(pollCount: () => number, maxSteps = 10): Prom
   for (let i = 0; i < maxSteps && pollCount() <= 1; i += 1) {
     await tick(11_000);
   }
+}
+
+/**
+ * Wait for a DURABLE condition (a row's parse_state) rather than a fixed
+ * number of I/O flushes. `replay.test.ts` has the same helper on a real clock;
+ * here `setTimeout`/`Date` are faked, so a wall-clock version would spin
+ * forever — this one drains real I/O first and only then steps the fake timer,
+ * bounded so a genuine regression fails instead of hanging.
+ */
+async function waitUntil(pred: () => boolean, steps = 40): Promise<void> {
+  for (let i = 0; i < steps; i += 1) {
+    await flushIo(20);
+    if (pred()) return;
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  await flushIo();
+  if (!pred()) throw new Error("waitUntil: the condition never became true");
 }
 
 beforeEach(() => {
@@ -616,7 +670,7 @@ describe("ensurePrintWatch — reconcile", () => {
     expect(fake.edgarCalls).toBe(0);
     expect(getWatchStatus(db)[0].coverage).toEqual([
       "TAS — release time unknown; drop-zone only",
-      "drop: HTML/text",
+      "drop: HTML/text/PDF, or a pasted link",
     ]);
 
     // The drop zone still works — that is the whole point of keeping the print.
@@ -920,7 +974,7 @@ describe("validateDocForEvent", () => {
 });
 
 describe("ingestDocument — gate", () => {
-  it("stores a failing document as rejected:<reason> and never parses it", async () => {
+  it("stores a failing document with a rejected CONTENT verdict and never parses it", async () => {
     const { eventId } = seedArmedEvent();
     ensurePrintWatch(db);
     const printId = printIdFor(eventId);
@@ -937,7 +991,11 @@ describe("ingestDocument — gate", () => {
     const docs = listDocuments(db, printId);
     expect(docs).toHaveLength(1);
     expect(docs[0].id).toBe(result.docId);
-    expect(docs[0].source.startsWith("rejected:")).toBe(true);
+    // 089 moved the verdict off the source string and onto its own column —
+    // the source keeps saying where the bytes came from.
+    expect(docs[0].source).toBe("drop:acme.html");
+    expect(docs[0].gate_verdict).toBe("rejected");
+    expect(docs[0].gate_reason).toBe(result.rejectReason);
     expect(docs[0].parsed_at).toBeNull();
     expect(fake.extractCalls).toHaveLength(0);
     expect(getSheet(db, printId).every((l) => l.state === "pending")).toBe(true);
@@ -969,7 +1027,13 @@ describe("ingestDocument — gate", () => {
     expect(result.rejectReason).toMatch(/IR page/i);
     expect(fake.extractCalls).toHaveLength(0);
     expect(getSheet(db, printId).every((l) => l.state === "pending")).toBe(true);
-    expect(listDocuments(db, printId)[0].source.startsWith("rejected:")).toBe(true);
+    // The CONTENT is plausibly this issuer's (it names NVDA and a fiscal
+    // quarter); it is the ROAD that is refused, which is precisely why the
+    // same bytes by drop still parse.
+    expect(listDocuments(db, printId)[0].gate_verdict).toBe("accepted");
+    expect(listDocumentRoads(db, printId)).toEqual([
+      expect.objectContaining({ kind: "ir-page", road_verdict: "rejected" }),
+    ]);
   });
 });
 
@@ -1489,8 +1553,201 @@ describe("pipeline", () => {
 
     expect(result.outcome).toBe("rejected");
     expect(result.rejectReason).toContain("issuer");
-    // The stored source keeps the same reason — the panel's banner and the
+    // The stored row keeps the same reason — the panel's banner and the
     // document row tell one story.
-    expect(listDocuments(db, printId)[0].source).toBe(`rejected:${result.rejectReason}`);
+    expect(listDocuments(db, printId)[0].gate_reason).toBe(result.rejectReason);
+  });
+
+  // -------------------------------------------------------------------------
+  // slice B: content identity, the CAS parse queue, refusals, M15
+  // -------------------------------------------------------------------------
+
+  /** An ACME print, so the slice-B fixtures can use short ACME release text
+   *  that the gate reads as this event's (issuer + quarter both named). */
+  function seedAcmePrint(): { eventId: number; printId: number } {
+    const { eventId } = seedArmedEvent({ symbol: "ACME", issuerName: "ACME Corporation" });
+    ensurePrintWatch(db);
+    return { eventId, printId: printIdFor(eventId) };
+  }
+
+  it("identical bytes through two roads are ONE document with two roads, ONE extraction, and single_source (M13)", async () => {
+    const { printId } = seedAcmePrint();
+    fake.extract = async () => [candidate("revenue_q", 1000)];
+    const text = "ACME reports Q2 2026 results. Revenue $1,000 million.";
+
+    const a = await ingestDocument(
+      db,
+      printId,
+      "edgar-ex99",
+      "edgar:0001:ex99-1",
+      "https://www.sec.gov/x",
+      Buffer.from(text, "utf8"),
+    );
+    const b = await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "user-drop:release.txt",
+      null,
+      Buffer.from(text, "utf8"),
+    );
+
+    expect(a.outcome).toBe("parsed");
+    expect(b).toMatchObject({ docId: a.docId, isNew: false, outcome: "duplicate" });
+    expect(listDocuments(db, printId)).toHaveLength(1);
+    expect(listDocumentRoads(db, printId).map((r) => r.kind).sort()).toEqual([
+      "edgar-ex99",
+      "user-drop",
+    ]);
+    // The SECOND road is provenance, not a second reading: one extraction, and
+    // the line stays honestly single-sourced.
+    expect(fake.extractCalls).toHaveLength(1);
+    const line = getSheet(db, printId).find((l) => l.metric_id === "revenue_q")!;
+    expect(line.state).toBe("single_source");
+    expect((JSON.parse(line.candidates_json) as TaggedCandidate[]).map((c) => c.doc_id)).toEqual([
+      a.docId,
+    ]);
+  });
+
+  it("a stricter road first (ir-page, last quarter's labels) is rejected; the same bytes by drop become eligible and parse", async () => {
+    const { printId } = seedAcmePrint();
+    fake.extract = async () => [candidate("revenue_q", 900)];
+    const text = "ACME reports first quarter fiscal 2027 results. Revenue $900 million.";
+
+    const ir = await ingestDocument(
+      db,
+      printId,
+      "ir-page",
+      "ir-page:old",
+      "https://ir.acme.example/old",
+      Buffer.from(text, "utf8"),
+    );
+    expect(ir.outcome).toBe("rejected");
+    expect(ir.rejectReason).toMatch(/IR page/i);
+    expect(fake.extractCalls).toHaveLength(0);
+
+    const drop = await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "user-drop:same.txt",
+      null,
+      Buffer.from(text, "utf8"),
+    );
+    // Same bytes, same document — the drop only adds a road the gate trusts.
+    expect(drop).toMatchObject({ docId: ir.docId, outcome: "parsed" });
+    expect(fake.extractCalls).toHaveLength(1);
+    expect(listDocuments(db, printId)).toHaveLength(1);
+  });
+
+  it("refuses binary bytes without storing a document", async () => {
+    const { printId } = seedAcmePrint();
+
+    const r = await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "user-drop:x.bin",
+      null,
+      Buffer.from([0x41, 0x00, 0x42]),
+    );
+
+    expect(r).toMatchObject({ docId: 0, isNew: false, outcome: "refused" });
+    expect(r.rejectReason).toMatch(/binary/);
+    // A refusal is about the FILE — there is nothing to keep as evidence.
+    expect(listDocuments(db, printId)).toEqual([]);
+    expect(fake.extractCalls).toHaveLength(0);
+  });
+
+  it("parses through a CAS claim: a stale claim from a dead worker is taken over on the next drain", async () => {
+    const { printId } = seedAcmePrint();
+    fake.extract = async () => [candidate("revenue_q", 1)];
+    const text = "ACME reports Q2 2026 results.";
+    const bytes = Buffer.from(text, "utf8");
+    const bytesPath = path.join(tmpRoot, "dead.txt");
+
+    const delivered = recordDelivery(db, printId, "user-drop", "u", null, bytes, {
+      bytesPath,
+      text,
+      gateCtx: { symbol: "ACME", issuerName: "ACME Corporation", eventDate: EVENT_DATE },
+    });
+    fs.writeFileSync(bytesPath, bytes);
+    // A worker claimed it six minutes ago and never finalised.
+    claimDocumentParse(db, delivered.id, "dead-token", fake.nowMs - 6 * 60_000);
+
+    ensurePrintWatch(db); // the next drain is what takes the claim over
+
+    await waitUntil(() => getDocument(db, delivered.id)?.parse_state === "parsed");
+    expect(fake.extractCalls).toHaveLength(1);
+    // The dead worker's attempt is not refunded — the budget is durable.
+    expect(getDocument(db, delivered.id)?.parse_attempts).toBe(2);
+  });
+
+  it("a failed extraction reports parse_failed with the durable error, returns the document to the queue, and counts ONE attempt (M15)", async () => {
+    const { printId } = seedAcmePrint();
+    fake.extract = async () => {
+      throw new Error("model 529");
+    };
+
+    const r = await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "u",
+      null,
+      Buffer.from("ACME reports Q2 2026 results.", "utf8"),
+    );
+
+    // The DURABLE state after the drain, never the drain's return value.
+    expect(r.outcome).toBe("parse_failed");
+    expect(r.rejectReason).toMatch(/model 529/);
+    expect(getDocument(db, r.docId)).toMatchObject({
+      parse_state: "queued",
+      parse_attempts: 1,
+      parse_last_error: expect.stringMatching(/model 529/),
+    });
+    expect(getWatchStatus(db)[0].sources.pipeline).toMatch(/model 529/);
+    expect(fake.extractCalls).toHaveLength(1);
+  });
+
+  it("the attempt budget survives a restart and a fifth failure is terminal until a person re-delivers (M15)", async () => {
+    const { printId } = seedAcmePrint();
+    fake.extract = async () => {
+      throw new Error("model 529");
+    };
+
+    const r = await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "u",
+      null,
+      Buffer.from("ACME reports Q2 2026 results.", "utf8"),
+    );
+    db.prepare(`UPDATE print_watch_documents SET parse_attempts = 4 WHERE id = ?`).run(r.docId);
+
+    _setTestSeams(null); // "restart": every in-memory attempt record is gone
+    installSeams();
+    fake.extract = async () => {
+      throw new Error("model 529");
+    };
+    fake.nowMs += 60_000;
+    ensurePrintWatch(db);
+
+    await waitUntil(() => getDocument(db, r.docId)?.parse_state === "failed");
+    expect(getDocument(db, r.docId)?.parse_attempts).toBe(5);
+
+    // A person re-delivering the same bytes is the ONE thing that buys a fresh
+    // budget — an automated road re-serving them does not.
+    fake.extract = async () => [candidate("revenue_q", 1)];
+    const again = await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "u2",
+      null,
+      Buffer.from("ACME reports Q2 2026 results.", "utf8"),
+    );
+    expect(again).toMatchObject({ docId: r.docId, outcome: "parsed" });
   });
 });

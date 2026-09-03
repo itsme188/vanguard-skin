@@ -22,10 +22,19 @@
  *    per-print promise chain: ONE document parses at a time, in doc-id order.
  *
  *  - THE GATE COMES BEFORE THE PARSE (Codex #1). Bytes only become candidates
- *    after `validateDocForEvent` agrees the document is this issuer's release
- *    for this period. A failing document is still STORED (it is evidence of
- *    what the wire served) but under the source `rejected:<reason>`, and the
- *    pipeline skips those forever.
+ *    after the gate agrees the document is this issuer's release for this
+ *    period AND at least one road that delivered it is trusted for this event.
+ *    A failing document is still STORED (it is evidence of what the wire
+ *    served) with its verdict in `gate_verdict`/`road_verdict`; the parse
+ *    queue simply never sees it. Slice B moved that decision out of the
+ *    source string and into `recordDelivery` (lib/print-watch/delivery.ts),
+ *    which is now the ONE way bytes enter the store.
+ *
+ *  - IDENTITY IS CONTENT, NOT ROAD (089/M13). The same bytes arriving by
+ *    EDGAR and by a drop are ONE document with TWO roads — one extraction,
+ *    one honest `single_source`. The parse itself is claimed by token
+ *    (compare-and-set) so two processes never parse one document twice, and a
+ *    crashed worker's claim is taken over after PARSE_CLAIM_STALE_MS.
  *
  *  - EXPECTED VALUES NEVER TOUCH EXTRACTION. `compileContracts` returns
  *    contracts and a PARALLEL expected map; only `contracts` is ever passed to
@@ -76,17 +85,23 @@ import { reconcile } from "./reconcile";
 import { htmlToRawText, htmlToTablesRepresentation } from "./representations";
 import {
   acquireWatcherLease,
+  anyRoadAccepted,
+  claimDocumentParse,
+  finalizeDocumentParse,
+  getDocument,
   getSheet,
-  insertDocument,
+  hasParsableDocuments,
   listActivePrints,
   listDocuments,
+  listParseQueue,
   listTodaysExpiredPrints,
-  listUnparsedDocuments,
-  markDocumentParsed,
   setPrintState,
   upsertLines,
   upsertPrint,
+  PARSE_CLAIM_STALE_MS,
 } from "./store";
+import { recordDelivery, sha256Hex, type DeliveryInput } from "./delivery";
+import { classifyBytes } from "./url-fetch";
 import type {
   DocumentRow,
   LineContract,
@@ -136,8 +151,6 @@ const MAX_PARSE_ATTEMPTS = 5;
  * its socket until the runtime drops it.
  */
 const SOURCE_TIMEOUT_MS = 15_000;
-
-const REJECTED_PREFIX = "rejected:";
 
 /**
  * Flash candidates come off the DJ wire, which produces no document — but
@@ -191,22 +204,40 @@ export interface WatchStatusRow {
  * What actually happened to a set of acquired bytes — the drop route forwards
  * this verbatim so the panel can say something true and final.
  *
- *  - `parsed`    — new document, passed the issuer/period gate, parse awaited.
- *  - `rejected`  — stored as evidence under `rejected:<reason>`, never parsed.
+ *  - `parsed`    — the document is eligible and its parse was awaited and
+ *                  landed on the sheet.
+ *  - `rejected`  — stored as evidence, with the gate's verdict on the row
+ *                  (content) or on the delivering road; never parsed.
  *  - `duplicate` — these exact bytes are already this print's; nothing re-ran.
- *  - `queued`    — stored and gate-passed, but the parse did NOT run: another
+ *  - `queued`    — stored and eligible, but the parse did NOT run: another
  *                  process holds the watcher lease, so the drain deferred to
  *                  the owner (fix wave, finding C). Saying "parsed" here was a
  *                  lie the desk could not see through — the sheet had not
  *                  moved and nothing on screen said so.
+ *  - `refused`   — NOTHING was stored (plan M11): the bytes are not a document
+ *                  this subsystem can read at all (binary, or a PDF before
+ *                  PDF support lands). A refusal is about the FILE, so there
+ *                  is no document row to point at and `docId` is 0.
+ *  - `parse_failed` — stored and eligible, the parse ATTEMPT ran and failed
+ *                  (M15). `rejectReason` carries the durable
+ *                  `parse_last_error`, and the document is queued for another
+ *                  attempt unless its budget is spent.
  */
-export type IngestOutcome = "parsed" | "rejected" | "duplicate" | "queued";
+export type IngestOutcome =
+  | "parsed"
+  | "rejected"
+  | "duplicate"
+  | "queued"
+  | "refused"
+  | "parse_failed";
 
 export interface IngestResult {
+  /** 0 on `refused` — nothing was stored, so there is no row to name. */
   docId: number;
   isNew: boolean;
   outcome: IngestOutcome;
-  /** Present only on `rejected` — the gate's own plain-language reason. */
+  /** Present on `rejected` (the gate's plain-language reason), on `refused`
+   *  (why the file is unreadable) and on `parse_failed` (`parse_last_error`). */
   rejectReason?: string;
 }
 
@@ -536,17 +567,18 @@ function readIssuerName(db: Database.Database, symbol: string): string | null {
   return row?.name ?? null;
 }
 
-function gateContextFor(
-  db: Database.Database,
-  print: PrintRow,
-  kind: PrintWatchDocKind,
-): DocGateContext {
+/**
+ * The identity the gate judges a document against. No `kind` any more: the
+ * CONTENT verdict is about the bytes and must be the same whichever road
+ * carried them (089/M13 — one document, many roads), and the per-road verdict
+ * is computed by `recordDelivery` from the kind it was handed.
+ */
+function gateContextFor(db: Database.Database, print: PrintRow): DocGateContext {
   const rt = runtimes.get(print.id);
   return {
     symbol: print.symbol,
     issuerName: rt ? rt.issuerName : readIssuerName(db, print.symbol),
     eventDate: print.event_date,
-    kind,
   };
 }
 
@@ -601,7 +633,7 @@ function refreshCoverage(rt: PrintRuntime, twsUp: boolean | null): void {
   if (!rt.window) {
     statusFor(rt.printId).coverage = [
       "TAS — release time unknown; drop-zone only",
-      "drop: HTML/text",
+      "drop: HTML/text/PDF, or a pasted link",
     ];
     return;
   }
@@ -612,7 +644,7 @@ function refreshCoverage(rt: PrintRuntime, twsUp: boolean | null): void {
   if (rt.dto.cik) notes.push(`EDGAR: CIK ${rt.dto.cik}`);
   else notes.push(rt.cikAttempted ? "EDGAR: CIK unresolved" : "EDGAR: CIK pending");
   notes.push(irConfigFor(rt.dto.symbol) ? `RSS: ${rt.dto.symbol} IR feed` : "RSS: NVDA only");
-  notes.push("drop: HTML/text");
+  notes.push("drop: HTML/text/PDF, or a pasted link");
   statusFor(rt.printId).coverage = notes;
 }
 
@@ -1159,17 +1191,6 @@ async function spaceHost(host: string): Promise<void> {
 // acquisition + pipeline
 // ---------------------------------------------------------------------------
 
-function sha256(buf: Buffer): string {
-  return crypto.createHash("sha256").update(buf).digest("hex");
-}
-
-/** Cheap sniff — decides the stored extension, which in turn decides whether
- *  the pipeline builds two representations or one. */
-function looksLikeHtml(text: string): boolean {
-  const head = text.slice(0, 2048).trimStart().toLowerCase();
-  return head.startsWith("<") || head.includes("<html") || head.includes("<table");
-}
-
 /** Temp file + atomic rename under `<storageRoot>/<printId>/` — the packaged
  *  app's cwd is a read-only signed bundle, so this anchors at the DB dir. */
 async function writeBytes(printId: number, sha: string, ext: string, buf: Buffer): Promise<string> {
@@ -1184,24 +1205,21 @@ async function writeBytes(printId: number, sha: string, ext: string, buf: Buffer
 }
 
 /**
- * Store acquired bytes for a print and (when they pass the gate) parse them.
+ * Store acquired bytes for a print and (when they are eligible) parse them.
  *
- * Idempotent on (print, kind, sha256): re-dropping the same file returns the
- * existing document and parses nothing. A gate failure is recorded, never
- * thrown — the caller acquired a real document, it simply isn't this event's.
+ * Idempotent on CONTENT (089/M13): the same bytes down a second road return
+ * the same document id, add a road, and parse nothing. A gate failure is
+ * recorded, never thrown — the caller acquired a real document, it simply
+ * isn't this event's.
  *
  * Returns its VERDICT, not just an id (final fix wave). The outcomes are
  * genuinely different things to tell the desk — the sheet just moved, the
  * document was refused as another issuer's/period's, these exact bytes were
- * already in hand, or the parse is waiting on the process that owns the
- * watcher — and only this function knows which happened. Callers that guessed
- * from `isNew` alone had to say something vague and permanent ("parsing now…")
- * that no later poll could ever correct.
- *
- * `parsed` means the document passed the gate and its parse was awaited. A
- * parse that then failed inside the pipeline leaves the document unparsed for
- * a later retry and reports itself through the `pipeline` source note, which
- * the panel's ladder already renders.
+ * already in hand, the parse is waiting on the process that owns the watcher,
+ * the file is not readable at all, or the parse ran and failed — and only this
+ * function knows which happened. Callers that guessed from `isNew` alone had
+ * to say something vague and permanent ("parsing now…") that no later poll
+ * could ever correct.
  */
 export async function ingestDocument(
   db: Database.Database,
@@ -1214,31 +1232,125 @@ export async function ingestDocument(
   const print = readPrintRow(db, printId);
   if (!print) throw new Error(`print-watch: print ${printId} not found`);
 
+  // A REFUSAL is not a rejection (plan M11). A rejected document is real
+  // evidence of what a road served and is kept; bytes we cannot read at all
+  // are not a document, so nothing is stored and there is no id to return.
+  const shape = classifyBytes(buf);
+  if (shape === "binary") {
+    return {
+      docId: 0,
+      isNew: false,
+      outcome: "refused",
+      rejectReason: "binary content — print-watch reads HTML, plain text, or PDF",
+    };
+  }
+  if (shape === "pdf") return refusePdf();
+
+  const sha = sha256Hex(buf);
+  const ext = shape === "html" ? "html" : "txt";
   const text = buf.toString("utf8");
-  const sha = sha256(buf);
-  const ext = looksLikeHtml(text) ? "html" : "txt";
   const bytesPath = await writeBytes(printId, sha, ext, buf);
+  return finishIngest(db, print, kind, source, url, buf, {
+    bytesPath,
+    text,
+    gateCtx: gateContextFor(db, print),
+  });
+}
 
-  const verdict = validateDocForEvent(text, gateContextFor(db, print, kind));
-  const storedSource = verdict.ok ? source : `${REJECTED_PREFIX}${verdict.reason}`;
-  const { id, isNew } = insertDocument(db, printId, kind, storedSource, url, sha, bytesPath);
+/**
+ * PDF acquisition (poppler text + a native reading, provisionally a weak pair)
+ * is the next slice-B task. Until it lands a PDF is REFUSED rather than
+ * stored: a document nothing can read would sit on the sheet forever, stamped
+ * `parsed` with no candidates, which is worse than no document at all.
+ */
+function refusePdf(): IngestResult {
+  return {
+    docId: 0,
+    isNew: false,
+    outcome: "refused",
+    rejectReason:
+      "PDFs aren't readable here yet — open the release page and save it as HTML, then drop that file instead.",
+  };
+}
 
-  if (!verdict.ok) {
-    statusFor(printId).sources.gate = `doc ${id} rejected: ${verdict.reason}`;
-    return { docId: id, isNew, outcome: "rejected", rejectReason: verdict.reason };
+/**
+ * The shared tail of every ingest: record the delivery (one transaction —
+ * document by content, road by (kind, source), both verdicts), then parse only
+ * if a parse is actually owed.
+ *
+ * The bytes are on disk BEFORE this runs, on purpose: `recordDelivery` holds a
+ * write lock and must never wait on a syscall, and a rolled-back transaction
+ * must never leave a `bytes_path` pointing at a file that was never written.
+ */
+async function finishIngest(
+  db: Database.Database,
+  print: PrintRow,
+  kind: PrintWatchDocKind,
+  source: string,
+  url: string | null,
+  buf: Buffer,
+  input: DeliveryInput,
+): Promise<IngestResult> {
+  const delivery = recordDelivery(db, print.id, kind, source, url, buf, input);
+  const status = statusFor(print.id);
+
+  if (!delivery.contentVerdict.ok) {
+    status.sources.gate = `doc ${delivery.id} rejected: ${delivery.contentVerdict.reason}`;
+    return {
+      docId: delivery.id,
+      isNew: delivery.isNew,
+      outcome: "rejected",
+      rejectReason: delivery.contentVerdict.reason,
+    };
+  }
+  if (!delivery.eligible) {
+    // Content is this event's, but no road we trust has carried it yet — an
+    // IR newsroom post that names no quarter is the live case. The same bytes
+    // down an accepting road (a drop) make it eligible with no re-store.
+    const reason = delivery.roadVerdict.ok ? "no accepting road yet" : delivery.roadVerdict.reason;
+    status.sources.gate = `doc ${delivery.id} road ${kind} rejected: ${reason}`;
+    return { docId: delivery.id, isNew: delivery.isNew, outcome: "rejected", rejectReason: reason };
+  }
+  if (!delivery.needsParse) {
+    return { docId: delivery.id, isNew: delivery.isNew, outcome: "duplicate" };
   }
 
-  if (!isNew) return { docId: id, isNew, outcome: "duplicate" };
+  // A parse is genuinely owed for THIS document right now — it is new, it just
+  // became eligible, or a person re-delivered it after its budget ran out (the
+  // only case `recordDelivery` re-queues). In every one of those the durable
+  // budget is what governs; the process-local retry SPACING is a cool-down on a
+  // document nobody asked about again, and a fresh delivery IS that ask. Left
+  // in place it would answer a person's "try it again" with a 30-second no-op.
+  parseAttempts.delete(delivery.id);
 
-  advanceState(db, printId, "acquired");
-  const drain = await runQueue(db, printId);
+  advanceState(db, print.id, "acquired");
+  const drain = await runQueue(db, print.id);
   // The drain can END without parsing: another process owns the watcher, so
   // the parse belongs to it, not us (fix wave, finding C). Reporting that as
   // `parsed` told the desk the sheet had moved when it had not — and for an
   // expired or TAS print there is no loop coming back to correct it, which is
   // why ensurePrintWatch now drains those explicitly.
-  if (drain === "lease_blocked") return { docId: id, isNew, outcome: "queued" };
-  return { docId: id, isNew, outcome: "parsed" };
+  if (drain === "lease_blocked") {
+    return { docId: delivery.id, isNew: delivery.isNew, outcome: "queued" };
+  }
+
+  // M15: report the DURABLE state of this document after the drain — never the
+  // drain's return value, which only says the pass ran. The pass may have
+  // parsed a DIFFERENT document, or this one may have failed while another
+  // worker's claim was live.
+  const after = getDocument(db, delivery.id);
+  if (after?.parse_state === "parsed") {
+    return { docId: delivery.id, isNew: delivery.isNew, outcome: "parsed" };
+  }
+  if (after?.parse_state === "claimed") {
+    return { docId: delivery.id, isNew: delivery.isNew, outcome: "queued" };
+  }
+  return {
+    docId: delivery.id,
+    isNew: delivery.isNew,
+    outcome: "parse_failed",
+    rejectReason: after?.parse_last_error ?? "the parse did not complete",
+  };
 }
 
 /**
@@ -1281,27 +1393,63 @@ function runQueue(db: Database.Database, printId: number): Promise<DrainOutcome>
   return enqueueWrite(printId, () => drainQueue(db, printId));
 }
 
-/** Is this document eligible for a parse attempt right now? Rejected docs
- *  never are; a doc that just failed waits out PARSE_RETRY_SPACING_MS so its
- *  budget isn't spent on three ticks of the same transient failure. */
+/**
+ * Is this document worth a parse attempt right now?
+ *
+ * The BUDGET is read off the row (M15): `claimDocumentParse` increments
+ * `parse_attempts` durably, so a crash, a restart or a takeover by another
+ * process can never hand a document a fresh five attempts. Only the SPACING
+ * — "not again for 30s" — is process-local, because it exists to stop one
+ * transient failure (a model 529, a half-written file) from burning the whole
+ * budget inside half a minute, and a brand-new process has no reason to
+ * inherit another one's cool-down.
+ *
+ * Ineligible documents (gate-rejected, no accepting road) never reach here:
+ * `listParseQueue` filters them in SQL.
+ */
 function parseEligible(doc: DocumentRow, nowMs: number): boolean {
-  if (doc.source.startsWith(REJECTED_PREFIX)) return false;
+  if (doc.parse_attempts >= MAX_PARSE_ATTEMPTS) return false;
   const record = parseAttempts.get(doc.id);
   if (!record) return true;
-  if (record.attempts >= MAX_PARSE_ATTEMPTS) return false;
   return nowMs - record.lastAtMs >= PARSE_RETRY_SPACING_MS;
+}
+
+/**
+ * Claims older than PARSE_CLAIM_STALE_MS belong to a worker that died holding
+ * one. The takeover decision lives HERE rather than in the store so there is
+ * exactly ONE place that decides a claim is abandoned — `listParseQueue` stays
+ * the honest "nobody holds this" read. Eligibility (content accepted, ≥1
+ * accepted road) is repeated because a stale claim is worth nothing on a
+ * document the gate has since withdrawn.
+ */
+function listStaleClaims(db: Database.Database, printId: number, nowMs: number): DocumentRow[] {
+  return db
+    .prepare(
+      `SELECT d.* FROM print_watch_documents d
+        WHERE d.print_id = ? AND d.parse_state = 'claimed'
+          AND datetime(d.parse_claimed_at) < datetime(?)
+          AND d.gate_verdict = 'accepted'
+          AND EXISTS (SELECT 1 FROM print_watch_document_roads r
+                       WHERE r.document_id = d.id AND r.road_verdict = 'accepted')
+        ORDER BY d.id`,
+    )
+    .all(printId, new Date(nowMs - PARSE_CLAIM_STALE_MS).toISOString()) as DocumentRow[];
 }
 
 async function drainQueue(db: Database.Database, printId: number): Promise<DrainOutcome> {
   const attemptedThisPass = new Set<number>();
   for (;;) {
     const nowMs = seams.now();
-    const pending = listUnparsedDocuments(db, printId).filter(
+    const pending = listParseQueue(db, printId).filter(
       (doc) => !attemptedThisPass.has(doc.id) && parseEligible(doc, nowMs),
     );
-    if (pending.length === 0) return "drained";
+    const stale = listStaleClaims(db, printId, nowMs).filter(
+      (doc) => !attemptedThisPass.has(doc.id) && parseEligible(doc, nowMs),
+    );
+    const candidates = [...pending, ...stale];
+    if (candidates.length === 0) return "drained";
 
-    const doc = pending[0];
+    const doc = candidates[0];
     attemptedThisPass.add(doc.id);
 
     // Don't even spend a model call — let alone an attempt — when this
@@ -1311,15 +1459,36 @@ async function drainQueue(db: Database.Database, printId: number): Promise<Drain
       return "lease_blocked";
     }
 
-    const record = parseAttempts.get(doc.id);
-    parseAttempts.set(doc.id, { attempts: (record?.attempts ?? 0) + 1, lastAtMs: nowMs });
+    const token = crypto.randomUUID();
+    if (!claimDocumentParse(db, doc.id, token, nowMs)) continue; // another worker got there first
+
+    // The claim incremented `parse_attempts` durably; read the count BACK
+    // rather than adding one to the snapshot we listed — between the two,
+    // another process may have taken an attempt of its own and handed the row
+    // back. The in-memory map now carries only the retry SPACING.
+    const attempts = getDocument(db, doc.id)?.parse_attempts ?? doc.parse_attempts + 1;
+    parseAttempts.set(doc.id, { attempts, lastAtMs: nowMs });
+
+    let pass: ParsePassResult;
     try {
-      await processDocument(db, printId, doc);
+      pass = await processDocument(db, printId, doc);
     } catch (err) {
-      // The document stays unparsed on purpose — a later tick retries it,
-      // spaced out, up to MAX_PARSE_ATTEMPTS.
-      statusFor(printId).sources.pipeline = `doc ${doc.id}: ${errText(err)}`;
+      const message = errText(err);
+      statusFor(printId).sources.pipeline = `doc ${doc.id}: ${message}`;
+      pass = { state: "queued", error: message };
     }
+    // A pass that did not parse and has spent the budget is booked `failed`
+    // (M15) — NOT left `queued` at five attempts, which no retry would ever
+    // pick up again and which `recordDelivery` would refuse to re-queue on a
+    // person's re-delivery. `failed` is the state a human can clear.
+    const terminal = pass.state !== "parsed" && attempts >= MAX_PARSE_ATTEMPTS;
+    finalizeDocumentParse(
+      db,
+      doc.id,
+      token,
+      pass.state === "parsed" ? "parsed" : terminal ? "failed" : "queued",
+      pass.error,
+    );
   }
 }
 
@@ -1338,9 +1507,7 @@ function drainStrandedPrints(db: Database.Database, printIds: Iterable<number>):
   for (const printId of printIds) {
     let parsable = false;
     try {
-      parsable = listUnparsedDocuments(db, printId).some(
-        (doc) => !doc.source.startsWith(REJECTED_PREFIX),
-      );
+      parsable = hasParsableDocuments(db, printId);
     } catch {
       // A failed read here must never break the sweep.
       continue;
@@ -1355,12 +1522,16 @@ function tag(
   docId: number,
   representation: TaggedCandidate["representation"],
   weakPair: boolean,
+  /** Only PDF readings carry one today — written ONLY when present, so a
+   *  non-PDF candidate's JSON keeps exactly the shape it always had. */
+  pairNote?: TaggedCandidate["pair_note"],
 ): TaggedCandidate[] {
   return candidates.map((c) => ({
     ...c,
     doc_id: docId,
     representation,
     weak_pair: weakPair,
+    ...(pairNote ? { pair_note: pairNote } : {}),
   }));
 }
 
@@ -1411,40 +1582,71 @@ function writeLines(
   return true;
 }
 
+/**
+ * What one parse pass produced, for the CAS finalize. `parsed` stamps the
+ * document; `queued` returns it with a durable reason, which is what the panel
+ * and the next attempt both read.
+ */
+type ParsePassResult =
+  | { state: "parsed"; error: null }
+  | { state: "queued"; error: string };
+
 async function processDocument(
   db: Database.Database,
   printId: number,
   doc: DocumentRow,
-): Promise<void> {
+): Promise<ParsePassResult> {
   const print = readPrintRow(db, printId);
-  if (!print) return;
+  if (!print) return { state: "queued", error: "the print row vanished mid-parse" };
 
-  const raw = await fsp.readFile(doc.bytes_path, "utf8");
   const { contracts } = compileContracts(db, print.event_id, print.symbol);
 
   const fresh: TaggedCandidate[] = [];
-  if (doc.bytes_path.endsWith(".html")) {
-    // Two genuinely different readings of the same bytes — the pair reconcile
-    // treats as independent (different representation, weak_pair false).
-    const repA = await seams.extractCandidates(contracts, htmlToTablesRepresentation(raw));
-    fresh.push(...tag(repA, doc.id, "repA", false));
-    const repB = await seams.extractCandidates(contracts, htmlToRawText(raw));
-    fresh.push(...tag(repB, doc.id, "repB", false));
+  if (doc.bytes_path.endsWith(".pdf")) {
+    // Unreachable while `refusePdf` turns every PDF away at ingest — and a
+    // THROW rather than an empty reading on purpose: a document that "parsed"
+    // to zero candidates would be stamped `parsed` and never looked at again.
+    throw new Error("print-watch cannot read PDF documents yet");
   } else {
-    // Plain text has ONE reading. Parsing it twice with the same prompt would
-    // be a correlated pair, so it gets a single call and can only ever green
-    // by agreeing with ANOTHER document (reconcile rule 3).
-    const only = await seams.extractCandidates(contracts, raw);
-    fresh.push(...tag(only, doc.id, "repB", false));
+    const raw = await fsp.readFile(doc.bytes_path, "utf8");
+    if (doc.bytes_path.endsWith(".html")) {
+      // Two genuinely different readings of the same bytes — the pair reconcile
+      // treats as independent (different representation, weak_pair false).
+      const repA = await seams.extractCandidates(contracts, htmlToTablesRepresentation(raw));
+      fresh.push(...tag(repA, doc.id, "repA", false));
+      const repB = await seams.extractCandidates(contracts, htmlToRawText(raw));
+      fresh.push(...tag(repB, doc.id, "repB", false));
+    } else {
+      // Plain text has ONE reading. Parsing it twice with the same prompt would
+      // be a correlated pair, so it gets a single call and can only ever green
+      // by agreeing with ANOTHER document (reconcile rule 3).
+      const only = await seams.extractCandidates(contracts, raw);
+      fresh.push(...tag(only, doc.id, "repB", false));
+    }
+  }
+
+  // A CLAIM OUTLIVES A GATE FLIP (Task 8 handoff note 2). We have been at the
+  // model for up to a few minutes; in that window a corrected event date could
+  // have re-fingerprinted the gate into a rejection, or the last accepting
+  // road could have been withdrawn — and `recordDelivery` would already have
+  // RETRACTED this document's earlier evidence. Writing now would re-green
+  // exactly what was just retracted, so drop the reading instead. The document
+  // stays `queued`, which is invisible to the queue while it is ineligible and
+  // parses again by itself the moment a road accepts it.
+  const still = getDocument(db, doc.id);
+  if (!still || still.gate_verdict !== "accepted" || !anyRoadAccepted(db, doc.id)) {
+    const note = `doc ${doc.id}: the gate withdrew this document mid-parse — reading dropped`;
+    statusFor(printId).sources.pipeline = note;
+    return { state: "queued", error: "the gate withdrew this document mid-parse" };
   }
 
   const existing = collectCandidates(db, printId).filter((c) => c.doc_id !== doc.id);
   const written = writeLines(db, printId, print.event_id, print.symbol, [...existing, ...fresh]);
   // Only stamp the document parsed if its candidates actually landed —
   // stamping a refused write would strand the document forever.
-  if (!written) return;
-  markDocumentParsed(db, doc.id);
+  if (!written) return { state: "queued", error: "sheet write refused — lease lost" };
   advanceState(db, printId, "parsed");
+  return { state: "parsed", error: null };
 }
 
 /**

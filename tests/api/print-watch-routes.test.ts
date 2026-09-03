@@ -223,6 +223,68 @@ describe("GET /api/print-watch/status", () => {
     });
   });
 
+  it("GET /status carries documentRoads per document alongside the kind map", async () => {
+    const printId = upsertPrint(hoisted.db, 507, "ACME", "2026-08-26", "16:15");
+    upsertLines(hoisted.db, printId, [testLine("eps_adj_q", "conflict")]);
+    // One document, TWO roads (089/M13 — identity is content): the kind map can
+    // only name one of them, which is exactly why the roads ride along.
+    const shared = "ACME reports Q2 2026 results (the release itself).";
+    seedDelivery(
+      hoisted.db,
+      printId,
+      "edgar-ex99",
+      "edgar:0001-000123:ex99-1.htm",
+      "https://sec.gov/x",
+      shared,
+      "/tmp/shared.html",
+    );
+    seedDelivery(
+      hoisted.db,
+      printId,
+      "user-drop",
+      "user-drop:release.html",
+      null,
+      shared,
+      "/tmp/shared.html",
+    );
+    seedDelivery(
+      hoisted.db,
+      printId,
+      "user-drop",
+      "user-drop:other.html",
+      null,
+      "ACME reports Q2 2026 results (a second, different document).",
+      "/tmp/other.html",
+    );
+
+    const mod = await import("@/app/api/print-watch/status/route");
+    const res = await mod.GET();
+    const body = (await res.json()) as {
+      data: {
+        prints: Array<{
+          documents: Record<string, string>;
+          documentRoads: Record<string, Array<{ kind: string; source: string; verdict: string }>>;
+        }>;
+      };
+    };
+
+    const print = body.data.prints[0];
+    expect(Object.keys(print.documents)).toHaveLength(2);
+    for (const docId of Object.keys(print.documents)) {
+      // Every document's kind is one of its roads, and these roads are trusted.
+      expect(print.documentRoads[docId]).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: print.documents[docId], verdict: "accepted" }),
+        ]),
+      );
+    }
+    // The shared document carries BOTH roads; the other carries one.
+    const roadCounts = Object.values(print.documentRoads)
+      .map((roads) => roads.length)
+      .sort();
+    expect(roadCounts).toEqual([1, 2]);
+  });
+
   it("omits prints that are no longer active (disarmed)", async () => {
     const printId = upsertPrint(hoisted.db, 502, "WXYZ", "2026-08-20", "08:00");
     setPrintState(hoisted.db, printId, "disarmed");
