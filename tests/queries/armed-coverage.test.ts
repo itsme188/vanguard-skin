@@ -34,11 +34,18 @@ function getAccount(name: string): number {
   return row.id;
 }
 
-function seedEvent(symbol: string, date: string, extra: Partial<{ superseded: number }> = {}): number {
+function seedEvent(
+  symbol: string,
+  date: string,
+  extra: Partial<{ superseded: number; tag: string }> = {},
+): number {
+  const key = extra.tag
+    ? `manual:${symbol}:${date}:earnings:${extra.tag}`
+    : `manual:${symbol}:${date}:earnings`;
   const r = db.prepare(
     `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol, superseded)
      VALUES ('manual','earnings',?,?,?,?,?)`,
-  ).run(date, `${symbol} earnings`, `manual:${symbol}:${date}:earnings`, symbol, extra.superseded ?? 0);
+  ).run(date, `${symbol} earnings`, key, symbol, extra.superseded ?? 0);
   return Number(r.lastInsertRowid);
 }
 
@@ -105,5 +112,53 @@ describe("armed coverage (spec §4.1)", () => {
     const detailed = getSymbolStatusDetailed(db, ["ACME"], { today: "2026-09-02" });
     expect(detailed.ACME).toEqual({ status: "held", reasons: { held: true, watchlist: false, armed: true } });
     expect(getSymbolStatus(db, ["ACME"], { today: "2026-09-02" })).toEqual({ ACME: "held" });
+  });
+});
+
+// R11 (fix round 1): the sweep's cross-source dedupe (finnhub-first, then
+// lowest id) and the cockpit's dedupe (finnhub-first, then newest
+// created_at) can pick DIFFERENT twins of one (symbol, event_date) print —
+// arming the twin the cockpit shows must still cover the twin the sweep
+// acts on. coveredForEvents' armed leg is cluster-aware: an event id is
+// covered when it, OR any unsuperseded earnings row sharing its
+// (UPPER(symbol), event_date), carries a worksheet flag. getArmedEventIds /
+// isEventArmed are untouched — they keep their exact per-id meaning.
+describe("R11: cluster-aware armed coverage (dedupe-twin safety)", () => {
+  it("two unsuperseded twins for ACME on the same date, flag on the higher id only, → BOTH ids are covered", () => {
+    const lower = seedEvent("ACME", "2026-09-10", { tag: "a" }); // e.g. the sweep's pick (lowest id)
+    const higher = seedEvent("ACME", "2026-09-10", { tag: "b" }); // e.g. the cockpit's pick (armed here)
+    expect(higher).toBeGreaterThan(lower);
+    armWorksheet(db, higher);
+
+    expect(isEventArmed(db, lower)).toBe(false); // per-id meaning is unchanged
+    expect(isEventArmed(db, higher)).toBe(true);
+
+    expect(
+      coveredForEvents(db, [
+        { symbol: "ACME", eventId: lower },
+        { symbol: "ACME", eventId: higher },
+      ]),
+    ).toEqual(new Set([lower, higher]));
+    expect(coveredForEvent(db, "ACME", lower)).toBe(true);
+    expect(coveredForEvent(db, "ACME", higher)).toBe(true);
+  });
+
+  it("a SUPERSEDED twin does not confer coverage onto its unsuperseded sibling", () => {
+    const live = seedEvent("ACME", "2026-09-10", { tag: "a" }); // unsuperseded, no flag itself
+    const superseded = seedEvent("ACME", "2026-09-10", { tag: "b", superseded: 1 }); // flagged, but superseded
+    armWorksheet(db, superseded);
+
+    expect(coveredForEvents(db, [{ symbol: "ACME", eventId: live }])).toEqual(new Set());
+    expect(coveredForEvent(db, "ACME", live)).toBe(false);
+  });
+
+  it("a same-symbol event on a DIFFERENT date is not covered by the flag (clustering is date-scoped)", () => {
+    const thisQuarter = seedEvent("ACME", "2026-09-10"); // unarmed
+    const nextQuarter = seedEvent("ACME", "2026-12-10"); // armed, different date
+    armWorksheet(db, nextQuarter);
+
+    expect(coveredForEvents(db, [{ symbol: "ACME", eventId: thisQuarter }])).toEqual(new Set());
+    expect(coveredForEvent(db, "ACME", thisQuarter)).toBe(false);
+    expect(coveredForEvent(db, "ACME", nextQuarter)).toBe(true);
   });
 });

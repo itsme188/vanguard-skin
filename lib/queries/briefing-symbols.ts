@@ -192,8 +192,24 @@ export function getSymbolStatus(
   return out;
 }
 
-/** Event-scoped coverage (spec §4.1 consumer matrix): held or watchlist
- *  (family-aware) OR isEventArmed(eventId). Returns the covered event ids. */
+/**
+ * Event-scoped coverage (spec §4.1 consumer matrix): held or watchlist
+ * (family-aware) OR the event's ARMED CLUSTER.
+ *
+ * The armed cluster is CLUSTER-AWARE, not just per-id (R11, 2026-09-02):
+ * the sweep's cross-source dedupe (finnhub-first, then lowest id) and the
+ * cockpit's dedupe (finnhub-first, then newest created_at) can each pick a
+ * DIFFERENT twin of the same (symbol, event_date) print when more than one
+ * vendor row exists for it. Arming the twin the cockpit shows must still
+ * cover the twin the sweep acts on, or an armed print silently gets
+ * nothing. So an event id is covered here when EITHER it, OR any other
+ * unsuperseded earnings row sharing its (UPPER(symbol), event_date),
+ * carries an `earnings_worksheet_flags` row. `getArmedEventIds` /
+ * `isEventArmed` are unchanged by this — they keep their exact per-id
+ * meaning; this cluster widening lives only here.
+ *
+ * Returns the covered event ids.
+ */
 export function coveredForEvents(
   db: Database.Database,
   rows: Array<{ symbol: string | null; eventId: number }>,
@@ -209,14 +225,47 @@ export function coveredForEvents(
     ),
   );
   const detailed = getSymbolStatusDetailed(db, symbols);
-  const armed = getArmedEventIds(
-    db,
-    rows.map((r) => r.eventId),
-  );
+  const eventIds = rows.map((r) => r.eventId);
+  const armed = getArmedEventIds(db, eventIds);
+  const clusterArmed = getClusterArmedEventIds(db, eventIds);
   for (const r of rows) {
     const reasons = r.symbol ? detailed[r.symbol.toUpperCase()]?.reasons : undefined;
-    if ((reasons && (reasons.held || reasons.watchlist)) || armed.has(r.eventId)) out.add(r.eventId);
+    if (
+      (reasons && (reasons.held || reasons.watchlist)) ||
+      armed.has(r.eventId) ||
+      clusterArmed.has(r.eventId)
+    )
+      out.add(r.eventId);
   }
+  return out;
+}
+
+/**
+ * R11: an event id is CLUSTER-armed when any unsuperseded earnings row
+ * sharing its (UPPER(symbol), event_date) — including itself — carries an
+ * `earnings_worksheet_flags` row. One batched self-join over the input ids
+ * (no timestamp comparison needed here — event_date is a plain YYYY-MM-DD
+ * column, not a datetime — but the COALESCE(superseded,0)=0 idiom used
+ * elsewhere in this file still applies to the twin).
+ */
+function getClusterArmedEventIds(db: Database.Database, eventIds: number[]): Set<number> {
+  const out = new Set<number>();
+  if (eventIds.length === 0) return out;
+  const placeholders = eventIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT ce.id AS eventId
+         FROM calendar_events ce
+         JOIN calendar_events twin
+           ON UPPER(twin.symbol) = UPPER(ce.symbol)
+          AND twin.event_date = ce.event_date
+          AND twin.event_type = 'earnings'
+          AND COALESCE(twin.superseded, 0) = 0
+         JOIN earnings_worksheet_flags f ON f.event_id = twin.id
+        WHERE ce.id IN (${placeholders})`,
+    )
+    .all(...eventIds) as { eventId: number }[];
+  for (const r of rows) out.add(r.eventId);
   return out;
 }
 
