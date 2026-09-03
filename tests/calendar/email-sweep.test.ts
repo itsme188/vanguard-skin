@@ -1390,20 +1390,51 @@ describe("prepare pass for armed events (v2 slice A)", () => {
     expect(runs).toEqual([id]);
   });
 
-  it("a throwing prepare pass warns but never fails the sweep", async () => {
+  /**
+   * Fix round 1, item 1: a fingerprint that throws is the STEP's failure, not
+   * the pass's. Before the fix it rejected runPrepareSteps, the sweep swallowed
+   * it, and EVERY step on EVERY armed event got nothing that tick — forever,
+   * with no row touched and nothing the attempt cap could retire.
+   */
+  it("a step whose fingerprint throws fails only its own row; other steps and events still run", async () => {
     registerPrepareStep("boom", {
       fingerprint: () => {
         throw new Error("fingerprint blew up");
       },
       run: async () => ({ status: "done" }),
     });
-    seedArmed("ACME");
+    const healthyRuns: number[] = [];
+    registerPrepareStep("ok_step", {
+      fingerprint: () => "fp",
+      run: async (_db, eventId) => {
+        healthyRuns.push(eventId);
+        return { status: "done" };
+      },
+    });
+    const a = seedArmed("ACME");
+    const b = seedArmed("BETA");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const summary = await runEarningsEmailSweep(db, { now: NOW });
 
-    expect(summary.prepared).toEqual({ ran: 0, done: 0, pending: 0, failed: 0, skipped: 0 });
     expect(summary.swept).toBe(0);
+    // Two events x (one healthy invocation + one fingerprint failure).
+    expect(summary.prepared).toEqual({ ran: 2, done: 2, pending: 0, failed: 2, skipped: 0 });
+    expect(healthyRuns.sort((x, y) => x - y)).toEqual([a, b].sort((x, y) => x - y));
+
+    const stepRow = (eventId: number, step: string) =>
+      db
+        .prepare(
+          `SELECT status, attempts, last_error FROM earnings_prepare_steps WHERE event_id = ? AND step = ?`,
+        )
+        .get(eventId, step) as { status: string; attempts: number; last_error: string | null };
+
+    for (const id of [a, b]) {
+      expect(stepRow(id, "boom")).toMatchObject({ status: "failed", attempts: 1 });
+      expect(stepRow(id, "boom").last_error).toMatch(/fingerprint blew up/);
+      expect(stepRow(id, "ok_step")).toMatchObject({ status: "done", attempts: 1 });
+    }
+    expect(warn.mock.calls.some((c) => c.join(" ").includes("fingerprint blew up"))).toBe(true);
     warn.mockRestore();
   });
 });
