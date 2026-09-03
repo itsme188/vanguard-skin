@@ -13,6 +13,7 @@ import {
   hasBoundedObservations,
   applyResolvedReleaseTimeToUpcomingEvents,
   isSuspectAmcCallTime,
+  checkUserReleaseTimeAgainstUpcomingSlot,
 } from "@/lib/earnings/wire-times";
 import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 
@@ -31,6 +32,13 @@ function seedEvent(symbol: string, date: string): number {
     )
     .run(date, symbol, `${symbol} earnings`, `finnhub:${symbol}:${date}`, date)
     .lastInsertRowid as number;
+}
+
+/** seedEvent + an explicit event_time (drives deriveEarningsSlot). */
+function seedEventWithTime(symbol: string, date: string, eventTime: string): number {
+  const id = seedEvent(symbol, date);
+  db.prepare("UPDATE calendar_events SET event_time = ? WHERE id = ?").run(eventTime, id);
+  return id;
 }
 
 describe("recordWireObservation", () => {
@@ -392,5 +400,89 @@ describe("resolveSymbolReleaseTime — suspect AMC call-time rows", () => {
         symbol: "RBRK",
       }),
     ).toBe("16:15");
+  });
+});
+
+/**
+ * QA finding today-earningshub-release-time--save-stamps-slot-default-summary-contradicts-input
+ * (2026-09-03): the route wrote a user override whose side-of-noon didn't
+ * match the upcoming event's BMO/AMC slot; resolveSymbolReleaseTime's
+ * sameSideOfNoon guard then silently ignored it, so the write happened but
+ * the value was never used — the resolver fell through to the slot default
+ * instead, while the previously-verified web_verified row was already gone
+ * (overwritten by the single-row-per-symbol upsert). This check runs BEFORE
+ * the write so the route can reject the mismatch instead of accepting a
+ * value the cascade will never honor.
+ */
+describe("checkUserReleaseTimeAgainstUpcomingSlot", () => {
+  const today = "2026-09-03";
+
+  it("ok when there is no upcoming event for the symbol", () => {
+    expect(
+      checkUserReleaseTimeAgainstUpcomingSlot(db, "NOPE", "07:30", { today }),
+    ).toEqual({ ok: true });
+  });
+
+  it("ok when the entered time is on the same side of noon as the event's slot", () => {
+    seedEventWithTime("XMTR", "2099-01-01", "AMC");
+    expect(
+      checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "16:20", { today }),
+    ).toEqual({ ok: true });
+  });
+
+  it("not-ok: a before-open time entered against an AMC-slotted upcoming event", () => {
+    const id = seedEventWithTime("XMTR", "2099-01-01", "AMC");
+    expect(
+      checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "07:30", { today }),
+    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id });
+  });
+
+  it("not-ok: an after-close time entered against a BMO-slotted upcoming event", () => {
+    const id = seedEventWithTime("WIX", "2099-01-01", "BMO");
+    expect(
+      checkUserReleaseTimeAgainstUpcomingSlot(db, "WIX", "16:15", { today }),
+    ).toEqual({ ok: false, slot: "bmo", eventDate: "2099-01-01", eventId: id });
+  });
+
+  it("ok when the upcoming event is TAS (no slot to violate, mirrors resolveEarningsReleaseTime)", () => {
+    seedEventWithTime("DOCN", "2099-01-01", "TAS");
+    expect(
+      checkUserReleaseTimeAgainstUpcomingSlot(db, "DOCN", "07:30", { today }),
+    ).toEqual({ ok: true });
+  });
+
+  it("ok when the upcoming event's slot can't be derived (no event_time, no raw_json hour)", () => {
+    seedEvent("EARL", "2099-01-01"); // event_time null, raw_json null
+    expect(
+      checkUserReleaseTimeAgainstUpcomingSlot(db, "EARL", "07:30", { today }),
+    ).toEqual({ ok: true });
+  });
+
+  it("walks issuer siblings (a GOOGL check finds GOOG's upcoming event)", () => {
+    const id = seedEventWithTime("GOOG", "2099-01-01", "AMC");
+    expect(
+      checkUserReleaseTimeAgainstUpcomingSlot(db, "GOOGL", "07:30", { today }),
+    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id });
+  });
+
+  it("picks the NEAREST upcoming event when multiple future events exist", () => {
+    seedEventWithTime("XMTR", "2099-06-01", "BMO"); // farther out — would be ok:true
+    const id = seedEventWithTime("XMTR", "2099-01-01", "AMC"); // nearer — not-ok
+    expect(
+      checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "07:30", { today }),
+    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id });
+  });
+
+  it("skips an already-enriched/actualed event, same predicate as applyResolvedReleaseTimeToUpcomingEvents", () => {
+    const id = seedEventWithTime("XMTR", "2099-01-01", "AMC");
+    db.prepare("UPDATE calendar_events SET actual_value = 'EPS 1.00' WHERE id = ?").run(id);
+    expect(
+      checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "07:30", { today }),
+    ).toEqual({ ok: true });
+  });
+
+  it("survives a DB without calendar_events (minimal test DB) → ok:true", () => {
+    const bare = new Database(":memory:");
+    expect(checkUserReleaseTimeAgainstUpcomingSlot(bare, "XMTR", "07:30")).toEqual({ ok: true });
   });
 });

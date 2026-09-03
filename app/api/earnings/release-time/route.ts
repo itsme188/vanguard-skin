@@ -7,6 +7,7 @@ import {
   getSymbolReleaseTimeRow,
   getObservationsForFamily,
   applyResolvedReleaseTimeToUpcomingEvents,
+  checkUserReleaseTimeAgainstUpcomingSlot,
   EARLIEST_PLAUSIBLE_ET,
   LATEST_PLAUSIBLE_ET,
   OBSERVATION_LOOKBACK_DAYS,
@@ -26,6 +27,17 @@ export const dynamic = "force-dynamic";
  * re-resolve release_time on the symbol's untouched upcoming earnings rows via
  * applyResolvedReleaseTimeToUpcomingEvents so the chip's own event reflects
  * the change without waiting for the next enrichment tick.
+ *
+ * Before writing a non-null releaseTime, checkUserReleaseTimeAgainstUpcomingSlot
+ * rejects it with 409 { code: "slot_mismatch" } when its side of noon
+ * disagrees with the symbol's nearest upcoming untouched event's derived
+ * BMO/AMC slot. Without this, resolveSymbolReleaseTime's sameSideOfNoon
+ * guard would silently ignore the wrong-side write and the resolver would
+ * fall through to the slot default — the write happens, the value is never
+ * used, and any prior web_verified row is already gone (overwritten by the
+ * single-row-per-symbol upsert). No force bypass: a forced wrong-side row
+ * would still be ignored downstream, which is the exact contradiction this
+ * guard exists to prevent.
  *
  * Thin — validation + composition only; the cascade semantics live in
  * lib/earnings/wire-times.ts. In-app only (no cron auth — same family as
@@ -92,6 +104,25 @@ export async function POST(req: NextRequest) {
         error: `releaseTime must be HH:MM ET between ${EARLIEST_PLAUSIBLE_ET} and ${LATEST_PLAUSIBLE_ET}`,
       },
       { status: 400 },
+    );
+  }
+  const slotCheck = checkUserReleaseTimeAgainstUpcomingSlot(db, symbol, t);
+  if (!slotCheck.ok) {
+    const enteredLabel = t < "12:00" ? "a before-open" : "an after-close";
+    const slotLabel =
+      slotCheck.slot === "bmo" ? "before the open (BMO)" : "after the close (AMC)";
+    const fixLabel = slotCheck.slot === "bmo" ? "a before-open" : "an after-close";
+    return NextResponse.json(
+      {
+        success: false,
+        error:
+          `${t} is ${enteredLabel} time, but the next ${symbol} print on ` +
+          `${slotCheck.eventDate} is slotted ${slotLabel}. Enter ${fixLabel} time, ` +
+          `or correct the event's slot first.`,
+        code: "slot_mismatch",
+        data: { slot: slotCheck.slot, eventDate: slotCheck.eventDate },
+      },
+      { status: 409 },
     );
   }
   upsertSymbolReleaseTime(db, { symbol, releaseTime: t, source: "user", note: "set in app" });
