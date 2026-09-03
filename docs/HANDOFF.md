@@ -3,40 +3,38 @@
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Session date:** 2026-09-02 evening — the user redirected the session-start menu to "an earnings print session". A print was landing as the session opened.
+**Session date:** 2026-09-02 late evening (second session of the day; started ~20:30 ET after the evening redeploy). Focus chosen from the session-start menu: live print v2 — write the slice A and slice B implementation plans, one Codex round each.
 
 ## 1. Goal + exact files changed
 
-**Live incident (SNOW, after-close print, same-day manual add).** The print-watch window was open with zero documents 25 minutes after the wire while EDGAR already showed the 8-K accepted at 16:08 ET. Two independent lane failures, both root-caused and fixed test-first the same evening, pushed as `6628dd4`, `f691229`, `775c0ea`:
+**Planning only — no application code changed.**
 
-- `lib/print-watch/edgar-adapter.ts` + `tests/print-watch/edgar-adapter.test.ts` — the SEC submissions JSON reports a FRESH filing's `acceptanceDateTime` as Eastern wall-clock with a bogus `Z` and normalises it to true UTC at a later rebuild (Dell's 9/1 filing already read `20:10Z` against a `16:10` ET header; Entergy nine minutes after acceptance read Eastern-as-Z). `Date.parse` put the filing four hours early, outside the window. `pollEdgar` now prefilters on both readings without fetching and decides on the filing's own `-index-headers.html` `<ACCEPTANCE-DATETIME>` (always Eastern), which it already fetched for the exhibit list. A first fix that parsed Eastern-only was rejected mid-session after the Dell/Zscaler evidence.
-- `lib/print-watch/watcher.ts`, `lib/queries/earnings-worksheet-flags.ts`, tests — `enrichSecurities` only walks HELD securities, so an unheld armed name had `ib_con_id NULL` and the panel read "DJ: no conId — wire off". The DJ lane now backfills the conId once per print through `enrichSecurities(db, [securityId])` when TWS is up (TWS down is not an attempt), and the coverage note states which of four outcomes happened.
-- `docs/reference/earnings-pipeline.md` — second-live-run note; the print-watch window was also corrected to T−10 (the doc said T−30; the code and v1 spec say T−10).
+- `docs/superpowers/plans/2026-09-02-live-print-v2-slice-a.md` — NEW. Slice A (armed-as-covered, ET day math, consumer matrix, cloud outbox + snapshot v11 + Worker resolver, merge registry, prepare registry + four steps). 12 tasks, TDD, pathspec commits. Written by the session model; Codex round 1 returned REVISE with 19 findings: 17 folded in (marked `[C-n]` in the tasks), 1 partially (finding 8 — Cloudflare KV has no compare-and-swap; the Mac is the single writer and now serialises drains through an in-process mutex; residual documented), 1 disputed and left for the user (finding 1 / deviation D1, below).
+- `docs/superpowers/plans/2026-09-02-live-print-v2-slice-b.md` — NEW. Slice B (`.ts` migration support, document identity rebuild, roads, PDF/URL/IR-page acquisition, registry shim). 16 tasks. Written by a forked parallel pass of the same session with the same context; its own Codex round is folded in ("REVISED after Codex #n" entries in its header).
+- `docs/plans/TODO.md` — contract-id backfill closed (line 69); live print v2 entry updated with both plan paths, the Codex outcomes, and the pending D1 ruling.
+- `docs/HANDOFF.md` — this file.
 
-**Recovery that night:** EX-99.1 fetched from EDGAR and posted to `POST /api/print-watch/drop` with a minted qa session (cookie + `x-csrf-token` + a trusted `Origin` header, which the verifier requires on every POST); parsed in 35 s; all four greened lines matched the release. Nothing was accepted or promoted on the user's behalf.
+**Cross-slice contract** (both plans quote it verbatim): `lib/earnings/event-merge.ts` (`registerEventMergeHandler`, `mergeEarningsEventState` returning `changed`) and `lib/earnings/prepare-armed-event.ts` (`registerPrepareStep`, `stableHash`, `enqueuePrepareSteps`, `runPrepareSteps`, `getPrepareStepRows`). B calls them through `lib/print-watch/registry-shim.ts` until both slices merge; A's `bootstrapEarningsRegistries()` in `lib/earnings/registry-bootstrap.ts` is the composition root, called lazily by the three registry-reading functions (aligned with B's header mechanic M3). Migration numbers: A = 088, B = 089 (`.ts`, discovered through a static registry because the packaged app copies only `*.sql` and has no TypeScript loader).
 
-**Design work:** `docs/superpowers/specs/2026-09-02-live-print-v2-design.md`, rev 4 at `7e38653`, after a brainstorm and three read-only Codex rounds (20 + 21 + 10 findings, all folded in; rounds closed at three by user ruling). Six deployable slices (A armed-as-covered + cloud parity + merge registry + prepare steps; B document identity + PDF/URL/IR-page roads; C go action + window + scheduler; D deterministic facts + verified callouts + first-pass read; E paper sheet + canonical send service; F Today layout + Hub controller + extra metrics). User rulings in §2. `docs/plans/TODO.md` reconciled (`f060214`, `69b58b4`).
+**Live-data action taken (not code):** the one-shot contract-id backfill from TODO 69 was run through the live app's enrich route with a temporary qa session (revoked afterwards): 174 stock/ETF rows without an IBKR contract id were submitted, 141 resolved, 33 returned "No security definition has been found" (dead or delisted tickers, left NULL). No other data was changed.
 
 ## 2. Tests / E2E / deploy result
 
-- `verify:changed` 118 files / 1,118 tests green; full suite 615 files / 7,296 tests green before the fix commits.
-- The Codex round-1 EDGAR fix went red-first (13 of 23 failing for the right reason) then green; the redesign added 5 cases (fresh form, normalised form, header overrules a lucky reading, no-fetch prefilter, header missing) → 28/28. The conId fix added 5 watcher cases + 4 query cases (red-first) → 945 across print-watch and queries.
-- Electron redeploy launched 19:29 ET after the TODO reconciliation hook was satisfied; result recorded in §4 below.
+- No code changed → no test run, no build, no deploy this session. The Electron app deployed at 19:43 ET (previous session) is still the running build; ZS print 9588 stays armed for 9/3 16:05 ET (release time web-verified from the IR PDF, contract id present, name held → DJ wire lane on).
+- The SNOW sheet from the 9/2 print sits in `parsed` with four agreed lines; the calendar row already carries Finnhub actuals matching the sheet's headline pair, so the recap is not blocked on acceptance.
 
 ## 3. Open concerns / rejected approaches / decisions
 
-- **Rejected:** Eastern-only parse of the EDGAR JSON (would miss any filing already normalised to UTC); requiring two independent documents for callouts (wire copy and EDGAR exhibit are the same bytes); a single implementation plan (Codex round 3: A and B were not independent as drawn, and the migration runner is SQL-only).
-- **Decided:** armed = covered, event-scoped, mirrored to the cloud via an outbox + KV delta + snapshot v11; PDF pair weak until a pre-registered ≥50-document holdout passes the v1 gate; Finnhub EPS consensus never fills the adjusted-EPS bogey; A and B built first in parallel worktrees with no shared file, joined by two registries A creates.
-- **Open, for Codex:** the round-3 mechanics were folded into rev 4 without a fourth round; each slice plan gets its own single Codex round, where residual mechanics belong.
-- **Calendar:** DELL's 9/3 row is a stale Finnhub date (the company reported 9/1 AMC; the position was closed 8/19; the verifier skips unheld names by design). Left as-is; TODO item. `findEmailCandidates` derives "today" via UTC — TODO item, slice A fixes it.
+- **Needs the user's ruling — D1 (Codex finding 1):** A stores the Finnhub EPS in a new `earnings_bogeys.eps_consensus_vendor` column and leaves `eps_consensus` NULL on the `'finnhub'` row, because `compileContracts` (`lib/print-watch/contracts.ts`, a slice B/F file) fills the adjusted-EPS expected value from the first non-null `eps_consensus` and the spec rules that A and B share no file. Codex wants the spec's `eps_consensus_basis` column plus a basis filter in `compileContracts` — a three-line edit in B's file. Options: (a) keep D1 (default in the plan); (b) relax the no-shared-file rule for exactly that filter and revert to the spec's column.
+- **Rejected by A's plan:** entrypoint-import bootstrap with a loud throw (replaced by self-bootstrapping registries per B's M3); deleting the shared `repointBogeys` statement from `createDependentRepointer` (it also serves the delete-before-cascade path — Codex finding 4); tombstone retention by event date alone (now event date OR 48 hours after removal — finding 7); fire-and-forget enqueue as the only path (the sweep now reconciles missing step rows every tick — finding 10).
+- **Accepted residuals:** KV ordering under two Mac processes with Worker credentials (unsupported deployment); the secretless E2E sandbox cannot exercise the newsletter model path (proven by unit tests plus one supervised arm after deploy).
+- **Hook note:** the TODO-reconciliation PreToolUse hook blocks any Bash command whose text contains the Electron deploy keyword, including a heredoc appending documentation that merely mentions it. Complied by using the file editor for that append and by committing the reconciled TODO with the plans; nothing was restructured to evade the guard.
 
-## 4. Uncommitted changes / live-process state (post-deploy)
+## 4. Uncommitted changes / live-process state
 
-- Main pushed through `aa3522e` (CLAUDE.md gained the EDGAR acceptance-time invariant at session end). Working tree clean except this file.
-- Electron redeploy DONE 19:43 ET: signed + notarized, `verify-bundle: OK (no leaks, runtime pieces present)`, installed to /Applications, relaunched (server PID 31682), `/login` 200, TWS re-synced 10 positions on launch, print-watch lease re-acquired by the new process. The ZS print (event 1487, print 9588) is armed for 9/3 with a 16:05 ET release and the window opening at 15:35; the wire lane shows armed; the fixed EDGAR lane runs on the new bundle.
-- The `qa`-labelled session minted for the drop and status calls was revoked (0 qa rows remain).
-- Nightly chain: 02:00 smoke, 02:45 deep QA + fixer, unchanged; the fixer's own worktree `../vanguard-skin-qa-fix` remains.
+- Working tree at the time of writing: the two plan files (untracked), `docs/plans/TODO.md` and this file (modified). They are committed together as a docs commit at the end of the session; not pushed unless `/session-end` runs.
+- Electron app running (server PID 31682, :3099); nightly chain unchanged (02:00 smoke, 02:45 deep QA + fixer — the 02:48 run is the first unattended proof of the probe-hang fix). No sandbox servers or dev servers were started this session.
 
 ## 5. Claude session link
 
-https://claude.ai/code/session_012V5fASeDqLCdv2v57kQZEv
+https://claude.ai/code/session_01XKW6YpADeS1wVP2ANxpBJi
