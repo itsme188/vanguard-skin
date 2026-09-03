@@ -130,6 +130,20 @@ describe("hardenedFetchBytes", () => {
     await expect(hardenedFetchBytes("https://a.example/1", { label: "t", lookup, request: hop.request })).rejects.toThrow(/non-routable/);
   });
 
+  it("refuses a redirect whose Location will not parse, instead of leaking a TypeError", async () => {
+    const { request, calls, destroyed } = fakeRequest({
+      "https://a.example/1": { status: 302, headers: { location: "http://[bad" } },
+    });
+    const err = await hardenedFetchBytes("https://a.example/1", { label: "t", lookup: PUBLIC, request }).catch((e) => e as Error);
+    expect(err).toBeInstanceOf(UrlFetchRefused);
+    expect((err as Error).message).toMatch(/unparseable Location/);
+    // The server-controlled Location value never reaches the message.
+    expect((err as Error).message).not.toMatch(/\[bad/);
+    expect(calls).toHaveLength(1);
+    expect(destroyed).toContain("https://a.example/1");
+    expect(destroyed).toContain("req:https://a.example/1");
+  });
+
   it("refuses on the content-length precheck and on the streamed cap, destroying the response", async () => {
     const declared = fakeRequest({
       "https://a.example/big": { status: 200, headers: { "content-length": String(11 * 1024 * 1024) }, chunks: [Buffer.alloc(10)] },

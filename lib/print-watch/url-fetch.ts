@@ -156,7 +156,9 @@ export async function hardenedFetchBytes(
         timedOut,
       ).catch((err: Error) => {
         if (err instanceof UrlFetchRefused) throw err;
-        throw new UrlFetchRefused(`${label}: ${err.message.replace(verdict.hostname, redactUrl(current))}`);
+        // Function replacer: a `$&`/`$1` sequence inside the redacted URL is a
+        // literal here, not a substitution pattern.
+        throw new UrlFetchRefused(`${label}: ${err.message.replace(verdict.hostname, () => redactUrl(current))}`);
       });
 
       const u = new URL(current);
@@ -230,7 +232,18 @@ export async function hardenedFetchBytes(
           throw new UrlFetchRefused(`${label}: exceeded ${URL_FETCH_MAX_REDIRECTS} redirect hops (${shownStart})`);
         }
         if (!location) throw new UrlFetchRefused(`${label}: redirect ${status} with no Location (${shown})`);
-        current = new URL(Array.isArray(location) ? location[0] : location, current).toString();
+        // `Location` is server-controlled and `new URL` throws ERR_INVALID_URL
+        // on junk ("http://[bad"). Left unguarded, any host could end the fetch
+        // with a TypeError, which the consuming roads would mis-route as an
+        // unexpected fault rather than a refusal. The Location value itself
+        // never reaches the message — only the redacted URL we were already on.
+        let next: string;
+        try {
+          next = new URL(Array.isArray(location) ? location[0] : location, current).toString();
+        } catch {
+          throw new UrlFetchRefused(`${label}: redirect ${status} with an unparseable Location (${shown})`);
+        }
+        current = next;
         continue;
       }
       if (status === 403) {
