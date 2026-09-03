@@ -76,14 +76,29 @@ export function __resetEventMergeHandlersForTests(): void {
 const STATUS_RANK: Record<string, number> = { pending: 0, failed: 1, claimed: 2, done: 3 };
 /** Terminal precedence for the per-article scan ledger — a donor hit is never lost. */
 const SCAN_RANK: Record<string, number> = { claimed: 0, error: 1, no_numbers: 2, hit: 3 };
-const BOGEY_PROVENANCE = [
+/**
+ * The bogey columns the collision rule carries across, split by role.
+ *
+ * EXPORTED so `tests/repo/bogey-merge-columns.test.ts` can pin them against
+ * the live `earnings_bogeys` schema. The collision rule writes
+ * `UPDATE <these columns>` and then DELETEs the donor row, so a future
+ * migration that adds a bogey column without adding it here would silently
+ * destroy that column's donor value on every collision. The guard fails the
+ * suite instead of losing the number.
+ *
+ * `lib/mutations/earnings-bogeys.ts::CONTENT_COLUMNS` is a related but DISTINCT
+ * list (it drives `hasAnyContent` and the preserve-mode COALESCE); the two are
+ * deliberately not merged — the schema, not the other list, is the shared
+ * source of truth both are checked against.
+ */
+export const BOGEY_PROVENANCE = [
   "source_url",
   "raw_pdf_r2_key",
   "research_document_id",
   "research_article_id",
   "ai_extraction_model",
 ] as const;
-const BOGEY_CONTENT = [
+export const BOGEY_CONTENT = [
   "eps_consensus",
   "eps_whisper",
   "revenue_consensus_usd",
@@ -268,6 +283,11 @@ function mergeBogeys({ db, donorEventId, targetEventId }: EventMergeContext): Ev
     .all(donorEventId) as Array<Record<string, unknown>>;
   let merged = 0;
   const notes: string[] = [];
+  // Timestamps are compared with datetime() on BOTH sides: `uploaded_at`
+  // defaults to the space-separated `datetime('now')` form, but a row written
+  // from JS can carry the ISO `T` form, and a raw string compare mis-orders
+  // those two against each other.
+  const donorIsNewer = db.prepare(`SELECT datetime(?) > datetime(?) AS newer`);
   for (const d of leftovers) {
     const t = db
       .prepare(`SELECT * FROM earnings_bogeys WHERE event_id = ? AND source = ? AND source_label IS ?`)
@@ -278,11 +298,20 @@ function mergeBogeys({ db, donorEventId, targetEventId }: EventMergeContext): Ev
       notes.push(`bogey #${String(d.id)} left on the donor (no matching target row)`);
       continue;
     }
-    const newer = String(d.uploaded_at) > String(t.uploaded_at) ? d : t;
+    const newer =
+      (donorIsNewer.get(d.uploaded_at, t.uploaded_at) as { newer: number }).newer === 1 ? d : t;
     const older = newer === d ? t : d;
-    // [C-6] Values and provenance travel together: the row whose numbers win (the newer one)
-    // also supplies source_url / PDF key / research ids / extraction model, so no figure is
-    // left attributed to a document it did not come from.
+    // [C-6] The two halves are treated DIFFERENTLY, on purpose:
+    //   content    — a union, newer ?? older ?? null: a figure only one side
+    //                published still survives the merge.
+    //   provenance — newer ONLY (never COALESCEd forward): the surviving row
+    //                names exactly one document, the newest one, so no stale
+    //                PDF key / URL / research id outlives the figures it
+    //                described.
+    // The consequence is deliberate: a value contributed by the OLDER row is
+    // published under the newer row's provenance. The plan takes that over the
+    // alternative (a row whose provenance columns name two different
+    // documents, with no way to tell which figure came from which).
     const cols = [...BOGEY_CONTENT, ...BOGEY_PROVENANCE];
     const sets = cols.map((c) => `${c} = ?`).join(", ");
     const values = [
