@@ -5,22 +5,9 @@ import {
 } from "@/lib/mutations/earnings-worksheet-flags";
 import { getWorksheetFlagsForEvents } from "@/lib/queries/earnings-worksheet-flags";
 import { printWorksheetNow } from "@/lib/earnings/worksheet";
-import { drainCloudOutbox } from "@/lib/earnings/cloud-outbox";
+import { attemptPostCommitDrain } from "@/lib/earnings/cloud-outbox";
 
 export const dynamic = "force-dynamic";
-
-/**
- * Post-commit attempt to hand the fresh armed-events generation to the Worker
- * (v2 slice A). Awaited with a 2s cap so a dead Worker costs at most 2s; the
- * 15-minute sweep retries whatever this misses.
- */
-async function pushArmedEvents(): Promise<void> {
-  try {
-    await drainCloudOutbox(db, { timeoutMs: 2000 });
-  } catch (err) {
-    console.warn("[cloud-outbox] post-commit drain failed:", err);
-  }
-}
 
 /**
  * Earnings worksheet flags + printing (feedback #6). In-app only (no cron
@@ -58,12 +45,15 @@ export async function POST(request: Request) {
   switch (body.action) {
     case "arm": {
       const armed = armWorksheet(db, body.eventId);
-      await pushArmedEvents();
+      // v2 slice A: hand the new armed-events generation to the Worker. The
+      // whole wait is capped (2s), after which the push continues in the
+      // background and the 15-minute sweep is the backstop.
+      await attemptPostCommitDrain(db);
       return Response.json({ success: true, armed });
     }
     case "disarm": {
       const disarmed = disarmWorksheet(db, body.eventId);
-      await pushArmedEvents();
+      await attemptPostCommitDrain(db);
       return Response.json({ success: true, disarmed });
     }
     case "print":

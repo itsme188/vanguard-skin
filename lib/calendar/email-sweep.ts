@@ -38,7 +38,7 @@ import { runMorningDebrief } from "@/lib/earnings/debrief-send";
 import { sendReporterRecapEmail } from "@/lib/earnings/reporter-recap";
 import { printArmedWorksheets } from "@/lib/earnings/worksheet";
 import { todayET } from "@/lib/calendar/date-utils";
-import { drainCloudOutbox } from "@/lib/earnings/cloud-outbox";
+import { drainCloudOutbox, writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 import { fetchSameDayTranscripts } from "@/lib/transcripts/same-day";
 import { recordEarningsEmailSkip } from "@/lib/mutations/earnings-skips";
 import { ensurePrintWatch } from "@/lib/print-watch/watcher";
@@ -68,6 +68,8 @@ export interface SweepSummary {
   cloudReconciled: number;
   /** armed-events outbox rows delivered to the Worker this tick (v2 slice A). */
   outboxSent: number;
+  /** True when this tick's reconcile minted a new armed-events generation (R8). */
+  outboxReconciled: boolean;
   /**
    * Result of the 7:45 ET morning debrief pass (2026-08-02, replaces the EOD
    * wrap — see lib/earnings/debrief-send.ts). Null when the pass threw
@@ -136,6 +138,20 @@ export async function runEarningsEmailSweep(
   // Drain cloud-sent markers into audit rows BEFORE candidate selection so a
   // freshly-backfilled row excludes its event from this very tick's candidates.
   const cloudReconciled = await reconcileCloudSentAudits(db);
+
+  // ── Armed-events outbox reconcile (R8) ────────────────────────────────
+  // The Worker learns about armed worksheets ONLY through cloud_outbox rows,
+  // so without a periodic re-derive it would never hear about an event that
+  // was armed before the outbox existed — or armed by a path whose write was
+  // lost. D10 makes this a no-op on every tick where nothing changed.
+  let outboxReconciled = false;
+  try {
+    outboxReconciled = db
+      .transaction(() => writeArmedEventsOutboxRow(db))
+      .immediate().written;
+  } catch (err) {
+    console.warn("[earnings-sweep] armed-events outbox reconcile failed:", err);
+  }
 
   // ── Cloud outbox drain (v2 slice A): armed-events delta to the Worker ──
   // The routes attempt their own post-commit drain; this is the catch-up for
@@ -389,6 +405,7 @@ export async function runEarningsEmailSweep(
     recapAlerts,
     cloudReconciled,
     outboxSent,
+    outboxReconciled,
     debrief,
     transcriptsFetched,
     results,

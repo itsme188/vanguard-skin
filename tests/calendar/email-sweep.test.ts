@@ -108,6 +108,18 @@ vi.mock("@/lib/transcripts/same-day", () => ({
 // (nothing here sets earnings_worksheet_flags.armed=1), so mocking this out
 // doesn't change any other test's outcome — it only lets the new ordering
 // test below observe invocationCallOrder against sendPreview.
+// R8 (v2 slice A): the sweep now reconciles the armed-events outbox before
+// draining it. The WRITER must stay real (these tests assert the row it
+// writes); only the sender is stubbed, so a developer with WORKER_MARKER_URL
+// exported in their shell can never make this file talk to the Worker.
+const drainCloudOutbox = vi.hoisted(() =>
+  vi.fn(async (..._args: unknown[]) => ({ sent: 0, failed: 0, skipped: null })),
+);
+vi.mock("@/lib/earnings/cloud-outbox", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/earnings/cloud-outbox")>();
+  return { ...actual, drainCloudOutbox: (...a: unknown[]) => drainCloudOutbox(...a) };
+});
+
 const printArmed = vi.hoisted(() =>
   vi.fn(async (..._args: unknown[]) => ({ printed: 0 })),
 );
@@ -118,6 +130,7 @@ vi.mock("@/lib/earnings/worksheet", () => ({
 import { runEarningsEmailSweep, alertBlockedRecaps } from "@/lib/calendar/email-sweep";
 import { EarningsEmailError } from "@/lib/digest/send-earnings-email";
 import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
+import { readArmedGeneration } from "@/lib/earnings/armed-events-projection";
 
 // 2h before 16:30 ET release = 20:30 UTC. Same construction as
 // tests/calendar/findEmailCandidates-skip.test.ts's AAPL preview case —
@@ -1219,5 +1232,87 @@ describe("runEarningsEmailSweep mac-aliveness marker", () => {
     seedHeldPreviewCandidate(db, "AAPL");
     await runEarningsEmailSweep(db, { now: NOW });
     expect(postAliveMarker).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * R8 (live print v2 slice A): the Worker learns about armed worksheets only
+ * through cloud_outbox rows. Without a periodic reconcile it would never hear
+ * about events that were already armed before the outbox existed (or armed by
+ * a path that failed to write) — so every sweep tick re-derives the projection
+ * and lets D10 decide whether that is a new generation.
+ */
+describe("armed-events outbox reconcile (R8)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    fetchCloudSent.mockClear();
+    fetchCloudSent.mockResolvedValue([]);
+    runMorningDebrief.mockClear();
+    runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
+    fetchSameDayTranscripts.mockClear();
+    fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
+    drainCloudOutbox.mockClear();
+  });
+
+  /** An event armed with NO outbox row — the pre-outbox production state. */
+  const seedArmedWithoutOutbox = (symbol: string) => {
+    const id = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, title, source_key, symbol)
+           VALUES ('finnhub','earnings','2026-09-02','AMC','16:15',?,?,?)`,
+        )
+        .run(`${symbol} earnings`, `finnhub:${symbol}:2026-09-02`, symbol).lastInsertRowid,
+    );
+    db.prepare(`INSERT INTO earnings_worksheet_flags (event_id) VALUES (?)`).run(id);
+    return id;
+  };
+
+  it("writes a generation for an already-armed event the outbox never heard about", async () => {
+    const id = seedArmedWithoutOutbox("ACME");
+    expect(readArmedGeneration(db)).toBe(0);
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.outboxReconciled).toBe(true);
+    expect(readArmedGeneration(db)).toBe(1);
+    const payload = JSON.parse(
+      (
+        db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as {
+          payload_json: string;
+        }
+      ).payload_json,
+    );
+    expect(payload.entries).toEqual([expect.objectContaining({ eventId: id, symbol: "ACME" })]);
+    expect(drainCloudOutbox).toHaveBeenCalled();
+  });
+
+  it("a second tick with no change writes nothing (D10)", async () => {
+    seedArmedWithoutOutbox("ACME");
+    await runEarningsEmailSweep(db, { now: NOW });
+    const second = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(second.outboxReconciled).toBe(false);
+    expect(readArmedGeneration(db)).toBe(1);
+    expect(
+      (db.prepare(`SELECT COUNT(*) AS n FROM cloud_outbox`).get() as { n: number }).n,
+    ).toBe(1);
+  });
+
+  it("a failing reconcile warns but never aborts the sweep", async () => {
+    seedArmedWithoutOutbox("ACME");
+    db.exec(`DROP TABLE cloud_outbox`);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.outboxReconciled).toBe(false);
+    expect(summary.swept).toBe(0);
+    warn.mockRestore();
   });
 });
