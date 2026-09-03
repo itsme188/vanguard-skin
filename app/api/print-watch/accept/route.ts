@@ -1,20 +1,57 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { getPrintByEventId, getSheet, markLineAccepted, clearLineAccepted } from "@/lib/print-watch/store";
+import {
+  getPrintByEventId,
+  getSheet,
+  listDocuments,
+  markLineAccepted,
+  acceptLineCandidate,
+  clearLineAccepted,
+} from "@/lib/print-watch/store";
 import { saveManualActuals } from "@/lib/earnings/actuals";
 import type { SaveManualActualsResult } from "@/lib/earnings/actuals";
 import type { PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * One entry of the `accept` array.
+ *
+ * A bare metric id is the original whole-line accept ("lock in whatever the
+ * reconciler currently reads on this line"). The object form is the
+ * PER-CANDIDATE accept (QA finding `…unaccept-after-supersede…`, user ruling
+ * 2026-09-02): a conflict line has no top-level number by construction, so the
+ * only honest way to accept one is to name the DOCUMENT whose figure the desk
+ * verified. `representation` is optional and only needed to disambiguate two
+ * readings of the SAME document that disagree.
+ */
+type AcceptEntry = string | { metric_id: string; doc_id: number; representation?: string };
+
 interface AcceptBody {
   eventId?: number;
-  accept?: string[];
+  accept?: AcceptEntry[];
   unaccept?: string[];
   promoteHeadline?: boolean;
   force?: boolean;
   forceSuperseded?: boolean;
 }
+
+/** A parsed, shape-validated `accept` entry. `docId === null` = whole-line. */
+interface AcceptRequestItem {
+  metricId: string;
+  docId: number | null;
+  representation: string | null;
+}
+
+/** The candidate a per-candidate accept resolved to, once validated. */
+interface ResolvedCandidate {
+  value: number | null;
+  value_high: number | null;
+  snippet: string | null;
+  source_doc_id: number;
+}
+
+const REPRESENTATIONS = new Set(["repA", "repB", "flash"]);
 
 type SaveManualActualsFailure = Extract<SaveManualActualsResult, { ok: false }>;
 
@@ -61,20 +98,22 @@ const ACCEPTABLE_ACCEPT_STATES = new Set(["agreed", "flash", "single_source", "b
  * Whether this line may be accepted.
  *
  * The state set above, PLUS the one 'pending' case that is not "still waiting
- * for a source": an un-accepted line. `clearLineAccepted` parks a line back on
- * 'pending' but LEAVES its verified value in place, while the reconciler never
- * produces a 'pending' line carrying a value (no value-candidate and no flash
- * → value null, every path). So `pending && value !== null` means exactly one
- * thing — this desk un-accepted the line and the watcher has not reconciled it
- * since — and refusing it made an accidental un-accept unrecoverable until the
- * next poll, which after the watch window closes never comes.
+ * for a source": an un-accepted line that still carries a number. The
+ * reconciler never produces a 'pending' line with a value (no value-candidate
+ * and no flash → value null, every path), so `pending && value !== null` can
+ * only be an un-accept — and refusing it made an accidental un-accept
+ * unrecoverable until the next poll, which after the watch window closes never
+ * comes.
  *
- * A pending line with NO value is still refused, with the same message as
- * before: there is nothing to accept yet.
+ * Since the QA fix `…unaccept-after-supersede…`, `clearLineAccepted`
+ * RE-DERIVES the line, so it only leaves this shape behind for a line with NO
+ * candidate evidence to re-derive from (plus rows parked this way before that
+ * fix shipped). A pending line with NO value is still refused, with the same
+ * message as before: there is nothing to accept yet.
  *
  * ADMITTING that line is not the same as TRUSTING its number: the value is
- * residue from the earlier acceptance and the candidates under it have kept
- * moving, so the accept loop re-checks it against current evidence (the
+ * residue from the earlier acceptance and the candidates under it may have
+ * kept moving, so the accept loop re-checks it against current evidence (the
  * supersession gate below) before letting it back in.
  */
 function isAcceptableLine(line: PrintWatchLine): boolean {
@@ -143,6 +182,168 @@ function supersessionDetail(line: PrintWatchLine): string | null {
   return `${line.metric_id} (accepted ${line.value}, later evidence ${values.join(", ")})`;
 }
 
+// ── per-candidate accept ───────────────────────────────────────────────
+//
+// Why it exists (QA finding `…unaccept-after-supersede…`, user ruling
+// 2026-09-02): un-accepting a superseded line now re-derives it, and a
+// disagreeing pool re-derives to 'conflict' — a state that carries NO
+// top-level number and that the whole-line accept refuses on purpose. Without
+// a way to say "this figure, from this document", the desk's only remaining
+// move on a corrected print would be to force the stale number back on.
+
+/** Shape-validates `body.accept` without touching the DB. Returns a message
+ *  instead of items when an entry is malformed (400 before any read). */
+function parseAcceptEntries(entries: AcceptEntry[]): { items: AcceptRequestItem[] } | { error: string } {
+  const items: AcceptRequestItem[] = [];
+  for (const entry of entries) {
+    if (typeof entry === "string") {
+      items.push({ metricId: entry, docId: null, representation: null });
+      continue;
+    }
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return {
+        error:
+          "Each 'accept' entry must be a metric id, or an object { metric_id, doc_id } naming the candidate to lock in.",
+      };
+    }
+    const record = entry as Record<string, unknown>;
+    const metricId = record.metric_id;
+    const docId = record.doc_id;
+    const representation = record.representation;
+    if (typeof metricId !== "string" || metricId.length === 0) {
+      return { error: "Each 'accept' object entry needs a 'metric_id' string." };
+    }
+    if (typeof docId !== "number" || !Number.isInteger(docId)) {
+      return {
+        error: `Accept entry for "${metricId}" needs an integer 'doc_id' naming the document whose figure you verified.`,
+      };
+    }
+    if (representation !== undefined && representation !== null) {
+      if (typeof representation !== "string" || !REPRESENTATIONS.has(representation)) {
+        return {
+          error: `Accept entry for "${metricId}" has an unknown 'representation' — expected repA, repB or flash.`,
+        };
+      }
+    }
+    items.push({
+      metricId,
+      docId,
+      representation: typeof representation === "string" ? representation : null,
+    });
+  }
+  return { items };
+}
+
+function parseCandidates(line: PrintWatchLine): TaggedCandidate[] {
+  try {
+    const parsed: unknown = JSON.parse(line.candidates_json);
+    return Array.isArray(parsed) ? (parsed as TaggedCandidate[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolves ONE per-candidate accept against the line's evidence, or throws the
+ * refusal. Every failure is a 400 that names what the desk asked for and what
+ * the sheet actually holds — never a silent fallback to another figure.
+ */
+function resolveCandidate(
+  line: PrintWatchLine,
+  item: AcceptRequestItem,
+  documentIds: Set<number>,
+): ResolvedCandidate {
+  const docId = item.docId as number;
+  const pool = parseCandidates(line).filter((c) => c.metric_id === line.metric_id);
+  const named = pool.filter(
+    (c) => c.doc_id === docId && (item.representation === null || c.representation === item.representation),
+  );
+
+  if (named.length > 0 && named.every((c) => c.representation === "flash")) {
+    throw new RequestRefused(400, {
+      success: false,
+      error: `Cannot accept the wire flash for "${line.metric_id}": a flash has no document of record. Accept a document candidate, or accept the line itself if the flash is all there is.`,
+    });
+  }
+
+  const usable = named.filter((c) => c.representation !== "flash");
+  if (usable.length === 0) {
+    const available = Array.from(new Set(pool.filter((c) => c.representation !== "flash").map((c) => c.doc_id)));
+    throw new RequestRefused(400, {
+      success: false,
+      error: `No candidate from doc #${docId} on "${line.metric_id}"${
+        available.length > 0 ? ` — this line's evidence came from doc ${available.map((d) => `#${d}`).join(", ")}.` : " — this line has no document evidence yet."
+      }`,
+    });
+  }
+
+  const withNumbers = usable.filter((c) => !c.not_disclosed && c.value !== null);
+  if (withNumbers.length === 0) {
+    throw new RequestRefused(400, {
+      success: false,
+      error: `Doc #${docId} reported "${line.metric_id}" as not disclosed — there is no number on it to lock in.`,
+    });
+  }
+
+  // Two readings of the same document that disagree: the desk has to say which
+  // one it read. Picking one here would be the system guessing at a figure it
+  // is about to call verified.
+  const first = withNumbers[0];
+  const disagreeing = withNumbers.find(
+    (c) => valuesDiverge(first.value, c.value) || valuesDiverge(first.value_high, c.value_high),
+  );
+  if (disagreeing) {
+    const values = Array.from(new Set(withNumbers.map((c) => String(c.value)))).join(", ");
+    throw new RequestRefused(400, {
+      success: false,
+      error: `Doc #${docId} has two readings of "${line.metric_id}" that disagree (${values}). Name the 'representation' (repA / repB) you verified.`,
+    });
+  }
+
+  // A doc id that names no document row would be a foreign-key error on write.
+  if (!documentIds.has(docId)) {
+    throw new RequestRefused(400, {
+      success: false,
+      error: `Doc #${docId} is not a document of this print.`,
+    });
+  }
+
+  return {
+    value: first.value,
+    value_high: first.value_high,
+    snippet: first.snippet,
+    source_doc_id: docId,
+  };
+}
+
+/**
+ * The per-candidate twin of `supersessionDetail` — null unless a document that
+ * arrived AFTER the one being accepted disagrees with it.
+ *
+ * Deliberately narrower than the line-level gate, and this is the whole point
+ * of the ruling: accepting the SUPERSEDING document IS the re-verify, so it
+ * must not be refused for disagreeing with the document it supersedes. Only
+ * reaching backwards — locking in an older figure while a later document says
+ * otherwise — is a supersession the desk has to confirm.
+ *
+ * Doc ids are AUTOINCREMENT, so a higher id is a later-arriving document.
+ */
+function candidateSupersessionDetail(
+  line: PrintWatchLine,
+  chosen: ResolvedCandidate,
+): string | null {
+  const later = parseCandidates(line).filter((c) => {
+    if (c.metric_id !== line.metric_id) return false;
+    if (c.representation === "flash") return false;
+    if (c.not_disclosed || c.value === null) return false;
+    if (c.doc_id <= chosen.source_doc_id) return false;
+    return valuesDiverge(chosen.value, c.value) || valuesDiverge(chosen.value_high, c.value_high);
+  });
+  if (later.length === 0) return null;
+  const values = Array.from(new Set(later.map((c) => String(c.value)))).slice(0, 3);
+  return `${line.metric_id} (doc #${chosen.source_doc_id} reads ${chosen.value}, later evidence ${values.join(", ")})`;
+}
+
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as AcceptBody;
 
@@ -167,6 +368,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const parsedAccept = parseAcceptEntries(body.accept ?? []);
+  if ("error" in parsedAccept) {
+    return NextResponse.json({ success: false, error: parsedAccept.error }, { status: 400 });
+  }
+
   const print = getPrintByEventId(db, eventId);
   if (!print) {
     return NextResponse.json(
@@ -175,7 +381,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const acceptList = (body.accept ?? []) as string[];
+  const acceptItems = parsedAccept.items;
+  // The metric ids being accepted — the response envelope, the both-lists
+  // check and the promote view all speak metric ids, whether the desk named a
+  // candidate or the whole line.
+  const acceptList = acceptItems.map((i) => i.metricId);
   const unacceptList = (body.unaccept ?? []) as string[];
   const promoteHeadline = body.promoteHeadline === true;
   const force = body.force === true;
@@ -212,8 +422,14 @@ export async function POST(request: NextRequest) {
   const applyTx = db.transaction(() => {
     const sheet = getSheet(db, print.id);
     const byMetric = new Map<string, PrintWatchLine>(sheet.map((l) => [l.metric_id, l]));
+    /** metric → the candidate a per-candidate accept resolved to, so the write
+     *  phase and the promote view read the figure the desk actually picked
+     *  rather than whatever the line still carried. */
+    const resolved = new Map<string, ResolvedCandidate>();
+    let documentIds: Set<number> | null = null;
 
-    for (const metricId of acceptList) {
+    for (const item of acceptItems) {
+      const metricId = item.metricId;
       const line = byMetric.get(metricId);
       if (!line) {
         throw new RequestRefused(400, {
@@ -221,6 +437,34 @@ export async function POST(request: NextRequest) {
           error: `Unknown metric "${metricId}" — no line on this print's sheet.`,
         });
       }
+
+      // ── per-candidate accept ──
+      //
+      // The line-state gate is deliberately SKIPPED here: naming a document is
+      // how a 'conflict' line gets resolved, and refusing it would leave the
+      // desk with no move but forcing the stale number back. What replaces the
+      // gate is stricter in the way that matters — the figure has to exist, in
+      // that document, unambiguously (`resolveCandidate`), and it may not be
+      // an older reading that a later document contradicts (the 409 below).
+      if (item.docId !== null) {
+        if (documentIds === null) {
+          documentIds = new Set(listDocuments(db, print.id).map((d) => d.id));
+        }
+        const chosen = resolveCandidate(line, item, documentIds);
+        if (!forceSuperseded) {
+          const detail = candidateSupersessionDetail(line, chosen);
+          if (detail) {
+            throw new RequestRefused(409, {
+              success: false,
+              code: "superseded",
+              error: `A later document disagrees with the figure you picked on ${detail}. Accept the later document's candidate instead, or send forceSuperseded to lock in the one you chose.`,
+            });
+          }
+        }
+        resolved.set(metricId, chosen);
+        continue;
+      }
+
       if (!isAcceptableLine(line)) {
         throw new RequestRefused(400, {
           success: false,
@@ -232,14 +476,17 @@ export async function POST(request: NextRequest) {
       // 'pending' line that can carry a number — is re-accepted ONLY if the
       // evidence now on the sheet still agrees with that number.
       //
-      // The number on such a line is RESIDUE: `clearLineAccepted` flips state
-      // and leaves `value` alone, while the reconciler kept refreshing
-      // `candidates_json` underneath the accepted lock the whole time
-      // (reconcile.ts rule 6). So a correction that landed while the line was
-      // accepted — an 8-K/A, a corrected drop — leaves exactly the shape this
-      // gate refuses: state 'pending', value stale, candidates newer. Without
-      // it, un-accept then re-accept was a laundering path back to a number
-      // the promote gate would have refused outright.
+      // The number on such a line is RESIDUE: an un-accept left `value` in
+      // place while the reconciler kept refreshing `candidates_json` underneath
+      // the accepted lock (reconcile.ts rule 6). Without this gate, un-accept
+      // then re-accept was a laundering path back to a number the promote gate
+      // would have refused outright.
+      //
+      // `clearLineAccepted` now re-derives instead of parking a stale figure,
+      // so new rows reach this shape only with an EMPTY candidate pool (no
+      // rivals, gate passes trivially). It still holds the line for rows parked
+      // before that fix shipped — the laundering path has to stay closed for
+      // them too.
       //
       // Same comparison as the promote gate (`supersessionDetail`), same 409
       // `superseded` envelope, same `forceSuperseded` override. Lines whose
@@ -288,6 +535,15 @@ export async function POST(request: NextRequest) {
     let epsLine: PrintWatchLine | undefined;
     let revLine: PrintWatchLine | undefined;
 
+    /** The number this request LEAVES on the line: a per-candidate accept
+     *  replaces the line's figure in the same transaction, so the promote
+     *  guards below (and the write itself) have to read the chosen candidate,
+     *  not the pre-request value they would otherwise still see. */
+    const effective = (line: PrintWatchLine): { value: number | null; value_high: number | null } => {
+      const pick = resolved.get(line.metric_id);
+      return pick ? { value: pick.value, value_high: pick.value_high } : { value: line.value, value_high: line.value_high };
+    };
+
     if (promoteHeadline) {
       // Adj preferred over gaap (task brief) — name the basis in the response.
       if (acceptedAfter("eps_adj_q")) {
@@ -317,10 +573,10 @@ export async function POST(request: NextRequest) {
       // calendar_events actuals and leaves the other field stale: EXACTLY the
       // failure the complete-pair rule above exists to prevent, arriving through
       // the door that rule doesn't watch. Same 400, same explanation.
-      if (epsLine!.value === null || revLine!.value === null) {
+      if (effective(epsLine!).value === null || effective(revLine!).value === null) {
         const missing = [
-          epsLine!.value === null ? `${epsLine!.metric_id} (${epsLine!.state})` : null,
-          revLine!.value === null ? `revenue_q (${revLine!.state})` : null,
+          effective(epsLine!).value === null ? `${epsLine!.metric_id} (${epsLine!.state})` : null,
+          effective(revLine!).value === null ? `revenue_q (${revLine!.state})` : null,
         ]
           .filter(Boolean)
           .join(" and ");
@@ -332,9 +588,17 @@ export async function POST(request: NextRequest) {
 
       // Supersession recheck (fix wave, finding B) — LAST, against the same
       // in-transaction read as every other guard.
+      //
+      // A metric the desk just resolved by NAMING a candidate is skipped here
+      // and only here: it has already passed the stricter, correct test for
+      // that case (`candidateSupersessionDetail` — is there a LATER document
+      // that disagrees?). The line-level test would refuse it for disagreeing
+      // with the document it supersedes, i.e. refuse the corrected figure for
+      // being a correction.
       if (!forceSuperseded) {
         const superseded: string[] = [];
         for (const line of [epsLine!, revLine!]) {
+          if (resolved.has(line.metric_id)) continue;
           const detail = supersessionDetail(line);
           if (detail) superseded.push(detail);
         }
@@ -350,8 +614,13 @@ export async function POST(request: NextRequest) {
 
     // ── every guard has passed against state nothing can have changed: write ──
 
-    for (const metricId of acceptList) {
-      markLineAccepted(db, print.id, metricId);
+    for (const item of acceptItems) {
+      const chosen = resolved.get(item.metricId);
+      if (item.docId !== null && chosen) {
+        acceptLineCandidate(db, print.id, item.metricId, chosen);
+      } else {
+        markLineAccepted(db, print.id, item.metricId);
+      }
     }
     for (const metricId of unacceptList) {
       clearLineAccepted(db, print.id, metricId);
@@ -360,8 +629,8 @@ export async function POST(request: NextRequest) {
     if (promoteHeadline) {
       const result = saveManualActuals(db, {
         eventId,
-        epsActual: epsLine!.value,
-        revenueActualUsd: revLine!.value,
+        epsActual: effective(epsLine!).value,
+        revenueActualUsd: effective(revLine!).value,
         force,
       });
       if (!result.ok) {

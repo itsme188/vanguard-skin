@@ -5,6 +5,7 @@ import {
   promoteSummary,
   needsReverify,
   canAcceptLine,
+  acceptableRivals,
   deltaPct,
   printStateLabel,
   printCountLabel,
@@ -666,6 +667,105 @@ describe("canAcceptLine", () => {
     });
     expect(promoteSummary([unaccepted, revenue])).toBeNull();
     expect(canAcceptLine(unaccepted)).toBe(true);
+  });
+});
+
+// ── per-candidate accept on a conflict row ─────────────────────────────
+//
+// QA finding `today-print-watch--unaccept-after-supersede-keeps-old-value-
+// hides-newer-candidate` (HIGH), user ruling 2026-09-02 option 1. Un-accepting
+// a superseded line now re-derives it, and a disagreeing pool lands on
+// 'conflict' — which carries no top-level number and no line-level accept. The
+// desk's move is to accept the rival figure it verified, naming the document.
+
+describe("acceptableRivals", () => {
+  it("offers one control per rival figure on a conflict line", () => {
+    const line = makeLine({
+      state: "conflict",
+      value: null,
+      candidates_json: JSON.stringify([
+        candidate({ doc_id: 10, value: 0.91 }),
+        candidate({ doc_id: 12, value: 0.87 }),
+      ]),
+    });
+    const rivals = acceptableRivals(line);
+    expect(rivals.map((c) => c.doc_id)).toEqual([10, 12]);
+    expect(rivals.map((c) => c.value)).toEqual([0.91, 0.87]);
+  });
+
+  it("offers nothing on a line that is not in conflict — the line-level control covers those", () => {
+    const candidates = JSON.stringify([candidate({ doc_id: 10 }), candidate({ doc_id: 12, value: 0.87 })]);
+    expect(acceptableRivals(makeLine({ state: "agreed", value: 0.91, candidates_json: candidates }))).toEqual([]);
+    expect(acceptableRivals(makeLine({ state: "accepted", value: 0.91, candidates_json: candidates }))).toEqual([]);
+    expect(acceptableRivals(makeLine({ state: "pending", value: 0.91, candidates_json: candidates }))).toEqual([]);
+  });
+
+  it("skips candidates with no figure to lock in — wire flash, not-disclosed, null value", () => {
+    const line = makeLine({
+      state: "conflict",
+      value: null,
+      candidates_json: JSON.stringify([
+        candidate({ doc_id: 10, value: 0.91 }),
+        candidate({ doc_id: 0, representation: "flash", value: 0.9 }),
+        candidate({ doc_id: 12, value: null, not_disclosed: true }),
+        candidate({ doc_id: 13, value: null }),
+      ]),
+    });
+    expect(acceptableRivals(line).map((c) => c.doc_id)).toEqual([10]);
+  });
+
+  it("keeps both readings when ONE document's two representations disagree — the desk names which it read", () => {
+    const line = makeLine({
+      state: "conflict",
+      value: null,
+      candidates_json: JSON.stringify([
+        candidate({ doc_id: 10, representation: "repA", value: 0.91 }),
+        candidate({ doc_id: 10, representation: "repB", value: 0.87 }),
+      ]),
+    });
+    expect(acceptableRivals(line).map((c) => c.representation)).toEqual(["repA", "repB"]);
+  });
+
+  it("dedupes identical evidence so one figure gets one control", () => {
+    const line = makeLine({
+      state: "conflict",
+      value: null,
+      candidates_json: JSON.stringify([
+        candidate({ doc_id: 10, value: 0.91 }),
+        candidate({ doc_id: 10, value: 0.91 }),
+        candidate({ doc_id: 12, value: 0.87 }),
+      ]),
+    });
+    expect(acceptableRivals(line)).toHaveLength(2);
+  });
+
+  it("returns nothing rather than throwing on unreadable evidence", () => {
+    expect(acceptableRivals(makeLine({ state: "conflict", candidates_json: "not json" }))).toEqual([]);
+    expect(acceptableRivals(makeLine({ state: "conflict", candidates_json: '{"a":1}' }))).toEqual([]);
+  });
+});
+
+describe("per-candidate accept control (panel source)", () => {
+  const src = readFileSync("app/dashboard/today/PrintWatchPanel.tsx", "utf8");
+
+  it("renders an 'accept this' control against each rival of a conflict row", () => {
+    expect(src).toMatch(/acceptableRivals\(line\)/);
+    expect(src).toMatch(/"accept this"/);
+  });
+
+  it("posts the metric AND the document it verified", () => {
+    expect(src).toMatch(
+      /postAccept\(\{ accept: \[\{ metric_id: metricId, doc_id: docId, representation \}\] \}\)/,
+    );
+  });
+
+  it("reverts the in-flight state and explains a failure rather than swallowing it", () => {
+    expect(src).toMatch(/setAcceptingCandidateKey\(null\)/);
+    expect(src).not.toMatch(/catch \{\s*\}/);
+  });
+
+  it("has its own supersession confirm — a candidate accept is not a promote", () => {
+    expect(src).toMatch(/SUPERSEDED_CANDIDATE_CONFIRM_COPY/);
   });
 });
 
