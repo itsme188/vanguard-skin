@@ -34,6 +34,7 @@ import {
   type PrePrintFloorResult,
 } from "@/lib/earnings/pre-print-floor";
 import { recordWireObservation } from "@/lib/earnings/wire-times";
+import { todayET, addDays } from "./date-utils";
 
 // Macro releases (FRED/FOMC/nonfred): data is typically published within
 // minutes of release, and the reaction window is the immediate 2-hour
@@ -165,10 +166,8 @@ function findCandidates(
   // days and release_time set. The final window check happens in JS because
   // release_time is ET wall-clock — `datetime()` comparisons against UTC
   // `now` would silently be off by 4–5 hours across DST.
-  const threeDaysAgo = new Date(nowMs - 3 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 10);
-  const today = new Date(nowMs).toISOString().slice(0, 10);
+  const today = todayET(now);
+  const threeDaysAgo = addDays(today, -3);
 
   const rows = db
     .prepare(
@@ -742,8 +741,8 @@ export function findEmailCandidates(
   // Pre-filter SQL by event_date proximity to today; final window check is
   // in JS because release_time is ET wall-clock and SQL `datetime()` would
   // silently shift across DST. Same pattern as findCandidates above.
-  const todayStr = new Date(nowMs).toISOString().slice(0, 10);
-  const tomorrowStr = new Date(nowMs + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const todayStr = todayET(now);
+  const tomorrowStr = addDays(todayStr, 1);
 
   const previewRows = db
     .prepare(
@@ -816,7 +815,7 @@ export function findEmailCandidates(
   // resolved for them too (a held symbol whose recap was already audited is
   // absent from recapCandidates, and an unresolved lookup would misread it
   // as a pure reporter).
-  const yesterdayStr = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const yesterdayStr = addDays(todayStr, -1);
   const reporterScanRows = db
     .prepare(
       `SELECT ce.id, ce.symbol, ce.event_date, ce.enriched_at, ce.source
