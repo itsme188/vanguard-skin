@@ -7,7 +7,10 @@
 // into the server bundle. tests/db/code-migrations-registry.test.ts asserts
 // this map and the files on disk agree.
 import type Database from "better-sqlite3";
+import { up as up089 } from "./migrations/089_print_watch_document_identity";
 
 export type CodeMigration = (db: Database.Database) => void;
 
-export const CODE_MIGRATIONS: Record<string, CodeMigration> = {};
+export const CODE_MIGRATIONS: Record<string, CodeMigration> = {
+  "089_print_watch_document_identity.ts": up089,
+};
