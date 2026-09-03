@@ -9,7 +9,7 @@
 # Requirements:
 #   - Node.js on PATH
 #   - agent-browser installed
-#   - claude CLI installed
+#   - (auto-fix is owned by the 02:45 deep-QA chain — this smoke only reports)
 #   - No other process on port 3099
 
 set -uo pipefail
@@ -22,7 +22,6 @@ PORT=3099
 TODAY=$(TZ=America/New_York date '+%Y-%m-%d')
 LOG_DIR="$QA_DIR/logs"
 REPORT_DIR="$QA_DIR/reports"
-MAX_FIX_ATTEMPTS=2
 
 mkdir -p "$LOG_DIR" "$REPORT_DIR"
 
@@ -42,6 +41,12 @@ ab_cleanup_init
 source /Users/Yitzi/code/vanguard-skin/scripts/lib/et-gate.sh
 in_et_window "1,2,3,4,5,6,7" 2 0 || exit 0
 
+# Once per night: the plist ticks every 5 min and the 10-min gate admits two
+# ticks, which ran the whole smoke twice a night from 2026-06-01 to 2026-09-03.
+# The archived report is the per-day marker (a run that produced no report
+# — e.g. a crashed mint — is retried by the next tick, which is what we want).
+[ -f "$REPORT_DIR/$TODAY.txt" ] && exit 0
+
 echo "=== Nightly QA — $TODAY ==="
 echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
@@ -56,13 +61,6 @@ fi
 if ! command -v agent-browser &>/dev/null; then
   echo "ERROR: agent-browser not found on PATH"
   exit 1
-fi
-
-if ! command -v claude &>/dev/null; then
-  echo "WARNING: claude CLI not found — auto-fix will be skipped"
-  CLAUDE_AVAILABLE=false
-else
-  CLAUDE_AVAILABLE=true
 fi
 
 # --- Check if port is already in use ---
@@ -117,51 +115,11 @@ if [ -f "$QA_DIR/qa-report.txt" ]; then
   echo "Report archived to: reports/$TODAY.txt"
 fi
 
-# --- Handle failures ---
-
-FAIL_COUNT=$(grep -c "FAIL:" "$QA_DIR/qa-report.txt" 2>/dev/null || echo "0")
-
-if [ "$FAIL_COUNT" -gt 0 ] && [ "$CLAUDE_AVAILABLE" = true ]; then
-  echo ""
-  echo "Found $FAIL_COUNT failures. Invoking Claude Code for auto-fix..."
-  echo ""
-
-  FAIL_SUMMARY=$(grep "FAIL:" "$QA_DIR/qa-report.txt")
-
-  claude -p "$(cat <<PROMPT
-You are running a nightly QA check on the Vanguard Skin project at $PROJECT_DIR.
-The dev server is running on localhost:$PORT.
-
-The QA report found these failures:
-
-$FAIL_SUMMARY
-
-Screenshots of each page are in $QA_DIR/screenshots/.
-
-Instructions:
-1. Create a new branch: git checkout -b qa-fixes-$TODAY
-2. For each failure, read the relevant source file and attempt a fix.
-3. Maximum $MAX_FIX_ATTEMPTS attempts per issue. If you cannot fix it in $MAX_FIX_ATTEMPTS tries, log what you tried and move on.
-   (Wording note: this heredoc must contain NO apostrophe / single-quote
-   characters — macOS /bin/bash 3.2 cannot parse one inside a cat-heredoc
-   command substitution and dies with unexpected EOF. One such character
-   killed this script at this line EVERY night: 115 runs, zero completions,
-   leaking the dev server + browser processes the cleanup below never reached.)
-4. After all fixes, re-run: bash $QA_DIR/run-qa.sh
-5. Commit any fixes with a descriptive message.
-6. Do NOT push — just leave the branch ready for review.
-7. Return to the main branch when done: git checkout main
-
-Important:
-- Do not refactor or "improve" working code
-- Only fix the specific failures listed above
-- 2 attempts max per issue, then stop
-PROMPT
-  )" 2>&1 || true
-
-  echo ""
-  echo "Claude Code auto-fix completed."
-fi
+# --- Failures ---
+# Reported only. Auto-fix moved to the 02:45 deep-QA chain (own worktree) on
+# 2026-07-27; the claude -p block that used to live here had been dead since
+# 2026-05-30 (claude was never on this PATH) and would have switched the MAIN
+# checkout to a qa-fixes branch at 2 AM had it ever run. Removed 2026-09-03.
 
 # --- Cleanup ---
 
