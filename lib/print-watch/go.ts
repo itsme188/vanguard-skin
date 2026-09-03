@@ -490,9 +490,28 @@ export async function runGoRequest(
   // `heartbeatGoRequest` was written for; when it reports the claim GONE it
   // aborts the in-flight work through our OWN controller (never a scheduler
   // pass signal — R-C8) so the new owner runs alone.
+  //
+  // The callback NEVER throws (re-review). `heartbeatGoRequest` is a
+  // synchronous better-sqlite3 UPDATE, so a locked handle (SQLITE_BUSY past
+  // the busy timeout) or a closed one (shutdown while this run is detached)
+  // raises — and an exception out of a timer callback is an UNCAUGHT
+  // exception: the dispatcher's `void runGoRequest(...).catch(...)` cannot
+  // see it and this repo registers no `uncaughtException` handler, so the
+  // server would die in the minute the desk pressed "print is live". A
+  // heartbeat we cannot RUN is a claim we cannot PROVE we hold, so a throw
+  // ends the run exactly like a `false` does — the same verdict the watcher's
+  // own lease renewal reaches (`watcher.ts`, `renew` inside `pass`).
   const claim = new AbortController();
-  const beat = setInterval(() => {
-    if (!owns()) claim.abort();
+  const beat: ReturnType<typeof setInterval> = setInterval(() => {
+    const lose = (reason: Error) => {
+      clearInterval(beat); // stop beating on a handle we already know is gone
+      claim.abort(reason);
+    };
+    try {
+      if (!owns()) lose(new Error("go claim lost"));
+    } catch (err) {
+      lose(err instanceof Error ? err : new Error(String(err)));
+    }
   }, GO_CLAIM_HEARTBEAT_MS);
   beat.unref?.(); // a press must never hold the process open
 
@@ -514,7 +533,9 @@ export async function runGoRequest(
       reports.push({ road: "user-drop", outcome: r.outcome, detail: r.rejectReason ?? "" });
     } else if (req.input_kind === "url" && req.input_url) {
       if (!owns()) return null;
-      // The stored url IS what the desk pasted — credential links never got here.
+      // The stored url IS the fetch target: `storableUrl` stripped the
+      // fragment at the press and refused userinfo and every query key the
+      // redaction family names (its own doc states that family's limit).
       const r = await whileClaimed(
         s.deliverUrl(db, req.print_id, req.input_url, claim.signal),
         claim.signal,
