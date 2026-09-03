@@ -1535,3 +1535,102 @@ describe("recap safety gates — manual actuals override (Mac parity)", () => {
     expect(md).not.toContain("flagged as implausible");
   });
 });
+
+/**
+ * "Armed as covered" in the cloud (live print v2 slice A §4.1, Task 8).
+ *
+ * Mirror of the Mac-side test: an event armed AFTER the 2am snapshot reaches
+ * the Worker only through the KV delta, and must be swept even though its
+ * symbol is neither held nor watchlisted.
+ */
+describe("armed-as-covered (snapshot v11 + KV delta)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+  });
+
+  const armedEntry = (eventId: number, symbol: string) => ({
+    eventId,
+    symbol,
+    eventDate: EVENT_DATE,
+    eventTime: "AMC",
+    releaseTime: RELEASE_TIME,
+    sourceKey: `manual:${symbol}:${EVENT_DATE}:earnings`,
+    source: "manual",
+    consensusValue: "EPS 2.10 · Rev 5,000,000,000",
+    expectedImpact: null,
+    securityId: null,
+    epsConsensusVendor: null,
+  });
+
+  /** v11 snapshot with NO event 77 and an armedGeneration BELOW the delta's. */
+  function v11Snapshot(): Snapshot {
+    const snap = makeEarningsSnapshot() as unknown as Record<string, unknown>;
+    snap.schemaVersion = 11;
+    snap.armedGeneration = 3;
+    snap.armedEvents = [];
+    snap.heldSymbols = ["AAPL"]; // ACME is neither held nor watchlisted
+    snap.watchlistSymbols = [];
+    return snap as unknown as Snapshot;
+  }
+
+  it("sweeps a delta-only armed event whose symbol is neither held nor watchlisted", async () => {
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      "armed-events",
+      JSON.stringify({ generation: 9, entries: [armedEntry(77, "ACME")] }),
+    );
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(v11Snapshot());
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    const armed = result.details.filter((d) => d.eventId === 77 && d.phase === "preview");
+    expect(armed).toHaveLength(1);
+    expect(armed[0].symbol).toBe("ACME");
+    // The held name still sweeps — armed WIDENS coverage, never replaces it.
+    expect(result.details.some((d) => d.eventId === 1 && d.phase === "preview")).toBe(true);
+  });
+
+  it("does NOT sweep the same event when the delta is stale (generation <= watermark)", async () => {
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      "armed-events",
+      JSON.stringify({ generation: 3, entries: [armedEntry(77, "ACME")] }),
+    );
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(v11Snapshot());
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.details.some((d) => d.eventId === 77)).toBe(false);
+    expect(result.details.some((d) => d.eventId === 1 && d.phase === "preview")).toBe(true);
+  });
+
+  it("ignores the delta entirely on a pre-v11 snapshot (degraded held+watchlist)", async () => {
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      "armed-events",
+      JSON.stringify({ generation: 9, entries: [armedEntry(77, "ACME")] }),
+    );
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(makeEarningsSnapshot());
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.details.some((d) => d.eventId === 77)).toBe(false);
+    expect(result.details.some((d) => d.eventId === 1 && d.phase === "preview")).toBe(true);
+  });
+
+  it("a muted symbol stays muted even when armed", async () => {
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      "armed-events",
+      JSON.stringify({ generation: 9, entries: [armedEntry(77, "ACME")] }),
+    );
+    const snap = v11Snapshot() as unknown as Record<string, unknown>;
+    snap.earningsSettings = { enabled: true, mutedSymbols: ["ACME"] };
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.details.some((d) => d.eventId === 77)).toBe(false);
+  });
+});

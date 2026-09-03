@@ -38,6 +38,7 @@ import { composeReleaseInstant, resolveSectorEtf } from "./reaction-matcher";
 import { captureReactionFromYahoo } from "./yahoo";
 import { fetchActualForEventCloud, type WorkerEnrichActualResult } from "./enrich-actuals";
 import { issuerSiblings } from "./fallback-earnings";
+import { effectiveCalendarEvents, readArmedEventsDelta } from "./armed-events";
 import { readPrintPushMarker, writePrintPushMarker } from "./earnings-markers";
 import { composePrintPushMessage } from "./print-push-message";
 import { sendPushover } from "./pushover";
@@ -216,7 +217,13 @@ export async function runCloudFallback(
   const snapshot = await loadLatestSnapshot(env.ARCHIVE);
   if (!snapshot) return { kind: "snapshot_missing" };
 
-  const events = (snapshot.calendarEvents as unknown as SnapshotCalendarEvent[]) ?? [];
+  // D5: the EVENT LIST reads the effective collection so an event armed after
+  // the 2am snapshot can still be enriched from the cloud. The push gate below
+  // (held / watchlist / read-through) is deliberately NOT widened here.
+  const events = effectiveCalendarEvents(
+    snapshot,
+    await readArmedEventsDelta(env.CRON_KV),
+  ).events as unknown as SnapshotCalendarEvent[];
   const candidates: {
     id: number;
     source_key: string;
