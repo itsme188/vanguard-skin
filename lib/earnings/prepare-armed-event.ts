@@ -175,58 +175,59 @@ export async function runPrepareSteps(
     const def = steps.get(r.step);
     if (!def) { report.skipped += 1; continue; }
     const staleBefore = sqlUtc(now() - PREPARE_CLAIM_STALE_MS);
-    // [R14] The cap retires ANY spent row, not just an already-'failed' one, and it
-    // is checked BEFORE the fingerprint so it also retires a fingerprint that throws
-    // every tick. A row stuck at 'claimed' (its owner died) was otherwise taken over
-    // every tick forever: attempts climbed past the cap with no effect while the
-    // step's side effect was re-invoked each time. Two rows are exempt — a 'done'
-    // row (terminal-good; its drift check below may legitimately revive it, which
-    // resets attempts to 0) and a LIVE claim (same guard as the drift reset: its
-    // owner is still working and will finalise it).
-    if (r.status !== "done" && r.attempts >= PREPARE_MAX_ATTEMPTS) {
-      if (r.status !== "failed") {
-        const retired = db.prepare(
-          `UPDATE earnings_prepare_steps
-              SET status = 'failed', last_error = ?, claim_token = NULL, claimed_at = NULL, updated_at = datetime('now')
-            WHERE event_id = ? AND step = ?
-              AND NOT (status = 'claimed' AND datetime(claimed_at) >= datetime(?))`,
-        ).run(
-          `retired: ${PREPARE_MAX_ATTEMPTS} attempts exhausted`,
-          r.event_id,
-          r.step,
-          staleBefore,
-        ).changes;
-        if (retired > 0) {
-          console.warn(
-            `[prepare] ${r.step} for event ${r.event_id}: retired after ${PREPARE_MAX_ATTEMPTS} attempts`,
-          );
-        }
-      }
-      report.skipped += 1;
-      continue;
-    }
+    /** Mark the row spent. Guarded like every other out-of-band write here: a LIVE
+     *  claim belongs to its worker. Nulls the token so no stale worker can finalise
+     *  by CAS on a token that outlived its window. */
+    const retireRow = (lastError: string): number =>
+      db.prepare(
+        `UPDATE earnings_prepare_steps
+            SET status = 'failed', last_error = ?, claim_token = NULL, claimed_at = NULL, updated_at = datetime('now')
+          WHERE event_id = ? AND step = ?
+            AND NOT (status = 'claimed' AND datetime(claimed_at) >= datetime(?))`,
+      ).run(lastError, r.event_id, r.step, staleBefore).changes;
+
+    // ORDER MATTERS, and it is fingerprint-FIRST. Drift is what revives a spent row
+    // ("a change of inputs resets the row to pending", and Task 7's merge moves a
+    // donor row keeping its status/attempts precisely so this pass can re-derive the
+    // fingerprint against the TARGET event and reset it). Checking the cap ahead of
+    // the fingerprint would make a row that failed five ticks terminal FOREVER — the
+    // newsletter lands, the fingerprint drifts, and nothing ever notices.
+    //
     // The fingerprint is the STEP's own code (it reads columns, parses JSON, derefs
     // rows), so a throw is that row's failure — never the pass's. Booking it here
     // instead of letting it reject runPrepareSteps is what stops one malformed row
-    // from starving every other step on every armed event, tick after tick, with
-    // nothing the attempt cap could ever retire.
+    // from starving every other step on every armed event, tick after tick.
     let fp: string;
     try {
       fp = def.fingerprint(db, r.event_id);
     } catch (err) {
       const msg = errText(err);
-      // Guarded exactly like the drift reset: a LIVE claim belongs to its worker.
+      if (r.attempts >= PREPARE_MAX_ATTEMPTS) {
+        // Already spent. Don't keep counting: a fingerprint that throws can never
+        // drift (computing it is exactly what fails), so there is nothing left to
+        // revive this row and nothing to learn from a sixth identical error.
+        if (r.status !== "failed") retireRow(`retired: ${PREPARE_MAX_ATTEMPTS} attempts exhausted; fingerprint: ${msg}`);
+        report.skipped += 1;
+        continue;
+      }
+      const lastError =
+        r.attempts + 1 >= PREPARE_MAX_ATTEMPTS
+          ? `retired: ${PREPARE_MAX_ATTEMPTS} attempts exhausted; fingerprint: ${msg}`
+          : `fingerprint: ${msg}`;
       const marked = db.prepare(
         `UPDATE earnings_prepare_steps
-            SET status = 'failed', attempts = attempts + 1, last_error = ?, updated_at = datetime('now')
+            SET status = 'failed', attempts = attempts + 1, last_error = ?,
+                claim_token = NULL, claimed_at = NULL, updated_at = datetime('now')
           WHERE event_id = ? AND step = ?
             AND NOT (status = 'claimed' AND datetime(claimed_at) >= datetime(?))`,
-      ).run(`fingerprint: ${msg}`, r.event_id, r.step, staleBefore).changes;
+      ).run(lastError, r.event_id, r.step, staleBefore).changes;
       if (marked > 0) report.failed += 1; else report.skipped += 1;
       console.warn(`[prepare] ${r.step} for event ${r.event_id}: fingerprint failed: ${msg}`);
       continue;
     }
-    // Fingerprint drift resets status + attempts atomically, then the row is runnable again.
+    // Fingerprint drift resets status + attempts atomically, then the row is runnable
+    // again — INCLUDING a row that had reached the attempt cap, which is the whole
+    // point of doing this before the cap check below.
     // [C-11] Never clears a LIVE claim: a fresh 'claimed' row is left for its worker to finish.
     if (r.input_fingerprint != null && r.input_fingerprint !== fp) {
       const reset = db.prepare(
@@ -237,6 +238,21 @@ export async function runPrepareSteps(
       r.status = "pending"; r.attempts = 0;
     }
     if (r.status === "done") { continue; }
+    // [R14] The cap retires ANY spent row, not just an already-'failed' one — a row
+    // stuck at 'claimed' (its owner died) was otherwise taken over every tick forever:
+    // attempts climbed past the cap with no effect while the step's side effect was
+    // re-invoked each time. Read against the row's CURRENT attempts, so a drift reset
+    // just above (attempts = 0) has already revived it. A LIVE claim is exempt via
+    // retireRow's guard — its owner is still working and will finalise it.
+    if (r.attempts >= PREPARE_MAX_ATTEMPTS) {
+      if (r.status !== "failed" && retireRow(`retired: ${PREPARE_MAX_ATTEMPTS} attempts exhausted`) > 0) {
+        console.warn(
+          `[prepare] ${r.step} for event ${r.event_id}: retired after ${PREPARE_MAX_ATTEMPTS} attempts`,
+        );
+      }
+      report.skipped += 1;
+      continue;
+    }
     const token = randomUUID();
     const claimed = db.prepare(
       `UPDATE earnings_prepare_steps
