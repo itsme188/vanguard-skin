@@ -1,0 +1,56 @@
+/**
+ * Live print v2 slice A, Ruling R1/R2 — cold-process proof that the lazy
+ * bootstrap actually registers the concrete prepare steps.
+ *
+ * Only `@/lib/earnings/prepare-armed-event` is imported (via a dynamic
+ * import after `vi.resetModules()`, so this file's own module graph is
+ * untouched by any other test's `__resetPrepareStepsForTests()` /
+ * `__isBootstrapSuppressedForTests(true)` call). Nothing under
+ * `lib/earnings/prepare-steps/**` is imported directly — the whole point is
+ * that `enqueuePrepareSteps` reaches the three concrete steps ONLY through
+ * `bootstrapEarningsRegistries()` → `registerPrepareStepsOnce()`.
+ *
+ * Ruling R2: Task 10 registers three steps (consensus_row, intel, con_id).
+ * Task 11 prepends `newsletter_rescan` and updates the two assertions below
+ * to the final four, in run order ["newsletter_rescan", "consensus_row",
+ * "intel", "con_id"].
+ */
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import Database from "better-sqlite3";
+
+describe("registry-bootstrap cold process (Ruling R1/R2)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("enqueuePrepareSteps lazily registers exactly the three A steps, in run order, with nothing else imported", async () => {
+    const { runMigrations } = await import("@/lib/db/migrate");
+    const { armWorksheet } = await import("@/lib/mutations/earnings-worksheet-flags");
+    const { enqueuePrepareSteps, listPrepareSteps, getPrepareStepRows } = await import(
+      "@/lib/earnings/prepare-armed-event"
+    );
+
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    const id = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol) VALUES ('manual','earnings','2026-09-03','GAMMA','k-registry-bootstrap','GAMMA')`,
+        )
+        .run().lastInsertRowid,
+    );
+    armWorksheet(db, id);
+
+    const inserted = enqueuePrepareSteps(db, id);
+    expect(inserted).toBe(3);
+    expect(listPrepareSteps()).toEqual(["consensus_row", "intel", "con_id"]);
+    expect(getPrepareStepRows(db, id).map((r) => r.step)).toEqual(["con_id", "consensus_row", "intel"]);
+
+    // A second enqueue on the same event is a no-op — steps registered once, rows inserted once.
+    const insertedAgain = enqueuePrepareSteps(db, id);
+    expect(insertedAgain).toBe(0);
+    expect(listPrepareSteps()).toEqual(["consensus_row", "intel", "con_id"]);
+  });
+});
