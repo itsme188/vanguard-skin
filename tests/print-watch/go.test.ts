@@ -11,7 +11,7 @@
  * Every date fixture is seeded relative to `todayET()` (worktree rule) and the
  * clock is a seam — no wall-clock sleeps, no literal dates that go stale.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -23,6 +23,7 @@ import {
   safeErrorText,
   GoRefused,
   GO_STAGING_DIR_KEY,
+  GO_CLAIM_HEARTBEAT_MS,
   PRINT_WATCH_GO_MERGE_HANDLER_NAME,
   type GoSeams,
 } from "@/lib/print-watch/go";
@@ -36,9 +37,11 @@ import {
   insertGoRequest,
   movePrintGoState,
   GO_MAX_ATTEMPTS,
+  GO_CLAIM_STALE_MS,
 } from "@/lib/print-watch/store";
 import { effectiveWindow, extendedUntil, composeReleaseInstant, EXTEND_MS, FORCED_PRE_MS } from "@/lib/print-watch/window";
 import { sha256Hex } from "@/lib/print-watch/delivery";
+import { redactUrl } from "@/lib/print-watch/hardened-fetch";
 import { registerPrintWatch, __resetRegisterForTests } from "@/lib/print-watch/register";
 import {
   listEventMergeHandlers,
@@ -232,6 +235,55 @@ describe("requestGo", () => {
     ).rejects.toThrow(/secret-bearing/);
     expect(isArmed(refused)).toBe(false);
     expect(getPrintByEventId(db, refused)).toBeNull();
+  });
+
+  it("strips a fragment before storing and fetching, so a fragment-borne secret is never persisted (review I1)", async () => {
+    const eventId = seedEvent();
+    const seams = fakeSeams();
+    const ack = await requestGo(
+      db,
+      eventId,
+      { url: "https://ir.acme.example/q2?page=2#access_token=SECRET" },
+      seams,
+    );
+    const req = getGoRequest(db, ack.requestId)!;
+    expect(req.input_url).toBe("https://ir.acme.example/q2?page=2");
+    expect(JSON.stringify(req)).not.toContain("SECRET");
+    expect(JSON.stringify(req)).not.toContain("#");
+    // And the fetch goes to that same fragment-free target.
+    await runGoRequest(db, ack.requestId, seams);
+    expect(seams.calls.deliverUrl).toEqual([[ack.printId, "https://ir.acme.example/q2?page=2"]]);
+  });
+
+  it("refuses a link carrying embedded credentials, in domain language, with the secret never echoed (review I1)", async () => {
+    const eventId = seedEvent();
+    const seams = fakeSeams();
+    let message = "";
+    try {
+      await requestGo(db, eventId, { url: "https://desk:hunter2@ir.acme.example/q2" }, seams);
+      throw new Error("expected a refusal");
+    } catch (err) {
+      expect(err).toBeInstanceOf(GoRefused);
+      message = (err as Error).message;
+    }
+    expect(message).toMatch(/credential/i);
+    expect(message).not.toContain("hunter2");
+    expect(isArmed(eventId)).toBe(false);
+    expect(getPrintByEventId(db, eventId)).toBeNull();
+  });
+
+  it("accepts a long link with no secret in it and stores it IN FULL (review M3)", async () => {
+    const eventId = seedEvent();
+    const long = `https://ir.acme.example/newsroom/${"q".repeat(300)}?page=2`;
+    expect(long.length).toBeGreaterThan(200);
+    const seams = fakeSeams();
+    const ack = await requestGo(db, eventId, { url: long }, seams);
+    // Storage keeps the whole link — `redactUrl`'s 200-character cap is a
+    // DISPLAY rule, and truncating what we fetch would send us elsewhere.
+    expect(getGoRequest(db, ack.requestId)!.input_url).toBe(long);
+    expect(redactUrl(long).length).toBeLessThan(long.length);
+    await runGoRequest(db, ack.requestId, seams);
+    expect(seams.calls.deliverUrl).toEqual([[ack.printId, long]]);
   });
 
   it("refuses both a url and a file, a binary file, an oversize file, and an event that cannot be resolved", async () => {
@@ -433,6 +485,100 @@ describe("runGoRequest", () => {
     expect(row.print_id).toBe(targetPrintId);
     expect(row.status).toBe("queued");
     expect(row.claim_token).toBeNull();
+  });
+
+  it("renews the claim while a long pass runs, so a second worker cannot steal it mid-fetch (review I2)", async () => {
+    vi.useFakeTimers();
+    try {
+      const eventId = seedEvent();
+      const ack = await requestGo(db, eventId, {}, fakeSeams());
+      let clock = NOW;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const seams = fakeSeams({
+        now: () => clock,
+        acquire: async (_db, printId) => {
+          await gate;
+          return [{ road: "dj", outcome: "ok", detail: `print ${printId}` }];
+        },
+      });
+      const run = runGoRequest(db, ack.requestId, seams);
+      await vi.advanceTimersByTimeAsync(0); // let the run reach the fan-out pass
+
+      for (let beat = 0; beat < 7; beat += 1) {
+        clock += GO_CLAIM_HEARTBEAT_MS;
+        await vi.advanceTimersByTimeAsync(GO_CLAIM_HEARTBEAT_MS);
+      }
+      expect(clock - NOW).toBeGreaterThan(2 * GO_CLAIM_STALE_MS);
+      // Without the renewal this row would look abandoned and be taken.
+      expect(claimGoRequest(db, ack.requestId, "second-worker", clock)).toBe(false);
+
+      release();
+      const row = (await run)!;
+      expect(row.status).toBe("done");
+      expect(row.attempts).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a claim stolen mid-pass aborts the in-flight work and finalises nothing (review I2)", async () => {
+    vi.useFakeTimers();
+    try {
+      const eventId = seedEvent();
+      const ack = await requestGo(db, eventId, {}, fakeSeams());
+      let clock = NOW;
+      let aborted = false;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const seams = fakeSeams({
+        now: () => clock,
+        acquire: async (_db, _printId, signal) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+          });
+          await gate;
+          return [];
+        },
+      });
+      const run = runGoRequest(db, ack.requestId, seams);
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Someone else takes the row (a stale-claim takeover, or a merge).
+      db.prepare(`UPDATE print_watch_go_requests SET claim_token = 'thief' WHERE id = ?`).run(ack.requestId);
+      clock += GO_CLAIM_HEARTBEAT_MS;
+      await vi.advanceTimersByTimeAsync(GO_CLAIM_HEARTBEAT_MS);
+
+      expect(await run).toBeNull();
+      expect(aborted).toBe(true);
+      const row = getGoRequest(db, ack.requestId)!;
+      expect(row.claim_token).toBe("thief");
+      expect(row.status).toBe("claimed");
+      expect(row.result_json).toBeNull();
+      expect(row.finished_at).toBeNull();
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an incoherent input row fails loudly instead of finalising done (review M5)", async () => {
+    const eventId = seedEvent();
+    const ack = await requestGo(db, eventId, {}, fakeSeams());
+    db.prepare(
+      `UPDATE print_watch_go_requests SET input_kind = 'file', input_sha256 = 'deadbeef', input_bytes_path = '' WHERE id = ?`,
+    ).run(ack.requestId);
+    const seams = fakeSeams();
+    const row = (await runGoRequest(db, ack.requestId, seams))!;
+    expect(seams.calls.ingest).toEqual([]);
+    expect(seams.calls.acquire).toEqual([]);
+    const reports = JSON.parse(row.result_json!) as RoadReport[];
+    expect(reports[0]).toMatchObject({ road: "system", outcome: "failed" });
+    expect(reports[0].detail).toContain("incoherent");
   });
 
   it("re-verifies the staged file's SHA: bytes that changed on disk fail the run with a system report", async () => {

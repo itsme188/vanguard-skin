@@ -53,6 +53,7 @@ import {
   finalizeGoRequest,
   movePrintGoState,
   GO_MAX_ATTEMPTS,
+  GO_CLAIM_STALE_MS,
 } from "./store";
 import { effectiveWindow, extendedUntil, windowToIso } from "./window";
 import type { GoInputKind, GoRequestRow, RoadReport } from "./types";
@@ -62,9 +63,10 @@ export class GoRefused extends Error {}
 
 export interface GoInput {
   url?: string;
-  /** What the browser called the file. Recorded for the desk, never used to
-   *  build a path — the stored extension follows the CLASSIFIED shape of the
-   *  bytes, so a claimed name can never steer where they land. */
+  /** What the browser called the file. Accepted and DISCARDED: migration 090
+   *  has no column for it, and it is never used to build a path — the stored
+   *  extension follows the CLASSIFIED shape of the bytes, so a claimed name
+   *  can never steer where they land. */
   filename?: string;
   contentBase64?: string;
 }
@@ -110,15 +112,19 @@ export interface GoSeams {
     buf: Buffer,
   ) => Promise<{ outcome: string; rejectReason?: string; docId: number }>;
   /** Default: `roads.deliverFromUrl`, fetching through the scheduler's
-   *  per-host throttle (finding #9). */
+   *  per-host throttle (finding #9). `signal` aborts when the claim is lost
+   *  mid-fetch — it is `runGoRequest`'s OWN controller, never a scheduler
+   *  pass signal (R-C8). */
   deliverUrl: (
     db: Database.Database,
     printId: number,
     url: string,
+    signal?: AbortSignal,
   ) => Promise<{ outcome: string; detail: string }>;
   /** Default: the watcher's `runForcedPass` (lazy import) — one fan-out pass
-   *  NOW, returning one RoadReport per road. */
-  acquire: (db: Database.Database, printId: number) => Promise<RoadReport[]>;
+   *  NOW, returning one RoadReport per road. Same `signal` contract as
+   *  `deliverUrl`. */
+  acquire: (db: Database.Database, printId: number, signal?: AbortSignal) => Promise<RoadReport[]>;
 }
 
 /** Bytes are staged here because a first press has no print id yet: the row's
@@ -144,7 +150,7 @@ export function safeErrorText(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   return raw
     .replace(/https?:\/\/[^\s"')]+/g, (m) => redactUrl(m))
-    .replace(/\/(?:Users|home|private|var)\/[^\s"')]+/g, "<path>")
+    .replace(/\/(?:Users|home|private|var|tmp|opt)\/[^\s"')]+/g, "<path>")
     .slice(0, 500);
 }
 
@@ -156,7 +162,7 @@ export function safeErrorText(err: unknown): string {
 interface WatcherGoExports {
   writeAcquiredBytes?: (dirKey: number | string, sha: string, ext: string, buf: Buffer) => Promise<string>;
   wakePrintWatch?: (db: Database.Database, printId: number) => Promise<void>;
-  runForcedPass?: (db: Database.Database, printId: number) => Promise<RoadReport[]>;
+  runForcedPass?: (db: Database.Database, printId: number, signal?: AbortSignal) => Promise<RoadReport[]>;
   throttledFetchBytes?: typeof hardenedFetchBytes;
 }
 
@@ -244,17 +250,20 @@ const DEFAULT_SEAMS: GoSeams = {
   ingest: async (db, printId, kind, source, url, buf) =>
     (await watcherModule()).ingestDocument(db, printId, kind, source, url, buf),
 
-  deliverUrl: async (db, printId, url) => {
+  deliverUrl: async (db, printId, url, signal) => {
     const { deliverFromUrl } = await import("./roads");
     // Finding #9: the pasted-link road is fetched under the scheduler's
-    // per-host throttle, exactly like every automatic road. No signal is
-    // passed — a go press is never cancelled by a settling pass (R-C8).
+    // per-host throttle, exactly like every automatic road. The signal is the
+    // CLAIM's, composed with the fetcher's own budget — a go press is never
+    // cancelled by a settling acquisition pass (R-C8).
     const throttled = requireWatcherExport((await watcherModule()).throttledFetchBytes, "throttledFetchBytes");
-    return deliverFromUrl(db, printId, url, { fetchBytes: throttled });
+    return deliverFromUrl(db, printId, url, {
+      fetchBytes: (u, opts) => throttled(u, { ...opts, signal }),
+    });
   },
 
-  acquire: async (db, printId) =>
-    requireWatcherExport((await watcherModule()).runForcedPass, "runForcedPass")(db, printId),
+  acquire: async (db, printId, signal) =>
+    requireWatcherExport((await watcherModule()).runForcedPass, "runForcedPass")(db, printId, signal),
 };
 
 // ---------------------------------------------------------------------------
@@ -268,24 +277,47 @@ const BASE64_MAX_CHARS = Math.ceil(URL_FETCH_MAX_BYTES / 3) * 4 + 4;
 
 interface ParsedInput {
   kind: GoInputKind;
-  /** What the row stores AND what the claim fetches — the two are the same
-   *  string by construction (a link we could not store verbatim is refused). */
+  /** What the row stores AND what the claim fetches — one string, by
+   *  construction: a link that could not be stored safely in full is refused
+   *  at the press rather than stored in a form we would then not fetch. */
   url: string | null;
   bytes: Buffer | null;
   ext: "html" | "txt" | "pdf" | null;
 }
 
-/** Same fetch target, ignoring the fragment (never sent to a server). */
-function sameTarget(a: string, b: string): boolean {
-  try {
-    const ua = new URL(a);
-    const ub = new URL(b);
-    ua.hash = "";
-    ub.hash = "";
-    return ua.toString() === ub.toString();
-  } catch {
-    return false;
+/**
+ * The three things `redactUrl` would REMOVE from a link — userinfo, the
+ * fragment, and a secret-bearing query key (review I1). A pasted link is the
+ * one URL this subsystem stores unredacted, because the claim fetches the
+ * stored string; so instead of storing a redacted copy we make the two
+ * identical: the fragment is stripped (it never reaches a server, so the fetch
+ * target is unchanged), and the other two are REFUSED at the press.
+ *
+ * What `redactUrl` would only TRUNCATE (its 200-character cap) is a DISPLAY
+ * concern, not a storage one: a long link with no secret in it is accepted and
+ * stored in full (review M3). Any surface that shows `input_url` still renders
+ * it through `redactUrl`, which by then can only shorten it.
+ *
+ * LIMIT worth knowing (review M4): "secret-bearing" is only as wide as
+ * `REDACTED_QUERY_KEYS`. A credential under a key that family does not name
+ * (`?jwt=`, `?t=`) is stored in plaintext. This is the same blind spot the
+ * whole subsystem's redaction has — not a stronger promise made here.
+ */
+function storableUrl(raw: string): string {
+  const url = new URL(raw); // `validatePublicUrl` has already parsed it
+  if (url.username || url.password) {
+    throw new GoRefused(
+      "Link refused: it carries embedded credentials — paste the plain link, or download the release and drop the file instead.",
+    );
   }
+  const secretKey = Array.from(url.searchParams.keys()).find((k) => REDACTED_QUERY_KEYS.test(k));
+  if (secretKey) {
+    throw new GoRefused(
+      "Link refused: it carries a secret-bearing query parameter — download the release and drop the file instead.",
+    );
+  }
+  url.hash = "";
+  return url.toString();
 }
 
 function parseInput(input: GoInput): ParsedInput {
@@ -297,28 +329,10 @@ function parseInput(input: GoInput): ParsedInput {
     const trimmed = input.url!.trim();
     const verdict = validatePublicUrl(trimmed);
     if (!verdict.ok) throw new GoRefused(`Link refused: ${verdict.reason}.`);
-    // A link is stored VERBATIM and fetched from the stored copy, so a link we
-    // could only store in a redacted or truncated form is refused at the press
-    // (user decision (a)) — storing one would either leak a credential or send
-    // us to a different URL than the desk pasted.
-    let secretKey: string | null = null;
-    try {
-      secretKey =
-        Array.from(new URL(trimmed).searchParams.keys()).find((k) => REDACTED_QUERY_KEYS.test(k)) ?? null;
-    } catch {
-      secretKey = null;
-    }
-    if (secretKey) {
-      throw new GoRefused(
-        "Link refused: it carries a secret-bearing query parameter — download the release and drop the file instead.",
-      );
-    }
-    if (!sameTarget(redactUrl(trimmed), trimmed)) {
-      throw new GoRefused(
-        "Link refused: it cannot be stored in full — download the release and drop the file instead.",
-      );
-    }
-    return { kind: "url", url: trimmed, bytes: null, ext: null };
+    // The stored form: fragment stripped, userinfo and secret query keys
+    // refused (user decision (a)). What comes back is both what the row keeps
+    // and what the claim fetches.
+    return { kind: "url", url: storableUrl(trimmed), bytes: null, ext: null };
   }
 
   if (hasFile) {
@@ -426,6 +440,35 @@ export async function requestGo(
 // the claim/run loop (the watcher's 2-second dispatcher calls this)
 // ---------------------------------------------------------------------------
 
+/** How often the claim is renewed while a phase runs — a third of the stale
+ *  window, so two consecutive missed beats still leave the claim live. */
+export const GO_CLAIM_HEARTBEAT_MS = Math.floor(GO_CLAIM_STALE_MS / 3);
+
+/** The claim went away mid-run (a takeover, or a merge that re-homed the row).
+ *  Never a failure of THIS request: the new owner is running it. */
+class GoClaimLost extends Error {}
+
+/** Await `work`, but give up the moment the claim does (review I2). The
+ *  underlying promise may still settle later — what matters is that this
+ *  worker stops waiting on it, writes nothing, and burns no attempt. */
+function whileClaimed<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new GoClaimLost("claim lost"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new GoClaimLost("claim lost"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
 export async function runGoRequest(
   db: Database.Database,
   requestId: number,
@@ -439,32 +482,60 @@ export async function runGoRequest(
    *  worker that kept writing would land its report on someone else's print. */
   const owns = () => heartbeatGoRequest(db, requestId, token, s.now());
 
+  // Review I2: `owns()` between phases is not enough. One phase is an EDGAR
+  // fetch plus an IR fetch plus, on the drop road, a PDF ingest with model
+  // calls — minutes against a 60-second stale window, so a second dispatcher
+  // tick would take the row mid-fetch, run the same fan-out against the same
+  // print, and burn one of three attempts. This ticking renewal is what
+  // `heartbeatGoRequest` was written for; when it reports the claim GONE it
+  // aborts the in-flight work through our OWN controller (never a scheduler
+  // pass signal — R-C8) so the new owner runs alone.
+  const claim = new AbortController();
+  const beat = setInterval(() => {
+    if (!owns()) claim.abort();
+  }, GO_CLAIM_HEARTBEAT_MS);
+  beat.unref?.(); // a press must never hold the process open
+
   let req = getGoRequest(db, requestId)!;
   const reports: RoadReport[] = [];
   try {
     if (req.input_kind === "file" && req.input_bytes_path && req.input_sha256) {
-      const bytes = await s.readBytes(req.input_bytes_path);
+      const bytes = await whileClaimed(s.readBytes(req.input_bytes_path), claim.signal);
       // Finding #14: the row is the authority on WHAT was pressed. Bytes that
       // no longer hash to it are a different document, not this request's.
       if (sha256Hex(bytes) !== req.input_sha256) {
         throw new Error("input bytes changed on disk since the press");
       }
       if (!owns()) return null;
-      const r = await s.ingest(db, req.print_id, "user-drop", `go:${req.input_sha256}`, null, bytes);
+      const r = await whileClaimed(
+        s.ingest(db, req.print_id, "user-drop", `go:${req.input_sha256}`, null, bytes),
+        claim.signal,
+      );
       reports.push({ road: "user-drop", outcome: r.outcome, detail: r.rejectReason ?? "" });
     } else if (req.input_kind === "url" && req.input_url) {
       if (!owns()) return null;
       // The stored url IS what the desk pasted — credential links never got here.
-      const r = await s.deliverUrl(db, req.print_id, req.input_url);
+      const r = await whileClaimed(
+        s.deliverUrl(db, req.print_id, req.input_url, claim.signal),
+        claim.signal,
+      );
       reports.push({ road: "user-url", outcome: r.outcome, detail: r.detail });
+    } else if (req.input_kind !== "none") {
+      // Review M5: migration 090's CHECK allows an empty-string path, and a
+      // row that matches neither branch would otherwise finalise `done` with
+      // the desk's own document silently never ingested.
+      throw new Error(`go request ${requestId}: incoherent ${req.input_kind} row — input not usable`);
     }
     if (!owns()) return null;
     // Re-read: a merge may have re-homed the row (finding #8). The `owns()`
     // above would already have failed in that case, so this is the benign
     // re-read of a row we still hold.
     req = getGoRequest(db, requestId)!;
-    reports.push(...(await s.acquire(db, req.print_id)));
+    reports.push(...(await whileClaimed(s.acquire(db, req.print_id, claim.signal), claim.signal)));
   } catch (err) {
+    // A lost claim is not this request's failure: the row belongs to someone
+    // else now, so write NOTHING — no report, no requeue, no attempt spent.
+    if (err instanceof GoClaimLost || claim.signal.aborted) return null;
     reports.push({ road: "system", outcome: "failed", detail: safeErrorText(err) });
     const attempts = getGoRequest(db, requestId)?.attempts ?? GO_MAX_ATTEMPTS;
     if (attempts < GO_MAX_ATTEMPTS) {
@@ -475,6 +546,8 @@ export async function runGoRequest(
     }
     if (!finalizeGoRequest(db, requestId, token, "failed", JSON.stringify(reports), s.now())) return null;
     return getGoRequest(db, requestId);
+  } finally {
+    clearInterval(beat); // every exit path — an uncleared interval outlives the run
   }
   if (!finalizeGoRequest(db, requestId, token, "done", JSON.stringify(reports), s.now())) return null;
   return getGoRequest(db, requestId);
