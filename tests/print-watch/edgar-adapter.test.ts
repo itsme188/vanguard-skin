@@ -470,6 +470,49 @@ describe("pollEdgar", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Task 4 (slice C): pollEdgar rides the caller's throttled fetch for
+// cancellation — NO signature change. `resolveCik`/`pollEdgar` already take
+// `fetchFn`; Task 6 passes a fetch that carries an AbortSignal into every
+// request. The only thing THIS module owns is its per-filing try/catch: an
+// AbortError must reject the whole poll, never get counted as an ordinary
+// filing failure that yields a partial "ok" result (Codex round 1, #10).
+// ---------------------------------------------------------------------------
+describe("pollEdgar — cancellation via the caller's fetch", () => {
+  it("rejects when the fetch it was handed throws AbortError, and marks nothing seen", async () => {
+    const seen = new Set<string>();
+    const abortingFetch: FetchLike = async () => {
+      throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    };
+    await expect(
+      pollEdgar("0000000001", "2026-09-03T19:55:00.000Z", "2026-09-03T20:40:00.000Z", seen, abortingFetch),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(seen.size).toBe(0);
+  });
+
+  it("rejects with AbortError when the SECOND filing's fetch aborts mid-walk, and marks neither accession seen (the per-filing catch must rethrow, not swallow)", async () => {
+    const { fetchFn: baseFetch } = makeMockFetch(buildRoutes());
+    const sixKBase = baseUrl(NEW_6K_ACCESSION);
+    const abortingFetch: FetchLike = async (url, init) => {
+      // The 8-K (first qualifying filing) is left to complete normally; the
+      // 6-K (second) aborts on its own header fetch, mid-walk.
+      if (url === `${sixKBase}/${NEW_6K_ACCESSION}-index-headers.html`) {
+        throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      }
+      return baseFetch(url, init);
+    };
+
+    const seen = new Set<string>();
+    await expect(pollEdgar(CIK, WINDOW_START, WINDOW_END, seen, abortingFetch)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    // pollEdgar rejected rather than returning — the caller never got a
+    // result to mark ANY accession seen from, including the 8-K that had
+    // already completed internally.
+    expect(seen.size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // outbound hardening (fix wave, finding E — shared hardened-fetch)
 // ---------------------------------------------------------------------------
 
