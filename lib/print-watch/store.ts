@@ -233,8 +233,14 @@ const FLASH_DOC_ID = 0;
  * a candidate whose document row was never written (a legacy sheet, hand-built
  * evidence). Nulling those keeps an un-accept CLICK from turning into a
  * foreign-key exception — the line simply reports no document of record.
+ *
+ * EXPORTED (R-B8 fix round 1): evidence retraction re-derives lines the same
+ * way un-accept does and hits the same hazard — migration 089 deliberately
+ * PRESERVES candidates whose `doc_id` names no document row, so `reconcile()`
+ * can hand back a dangling id. Both callers must resolve through this one
+ * function; a second copy is how the two paths drift apart.
  */
-function resolveSourceDocId(db: Database.Database, docId: number | null): number | null {
+export function resolveSourceDocId(db: Database.Database, docId: number | null): number | null {
   if (docId === null || docId === FLASH_DOC_ID) return null;
   const row = db.prepare(`SELECT 1 AS ok FROM print_watch_documents WHERE id = ?`).get(docId) as
     | { ok: number }
