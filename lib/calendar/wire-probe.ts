@@ -13,9 +13,10 @@
 import type Database from "better-sqlite3";
 import { probeFinnhubActualExistsStrict } from "./enrich-actuals";
 import { composeReleaseInstant } from "./reaction-snapshot";
-import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { getReadThroughReporterSymbols } from "@/lib/queries/read-through-pairs";
 import { stampEmptyProbe, etTimeOfInstant } from "@/lib/earnings/wire-times";
+import { todayET, addDays } from "./date-utils";
 
 export const PROBE_WINDOW_MS = 90 * 60 * 1000;
 export const MAX_PROBES_PER_TICK = 6;
@@ -33,8 +34,8 @@ export function findProbeCandidates(
   now: Date,
 ): ProbeCandidate[] {
   const nowMs = now.getTime();
-  const today = new Date(nowMs).toISOString().slice(0, 10);
-  const yesterday = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const today = todayET(now);
+  const yesterday = addDays(today, -1);
 
   let rows: Array<ProbeCandidate & { source: string; event_type: string }>;
   try {
@@ -65,8 +66,9 @@ export function findProbeCandidates(
   });
   if (inWindow.length === 0) return [];
 
-  // Held / watchlist / read-through-reporter gate (the enrichment universe).
-  const status = getSymbolStatus(db, inWindow.map((r) => r.symbol));
+  // Covered (held/watchlist/armed, spec §4.1) / read-through-reporter gate
+  // (the enrichment universe).
+  const coveredIds = coveredForEvents(db, inWindow.map((r) => ({ symbol: r.symbol, eventId: r.id })));
   let reporters: Set<string>;
   try {
     reporters = new Set(
@@ -75,10 +77,9 @@ export function findProbeCandidates(
   } catch {
     reporters = new Set();
   }
-  const gated = inWindow.filter((r) => {
-    const st = status[r.symbol.toUpperCase()];
-    return st === "held" || st === "watchlist" || reporters.has(r.symbol.toUpperCase());
-  });
+  const gated = inWindow.filter(
+    (r) => coveredIds.has(r.id) || reporters.has(r.symbol.toUpperCase()),
+  );
 
   gated.sort((a, b) => a.release_time.localeCompare(b.release_time));
   return gated.slice(0, MAX_PROBES_PER_TICK).map((r) => ({

@@ -34,7 +34,7 @@ interface Row {
   eventDate: string;
   eventTime: string | null;
   releaseTime: string | null;
-  symbolStatus: "held" | "watchlist";
+  symbolStatus: "held" | "watchlist" | "armed";
   consensus: string;
   actual: string | null;
   stages: Stages;
@@ -270,8 +270,12 @@ function CockpitRowView({ row, onChanged }: { row: Row; onChanged: () => void })
         ) : (
           <span className="font-mono text-[13px] font-semibold text-ink">{row.symbol}</span>
         )}
-        <Chip tone={row.symbolStatus === "held" ? "up" : "info"} size="xs" uppercase>
-          {row.symbolStatus === "held" ? "held" : "watch"}
+        <Chip
+          tone={row.symbolStatus === "held" ? "up" : row.symbolStatus === "watchlist" ? "info" : "neutral"}
+          size="xs"
+          uppercase
+        >
+          {row.symbolStatus === "held" ? "held" : row.symbolStatus === "watchlist" ? "watch" : "armed"}
         </Chip>
         {row.netExposure !== 0 && (
           <span className="text-[12px] text-ink-dim">

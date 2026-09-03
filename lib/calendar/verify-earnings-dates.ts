@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
-import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { getReadThroughReporterSymbols } from "@/lib/queries/read-through-pairs";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { extractJsonArray } from "@/lib/ai/extract-json";
@@ -74,13 +74,15 @@ export interface DateVerdict {
 }
 
 /**
- * Selects upcoming earnings rows worth verifying: held, watchlisted, or a
- * read-through reporter symbol (its print matters even though the user
- * doesn't own it directly) — with an unconfirmed date within the horizon.
+ * Selects upcoming earnings rows worth verifying: covered (held, watchlisted,
+ * or the event itself armed — spec §4.1), or a read-through reporter symbol
+ * (its print matters even though the user doesn't own it directly) — with an
+ * unconfirmed date within the horizon.
  *
  * SQL pre-filters on what it can see cheaply (type, supersede/verify/actual
- * state, date range); held/watchlist/reporter status requires a DB round
- * trip per symbol batch, so that filter runs in JS via getSymbolStatus.
+ * state, date range); event coverage (held/watchlist/armed) and reporter
+ * status require a DB round trip, so that filter runs in JS via
+ * coveredForEvents.
  *
  * Family-dedupes dual-class share symbols (GOOG/GOOGL) down to one row —
  * they're the same earnings print, verifying both would waste an AI call and
@@ -133,15 +135,8 @@ export function findDateVerificationCandidates(
   if (rows.length === 0) return [];
 
   const reporterSet = new Set(getReadThroughReporterSymbols(db).map((s) => s.toUpperCase()));
-  const status = getSymbolStatus(
-    db,
-    rows.map((r) => r.symbol),
-  );
-
-  const covered = rows.filter((r) => {
-    const u = r.symbol.toUpperCase();
-    return status[u] === "held" || status[u] === "watchlist" || reporterSet.has(u);
-  });
+  const coveredIds = coveredForEvents(db, rows.map((r) => ({ symbol: r.symbol, eventId: r.id })));
+  const covered = rows.filter((r) => coveredIds.has(r.id) || reporterSet.has(r.symbol.toUpperCase()));
 
   const seenFamilies = new Set<string>();
   const deduped: DateVerificationCandidate[] = [];

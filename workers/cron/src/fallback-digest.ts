@@ -10,7 +10,8 @@
  *   5. Send via Gmail REST with an italic footer noting fallback delivery.
  *
  * Guardrails:
- *   - Cap total new articles processed per run at 15 (latency + cost).
+ *   - Cap total new articles processed per run at MAX_ARTICLES_PER_RUN (see
+ *     its subrequest arithmetic below), for latency, cost AND the 50-subrequest cap.
  *   - Per-article failures are swallowed with a log; the digest still ships.
  *   - If the snapshot is missing, we refuse to send — no state ≠ better
  *     than a placeholder email.
@@ -32,15 +33,18 @@ import { todayET } from "./dst";
 import { sourceKind, editionLabel } from "./editions";
 import { fetchOvernightMovesWorker, renderOvernightLines } from "./overnight";
 import { buildTodaysReportersBlock } from "./todays-reporters";
+import { readArmedEventsDelta } from "./armed-events";
 
 // Workers Free plan caps each invocation at 50 subrequests. The digest does
 // 1 list call per source + 2 calls per processed article (getMessage + Claude)
-// + 1 Yahoo spark call for the Overnight block (2026-07-15).
-// 28 active sources × 1 list + 10 articles × 2 + 1 spark = 49 — the last
-// slot is spent by Resend/recipient work. Bumping any constant risks the
-// "Too many subrequests by single Worker invocation" failure that produced
-// the silent miss on 2026-05-20.
-const MAX_ARTICLES_PER_RUN = 10;
+// + 1 Yahoo spark call for the Overnight block (2026-07-15) + 1 KV read for
+// the armed-events delta (v2 slice A §4.1, v11 snapshots only).
+// 28 active sources × 1 list + 9 articles × 2 + 1 spark + 1 KV = 48, and the
+// Resend send spends the 49th — one slot of headroom left deliberately
+// (Ruling R25: the KV read is what took the old 10-article arithmetic to 50).
+// Bumping any constant risks the "Too many subrequests by single Worker
+// invocation" failure that produced the silent miss on 2026-05-20.
+const MAX_ARTICLES_PER_RUN = 9;
 const MAX_MESSAGES_PER_SOURCE = 1;
 
 export interface FallbackEnv {
@@ -211,8 +215,14 @@ export async function runFallbackDigest(
   // subrequest for all four symbols; a Yahoo failure degrades to no block.
   const overnightBlock = renderOvernightLines(await fetchOvernightMovesWorker(todayET()));
 
-  // Today's reporters (#18) — snapshot-only, zero subrequests.
-  const reportersBlock = buildTodaysReportersBlock(snapshot, todayET());
+  // Today's reporters (#18) — snapshot + the armed-events delta (v2 slice A
+  // §4.1): ONE KV read so a worksheet armed after the 2am snapshot still shows
+  // up, chipped `armed`. [F4] Skipped entirely below v11: `effectiveCalendarEvents`
+  // ignores a delta without a watermark (degraded-v10), so the read would buy
+  // nothing and this invocation has exactly one subrequest of headroom.
+  const armedDelta =
+    (snapshot.schemaVersion ?? 0) >= 11 ? await readArmedEventsDelta(env.CRON_KV) : null;
+  const reportersBlock = buildTodaysReportersBlock(snapshot, todayET(), armedDelta);
 
   // Combine: newly-processed on top (fresh today), then snapshot meta as context.
   const snapshotRecent = filterTodayArticles(snapshot.recentArticlesMeta);

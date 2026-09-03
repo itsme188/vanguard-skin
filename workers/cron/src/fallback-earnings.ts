@@ -45,7 +45,13 @@ import type {
   EarningsHistorySnapshotEntry,
   EarningsHistorySnapshotRow,
 } from "./state";
+import type { ArmedEventsDelta } from "./state";
 import { loadLatestSnapshot } from "./state";
+import {
+  effectiveCalendarEvents,
+  isCoveredInCloud,
+  readArmedEventsDelta,
+} from "./armed-events";
 import { briefingToHtml } from "./html";
 import { sendEmail } from "./resend";
 import { composeReleaseInstant } from "./reaction-matcher";
@@ -295,11 +301,11 @@ function buildWrapCluster(
   snapshot: Snapshot,
   slot: WrapSlot,
   date: string,
+  // Armed-events delta read once per run by the caller (v2 slice A §4.1) —
+  // an event armed after the 2am snapshot is covered like a held one.
+  delta: ArmedEventsDelta | null = null,
 ): WrapMember[] {
-  const heldSet = new Set(snapshot.heldSymbols.map((s) => s.toUpperCase()));
-  const watchSet = new Set(
-    (snapshot.watchlistSymbols ?? []).map((s) => s.toUpperCase()),
-  );
+  const eff = effectiveCalendarEvents(snapshot, delta);
   const muted = new Set(
     (snapshot.earningsSettings?.mutedSymbols ?? []).map((s) => s.toUpperCase()),
   );
@@ -312,14 +318,14 @@ function buildWrapCluster(
   );
 
   const raw: CalendarEventRow[] = [];
-  for (const e of snapshot.calendarEvents) {
+  for (const e of eff.events) {
     if (e.event_type !== "earnings") continue;
     if (!e.symbol) continue;
     if (e.superseded) continue;
     if (e.event_date !== date) continue;
     if (wrapSlotForCloud(e) !== slot) continue;
+    if (!isCoveredInCloud(snapshot, eff, e)) continue;
     const family = issuerSiblings(e.symbol).map((s) => s.toUpperCase());
-    if (!family.some((f) => heldSet.has(f) || watchSet.has(f))) continue;
     if (family.some((f) => muted.has(f))) continue;
     if (auditedRecap.has(e.id)) continue;
     raw.push(e);
@@ -387,9 +393,15 @@ export async function runEarningsFallback(
   // AMC ONLY (2026-08-04 decision, parity with lib/calendar/email-sweep.ts):
   // the defer-to-debrief rationale is AMC-specific — a BMO cluster's
   // individual recaps land the same morning, so BMO never suppresses.
+
+  // Armed-events delta: ONE KV read for the whole tick, threaded into both the
+  // wrap cluster and the candidate scan so they resolve the SAME effective
+  // calendar (deviation D2, and the 50-subrequest budget).
+  const armedDelta = await readArmedEventsDelta(env.CRON_KV);
+
   const suppressedRecapIds = new Set<number>();
   {
-    const cluster = buildWrapCluster(snapshot, "AMC", date);
+    const cluster = buildWrapCluster(snapshot, "AMC", date, armedDelta);
     if (cluster.length >= WRAP_THRESHOLD) {
       for (const m of cluster) {
         suppressedRecapIds.add(m.eventId);
@@ -406,7 +418,13 @@ export async function runEarningsFallback(
     }
   }
 
-  const scan = await findCandidatesFromSnapshot(snapshot, now, env.CRON_KV, suppressedRecapIds);
+  const scan = await findCandidatesFromSnapshot(
+    snapshot,
+    now,
+    env.CRON_KV,
+    suppressedRecapIds,
+    armedDelta,
+  );
 
   // Mac-aliveness gate — PREVIEWS ONLY (2026-08-05, the APP/MELI race). The
   // Mac posts `mac-recent-earnings-sweep` (25-min TTL) after every successful
@@ -584,12 +602,12 @@ async function findCandidatesFromSnapshot(
   // recap sends are suppressed (road-1 AND road-2), and road-2's KV probe is
   // skipped so the wrap owns the only read. Defaults empty → no behavior change.
   suppressedRecapIds: Set<number> = new Set(),
+  // Armed-events delta, read ONCE per run by the caller (one KV read for the
+  // whole tick — the subrequest budget is why it is threaded, not re-read).
+  delta: ArmedEventsDelta | null = null,
 ): Promise<{ candidates: SnapshotCandidate[]; skips: ScanSkip[] }> {
   const nowMs = now.getTime();
-  const heldSet = new Set(snapshot.heldSymbols.map((s) => s.toUpperCase()));
-  const watchSet = new Set(
-    (snapshot.watchlistSymbols ?? []).map((s) => s.toUpperCase()),
-  );
+  const eff = effectiveCalendarEvents(snapshot, delta);
   const muted = new Set(
     (snapshot.earningsSettings?.mutedSymbols ?? []).map((s) => s.toUpperCase()),
   );
@@ -609,7 +627,7 @@ async function findCandidatesFromSnapshot(
   const out: SnapshotCandidate[] = [];
   const skips: ScanSkip[] = [];
 
-  for (const e of snapshot.calendarEvents) {
+  for (const e of eff.events) {
     if (e.event_type !== "earnings") continue;
     if (!e.symbol) continue;
     // Cross-source duplicate guard: one print can carry two calendar rows
@@ -620,12 +638,15 @@ async function findCandidatesFromSnapshot(
     // previews doubled while the Mac slept).
     if (e.superseded) continue;
     const sym = e.symbol.toUpperCase();
-    // B20: family walk so a GOOGL event with GOOG held isn't dropped, plus
-    // watchlist coverage (snapshot v8 ships watchlistSymbols; older
-    // snapshots degrade to held-only via ?? []). Mirrors the push-at-print
-    // gate in calendar-enrich.ts.
+    // Coverage = ARMED (an event fact — v2 slice A §4.1) OR the classic
+    // family-aware held/watchlist walk, so a GOOGL event with GOOG held isn't
+    // dropped and watchlist names still count (snapshot v8 ships
+    // watchlistSymbols; older snapshots degrade to held-only). Mirrors the
+    // push-at-print gate in calendar-enrich.ts.
+    if (!isCoveredInCloud(snapshot, eff, e)) continue;
+    // Muting is symbol-level and beats arming — an explicitly muted name must
+    // stay silent however the event was covered.
     const family = issuerSiblings(sym).map((s) => s.toUpperCase());
-    if (!family.some((f) => heldSet.has(f) || watchSet.has(f))) continue;
     if (family.some((f) => muted.has(f))) continue;
 
     // Preview candidate

@@ -108,6 +108,18 @@ vi.mock("@/lib/transcripts/same-day", () => ({
 // (nothing here sets earnings_worksheet_flags.armed=1), so mocking this out
 // doesn't change any other test's outcome — it only lets the new ordering
 // test below observe invocationCallOrder against sendPreview.
+// R8 (v2 slice A): the sweep now reconciles the armed-events outbox before
+// draining it. The WRITER must stay real (these tests assert the row it
+// writes); only the sender is stubbed, so a developer with WORKER_MARKER_URL
+// exported in their shell can never make this file talk to the Worker.
+const drainCloudOutbox = vi.hoisted(() =>
+  vi.fn(async (..._args: unknown[]) => ({ sent: 0, failed: 0, skipped: null })),
+);
+vi.mock("@/lib/earnings/cloud-outbox", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/earnings/cloud-outbox")>();
+  return { ...actual, drainCloudOutbox: (...a: unknown[]) => drainCloudOutbox(...a) };
+});
+
 const printArmed = vi.hoisted(() =>
   vi.fn(async (..._args: unknown[]) => ({ printed: 0 })),
 );
@@ -118,6 +130,11 @@ vi.mock("@/lib/earnings/worksheet", () => ({
 import { runEarningsEmailSweep, alertBlockedRecaps } from "@/lib/calendar/email-sweep";
 import { EarningsEmailError } from "@/lib/digest/send-earnings-email";
 import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
+import { readArmedGeneration } from "@/lib/earnings/armed-events-projection";
+import {
+  registerPrepareStep,
+  __resetPrepareStepsForTests,
+} from "@/lib/earnings/prepare-armed-event";
 
 // 2h before 16:30 ET release = 20:30 UTC. Same construction as
 // tests/calendar/findEmailCandidates-skip.test.ts's AAPL preview case —
@@ -1219,5 +1236,263 @@ describe("runEarningsEmailSweep mac-aliveness marker", () => {
     seedHeldPreviewCandidate(db, "AAPL");
     await runEarningsEmailSweep(db, { now: NOW });
     expect(postAliveMarker).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * R8 (live print v2 slice A): the Worker learns about armed worksheets only
+ * through cloud_outbox rows. Without a periodic reconcile it would never hear
+ * about events that were already armed before the outbox existed (or armed by
+ * a path that failed to write) — so every sweep tick re-derives the projection
+ * and lets D10 decide whether that is a new generation.
+ */
+describe("armed-events outbox reconcile (R8)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    fetchCloudSent.mockClear();
+    fetchCloudSent.mockResolvedValue([]);
+    runMorningDebrief.mockClear();
+    runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
+    fetchSameDayTranscripts.mockClear();
+    fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
+    drainCloudOutbox.mockClear();
+  });
+
+  /** An event armed with NO outbox row — the pre-outbox production state. */
+  const seedArmedWithoutOutbox = (symbol: string) => {
+    const id = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, title, source_key, symbol)
+           VALUES ('finnhub','earnings','2026-09-02','AMC','16:15',?,?,?)`,
+        )
+        .run(`${symbol} earnings`, `finnhub:${symbol}:2026-09-02`, symbol).lastInsertRowid,
+    );
+    db.prepare(`INSERT INTO earnings_worksheet_flags (event_id) VALUES (?)`).run(id);
+    return id;
+  };
+
+  it("writes a generation for an already-armed event the outbox never heard about", async () => {
+    const id = seedArmedWithoutOutbox("ACME");
+    expect(readArmedGeneration(db)).toBe(0);
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.outboxReconciled).toBe(true);
+    expect(readArmedGeneration(db)).toBe(1);
+    const payload = JSON.parse(
+      (
+        db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as {
+          payload_json: string;
+        }
+      ).payload_json,
+    );
+    expect(payload.entries).toEqual([expect.objectContaining({ eventId: id, symbol: "ACME" })]);
+    expect(drainCloudOutbox).toHaveBeenCalled();
+  });
+
+  it("a second tick with no change writes nothing (D10)", async () => {
+    seedArmedWithoutOutbox("ACME");
+    await runEarningsEmailSweep(db, { now: NOW });
+    const second = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(second.outboxReconciled).toBe(false);
+    expect(readArmedGeneration(db)).toBe(1);
+    expect(
+      (db.prepare(`SELECT COUNT(*) AS n FROM cloud_outbox`).get() as { n: number }).n,
+    ).toBe(1);
+  });
+
+  it("a failing reconcile warns but never aborts the sweep", async () => {
+    seedArmedWithoutOutbox("ACME");
+    db.exec(`DROP TABLE cloud_outbox`);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.outboxReconciled).toBe(false);
+    expect(summary.swept).toBe(0);
+    warn.mockRestore();
+  });
+});
+
+/**
+ * Prepare pass (live print v2 slice A): the route's post-arm kick is
+ * fire-and-forget, so the sweep tick is the DURABLE path — every tick
+ * re-runs every runnable prepare step for every armed, unsuperseded,
+ * not-yet-past event, and reconciles rows an arm never managed to enqueue.
+ */
+describe("prepare pass for armed events (v2 slice A)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    fetchCloudSent.mockClear();
+    fetchCloudSent.mockResolvedValue([]);
+    runMorningDebrief.mockClear();
+    runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
+    fetchSameDayTranscripts.mockClear();
+    fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
+    drainCloudOutbox.mockClear();
+    postAliveMarker.mockClear();
+    __resetPrepareStepsForTests();
+  });
+
+  afterEach(() => {
+    __resetPrepareStepsForTests();
+    db.close();
+  });
+
+  /** Armed, in the future relative to NOW (2026-06-01), and never enqueued. */
+  const seedArmed = (symbol: string) => {
+    const id = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, title, source_key, symbol)
+           VALUES ('finnhub','earnings','2026-09-02','AMC','16:15',?,?,?)`,
+        )
+        .run(`${symbol} earnings`, `finnhub:${symbol}:2026-09-02`, symbol).lastInsertRowid,
+    );
+    db.prepare(`INSERT INTO earnings_worksheet_flags (event_id) VALUES (?)`).run(id);
+    return id;
+  };
+
+  /**
+   * [F3] The aliveness marker is what tells the Worker to defer previews to the
+   * Mac's wider window; a prepare pass that can legitimately run for minutes
+   * must never sit in front of it. The transcript pass moves with it for the
+   * same reason.
+   */
+  it("[F3] posts the Mac-aliveness marker BEFORE the prepare and transcript passes", async () => {
+    const stepRun = vi.fn(async () => ({ status: "done" as const }));
+    registerPrepareStep("ordering_step", { fingerprint: () => "fp", run: stepRun });
+    seedArmed("ACME");
+
+    await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(postAliveMarker).toHaveBeenCalledTimes(1);
+    expect(stepRun).toHaveBeenCalledTimes(1);
+    expect(stepRun.mock.invocationCallOrder[0]).toBeGreaterThan(
+      postAliveMarker.mock.invocationCallOrder[0],
+    );
+    expect(fetchSameDayTranscripts.mock.invocationCallOrder[0]).toBeGreaterThan(
+      postAliveMarker.mock.invocationCallOrder[0],
+    );
+  });
+
+  /**
+   * [F3] The pass budget is wall-clock, so this one runs on the REAL clock
+   * (the sweep's `now` override freezes the runner's clock and with it the
+   * budget) against an event dated a week out.
+   */
+  it("[F3] a pass that blows its budget stops early and the sweep summary says so", async () => {
+    const started: string[] = [];
+    for (const name of ["a", "b", "c"]) {
+      registerPrepareStep(name, {
+        fingerprint: () => "fp",
+        run: async () => {
+          started.push(name);
+          await new Promise((r) => setTimeout(r, 60));
+          return { status: "done" };
+        },
+      });
+    }
+    const future = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+    const id = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, title, source_key, symbol)
+           VALUES ('finnhub','earnings',?,'AMC','16:15','ACME earnings','finnhub:ACME:future','ACME')`,
+        )
+        .run(future).lastInsertRowid,
+    );
+    db.prepare(`INSERT INTO earnings_worksheet_flags (event_id) VALUES (?)`).run(id);
+
+    const summary = await runEarningsEmailSweep(db, { prepareBudgetMs: 40 });
+
+    expect(started).toHaveLength(1);
+    expect(summary.prepared).toMatchObject({ ran: 1, done: 1, budgetExhausted: true });
+  }, 15_000);
+
+  it("a registered step on an armed future event runs once per tick and the summary reports it", async () => {
+    const runs: number[] = [];
+    registerPrepareStep("sweep_step", {
+      fingerprint: () => "fp",
+      run: async (_db, eventId) => {
+        runs.push(eventId);
+        return { status: "done" };
+      },
+    });
+    const id = seedArmed("ACME");
+
+    const first = await runEarningsEmailSweep(db, { now: NOW });
+    expect(first.prepared).toEqual({ ran: 1, done: 1, pending: 0, failed: 0, skipped: 0 });
+    expect(runs).toEqual([id]);
+    expect(
+      db
+        .prepare(`SELECT status, attempts FROM earnings_prepare_steps WHERE event_id = ?`)
+        .get(id),
+    ).toMatchObject({ status: "done", attempts: 1 });
+
+    // Done + unchanged fingerprint = nothing to do on the next tick.
+    const second = await runEarningsEmailSweep(db, { now: NOW });
+    expect(second.prepared).toEqual({ ran: 0, done: 0, pending: 0, failed: 0, skipped: 0 });
+    expect(runs).toEqual([id]);
+  });
+
+  /**
+   * Fix round 1, item 1: a fingerprint that throws is the STEP's failure, not
+   * the pass's. Before the fix it rejected runPrepareSteps, the sweep swallowed
+   * it, and EVERY step on EVERY armed event got nothing that tick — forever,
+   * with no row touched and nothing the attempt cap could retire.
+   */
+  it("a step whose fingerprint throws fails only its own row; other steps and events still run", async () => {
+    registerPrepareStep("boom", {
+      fingerprint: () => {
+        throw new Error("fingerprint blew up");
+      },
+      run: async () => ({ status: "done" }),
+    });
+    const healthyRuns: number[] = [];
+    registerPrepareStep("ok_step", {
+      fingerprint: () => "fp",
+      run: async (_db, eventId) => {
+        healthyRuns.push(eventId);
+        return { status: "done" };
+      },
+    });
+    const a = seedArmed("ACME");
+    const b = seedArmed("BETA");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.swept).toBe(0);
+    // Two events x (one healthy invocation + one fingerprint failure).
+    expect(summary.prepared).toEqual({ ran: 2, done: 2, pending: 0, failed: 2, skipped: 0 });
+    expect(healthyRuns.sort((x, y) => x - y)).toEqual([a, b].sort((x, y) => x - y));
+
+    const stepRow = (eventId: number, step: string) =>
+      db
+        .prepare(
+          `SELECT status, attempts, last_error FROM earnings_prepare_steps WHERE event_id = ? AND step = ?`,
+        )
+        .get(eventId, step) as { status: string; attempts: number; last_error: string | null };
+
+    for (const id of [a, b]) {
+      expect(stepRow(id, "boom")).toMatchObject({ status: "failed", attempts: 1 });
+      expect(stepRow(id, "boom").last_error).toMatch(/fingerprint blew up/);
+      expect(stepRow(id, "ok_step")).toMatchObject({ status: "done", attempts: 1 });
+    }
+    expect(warn.mock.calls.some((c) => c.join(" ").includes("fingerprint blew up"))).toBe(true);
+    warn.mockRestore();
   });
 });

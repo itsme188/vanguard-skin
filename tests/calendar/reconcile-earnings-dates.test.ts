@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
+import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 
 let db: Database.Database;
 
@@ -237,6 +238,31 @@ describe("reconcileEarningsDates — enrichment carry-forward", () => {
     expect(
       (db.prepare("SELECT event_id FROM earnings_email_skips").get() as { event_id: number }).event_id,
     ).toBe(manual);
+  });
+
+  it("moves an armed superseded row's worksheet flag onto the canonical, writing exactly one outbox row (a second pass writes none)", () => {
+    const nasdaq = seed({ source: "nasdaq", symbol: "NKE", date: "2026-06-09" });
+    const manual = seed({
+      source: "manual",
+      symbol: "NKE",
+      date: "2026-06-09",
+      dateStatus: "user_confirmed",
+    });
+    armWorksheet(db, nasdaq); // generation 1: [nasdaq armed]
+    const outboxRows = () =>
+      (db.prepare("SELECT COUNT(*) AS n FROM cloud_outbox").get() as { n: number }).n;
+    const before = outboxRows();
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(db.prepare("SELECT event_id FROM earnings_worksheet_flags").all()).toEqual([
+      { event_id: manual },
+    ]);
+    expect(outboxRows()).toBe(before + 1);
+
+    // Idempotent at the outbox level: the donor has nothing left to give.
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(outboxRows()).toBe(before + 1);
   });
 
   it("keeps the canonical's audit row when re-pointing would violate UNIQUE(event_id, phase)", () => {

@@ -14,6 +14,8 @@ import {
 import { fetchTranscript } from "@/lib/transcripts/fetch";
 import { upsertTranscript } from "@/lib/mutations/transcripts";
 import { generateTextForFeature } from "@/lib/ai/generate";
+import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
+import { todayET, nowET, addDays } from "@/lib/calendar/date-utils";
 import type { EarningsTranscript } from "@/lib/types";
 
 vi.mock("@/lib/transcripts/fetch", async (importOriginal) => ({
@@ -216,6 +218,39 @@ describe("fetchSameDayTranscripts", () => {
 
     expect(result).toEqual({ attempted: 1, fetched: 1 });
     expect(mockedFetch).toHaveBeenCalledWith(db, "AAA", expect.any(Number), expect.any(Number));
+    expect(getAttemptedAt(eventId)).not.toBeNull();
+  });
+
+  // fetchSameDayTranscripts' getSymbolStatus call takes no `today` override
+  // (real wall-clock, spec §4.1) — so unlike this file's other cases, the
+  // symbol-level armed signal has to be seeded relative to REAL today, not
+  // the fixture NOW. The release event itself can stay anchored to NOW
+  // (only the armed FLAG's own event needs to sit inside the real horizon);
+  // seeding both from real "now" keeps every date self-consistent regardless
+  // of when the suite runs (same fix as 1736248).
+  it("attempts an armed-only (unheld, unwatched) symbol with actuals inside the fresh window", async () => {
+    const nowReal = new Date();
+    const releaseAt = new Date(nowReal.getTime() - 3 * 60 * 60 * 1000);
+    const eventId = seedEvent({
+      symbol: "ARM1",
+      date: todayET(releaseAt),
+      releaseTime: nowET(releaseAt),
+    });
+    // A second, unrelated earnings event for the same symbol inside the real
+    // 14-day armed horizon — getArmedSymbolsInHorizon is symbol-level, not
+    // tied to the specific event under test.
+    const today = todayET(nowReal);
+    const armedFlagEventId = seedEvent({
+      symbol: "ARM1",
+      date: addDays(today, 1),
+      releaseTime: "16:00",
+    });
+    armWorksheet(db, armedFlagEventId);
+    mockedFetch.mockResolvedValue(fakeFetchResult());
+
+    const result = await fetchSameDayTranscripts(db, { now: nowReal });
+
+    expect(result.attempted).toBe(1);
     expect(getAttemptedAt(eventId)).not.toBeNull();
   });
 

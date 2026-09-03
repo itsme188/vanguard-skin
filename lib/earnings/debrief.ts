@@ -16,9 +16,10 @@
  *     stays a complete "what happened" record without re-narrating names
  *     the user already got a full email about.
  *
- * Semantics mirror lib/earnings/wrap.ts::getExpectedRecapCluster (held or
- * watchlisted, family-deduped, muted/toggle-respecting, superseded rows
- * excluded) with two deliberate differences:
+ * Semantics mirror lib/earnings/wrap.ts::getExpectedRecapCluster (covered —
+ * held, watchlisted, or the event itself armed, spec §4.1 — family-deduped,
+ * muted/toggle-respecting, superseded rows excluded) with two deliberate
+ * differences:
  *   1. Window is [yesterday ET, today ET] by event_date, not a same-day
  *      (date, slot) cluster.
  *   2. A live 'in_progress' recap claim EXCLUDES the event from `unsent`
@@ -30,7 +31,7 @@
  */
 
 import type Database from "better-sqlite3";
-import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earnings-settings";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
@@ -128,16 +129,11 @@ export function findDebriefCandidates(
     .all(lookbackStart, today, today) as DebriefCandidate[];
 
   const settings = getEarningsSettings(db);
-  const status = getSymbolStatus(
-    db,
-    rawRows.map((r) => r.symbol),
-  );
+  const coveredIds = coveredForEvents(db, rawRows.map((r) => ({ symbol: r.symbol, eventId: r.eventId })));
 
-  let candidates = rawRows.filter((r) => {
-    const st = status[r.symbol.toUpperCase()];
-    if (st !== "held" && st !== "watchlist") return false;
-    return shouldSendEarningsEmail(settings, r.symbol);
-  });
+  let candidates = rawRows.filter(
+    (r) => coveredIds.has(r.eventId) && shouldSendEarningsEmail(settings, r.symbol),
+  );
 
   // Release-recency filter: a known release_time under an hour old is held
   // back for the sweep to own; unknown release_time is never held back.

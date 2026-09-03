@@ -2,8 +2,8 @@
  * Same-day transcript orchestrator (#12 B1).
  *
  * Runs as the LAST step of the earnings email sweep (after `alertBlockedRecaps`
- * — see lib/calendar/email-sweep.ts). For each held/watchlist earnings print
- * whose actuals have landed within the last 36h, kicks off `fetchTranscript`
+ * — see lib/calendar/email-sweep.ts). For each held/watchlist/armed earnings
+ * print whose actuals have landed within the last 36h, kicks off `fetchTranscript`
  * (lib/transcripts/fetch.ts) so a transcript is warm in cache by the time the
  * user or the recap composer wants one, without waiting for someone to open
  * the chat tool and trigger a cold fetch.
@@ -18,7 +18,8 @@
  *   - family-deduped (dedupeByFamily below — mirrors
  *     lib/earnings/wrap.ts::dedupeByFamily / enrichment-runner's
  *     dedupeCrossSourceRows, neither of which is exported)
- *   - held or watchlist (getSymbolStatus)
+ *   - held, watchlist, or armed (getSymbolStatus — symbol-only consumer,
+ *     no event id to key coveredForEvents on, so armed counts too: spec §4.1)
  *   - no cached transcript for the (ticker, filing-reporting year, quarter)
  *     derived from event_date via deriveFilingReportingQuarter — EXCEPT a
  *     cached `edgar_8k` row, which is an UPGRADE candidate (see below)
@@ -75,6 +76,7 @@ import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { generateTextForFeature } from "@/lib/ai/generate";
 import { upsertTranscript } from "@/lib/mutations/transcripts";
 import type { EarningsTranscript } from "@/lib/types";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 const PACING_MS = 30 * 60 * 1000; // 30 minutes between attempts per event
 const DEADLINE_MS = 36 * 60 * 60 * 1000; // 36h same-day-ish window from release
@@ -248,10 +250,8 @@ export async function fetchSameDayTranscripts(
   // stricter 24h pacing in JS below, where the cache lookup tells the two
   // classes apart. Final release-instant window check also happens in JS —
   // release_time is ET wall-clock.
-  const today = new Date(nowMs).toISOString().slice(0, 10);
-  const rangeStart = new Date(nowMs - UPGRADE_DEADLINE_MS - 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 10);
+  const today = todayET(now);
+  const rangeStart = addDays(today, -(Math.ceil(UPGRADE_DEADLINE_MS / 86_400_000) + 1));
   const pacingCutoff = new Date(nowMs - PACING_MS).toISOString().replace("T", " ").slice(0, 19);
 
   const rows = db
@@ -285,9 +285,12 @@ export async function fetchSameDayTranscripts(
     new Set(deduped.map((r) => r.symbol!.toUpperCase())),
   );
   const status = getSymbolStatus(db, symbols);
+  // Symbol-only consumer (no event id to key on) — armed is DISPLAY-ONLY
+  // everywhere else, but a same-day transcript fetch has no event-scoped
+  // decision to make, so it counts armed like held/watchlist (spec §4.1).
   const covered = deduped.filter((r) => {
     const st = status[r.symbol!.toUpperCase()];
-    return st === "held" || st === "watchlist";
+    return st === "held" || st === "watchlist" || st === "armed";
   });
 
   // Classify each candidate by cache state. A cached NON-edgar transcript is

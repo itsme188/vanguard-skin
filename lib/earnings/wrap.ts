@@ -3,8 +3,9 @@
  * lives in lib/earnings/wrap-send.ts.
  *
  * A (date, slot) cluster is in WRAP MODE when its expected-unsent recap
- * count reaches WRAP_THRESHOLD. Expected = held/watchlist (family-aware),
- * family-deduped, not superseded/skipped/muted, recap not completed.
+ * count reaches WRAP_THRESHOLD. Expected = covered (held/watchlist
+ * family-aware, or the event itself armed — spec §4.1), family-deduped,
+ * not superseded/skipped/muted, recap not completed.
  * An 'in_progress' claim row keeps the event a member (someone is sending
  * it — usually the wrap itself mid-flight).
  *
@@ -14,7 +15,7 @@
 import type Database from "better-sqlite3";
 import { mondayOf } from "@/lib/calendar/date-utils";
 import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
-import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earnings-settings";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import type { CalendarEvent } from "@/lib/types";
@@ -96,7 +97,7 @@ export function getExpectedRecapCluster(
   );
   if (events.length === 0) return [];
 
-  const status = getSymbolStatus(db, events.map((e) => e.symbol!));
+  const coveredIds = coveredForEvents(db, events.map((e) => ({ symbol: e.symbol!, eventId: e.id })));
   const settings = getEarningsSettings(db);
 
   const ids = events.map((e) => e.id);
@@ -116,8 +117,7 @@ export function getExpectedRecapCluster(
   );
 
   const filtered = events.filter((e) => {
-    const st = status[e.symbol!.toUpperCase()];
-    if (st !== "held" && st !== "watchlist") return false;
+    if (!coveredIds.has(e.id)) return false;
     if (sentRecaps.has(e.id) || skipped.has(e.id)) return false;
     if (!shouldSendEarningsEmail(settings, e.symbol!)) return false;
     return true;
