@@ -107,7 +107,12 @@ export function buildIrBaselineStep(
             linkMustContain: source.link_must_contain,
           },
           seen,
-          (url, opts) => fetchBytes(url, { ...opts, allowHost }),
+          // [R13] The runner's cancellation reaches the SOCKET, not just the
+          // checks around it: an invocation the runner has raced and moved on
+          // from must not hold a hung newsroom open for the rest of the
+          // fetch's own 20-second budget while its successor is already
+          // running.
+          (url, opts) => fetchBytes(url, { ...opts, allowHost, signal: ctx.signal }),
           { baseline: true },
         );
       } catch (err) {

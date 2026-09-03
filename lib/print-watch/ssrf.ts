@@ -25,12 +25,14 @@ export function validatePublicUrl(raw: string): SsrfVerdict {
   if (url.protocol !== "https:") return { ok: false, reason: "only https:// links are accepted" };
   if (url.username || url.password) return { ok: false, reason: "links with embedded credentials are refused" };
   if (url.port && url.port !== "443") return { ok: false, reason: "only port 443 is accepted" };
-  // Strip a trailing-dot FQDN (Node's WHATWG URL keeps it: "localhost."
+  // Strip EVERY trailing dot (Node's WHATWG URL keeps them: "localhost.."
   // survives to url.hostname) and lower-case before any local-name or
-  // literal-IP check, so a trailing dot can't smuggle a local host past
-  // the guard below. IPv4 literals are already dotted-quad-normalized by
-  // the URL parser itself, so this is a no-op for them.
-  const hostname = stripBrackets(url.hostname).replace(/\.$/, "").toLowerCase();
+  // literal-IP check, so a trailing dot can't smuggle a local host past the
+  // guard below. Stripping only ONE left "https://localhost../x" passing this
+  // check, with nothing but the resolver's routability gate behind it. IPv4
+  // literals are already dotted-quad-normalized by the URL parser itself, so
+  // this is a no-op for them.
+  const hostname = stripBrackets(url.hostname).replace(/\.+$/, "").toLowerCase();
   if (!hostname) return { ok: false, reason: "not a valid URL" };
   if (hostname === "localhost" || hostname.endsWith(".localhost")) {
     return { ok: false, reason: "local hostnames are refused" };

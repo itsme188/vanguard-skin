@@ -38,6 +38,14 @@ export interface HardenedFetchBytesOptions {
   request?: RequestLike;
   /** Applied to the initial host AND every redirect hop (the IR lane passes its allowlist). */
   allowHost?: (hostname: string) => boolean;
+  /**
+   * The CALLER's cancellation, composed with the internal budget: whichever
+   * fires first refuses the fetch, and the message says which (a prepare step
+   * the runner has given up on must not keep a socket open for the rest of the
+   * 20-second budget). Never replaces the budget — a caller who forgets to
+   * abort still gets one.
+   */
+  signal?: AbortSignal;
 }
 
 const HINT_403 = "wire syndicators often block direct fetches — paste the company's IR-site link or the EDGAR exhibit instead";
@@ -92,6 +100,10 @@ function readCappedStream(
   label: string,
   shownUrl: string,
   closeSocket: () => void,
+  /** The one refusal factory for this fetch: it knows whether the budget
+   *  lapsed or the caller cancelled, so a body read reports the same reason
+   *  every other hop does. */
+  aborted: () => UrlFetchRefused,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -99,7 +111,7 @@ function readCappedStream(
     const onAbort = () => {
       res.destroy();
       closeSocket();
-      reject(new UrlFetchRefused(`${label}: timed out reading ${shownUrl}`));
+      reject(aborted());
     };
     signal.addEventListener("abort", onAbort, { once: true });
     res.on("data", (chunk: Buffer) => {
@@ -134,12 +146,36 @@ export async function hardenedFetchBytes(
   const timeoutMs = opts.timeoutMs ?? URL_FETCH_TIMEOUT_MS;
   const lookup = opts.lookup ?? undefined;
   const request = opts.request ?? https.request;
+  // ONE controller for the whole fetch, fed by TWO sources: the internal
+  // budget and the caller's signal. `cause` is latched by whichever fires
+  // first so the refusal names the real reason — "timed out after 20000ms" on
+  // a hung host, "aborted by the caller" when the prepare runner's deadline
+  // already passed and this invocation is a ghost.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let cause: "timeout" | "caller" = "timeout";
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+  const onCallerAbort = () => {
+    if (!controller.signal.aborted) cause = "caller";
+    controller.abort();
+  };
   const shownStart = redactUrl(rawUrl);
-  const timedOut = () => new UrlFetchRefused(`${label}: timed out after ${timeoutMs}ms (${shownStart})`);
+  const timedOut = () =>
+    new UrlFetchRefused(
+      cause === "caller"
+        ? `${label}: aborted by the caller (${shownStart})`
+        : `${label}: timed out after ${timeoutMs}ms (${shownStart})`,
+    );
+  if (opts.signal) {
+    if (opts.signal.aborted) onCallerAbort();
+    else opts.signal.addEventListener("abort", onCallerAbort);
+  }
 
   try {
+    // Nothing is resolved, connected or written once the fetch is already off:
+    // an aborted caller signal refuses before the first DNS answer is asked for.
+    if (controller.signal.aborted) throw timedOut();
     let current = rawUrl;
     for (let hop = 0; ; hop += 1) {
       const verdict = validatePublicUrl(current);
@@ -262,7 +298,7 @@ export async function hardenedFetchBytes(
         closeSocket();
         throw new UrlFetchRefused(`${label}: content-length ${declared} exceeds ${maxBytes}-byte cap (${shown})`);
       }
-      const bytes = await readCappedStream(res, maxBytes, controller.signal, label, shown, closeSocket);
+      const bytes = await readCappedStream(res, maxBytes, controller.signal, label, shown, closeSocket, timedOut);
       const contentTypeHeader = res.headers["content-type"];
       return {
         bytes,
@@ -273,12 +309,22 @@ export async function hardenedFetchBytes(
     }
   } finally {
     clearTimeout(timer);
+    opts.signal?.removeEventListener("abort", onCallerAbort);
   }
 }
 
 /**
- * Type by magic bytes (spec §4.2): `%PDF-` first; then HTML; then text, only
- * if the first 4KB has no NUL and under 2% control bytes; else binary.
+ * Type by magic bytes (spec §4.2): `%PDF-` first; then the BINARY check — no
+ * NUL and under 2% control bytes in the first 4KB — and only then the HTML
+ * sniff, with plain text as the remainder.
+ *
+ * ORDER MATTERS (Task 9 ruling). The HTML sniff is a substring test, and a
+ * binary blob whose first byte happens to be `<` (or which contains the bytes
+ * of "<table" anywhere in 4KB, as compressed and image data routinely do) used
+ * to be classified HTML ahead of the NUL check — handing the representations
+ * layer, and then the model, a buffer that is not text at all. A UTF-16 page
+ * lands here too: everything downstream reads the bytes as utf8, so NUL-
+ * separated ASCII is not something we can parse.
  *
  * The HTML rule is deliberately v1's (controller ruling R-B12): a leading `<`
  * after an optional BOM and whitespace, OR `<table` / `<html` / `<!doctype`
@@ -297,6 +343,13 @@ export function classifyBytes(buf: Buffer): BytesKind | "binary" {
   if (buf.subarray(0, 5).toString("latin1") === "%PDF-") return "pdf";
   let head = buf.subarray(0, 4096);
   if (head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) head = head.subarray(3);
+  if (head.length === 0) return "binary";
+  let control = 0;
+  for (const b of head) {
+    if (b === 0) return "binary";
+    if (b < 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0d) control += 1;
+  }
+  if (control / head.length >= 0.02) return "binary";
   const lower = head.toString("latin1").toLowerCase();
   if (
     lower.trimStart().startsWith("<") ||
@@ -306,11 +359,5 @@ export function classifyBytes(buf: Buffer): BytesKind | "binary" {
   ) {
     return "html";
   }
-  if (head.length === 0) return "binary";
-  let control = 0;
-  for (const b of head) {
-    if (b === 0) return "binary";
-    if (b < 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0d) control += 1;
-  }
-  return control / head.length < 0.02 ? "text" : "binary";
+  return "text";
 }

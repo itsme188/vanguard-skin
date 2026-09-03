@@ -2316,6 +2316,63 @@ describe("pipeline", () => {
     expect(fake.extractPdfCalls).toHaveLength(1);
   });
 
+  // Task 9/10 minor, ruled in. Text identity (M13) deduped these bytes onto an
+  // EXISTING document whose `bytes_path` points somewhere else, so the file we
+  // had just written is referenced by nothing: no row, no re-parse, no
+  // retention rule. Left behind it is a private release sitting on disk that
+  // nothing will ever read or clean up.
+  it("a text-identity duplicate deletes the bytes it just wrote (nothing references them)", async () => {
+    const { printId } = seedAcmePrint();
+    fake.pdfText = async () => acmePdfText();
+    fake.extract = async () => [candidate("revenue_q", 1000)];
+    fake.extractPdf = async () => [candidate("revenue_q", 1000)];
+
+    const first = await ingestDocument(db, printId, "user-drop", "u1.pdf", null, PDF_BYTES);
+    const [doc] = listDocuments(db, printId);
+    const dir = path.join(tmpRoot, String(printId));
+    const resaved = Buffer.from("%PDF-1.7\n%resaved by another writer\n");
+    const second = await ingestDocument(db, printId, "user-drop", "u2.pdf", null, resaved);
+
+    expect(second).toMatchObject({ docId: first.docId, isNew: false });
+    // The survivor keeps BOTH of its files; the re-saved copy left nothing.
+    expect(fs.existsSync(doc.bytes_path)).toBe(true);
+    expect(fs.existsSync(textPathFor(doc.bytes_path))).toBe(true);
+    expect(fs.readdirSync(dir).sort()).toEqual(
+      [path.basename(doc.bytes_path), path.basename(textPathFor(doc.bytes_path))].sort(),
+    );
+  });
+
+  it("the same cleanup on the text road: whitespace-only differences leave one file", async () => {
+    const { eventId } = seedArmedEvent();
+    ensurePrintWatch(db);
+    const printId = printIdFor(eventId);
+    fake.extract = async () => [candidate("eps_adj_q", 1.05)];
+
+    const first = await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "drop:a.txt",
+      null,
+      Buffer.from(NVDA_RELEASE_TEXT, "utf8"),
+    );
+    const [doc] = listDocuments(db, printId);
+    const second = await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "drop:b.txt",
+      null,
+      // Same words, re-wrapped: different sha256, identical normalised text.
+      Buffer.from(NVDA_RELEASE_TEXT.replace(/ /g, "  "), "utf8"),
+    );
+
+    expect(second).toMatchObject({ docId: first.docId, isNew: false });
+    expect(fs.readdirSync(path.join(tmpRoot, String(printId)))).toEqual([
+      path.basename(doc.bytes_path),
+    ]);
+  });
+
   it("a refusal on a RE-delivery never deletes the bytes an existing document owns", async () => {
     const { printId } = seedAcmePrint();
     fake.pdfText = async () => acmePdfText();

@@ -171,6 +171,55 @@ describe("hardenedFetchBytes", () => {
     expect(calls).toHaveLength(0);
   });
 
+  // Task 12 ruling. The prepare-step runner races each step against its own
+  // deadline and aborts the invocation it gave up on; without a caller signal
+  // a hung IR page kept the socket open for the whole 20-second budget after
+  // the runner had already moved on.
+  it("honours a caller AbortSignal composed with the internal budget, and says which one fired", async () => {
+    const { request, destroyed } = fakeRequest({ "https://a.example/hang": { status: 200, hang: true } });
+    const controller = new AbortController();
+    const pending = hardenedFetchBytes("https://a.example/hang", {
+      label: "t",
+      lookup: PUBLIC,
+      request,
+      timeoutMs: 10_000,
+      signal: controller.signal,
+    });
+    setImmediate(() => controller.abort());
+    const err = await pending.catch((e) => e as UrlFetchRefused);
+    expect(err).toBeInstanceOf(UrlFetchRefused);
+    expect((err as Error).message).toMatch(/aborted by the caller/);
+    expect((err as Error).message).not.toMatch(/timed out/);
+    expect(destroyed).toContain("req:https://a.example/hang");
+  });
+
+  it("refuses immediately on an already-aborted caller signal, without opening a socket", async () => {
+    const { request, calls } = fakeRequest({ "https://a.example/x": { status: 200, chunks: [Buffer.from("x")] } });
+    await expect(
+      hardenedFetchBytes("https://a.example/x", {
+        label: "t",
+        lookup: PUBLIC,
+        request,
+        signal: AbortSignal.abort(),
+      }),
+    ).rejects.toThrow(/aborted by the caller/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("still reports a lapsed internal budget as a timeout when a caller signal is attached", async () => {
+    const { request } = fakeRequest({ "https://a.example/hang": { status: 200, hang: true } });
+    const controller = new AbortController();
+    await expect(
+      hardenedFetchBytes("https://a.example/hang", {
+        label: "t",
+        lookup: PUBLIC,
+        request,
+        timeoutMs: 30,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(/timed out after 30ms/);
+  });
+
   it("applies allowHost at every hop and destroys the redirect response instead of reading it", async () => {
     const { request, destroyed } = fakeRequest({
       "https://ir.acme.example/1": { status: 302, headers: { location: "https://mirror.example/2" }, chunks: [Buffer.alloc(100)] },
@@ -222,6 +271,17 @@ describe("classifyBytes", () => {
     );
     // Prose with no markup at all is still text.
     expect(classifyBytes(Buffer.from("ACME reports Q2 2026 results. Revenue rose."))).toBe("text");
+  });
+
+  // Task 9 ruling: the binary check runs BEFORE the HTML sniff (only the PDF
+  // magic outranks it). A `<`-leading buffer full of NULs is a binary blob
+  // whose first byte happens to be an angle bracket — never HTML we can read.
+  it("refuses a <-leading buffer that carries NUL bytes as binary, not HTML", () => {
+    expect(classifyBytes(Buffer.from([0x3c, 0x68, 0x74, 0x6d, 0x6c, 0x3e, 0x00, 0x41]))).toBe("binary");
+    expect(classifyBytes(Buffer.concat([Buffer.from("<!DOCTYPE html>"), Buffer.alloc(8)]))).toBe("binary");
+    // A UTF-16LE page (NUL between every ASCII byte) is binary to this reader:
+    // everything downstream treats the bytes as utf8.
+    expect(classifyBytes(Buffer.from("<html><body>", "utf16le"))).toBe("binary");
   });
 
   it("refuses binary: a NUL byte, or 2% or more control bytes in the first 4KB", () => {

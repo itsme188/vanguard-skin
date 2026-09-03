@@ -163,6 +163,27 @@ describe("ir_baseline prepare step", () => {
     expect(fetchBytes).toHaveBeenCalledTimes(1);
   });
 
+  // Task 12 ruling. The runner races each invocation against its own deadline
+  // and aborts the one it gave up on; unless that signal reaches the socket,
+  // a hung newsroom holds the fetch open for the rest of its 20-second budget
+  // while the successor invocation is already running.
+  it("forwards the runner's abort signal to the fetch", async () => {
+    const controller = new AbortController();
+    const fetchBytes = vi.fn(async (_url: string, opts: HardenedFetchBytesOptions) => {
+      expect(opts.signal).toBe(controller.signal);
+      return {
+        bytes: Buffer.from(PAGE, "utf8"),
+        finalUrl: URL1,
+        status: 200,
+        contentType: "text/html",
+      };
+    });
+    upsertPrintWatchSource(db, { symbol: "ACME", irPageUrl: URL1, linkMustContain: null });
+    const out = await buildIrBaselineStep({ fetchBytes }).run(db, eventId, ctx(controller.signal));
+    expect(out.status).toBe("done");
+    expect(fetchBytes).toHaveBeenCalledTimes(1);
+  });
+
   it("a fetch failure is a failed attempt, not a baseline", async () => {
     upsertPrintWatchSource(db, { symbol: "ACME", irPageUrl: URL1, linkMustContain: null });
     const step = buildIrBaselineStep({
