@@ -12,7 +12,10 @@
  *    request for the whole read, not just for its headers;
  *  - per-print pass coalescing (`runPass`): one pass runs at a time per print,
  *    a pass requested meanwhile is remembered ONCE and runs after, so a burst
- *    of hits never queues a pile of identical passes;
+ *    of hits never queues a pile of identical passes. WHEN A PASS SETTLES ITS
+ *    SIGNAL IS ABORTED — work that must outlive the pass must not be linked to
+ *    the pass signal (that abort is what stops a finished pass from leaving a
+ *    straggler request holding a concurrency slot);
  *  - an explicit wake (`wake` / `waitForWake`) so a go request ends the loop's
  *    cadence sleep NOW instead of at the next tick.
  *
@@ -29,7 +32,12 @@
 import type { FetchLike } from "./hardened-fetch";
 
 export interface HostPolicy {
+  /** Requests per second for the whole family. CLAMPED to a positive number:
+   *  `0` becomes 0.001/s, not "never" — a policy is a pace, never a pause
+   *  switch (a pause belongs in the watcher, which can decline to poll). */
   ratePerSecond: number;
+  /** Simultaneous in-flight requests for the whole family. CLAMPED to ≥ 1 for
+   *  the same reason: `0` would park every waiter forever. */
   concurrency: number;
 }
 
@@ -41,13 +49,16 @@ export const HOST_POLICIES: Record<string, HostPolicy> = {
 
 /**
  * The longest a single response body may hold its concurrency slot. The slot
- * is meant to be returned when the body closes, but a caller can legitimately
- * abandon a body it never reads — `hardenedFetchText` walks away from redirect
- * hops, non-2xx statuses and wrong content-types without draining them, and an
- * abandoned stream never fires `flush` or `cancel`. Two such bodies would wedge
- * the SEC family forever, so the hold is bounded: after this the slot goes back
- * whether or not the body ever closed. Deliberately far longer than any read
- * the print-watch performs (the 2MB cap in `hardened-fetch.ts` sees to that).
+ * is meant to be returned when the body closes, but an abandoned stream fires
+ * neither `flush` nor `cancel`, so the hold is bounded: after this the slot
+ * goes back whether or not the body ever closed. Deliberately far longer than
+ * any read the print-watch performs (the 2MB cap in `hardened-fetch.ts` sees
+ * to that).
+ *
+ * It is a BACKSTOP, not the mechanism. Two faster paths return the slot first:
+ * `fetchFor` never holds one for a 3xx/4xx/5xx at all (nothing streams those),
+ * and `hardenedFetchText` cancels the body on every early exit it takes. What
+ * is left for the watchdog is a future caller abandoning a 2xx body.
  */
 export const MAX_BODY_HOLD_MS = 120_000;
 
@@ -60,7 +71,10 @@ const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
  *  like "sec.gov.evil.example" is its OWN family and never borrows the SEC
  *  budget. */
 export function hostFamily(hostname: string): string {
-  const h = hostname.trim().toLowerCase();
+  // The trailing root label of an FQDN ("www.sec.gov.") is dropped first, so a
+  // fully-qualified spelling cannot slip out of the SEC budget into its own
+  // 5/s family (review M2).
+  const h = hostname.trim().toLowerCase().replace(/\.$/, "");
   return h === SEC_FAMILY || h.endsWith(`.${SEC_FAMILY}`) ? SEC_FAMILY : h;
 }
 
@@ -246,7 +260,13 @@ export class AcquisitionScheduler {
       const waiter: ThrottleWaiter = {
         grant: (release) => {
           if (settled) {
-            release(); // raced with an abort: hand the capacity straight back
+            // Raced with an abort: hand back BOTH halves of the capacity
+            // `take()` consumed — the release returns the slot, the token has
+            // to be put back by hand or the bucket under-counts forever
+            // (review M1; unreachable today because an aborted waiter is
+            // spliced out of the queue before it can be granted).
+            bucket.tokens += 1;
+            release();
             return;
           }
           settled = true;
@@ -292,7 +312,18 @@ export class AcquisitionScheduler {
       try {
         const merged = init?.signal ? AbortSignal.any([init.signal, signal]) : signal;
         const res = await fetchImpl(url, { ...init, signal: merged });
-        if (!res.body || merged.aborted || NULL_BODY_STATUSES.has(res.status) || res.status < 200) {
+        if (
+          !res.body ||
+          merged.aborted ||
+          NULL_BODY_STATUSES.has(res.status) ||
+          res.status < 200 ||
+          // Redirects and errors are never STREAMED by any caller in this repo
+          // (`hardenedFetchText` reads a body only on the 2xx path), and a 404
+          // is the ordinary EDGAR answer before a filing posts. Holding a slot
+          // for those bodies stalled the whole SEC lane for the watchdog's two
+          // minutes at exactly print time (review C1).
+          res.status >= 300
+        ) {
           return res; // nothing to stream: the `finally` returns the slot now
         }
         const finish = this.holdUntilBodyCloses(release, merged);
@@ -343,6 +374,12 @@ export class AcquisitionScheduler {
    * starts, so the first runner is as fresh as the last). Joiners therefore
    * receive the FIRST pending runner's value — in practice every pass runner
    * resolves to `void`.
+   *
+   * WHEN A PASS SETTLES ITS SIGNAL IS ABORTED — never hand the pass signal to
+   * work that must outlive the pass (a fire-and-forget drain, a background
+   * enrich, a detached fetch): it dies the moment the runner resolves. That
+   * abort is deliberate; it is what keeps a finished pass from leaving a
+   * straggler request holding a host family's concurrency slot.
    */
   runPass<T = void>(
     printId: number,

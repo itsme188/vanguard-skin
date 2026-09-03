@@ -62,6 +62,10 @@ describe("hostFamily", () => {
     expect(hostFamily("sec.gov.evil.example")).toBe("sec.gov.evil.example");
     expect(hostFamily("notsec.gov")).toBe("notsec.gov");
     expect(hostFamily("  WWW.SEC.GOV  ")).toBe(SEC_FAMILY);
+    // A fully-qualified spelling stays inside the SEC budget instead of being
+    // handed a private 5/s family of its own.
+    expect(hostFamily("www.sec.gov.")).toBe(SEC_FAMILY);
+    expect(hostFamily("sec.gov.")).toBe(SEC_FAMILY);
   });
 
   it("ships the SEC fair-access policy and a default for every other host", () => {
@@ -270,6 +274,85 @@ describe("AcquisitionScheduler.fetchFor", () => {
     await flush();
     await p;
     expect(third).toBe(true);
+  });
+
+  it("releases the slot at HEADERS for a status nobody streams (404, 302)", async () => {
+    const clock = makeClock();
+    const s = new AcquisitionScheduler({ "x.example": { ratePerSecond: 100, concurrency: 1 } }, clock);
+    const ac = new AbortController();
+    // A 404 body that is never read — the ordinary EDGAR "not posted yet".
+    const missing = s.fetchFor(ac.signal, async () => new Response("not found", { status: 404 }));
+    const gone = await missing("https://x.example/1");
+    expect(gone.status).toBe(404);
+    // A redirect the caller only reads a header off.
+    const moved = s.fetchFor(ac.signal, async () =>
+      new Response("moved", { status: 302, headers: { location: "https://x.example/2" } }),
+    );
+    const hop = await moved("https://x.example/1");
+    expect(hop.headers.get("location")).toBe("https://x.example/2");
+
+    // Neither took the single slot with it: the next request goes straight
+    // through with no clock advance and no watchdog.
+    let third = false;
+    const ok = s.fetchFor(ac.signal, async () => new Response("ok"));
+    const p = ok("https://x.example/3").then(async (res) => {
+      third = true;
+      await res.text();
+    });
+    await flush();
+    await p;
+    expect(third).toBe(true);
+    // …and the bodies are still readable for any caller that wants them.
+    expect(await gone.text()).toBe("not found");
+  });
+
+  it("still holds the slot for a 200 until its body closes", async () => {
+    const clock = makeClock();
+    const s = new AcquisitionScheduler({ "x.example": { ratePerSecond: 100, concurrency: 1 } }, clock);
+    const ac = new AbortController();
+    const f = s.fetchFor(ac.signal, async () => new Response("payload", { status: 200 }));
+    const first = await f("https://x.example/1");
+    let second = false;
+    const p = f("https://x.example/2").then(async (res) => {
+      second = true;
+      await res.text();
+    });
+    await clock.advance(1_000);
+    expect(second).toBe(false); // the 200's body is still open
+    expect(await first.text()).toBe("payload");
+    await p;
+    expect(second).toBe(true);
+  });
+
+  it("releases the slot when the source stream errors mid-body", async () => {
+    const clock = makeClock();
+    const s = new AcquisitionScheduler({ "x.example": { ratePerSecond: 100, concurrency: 1 } }, clock);
+    const ac = new AbortController();
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const f = s.fetchFor(ac.signal, async () => {
+      if (source) return new Response("ok");
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            source = controller;
+            controller.enqueue(new TextEncoder().encode("first chunk"));
+          },
+        }),
+      );
+    });
+    const first = await f("https://x.example/1");
+    const read = first.text().catch(() => "errored");
+    let second = false;
+    const p = f("https://x.example/2").then(async (res) => {
+      second = true;
+      await res.text();
+    });
+    await clock.advance(1_000);
+    expect(second).toBe(false);
+    source.error(new Error("socket died")); // the wire drops mid-body
+    expect(await read).toBe("errored");
+    await p; // released without waiting for MAX_BODY_HOLD_MS
+    expect(second).toBe(true);
   });
 
   it("releases the slot when the consumer cancels the body", async () => {
