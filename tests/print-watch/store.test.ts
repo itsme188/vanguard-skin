@@ -16,7 +16,12 @@ import {
   clearLineAccepted,
   acquireWatcherLease,
 } from "@/lib/print-watch/store";
-import type { PrintWatchLine, LineContract, ExpectedValue } from "@/lib/print-watch/types";
+import type {
+  PrintWatchLine,
+  LineContract,
+  ExpectedValue,
+  TaggedCandidate,
+} from "@/lib/print-watch/types";
 
 function insertCalendarEvent(db: Database.Database, sourceKey: string, eventDate = "2026-08-20"): number {
   const result = db
@@ -267,6 +272,174 @@ describe("print-watch store (migration 085)", () => {
     clearLineAccepted(db, printId, "eps_adj_q");
 
     expect(getSheet(db, printId)[0].state).toBe("conflict");
+  });
+
+  // QA finding `today-print-watch--unaccept-after-supersede-keeps-old-value-
+  // hides-newer-candidate` (HIGH, money-critical): un-accept used to be a
+  // one-column UPDATE (state → 'pending') that left value / value_high /
+  // snippet / source_doc_id frozen at the superseded document's figures, and
+  // nothing reconciled the line afterwards (reconcile.ts rule 6 skips accepted
+  // lines, so the pass that would have fixed it never ran while the line was
+  // locked). The desk un-accepted a line the panel had flagged "⟳ superseded —
+  // re-verify" and kept looking at the OLD number with the OLD snippet, while
+  // the disagreeing newer figure sat unseen inside candidates_json.
+  //
+  // User ruling 2026-09-02, option 1: un-accept RE-DERIVES the line through
+  // the pure reconciler over its own candidate pool.
+  describe("clearLineAccepted re-derivation (QA: unaccept-after-supersede)", () => {
+    function makeCandidate(overrides: Partial<TaggedCandidate> = {}): TaggedCandidate {
+      return {
+        metric_id: "eps_adj_q",
+        value: 1.42,
+        value_high: null,
+        raw_text: "1.42",
+        snippet: "adjusted EPS of $1.42",
+        location_hint: null,
+        not_disclosed: false,
+        doc_id: 1,
+        representation: "repA",
+        weak_pair: false,
+        ...overrides,
+      };
+    }
+
+    function seedAcceptedLine(candidates: TaggedCandidate[], value: number | null = 1.42) {
+      const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
+      const printId = upsertPrint(db, eventId, "ACME", "2026-08-20", null);
+      const docA = insertDocument(db, printId, "dj-release", "dj", null, "sha-a", "/tmp/a").id;
+      const docB = insertDocument(db, printId, "edgar-ex99", "edgar", null, "sha-b", "/tmp/b").id;
+      upsertLines(db, printId, [
+        makeLine("eps_adj_q", value, {
+          state: "agreed",
+          snippet: "adjusted EPS of $1.42",
+          source_doc_id: docA,
+          candidates_json: JSON.stringify(candidates),
+        }),
+      ]);
+      markLineAccepted(db, printId, "eps_adj_q");
+      return { printId, docA, docB };
+    }
+
+    it("re-derives an AGREEING pool back to 'agreed' with the number intact", () => {
+      const seeded = seedAcceptedLine([]);
+      const candidates = [
+        makeCandidate({ doc_id: seeded.docA }),
+        makeCandidate({ doc_id: seeded.docB, snippet: "second document, same figure" }),
+      ];
+      upsertLines(db, seeded.printId, [
+        makeLine("eps_adj_q", 9.99, { candidates_json: JSON.stringify(candidates) }),
+      ]);
+
+      clearLineAccepted(db, seeded.printId, "eps_adj_q");
+
+      const line = getSheet(db, seeded.printId)[0];
+      expect(line.state).toBe("agreed");
+      expect(line.value).toBe(1.42); // the verified number survives
+      expect(line.source_doc_id).toBe(seeded.docA);
+      expect(JSON.parse(line.candidates_json)).toHaveLength(2); // nothing deleted
+    });
+
+    it("re-derives a ONE-CANDIDATE pool to 'single_source' with the number intact", () => {
+      const seeded = seedAcceptedLine([]);
+      upsertLines(db, seeded.printId, [
+        makeLine("eps_adj_q", 9.99, {
+          candidates_json: JSON.stringify([makeCandidate({ doc_id: seeded.docA })]),
+        }),
+      ]);
+
+      clearLineAccepted(db, seeded.printId, "eps_adj_q");
+
+      const line = getSheet(db, seeded.printId)[0];
+      expect(line.state).toBe("single_source");
+      expect(line.value).toBe(1.42);
+      expect(line.source_doc_id).toBe(seeded.docA);
+    });
+
+    it("re-derives a DISAGREEING pool to 'conflict', dropping the stale figure while every rival survives", () => {
+      const seeded = seedAcceptedLine([]);
+      const candidates = [
+        makeCandidate({ doc_id: seeded.docA }),
+        makeCandidate({
+          doc_id: seeded.docB,
+          value: 1.24,
+          raw_text: "1.24",
+          snippet: "adjusted EPS of $1.24",
+        }),
+      ];
+      const candidatesJson = JSON.stringify(candidates);
+      upsertLines(db, seeded.printId, [
+        makeLine("eps_adj_q", 9.99, { candidates_json: candidatesJson }),
+      ]);
+
+      clearLineAccepted(db, seeded.printId, "eps_adj_q");
+
+      const line = getSheet(db, seeded.printId)[0];
+      expect(line.state).toBe("conflict");
+      // The superseded figure and its snippet are GONE — the whole finding was
+      // that they kept rendering as if still verified.
+      expect(line.value).toBeNull();
+      expect(line.value_high).toBeNull();
+      expect(line.snippet).toBeNull();
+      expect(line.source_doc_id).toBeNull();
+      // Every rival stays visible for the desk to pick from (per-candidate
+      // accept), byte-for-byte — un-accept never edits the evidence.
+      expect(line.candidates_json).toBe(candidatesJson);
+      const rivals = JSON.parse(line.candidates_json) as TaggedCandidate[];
+      expect(rivals.map((c) => c.value).sort()).toEqual([1.24, 1.42]);
+    });
+
+    it("keeps the residue when the line has NO candidates — an un-accept must stay recoverable", () => {
+      // A line with an empty pool has nothing to re-derive from; wiping its
+      // number would make an accidental un-accept unrecoverable (the accept
+      // route only admits a 'pending' line that still carries a value).
+      const seeded = seedAcceptedLine([]);
+
+      clearLineAccepted(db, seeded.printId, "eps_adj_q");
+
+      const line = getSheet(db, seeded.printId)[0];
+      expect(line.state).toBe("pending");
+      expect(line.value).toBe(1.42);
+      expect(line.snippet).toBe("adjusted EPS of $1.42");
+    });
+
+    it("never writes the flash sentinel doc id into source_doc_id (real FK)", () => {
+      const seeded = seedAcceptedLine([]);
+      upsertLines(db, seeded.printId, [
+        makeLine("eps_adj_q", 9.99, {
+          candidates_json: JSON.stringify([
+            makeCandidate({ doc_id: 0, representation: "flash", value: 1.4 }),
+          ]),
+        }),
+      ]);
+
+      clearLineAccepted(db, seeded.printId, "eps_adj_q");
+
+      const line = getSheet(db, seeded.printId)[0];
+      expect(line.state).toBe("flash");
+      expect(line.value).toBe(1.4);
+      expect(line.source_doc_id).toBeNull();
+      expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    });
+
+    it("leaves a non-accepted line untouched even when its pool disagrees", () => {
+      const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
+      const printId = upsertPrint(db, eventId, "ACME", "2026-08-20", null);
+      upsertLines(db, printId, [
+        makeLine("eps_adj_q", 1.42, {
+          state: "single_source",
+          candidates_json: JSON.stringify([
+            makeCandidate({ doc_id: 0, representation: "flash" }),
+            makeCandidate({ doc_id: 0, representation: "flash", value: 1.24 }),
+          ]),
+        }),
+      ]);
+
+      clearLineAccepted(db, printId, "eps_adj_q");
+
+      const line = getSheet(db, printId)[0];
+      expect(line.state).toBe("single_source");
+      expect(line.value).toBe(1.42);
+    });
   });
 
   it("deleting the calendar_events row does NOT delete the print (evidence survives event correction)", () => {

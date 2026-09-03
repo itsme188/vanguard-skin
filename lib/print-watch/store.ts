@@ -2,13 +2,16 @@
 // §5, migration 085). Every function takes `db` first (DI for tests).
 
 import type Database from "better-sqlite3";
+import { reconcile } from "./reconcile";
 import type {
   PrintWatchState,
   PrintWatchDocKind,
   PrintWatchLine,
+  LineContract,
   LineStateKind,
   PrintRow,
   DocumentRow,
+  TaggedCandidate,
 } from "./types";
 
 const LEASE_SETTINGS_KEY = "print_watch_lease";
@@ -205,15 +208,168 @@ export function markLineAccepted(db: Database.Database, printId: number, metricI
   ).run(printId, metricId);
 }
 
-/** Unaccept → state recomputed by next reconcile (Codex #15): this only
- *  releases the accepted lock back to 'pending'; it does not itself
- *  recompute agreed/conflict/single_source — that is reconcile.ts's job
- *  (Task 5) the next time it upserts this line. */
-export function clearLineAccepted(db: Database.Database, printId: number, metricId: string): void {
+/**
+ * Locks a line to ONE named candidate — the per-candidate accept the desk
+ * uses to resolve a conflict row ("this figure, from this document").
+ *
+ * `markLineAccepted` flips state and keeps whatever the reconciler last
+ * wrote; that is useless on a 'conflict' line, which by definition carries no
+ * top-level number. Here the caller has picked a specific candidate out of
+ * `candidates_json`, so its value / snippet / document become the line's
+ * verified reading. `candidates_json` is deliberately NOT touched: the rivals
+ * stay on the sheet as the audit trail of what was rejected.
+ *
+ * `source_doc_id` is a real FK to print_watch_documents(id) — the caller must
+ * pass a document that exists (the accept route checks) or null.
+ */
+export function acceptLineCandidate(
+  db: Database.Database,
+  printId: number,
+  metricId: string,
+  chosen: {
+    value: number | null;
+    value_high: number | null;
+    snippet: string | null;
+    source_doc_id: number | null;
+  },
+): void {
   db.prepare(
+    `UPDATE print_watch_lines
+        SET state = 'accepted',
+            value = ?,
+            value_high = ?,
+            snippet = ?,
+            source_doc_id = ?,
+            updated_at = datetime('now')
+      WHERE print_id = ? AND metric_id = ?`,
+  ).run(
+    chosen.value,
+    chosen.value_high,
+    chosen.snippet,
+    chosen.source_doc_id,
+    printId,
+    metricId,
+  );
+}
+
+/**
+ * The flash sentinel doc id (parity with watcher.ts's own constant): flash
+ * candidates come off the wire with no document, and `source_doc_id` is a real
+ * FK — 0 is not a row, so it is nulled before any write.
+ */
+const FLASH_DOC_ID = 0;
+
+/**
+ * A doc id fit to be written into `source_doc_id`, or null.
+ *
+ * `source_doc_id` is a real FK, so anything the reconciler hands back has to
+ * name a row that exists: the flash sentinel (0) never does, and neither would
+ * a candidate whose document row was never written (a legacy sheet, hand-built
+ * evidence). Nulling those keeps an un-accept CLICK from turning into a
+ * foreign-key exception — the line simply reports no document of record.
+ */
+function resolveSourceDocId(db: Database.Database, docId: number | null): number | null {
+  if (docId === null || docId === FLASH_DOC_ID) return null;
+  const row = db.prepare(`SELECT 1 AS ok FROM print_watch_documents WHERE id = ?`).get(docId) as
+    | { ok: number }
+    | undefined;
+  return row ? docId : null;
+}
+
+/**
+ * Un-accept — RELEASE THE LOCK AND RE-DERIVE THE LINE (QA finding
+ * `today-print-watch--unaccept-after-supersede-keeps-old-value-hides-newer-
+ * candidate`, HIGH; user ruling 2026-09-02 option 1).
+ *
+ * This used to be a one-column UPDATE (state → 'pending') on the theory that
+ * "the next reconcile will recompute it" (Codex #15). It never did: reconcile
+ * runs when a DOCUMENT arrives, and the whole reason to un-accept is that the
+ * last document already arrived and disagreed. So the line sat on 'pending'
+ * still rendering the superseded document's value, value_high, snippet and
+ * source_doc_id — with the newer, disagreeing figure invisible inside
+ * `candidates_json` — and the only control left ('accept') re-locked the stale
+ * number. On a sheet whose figures get promoted into the recap scoreboard,
+ * that is a money-critical lie.
+ *
+ * Un-accept now re-runs the SAME pure reconciler the watcher uses over this
+ * line's own candidate pool (rules 1-5; `acceptedLines` empty, because the
+ * point is to stop treating this line as accepted):
+ *   - unanimous pool with an independent pair  → 'agreed', number intact
+ *   - unanimous pool without one, or a single candidate → 'single_source'
+ *   - ANY value disagreement → 'conflict': the stale number is cleared and
+ *     every rival stays visible in `candidates_json` for the desk to pick
+ *     from (per-candidate accept, POST /api/print-watch/accept).
+ *
+ * TWO deliberate carve-outs:
+ *   - EMPTY pool → the old behaviour (state 'pending', number left in place).
+ *     There is nothing to re-derive from, and wiping the figure would make an
+ *     accidental un-accept unrecoverable: the accept route only re-admits a
+ *     'pending' line that still carries a value (the recovery path from QA
+ *     finding `…unaccept-one-way-no-per-line-accept…`).
+ *   - `candidates_json` is never rewritten. Evidence is append-only; the
+ *     reconciler's sign guard drops candidates from its own working set, and
+ *     persisting that filtered set here would silently delete evidence.
+ */
+export function clearLineAccepted(db: Database.Database, printId: number, metricId: string): void {
+  const releaseOnly = db.prepare(
     `UPDATE print_watch_lines SET state = 'pending', updated_at = datetime('now')
      WHERE print_id = ? AND metric_id = ? AND state = 'accepted'`,
-  ).run(printId, metricId);
+  );
+
+  // ONE transaction: the read that decides the new state and the write that
+  // applies it must not straddle another writer. Nested inside the accept
+  // route's own transaction this degrades to a SAVEPOINT, so a later refusal
+  // in that request still rolls this back.
+  const tx = db.transaction(() => {
+    const row = db
+      .prepare(
+        `SELECT contract_json, candidates_json FROM print_watch_lines
+          WHERE print_id = ? AND metric_id = ? AND state = 'accepted'`,
+      )
+      .get(printId, metricId) as { contract_json: string; candidates_json: string } | undefined;
+    if (!row) return; // not accepted — same no-op as before
+
+    let candidates: TaggedCandidate[] = [];
+    let contract: LineContract | null = null;
+    try {
+      const parsed: unknown = JSON.parse(row.candidates_json);
+      if (Array.isArray(parsed)) candidates = parsed as TaggedCandidate[];
+      contract = JSON.parse(row.contract_json) as LineContract;
+    } catch {
+      // Unreadable JSON costs this line its re-derivation, never the unaccept:
+      // fall through to the plain release so the desk is not stuck accepted.
+      candidates = [];
+      contract = null;
+    }
+
+    if (candidates.length === 0 || contract === null) {
+      releaseOnly.run(printId, metricId);
+      return;
+    }
+
+    const [rederived] = reconcile([contract], {}, candidates, []);
+    if (!rederived) {
+      releaseOnly.run(printId, metricId);
+      return;
+    }
+
+    db.prepare(
+      `UPDATE print_watch_lines
+          SET state = ?, value = ?, value_high = ?, snippet = ?, source_doc_id = ?,
+              updated_at = datetime('now')
+        WHERE print_id = ? AND metric_id = ?`,
+    ).run(
+      rederived.state,
+      rederived.value,
+      rederived.value_high,
+      rederived.snippet,
+      resolveSourceDocId(db, rederived.source_doc_id),
+      printId,
+      metricId,
+    );
+  });
+
+  tx();
 }
 
 interface WatcherLeaseValue {
