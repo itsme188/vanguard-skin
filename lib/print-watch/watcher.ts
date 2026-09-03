@@ -1278,9 +1278,9 @@ const IR_REFUSAL_LIMIT = 3;
  *
  * The page is read with a SCRATCH seen-set so the adapter reports every
  * allowed matching link on the page (the count the panel shows, so a newsroom
- * that changes shape reads as "IR: 0 matching links" rather than as a quiet
- * night); the runtime's real seen-set then decides which of those are new. One
- * fetch either way.
+ * that changes shape reads as "0 matching links" under the panel's own IR
+ * label rather than as a quiet night); the runtime's real seen-set then
+ * decides which of those are new. One fetch either way.
  */
 async function pollIrPageSource(db: Database.Database, rt: PrintRuntime): Promise<void> {
   const status = statusFor(rt.printId);
@@ -1382,8 +1382,10 @@ async function pollIrPageSource(db: Database.Database, rt: PrintRuntime): Promis
     // link is a durable fact about tonight's coverage — the desk has to keep
     // seeing that the road stopped trying, not just a quiet "0 new".
     const retired = [...rt.irRefusals.values()].filter((n) => n >= IR_REFUSAL_LIMIT).length;
+    // No "IR: " prefix: the panel renders this lane under its own IR label
+    // (LADDER_LABELS), so carrying one here printed "IR: ok — IR: 3 matching…".
     const summary =
-      `${head} — IR: ${matching.length} matching links, ${durable} new` +
+      `${head} — ${matching.length} matching links, ${durable} new` +
       (retired > 0 ? ` (${retired} link(s) retired after ${IR_REFUSAL_LIMIT} refusals)` : "");
     status.sources.ir = [summary, ...refusals].join("; ");
   } catch (err) {
