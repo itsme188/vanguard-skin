@@ -15,6 +15,7 @@ import {
   __resetSchedulerForTests,
   READ_DEBOUNCE_MS,
   READ_RECONCILE_EVERY_MS,
+  ASK_MEMORY_TTL_MS,
 } from "@/lib/print-watch/read-scheduler";
 import { todayET } from "@/lib/calendar/date-utils";
 import type { PrintWatchLine } from "@/lib/print-watch/types";
@@ -169,6 +170,65 @@ describe("reconcilePendingReads (#16)", () => {
     finalizeReadDone(db, { readId: d.row.id, token: d.token, facts: [], prose: PROSE, callouts: [], nowMs: T0 });
     _setSchedulerSeams({ runner: async () => undefined, now: () => T0, fingerprintFor: async () => "fp-new" });
     expect((await reconcilePendingReads(db, T0)).scheduled).toEqual([p]);
+  });
+
+  it("re-schedules a print whose dispatched run REJECTED, inside the ask-memory TTL", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const today = todayET(new Date(T0));
+    const p = seedPrint(today, "i");
+    const runner = vi.fn(async () => {
+      throw new Error("the model wire went down");
+    });
+    _setSchedulerSeams({ runner, now: () => T0, fingerprintFor: async () => "fp" });
+
+    expect((await reconcilePendingReads(db, T0)).scheduled).toEqual([p]);
+    await vi.advanceTimersByTimeAsync(READ_DEBOUNCE_MS + 1);
+    expect(runner).toHaveBeenCalledTimes(1);
+    // The ask never reached a row, so the next tick must ask again — even
+    // though the fingerprint has not moved and the TTL has not expired.
+    expect((await reconcilePendingReads(db, T0 + 61_000)).scheduled).toEqual([p]);
+    warn.mockRestore();
+  });
+
+  it("a tick that cannot fingerprint the sheet forgets what it asked, so a re-accepted sheet is asked again (R-D18)", async () => {
+    const today = todayET(new Date(T0));
+    const p = seedPrint(today, "k");
+    const runner = vi.fn(async () => undefined);
+    let fp: string | null = "fp";
+    _setSchedulerSeams({ runner, now: () => T0, fingerprintFor: async () => fp });
+
+    expect((await reconcilePendingReads(db, T0)).scheduled).toEqual([p]);
+    await vi.advanceTimersByTimeAsync(READ_DEBOUNCE_MS + 1);
+    // The desk un-accepts the sheet inside the debounce window: the run skips
+    // on no_facts and writes nothing, and the next tick has no fingerprint.
+    fp = null;
+    expect((await reconcilePendingReads(db, T0 + 60_000)).scheduled).toEqual([]);
+    // Re-accepted. The SAME fingerprint must be asked for again rather than
+    // stranded behind the dedupe memory until a restart.
+    fp = "fp";
+    expect((await reconcilePendingReads(db, T0 + 120_000)).scheduled).toEqual([p]);
+  });
+
+  it("re-asks once the ask-memory TTL expires, even when nothing else changed (R-D18: a dedupe, not a latch)", async () => {
+    const today = todayET(new Date(T0));
+    const p = seedPrint(today, "j");
+    // Resolves without writing a row — the store's gate stays open.
+    const runner = vi.fn(async () => undefined);
+    _setSchedulerSeams({ runner, now: () => T0, fingerprintFor: async () => "fp" });
+
+    expect((await reconcilePendingReads(db, T0)).scheduled).toEqual([p]);
+    await vi.advanceTimersByTimeAsync(READ_DEBOUNCE_MS + 1);
+    expect((await reconcilePendingReads(db, T0 + 61_000)).scheduled).toEqual([]);
+    expect((await reconcilePendingReads(db, T0 + ASK_MEMORY_TTL_MS + 1)).scheduled).toEqual([p]);
+  });
+
+  it("does nothing at all — no query, no timer — while the scheduler is disabled", async () => {
+    disableFirstPassScheduler();
+    const prepare = vi.spyOn(db, "prepare");
+    expect(await reconcilePendingReads(db, T0)).toEqual({ scheduled: [], checked: 0 });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(__pendingReadTimers()).toEqual([]);
+    prepare.mockRestore();
   });
 });
 
