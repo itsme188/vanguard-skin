@@ -721,6 +721,11 @@ function buildSnapshot(db: Database.Database): Snapshot {
     };
   })();
 }
+// Exported so the data-flow-contract test can execute the real builder
+// against a canary-seeded in-memory DB (tests/print-watch/first-pass-privacy.test.ts)
+// instead of just grepping the source — never called anywhere but there and
+// by `main()` below.
+export { buildSnapshot };
 
 async function pruneOldSnapshots(keepFromDate: string): Promise<number> {
   const keys = await listObjects("state/vanguard-state-");
@@ -780,7 +785,13 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error("[snapshot] fatal:", err);
-  process.exit(1);
-});
+// Direct-run guard: launchd/cron still invoke this script directly
+// (`npx tsx scripts/snapshot-state-to-r2.ts`), which keeps this branch true —
+// but importing the module from a test (for `buildSnapshot` above) must not
+// also try to upload a snapshot.
+if (process.argv[1]?.endsWith("snapshot-state-to-r2.ts")) {
+  main().catch((err) => {
+    console.error("[snapshot] fatal:", err);
+    process.exit(1);
+  });
+}
