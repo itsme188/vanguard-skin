@@ -16,6 +16,7 @@ import { composeReleaseInstant } from "./reaction-snapshot";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
 import { getReadThroughReporterSymbols } from "@/lib/queries/read-through-pairs";
 import { stampEmptyProbe, etTimeOfInstant } from "@/lib/earnings/wire-times";
+import { todayET, addDays } from "./date-utils";
 
 export const PROBE_WINDOW_MS = 90 * 60 * 1000;
 export const MAX_PROBES_PER_TICK = 6;
@@ -33,8 +34,8 @@ export function findProbeCandidates(
   now: Date,
 ): ProbeCandidate[] {
   const nowMs = now.getTime();
-  const today = new Date(nowMs).toISOString().slice(0, 10);
-  const yesterday = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const today = todayET(now);
+  const yesterday = addDays(today, -1);
 
   let rows: Array<ProbeCandidate & { source: string; event_type: string }>;
   try {

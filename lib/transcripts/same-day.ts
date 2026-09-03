@@ -75,6 +75,7 @@ import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { generateTextForFeature } from "@/lib/ai/generate";
 import { upsertTranscript } from "@/lib/mutations/transcripts";
 import type { EarningsTranscript } from "@/lib/types";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 const PACING_MS = 30 * 60 * 1000; // 30 minutes between attempts per event
 const DEADLINE_MS = 36 * 60 * 60 * 1000; // 36h same-day-ish window from release
@@ -248,10 +249,8 @@ export async function fetchSameDayTranscripts(
   // stricter 24h pacing in JS below, where the cache lookup tells the two
   // classes apart. Final release-instant window check also happens in JS —
   // release_time is ET wall-clock.
-  const today = new Date(nowMs).toISOString().slice(0, 10);
-  const rangeStart = new Date(nowMs - UPGRADE_DEADLINE_MS - 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 10);
+  const today = todayET(now);
+  const rangeStart = addDays(today, -(Math.ceil(UPGRADE_DEADLINE_MS / 86_400_000) + 1));
   const pacingCutoff = new Date(nowMs - PACING_MS).toISOString().replace("T", " ").slice(0, 19);
 
   const rows = db
