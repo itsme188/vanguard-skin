@@ -42,6 +42,9 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   briefing: "anthropic/$frontier",
   tradeReviewMain: "anthropic/$frontier",
   pdfParsing: "anthropic/$frontier",
+  // Live print v2 slice D — the on-screen first-pass read of a print (spec §4.4
+  // "Model": frontier; extraction stays on the workhorse tier).
+  printWatchFirstPass: "anthropic/$frontier",
 
   // workhorse (was Sonnet)
   dailyDigestSynthesis: "anthropic/$workhorse",

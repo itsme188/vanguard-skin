@@ -57,6 +57,28 @@ export function getReportHistoryForFamily(
   ).all(...syms, limit) as ReportHistoryRow[];
 }
 
+/** History rows strictly BEFORE an event date (live print v2 slice D): the
+ *  "last quarter" of a print must never be the print itself once enriched.
+ *  `earnings_report_history.id` (migrations 065/069) gives the tie-break a
+ *  stable secondary key — same-date twins exist only across an issuer family,
+ *  since the table carries UNIQUE(symbol, reported_date). */
+export function getReportHistoryBefore(
+  db: Database.Database,
+  symbol: string,
+  eventDate: string,
+  limit = 1,
+): ReportHistoryRow[] {
+  const { list, syms } = familyPlaceholders(symbol);
+  return db.prepare(
+    `SELECT reported_date AS reportedDate, fiscal_date_ending AS fiscalDateEnding,
+            eps_actual AS epsActual, eps_estimate AS epsEstimate, surprise_pct AS surprisePct,
+            report_time AS reportTime, post_print_move_pct AS postPrintMovePct
+     FROM earnings_report_history
+     WHERE symbol IN (${list}) AND reported_date < ?
+     ORDER BY reported_date DESC, id DESC LIMIT ?`
+  ).all(...syms, eventDate, limit) as ReportHistoryRow[];
+}
+
 export function isHistoryStale(db: Database.Database, symbol: string): boolean {
   const { list, syms } = familyPlaceholders(symbol);
   const row = db.prepare(

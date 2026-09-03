@@ -43,4 +43,5 @@ export type FeatureKey =
   | "newsletterBogeyExtraction"
   | "etfSectorWeights"
   | "transcriptSummary"
-  | "earningsDebrief";
+  | "earningsDebrief"
+  | "printWatchFirstPass";
