@@ -1,0 +1,195 @@
+import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  stripHtmlToText,
+  documentText,
+  parseValueText,
+  numbersIn,
+  contentWords,
+  labelNorm,
+  extractGuidanceMetrics,
+  sheetLineKeys,
+  verifyCallout,
+  vsBogeyText,
+  formatValue,
+} from "@/lib/print-watch/callouts";
+
+const TEXT =
+  "Acme Corp today reported fourth quarter results. Annual recurring revenue (ARR) reached $3.74 billion, up 24% year over year. " +
+  "Remaining performance obligations were $6.9 billion. Non-GAAP operating income was $207.2 million, or 23.1% of revenue. " +
+  "Diluted net income per share was $1.12 on a non-GAAP basis. The company had 712 customers above $1 million in ARR.";
+
+describe("parseValueText", () => {
+  it("scales dollar amounts, keeps percentages, reads per-share and counts, and ranges", () => {
+    expect(parseValueText("$3.74 billion")).toEqual({ value: 3.74e9, value_high: null, unit: "usd" });
+    expect(parseValueText("$207.2M")).toEqual({ value: 207.2e6, value_high: null, unit: "usd" });
+    expect(parseValueText("23.1%")).toEqual({ value: 23.1, value_high: null, unit: "percent" });
+    expect(parseValueText("$1.12")).toEqual({ value: 1.12, value_high: null, unit: "per_share" });
+    expect(parseValueText("$1.12 per diluted share")).toEqual({ value: 1.12, value_high: null, unit: "per_share" });
+    expect(parseValueText("712")).toEqual({ value: 712, value_high: null, unit: "count" });
+    expect(parseValueText("$875M to $878M")).toEqual({ value: 875e6, value_high: 878e6, unit: "usd" });
+    expect(parseValueText("between 16% and 17%")).toEqual({ value: 16, value_high: 17, unit: "percent" });
+    expect(parseValueText("16-17%")).toEqual({ value: 16, value_high: 17, unit: "percent" });
+    expect(parseValueText("a lot")).toBeNull();
+  });
+  it("numbersIn finds every number of a unit inside a snippet, scaled the same way", () => {
+    expect(numbersIn("ARR reached $3.74 billion, up 24% year over year", "usd")).toEqual([3.74e9]);
+    expect(numbersIn("ARR reached $3.74 billion, up 24% year over year", "percent")).toEqual([24]);
+    expect(numbersIn("$1.12 on a non-GAAP basis", "per_share")).toEqual([1.12]);
+  });
+});
+
+describe("contentWords", () => {
+  it("drops stopwords and short tokens, lower-cases the rest", () => {
+    expect(contentWords("Non-GAAP operating income")).toEqual(["operating", "income"]);
+    expect(contentWords("ARR")).toEqual(["arr"]);
+    expect(contentWords("Q4 FY26")).toEqual([]);
+  });
+});
+
+describe("labelNorm / extractGuidanceMetrics / sheetLineKeys", () => {
+  it("normalises labels to their content words", () => {
+    expect(labelNorm("Annual Recurring Revenue (ARR)")).toBe("annual recurring revenue arr");
+    expect(labelNorm("Non-GAAP operating income")).toBe("operating income");
+  });
+  it("extracts one typed metric per guidance clause, with or without a figure", () => {
+    const m = extractGuidanceMetrics([
+      "Watch ARR growth (guide ~24%) and non-GAAP operating income of $206M–$208M.",
+      "RPO commentary.",
+      "FY27 framework 16-17%",
+    ]);
+    expect(m).toEqual([
+      { key: "arr growth", unit: "percent", value: 24, value_high: null, source_index: 0 },
+      { key: "operating income", unit: "usd", value: 206e6, value_high: 208e6, source_index: 0 },
+      { key: "rpo commentary", unit: null, value: null, value_high: null, source_index: 1 },
+      { key: "fy27 framework", unit: "percent", value: 16, value_high: 17, source_index: 2 },
+    ]);
+  });
+  it("sheetLineKeys names every contract the sheet already covers", () => {
+    expect(
+      sheetLineKeys([
+        { metric_id: "revenue_q", label: "Revenue", definition: "", basis: "na", period: "Q", currency: "USD", unit: "usd", kind: "point", segment: null },
+      ]),
+    ).toEqual(["revenue"]);
+  });
+});
+
+describe("verifyCallout", () => {
+  const guidance = extractGuidanceMetrics([
+    "Watch ARR growth (guide ~24%) and non-GAAP operating income of $206M–$208M.",
+    "Annual recurring revenue commentary.",
+  ]);
+  const keys = ["revenue", "eps adj", "eps gaap"];
+  it("accepts a proposal named by guidance, absent from the sheet, verbatim, same-unit, and anchored", () => {
+    const r = verifyCallout({
+      proposal: { label: "Annual recurring revenue", value_text: "$3.74B", snippet: "Annual recurring revenue (ARR) reached $3.74 billion", doc_id: 1 },
+      text: TEXT,
+      guidanceMetrics: guidance,
+      sheetLineKeys: keys,
+    });
+    expect(r).toMatchObject({ ok: true, parsed: { value: 3.74e9, unit: "usd" }, labelNorm: "annual recurring revenue" });
+  });
+  it("refuses a metric the guidance never named", () => {
+    const r = verifyCallout({
+      proposal: { label: "Remaining performance obligations", value_text: "$6.9 billion", snippet: "Remaining performance obligations were $6.9 billion", doc_id: 1 },
+      text: TEXT,
+      guidanceMetrics: guidance,
+      sheetLineKeys: keys,
+    });
+    expect(r).toMatchObject({ ok: false, reason: expect.stringMatching(/guidance/) });
+  });
+  it("refuses a metric the sheet already has a line for", () => {
+    const r = verifyCallout({
+      proposal: { label: "Revenue", value_text: "$898.2M", snippet: "revenue of $898.2 million", doc_id: 1 },
+      text: "Acme revenue of $898.2 million.",
+      guidanceMetrics: extractGuidanceMetrics(["Revenue guide $890M"]),
+      sheetLineKeys: keys,
+    });
+    expect(r).toMatchObject({ ok: false, reason: expect.stringMatching(/sheet/) });
+  });
+  it("refuses a snippet that is not verbatim, a value not in the snippet in that unit, and accepts a label anchored only via guidance (R-D1)", () => {
+    expect(
+      verifyCallout({
+        proposal: { label: "ARR growth", value_text: "24%", snippet: "ARR reached $3.74B, up 24%", doc_id: 1 },
+        text: TEXT,
+        guidanceMetrics: guidance,
+        sheetLineKeys: keys,
+      }),
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/verbatim/) });
+    expect(
+      verifyCallout({
+        proposal: { label: "ARR growth", value_text: "25%", snippet: "Annual recurring revenue (ARR) reached $3.74 billion, up 24%", doc_id: 1 },
+        text: TEXT,
+        guidanceMetrics: guidance,
+        sheetLineKeys: keys,
+      }),
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/value/) });
+    // R-D1: anchoring is an OR — "growth" is nowhere near this snippet, but
+    // the guidance names "arr growth", so the guidance branch anchors it.
+    expect(
+      verifyCallout({
+        proposal: { label: "ARR growth", value_text: "712", snippet: "The company had 712 customers above $1 million in ARR", doc_id: 1 },
+        text: TEXT,
+        guidanceMetrics: guidance,
+        sheetLineKeys: keys,
+      }),
+    ).toMatchObject({ ok: true, labelNorm: "arr growth" });
+  });
+  it("refuses a label with no content words", () => {
+    expect(
+      verifyCallout({
+        proposal: { label: "Q4", value_text: "712", snippet: "The company had 712 customers", doc_id: 1 },
+        text: TEXT,
+        guidanceMetrics: guidance,
+        sheetLineKeys: keys,
+      }).ok,
+    ).toBe(false);
+  });
+});
+
+describe("vsBogeyText — typed association only", () => {
+  const guidance = extractGuidanceMetrics(["ARR growth (guide ~24%)", "non-GAAP operating income of $206M–$208M", "Operating income commentary", "Customers 700"]);
+  it("point bogey → delta in code; range bogey → within/above/below, never a midpoint", () => {
+    expect(vsBogeyText("arr growth", { value: 24.6, value_high: null, unit: "percent" }, guidance)).toBe("vs guide 24.0% (+2.5%)");
+    expect(vsBogeyText("operating income", { value: 207.2e6, value_high: null, unit: "usd" }, guidance)).toBe("vs guide $206.0M–$208.0M (within range)");
+    expect(vsBogeyText("operating income", { value: 209e6, value_high: null, unit: "usd" }, guidance)).toBe("vs guide $206.0M–$208.0M (above range)");
+  });
+  it("ambiguity or a unit mismatch is 'no bogey', never a guess", () => {
+    expect(vsBogeyText("operating income", { value: 23.1, value_high: null, unit: "percent" }, guidance)).toBe("no bogey on file");
+    expect(vsBogeyText("customers", { value: 712, value_high: null, unit: "count" }, guidance)).toBe("vs guide 700 (+1.7%)");
+    expect(vsBogeyText("customers", { value: 712, value_high: null, unit: "count" }, [...guidance, ...extractGuidanceMetrics(["Customers 750"])])).toBe(
+      "no bogey on file",
+    );
+    expect(vsBogeyText("headcount", { value: 1, value_high: null, unit: "count" }, guidance)).toBe("no bogey on file");
+  });
+  it("a range CALLOUT against a point bogey reports the range, no delta", () => {
+    expect(vsBogeyText("arr growth", { value: 23, value_high: 25, unit: "percent" }, guidance)).toBe("vs guide 24.0% (range 23.0%–25.0%)");
+  });
+  it("formatValue renders each unit the way the panel does", () => {
+    expect(formatValue(3.74e9, "usd")).toBe("$3.74B");
+    expect(formatValue(207.2e6, "usd")).toBe("$207.2M");
+    expect(formatValue(23.1, "percent")).toBe("23.1%");
+    expect(formatValue(1.12, "per_share")).toBe("$1.12");
+    expect(formatValue(712, "count")).toBe("712");
+  });
+});
+
+describe("documentText", () => {
+  it("strips HTML to text, reads txt as-is, and reads the poppler sidecar for pdf", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "callouts-"));
+    try {
+      fs.writeFileSync(path.join(dir, "a.html"), "<p>ARR&nbsp;of <b>$3.74</b> billion</p>\n<script>x()</script>");
+      fs.writeFileSync(path.join(dir, "b.txt"), "plain $1.12 text");
+      fs.writeFileSync(path.join(dir, "c.pdf"), "%PDF-1.4 binary");
+      fs.writeFileSync(path.join(dir, "c.pdftext.txt"), "poppler text $6.9 billion");
+      expect(await documentText({ bytes_path: path.join(dir, "a.html") })).toBe("ARR of $3.74 billion");
+      expect(await documentText({ bytes_path: path.join(dir, "b.txt") })).toBe("plain $1.12 text");
+      expect(await documentText({ bytes_path: path.join(dir, "c.pdf") })).toBe("poppler text $6.9 billion");
+      expect(stripHtmlToText("<div>a</div><div>b</div>")).toBe("a b");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
