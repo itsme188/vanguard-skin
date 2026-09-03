@@ -22,9 +22,9 @@ import {
   upsertLines,
   setPrintState,
   getPrintByEventId,
-  insertDocument,
 } from "@/lib/print-watch/store";
-import type { PrintWatchLine, LineStateKind } from "@/lib/print-watch/types";
+import { recordDelivery } from "@/lib/print-watch/delivery";
+import type { PrintWatchLine, LineStateKind, PrintWatchDocKind } from "@/lib/print-watch/types";
 import { _setTestSeams } from "@/lib/print-watch/watcher";
 
 const hoisted = vi.hoisted(() => ({
@@ -49,6 +49,28 @@ vi.mock("@/lib/print-watch/watcher", async (importOriginal) => {
 });
 
 let tmpRoot: string;
+
+/**
+ * A document seeded the way the app seeds one: through the single delivery
+ * entry, so the row carries a real content verdict and a real road (migration
+ * 089 retired the hand-insert path). The text has to name the print's issuer
+ * and quarter or the gate stores the document REJECTED.
+ */
+function seedDelivery(
+  db: Database.Database,
+  printId: number,
+  kind: PrintWatchDocKind,
+  source: string,
+  url: string | null,
+  text: string,
+  bytesPath: string,
+) {
+  return recordDelivery(db, printId, kind, source, url, Buffer.from(text, "utf8"), {
+    bytesPath,
+    text,
+    gateCtx: { symbol: "ACME", issuerName: null, eventDate: "2026-08-26" },
+  });
+}
 
 function testLine(metricId: string, state: LineStateKind = "pending"): PrintWatchLine {
   return {
@@ -170,22 +192,22 @@ describe("GET /api/print-watch/status", () => {
   it("carries a doc-id → kind map so conflict candidates can name their source", async () => {
     const printId = upsertPrint(hoisted.db, 505, "ACME", "2026-08-26", "16:15");
     upsertLines(hoisted.db, printId, [testLine("eps_adj_q", "conflict")]);
-    const edgar = insertDocument(
+    const edgar = seedDelivery(
       hoisted.db,
       printId,
       "edgar-ex99",
       "edgar:0001-000123:ex99-1.htm",
       "https://sec.gov/x",
-      "a".repeat(64),
+      "ACME reports Q2 2026 results (EDGAR exhibit 99.1).",
       "/tmp/a.html",
     );
-    const drop = insertDocument(
+    const drop = seedDelivery(
       hoisted.db,
       printId,
       "user-drop",
       "user-drop:release.html",
       null,
-      "b".repeat(64),
+      "ACME reports Q2 2026 results (operator-dropped release).",
       "/tmp/b.html",
     );
 

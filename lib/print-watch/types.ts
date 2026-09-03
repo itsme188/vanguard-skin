@@ -17,7 +17,11 @@ export type LineStateKind =
   | "agreed"
   | "conflict"
   | "blank"
-  | "accepted";
+  | "accepted"
+  /** The contract this line was built from no longer applies to the print
+   *  (089/slice B): the row survives as the audit trail of what was measured,
+   *  but it is never promoted and never counted as coverage. */
+  | "retired";
 
 export interface LineContract {
   metric_id: string;
@@ -48,13 +52,25 @@ export interface ParseCandidate {
   not_disclosed: boolean;
 }
 
+/**
+ * How a candidate was READ out of its document. Two readings of the SAME
+ * document only count as independent when they came off different
+ * representations (`repA` tables vs `repB` raw text, or a PDF's extracted text
+ * vs its native rendering) — see `weak_pair`.
+ */
+export type CandidateRepresentation = "repA" | "repB" | "flash" | "pdfText" | "pdfNative";
+
 /** A candidate tagged with where it came from — reconciliation identity. */
 export interface TaggedCandidate extends ParseCandidate {
   doc_id: number;
-  representation: "repA" | "repB" | "flash";
+  representation: CandidateRepresentation;
   /** True when this doc was plain text parsed twice by the same prompt —
    *  such pairs are NOT independent and can never green alone (Codex #3). */
   weak_pair: boolean;
+  /** Present on BOTH readings of a PDF until the pre-registered holdout
+   *  passes (spec §4.2 "PDF"): the two readings of one PDF are provisionally
+   *  treated as a weak pair, and this note says why. */
+  pair_note?: "pdf-weak";
 }
 
 export interface PrintWatchLine {
@@ -67,6 +83,10 @@ export interface PrintWatchLine {
   snippet: string | null;
   source_doc_id: number | null;
   candidates_json: string; // JSON TaggedCandidate[]
+  /** Append-only trail of what happened to this line (acceptances,
+   *  supersessions). `undefined` from a caller means "not supplied" and
+   *  PRESERVES whatever is stored — `upsertLines` never nulls it by omission. */
+  audit_json?: string | null;
 }
 
 export type PrintWatchDocKind = "dj-release" | "edgar-ex99" | "ir-page" | "user-drop" | "user-url";
@@ -83,7 +103,15 @@ export interface PrintRow {
   updated_at: string;
 }
 
-/** Raw row shape of `print_watch_documents` — 1:1 with the table's columns. */
+/** The two verdicts a document carries: one for its CONTENT (does this text
+ *  belong to this event at all?) and one per ROAD it arrived by. */
+export type GateVerdictKind = "accepted" | "rejected";
+
+/** Where a document sits in the parse pipeline. `claimed` is held by ONE
+ *  worker under a token; `failed` means the attempt budget is spent. */
+export type ParseState = "queued" | "claimed" | "parsed" | "failed";
+
+/** Raw row shape of `print_watch_documents` — 1:1 with migration 089's columns. */
 export interface DocumentRow {
   id: number;
   print_id: number;
@@ -94,4 +122,47 @@ export interface DocumentRow {
   bytes_path: string;
   parsed_at: string | null;
   first_seen_at: string;
+  last_seen_at: string;
+  gate_verdict: GateVerdictKind;
+  gate_reason: string | null;
+  gate_version: number;
+  gate_fingerprint: string | null;
+  parse_state: ParseState;
+  parse_claim_token: string | null;
+  parse_claimed_at: string | null;
+  parse_attempts: number;
+  parse_last_error: string | null;
+  text_sha256: string | null;
+}
+
+/** Raw row shape of `print_watch_document_roads` — one provenance row per
+ *  (document, kind, source) that delivered the same bytes. */
+export interface DocumentRoadRow {
+  document_id: number;
+  kind: PrintWatchDocKind;
+  source: string;
+  url: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  seen_count: number;
+  road_verdict: GateVerdictKind;
+  road_reason: string | null;
+}
+
+/** Raw row shape of `print_watch_ir_baseline` — the completion marker for one
+ *  event's IR-page baseline, versioned by the IR URL's fingerprint. */
+export interface IrBaselineRow {
+  event_id: number;
+  source_fingerprint: string;
+  link_count: number;
+  completed_at: string;
+}
+
+/** Raw row shape of `print_watch_sources` — the per-symbol IR newsroom page. */
+export interface PrintWatchSourceRow {
+  symbol: string;
+  ir_page_url: string;
+  link_must_contain: string | null;
+  created_at: string;
+  updated_at: string;
 }
