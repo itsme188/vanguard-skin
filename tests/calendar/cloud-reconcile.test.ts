@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
 import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
-import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { todayET, addDays, mondayOf } from "@/lib/calendar/date-utils";
 
 vi.mock("@/lib/alerts/print-push", () => ({
   sendEarningsPrintPush: vi.fn(),
@@ -191,7 +191,7 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
     event_date?: string;
   }): number {
     const eventDate = opts.event_date ?? "2026-07-28";
-    const weekOf = opts.event_date ? eventDate : "2026-07-27";
+    const weekOf = opts.event_date ? mondayOf(eventDate) : "2026-07-27";
     const r = db
       .prepare(
         `INSERT INTO calendar_events
