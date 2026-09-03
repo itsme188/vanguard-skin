@@ -5,9 +5,16 @@ import { useRef, useEffect, type ReactNode } from "react";
 export function ScrollFade({
   children,
   className = "",
+  scrollerClassName = "",
 }: {
   children: ReactNode;
   className?: string;
+  /** Extra classes for the inner overflow-x-auto scroller — e.g.
+   * "scrollbar-none" for a caller that must hide the native scrollbar
+   * while still getting the fade cue (qa:mobile-chat-prompt-chips —
+   * a scrollbar-none row with no ScrollFade had zero affordance that it
+   * scrolled at all). */
+  scrollerClassName?: string;
 }) {
   // Two refs: `ref` is the inner overflow-x-auto scroller (what we measure
   // scrollWidth/scrollLeft on), `wrapperRef` is the outer `.scroll-fade` div
@@ -42,7 +49,7 @@ export function ScrollFade({
 
   return (
     <div ref={wrapperRef} className={`scroll-fade ${className}`}>
-      <div ref={ref} className="overflow-x-auto">
+      <div ref={ref} className={`overflow-x-auto ${scrollerClassName}`}>
         {children}
       </div>
     </div>
