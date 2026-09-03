@@ -641,7 +641,7 @@ describe("effectiveWindow", () => {
     expect(w.endMs).toBe(RELEASE + WINDOW_POST_MS);
     const late = new Date(RELEASE + 40 * 60_000).toISOString(); // pressed 40m after the release
     const w2 = effectiveWindow({ event_date: "2026-09-03", release_time_et: "16:05", forced_open_at: late, window_extended_until: null })!;
-    expect(w2.startMs).toBe(RELEASE - WINDOW_PRE_MS);
+    expect(w2.startMs).toBe(Date.parse(late) - FORCED_PRE_MS); // pooled MIN: the forced lookback reaches 10m further back than the schedule
     expect(w2.endMs).toBe(Date.parse(late) + FORCED_POST_MS);
   });
 
