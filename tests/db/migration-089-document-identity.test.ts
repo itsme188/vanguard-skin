@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import os from "node:os";
@@ -78,6 +78,9 @@ function seedLine(
 let tmp: string;
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "m089-"));
+});
+afterEach(() => {
+  fs.rmSync(tmp, { recursive: true, force: true });
 });
 
 describe("migration 089 — fresh database shape", () => {
@@ -291,5 +294,56 @@ describe("migration 089 — rebuild of legacy rows", () => {
     const before = digest();
     apply089(db);
     expect(digest()).toBe(before);
+  });
+
+  // Controller ruling R-B7. The pair below is NOT byte-identical — same value,
+  // different `representation` — so a field-equality dedupe would keep both on
+  // doc_id d1, where reconcile's independent() (differing representation, both
+  // weak_pair false) reads them as an independent pair and greens `agreed`:
+  // the exact false-green 089 exists to remove. One candidate per survivor.
+  it("archives a remapped candidate whenever the line already carries one from that survivor, whatever its fields", () => {
+    const db = legacyDb();
+    const printId = seedPrint(db);
+    const bytes = path.join(tmp, "r.txt");
+    fs.writeFileSync(bytes, "ACME Q2 2026");
+    const d1 = seedLegacyDoc(db, printId, "dj-release", "dj", null, "sha-same", bytes, true);
+    const d2 = seedLegacyDoc(db, printId, "user-drop", "u", null, "sha-same", bytes, true);
+    seedLine(db, printId, "revenue_q", "agreed", 1000, d1, [
+      cand("revenue_q", 1000, d1, "repA"),
+      cand("revenue_q", 1000, d2, "repB"),
+    ]);
+    const report = db.transaction(() => rebuildDocumentIdentity(db, { log: () => {} }))();
+
+    expect(report.candidates).toEqual({ before: 2, kept: 1, archived: 1 });
+    const line = db.prepare("SELECT state, candidates_json FROM print_watch_lines WHERE metric_id = 'revenue_q'").get() as { state: string; candidates_json: string };
+    const kept = JSON.parse(line.candidates_json) as TaggedCandidate[];
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).toMatchObject({ doc_id: d1, representation: "repA" });
+    expect(line.state).toBe("single_source");
+    const archive = db.prepare("SELECT metric_id, candidate_json, reason FROM print_watch_candidate_archive").all() as Array<{ metric_id: string; candidate_json: string; reason: string }>;
+    expect(archive).toHaveLength(1);
+    expect(archive[0].metric_id).toBe("revenue_q");
+    expect(archive[0].reason).toBe(`duplicate-of:${d1}`);
+    expect((JSON.parse(archive[0].candidate_json) as TaggedCandidate)).toMatchObject({ doc_id: d2, representation: "repB" });
+    expect(report.linesChanged).toEqual([{ printId, metricId: "revenue_q", from: "agreed", to: "single_source" }]);
+  });
+
+  it("keeps (remapped, never archived) a line whose ONLY evidence arrived through the merged twin", () => {
+    const db = legacyDb();
+    const printId = seedPrint(db);
+    const bytes = path.join(tmp, "r.txt");
+    fs.writeFileSync(bytes, "ACME Q2 2026");
+    const d1 = seedLegacyDoc(db, printId, "dj-release", "dj", null, "sha-same", bytes, true);
+    const d2 = seedLegacyDoc(db, printId, "user-drop", "u", null, "sha-same", bytes, true);
+    // d1 (the survivor) contributed nothing to this metric; every candidate came from d2.
+    seedLine(db, printId, "eps_adj_q", "single_source", 2, d2, [cand("eps_adj_q", 2, d2, "repB")]);
+    const report = db.transaction(() => rebuildDocumentIdentity(db, { log: () => {} }))();
+
+    expect(report.candidates).toEqual({ before: 1, kept: 1, archived: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM print_watch_candidate_archive").get()).toEqual({ n: 0 });
+    const line = db.prepare("SELECT state, value, source_doc_id, candidates_json FROM print_watch_lines WHERE metric_id = 'eps_adj_q'").get() as { state: string; value: number; source_doc_id: number; candidates_json: string };
+    expect(line).toMatchObject({ state: "single_source", value: 2, source_doc_id: d1 });
+    expect((JSON.parse(line.candidates_json) as TaggedCandidate[])[0]).toMatchObject({ doc_id: d1, representation: "repB" });
+    expect(report.linesChanged).toEqual([]);
   });
 });
