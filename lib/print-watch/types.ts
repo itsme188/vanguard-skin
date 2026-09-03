@@ -101,6 +101,37 @@ export interface PrintRow {
   state: PrintWatchState;
   created_at: string;
   updated_at: string;
+  /** ISO UTC; stamped ONCE by the first go press (spec §9 ruling 2). */
+  forced_open_at: string | null;
+  /** ISO UTC; every "Extend 30 min" press writes max(now, current end) + 30m. */
+  window_extended_until: string | null;
+}
+
+export type GoRequestStatus = "queued" | "claimed" | "done" | "failed";
+export type GoInputKind = "none" | "url" | "file";
+
+export interface GoRequestRow {
+  id: number;
+  print_id: number;
+  status: GoRequestStatus;
+  requested_at: string;
+  input_kind: GoInputKind;
+  input_url: string | null;
+  input_sha256: string | null;
+  input_bytes_path: string | null;
+  claim_token: string | null;
+  claimed_at: string | null;
+  attempts: number;
+  result_json: string | null;
+  finished_at: string | null;
+}
+
+/** One road's answer to a go request — what `result_json` holds. `"system"`
+ *  (amendment #12) covers a non-road failure such as an abandoned claim. */
+export interface RoadReport {
+  road: "user-drop" | "user-url" | "dj" | "edgar" | "ir" | "system";
+  outcome: string;
+  detail: string;
 }
 
 /** The two verdicts a document carries: one for its CONTENT (does this text
