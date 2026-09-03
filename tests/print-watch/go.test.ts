@@ -373,6 +373,13 @@ describe("requestGo", () => {
     expect(getPrintByEventId(db, eventId)!.forced_open_at).toBe(ack.forcedOpenAt);
   });
 
+  // The ONLY test in this file that pays for the watcher's module graph (the
+  // default `resolveEvent` reaches `buildArmedEventDto` through the lazy
+  // `import("./watcher")`, which pulls in TWS, the scheduler, the PDF and
+  // extract lanes). That import measures ~1.4 s on an idle machine and this
+  // file runs beside other agents' suites, where a 5x slowdown puts it past
+  // Vitest's 5 s default and fails the test on nothing but load. An explicit,
+  // generous timeout — not a retry, and no behaviour is timing-dependent.
   it("the DEFAULT resolveEvent reads calendar_events by id: refuses a missing or superseded row, resolves a live one", async () => {
     const live = seedEvent("go-ev-live");
     const seams = fakeSeams();
@@ -389,7 +396,7 @@ describe("requestGo", () => {
     await expect(requestGo(db, superseded, {}, rest)).rejects.toBeInstanceOf(GoRefused);
     await expect(requestGo(db, 999_999, {}, rest)).rejects.toBeInstanceOf(GoRefused);
     expect(isArmed(superseded)).toBe(false);
-  });
+  }, 30_000);
 });
 
 describe("runGoRequest", () => {
@@ -497,21 +504,28 @@ describe("runGoRequest", () => {
       const gate = new Promise<void>((resolve) => {
         release = resolve;
       });
+      let passStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        passStarted = resolve;
+      });
       const seams = fakeSeams({
         now: () => clock,
         acquire: async (_db, printId) => {
+          passStarted();
           await gate;
           return [{ road: "dj", outcome: "ok", detail: `print ${printId}` }];
         },
       });
       const run = runGoRequest(db, ack.requestId, seams);
-      await vi.advanceTimersByTimeAsync(0); // let the run reach the fan-out pass
+      await started; // the run IS inside the fan-out pass — not "probably, by now"
 
       for (let beat = 0; beat < 7; beat += 1) {
         clock += GO_CLAIM_HEARTBEAT_MS;
         await vi.advanceTimersByTimeAsync(GO_CLAIM_HEARTBEAT_MS);
       }
       expect(clock - NOW).toBeGreaterThan(2 * GO_CLAIM_STALE_MS);
+      // Every beat renewed the claim: the row carries the LAST beat's instant.
+      expect(getGoRequest(db, ack.requestId)!.claimed_at).toBe(new Date(clock).toISOString());
       // Without the renewal this row would look abandoned and be taken.
       expect(claimGoRequest(db, ack.requestId, "second-worker", clock)).toBe(false);
 
@@ -535,18 +549,23 @@ describe("runGoRequest", () => {
       const gate = new Promise<void>((resolve) => {
         release = resolve;
       });
+      let passStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        passStarted = resolve;
+      });
       const seams = fakeSeams({
         now: () => clock,
         acquire: async (_db, _printId, signal) => {
           signal?.addEventListener("abort", () => {
             aborted = true;
           });
+          passStarted();
           await gate;
           return [];
         },
       });
       const run = runGoRequest(db, ack.requestId, seams);
-      await vi.advanceTimersByTimeAsync(0);
+      await started; // the abort listener is attached before anything can abort
 
       // Someone else takes the row (a stale-claim takeover, or a merge).
       db.prepare(`UPDATE print_watch_go_requests SET claim_token = 'thief' WHERE id = ?`).run(ack.requestId);
@@ -577,18 +596,23 @@ describe("runGoRequest", () => {
       const gate = new Promise<void>((resolve) => {
         release = resolve;
       });
+      let passStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        passStarted = resolve;
+      });
       const seams = fakeSeams({
         now: () => clock,
         acquire: async (_db, _printId, signal) => {
           signal?.addEventListener("abort", () => {
             aborted = true;
           });
+          passStarted();
           await gate;
           return [];
         },
       });
       const run = runGoRequest(db, ack.requestId, seams);
-      await vi.advanceTimersByTimeAsync(0);
+      await started; // the abort listener is attached before anything can abort
 
       // The handle goes bad under a detached run — a locked DB in production,
       // a raising trigger here. The heartbeat's UPDATE now throws.

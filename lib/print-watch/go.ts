@@ -37,7 +37,7 @@ import { attemptPostCommitDrain } from "@/lib/earnings/cloud-outbox";
 import type { EventMergeContext, EventMergeTableResult } from "@/lib/earnings/event-merge";
 import { validatePublicUrl } from "./ssrf";
 import { redactUrl, REDACTED_QUERY_KEYS } from "./hardened-fetch";
-import { classifyBytes, URL_FETCH_MAX_BYTES, type hardenedFetchBytes } from "./url-fetch";
+import { classifyBytes, URL_FETCH_MAX_BYTES } from "./url-fetch";
 import { sha256Hex } from "./delivery";
 import {
   upsertPrint,
@@ -158,21 +158,16 @@ export function safeErrorText(err: unknown): string {
 // the watcher, lazily (never a static import — see the module header)
 // ---------------------------------------------------------------------------
 
-/** Task 6's exports, optional until it lands so this module type-checks alone. */
-interface WatcherGoExports {
-  writeAcquiredBytes?: (dirKey: number | string, sha: string, ext: string, buf: Buffer) => Promise<string>;
-  wakePrintWatch?: (db: Database.Database, printId: number) => Promise<void>;
-  runForcedPass?: (db: Database.Database, printId: number, signal?: AbortSignal) => Promise<RoadReport[]>;
-  throttledFetchBytes?: typeof hardenedFetchBytes;
-}
-
-async function watcherModule(): Promise<typeof import("./watcher") & WatcherGoExports> {
-  return (await import("./watcher")) as typeof import("./watcher") & WatcherGoExports;
-}
-
-function requireWatcherExport<T>(fn: T | undefined, name: string): T {
-  if (!fn) throw new Error(`print-watch/go: the watcher does not export ${name} yet (Task 6 not landed)`);
-  return fn;
+/**
+ * The watcher, reached ONLY here and ONLY lazily. Its go dispatcher imports
+ * `runGoRequest` from this module, so a static import in both directions is an
+ * evaluation-order cycle — but the module's real type is what every default
+ * seam below is checked against, so a signature that drifts on either side is
+ * a compile error rather than a runtime surprise (R-C14: the "not landed"
+ * optional typing retired now that Task 6's exports have landed).
+ */
+function watcherModule(): Promise<typeof import("./watcher")> {
+  return import("./watcher");
 }
 
 // ---------------------------------------------------------------------------
@@ -228,14 +223,14 @@ const DEFAULT_SEAMS: GoSeams = {
   },
 
   writeBytes: async (dirKey, sha, ext, buf) =>
-    requireWatcherExport((await watcherModule()).writeAcquiredBytes, "writeAcquiredBytes")(dirKey, sha, ext, buf),
+    (await watcherModule()).writeAcquiredBytes(dirKey, sha, ext, buf),
 
   readBytes: (path) => fsp.readFile(path),
 
   unlink: (path) => fsp.unlink(path),
 
   wake: async (db, printId) =>
-    requireWatcherExport((await watcherModule()).wakePrintWatch, "wakePrintWatch")(db, printId),
+    (await watcherModule()).wakePrintWatch(db, printId),
 
   postCommit: async (db, eventId) => {
     // Detached on purpose: a prepare pass can take minutes (model calls), and
@@ -256,14 +251,14 @@ const DEFAULT_SEAMS: GoSeams = {
     // per-host throttle, exactly like every automatic road. The signal is the
     // CLAIM's, composed with the fetcher's own budget — a go press is never
     // cancelled by a settling acquisition pass (R-C8).
-    const throttled = requireWatcherExport((await watcherModule()).throttledFetchBytes, "throttledFetchBytes");
+    const { throttledFetchBytes } = await watcherModule();
     return deliverFromUrl(db, printId, url, {
-      fetchBytes: (u, opts) => throttled(u, { ...opts, signal }),
+      fetchBytes: (u, opts) => throttledFetchBytes(u, { ...opts, signal }),
     });
   },
 
   acquire: async (db, printId, signal) =>
-    requireWatcherExport((await watcherModule()).runForcedPass, "runForcedPass")(db, printId, signal),
+    (await watcherModule()).runForcedPass(db, printId, signal),
 };
 
 // ---------------------------------------------------------------------------
