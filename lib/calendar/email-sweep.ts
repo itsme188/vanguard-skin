@@ -42,6 +42,7 @@ import { drainCloudOutbox, writeArmedEventsOutboxRow } from "@/lib/earnings/clou
 import { fetchSameDayTranscripts } from "@/lib/transcripts/same-day";
 import { recordEarningsEmailSkip } from "@/lib/mutations/earnings-skips";
 import { ensurePrintWatch } from "@/lib/print-watch/watcher";
+import { runPrepareSteps, type PrepareRunReport } from "@/lib/earnings/prepare-armed-event";
 // Shared with lib/earnings/debrief-send.ts (which also drops cloud-delivered
 // members) — moved out of this file 2026-08-02 so both can use it without an
 // email-sweep ↔ debrief-send import cycle.
@@ -80,6 +81,11 @@ export interface SweepSummary {
   debrief: { sent: boolean; covered: string[] } | null;
   /** Same-day transcript fetch attempts that succeeded this pass (#12 B1). */
   transcriptsFetched: number;
+  /**
+   * Prepare pass for armed events (v2 slice A): what this tick's registered
+   * prepare steps did. Zeroed when the pass threw (it never fails the sweep).
+   */
+  prepared: PrepareRunReport;
   results: SweepCandidateResult[];
 }
 
@@ -370,6 +376,20 @@ export async function runEarningsEmailSweep(
   // throws.
   await printArmedWorksheets(db, { now: opts.now });
 
+  // ── Prepare pass for armed events (v2 slice A) ────────────────────────
+  // Re-runs every runnable step each tick until the event is past: the
+  // route's post-arm kick is fire-and-forget, so this is the DURABLE path
+  // for a crashed kick, a step registered after the arm, or an arm whose
+  // enqueue never landed. Never fails the sweep.
+  let prepared: PrepareRunReport = { ran: 0, done: 0, pending: 0, failed: 0, skipped: 0 };
+  try {
+    prepared = await runPrepareSteps(db, {
+      now: () => (opts.now ?? new Date()).getTime(),
+    });
+  } catch (err) {
+    console.warn("[earnings-sweep] prepare pass failed:", err);
+  }
+
   // ── Same-day transcript orchestrator (#12 B1) ─────────────────────────
   // Best-effort, always last: kicks off fetchTranscript for held/watchlist
   // prints whose actuals landed in the last 36h so a transcript is warm in
@@ -408,6 +428,7 @@ export async function runEarningsEmailSweep(
     outboxReconciled,
     debrief,
     transcriptsFetched,
+    prepared,
     results,
   };
 }

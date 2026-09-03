@@ -131,6 +131,10 @@ import { runEarningsEmailSweep, alertBlockedRecaps } from "@/lib/calendar/email-
 import { EarningsEmailError } from "@/lib/digest/send-earnings-email";
 import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
 import { readArmedGeneration } from "@/lib/earnings/armed-events-projection";
+import {
+  registerPrepareStep,
+  __resetPrepareStepsForTests,
+} from "@/lib/earnings/prepare-armed-event";
 
 // 2h before 16:30 ET release = 20:30 UTC. Same construction as
 // tests/calendar/findEmailCandidates-skip.test.ts's AAPL preview case —
@@ -1312,6 +1316,93 @@ describe("armed-events outbox reconcile (R8)", () => {
     const summary = await runEarningsEmailSweep(db, { now: NOW });
 
     expect(summary.outboxReconciled).toBe(false);
+    expect(summary.swept).toBe(0);
+    warn.mockRestore();
+  });
+});
+
+/**
+ * Prepare pass (live print v2 slice A): the route's post-arm kick is
+ * fire-and-forget, so the sweep tick is the DURABLE path — every tick
+ * re-runs every runnable prepare step for every armed, unsuperseded,
+ * not-yet-past event, and reconciles rows an arm never managed to enqueue.
+ */
+describe("prepare pass for armed events (v2 slice A)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    fetchCloudSent.mockClear();
+    fetchCloudSent.mockResolvedValue([]);
+    runMorningDebrief.mockClear();
+    runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
+    fetchSameDayTranscripts.mockClear();
+    fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
+    drainCloudOutbox.mockClear();
+    __resetPrepareStepsForTests();
+  });
+
+  afterEach(() => {
+    __resetPrepareStepsForTests();
+    db.close();
+  });
+
+  /** Armed, in the future relative to NOW (2026-06-01), and never enqueued. */
+  const seedArmed = (symbol: string) => {
+    const id = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, title, source_key, symbol)
+           VALUES ('finnhub','earnings','2026-09-02','AMC','16:15',?,?,?)`,
+        )
+        .run(`${symbol} earnings`, `finnhub:${symbol}:2026-09-02`, symbol).lastInsertRowid,
+    );
+    db.prepare(`INSERT INTO earnings_worksheet_flags (event_id) VALUES (?)`).run(id);
+    return id;
+  };
+
+  it("a registered step on an armed future event runs once per tick and the summary reports it", async () => {
+    const runs: number[] = [];
+    registerPrepareStep("sweep_step", {
+      fingerprint: () => "fp",
+      run: async (_db, eventId) => {
+        runs.push(eventId);
+        return { status: "done" };
+      },
+    });
+    const id = seedArmed("ACME");
+
+    const first = await runEarningsEmailSweep(db, { now: NOW });
+    expect(first.prepared).toEqual({ ran: 1, done: 1, pending: 0, failed: 0, skipped: 0 });
+    expect(runs).toEqual([id]);
+    expect(
+      db
+        .prepare(`SELECT status, attempts FROM earnings_prepare_steps WHERE event_id = ?`)
+        .get(id),
+    ).toMatchObject({ status: "done", attempts: 1 });
+
+    // Done + unchanged fingerprint = nothing to do on the next tick.
+    const second = await runEarningsEmailSweep(db, { now: NOW });
+    expect(second.prepared).toEqual({ ran: 0, done: 0, pending: 0, failed: 0, skipped: 0 });
+    expect(runs).toEqual([id]);
+  });
+
+  it("a throwing prepare pass warns but never fails the sweep", async () => {
+    registerPrepareStep("boom", {
+      fingerprint: () => {
+        throw new Error("fingerprint blew up");
+      },
+      run: async () => ({ status: "done" }),
+    });
+    seedArmed("ACME");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.prepared).toEqual({ ran: 0, done: 0, pending: 0, failed: 0, skipped: 0 });
     expect(summary.swept).toBe(0);
     warn.mockRestore();
   });
