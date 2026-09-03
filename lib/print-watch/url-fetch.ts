@@ -276,14 +276,36 @@ export async function hardenedFetchBytes(
   }
 }
 
-/** Type by magic bytes (spec §4.2): `%PDF-`; `<html` / `<!doctype`; else text
- *  only if the first 4KB has no NUL and under 2% control bytes; else binary. */
+/**
+ * Type by magic bytes (spec §4.2): `%PDF-` first; then HTML; then text, only
+ * if the first 4KB has no NUL and under 2% control bytes; else binary.
+ *
+ * The HTML rule is deliberately v1's (controller ruling R-B12): a leading `<`
+ * after an optional BOM and whitespace, OR `<table` / `<html` / `<!doctype`
+ * anywhere in that first 4KB. Requiring a document element is too narrow for
+ * what EDGAR actually serves — an EX-99 exhibit is routinely a HEADLESS
+ * fragment whose body starts at a bare `<div>` or `<table>` — and a fragment
+ * misread as plain text gets ONE extraction instead of the repA/repB pair, so
+ * every line it produces is capped at `single_source` and can never green.
+ *
+ * Prose that merely MENTIONS the tag ("...served as <html> rather than a PDF")
+ * is accepted as HTML, exactly as v1 accepted it. The cost of being wrong that
+ * way is one extra representation of a document the gate still has to accept
+ * — never a wrong number.
+ */
 export function classifyBytes(buf: Buffer): BytesKind | "binary" {
   if (buf.subarray(0, 5).toString("latin1") === "%PDF-") return "pdf";
   let head = buf.subarray(0, 4096);
   if (head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) head = head.subarray(3);
-  const lower = head.toString("latin1").trimStart().toLowerCase();
-  if (lower.startsWith("<!doctype") || lower.startsWith("<html") || lower.includes("<html")) return "html";
+  const lower = head.toString("latin1").toLowerCase();
+  if (
+    lower.trimStart().startsWith("<") ||
+    lower.includes("<html") ||
+    lower.includes("<table") ||
+    lower.includes("<!doctype")
+  ) {
+    return "html";
+  }
   if (head.length === 0) return "binary";
   let control = 0;
   for (const b of head) {

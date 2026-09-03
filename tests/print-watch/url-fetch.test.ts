@@ -199,6 +199,31 @@ describe("classifyBytes", () => {
     expect(classifyBytes(Buffer.from("﻿<html><body>", "utf8"))).toBe("html");
     expect(classifyBytes(Buffer.from("ACME reports Q2 results\nRevenue $1.0B\n"))).toBe("text");
   });
+  it("keeps v1's HTML sniff so a headless EDGAR fragment is not read as plain text (R-B12)", () => {
+    // An EX-99 exhibit is routinely a fragment with no <html>/<!doctype at all.
+    expect(classifyBytes(Buffer.from("<div><p>ACME reports Q2 2026 results</p></div>"))).toBe(
+      "html",
+    );
+    expect(classifyBytes(Buffer.from("  <table><tr><td>Revenue</td></tr></table>"))).toBe("html");
+    // A table that only appears well into the body still makes it HTML.
+    expect(
+      classifyBytes(
+        Buffer.from(
+          `ACME reports Q2 2026 results.\n${"prose ".repeat(60)}\n<table><tr><td>Revenue</td><td>1,000</td></tr></table>`,
+        ),
+      ),
+    ).toBe("html");
+    // DOCUMENTED DECISION: prose that merely MENTIONS the tag reads as HTML,
+    // exactly as v1 read it. Being wrong that way costs one extra
+    // representation of a document the gate still has to accept — never a
+    // wrong number.
+    expect(classifyBytes(Buffer.from("The release was served as <html> rather than a PDF."))).toBe(
+      "html",
+    );
+    // Prose with no markup at all is still text.
+    expect(classifyBytes(Buffer.from("ACME reports Q2 2026 results. Revenue rose."))).toBe("text");
+  });
+
   it("refuses binary: a NUL byte, or 2% or more control bytes in the first 4KB", () => {
     expect(classifyBytes(Buffer.from([0x41, 0x00, 0x42]))).toBe("binary");
     const controls = Buffer.alloc(100, 0x41);
