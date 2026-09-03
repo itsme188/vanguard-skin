@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export type EarningsBogeySource = "pdf_upload" | "manual" | "newsletter";
+export type EarningsBogeySource = "pdf_upload" | "manual" | "newsletter" | "finnhub";
 
 export interface EarningsBogey {
   id: number;
@@ -17,6 +17,8 @@ export interface EarningsBogey {
   revenue_whisper_usd: number | null;
   /** Absolute percent (±6% → 6) — sheet-stated expected earnings move. */
   expected_move_pct: number | null;
+  /** Vendor EPS consensus (Finnhub), basis unspecified. NEVER the adjusted-EPS bogey (D1). */
+  eps_consensus_vendor: number | null;
   segment_breakdown_json: string | null;
   guidance_notes: string | null;
   notes: string | null;
@@ -37,6 +39,7 @@ export function getBogeysForEvent(
       `SELECT id, event_id, source, source_label, source_url, raw_pdf_r2_key,
               research_document_id, research_article_id, eps_consensus, eps_whisper,
               revenue_consensus_usd, revenue_whisper_usd, expected_move_pct,
+              eps_consensus_vendor,
               segment_breakdown_json, guidance_notes, notes, uploaded_at,
               ai_extraction_model
          FROM earnings_bogeys

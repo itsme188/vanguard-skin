@@ -131,6 +131,12 @@ describe("upsertBogey", () => {
     expect(ok).toBe(true);
     expect(getBogeysForEvent(db, 1)).toHaveLength(0);
   });
+
+  it("stores a finnhub row with the vendor EPS apart from eps_consensus", () => {
+    upsertBogey(db, { event_id: 1, source: "finnhub", source_label: "Sell-side consensus (Finnhub)", eps_consensus: null, eps_consensus_vendor: 0.50, revenue_consensus_usd: 1_234_000_000 });
+    const row = db.prepare(`SELECT source, eps_consensus, eps_consensus_vendor, revenue_consensus_usd FROM earnings_bogeys WHERE event_id = ?`).get(1);
+    expect(row).toEqual({ source: "finnhub", eps_consensus: null, eps_consensus_vendor: 0.50, revenue_consensus_usd: 1_234_000_000 });
+  });
 });
 
 /**

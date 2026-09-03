@@ -102,6 +102,7 @@ function bogey(overrides: Partial<EarningsBogey>): EarningsBogey {
     revenue_consensus_usd: 750_000_000,
     revenue_whisper_usd: 760_000_000,
     expected_move_pct: null,
+    eps_consensus_vendor: null,
     segment_breakdown_json: null,
     guidance_notes: null,
     notes: null,
