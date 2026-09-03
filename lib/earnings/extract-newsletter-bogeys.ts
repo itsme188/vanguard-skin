@@ -20,7 +20,7 @@ import { resolveFeatureModel } from "@/lib/ai/models";
 import { upsertBogey } from "@/lib/mutations/earnings-bogeys";
 import { extractJsonArray } from "@/lib/ai/extract-json";
 import { coercePercent, parseLargeUSD } from "@/lib/format";
-import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 
@@ -255,11 +255,15 @@ export function isSymbolMentioned(text: string, symbol: string): boolean {
 
 /**
  * Fetch upcoming earnings reporters in [today, today+14d] scoped to
- * held/watchlist symbols only (getSymbolStatus, issuer-family aware).
- * Excludes superseded calendar_events rows.
+ * covered events only (coveredForEvents: held/watchlist family OR the
+ * event itself is armed — spec §4.1). Excludes superseded calendar_events
+ * rows.
  */
-function getUpcomingReporters(db: Database.Database): UpcomingReporter[] {
-  const today = todayET();
+function getUpcomingReporters(
+  db: Database.Database,
+  opts: { today?: string } = {},
+): UpcomingReporter[] {
+  const today = opts.today ?? todayET();
   const endDate = addDays(today, WINDOW_DAYS_AHEAD);
 
   const rows = db
@@ -275,20 +279,19 @@ function getUpcomingReporters(db: Database.Database): UpcomingReporter[] {
 
   if (rows.length === 0) return [];
 
-  const symbols = Array.from(new Set(rows.map((r) => r.symbol.toUpperCase())));
-  const statuses = getSymbolStatus(db, symbols);
+  const covered = coveredForEvents(db, rows.map((r) => ({ symbol: r.symbol, eventId: r.event_id })));
 
   return rows
-    .filter((r) => {
-      const status = statuses[r.symbol.toUpperCase()];
-      return status === "held" || status === "watchlist";
-    })
+    .filter((r) => covered.has(r.event_id))
     .map((r) => ({
       symbol: r.symbol.toUpperCase(),
       event_id: r.event_id,
       event_date: r.event_date,
     }));
 }
+
+/** Test seam — the function stays private to the module's callers. */
+export const __getUpcomingReportersForTests = getUpcomingReporters;
 
 /**
  * Per-article symbol pre-filter: only the reporters actually mentioned in

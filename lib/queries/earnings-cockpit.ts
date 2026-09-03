@@ -12,6 +12,7 @@ import { getEmailStatesForEvents, getSentPhasesForEvents } from "@/lib/queries/e
 import { getSkippedPhasesForEvents } from "@/lib/queries/earnings-skips";
 import {
   getSymbolStatus,
+  coveredForEvents,
   getSecurityIdForSymbolWithSiblings,
 } from "@/lib/queries/briefing-symbols";
 import { getEarningsSettings } from "@/lib/queries/earnings-settings";
@@ -137,7 +138,8 @@ export function buildCockpitPayload(
 
   const rawById = new Map<number, RawEventRow>(raw.map((r) => [r.id, r]));
   const eventIds = raw.map((r) => r.id);
-  const statusMap = getSymbolStatus(db, raw.map((r) => r.symbol));
+  const statusMap = getSymbolStatus(db, raw.map((r) => r.symbol));   // still used for the chip
+  const coveredIds = coveredForEvents(db, raw.map((r) => ({ symbol: r.symbol, eventId: r.id })));
   const emailStates = getEmailStatesForEvents(db, eventIds);
   const sentPhases = getSentPhasesForEvents(db, eventIds);
   const skipMap = getSkippedPhasesForEvents(db, eventIds);
@@ -149,11 +151,8 @@ export function buildCockpitPayload(
   const isMuted = (symbol: string) =>
     issuerSiblings(symbol).some((s) => mutedSet.has(s.toUpperCase()));
 
-  // Keep held + watchlist only.
-  const kept = raw.filter((r) => {
-    const st = statusMap[r.symbol.toUpperCase()] ?? statusMap[r.symbol] ?? "neither";
-    return st === "held" || st === "watchlist";
-  });
+  // Keep held + watchlist + armed (event-scoped).
+  const kept = raw.filter((r) => coveredIds.has(r.id));
 
   const exposureMap = getNetExposureForSymbolFamilies(
     db,

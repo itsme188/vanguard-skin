@@ -12,6 +12,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import { runEnrichment, REACTION_READY_MS } from "@/lib/calendar/enrichment-runner";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { setMutedEarningsSymbols, setEarningsEmailsEnabled } from "@/lib/queries/earnings-settings";
+import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 
 vi.mock("@/lib/alerts/print-push", () => ({
   sendEarningsPrintPush: vi.fn(),
@@ -1099,6 +1100,39 @@ describe("push-at-print hook (Wave 1 §2)", () => {
       symbol: "NOPOS",
       security_id: 303,
     });
+
+    const now = new Date("2026-04-24T16:30:00Z");
+    await runEnrichment(db, { now });
+
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+  });
+
+  // [C-17 / v2 slice A §4.1] Selection consumers switched to coveredForEvents
+  // (armed events get what held names get) — the push gate is explicitly
+  // NOT one of them and must keep reading getSymbolStatus's held/watchlist
+  // union only. An armed-only, unheld, unwatched reporter's null→non-null
+  // transition must not fire the push.
+  it("does NOT fire for an armed-only reporter (not held, not watchlisted) — push gate stays held/watchlist/read-through only", async () => {
+    seedSecurity(db, 306, "ARMED1", "Technology");
+    // No holdings, no watchlist row — armed only.
+
+    mockFinnhubActual({
+      symbol: "ARMED1",
+      date: "2026-04-24",
+      epsActual: 0.62,
+      epsEstimate: 0.55,
+    });
+
+    const { lastInsertRowid } = insertEvent(db, {
+      source: "finnhub",
+      source_key: "finnhub:ARMED1:2026-04-24",
+      event_type: "earnings",
+      event_date: "2026-04-24",
+      release_time: "08:00",
+      symbol: "ARMED1",
+      security_id: 306,
+    });
+    armWorksheet(db, Number(lastInsertRowid));
 
     const now = new Date("2026-04-24T16:30:00Z");
     await runEnrichment(db, { now });

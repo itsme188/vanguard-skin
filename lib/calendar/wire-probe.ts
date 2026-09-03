@@ -13,7 +13,7 @@
 import type Database from "better-sqlite3";
 import { probeFinnhubActualExistsStrict } from "./enrich-actuals";
 import { composeReleaseInstant } from "./reaction-snapshot";
-import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { getReadThroughReporterSymbols } from "@/lib/queries/read-through-pairs";
 import { stampEmptyProbe, etTimeOfInstant } from "@/lib/earnings/wire-times";
 import { todayET, addDays } from "./date-utils";
@@ -66,8 +66,9 @@ export function findProbeCandidates(
   });
   if (inWindow.length === 0) return [];
 
-  // Held / watchlist / read-through-reporter gate (the enrichment universe).
-  const status = getSymbolStatus(db, inWindow.map((r) => r.symbol));
+  // Covered (held/watchlist/armed, spec §4.1) / read-through-reporter gate
+  // (the enrichment universe).
+  const coveredIds = coveredForEvents(db, inWindow.map((r) => ({ symbol: r.symbol, eventId: r.id })));
   let reporters: Set<string>;
   try {
     reporters = new Set(
@@ -76,10 +77,9 @@ export function findProbeCandidates(
   } catch {
     reporters = new Set();
   }
-  const gated = inWindow.filter((r) => {
-    const st = status[r.symbol.toUpperCase()];
-    return st === "held" || st === "watchlist" || reporters.has(r.symbol.toUpperCase());
-  });
+  const gated = inWindow.filter(
+    (r) => coveredIds.has(r.id) || reporters.has(r.symbol.toUpperCase()),
+  );
 
   gated.sort((a, b) => a.release_time.localeCompare(b.release_time));
   return gated.slice(0, MAX_PROBES_PER_TICK).map((r) => ({
