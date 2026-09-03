@@ -332,6 +332,10 @@ export function mergePrintWatchState(ctx: EventMergeContext): EventMergeTableRes
     `INSERT INTO print_watch_candidate_archive (print_id, metric_id, candidate_json, reason) VALUES (?, ?, ?, ?)`,
   );
   const readTargetLine = db.prepare(`SELECT * FROM print_watch_lines WHERE print_id = ? AND metric_id = ?`);
+  /** Metrics this merge turned into a `conflict` because two DIFFERING
+   *  acceptances met. Phase 3 can unmake them (see the re-assert below), so
+   *  they are remembered here rather than re-derived afterwards. */
+  const mintedConflicts: string[] = [];
 
   /** Which surviving document a candidate now belongs to (itself, unless its
    *  document was merged into a twin). The flash sentinel and a doc_id we never
@@ -365,7 +369,9 @@ export function mergePrintWatchState(ctx: EventMergeContext): EventMergeTableRes
       }
       touched = true;
       if (docIdsKept.has(survivor)) {
-        archive.run(target.id, metric, JSON.stringify(c), `merge-duplicate-of:${survivor}`);
+        // The SAME reason prefix migration 089 phase (5) writes, so one audit
+        // query covers duplicates collapsed by the rebuild and by a merge.
+        archive.run(target.id, metric, JSON.stringify(c), `duplicate-of:${survivor}`);
         continue;
       }
       docIdsKept.add(survivor);
@@ -565,6 +571,7 @@ export function mergePrintWatchState(ctx: EventMergeContext): EventMergeTableRes
                 candidates_json = COALESCE(?, candidates_json), audit_json = ?, updated_at = datetime('now')
           WHERE print_id = ? AND metric_id = ?`,
       ).run(mergedJson, audit, target.id, tl.metric_id);
+      mintedConflicts.push(tl.metric_id);
       lines.notes.push(`${tl.metric_id}: two differing acceptances → conflict, both kept in audit_json`);
     } else if (tAccepted) {
       db.prepare(
@@ -631,6 +638,47 @@ export function mergePrintWatchState(ctx: EventMergeContext): EventMergeTableRes
   // the DONOR's date — they are re-judged here alongside the moved documents.
   reevaluateAll(db, new Set<number>([...movedDocIds, ...twinSurvivors]), identity, docs.notes);
   out.push(docs);
+
+  // ── phase 3b: re-assert the conflicts phase 2 minted ──
+  //
+  // A document that loses its acceptance in the re-verdict above takes its
+  // candidates with it (`retractDocumentEvidence`), and that re-reconciles
+  // every NON-accepted line those candidates touched — which now includes the
+  // `conflict` this very merge just minted. Recomputing it off whatever
+  // evidence survives can land on `single_source`/`agreed` WITH a value: one
+  // verified number on a line where two people accepted DIFFERENT ones. The
+  // conflict is a fact about the two acceptances, not about the candidate
+  // pool, so the reconciler does not get to overrule it. `candidates_json`
+  // keeps whatever the retraction left (that part IS about the pool), and
+  // `audit_json` is untouched by retraction, so both acceptances survive.
+  if (mintedConflicts.length > 0) {
+    const reassert = db.prepare(
+      `UPDATE print_watch_lines
+          SET state = 'conflict', value = NULL, value_high = NULL, snippet = NULL, source_doc_id = NULL,
+              updated_at = datetime('now')
+        WHERE print_id = ? AND metric_id = ? AND state != 'conflict'`,
+    );
+    for (const metric of mintedConflicts) {
+      if (reassert.run(target.id, metric).changes > 0) {
+        lines.notes.push(`${metric}: conflict re-asserted after the document re-verdict`);
+      }
+    }
+  }
+
+  // ── phase 3c: archived candidates follow the surviving print ──
+  //
+  // `print_watch_candidate_archive` carries NO foreign key (089), so deleting
+  // the donor print below would strand every candidate ever archived for it
+  // behind a print id that no longer exists — unreachable from the surviving
+  // print, which is the opposite of "evidence is appended, never dropped".
+  // Rows this merge archived are already keyed to the target; these are the
+  // donor's older ones.
+  const archiveMoved = db
+    .prepare(`UPDATE print_watch_candidate_archive SET print_id = ? WHERE print_id = ?`)
+    .run(target.id, donor.id).changes;
+  if (archiveMoved > 0) {
+    out.push(result("print_watch_candidate_archive", { moved: archiveMoved }));
+  }
 
   // ── phase 4: the donor print row goes LAST ──
   db.prepare(`DELETE FROM print_watch_prints WHERE id = ?`).run(donor.id);
