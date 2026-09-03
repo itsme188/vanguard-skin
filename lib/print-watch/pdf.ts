@@ -21,8 +21,9 @@
  * image-only scan needs a different file entirely, a 300-page 10-K is the
  * wrong document, and a missing poppler is a machine problem the user can
  * fix in one `brew install`. Page count and encryption both come from
- * pdftotext itself rather than a hand-rolled PDF parser — the `/Encrypt`
- * byte pre-check below is a cheap early-out, not the authority.
+ * pdftotext ITSELF rather than a hand-rolled PDF parser — see
+ * `checkPdfBytes` for why the tempting `/Encrypt` byte scan is not a
+ * refusal.
  */
 import { spawn as nodeSpawn } from "node:child_process";
 import fs from "node:fs";
@@ -68,17 +69,29 @@ export function isPdf(buf: Buffer): boolean {
 }
 
 /**
- * Checks that cost nothing and run BEFORE the bytes are written or poppler is
- * spawned. The `/Encrypt` scan is a pre-check, not a parser: a PDF that hides
- * its encryption dictionary in an object stream still reaches poppler, which
- * refuses it with a password error (`runPdftotext` classifies that).
+ * The one check that costs nothing and runs BEFORE the bytes are written or
+ * poppler is spawned: size.
+ *
+ * ENCRYPTION IS DELIBERATELY NOT CHECKED HERE (R-B15). An `/Encrypt` entry in
+ * the trailer is NOT the same thing as "you need a password to read this":
+ * the common case in the wild is an OWNER-password-only PDF — permission
+ * flags saying "no printing, no copying" with an EMPTY user password — which
+ * `pdftotext` opens and extracts without complaint. IR departments publish
+ * releases with exactly those restrictions. Refusing on the byte pattern
+ * would turn one of those into "remove the password and drop it again" in the
+ * middle of a print, advice the desk cannot act on because there is no
+ * password to remove.
+ *
+ * So poppler is the authority, as plan M14 says it is: a PDF that genuinely
+ * needs a user password makes `pdftotext` exit non-zero with a password
+ * error, and `runPdftotext` classifies that into `PdfEncryptedError` with the
+ * message this function used to guess at. The byte scan would also have been
+ * incomplete in the other direction — an encryption dictionary hidden in an
+ * object stream never matches it.
  */
 export function checkPdfBytes(buf: Buffer): PdfCheck {
   if (buf.length > PDF_MAX_BYTES) {
     return { ok: false, reason: "PDF is larger than 10MB — print-watch accepts releases up to 10MB" };
-  }
-  if (/\/Encrypt\b/.test(buf.toString("latin1"))) {
-    return { ok: false, reason: "encrypted PDF — remove the password and drop it again" };
   }
   return { ok: true };
 }

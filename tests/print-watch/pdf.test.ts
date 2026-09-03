@@ -73,16 +73,44 @@ describe("pdf.ts — byte and text checks", () => {
     expect(isPdf(Buffer.from("<html>"))).toBe(false);
   });
 
-  it("refuses oversize and encrypted PDFs with their own messages", () => {
+  it("refuses an oversize PDF with its own message", () => {
     expect(checkPdfBytes(Buffer.alloc(PDF_MAX_BYTES + 1, 0x20))).toEqual({
       ok: false,
       reason: expect.stringMatching(/10MB/),
     });
-    expect(checkPdfBytes(Buffer.from("%PDF-1.7 trailer << /Encrypt 5 0 R >>"))).toEqual({
-      ok: false,
-      reason: expect.stringMatching(/encrypted/i),
-    });
     expect(checkPdfBytes(Buffer.from("%PDF-1.7 hello"))).toEqual({ ok: true });
+  });
+
+  // R-B15: an /Encrypt entry is NOT "needs a password". The common case is an
+  // owner-password-only PDF — permission flags, EMPTY user password — which
+  // pdftotext reads happily, and IR departments publish releases like that.
+  // Refusing on the byte pattern would tell the desk to "remove the password"
+  // from a file that has none.
+  it("does NOT refuse a permissions-only PDF on its /Encrypt bytes — poppler decides", async () => {
+    const permissionsOnly = Buffer.from(
+      "%PDF-1.7\ntrailer << /Encrypt 5 0 R /Root 1 0 R >>\n%%EOF\n",
+    );
+    expect(checkPdfBytes(permissionsOnly)).toEqual({ ok: true });
+
+    // …and the whole chain proceeds: poppler extracts a real text layer from
+    // it, which clears the image-only floor.
+    const body = `ACME reports Q2 2026 results. ${"Segment detail line. ".repeat(40)}\f`;
+    const { spawn } = fakeSpawn({ stdout: body });
+    const text = await runPdftotext("/p", "/x/permissions-only.pdf", { spawn });
+    expect(text).toBe(body);
+    expect(text.replace(/\s+/g, "").length).toBeGreaterThanOrEqual(PDF_MIN_TEXT_CHARS);
+    expect(checkPdfText(text)).toEqual({ ok: true });
+  });
+
+  it("a PDF that genuinely needs a password is refused by poppler, with the encryption message", async () => {
+    // Each call consumes one scripted child, so this needs two.
+    const locked = () => fakeSpawn({ stderr: "Command Line Error: Incorrect password", code: 1 }).spawn;
+    await expect(
+      runPdftotext("/p", "/x/locked.pdf", { spawn: locked() }),
+    ).rejects.toBeInstanceOf(PdfEncryptedError);
+    await expect(
+      runPdftotext("/p", "/x/locked.pdf", { spawn: locked() }),
+    ).rejects.toThrow(/encrypted/i);
   });
 
   it("refuses an image-only text layer and more than 60 pages", () => {
