@@ -7,9 +7,11 @@
  *    every CIK, which is what the SEC's fair-access policy actually measures;
  *  - a fetch wrapper (`fetchFor`) that applies the throttle by the request's
  *    host and merges the pass signal into `init.signal`, so an aborted pass
- *    cancels the socket (AbortSignal.any, Node 24). The concurrency slot is
- *    held until the response BODY closes — a streamed SEC exhibit is one
- *    request for the whole read, not just for its headers;
+ *    cancels the socket (AbortSignal.any, Node 24). For a 2xx the concurrency
+ *    slot is held until the response BODY closes — a streamed SEC exhibit is
+ *    one request for the whole read, not just for its headers — while a status
+ *    ≥ 300 releases it at HEADERS, because nothing here streams a redirect or
+ *    an error and an EDGAR 404 is the ordinary answer before a filing posts;
  *  - per-print pass coalescing (`runPass`): one pass runs at a time per print,
  *    a pass requested meanwhile is remembered ONCE and runs after, so a burst
  *    of hits never queues a pile of identical passes. WHEN A PASS SETTLES ITS
@@ -79,6 +81,34 @@ export function hostFamily(hostname: string): string {
 }
 
 export type PassReason = "cadence" | "burst" | "go" | "stranded";
+
+/** Which reason survives when a wake lands on a print that has no waiter yet:
+ *  a stronger reason replaces a weaker remembered one, never the other way
+ *  round. A user pressing Go must not surface to the loop as a "burst" it
+ *  happened to arrive behind (review M6 / R-C10). */
+const WAKE_PRECEDENCE: Record<PassReason, number> = {
+  cadence: 0,
+  burst: 1,
+  stranded: 2,
+  go: 3,
+};
+
+/**
+ * The default `sleep`: a plain timer that is UNREF'd, so a pending body-hold
+ * watchdog or cadence wait can never hold the process open (R-C9). Only the
+ * default is unref'd — an injected test sleep is used exactly as given, and
+ * `SchedulerSeams` stays a two-function seam.
+ *
+ * Safe because nothing in this scheduler is the only reason a process should
+ * stay alive: the watcher's own server/loop handles keep it running, and if
+ * they are gone there is nothing left for a wake-up to do.
+ */
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms) as unknown as { unref?: () => void };
+    timer.unref?.(); // Node only; a DOM timer id has no unref
+  });
+}
 
 export interface SchedulerSeams {
   now: () => number;
@@ -150,7 +180,7 @@ export class AcquisitionScheduler {
     this.policies = policies;
     this.seams = {
       now: seams.now ?? (() => Date.now()),
-      sleep: seams.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+      sleep: seams.sleep ?? defaultSleep,
     };
   }
 
@@ -300,10 +330,12 @@ export class AcquisitionScheduler {
    * signal merged into `init.signal`. `FetchLike` takes a string URL
    * (`hardened-fetch.ts`).
    *
-   * The concurrency slot is held until the response body closes (end, cancel,
-   * error or the pass aborting), so a slow streamed read counts as one
-   * in-flight request for its whole life. A body nobody ever reads gives its
-   * slot back after `MAX_BODY_HOLD_MS`.
+   * For a 2xx the concurrency slot is held until the response body closes
+   * (end, cancel, error or the pass aborting), so a slow streamed read counts
+   * as one in-flight request for its whole life; a 2xx body nobody ever reads
+   * gives its slot back after `MAX_BODY_HOLD_MS`. For a status ≥ 300 (and for
+   * a null body) the slot is released at HEADERS — no caller streams a
+   * redirect or an error, and holding those stalled the SEC lane at print time.
    */
   fetchFor(signal: AbortSignal, fetchImpl: FetchLike = (url, init) => fetch(url, init)): FetchLike {
     return async (url, init) => {
@@ -456,15 +488,24 @@ export class AcquisitionScheduler {
 
   // ------------------------------------------------------------ wake / sleep
 
-  /** Ends a `waitForWake` early with reason "go" (or the given reason). Safe to
-   *  call when nothing waits — remembered ONCE until the next wait. */
+  /**
+   * Ends a `waitForWake` early with reason "go" (or the given reason). Safe to
+   * call when nothing waits — ONE reason is remembered until the next wait, and
+   * when several arrive first the STRONGEST wins
+   * (`go` > `stranded` > `burst` > `cadence`). A user pressing Go while a burst
+   * wake sits remembered must reach the loop as a Go, since the reason is the
+   * provenance the desk sees.
+   */
   wake(printId: number, reason: PassReason = "go"): void {
     const parked = this.waiters.get(printId);
     if (parked && parked.size > 0) {
       for (const waiter of Array.from(parked)) waiter.settle(reason);
       return;
     }
-    if (!this.pendingWakes.has(printId)) this.pendingWakes.set(printId, reason);
+    const remembered = this.pendingWakes.get(printId);
+    if (remembered === undefined || WAKE_PRECEDENCE[reason] > WAKE_PRECEDENCE[remembered]) {
+      this.pendingWakes.set(printId, reason);
+    }
   }
 
   /** The loop's cadence sleep: resolves early on `wake()`. */

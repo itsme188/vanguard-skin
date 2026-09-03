@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   AcquisitionScheduler,
   AbortedError,
@@ -622,11 +622,58 @@ describe("AcquisitionScheduler.wake / waitForWake", () => {
     const clock = makeClock();
     const s = new AcquisitionScheduler(undefined, clock);
     s.wake(20, "go");
-    s.wake(20, "burst"); // the first remembered wake stands
+    s.wake(20, "burst"); // a weaker reason never displaces a remembered Go
     expect(await s.waitForWake(20, 1_000)).toBe("go");
     const other = s.waitForWake(21, 1_000);
     await clock.advance(1_000);
     expect(await other).toBe("timeout");
+  });
+
+  it("a remembered reason keeps the STRONGEST: go > stranded > burst > cadence", async () => {
+    const clock = makeClock();
+    const s = new AcquisitionScheduler(undefined, clock);
+    // Upwards: a user Go arriving behind a burst reaches the loop as a Go, so
+    // the desk sees its own action as the provenance.
+    s.wake(40, "cadence");
+    s.wake(40, "burst");
+    s.wake(40, "go");
+    expect(await s.waitForWake(40, 1_000)).toBe("go");
+
+    // Downwards: nothing weaker can overwrite what is remembered.
+    s.wake(41, "stranded");
+    s.wake(41, "burst");
+    s.wake(41, "cadence");
+    expect(await s.waitForWake(41, 1_000)).toBe("stranded");
+
+    // …and the ladder's middle rung behaves the same way.
+    s.wake(42, "burst");
+    s.wake(42, "stranded");
+    expect(await s.waitForWake(42, 1_000)).toBe("stranded");
+
+    // Only ONE reason is remembered: the next wait still times out.
+    const next = s.waitForWake(40, 1_000);
+    await clock.advance(1_000);
+    expect(await next).toBe("timeout");
+  });
+
+  it("the DEFAULT sleep seam unrefs its timer so a pending wait cannot hold the process open", async () => {
+    const s = new AcquisitionScheduler(); // real seams, real setTimeout
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const waiting = s.waitForWake(50, 60_000);
+      expect(spy).toHaveBeenCalledTimes(1);
+      const handle = spy.mock.results[0]?.value as unknown as {
+        hasRef?: () => boolean;
+        unref?: () => void;
+      };
+      expect(typeof handle.hasRef).toBe("function"); // a Node timer, not a DOM id
+      expect(handle.hasRef?.()).toBe(false); // …and it is NOT keeping the loop alive
+      s.wake(50);
+      expect(await waiting).toBe("go");
+    } finally {
+      spy.mockRestore();
+      s.reset();
+    }
   });
 
   it("wakes every waiter parked on the same print", async () => {
