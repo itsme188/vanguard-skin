@@ -143,6 +143,10 @@ const DEFAULT_SPACING_MS = 200;
 const PARSE_RETRY_SPACING_MS = 30_000;
 const MAX_PARSE_ATTEMPTS = 5;
 
+/** Booked on a document whose LAST claim was abandoned by a dead worker —
+ *  the terminal state that lets a person's re-delivery revive it. */
+const ABANDONED_CLAIM_ERROR = "abandoned claim at the attempt cap";
+
 /**
  * A stalled socket must not park `pollOnce` past the lease renewal — a 60s
  * lease expiring under a hung EDGAR fetch is a split-brain invitation (review
@@ -1443,8 +1447,12 @@ async function drainQueue(db: Database.Database, printId: number): Promise<Drain
     const pending = listParseQueue(db, printId).filter(
       (doc) => !attemptedThisPass.has(doc.id) && parseEligible(doc, nowMs),
     );
+    // A stale claim is worth taking either to RETRY the document or — once its
+    // budget is spent — purely to CLOSE it (the reap below).
     const stale = listStaleClaims(db, printId, nowMs).filter(
-      (doc) => !attemptedThisPass.has(doc.id) && parseEligible(doc, nowMs),
+      (doc) =>
+        !attemptedThisPass.has(doc.id) &&
+        (doc.parse_attempts >= MAX_PARSE_ATTEMPTS || parseEligible(doc, nowMs)),
     );
     const candidates = [...pending, ...stale];
     if (candidates.length === 0) return "drained";
@@ -1461,6 +1469,21 @@ async function drainQueue(db: Database.Database, printId: number): Promise<Drain
 
     const token = crypto.randomUUID();
     if (!claimDocumentParse(db, doc.id, token, nowMs)) continue; // another worker got there first
+
+    // REAP an abandoned claim (fix round 1, finding 1). A document whose LAST
+    // attempt was claimed by a process that then died sits `claimed` forever:
+    // no retry can take it (its budget is gone), `recordDelivery` re-queues
+    // only `failed` rows so a person's re-drop returns `duplicate` with nothing
+    // to explain it, and `hasParsableDocuments` keeps counting it as work, so
+    // every reconcile kicks a drain that can do nothing. Taking the claim only
+    // to book it `failed` closes all three: the row reaches the one state a
+    // human can clear, and the drain goes quiet. No model call — there is no
+    // attempt left to spend on one.
+    if (doc.parse_attempts >= MAX_PARSE_ATTEMPTS) {
+      statusFor(printId).sources.pipeline = `doc ${doc.id}: ${ABANDONED_CLAIM_ERROR}`;
+      recordFinalize(db, printId, doc.id, token, "failed", ABANDONED_CLAIM_ERROR);
+      continue;
+    }
 
     // The claim incremented `parse_attempts` durably; read the count BACK
     // rather than adding one to the snapshot we listed — between the two,
@@ -1482,14 +1505,35 @@ async function drainQueue(db: Database.Database, printId: number): Promise<Drain
     // pick up again and which `recordDelivery` would refuse to re-queue on a
     // person's re-delivery. `failed` is the state a human can clear.
     const terminal = pass.state !== "parsed" && attempts >= MAX_PARSE_ATTEMPTS;
-    finalizeDocumentParse(
+    recordFinalize(
       db,
+      printId,
       doc.id,
       token,
       pass.state === "parsed" ? "parsed" : terminal ? "failed" : "queued",
       pass.error,
     );
   }
+}
+
+/**
+ * Finalize under the claim token and SAY SO when the token no longer matches.
+ * A refused finalize means this worker's claim was taken over while it was
+ * running: its result was discarded, and the row the panel is showing belongs
+ * to whoever holds the document now. Swallowing that boolean left the desk
+ * looking at a document whose note claimed an error that was never recorded.
+ */
+function recordFinalize(
+  db: Database.Database,
+  printId: number,
+  docId: number,
+  token: string,
+  state: "parsed" | "queued" | "failed",
+  error: string | null,
+): void {
+  if (finalizeDocumentParse(db, docId, token, state, error)) return;
+  statusFor(printId).sources.pipeline =
+    `doc ${docId}: claim was taken over mid-parse — this result was discarded`;
 }
 
 /**

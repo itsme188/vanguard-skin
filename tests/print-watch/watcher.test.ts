@@ -1750,4 +1750,64 @@ describe("pipeline", () => {
     );
     expect(again).toMatchObject({ docId: r.docId, outcome: "parsed" });
   });
+
+  it("reaps a claim abandoned at the attempt cap: it books failed with no model call, and a person can revive it", async () => {
+    const { printId } = seedAcmePrint();
+    fake.extract = async () => [candidate("revenue_q", 1)];
+    const text = "ACME reports Q2 2026 results.";
+    const bytes = Buffer.from(text, "utf8");
+    const bytesPath = path.join(tmpRoot, "abandoned.txt");
+
+    const delivered = recordDelivery(db, printId, "user-drop", "u", null, bytes, {
+      bytesPath,
+      text,
+      gateCtx: { symbol: "ACME", issuerName: "ACME Corporation", eventDate: EVENT_DATE },
+    });
+    fs.writeFileSync(bytesPath, bytes);
+    // Its FIFTH and last attempt was claimed by a process that then died.
+    db.prepare(`UPDATE print_watch_documents SET parse_attempts = 4 WHERE id = ?`).run(delivered.id);
+    claimDocumentParse(db, delivered.id, "dead-token", fake.nowMs - 6 * 60_000);
+    expect(getDocument(db, delivered.id)).toMatchObject({
+      parse_state: "claimed",
+      parse_attempts: 5,
+    });
+
+    ensurePrintWatch(db);
+    await waitUntil(() => getDocument(db, delivered.id)?.parse_state === "failed");
+
+    // Booked terminal WITHOUT a model call — there was no attempt left to spend.
+    expect(getDocument(db, delivered.id)?.parse_last_error).toMatch(
+      /abandoned claim at the attempt cap/,
+    );
+    expect(fake.extractCalls).toHaveLength(0);
+
+    // ...and `failed` is the one state a person's re-delivery can clear.
+    const again = await ingestDocument(db, printId, "user-drop", "u2", null, bytes);
+    expect(again).toMatchObject({ docId: delivered.id, outcome: "parsed" });
+    expect(fake.extractCalls).toHaveLength(1);
+  });
+
+  it("a headless HTML fragment (bare <div>/<table>, as EDGAR serves) is stored .html and read as a repA/repB pair", async () => {
+    const { printId } = seedAcmePrint();
+    fake.extract = async () => [candidate("revenue_q", 1000)];
+    const fragment =
+      "<div><h1>ACME reports Q2 2026 results</h1><table><tr><td>Revenue</td><td>1,000</td></tr></table></div>";
+
+    const r = await ingestDocument(
+      db,
+      printId,
+      "edgar-ex99",
+      "edgar:0001:ex99-1",
+      "https://www.sec.gov/x",
+      Buffer.from(fragment, "utf8"),
+    );
+
+    expect(r.outcome).toBe("parsed");
+    expect(listDocuments(db, printId)[0].bytes_path.endsWith(".html")).toBe(true);
+    // TWO readings of the one document — the pair that lets a single document
+    // reach `agreed` at all. Stored as .txt it would be capped at single_source.
+    expect(fake.extractCalls).toHaveLength(2);
+    expect(fake.extractCalls[0].text.startsWith("# REPRESENTATION")).toBe(true);
+    expect(getSheet(db, printId).find((l) => l.metric_id === "revenue_q")!.state).toBe("agreed");
+  });
 });
