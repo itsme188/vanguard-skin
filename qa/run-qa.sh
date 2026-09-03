@@ -20,7 +20,10 @@ SESSION="qa-$$"
 # the runner is unauthenticated and proxy.ts default-denies every route,
 # so every page load below would just see the login page. Revoked on exit
 # (pass or fail) by the trap right after.
-eval "$(PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx "$PROJECT_DIR/scripts/mint-qa-session.ts" --db "$PROJECT_DIR/data/vanguard.db")"
+# The mint script must run FROM the repo root: tsx resolves the `@/` alias off
+# the tsconfig it finds from cwd, and launchd starts this script elsewhere
+# (silent "Cannot find module '@/lib/queries/sessions'" every night 08-31 → 09-03).
+eval "$(cd "$PROJECT_DIR" && PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx scripts/mint-qa-session.ts --db "$PROJECT_DIR/data/vanguard.db")"
 if [ -z "${VGS_SESSION:-}" ]; then
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAIL: auth/mint — could not mint QA session" >> "$REPORT"
   echo "FAIL: auth/mint — could not mint QA session" >&2
@@ -29,7 +32,7 @@ fi
 
 # No existing EXIT trap in this file (checked) — safe to install directly
 # rather than chain.
-trap 'PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx "$PROJECT_DIR/scripts/mint-qa-session.ts" --db "$PROJECT_DIR/data/vanguard.db" --revoke || true' EXIT
+trap '(cd "$PROJECT_DIR" && PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx scripts/mint-qa-session.ts --db "$PROJECT_DIR/data/vanguard.db" --revoke) || true' EXIT
 
 # Colors for terminal output
 RED='\033[0;31m'
