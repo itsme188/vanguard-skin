@@ -38,6 +38,7 @@ import { runMorningDebrief } from "@/lib/earnings/debrief-send";
 import { sendReporterRecapEmail } from "@/lib/earnings/reporter-recap";
 import { printArmedWorksheets } from "@/lib/earnings/worksheet";
 import { todayET } from "@/lib/calendar/date-utils";
+import { drainCloudOutbox } from "@/lib/earnings/cloud-outbox";
 import { fetchSameDayTranscripts } from "@/lib/transcripts/same-day";
 import { recordEarningsEmailSkip } from "@/lib/mutations/earnings-skips";
 import { ensurePrintWatch } from "@/lib/print-watch/watcher";
@@ -65,6 +66,8 @@ export interface SweepSummary {
   recapAlerts: number;
   /** Audit rows backfilled from cloud-sent KV markers this sweep (2026-07-15). */
   cloudReconciled: number;
+  /** armed-events outbox rows delivered to the Worker this tick (v2 slice A). */
+  outboxSent: number;
   /**
    * Result of the 7:45 ET morning debrief pass (2026-08-02, replaces the EOD
    * wrap — see lib/earnings/debrief-send.ts). Null when the pass threw
@@ -133,6 +136,16 @@ export async function runEarningsEmailSweep(
   // Drain cloud-sent markers into audit rows BEFORE candidate selection so a
   // freshly-backfilled row excludes its event from this very tick's candidates.
   const cloudReconciled = await reconcileCloudSentAudits(db);
+
+  // ── Cloud outbox drain (v2 slice A): armed-events delta to the Worker ──
+  // The routes attempt their own post-commit drain; this is the catch-up for
+  // a Worker that was down (or a Mac that was asleep) when the row was written.
+  let outboxSent = 0;
+  try {
+    outboxSent = (await drainCloudOutbox(db)).sent;
+  } catch (err) {
+    console.warn("[earnings-sweep] cloud outbox drain failed:", err);
+  }
 
   const candidates = findEmailCandidates(db, opts);
   const results: SweepCandidateResult[] = [];
@@ -375,6 +388,7 @@ export async function runEarningsEmailSweep(
     failed: results.filter((r) => !r.ok).length,
     recapAlerts,
     cloudReconciled,
+    outboxSent,
     debrief,
     transcriptsFetched,
     results,
