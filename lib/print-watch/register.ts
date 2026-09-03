@@ -17,21 +17,31 @@
  * point may call this directly (tests do), and a second call must not trip the
  * registries' duplicate-name throw.
  */
+import type Database from "better-sqlite3";
 import { registerEventMergeHandler } from "@/lib/earnings/event-merge";
 import { registerPrepareStep } from "@/lib/earnings/prepare-armed-event";
 import { mergePrintWatchState, PRINT_WATCH_MERGE_HANDLER_NAME } from "./merge-handler";
 import { mergePrintWatchGoState, PRINT_WATCH_GO_MERGE_HANDLER_NAME } from "./go";
 import { IR_BASELINE_STEP, IR_BASELINE_STEP_NAME } from "./ir-baseline-step";
+import { registerFirstPass, __resetFirstPassRegisterForTests } from "./first-pass-register";
 
 let registered = false;
 
-export function registerPrintWatch(): void {
+/** `db` is OPTIONAL and additive: only slice D's root uses it, to arm the
+ *  durable first-pass reconcile timer. A's composition root calls this with no
+ *  argument and registers the handlers alone. */
+export function registerPrintWatch(db?: Database.Database): void {
   if (registered) return;
   registered = true;
-  // Slice C FIRST, deliberately: B's handler deletes the donor print row at
-  // the end of a both-prints merge, and go rows reference prints with no
-  // cascade — C has to repoint them before that delete (see go.ts).
+  // Slices C and D BOTH register ahead of B, deliberately. B's handler deletes
+  // the donor print row at the end of a both-prints merge; go rows
+  // (print_watch_go_requests) and first-pass rows (print_watch_reads /
+  // print_watch_callouts) all reference print_watch_prints with no cascade, so
+  // each has to repoint its own rows before that delete (R-C7, plan M-D12).
+  // C before D only to match slice order — the two are independent: no foreign
+  // key runs between the go tables and the first-pass tables.
   registerEventMergeHandler(PRINT_WATCH_GO_MERGE_HANDLER_NAME, mergePrintWatchGoState);
+  registerFirstPass(db);
   registerEventMergeHandler(PRINT_WATCH_MERGE_HANDLER_NAME, mergePrintWatchState);
   registerPrepareStep(IR_BASELINE_STEP_NAME, IR_BASELINE_STEP);
 }
@@ -41,4 +51,5 @@ export function registerPrintWatch(): void {
  *  `registerPrintWatch()` would silently register nothing. */
 export function __resetRegisterForTests(): void {
   registered = false;
+  __resetFirstPassRegisterForTests();
 }
