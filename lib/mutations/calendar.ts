@@ -9,6 +9,8 @@ import { resolveEarningsReleaseTime, resolveSymbolReleaseTime } from "@/lib/earn
 import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { mondayOf, todayET } from "@/lib/calendar/date-utils";
+import { isEventArmed } from "@/lib/queries/earnings-worksheet-flags";
+import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 import {
   reconcileEarningsDates,
   repointDependentsBeforeDelete,
@@ -790,13 +792,20 @@ export function updateCalendarEvent(
   if (fields.length === 0) return true; // no-op update
 
   params.push(input.id);
-  const result = db
-    .prepare(
-      `UPDATE calendar_events SET ${fields.join(", ")}
-        WHERE id = ? AND source = 'manual'`,
-    )
-    .run(...params);
-  return result.changes > 0;
+  return db.transaction(() => {
+    const result = db
+      .prepare(
+        `UPDATE calendar_events SET ${fields.join(", ")}
+          WHERE id = ? AND source = 'manual'`,
+      )
+      .run(...params);
+    // v2 slice A: an armed event's projection (date, slot, release time,
+    // consensus) just changed — the Worker delta must carry the new shape.
+    // Unarmed edits write nothing; an edit that changed no VALUE is caught by
+    // the writer's own no-op rule (D10).
+    if (result.changes > 0 && isEventArmed(db, input.id)) writeArmedEventsOutboxRow(db);
+    return result.changes > 0;
+  })();
 }
 
 /**
@@ -850,6 +859,11 @@ export function deleteCalendarEvent(
     const restoreSymbol =
       existing.event_type === "earnings" && existing.symbol ? existing.symbol : null;
 
+    // [C-7] Read the arm state BEFORE the DELETE cascades the flag row away:
+    // the Worker only ever hears "this event is gone" through a tombstone in
+    // the armed-events projection, written below once the delete lands.
+    const wasArmed = isEventArmed(db, id);
+
     // BEFORE the DELETE: earnings_bogeys / earnings_emails /
     // earnings_email_skips are ON DELETE CASCADE on event_id (migrations
     // 042/043/045), and the reconcile pass that made THIS row canonical had
@@ -870,6 +884,9 @@ export function deleteCalendarEvent(
     if (deleted && restoreSymbol) {
       reconcileEarningsDates(db, { today, symbols: [restoreSymbol] });
     }
+    // The flag has cascaded away, so the projection no longer carries the
+    // event and the writer emits its tombstone (D7).
+    if (deleted && wasArmed) writeArmedEventsOutboxRow(db, { today });
     return deleted;
   });
   return txn();

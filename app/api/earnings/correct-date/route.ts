@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { correctEarningsEventDate } from "@/lib/mutations/calendar";
+import { drainCloudOutbox } from "@/lib/earnings/cloud-outbox";
 
 export const dynamic = "force-dynamic";
 
@@ -86,6 +87,15 @@ export async function POST(request: Request) {
       { success: false, error: result.refusedReason ?? "correction refused" },
       { status },
     );
+  }
+
+  // Post-commit attempt to hand the fresh armed-events generation to the
+  // Worker (v2 slice A). Awaited with a 2s cap so a dead Worker costs at most
+  // 2s; the 15-minute sweep retries whatever this misses.
+  try {
+    await drainCloudOutbox(db, { timeoutMs: 2000 });
+  } catch (err) {
+    console.warn("[cloud-outbox] post-commit drain failed:", err);
   }
 
   return Response.json({

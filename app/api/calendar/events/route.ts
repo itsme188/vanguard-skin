@@ -8,8 +8,23 @@ import {
 } from "@/lib/mutations/calendar";
 import { mondayOf, addDays } from "@/lib/calendar/date-utils";
 import { getSecurityIdForSymbol } from "@/lib/queries/briefing-symbols";
+import { drainCloudOutbox } from "@/lib/earnings/cloud-outbox";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * Post-commit attempt to hand the fresh armed-events generation to the Worker
+ * (v2 slice A). Awaited with a 2s cap so a dead Worker costs at most 2s; the
+ * 15-minute sweep retries whatever this misses. A no-op when the mutation
+ * wrote no outbox row (an unarmed edit, or a fresh manual insert).
+ */
+async function pushArmedEvents(): Promise<void> {
+  try {
+    await drainCloudOutbox(db, { timeoutMs: 2000 });
+  } catch (err) {
+    console.warn("[cloud-outbox] post-commit drain failed:", err);
+  }
+}
 
 /**
  * GET /api/calendar/events?start=YYYY-MM-DD&end=YYYY-MM-DD&weekOf=YYYY-MM-DD
@@ -94,6 +109,7 @@ export async function POST(request: Request) {
       security_id: getSecurityIdForSymbol(db, symbol),
       week_of: mondayOf(body.event_date),
     });
+    await pushArmedEvents();
     return Response.json({ success: true, id: id.id });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -161,6 +177,7 @@ export async function PATCH(request: Request) {
     week_of,
   });
 
+  await pushArmedEvents();
   return Response.json({ success: ok });
 }
 
@@ -195,6 +212,9 @@ export async function DELETE(request: Request) {
 
   if (existing.source === "manual") {
     const ok = deleteCalendarEvent(db, body.id);
+    // Deleting an ARMED row writes a tombstone generation (D7) — same
+    // time-sensitivity as a disarm, so it gets the same post-commit push.
+    await pushArmedEvents();
     return Response.json({ success: ok });
   }
 
