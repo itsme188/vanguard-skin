@@ -436,8 +436,26 @@ export const PARSE_CLAIM_STALE_MS = 5 * 60_000;
  * gate refused (a months-old IR newsroom post) is stored, visible, and never
  * parsed — until a road that does accept it delivers the same bytes.
  */
-const ELIGIBLE_SQL = `d.gate_verdict = 'accepted'
+export const ELIGIBLE_SQL = `d.gate_verdict = 'accepted'
        AND EXISTS (SELECT 1 FROM print_watch_document_roads r WHERE r.document_id = d.id AND r.road_verdict = 'accepted')`;
+
+/**
+ * ONE definition of "eligible", asked about one document.
+ *
+ * Exported because four call sites ask the same question — the parse queue and
+ * `hasParsableDocuments` (in SQL, above), `recordDelivery` before and after a
+ * verdict, the watcher's post-model re-check and its stale-claim takeover, and
+ * the event-merge re-verdict. Hand-rolled copies drifted apart once already
+ * (the merge retracted on a content flip but not a road flip), so every one of
+ * them now reads through this or through `ELIGIBLE_SQL` itself.
+ */
+export function isDocumentEligible(db: Database.Database, docId: number): boolean {
+  return (
+    db
+      .prepare(`SELECT 1 AS one FROM print_watch_documents d WHERE d.id = ? AND ${ELIGIBLE_SQL} LIMIT 1`)
+      .get(docId) !== undefined
+  );
+}
 
 /** Documents this print may parse right now: content accepted, >=1 road accepted, state queued. */
 export function listParseQueue(db: Database.Database, printId: number): DocumentRow[] {
@@ -654,8 +672,17 @@ export function getIrBaseline(db: Database.Database, eventId: number): IrBaselin
   );
 }
 
-/** True only when a COMPLETED baseline exists for THIS fingerprint — a changed
- *  IR URL (or match rule) is a NEW baseline, not a page full of new posts. */
+/**
+ * True only when a COMPLETED baseline exists for THIS fingerprint — a changed
+ * IR page URL is a new baseline, not a page full of new posts.
+ *
+ * The fingerprint is the stored page URL ALONE (`irBaselineFingerprint`), and
+ * `link_must_contain` is deliberately NOT part of it: the match rule narrows
+ * what we NOTICE on the page, it does not make last quarter's posts new. Were
+ * it in the key, a desk edit to the filter mid-window would drift the
+ * fingerprint, discard a live baseline, and re-baseline the page — marking
+ * tonight's already-posted release "seen" and blinding the road for the night.
+ */
 export function hasIrBaseline(db: Database.Database, eventId: number, sourceFingerprint: string): boolean {
   return (
     db

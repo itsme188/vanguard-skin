@@ -1,17 +1,22 @@
 // 089 (slice B, spec §4.2 "Identity and eligibility" + "Rebuild order"):
 // documents dedupe on CONTENT (print_id, sha256); roads become provenance
-// rows; lines gain `retired` and `audit_json`; candidates from a merged
-// duplicate are archived (never silently dropped) and every affected line
-// is re-reconciled so a duplicate-only `agreed` becomes an honest
-// `single_source`. A CODE migration because phases (5) and (11) need JSON
-// and the reconciler. Runs inside the runner's transaction; every phase is
-// a rollback point (tests inject a throw after each).
+// rows; lines gain `retired` and `audit_json`; a merged duplicate's candidates
+// move onto the survivor, and one that would land on a reading the survivor
+// already carries — the same (document, representation) slot — is archived
+// instead, never silently dropped (R-B7b, shared with the event-merge handler
+// through `print-watch/candidate-fate.ts`). Every affected line is then
+// re-reconciled, so an `agreed` that rested on ONE content hash counted twice
+// becomes an honest `single_source` while a real repA/repB pair stays green.
+// A CODE migration because phases (5) and (11) need JSON and the reconciler.
+// Runs inside the runner's transaction; every phase is a rollback point
+// (tests inject a throw after each).
 //
 // RELATIVE imports on purpose: the rehearsal script loads this file under
 // tsx, where the `@/` alias does not resolve for dynamic imports.
 import type Database from "better-sqlite3";
 import fs from "node:fs";
 import { reconcile } from "../../print-watch/reconcile";
+import { dedupeRemappedCandidates } from "../../print-watch/candidate-fate";
 import { redactUrl } from "../../print-watch/hardened-fetch";
 import type { ExpectedValue, LineContract, PrintWatchLine, TaggedCandidate } from "../../print-watch/types";
 
@@ -267,19 +272,11 @@ export function rebuildDocumentIdentity(db: Database.Database, hooks: RebuildHoo
     INSERT INTO print_watch_candidate_archive (print_id, metric_id, candidate_json, reason) VALUES (?, ?, ?, ?)`);
   const affected: Array<{ printId: number; metricId: string }> = [];
 
-  /** What the rebuild does with one candidate: keep it untouched, retract it
-   *  (its document's bytes are gone), or move it onto the merge survivor. */
-  type Fate = { kind: "keep" } | { kind: "missing" } | { kind: "remap"; survivor: number };
-  const fateOf = (c: TaggedCandidate): Fate => {
-    // The flash sentinel (0) is not a row, and a doc_id we never saw is not
-    // ours to rewrite — both pass through exactly as stored.
-    if (c.doc_id === FLASH_DOC_ID) return { kind: "keep" };
-    const survivor = remap.get(c.doc_id);
-    if (survivor === undefined) return { kind: "keep" };
-    if (missingDocIds.has(survivor)) return { kind: "missing" };
-    if (survivor === c.doc_id) return { kind: "keep" };
-    return { kind: "remap", survivor };
-  };
+  /** The document a candidate's evidence belongs to after the rebuild. The
+   *  flash sentinel (0) is not a row, and a doc_id we never saw is not ours to
+   *  rewrite — both pass through exactly as stored. */
+  const survivorOf = (docId: number): number | null =>
+    docId === FLASH_DOC_ID ? null : remap.get(docId) ?? null;
 
   for (const line of oldLines) {
     const sourceDocId =
@@ -307,47 +304,19 @@ export function rebuildDocumentIdentity(db: Database.Database, hooks: RebuildHoo
       continue;
     }
     const all = parsed as TaggedCandidate[];
-    // Controller ruling R-B7: no line may carry TWO candidates from one content
-    // hash. Identity here is the SURVIVING DOCUMENT, never the candidate's
-    // fields — two extractions of the same bytes that differ only in
-    // `representation` would otherwise both survive on one doc_id, where
-    // reconcile.ts `independent()` reads them as an independent pair and greens
-    // `agreed` (and differing table hints would flip the line to `conflict` via
-    // `locationCompatible`). Pre-registering the doc_ids that keep their own id
-    // makes the decision order-independent: a remapped twin is archived whether
-    // it sits before or after the survivor's own candidate.
-    const docIdsKept = new Set<number>();
-    for (const c of all) if (fateOf(c).kind === "keep") docIdsKept.add(c.doc_id);
-
-    const kept: TaggedCandidate[] = [];
-    let touched = false;
-    for (const c of all) {
-      const fate = fateOf(c);
-      if (fate.kind === "keep") {
-        kept.push(c);
-        continue;
-      }
-      if (fate.kind === "missing") {
-        // Evidence that can no longer be re-read is retracted, not kept (M7/M16).
-        archive.run(line.print_id, line.metric_id, JSON.stringify(c), "bytes-missing");
-        report.candidates.archived += 1;
-        touched = true;
-        continue;
-      }
-      // The document this candidate came from was merged into `survivor` (same
-      // print, same bytes). Move the evidence onto the survivor — unless the
-      // line ALREADY carries a candidate from that survivor, in which case this
-      // copy is the same content hash speaking twice and is archived, never
-      // dropped (R-B7). A line whose ONLY evidence arrived through the merged
-      // twin keeps it, remapped.
-      touched = true;
-      if (docIdsKept.has(fate.survivor)) {
-        archive.run(line.print_id, line.metric_id, JSON.stringify(c), `duplicate-of:${fate.survivor}`);
-        report.candidates.archived += 1;
-        continue;
-      }
-      docIdsKept.add(fate.survivor);
-      kept.push({ ...c, doc_id: fate.survivor });
+    // Controller ruling R-B7b: no line may carry two candidates that are the
+    // SAME READING of one surviving document. The whole decision — remap,
+    // archive as a duplicate, retract as unreadable — lives in
+    // `dedupeRemappedCandidates`, the one helper the event-merge handler uses
+    // too, so the rebuild and the merge can never drift apart on it.
+    const { kept, archived, touched: candidatesTouched } = dedupeRemappedCandidates(all, {
+      survivorOf,
+      bytesMissing: (survivor) => missingDocIds.has(survivor),
+    });
+    let touched = candidatesTouched;
+    for (const a of archived) {
+      archive.run(line.print_id, line.metric_id, JSON.stringify(a.candidate), a.reason);
+      report.candidates.archived += 1;
     }
     report.candidates.kept += kept.length;
     if (sourceDocId !== line.source_doc_id) touched = true;

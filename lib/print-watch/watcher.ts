@@ -87,7 +87,8 @@ import { reconcile } from "./reconcile";
 import { htmlToRawText, htmlToTablesRepresentation } from "./representations";
 import {
   acquireWatcherLease,
-  anyRoadAccepted,
+  ELIGIBLE_SQL,
+  isDocumentEligible,
   claimDocumentParse,
   finalizeDocumentParse,
   getDocument,
@@ -1709,9 +1710,11 @@ function parseEligible(doc: DocumentRow, nowMs: number): boolean {
  * Claims older than PARSE_CLAIM_STALE_MS belong to a worker that died holding
  * one. The takeover decision lives HERE rather than in the store so there is
  * exactly ONE place that decides a claim is abandoned — `listParseQueue` stays
- * the honest "nobody holds this" read. Eligibility (content accepted, ≥1
- * accepted road) is repeated because a stale claim is worth nothing on a
- * document the gate has since withdrawn.
+ * the honest "nobody holds this" read. Eligibility still applies (a stale claim
+ * is worth nothing on a document the gate has since withdrawn), and it is the
+ * store's `ELIGIBLE_SQL` verbatim rather than a second copy of the rule: the
+ * two drifted once already, and a takeover reading a stale definition would
+ * hand the model a document `listParseQueue` refuses to show it.
  */
 function listStaleClaims(db: Database.Database, printId: number, nowMs: number): DocumentRow[] {
   return db
@@ -1719,9 +1722,7 @@ function listStaleClaims(db: Database.Database, printId: number, nowMs: number):
       `SELECT d.* FROM print_watch_documents d
         WHERE d.print_id = ? AND d.parse_state = 'claimed'
           AND datetime(d.parse_claimed_at) < datetime(?)
-          AND d.gate_verdict = 'accepted'
-          AND EXISTS (SELECT 1 FROM print_watch_document_roads r
-                       WHERE r.document_id = d.id AND r.road_verdict = 'accepted')
+          AND ${ELIGIBLE_SQL}
         ORDER BY d.id`,
     )
     .all(printId, new Date(nowMs - PARSE_CLAIM_STALE_MS).toISOString()) as DocumentRow[];
@@ -1987,7 +1988,7 @@ async function processDocument(
   // stays `queued`, which is invisible to the queue while it is ineligible and
   // parses again by itself the moment a road accepts it.
   const still = getDocument(db, doc.id);
-  if (!still || still.gate_verdict !== "accepted" || !anyRoadAccepted(db, doc.id)) {
+  if (!still || !isDocumentEligible(db, doc.id)) {
     const note = `doc ${doc.id}: the gate withdrew this document mid-parse — reading dropped`;
     statusFor(printId).sources.pipeline = note;
     return { state: "queued", error: "the gate withdrew this document mid-parse" };

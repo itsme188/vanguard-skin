@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { runMigrations } from "@/lib/db/migrate";
-import { recordDelivery, sha256Hex, textIdentityHash } from "@/lib/print-watch/delivery";
+import { recordDelivery, retractDocumentEvidence, sha256Hex, textIdentityHash } from "@/lib/print-watch/delivery";
 import {
   upsertPrint,
   upsertLines,
@@ -297,6 +297,48 @@ describe("recordDelivery", () => {
     expect(JSON.parse(line.candidates_json)).toHaveLength(1);
     expect(db.prepare("SELECT reason FROM print_watch_candidate_archive").all()).toEqual([{ reason: "gate-rejected" }]);
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
+  // Whole-branch review (must-land minor). A `retired` line is the audit trail
+  // of a contract that no longer applies to this print: it is never promoted
+  // and never counted as coverage, so re-deriving it off a shrunken candidate
+  // pool can only resurrect it into a live state. It gets the same carve-out
+  // `accepted` gets — the evidence goes, the reading stays.
+  it("a retired line loses the retracted candidates but is never re-derived (rule 6 carve-out)", () => {
+    const { id } = deliver("user-drop", THIS_Q);
+    const candidate = {
+      metric_id: "revenue_q",
+      value: 1e9,
+      value_high: null,
+      raw_text: "1.0",
+      snippet: "s",
+      location_hint: null,
+      not_disclosed: false,
+      doc_id: id,
+      representation: "repB" as const,
+      weak_pair: false,
+    };
+    upsertLines(db, printId, [
+      {
+        metric_id: "revenue_q",
+        contract: contractFor("revenue_q"),
+        expected: null,
+        state: "retired",
+        value: 1e9,
+        value_high: null,
+        snippet: "s",
+        source_doc_id: id,
+        candidates_json: JSON.stringify([candidate]),
+      },
+    ]);
+
+    expect(retractDocumentEvidence(db, id, "gate-rejected")).toEqual({ archived: 1, linesChanged: 0 });
+
+    const line = getSheet(db, printId).find((l) => l.metric_id === "revenue_q")!;
+    expect(line).toMatchObject({ state: "retired", value: 1e9, source_doc_id: id, candidates_json: "[]" });
+    expect(db.prepare("SELECT reason FROM print_watch_candidate_archive").all()).toEqual([
+      { reason: "gate-rejected" },
+    ]);
   });
 
   it("never merges two documents on an EMPTY normalised text (image-only PDFs)", () => {
