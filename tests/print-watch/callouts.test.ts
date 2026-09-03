@@ -45,6 +45,14 @@ describe("parseValueText", () => {
     expect(numbersIn("backlog visibility into fiscal 2026 remains strong", "count")).toEqual([]);
     expect(numbersIn("The company had 712 customers", "count")).toEqual([712]);
   });
+  it("the year guard survives a trailing comma or any other text after the year (fix round 3)", () => {
+    // NUM's own [\d,]* is greedy and swallows a trailing comma into the
+    // matched digit run ("2026," off "fiscal 2026, backlog of 3 deals"),
+    // which defeated the round-2 guard's exact-4-digit shape test.
+    expect(numbersIn("into fiscal 2026, backlog of 3 deals remains", "count")).toEqual([3]);
+    // A trailing comma on an ordinary count must not corrupt its value.
+    expect(numbersIn("had 712, up from 600", "count")).toEqual([712, 600]);
+  });
 });
 
 describe("contentWords", () => {
@@ -132,6 +140,17 @@ describe("labelNorm / extractGuidanceMetrics / sheetLineKeys", () => {
     // the year guard.
     expect(extractGuidanceMetrics(["We expect strength in fiscal 2026."])).toEqual([
       { key: "expect strength", unit: null, value: null, value_high: null, source_index: 0 },
+    ]);
+  });
+  it("the year guard is not defeated by a trailing comma or by more clause text after the year (fix round 3)", () => {
+    // A comma right after the year ("fiscal 2026, driven by…") swallowed
+    // into POINT_TOKEN's own greedy digit run defeated the round-2 guard's
+    // exact-4-digit test; neither example carries `value: 2026`.
+    expect(extractGuidanceMetrics(["We expect strength in fiscal 2026, driven by new products."])).toEqual([
+      { key: "expect strength driven new products", unit: null, value: null, value_high: null, source_index: 0 },
+    ]);
+    expect(extractGuidanceMetrics(["Guidance assumes fiscal 2026 will be a strong year for margins."])).toEqual([
+      { key: "guidance assumes will strong margins", unit: null, value: null, value_high: null, source_index: 0 },
     ]);
   });
 });

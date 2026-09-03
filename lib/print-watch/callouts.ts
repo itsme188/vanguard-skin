@@ -83,8 +83,22 @@ function endsWithYearLeadWord(before: string): boolean {
   return !!m && YEAR_LEAD_WORDS.has(m[1].toLowerCase());
 }
 
+// Fix round 3: neither call site's "raw" string is reliably a bare digit
+// run — COUNT_RE's own NUM group has a greedy `[\d,]*` that swallows a
+// trailing comma ("2026," off "fiscal 2026, driven by…"), and POINT_TOKEN
+// has no capture group of its own, so its `m[0]` can carry trailing junk
+// from its own optional groups (a consumed separator space, a scale word
+// that didn't apply, …). Re-deriving just the LEADING digit run (dropping a
+// trailing comma — a number never ends in one) before the exact-4-digit
+// shape test makes the check independent of whatever follows the token,
+// not just independent of what precedes it.
+function bareDigits(raw: string): string {
+  const m = raw.match(/^-?\d[\d,]*/);
+  return m ? m[0].replace(/,+$/, "") : raw;
+}
+
 function isYearToken(raw: string, before: string): boolean {
-  return YEAR_SHAPE_RE.test(raw) && endsWithYearLeadWord(before);
+  return YEAR_SHAPE_RE.test(bareDigits(raw)) && endsWithYearLeadWord(before);
 }
 
 function toNumber(s: string): number {
