@@ -240,7 +240,7 @@ export function TransactionsSection({
                     <td className={`${TD_MONO} text-right text-ink-dim hidden md:table-cell`}>
                       <Money value={t.price_per_share} precise fallback="–" />
                     </td>
-                    <td className={`${TD_MONO} text-right`}>
+                    <td className={`${TD_MONO} text-right whitespace-nowrap`}>
                       <Money value={displayCashEffect(t.type, t.amount)} fallback="–" />
                     </td>
                   </tr>
