@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import os from "node:os";
@@ -376,8 +376,16 @@ describe("recordDelivery", () => {
 });
 
 describe("recordDelivery across two connections (file-backed)", () => {
+  /** The only test here that touches the disk — its temp dir used to leak. */
+  let twoConnDir: string | null = null;
+  afterEach(() => {
+    if (twoConnDir) fs.rmSync(twoConnDir, { recursive: true, force: true });
+    twoConnDir = null;
+  });
+
   it("two processes delivering the same bytes see one document, two roads, and one parse claim", () => {
-    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pw-2conn-")), "t.db");
+    twoConnDir = fs.mkdtempSync(path.join(os.tmpdir(), "pw-2conn-"));
+    const file = path.join(twoConnDir, "t.db");
     const a = new Database(file);
     a.pragma("journal_mode = WAL");
     a.pragma("foreign_keys = ON");
