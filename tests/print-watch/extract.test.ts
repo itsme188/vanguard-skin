@@ -392,4 +392,20 @@ describe("extractCandidatesFromPdf", () => {
     expect(params.tools[0].name).toBe("emit_candidates");
     expect(params.system).toContain("deterministic figure-extraction engine");
   });
+
+  it("names ITSELF in the failure a caller records, not the text reading", async () => {
+    // The message lands in parse_last_error and the panel's parse_failed copy,
+    // so a PDF's native reading must not report under extractCandidates' name.
+    const create = vi.fn().mockResolvedValue(toolUseResponse([]));
+    await expect(
+      extractCandidatesFromPdf([REVENUE_CONTRACT], Buffer.from("%PDF-1.7 fake"), {
+        anthropic: mockClient(create),
+      }),
+    ).rejects.toThrow(/^extractCandidatesFromPdf: no candidates parsed/);
+
+    const textCreate = vi.fn().mockResolvedValue(toolUseResponse([]));
+    await expect(
+      extractCandidates([REVENUE_CONTRACT], DOC_TEXT, { anthropic: mockClient(textCreate) }),
+    ).rejects.toThrow(/^extractCandidates: no candidates parsed/);
+  });
 });

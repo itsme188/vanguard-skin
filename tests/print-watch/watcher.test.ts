@@ -1915,23 +1915,33 @@ describe("pipeline", () => {
     expect(locked.outcome).toBe("refused");
     expect(locked.rejectReason).toMatch(/encrypted/i);
 
-    // A PDF whose own bytes declare /Encrypt is refused BEFORE poppler runs.
-    fake.pdfTextCalls.length = 0;
-    const declared = await ingestDocument(
-      db,
-      printId,
-      "user-drop",
-      "u.pdf",
-      null,
-      Buffer.from("%PDF-1.7\ntrailer << /Encrypt 5 0 R >>"),
-    );
-    expect(declared.outcome).toBe("refused");
-    expect(declared.rejectReason).toMatch(/encrypted/i);
-    expect(fake.pdfTextCalls).toEqual([]);
+    // Both refusals came from POPPLER, not from a byte pattern (R-B15) — the
+    // file reached pdftotext each time.
+    expect(fake.pdfTextCalls).toHaveLength(2);
 
     expect(listDocuments(db, printId)).toEqual([]);
     const dir = path.join(tmpRoot, String(printId));
     expect(fs.existsSync(dir) ? fs.readdirSync(dir) : []).toEqual([]);
+  });
+
+  it("a permissions-only PDF (/Encrypt in its bytes, no user password) is read, not refused (R-B15)", async () => {
+    const { printId } = seedAcmePrint();
+    // An owner-password-only release: permission flags, EMPTY user password.
+    // pdftotext opens it, so print-watch must too — refusing on the byte
+    // pattern would tell the desk to remove a password that does not exist.
+    const permissionsOnly = Buffer.from("%PDF-1.7\ntrailer << /Encrypt 5 0 R /Root 1 0 R >>\n%%EOF\n");
+    fake.pdfText = async () => acmePdfText();
+    fake.extract = async () => [candidate("revenue_q", 1000)];
+    fake.extractPdf = async () => [candidate("revenue_q", 1000)];
+
+    const r = await ingestDocument(db, printId, "user-drop", "perm.pdf", null, permissionsOnly);
+
+    expect(r.outcome).toBe("parsed");
+    expect(fake.pdfTextCalls).toHaveLength(1); // it reached poppler
+    expect(listDocuments(db, printId)).toHaveLength(1);
+    expect(getSheet(db, printId).find((l) => l.metric_id === "revenue_q")!.state).toBe(
+      "single_source",
+    );
   });
 
   it("a second PDF whose text layer matches an existing one is the SAME document (text identity)", async () => {

@@ -318,7 +318,12 @@ export async function extractCandidates(
 ): Promise<ParseCandidate[]> {
   const modelId = resolveExtractionModelId(opts.model);
   const client = opts.anthropic ?? defaultClient();
-  return callExtraction(client, modelId, buildUserMessage(contracts, representationText));
+  return callExtraction(
+    client,
+    modelId,
+    buildUserMessage(contracts, representationText),
+    "extractCandidates",
+  );
 }
 
 /**
@@ -338,6 +343,10 @@ async function callExtraction(
   client: AnthropicLike,
   modelId: string,
   content: string | Anthropic.ContentBlockParam[],
+  /** Which READING is calling. It reaches `parse_last_error` and, from
+   *  there, the panel's parse_failed copy — so a PDF's native reading must
+   *  not report itself under the text reading's name. */
+  label: string,
 ): Promise<ParseCandidate[]> {
   let lastCandidates: ParseCandidate[] = [];
   let lastError: Error | null = null;
@@ -378,7 +387,7 @@ async function callExtraction(
 
     lastCandidates = candidates;
     lastError = new Error(
-      `extractCandidates: no candidates parsed from model response (stop_reason=${response.stop_reason ?? "null"})`,
+      `${label}: no candidates parsed from model response (stop_reason=${response.stop_reason ?? "null"})`,
     );
   }
 
@@ -417,11 +426,16 @@ export async function extractCandidatesFromPdf(
 ): Promise<ParseCandidate[]> {
   const modelId = resolveExtractionModelId(opts.model);
   const client = opts.anthropic ?? defaultClient();
-  return callExtraction(client, modelId, [
-    {
-      type: "document",
-      source: { type: "base64", media_type: "application/pdf", data: pdfBytes.toString("base64") },
-    },
-    { type: "text", text: buildPdfUserMessage(contracts) },
-  ]);
+  return callExtraction(
+    client,
+    modelId,
+    [
+      {
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: pdfBytes.toString("base64") },
+      },
+      { type: "text", text: buildPdfUserMessage(contracts) },
+    ],
+    "extractCandidatesFromPdf",
+  );
 }
