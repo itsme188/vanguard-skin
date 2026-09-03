@@ -159,7 +159,18 @@ export function CommandPalette() {
               <button
                 key={`security-${result.id}`}
                 onClick={() => navigate(result.href)}
-                onMouseEnter={() => setSelectedIndex(i)}
+                // onMouseMove, not onMouseEnter: results re-render as the
+                // debounced search resolves per keystroke, and browsers
+                // synthesize a mouseenter/mouseover for a NEW element that
+                // appears under an already-stationary pointer (hit-testing
+                // recompute on layout change, not a real input event) — that
+                // phantom event was silently stealing the keyboard/Enter
+                // target away from the typed exact match onto whatever row
+                // happened to sit under the resting cursor (QA:
+                // cmdk--hover-steals-enter-target-expired-options-ranked-above-stock-regression-2).
+                // mousemove only ever fires from genuine pointer movement, so
+                // deliberate hovering still updates the selection as before.
+                onMouseMove={() => setSelectedIndex(i)}
                 className={`w-full text-left px-4 py-2.5 flex items-baseline gap-3 transition-colors ${
                   i === selectedIndex
                     ? "bg-raised"
