@@ -36,6 +36,8 @@ import {
 } from "@/lib/earnings/extract-newsletter-bogeys";
 import {
   makeNewsletterRescanStep,
+  RESCAN_MAX_ARTICLES_PER_PASS,
+  RESCAN_SOFT_DEADLINE_MS,
   RESCAN_WINDOW_DAYS,
   SCAN_MAX_ATTEMPTS,
 } from "@/lib/earnings/prepare-steps/newsletter-rescan";
@@ -71,6 +73,15 @@ const FILLER =
  *  been bitten — see tests/earnings/extract-newsletter-bogeys.test.ts). */
 function daysAgo(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 19).replace("T", " ");
+}
+
+/** Independent restatement of the issue-date half of `newsletterIssueLabel`. */
+function etMonthDay(receivedAt: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "numeric",
+    day: "numeric",
+  }).format(new Date(receivedAt.replace(" ", "T") + "Z"));
 }
 
 function seedArticle(
@@ -219,9 +230,23 @@ describe("newsletter_rescan step + earnings_bogey_scans ledger", () => {
       )
       .all(ev, NEWSLETTER_EXTRACTOR_VERSION);
 
-  it("pins the window + attempt cap the spec names", () => {
+  /** Plant a ledger row in a given state — a foreign pass's claim, or a spent pair. */
+  const plantScan = (
+    ev: number,
+    articleId: number,
+    opts: { status: "claimed" | "error" | "hit" | "no_numbers"; attempts: number; ageMinutes: number },
+  ) =>
+    db
+      .prepare(
+        `INSERT INTO earnings_bogey_scans (event_id, article_id, extractor_version, status, claim_token, attempts, updated_at)
+         VALUES (?, ?, ?, ?, 'foreign-token', ?, datetime('now', ?))`,
+      )
+      .run(ev, articleId, NEWSLETTER_EXTRACTOR_VERSION, opts.status, opts.attempts, `-${opts.ageMinutes} minutes`);
+
+  it("pins the window, attempt cap and per-pass budget the spec names", () => {
     expect(RESCAN_WINDOW_DAYS).toBe(14);
     expect(SCAN_MAX_ATTEMPTS).toBe(3);
+    expect(RESCAN_MAX_ARTICLES_PER_PASS).toBe(8);
     expect(NEWSLETTER_EXTRACTOR_VERSION).toBe(1);
   });
 
@@ -328,6 +353,121 @@ describe("newsletter_rescan step + earnings_bogey_scans ledger", () => {
     const out = await makeNewsletterRescanStep({ extract }).run(db, id, ctx);
     expect(out.status).toBe("failed");
     expect(extract).not.toHaveBeenCalled();
+  });
+
+  it("a STALE claim already at the attempt cap is never re-claimed — the cap covers the takeover path too", async () => {
+    const ev = seedEvent();
+    const a1 = seedArticle("ACME EPS 0.60", daysAgo(3));
+    // A pair that killed the process mid-call, three times over.
+    plantScan(ev, a1, { status: "claimed", attempts: SCAN_MAX_ATTEMPTS, ageMinutes: 10 });
+
+    const extract = vi.fn();
+    expect(await makeNewsletterRescanStep({ extract }).run(db, ev, ctx)).toEqual({
+      status: "done",
+      note: "0 scanned, 0 hit (1 exhausted)",
+    });
+    expect(extract).not.toHaveBeenCalled();
+    expect(ledger(ev)).toEqual([
+      { article_id: a1, status: "claimed", attempts: SCAN_MAX_ATTEMPTS, model_id: null },
+    ]);
+  });
+
+  it("a LIVE claim held by another pass defers the step to pending (never a silent done)", async () => {
+    const ev = seedEvent();
+    const a1 = seedArticle("ACME EPS 0.60", daysAgo(3));
+    plantScan(ev, a1, { status: "claimed", attempts: 0, ageMinutes: 0 });
+
+    const extract = vi.fn();
+    expect(await makeNewsletterRescanStep({ extract }).run(db, ev, ctx)).toEqual({
+      status: "pending",
+      reason: "1 pair(s) claimed by another pass; resume next tick",
+    });
+    expect(extract).not.toHaveBeenCalled();
+    // pending costs no attempt; the next tick takes the by-then-stale claim over.
+    expect(ledger(ev)).toEqual([{ article_id: a1, status: "claimed", attempts: 0, model_id: null }]);
+  });
+
+  it("[R22] stops at RESCAN_MAX_ARTICLES_PER_PASS model calls and finishes on the next pass", async () => {
+    const ev = seedEvent();
+    for (let i = 0; i < RESCAN_MAX_ARTICLES_PER_PASS + 1; i++) seedArticle(`ACME note ${i}`, daysAgo(i + 1));
+
+    const extract = vi.fn(async (_db: Database.Database, _a: { id: number }) => ({
+      bogeysStored: 0,
+      modelId: "m",
+      called: true,
+    }));
+    const step = makeNewsletterRescanStep({ extract });
+
+    // `pending` — NOT `failed` — is the point: the runner charges no attempt for it,
+    // so a big corpus can never retire this step at PREPARE_MAX_ATTEMPTS.
+    expect(await step.run(db, ev, ctx)).toEqual({ status: "pending", reason: "budget reached; resume next tick" });
+    expect(extract).toHaveBeenCalledTimes(RESCAN_MAX_ARTICLES_PER_PASS);
+
+    expect(await step.run(db, ev, ctx)).toEqual({ status: "done", note: "1 scanned, 0 hit" });
+    expect(extract).toHaveBeenCalledTimes(RESCAN_MAX_ARTICLES_PER_PASS + 1);
+  });
+
+  it("[R22] stops on the soft wall-clock deadline read off ctx.now, before the runner's hard deadline", async () => {
+    const ev = seedEvent();
+    seedArticle("ACME first", daysAgo(1));
+    seedArticle("ACME second", daysAgo(2));
+
+    const T = Date.parse("2026-09-02T18:00:00Z");
+    let ticks = 0;
+    // 1st call = pass start, 2nd = article 1's budget check, 3rd = article 2's —
+    // by which point more than RESCAN_SOFT_DEADLINE_MS has "elapsed".
+    const now = () => {
+      ticks += 1;
+      return ticks <= 2 ? T : T + RESCAN_SOFT_DEADLINE_MS + 1_000;
+    };
+    const extract = vi.fn(async () => ({ bogeysStored: 0, modelId: "m", called: true }));
+
+    expect(
+      await makeNewsletterRescanStep({ extract }).run(db, ev, { now, signal: new AbortController().signal }),
+    ).toEqual({ status: "pending", reason: "budget reached; resume next tick" });
+    expect(extract).toHaveBeenCalledTimes(1);
+  });
+
+  it("[R20] a pair the global scan already extracted is banked as a hit with no model call", async () => {
+    const ev = seedEvent();
+    const a1 = seedArticle("ACME EPS 0.60", daysAgo(3));
+    db.prepare(
+      `INSERT INTO earnings_bogeys (event_id, source, source_label, research_article_id, eps_consensus)
+       VALUES (?, 'newsletter', 'Desk Notes 8/30', ?, 0.6)`,
+    ).run(ev, a1);
+
+    const extract = vi.fn();
+    expect(await makeNewsletterRescanStep({ extract }).run(db, ev, ctx)).toEqual({
+      status: "done",
+      note: "0 scanned, 0 hit (1 pre-existing from the global scan)",
+    });
+    expect(extract).not.toHaveBeenCalled();
+    expect(ledger(ev)).toEqual([{ article_id: a1, status: "hit", attempts: 0, model_id: null }]);
+  });
+
+  it("the DEFAULT step (no injected extractor) drives the real per-event path end to end", async () => {
+    const ev = seedEvent();
+    const hitArticle = seedArticle("ACME buyside bogey: EPS 0.60, rev 1.51B", daysAgo(2), null);
+    const missArticle = seedArticle("NVDA and CRWD only, nothing else", daysAgo(4), null);
+    generateTextMock.mockResolvedValue({ text: RESPONSE });
+
+    // No deps: makeNewsletterRescanStep() wires up extractBogeysFromArticleForEvent,
+    // so this exercises the article row shape the step's own query produces.
+    expect(await makeNewsletterRescanStep().run(db, ev, ctx)).toEqual({ status: "done", note: "1 scanned, 1 hit" });
+
+    expect(generateTextMock).toHaveBeenCalledTimes(1);
+    // The unmentioned article released its claim row rather than banking a scan.
+    expect(ledger(ev)).toEqual([
+      { article_id: hitArticle, status: "hit", attempts: 1, model_id: "claude-test-model" },
+    ]);
+    expect(missArticle).toBeGreaterThan(0);
+    expect(
+      db.prepare(`SELECT source_label, eps_consensus FROM earnings_bogeys WHERE event_id = ?`).all(ev),
+    ).toEqual([{ source_label: `Desk Notes ${etMonthDay(daysAgo(2))}`, eps_consensus: 0.6 }]);
+    // The per-event path still never stamps the global marker.
+    expect(
+      db.prepare(`SELECT COUNT(*) AS n FROM research_articles WHERE bogeys_scanned_at IS NOT NULL`).get(),
+    ).toEqual({ n: 0 });
   });
 
   it("fingerprint = hash(eventId, symbol, window, extractor version)", () => {
