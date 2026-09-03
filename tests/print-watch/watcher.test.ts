@@ -34,6 +34,7 @@ import {
   runForcedPass,
   CADENCE_MS,
   GO_DISPATCH_MS,
+  ROAD_ABANDON_MS,
   LEASE_RENEW_MS,
   ROAD_TIMEOUT_MS,
 } from "@/lib/print-watch/watcher";
@@ -85,6 +86,9 @@ interface ExtractCall {
 interface FakeFetchOptions {
   label: string;
   allowHost?: (hostname: string) => boolean;
+  /** The road's cancellation, so a fake link fetch can hang until it is
+   *  aborted — or deliberately IGNORE it (the abandon-budget case). */
+  signal?: AbortSignal;
 }
 
 interface FakeFetchResult {
@@ -886,7 +890,10 @@ describe("watch loop", () => {
   it("times out a stalled EDGAR poll so the lease keeps renewing and the loop lives", async () => {
     seedArmedEvent();
     fake.cik = "0001045810";
-    fake.edgar = () => new Promise(() => {}); // a socket that never answers
+    // A socket that never answers AND ignores its cancellation: aborted at
+    // ROAD_TIMEOUT_MS, and only then abandoned at ROAD_ABANDON_MS (R-C12), so
+    // one pass of this print lasts the full abandon budget.
+    fake.edgar = () => new Promise(() => {});
 
     const leaseExpiry = (): number => {
       const row = db.prepare(`SELECT value FROM settings WHERE key = 'print_watch_lease'`).get() as
@@ -898,7 +905,7 @@ describe("watch loop", () => {
     ensurePrintWatch(db);
     const expiryBefore = leaseExpiry();
 
-    await tick(40_000);
+    await tick(ROAD_ABANDON_MS + CADENCE_MS + 5_000);
 
     expect(fake.edgarCalls).toBeGreaterThan(0);
     expect(getWatchStatus(db)[0].sources.edgar).toContain("timed out");
@@ -907,7 +914,7 @@ describe("watch loop", () => {
     const djAfterStall = fake.djCalls;
     expect(djAfterStall).toBeGreaterThan(1);
 
-    await tick(30_000);
+    await tick(ROAD_ABANDON_MS + CADENCE_MS + 5_000);
     expect(fake.djCalls).toBeGreaterThan(djAfterStall);
   });
 
@@ -2792,6 +2799,154 @@ describe("slice C — window, fan-out, go", () => {
     expect(reports.find((r) => r.road === "edgar")!.outcome).toBe("failed");
     // Cancelled, not merely abandoned: nothing was written for this print.
     expect(listDocuments(db, printId)).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // R-C12: the road budgets cover ACQUISITION; a report settles at delivery
+  // -------------------------------------------------------------------------
+
+  /** A scheduled (not-yet-open) print: the runtime exists, no cadence loop
+   *  runs, so `runForcedPass` is the only pass and its reports are the test's. */
+  function scheduledAcme(): number {
+    const eventId = seedLaterAcmeEvent(3);
+    ensurePrintWatch(db);
+    return getPrintByEventId(db, eventId)!.id;
+  }
+
+  /** Resolve after `ms` of FAKE time. */
+  function after<T>(ms: number, value: T): Promise<T> {
+    return new Promise((resolve) => setTimeout(() => resolve(value), ms));
+  }
+
+  async function forcedPass(printId: number, budgetMs = 120_000): Promise<RoadReport[]> {
+    let reports: RoadReport[] | null = null;
+    void runForcedPass(db, printId).then((r) => {
+      reports = r;
+    });
+    await waitUntil(() => reports !== null, Math.ceil(budgetMs / 1_000), 1_000);
+    return reports!;
+  }
+
+  it("a road whose fetch lands fast but whose PARSE runs long is reported ok, and the document is parsed (R-C12)", async () => {
+    const printId = scheduledAcme();
+    fake.twsUp = true;
+    // 5 seconds of acquisition, then 40 seconds of parse — far past
+    // ROAD_TIMEOUT_MS, which covers acquisition only.
+    fake.dj = async () => after(5_000, { completedReleases: [acmeRelease()], flashes: [] });
+    fake.edgar = async () => [];
+    fake.extract = async () => after(40_000, [candidate("eps_adj_q", 1.05)]);
+
+    const reports = await forcedPass(printId);
+
+    expect(reports.find((r) => r.road === "dj")).toMatchObject({ outcome: "ok" });
+    const docs = listDocuments(db, printId);
+    expect(docs).toHaveLength(1);
+    expect(getDocument(db, docs[0].id)!.parse_state).toBe("parsed");
+  });
+
+  it("a road whose FETCH hangs is aborted at ROAD_TIMEOUT_MS and reported timed out (R-C12)", async () => {
+    const printId = scheduledAcme();
+    fake.twsUp = true;
+    // Honours its cancellation: it settles the moment the abort lands.
+    fake.dj = (signal?: AbortSignal) =>
+      new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+          { once: true },
+        );
+      });
+    fake.edgar = async () => [];
+
+    const reports = await forcedPass(printId);
+
+    const dj = reports.find((r) => r.road === "dj")!;
+    expect(dj.outcome).toBe("failed");
+    expect(dj.detail).toMatch(/timed out/i);
+    expect(listDocuments(db, printId)).toEqual([]);
+  });
+
+  it("the IR lane keeps walking its links while a SIBLING road's timer fires (R-C12)", async () => {
+    const IR_URL = "https://ir.acme.example/news";
+    const LINK_A = "https://ir.acme.example/news/acme-q2-2026-results-one";
+    const LINK_B = "https://ir.acme.example/news/acme-q2-2026-results-two";
+    const PAGE =
+      `<a href="/news/acme-q2-2026-results-one">ACME Reports Q2 2026 Results</a>` +
+      `<a href="/news/acme-q2-2026-results-two">ACME Reports Q2 2026 Results Supplement</a>`;
+    const RELEASE = `<html><body>ACME reports Q2 2026 results. Revenue $1,000 million.</body></html>`;
+
+    const eventId = seedLaterAcmeEvent(3);
+    upsertPrintWatchSource(db, { symbol: "ACME", irPageUrl: IR_URL, linkMustContain: null });
+    ensurePrintWatch(db);
+    const printId = getPrintByEventId(db, eventId)!.id;
+
+    fake.twsUp = false;
+    // EDGAR hangs on its own signal: its road is aborted at ROAD_TIMEOUT_MS,
+    // 15 seconds into a walk the IR lane is still in the middle of.
+    fake.edgar = (fetchFn?: FetchLike) =>
+      new Promise<never>((_resolve, reject) => {
+        void fetchFn?.("https://data.sec.gov/probe").catch(reject);
+      });
+    // DISTINCT bytes per link: identical bytes are ONE document with two roads
+    // (M13), which would hide whether the second link was walked at all.
+    fake.fetchBytes = async (url: string) => ({
+      bytes: Buffer.from(
+        url === IR_URL ? PAGE : RELEASE.replace("</body>", `<p>${url}</p></body>`),
+        "utf8",
+      ),
+      finalUrl: url,
+      status: 200,
+      contentType: "text/html",
+    });
+    // Each parse is long enough that the sibling's 15s timer lands between the
+    // two links — and long enough that a budget covering the parse would kill
+    // the second one.
+    fake.extract = async () => after(10_000, [candidate("eps_adj_q", 1.05)]);
+
+    const reports = await forcedPass(printId);
+
+    expect(reports.find((r) => r.road === "edgar")!.outcome).toBe("failed");
+    // Both links walked: the IR road neither inherited the sibling's abort nor
+    // spent its own acquisition budget on the parses.
+    const urls = listDocuments(db, printId).map((d) => d.url);
+    expect(urls).toHaveLength(2);
+    expect(urls).toEqual(expect.arrayContaining([LINK_A, LINK_B]));
+    expect(reports.find((r) => r.road === "ir")!.outcome).toBe("ok");
+  });
+
+  it("a road ABANDONED after it already delivered is reported ok, never failed (R-C12)", async () => {
+    const IR_URL = "https://ir.acme.example/news";
+    const LINK_A = "https://ir.acme.example/news/acme-q2-2026-results-one";
+    const PAGE =
+      `<a href="/news/acme-q2-2026-results-one">ACME Reports Q2 2026 Results</a>` +
+      `<a href="/news/acme-q2-2026-results-two">ACME Reports Q2 2026 Results Supplement</a>`;
+    const RELEASE = `<html><body>ACME reports Q2 2026 results. Revenue $1,000 million.</body></html>`;
+
+    const eventId = seedLaterAcmeEvent(3);
+    upsertPrintWatchSource(db, { symbol: "ACME", irPageUrl: IR_URL, linkMustContain: null });
+    ensurePrintWatch(db);
+    const printId = getPrintByEventId(db, eventId)!.id;
+
+    fake.twsUp = false;
+    fake.edgar = async () => [];
+    fake.fetchBytes = async (url: string) => {
+      if (url === IR_URL) {
+        return { bytes: Buffer.from(PAGE, "utf8"), finalUrl: url, status: 200, contentType: "text/html" };
+      }
+      if (url === LINK_A) {
+        return { bytes: Buffer.from(RELEASE, "utf8"), finalUrl: url, status: 200, contentType: "text/html" };
+      }
+      // The second link IGNORES its cancellation — the only case the abandon
+      // budget exists for. The road is rejected, but it already delivered.
+      return new Promise<never>(() => {});
+    };
+
+    const reports = await forcedPass(printId);
+
+    const ir = reports.find((r) => r.road === "ir")!;
+    expect(ir.outcome).toBe("ok");
+    expect(ir.detail).toMatch(/1 document\(s\) delivered/);
+    expect(listDocuments(db, printId).map((d) => d.url)).toEqual([LINK_A]);
   });
 
   it("status carries forcedOpenAt, windowExtendedUntil, effectiveWindow and the latest goRequest", async () => {
