@@ -35,7 +35,10 @@ cd /Users/Yitzi/code/vanguard-skin
 # Isolate npm cache so a root-owned ~/.npm cache entry can't block cron.
 # (Happens once on some machines from pre-2021 npm; proper fix is
 #  `sudo chown -R $USER:staff ~/.npm`, but the cron must work regardless.)
-export npm_config_cache="${TMPDIR:-/tmp}/vanguard-skin-npm-cache"
+# Lives under ~/Library/Caches, NOT $TMPDIR: macOS purges /var/folders/T
+# entries idle for 3 days, which left half a cache behind and failed the
+# 2026-09-03 02:01 beta refresh with an npm ENOENT on the tsx tarball.
+export npm_config_cache="$HOME/Library/Caches/vanguard-skin-npm-cache"
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') — refreshing Vanguard betas"
 (cd /Users/Yitzi/code/vanguard-skin && npx tsx scripts/refresh-vanguard-betas.ts) || \
