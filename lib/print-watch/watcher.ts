@@ -167,6 +167,14 @@ const LEASE_SETTINGS_KEY = "print_watch_lease";
  */
 export const ROAD_TIMEOUT_MS = 15_000;
 
+/**
+ * The hard backstop for a road that IGNORES its cancellation (review I1 /
+ * R-C12). The abort at `ROAD_TIMEOUT_MS` is what a signal-honouring adapter
+ * settles on; this is when the pass stops waiting on one that does not. Kept
+ * under `LEASE_TTL_MS` — the mid-pass renewal (every 20s) covers the park.
+ */
+export const ROAD_ABANDON_MS = 3 * ROAD_TIMEOUT_MS;
+
 /** How often the lease owner sweeps for go requests ANY process queued. */
 export const GO_DISPATCH_MS = 2_000;
 
@@ -312,7 +320,7 @@ export interface WatcherSeams {
     nowMs: number,
     signal?: AbortSignal,
   ) => Promise<DjPollOutput>;
-  resolveCik: (symbol: string, fetchFn?: FetchLike) => Promise<string | null>;
+  resolveCik: (symbol: string, fetchFn: FetchLike) => Promise<string | null>;
   /** Ask TWS for a security's IB contract id (and persist it). Null = TWS
    *  answered but knows no contract for this row. */
   resolveConId: (db: Database.Database, securityId: number) => Promise<number | null>;
@@ -321,13 +329,17 @@ export interface WatcherSeams {
     windowStartIso: string,
     windowEndIso: string,
     seenAccessions: Set<string>,
-    fetchFn?: FetchLike,
+    fetchFn: FetchLike,
   ) => Promise<EdgarFiling[]>;
+  /** `fetchFn` is REQUIRED on all three (review M3): every outbound HTTP
+   *  request this module makes rides the acquisition scheduler, and an
+   *  optional parameter defaulting to the bare global `fetch` is a silent
+   *  escape hatch for the next caller. */
   pollIrRss: (
     cfg: IrRssConfig,
     seenLinks: Set<string>,
     baseline: boolean,
-    fetchFn?: FetchLike,
+    fetchFn: FetchLike,
   ) => Promise<Array<{ title: string; link: string; html: string }>>;
   /** The SSRF-hardened reader for the stored IR page road — the newsroom page
    *  itself and every release link followed off it. The lane always wraps this
@@ -395,7 +407,7 @@ const DEFAULT_SEAMS: WatcherSeams = {
   resolveCik: (symbol, fetchFn) => resolveCik(symbol, fetchFn),
   resolveConId: (db, securityId) => defaultResolveConId(db, securityId),
   pollEdgar: (cik, startIso, endIso, seen, fetchFn) => pollEdgar(cik, startIso, endIso, seen, fetchFn),
-  pollIrRss: (cfg, seenLinks, baseline, fetchFn) => pollIrRss(cfg, seenLinks, fetchFn ?? fetch, { baseline }),
+  pollIrRss: (cfg, seenLinks, baseline, fetchFn) => pollIrRss(cfg, seenLinks, fetchFn, { baseline }),
   fetchBytes: (url, opts) => hardenedFetchBytes(url, opts),
   extractCandidates: (contracts, text) => extractCandidates(contracts, text),
   pdfToText: async (db, pdfPath) => {
@@ -1114,7 +1126,10 @@ async function cadenceWait(printId: number): Promise<PassReason | "timeout"> {
   });
   const first = await Promise.race([wake, deadline]);
   // The deadline's own `wake` resolves the wait branch with "cadence"; report
-  // it as the timeout it actually is.
+  // it as the timeout it actually is. RESERVED REASON: `"cadence"` is this
+  // function's private handshake — nothing else may call
+  // `acquisitionScheduler.wake(printId, "cadence")`, or its wake would be read
+  // as a timeout here and skip the dispatcher tick R-C10 requires.
   return first === "cadence" ? "timeout" : first;
 }
 
@@ -1169,11 +1184,11 @@ async function pass(db: Database.Database, rt: PrintRuntime, signal: AbortSignal
     }
   }, LEASE_RENEW_MS);
 
-  const notes: Record<RoadName, string> = { dj: "", edgar: "", ir: "" };
   // The RSS lane keeps its own ladder key (the panel labels it "RSS"), but it
   // IS the IR road as far as a go report is concerned (finding #12).
   const irKey = irConfigFor(rt.dto.symbol) ? "rss" : "ir";
   const keyFor = (road: RoadName) => (road === "ir" ? irKey : road);
+  const ctx: Record<RoadName, RoadCtx> = { dj: newRoadCtx(), edgar: newRoadCtx(), ir: newRoadCtx() };
   let twsUp: boolean | null = null;
   try {
     // Crash recovery (Codex #6): anything a previous process acquired but never
@@ -1181,24 +1196,36 @@ async function pass(db: Database.Database, rt: PrintRuntime, signal: AbortSignal
     await runQueue(db, rt.printId);
 
     const settled = await Promise.allSettled([
-      withRoad("dj", passSignal, async (s) => {
-        twsUp = await pollDjSource(db, rt, window, s);
+      runRoad("dj", passSignal, ctx.dj, async (c) => {
+        twsUp = await pollDjSource(db, rt, window, c);
       }),
-      withRoad("edgar", passSignal, (s) => pollEdgarSource(db, rt, window, s)),
-      withRoad("ir", passSignal, (s) => pollIrSource(db, rt, s)),
+      runRoad("edgar", passSignal, ctx.edgar, (c) => pollEdgarSource(db, rt, window, c)),
+      runRoad("ir", passSignal, ctx.ir, (c) => pollIrSource(db, rt, c)),
     ]);
 
     const reports: RoadReport[] = ROADS.map((road, i) => {
       const outcome = settled[i];
+      const delivered = ctx[road].delivered;
       if (outcome.status === "rejected") {
-        notes[road] = errText(outcome.reason);
-        status.sources[keyFor(road)] = notes[road];
-        return { road, outcome: "failed", detail: safeErrorText(outcome.reason) };
+        // R-C12: a road that RECORDED bytes did its job, even if it was then
+        // cancelled or abandoned — its parse is still running, and `failed` is
+        // the one verdict `result_json` keeps forever.
+        const note = delivered
+          ? `ok — ${delivered} document(s) delivered; then ${errText(outcome.reason)}`
+          : errText(outcome.reason);
+        status.sources[keyFor(road)] = note;
+        return { road, outcome: delivered ? "ok" : "failed", detail: safeErrorText(note) };
       }
       // The lane wrote its own note during THIS pass (one pass runs at a time
       // per print), so reading it back is reading this pass's own outcome.
-      notes[road] = status.sources[keyFor(road)] ?? "";
-      return { road, outcome: roadOutcome(notes[road]), detail: notes[road] };
+      const note = status.sources[keyFor(road)] ?? "";
+      return {
+        road,
+        outcome: delivered ? "ok" : roadOutcome(note),
+        // M1: scrubbed on BOTH paths — every detail here persists into a go
+        // request's `result_json`.
+        detail: safeErrorText(note),
+      };
     });
 
     refreshCoverage(db, rt, twsUp);
@@ -1234,47 +1261,158 @@ function skippedReports(detail: string): RoadReport[] {
 }
 
 /**
- * Run ONE road on its own linked signal.
- *
- * The per-road timer ABORTS the road (so `hardenedFetchBytes` / the throttled
- * SEC fetch close their sockets and hand back their scheduler slot) AND stops
- * waiting on it: an adapter that ignores its signal must not be able to park
- * the whole pass past the lease renewal. The pass signal reaches the road the
- * same way, so a lost lease cancels all three at once.
+ * One road's slice of a pass: the signal every request of that road rides, the
+ * delivery counter its report settles on, and the ingest escape hatch.
  */
-async function withRoad<T>(
-  label: string,
+interface RoadCtx {
+  /** Installed by `runRoad`; every request this road makes rides it. */
+  signal: AbortSignal;
+  /**
+   * How many documents this road has RECORDED in this pass (R-C12). It is
+   * incremented the moment `recordDelivery` returns — before the parse — and a
+   * road that delivered is never reported `failed`, whatever happens to it
+   * afterwards. `result_json` keeps a go request's verdict forever; writing
+   * "timed out" over the road that just carried the print is the one error the
+   * desk cannot correct.
+   */
+  delivered: number;
+  /**
+   * Record + parse one road document. Runs OUTSIDE the road's budgets: an
+   * ingest ends in `runQueue` → a Claude call, which is minutes, and counting
+   * it as acquisition time reported a successful wire road as timed out and
+   * aborted the IR links the lane had not read yet (review I1). The road's
+   * deadline covers ACQUISITION only.
+   */
+  ingest: (
+    db: Database.Database,
+    printId: number,
+    kind: PrintWatchDocKind,
+    source: string,
+    url: string | null,
+    buf: Buffer,
+  ) => Promise<IngestResult>;
+}
+
+/**
+ * Run ONE road under two budgets, both measured over ACQUISITION time only
+ * (R-C12) — `ctx.ingest` suspends them for the duration of a record + parse.
+ *
+ *  - at `ROAD_TIMEOUT_MS` the road's signal is ABORTED. That is what closes the
+ *    socket and hands the scheduler slot back, and a signal-honouring lane
+ *    settles on its own the moment it lands;
+ *  - at `ROAD_ABANDON_MS` the pass stops WAITING. Nothing else does: an adapter
+ *    that ignores its cancellation must not be able to park a pass past the
+ *    lease TTL, and it is the only case this second budget exists for.
+ *
+ * Splitting the two is the whole of review I1: the old single deadline rejected
+ * the road at 15s whatever it was doing, so a wire road that had just delivered
+ * the print and was inside its parse was written `failed — timed out` into a go
+ * request's `result_json`, permanently, and the IR lane's unread links died on
+ * the aborted signal.
+ *
+ * A road that is already cancelled when it starts (the lease was lost during
+ * the pre-road drain) never runs its lane at all. Once running, the pass signal
+ * reaches the lane through `ctx.signal` and the lane decides — a settling pass
+ * therefore never orphans a half-written document (R-C8: the ingest takes no
+ * signal and always completes).
+ *
+ * ACCEPTED LIMIT: a road stuck INSIDE an ingest parks the pass, because both
+ * budgets are suspended there. That is the same exposure the pre-road
+ * `runQueue` has always had — a parse that never returns — and the mid-pass
+ * lease renewal keeps the lease alive across it.
+ */
+async function runRoad(
+  label: RoadName,
   parent: AbortSignal,
-  run: (signal: AbortSignal) => Promise<T>,
-): Promise<T> {
+  ctx: RoadCtx,
+  run: (ctx: RoadCtx) => Promise<void>,
+): Promise<void> {
   const ac = new AbortController();
   const signal = AbortSignal.any([parent, ac.signal]);
+  ctx.signal = signal;
+
   const abortText = () => {
     const reason: unknown = signal.reason;
     return reason instanceof Error ? reason.message : `${label} aborted`;
   };
-  let onAbort: (() => void) | null = null;
-  const timer = setTimeout(
-    () => ac.abort(new Error(`${label} timed out after ${ROAD_TIMEOUT_MS / 1000}s`)),
-    ROAD_TIMEOUT_MS,
-  );
+  /** Said only of a road that IGNORED its cancellation — the desk should be
+   *  able to tell that from a road that stopped when it was told to. */
+  const abandonText = () =>
+    `${label} timed out after ${ROAD_TIMEOUT_MS / 1000}s and ignored it — abandoned after ${ROAD_ABANDON_MS / 1000}s`;
+
+  let abortTimer: ReturnType<typeof setTimeout> | undefined;
+  let abandonTimer: ReturnType<typeof setTimeout> | undefined;
+  let abortLeftMs = ROAD_TIMEOUT_MS;
+  let abandonLeftMs = ROAD_ABANDON_MS;
+  let armedAtMs = 0;
+  let ingesting = 0;
+  let abandoned = false;
+  let stop: ((err: Error) => void) | null = null;
+
+  const arm = () => {
+    armedAtMs = seams.now();
+    abortTimer = setTimeout(
+      () => ac.abort(new Error(`${label} timed out after ${ROAD_TIMEOUT_MS / 1000}s`)),
+      Math.max(0, abortLeftMs),
+    );
+    abandonTimer = setTimeout(() => {
+      abandoned = true;
+      stop?.(new Error(abandonText()));
+    }, Math.max(0, abandonLeftMs));
+  };
+  const disarm = () => {
+    const spent = Math.max(0, seams.now() - armedAtMs);
+    abortLeftMs = Math.max(0, abortLeftMs - spent);
+    abandonLeftMs = Math.max(0, abandonLeftMs - spent);
+    if (abortTimer) clearTimeout(abortTimer);
+    if (abandonTimer) clearTimeout(abandonTimer);
+    abortTimer = undefined;
+    abandonTimer = undefined;
+  };
+  ctx.ingest = async (db, printId, kind, source, url, buf) => {
+    disarm();
+    ingesting += 1;
+    try {
+      return await ingestDocument(db, printId, kind, source, url, buf, () => {
+        ctx.delivered += 1;
+      });
+    } finally {
+      ingesting -= 1;
+      if (ingesting === 0) arm();
+    }
+  };
+
+  // Cancelled before it started: don't open a socket under a lease we lost.
+  if (signal.aborted) throw new Error(abortText());
+
+  arm();
   try {
-    const cancelled = new Promise<never>((_resolve, reject) => {
-      if (signal.aborted) {
-        reject(new Error(abortText()));
-        return;
-      }
-      onAbort = () => reject(new Error(abortText()));
-      signal.addEventListener("abort", onAbort, { once: true });
+    const abandoned = new Promise<never>((_resolve, reject) => {
+      stop = reject;
     });
-    return await Promise.race([run(signal), cancelled]);
+    await Promise.race([run(ctx), abandoned]);
   } catch (err) {
-    if (signal.aborted) throw new Error(abortText());
+    if (abandoned) throw new Error(abandonText());
+    // A lane that honoured its cancellation rejects with whatever its adapter
+    // threw; name the real reason instead ("… timed out after 15s", "watcher
+    // lease lost mid-pass").
+    if (signal.aborted && ingesting === 0) throw new Error(abortText());
     throw err;
   } finally {
-    clearTimeout(timer);
-    if (onAbort) signal.removeEventListener("abort", onAbort);
+    stop = null;
+    disarm();
   }
+}
+
+/** A road's context before its runner exists — `runRoad` installs the real
+ *  signal and ingest; `pass` keeps the object so it can read `delivered` even
+ *  when the road is cancelled or abandoned. */
+function newRoadCtx(): RoadCtx {
+  return {
+    signal: AbortSignal.abort(),
+    delivered: 0,
+    ingest: () => Promise.reject(new Error("road context used outside its road")),
+  };
 }
 
 /**
@@ -1305,7 +1443,7 @@ async function pollDjSource(
   db: Database.Database,
   rt: PrintRuntime,
   window: EffectiveWindow,
-  signal: AbortSignal,
+  road: RoadCtx,
 ): Promise<boolean | null> {
   const status = statusFor(rt.printId);
   if (rt.dto.conId === null) {
@@ -1330,12 +1468,12 @@ async function pollDjSource(
       formatTwsDateTime(new Date(seams.now())),
       rt.djState,
       seams.now(),
-      signal,
+      road.signal,
     );
 
     for (const release of out.completedReleases) {
       rt.burst = true;
-      await ingestDocument(
+      await road.ingest(
         db,
         rt.printId,
         "dj-release",
@@ -1434,14 +1572,14 @@ async function pollEdgarSource(
   db: Database.Database,
   rt: PrintRuntime,
   window: EffectiveWindow,
-  signal: AbortSignal,
+  road: RoadCtx,
 ): Promise<void> {
   const status = statusFor(rt.printId);
   // ONE throttled fetch for the whole lane: the SEC family's 2/s budget is
   // shared across every CIK by the scheduler, and the pass signal rides every
   // request — so no hand-rolled host spacer, and a cancelled pass closes the
   // socket instead of leaving it to the runtime.
-  const fetchFn = acquisitionScheduler.fetchFor(signal, seams.fetchImpl);
+  const fetchFn = acquisitionScheduler.fetchFor(road.signal, seams.fetchImpl);
   try {
     if (rt.dto.cik === null && !rt.cikAttempted) {
       rt.cikAttempted = true;
@@ -1474,7 +1612,7 @@ async function pollEdgarSource(
       for (const exhibit of filing.exhibits) {
         rt.burst = true;
         exhibits += 1;
-        await ingestDocument(
+        await road.ingest(
           db,
           rt.printId,
           "edgar-ex99",
@@ -1503,10 +1641,10 @@ async function pollEdgarSource(
  * RSS keeps precedence — a stored page for NVDA would be a second, weaker
  * reading of the same newsroom.
  */
-async function pollIrSource(db: Database.Database, rt: PrintRuntime, signal: AbortSignal): Promise<void> {
+async function pollIrSource(db: Database.Database, rt: PrintRuntime, road: RoadCtx): Promise<void> {
   const rss = irConfigFor(rt.dto.symbol);
-  if (rss) return pollIrRssSource(db, rt, rss, signal);
-  return pollIrPageSource(db, rt, signal);
+  if (rss) return pollIrRssSource(db, rt, rss, road);
+  return pollIrPageSource(db, rt, road);
 }
 
 /** v1's NVDA-feed lane, unchanged. */
@@ -1514,7 +1652,7 @@ async function pollIrRssSource(
   db: Database.Database,
   rt: PrintRuntime,
   cfg: IrRssConfig,
-  signal: AbortSignal,
+  road: RoadCtx,
 ): Promise<void> {
   const status = statusFor(rt.printId);
   try {
@@ -1529,13 +1667,13 @@ async function pollIrRssSource(
       cfg,
       rt.seenIrLinks,
       baseline,
-      acquisitionScheduler.fetchFor(signal, seams.fetchImpl),
+      acquisitionScheduler.fetchFor(road.signal, seams.fetchImpl),
     );
     rt.irBaselineDone = true;
 
     for (const item of items) {
       rt.burst = true;
-      await ingestDocument(
+      await road.ingest(
         db,
         rt.printId,
         "ir-page",
@@ -1581,7 +1719,7 @@ const IR_REFUSAL_LIMIT = 3;
 async function pollIrPageSource(
   db: Database.Database,
   rt: PrintRuntime,
-  signal: AbortSignal,
+  road: RoadCtx,
 ): Promise<void> {
   const status = statusFor(rt.printId);
   // Re-read every poll: a PUT /sources during the window must take effect
@@ -1613,7 +1751,7 @@ async function pollIrPageSource(
   // included — carries the M17 host policy, the pass signal, and the
   // scheduler's per-host slot (finding #9).
   const fetchBytes: typeof hardenedFetchBytes = (url, opts) =>
-    throttledFetchBytes(url, { ...opts, allowHost, signal });
+    throttledFetchBytes(url, { ...opts, allowHost, signal: road.signal });
 
   const refusals: string[] = [];
   try {
@@ -1637,7 +1775,7 @@ async function pollIrPageSource(
         const fetched = await fetchBytes(item.link, { label: "IR page link" });
         // The road records the FINAL url (a hop may have moved it WITHIN the
         // allowlist), redacted — a stored newsroom URL can carry a token.
-        result = await ingestDocument(
+        result = await road.ingest(
           db,
           rt.printId,
           "ir-page",
@@ -1790,6 +1928,11 @@ export async function ingestDocument(
   source: string,
   url: string | null,
   buf: Buffer,
+  /** Fired the moment `recordDelivery` returns — BEFORE the parse (R-C12).
+   *  A road's report settles here: bytes recorded is what "the road worked"
+   *  means, and everything after this point is the parse, which outlives the
+   *  pass. Optional, so every other caller is unchanged. */
+  onDelivered?: () => void,
 ): Promise<IngestResult> {
   const print = readPrintRow(db, printId);
   if (!print) throw new Error(`print-watch: print ${printId} not found`);
@@ -1806,17 +1949,22 @@ export async function ingestDocument(
       rejectReason: "binary content — print-watch reads HTML, plain text, or PDF",
     };
   }
-  if (shape === "pdf") return ingestPdf(db, print, kind, source, url, buf);
+  if (shape === "pdf") return ingestPdf(db, print, kind, source, url, buf, onDelivered);
 
   const sha = sha256Hex(buf);
   const ext = shape === "html" ? "html" : "txt";
   const text = buf.toString("utf8");
   const bytesPath = await writeAcquiredBytes(printId, sha, ext, buf);
-  return finishIngest(db, print, kind, source, url, buf, {
-    bytesPath,
-    text,
-    gateCtx: gateContextFor(db, print),
-  });
+  return finishIngest(
+    db,
+    print,
+    kind,
+    source,
+    url,
+    buf,
+    { bytesPath, text, gateCtx: gateContextFor(db, print) },
+    onDelivered,
+  );
 }
 
 /**
@@ -1839,6 +1987,7 @@ async function ingestPdf(
   source: string,
   url: string | null,
   buf: Buffer,
+  onDelivered?: () => void,
 ): Promise<IngestResult> {
   const bytesCheck = checkPdfBytes(buf);
   if (!bytesCheck.ok) {
@@ -1884,11 +2033,16 @@ async function ingestPdf(
   await fsp.writeFile(tmpTextPath, text, "utf8");
   await fsp.rename(tmpTextPath, textPath);
 
-  return finishIngest(db, print, kind, source, url, buf, {
-    bytesPath,
-    text,
-    gateCtx: gateContextFor(db, print),
-  });
+  return finishIngest(
+    db,
+    print,
+    kind,
+    source,
+    url,
+    buf,
+    { bytesPath, text, gateCtx: gateContextFor(db, print) },
+    onDelivered,
+  );
 }
 
 /**
@@ -1908,8 +2062,13 @@ async function finishIngest(
   url: string | null,
   buf: Buffer,
   input: DeliveryInput,
+  onDelivered?: () => void,
 ): Promise<IngestResult> {
   const delivery = recordDelivery(db, print.id, kind, source, url, buf, input);
+  // The bytes are DURABLE from here on. Everything below — the gate verdict,
+  // the parse — is about what they turn into, and a road's report has already
+  // settled (R-C12).
+  onDelivered?.();
   const status = statusFor(print.id);
   // Guarded at the CALL site, not just inside: every other delivery — the
   // overwhelming majority — then adds no await at all to the ingest chain.
