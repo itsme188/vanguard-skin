@@ -1342,6 +1342,7 @@ describe("prepare pass for armed events (v2 slice A)", () => {
     fetchSameDayTranscripts.mockClear();
     fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
     drainCloudOutbox.mockClear();
+    postAliveMarker.mockClear();
     __resetPrepareStepsForTests();
   });
 
@@ -1363,6 +1364,63 @@ describe("prepare pass for armed events (v2 slice A)", () => {
     db.prepare(`INSERT INTO earnings_worksheet_flags (event_id) VALUES (?)`).run(id);
     return id;
   };
+
+  /**
+   * [F3] The aliveness marker is what tells the Worker to defer previews to the
+   * Mac's wider window; a prepare pass that can legitimately run for minutes
+   * must never sit in front of it. The transcript pass moves with it for the
+   * same reason.
+   */
+  it("[F3] posts the Mac-aliveness marker BEFORE the prepare and transcript passes", async () => {
+    const stepRun = vi.fn(async () => ({ status: "done" as const }));
+    registerPrepareStep("ordering_step", { fingerprint: () => "fp", run: stepRun });
+    seedArmed("ACME");
+
+    await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(postAliveMarker).toHaveBeenCalledTimes(1);
+    expect(stepRun).toHaveBeenCalledTimes(1);
+    expect(stepRun.mock.invocationCallOrder[0]).toBeGreaterThan(
+      postAliveMarker.mock.invocationCallOrder[0],
+    );
+    expect(fetchSameDayTranscripts.mock.invocationCallOrder[0]).toBeGreaterThan(
+      postAliveMarker.mock.invocationCallOrder[0],
+    );
+  });
+
+  /**
+   * [F3] The pass budget is wall-clock, so this one runs on the REAL clock
+   * (the sweep's `now` override freezes the runner's clock and with it the
+   * budget) against an event dated a week out.
+   */
+  it("[F3] a pass that blows its budget stops early and the sweep summary says so", async () => {
+    const started: string[] = [];
+    for (const name of ["a", "b", "c"]) {
+      registerPrepareStep(name, {
+        fingerprint: () => "fp",
+        run: async () => {
+          started.push(name);
+          await new Promise((r) => setTimeout(r, 60));
+          return { status: "done" };
+        },
+      });
+    }
+    const future = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+    const id = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, title, source_key, symbol)
+           VALUES ('finnhub','earnings',?,'AMC','16:15','ACME earnings','finnhub:ACME:future','ACME')`,
+        )
+        .run(future).lastInsertRowid,
+    );
+    db.prepare(`INSERT INTO earnings_worksheet_flags (event_id) VALUES (?)`).run(id);
+
+    const summary = await runEarningsEmailSweep(db, { prepareBudgetMs: 40 });
+
+    expect(started).toHaveLength(1);
+    expect(summary.prepared).toMatchObject({ ran: 1, done: 1, budgetExhausted: true });
+  }, 15_000);
 
   it("a registered step on an armed future event runs once per tick and the summary reports it", async () => {
     const runs: number[] = [];

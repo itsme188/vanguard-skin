@@ -18,6 +18,15 @@ import { addDays } from "@/lib/calendar/date-utils";
 
 export const ARMED_EVENTS_KIND = "armed-events";
 
+/**
+ * [R23] LIVE entries are limited to a 14-day lookback: an armed event whose
+ * event_date is older than today - LIVE_LOOKBACK_DAYS drops out of the
+ * projection entirely. It is NOT tombstoned — nothing in the Worker selects a
+ * 15-day-old event, and a tombstone would only be re-carried for two more days
+ * for nothing. This is what stops the payload growing without bound as
+ * never-disarmed worksheets accumulate.
+ */
+const LIVE_LOOKBACK_DAYS = 14;
 /** Tombstones are carried while event_date >= today - TOMBSTONE_LOOKBACK_DAYS (D7). */
 const TOMBSTONE_LOOKBACK_DAYS = 2;
 /** ...and, independently, while the removal itself is younger than this (D7). */
@@ -108,6 +117,12 @@ export function readPreviousArmedEntries(db: Database.Database): ArmedEventProje
  * Full current armed list (+ tombstones carried from the previous payload, D7).
  * Pure read — no writes, safe to call outside a transaction.
  *
+ * [R23] Live entries are limited to a 14-day lookback (`event_date >= today -
+ * 14`). An armed event that ages past that horizon simply leaves the list; it
+ * is deliberately NOT tombstoned, because a tombstone is a statement that the
+ * event is no longer armed and this one still is. The sweep-tick reconcile
+ * (R8) mints the first post-horizon generation naturally — the entries differ.
+ *
  * D7 retention: a tombstone survives while its event is still recent
  * (event_date >= today - 2 ET days) OR while the removal itself is younger
  * than 48 hours. Both rules matter — a disarm the evening before a print must
@@ -119,7 +134,7 @@ export function buildArmedEventsEntries(
   opts: { today: string; nowMs?: number },
 ): ArmedEventProjection[] {
   const nowMs = opts.nowMs ?? Date.now();
-  const live = db
+  const armed = db
     .prepare(
       `SELECT f.event_id AS eventId, ce.symbol, ce.event_date AS eventDate, ce.event_time AS eventTime,
               ce.release_time AS releaseTime, ce.source_key AS sourceKey, ce.source, ce.consensus_value AS consensusValue,
@@ -133,11 +148,17 @@ export function buildArmedEventsEntries(
     )
     .all() as ArmedRow[];
 
-  const liveIds = new Set(live.map((r) => r.eventId));
+  // [R23] Two different sets. `armedIds` is EVERY still-armed event, horizon or
+  // not, and it is what suppresses a tombstone: an event that merely aged out
+  // has not been removed, so publishing a removal for it would be a lie the
+  // Worker would then carry for 48 hours. `live` is what actually ships.
+  const armedIds = new Set(armed.map((r) => r.eventId));
+  const liveCutoff = addDays(opts.today, -LIVE_LOOKBACK_DAYS);
+  const live = armed.filter((r) => r.eventDate >= liveCutoff);
   const cutoff = addDays(opts.today, -TOMBSTONE_LOOKBACK_DAYS);
   const tombstones: ArmedEventProjection[] = [];
   for (const prev of readPreviousArmedEntries(db)) {
-    if (liveIds.has(prev.eventId)) continue; // armed again → not removed
+    if (armedIds.has(prev.eventId)) continue; // armed again, or aged out → not removed
     // First tombstone for this event: stamp now. Carried ones keep their stamp.
     const removedAt = prev.removedAt ?? new Date(nowMs).toISOString();
     const fresh = nowMs - Date.parse(removedAt) < TOMBSTONE_RETENTION_MS;

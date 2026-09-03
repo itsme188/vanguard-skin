@@ -26,7 +26,9 @@ const ALLOWLIST: AllowEntry[] = [
   { file: "lib/earnings/wrap.ts", fn: "coveredForEvents", effect: "selection-covered" },
   { file: "lib/earnings/debrief.ts", fn: "coveredForEvents", effect: "selection-covered" },
   { file: "lib/queries/earnings-cockpit.ts", fn: "coveredForEvents", effect: "selection-covered" },
-  { file: "lib/queries/earnings-cockpit.ts", fn: "getSymbolStatus", effect: "display" },
+  // [M1] Reasons, not the status string: the chip's held/watchlist halves are
+  // symbol facts, and `armed` is derived from the row's own event coverage.
+  { file: "lib/queries/earnings-cockpit.ts", fn: "getSymbolStatusDetailed", effect: "display" },
   { file: "lib/digest/todays-reporters.ts", fn: "getSymbolStatus", effect: "display" },
   { file: "app/dashboard/today/EarningsHub.tsx", fn: "getSymbolStatus", effect: "display" },
   { file: "lib/digest/call-transcripts.ts", fn: "getSymbolStatus", effect: "symbol-armed" },

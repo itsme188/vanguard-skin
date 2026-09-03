@@ -27,6 +27,7 @@ import {
   PREPARE_MAX_ATTEMPTS,
   PREPARE_STEP_TIMEOUT_MS,
   PREPARE_CLAIM_STALE_MS,
+  PREPARE_PASS_BUDGET_MS,
   type PrepareStepOutcome,
   type PrepareStepDefinition,
 } from "@/lib/earnings/prepare-armed-event";
@@ -112,6 +113,51 @@ describe("prepare registry + runner (spec §4.1 prepare work table)", () => {
       skipped: 0,
     });
     expect(row(id, "con_id")).toMatchObject({ status: "done", attempts: 1, input_fingerprint: "f1" });
+  });
+
+  /**
+   * [F3] The per-invocation deadline caps ONE step; N hung rows x 4 minutes
+   * still blows the 15-minute sweep tick. The pass-level budget is checked
+   * between rows: the row in flight always finishes (its claim is live and its
+   * finalisation must land), and everything not yet started is simply left
+   * pending for the next tick.
+   */
+  it("[F3] a pass-level budget stops the pass BETWEEN rows and reports budgetExhausted", async () => {
+    const started: string[] = [];
+    for (const name of ["a", "b", "c"]) {
+      registerPrepareStep(name, {
+        fingerprint: () => "fp",
+        run: async () => {
+          started.push(name);
+          await new Promise((r) => setTimeout(r, 60));
+          return { status: "done" };
+        },
+      });
+    }
+    const id = seedArmed();
+    enqueuePrepareSteps(db, id);
+
+    const out = await runPrepareSteps(db, { eventId: id, passBudgetMs: 40 });
+
+    expect(started).toEqual(["a"]);                       // one row ran, not three
+    expect(out).toMatchObject({ ran: 1, done: 1, skipped: 0, budgetExhausted: true });
+    // The rows the budget never reached are untouched — pending, unclaimed, no
+    // attempt burned, so the next tick picks them up exactly as it would have.
+    expect(getPrepareStepRows(db, id).map((r) => [r.step, r.status, r.attempts])).toEqual([
+      ["a", "done", 1],
+      ["b", "pending", 0],
+      ["c", "pending", 0],
+    ]);
+  });
+
+  it("[F3] a pass that finishes inside its budget does not report budgetExhausted", async () => {
+    registerPrepareStep("quick", { fingerprint: () => "fp", run: async () => ({ status: "done" }) });
+    const id = seedArmed();
+    enqueuePrepareSteps(db, id);
+    const out = await runPrepareSteps(db, { eventId: id });
+    expect(out).toEqual({ ran: 1, done: 1, pending: 0, failed: 0, skipped: 0 });
+    expect(out.budgetExhausted).toBeUndefined();
+    expect(PREPARE_PASS_BUDGET_MS).toBe(5 * 60_000);
   });
 
   it("a failed step retries up to PREPARE_MAX_ATTEMPTS then is skipped", async () => {

@@ -685,10 +685,16 @@ export function correctEarningsEventDate(
       deletedIds.push(row.id);
     }
 
-    // [C-13] ONE outbox row for the whole correction, and only when the merge
-    // moved something — the arm now sits on newEventId, so the Worker has to
-    // hear the new projection (and the doomed ids as tombstones).
-    if (anyChanged) writeArmedEventsOutboxRow(db);
+    // [C-13] ONE outbox row for the whole correction. `anyChanged` covers the
+    // merge case — the arm now sits on newEventId, so the Worker has to hear
+    // the new projection (and the doomed ids as tombstones). [F5] The armed
+    // check covers the two paths where the projection changes with NOTHING
+    // merged: the in-place slot fix (wrongDate === correctDate, the corrected
+    // row IS the only row, so there are no doomed rows) and the adopt branch.
+    // Both change this armed event's release time, which is precisely what the
+    // cloud fallback would act on. D10 keeps it free when nothing moved: an
+    // identical projection writes no row.
+    if (anyChanged || isEventArmed(db, newEventId)) writeArmedEventsOutboxRow(db);
 
     return { ok: true, newEventId, deletedIds, bogeysMigrated, auditRowsMigrated };
   });

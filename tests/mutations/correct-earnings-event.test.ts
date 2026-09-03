@@ -65,6 +65,14 @@ function addBogey(db: Database.Database, eventId: number, label: string): void {
   ).run(eventId, label);
 }
 
+/**
+ * [R23] The armed projection publishes only events inside a 14-day lookback and
+ * the correction path stamps its outbox row with the REAL ET today, so any
+ * fixture that expects a published generation has to sit inside that window.
+ */
+const inLiveHorizon = (offsetDays: number): string =>
+  new Date(Date.now() + offsetDays * 86_400_000).toISOString().slice(0, 10);
+
 describe("correctEarningsEventDate", () => {
   it("moves a wrong date: manual row created, wrong row deleted + suppressed, bogeys migrated", () => {
     const wrongId = seedFinnhub(db, "RKT", "2026-07-30");
@@ -463,7 +471,9 @@ describe("correctEarningsEventDate", () => {
   }
 
   it("moves an armed doomed row's worksheet flag onto the corrected row, writing exactly one outbox row", () => {
-    const wrongId = seedFinnhub(db, "VRTX", "2026-08-03", { eventTime: "AMC" });
+    const wrongDate = inLiveHorizon(3);
+    const correctDate = inLiveHorizon(5);
+    const wrongId = seedFinnhub(db, "VRTX", wrongDate, { eventTime: "AMC" });
     armWorksheet(db, wrongId); // generation 1: [wrongId armed]
     const outboxRows = () =>
       (db.prepare("SELECT COUNT(*) AS n FROM cloud_outbox").get() as { n: number }).n;
@@ -471,8 +481,8 @@ describe("correctEarningsEventDate", () => {
 
     const res = correctEarningsEventDate(db, {
       symbol: "VRTX",
-      wrongDate: "2026-08-03",
-      correctDate: "2026-08-05",
+      wrongDate,
+      correctDate,
       slot: "AMC",
     });
 
@@ -483,6 +493,70 @@ describe("correctEarningsEventDate", () => {
     ]);
     // [C-13] ONE row for the whole correction, not one per doomed row.
     expect(outboxRows()).toBe(before + 1);
+  });
+
+  /**
+   * [F5] The in-place slot fix (and the adopt branch) changes the projection
+   * with `anyChanged === false` — no doomed row, so no merge moved anything.
+   * Gating the outbox write on the merge alone left the Worker holding the old
+   * release time for an ARMED print: exactly the row the cloud fallback would
+   * have to act on if the Mac went to sleep.
+   */
+  it("[F5] an in-place slot fix on an ARMED row publishes the new projection", () => {
+    const day = inLiveHorizon(5);
+    const manualId = insertCalendarEvent(db, {
+      symbol: "HD",
+      event_date: day,
+      event_type: "earnings",
+      event_time: "BMO",
+      week_of: "2026-08-17",
+    }).id;
+    armWorksheet(db, manualId); // generation 1 — BMO release time
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "HD",
+      wrongDate: day,
+      correctDate: day,
+      slot: "AMC",
+    });
+    expect(res.ok).toBe(true);
+
+    const row = db
+      .prepare(`SELECT event_time, release_time FROM calendar_events WHERE id = ?`)
+      .get(manualId) as { event_time: string; release_time: string };
+    expect(row.event_time).toBe("AMC");
+    const latest = JSON.parse(
+      (
+        db
+          .prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`)
+          .get() as { payload_json: string }
+      ).payload_json,
+    ) as { generation: number; entries: Array<Record<string, unknown>> };
+    expect(latest.generation).toBe(2);
+    expect(latest.entries).toEqual([
+      expect.objectContaining({
+        eventId: manualId,
+        eventTime: "AMC",
+        releaseTime: row.release_time,
+      }),
+    ]);
+  });
+
+  it("[F5] the same fix on an UNARMED row still publishes nothing", () => {
+    const day = inLiveHorizon(5);
+    const manualId = insertCalendarEvent(db, {
+      symbol: "HD",
+      event_date: day,
+      event_type: "earnings",
+      event_time: "BMO",
+      week_of: "2026-08-17",
+    }).id;
+
+    expect(
+      correctEarningsEventDate(db, { symbol: "HD", wrongDate: day, correctDate: day, slot: "AMC" }).ok,
+    ).toBe(true);
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM cloud_outbox`).get()).toEqual({ n: 0 });
+    expect(manualId).toBeGreaterThan(0);
   });
 
   // ── Preview plausibility gate on the correction path (Ruling R15) ────────

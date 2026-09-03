@@ -128,7 +128,11 @@ async function reconcileCloudSentAudits(db: Database.Database): Promise<number> 
 
 export async function runEarningsEmailSweep(
   db: Database.Database,
-  opts: EmailSweepOpts = {},
+  opts: EmailSweepOpts & {
+    /** [F3] Pass-level budget override for the prepare pass. Tests only —
+     *  production uses PREPARE_PASS_BUDGET_MS. */
+    prepareBudgetMs?: number;
+  } = {},
 ): Promise<SweepSummary> {
   // Reap stale (>30 min) 'in_progress' claim rows BEFORE candidate selection
   // — a stale claim from a dead process otherwise hides its event from
@@ -376,15 +380,37 @@ export async function runEarningsEmailSweep(
   // throws.
   await printArmedWorksheets(db, { now: opts.now });
 
+  // ── Mac-aliveness marker (2026-08-05, the APP/MELI preview race) ──────
+  // Posted after EVERY completed tick — quiet ones included — so the
+  // Worker's preview fallback (25-min KV TTL) knows the Mac is alive and
+  // defers previews to the Mac's wider [105,135] window. Recaps stay
+  // un-gated cloud-side. Fire-and-forget: workerFetch swallows
+  // unreachability, and a missed post only re-opens the lean-preview race
+  // for one tick — never blocks or fails the sweep.
+  //
+  // [F3] Everything below this point is preparation for FUTURE prints, and
+  // both passes can legitimately run for minutes (a prepare step gets up to
+  // PREPARE_STEP_TIMEOUT_MS; the transcript pass does network I/O). The
+  // marker is the Mac saying "I am awake" to a Worker whose fallback window
+  // is 25 minutes wide — it must never queue behind that work.
+  try {
+    await postMacRecentEarningsSweepMarker();
+  } catch (err) {
+    console.warn("[earnings-sweep] aliveness-marker post failed (ignored):", err);
+  }
+
   // ── Prepare pass for armed events (v2 slice A) ────────────────────────
   // Re-runs every runnable step each tick until the event is past: the
   // route's post-arm kick is fire-and-forget, so this is the DURABLE path
   // for a crashed kick, a step registered after the arm, or an arm whose
-  // enqueue never landed. Never fails the sweep.
+  // enqueue never landed. Never fails the sweep. [F3] Bounded by
+  // PREPARE_PASS_BUDGET_MS: whatever it does not reach stays pending and is
+  // picked up by the next tick.
   let prepared: PrepareRunReport = { ran: 0, done: 0, pending: 0, failed: 0, skipped: 0 };
   try {
     prepared = await runPrepareSteps(db, {
       now: () => (opts.now ?? new Date()).getTime(),
+      passBudgetMs: opts.prepareBudgetMs,
     });
   } catch (err) {
     console.warn("[earnings-sweep] prepare pass failed:", err);
@@ -402,19 +428,6 @@ export async function runEarningsEmailSweep(
   } catch (err) {
     console.warn("[earnings-sweep] same-day transcript pass failed:", err);
     transcriptsFetched = 0;
-  }
-
-  // ── Mac-aliveness marker (2026-08-05, the APP/MELI preview race) ──────
-  // Posted after EVERY completed tick — quiet ones included — so the
-  // Worker's preview fallback (25-min KV TTL) knows the Mac is alive and
-  // defers previews to the Mac's wider [105,135] window. Recaps stay
-  // un-gated cloud-side. Fire-and-forget: workerFetch swallows
-  // unreachability, and a missed post only re-opens the lean-preview race
-  // for one tick — never blocks or fails the sweep.
-  try {
-    await postMacRecentEarningsSweepMarker();
-  } catch (err) {
-    console.warn("[earnings-sweep] aliveness-marker post failed (ignored):", err);
   }
 
   return {
