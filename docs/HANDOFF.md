@@ -7,7 +7,7 @@
 
 ## 1. Goal + exact files changed
 
-**Branch `live-print-v2-a`: 30 commits on top of `bc1ec51` (main), 88 files, roughly +9.4k / −0.6k lines. NOT merged, NOT pushed, NOT deployed — that is the user's call (see §4).**
+**MERGED to main locally at `1b53b15` (merge commit, 31 branch commits, 87 files, +9408 / −559) on the user's instruction; NOT pushed, NOT deployed (see §4).** Merged-result verification: Worker suite 530/530 and Worker `tsc` clean; the main suite passed 7515 with ONE failing test in each of two full runs, a different test each time, both in `tests/print-watch/watcher.test.ts`, a file this branch never touched. The same content passed four full runs in the clean worktree; the file passes 49/49 in isolation in both checkouts and under a 119-file partial load. Cause: the main checkout's `data/print-watch` fixtures enable three env-gated print-watch tests that only run there, and they interleave with the watcher's timing assertions under full parallel load. Filed as a TODO follow-up (pre-existing flake), not a merge defect.
 
 What slice A delivers (spec `docs/superpowers/specs/2026-09-02-live-print-v2-design.md` §4.1, §5 088, §6, §7, §8 A-line; plan `docs/superpowers/plans/2026-09-02-live-print-v2-slice-a.md`):
 
@@ -20,7 +20,7 @@ What slice A delivers (spec `docs/superpowers/specs/2026-09-02-live-print-v2-des
 - **Newsletter path**: shared `callAndStore` helper for the global scan and the per-event path; issue-dated labels [C-3]; bogey reads ordered by issue date (R21).
 - **Docs**: `docs/DECISIONS.md` (one 2026-09-03 entry), spec pointers, contract doc (`signal`, constants, slice B shim rule), `docs/reference/earnings-pipeline.md` (new subsection), `docs/reference/cron-and-workers.md` (§15), `docs/plans/TODO.md` (slice A → implemented, pending merge; item 68 closed; follow-ups).
 
-Every controller ruling (R1–R26) with its "cost if wrong" is in the gitignored ledger copy `docs/private/2026-09-03-live-print-v2-slice-a-sdd-ledger.md` (in the worktree; the SDD workspace itself was deleted at finish) and summarised in the session's final message; the merge-relevant ones are in `docs/DECISIONS.md`.
+Every controller ruling (R1–R26) with its "cost if wrong" is in the gitignored ledger copy `docs/private/2026-09-03-live-print-v2-slice-a-sdd-ledger.md` (copied into the main checkout's gitignored `docs/private/`; the worktree and the SDD workspace were removed after the merge) and summarised in the session's final message; the merge-relevant ones are in `docs/DECISIONS.md`.
 
 ## 2. Tests / E2E / deploy result
 
@@ -44,7 +44,7 @@ Every controller ruling (R1–R26) with its "cost if wrong" is in the gitignored
 
 ## 4. Uncommitted changes / live-process state
 
-- Worktree `/Users/Yitzi/code/vanguard-skin-v2-a`, branch `live-print-v2-a`, HEAD `eaf6948` + this handoff commit; working tree clean; nothing pushed. Main checkout untouched (`bc1ec51`). The nightly fixer's `../vanguard-skin-qa-fix` worktree remains as before.
+- Main checkout at the merge commit `1b53b15` (+ this handoff amendment); working tree clean; NOTHING PUSHED (origin/main is still `bc1ec51`). Worktree `../vanguard-skin-v2-a` removed and branch `live-print-v2-a` deleted after the merge. The nightly fixer's `../vanguard-skin-qa-fix` worktree remains as before.
 - The sandbox dev server (`:3095`) and the local `wrangler dev` (`:8787`) started for the E2E are killed at session end; the sandbox DB copy and screenshots live only in the session scratchpad.
 - Electron app running unchanged (`:3099`); nightly chain unchanged.
 
