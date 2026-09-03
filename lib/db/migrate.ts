@@ -28,6 +28,47 @@ export function migrationOrder(sqlFiles: string[], codeNames: string[]): string[
   );
 }
 
+/**
+ * Unapplied migrations that sort AFTER `filename` — the guard a cutover script
+ * needs before it hand-runs one migration.
+ *
+ * `scripts/migrate-089-document-identity.ts` brings a database to the pre-089
+ * schema with `runMigrations(conn, { codeMigrations: {} })` and then runs 089
+ * itself, in its own gated transaction. The runner applies EVERY pending file
+ * on disk in numeric order, so a later-numbered `.sql` added after 089 was
+ * written would be applied AHEAD of it, against a schema it was never written
+ * for. The script refuses to start while this returns anything.
+ *
+ * A database with no `schema_migrations` table has applied nothing, so every
+ * later migration counts as pending.
+ */
+export function pendingMigrationsAfter(
+  db: Database.Database,
+  filename: string,
+  opts: RunMigrationsOptions = {},
+): string[] {
+  const migrationsDir = opts.migrationsDir ?? MIGRATIONS_DIR;
+  const codeMigrations = opts.codeMigrations ?? CODE_MIGRATIONS;
+  const hasTable = db
+    .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`)
+    .get() as { ok: number } | undefined;
+  const applied = new Set(
+    hasTable
+      ? (db.prepare("SELECT filename FROM schema_migrations").all() as { filename: string }[]).map(
+          (r) => r.filename,
+        )
+      : [],
+  );
+  const sqlFiles = fs.readdirSync(migrationsDir).filter((f) => f.endsWith(".sql"));
+  const order = migrationOrder(sqlFiles, Object.keys(codeMigrations));
+  const cutoff = order.indexOf(filename);
+  // The cutover file itself need not be on disk (089 lives in the registry the
+  // script deliberately passes empty): fall back to its numeric prefix.
+  const isAfter = (name: string): boolean =>
+    cutoff >= 0 ? order.indexOf(name) > cutoff : migrationNumber(name) > migrationNumber(filename);
+  return order.filter((name) => isAfter(name) && !applied.has(name));
+}
+
 export function runMigrations(db: Database.Database, opts: RunMigrationsOptions = {}): void {
   const migrationsDir = opts.migrationsDir ?? MIGRATIONS_DIR;
   const codeMigrations = opts.codeMigrations ?? CODE_MIGRATIONS;

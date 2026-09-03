@@ -36,6 +36,9 @@ export interface RebuildReport {
   urlsSanitised: number;
   /** Lines whose candidates_json could not be parsed: copied verbatim, raw value archived (M7). */
   unparseableLines: number;
+  /** Affected lines whose contract/expectation could not be read in phase (11):
+   *  evidence moved, the reading left exactly as it was. */
+  unreadableContracts: number;
 }
 
 const KINDS = "('dj-release','edgar-ex99','ir-page','user-drop','user-url')";
@@ -89,6 +92,7 @@ export function rebuildDocumentIdentity(db: Database.Database, hooks: RebuildHoo
     missingBytes: [],
     urlsSanitised: 0,
     unparseableLines: 0,
+    unreadableContracts: 0,
   };
 
   // (0) sidecar tables that reference nothing being rebuilt
@@ -368,10 +372,30 @@ export function rebuildDocumentIdentity(db: Database.Database, hooks: RebuildHoo
     const row = readLine.get(printId, metricId) as OldLineRow & { audit_json: string | null };
     report.linesRechecked += 1;
     if (row.state === "accepted") continue; // rule 6: an acceptance is never recomputed here
-    const contract = JSON.parse(row.contract_json) as LineContract;
+    // ONE corrupt row must never abort an all-or-nothing rebuild, and a
+    // contract we cannot read must never be RECONCILED past: `reconcile()`
+    // buckets candidates by their own metric_id and looks the bucket up by
+    // `contract.metric_id`, so an unreadable or drifted contract resolves to an
+    // EMPTY pool and would clear a figure real evidence still supports. Exactly
+    // the carve-out `retractDocumentEvidence` and the merge handler carry: the
+    // evidence has already moved, the reading is left alone, and a human sees
+    // the mismatch in the log.
+    let contract: LineContract | null = null;
     const expected: Record<string, ExpectedValue> = {};
-    if (row.expected_json) expected[metricId] = JSON.parse(row.expected_json) as ExpectedValue;
-    const candidates = JSON.parse(row.candidates_json) as TaggedCandidate[];
+    let candidates: TaggedCandidate[] | null = null;
+    try {
+      contract = JSON.parse(row.contract_json) as LineContract;
+      if (row.expected_json) expected[metricId] = JSON.parse(row.expected_json) as ExpectedValue;
+      const parsedCands: unknown = JSON.parse(row.candidates_json);
+      candidates = Array.isArray(parsedCands) ? (parsedCands as TaggedCandidate[]) : null;
+    } catch {
+      contract = null;
+    }
+    if (contract === null || candidates === null || contract.metric_id !== metricId) {
+      report.unreadableContracts += 1;
+      log(`line print=${printId} metric=${metricId}: contract/expectation could not be read — evidence moved, reading left alone`);
+      continue;
+    }
     const [next] = reconcile([contract], expected, candidates, []) as PrintWatchLine[];
     const nextSource = next.source_doc_id === FLASH_DOC_ID ? null : next.source_doc_id;
     if (next.state !== row.state || next.value !== row.value || nextSource !== row.source_doc_id) {
@@ -406,7 +430,7 @@ export function rebuildDocumentIdentity(db: Database.Database, hooks: RebuildHoo
     log(
       `documents ${report.documents.before}→${report.documents.after} (merged ${report.documents.merged}), roads ${report.roads}, ` +
         `candidates kept ${report.candidates.kept} archived ${report.candidates.archived}, lines rechecked ${report.linesRechecked} changed ${report.linesChanged.length}, ` +
-        `urls sanitised ${report.urlsSanitised}, missing bytes ${report.missingBytes.length}`,
+        `urls sanitised ${report.urlsSanitised}, missing bytes ${report.missingBytes.length}, unreadable contracts ${report.unreadableContracts}`,
     );
   }
   return report;

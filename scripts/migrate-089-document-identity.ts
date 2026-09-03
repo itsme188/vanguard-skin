@@ -33,6 +33,10 @@
  *
  * Exit 0 = clean; exit 1 = refused; exit 2 = an invariant failed (rolled back).
  *
+ * Either mode ALSO refuses while any migration numbered after 089 is still
+ * pending: `runMigrations` applies pending files in numeric order, so a later
+ * `.sql` would land ahead of 089 against a schema it was never written for.
+ *
  * A target that is not a Portfolio Desk database is refused WITHOUT any
  * write: `new Database(path)` (read-write) on a 0-byte or brand-new file
  * would itself write the standard SQLite header the instant a pragma like
@@ -47,7 +51,7 @@ import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import Database from "better-sqlite3";
 import { resolveDbPath } from "../lib/db/db-path";
-import { runMigrations } from "../lib/db/migrate";
+import { pendingMigrationsAfter, runMigrations } from "../lib/db/migrate";
 import { rebuildDocumentIdentity } from "../lib/db/migrations/089_print_watch_document_identity";
 
 const NAME = "089_print_watch_document_identity.ts";
@@ -249,6 +253,22 @@ function main(): void {
       return;
     }
     const conn = db;
+
+    // A migration numbered ABOVE 089 must not exist yet on a database that is
+    // still pre-089: `runMigrations` walks every pending `.sql` on disk in
+    // numeric order, so a 090 added after this cutover was written would be
+    // applied AHEAD of 089, against a schema it was never written for. Refuse
+    // rather than half-migrate — the fix is to land 089 first, on a checkout
+    // whose migrations directory stops at it.
+    const later = pendingMigrationsAfter(conn, NAME, { codeMigrations: {} });
+    if (later.length > 0) {
+      console.error(
+        `refusing: ${later.length} migration(s) numbered after ${NAME} are still pending (${later.join(", ")}). ` +
+          `Apply 089 from a checkout whose migrations stop at it, then run the rest normally.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
 
     try {
       // Every migration BEFORE 089 (A's 088 included when present); the registry is
