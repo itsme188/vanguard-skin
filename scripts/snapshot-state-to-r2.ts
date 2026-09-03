@@ -38,6 +38,12 @@ import {
 } from "@/lib/queries/manual-actuals-cluster";
 import { getReportHistoryForFamily } from "@/lib/queries/earnings-intel";
 import { summarizeHistory } from "@/lib/earnings/report-history";
+import {
+  buildArmedEventsEntries,
+  readArmedGeneration,
+  type ArmedEventProjection,
+} from "@/lib/earnings/armed-events-projection";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 const DEEP_READ_SOURCE_IDS = [1, 18, 19, 28]; // VK, Eliant, Purple Drink, Meisler
 const DEEP_READ_HOURS = 72;
@@ -47,7 +53,7 @@ const CALENDAR_LOOKAHEAD_DAYS = 7;
 const SNAPSHOT_RETENTION_DAYS = 7;
 
 interface Snapshot {
-  schemaVersion: 10;
+  schemaVersion: 11;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -132,6 +138,9 @@ interface Snapshot {
     revenue_consensus_usd: number | null;
     revenue_whisper_usd: number | null;
     expected_move_pct: number | null;
+    // v11 — vendor (Finnhub) EPS in its OWN column, basis unspecified (D1):
+    // never folded into eps_consensus, which stays the user's own number.
+    eps_consensus_vendor: number | null;
     segment_breakdown_json: string | null;
     guidance_notes: string | null;
     notes: string | null;
@@ -194,18 +203,27 @@ interface Snapshot {
     weight: number;
     hypothesis: string | null;
   }>;
+  // v11 — "armed as covered" in the cloud (live print v2 slice A §4.1).
+  // `armedGeneration` is the WATERMARK the Worker compares a KV delta against:
+  // MAX(cloud_outbox.generation) read inside the SAME transaction as
+  // `armedEvents`, so the pair can never describe two different instants.
+  // `armedEvents` is the full armed list plus D7 tombstones.
+  armedGeneration: number;
+  armedEvents: ArmedEventProjection[];
 }
 
-function today(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
+/**
+ * Snapshot day math is ET, not UTC. `snapshotDate` names the object key the
+ * Worker reads and every window below is a user-facing calendar day — a UTC
+ * `toISOString().slice(0,10)` rolls over at 20:00 ET and would silently shift
+ * the calendar window (and the R2 key) by a day for an evening run.
+ */
 function daysAgo(days: number): string {
-  return new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
+  return addDays(todayET(), -days);
 }
 
 function daysAhead(days: number): string {
-  return new Date(Date.now() + days * 86400_000).toISOString().slice(0, 10);
+  return addDays(todayET(), days);
 }
 
 function openReadOnly(): Database.Database {
@@ -355,8 +373,8 @@ function getEarningsBogeysForSnapshot(
     .prepare(
       `SELECT b.id, b.event_id, b.source, b.source_label, b.eps_consensus,
               b.eps_whisper, b.revenue_consensus_usd, b.revenue_whisper_usd,
-              b.expected_move_pct, b.segment_breakdown_json, b.guidance_notes,
-              b.notes, b.uploaded_at
+              b.expected_move_pct, b.eps_consensus_vendor, b.segment_breakdown_json,
+              b.guidance_notes, b.notes, b.uploaded_at
          FROM earnings_bogeys b
          JOIN calendar_events e ON e.id = b.event_id
         WHERE e.event_date >= ? AND e.event_date <= ?
@@ -441,246 +459,267 @@ function getEarningsHistoryForSnapshot(
   return out;
 }
 
+/**
+ * The whole snapshot is read inside ONE transaction.
+ *
+ * Why it matters now: `armedGeneration` is a watermark the Worker compares a
+ * later KV delta against. If the generation were read a moment after the armed
+ * list, a concurrent arm on the Mac could bump the outbox in between — the
+ * snapshot would then claim a watermark that is NEWER than the list it carries,
+ * and the Worker would discard the very delta that fills the gap. One
+ * transaction makes every read (calendar, holdings, bogeys, armed list,
+ * watermark) describe the same instant.
+ *
+ * A read-only connection accepts BEGIN/COMMIT — better-sqlite3's deferred
+ * transaction takes no write lock, so this never blocks the app.
+ */
 function buildSnapshot(db: Database.Database): Snapshot {
-  // Includes trailing-1-day so the Worker's cloud-enrich fallback can find
-  // same-day-before-midnight releases that still need enrichment when the
-  // Mac was unreachable during the [release, release+2h] window. SELECT *
-  // already pulls release_time / actual_value / enriched_at / reaction_snapshot
-  // so Phase 9b parity needs no column additions here.
-  const calendarEvents = db
-    .prepare(
-      `SELECT * FROM calendar_events
-         WHERE event_date >= ? AND event_date <= ?
-         ORDER BY event_date, event_time`
-    )
-    .all(daysAgo(1), daysAhead(CALENDAR_LOOKAHEAD_DAYS)) as Record<string, unknown>[];
-
-  // The Worker's fallback recap gate mirrors actualsAreImplausible and reads
-  // manual_actuals_at off whichever twin its own family dedup keeps — so the
-  // acceptance must already be resolved cluster-wide in the snapshot, exactly
-  // as the Mac's read surfaces resolve it
-  // (lib/queries/manual-actuals-cluster.ts). Parity, not a second rule.
-  applyClusterManualActuals(db, calendarEvents as unknown as ClusterActualsRow[]);
-
-  const researchSources = db
-    .prepare(
-      `SELECT id, name, sender_email, sender_pattern, subject_pattern,
-              is_active, fetch_frequency, max_age_days, processing_prompt,
-              website_url
-         FROM research_sources
-         ORDER BY id`
-    )
-    .all() as Record<string, unknown>[];
-
-  const recentArticlesMeta = db
-    .prepare(
-      `SELECT a.id, a.source_id, s.name AS source_name, a.gmail_message_id,
-              a.received_at, a.subject, a.sender, a.summary, a.key_themes,
-              a.sentiment, a.sentiment_score, a.mentioned_symbols,
-              a.portfolio_relevance, a.source_url, s.website_url,
-              a.processed_at, a.ai_model
-         FROM research_articles a
-         JOIN research_sources s ON s.id = a.source_id
-         WHERE a.received_at >= ?
-         ORDER BY a.received_at DESC`
-    )
-    .all(daysAgo(RECENT_META_DAYS)) as Record<string, unknown>[];
-
-  const deepCutoff = new Date(Date.now() - DEEP_READ_HOURS * 3600_000).toISOString();
-  const placeholders = DEEP_READ_SOURCE_IDS.map(() => "?").join(",");
-  const deepRaw = db
-    .prepare(
-      `SELECT a.id, a.source_id, s.name AS source_name, a.received_at,
-              a.subject, a.raw_text, a.raw_html, a.source_url
-         FROM research_articles a
-         JOIN research_sources s ON s.id = a.source_id
-         WHERE a.source_id IN (${placeholders})
-           AND a.received_at >= ?
-         ORDER BY a.received_at DESC`
-    )
-    .all(...DEEP_READ_SOURCE_IDS, deepCutoff) as {
-      id: number;
-      source_id: number;
-      source_name: string;
-      received_at: string;
-      subject: string;
-      raw_text: string | null;
-      raw_html: string | null;
-      source_url: string | null;
-    }[];
-
-  const deepReadArticles = deepRaw.map((a) => ({
-    ...a,
-    raw_text: a.raw_text?.slice(0, MAX_DEEP_READ_CHARS) ?? null,
-    raw_html: null, // drop HTML — body is already in raw_text
-  }));
-
-  // Phase 4 — earnings cloud-fallback context. Cross-account latest holdings
-  // (latest per (account, security) — CLAUDE.md mandates per-pair), full securities table
-  // (Worker needs underlying_symbol to roll options into family positions),
-  // accounts (id → name for the position block), audit rows (so Worker can
-  // skip events Mac already fired), and earnings settings (master toggle +
-  // muted symbols). Anything else the Mac composer reads (newsletters,
-  // analyst recs, transcripts, notes) is intentionally NOT in the fallback —
-  // the cloud email is a leaner "actuals + reaction + positions" version
-  // with a footer disclosing limited context.
-  // Cost basis fallback: Plaid sync writes cost_basis = NULL on holdings
-  // rows. Statement imports write the same (account, security) pair with
-  // cost_basis populated on the period-end date. Without this COALESCE,
-  // the first Plaid sync would blank out return-% disclosures in every
-  // Worker cloud-fallback earnings email — mirrors
-  // lib/digest/send-earnings-email.ts::getCrossAccountPositions and
-  // lib/queries/holdings.ts::getAllHoldings/getHoldingsByAccount.
-  const holdings = db
-    .prepare(
-      `SELECT h.id, h.account_id, h.security_id, h.quantity,
-              COALESCE(
-                h.cost_basis,
-                (SELECT h3.cost_basis FROM holdings h3
-                  WHERE h3.account_id = h.account_id
-                    AND h3.security_id = h.security_id
-                    AND h3.cost_basis IS NOT NULL
-                  ORDER BY h3.as_of_date DESC LIMIT 1)
-              ) AS cost_basis,
-              h.as_of_date
-         FROM holdings h
-        WHERE h.quantity != 0
-          AND h.as_of_date = (
-            SELECT MAX(h2.as_of_date) FROM holdings h2
-             WHERE h2.account_id = h.account_id
-               AND h2.security_id = h.security_id
-          )`,
-    )
-    .all() as Record<string, unknown>[];
-
-  const securities = db
-    .prepare(
-      `SELECT id, symbol, name, security_type, asset_class, sector,
-              underlying_symbol, option_type, strike_price, expiration_date, multiplier
-         FROM securities`,
-    )
-    .all() as Record<string, unknown>[];
-
-  const accounts = db
-    .prepare(`SELECT id, name FROM accounts`)
-    .all() as Record<string, unknown>[];
-
-  const earningsEmails = db
-    .prepare(
-      `SELECT id, event_id, phase, recipient, sent_at, error
-         FROM earnings_emails
-        WHERE datetime(sent_at) >= datetime('now', '-3 days')
-        ORDER BY sent_at DESC`,
-    )
-    .all() as Record<string, unknown>[];
-
-  const earningsEnabledRow = db
-    .prepare(`SELECT value FROM settings WHERE key = 'earnings_emails_enabled'`)
-    .get() as { value: string } | undefined;
-  const earningsMutedRow = db
-    .prepare(`SELECT value FROM settings WHERE key = 'earnings_emails_muted_symbols'`)
-    .get() as { value: string } | undefined;
-
-  const securityLevels = db
-    .prepare(
-      `SELECT sl.id, sl.security_id, s.symbol, sl.level_type, sl.price,
-              sl.direction, sl.source, sl.source_author, sl.expires_at,
-              sl.armed_crossed_at
-         FROM security_levels sl
-         JOIN securities s ON s.id = sl.security_id
-         WHERE sl.is_active = 1
-           AND sl.review_status = 'auto_approved'
-           AND sl.price_source = 'static'
-           AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))`,
-    )
-    .all() as Array<{
-      id: number;
-      security_id: number;
-      symbol: string;
-      level_type: string;
-      price: number;
-      direction: string | null;
-      source: string;
-      source_author: string | null;
-      expires_at: string | null;
-      armed_crossed_at: string | null;
-    }>;
-
-  // v9 — earnings intelligence. `earningsIntelStartDate` mirrors the
-  // trailing-1-day convention used everywhere else in this function (same-day
-  // releases stay visible); the history window looks 14 days ahead, matching
-  // how far out a "next print" is worth caching surprise/reaction context for.
-  const earningsIntelStartDate = daysAgo(1);
-  const upcomingEarningsSymbols = getUpcomingEarningsSymbols(
-    db,
-    earningsIntelStartDate,
-    daysAhead(14),
-  );
-
-  return {
-    schemaVersion: 10,
-    snapshotDate: today(),
-    generatedAt: new Date().toISOString(),
-    heldSymbols: getHeldStockSymbols(db),
-    settings: {
-      last_digest_sent_at: getSettingValue(db, "last_digest_sent_at"),
-      last_briefing_sent_at: getSettingValue(db, "last_briefing_sent_at"),
-      // v3 additions — recipient overrides (null until Phase 6 UI surfaces them)
-      evening_email_recipients: getSettingValue(db, "evening_email_recipients"),
-      digest_email_recipients: getSettingValue(db, "digest_email_recipients"),
-      briefing_email_recipients: getSettingValue(db, "briefing_email_recipients"),
-      // v3 additions — observability ring buffer for synthesis fallbacks
-      synthesis_fallbacks_last_30d: getSettingValue(db, "synthesis_fallbacks_last_30d"),
-    },
-    calendarEvents,
-    researchSources,
-    recentArticlesMeta,
-    deepReadArticles,
-    holdings,
-    securities,
-    accounts,
-    earningsEmails,
-    earningsSettings: {
-      enabled: earningsEnabledRow ? earningsEnabledRow.value === "1" || earningsEnabledRow.value.toLowerCase() === "true" : true,
-      mutedSymbols: earningsMutedRow
-        ? earningsMutedRow.value.split(",").map((s) => s.trim().toUpperCase()).filter((s) => s.length > 0)
-        : [],
-    },
-    // v3 additions
-    vanguardHoldings: getVanguardHoldingsForSnapshot(db),
-    securityBetas: getSecurityBetas(db),
-    // v4 — static price levels for cloud-side scan
-    securityLevels,
-    // v5 — earnings-email enrichment context
-    notes: getNotesForSnapshot(db),
-    earningsBogeys: getEarningsBogeysForSnapshot(
-      db,
-      daysAgo(1),
-      daysAhead(CALENDAR_LOOKAHEAD_DAYS),
-    ),
-    // v6 — available Anthropic model ids for Worker tier resolution + failover.
-    // Returns [] when the Mac has never run a catalog refresh (travel, fresh install).
-    modelCatalog: getModelCatalog(db),
-    // v7 — Vanguard-only briefing holdings (IBKR excluded). Single-sourced from
-    // the Mac's getBriefingHoldings so the cloud briefing matches the real one.
-    briefingHoldings: getBriefingHoldingsForSnapshot(db),
-    // v8 — active watchlist stock symbols for the Worker's push-at-print hook.
-    watchlistSymbols: getActiveWatchlistStockSymbolsRO(db),
-    // v9 — earnings intelligence: implied move per upcoming event + per-symbol
-    // surprise/reaction history. Lets the Worker's scoreboard render the
-    // "Expected move (options)" / "Avg move last 8 prints" rows.
-    earningsIntel: getEarningsIntelForSnapshot(db, earningsIntelStartDate),
-    earningsHistory: getEarningsHistoryForSnapshot(db, upcomingEarningsSymbols),
-    // v10 — read-through pairs (#13). The Worker's push-at-print hook widens
-    // its gate to non-held reporters with a live read-through target. Whole
-    // table shipped — it's small and user-curated.
-    readThroughPairs: db
+  return db.transaction((): Snapshot => {
+    // Includes trailing-1-day so the Worker's cloud-enrich fallback can find
+    // same-day-before-midnight releases that still need enrichment when the
+    // Mac was unreachable during the [release, release+2h] window. SELECT *
+    // already pulls release_time / actual_value / enriched_at / reaction_snapshot
+    // so Phase 9b parity needs no column additions here.
+    const calendarEvents = db
       .prepare(
-        `SELECT reporter_symbol AS reporter, target_symbol AS target, weight, hypothesis
-           FROM read_through_pairs ORDER BY weight DESC, reporter_symbol ASC`,
+        `SELECT * FROM calendar_events
+           WHERE event_date >= ? AND event_date <= ?
+           ORDER BY event_date, event_time`
       )
-      .all() as Snapshot["readThroughPairs"],
-  };
+      .all(daysAgo(1), daysAhead(CALENDAR_LOOKAHEAD_DAYS)) as Record<string, unknown>[];
+
+    // The Worker's fallback recap gate mirrors actualsAreImplausible and reads
+    // manual_actuals_at off whichever twin its own family dedup keeps — so the
+    // acceptance must already be resolved cluster-wide in the snapshot, exactly
+    // as the Mac's read surfaces resolve it
+    // (lib/queries/manual-actuals-cluster.ts). Parity, not a second rule.
+    applyClusterManualActuals(db, calendarEvents as unknown as ClusterActualsRow[]);
+
+    const researchSources = db
+      .prepare(
+        `SELECT id, name, sender_email, sender_pattern, subject_pattern,
+                is_active, fetch_frequency, max_age_days, processing_prompt,
+                website_url
+           FROM research_sources
+           ORDER BY id`
+      )
+      .all() as Record<string, unknown>[];
+
+    const recentArticlesMeta = db
+      .prepare(
+        `SELECT a.id, a.source_id, s.name AS source_name, a.gmail_message_id,
+                a.received_at, a.subject, a.sender, a.summary, a.key_themes,
+                a.sentiment, a.sentiment_score, a.mentioned_symbols,
+                a.portfolio_relevance, a.source_url, s.website_url,
+                a.processed_at, a.ai_model
+           FROM research_articles a
+           JOIN research_sources s ON s.id = a.source_id
+           WHERE a.received_at >= ?
+           ORDER BY a.received_at DESC`
+      )
+      .all(daysAgo(RECENT_META_DAYS)) as Record<string, unknown>[];
+
+    const deepCutoff = new Date(Date.now() - DEEP_READ_HOURS * 3600_000).toISOString();
+    const placeholders = DEEP_READ_SOURCE_IDS.map(() => "?").join(",");
+    const deepRaw = db
+      .prepare(
+        `SELECT a.id, a.source_id, s.name AS source_name, a.received_at,
+                a.subject, a.raw_text, a.raw_html, a.source_url
+           FROM research_articles a
+           JOIN research_sources s ON s.id = a.source_id
+           WHERE a.source_id IN (${placeholders})
+             AND a.received_at >= ?
+           ORDER BY a.received_at DESC`
+      )
+      .all(...DEEP_READ_SOURCE_IDS, deepCutoff) as {
+        id: number;
+        source_id: number;
+        source_name: string;
+        received_at: string;
+        subject: string;
+        raw_text: string | null;
+        raw_html: string | null;
+        source_url: string | null;
+      }[];
+
+    const deepReadArticles = deepRaw.map((a) => ({
+      ...a,
+      raw_text: a.raw_text?.slice(0, MAX_DEEP_READ_CHARS) ?? null,
+      raw_html: null, // drop HTML — body is already in raw_text
+    }));
+
+    // Phase 4 — earnings cloud-fallback context. Cross-account latest holdings
+    // (latest per (account, security) — CLAUDE.md mandates per-pair), full securities table
+    // (Worker needs underlying_symbol to roll options into family positions),
+    // accounts (id → name for the position block), audit rows (so Worker can
+    // skip events Mac already fired), and earnings settings (master toggle +
+    // muted symbols). Anything else the Mac composer reads (newsletters,
+    // analyst recs, transcripts, notes) is intentionally NOT in the fallback —
+    // the cloud email is a leaner "actuals + reaction + positions" version
+    // with a footer disclosing limited context.
+    // Cost basis fallback: Plaid sync writes cost_basis = NULL on holdings
+    // rows. Statement imports write the same (account, security) pair with
+    // cost_basis populated on the period-end date. Without this COALESCE,
+    // the first Plaid sync would blank out return-% disclosures in every
+    // Worker cloud-fallback earnings email — mirrors
+    // lib/digest/send-earnings-email.ts::getCrossAccountPositions and
+    // lib/queries/holdings.ts::getAllHoldings/getHoldingsByAccount.
+    const holdings = db
+      .prepare(
+        `SELECT h.id, h.account_id, h.security_id, h.quantity,
+                COALESCE(
+                  h.cost_basis,
+                  (SELECT h3.cost_basis FROM holdings h3
+                    WHERE h3.account_id = h.account_id
+                      AND h3.security_id = h.security_id
+                      AND h3.cost_basis IS NOT NULL
+                    ORDER BY h3.as_of_date DESC LIMIT 1)
+                ) AS cost_basis,
+                h.as_of_date
+           FROM holdings h
+          WHERE h.quantity != 0
+            AND h.as_of_date = (
+              SELECT MAX(h2.as_of_date) FROM holdings h2
+               WHERE h2.account_id = h.account_id
+                 AND h2.security_id = h.security_id
+            )`,
+      )
+      .all() as Record<string, unknown>[];
+
+    const securities = db
+      .prepare(
+        `SELECT id, symbol, name, security_type, asset_class, sector,
+                underlying_symbol, option_type, strike_price, expiration_date, multiplier
+           FROM securities`,
+      )
+      .all() as Record<string, unknown>[];
+
+    const accounts = db
+      .prepare(`SELECT id, name FROM accounts`)
+      .all() as Record<string, unknown>[];
+
+    const earningsEmails = db
+      .prepare(
+        `SELECT id, event_id, phase, recipient, sent_at, error
+           FROM earnings_emails
+          WHERE datetime(sent_at) >= datetime('now', '-3 days')
+          ORDER BY sent_at DESC`,
+      )
+      .all() as Record<string, unknown>[];
+
+    const earningsEnabledRow = db
+      .prepare(`SELECT value FROM settings WHERE key = 'earnings_emails_enabled'`)
+      .get() as { value: string } | undefined;
+    const earningsMutedRow = db
+      .prepare(`SELECT value FROM settings WHERE key = 'earnings_emails_muted_symbols'`)
+      .get() as { value: string } | undefined;
+
+    const securityLevels = db
+      .prepare(
+        `SELECT sl.id, sl.security_id, s.symbol, sl.level_type, sl.price,
+                sl.direction, sl.source, sl.source_author, sl.expires_at,
+                sl.armed_crossed_at
+           FROM security_levels sl
+           JOIN securities s ON s.id = sl.security_id
+           WHERE sl.is_active = 1
+             AND sl.review_status = 'auto_approved'
+             AND sl.price_source = 'static'
+             AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))`,
+      )
+      .all() as Array<{
+        id: number;
+        security_id: number;
+        symbol: string;
+        level_type: string;
+        price: number;
+        direction: string | null;
+        source: string;
+        source_author: string | null;
+        expires_at: string | null;
+        armed_crossed_at: string | null;
+      }>;
+
+    // v9 — earnings intelligence. `earningsIntelStartDate` mirrors the
+    // trailing-1-day convention used everywhere else in this function (same-day
+    // releases stay visible); the history window looks 14 days ahead, matching
+    // how far out a "next print" is worth caching surprise/reaction context for.
+    const earningsIntelStartDate = daysAgo(1);
+    const upcomingEarningsSymbols = getUpcomingEarningsSymbols(
+      db,
+      earningsIntelStartDate,
+      daysAhead(14),
+    );
+
+    return {
+      schemaVersion: 11,
+      snapshotDate: todayET(),
+      generatedAt: new Date().toISOString(),
+      heldSymbols: getHeldStockSymbols(db),
+      settings: {
+        last_digest_sent_at: getSettingValue(db, "last_digest_sent_at"),
+        last_briefing_sent_at: getSettingValue(db, "last_briefing_sent_at"),
+        // v3 additions — recipient overrides (null until Phase 6 UI surfaces them)
+        evening_email_recipients: getSettingValue(db, "evening_email_recipients"),
+        digest_email_recipients: getSettingValue(db, "digest_email_recipients"),
+        briefing_email_recipients: getSettingValue(db, "briefing_email_recipients"),
+        // v3 additions — observability ring buffer for synthesis fallbacks
+        synthesis_fallbacks_last_30d: getSettingValue(db, "synthesis_fallbacks_last_30d"),
+      },
+      calendarEvents,
+      researchSources,
+      recentArticlesMeta,
+      deepReadArticles,
+      holdings,
+      securities,
+      accounts,
+      earningsEmails,
+      earningsSettings: {
+        enabled: earningsEnabledRow ? earningsEnabledRow.value === "1" || earningsEnabledRow.value.toLowerCase() === "true" : true,
+        mutedSymbols: earningsMutedRow
+          ? earningsMutedRow.value.split(",").map((s) => s.trim().toUpperCase()).filter((s) => s.length > 0)
+          : [],
+      },
+      // v3 additions
+      vanguardHoldings: getVanguardHoldingsForSnapshot(db),
+      securityBetas: getSecurityBetas(db),
+      // v4 — static price levels for cloud-side scan
+      securityLevels,
+      // v5 — earnings-email enrichment context
+      notes: getNotesForSnapshot(db),
+      earningsBogeys: getEarningsBogeysForSnapshot(
+        db,
+        daysAgo(1),
+        daysAhead(CALENDAR_LOOKAHEAD_DAYS),
+      ),
+      // v6 — available Anthropic model ids for Worker tier resolution + failover.
+      // Returns [] when the Mac has never run a catalog refresh (travel, fresh install).
+      modelCatalog: getModelCatalog(db),
+      // v7 — Vanguard-only briefing holdings (IBKR excluded). Single-sourced from
+      // the Mac's getBriefingHoldings so the cloud briefing matches the real one.
+      briefingHoldings: getBriefingHoldingsForSnapshot(db),
+      // v8 — active watchlist stock symbols for the Worker's push-at-print hook.
+      watchlistSymbols: getActiveWatchlistStockSymbolsRO(db),
+      // v9 — earnings intelligence: implied move per upcoming event + per-symbol
+      // surprise/reaction history. Lets the Worker's scoreboard render the
+      // "Expected move (options)" / "Avg move last 8 prints" rows.
+      earningsIntel: getEarningsIntelForSnapshot(db, earningsIntelStartDate),
+      earningsHistory: getEarningsHistoryForSnapshot(db, upcomingEarningsSymbols),
+      // v10 — read-through pairs (#13). The Worker's push-at-print hook widens
+      // its gate to non-held reporters with a live read-through target. Whole
+      // table shipped — it's small and user-curated.
+      readThroughPairs: db
+        .prepare(
+          `SELECT reporter_symbol AS reporter, target_symbol AS target, weight, hypothesis
+             FROM read_through_pairs ORDER BY weight DESC, reporter_symbol ASC`,
+        )
+        .all() as Snapshot["readThroughPairs"],
+      // v11 — armed worksheets for the Worker's "armed as covered" resolver.
+      // Both reads sit inside buildSnapshot's read transaction, so the
+      // watermark can never be older than the list it stamps.
+      armedGeneration: readArmedGeneration(db),
+      armedEvents: buildArmedEventsEntries(db, { today: todayET() }),
+    };
+  })();
 }
 
 async function pruneOldSnapshots(keepFromDate: string): Promise<number> {
@@ -730,7 +769,8 @@ async function main() {
       `${snapshot.modelCatalog.length} model-catalog, ` +
       `${snapshot.watchlistSymbols.length} watchlist-symbols, ` +
       `${snapshot.earningsIntel.length} earnings-intel, ` +
-      `${Object.keys(snapshot.earningsHistory).length} earnings-history-symbols`
+      `${Object.keys(snapshot.earningsHistory).length} earnings-history-symbols, ` +
+      `${snapshot.armedEvents.length} armed-events @ gen ${snapshot.armedGeneration}`
   );
 
   const keepFromDate = daysAgo(SNAPSHOT_RETENTION_DAYS);

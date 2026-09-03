@@ -8,6 +8,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import { armWorksheet, disarmWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 import { deleteCalendarEvent } from "@/lib/mutations/calendar";
 import {
+  ARMED_EVENT_PROJECTION_KEYS,
   buildArmedEventsEntries,
   readArmedGeneration,
 } from "@/lib/earnings/armed-events-projection";
@@ -263,4 +264,169 @@ describe("[C-9] two processes cannot mint the same generation", () => {
     expect(gens).toEqual([1, 2]); // never a UNIQUE violation, never a duplicate
     a1.close();
   }, 20_000);
+});
+
+/**
+ * The snapshot slice (Task 8): what scripts/snapshot-state-to-r2.ts embeds as
+ * `armedEvents` / `armedGeneration` in a v11 snapshot.
+ *
+ * The script calls main() at import (deviation D9), so it cannot be imported
+ * here — the projection module IS the shared source it calls, and these tests
+ * pin the two properties the snapshot depends on: the data-flow contract
+ * (exactly the declared key set, survives JSON serialisation) and the
+ * one-transaction read (watermark and list describe the same instant).
+ */
+describe("snapshot slice — data-flow contract", () => {
+  it("carries EXACTLY the declared key set — never notes, reads, callouts, or document text", () => {
+    const a = seed("ACME", "2026-09-02");
+    armWorksheet(db, a);
+    const entries = buildArmedEventsEntries(db, { today: "2026-09-02" });
+    expect(entries).toHaveLength(1);
+
+    const allowed = new Set<string>(ARMED_EVENT_PROJECTION_KEYS as readonly string[]);
+    for (const e of entries) {
+      for (const k of Object.keys(e)) expect(allowed.has(k)).toBe(true);
+    }
+    // A live row carries every field except the two tombstone-only ones.
+    expect(Object.keys(entries[0]).sort()).toEqual(
+      (ARMED_EVENT_PROJECTION_KEYS as readonly string[])
+        .filter((k) => k !== "removed" && k !== "removedAt")
+        .slice()
+        .sort(),
+    );
+  });
+
+  it("a tombstone adds removed + removedAt and nothing else", () => {
+    const a = seed("ACME", "2026-09-02");
+    db.transaction(() => {
+      armWorksheet(db, a);
+      writeArmedEventsOutboxRow(db, { today: "2026-09-02" });
+    })();
+    disarmWorksheet(db, a);
+
+    const entries = buildArmedEventsEntries(db, { today: "2026-09-02" });
+    expect(entries).toHaveLength(1);
+    expect(entries[0].removed).toBe(true);
+    expect(typeof entries[0].removedAt).toBe("string");
+    const allowed = new Set<string>(ARMED_EVENT_PROJECTION_KEYS as readonly string[]);
+    for (const k of Object.keys(entries[0])) expect(allowed.has(k)).toBe(true);
+  });
+
+  it("survives the JSON round-trip the gzipped snapshot upload performs", () => {
+    const a = seed("ACME", "2026-09-02");
+    armWorksheet(db, a);
+    const entries = buildArmedEventsEntries(db, { today: "2026-09-02" });
+    // putGzippedJson serialises with JSON.stringify — what the Worker parses
+    // must be byte-for-byte what the projection produced (no undefined holes,
+    // no Date objects, no NaN).
+    expect(JSON.parse(JSON.stringify(entries))).toEqual(entries);
+  });
+});
+
+describe("snapshot slice — buildSnapshot's single read transaction (D9)", () => {
+  let dir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "armed-snapshot-"));
+    dbPath = path.join(dir, "vanguard.db");
+    const w = new Database(dbPath);
+    w.pragma("journal_mode = WAL");
+    w.pragma("foreign_keys = ON");
+    runMigrations(w);
+    const insert = (symbol: string, date: string) =>
+      Number(
+        w
+          .prepare(
+            `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, title, source_key, symbol)
+             VALUES ('manual','earnings',?,'AMC','16:15',?,?,?)`,
+          )
+          .run(date, symbol, `manual:${symbol}:${date}:earnings`, symbol).lastInsertRowid,
+      );
+    const a = insert("ACME", "2026-09-02");
+    insert("BETA", "2026-09-02");
+    w.transaction(() => {
+      armWorksheet(w, a);
+      writeArmedEventsOutboxRow(w, { today: "2026-09-02" });
+    })();
+    w.close();
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reads the watermark and the armed list at ONE instant on a read-only connection", () => {
+    const ro = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const writer = new Database(dbPath);
+    writer.pragma("foreign_keys = ON");
+
+    try {
+      const observed = ro.transaction(() => {
+        // First read establishes this transaction's snapshot of the file.
+        const before = {
+          generation: readArmedGeneration(ro),
+          entries: buildArmedEventsEntries(ro, { today: "2026-09-02" }),
+        };
+
+        // A concurrent Mac arm commits a NEWER generation mid-read.
+        const b = writer
+          .prepare(`SELECT id FROM calendar_events WHERE symbol = 'BETA'`)
+          .get() as { id: number };
+        writer.transaction(() => {
+          armWorksheet(writer, b.id);
+          writeArmedEventsOutboxRow(writer, { today: "2026-09-02" });
+        })();
+
+        // Same transaction, second read: must NOT see it. A watermark newer
+        // than the list it stamps would make the Worker discard the very
+        // delta that fills the gap.
+        const after = {
+          generation: readArmedGeneration(ro),
+          entries: buildArmedEventsEntries(ro, { today: "2026-09-02" }),
+        };
+        expect(after.generation).toBe(before.generation);
+        expect(after.entries).toEqual(before.entries);
+        return after;
+      })();
+
+      // The watermark equals the outbox maximum as seen inside that same
+      // transaction — one armed event, generation 1.
+      expect(observed.generation).toBe(1);
+      expect(observed.entries.map((e) => e.symbol)).toEqual(["ACME"]);
+
+      // ...and a FRESH read outside it does see the concurrent write, proving
+      // the stability above came from the transaction, not from staleness.
+      expect(readArmedGeneration(new Database(dbPath, { readonly: true }))).toBe(2);
+    } finally {
+      ro.close();
+      writer.close();
+    }
+  });
+});
+
+/**
+ * The script itself cannot be imported (it calls main() at import — D9), so
+ * its two structural promises are pinned at the source level instead. Both
+ * are one-line regressions away from silently breaking the Worker.
+ */
+describe("snapshot slice — scripts/snapshot-state-to-r2.ts structure (D9)", () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "scripts/snapshot-state-to-r2.ts"),
+    "utf-8",
+  );
+
+  it("builds the snapshot inside ONE db.transaction", () => {
+    expect(source).toMatch(/function buildSnapshot\([^)]*\)[^{]*\{\s*return db\.transaction\(/);
+  });
+
+  it("ships v11 with the armed watermark, the armed list, and the vendor EPS column", () => {
+    expect(source).toContain("schemaVersion: 11");
+    expect(source).toContain("armedGeneration: readArmedGeneration(db)");
+    expect(source).toContain("armedEvents: buildArmedEventsEntries(db,");
+    expect(source).toContain("b.eps_consensus_vendor");
+    // ET day math, never UTC — snapshotDate names the R2 key the Worker reads.
+    expect(source).toContain("snapshotDate: todayET()");
+    expect(source).not.toMatch(/new Date\(\)\.toISOString\(\)\.slice\(0, 10\)/);
+  });
 });

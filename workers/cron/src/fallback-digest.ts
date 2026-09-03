@@ -32,6 +32,7 @@ import { todayET } from "./dst";
 import { sourceKind, editionLabel } from "./editions";
 import { fetchOvernightMovesWorker, renderOvernightLines } from "./overnight";
 import { buildTodaysReportersBlock } from "./todays-reporters";
+import { readArmedEventsDelta } from "./armed-events";
 
 // Workers Free plan caps each invocation at 50 subrequests. The digest does
 // 1 list call per source + 2 calls per processed article (getMessage + Claude)
@@ -211,8 +212,14 @@ export async function runFallbackDigest(
   // subrequest for all four symbols; a Yahoo failure degrades to no block.
   const overnightBlock = renderOvernightLines(await fetchOvernightMovesWorker(todayET()));
 
-  // Today's reporters (#18) — snapshot-only, zero subrequests.
-  const reportersBlock = buildTodaysReportersBlock(snapshot, todayET());
+  // Today's reporters (#18) — snapshot + the armed-events delta (v2 slice A
+  // §4.1): ONE KV read so a worksheet armed after the 2am snapshot still shows
+  // up, chipped `armed`.
+  const reportersBlock = buildTodaysReportersBlock(
+    snapshot,
+    todayET(),
+    await readArmedEventsDelta(env.CRON_KV),
+  );
 
   // Combine: newly-processed on top (fresh today), then snapshot meta as context.
   const snapshotRecent = filterTodayArticles(snapshot.recentArticlesMeta);

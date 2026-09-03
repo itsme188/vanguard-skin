@@ -208,3 +208,104 @@ describe("GET /internal/cloud-sent-earnings", () => {
     expect(res.status).toBe(401);
   });
 });
+
+/**
+ * POST /internal/armed-events — the Mac's cloud outbox drain lands here
+ * (deviation D2: the Mac never touches KV directly). Body shape and headers
+ * are pinned by lib/earnings/cloud-outbox.ts::drainCloudOutbox.
+ */
+describe("POST /internal/armed-events", () => {
+  let store: Map<string, string>;
+  let env: any;
+
+  beforeEach(() => {
+    store = new Map<string, string>();
+    const kv = {
+      get: vi.fn(async (key: string) => store.get(key) ?? null),
+      put: vi.fn(async (key: string, value: string) => {
+        store.set(key, value);
+      }),
+      delete: vi.fn(async (key: string) => {
+        store.delete(key);
+      }),
+      list: vi.fn(async () => ({ keys: [] })),
+    } as any;
+    env = { CRON_KV: kv, CRON_SHARED_SECRET: "test-secret" };
+  });
+
+  const entry = (eventId: number, symbol: string, eventDate: string) => ({
+    eventId,
+    symbol,
+    eventDate,
+    eventTime: "AMC",
+    releaseTime: "16:15",
+    sourceKey: `manual:${symbol}:${eventDate}:earnings`,
+    source: "manual",
+    consensusValue: null,
+    expectedImpact: null,
+    securityId: null,
+    epsConsensusVendor: null,
+  });
+
+  const post = (body: unknown, headers: Record<string, string> = { "x-cron-secret": "test-secret" }) =>
+    worker.fetch(
+      new Request("https://worker.test/internal/armed-events", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: typeof body === "string" ? body : JSON.stringify(body),
+      }),
+      env,
+    );
+
+  it("requires the shared secret", async () => {
+    const res = await post({ generation: 1, entries: [] }, {});
+    expect(res.status).toBe(401);
+    expect(store.size).toBe(0);
+  });
+
+  it("applies a payload and reports the generation", async () => {
+    const res = await post({ generation: 4, entries: [entry(77, "ACME", "2026-09-02")] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, applied: true, generation: 4 });
+    expect(JSON.parse(store.get("armed-events")!)).toEqual({
+      generation: 4,
+      entries: [entry(77, "ACME", "2026-09-02")],
+    });
+  });
+
+  it("is idempotent for a replayed or out-of-order generation", async () => {
+    await post({ generation: 4, entries: [entry(77, "ACME", "2026-09-02")] });
+    const replay = await post({ generation: 4, entries: [] });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual({ ok: true, applied: false, generation: 4 });
+    // The stored payload is untouched — a replay never empties the list.
+    expect(JSON.parse(store.get("armed-events")!).entries).toHaveLength(1);
+  });
+
+  it("400s a malformed body and invalid JSON", async () => {
+    const bad = await post({ generation: "x", entries: [] });
+    expect(bad.status).toBe(400);
+    expect((await bad.json()) as any).toMatchObject({ ok: false });
+
+    const notJson = await post("{nope");
+    expect(notJson.status).toBe(400);
+    expect(store.size).toBe(0);
+  });
+
+  it("413s an oversized body before parsing it", async () => {
+    const res = await worker.fetch(
+      new Request("https://worker.test/internal/armed-events", {
+        method: "POST",
+        headers: {
+          "x-cron-secret": "test-secret",
+          "content-type": "application/json",
+          "content-length": String(1024 * 1024),
+        },
+        body: JSON.stringify({ generation: 1, entries: [] }),
+      }),
+      env,
+    );
+    expect(res.status).toBe(413);
+    expect(store.size).toBe(0);
+  });
+});
