@@ -100,6 +100,40 @@ describe("labelNorm / extractGuidanceMetrics / sheetLineKeys", () => {
     const rangeGuidance = extractGuidanceMetrics(["Operating income between $206M and $208M"]);
     expect(vsBogeyText("operating income", { value: 207.2e6, value_high: null, unit: "usd" }, rangeGuidance)).toBe("vs guide $206.0M–$208.0M (within range)");
   });
+  it("splits a sentence-final period even when the sentence ends in a digit run (fix round 2 — CLAUSE_SPLIT's period guard was inverted)", () => {
+    // "…for Q4." — the period is preceded by a digit but is NOT a decimal
+    // point; round 1's (?<!\d)\.(?!\d) (an AND) wrongly required BOTH sides
+    // non-digit to split, so this never split and "Margin…30%" was dropped.
+    expect(extractGuidanceMetrics(["Revenue guide is $200M for Q4. Margin should be 30%."])).toEqual([
+      { key: "revenue guide", unit: "usd", value: 200e6, value_high: null, source_index: 0 },
+      { key: "margin should", unit: "percent", value: 30, value_high: null, source_index: 0 },
+    ]);
+    // The decimal case (round 1's own fixture, re-pinned) must keep working
+    // now that the period guard is an OR, not an AND.
+    expect(extractGuidanceMetrics(["Operating income of $206.5M. ARR growth 24%."])).toEqual([
+      { key: "operating income", unit: "usd", value: 206.5e6, value_high: null, source_index: 0 },
+      { key: "arr growth", unit: "percent", value: 24, value_high: null, source_index: 0 },
+    ]);
+    // A sentence-final period followed (after a space) by a digit-led
+    // sentence still splits — and the leading clause carries no metric (it
+    // has no figure of its own), so nothing here reads as `count: 2026`.
+    expect(extractGuidanceMetrics(["Results were strong. 2026 outlook is cautious."])).toEqual([
+      { key: "results were strong", unit: null, value: null, value_high: null, source_index: 0 },
+    ]);
+  });
+  it("does not mint a bogus figure from a bare year that a lead word precedes (fix round 2 — adjacent gap)", () => {
+    // extractGuidanceMetrics matches RANGE_TOKEN/POINT_TOKEN against the
+    // clause directly, so numbersIn's year guard (which only ever sees the
+    // isolated matched token) cannot catch this — the guard has to be
+    // reapplied here against the clause text. "fiscal" is itself a
+    // STOPWORD already (pre-existing, unrelated to this fix), so the pinned
+    // key below is "expect strength", not "expect strength fiscal" —
+    // contentWords drops "fiscal" and "2026" (pure digits) regardless of
+    // the year guard.
+    expect(extractGuidanceMetrics(["We expect strength in fiscal 2026."])).toEqual([
+      { key: "expect strength", unit: null, value: null, value_high: null, source_index: 0 },
+    ]);
+  });
 });
 
 describe("verifyCallout", () => {
