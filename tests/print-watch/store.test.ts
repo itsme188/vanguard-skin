@@ -75,16 +75,23 @@ describe("print-watch store (migration 085)", () => {
     runMigrations(db);
   });
 
-  it("applies migration 085 fresh with the three tables + index", () => {
+  // 089 (slice B) adds the five sidecar tables to 085's three; the list is
+  // exhaustive on purpose, so a new print_watch_% table has to be declared here.
+  it("applies migrations 085 + 089 fresh with every print_watch table + index", () => {
     const tables = db
       .prepare(
         `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'print_watch_%' ORDER BY name`,
       )
       .all() as Array<{ name: string }>;
     expect(tables.map((t) => t.name)).toEqual([
+      "print_watch_candidate_archive",
+      "print_watch_document_roads",
       "print_watch_documents",
+      "print_watch_ir_baseline",
+      "print_watch_ir_seen",
       "print_watch_lines",
       "print_watch_prints",
+      "print_watch_sources",
     ]);
 
     const indexes = db
