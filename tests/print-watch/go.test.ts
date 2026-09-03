@@ -566,6 +566,61 @@ describe("runGoRequest", () => {
     }
   });
 
+  it("a heartbeat that THROWS ends the run instead of escaping the timer (re-review)", async () => {
+    vi.useFakeTimers();
+    try {
+      const eventId = seedEvent();
+      const ack = await requestGo(db, eventId, {}, fakeSeams());
+      let clock = NOW;
+      let aborted = false;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const seams = fakeSeams({
+        now: () => clock,
+        acquire: async (_db, _printId, signal) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+          });
+          await gate;
+          return [];
+        },
+      });
+      const run = runGoRequest(db, ack.requestId, seams);
+      await vi.advanceTimersByTimeAsync(0);
+
+      // The handle goes bad under a detached run — a locked DB in production,
+      // a raising trigger here. The heartbeat's UPDATE now throws.
+      db.exec(
+        `CREATE TRIGGER go_hb_boom BEFORE UPDATE OF claimed_at ON print_watch_go_requests
+         BEGIN SELECT RAISE(ABORT, 'database is locked'); END`,
+      );
+      clock += GO_CLAIM_HEARTBEAT_MS;
+      // If the callback let the error escape, THIS is where it would surface
+      // as an uncaught exception (in production it would take the process).
+      let escaped: unknown = null;
+      try {
+        await vi.advanceTimersByTimeAsync(GO_CLAIM_HEARTBEAT_MS);
+      } catch (err) {
+        escaped = err;
+      }
+      expect(escaped).toBeNull();
+
+      expect(await run).toBeNull();
+      expect(aborted).toBe(true);
+      const row = getGoRequest(db, ack.requestId)!;
+      expect(row.status).toBe("claimed"); // nothing finalised, nothing requeued
+      expect(row.result_json).toBeNull();
+      expect(row.finished_at).toBeNull();
+      expect(row.attempts).toBe(1);
+      release();
+      db.exec(`DROP TRIGGER go_hb_boom`);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("an incoherent input row fails loudly instead of finalising done (review M5)", async () => {
     const eventId = seedEvent();
     const ack = await requestGo(db, eventId, {}, fakeSeams());
