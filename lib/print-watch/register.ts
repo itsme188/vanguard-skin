@@ -17,16 +17,24 @@
  * point may call this directly (tests do), and a second call must not trip the
  * registries' duplicate-name throw.
  */
+import type Database from "better-sqlite3";
 import { registerEventMergeHandler } from "@/lib/earnings/event-merge";
 import { registerPrepareStep } from "@/lib/earnings/prepare-armed-event";
 import { mergePrintWatchState, PRINT_WATCH_MERGE_HANDLER_NAME } from "./merge-handler";
 import { IR_BASELINE_STEP, IR_BASELINE_STEP_NAME } from "./ir-baseline-step";
+import { registerFirstPass, __resetFirstPassRegisterForTests } from "./first-pass-register";
 
 let registered = false;
 
-export function registerPrintWatch(): void {
+/** `db` is OPTIONAL and additive: only slice D's root uses it, to arm the
+ *  durable first-pass reconcile timer. A's composition root calls this with no
+ *  argument and registers the handlers alone. */
+export function registerPrintWatch(db?: Database.Database): void {
   if (registered) return;
   registered = true;
+  // Slice D FIRST (plan M-D12): its reads/callouts reference print_watch_prints,
+  // which B's handler deletes last — D must re-home before B deletes.
+  registerFirstPass(db);
   registerEventMergeHandler(PRINT_WATCH_MERGE_HANDLER_NAME, mergePrintWatchState);
   registerPrepareStep(IR_BASELINE_STEP_NAME, IR_BASELINE_STEP);
 }
@@ -36,4 +44,5 @@ export function registerPrintWatch(): void {
  *  `registerPrintWatch()` would silently register nothing. */
 export function __resetRegisterForTests(): void {
   registered = false;
+  __resetFirstPassRegisterForTests();
 }

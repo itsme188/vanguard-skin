@@ -33,6 +33,7 @@ import {
   __resetPrepareStepsForTests,
 } from "@/lib/earnings/prepare-armed-event";
 import { registerPrintWatch, __resetRegisterForTests } from "@/lib/print-watch/register";
+import { __resetFirstPassRegisterForTests } from "@/lib/print-watch/first-pass-register";
 import { upsertPrint, getPrintByEventId } from "@/lib/print-watch/store";
 
 let db: Database.Database;
@@ -40,6 +41,7 @@ beforeEach(() => {
   __resetEventMergeHandlersForTests();
   __resetPrepareStepsForTests();
   __resetRegisterForTests();
+  __resetFirstPassRegisterForTests();
   db = new Database(":memory:");
   db.pragma("foreign_keys = ON");
   runMigrations(db);
@@ -55,7 +57,9 @@ describe("print-watch × slice A registries", () => {
   it("registers exactly the print-watch handler and the ir_baseline step, once (idempotent)", () => {
     registerPrintWatch();
     registerPrintWatch();
-    expect(listEventMergeHandlers()).toEqual(["print-watch"]);
+    // Slice D registers FIRST (plan M-D12): its reads/callouts reference
+    // print_watch_prints, which B's handler deletes last.
+    expect(listEventMergeHandlers()).toEqual(["print-watch-first-pass", "print-watch"]);
     expect(listPrepareSteps()).toEqual(["ir_baseline"]);
   });
 
