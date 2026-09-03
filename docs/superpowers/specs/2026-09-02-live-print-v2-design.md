@@ -28,6 +28,7 @@ Two live runs of print-watch v1 are on record. The first (2026-08-26/27, three p
 - The work ships as six independently deployable slices (§10); slices A and B are built first, in parallel, and must not share a file.
 - Design rounds end at three; residual mechanics are settled in each slice's plan review.
 - Today: Alerts and Nearby Levels leave the page. Significant Moves and Momentum Pulse move to Analysis. The Earnings Cockpit folds into the Earnings Hub rows as chips. The print-watch card becomes the armed Hub row's in-place expansion. Portfolio snapshot shrinks to one line. Week Ahead, Releases, IBKR today, and the chat button stay.
+- *(Plan-round rulings, 2026-09-02 late evening.)* Slice A stores the Finnhub EPS in its own column `earnings_bogeys.eps_consensus_vendor` and leaves `eps_consensus` NULL on the `'finnhub'` row; the `eps_consensus_basis` column in §4.1 step 2 / §5 088 is NOT added. Reason: `compileContracts` (a slice B/F file) fills the adjusted-EPS expected value from the first non-null `eps_consensus`, and A and B share no file — the ruling "Finnhub EPS never fills the adjusted-EPS bogey" holds by construction. Slice B keeps v1's independence rule: a Dow Jones stitched text and an EDGAR exhibit of one release remain two independent documents (content identity already collapses byte-identical deliveries); reconciler correlation groups are not added.
 
 ## 3. Goals and non-goals
 
