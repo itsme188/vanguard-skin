@@ -7,16 +7,14 @@
  * untouched by any other test's `__resetPrepareStepsForTests()` /
  * `__isBootstrapSuppressedForTests(true)` call). Nothing under
  * `lib/earnings/prepare-steps/**` is imported directly — the whole point is
- * that `enqueuePrepareSteps` reaches the three concrete steps ONLY through
+ * that `enqueuePrepareSteps` reaches the four concrete steps ONLY through
  * `bootstrapEarningsRegistries()` → `registerPrepareStepsOnce()`.
  *
- * Ruling R2: Task 10 registers three steps (consensus_row, intel, con_id).
- * Task 11 prepends `newsletter_rescan` and updates the two assertions below
- * to the final four, in REGISTRATION order ["newsletter_rescan",
- * "consensus_row", "intel", "con_id"] — `listPrepareSteps()` reflects
- * insertion order, which is NOT the same as run order: the runner
- * (prepare-armed-event.ts) always selects work `ORDER BY p.step`
- * (alphabetical: con_id, consensus_row, intel).
+ * Ruling R2: the registered set is newsletter_rescan, consensus_row, intel,
+ * con_id. The assertions below are in REGISTRATION order —
+ * `listPrepareSteps()` reflects insertion order, which is NOT run order: the
+ * runner (prepare-armed-event.ts) always selects work `ORDER BY p.step`
+ * (alphabetical: con_id, consensus_row, intel, newsletter_rescan).
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
@@ -26,7 +24,7 @@ describe("registry-bootstrap cold process (Ruling R1/R2)", () => {
     vi.resetModules();
   });
 
-  it("enqueuePrepareSteps lazily registers exactly the three A steps, in registration order, with nothing else imported", async () => {
+  it("enqueuePrepareSteps lazily registers exactly the four A steps, in registration order, with nothing else imported", async () => {
     const { runMigrations } = await import("@/lib/db/migrate");
     const { armWorksheet } = await import("@/lib/mutations/earnings-worksheet-flags");
     const { enqueuePrepareSteps, listPrepareSteps, getPrepareStepRows } = await import(
@@ -47,14 +45,14 @@ describe("registry-bootstrap cold process (Ruling R1/R2)", () => {
     armWorksheet(db, id);
 
     const inserted = enqueuePrepareSteps(db, id);
-    expect(inserted).toBe(3);
-    expect(listPrepareSteps()).toEqual(["consensus_row", "intel", "con_id"]);
-    expect(getPrepareStepRows(db, id).map((r) => r.step)).toEqual(["con_id", "consensus_row", "intel"]);
+    expect(inserted).toBe(4);
+    expect(listPrepareSteps()).toEqual(["newsletter_rescan", "consensus_row", "intel", "con_id"]);
+    expect(getPrepareStepRows(db, id).map((r) => r.step)).toEqual(["con_id", "consensus_row", "intel", "newsletter_rescan"]);
 
     // A second enqueue on the same event is a no-op — steps registered once, rows inserted once.
     const insertedAgain = enqueuePrepareSteps(db, id);
     expect(insertedAgain).toBe(0);
-    expect(listPrepareSteps()).toEqual(["consensus_row", "intel", "con_id"]);
+    expect(listPrepareSteps()).toEqual(["newsletter_rescan", "consensus_row", "intel", "con_id"]);
   });
 
   it("[nit] registerPrepareStepsOnce is idempotent when called directly, twice, in the same process", async () => {
@@ -67,9 +65,9 @@ describe("registry-bootstrap cold process (Ruling R1/R2)", () => {
     const { registerPrepareStepsOnce } = await import("@/lib/earnings/prepare-steps");
 
     registerPrepareStepsOnce();
-    expect(listPrepareSteps()).toEqual(["consensus_row", "intel", "con_id"]);
+    expect(listPrepareSteps()).toEqual(["newsletter_rescan", "consensus_row", "intel", "con_id"]);
 
     expect(() => registerPrepareStepsOnce()).not.toThrow();
-    expect(listPrepareSteps()).toEqual(["consensus_row", "intel", "con_id"]);
+    expect(listPrepareSteps()).toEqual(["newsletter_rescan", "consensus_row", "intel", "con_id"]);
   });
 });

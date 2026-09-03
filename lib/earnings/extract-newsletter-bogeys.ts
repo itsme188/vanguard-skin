@@ -334,29 +334,96 @@ function markArticleScanned(db: Database.Database, articleId: number): void {
   ).run(articleId);
 }
 
+/** Extractor identity stamped on every `earnings_bogey_scans` ledger row. Bump
+ *  it when the prompt/parser changes materially enough that an already-scanned
+ *  (event, article) pair deserves a fresh pass — the ledger PK carries it, so a
+ *  bump re-opens every pair without touching the rows the old version wrote. */
+export const NEWSLETTER_EXTRACTOR_VERSION = 1;
+
 /**
- * Run bogey extraction on a single article against the full set of
- * upcoming reporters. Marks the article scanned regardless of whether any
- * bogeys were found or matched — only a genuine AI-call failure skips the
- * marker (retries next run).
+ * [C-3] Issue-scoped bogey label: "<publication> <M/D>" with the issue date in
+ * ET, so two issues of one newsletter are two rows under
+ * UNIQUE(event_id, source, source_label) rather than one clobbering the other
+ * (the 2026-08-26 class, only half-mitigated by `preserveExisting`).
+ *
+ * Both the global scan and the per-event rescan label through this one
+ * function — otherwise the two paths would mint different labels for the same
+ * article and duplicate its numbers onto the sheet.
+ *
+ * `received_at` is stored as space-separated UTC ("YYYY-MM-DD HH:MM:SS", see
+ * lib/gmail/fetch.ts); an unparseable value falls back to the bare publication
+ * name rather than labelling the row "Invalid Date".
  */
-export async function extractBogeysFromArticle(
+export function newsletterIssueLabel(
+  article: Pick<ArticleInput, "source_name" | "received_at">
+): string {
+  const raw = (article.received_at ?? "").trim();
+  const hasZone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(raw);
+  const parsed = new Date(raw.replace(" ", "T") + (hasZone ? "" : "Z"));
+  if (Number.isNaN(parsed.getTime())) return article.source_name;
+  const md = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "numeric",
+    day: "numeric",
+  }).format(parsed);
+  return `${article.source_name} ${md}`;
+}
+
+/** Does this extracted element carry anything worth a row? Mirrors
+ *  CONTENT_COLUMNS in lib/mutations/earnings-bogeys.ts (`symbol` is the key,
+ *  not content). */
+function hasExtractedContent(bogey: ExtractedBogey): boolean {
+  return (
+    bogey.eps_consensus != null ||
+    bogey.eps_whisper != null ||
+    bogey.revenue_consensus != null ||
+    bogey.revenue_whisper != null ||
+    bogey.expected_move_pct != null ||
+    bogey.guidance_notes != null ||
+    bogey.notes != null
+  );
+}
+
+interface CallAndStoreResult {
+  bogeysStored: number;
+  eventsMatched: number;
+  modelId: string | null;
+  /** A model call was actually made (the article mentioned at least one reporter). */
+  called: boolean;
+  /** The model call itself failed — the caller decides whether to retry. */
+  failed: boolean;
+}
+
+/**
+ * The ONE prompt → model → parse → write path. Both the global scan
+ * (`extractBogeysFromArticle`) and the per-event rescan
+ * (`extractBogeysFromArticleForEvent`) go through it, so the two can never
+ * drift into different prompts, different parsing, or different bogey labels.
+ *
+ * `reporters` is already filtered to the ones this article mentions. This
+ * helper deliberately does NOT touch `research_articles.bogeys_scanned_at`:
+ * the global marker belongs to the global sweep alone, and the per-event path
+ * must never consume an article on the sweep's behalf.
+ */
+async function callAndStore(
   db: Database.Database,
   article: ArticleInput,
   reporters: UpcomingReporter[]
-): Promise<{ bogeysStored: number; eventsMatched: number }> {
-  const mentioned = filterReportersMentionedInArticle(article, reporters);
-
-  if (mentioned.length === 0) {
-    markArticleScanned(db, article.id);
-    return { bogeysStored: 0, eventsMatched: 0 };
-  }
+): Promise<CallAndStoreResult> {
+  const nothing: CallAndStoreResult = {
+    bogeysStored: 0,
+    eventsMatched: 0,
+    modelId: null,
+    called: false,
+    failed: false,
+  };
+  if (reporters.length === 0) return nothing;
 
   let responseText: string;
   try {
     const { text } = await generateTextForFeature("newsletterBogeyExtraction", {
       maxOutputTokens: 2048,
-      prompt: buildExtractionPrompt(article, mentioned),
+      prompt: buildExtractionPrompt(article, reporters),
     });
     responseText = text;
   } catch (err) {
@@ -364,21 +431,21 @@ export async function extractBogeysFromArticle(
       `[earnings/extract-newsletter-bogeys] Claude failed for article ${article.id}:`,
       err instanceof Error ? err.message : err
     );
-    // Don't mark scanned — transient failures should retry on next run.
-    return { bogeysStored: 0, eventsMatched: 0 };
+    return { ...nothing, called: true, failed: true };
   }
 
+  // Mirrors app/api/earnings/bogeys/upload/route.ts:149 — never record
+  // FEATURE_MODELS[key] directly (it's a tier token); resolve the concrete
+  // model id actually resolved for this feature. Resolved as soon as the call
+  // succeeds so the rescan ledger can record WHICH model said "no numbers".
+  const { modelId } = resolveFeatureModel("newsletterBogeyExtraction");
+
   if (!responseText.trim()) {
-    markArticleScanned(db, article.id);
-    return { bogeysStored: 0, eventsMatched: 0 };
+    return { bogeysStored: 0, eventsMatched: 0, modelId, called: true, failed: false };
   }
 
   const extracted = parseExtractionResponse(responseText);
-  const bySymbol = new Map(mentioned.map((r) => [r.symbol, r]));
-  // Mirrors app/api/earnings/bogeys/upload/route.ts:149 — never record
-  // FEATURE_MODELS[key] directly (it's a tier token); resolve the concrete
-  // model id actually resolved for this feature.
-  const { modelId } = resolveFeatureModel("newsletterBogeyExtraction");
+  const bySymbol = new Map(reporters.map((r) => [r.symbol, r]));
 
   let bogeysStored = 0;
   let eventsMatched = 0;
@@ -395,11 +462,19 @@ export async function extractBogeysFromArticle(
       }
     }
     if (!matched) continue;
+    // [C-3] fallout guard: with issue-DATED labels a numberless mention no longer
+    // lands on the publication's existing row (where upsertBogey's has-content
+    // check would skip it) — it would mint a brand-new all-null row per issue.
+    // A bogey row with nothing in any content column is noise on the worksheet
+    // and a false "hit" in the rescan ledger, so it is never written.
+    // Mirrors CONTENT_COLUMNS in lib/mutations/earnings-bogeys.ts.
+    if (!hasExtractedContent(bogey)) continue;
 
     upsertBogey(db, {
       event_id: matched.event_id,
       source: "newsletter",
-      source_label: article.source_name,
+      // [C-3] Issue-dated, so a LATER issue lands beside the earlier one.
+      source_label: newsletterIssueLabel(article),
       research_article_id: article.id,
       eps_consensus: bogey.eps_consensus,
       eps_whisper: bogey.eps_whisper,
@@ -409,19 +484,78 @@ export async function extractBogeysFromArticle(
       guidance_notes: bogey.guidance_notes,
       notes: bogey.notes,
       ai_extraction_model: modelId,
-      // Newsletter rows key on (event, 'newsletter', source_name), so a LATER
-      // issue of the same newsletter conflicts with the earlier one. Live
-      // 2026-08-26: an issue that mentioned NVDA/CRWD without numbers erased
-      // the earlier issue's extracted consensus. Never let a re-scan's null
-      // overwrite a stored number.
+      // Even within one issue label, a RE-scan of the same article (a rescan
+      // step re-run after fingerprint drift) must never let a null erase an
+      // already-extracted number. Live 2026-08-26: an issue that mentioned
+      // NVDA/CRWD without numbers erased the earlier issue's consensus.
       preserveExisting: true,
     });
     bogeysStored++;
     eventsMatched++;
   }
 
+  return { bogeysStored, eventsMatched, modelId, called: true, failed: false };
+}
+
+/**
+ * Run bogey extraction on a single article against the full set of
+ * upcoming reporters. Marks the article scanned regardless of whether any
+ * bogeys were found or matched — only a genuine AI-call failure skips the
+ * marker (retries next run).
+ */
+export async function extractBogeysFromArticle(
+  db: Database.Database,
+  article: ArticleInput,
+  reporters: UpcomingReporter[]
+): Promise<{ bogeysStored: number; eventsMatched: number }> {
+  const mentioned = filterReportersMentionedInArticle(article, reporters);
+  const result = await callAndStore(db, article, mentioned);
+
+  // Don't mark scanned on a transient AI failure — it should retry next run.
+  if (result.failed) return { bogeysStored: 0, eventsMatched: 0 };
+
   markArticleScanned(db, article.id);
-  return { bogeysStored, eventsMatched };
+  return { bogeysStored: result.bogeysStored, eventsMatched: result.eventsMatched };
+}
+
+/**
+ * Spec §4.1 step 1 — the PURE per-(article, event) extraction path.
+ *
+ * The global scan consumes an article once, for whatever was covered at that
+ * moment; an event armed AFTERWARDS would never see the numbers. This path
+ * re-reads an already-scanned article for ONE event, using the same prompt,
+ * parser and bogey write (`callAndStore`), and NEVER stamps
+ * `research_articles.bogeys_scanned_at` — the global marker stays the global
+ * sweep's alone.
+ *
+ * No coverage/status call here by design: it is invoked only by the
+ * `newsletter_rescan` prepare step, which runs solely for armed events.
+ *
+ * Throws when the model call fails, so the step's `earnings_bogey_scans`
+ * ledger can book `error` + an attempt (and stop after SCAN_MAX_ATTEMPTS)
+ * rather than silently recording a clean "no numbers".
+ */
+export async function extractBogeysFromArticleForEvent(
+  db: Database.Database,
+  article: ArticleInput,
+  event: { event_id: number; symbol: string; event_date: string }
+): Promise<{ bogeysStored: number; modelId: string | null; called: boolean }> {
+  const reporter: UpcomingReporter = {
+    symbol: event.symbol.toUpperCase(),
+    event_id: event.event_id,
+    event_date: event.event_date,
+  };
+  if (!issuerSiblings(reporter.symbol).some((sym) => isSymbolMentioned(article.raw_text, sym))) {
+    return { bogeysStored: 0, modelId: null, called: false };
+  }
+
+  const result = await callAndStore(db, article, [reporter]);
+  if (result.failed) {
+    throw new Error(
+      `newsletter extraction failed for article ${article.id} / event ${event.event_id}`
+    );
+  }
+  return { bogeysStored: result.bogeysStored, modelId: result.modelId, called: true };
 }
 
 /**
