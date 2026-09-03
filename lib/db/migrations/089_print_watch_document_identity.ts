@@ -60,16 +60,6 @@ function countCandidates(db: Database.Database, table: string): number {
   return n;
 }
 
-/** Content identity of a candidate, key-order independent: two candidates
- *  with the same key are the SAME piece of evidence. Used only to decide
- *  whether remapping a merged duplicate's doc_id made it redundant — a
- *  candidate whose doc_id did not move is never dropped by it. */
-function candidateKey(c: TaggedCandidate): string {
-  return JSON.stringify(
-    Object.entries(c as unknown as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-  );
-}
-
 /** The AUTOINCREMENT high-water mark of `name`, or undefined when the table
  *  has never held a row (or sqlite_sequence does not exist yet). */
 function readSequence(db: Database.Database, name: string): number | undefined {
@@ -311,14 +301,23 @@ export function rebuildDocumentIdentity(db: Database.Database, hooks: RebuildHoo
         line.snippet, sourceDocId, line.candidates_json, line.updated_at,
       );
       log(`line print=${line.print_id} metric=${line.metric_id}: candidates_json unparseable — copied verbatim, raw value archived`);
+      // Deliberately NOT added to `affected`: phase (11) would have to
+      // JSON.parse this same unreadable text to re-reconcile it, and a throw
+      // there would roll back the whole migration over one corrupt row.
       continue;
     }
     const all = parsed as TaggedCandidate[];
-    // Pre-register the identity of every candidate that keeps its doc_id, so
-    // the archive decision below does not depend on array order: a remapped
-    // duplicate is archived whether it sits before or after its twin.
-    const seen = new Set<string>();
-    for (const c of all) if (fateOf(c).kind === "keep") seen.add(candidateKey(c));
+    // Controller ruling R-B7: no line may carry TWO candidates from one content
+    // hash. Identity here is the SURVIVING DOCUMENT, never the candidate's
+    // fields — two extractions of the same bytes that differ only in
+    // `representation` would otherwise both survive on one doc_id, where
+    // reconcile.ts `independent()` reads them as an independent pair and greens
+    // `agreed` (and differing table hints would flip the line to `conflict` via
+    // `locationCompatible`). Pre-registering the doc_ids that keep their own id
+    // makes the decision order-independent: a remapped twin is archived whether
+    // it sits before or after the survivor's own candidate.
+    const docIdsKept = new Set<number>();
+    for (const c of all) if (fateOf(c).kind === "keep") docIdsKept.add(c.doc_id);
 
     const kept: TaggedCandidate[] = [];
     let touched = false;
@@ -335,21 +334,20 @@ export function rebuildDocumentIdentity(db: Database.Database, hooks: RebuildHoo
         touched = true;
         continue;
       }
-      // The document this candidate came from was merged into `survivor`
-      // (same print, same bytes). Move the evidence onto the survivor; if
-      // the survivor already carries that exact evidence the copy is
-      // redundant — archive it rather than let two rows of the SAME bytes
-      // masquerade as an independent pair (that is the false `agreed` 089 fixes).
-      const remapped: TaggedCandidate = { ...c, doc_id: fate.survivor };
-      const key = candidateKey(remapped);
+      // The document this candidate came from was merged into `survivor` (same
+      // print, same bytes). Move the evidence onto the survivor — unless the
+      // line ALREADY carries a candidate from that survivor, in which case this
+      // copy is the same content hash speaking twice and is archived, never
+      // dropped (R-B7). A line whose ONLY evidence arrived through the merged
+      // twin keeps it, remapped.
       touched = true;
-      if (seen.has(key)) {
+      if (docIdsKept.has(fate.survivor)) {
         archive.run(line.print_id, line.metric_id, JSON.stringify(c), `duplicate-of:${fate.survivor}`);
         report.candidates.archived += 1;
         continue;
       }
-      seen.add(key);
-      kept.push(remapped);
+      docIdsKept.add(fate.survivor);
+      kept.push({ ...c, doc_id: fate.survivor });
     }
     report.candidates.kept += kept.length;
     if (sourceDocId !== line.source_doc_id) touched = true;
