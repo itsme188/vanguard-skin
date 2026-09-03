@@ -69,7 +69,7 @@ export interface PrintWatchLine {
   candidates_json: string; // JSON TaggedCandidate[]
 }
 
-export type PrintWatchDocKind = "dj-release" | "edgar-ex99" | "ir-page" | "user-drop";
+export type PrintWatchDocKind = "dj-release" | "edgar-ex99" | "ir-page" | "user-drop" | "user-url";
 
 /** Raw row shape of `print_watch_prints` — 1:1 with the table's columns. */
 export interface PrintRow {
