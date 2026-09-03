@@ -295,3 +295,135 @@ describe("applyArmedEventsDelta (KV read-compare-write)", () => {
     expect(await readArmedEventsDelta(kv)).toBeNull();
   });
 });
+
+/**
+ * Fix round 1, item 1: the projection may only overwrite the fields it OWNS.
+ *
+ * `consensus_estimate` (Finnhub sync-time) and `consensus_value`
+ * (enrichment-time) are different columns with different lifecycles. Spreading
+ * a synthesized row over a real snapshot row blanked `consensus_estimate`,
+ * which kills effectiveConsensusRaw's last fallback in fallback-earnings, empties
+ * the `cons` column in todays-reporters, and hands a null consensus to
+ * calendar-enrich's actual-fetch context. A synthesized `title` could also lose
+ * slot inference for a "(Before Market Open)" event with no release_time.
+ */
+describe("projection merge — snapshot-only fields survive", () => {
+  const richSnapshot = (over: Partial<Snapshot> = {}) =>
+    snap({
+      calendarEvents: [
+        {
+          id: 1,
+          source: "finnhub",
+          event_type: "earnings",
+          event_date: "2026-09-03",
+          event_time: null,
+          title: "HELDCO earnings (Before Market Open)",
+          description: "vendor blurb",
+          security_id: 42,
+          symbol: "HELDCO",
+          expected_impact: "high",
+          consensus_estimate: "EPS 9.99 · Rev 1,000,000",
+          consensus_value: null,
+          previous_value: "EPS 8.00",
+          raw_json: '{"v":1}',
+          enriched_at: "2026-09-03 21:00:00",
+          actual_value: "EPS 10.10",
+          reaction_snapshot: '{"pct":2.1}',
+          release_time: null,
+          superseded: 0,
+        },
+      ] as unknown as Snapshot["calendarEvents"],
+      ...over,
+    });
+
+  it("a delta entry over an existing snapshot row updates only owned fields", () => {
+    const eff = effectiveCalendarEvents(richSnapshot(), {
+      generation: 4,
+      entries: [
+        entry(1, "HELDCO", "2026-09-05", {
+          releaseTime: "07:00",
+          eventTime: "BMO",
+          consensusValue: "EPS 10.00",
+        }),
+      ],
+    });
+    const row = eff.events.find((e) => e.id === 1)!;
+    // Owned by the projection — updated.
+    expect(row).toMatchObject({
+      event_date: "2026-09-05",
+      event_time: "BMO",
+      release_time: "07:00",
+      consensus_value: "EPS 10.00",
+      source_key: "manual:HELDCO:2026-09-05:earnings",
+      source: "manual",
+    });
+    // Snapshot-only — untouched.
+    expect(row.consensus_estimate).toBe("EPS 9.99 · Rev 1,000,000");
+    expect(row.title).toBe("HELDCO earnings (Before Market Open)");
+    expect(row.description).toBe("vendor blurb");
+    expect(row.previous_value).toBe("EPS 8.00");
+    expect(row.raw_json).toBe('{"v":1}');
+    expect(row.enriched_at).toBe("2026-09-03 21:00:00");
+    expect(row.actual_value).toBe("EPS 10.10");
+    expect(row.reaction_snapshot).toBe('{"pct":2.1}');
+  });
+
+  it("the snapshot's own armedEvents path merges identically to the delta path", () => {
+    const viaSnapshot = effectiveCalendarEvents(
+      richSnapshot({
+        armedEvents: [
+          entry(1, "HELDCO", "2026-09-05", { releaseTime: "07:00", eventTime: "BMO" }),
+        ],
+      }),
+      null,
+    );
+    const viaDelta = effectiveCalendarEvents(richSnapshot(), {
+      generation: 4,
+      entries: [entry(1, "HELDCO", "2026-09-05", { releaseTime: "07:00", eventTime: "BMO" })],
+    });
+    expect(viaSnapshot.events.find((e) => e.id === 1)).toEqual(
+      viaDelta.events.find((e) => e.id === 1),
+    );
+    expect(viaSnapshot.armedEventIds).toEqual(viaDelta.armedEventIds);
+  });
+
+  it("with NO snapshot row the synthesized row still carries a usable consensus + slot", () => {
+    const eff = effectiveCalendarEvents(snap({}), {
+      generation: 4,
+      entries: [
+        entry(77, "ACME", "2026-09-02", {
+          eventTime: "BMO",
+          releaseTime: "07:00",
+          consensusValue: "EPS 1.20",
+        }),
+      ],
+    });
+    const row = eff.events.find((e) => e.id === 77)!;
+    expect(row).toMatchObject({
+      id: 77,
+      event_type: "earnings",
+      symbol: "ACME",
+      event_date: "2026-09-02",
+      event_time: "BMO",
+      release_time: "07:00",
+      title: "ACME earnings",
+      // Delta-only rows have no other source of consensus, so the projection's
+      // value fills BOTH columns — this is the one place synthesis is right.
+      consensus_estimate: "EPS 1.20",
+      consensus_value: "EPS 1.20",
+      superseded: 0,
+    });
+  });
+
+  it("a superseded snapshot row stays superseded when armed", () => {
+    const eff = effectiveCalendarEvents(
+      richSnapshot({
+        calendarEvents: [
+          { id: 1, event_type: "earnings", event_date: "2026-09-03", symbol: "HELDCO", superseded: 1 },
+        ] as unknown as Snapshot["calendarEvents"],
+      }),
+      { generation: 4, entries: [entry(1, "HELDCO", "2026-09-03")] },
+    );
+    expect(eff.events.find((e) => e.id === 1)!.superseded).toBe(1);
+  });
+});
