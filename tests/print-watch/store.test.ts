@@ -24,6 +24,7 @@ import {
   extendPrintWindow,
   insertGoRequest,
   getGoRequest,
+  latestGoRequest,
   listTakeableGoRequests,
   claimGoRequest,
   heartbeatGoRequest,
@@ -123,9 +124,10 @@ describe("print-watch store (migration 085)", () => {
     runMigrations(db);
   });
 
-  // 089 (slice B) adds the five sidecar tables to 085's three; the list is
-  // exhaustive on purpose, so a new print_watch_% table has to be declared here.
-  it("applies migrations 085 + 089 fresh with every print_watch table + index", () => {
+  // 089 (slice B) adds five sidecar tables to 085's three, and 090 (slice C)
+  // adds one more; the list is exhaustive on purpose, so a new print_watch_%
+  // table has to be declared here.
+  it("applies migrations 085 + 089 + 090 fresh with every print_watch table + index", () => {
     const tables = db
       .prepare(
         `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'print_watch_%' ORDER BY name`,
@@ -691,6 +693,45 @@ describe("print-watch store (migration 085)", () => {
       expect(getPrintById(db, printId)?.forced_open_at).toBe("2026-09-10T20:01:00.000Z");
     });
 
+    it("stampForcedOpen returns null (never throws) for an unknown print id", () => {
+      expect(stampForcedOpen(db, 999_999, "2026-09-10T20:01:00.000Z")).toBeNull();
+    });
+
+    it("latestGoRequest returns the newest request for the print, and null when there are none", () => {
+      const printId = seedPrint();
+      const other = seedPrint("go-other");
+      expect(latestGoRequest(db, printId)).toBeNull();
+
+      const first = insertGoRequest(db, {
+        printId,
+        inputKind: "none",
+        inputUrl: null,
+        inputSha256: null,
+        inputBytesPath: null,
+        requestedAt: "2026-09-10T20:00:00.000Z",
+      });
+      const second = insertGoRequest(db, {
+        printId,
+        inputKind: "none",
+        inputUrl: null,
+        inputSha256: null,
+        inputBytesPath: null,
+        requestedAt: "2026-09-10T20:05:00.000Z",
+      });
+      // A request on a DIFFERENT print must never leak into this print's answer.
+      insertGoRequest(db, {
+        printId: other,
+        inputKind: "none",
+        inputUrl: null,
+        inputSha256: null,
+        inputBytesPath: null,
+        requestedAt: "2026-09-10T20:10:00.000Z",
+      });
+
+      expect(latestGoRequest(db, printId)?.id).toBe(second);
+      expect(second).toBeGreaterThan(first);
+    });
+
     it("extendPrintWindow writes the given instant verbatim", () => {
       const printId = seedPrint();
       extendPrintWindow(db, printId, "2026-09-10T23:00:00.000Z");
@@ -738,12 +779,17 @@ describe("print-watch store (migration 085)", () => {
       expect(requeued.status).toBe("queued");
       expect(requeued.attempts).toBe(2);
       expect(requeued.result_json).toContain("parse error");
+      expect(requeued.claim_token).toBeNull();
+      expect(requeued.claimed_at).toBeNull(); // matches finalizeDocumentParse's sibling CAS (review #8)
       expect(listTakeableGoRequests(db, trulyStale).map((r) => r.id)).toEqual([id]);
 
       expect(claimGoRequest(db, id, "tok-c", trulyStale)).toBe(true);
       expect(finalizeGoRequest(db, id, "tok-a", "done", "[]", trulyStale + 1)).toBe(false);
       expect(finalizeGoRequest(db, id, "tok-c", "done", "[]", trulyStale + 1)).toBe(true);
-      expect(getGoRequest(db, id)?.status).toBe("done");
+      const finalized = getGoRequest(db, id)!;
+      expect(finalized.status).toBe("done");
+      expect(finalized.claim_token).toBeNull();
+      expect(finalized.claimed_at).toBeNull(); // matches finalizeDocumentParse's sibling CAS (review #8)
     });
 
     it("a request at the attempt cap is failed by failCappedGoRequests whether stale-claimed or requeued-to-queued, and never re-claimed", () => {

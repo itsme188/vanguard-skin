@@ -706,6 +706,13 @@ export function hasIrBaseline(db: Database.Database, eventId: number, sourceFing
 // regardless of literal formatting.
 // ---------------------------------------------------------------------------
 
+// `GO_CLAIM_STALE_MS` is 60_000ms, but every staleness comparison below wraps
+// both sides in SQLite's `datetime()`, which compares at ONE-SECOND
+// resolution (fractional seconds are truncated away). The effective stale
+// window is therefore 60-61s, not exactly 60s — a claim made at `t0` is not
+// yet stale at `t0 + 60.999s` and is stale at `t0 + 61.000s`. Test fixtures
+// against these predicates need >=1s margins, not millisecond ones (review
+// finding #7 — this cost two test failures during Task 1's own TDD pass).
 export const GO_CLAIM_STALE_MS = 60_000;
 export const GO_MAX_ATTEMPTS = 3;
 
@@ -715,17 +722,27 @@ export function getPrintById(db: Database.Database, printId: number): PrintRow |
 }
 
 /** The FIRST go press stamps; every later press reads the stamp back (spec
- *  §9 ruling 2: "the first go stamps once … a repeat press never extends"). */
-export function stampForcedOpen(db: Database.Database, printId: number, nowIso: string): string {
-  db.prepare(
-    `UPDATE print_watch_prints SET forced_open_at = COALESCE(forced_open_at, ?), updated_at = datetime('now') WHERE id = ?`,
-  ).run(nowIso, printId);
+ *  §9 ruling 2: "the first go stamps once … a repeat press never extends").
+ *  Returns null for an unknown print id (never throws — review finding #3),
+ *  so a caller can map it to a domain error instead of an opaque 500. */
+export function stampForcedOpen(db: Database.Database, printId: number, nowIso: string): string | null {
+  const updated = db
+    .prepare(
+      `UPDATE print_watch_prints SET forced_open_at = COALESCE(forced_open_at, ?), updated_at = datetime('now') WHERE id = ?`,
+    )
+    .run(nowIso, printId);
+  if (updated.changes === 0) return null; // no print with this id
   const row = db.prepare(`SELECT forced_open_at FROM print_watch_prints WHERE id = ?`).get(printId) as {
     forced_open_at: string;
   };
   return row.forced_open_at;
 }
 
+/** Writes `untilIso` verbatim — it does NOT enforce "an extension never
+ *  lowers the end" (spec: every press writes `max(now, current end) + 30m`);
+ *  that max() is the CALLER's obligation (review finding #4). A caller
+ *  passing an earlier instant than the current `window_extended_until` will
+ *  silently shorten a live window. */
 export function extendPrintWindow(db: Database.Database, printId: number, untilIso: string): void {
   db.prepare(
     `UPDATE print_watch_prints SET window_extended_until = ?, updated_at = datetime('now') WHERE id = ?`,
@@ -806,18 +823,23 @@ export function heartbeatGoRequest(db: Database.Database, id: number, token: str
 }
 
 /** An ordinary failure below the cap: back to queued (attempts kept, partial
- *  reports kept) so the next dispatcher tick retries. */
+ *  reports kept) so the next dispatcher tick retries. Clears `claimed_at`
+ *  alongside `claim_token` — matching `finalizeDocumentParse`'s sibling CAS
+ *  above — so a queued row never carries a stale claim timestamp that a
+ *  future query might read without also checking `status` (review #8). */
 export function requeueGoRequest(db: Database.Database, id: number, token: string, resultJson: string): boolean {
   const r = db
     .prepare(
-      `UPDATE print_watch_go_requests SET status = 'queued', claim_token = NULL, result_json = ?
+      `UPDATE print_watch_go_requests SET status = 'queued', claim_token = NULL, claimed_at = NULL, result_json = ?
         WHERE id = ? AND status = 'claimed' AND claim_token = ?`,
     )
     .run(resultJson, id, token);
   return r.changes === 1;
 }
 
-/** CAS finalise: false when the token no longer owns the row (taken over). */
+/** CAS finalise: false when the token no longer owns the row (taken over).
+ *  Clears `claimed_at` alongside `claim_token` (review #8), matching
+ *  `finalizeDocumentParse`'s sibling CAS above. */
 export function finalizeGoRequest(
   db: Database.Database,
   id: number,
@@ -829,7 +851,7 @@ export function finalizeGoRequest(
   const r = db
     .prepare(
       `UPDATE print_watch_go_requests
-          SET status = ?, result_json = ?, finished_at = ?, claim_token = NULL
+          SET status = ?, result_json = ?, finished_at = ?, claim_token = NULL, claimed_at = NULL
         WHERE id = ? AND status = 'claimed' AND claim_token = ?`,
     )
     .run(status, resultJson, new Date(nowMs).toISOString(), id, token);
@@ -875,7 +897,13 @@ export function listForcedLivePrints(db: Database.Database, nowMs: number): Prin
  *  dispatcher picks the request back up against the target print on its next
  *  tick (finding #8). The forced stamp keeps the EARLIEST press and the
  *  extension the LATEST end, so a merge can only widen what the desk already
- *  opened. */
+ *  opened.
+ *
+ *  Runs as two UPDATEs plus two reads, NOT wrapped in its own transaction
+ *  (review #9): the caller MUST invoke this from inside the merge
+ *  transaction (slice B's event-merge handler already does), so a crash
+ *  mid-call rolls back everything together rather than leaving go rows
+ *  repointed with the forced/extension carry unapplied. */
 export function movePrintGoState(
   db: Database.Database,
   donorPrintId: number,
