@@ -103,6 +103,37 @@ describe("PUT /api/print-watch/sources", () => {
     expect(((await noUrl.json()) as { error: string }).error).toMatch(/irPageUrl/);
   });
 
+  // Task 12 minor, ruled in. `symbol` is the PRIMARY KEY of
+  // print_watch_sources and the key every lane re-reads the row by, so junk
+  // stored here is a row nothing will ever look up again — refuse it at the
+  // boundary instead of persisting an unreachable configuration.
+  it("refuses a symbol that is not ticker-shaped, and accepts the shapes that are", async () => {
+    const { PUT } = await import("@/app/api/print-watch/sources/route");
+    for (const symbol of ["AC ME", "ACME!", "ABCDEFGHIJKLM", "acme@x", "a/b"]) {
+      const res = await PUT(putReq({ symbol, irPageUrl: "https://ir.acme.example/news" }));
+      expect(res.status, symbol).toBe(400);
+      const json = (await res.json()) as { success: boolean; error: string };
+      expect(json.success).toBe(false);
+      expect(json.error).toMatch(/symbol/i);
+    }
+    expect(getPrintWatchSource(hoisted.db, "ACME")).toBeNull();
+
+    for (const symbol of [" brk.b ", "ACME", "rds-a", "ABCDEFGHIJKL"]) {
+      const res = await PUT(putReq({ symbol, irPageUrl: "https://ir.acme.example/news" }));
+      expect(res.status, symbol).toBe(200);
+    }
+    expect(getPrintWatchSource(hoisted.db, "BRK.B")?.ir_page_url).toBe("https://ir.acme.example/news");
+  });
+
+  // The same shape gate on the CLEAR direction: an empty irPageUrl must not be
+  // a back door that runs a DELETE for an impossible symbol.
+  it("refuses a malformed symbol on the clear path too", async () => {
+    const { PUT } = await import("@/app/api/print-watch/sources/route");
+    const res = await PUT(putReq({ symbol: "AC ME", irPageUrl: "" }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/symbol/i);
+  });
+
   it("refuses an SSRF-unsafe IR page (loopback, credentials, non-443 port)", async () => {
     const { PUT } = await import("@/app/api/print-watch/sources/route");
     for (const irPageUrl of [

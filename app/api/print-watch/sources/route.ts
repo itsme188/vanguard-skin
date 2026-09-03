@@ -23,7 +23,18 @@ export const dynamic = "force-dynamic";
  * fetched later by the `ir_baseline` step and the watcher, both of which
  * re-validate on every hop; validating HERE is what makes a bad paste a
  * visible 400 at the desk instead of a silent lane failure at 16:05.
+ *
+ * `symbol` is validated the same way and for the same reason: it is the
+ * PRIMARY KEY of `print_watch_sources` and the key every lane re-reads the row
+ * by (`getPrintWatchSource(db, print.symbol)`), so a stored "AC ME" is a row
+ * nothing will ever look up again — a configuration the desk believes it made
+ * and that silently does nothing at 16:05.
  */
+
+/** Ticker shape after trim/uppercase: letters, digits, dot, hyphen (BRK.B,
+ *  RDS-A), 1–12 characters. Deliberately narrower than "any string" and wider
+ *  than plain A–Z. */
+const SYMBOL_RE = /^[A-Z0-9.\-]{1,12}$/;
 export async function PUT(request: NextRequest) {
   try {
     let body: { symbol?: unknown; irPageUrl?: unknown; linkMustContain?: unknown };
@@ -45,6 +56,15 @@ export async function PUT(request: NextRequest) {
       );
     }
     const symbol = body.symbol.trim().toUpperCase();
+    if (!SYMBOL_RE.test(symbol)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Body field 'symbol' must be a ticker (letters, digits, '.' or '-', up to 12 characters).",
+        },
+        { status: 400 },
+      );
+    }
     if (body.irPageUrl.trim() === "") {
       return NextResponse.json({
         success: true,

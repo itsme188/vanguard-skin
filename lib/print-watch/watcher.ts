@@ -1585,6 +1585,7 @@ async function finishIngest(
 ): Promise<IngestResult> {
   const delivery = recordDelivery(db, print.id, kind, source, url, buf, input);
   const status = statusFor(print.id);
+  await dropOrphanBytes(db, delivery, input.bytesPath);
 
   if (!delivery.contentVerdict.ok) {
     status.sources.gate = `doc ${delivery.id} rejected: ${delivery.contentVerdict.reason}`;
@@ -1643,6 +1644,31 @@ async function finishIngest(
     outcome: "parse_failed",
     rejectReason: after?.parse_last_error ?? "the parse did not complete",
   };
+}
+
+/**
+ * Text identity (M13) can dedupe the bytes we just wrote onto an EXISTING
+ * document whose `bytes_path` points somewhere else — a re-saved PDF, a text
+ * wrapper of the same release. Nothing then references the file this delivery
+ * wrote: no row, no re-parse, no retention rule ever reads it again, so it is
+ * a private release left on disk forever. Delete it (and its poppler text)
+ * here, where the outcome is known.
+ *
+ * ONLY when the survivor's path DIFFERS. The paths are content-addressed, so a
+ * byte-identical re-delivery writes the very file the surviving row points at
+ * — deleting that would strand the document's own bytes and ENOENT every later
+ * re-parse (the same rule `ingestPdf`'s refusal cleanup follows).
+ */
+async function dropOrphanBytes(
+  db: Database.Database,
+  delivery: { id: number; matchedBy: "new" | "bytes" | "text" },
+  writtenPath: string,
+): Promise<void> {
+  if (delivery.matchedBy !== "text") return;
+  const survivor = getDocument(db, delivery.id);
+  if (!survivor || survivor.bytes_path === writtenPath) return;
+  await fsp.rm(writtenPath, { force: true });
+  if (writtenPath.endsWith(".pdf")) await fsp.rm(textPathFor(writtenPath), { force: true });
 }
 
 /**

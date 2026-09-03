@@ -32,6 +32,19 @@ describe("validatePublicUrl", () => {
       hostname: "ir.example.com",
     });
   });
+  // Task 3 minor, ruled in: ONE stripped dot let "localhost.." past the local
+  // -name check (only the resolver's routability gate caught it afterwards).
+  it("strips EVERY trailing dot, so a doubled dot cannot smuggle a local name past the string check", () => {
+    expect(validatePublicUrl("https://localhost../x")).toEqual({
+      ok: false,
+      reason: "local hostnames are refused",
+    });
+    expect(validatePublicUrl("https://LOCALHOST.../x").ok).toBe(false);
+    expect(validatePublicUrl("https://ir.example.com.../release")).toEqual({
+      ok: true,
+      hostname: "ir.example.com",
+    });
+  });
 });
 
 describe("isGloballyRoutable — IPv4 blocked ranges", () => {

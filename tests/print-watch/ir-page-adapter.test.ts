@@ -75,6 +75,26 @@ describe("extractIrPageLinks", () => {
     ).toHaveLength(0);
   });
 
+  // Task 12 minor, ruled in. The desk types what it READS on the page while
+  // the href carries a slug; a case-sensitive literal matched neither and the
+  // lane went quiet at 16:05 with nothing to show for it.
+  it("matches link_must_contain case-insensitively on both the title and the href", () => {
+    // Title casing is "Second Quarter Fiscal 2026"; the href slug is lower-case.
+    expect(
+      extractIrPageLinks(PAGE, "https://ir.acme.example/news", { ...CFG, linkMustContain: "fiscal 2026" }),
+    ).toHaveLength(1);
+    expect(
+      extractIrPageLinks(PAGE, "https://ir.acme.example/news", { ...CFG, linkMustContain: "SECOND-QUARTER" }),
+    ).toHaveLength(1);
+    expect(
+      extractIrPageLinks(PAGE, "https://ir.acme.example/news", { ...CFG, linkMustContain: "BusinessWire" }),
+    ).toHaveLength(1);
+    // Still a literal: case-insensitivity does not make it a pattern.
+    expect(
+      extractIrPageLinks(PAGE, "https://ir.acme.example/news", { ...CFG, linkMustContain: "FISCAL 2027" }),
+    ).toHaveLength(0);
+  });
+
   it("the default pattern needs a period word AND results/earnings", () => {
     expect(IR_PAGE_HEADLINE_RE.test("Acme Reports Fourth Quarter and Full Year 2025 Results")).toBe(true);
     expect(IR_PAGE_HEADLINE_RE.test("Acme Announces FY2026 Earnings")).toBe(true);
@@ -225,5 +245,25 @@ describe("pollIrPage", () => {
     expect(fetchBytes).toHaveBeenCalledTimes(1);
     expect(fetchBytes.mock.calls[0][0]).toBe(CFG.irPageUrl);
     expect(fetchBytes.mock.calls[0][1]).toMatchObject({ label: expect.stringContaining("IR page") });
+  });
+
+  // M17 made STRUCTURAL (Task 12 minor, ruled in): a caller that hands over a
+  // bare `fetchBytes` still cannot be redirected off the IR/wire allowlist,
+  // because the adapter derives the predicate from the stored page's own host.
+  it("derives allowHost from the stored page's host when the caller passes none", async () => {
+    const fetchBytes = vi.fn(pageServer(PAGE));
+    await pollIrPage(CFG, new Set<string>(), fetchBytes, { baseline: true });
+    const { allowHost } = fetchBytes.mock.calls[0][1];
+    expect(allowHost).toBeTypeOf("function");
+    expect(allowHost!("ir.acme.example")).toBe(true);
+    expect(allowHost!("www.businesswire.com")).toBe(true);
+    expect(allowHost!("evil.example")).toBe(false);
+  });
+
+  it("leaves a caller-supplied allowHost in charge", async () => {
+    const fetchBytes = vi.fn(pageServer(PAGE));
+    const allowHost = (h: string) => h === "only.example";
+    await pollIrPage(CFG, new Set<string>(), fetchBytes, { baseline: true, allowHost });
+    expect(fetchBytes.mock.calls[0][1].allowHost).toBe(allowHost);
   });
 });

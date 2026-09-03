@@ -10,10 +10,13 @@
  *   - the earnings-headline pattern is a CODE CONSTANT (below). The desk
  *     never types a regex; a bad one would either swallow the print or drag
  *     every "Acme Names New CFO" post into the parser at 16:05.
- *   - `link_must_contain` is the user's own narrowing, applied as a LITERAL
- *     substring on the anchor text OR the href. Literal, never compiled: a
- *     stored "Q2 (2026)" must mean those characters, and a stray ".*" must
- *     match nothing rather than everything.
+ *   - `link_must_contain` is the user's own narrowing, applied as a LITERAL,
+ *     CASE-INSENSITIVE substring on the anchor text OR the href. Literal,
+ *     never compiled: a stored "Q2 (2026)" must mean those characters, and a
+ *     stray ".*" must match nothing rather than everything. Case-insensitive
+ *     because the desk types what it reads on the page ("Q2 2026") while the
+ *     href carries "q2-2026" — a filter that silently matched neither is a
+ *     lane that goes quiet at 16:05 with no error to show for it.
  *
  * M17 (fixed-host policy): a page can link anywhere, so `isAllowedIrLinkHost`
  * confines what we will FOLLOW to the IR host itself plus the four wire hosts
@@ -84,10 +87,12 @@ export function extractIrPageLinks(html: string, baseUrl: string, cfg: IrPageCon
       .replace(/\s+/g, " ")
       .trim();
     if (!title || title.length > IR_PAGE_MAX_TITLE_CHARS) continue;
-    // Literal substring, on the visible text OR the href — a company that
-    // titles every release identically is still separable by URL path.
-    if (cfg.linkMustContain && !title.includes(cfg.linkMustContain) && !href.includes(cfg.linkMustContain)) {
-      continue;
+    // Literal, case-insensitive substring on the visible text OR the href — a
+    // company that titles every release identically is still separable by URL
+    // path, and the desk's "Q2 2026" still matches a "/q2-2026-results" href.
+    if (cfg.linkMustContain) {
+      const needle = cfg.linkMustContain.toLowerCase();
+      if (!title.toLowerCase().includes(needle) && !href.toLowerCase().includes(needle)) continue;
     }
     if (!IR_PAGE_HEADLINE_RE.test(title)) continue;
     let resolved: URL;
@@ -139,17 +144,23 @@ export function isAllowedIrLinkHost(link: string, irHost: string): boolean {
  *                     was refused is retried on the next poll instead of being
  *                     silently dropped.
  *
- * `fetchBytes` is the seam; the caller supplies the `allowHost` predicate by
- * wrapping it, so the page fetch and every link fetch share one policy.
+ * `fetchBytes` is the seam. M17's fixed-host policy is STRUCTURAL here: the
+ * page fetch carries an `allowHost` derived from the stored page's own host
+ * unless the caller passes one, so a caller that forgets to wrap the seam
+ * still cannot be redirected off the allowlist. (Both production callers do
+ * wrap it — their predicate simply overrides this one, unchanged.)
  */
 export async function pollIrPage(
   cfg: IrPageConfig,
   seen: Set<string>,
   fetchBytes: typeof hardenedFetchBytes,
-  opts: { baseline: boolean },
+  opts: { baseline: boolean; allowHost?: (hostname: string) => boolean },
 ): Promise<IrPageLink[]> {
-  const page = await fetchBytes(cfg.irPageUrl, { label: "IR page" });
+  // Resolved BEFORE the fetch: the host is what the allowlist is built from,
+  // and a stored page that is not a URL must refuse without a request.
   const irHost = new URL(cfg.irPageUrl).hostname;
+  const allowHost = opts.allowHost ?? ((h: string) => isAllowedIrLinkHost(`https://${h}/`, irHost));
+  const page = await fetchBytes(cfg.irPageUrl, { label: "IR page", allowHost });
   const results: IrPageLink[] = [];
   for (const item of extractIrPageLinks(page.bytes.toString("utf8"), page.finalUrl, cfg)) {
     if (!isAllowedIrLinkHost(item.link, irHost)) continue;
