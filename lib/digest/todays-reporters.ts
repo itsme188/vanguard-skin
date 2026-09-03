@@ -89,7 +89,7 @@ export function composeTodaysReportersBlock(
     const rows: ReporterRowView[] = events.map((e) => {
       const sym = e.symbol!.toUpperCase();
       const st = status[sym];
-      const chip = st === "held" ? "held" : st === "watchlist" ? "wl" : rtSet.has(sym) ? "rt" : "";
+      const chip = st === "held" ? "held" : st === "watchlist" ? "wl" : st === "armed" ? "armed" : rtSet.has(sym) ? "rt" : "";
       // consensus_value (enrichment-corrected) wins over the sync-time
       // consensus_estimate — same precedence as renderHeadlineTable + the
       // Today tab (7/28 review follow-up: email-surface parity).

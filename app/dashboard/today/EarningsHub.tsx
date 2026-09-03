@@ -39,6 +39,7 @@ import { BogeysEditButton } from "./BogeysEditButton";
 import { getSkippedPhasesForEvents } from "@/lib/queries/earnings-skips";
 import { getWorksheetFlagsForEvents } from "@/lib/queries/earnings-worksheet-flags";
 import { getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
+import { statusChipClass, statusChipLabel } from "./status-chip";
 
 type EnrichedRow = CalendarEvent & {
   status: SymbolStatus;
@@ -65,17 +66,9 @@ function fmtSlot(eventTime: string | null, releaseTime: string | null): string {
   return t || "TBD";
 }
 
-function statusChipClass(status: SymbolStatus): string {
-  if (status === "held") return "text-up bg-up/15 border border-up/30";
-  if (status === "watchlist") return "text-gold-ink bg-gold/15 border border-gold/30";
-  return "text-ink-faint bg-raised border border-edge";
-}
-
-function statusChipLabel(status: SymbolStatus): string {
-  if (status === "held") return "HELD";
-  if (status === "watchlist") return "WATCH";
-  return "—";
-}
+// statusChipClass / statusChipLabel moved to ./status-chip.ts ([C-17],
+// live print v2 slice A Task 5) — a pure module so they can be unit tested
+// without pulling in this file's `db` singleton import.
 
 // epsDelta / deltaToneClass moved to lib/earnings/eps-delta.ts (unchanged)
 // so WeekAheadView's "actual …" chip can reuse the same beat/miss logic

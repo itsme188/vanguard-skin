@@ -2,9 +2,11 @@
  * Morning-digest "Call transcripts" block (#12 B3).
  *
  * Surfaces earnings-call transcripts fetched in the last 24h (via
- * fetchSameDayTranscripts, #12 B1/B2 — lib/transcripts/same-day.ts) for held
- * or watchlist tickers, so the user sees today's desk-note summary without
- * opening chat. Sibling of the Overnight block (lib/digest/overnight.ts):
+ * fetchSameDayTranscripts, #12 B1/B2 — lib/transcripts/same-day.ts) for
+ * held, watchlist, or armed tickers (symbol-only consumer, no event id to
+ * key coveredForEvents on: spec §4.1), so the user sees today's desk-note
+ * summary without opening chat. Sibling of the Overnight block
+ * (lib/digest/overnight.ts):
  * deterministic, `null` self-quiet, never blocks the digest.
  */
 
@@ -249,9 +251,13 @@ export function composeCallTranscriptsBlock(
 
     const symbols = Array.from(new Set(rows.map((r) => r.ticker.toUpperCase())));
     const status = getSymbolStatus(db, symbols);
+    // Symbol-only consumer (no event id to key on) — armed is DISPLAY-ONLY
+    // everywhere else, but this reads back already-fetched transcripts with
+    // no event-scoped decision to make, so it counts armed like
+    // held/watchlist (spec §4.1).
     const covered = rows.filter((r) => {
       const st = status[r.ticker.toUpperCase()];
-      return st === "held" || st === "watchlist";
+      return st === "held" || st === "watchlist" || st === "armed";
     });
 
     if (covered.length === 0) return null;

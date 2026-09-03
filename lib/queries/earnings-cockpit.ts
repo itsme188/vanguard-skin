@@ -42,7 +42,7 @@ export interface CockpitRow {
   eventDate: string;
   eventTime: string | null;
   releaseTime: string | null;
-  symbolStatus: "held" | "watchlist";
+  symbolStatus: "held" | "watchlist" | "armed";
   consensus: string;
   actual: string | null;
   stages: EventStages;
@@ -188,7 +188,10 @@ export function buildCockpitPayload(
         eventDate: r.event_date,
         eventTime: r.event_time,
         releaseTime: r.release_time,
-        symbolStatus: status as "held" | "watchlist",
+        // `kept` is already restricted to coveredIds (held/watchlist/armed,
+        // R10) — `status` can never actually be "neither" here, but the
+        // Record<string, SymbolStatus> return type can't express that.
+        symbolStatus: status as "held" | "watchlist" | "armed",
         consensus: formatFinnhubFigureCompact(r.consensus_value ?? r.consensus_estimate),
         // An implausible Finnhub actual is withheld from the cons→actual
         // figures line (the "act ⚠" stage chip carries the flag) — same
