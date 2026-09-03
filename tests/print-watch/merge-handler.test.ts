@@ -53,7 +53,12 @@ function contract(metric: string): LineContract {
     segment: null,
   };
 }
-function cand(metric: string, value: number, docId: number): TaggedCandidate {
+function cand(
+  metric: string,
+  value: number,
+  docId: number,
+  representation: TaggedCandidate["representation"] = "repB",
+): TaggedCandidate {
   return {
     metric_id: metric,
     value,
@@ -63,7 +68,7 @@ function cand(metric: string, value: number, docId: number): TaggedCandidate {
     location_hint: null,
     not_disclosed: false,
     doc_id: docId,
-    representation: "repB",
+    representation,
     weak_pair: false,
   };
 }
@@ -211,6 +216,120 @@ describe("mergePrintWatchState", () => {
     expect(audit.acceptances.map((a) => a.value).sort()).toEqual([1000, 1100]);
     const eps = sheet.find((l) => l.metric_id === "eps_gaap_q")!;
     expect(eps).toMatchObject({ state: "accepted", value: 2 });
+  });
+
+  // Controller ruling R-B7b. The donor's line carried v1's MEASURED PAIR of
+  // ONE document (repA tables + repB raw text) and the surviving twin has no
+  // candidate of its own on that metric. Keyed on doc_id alone one reading
+  // would be archived and a legitimate `agreed` would drop to `single_source`
+  // on every date-correction merge; keyed on (document, representation) both
+  // survive, remapped onto the twin.
+  it("R-B7b: a merged twin's repA/repB pair both survive when the surviving document has no candidate on that line", () => {
+    const donor = event(db, "2026-08-26", "d");
+    const target = event(db, "2026-08-27", "t");
+    const dp = upsertPrint(db, donor, "ACME", "2026-08-26", "16:05");
+    const tp = upsertPrint(db, target, "ACME", "2026-08-27", "16:05");
+    const same = "ACME reports Q3 2026 results. Revenue $1,000 million.";
+    const tDoc = deliver(tp, "edgar-ex99", same, "2026-08-27");
+    const dDoc = deliver(dp, "user-drop", same, "2026-08-26");
+    // The target print has no revenue line at all; the donor's is the pair.
+    upsertLines(db, dp, [
+      line("revenue_q", "agreed", 1000, dDoc.id, [
+        cand("revenue_q", 1000, dDoc.id, "repA"),
+        cand("revenue_q", 1000, dDoc.id, "repB"),
+      ]),
+    ]);
+    db.transaction(() => mergePrintWatchState({ db, donorEventId: donor, targetEventId: target }))();
+
+    const rev = getSheet(db, tp).find((l) => l.metric_id === "revenue_q")!;
+    expect(rev.state).toBe("agreed");
+    expect(
+      (JSON.parse(rev.candidates_json) as TaggedCandidate[]).map((c) => [c.doc_id, c.representation]),
+    ).toEqual([
+      [tDoc.id, "repA"],
+      [tDoc.id, "repB"],
+    ]);
+    expect(
+      (db.prepare("SELECT COUNT(*) AS n FROM print_watch_candidate_archive").get() as { n: number }).n,
+    ).toBe(0);
+  });
+
+  // The other half of R-B7b: the SAME reading of the same bytes down two roads
+  // is one measurement counted twice — archived with its provenance, and the
+  // line falls back to what one source can honestly support.
+  it("R-B7b: the twin's repA is archived when the surviving document already carries a repA on that line", () => {
+    const donor = event(db, "2026-08-26", "d");
+    const target = event(db, "2026-08-27", "t");
+    const dp = upsertPrint(db, donor, "ACME", "2026-08-26", "16:05");
+    const tp = upsertPrint(db, target, "ACME", "2026-08-27", "16:05");
+    const same = "ACME reports Q3 2026 results. Revenue $1,000 million.";
+    const tDoc = deliver(tp, "edgar-ex99", same, "2026-08-27");
+    const dDoc = deliver(dp, "user-drop", same, "2026-08-26");
+    upsertLines(db, tp, [
+      line("revenue_q", "single_source", 1000, tDoc.id, [cand("revenue_q", 1000, tDoc.id, "repA")]),
+    ]);
+    upsertLines(db, dp, [
+      line("revenue_q", "single_source", 1000, dDoc.id, [cand("revenue_q", 1000, dDoc.id, "repA")]),
+    ]);
+    db.transaction(() => mergePrintWatchState({ db, donorEventId: donor, targetEventId: target }))();
+
+    const rev = getSheet(db, tp).find((l) => l.metric_id === "revenue_q")!;
+    expect(rev.state).toBe("single_source");
+    expect(
+      (JSON.parse(rev.candidates_json) as TaggedCandidate[]).map((c) => [c.doc_id, c.representation]),
+    ).toEqual([[tDoc.id, "repA"]]);
+    const archived = db
+      .prepare("SELECT print_id, metric_id, reason, candidate_json FROM print_watch_candidate_archive")
+      .all() as Array<{ print_id: number; metric_id: string; reason: string; candidate_json: string }>;
+    expect(archived).toHaveLength(1);
+    expect(archived[0]).toMatchObject({ print_id: tp, metric_id: "revenue_q", reason: `duplicate-of:${tDoc.id}` });
+    expect(JSON.parse(archived[0].candidate_json) as TaggedCandidate).toMatchObject({
+      doc_id: dDoc.id,
+      representation: "repA",
+    });
+  });
+
+  // Whole-branch review, Important 2. The gate's ROAD verdict for an `ir-page`
+  // document is decided against the event DATE: a newsroom post that named
+  // tonight's quarter for the donor names last quarter's for the target. The
+  // content verdict is generous enough to survive that move (symbol + any
+  // fiscal-year/quarter pairing), so retracting only on a content flip left
+  // the evidence green on the sheet under a road nothing trusts any more.
+  it("retracts an ir-page document's evidence when the road verdict — not the content verdict — flips against the target date", () => {
+    const donor = event(db, "2026-08-26", "d");
+    const target = event(db, "2027-02-10", "t");
+    const dp = upsertPrint(db, donor, "ACME", "2026-08-26", "16:05");
+    const tp = upsertPrint(db, target, "ACME", "2027-02-10", "16:05");
+    // Names Q3 2026 (the donor's quarter, so the ir-page road accepts it) and
+    // carries a generic fiscal-year + quarter pairing, which is all the CONTENT
+    // gate needs for the target's Q1 2027 / Q4 2026 window.
+    const text =
+      "ACME reports Q3 2026 results for fiscal year 2026. Revenue $1,000 million.";
+    const dDoc = deliver(dp, "ir-page", text, "2026-08-26");
+    expect(dDoc.eligible).toBe(true);
+    deliver(tp, "edgar-ex99", "ACME reports Q1 2027 results. Revenue $2,000 million.", "2027-02-10");
+    upsertLines(db, dp, [
+      line("revenue_q", "single_source", 1000, dDoc.id, [cand("revenue_q", 1000, dDoc.id)]),
+    ]);
+    db.transaction(() => mergePrintWatchState({ db, donorEventId: donor, targetEventId: target }))();
+
+    // The document survives, its content still accepted — only the road fell.
+    const moved = getDocument(db, dDoc.id)!;
+    expect(moved.print_id).toBe(tp);
+    expect(moved.gate_verdict).toBe("accepted");
+    expect(
+      listDocumentRoads(db, tp)
+        .filter((r) => r.document_id === dDoc.id)
+        .map((r) => r.road_verdict),
+    ).toEqual(["rejected"]);
+
+    const rev = getSheet(db, tp).find((l) => l.metric_id === "revenue_q")!;
+    expect(rev).toMatchObject({ state: "pending", value: null, source_doc_id: null });
+    expect(JSON.parse(rev.candidates_json)).toEqual([]);
+    const archived = db
+      .prepare("SELECT print_id, metric_id, reason FROM print_watch_candidate_archive")
+      .all() as Array<{ print_id: number; metric_id: string; reason: string }>;
+    expect(archived).toEqual([{ print_id: tp, metric_id: "revenue_q", reason: "road-rejected" }]);
   });
 
   it("is a no-op with an empty result when neither event has a print", () => {

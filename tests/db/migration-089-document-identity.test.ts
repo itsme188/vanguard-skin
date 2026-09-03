@@ -300,17 +300,20 @@ describe("migration 089 — rebuild of legacy rows", () => {
   // different `representation` — so a field-equality dedupe would keep both on
   // doc_id d1, where reconcile's independent() (differing representation, both
   // weak_pair false) reads them as an independent pair and greens `agreed`:
-  // the exact false-green 089 exists to remove. One candidate per survivor.
-  it("archives a remapped candidate whenever the line already carries one from that survivor, whatever its fields", () => {
+  // the exact false-green 089 exists to remove. One candidate per (survivor,
+  // representation) — controller ruling R-B7b.
+  it("archives a remapped candidate whenever the line already carries the SAME reading of that survivor", () => {
     const db = legacyDb();
     const printId = seedPrint(db);
     const bytes = path.join(tmp, "r.txt");
     fs.writeFileSync(bytes, "ACME Q2 2026");
     const d1 = seedLegacyDoc(db, printId, "dj-release", "dj", null, "sha-same", bytes, true);
     const d2 = seedLegacyDoc(db, printId, "user-drop", "u", null, "sha-same", bytes, true);
+    // The SAME reading (repA) of the same bytes, arriving down two roads: one
+    // measurement counted twice, which is what the dedupe is for.
     seedLine(db, printId, "revenue_q", "agreed", 1000, d1, [
       cand("revenue_q", 1000, d1, "repA"),
-      cand("revenue_q", 1000, d2, "repB"),
+      cand("revenue_q", 1000, d2, "repA"),
     ]);
     const report = db.transaction(() => rebuildDocumentIdentity(db, { log: () => {} }))();
 
@@ -324,8 +327,62 @@ describe("migration 089 — rebuild of legacy rows", () => {
     expect(archive).toHaveLength(1);
     expect(archive[0].metric_id).toBe("revenue_q");
     expect(archive[0].reason).toBe(`duplicate-of:${d1}`);
-    expect((JSON.parse(archive[0].candidate_json) as TaggedCandidate)).toMatchObject({ doc_id: d2, representation: "repB" });
+    expect((JSON.parse(archive[0].candidate_json) as TaggedCandidate)).toMatchObject({ doc_id: d2, representation: "repA" });
     expect(report.linesChanged).toEqual([{ printId, metricId: "revenue_q", from: "agreed", to: "single_source" }]);
+  });
+
+  // R-B7b, the other half. The merged twin carries v1's MEASURED PAIR (repA
+  // tables + repB raw text of ONE document) and the survivor has nothing on
+  // this line. Keyed on doc_id alone one reading would be archived and a
+  // legitimate `agreed` would drop to `single_source`; keyed on (document,
+  // representation) both survive on the survivor, exactly as reconcile's
+  // independence rule has always read them.
+  it("keeps BOTH readings when a merged twin carries a repA/repB pair the survivor has no candidate against", () => {
+    const db = legacyDb();
+    const printId = seedPrint(db);
+    const bytes = path.join(tmp, "r.txt");
+    fs.writeFileSync(bytes, "ACME Q2 2026");
+    const d1 = seedLegacyDoc(db, printId, "dj-release", "dj", null, "sha-same", bytes, true);
+    const d2 = seedLegacyDoc(db, printId, "user-drop", "u", null, "sha-same", bytes, true);
+    seedLine(db, printId, "revenue_q", "agreed", 1000, d2, [
+      cand("revenue_q", 1000, d2, "repA"),
+      cand("revenue_q", 1000, d2, "repB"),
+    ]);
+    const report = db.transaction(() => rebuildDocumentIdentity(db, { log: () => {} }))();
+
+    expect(report.candidates).toEqual({ before: 2, kept: 2, archived: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM print_watch_candidate_archive").get()).toEqual({ n: 0 });
+    const line = db.prepare("SELECT state, value, source_doc_id, candidates_json FROM print_watch_lines WHERE metric_id = 'revenue_q'").get() as { state: string; value: number; source_doc_id: number; candidates_json: string };
+    expect(line).toMatchObject({ state: "agreed", value: 1000, source_doc_id: d1 });
+    expect((JSON.parse(line.candidates_json) as TaggedCandidate[]).map((c) => [c.doc_id, c.representation])).toEqual([
+      [d1, "repA"],
+      [d1, "repB"],
+    ]);
+  });
+
+  // The survivor's own repA plus the twin's repB is still ONE document read
+  // two ways: kept, and the line stays green.
+  it("keeps a remapped reading the survivor does not already carry (survivor repA + twin repB)", () => {
+    const db = legacyDb();
+    const printId = seedPrint(db);
+    const bytes = path.join(tmp, "r.txt");
+    fs.writeFileSync(bytes, "ACME Q2 2026");
+    const d1 = seedLegacyDoc(db, printId, "dj-release", "dj", null, "sha-same", bytes, true);
+    const d2 = seedLegacyDoc(db, printId, "user-drop", "u", null, "sha-same", bytes, true);
+    seedLine(db, printId, "revenue_q", "agreed", 1000, d1, [
+      cand("revenue_q", 1000, d1, "repA"),
+      cand("revenue_q", 1000, d2, "repB"),
+    ]);
+    const report = db.transaction(() => rebuildDocumentIdentity(db, { log: () => {} }))();
+
+    expect(report.candidates).toEqual({ before: 2, kept: 2, archived: 0 });
+    const line = db.prepare("SELECT state, candidates_json FROM print_watch_lines WHERE metric_id = 'revenue_q'").get() as { state: string; candidates_json: string };
+    expect(line.state).toBe("agreed");
+    expect((JSON.parse(line.candidates_json) as TaggedCandidate[]).map((c) => [c.doc_id, c.representation])).toEqual([
+      [d1, "repA"],
+      [d1, "repB"],
+    ]);
+    expect(report.linesChanged).toEqual([]);
   });
 
   it("keeps (remapped, never archived) a line whose ONLY evidence arrived through the merged twin", () => {

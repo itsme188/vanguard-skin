@@ -20,7 +20,7 @@ import {
   type DocGateVerdict,
 } from "./gate";
 import { reconcile } from "./reconcile";
-import { anyRoadAccepted, resolveSourceDocId } from "./store";
+import { isDocumentEligible, resolveSourceDocId } from "./store";
 import type {
   ExpectedValue,
   LineContract,
@@ -87,9 +87,12 @@ interface LineRow {
 
 /**
  * Evidence retraction (M16): archive every candidate that came from `docId` and
- * re-reconcile each affected NON-accepted line from its stored contract/expected.
- * An accepted line only loses the retracted candidates from its audit trail
- * (rule 6). Synchronous.
+ * re-reconcile each affected line whose reading is still the reconciler's to
+ * make. An ACCEPTED line only loses the retracted candidates from its audit
+ * trail (rule 6), and so does a RETIRED one — its contract no longer applies
+ * to this print, so it is never promoted and never counted as coverage, and
+ * re-deriving it off a shrunken pool could only resurrect it into a live
+ * state. Synchronous.
  *
  * Runs in its OWN transaction so archive-then-rewrite is atomic for callers
  * OUTSIDE `recordDelivery` too — the parse pipeline calls it standalone after a
@@ -150,7 +153,7 @@ function retractDocumentEvidenceInTxn(
       archive.run(printId, line.metric_id, JSON.stringify(c), reason);
       archived += 1;
     }
-    if (line.state === "accepted") {
+    if (line.state === "accepted" || line.state === "retired") {
       writeAudit.run(JSON.stringify(kept), printId, line.metric_id);
       continue;
     }
@@ -258,7 +261,8 @@ export function recordDelivery(
     } else {
       id = existing.id;
       isNew = false;
-      eligibleBefore = existing.gate_verdict === "accepted" && anyRoadAccepted(db, id);
+      // The ONE eligibility rule (`store.ts`), never a second hand-rolled copy.
+      eligibleBefore = isDocumentEligible(db, id);
       db.prepare(
         `UPDATE print_watch_documents SET last_seen_at = datetime('now'), text_sha256 = COALESCE(text_sha256, ?) WHERE id = ?`,
       ).run(textSha, id);
@@ -298,7 +302,10 @@ export function recordDelivery(
          road_reason = excluded.road_reason`,
     ).run(id, kind, source, url, road.ok ? "accepted" : "rejected", road.ok ? null : road.reason);
 
-    const eligible = content.ok && anyRoadAccepted(db, id);
+    // Read the rule back off the row: `content` was just written to it, and the
+    // road above was just upserted, so this is the same question the parse
+    // queue and the watcher's re-check ask — asked once, in one place.
+    const eligible = isDocumentEligible(db, id);
     // M16, second trigger: the last accepting road was withdrawn (a road verdict re-evaluated to rejected).
     if (existing && eligibleBefore && !eligible && content.ok) retractDocumentEvidence(db, id, "road-rejected");
 

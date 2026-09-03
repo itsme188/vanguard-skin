@@ -24,12 +24,15 @@
  *   phase 4  the donor print row goes LAST (its children are all gone).
  *
  * LOSSLESS is the rule for lines: evidence is appended, never dropped. Two
- * candidates that came from the SAME surviving document are still only one
- * reading of one content hash, so the second is ARCHIVED with its provenance
- * (R-B7) rather than kept — keeping it would let `reconcile()`'s `independent()`
- * read one document as two and green a line on a single source. And two
- * DIFFERING acceptances never pick a winner: the surviving line becomes a
- * `conflict` and `audit_json` carries both acceptances for the desk to resolve.
+ * candidates that are the SAME READING (same `representation`) of the same
+ * surviving document are one measurement counted twice, so the second is
+ * ARCHIVED with its provenance (R-B7b) rather than kept — keeping it would let
+ * `reconcile()`'s `independent()` read one document as two and green a line on
+ * a single source. A twin's repA/repB PAIR is not that: it is v1's two readings
+ * of one document, and both survive. That decision lives in ONE shared helper
+ * (`candidate-fate.ts`) with migration 089. And two DIFFERING acceptances never
+ * pick a winner: the surviving line becomes a `conflict` and `audit_json`
+ * carries both acceptances for the desk to resolve.
  */
 import fs from "node:fs";
 import type Database from "better-sqlite3";
@@ -38,7 +41,8 @@ import { reconcile } from "./reconcile";
 import { contentVerdict, roadVerdict, gateFingerprint, GATE_VERSION } from "./gate";
 import { textPathFor } from "./pdf";
 import { retractDocumentEvidence } from "./delivery";
-import { resolveSourceDocId } from "./store";
+import { dedupeRemappedCandidates } from "./candidate-fate";
+import { isDocumentEligible, resolveSourceDocId } from "./store";
 import type {
   DocumentRow,
   DocumentRoadRow,
@@ -153,8 +157,21 @@ function reevaluate(
   }
 }
 
-/** Re-verdict a set of surviving documents; a document that LOSES its content
- *  acceptance has its evidence retracted (M16), never left green on the sheet. */
+/**
+ * Re-verdict a set of surviving documents; a document that loses its
+ * ELIGIBILITY has its evidence retracted (M16), never left green on the sheet.
+ *
+ * ELIGIBILITY, not the content verdict alone (whole-branch review): a document
+ * is eligible when the gate accepts its content AND at least one road that
+ * delivered it is trusted for this event — `isDocumentEligible`, the same one
+ * rule `recordDelivery` and the parse queue use. A re-home moves the event
+ * DATE, and an `ir-page` road verdict is decided against that date: a newsroom
+ * post that was tonight's release for the donor is last quarter's for the
+ * target, so a document can keep its content acceptance and still lose its
+ * last accepting road. Retracting only on a content flip left that evidence
+ * green on the sheet. The reason distinguishes the two exactly as
+ * `recordDelivery` does, so the archive says which gate withdrew it.
+ */
 function reevaluateAll(
   db: Database.Database,
   docIds: Iterable<number>,
@@ -165,10 +182,12 @@ function reevaluateAll(
   for (const id of docIds) {
     const doc = read.get(id) as DocumentRow | undefined;
     if (!doc) continue;
-    const before = doc.gate_verdict;
+    const eligibleBefore = isDocumentEligible(db, id);
     reevaluate(db, doc, identity, notes);
-    const after = (read.get(id) as DocumentRow).gate_verdict;
-    if (before === "accepted" && after === "rejected") retractDocumentEvidence(db, id, "gate-rejected");
+    if (!eligibleBefore || isDocumentEligible(db, id)) continue;
+    const contentStillOk = (read.get(id) as DocumentRow).gate_verdict === "accepted";
+    retractDocumentEvidence(db, id, contentStillOk ? "road-rejected" : "gate-rejected");
+    notes.push(`doc ${id}: ${contentStillOk ? "no accepting road" : "content rejected"} for the target event — evidence retracted`);
   }
 }
 
@@ -347,36 +366,22 @@ export function mergePrintWatchState(ctx: EventMergeContext): EventMergeTableRes
   };
 
   /**
-   * R-B7: no line may carry TWO candidates from ONE surviving document. The
-   * doc ids that keep their own id are pre-registered by the caller so the
-   * decision is order-independent — a remapped twin is archived whether it sits
-   * before or after the survivor's own candidate. Anything archived keeps its
-   * full provenance in `print_watch_candidate_archive`; nothing is dropped.
+   * R-B7b: no line may carry two candidates that are the SAME READING —
+   * (document, representation) — of one surviving document. The decision is
+   * `dedupeRemappedCandidates`, the ONE helper migration 089 phase (5) uses
+   * too, so a rebuild and a merge can never disagree about a twin's evidence.
+   * The candidates already on the TARGET line are passed as the occupied
+   * slots; anything archived keeps its full provenance in
+   * `print_watch_candidate_archive` (the same `duplicate-of:<id>` reason 089
+   * writes, so one audit query covers both). Nothing is dropped.
    */
   const remapCandidates = (
     cands: TaggedCandidate[],
     metric: string,
-    docIdsKept: Set<number>,
+    taken: TaggedCandidate[],
   ): { kept: TaggedCandidate[]; touched: boolean } => {
-    const kept: TaggedCandidate[] = [];
-    let touched = false;
-    for (const c of cands) {
-      const survivor = survivorOf(c.doc_id);
-      if (survivor === null) {
-        kept.push(c);
-        docIdsKept.add(c.doc_id);
-        continue;
-      }
-      touched = true;
-      if (docIdsKept.has(survivor)) {
-        // The SAME reason prefix migration 089 phase (5) writes, so one audit
-        // query covers duplicates collapsed by the rebuild and by a merge.
-        archive.run(target.id, metric, JSON.stringify(c), `duplicate-of:${survivor}`);
-        continue;
-      }
-      docIdsKept.add(survivor);
-      kept.push({ ...c, doc_id: survivor });
-    }
+    const { kept, archived, touched } = dedupeRemappedCandidates(cands, { survivorOf }, taken);
+    for (const a of archived) archive.run(target.id, metric, JSON.stringify(a.candidate), a.reason);
     return { kept, touched };
   };
 
@@ -478,12 +483,10 @@ export function mergePrintWatchState(ctx: EventMergeContext): EventMergeTableRes
       archive.run(target.id, dl.metric_id, dl.candidates_json, "unparseable-json");
       lines.notes.push(`${dl.metric_id}: donor candidates_json unparseable — raw value archived`);
     }
-    const docIdsKept = new Set<number>(targetCands.map((c) => c.doc_id));
-    for (const c of donorRaw ?? []) if (survivorOf(c.doc_id) === null) docIdsKept.add(c.doc_id);
     const { kept: donorCands, touched } =
       donorRaw === null
         ? { kept: [] as TaggedCandidate[], touched: false }
-        : remapCandidates(donorRaw, dl.metric_id, docIdsKept);
+        : remapCandidates(donorRaw, dl.metric_id, targetCands);
     const donorSource =
       dl.source_doc_id === null
         ? null
