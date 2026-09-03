@@ -328,14 +328,24 @@ function reqHistoricalNewsOnce(
     ib.on("error", onError);
     signal?.addEventListener("abort", onAbort, { once: true });
 
-    ib.reqHistoricalNews(
-      reqId,
-      args.conId,
-      DJ_PROVIDER_CODES,
-      args.startDateTime,
-      args.endDateTime,
-      args.totalResults ?? 300,
-    );
+    // If the raw IBApi call throws SYNCHRONOUSLY — rather than erroring via
+    // the "error" event, its documented failure path — cleanup() would
+    // otherwise never run, leaking the 25s timer, the TWS listeners, and the
+    // abort listener on a signal that outlives this one request (review
+    // finding M1, fix round 1).
+    try {
+      ib.reqHistoricalNews(
+        reqId,
+        args.conId,
+        DJ_PROVIDER_CODES,
+        args.startDateTime,
+        args.endDateTime,
+        args.totalResults ?? 300,
+      );
+    } catch (err) {
+      cleanup();
+      reject(err);
+    }
   });
 }
 
@@ -391,7 +401,15 @@ function reqNewsArticleOnce(
     ib.on("newsArticle", onArticle);
     ib.on("error", onError);
     signal?.addEventListener("abort", onAbort, { once: true });
-    ib.reqNewsArticle(reqId, args.providerCode, args.articleId);
+
+    // Same synchronous-throw cleanup gap as reqHistoricalNewsOnce above
+    // (review finding M1, fix round 1).
+    try {
+      ib.reqNewsArticle(reqId, args.providerCode, args.articleId);
+    } catch (err) {
+      cleanup();
+      reject(err);
+    }
   });
 }
 
