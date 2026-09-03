@@ -122,6 +122,15 @@ export const SUPERSEDED_CONFIRM_COPY =
 export const SUPERSEDED_ACCEPT_CONFIRM_COPY =
   "Newer evidence disagrees with the number left on this line — re-verify before accepting. Accept it as it stands anyway?";
 
+/**
+ * The PER-CANDIDATE twin. Accepting a named document's figure can only be
+ * refused for one reason — a LATER document disagrees with the one picked — so
+ * the confirm has to ask about that, not about "the number left on this line"
+ * (there is none on a conflict row) and not about promoting.
+ */
+export const SUPERSEDED_CANDIDATE_CONFIRM_COPY =
+  "A later document disagrees with the figure you picked — re-verify before accepting. Lock in the figure you chose anyway?";
+
 const HOT_STATES: ReadonlySet<PrintWatchState> = new Set(["window_open", "acquired"]);
 const HOT_POLL_MS = 2_000;
 const COOL_POLL_MS = 30_000;
@@ -415,14 +424,18 @@ export function needsReverify(line: PrintWatchLine): boolean {
  *
  * The recovery path out of an un-accept (QA finding
  * `today-print-watch--unaccept-one-way-no-per-line-accept-promote-falls-to-gaap`):
- * `clearLineAccepted` parks an un-accepted line on 'pending' while LEAVING
- * its verified number in place, and the only other control that accepts
- * anything is the bulk "Accept all agreed" button — which takes 'agreed'
- * lines only. So an accidental un-accept was one-way until the watcher
+ * an un-accepted line with no candidate evidence to re-derive from parks on
+ * 'pending' while KEEPING its verified number, and the only other control that
+ * accepts anything is the bulk "Accept all agreed" button — which takes
+ * 'agreed' lines only. So an accidental un-accept was one-way until the watcher
  * happened to reconcile that line again (and once the watch window closes it
  * never does): the desk could watch a correct, still-rendered number sit on
  * the sheet with no way to put it back, while Promote silently fell through
  * to the GAAP basis.
+ *
+ * A line that DID re-derive lands on a real reconciler state and is covered by
+ * the rule below — except 'conflict', whose rivals get their own per-candidate
+ * controls (`acceptableRivals`).
  *
  * The rule mirrors the accept route's own state guard, minus the states that
  * have no number to accept:
@@ -440,6 +453,56 @@ export function canAcceptLine(line: PrintWatchLine): boolean {
   if (line.state === "accepted") return false;
   if (line.state === "conflict") return false;
   return line.value !== null;
+}
+
+/** Stable identity of one candidate inside a line's pool — the document, the
+ *  reading of it, and the figure. Two entries with the same key are the same
+ *  piece of evidence recorded twice, and must not become two buttons. */
+function candidateKey(c: TaggedCandidate): string {
+  return `${c.doc_id}|${c.representation}|${c.value}|${c.value_high}`;
+}
+
+/**
+ * The rival figures a CONFLICT row offers a per-candidate "accept this"
+ * control for (QA finding `today-print-watch--unaccept-after-supersede-keeps-
+ * old-value-hides-newer-candidate`, user ruling 2026-09-02).
+ *
+ * A conflict line carries no top-level number — the reconciler refuses to pick
+ * between disagreeing documents, and `canAcceptLine` refuses it for the same
+ * reason. Since un-accepting a superseded line now re-derives it into exactly
+ * this state, "no control at all" would leave the desk with nowhere to go on a
+ * corrected print. So the resolution is the honest one: accept the figure from
+ * the document you read, by name.
+ *
+ * Excluded, all for the same reason the route refuses them:
+ *   - flash — a wire flash has no document of record (`source_doc_id` is a real
+ *     FK), and it is expected to round differently from the eventual document.
+ *   - not_disclosed / value null — no figure to lock in.
+ * Non-conflict lines return nothing: their state IS the reconciler's current
+ * reading, and the line-level accept control already covers them.
+ */
+export function acceptableRivals(line: PrintWatchLine): TaggedCandidate[] {
+  if (line.state !== "conflict") return [];
+  let candidates: TaggedCandidate[];
+  try {
+    const parsed = JSON.parse(line.candidates_json) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    candidates = parsed as TaggedCandidate[];
+  } catch {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const rivals: TaggedCandidate[] = [];
+  for (const c of candidates) {
+    if (c.representation === "flash") continue;
+    if (c.not_disclosed || c.value === null) continue;
+    const key = candidateKey(c);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rivals.push(c);
+  }
+  return rivals;
 }
 
 // ── state chip presentation (text + icon — never color alone) ─────────
@@ -728,6 +791,8 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
   const [promoting, setPromoting] = useState(false);
   const [unacceptingId, setUnacceptingId] = useState<string | null>(null);
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
+  /** `metric|doc|representation` of the per-candidate accept in flight. */
+  const [acceptingCandidateKey, setAcceptingCandidateKey] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -739,7 +804,9 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
   const noEventId = print.eventId === undefined;
 
   async function postAccept(body: {
-    accept?: string[];
+    /** A metric id accepts the whole line; the object form accepts ONE named
+     *  candidate off a conflict row (see `acceptableRivals`). */
+    accept?: Array<string | { metric_id: string; doc_id: number; representation: string }>;
     unaccept?: string[];
     promoteHeadline?: boolean;
     force?: boolean;
@@ -773,18 +840,27 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
         // landed since (fix wave, finding B). Its own confirm, its own
         // override flag — never the pre-print `force`.
         if (res.status === 409 && data?.code === "superseded" && !body.forceSuperseded) {
-          // Both gates share the code; only the click that hit them differs.
+          // Three gates share the code; only the click that hit them differs,
+          // and each one asks a different question of the desk.
           const isPromote = body.promoteHeadline === true;
+          const isCandidate =
+            !isPromote && (body.accept ?? []).some((entry) => typeof entry === "object");
           const confirmed = window.confirm(
             `${data.error ?? "Newer evidence disagrees with the accepted number."}\n\n${
-              isPromote ? SUPERSEDED_CONFIRM_COPY : SUPERSEDED_ACCEPT_CONFIRM_COPY
+              isPromote
+                ? SUPERSEDED_CONFIRM_COPY
+                : isCandidate
+                  ? SUPERSEDED_CANDIDATE_CONFIRM_COPY
+                  : SUPERSEDED_ACCEPT_CONFIRM_COPY
             }`,
           );
           if (confirmed) return postAccept({ ...body, forceSuperseded: true });
           setActionError(
             isPromote
               ? "Promote cancelled — re-verify the superseded line against the release, then accept the corrected figure."
-              : "Accept cancelled — re-verify this line against the release, then accept the corrected figure.",
+              : isCandidate
+                ? "Accept cancelled — a later document disagrees; re-read the release, then accept the figure it prints."
+                : "Accept cancelled — re-verify this line against the release, then accept the corrected figure.",
           );
           return false;
         }
@@ -848,6 +924,33 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
       if (ok) setActionNote(`Accepted ${metricId} — verify it against the release before promoting.`);
     } finally {
       setAcceptingId(null);
+    }
+  }
+
+  /**
+   * Per-CANDIDATE accept — how a conflict row gets resolved (QA finding
+   * `…unaccept-after-supersede…`). The desk names the document whose figure it
+   * read, so the sheet records WHICH disclosure it verified rather than a bare
+   * number; the rejected rivals stay in the evidence list underneath.
+   *
+   * The route refuses this with 409 `superseded` only when a LATER document
+   * disagrees with the one picked — `postAccept` answers that with the
+   * candidate-side confirm, never the promote copy.
+   */
+  async function acceptCandidate(metricId: string, docId: number, representation: string) {
+    const key = `${metricId}|${docId}|${representation}`;
+    if (acceptingCandidateKey) return;
+    setAcceptingCandidateKey(key);
+    setActionNote(null);
+    try {
+      const ok = await postAccept({ accept: [{ metric_id: metricId, doc_id: docId, representation }] });
+      if (ok) {
+        setActionNote(
+          `Accepted ${metricId} from doc #${docId} — the other readings stay on the sheet as evidence.`,
+        );
+      }
+    } finally {
+      setAcceptingCandidateKey(null);
     }
   }
 
@@ -999,6 +1102,10 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
                 unaccepting={unacceptingId === line.metric_id}
                 onAccept={() => acceptLine(line.metric_id)}
                 accepting={acceptingId === line.metric_id}
+                onAcceptCandidate={(docId, representation) =>
+                  acceptCandidate(line.metric_id, docId, representation)
+                }
+                acceptingCandidateKey={acceptingCandidateKey}
                 noEventId={noEventId}
               />
             ))}
@@ -1047,6 +1154,8 @@ function LineRow({
   unaccepting,
   onAccept,
   accepting,
+  onAcceptCandidate,
+  acceptingCandidateKey,
   noEventId,
 }: {
   line: PrintWatchLine;
@@ -1055,6 +1164,8 @@ function LineRow({
   unaccepting: boolean;
   onAccept: () => void;
   accepting: boolean;
+  onAcceptCandidate: (docId: number, representation: string) => void;
+  acceptingCandidateKey: string | null;
   noEventId: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -1072,6 +1183,10 @@ function LineRow({
       candidates = [];
     }
   }
+
+  // Which of the rendered rivals can actually be locked in — one control per
+  // distinct figure, flash / not-disclosed entries stay evidence-only.
+  const rivalKeys = new Set(acceptableRivals(line).map(candidateKey));
 
   return (
     <>
@@ -1147,7 +1262,10 @@ function LineRow({
               onClick={() => setExpanded((v) => !v)}
               className="relative text-[11px] text-ink-faint hover:text-ink pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
             >
-              {expanded ? "hide ▲" : "snippet ▾"}
+              {/* On a conflict row the expander is the ONLY road to the
+                  per-candidate accept controls, so it names what is behind it
+                  rather than reading like an optional snippet. */}
+              {expanded ? "hide ▲" : rivalKeys.size > 0 ? `${rivalKeys.size} rival figures ▾` : "snippet ▾"}
             </button>
           )}
         </td>
@@ -1157,15 +1275,38 @@ function LineRow({
           <td colSpan={6} className="pb-2.5 pr-3">
             {line.state === "conflict" && candidates.length > 0 ? (
               <ul className="space-y-1">
-                {candidates.map((c, i) => (
-                  <li key={`${c.doc_id}-${c.representation}-${i}`} className="text-[11px] text-ink-dim font-mono">
-                    <span className="text-ink-faint">{candidateSourceLabel(c, documents)}:</span>{" "}
-                    {c.not_disclosed
-                      ? "not disclosed"
-                      : formatContractRange(line.contract, c.value, c.value_high)}
-                    {c.snippet && <span className="text-ink-faint italic"> — “{c.snippet}”</span>}
-                  </li>
-                ))}
+                {candidates.map((c, i) => {
+                  // Per-candidate accept (QA: unaccept-after-supersede). A
+                  // conflict line has no number of its own, so the desk locks
+                  // in the reading it verified BY DOCUMENT — and the rivals it
+                  // rejected stay listed right here as the audit trail.
+                  const key = candidateKey(c);
+                  const inFlight = `${line.metric_id}|${c.doc_id}|${c.representation}`;
+                  return (
+                    <li key={`${c.doc_id}-${c.representation}-${i}`} className="text-[11px] text-ink-dim font-mono">
+                      <span className="text-ink-faint">{candidateSourceLabel(c, documents)}:</span>{" "}
+                      {c.not_disclosed
+                        ? "not disclosed"
+                        : formatContractRange(line.contract, c.value, c.value_high)}
+                      {c.snippet && <span className="text-ink-faint italic"> — “{c.snippet}”</span>}
+                      {rivalKeys.has(key) && (
+                        <button
+                          type="button"
+                          onClick={() => onAcceptCandidate(c.doc_id, c.representation)}
+                          disabled={acceptingCandidateKey !== null || noEventId}
+                          title={
+                            noEventId
+                              ? "This print has no event reference from the server — cannot accept."
+                              : `Lock in this reading of ${line.contract.label} as the verified figure`
+                          }
+                          className="relative ml-2 text-[11px] text-ink-dim hover:text-up disabled:opacity-50 underline decoration-dotted underline-offset-2 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                        >
+                          {acceptingCandidateKey === inFlight ? "Accepting…" : "accept this"}
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             ) : line.snippet ? (
               <p className="text-[11px] text-ink-faint italic">“{line.snippet}”</p>

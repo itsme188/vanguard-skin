@@ -429,7 +429,13 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
             <dl className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2 text-sm">
               <div>
                 <dt className="text-[11px] uppercase tracking-widest text-ink-faint">Start</dt>
-                <dd className="text-ink font-mono">{fmtDate(twrResult?.startDate)}</dd>
+                {/* measurementStartDate, not startDate: the chained return
+                    opens at the prior month-end close, so that — not the
+                    first in-window snapshot — is the date this card, its
+                    Days cell and the annualized figures above all share.
+                    Pairing startDate with an annualized figure is the
+                    2026-09-02 QA defect (card 181 days, figure implied 211). */}
+                <dd className="text-ink font-mono">{fmtDate(twrResult?.measurementStartDate)}</dd>
               </div>
               <div>
                 <dt className="text-[11px] uppercase tracking-widest text-ink-faint">End</dt>
@@ -437,18 +443,26 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
               </div>
               <div>
                 <dt className="text-[11px] uppercase tracking-widest text-ink-faint">Days</dt>
-                {/* displayDays, not totalDays: this cell sits between the
-                    Start and End cells above, so it must be THEIR span.
-                    totalDays is the (usually ~30 days longer) window the
-                    return was really earned over — it anchors the
-                    annualized figure, not this label. */}
-                <dd className="text-ink font-mono">{twrResult?.displayDays ?? "—"}</dd>
+                {/* totalDays = Start (the measurement anchor) → End, and the
+                    denominator annualize() divides by. One window across all
+                    three cells and the annualized figures. */}
+                <dd className="text-ink font-mono">{twrResult?.totalDays ?? "—"}</dd>
               </div>
               <div>
                 <dt className="text-[11px] uppercase tracking-widest text-ink-faint">Cash flows</dt>
                 <dd className="text-ink font-mono">{xirrResult?.cashFlowCount ?? "—"}</dd>
               </div>
             </dl>
+            {/* Only when the chain really does open before the first
+                in-window snapshot — when the requested start already lands
+                on an anchor (e.g. 5Y) the two dates coincide and the
+                caption would be noise. */}
+            {twrResult && twrResult.measurementStartDate !== twrResult.startDate && (
+              <p className="mt-3 text-xs text-ink-faint">
+                Chained from the prior month-end anchor — Start, Days and the annualized figures
+                all describe that window.
+              </p>
+            )}
             {twrResult?.perAccount.some((a) => a.isPartial) && (
               <p className="mt-3 text-[12px] text-ink-faint italic">
                 Some months had to be skipped due to gaps in monthly snapshots — the TWR figure
@@ -476,9 +490,11 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                         <div>{acc.accountName}</div>
                         {/* Compact per-account coverage window — a shorter
                             account history next to a longer headline window
-                            should be visibly different, not implied equal. */}
+                            should be visibly different, not implied equal.
+                            Anchored the same way as the Period window card,
+                            because it labels the annualized column beside it. */}
                         <div className="text-[11px] text-ink-faint font-mono">
-                          {fmtMonthYear(acc.startDate)} – {fmtMonthYear(acc.endDate)}
+                          {fmtMonthYear(acc.measurementStartDate)} – {fmtMonthYear(acc.endDate)}
                         </div>
                       </td>
                       <td className="py-2 text-right font-mono tabular-nums">

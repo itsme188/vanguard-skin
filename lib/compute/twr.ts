@@ -16,36 +16,45 @@ import {
 export interface TwrResult {
   accountId: number;
   accountName: string;
+  /** First snapshot INSIDE the requested window. Not the date the return
+   *  chain opens on — see `measurementStartDate`, which is what any surface
+   *  showing a window beside an annualized figure must use. */
   startDate: string;
+  /** The date the chained return actually OPENS on: the anchor behind the
+   *  first sub-period that made it into the chain. Usually EARLIER than
+   *  `startDate` — a bounded window (YTD/6M/1Y/…) chains its first month
+   *  off the prior month-end close, so the return covers ~30 days that
+   *  `startDate` never shows.
+   *
+   *  `measurementStartDate → endDate` spans exactly `totalDays`, and that is
+   *  the window `totalReturn` and `annualizedReturn` describe. Report all
+   *  four together or none of them: showing `startDate` next to
+   *  `annualizedReturn` is the 2026-09-02 QA defect (card said 181 days,
+   *  the annualized figure implied 211). */
+  measurementStartDate: string;
   endDate: string;
   totalReturn: number; // decimal, e.g. 0.123 = 12.3%
   annualizedReturn: number | null; // null if period too short (<30 days)
-  /** The window `totalReturn` was actually earned over, in days: from the
-   *  anchor that opened the FIRST chained sub-period through `endDate`.
-   *  That anchor is usually EARLIER than `startDate` — a bounded window
-   *  (6M/1Y/…) chains its first month off the prior month-end snapshot, so
-   *  the return covers ~30 days more than `startDate → endDate` shows.
-   *  This — never `displayDays` — is the annualization denominator: feeding
-   *  a short denominator into `annualize()` inflates the headline figure
-   *  (2026-08-31 regression, ~15.6% reported for a true ~12.8%). */
+  /** `measurementStartDate → endDate` in days — the window `totalReturn`
+   *  was actually earned over, and the only correct annualization
+   *  denominator: feeding a shorter one into `annualize()` inflates the
+   *  headline figure (2026-08-31 regression, ~15.6% reported for a true
+   *  ~12.8%). */
   totalDays: number;
-  /** `startDate → endDate` in days — the span of the window the UI DISPLAYS,
-   *  so START/END/DAYS reconcile on screen. Presentation only: never do
-   *  return math with it. */
-  displayDays: number;
   monthsIncluded: number;
   isPartial: boolean; // true if some months had to be skipped
 }
 
 export interface PortfolioTwrResult {
+  /** First snapshot inside the window — see TwrResult.startDate. */
   startDate: string;
+  /** Where the chained return opens — see TwrResult.measurementStartDate. */
+  measurementStartDate: string;
   endDate: string;
   totalReturn: number;
   annualizedReturn: number | null;
-  /** Measurement window — see TwrResult.totalDays. */
+  /** measurementStartDate → endDate — see TwrResult.totalDays. */
   totalDays: number;
-  /** Displayed START → END span — see TwrResult.displayDays. */
-  displayDays: number;
   perAccount: TwrResult[];
   isPartial: boolean; // true if some months had to be skipped from the chain (mirrors TwrResult.isPartial)
 }
@@ -442,26 +451,24 @@ export function computeTwr(
     const firstDate =
       snapshots[0].month_end_date;
     const lastDate = snapshots[snapshots.length - 1].month_end_date;
-    // Two different day counts, deliberately kept apart:
-    //   displayDays — firstDate (the month-END anchor the UI shows as START)
-    //     → lastDate, so the on-screen START/END/DAYS reconcile.
-    //   totalDays — where the chained return actually opens → lastDate.
-    //     Whenever the first sub-period was chained off a value from BEFORE
-    //     firstDate (a prior-window snapshot, or the month's own opening
-    //     balance), that is ~30 days earlier than firstDate. Annualizing a
-    //     return over the shorter display span inflates it.
-    const displayDays = daysBetween(firstDate, lastDate);
-    const totalDays = daysBetween(measurementStart ?? firstDate, lastDate);
+    // Where the chained return actually opens. Whenever the first
+    // sub-period was chained off a value from BEFORE firstDate (a
+    // prior-window snapshot, or the month's own opening balance), that is
+    // ~30 days earlier than firstDate — and it, not firstDate, is the date
+    // every window label sitting beside an annualized figure must show
+    // (2026-09-02 QA ruling: START / DAYS / annualized describe ONE window).
+    const measurementStartDate = measurementStart ?? firstDate;
+    const totalDays = daysBetween(measurementStartDate, lastDate);
 
     perAccount.push({
       accountId: account.id,
       accountName: account.name,
       startDate: firstDate,
+      measurementStartDate,
       endDate: lastDate,
       totalReturn,
       annualizedReturn: annualize(totalReturn, totalDays),
       totalDays,
-      displayDays,
       monthsIncluded: subPeriodReturns.length,
       isPartial,
     });
@@ -481,11 +488,11 @@ export function computeTwr(
     const acct = perAccount[0];
     return {
       startDate: acct.startDate,
+      measurementStartDate: acct.measurementStartDate,
       endDate: acct.endDate,
       totalReturn: acct.totalReturn,
       annualizedReturn: acct.annualizedReturn,
       totalDays: acct.totalDays,
-      displayDays: acct.displayDays,
       perAccount,
       isPartial: acct.isPartial,
     };
@@ -758,20 +765,21 @@ export function computeTwr(
     coveredSnapshots.length > 0
       ? coveredSnapshots[coveredSnapshots.length - 1].month_end_date
       : effectiveEnd;
-  // Same display/measurement split as the per-account counts above.
-  const portfolioDisplayDays = daysBetween(portfolioFirstDate, portfolioLastDate);
+  // Same measurement anchor as the per-account counts above.
+  const portfolioMeasurementStartDate =
+    portfolioMeasurementStart ?? portfolioFirstDate;
   const portfolioTotalDays = daysBetween(
-    portfolioMeasurementStart ?? portfolioFirstDate,
+    portfolioMeasurementStartDate,
     portfolioLastDate
   );
 
   return {
     startDate: portfolioFirstDate,
+    measurementStartDate: portfolioMeasurementStartDate,
     endDate: portfolioLastDate,
     totalReturn: portfolioTotalReturn,
     annualizedReturn: annualize(portfolioTotalReturn, portfolioTotalDays),
     totalDays: portfolioTotalDays,
-    displayDays: portfolioDisplayDays,
     perAccount,
     isPartial: portfolioPartial,
   };

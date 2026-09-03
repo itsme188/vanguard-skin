@@ -30,6 +30,8 @@ function createTestDb(): Database.Database {
       security_type TEXT DEFAULT 'stock',
       multiplier REAL DEFAULT 1,
       sector TEXT,
+      industry TEXT,
+      geography TEXT,
       market_cap_category TEXT,
       style TEXT,
       duration_years REAL,
