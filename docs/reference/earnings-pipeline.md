@@ -608,3 +608,142 @@ Live print-time surface: when an armed earnings event prints, the bogey sheet fi
 - *Unheld names have no contract id, so the wire is off.* `enrichSecurities` walks HELD securities only; an armed event on a name the desk does not own arrives with `ib_con_id NULL` and the panel reads "DJ: no conId — wire off" (also silencing straddle intel and the TWS reaction snapshot). The DJ lane now backfills the conId once per print through `enrichSecurities(db, [securityId])` when TWS is up (TWS down is not an attempt; retried when it returns), and the coverage note says which of the four outcomes happened.
 
 Recovery that night: the EX-99.1 was fetched from EDGAR and posted to `POST /api/print-watch/drop` (human route: session cookie + `vgs_csrf` + `x-csrf-token` + a trusted `Origin` header); the drop parsed in 35s and all four greened lines matched the release. Still open from that run: a same-day manual add gets no preview, so the worksheet auto-print waits forever ("armed but no local preview yet"); the sheet has no line for the metric the name is actually traded on (product-revenue guidance) because contract lines derive from bogey rows.
+
+## Armed coverage + prepare steps (v2 slice A)
+
+Spec: `docs/superpowers/specs/2026-09-02-live-print-v2-design.md` §4.1 (rev 4); plan:
+`docs/superpowers/plans/2026-09-02-live-print-v2-slice-a.md`; rulings: `docs/DECISIONS.md`
+(2026-09-03 entry). Migration 088. **The premise: arming a worksheet means "I care about this
+print", so it is the coverage signal** — an armed event gets what a held name's event gets, on the
+Mac and in the Worker fallback, and arming starts the preparation a held name gets for free.
+
+**Two questions, two answers.** A decision about a SPECIFIC print asks
+`coveredForEvents(db, rows)` (`lib/queries/briefing-symbols.ts`): held or watchlist, family-aware
+through `issuerSiblings`, **OR** the event is armed — where "armed" is cluster-aware (R11): the
+event itself, or any unsuperseded earnings row sharing its `(UPPER(symbol), event_date)`, carries
+an `earnings_worksheet_flags` row. Twins of one `(symbol, date)` ARE one print, and the sweep's
+dedupe and the cockpit's dedupe can pick different twins — arming the row on screen must cover the
+row the engine acts on. `isEventArmed` / `getArmedEventIds`
+(`lib/queries/earnings-worksheet-flags.ts`) keep their exact per-event meaning; the widening lives
+only in the coverage helper. A SYMBOL-level question with no event in hand (the transcript
+consumers) uses `SymbolStatus`, which gained a fourth value `armed` — precedence
+`held` > `watchlist` > `armed` > `neither`, horizon `[todayET(), +14 days]`.
+
+**`armed` is display-only.** It renders as a chip on the Today Earnings Hub row, on the earnings
+cockpit rows, and in the digest's today's-reporters block plus its byte-parity Worker mirror. It
+must never gate an event decision. `tests/repo/symbol-status-consumers.test.ts` is the guard: it
+walks `lib/`, `app/` and `scripts/` for the six helper names, and fails on (1) a call site missing
+from the allowlist, (2) an allowlist entry whose call site is gone, (3) any file classified
+`selection-covered` that compares a status to `"armed"`. Effects in the allowlist are
+`selection-covered`, `symbol-armed`, `unchanged-push-gate`, `display`, `helper` — **the push gates
+(`enrichment-runner`, `cloud-reconcile`, `read-through-push`, and the Worker's `calendar-enrich`)
+are deliberately unchanged: armed does not open a push.**
+
+**Prepare steps.** Arming enqueues one `pending` row per registered step into
+`earnings_prepare_steps` (PK `(event_id, step)`), and the route kicks `runPrepareSteps` without
+awaiting it (D6 — the rescan makes model calls). Durability is the sweep, not the kick: every
+earnings sweep tick first reconciles missing rows for every armed, unsuperseded, not-yet-past
+event and then runs everything runnable, so a crashed kick, an arm whose enqueue never landed, or
+a step registered after the arm is picked up within one tick. Slice A registers four steps
+(`lib/earnings/prepare-steps/`); the runner selects work `ORDER BY step`, so **run order is
+alphabetical and registration order buys nothing**:
+
+| Step | Does | Fingerprint over |
+|---|---|---|
+| `con_id` | Resolves the security's IBKR contract id via `enrichSecurities` when it is missing | security row id + current `ib_con_id` |
+| `consensus_row` | Upserts the engine-owned `finnhub` bogey row from the event's vendor estimates | event source + the parsed vendor pair + the event's consensus columns |
+| `intel` | Runs `ensureIntelForEvents` so an armed-but-unheld name has implied-move data by print time | symbol + event date + release time |
+| `newsletter_rescan` | Re-reads recent research articles for THIS event through the pure per-event path | event id + symbol + window + extractor version |
+
+Outcomes are `done`, `pending` and `failed`. **`pending` is a precondition failure, not an
+attempt** — TWS being down, or intel not yet computed, costs nothing and retries next tick; only
+`done` and `failed` increment `attempts`. Claiming is compare-and-set on a fresh token
+(`pending`/`failed`, or a `claimed` row older than `PREPARE_CLAIM_STALE_MS`), and finalisation is
+CAS on that same token, so a timed-out worker's outcome can never land on top of its successor's.
+A takeover of a dead worker's claim counts the dead attempt. `PREPARE_MAX_ATTEMPTS` = 5 retires a
+row — **and the cap gates takeovers too** (R14): a row stuck `claimed` by a dead process was
+otherwise re-claimed every tick forever with its side effect re-invoked each time.
+
+Every invocation is raced against `PREPARE_STEP_TIMEOUT_MS` (4 minutes, deliberately INSIDE the
+5-minute stale window so the owner always finalises before any takeover). On the deadline the
+runner aborts `ctx.signal` and books the row `failed`. **Step authors must check
+`ctx.signal.aborted` between units of work and keep side effects idempotent upserts** — an aborted
+invocation may have written before it was cut off, and the row will be retried. `signal` is an
+ADDITIVE field on `PrepareStepContext` (R13); a step typing `ctx` as `{ now }` stays assignable,
+which is what lets slice B register through its shim.
+
+Fingerprints are checked BEFORE the attempt cap, on purpose: **drift revives a spent row.** A step
+that failed five ticks must come back when its inputs change (the newsletter lands, the date is
+corrected) — checking the cap first would make it terminal forever. A fingerprint that throws
+fails only its own row; the pass carries on.
+
+**Newsletter scan ledger.** `earnings_bogey_scans` (PK `(event_id, article_id,
+extractor_version)`, statuses `claimed | hit | no_numbers | error`) makes the rescan resumable: the
+row is claimed BEFORE the model call, so a crash mid-call leaves a stale claim the next tick takes
+over rather than an invisible gap, and `SCAN_MAX_ATTEMPTS` = 3 caps the cost of a crash loop per
+pair. Candidates are articles from the last `RESCAN_WINDOW_DAYS` = 14 over the same corpus floor
+the global scan uses, and the per-event path NEVER stamps `research_articles.bogeys_scanned_at`.
+Three rulings shape the cost:
+
+- **already-extracted pairs are skipped** (R20) — when a bogey row for this event already
+  references that article (the normal case for a name that was held, so covered, and is then
+  armed), the pair is banked as a `hit` with no model call;
+- **bogey reads order by the article's issue date**, upload stamp as fallback (R21) — newsletter
+  bogey labels already carry the issue date, so two issues of one letter are two rows; a preview
+  block that shows only the first few must show the NEWEST issues. Write order stays newest-first
+  so `compileContracts`' rowid-ascending rule is unaffected;
+- **each pass has a soft budget** (R22) — a bounded number of model calls and a wall-clock limit,
+  both strictly inside the runner's hard deadline, after which the step returns `pending` and
+  resumes next tick. A hard-deadline `failed` costs an attempt and, repeated, would retire the step.
+
+A pass also returns `pending`, never `done`, when a pair is held by another pass's LIVE claim —
+swallowing it would pin the step `done` until fingerprint drift and that pair would never be
+scanned. *(R20–R22 landed in the Task 11 fix round, `750c8c0`.)*
+
+**Merge registry.** `mergeEarningsEventState(db, donorId, targetId)`
+(`lib/earnings/event-merge.ts`) folds a doomed event's state into the surviving one. It is
+SYNCHRONOUS, SQL-only, must run inside the caller's open transaction, and must run BEFORE the
+donor `calendar_events` row is deleted (everything cascades on that delete). Built-in rules:
+`earnings_worksheet_flags` (target keeps its row; a print stamp from either side survives so the
+auto-pass cannot double-print), `earnings_prepare_steps` (equal fingerprints keep the more
+advanced status by a `pending < failed < claimed < done` lattice; differing fingerprints reset to
+`pending` so the runner re-derives against the TARGET), `earnings_bogey_scans` (terminal
+precedence `hit > no_numbers > error > claimed` — a donor hit is never lost), `earnings_bogeys`
+(the existing repoint, plus a collision rule where the newer row wins: content unioned
+newer-then-older, provenance from the newer row only), and the email/skip audit. The audit merge
+is **no-refire**: a delivered phase on either side counts as delivered for the target, live
+`in_progress` claims are never touched, and **the preview plausibility gate applies here too**
+(R15) — a preview whose send date could not cover the target print stays behind and dies with its
+donor rather than fabricating history and blocking the genuine preview forever. Sibling slices
+register their own tables through `registerEventMergeHandler`; handlers run after the built-ins,
+in registration order, reached through one lazily-invoked composition root
+(`lib/earnings/registry-bootstrap.ts`) so no entry point can forget one. **Four call sites:** the
+user date correction, the automatic date reconciler, and BOTH delete-with-hand-back paths (R12 the
+suppress-delete of a sync row, R12b the manual-row delete) — the arm must follow the print, or an
+arm dies with a row whose print survives. The merge never writes the outbox itself; the CALLER
+writes one row per outer transaction when the report says `changed`.
+
+**Cloud outbox.** `cloud_outbox` `(kind, generation, payload_json, written_at, sent_at,
+send_error)` is how the Worker learns anything about armed worksheets. Every mutation that changes
+the armed projection — arm, disarm, manual add/edit, correction, both delete paths — appends one
+`armed-events` row INSIDE its own IMMEDIATE transaction, so the row and the state it describes
+commit together and the generation is allocated under the write lock. The payload is the **full
+current armed list plus tombstones**, never a diff, which is what makes a dropped or replayed row
+harmless. An identical projection writes nothing and reports the generation that already stands
+(D10). Tombstones ride for two ET days past the event date OR 48 hours past the removal, whichever
+lasts longer (D7), so a removal can never be dropped before a snapshot that omits the event
+exists. Every sweep tick re-derives the projection before draining (R8) — a cheap no-op when
+nothing changed, and a ≤15-minute self-heal for any un-arm path that missed its write or for state
+that predates the outbox. The drain sends unsent rows in generation order, stops at the first
+failure (never N+1 before N), and serialises through one in-process chain. Mutating routes attempt
+an immediate push, but the WHOLE wait is capped at 2 seconds (R9): the chained drain races a timer
+and, when the timer wins, keeps running in the background while the request returns. Never make a
+user wait on the cloud. Worker side, KV key, resolver and the post-deploy sequence:
+`docs/reference/cron-and-workers.md` §15.
+
+**Snapshot v11.** `scripts/snapshot-state-to-r2.ts` reads everything in one transaction and adds
+`armedEvents` (the same projection) and `armedGeneration` (the outbox maximum observed at that
+read — a WATERMARK the Worker compares a KV delta against, not a count), plus the vendor EPS on
+each bogey row. `lib/earnings/armed-events-projection.ts` owns the projection so both the script
+and the mutations build the identical shape; `ARMED_EVENT_PROJECTION_KEYS` is parity-pinned
+against the Worker's `ARMED_EVENT_ENTRY_KEYS`.
