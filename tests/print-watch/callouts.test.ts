@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   stripHtmlToText,
   documentText,
+  evidenceSha256,
   parseValueText,
   numbersIn,
   contentWords,
@@ -15,6 +16,7 @@ import {
   vsBogeyText,
   formatValue,
 } from "@/lib/print-watch/callouts";
+import { sha256Hex } from "@/lib/print-watch/delivery";
 
 const TEXT =
   "Acme Corp today reported fourth quarter results. Annual recurring revenue (ARR) reached $3.74 billion, up 24% year over year. " +
@@ -38,6 +40,10 @@ describe("parseValueText", () => {
     expect(numbersIn("ARR reached $3.74 billion, up 24% year over year", "usd")).toEqual([3.74e9]);
     expect(numbersIn("ARR reached $3.74 billion, up 24% year over year", "percent")).toEqual([24]);
     expect(numbersIn("$1.12 on a non-GAAP basis", "per_share")).toEqual([1.12]);
+  });
+  it("excludes a fiscal-year token from count, but not a real count (R-D17 minor)", () => {
+    expect(numbersIn("backlog visibility into fiscal 2026 remains strong", "count")).toEqual([]);
+    expect(numbersIn("The company had 712 customers", "count")).toEqual([712]);
   });
 });
 
@@ -73,6 +79,26 @@ describe("labelNorm / extractGuidanceMetrics / sheetLineKeys", () => {
         { metric_id: "revenue_q", label: "Revenue", definition: "", basis: "na", period: "Q", currency: "USD", unit: "usd", kind: "point", segment: null },
       ]),
     ).toEqual(["revenue"]);
+  });
+  it("does not mangle a decimal figure, a spelled-out 'between X and Y' range, a fully spelled-out scale-word range, or a percent-with-decimal (R-D17)", () => {
+    expect(extractGuidanceMetrics(["Operating income of $206.5M"])).toEqual([
+      { key: "operating income", unit: "usd", value: 206.5e6, value_high: null, source_index: 0 },
+    ]);
+    expect(extractGuidanceMetrics(["Operating income between $206M and $208M"])).toEqual([
+      { key: "operating income", unit: "usd", value: 206e6, value_high: 208e6, source_index: 0 },
+    ]);
+    expect(extractGuidanceMetrics(["Revenue of $875 million to $878 million"])).toEqual([
+      { key: "revenue", unit: "usd", value: 875e6, value_high: 878e6, source_index: 0 },
+    ]);
+    expect(extractGuidanceMetrics(["Revenue growth of 24.5%"])).toEqual([
+      { key: "revenue growth", unit: "percent", value: 24.5, value_high: null, source_index: 0 },
+    ]);
+  });
+  it("vsBogeyText against those clauses gives a sane comparison, never a nonsense delta (R-D17)", () => {
+    const pointGuidance = extractGuidanceMetrics(["Operating income of $206.5M"]);
+    expect(vsBogeyText("operating income", { value: 207e6, value_high: null, unit: "usd" }, pointGuidance)).toBe("vs guide $206.5M (in-line)");
+    const rangeGuidance = extractGuidanceMetrics(["Operating income between $206M and $208M"]);
+    expect(vsBogeyText("operating income", { value: 207.2e6, value_high: null, unit: "usd" }, rangeGuidance)).toBe("vs guide $206.0M–$208.0M (within range)");
   });
 });
 
@@ -188,6 +214,7 @@ describe("documentText", () => {
       expect(await documentText({ bytes_path: path.join(dir, "b.txt") })).toBe("plain $1.12 text");
       expect(await documentText({ bytes_path: path.join(dir, "c.pdf") })).toBe("poppler text $6.9 billion");
       expect(stripHtmlToText("<div>a</div><div>b</div>")).toBe("a b");
+      expect(evidenceSha256(await documentText({ bytes_path: path.join(dir, "a.html") }))).toBe(sha256Hex("ARR of $3.74 billion"));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
