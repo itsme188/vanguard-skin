@@ -908,8 +908,17 @@ export function deleteCalendarEvent(
     // findEmailCandidates reads as "never emailed", re-opening the print to a
     // duplicate send. Hand them to the row that is about to become canonical
     // instead, under the reconciler's own repoint rules.
+    // Computed before the DELETE but consulted after `deleted` is known.
+    let mergeChanged = false;
     if (restoreSymbol) {
-      repointDependentsBeforeDelete(db, { eventId: id, today });
+      const handedBack = repointDependentsBeforeDelete(db, { eventId: id, today });
+      // [R12b] The repointer only knows about bogeys/emails/skips. The arm
+      // itself, its prepare steps, its scan ledger and every slice's registered
+      // tables cascade too — hand them to the SAME survivor, or the print
+      // survives on the twin while the arm dies with this row.
+      if (handedBack.targetId !== null) {
+        mergeChanged = mergeEarningsEventState(db, id, handedBack.targetId).changed;
+      }
     }
 
     const deleted =
@@ -919,9 +928,12 @@ export function deleteCalendarEvent(
     if (deleted && restoreSymbol) {
       reconcileEarningsDates(db, { today, symbols: [restoreSymbol] });
     }
-    // The flag has cascaded away, so the projection no longer carries the
-    // event and the writer emits its tombstone (D7).
-    if (deleted && wasArmed) writeArmedEventsOutboxRow(db, { today });
+    // The flag either moved to the survivor or cascaded away; either way the
+    // projection changed and the writer emits the tombstone for this id (D7).
+    // `mergeChanged` covers the case where THIS row was not armed but the merge
+    // changed an armed survivor's shape; the writer is a no-op on an unchanged
+    // projection (D10), so the extra call is free.
+    if (deleted && (wasArmed || mergeChanged)) writeArmedEventsOutboxRow(db, { today });
     return deleted;
   });
   return txn();

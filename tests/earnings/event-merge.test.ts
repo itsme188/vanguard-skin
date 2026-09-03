@@ -211,6 +211,93 @@ describe("mergeEarningsEventState — A's merge matrix (spec §4.1)", () => {
     ).toEqual({ n: 0 });
   });
 
+  it("bogeys: when BOTH sides publish the same column, the newer uploaded_at wins and the older value is destroyed with the donor row", () => {
+    // The destructive branch: not "fill in a null" but "two numbers disagree".
+    const donor = seed("ACME", "2026-09-02");
+    const target = seed("ACME", "2026-09-03");
+    upsertBogey(db, {
+      event_id: target,
+      source: "newsletter",
+      source_label: "Desk Notes",
+      eps_consensus: 0.5,
+      revenue_consensus_usd: 1.0e9,
+      guidance_notes: "older read",
+      source_url: "https://example.test/old",
+      ai_extraction_model: "m-old",
+    });
+    db.prepare(`UPDATE earnings_bogeys SET uploaded_at = '2026-08-20 09:00:00' WHERE event_id = ?`).run(
+      target,
+    );
+    upsertBogey(db, {
+      event_id: donor,
+      source: "newsletter",
+      source_label: "Desk Notes",
+      eps_consensus: 0.55,
+      revenue_consensus_usd: 1.2e9,
+      guidance_notes: "newer read",
+      notes: "donor-only column", // absent on the target → the union still carries it
+      source_url: "https://example.test/new",
+      ai_extraction_model: "m-new",
+    });
+    const donorBogeyId = (
+      db.prepare(`SELECT id FROM earnings_bogeys WHERE event_id = ?`).get(donor) as { id: number }
+    ).id;
+    db.prepare(`UPDATE earnings_bogeys SET uploaded_at = '2026-08-25 09:00:00' WHERE event_id = ?`).run(
+      donor,
+    );
+
+    db.transaction(() => mergeEarningsEventState(db, donor, target))();
+
+    const rows = db
+      .prepare(
+        `SELECT event_id, eps_consensus, revenue_consensus_usd, guidance_notes, notes,
+                source_url, ai_extraction_model, uploaded_at
+           FROM earnings_bogeys`,
+      )
+      .all();
+    // Exactly one surviving row, on the target, carrying every newer value…
+    expect(rows).toEqual([
+      {
+        event_id: target,
+        eps_consensus: 0.55,
+        revenue_consensus_usd: 1.2e9,
+        guidance_notes: "newer read",
+        notes: "donor-only column",
+        source_url: "https://example.test/new",
+        ai_extraction_model: "m-new",
+        uploaded_at: "2026-08-25 09:00:00",
+      },
+    ]);
+    // …and the donor ROW itself is gone, not merely repointed.
+    expect(
+      db.prepare(`SELECT id FROM earnings_bogeys WHERE id = ?`).get(donorBogeyId),
+    ).toBeUndefined();
+  });
+
+  it("bogeys: an ISO-T uploaded_at never mis-orders against the space form (datetime() on both sides)", () => {
+    const donor = seed("ACME", "2026-09-02");
+    const target = seed("ACME", "2026-09-03");
+    upsertBogey(db, { event_id: target, source: "manual", source_label: "desk", eps_consensus: 0.5 });
+    // SAME DAY, target an hour LATER — so the target is genuinely newer and
+    // its 0.5 must survive. A raw string compare gets this backwards: the two
+    // strings first differ at index 10, where the donor's 'T' (0x54) beats the
+    // target's ' ' (0x20), so the donor would be declared newer and 0.7 would
+    // win. datetime() on both sides normalises the T away.
+    db.prepare(`UPDATE earnings_bogeys SET uploaded_at = '2026-08-25 10:00:00' WHERE event_id = ?`).run(
+      target,
+    );
+    upsertBogey(db, { event_id: donor, source: "manual", source_label: "desk", eps_consensus: 0.7 });
+    db.prepare(`UPDATE earnings_bogeys SET uploaded_at = '2026-08-25T09:00:00' WHERE event_id = ?`).run(
+      donor,
+    );
+
+    db.transaction(() => mergeEarningsEventState(db, donor, target))();
+
+    expect(db.prepare(`SELECT eps_consensus FROM earnings_bogeys`).all()).toEqual([
+      { eps_consensus: 0.5 },
+    ]);
+  });
+
   it("[C-13] reports changed=true only when something moved, merged, or was deleted; it never writes the outbox itself", () => {
     const donor = seed("ACME", "2026-09-02");
     const target = seed("ACME", "2026-09-03");
