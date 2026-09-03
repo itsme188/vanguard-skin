@@ -79,7 +79,7 @@ interface AcceptResponse {
   code?: string;
 }
 
-type DropOutcome = "parsed" | "rejected" | "duplicate" | "queued";
+type DropOutcome = "parsed" | "rejected" | "duplicate" | "queued" | "refused" | "parse_failed";
 
 interface DropResponse {
   success?: boolean;
@@ -272,6 +272,22 @@ export function dropOutcomeMessage(
     return {
       tone: "note",
       text: "Queued — another process owns the watch; it will parse shortly.",
+    };
+  }
+  // Task 10: a REFUSAL is about the file itself — nothing was stored, so the
+  // desk has to hand over a different file (or a link) rather than wait.
+  if (outcome === "refused") {
+    return {
+      tone: "error",
+      text: `Not readable: ${rejectReason ?? "print-watch reads HTML, plain text, or PDF"}. Drop an HTML, text or PDF release, or paste its link.`,
+    };
+  }
+  // The document IS stored and eligible; the read attempt failed. Saying
+  // "parsed" here would claim a sheet update that never happened.
+  if (outcome === "parse_failed") {
+    return {
+      tone: "error",
+      text: `Stored, but the read failed — it will retry. ${rejectReason ?? "the parse did not complete"}`,
     };
   }
   return { tone: "note", text: "Parsed — sheet updated." };

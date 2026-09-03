@@ -22,6 +22,11 @@ import {
   validateDocForEvent,
   _setTestSeams,
 } from "@/lib/print-watch/watcher";
+import {
+  textPathFor,
+  PdfEncryptedError,
+  PdfToolMissingError,
+} from "@/lib/print-watch/pdf";
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -59,6 +64,14 @@ interface ExtractCall {
 interface FakeSeamState {
   extractCalls: ExtractCall[];
   extract: (contracts: LineContract[], text: string) => Promise<ParseCandidate[]>;
+  /** The PDF paths handed to the poppler seam, in order. */
+  pdfTextCalls: string[];
+  /** Stands in for `pdftotext -layout` — throw to simulate poppler missing
+   *  or an encrypted PDF, return a string to simulate its text layer. */
+  pdfText: (pdfPath: string) => Promise<string>;
+  /** The PDF bytes handed to the Claude-native reading, in order. */
+  extractPdfCalls: Array<{ bytes: Buffer }>;
+  extractPdf: (contracts: LineContract[], bytes: Buffer) => Promise<ParseCandidate[]>;
   djCalls: number;
   dj: () => Promise<{
     completedReleases: Array<{
@@ -133,6 +146,10 @@ function installSeams(): void {
   fake = {
     extractCalls: [],
     extract: async () => [],
+    pdfTextCalls: [],
+    pdfText: async () => "",
+    extractPdfCalls: [],
+    extractPdf: async () => [],
     djCalls: 0,
     dj: async () => ({ completedReleases: [], flashes: [] }),
     edgarCalls: 0,
@@ -213,6 +230,14 @@ function installSeams(): void {
     extractCandidates: async (contracts: LineContract[], text: string) => {
       fake.extractCalls.push({ text });
       return fake.extract(contracts, text);
+    },
+    pdfToText: async (_db: unknown, pdfPath: string) => {
+      fake.pdfTextCalls.push(pdfPath);
+      return fake.pdfText(pdfPath);
+    },
+    extractCandidatesFromPdf: async (contracts: LineContract[], bytes: Buffer) => {
+      fake.extractPdfCalls.push({ bytes });
+      return fake.extractPdf(contracts, bytes);
     },
   });
 }
@@ -1809,5 +1834,145 @@ describe("pipeline", () => {
     expect(fake.extractCalls).toHaveLength(2);
     expect(fake.extractCalls[0].text.startsWith("# REPRESENTATION")).toBe(true);
     expect(getSheet(db, printId).find((l) => l.metric_id === "revenue_q")!.state).toBe("agreed");
+  });
+
+  // -------------------------------------------------------------------------
+  // the PDF road (Task 10)
+  // -------------------------------------------------------------------------
+
+  /** A poppler text layer that names ACME's Q2 2026 (so the gate accepts it)
+   *  AND carries enough non-whitespace to clear the image-only floor. */
+  function acmePdfText(): string {
+    return `ACME reports Q2 2026 results. Revenue $1,000 million.\n${"Segment detail line. ".repeat(40)}\f`;
+  }
+
+  const PDF_BYTES = Buffer.from("%PDF-1.7\n%fake\n");
+
+  it("a PDF drop is read twice (pdfText + pdfNative) as a weak pair, persists its text, and reaches single_source", async () => {
+    const { printId } = seedAcmePrint();
+    fake.pdfText = async () => acmePdfText();
+    fake.extract = async () => [candidate("revenue_q", 1000)];
+    fake.extractPdf = async () => [candidate("revenue_q", 1000)];
+
+    const r = await ingestDocument(db, printId, "user-drop", "user-drop:release.pdf", null, PDF_BYTES);
+
+    expect(r.outcome).toBe("parsed");
+    const [doc] = listDocuments(db, printId);
+    expect(doc.bytes_path.endsWith(".pdf")).toBe(true);
+    expect(fake.pdfTextCalls).toEqual([doc.bytes_path]);
+    expect(fs.existsSync(textPathFor(doc.bytes_path))).toBe(true);
+    expect(fs.readFileSync(textPathFor(doc.bytes_path), "utf8")).toBe(acmePdfText());
+    // The TEXT identity lands on the row too, so a re-saved PDF with the same
+    // text layer dedupes onto this document instead of opening a second one.
+    expect(doc.text_sha256).toMatch(/^[0-9a-f]{64}$/);
+
+    // Reading one is the poppler text through the ordinary text extractor;
+    // reading two is the PDF bytes themselves.
+    expect(fake.extractCalls).toHaveLength(1);
+    expect(fake.extractCalls[0].text).toBe(acmePdfText());
+    expect(fake.extractPdfCalls).toHaveLength(1);
+    expect(fake.extractPdfCalls[0].bytes.equals(PDF_BYTES)).toBe(true);
+
+    const line = getSheet(db, printId).find((l) => l.metric_id === "revenue_q")!;
+    // Both readings are WEAK (DECISIONS.md, 2026-09-02): two agreeing readings
+    // of one PDF cap at single_source - a PDF alone can never green.
+    expect(line.state).toBe("single_source");
+    const cands = JSON.parse(line.candidates_json) as TaggedCandidate[];
+    expect(cands.map((c) => c.representation).sort()).toEqual(["pdfNative", "pdfText"]);
+    expect(cands.every((c) => c.weak_pair && c.pair_note === "pdf-weak")).toBe(true);
+  });
+
+  it("refuses a PDF when poppler is missing, naming the tool and the setting, storing nothing", async () => {
+    const { printId } = seedAcmePrint();
+    fake.pdfText = async () => {
+      throw new PdfToolMissingError(
+        "pdftotext not found - install poppler (brew install poppler) or set settings.pdftotext_path",
+      );
+    };
+
+    const r = await ingestDocument(db, printId, "user-drop", "u.pdf", null, PDF_BYTES);
+
+    expect(r).toMatchObject({ docId: 0, outcome: "refused" });
+    expect(r.rejectReason).toMatch(/pdftotext/);
+    expect(r.rejectReason).toMatch(/pdftotext_path/);
+    expect(listDocuments(db, printId)).toEqual([]);
+    const dir = path.join(tmpRoot, String(printId));
+    expect(fs.existsSync(dir) ? fs.readdirSync(dir) : []).toEqual([]); // no orphan bytes (M14)
+  });
+
+  it("refuses an image-only PDF (thin text layer) and an encrypted one, each with its own reason", async () => {
+    const { printId } = seedAcmePrint();
+
+    fake.pdfText = async () => "ACME\f";
+    const thin = await ingestDocument(db, printId, "user-drop", "u.pdf", null, PDF_BYTES);
+    expect(thin.outcome).toBe("refused");
+    expect(thin.rejectReason).toMatch(/image-only|text layer/i);
+
+    fake.pdfText = async () => {
+      throw new PdfEncryptedError("encrypted PDF - remove the password and drop it again");
+    };
+    const locked = await ingestDocument(db, printId, "user-drop", "u.pdf", null, PDF_BYTES);
+    expect(locked.outcome).toBe("refused");
+    expect(locked.rejectReason).toMatch(/encrypted/i);
+
+    // A PDF whose own bytes declare /Encrypt is refused BEFORE poppler runs.
+    fake.pdfTextCalls.length = 0;
+    const declared = await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "u.pdf",
+      null,
+      Buffer.from("%PDF-1.7\ntrailer << /Encrypt 5 0 R >>"),
+    );
+    expect(declared.outcome).toBe("refused");
+    expect(declared.rejectReason).toMatch(/encrypted/i);
+    expect(fake.pdfTextCalls).toEqual([]);
+
+    expect(listDocuments(db, printId)).toEqual([]);
+    const dir = path.join(tmpRoot, String(printId));
+    expect(fs.existsSync(dir) ? fs.readdirSync(dir) : []).toEqual([]);
+  });
+
+  it("a second PDF whose text layer matches an existing one is the SAME document (text identity)", async () => {
+    const { printId } = seedAcmePrint();
+    fake.pdfText = async () => acmePdfText();
+    fake.extract = async () => [candidate("revenue_q", 1000)];
+    fake.extractPdf = async () => [candidate("revenue_q", 1000)];
+
+    const first = await ingestDocument(db, printId, "user-drop", "u1.pdf", null, PDF_BYTES);
+    // Different BYTES (a re-saved copy), identical poppler text.
+    const resaved = Buffer.from("%PDF-1.7\n%resaved by another writer\n");
+    const second = await ingestDocument(db, printId, "user-drop", "u2.pdf", null, resaved);
+
+    expect(first.outcome).toBe("parsed");
+    expect(second).toMatchObject({ docId: first.docId, isNew: false, outcome: "duplicate" });
+    expect(listDocuments(db, printId)).toHaveLength(1);
+    // ONE extraction pair, not two.
+    expect(fake.extractCalls).toHaveLength(1);
+    expect(fake.extractPdfCalls).toHaveLength(1);
+  });
+
+  it("a refusal on a RE-delivery never deletes the bytes an existing document owns", async () => {
+    const { printId } = seedAcmePrint();
+    fake.pdfText = async () => acmePdfText();
+    fake.extract = async () => [candidate("revenue_q", 1000)];
+    fake.extractPdf = async () => [candidate("revenue_q", 1000)];
+
+    const first = await ingestDocument(db, printId, "user-drop", "u1.pdf", null, PDF_BYTES);
+    expect(first.outcome).toBe("parsed");
+    const [doc] = listDocuments(db, printId);
+
+    // Poppler goes away and the SAME PDF is dropped again. The refusal's
+    // cleanup is content-addressed at exactly this document's bytes.
+    fake.pdfText = async () => {
+      throw new PdfToolMissingError("pdftotext not found — install poppler");
+    };
+    const again = await ingestDocument(db, printId, "user-drop", "u1.pdf", null, PDF_BYTES);
+    expect(again.outcome).toBe("refused");
+
+    expect(fs.existsSync(doc.bytes_path)).toBe(true);
+    expect(fs.existsSync(textPathFor(doc.bytes_path))).toBe(true);
+    expect(listDocuments(db, printId)).toHaveLength(1);
   });
 });

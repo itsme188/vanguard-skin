@@ -26,10 +26,23 @@ import {
 import { recordDelivery } from "@/lib/print-watch/delivery";
 import type { PrintWatchLine, LineStateKind, PrintWatchDocKind } from "@/lib/print-watch/types";
 import { _setTestSeams } from "@/lib/print-watch/watcher";
+import { PdfToolMissingError } from "@/lib/print-watch/pdf";
+import { UrlFetchRefused } from "@/lib/print-watch/url-fetch";
 
 const hoisted = vi.hoisted(() => ({
   db: null as unknown as Database.Database,
   ensureSpy: vi.fn(),
+}));
+
+/** The pasted-URL road's ONE outbound call. Mocked at the module boundary so
+ *  these tests never touch the network; `classifyBytes` and the SSRF contract
+ *  stay REAL (importOriginal spread), so a refused link is refused for the
+ *  real reason. */
+const urlFetchMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/print-watch/url-fetch", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/print-watch/url-fetch")>()),
+  hardenedFetchBytes: urlFetchMock,
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -127,6 +140,10 @@ function extractGetBody(source: string): string {
   throw new Error("unbalanced braces in GET body");
 }
 
+/** A poppler text layer that names ACME's Q2 2026 and clears the image-only
+ *  floor (>= 500 non-whitespace characters). */
+const PDF_TEXT_LAYER = `ACME Reports Second Quarter 2026 Results. ${"Segment detail line. ".repeat(40)}\f`;
+
 function dropReq(body: unknown): NextRequest {
   return new NextRequest("http://test/api/print-watch/drop", {
     method: "POST",
@@ -139,6 +156,7 @@ beforeEach(() => {
   hoisted.db.pragma("foreign_keys = ON");
   runMigrations(hoisted.db);
   hoisted.ensureSpy.mockClear();
+  urlFetchMock.mockReset();
 
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "print-watch-route-test-"));
   _setTestSeams({
@@ -443,9 +461,18 @@ describe("POST /api/print-watch/drop", () => {
     }
   });
 
-  it("rejects a PDF drop with the domain-language save-as-HTML message", async () => {
+  it("ingests a PDF drop through the poppler + native pair (Task 10 — no longer refused)", async () => {
     upsertPrint(hoisted.db, 703, "ACME", "2026-08-26", "16:15");
     const pdfBuf = Buffer.from("%PDF-1.4\n1 0 obj\n<< >>\nendobj\n", "latin1");
+    // The poppler seam stands in for `pdftotext -layout`; the text must name
+    // the issuer and quarter (the gate reads it) and clear the image-only
+    // floor, exactly as a real release's text layer does.
+    _setTestSeams({
+      storageRoot: () => tmpRoot,
+      extractCandidates: async () => [],
+      extractCandidatesFromPdf: async () => [],
+      pdfToText: async () => PDF_TEXT_LAYER,
+    });
 
     const mod = await import("@/app/api/print-watch/drop/route");
     const res = await mod.POST(
@@ -456,13 +483,46 @@ describe("POST /api/print-watch/drop", () => {
       }),
     );
 
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.outcome).toBe("parsed");
+
+    const printId = getPrintByEventId(hoisted.db, 703)!.id;
+    const docs = hoisted.db
+      .prepare(`SELECT bytes_path FROM print_watch_documents WHERE print_id = ?`)
+      .all(printId) as Array<{ bytes_path: string }>;
+    expect(docs).toHaveLength(1);
+    expect(docs[0].bytes_path.endsWith(".pdf")).toBe(true);
+  });
+
+  it("400s a PDF drop when poppler is missing, naming the tool", async () => {
+    upsertPrint(hoisted.db, 707, "ACME", "2026-08-26", "16:15");
+    _setTestSeams({
+      storageRoot: () => tmpRoot,
+      extractCandidates: async () => [],
+      pdfToText: async () => {
+        throw new PdfToolMissingError(
+          "pdftotext not found - install poppler (brew install poppler) or set settings.pdftotext_path",
+        );
+      },
+    });
+
+    const mod = await import("@/app/api/print-watch/drop/route");
+    const res = await mod.POST(
+      dropReq({
+        eventId: 707,
+        filename: "release.pdf",
+        contentBase64: Buffer.from("%PDF-1.4\n", "latin1").toString("base64"),
+      }),
+    );
+
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.success).toBe(false);
-    expect(body.error).toContain("⌘S");
-    expect(body.error.toLowerCase()).toContain("pdf");
+    expect(body.error).toMatch(/pdftotext/);
 
-    const printId = getPrintByEventId(hoisted.db, 703)!.id;
+    const printId = getPrintByEventId(hoisted.db, 707)!.id;
     const docCount = (
       hoisted.db
         .prepare(`SELECT COUNT(*) AS n FROM print_watch_documents WHERE print_id = ?`)
@@ -540,5 +600,133 @@ describe("POST /api/print-watch/drop", () => {
     const body = await res.json();
     expect(body.success).toBe(false);
     expect(body.error).toMatch(/9999/);
+  });
+
+  // -------------------------------------------------------------------------
+  // the pasted-URL road ({ eventId, url }) — Task 11's route half
+  // -------------------------------------------------------------------------
+
+  it("POST /drop with { eventId, url } takes the URL road and returns the road outcome", async () => {
+    upsertPrint(hoisted.db, 710, "ACME", "2026-08-26", "16:15");
+    urlFetchMock.mockResolvedValueOnce({
+      bytes: Buffer.from("ACME Reports Second Quarter 2026 Results.", "utf8"),
+      finalUrl: "https://ir.example/r?token=SECRET&id=9",
+      status: 200,
+      contentType: "text/plain",
+    });
+
+    const mod = await import("@/app/api/print-watch/drop/route");
+    const res = await mod.POST(dropReq({ eventId: 710, url: "https://ir.example/r?token=SECRET&id=9" }));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data).toMatchObject({ road: "user-url", outcome: "parsed" });
+    // Nothing in the response may carry the raw link's credential-ish params.
+    expect(JSON.stringify(body)).not.toContain("token=SECRET");
+
+    const printId = getPrintByEventId(hoisted.db, 710)!.id;
+    const docs = hoisted.db
+      .prepare(`SELECT kind, url FROM print_watch_documents WHERE print_id = ?`)
+      .all(printId) as Array<{ kind: string; url: string | null }>;
+    expect(docs).toHaveLength(1);
+    expect(docs[0].kind).toBe("user-url");
+    expect(docs[0].url).not.toContain("token=SECRET");
+  });
+
+  it("400s a fetch refusal on the URL road with the refusal's own copy, storing nothing", async () => {
+    upsertPrint(hoisted.db, 711, "ACME", "2026-08-26", "16:15");
+    urlFetchMock.mockRejectedValueOnce(
+      new UrlFetchRefused(
+        "pasted link: HTTP 403 for https://wire.example/s - wire syndicators often block direct fetches - paste the company's IR-site link or the EDGAR exhibit instead",
+        403,
+      ),
+    );
+
+    const mod = await import("@/app/api/print-watch/drop/route");
+    const res = await mod.POST(dropReq({ eventId: 711, url: "https://wire.example/s" }));
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error).toMatch(/IR-site link or the EDGAR exhibit/);
+
+    const printId = getPrintByEventId(hoisted.db, 711)!.id;
+    const docCount = (
+      hoisted.db
+        .prepare(`SELECT COUNT(*) AS n FROM print_watch_documents WHERE print_id = ?`)
+        .get(printId) as { n: number }
+    ).n;
+    expect(docCount).toBe(0);
+  });
+
+  it("500s (message only, never the link) when the URL road throws an infrastructure error", async () => {
+    upsertPrint(hoisted.db, 712, "ACME", "2026-08-26", "16:15");
+    // `deliverFromUrl` catches FETCH failures itself and reports them as
+    // fetch_failed; an infrastructure error from the store below it
+    // propagates by ruling. Point the acquired-bytes root at a FILE so the
+    // ingest's mkdir throws — the cleanest way to reach the route's catch.
+    const notADirectory = path.join(tmpRoot, "not-a-directory");
+    fs.writeFileSync(notADirectory, "x");
+    _setTestSeams({ storageRoot: () => notADirectory, extractCandidates: async () => [] });
+    urlFetchMock.mockResolvedValueOnce({
+      bytes: Buffer.from("ACME Reports Second Quarter 2026 Results.", "utf8"),
+      finalUrl: "https://ir.example/boom?token=SECRET",
+      status: 200,
+      contentType: "text/plain",
+    });
+
+    const mod = await import("@/app/api/print-watch/drop/route");
+    const res = await mod.POST(
+      dropReq({ eventId: 712, url: "https://ir.example/boom?token=SECRET" }),
+    );
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(typeof body.error).toBe("string");
+    expect(JSON.stringify(body)).not.toContain("token=SECRET");
+  });
+
+  it("refuses a body carrying BOTH url and contentBase64, and a non-https url, with 400", async () => {
+    upsertPrint(hoisted.db, 713, "ACME", "2026-08-26", "16:15");
+    const mod = await import("@/app/api/print-watch/drop/route");
+
+    const both = await mod.POST(
+      dropReq({
+        eventId: 713,
+        url: "https://ir.example/r",
+        filename: "a.txt",
+        contentBase64: "QQ==",
+      }),
+    );
+    expect(both.status).toBe(400);
+    expect((await both.json()).error).toMatch(/either/i);
+    expect(urlFetchMock).not.toHaveBeenCalled();
+
+    const http = await mod.POST(dropReq({ eventId: 713, url: "http://ir.example/r" }));
+    expect(http.status).toBe(400);
+    expect((await http.json()).error).toMatch(/https/);
+    expect(urlFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("400s an empty body naming eventId, and a body with neither a file nor a url", async () => {
+    upsertPrint(hoisted.db, 714, "ACME", "2026-08-26", "16:15");
+    const mod = await import("@/app/api/print-watch/drop/route");
+
+    const empty = await mod.POST(dropReq({}));
+    expect(empty.status).toBe(400);
+    expect((await empty.json()).error).toMatch(/eventId/);
+
+    const bare = await mod.POST(dropReq({ eventId: 714 }));
+    expect(bare.status).toBe(400);
+    expect((await bare.json()).error).toMatch(/filename|url/);
+
+    // A non-string `url` is not a url at all — it must fall through to the
+    // file branch's own complaint, never be coerced into a link.
+    const numeric = await mod.POST(dropReq({ eventId: 714, url: 42 }));
+    expect(numeric.status).toBe(400);
+    expect((await numeric.json()).error).toMatch(/filename|url/);
+    expect(urlFetchMock).not.toHaveBeenCalled();
   });
 });
