@@ -12,6 +12,8 @@ describe("validatePublicUrl", () => {
     ["https://ir.example.com:8443/x", /port 443/],
     ["https://localhost/x", /local/],
     ["https://foo.localhost/x", /local/],
+    ["https://localhost./x", /local/],
+    ["https://foo.localhost./x", /local/],
     ["https://127.0.0.1/x", /routable/],
     ["https://[::1]/x", /routable/],
     ["https://169.254.169.254/latest/meta-data", /routable/],
@@ -23,6 +25,12 @@ describe("validatePublicUrl", () => {
   });
   it("accepts an explicit :443", () => {
     expect(validatePublicUrl("https://ir.example.com:443/x").ok).toBe(true);
+  });
+  it("strips a trailing-dot FQDN and returns the canonical hostname", () => {
+    expect(validatePublicUrl("https://ir.example.com./release")).toEqual({
+      ok: true,
+      hostname: "ir.example.com",
+    });
   });
 });
 
