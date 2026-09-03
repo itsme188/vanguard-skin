@@ -11,6 +11,7 @@ import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 import { isEventArmed } from "@/lib/queries/earnings-worksheet-flags";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
+import { mergeEarningsEventState } from "@/lib/earnings/event-merge";
 import {
   reconcileEarningsDates,
   repointDependentsBeforeDelete,
@@ -380,7 +381,20 @@ export function deleteAndSuppressCalendarEvent(
     // DELETE cascades the flag row off, and emit the tombstone after — without
     // it the Worker would keep an event armed that no longer exists.
     const wasArmed = isEventArmed(db, id);
-    if (handBack) repointDependentsBeforeDelete(db, { eventId: id, today });
+    let mergeChanged = false;
+    if (handBack) {
+      // The shared repointer moves bogeys/emails/skips onto the surviving twin.
+      // [R12] Everything ELSE that cascades off this row — the arm itself, its
+      // prepare steps, its scan ledger, and every slice's registered tables —
+      // moves through the registry merge, onto the SAME survivor the repointer
+      // just resolved. Without it the print survives on the twin while the arm
+      // dies with the row being deleted. BEFORE the DELETE: all of these
+      // cascade on event_id.
+      const handedBack = repointDependentsBeforeDelete(db, { eventId: id, today });
+      if (handedBack.targetId !== null) {
+        mergeChanged = mergeEarningsEventState(db, id, handedBack.targetId).changed;
+      }
+    }
     db.prepare("DELETE FROM calendar_events WHERE id = ?").run(id);
     if (handBack) {
       reconcileEarningsDates(db, { today, symbols: [symbol] });
@@ -389,8 +403,11 @@ export function deleteAndSuppressCalendarEvent(
       resuppressSuppressedTuples(db, symbol);
     }
     // After the hand-back, so the projection reflects whatever row the
-    // reconciler just made canonical.
-    if (wasArmed) writeArmedEventsOutboxRow(db, { today });
+    // reconciler just made canonical. `mergeChanged` covers the case where THIS
+    // row was not armed but the merge changed an armed survivor's shape (a
+    // vendor-EPS bogey landing on it); the writer is a no-op when the
+    // projection is unchanged (D10), so an extra call is free.
+    if (wasArmed || mergeChanged) writeArmedEventsOutboxRow(db, { today });
   });
   txn();
 
@@ -630,25 +647,30 @@ export function correctEarningsEventDate(
     // call exists to preserve. Everything below operates on the rest.
     const doomedRows = wrongRows.filter((r) => r.id !== newEventId);
 
-    // ── 2. Migrate user-curated bogeys + email audit off the doomed rows ────
-    // earnings_emails / earnings_email_skips repoint alongside bogeys (the
-    // reconcile-earnings-dates.ts sibling already carries this exact list):
-    // a correction moves the event, it does not unsend the preview — losing
-    // the audit row destroys the archived email AND re-opens the event as a
-    // findEmailCandidates send candidate (duplicate-preview risk). UPDATE OR
-    // IGNORE keeps the corrected row's own (event_id, phase) row on a UNIQUE
-    // collision; the doomed duplicate then dies in the delete CASCADE.
+    // ── 2. Migrate the doomed rows' whole state onto the corrected row ──────
+    // earnings_emails / earnings_email_skips migrate alongside bogeys: a
+    // correction moves the event, it does not unsend the preview — losing the
+    // audit row destroys the archived email AND re-opens the event as a
+    // findEmailCandidates send candidate (duplicate-preview risk). On a UNIQUE
+    // (event_id, phase) collision the corrected row keeps its own row and the
+    // doomed duplicate dies in the delete CASCADE, unless the doomed side is
+    // the DELIVERED one — then it wins, so nothing re-fires ([C-5]).
     let bogeysMigrated = 0;
     let auditRowsMigrated = 0;
+    let anyChanged = false;
     for (const row of doomedRows) {
-      bogeysMigrated += db
-        .prepare("UPDATE OR IGNORE earnings_bogeys SET event_id = ? WHERE event_id = ?")
-        .run(newEventId, row.id).changes;
-      for (const table of ["earnings_emails", "earnings_email_skips"]) {
-        auditRowsMigrated += db
-          .prepare(`UPDATE OR IGNORE ${table} SET event_id = ? WHERE event_id = ?`)
-          .run(newEventId, row.id).changes;
-      }
+      // Registry merge (v2 slice A): flags, prepare steps, scan ledger, bogeys (repoint +
+      // collision rule), email/skip audit (delivered history wins, in_progress untouched),
+      // every registered slice handler. Replaces the two UPDATE OR IGNORE loops that were
+      // here — the bogey repoint is the merge's own first statement, and the audit tables
+      // keep the same "target's row wins on a UNIQUE collision" outcome.
+      const report = mergeEarningsEventState(db, row.id, newEventId);
+      anyChanged ||= report.changed;
+      bogeysMigrated += report.handlers.find((h) => h.name === "builtin:bogeys")?.tables[0].moved ?? 0;
+      auditRowsMigrated +=
+        report.handlers
+          .find((h) => h.name === "builtin:email_audit")
+          ?.tables.reduce((n, t) => n + t.moved + t.merged, 0) ?? 0;
     }
 
     // ── 3. Delete the wrong rows + suppress the tuple ──────────────────────
@@ -662,6 +684,11 @@ export function correctEarningsEventDate(
       deleteAndSuppressCalendarEvent(db, row.id, { handBack: false });
       deletedIds.push(row.id);
     }
+
+    // [C-13] ONE outbox row for the whole correction, and only when the merge
+    // moved something — the arm now sits on newEventId, so the Worker has to
+    // hear the new projection (and the doomed ids as tombstones).
+    if (anyChanged) writeArmedEventsOutboxRow(db);
 
     return { ok: true, newEventId, deletedIds, bogeysMigrated, auditRowsMigrated };
   });

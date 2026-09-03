@@ -14,6 +14,7 @@ import {
   upsertCalendarEvents,
   type CalendarEventInput,
 } from "@/lib/mutations/calendar";
+import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 
 let db: Database.Database;
 
@@ -451,6 +452,29 @@ describe("correctEarningsEventDate", () => {
       `INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md) VALUES (?, ?, 'me@example.com', ?)`,
     ).run(eventId, phase, md);
   }
+
+  it("moves an armed doomed row's worksheet flag onto the corrected row, writing exactly one outbox row", () => {
+    const wrongId = seedFinnhub(db, "VRTX", "2026-08-03", { eventTime: "AMC" });
+    armWorksheet(db, wrongId); // generation 1: [wrongId armed]
+    const outboxRows = () =>
+      (db.prepare("SELECT COUNT(*) AS n FROM cloud_outbox").get() as { n: number }).n;
+    const before = outboxRows();
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "VRTX",
+      wrongDate: "2026-08-03",
+      correctDate: "2026-08-05",
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    // The arm followed the print instead of dying in the delete CASCADE.
+    expect(db.prepare(`SELECT event_id FROM earnings_worksheet_flags`).all()).toEqual([
+      { event_id: res.newEventId },
+    ]);
+    // [C-13] ONE row for the whole correction, not one per doomed row.
+    expect(outboxRows()).toBe(before + 1);
+  });
 
   it("migrates earnings_emails audit rows onto the corrected row on a date change", () => {
     const wrongId = seedFinnhub(db, "VRTX", "2026-08-03");
