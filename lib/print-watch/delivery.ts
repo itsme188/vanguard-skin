@@ -20,7 +20,7 @@ import {
   type DocGateVerdict,
 } from "./gate";
 import { reconcile } from "./reconcile";
-import { anyRoadAccepted } from "./store";
+import { anyRoadAccepted, resolveSourceDocId } from "./store";
 import type {
   ExpectedValue,
   LineContract,
@@ -53,10 +53,14 @@ export function sha256Hex(buf: Buffer | string): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
+function normaliseText(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
 /** Normalised-text identity (M13): whitespace collapsed, trimmed, lower-cased —
  *  a resaved PDF or a text wrapper of one release is the SAME document. */
 export function textIdentityHash(text: string): string {
-  return sha256Hex(text.replace(/\s+/g, " ").trim().toLowerCase());
+  return sha256Hex(normaliseText(text));
 }
 
 /** Roads a person drives. Only these may re-queue a document that exhausted its attempts (M15). */
@@ -85,9 +89,24 @@ interface LineRow {
  * Evidence retraction (M16): archive every candidate that came from `docId` and
  * re-reconcile each affected NON-accepted line from its stored contract/expected.
  * An accepted line only loses the retracted candidates from its audit trail
- * (rule 6). Synchronous; runs inside the caller's transaction.
+ * (rule 6). Synchronous.
+ *
+ * Runs in its OWN transaction so archive-then-rewrite is atomic for callers
+ * OUTSIDE `recordDelivery` too — the parse pipeline calls it standalone after a
+ * losing race, and a half-applied retraction would leave candidates archived but
+ * still on the line (double-counted evidence). Nested inside `recordDelivery`'s
+ * immediate transaction this degrades to a SAVEPOINT, exactly as
+ * `clearLineAccepted` does, so the delivery still rolls back as one unit.
  */
 export function retractDocumentEvidence(
+  db: Database.Database,
+  docId: number,
+  reason: string,
+): { archived: number; linesChanged: number } {
+  return db.transaction(() => retractDocumentEvidenceInTxn(db, docId, reason))();
+}
+
+function retractDocumentEvidenceInTxn(
   db: Database.Database,
   docId: number,
   reason: string,
@@ -156,7 +175,13 @@ export function retractDocumentEvidence(
     }
 
     const [next] = reconcile([contract], expected, kept, []) as PrintWatchLine[];
-    const nextSource = next.source_doc_id === 0 ? null : next.source_doc_id;
+    // NOT `=== 0 ? null : …`: the flash sentinel is only one of the two ways
+    // `reconcile()` hands back an id that names no row. Migration 089
+    // deliberately preserves candidates whose `doc_id` we never saw ("not ours
+    // to rewrite"), and `source_doc_id` is a real FK — writing a dangling id
+    // throws, rolls back the WHOLE delivery, and wedges the one entry point
+    // every road uses, forever, because each retry re-enters this branch.
+    const nextSource = resolveSourceDocId(db, next.source_doc_id);
     writeLine.run(
       next.state,
       next.value,
@@ -182,6 +207,7 @@ export function recordDelivery(
   input: DeliveryInput,
 ): DeliveryResult {
   const sha = sha256Hex(bytes);
+  const normalisedText = normaliseText(input.text);
   const textSha = textIdentityHash(input.text);
   const fingerprint = gateFingerprint(input.gateCtx);
   const selectExisting = `SELECT id, gate_verdict, gate_reason, gate_fingerprint, parse_state FROM print_watch_documents`;
@@ -190,7 +216,10 @@ export function recordDelivery(
     const bySha = db.prepare(`${selectExisting} WHERE print_id = ? AND sha256 = ?`).get(printId, sha) as
       | ExistingRow
       | undefined;
-    const byText = bySha
+    // An empty normalised text hashes to ONE universal key: two unrelated
+    // image-only PDFs (no extractable text) would merge into a single document.
+    // Byte identity still applies to them; text identity does not.
+    const byText = bySha || normalisedText.length === 0
       ? undefined
       : (db
           .prepare(`${selectExisting} WHERE print_id = ? AND text_sha256 = ? ORDER BY id LIMIT 1`)

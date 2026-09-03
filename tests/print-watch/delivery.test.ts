@@ -233,6 +233,88 @@ describe("recordDelivery", () => {
     expect(db.prepare("SELECT reason FROM print_watch_candidate_archive").all()).toEqual([{ reason: "gate-rejected" }]);
   });
 
+  // R-B8 fix round 1. `reconcile()` reports `source_doc_id` straight off a
+  // candidate's `doc_id`, and migration 089 deliberately PRESERVES candidates
+  // whose `doc_id` names no document row ("not ours to rewrite"). Since
+  // `print_watch_lines.source_doc_id` is a real FK, a retraction that leaves
+  // such a candidate behind used to write a dangling id, throw, and roll back
+  // the WHOLE delivery — wedging the one entry point every road uses, because
+  // every retry re-entered the same branch. Retraction now resolves the id
+  // through the store's `resolveSourceDocId`, exactly as un-accept does.
+  it("retraction never writes a dangling source_doc_id: a surviving orphan candidate re-derives to a NULL document", () => {
+    const bytes = Buffer.from("Acme Corp reports Q2 2026 results. Revenue $1.0 billion.");
+    const text = bytes.toString();
+    const first = recordDelivery(db, printId, "user-drop", "u", null, bytes, {
+      bytesPath: "/tmp/a",
+      text,
+      gateCtx: { symbol: "ZZZ", issuerName: "Acme Corp", eventDate: "2026-08-26" },
+    });
+    expect(first.eligible).toBe(true);
+
+    const ORPHAN_DOC_ID = 999_999; // no such row — a 089-preserved legacy candidate
+    expect(db.prepare(`SELECT 1 FROM print_watch_documents WHERE id = ?`).get(ORPHAN_DOC_ID)).toBeUndefined();
+    const candidate = (docId: number) => ({
+      metric_id: "revenue_q",
+      value: 1e9,
+      value_high: null,
+      raw_text: "1.0",
+      snippet: "s",
+      location_hint: null,
+      not_disclosed: false,
+      doc_id: docId,
+      representation: "repB",
+      weak_pair: false,
+    });
+    upsertLines(db, printId, [
+      {
+        metric_id: "revenue_q",
+        contract: contractFor("revenue_q"),
+        expected: null,
+        state: "agreed",
+        value: 1e9,
+        value_high: null,
+        snippet: "s",
+        source_doc_id: first.id,
+        candidates_json: JSON.stringify([candidate(first.id), candidate(ORPHAN_DOC_ID)]),
+      },
+    ]);
+
+    // The issuer name is corrected: this document no longer names the issuer.
+    const second = recordDelivery(db, printId, "user-drop", "u", null, bytes, {
+      bytesPath: "/tmp/a",
+      text,
+      gateCtx: { symbol: "ZZZ", issuerName: "Globex Inc", eventDate: "2026-08-26" },
+    });
+
+    // The gate flip is PERSISTED — the whole point is that nothing rolled back.
+    expect(second).toMatchObject({ id: first.id, eligible: false });
+    expect(getDocument(db, first.id)).toMatchObject({ gate_verdict: "rejected" });
+
+    const line = getSheet(db, printId).find((l) => l.metric_id === "revenue_q")!;
+    expect(line.state).toBe("single_source"); // the orphan candidate still stands alone
+    expect(line.value).toBe(1e9);
+    expect(line.source_doc_id).toBeNull(); // NOT 999999
+    expect(JSON.parse(line.candidates_json)).toHaveLength(1);
+    expect(db.prepare("SELECT reason FROM print_watch_candidate_archive").all()).toEqual([{ reason: "gate-rejected" }]);
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
+  it("never merges two documents on an EMPTY normalised text (image-only PDFs)", () => {
+    const a = recordDelivery(db, printId, "user-drop", "a", null, Buffer.from([1, 2, 3]), {
+      bytesPath: "/tmp/a.pdf",
+      text: "   \n\n  ",
+      gateCtx: CTX,
+    });
+    const b = recordDelivery(db, printId, "user-drop", "b", null, Buffer.from([4, 5, 6]), {
+      bytesPath: "/tmp/b.pdf",
+      text: "",
+      gateCtx: CTX,
+    });
+    expect(b.id).not.toBe(a.id);
+    expect(b.matchedBy).toBe("new");
+    expect(listDocuments(db, printId)).toHaveLength(2);
+  });
+
   it("an explicit user re-delivery re-queues a document that exhausted its attempts (M15); an automated road does not", () => {
     const { id } = deliver("edgar-ex99", THIS_Q);
     for (let i = 1; i <= 5; i++) {
