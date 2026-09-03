@@ -440,6 +440,60 @@ describe("print-watch store (migration 085)", () => {
       expect(line.state).toBe("single_source");
       expect(line.value).toBe(1.42);
     });
+
+    // Latent defect: the "keep the residue" carve-out only fired on
+    // `candidates.length === 0 || contract === null` (unreadable JSON). If
+    // `contract_json` parses fine but its `metric_id` names a DIFFERENT
+    // metric than this row's own `metric_id` — a drifted/corrupted contract —
+    // `reconcile([contract], {}, candidates, [])` buckets candidates by THEIR
+    // OWN metric_id and looks the bucket up by `contract.metric_id`. The
+    // mismatch means the lookup finds nothing, so `reconcileMetric` returns
+    // `{state: 'pending', value: null, ...}` for an EMPTY pool — and the old
+    // code wrote that straight over the row (keyed by the outer `metricId`
+    // param, not `rederived.metric_id`), clearing a verified figure even
+    // though real evidence for THIS metric was sitting right there under a
+    // different key in the same candidates array.
+    it("keeps the residue when contract_json names a DIFFERENT metric than this row (drifted contract)", () => {
+      const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
+      const printId = upsertPrint(db, eventId, "ACME", "2026-08-20", null);
+      const docA = insertDocument(db, printId, "dj-release", "dj", null, "sha-mismatch-a", "/tmp/a").id;
+
+      // Carries the ROW's real metric_id ("eps_adj_q") — real evidence, just
+      // invisible to reconcile() once contract.metric_id has drifted.
+      const candidates: TaggedCandidate[] = [
+        {
+          metric_id: "eps_adj_q",
+          value: 1.24,
+          value_high: null,
+          raw_text: "1.24",
+          snippet: "adjusted EPS of $1.24",
+          location_hint: null,
+          not_disclosed: false,
+          doc_id: docA,
+          representation: "repA",
+          weak_pair: false,
+        },
+      ];
+
+      upsertLines(db, printId, [
+        makeLine("eps_adj_q", 1.42, {
+          state: "agreed",
+          snippet: "adjusted EPS of $1.42",
+          source_doc_id: docA,
+          contract: makeContract("revenue_q"), // corrupted: should be "eps_adj_q"
+          candidates_json: JSON.stringify(candidates),
+        }),
+      ]);
+      markLineAccepted(db, printId, "eps_adj_q");
+      expect(getSheet(db, printId)[0].state).toBe("accepted");
+
+      clearLineAccepted(db, printId, "eps_adj_q");
+
+      const line = getSheet(db, printId)[0];
+      expect(line.state).toBe("pending");
+      expect(line.value).toBe(1.42); // UNCHANGED — the residue survives
+      expect(line.snippet).toBe("adjusted EPS of $1.42");
+    });
   });
 
   it("deleting the calendar_events row does NOT delete the print (evidence survives event correction)", () => {

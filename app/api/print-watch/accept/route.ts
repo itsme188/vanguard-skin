@@ -148,6 +148,19 @@ function valuesDiverge(accepted: number | null, fresh: number | null): boolean {
  *
  * Flash candidates are excluded on purpose: a wire flash rounding differently
  * from the eventual document is expected noise, not a correction.
+ *
+ * Document-order aware (defect fix): a PER-CANDIDATE accept
+ * (`acceptLineCandidate`) sets `line.source_doc_id` to the chosen document
+ * and deliberately keeps the rejected rival sitting in `candidates_json` — so
+ * without an ordering check, the very next plain `{promoteHeadline: true}`
+ * request (the panel's Promote button, no `accept` array) ran this gate and
+ * 409'd on the older rival the desk had already out-verified by picking the
+ * newer document. Once `source_doc_id` is a number, a candidate from that
+ * document or an earlier one (`doc_id <= source_doc_id`) is never "later
+ * evidence" — only a STRICTLY LATER document counts, same rule as
+ * `candidateSupersessionDetail` below. A whole-line accept never sets
+ * `source_doc_id` to a candidate-chosen document this way, so this only
+ * narrows the per-candidate case.
  */
 function divergentCandidates(line: PrintWatchLine): TaggedCandidate[] {
   let candidates: TaggedCandidate[];
@@ -162,6 +175,7 @@ function divergentCandidates(line: PrintWatchLine): TaggedCandidate[] {
   return candidates.filter((c) => {
     if (c.representation === "flash") return false;
     if (c.not_disclosed || c.value === null) return false;
+    if (typeof line.source_doc_id === "number" && c.doc_id <= line.source_doc_id) return false;
     return valuesDiverge(line.value, c.value) || valuesDiverge(line.value_high, c.value_high);
   });
 }

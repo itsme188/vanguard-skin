@@ -485,4 +485,51 @@ describe("checkUserReleaseTimeAgainstUpcomingSlot", () => {
     const bare = new Database(":memory:");
     expect(checkUserReleaseTimeAgainstUpcomingSlot(bare, "XMTR", "07:30")).toEqual({ ok: true });
   });
+
+  // Latent defect: the query picked the nearest upcoming row with
+  // `ORDER BY event_date ASC LIMIT 1` (no tie-break) while the WRITE this
+  // guards applies to EVERY upcoming row. Slice A made unsuperseded same-
+  // (symbol, event_date) twins a real shape — two calendar_events rows on the
+  // same date from different sources (e.g. `nasdaq:...` and `finnhub:...`).
+  // A twin with no derivable slot let the write through even while its sibling
+  // twin would have refused it, and SQLite's tie-break for two equal
+  // `event_date` values (absent a secondary sort key) is arbitrary. Fix:
+  // check EVERY row on the nearest event_date, not just whichever one the
+  // query happened to return first.
+  describe("same-date twins (live print v2 slice A shape)", () => {
+    /** A second calendar_events row for the SAME (symbol, event_date) — a
+     *  distinct source_key, same as two vendors both carrying the print. */
+    function seedTwinEvent(
+      symbol: string,
+      date: string,
+      sourceKey: string,
+      eventTime: string | null,
+    ): number {
+      return db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, symbol, title, source_key, week_of, event_time)
+           VALUES ('finnhub','earnings',?,?,?,?,?,?)`,
+        )
+        .run(date, symbol, `${symbol} earnings`, sourceKey, date, eventTime)
+        .lastInsertRowid as number;
+    }
+
+    it("refuses a BMO-side time when the AMC-deriving twin is inserted FIRST and the no-slot twin second", () => {
+      const amcId = seedTwinEvent("XMTR", "2099-01-01", "finnhub:XMTR:2099-01-01", "AMC");
+      seedTwinEvent("XMTR", "2099-01-01", "nasdaq:XMTR:2099-01-01", null); // no derivable slot — skipped, per today's rule
+
+      expect(
+        checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "07:30", { today }),
+      ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: amcId });
+    });
+
+    it("refuses a BMO-side time when the no-slot twin is inserted FIRST and the AMC-deriving twin second", () => {
+      seedTwinEvent("XMTR", "2099-01-01", "nasdaq:XMTR:2099-01-01", null); // no derivable slot — skipped, per today's rule
+      const amcId = seedTwinEvent("XMTR", "2099-01-01", "finnhub:XMTR:2099-01-01", "AMC");
+
+      expect(
+        checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "07:30", { today }),
+      ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: amcId });
+    });
+  });
 });

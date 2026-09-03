@@ -522,6 +522,51 @@ describe("needsReverify", () => {
     });
     expect(needsReverify(line)).toBe(false);
   });
+
+  // CONFIRMED defect (parity twin of app/api/print-watch/accept/route.ts's
+  // `divergentCandidates` — see tests/api/print-watch-accept.test.ts,
+  // describe("promoteHeadline-only follow-up after a per-candidate accept —
+  // document-order gate")): trigger (b) flagged ANY non-flash rival that
+  // disagreed with the accepted value, with no document ordering. A
+  // per-candidate accept (`acceptLineCandidate`) sets `source_doc_id` to the
+  // chosen document and deliberately keeps the rejected OLDER rival sitting
+  // in `candidates_json` — so the chip mislabeled a line the desk had just
+  // verified "⟳ superseded — re-verify" on evidence it had already
+  // out-verified by picking the newer document. Fix: trigger (b) now ignores
+  // any candidate whose `doc_id <= line.source_doc_id` once `source_doc_id`
+  // is a number, matching the route's `candidateSupersessionDetail` rule.
+  //
+  // Same (0.91 doc-B accepted / 0.89 doc-A rival) figures as the route's new
+  // tests, so both surfaces are pinned to read the identical verdict.
+  describe("needsReverify — per-candidate accept document order", () => {
+    it("is false when the accepted candidate came from the LATER document and an older rival (0.89) still sits in candidates_json", () => {
+      const candidates: TaggedCandidate[] = [
+        candidate({ doc_id: 5, representation: "repA", value: 0.89 }),
+        candidate({ doc_id: 7, representation: "repA", value: 0.91 }),
+      ];
+      const line = makeLine({
+        state: "accepted",
+        value: 0.91,
+        source_doc_id: 7,
+        candidates_json: JSON.stringify(candidates),
+      });
+      expect(needsReverify(line)).toBe(false);
+    });
+
+    it("is still true when the accepted candidate came from the STALE document and a later rival (0.91) disagrees", () => {
+      const candidates: TaggedCandidate[] = [
+        candidate({ doc_id: 5, representation: "repA", value: 0.89 }),
+        candidate({ doc_id: 7, representation: "repA", value: 0.91 }),
+      ];
+      const line = makeLine({
+        state: "accepted",
+        value: 0.89,
+        source_doc_id: 5,
+        candidates_json: JSON.stringify(candidates),
+      });
+      expect(needsReverify(line)).toBe(true);
+    });
+  });
 });
 
 // ── promoteSummary ──────────────────────────────────────────────────────
