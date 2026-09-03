@@ -32,6 +32,15 @@
  *     PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx scripts/migrate-089-document-identity.ts --rehearse
  *
  * Exit 0 = clean; exit 1 = refused; exit 2 = an invariant failed (rolled back).
+ *
+ * A target that is not a Portfolio Desk database is refused WITHOUT any
+ * write: `new Database(path)` (read-write) on a 0-byte or brand-new file
+ * would itself write the standard SQLite header the instant a pragma like
+ * `journal_mode = WAL` runs — so the "is this ours?" check (a
+ * `schema_migrations` table, and whether 089 is already applied) opens the
+ * target `{ readonly: true }` first, closes it, and only reopens read-write
+ * once that check has passed. `--rehearse` additionally refuses a 0-byte
+ * `REPAIR_DB_PATH` up front, before any open at all.
  */
 import path from "node:path";
 import fs from "node:fs";
@@ -150,12 +159,26 @@ function main(): void {
       console.error(`--rehearse: no such file ${target}`);
       process.exit(1);
     }
+    if (fs.statSync(target).size === 0) {
+      console.error(`--rehearse: ${target} is 0 bytes — not a Portfolio Desk database`);
+      process.exit(1);
+    }
     if (sameFile(target, live)) {
       console.error(`--rehearse: REPAIR_DB_PATH is the LIVE database (${live}); refusing`);
       process.exit(1);
     }
   } else {
     target = live;
+    // The holder check and every later reference to `target` must agree on
+    // the SAME real path — resolveDbPath() can return a symlink, and a
+    // symlink path fed to lsof/otherwise could disagree with the real file
+    // an actual holder has open.
+    try {
+      target = fs.realpathSync(target);
+    } catch {
+      // Leave target as computed; the open below will fail with a clear,
+      // uncorrupted message rather than crash here.
+    }
     let holders: string[];
     try {
       holders = otherHolders(target);
@@ -174,15 +197,46 @@ function main(): void {
     }
   }
 
-  // Everything from here holds an open handle on `target` — one try/finally
-  // for the whole lifecycle so every exit path (refusal, invariant failure,
-  // or success) closes it exactly once. process.exit() does NOT run pending
-  // `finally` blocks (confirmed empirically), AND a bare `return` from inside
-  // a try exits this whole function — there is no "resume after the
-  // try/finally" once a nested return fires. So every branch below sets
-  // process.exitCode (which Node applies once the event loop drains
-  // naturally — recompute-tax-lots-v2.ts's own pattern) and returns; nothing
-  // after the try/finally relies on being reached.
+  // process.exit() does NOT run pending `finally` blocks (confirmed
+  // empirically), AND a bare `return` from inside a try exits this whole
+  // function — there is no "resume after the try/finally" once a nested
+  // return fires. So every branch below sets process.exitCode (which Node
+  // applies once the event loop drains naturally — recompute-tax-lots-v2.ts's
+  // own pattern) and returns; nothing after a try/finally relies on being
+  // reached.
+
+  // Phase A — READ-ONLY inspection. Whether `target` is even a Portfolio
+  // Desk database (has schema_migrations) and whether 089 is already
+  // applied MUST be answered without writing a byte: a read-write
+  // `new Database()` on a 0-byte or brand-new file, followed by a pragma
+  // like journal_mode, itself writes the standard SQLite header before any
+  // refusal fires. { readonly: true } cannot do that.
+  let probe: Database.Database | undefined;
+  try {
+    probe = new Database(target, { readonly: true });
+    const hasSchemaMigrations = probe
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`)
+      .get();
+    if (!hasSchemaMigrations) {
+      console.error(`target has no schema_migrations table — not a Portfolio Desk database (${target})`);
+      process.exitCode = 1;
+      return;
+    }
+    if (probe.prepare(`SELECT 1 FROM schema_migrations WHERE filename = ?`).get(NAME)) {
+      console.error(`${NAME} is already applied on ${target}`);
+      process.exitCode = 1;
+      return;
+    }
+  } catch (err) {
+    console.error(`could not inspect ${target}: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+    return;
+  } finally {
+    probe?.close();
+  }
+
+  // Phase B — read-write. Only reached once Phase A has confirmed `target`
+  // is a Portfolio Desk database with 089 still pending.
   let db: Database.Database | undefined;
   try {
     try {
@@ -195,20 +249,6 @@ function main(): void {
       return;
     }
     const conn = db;
-
-    const hasSchemaMigrations = conn
-      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`)
-      .get();
-    if (!hasSchemaMigrations) {
-      console.error(`target has no schema_migrations table — not a Portfolio Desk database (${target})`);
-      process.exitCode = 1;
-      return;
-    }
-    if (conn.prepare(`SELECT 1 FROM schema_migrations WHERE filename = ?`).get(NAME)) {
-      console.error(`${NAME} is already applied on ${target}`);
-      process.exitCode = 1;
-      return;
-    }
 
     try {
       // Every migration BEFORE 089 (A's 088 included when present); the registry is
