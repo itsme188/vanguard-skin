@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
+import { PrivateText } from "@/lib/privacy/components";
 
 interface SkippedRow {
   category: string;
@@ -425,7 +426,7 @@ export function ImportFlow() {
                       <div className="space-y-0.5 mt-0.5">
                         {result.preview.donations.identityConflicts.map((c, j) => (
                           <p key={j} className="text-xs text-gold/80 font-mono">
-                            {c.sourceKey} — {c.field}
+                            <PrivateText>{c.sourceKey} — {c.field}</PrivateText>
                           </p>
                         ))}
                       </div>
@@ -441,7 +442,7 @@ export function ImportFlow() {
                       <div className="space-y-0.5 mt-0.5">
                         {result.preview.donations.absentPriorRows.map((key, j) => (
                           <p key={j} className="text-xs text-gold/80 font-mono">
-                            {key}
+                            <PrivateText>{key}</PrivateText>
                           </p>
                         ))}
                       </div>
