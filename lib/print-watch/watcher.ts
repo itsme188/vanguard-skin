@@ -80,6 +80,8 @@ import {
 } from "./dj-adapter";
 import { pollEdgar, resolveCik, type EdgarFiling } from "./edgar-adapter";
 import { extractCandidates, extractCandidatesFromPdf } from "./extract";
+import { irBaselineFingerprint } from "./ir-baseline-step";
+import { isAllowedIrLinkHost, pollIrPage, type IrPageConfig } from "./ir-page-adapter";
 import { IR_RSS_CONFIGS, pollIrRss, type IrRssConfig } from "./ir-rss-adapter";
 import { reconcile } from "./reconcile";
 import { htmlToRawText, htmlToTablesRepresentation } from "./representations";
@@ -98,10 +100,15 @@ import {
   setPrintState,
   upsertLines,
   upsertPrint,
+  getPrintWatchSource,
+  hasIrBaseline,
+  listIrSeenLinks,
+  recordIrSeenLinks,
   PARSE_CLAIM_STALE_MS,
 } from "./store";
 import { recordDelivery, sha256Hex, type DeliveryInput } from "./delivery";
-import { classifyBytes } from "./url-fetch";
+import { classifyBytes, hardenedFetchBytes } from "./url-fetch";
+import { redactUrl } from "./hardened-fetch";
 import {
   checkPdfBytes,
   checkPdfText,
@@ -290,6 +297,10 @@ export interface WatcherSeams {
     seenLinks: Set<string>,
     baseline: boolean,
   ) => Promise<Array<{ title: string; link: string; html: string }>>;
+  /** The SSRF-hardened reader for the stored IR page road — the newsroom page
+   *  itself and every release link followed off it. The lane always wraps this
+   *  with its `allowHost` predicate before handing it on (M17). */
+  fetchBytes: typeof hardenedFetchBytes;
   extractCandidates: (contracts: LineContract[], representationText: string) => Promise<ParseCandidate[]>;
   /** Reading ONE of a PDF: poppler's text layer for the file at `pdfPath`.
    *  Takes the db because WHERE poppler lives is a setting. */
@@ -352,6 +363,7 @@ const DEFAULT_SEAMS: WatcherSeams = {
   resolveConId: (db, securityId) => defaultResolveConId(db, securityId),
   pollEdgar: (cik, startIso, endIso, seen) => pollEdgar(cik, startIso, endIso, seen),
   pollIrRss: (cfg, seenLinks, baseline) => pollIrRss(cfg, seenLinks, fetch, { baseline }),
+  fetchBytes: (url, opts) => hardenedFetchBytes(url, opts),
   extractCandidates: (contracts, text) => extractCandidates(contracts, text),
   pdfToText: async (db, pdfPath) => {
     const binary = resolvePdftotextPath(db);
@@ -404,6 +416,11 @@ interface PrintRuntime {
    *  (fix wave, finding A). A failed first poll leaves it false, so the
    *  baseline happens on the first poll that actually reads the feed. */
   irBaselineDone: boolean;
+  /** Stored-IR-page road only: link -> how many times acquiring it has been
+   *  refused. A refusal is not evidence of anything, so the link is retried;
+   *  at IR_REFUSAL_LIMIT it is retired (marked seen) so one poison anchor
+   *  cannot spend every poll of the window re-fetching itself. */
+  irRefusals: Map<string, number>;
   flashHeadlines: string[];
   seenFlashKeys: Set<string>;
   cikAttempted: boolean;
@@ -655,7 +672,7 @@ function advanceState(db: Database.Database, printId: number, next: "acquired" |
   if (row.state !== next) setPrintState(db, printId, next);
 }
 
-function refreshCoverage(rt: PrintRuntime, twsUp: boolean | null): void {
+function refreshCoverage(db: Database.Database, rt: PrintRuntime, twsUp: boolean | null): void {
   if (twsUp !== null) rt.lastTwsUp = twsUp;
 
   // No window means no source ever polls for this print — say exactly that
@@ -674,9 +691,26 @@ function refreshCoverage(rt: PrintRuntime, twsUp: boolean | null): void {
   if (rt.lastTwsUp === false) notes.push("TWS offline");
   if (rt.dto.cik) notes.push(`EDGAR: CIK ${rt.dto.cik}`);
   else notes.push(rt.cikAttempted ? "EDGAR: CIK unresolved" : "EDGAR: CIK pending");
-  notes.push(irConfigFor(rt.dto.symbol) ? `RSS: ${rt.dto.symbol} IR feed` : "RSS: NVDA only");
+  // Read fresh rather than cached on the runtime: a PUT /sources mid-window
+  // must show up on the panel without restarting the app, and the lane itself
+  // re-reads the row on every poll for the same reason.
+  if (irConfigFor(rt.dto.symbol)) notes.push(`RSS: ${rt.dto.symbol} IR feed`);
+  else notes.push(irPageNote(db, rt.dto.symbol));
   notes.push("drop: HTML/text/PDF, or a pasted link");
   statusFor(rt.printId).coverage = notes;
+}
+
+/** What the stored-IR-page road can do for this symbol, in one phrase. */
+function irPageNote(db: Database.Database, symbol: string): string {
+  const source = getPrintWatchSource(db, symbol);
+  if (!source) return "IR: none configured";
+  try {
+    return `IR: ${new URL(source.ir_page_url).hostname}`;
+  } catch {
+    // A stored row that no longer parses is a configuration fault, not a
+    // crash: say so on the panel instead of throwing out of a status refresh.
+    return "IR: stored page is not a URL";
+  }
 }
 
 /**
@@ -756,8 +790,13 @@ export function ensurePrintWatch(db: Database.Database): void {
         loop: null,
         djState: createDjPollState(),
         seenAccessions: new Set(),
-        seenIrLinks: new Set(),
+        // Seeded from the DURABLE seen-set (the ir_baseline step's snapshot of
+        // what the newsroom already held, plus anything a previous process
+        // ingested). A fresh process that started with an empty set would read
+        // last quarter's permanently-parked post as tonight's print.
+        seenIrLinks: new Set(listIrSeenLinks(db, dto.eventId).map((l) => l.link)),
         irBaselineDone: false,
+        irRefusals: new Map(),
         flashHeadlines: [],
         seenFlashKeys: new Set(),
         cikAttempted: false,
@@ -789,7 +828,7 @@ export function ensurePrintWatch(db: Database.Database): void {
     // behind a lease it lost has nothing else to come back for it.
     if (rt.window === null) strandedPrintIds.add(printId);
 
-    refreshCoverage(rt, null);
+    refreshCoverage(db, rt, null);
   }
 
   for (const print of listActivePrints(db)) {
@@ -956,7 +995,7 @@ async function pollOnce(db: Database.Database, rt: PrintRuntime): Promise<void> 
   await pollEdgarSource(db, rt, window);
   if (!renewLeaseIfDue(db)) return;
   await pollIrSource(db, rt);
-  refreshCoverage(rt, twsUp);
+  refreshCoverage(db, rt, twsUp);
 }
 
 /**
@@ -1165,13 +1204,26 @@ async function pollEdgarSource(
   }
 }
 
+/**
+ * The IR road. Exactly one of two lanes runs for a symbol: the hardcoded RSS
+ * feed if there is one (v1's NVDA newsroom, which has a real feed and a
+ * curated title pattern), otherwise the per-company page the desk stored.
+ * RSS keeps precedence — a stored page for NVDA would be a second, weaker
+ * reading of the same newsroom.
+ */
 async function pollIrSource(db: Database.Database, rt: PrintRuntime): Promise<void> {
+  const rss = irConfigFor(rt.dto.symbol);
+  if (rss) return pollIrRssSource(db, rt, rss);
+  return pollIrPageSource(db, rt);
+}
+
+/** v1's NVDA-feed lane, unchanged. */
+async function pollIrRssSource(
+  db: Database.Database,
+  rt: PrintRuntime,
+  cfg: IrRssConfig,
+): Promise<void> {
   const status = statusFor(rt.printId);
-  const cfg = irConfigFor(rt.dto.symbol);
-  if (!cfg) {
-    status.sources.rss = "no IR feed for this symbol";
-    return;
-  }
   try {
     await spaceHost(cfg.host);
     // The FIRST poll of a watch is a baseline pass: it fetches no article at
@@ -1203,6 +1255,158 @@ async function pollIrSource(db: Database.Database, rt: PrintRuntime): Promise<vo
   } catch (err) {
     status.sources.rss = errText(err);
   }
+}
+
+/** A refused or thrown link is retried on later polls; at this many refusals
+ *  it is retired (marked seen) with the reason in the lane's note (M17). */
+const IR_REFUSAL_LIMIT = 3;
+
+/**
+ * The stored-IR-page lane (spec section 4.2).
+ *
+ * THE WATCHER NEVER BASELINES (plan M5). Only the `ir_baseline` prepare step
+ * does, before the window opens. Two consequences the tests pin:
+ *
+ *  - with a baseline, `print_watch_ir_seen` already holds last quarter's
+ *    posts, so the only links this lane follows are ones that appeared AFTER
+ *    arming — which is what "tonight's print" means on a newsroom page;
+ *  - with NO baseline (armed late, or the step never ran), every matching link
+ *    is a candidate and the strict `ir-page` period gate is what separates
+ *    tonight's release from the parked one. A late go must never re-baseline:
+ *    that would mark tonight's release "already there" and blind the road.
+ *
+ * The page is read with a SCRATCH seen-set so the adapter reports every
+ * allowed matching link on the page (the count the panel shows, so a newsroom
+ * that changes shape reads as "IR: 0 matching links" rather than as a quiet
+ * night); the runtime's real seen-set then decides which of those are new. One
+ * fetch either way.
+ */
+async function pollIrPageSource(db: Database.Database, rt: PrintRuntime): Promise<void> {
+  const status = statusFor(rt.printId);
+  // Re-read every poll: a PUT /sources during the window must take effect
+  // without a restart, and clearing the row must stop the lane.
+  const source = getPrintWatchSource(db, rt.dto.symbol);
+  if (!source) {
+    status.sources.ir = "no IR page configured";
+    return;
+  }
+
+  const cfg: IrPageConfig = {
+    symbol: source.symbol,
+    irPageUrl: source.ir_page_url,
+    linkMustContain: source.link_must_contain,
+  };
+  let irHost: string;
+  try {
+    irHost = new URL(cfg.irPageUrl).hostname;
+  } catch {
+    status.sources.ir = `stored IR page is not a URL (${redactUrl(cfg.irPageUrl)})`;
+    return;
+  }
+
+  // M17: the fixed-host policy rides on the page fetch AND on every hop of
+  // every link fetch — `hardenedFetchBytes` re-checks `allowHost` after each
+  // redirect, so a 302 off the allowlist is refused rather than followed.
+  const allowHost = (h: string) => isAllowedIrLinkHost(`https://${h}/`, irHost);
+  const fetchBytes: typeof hardenedFetchBytes = (url, opts) =>
+    seams.fetchBytes(url, { ...opts, allowHost });
+
+  const refusals: string[] = [];
+  try {
+    await spaceHost(irHost);
+    const baselined = hasIrBaseline(db, rt.dto.eventId, irBaselineFingerprint(cfg.irPageUrl));
+    const scratch = new Set<string>();
+    const matching = await withSourceTimeout("IR page poll", () =>
+      pollIrPage(cfg, scratch, fetchBytes, { baseline: false }),
+    );
+    const items = matching.filter((item) => !rt.seenIrLinks.has(item.link));
+
+    let durable = 0;
+    for (const item of items) {
+      let linkHost: string;
+      try {
+        linkHost = new URL(item.link).hostname;
+      } catch {
+        // Unreachable via the adapter (it resolves and filters by host first),
+        // but a link we cannot even name must not take the whole poll down.
+        refusals.push(noteIrRefusal(db, rt, item.link, "unparseable link"));
+        continue;
+      }
+      await spaceHost(linkHost);
+      let result: IngestResult;
+      try {
+        const fetched = await withSourceTimeout("IR link fetch", () =>
+          fetchBytes(item.link, { label: "IR page link" }),
+        );
+        // The road records the FINAL url (a hop may have moved it WITHIN the
+        // allowlist), redacted — a stored newsroom URL can carry a token.
+        result = await ingestDocument(
+          db,
+          rt.printId,
+          "ir-page",
+          `ir-page:${item.title.slice(0, 120)}`,
+          redactUrl(fetched.finalUrl),
+          fetched.bytes,
+        );
+      } catch (err) {
+        refusals.push(noteIrRefusal(db, rt, item.link, errText(err)));
+        continue;
+      }
+      if (result.outcome === "refused") {
+        // Nothing was stored (plan M11) — there is no durable record that we
+        // ever saw this link, so it is NOT seen.
+        refusals.push(noteIrRefusal(db, rt, item.link, result.rejectReason ?? "refused"));
+        continue;
+      }
+      // Every other outcome — parsed / duplicate / rejected / queued /
+      // parse_failed — means a document row exists for these bytes. THAT is
+      // what makes the link safe to retire: re-fetching it could only produce
+      // the same row again.
+      //
+      // Burst is set HERE and not at the fetch: it means "evidence landed, so
+      // re-read the other sources now", and it skips the cadence sleep. A
+      // refusal that set it would put the lane in a tight re-fetch loop and
+      // spend all three of a bad link's strikes inside one second, instead of
+      // retrying it on later polls the way the budget intends.
+      rt.burst = true;
+      rt.seenIrLinks.add(item.link);
+      recordIrSeenLinks(db, rt.dto.eventId, [item.link], false);
+      durable += 1;
+    }
+
+    const head = baselined
+      ? "ok"
+      : "no baseline (armed late) — period gate filtering";
+    // A per-poll refusal note is gone by the next poll, but GIVING UP on a
+    // link is a durable fact about tonight's coverage — the desk has to keep
+    // seeing that the road stopped trying, not just a quiet "0 new".
+    const retired = [...rt.irRefusals.values()].filter((n) => n >= IR_REFUSAL_LIMIT).length;
+    const summary =
+      `${head} — IR: ${matching.length} matching links, ${durable} new` +
+      (retired > 0 ? ` (${retired} link(s) retired after ${IR_REFUSAL_LIMIT} refusals)` : "");
+    status.sources.ir = [summary, ...refusals].join("; ");
+  } catch (err) {
+    // A page-level failure (refused, 503, timed out) leaves every link
+    // unseen, so the next poll simply tries again.
+    status.sources.ir = [errText(err), ...refusals].join("; ");
+  }
+}
+
+/** Count a refusal against a link's budget, retiring it at the limit, and
+ *  return the note the lane's status line carries for it. */
+function noteIrRefusal(
+  db: Database.Database,
+  rt: PrintRuntime,
+  link: string,
+  reason: string,
+): string {
+  const n = (rt.irRefusals.get(link) ?? 0) + 1;
+  rt.irRefusals.set(link, n);
+  if (n >= IR_REFUSAL_LIMIT) {
+    rt.seenIrLinks.add(link);
+    recordIrSeenLinks(db, rt.dto.eventId, [link], false);
+  }
+  return `link refused (${n}/${IR_REFUSAL_LIMIT}): ${reason}`;
 }
 
 /**
