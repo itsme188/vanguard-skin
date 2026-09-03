@@ -17,6 +17,8 @@ import {
   type ReporterRowView,
 } from "@/lib/digest/todays-reporters-render";
 import { composeTodaysReportersBlock } from "@/lib/digest/todays-reporters";
+import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
+import { todayET, mondayOf } from "@/lib/calendar/date-utils";
 
 const TODAY = "2026-07-16";
 
@@ -57,6 +59,7 @@ function seedEvent(opts: {
   eventTime?: string | null;
   consensus?: string | null;
   superseded?: number;
+  weekOf?: string;
 }): number {
   const date = opts.date ?? TODAY;
   const source = opts.source ?? "finnhub";
@@ -66,7 +69,7 @@ function seedEvent(opts: {
         `INSERT INTO calendar_events
            (source, event_type, event_date, event_time, release_time, title,
             symbol, consensus_estimate, source_key, week_of, superseded)
-         VALUES (?, 'earnings', ?, ?, ?, ?, ?, ?, ?, '2026-07-13', ?)`,
+         VALUES (?, 'earnings', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         source,
@@ -77,6 +80,7 @@ function seedEvent(opts: {
         opts.symbol,
         opts.consensus === undefined ? "EPS 1.00" : opts.consensus,
         `${source}:${opts.symbol}:${date}`,
+        opts.weekOf ?? "2026-07-13",
         opts.superseded ?? 0,
       ).lastInsertRowid,
   );
@@ -165,6 +169,24 @@ describe("composeTodaysReportersBlock", () => {
     expect(block).toMatch(/\| WATCH \| wl \|/);
     expect(block).toMatch(/\| RTREP \| rt \|/);
     expect(block).toMatch(/\| NOPOS \| — \|/);
+  });
+
+  // composeTodaysReportersBlock's getSymbolStatus call takes no `today`
+  // override (real wall-clock, spec §4.1) — seed the reporter's date at real
+  // today so this stays meaningful regardless of when the suite runs (same
+  // pattern as 1736248).
+  it("armed-only (unheld, unwatched) reporter chips \"armed\"", () => {
+    const today = todayET();
+    const eventId = seedEvent({
+      symbol: "ARMD",
+      date: today,
+      releaseTime: "08:00",
+      weekOf: mondayOf(today),
+    });
+    armWorksheet(db, eventId);
+
+    const block = composeTodaysReportersBlock(db, { today })!;
+    expect(block).toMatch(/\| ARMD \| armed \|/);
   });
 
   it("inherits the Hub's dedup: one row per print even with finnhub+nasdaq sources", () => {

@@ -4,6 +4,8 @@ import { runMigrations } from "@/lib/db/migrate";
 import { getEmailStatesForEvents } from "@/lib/queries/earnings-emails";
 import { buildCockpitPayload } from "@/lib/queries/earnings-cockpit";
 import { upsertCallNote } from "@/lib/mutations/earnings-call-notes";
+import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
+import { todayET } from "@/lib/calendar/date-utils";
 
 // Exposure needs Greeks/prices plumbing — not under test here.
 vi.mock("@/lib/compute/exposure", async (importOriginal) => {
@@ -112,6 +114,24 @@ describe("buildCockpitPayload", () => {
       ...payload.lanes.bmo, ...payload.lanes.amc, ...payload.lanes.unknown, ...payload.carryover,
     ].map((r) => r.symbol);
     expect(symbols).toEqual(["NVDA"]);
+  });
+
+  // Ruling R10 (live print v2 slice A, Task 5): buildCockpitPayload keeps
+  // getSymbolStatus for the display chip; an armed-only row (now selected
+  // by Task 4's coveredForEvents rewiring) must carry its real "armed"
+  // status, not a collapsed "held"/"watchlist" lie. getSymbolStatus's armed
+  // horizon has no `today` override (real wall-clock, spec §4.1) — seed at
+  // real today so this stays meaningful regardless of when the suite runs.
+  it('an armed-only (unheld, unwatched) reporter carries symbolStatus: "armed"', () => {
+    const today = todayET();
+    const ev = seedEvent({ symbol: "ACME", eventDate: today, eventTime: "AMC", releaseTime: "16:20" });
+    armWorksheet(db, ev);
+
+    const payload = buildCockpitPayload(db);
+    const row = [...payload.lanes.bmo, ...payload.lanes.amc, ...payload.lanes.unknown].find(
+      (r) => r.symbol === "ACME",
+    );
+    expect(row?.symbolStatus).toBe("armed");
   });
 
   it("dedupes finnhub-over-manual for the same symbol+date", () => {
