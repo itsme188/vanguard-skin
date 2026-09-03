@@ -376,4 +376,78 @@ describe("mergePrintWatchState", () => {
       gate_fingerprint: null,
     });
   });
+  it("a minted conflict SURVIVES the document re-verdict: a donor doc that flips to rejected must not recompute two acceptances into one number", () => {
+    // The donor event sits in a different quarter, so its release text names a
+    // period the TARGET event's gate refuses — the classic accepted→rejected
+    // flip a date correction produces.
+    const donor = event(db, "2026-02-26", "d");
+    const target = event(db, "2026-08-27", "t");
+    const dp = upsertPrint(db, donor, "ACME", "2026-02-26", "16:05");
+    const tp = upsertPrint(db, target, "ACME", "2026-08-27", "16:05");
+    const tDoc = deliver(
+      tp,
+      "edgar-ex99",
+      "ACME reports Q3 2026 results. Revenue $1,000 million.",
+      "2026-08-27",
+    );
+    const dDoc = deliver(
+      dp,
+      "user-drop",
+      "ACME reports Q1 2026 results. Revenue $1,100 million.",
+      "2026-02-26",
+    );
+    expect(getDocument(db, dDoc.id)?.gate_verdict).toBe("accepted"); // accepted for the DONOR's date
+    upsertLines(db, tp, [
+      line("revenue_q", "single_source", 1000, tDoc.id, [cand("revenue_q", 1000, tDoc.id)]),
+    ]);
+    upsertLines(db, dp, [
+      line("revenue_q", "single_source", 1100, dDoc.id, [cand("revenue_q", 1100, dDoc.id)]),
+    ]);
+    markLineAccepted(db, tp, "revenue_q");
+    markLineAccepted(db, dp, "revenue_q");
+
+    db.transaction(() =>
+      mergePrintWatchState({ db, donorEventId: donor, targetEventId: target }),
+    )();
+
+    // the moved document really did lose its acceptance for the target event
+    expect(getDocument(db, dDoc.id)?.gate_verdict).toBe("rejected");
+    expect(
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM print_watch_candidate_archive WHERE reason = 'gate-rejected'`)
+        .get(),
+    ).toEqual({ n: 1 });
+
+    const rev = getSheet(db, tp).find((l) => l.metric_id === "revenue_q")!;
+    expect(rev.state).toBe("conflict"); // NOT recomputed to single_source off the surviving pool
+    expect(rev.value).toBeNull(); // never "one verified number" where two humans disagreed
+    const audit = JSON.parse(rev.audit_json ?? "{}") as {
+      acceptances: Array<{ value: number }>;
+    };
+    expect(audit.acceptances.map((a) => a.value).sort()).toEqual([1000, 1100]);
+  });
+
+  it("archived candidates follow the surviving print — the donor's rows are never stranded behind a deleted print id", () => {
+    const donor = event(db, "2026-08-26", "d");
+    const target = event(db, "2026-08-27", "t");
+    const dp = upsertPrint(db, donor, "ACME", "2026-08-26", "16:05");
+    const tp = upsertPrint(db, target, "ACME", "2026-08-27", "16:05");
+    // An archive row that predates this merge (print_watch_candidate_archive
+    // carries no FK, so nothing would stop it being orphaned).
+    db.prepare(
+      `INSERT INTO print_watch_candidate_archive (print_id, metric_id, candidate_json, reason) VALUES (?, 'eps_gaap_q', '{"value":3}', 'bytes-missing')`,
+    ).run(dp);
+
+    const out = db.transaction(() =>
+      mergePrintWatchState({ db, donorEventId: donor, targetEventId: target }),
+    )();
+
+    expect(getPrintByEventId(db, donor)).toBeNull();
+    expect(
+      db
+        .prepare(`SELECT print_id, reason FROM print_watch_candidate_archive`)
+        .all(),
+    ).toEqual([{ print_id: tp, reason: "bytes-missing" }]);
+    expect(out.find((r) => r.table === "print_watch_candidate_archive")).toMatchObject({ moved: 1 });
+  });
 });
