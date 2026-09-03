@@ -13,7 +13,7 @@
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { displayCashEffect } from "@/app/dashboard/components/TransactionsSection";
+import { displayCashEffect } from "@/lib/format/cash-effect";
 
 describe("displayCashEffect (Amount column sign normalization)", () => {
   it("renders a Vanguard-sourced BUY (stored positive/unsigned) as negative", () => {

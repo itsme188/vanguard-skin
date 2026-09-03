@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import type { TransactionWithSecurity } from "@/lib/queries/transactions";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { Money, Shares } from "@/lib/privacy/components";
+import { displayCashEffect } from "@/lib/format/cash-effect";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
@@ -129,7 +130,7 @@ export function TransactionHistory({
                   <Shares value={txn.quantity} digits={4} />
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
-                  <Money value={txn.amount} precise />
+                  <Money value={displayCashEffect(txn.type, txn.amount)} precise />
                 </td>
               </tr>
             ))}
