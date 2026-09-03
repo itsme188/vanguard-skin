@@ -1125,6 +1125,116 @@ describe("POST /api/print-watch/accept", () => {
     });
   });
 
+  // CONFIRMED defect: `divergentCandidates` (the line-level gate behind
+  // `supersessionDetail`) flagged ANY non-flash rival that disagreed with
+  // `line.value`, with no document ordering — unlike its per-candidate twin
+  // `candidateSupersessionDetail`, which only counts a candidate from a
+  // STRICTLY LATER document (`c.doc_id > chosen.source_doc_id`) as later
+  // evidence. A per-candidate accept deliberately keeps the rejected OLDER
+  // rival sitting in `candidates_json` (store.ts's `acceptLineCandidate` never
+  // touches it) — so the desk's very next request, a plain
+  // `{promoteHeadline: true}` from the panel's Promote button, ran the
+  // line-level gate and 409'd on evidence it had already out-verified by
+  // picking the newer document. Fix: `divergentCandidates` now ignores any
+  // candidate whose `doc_id <= line.source_doc_id` once `source_doc_id` is a
+  // number, matching `candidateSupersessionDetail`'s own rule.
+  //
+  // Parity note: the panel's `needsReverify` (tests/dashboard/print-watch-
+  // panel.test.ts, describe("needsReverify — per-candidate accept document
+  // order")) is fixed the same way over the identical (0.91 doc-B / 0.89
+  // doc-A) figures, so the chip the desk sees and the gate the server
+  // enforces read the same verdict.
+  describe("promoteHeadline-only follow-up after a per-candidate accept — document-order gate", () => {
+    function cand(overrides: Partial<TaggedCandidate> = {}): TaggedCandidate {
+      return {
+        metric_id: "eps_adj_q",
+        value: 0.91,
+        value_high: null,
+        raw_text: "0.91",
+        snippet: "adjusted EPS of $0.91",
+        location_hint: null,
+        not_disclosed: false,
+        doc_id: 0,
+        representation: "repA",
+        weak_pair: false,
+        ...overrides,
+      };
+    }
+
+    /** Two REAL documents (docA earlier, docB later — AUTOINCREMENT ids) and
+     *  a conflict-shaped eps_adj_q pool split between them, plus an
+     *  already-accepted revenue_q so a promoteHeadline-only follow-up has a
+     *  complete pair to work with. */
+    function seedConflictWithAcceptedRevenue(
+      build: (docA: number, docB: number) => TaggedCandidate[],
+    ) {
+      const eventId = insertCalendarEvent({ eventDate: "2026-08-10" });
+      const printId = upsertPrint(hoisted.db, eventId, "ACME", "2026-08-10", null);
+      const docA = insertDocument(hoisted.db, printId, "dj-release", "dj", null, "sha-order-a", "/a").id;
+      const docB = insertDocument(hoisted.db, printId, "edgar-ex99", "sec", null, "sha-order-b", "/b").id;
+      upsertLines(hoisted.db, printId, [
+        makeLine("eps_adj_q", "conflict", null, {
+          snippet: null,
+          candidates_json: JSON.stringify(build(docA, docB)),
+        }),
+        makeLine("revenue_q", "agreed", 5_000_000),
+      ]);
+      markLineAccepted(hoisted.db, printId, "revenue_q");
+      return { eventId, printId, docA, docB };
+    }
+
+    it("does NOT 409 when the accepted candidate is the LATER document and an older rival (0.89) still sits in candidates_json", async () => {
+      const { eventId, printId, docA, docB } = seedConflictWithAcceptedRevenue((a, b) => [
+        cand({ doc_id: a, value: 0.89, raw_text: "0.89", snippet: "adjusted EPS of $0.89" }),
+        cand({ doc_id: b, value: 0.91 }),
+      ]);
+
+      const accepted = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: docB }],
+      });
+      expect(accepted.status).toBe(200);
+      const afterAccept = getSheet(hoisted.db, printId).find((l) => l.metric_id === "eps_adj_q")!;
+      expect(afterAccept.value).toBe(0.91);
+      expect(afterAccept.source_doc_id).toBe(docB);
+      // The rejected older rival stays visible — never rewritten.
+      expect(JSON.parse(afterAccept.candidates_json)).toHaveLength(2);
+      expect(docA).toBeLessThan(docB);
+
+      // The panel's Promote button sends exactly this — no `accept` array.
+      const { status, json } = await callAccept({ eventId, promoteHeadline: true });
+
+      expect(status).toBe(200);
+      expect(json.success).toBe(true);
+      expect(json.data!.promoted!.actualValue).toMatch(/EPS 0\.91/);
+    });
+
+    it("still 409s 'superseded' when the accepted candidate is the STALE document and a later rival (0.91) disagrees", async () => {
+      const { eventId, docA } = seedConflictWithAcceptedRevenue((a, b) => [
+        cand({ doc_id: a, value: 0.89, raw_text: "0.89", snippet: "adjusted EPS of $0.89" }),
+        cand({ doc_id: b, value: 0.91 }),
+      ]);
+
+      // Locking the stale document needs forceSuperseded — candidateSupersessionDetail
+      // already refuses this accept on its own (doc B is genuinely later).
+      const accepted = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: docA }],
+        forceSuperseded: true,
+      });
+      expect(accepted.status).toBe(200);
+
+      const { status, json } = await callAccept({ eventId, promoteHeadline: true });
+
+      expect(status).toBe(409);
+      expect(json.success).toBe(false);
+      expect(json.code).toBe("superseded");
+      expect(json.error).toMatch(/eps_adj_q/);
+      expect(json.error).toMatch(/0\.91/);
+      expect(saveManualActuals).not.toHaveBeenCalled();
+    });
+  });
+
   describe("pre_print passthrough (409, rolls back the whole request)", () => {
     it("passes through code 'pre_print' and rolls back accept writes from the same request", async () => {
       vi.useFakeTimers();

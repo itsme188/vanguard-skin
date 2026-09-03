@@ -408,9 +408,18 @@ export function needsReverify(line: PrintWatchLine): boolean {
 
   // Trigger (b): any single non-flash candidate that conflicts with the
   // locked value — the correction case (a) structurally cannot catch.
+  //
+  // Document-order aware (defect fix, parity with the accept route's
+  // `divergentCandidates`): a per-candidate accept sets `source_doc_id` to
+  // the chosen document and deliberately leaves the rejected rival in
+  // `candidates_json`, so without this check the chip mislabeled a
+  // just-verified line "superseded" on evidence the desk had already
+  // out-verified by picking the newer document. Only a candidate from a
+  // STRICTLY LATER document counts as later evidence.
   for (const c of candidates) {
     if (c.representation === "flash") continue;
     if (c.not_disclosed || c.value === null) continue;
+    if (typeof line.source_doc_id === "number" && c.doc_id <= line.source_doc_id) continue;
     if (valuesDiverge(line.value, c.value) || valuesDiverge(line.value_high, c.value_high)) {
       return true;
     }

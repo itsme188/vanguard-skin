@@ -405,39 +405,50 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
   | { ok: true }
   | { ok: false; slot: "bmo" | "amc"; eventDate: string; eventId: number } {
   const today = opts.today ?? todayET();
-  let row:
-    | {
-        id: number;
-        event_type: string;
-        event_time: string | null;
-        raw_json: string | null;
-        symbol: string | null;
-        event_date: string;
-      }
-    | undefined;
+  type Row = {
+    id: number;
+    event_type: string;
+    event_time: string | null;
+    raw_json: string | null;
+    symbol: string | null;
+    event_date: string;
+  };
+  let rows: Row[];
   try {
     const family = issuerSiblings(symbol).map((s) => s.toUpperCase());
     const ph = family.map(() => "?").join(",");
-    row = db
+    rows = db
       .prepare(
         `SELECT id, event_type, event_time, raw_json, symbol, event_date
          FROM calendar_events
          WHERE event_type = 'earnings' AND UPPER(symbol) IN (${ph})
            AND event_date >= ? AND actual_value IS NULL AND enriched_at IS NULL
            AND COALESCE(superseded, 0) = 0
-         ORDER BY event_date ASC LIMIT 1`,
+         ORDER BY event_date ASC, id ASC`,
       )
-      .get(...family, today) as typeof row;
+      .all(...family, today) as Row[];
   } catch {
     return { ok: true };
   }
-  if (!row) return { ok: true };
-  if (row.event_time?.trim().toUpperCase() === "TAS") return { ok: true };
+  if (rows.length === 0) return { ok: true };
 
-  const slot = deriveEarningsSlot(row);
-  if (slot === null) return { ok: true };
-  if (sameSideOfNoon(releaseTime, slot)) return { ok: true };
-  return { ok: false, slot, eventDate: row.event_date, eventId: row.id };
+  // Slice A made unsuperseded same-(symbol, event_date) twins a real shape,
+  // and the write this guards applies to EVERY upcoming row — so every row on
+  // the NEAREST event_date has to agree, not just whichever twin a bare
+  // `LIMIT 1` happened to return (SQLite's tie-break for equal event_date
+  // values is arbitrary). Rows further out are never consulted; the nearest
+  // date is still the one that matters.
+  const nearestDate = rows[0].event_date;
+  for (const row of rows) {
+    if (row.event_date !== nearestDate) break;
+    if (row.event_time?.trim().toUpperCase() === "TAS") continue;
+    const slot = deriveEarningsSlot(row);
+    if (slot === null) continue;
+    if (!sameSideOfNoon(releaseTime, slot)) {
+      return { ok: false, slot, eventDate: row.event_date, eventId: row.id };
+    }
+  }
+  return { ok: true };
 }
 
 /** Re-resolve release_time for future, untouched family earnings rows. */

@@ -300,12 +300,24 @@ function resolveSourceDocId(db: Database.Database, docId: number | null): number
  *     every rival stays visible in `candidates_json` for the desk to pick
  *     from (per-candidate accept, POST /api/print-watch/accept).
  *
- * TWO deliberate carve-outs:
+ * THREE deliberate carve-outs:
  *   - EMPTY pool → the old behaviour (state 'pending', number left in place).
  *     There is nothing to re-derive from, and wiping the figure would make an
  *     accidental un-accept unrecoverable: the accept route only re-admits a
  *     'pending' line that still carries a value (the recovery path from QA
  *     finding `…unaccept-one-way-no-per-line-accept…`).
+ *   - `contract_json`'s `metric_id` doesn't match this row's own `metric_id`
+ *     (a drifted/corrupted contract) → same fallback. `reconcile()` buckets
+ *     candidates by their OWN metric_id and looks the bucket up by
+ *     `contract.metric_id`; a mismatch finds nothing and resolves to an EMPTY
+ *     pool (`state: 'pending', value: null`) even when real evidence for THIS
+ *     metric is sitting right there under a different key in the same
+ *     `candidates_json` — writing that would clear a verified figure on a
+ *     bug in a DIFFERENT column, so this is checked BEFORE calling
+ *     `reconcile()` at all.
+ *   - `reconcile()` itself lands on `{state: 'pending', value: null}` for any
+ *     other reason (belt-and-braces for the same empty-pool outcome reached a
+ *     different way) → same fallback, checked AFTER the call.
  *   - `candidates_json` is never rewritten. Evidence is append-only; the
  *     reconciler's sign guard drops candidates from its own working set, and
  *     persisting that filtered set here would silently delete evidence.
@@ -342,13 +354,13 @@ export function clearLineAccepted(db: Database.Database, printId: number, metric
       contract = null;
     }
 
-    if (candidates.length === 0 || contract === null) {
+    if (candidates.length === 0 || contract === null || contract.metric_id !== metricId) {
       releaseOnly.run(printId, metricId);
       return;
     }
 
     const [rederived] = reconcile([contract], {}, candidates, []);
-    if (!rederived) {
+    if (!rederived || (rederived.state === "pending" && rederived.value === null)) {
       releaseOnly.run(printId, metricId);
       return;
     }
