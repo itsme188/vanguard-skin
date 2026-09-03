@@ -1498,7 +1498,7 @@ describe("IR page lane", () => {
     expectAllowlistOnEveryFetch();
   });
 
-  it("a page that changes shape reads as 'IR: 0 matching links' and the other roads still run", async () => {
+  it("a page that changes shape reads as '0 matching links' and the other roads still run", async () => {
     const { eventId } = seedAcme();
     upsertPrintWatchSource(db, { symbol: "ACME", irPageUrl: IR_URL, linkMustContain: null });
     recordIrBaseline(db, eventId, FP, [OLD_LINK]);
@@ -1509,7 +1509,10 @@ describe("IR page lane", () => {
     ensurePrintWatch(db);
     await waitUntil(() => (getWatchStatus(db)[0].sources.ir ?? "").includes("matching links"));
 
-    expect(getWatchStatus(db)[0].sources.ir).toContain("IR: 0 matching links");
+    // The panel supplies the "IR" label from LADDER_LABELS — the lane's own
+    // string must not repeat it ("IR: ok — IR: 0 matching links").
+    expect(getWatchStatus(db)[0].sources.ir).toContain("0 matching links");
+    expect(getWatchStatus(db)[0].sources.ir).not.toContain("IR:");
     // Other roads are unaffected (spec section 7).
     expect(fake.edgarCalls).toBeGreaterThan(0);
     expect(getWatchStatus(db)[0].sources.edgar).toBeTruthy();

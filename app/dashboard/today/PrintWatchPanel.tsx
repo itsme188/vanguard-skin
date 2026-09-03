@@ -142,12 +142,13 @@ const ENSURE_INTERVAL_MS = 60_000;
  *  (lib/print-watch/watcher.ts: watcher/dj/edgar/rss/gate/pipeline/flash/
  *  loop). Unknown keys (future sources, or a coverage note under an
  *  unexpected key) are appended alphabetically rather than dropped. */
-const LADDER_ORDER = ["watcher", "dj", "edgar", "rss", "gate", "pipeline", "flash", "loop"] as const;
+const LADDER_ORDER = ["watcher", "dj", "edgar", "rss", "ir", "gate", "pipeline", "flash", "loop"] as const;
 const LADDER_LABELS: Record<string, string> = {
   watcher: "Watcher",
   dj: "DJ",
   edgar: "EDGAR",
   rss: "RSS",
+  ir: "IR",
   gate: "Gate",
   pipeline: "Pipeline",
   flash: "Flash",
