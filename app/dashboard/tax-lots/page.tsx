@@ -77,9 +77,18 @@ export default async function TaxLotsPage(props: {
 
   const isNarrowed = Boolean(selectedAccount) || filterSecurityId != null;
 
-  const activeSummary = selectedAccount
-    ? accountSummaries.find((a) => a.account_name === selectedAccount)
-    : null;
+  // accountSummaries is account-wide (security-blind) — only trust it as
+  // the tiles' data source when the account is the ONLY active filter. The
+  // moment a security filter is also active, the tiles must derive from
+  // the already-filtered openLots/closedSales below (QA:
+  // tax-lots--account-pill-drops-security-filter-from-realized-tiles-filtered-chip-stays) —
+  // otherwise an account pill silently drops the security filter from the
+  // REALIZED/LONG-TERM/SHORT-TERM tiles while the "Filtered: <symbol>" chip
+  // stays on screen.
+  const activeSummary =
+    selectedAccount && filterSecurityId == null
+      ? accountSummaries.find((a) => a.account_name === selectedAccount)
+      : null;
 
   // Clear-filter link preserves year/account, drops only ?security=.
   const clearFilterParams = new URLSearchParams();
