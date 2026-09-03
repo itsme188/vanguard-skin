@@ -672,6 +672,12 @@ invocation may have written before it was cut off, and the row will be retried. 
 ADDITIVE field on `PrepareStepContext` (R13); a step typing `ctx` as `{ now }` stays assignable,
 which is what lets slice B register through its shim.
 
+Two scoping notes. `runPrepareSteps(db, { eventId })` — the route's post-arm kick — runs THAT
+event's rows without the date/armed gate the sweep-style pass applies; the gate belongs to the
+sweep's selection, not to an explicit single-event run. And the cluster widening has a visible
+consequence (R11): where an armed twin pair exists, the two consumers that do not dedupe (the wire
+probe and the upcoming-reporters list) will see both rows.
+
 Fingerprints are checked BEFORE the attempt cap, on purpose: **drift revives a spent row.** A step
 that failed five ticks must come back when its inputs change (the newsletter lands, the date is
 corrected) — checking the cap first would make it terminal forever. A fingerprint that throws
