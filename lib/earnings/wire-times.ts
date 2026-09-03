@@ -378,6 +378,68 @@ export function resolveEarningsReleaseTime(
   return resolved;
 }
 
+/**
+ * Guard for the release-time POST route (QA finding
+ * today-earningshub-release-time--save-stamps-slot-default-summary-contradicts-input,
+ * 2026-09-03): a user-entered release time whose side of noon disagrees with
+ * the symbol's NEAREST upcoming untouched earnings event's derived BMO/AMC
+ * slot would be written by upsertSymbolReleaseTime and then silently
+ * IGNORED by resolveSymbolReleaseTime's sameSideOfNoon guard — the write
+ * happens, the value is never used, and the resolver falls through to the
+ * slot default instead. Call this BEFORE the write so the route can reject
+ * the mismatch instead of accepting a value the cascade will never honor.
+ *
+ * Uses the SAME predicate as applyResolvedReleaseTimeToUpcomingEvents
+ * (issuer family, event_date >= today, actual_value IS NULL, enriched_at IS
+ * NULL, not superseded), narrowed to the single nearest row. Skips the
+ * check (ok: true) when there's no upcoming event, the row is TAS, or the
+ * row's slot can't be derived — mirroring resolveEarningsReleaseTime's own
+ * TAS/null-slot handling, where slot=null means "no side of noon to check".
+ */
+export function checkUserReleaseTimeAgainstUpcomingSlot(
+  db: Database.Database,
+  symbol: string,
+  releaseTime: string,
+  opts: { today?: string } = {},
+):
+  | { ok: true }
+  | { ok: false; slot: "bmo" | "amc"; eventDate: string; eventId: number } {
+  const today = opts.today ?? todayET();
+  let row:
+    | {
+        id: number;
+        event_type: string;
+        event_time: string | null;
+        raw_json: string | null;
+        symbol: string | null;
+        event_date: string;
+      }
+    | undefined;
+  try {
+    const family = issuerSiblings(symbol).map((s) => s.toUpperCase());
+    const ph = family.map(() => "?").join(",");
+    row = db
+      .prepare(
+        `SELECT id, event_type, event_time, raw_json, symbol, event_date
+         FROM calendar_events
+         WHERE event_type = 'earnings' AND UPPER(symbol) IN (${ph})
+           AND event_date >= ? AND actual_value IS NULL AND enriched_at IS NULL
+           AND COALESCE(superseded, 0) = 0
+         ORDER BY event_date ASC LIMIT 1`,
+      )
+      .get(...family, today) as typeof row;
+  } catch {
+    return { ok: true };
+  }
+  if (!row) return { ok: true };
+  if (row.event_time?.trim().toUpperCase() === "TAS") return { ok: true };
+
+  const slot = deriveEarningsSlot(row);
+  if (slot === null) return { ok: true };
+  if (sameSideOfNoon(releaseTime, slot)) return { ok: true };
+  return { ok: false, slot, eventDate: row.event_date, eventId: row.id };
+}
+
 /** Re-resolve release_time for future, untouched family earnings rows. */
 export function applyResolvedReleaseTimeToUpcomingEvents(
   db: Database.Database,
