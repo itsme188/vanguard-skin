@@ -356,11 +356,15 @@ export function getFilteredArticles(
 }
 
 /**
- * Lightweight count for the Feeds toolbar badge. Same base predicate
- * (is_relevant=0) as getFilteredArticles — keep them in lockstep if the
- * predicate ever changes. Deliberately ignores sourceId/search: the badge
- * is a global "there's stuff to review" indicator, independent of the
- * Filtered tab's current toolbar narrowing.
+ * Deliberately-unscoped global count of rows needing review (is_relevant=0),
+ * same base predicate as getFilteredArticles — keep them in lockstep if the
+ * predicate ever changes. This function never takes sourceId/search: it
+ * backs the page's initial SSR value (app/dashboard/research/page.tsx) and
+ * the Feeds toolbar badge's "all" tab. On the Filtered tab itself the badge
+ * is scope-corrected client-side by computeFilteredBadgeCount
+ * (ResearchFeedsView.tsx), which sums filteredCategoryCounts to honour the
+ * active sourceId/search narrowing (fixed 2026-09-03, commit 1e2b5c3) — this
+ * query stays the unscoped baseline underneath that.
  */
 export function getFilteredArticleCount(db: Database.Database): number {
   const row = db

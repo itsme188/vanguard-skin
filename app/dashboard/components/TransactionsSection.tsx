@@ -4,8 +4,9 @@ import { useMemo, useState } from "react";
 import type { SecurityDetailTransaction } from "@/lib/queries/security-detail";
 import { Money, Shares } from "@/lib/privacy/components";
 import { resolveOptionFields } from "@/lib/format";
+import { displayCashEffect } from "@/lib/format/cash-effect";
 import { SortableHeader } from "./SortableHeader";
-import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
+import { compareValues, useSortParam, type SortDir } from "@/lib/hooks/useSortParam";
 import { Section } from "./Section";
 import { Chip, type ChipTone } from "./Chip";
 
@@ -27,31 +28,36 @@ function isOptionTxn(t: SecurityDetailTransaction): boolean {
   return OPTION_TYPES.has(t.type);
 }
 
-// Mirrors lib/import/parsers/canonical-csv.ts's BUY_FAMILY_TYPES /
-// SELL_FAMILY_TYPES (kept as a separate literal copy — that file's sets are
-// module-private and scoped to the import-time signed-cash-effect
-// normalization, a different concern from this display-time fix).
-const BUY_FAMILY_TYPES = new Set(["BUY", "BUY_TO_OPEN", "BUY_TO_CLOSE", "BUY_TO_COVER"]);
-const SELL_FAMILY_TYPES = new Set(["SELL", "SELL_TO_CLOSE", "SELL_TO_OPEN"]);
-
 /**
- * Display-only cash-effect sign normalization (QA:
- * security-detail-transactions--buy-amount-sign-convention-differs-by-source-regression-1).
- * Vanguard canonical imports historically stored principal UNSIGNED while
- * IBKR imports store a signed cash flow, so adjacent BUY rows in this same
- * column rendered with opposite signs for the identical action. Never
- * rewrites stored data (transactions.amount stays exactly as imported) —
- * this only fixes what the table PRINTS: a BUY is always a cash outflow
- * (negative) and a SELL is always a cash inflow (positive), regardless of
- * which source or era the row came from.
+ * Sorts security-detail transaction rows for the Amount column consistently
+ * with what the column PRINTS. The `amount` field is compared via
+ * displayCashEffect(row.type, row.amount) — the same sign-normalization the
+ * Amount cell renders through (see displayCashEffect in
+ * lib/format/cash-effect.ts) — so a raw-positive legacy Vanguard BUY, which
+ * displays as a negative outflow, sorts among the other negative-displayed
+ * rows instead of among the raw-positive ones. Every other field sorts on
+ * its raw column value, unchanged.
  */
-export function displayCashEffect(type: string, amount: number | null): number | null {
-  if (amount == null || !Number.isFinite(amount)) return amount;
-  // `|| 0` normalizes the zero-amount case: -Math.abs(0) is -0, which would
-  // otherwise silently disagree with a plain `0` under Object.is/toBe.
-  if (BUY_FAMILY_TYPES.has(type)) return -Math.abs(amount) || 0;
-  if (SELL_FAMILY_TYPES.has(type)) return Math.abs(amount);
-  return amount;
+export function sortSecurityTransactions(
+  rows: SecurityDetailTransaction[],
+  field: SortField | null,
+  dir: SortDir,
+): SecurityDetailTransaction[] {
+  if (!field) return rows;
+  return [...rows].sort((a, b) => {
+    if (field === "amount") {
+      return compareValues(
+        displayCashEffect(a.type, a.amount),
+        displayCashEffect(b.type, b.amount),
+        dir,
+      );
+    }
+    return compareValues(
+      a[field as keyof SecurityDetailTransaction],
+      b[field as keyof SecurityDetailTransaction],
+      dir,
+    );
+  });
 }
 
 function typeTone(type: string): ChipTone {
@@ -95,15 +101,7 @@ export function TransactionsSection({
       if (typeScope === "options" && !isOptionTxn(t)) return false;
       return true;
     });
-    if (!sort.field) return base;
-    const field = sort.field;
-    return [...base].sort((a, b) =>
-      compareValues(
-        a[field as keyof SecurityDetailTransaction],
-        b[field as keyof SecurityDetailTransaction],
-        sort.dir,
-      ),
-    );
+    return sortSecurityTransactions(base, sort.field, sort.dir);
   }, [all, account, typeScope, sort]);
 
   if (all.length === 0) return null;
