@@ -13,6 +13,7 @@ import {
   coveredForEvents,
   coveredForEvent,
 } from "@/lib/queries/briefing-symbols";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 let db: Database.Database;
 beforeEach(() => {
@@ -55,8 +56,11 @@ function seedHeld(symbol: string): void {
 
 describe("armed coverage (spec §4.1)", () => {
   it("isEventArmed is event-scoped: arming one event does not cover the sibling event of the same symbol", () => {
-    const armedId = seedEvent("ACME", "2026-09-02");
-    const siblingId = seedEvent("ACME", "2026-12-02");
+    // coveredForEvent/coveredForEvents take no `today` override (plan-mandated),
+    // so the display-armed horizon is real wall-clock — seed relative to today
+    // so this stays permanently armed rather than going stale.
+    const armedId = seedEvent("ACME", addDays(todayET(), 1));
+    const siblingId = seedEvent("ACME", addDays(todayET(), 90));
     armWorksheet(db, armedId);
     expect(isEventArmed(db, armedId)).toBe(true);
     expect(isEventArmed(db, siblingId)).toBe(false);
@@ -67,9 +71,11 @@ describe("armed coverage (spec §4.1)", () => {
 
   it("coveredForEvents keeps held/watchlist family coverage and adds armed events", () => {
     seedHeld("GOOG");
-    const googl = seedEvent("GOOGL", "2026-10-20"); // family-held
-    const snow = seedEvent("ACME", "2026-09-02"); // armed only
-    const zs = seedEvent("BETA", "2026-09-03"); // nothing
+    const googl = seedEvent("GOOGL", "2026-10-20"); // family-held; date irrelevant to coverage
+    // Armed-only coverage relies on real wall-clock (no `today` override), so
+    // this date must stay relative to today to keep discriminating forever.
+    const snow = seedEvent("ACME", addDays(todayET(), 1)); // armed only
+    const zs = seedEvent("BETA", "2026-09-03"); // nothing; date irrelevant to coverage
     armWorksheet(db, snow);
     expect(
       coveredForEvents(db, [
