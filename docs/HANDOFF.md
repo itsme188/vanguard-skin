@@ -21,7 +21,7 @@
 
 ## 2. Tests / E2E / deploy result
 
-- No code changed → no test run, no build, no deploy this session. The Electron app deployed at 19:43 ET (previous session) is still the running build; ZS print 9588 stays armed for 9/3 16:05 ET (release time web-verified from the IR PDF, contract id present, name held → DJ wire lane on).
+- No code changed → no test run, no build. Step-7 Electron rebuild SKIPPED by the user at `/session-end` ("no need to rebuild electron") — docs-only session. The Electron app deployed at 19:43 ET (previous session) is still the running build; ZS print 9588 stays armed for 9/3 16:05 ET (release time web-verified from the IR PDF, contract id present, name held → DJ wire lane on).
 - The SNOW sheet from the 9/2 print sits in `parsed` with four agreed lines; the calendar row already carries Finnhub actuals matching the sheet's headline pair, so the recap is not blocked on acceptance.
 
 ## 3. Open concerns / rejected approaches / decisions
@@ -35,7 +35,7 @@
 
 ## 4. Uncommitted changes / live-process state
 
-- Working tree at the time of writing: the two plan files (untracked), `docs/plans/TODO.md` and this file (modified). They are committed together as a docs commit at the end of the session; not pushed unless `/session-end` runs.
+- Committed and pushed: `29330ec` (plan A + TODO + handoff), `81e98eb` (plan B + registry contract), `ce89d8a` (both rulings recorded in spec §2, DECISIONS.md, plan headers, TODO, handoff); this handoff commit is the session's last. Working tree clean; no worktrees created this session (the nightly fixer's `../vanguard-skin-qa-fix` remains, as before). Open GitHub issue #34 (process/documentation) stays open by design.
 - Electron app running (server PID 31682, :3099); nightly chain unchanged (02:00 smoke, 02:45 deep QA + fixer — the 02:48 run is the first unattended proof of the probe-hang fix). No sandbox servers or dev servers were started this session.
 
 ## 5. Claude session link
