@@ -213,6 +213,48 @@ describe("migration 089 — rebuild of legacy rows", () => {
     expect(db.prepare("SELECT reason, candidate_json FROM print_watch_candidate_archive").get()).toEqual({ reason: "unparseable-json", candidate_json: "{not json" });
   });
 
+  // Whole-branch review, Important 4. Phase (11) parsed `contract_json` and
+  // `expected_json` unguarded, so ONE corrupt row aborted the whole rebuild —
+  // and the rebuild is all-or-nothing, so the database stayed on the pre-089
+  // schema with no way forward but hand-editing the corrupt row. The carve-out
+  // is the one `retractDocumentEvidence` and the merge handler already carry:
+  // an unreadable (or drifted) contract resolves to an EMPTY candidate pool,
+  // which would CLEAR a figure real evidence still supports, so the evidence
+  // moves and the reading is left exactly as it was.
+  it("a line with malformed contract_json does not abort the rebuild — it is copied verbatim while every other line is re-reconciled", () => {
+    const db = legacyDb();
+    const printId = seedPrint(db);
+    const bytes = path.join(tmp, "r.txt");
+    fs.writeFileSync(bytes, "ACME Q2 2026");
+    const d1 = seedLegacyDoc(db, printId, "dj-release", "dj", null, "sha-same", bytes, true);
+    const d2 = seedLegacyDoc(db, printId, "user-drop", "u", null, "sha-same", bytes, true);
+    // Both lines are AFFECTED (their d2 candidate is remapped onto d1), so both
+    // reach phase (11); only the second one can be re-read.
+    seedLine(db, printId, "m1", "agreed", 1000, d1, [cand("m1", 1000, d1, "repB"), cand("m1", 1000, d2, "repB")]);
+    db.prepare(`UPDATE print_watch_lines SET contract_json = '{not json' WHERE metric_id = 'm1'`).run();
+    seedLine(db, printId, "m2", "agreed", 2000, d1, [cand("m2", 2000, d1, "repB"), cand("m2", 2000, d2, "repB")]);
+    // A third line whose EXPECTATION is the corrupt half.
+    seedLine(db, printId, "m3", "agreed", 3000, d1, [cand("m3", 3000, d1, "repB"), cand("m3", 3000, d2, "repB")]);
+    db.prepare(`UPDATE print_watch_lines SET expected_json = '{bad' WHERE metric_id = 'm3'`).run();
+
+    const logs: string[] = [];
+    const report = db.transaction(() => rebuildDocumentIdentity(db, { log: (l) => logs.push(l) }))();
+
+    expect(report.unreadableContracts).toBe(2);
+    // m1: state, value and source_doc_id untouched; its evidence still moved.
+    const m1 = db.prepare("SELECT state, value, source_doc_id, candidates_json, contract_json FROM print_watch_lines WHERE metric_id='m1'").get() as { state: string; value: number; source_doc_id: number; candidates_json: string; contract_json: string };
+    expect(m1).toMatchObject({ state: "agreed", value: 1000, source_doc_id: d1, contract_json: "{not json" });
+    expect((JSON.parse(m1.candidates_json) as TaggedCandidate[]).map((c) => c.doc_id)).toEqual([d1]);
+    // m2: honestly re-reconciled down to one source.
+    expect(db.prepare("SELECT state FROM print_watch_lines WHERE metric_id='m2'").get()).toEqual({ state: "single_source" });
+    // m3: the reading is left alone rather than recomputed without its expectation.
+    expect(db.prepare("SELECT state, value FROM print_watch_lines WHERE metric_id='m3'").get()).toEqual({ state: "agreed", value: 3000 });
+    expect(report.linesChanged).toEqual([{ printId, metricId: "m2", from: "agreed", to: "single_source" }]);
+    expect(logs.filter((l) => /could not be read/.test(l))).toHaveLength(2);
+    // The invariant still holds and the migration completed.
+    expect(report.candidates).toEqual({ before: 6, kept: 3, archived: 3 });
+  });
+
   it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])("rolls back cleanly when phase %i throws", (phase) => {
     const db = legacyDb();
     const printId = seedPrint(db);
