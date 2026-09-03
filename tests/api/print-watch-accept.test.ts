@@ -22,7 +22,13 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { NextRequest } from "next/server";
 import { runMigrations } from "@/lib/db/migrate";
-import { upsertPrint, upsertLines, getSheet, markLineAccepted } from "@/lib/print-watch/store";
+import {
+  upsertPrint,
+  upsertLines,
+  getSheet,
+  markLineAccepted,
+  insertDocument,
+} from "@/lib/print-watch/store";
 import type {
   LineContract,
   ExpectedValue,
@@ -355,25 +361,26 @@ describe("POST /api/print-watch/accept", () => {
       };
     }
 
-    /** The real production sequence: accept the line, let the watcher's next
-     *  reconcile refresh candidates_json underneath the accepted lock (value
-     *  stays locked at 1.42), then un-accept through the route — leaving
-     *  state 'pending' with the stale number and newer evidence beneath it. */
+    /**
+     * The residue shape: state 'pending', the earlier accepted number still on
+     * the line, newer evidence beneath it.
+     *
+     * Seeded DIRECTLY (not through the route's unaccept) since the QA fix
+     * `…unaccept-after-supersede-keeps-old-value-hides-newer-candidate`:
+     * un-accept now re-derives the line through the reconciler, so a
+     * disagreeing pool lands on 'conflict' with no number rather than on this
+     * shape. Rows already parked this way before that fix shipped still exist,
+     * so the gate below has to keep holding for them — that is what these
+     * tests pin. The route-driven un-accept behaviour is pinned separately in
+     * "unaccept re-derives the line".
+     */
     async function seedUnacceptedResidue(candidates: TaggedCandidate[]) {
       const { eventId, printId } = seedPrint([
-        makeLine("eps_adj_q", "agreed", 1.42, {
-          candidates_json: JSON.stringify([candidate()]),
+        makeLine("eps_adj_q", "pending", 1.42, {
+          candidates_json: JSON.stringify(candidates),
         }),
       ]);
-      markLineAccepted(hoisted.db, printId, "eps_adj_q");
 
-      // Watcher reconcile while accepted: candidates refresh, value does not.
-      upsertLines(hoisted.db, printId, [
-        makeLine("eps_adj_q", "agreed", 9.99, { candidates_json: JSON.stringify(candidates) }),
-      ]);
-
-      const cleared = await callAccept({ eventId, unaccept: ["eps_adj_q"] });
-      expect(cleared.status).toBe(200);
       const line = getSheet(hoisted.db, printId)[0];
       expect(line.state).toBe("pending");
       expect(line.value).toBe(1.42); // residue: the accepted number survives
@@ -459,6 +466,333 @@ describe("POST /api/print-watch/accept", () => {
       const { status } = await callAccept({ eventId, accept: ["eps_adj_q"] });
 
       expect(status).toBe(200);
+      expect(getSheet(hoisted.db, printId)[0].state).toBe("accepted");
+    });
+  });
+
+  // QA finding `today-print-watch--unaccept-after-supersede-keeps-old-value-
+  // hides-newer-candidate` (HIGH) — user ruling 2026-09-02, option 1. A
+  // conflict line has no top-level number by construction, so the only honest
+  // way to accept anything on it is to name the DOCUMENT whose figure the desk
+  // verified: `accept: [{ metric_id, doc_id }]`.
+  describe("per-candidate accept — accept: [{ metric_id, doc_id }]", () => {
+    function cand(overrides: Partial<TaggedCandidate> = {}): TaggedCandidate {
+      return {
+        metric_id: "eps_adj_q",
+        value: 1.42,
+        value_high: null,
+        raw_text: "1.42",
+        snippet: "adjusted EPS of $1.42",
+        location_hint: null,
+        not_disclosed: false,
+        doc_id: 0,
+        representation: "repA",
+        weak_pair: false,
+        ...overrides,
+      };
+    }
+
+    /** A print with two REAL documents (source_doc_id is a live FK) and a
+     *  conflict line whose pool holds one figure from each. */
+    function seedConflict(
+      build: (docA: number, docB: number) => TaggedCandidate[],
+      extraLines: PrintWatchLine[] = [],
+    ) {
+      const eventId = insertCalendarEvent({ eventDate: "2026-08-10" });
+      const printId = upsertPrint(hoisted.db, eventId, "ACME", "2026-08-10", null);
+      const docA = insertDocument(hoisted.db, printId, "dj-release", "dj", null, "sha-a", "/a").id;
+      const docB = insertDocument(hoisted.db, printId, "edgar-ex99", "sec", null, "sha-b", "/b").id;
+      upsertLines(hoisted.db, printId, [
+        makeLine("eps_adj_q", "conflict", null, {
+          snippet: null,
+          candidates_json: JSON.stringify(build(docA, docB)),
+        }),
+        ...extraLines,
+      ]);
+      return { eventId, printId, docA, docB };
+    }
+
+    it("locks the named candidate's figure, snippet and document onto the conflict line", async () => {
+      const { eventId, printId, docA, docB } = seedConflict((a, b) => [
+        cand({ doc_id: a }),
+        cand({ doc_id: b, value: 1.24, raw_text: "1.24", snippet: "adjusted EPS of $1.24" }),
+      ]);
+      const before = getSheet(hoisted.db, printId)[0].candidates_json;
+
+      const { status, json } = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: docB }],
+      });
+
+      expect(status).toBe(200);
+      expect(json.success).toBe(true);
+      expect(json.data!.accepted).toEqual(["eps_adj_q"]); // envelope stays metric ids
+
+      const line = getSheet(hoisted.db, printId)[0];
+      expect(line.state).toBe("accepted");
+      expect(line.value).toBe(1.24);
+      expect(line.snippet).toBe("adjusted EPS of $1.24");
+      expect(line.source_doc_id).toBe(docB);
+      expect(line.candidates_json).toBe(before); // the rejected rival survives
+      expect(docA).not.toBe(docB);
+    });
+
+    it("does NOT 409 when the named candidate is the NEWEST document — accepting the superseding document IS the re-verify", async () => {
+      const { eventId, printId, docB } = seedConflict((a, b) => [
+        cand({ doc_id: a }),
+        cand({ doc_id: b, value: 1.24 }),
+      ]);
+
+      const { status } = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: docB }],
+      });
+
+      expect(status).toBe(200);
+      expect(getSheet(hoisted.db, printId)[0].value).toBe(1.24);
+    });
+
+    it("409s 'superseded' when the named candidate is the STALE document a later one contradicts, writing nothing", async () => {
+      const { eventId, printId, docA } = seedConflict((a, b) => [
+        cand({ doc_id: a }),
+        cand({ doc_id: b, value: 1.24 }),
+      ]);
+
+      const { status, json } = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: docA }],
+      });
+
+      expect(status).toBe(409);
+      expect(json.code).toBe("superseded");
+      expect(json.error).toMatch(/eps_adj_q/);
+      expect(json.error).toMatch(/1\.24/);
+
+      const line = getSheet(hoisted.db, printId)[0];
+      expect(line.state).toBe("conflict"); // nothing written
+      expect(line.value).toBeNull();
+      expect(saveManualActuals).not.toHaveBeenCalled();
+    });
+
+    it("forceSuperseded: true locks the stale document's figure anyway", async () => {
+      const { eventId, printId, docA } = seedConflict((a, b) => [
+        cand({ doc_id: a }),
+        cand({ doc_id: b, value: 1.24 }),
+      ]);
+
+      const { status } = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: docA }],
+        forceSuperseded: true,
+      });
+
+      expect(status).toBe(200);
+      const line = getSheet(hoisted.db, printId)[0];
+      expect(line.state).toBe("accepted");
+      expect(line.value).toBe(1.42);
+      expect(line.source_doc_id).toBe(docA);
+    });
+
+    it("400s when the named doc_id has no candidate for that metric, writing nothing", async () => {
+      const { eventId, printId, docA, docB } = seedConflict((a, b) => [
+        cand({ doc_id: a }),
+        cand({ doc_id: b, value: 1.24 }),
+      ]);
+      const missing = Math.max(docA, docB) + 500;
+
+      const { status, json } = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: missing }],
+      });
+
+      expect(status).toBe(400);
+      expect(json.success).toBe(false);
+      expect(json.error).toMatch(String(missing));
+      expect(json.error).toMatch(/eps_adj_q/);
+      expect(getSheet(hoisted.db, printId)[0].state).toBe("conflict");
+    });
+
+    it("400s when the named document reported the metric as not disclosed — no figure to lock in", async () => {
+      const { eventId, printId, docB } = seedConflict((a, b) => [
+        cand({ doc_id: a }),
+        cand({ doc_id: b, value: null, raw_text: null, not_disclosed: true }),
+      ]);
+
+      const { status, json } = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: docB }],
+      });
+
+      expect(status).toBe(400);
+      expect(json.error).toMatch(/eps_adj_q/);
+      expect(json.error).toMatch(/no (?:number|figure)/i);
+      expect(getSheet(hoisted.db, printId)[0].state).toBe("conflict");
+    });
+
+    it("400s on a wire-flash candidate — a flash has no document of record", async () => {
+      const { eventId } = seedConflict((a) => [
+        cand({ doc_id: a }),
+        cand({ doc_id: 0, representation: "flash", value: 1.4 }),
+      ]);
+
+      const { status, json } = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: 0 }],
+      });
+
+      expect(status).toBe(400);
+      expect(json.error).toMatch(/flash/i);
+    });
+
+    it("400s when one document's two readings disagree, until the desk names the representation", async () => {
+      const { eventId, printId, docA } = seedConflict((a) => [
+        cand({ doc_id: a, representation: "repA", value: 1.42 }),
+        cand({ doc_id: a, representation: "repB", value: 1.24 }),
+      ]);
+
+      const ambiguous = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: docA }],
+      });
+      expect(ambiguous.status).toBe(400);
+      expect(ambiguous.json.error).toMatch(/representation/i);
+      expect(getSheet(hoisted.db, printId)[0].state).toBe("conflict");
+
+      const named = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: docA, representation: "repB" }],
+      });
+      expect(named.status).toBe(200);
+      const line = getSheet(hoisted.db, printId)[0];
+      expect(line.state).toBe("accepted");
+      expect(line.value).toBe(1.24);
+    });
+
+    it("400s a malformed accept entry (an object without a doc_id), writing nothing", async () => {
+      const { eventId, printId } = seedConflict((a, b) => [
+        cand({ doc_id: a }),
+        cand({ doc_id: b, value: 1.24 }),
+      ]);
+
+      const { status, json } = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q" }],
+      });
+
+      expect(status).toBe(400);
+      expect(json.error).toMatch(/doc_id/);
+      expect(getSheet(hoisted.db, printId)[0].state).toBe("conflict");
+    });
+
+    it("promotes the CANDIDATE's number in the same request, not the line's stale value", async () => {
+      const { eventId, docB } = seedConflict(
+        (a, b) => [cand({ doc_id: a }), cand({ doc_id: b, value: 1.24 })],
+        [makeLine("revenue_q", "agreed", 5_000_000)],
+      );
+
+      const { status, json } = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: docB }, "revenue_q"],
+        promoteHeadline: true,
+      });
+
+      expect(status).toBe(200);
+      expect(json.data!.accepted).toEqual(["eps_adj_q", "revenue_q"]);
+      expect(json.data!.promoted!.actualValue).toMatch(/EPS 1\.24/);
+      expect(saveManualActuals).toHaveBeenCalledWith(
+        hoisted.db,
+        expect.objectContaining({ epsActual: 1.24, revenueActualUsd: 5_000_000 }),
+      );
+    });
+
+    it("re-points an already-accepted line at a corrected document without an un-accept first", async () => {
+      const { eventId, printId, docA, docB } = seedConflict((a, b) => [
+        cand({ doc_id: a }),
+        cand({ doc_id: b, value: 1.24 }),
+      ]);
+      // The desk had locked the first document's figure.
+      hoisted.db
+        .prepare(
+          `UPDATE print_watch_lines SET state = 'accepted', value = 1.42, source_doc_id = ?
+            WHERE print_id = ? AND metric_id = 'eps_adj_q'`,
+        )
+        .run(docA, printId);
+
+      const { status } = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: docB }],
+      });
+
+      expect(status).toBe(200);
+      const line = getSheet(hoisted.db, printId)[0];
+      expect(line.value).toBe(1.24);
+      expect(line.source_doc_id).toBe(docB);
+    });
+  });
+
+  // The finding itself, at the HTTP boundary: un-accepting a line the panel
+  // flagged "⟳ superseded — re-verify" must stop rendering the superseded
+  // figure and surface the rivals instead.
+  describe("unaccept re-derives the line (QA: unaccept-after-supersede)", () => {
+    it("lands a disagreeing pool on 'conflict' with the stale figure cleared and every rival kept", async () => {
+      const eventId = insertCalendarEvent({ eventDate: "2026-08-10" });
+      const printId = upsertPrint(hoisted.db, eventId, "ACME", "2026-08-10", null);
+      const docA = insertDocument(hoisted.db, printId, "dj-release", "dj", null, "s-a", "/a").id;
+      const docB = insertDocument(hoisted.db, printId, "edgar-ex99", "sec", null, "s-b", "/b").id;
+      const pool: TaggedCandidate[] = [
+        {
+          metric_id: "eps_adj_q",
+          value: 1.42,
+          value_high: null,
+          raw_text: "1.42",
+          snippet: "adjusted EPS of $1.42",
+          location_hint: null,
+          not_disclosed: false,
+          doc_id: docA,
+          representation: "repA",
+          weak_pair: false,
+        },
+        {
+          metric_id: "eps_adj_q",
+          value: 1.24,
+          value_high: null,
+          raw_text: "1.24",
+          snippet: "adjusted EPS of $1.24",
+          location_hint: null,
+          not_disclosed: false,
+          doc_id: docB,
+          representation: "repA",
+          weak_pair: false,
+        },
+      ];
+      upsertLines(hoisted.db, printId, [
+        makeLine("eps_adj_q", "agreed", 1.42, {
+          source_doc_id: docA,
+          candidates_json: JSON.stringify(pool),
+        }),
+      ]);
+      markLineAccepted(hoisted.db, printId, "eps_adj_q");
+
+      const { status } = await callAccept({ eventId, unaccept: ["eps_adj_q"] });
+
+      expect(status).toBe(200);
+      const line = getSheet(hoisted.db, printId)[0];
+      expect(line.state).toBe("conflict");
+      expect(line.value).toBeNull();
+      expect(line.snippet).toBeNull();
+      expect(JSON.parse(line.candidates_json)).toHaveLength(2);
+    });
+
+    it("still admits a plain re-accept when the pool agrees (the un-accept recovery path)", async () => {
+      const { eventId, printId } = seedPrint([makeLine("eps_adj_q", "agreed", 1.42)]);
+      markLineAccepted(hoisted.db, printId, "eps_adj_q");
+
+      expect((await callAccept({ eventId, unaccept: ["eps_adj_q"] })).status).toBe(200);
+      const cleared = getSheet(hoisted.db, printId)[0];
+      expect(cleared.state).toBe("pending");
+      expect(cleared.value).toBe(1.42); // empty pool: nothing to re-derive from
+
+      expect((await callAccept({ eventId, accept: ["eps_adj_q"] })).status).toBe(200);
       expect(getSheet(hoisted.db, printId)[0].state).toBe("accepted");
     });
   });

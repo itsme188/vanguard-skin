@@ -1,14 +1,27 @@
 /**
  * Factor-anchored scenario recipes.
  *
- * Replaces the 9 arbitrary preset scenarios in scenarios.ts with 8 scenarios
- * grounded in the factor classifications already in security_factors. Each
- * scenario specifies a shock magnitude and per-factor sensitivity
- * multipliers; per-position P&L is shockMagnitude × sensitivityMultiplier ×
- * marketValue.
+ * Each recipe names a SUBJECT — the cohort the scenario is actually about
+ * (a sector, an industry, a fund category, foreign-domiciled names, or a
+ * factor cohort) — and prices it on the PRIMARY shock path: the headline
+ * move, floored at membership and scaled UP by the position's factor
+ * buckets. Everything else takes a weaker SPILLOVER leg, an explicit
+ * per-recipe fraction of the same headline move. Sector floors are applied
+ * worse-of (a floor can deepen a mild result, it never replaces a harsher
+ * one).
+ *
+ * Why (QA finding `analysis-scenarios--generic-factor-bucket-subject-sector-
+ * least-impacted`, ruled 2026-09-02, fixed 2026-09-03): the previous engine
+ * pushed each scenario through ONE generic factor bucket and used
+ * `sectorOverrides` as a REPLACEMENT, so the scenario's own subject was
+ * systematically the LEAST affected cohort — healthcare names pinned at the
+ * -10% "floor" in a healthcare shock while an unrelated Very-High-regulatory-
+ * risk name took -16.8%; the semiconductor pure-play at -10% in "Semi cycle
+ * -15%" while a mega-cap internet name took -24%; the foreign ADR at 0.0% in
+ * "USD strength +5%".
  *
  * Methodology is exposed alongside the result so the user can audit how a
- * given P&L number was derived.
+ * given P&L number was derived — keep those strings TRUE to the math.
  */
 
 import type Database from "better-sqlite3";
@@ -21,6 +34,8 @@ import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { delta } from "./options-greeks";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 
 // ─── Per-factor bucket sensitivities ─────────────────────────────────────
 //
@@ -47,6 +62,12 @@ export const FACTOR_SHOCK_SENSITIVITIES: Record<FactorColumn, BucketMultipliers>
   },
   international_exposure: {
     No: 0, Low: 0.20, Moderate: 0.50, High: 1.00, "Very High": 1.30,
+    // The classifier also emits the label "International" for this factor (35
+    // live securities on 2026-09-03: TSM, MELI, IDEV, …). It ranks in the same
+    // tier as High in FACTOR_SORT_RANK (lib/factors.ts), and leaving it
+    // unmapped scored those names 0 — the "foreign ADR takes 0.0% in USD
+    // strength +5%" half of the 2026-09-03 QA finding.
+    International: 1.00,
   },
   geopolitical_onshoring: {
     No: 0, Low: 0.20, Moderate: 0.50, High: 1.00, "Very High": 1.30,
@@ -59,11 +80,61 @@ export const FACTOR_SHOCK_SENSITIVITIES: Record<FactorColumn, BucketMultipliers>
   },
   crypto_adjacent: {
     No: 0, Low: 0.20, Moderate: 0.50, High: 1.00, "Very High": 1.40,
+    // Same vocabulary-gap class as international_exposure's "International":
+    // the shared factor vocabulary treats crypto as a binary "Yes" (ranked
+    // Very-High-equivalent in FACTOR_SORT_RANK). No live rows carry it today,
+    // but an unmapped label scores 0 — silently exempting a miner from the
+    // crypto scenario.
+    Yes: 1.40,
   },
   regulatory_risk: {
     No: 0, Low: 0.25, Moderate: 0.60, High: 1.00, "Very High": 1.40,
   },
 };
+
+// ─── Subject membership ──────────────────────────────────────────────────
+
+/**
+ * Multiplier floor for a position that belongs to the subject STRUCTURALLY —
+ * its sector / industry / fund category / domicile IS what the scenario is
+ * about. 1.0 means "takes the full headline move even with no factor
+ * evidence": a healthcare name in a healthcare shock never escapes the
+ * headline just because the LLM factor pass called its regulatory risk Low.
+ */
+export const STRUCTURAL_SUBJECT_FLOOR = 1.0;
+
+/**
+ * The spillover leg is capped at |shock × spillover|: a non-subject name can
+ * never transmit MORE than the headline move. This cap, plus the rule that
+ * every recipe's |spillover| is smaller than its weakest membership floor,
+ * is what makes "the subject moves furthest" a construction guarantee rather
+ * than a per-recipe coincidence.
+ */
+const SPILLOVER_INTENSITY_CAP = 1.0;
+
+/** Geography labels that mean "US revenue base" (lowercase). */
+const DOMESTIC_GEOGRAPHIES = new Set(["us", "usa", "u.s.", "united states", "domestic"]);
+
+/**
+ * How a recipe decides which positions ARE the scenario. Selectors are OR-ed;
+ * structural hits (sector / industry / fund category / domicile) carry the
+ * 1.0 floor, factor hits carry their own `minMultiplier` floor so within-
+ * cohort gradation survives.
+ */
+export interface ScenarioSubject {
+  /** Plain-English cohort description — rendered in the methodology string. */
+  label: string;
+  /** GICS sectors that ARE the subject; ETF sleeves count per look-through weight. */
+  sectors?: string[];
+  /** Case-insensitive substrings matched against `securities.industry`. */
+  industries?: string[];
+  /** Case-insensitive substrings matched against `securities.fund_category`. */
+  fundCategories?: string[];
+  /** Non-US geography or non-USD listing counts as subject (FX scenarios). */
+  foreignDomiciled?: boolean;
+  /** Factor-bucket membership: bucket multiplier ≥ minMultiplier ⇒ subject. */
+  factors?: Array<{ column: FactorColumn; minMultiplier: number }>;
+}
 
 // ─── Recipes ─────────────────────────────────────────────────────────────
 
@@ -72,6 +143,7 @@ export interface ScenarioRecipe {
   name: string;
   description: string;
   category: "rate" | "fx" | "tariff" | "ai" | "energy" | "semi" | "healthcare" | "crypto";
+  /** The SUBJECT's headline move (signed return). */
   shockMagnitude: number;
   primaryFactor: FactorColumn;
   /**
@@ -79,7 +151,21 @@ export interface ScenarioRecipe {
    * multiplier for the primary factor.
    */
   factorMultipliers?: Partial<Record<FactorColumn, number>>;
-  sectorOverrides?: Record<string, number>;
+  /** What this scenario is about — the primary shock path. */
+  subject: ScenarioSubject;
+  /**
+   * Signed fraction of `shockMagnitude` transmitted to NON-subject names,
+   * scaled by their own (capped) factor blend. Negative = the spillover runs
+   * the opposite way to the subject (oil: producers rally, consumers drift).
+   * Must be smaller in magnitude than the recipe's weakest membership floor.
+   */
+  spillover: number;
+  /**
+   * Per-sector FLOORS, not overrides: applied worse-of for a negative value
+   * (`min`) and better-of for a positive one (`max`). A floor can deepen a
+   * mild result; it can never cap a harsher one.
+   */
+  sectorFloors?: Record<string, number>;
   methodology: string;
   /**
    * Set by matchScenariosToThemes when this recipe's primaryFactor matches an
@@ -97,12 +183,25 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
     shockMagnitude: -0.025, // approximate equity-side impact per 25bp surprise
     primaryFactor: "interest_rate_sensitive",
     factorMultipliers: { growth_vs_value: 0.50 },
+    subject: {
+      label: "Rate-sensitive assets — bonds, long-duration growth equity, REITs and utilities",
+      sectors: ["Real Estate", "Utilities"],
+      factors: [
+        { column: "interest_rate_sensitive", minMultiplier: 0.50 }, // Moderate+
+        { column: "growth_vs_value", minMultiplier: 0.50 }, // Growth (long-duration cash flows)
+      ],
+    },
+    // A hawkish 25bp surprise is worth roughly -0.6% to the broad tape vs
+    // -2.5% for the rate-sensitive cohort.
+    spillover: 0.25,
     methodology:
-      "Per-position P&L = position_value × interest_rate_sensitive_bucket × -0.025. " +
-      "Growth names get an additional 0.5× growth add-on; Value names take no add-on " +
-      "(they fall less than growth on a hike — they don't rally). " +
-      "Bonds: duration × 25bp / 100. Options: inherit the underlying's rate exposure, " +
-      "levered by delta elasticity (Ω = Δ·S/V, |Ω| ≤ 8, fallback 2.5× when unpriceable). " +
+      "Subject = rate-sensitive assets: bonds (priced off duration, not buckets), " +
+      "long-duration growth equity, REITs and utilities. Subject P&L = position_value × -2.5% × " +
+      "max(membership floor, blend), blend = interest_rate_sensitive bucket + 0.5 × growth tilt " +
+      "(Value adds nothing — it falls less than growth on a hike, it doesn't rally). " +
+      "Everything else takes the spillover leg: 25% of the shock scaled by its own capped blend " +
+      "(≈ -0.6% at most). Bonds: duration × 25bp / 100. Options: inherit the underlying's rate " +
+      "exposure, levered by delta elasticity (Ω = Δ·S/V, |Ω| ≤ 8, fallback 2.5× when unpriceable). " +
       "Calibrated to typical 25bp surprise-day historical reaction.",
   },
   {
@@ -112,9 +211,20 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
     category: "fx",
     shockMagnitude: -0.05,
     primaryFactor: "international_exposure",
+    subject: {
+      label: "Foreign-revenue and non-US-domiciled names",
+      foreignDomiciled: true,
+      factors: [{ column: "international_exposure", minMultiplier: 0.50 }], // Moderate+
+    },
+    // Translation drag is subject-specific; domestic-only names are close to
+    // flat (relative winners), so the spillover leg is deliberately small.
+    spillover: 0.10,
     methodology:
-      "Per-position P&L = position_value × international_exposure_bucket × -0.05. " +
-      "Domestic-only names (No/Low buckets) close to flat; multinational large caps see translation drag.",
+      "Subject = foreign-revenue and non-US-domiciled names: international_exposure Moderate or " +
+      "higher, OR a non-US geography / non-USD listing — the structural test catches the ADRs the " +
+      "factor pass missed. Subject P&L = position_value × -5% × max(1.0, international bucket). " +
+      "Domestic names take the spillover leg — 10% of the shock scaled by their own international " +
+      "bucket — so a domestic-only name is close to flat.",
   },
   {
     id: "tariff_escalation_10pt",
@@ -124,10 +234,19 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
     shockMagnitude: -0.08,
     primaryFactor: "tariff_exposure",
     factorMultipliers: { geopolitical_onshoring: -0.40 },
+    subject: {
+      label: "Tariff-exposed supply chains",
+      factors: [{ column: "tariff_exposure", minMultiplier: 0.50 }], // Moderate+
+    },
+    // A tariff escalation is a broad risk-off event: ≈ -2% for names with no
+    // direct supply-chain exposure but some second-order sensitivity.
+    spillover: 0.25,
     methodology:
-      "Per-position P&L = position_value × tariff_exposure_bucket × -0.08. " +
-      "Onshoring beneficiaries get a positive offset via geopolitical_onshoring × +0.4 × 0.08. " +
-      "Semi capex names get a meaningful drag; reshoring-themed industrials get a small lift.",
+      "Subject = tariff-exposed supply chains (tariff_exposure Moderate or higher). Subject P&L = " +
+      "position_value × -8% × max(0.5, tariff bucket - 0.4 × onshoring bucket), so reshoring " +
+      "beneficiaries keep their offset inside the subject cohort. Non-subject names take the " +
+      "spillover leg — 25% of the shock scaled by that same capped blend — which leaves a pure " +
+      "onshoring beneficiary with a small lift.",
   },
   {
     id: "ai_capex_pause",
@@ -136,28 +255,51 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
     category: "ai",
     shockMagnitude: -0.15,
     primaryFactor: "ai_exposure",
+    subject: {
+      label: "AI-levered names — semis, AI infrastructure, data-center adjacencies",
+      industries: ["semiconductor"],
+      fundCategories: ["semiconductor"],
+      factors: [{ column: "ai_exposure", minMultiplier: 0.50 }], // Moderate+
+    },
+    // The AI complex is a large share of index cap: a -15% drawdown there
+    // drags a name with partial AI sensitivity by roughly -3%.
+    spillover: 0.20,
     methodology:
-      "Per-position P&L = position_value × ai_exposure_bucket × -0.15. " +
-      "Very-High AI names take the brunt; data-center adjacencies (utilities flagged AI) included. " +
-      "Calibrated to a NDX-95 analog: AI-pure names dropped ~20% over 2 weeks.",
+      "Subject = AI-levered names: ai_exposure Moderate or higher, plus semiconductor industry / " +
+      "fund-category members. Subject P&L = position_value × -15% × max(membership floor, ai bucket) " +
+      "— Very-High names take ≈ -21%. Everything else takes the spillover leg: 20% of the shock " +
+      "scaled by its own AI bucket, so a book with no AI story barely moves. Calibrated to an " +
+      "NDX-95 analog: AI-pure names dropped ~20% over 2 weeks.",
   },
   {
     id: "oil_shock_10dollar",
     name: "Oil shock +$10/bbl",
     description: "Brent +$10 — cyclical-sensitive names drift; energy producers rally.",
     category: "energy",
-    shockMagnitude: -0.04,
+    shockMagnitude: 0.12, // the SUBJECT here benefits: energy producers rally
     primaryFactor: "cyclical",
-    sectorOverrides: {
-      Energy: 0.12,
+    subject: {
+      label: "Energy producers",
+      sectors: ["Energy"],
+      industries: ["oil", "pipeline", "energy"],
+      fundCategories: ["energy", "oil"],
+    },
+    // Oil consumers move the OTHER way: -1/3 of the +12% producer move ≈ -4%
+    // for a fully cyclical name, scaled by its cyclicality bucket.
+    spillover: -1 / 3,
+    sectorFloors: {
       Utilities: -0.04,
       Industrials: -0.05,
       "Consumer Discretionary": -0.06,
     },
     methodology:
-      "Per-position P&L: cyclical-exposure bucket × -0.04 for non-energy non-utility names; " +
-      "explicit sector overrides for Energy (+12%) and rate-sensitive sectors. " +
-      "Calibrated to $10 Brent shock historical analog (2018, 2022).",
+      "Subject = energy producers (Energy sector, oil / pipeline industries, energy fund " +
+      "categories) — the beneficiaries: position_value × +12% × max(1.0, cyclicality bucket). " +
+      "Everything else takes the spillover leg in the OPPOSITE direction (-1/3 of the subject " +
+      "move, ≈ -4%) scaled by its cyclicality bucket, so defensives drift up slightly while " +
+      "Very-High cyclicals take the full drag. Sector floors apply worse-of: Utilities -4%, " +
+      "Industrials -5%, Consumer Discretionary -6%. Calibrated to $10 Brent shock historical " +
+      "analogs (2018, 2022).",
   },
   {
     id: "semi_cycle_minus_15pct",
@@ -167,10 +309,19 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
     shockMagnitude: -0.15,
     primaryFactor: "tariff_exposure",
     factorMultipliers: { ai_exposure: 0.60 },
-    sectorOverrides: { "Information Technology": -0.10, Technology: -0.10 },
+    subject: {
+      label: "Semiconductors and semi-cap equipment",
+      industries: ["semiconductor"],
+      fundCategories: ["semiconductor"],
+    },
+    spillover: 0.25,
+    sectorFloors: { Technology: -0.10 },
     methodology:
-      "Tariff-exposed names take a 1× hit; AI-exposed names take an additional 0.6× hit. " +
-      "Plus an across-Tech sector floor of -10%. Mid-cycle semi correction analog.",
+      "Subject = semiconductors and semi-cap equipment (industry / fund-category membership — NOT " +
+      "the whole Technology sector). Subject P&L = position_value × -15% × max(1.0, tariff bucket + " +
+      "0.6 × AI bucket). Non-semi names take the spillover leg (25% of the shock scaled by that " +
+      "capped blend); the across-Tech floor of -10% then applies worse-of, deepening a mild result " +
+      "but never capping a semi's. Mid-cycle semi correction analog.",
   },
   {
     id: "healthcare_reg_shock",
@@ -179,11 +330,22 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
     category: "healthcare",
     shockMagnitude: -0.12,
     primaryFactor: "regulatory_risk",
-    sectorOverrides: { Healthcare: -0.10 },
+    subject: {
+      label: "Healthcare — managed care, pharma, biotech, providers",
+      sectors: ["Healthcare"],
+      industries: ["pharmaceutic", "biotech", "healthcare", "health care", "medical"],
+      fundCategories: ["health care", "healthcare", "biotech"],
+    },
+    // Drug-pricing headlines are sector news: the read-through to an
+    // unrelated book is small.
+    spillover: 0.15,
     methodology:
-      "Per-position P&L = position_value × regulatory_risk_bucket × -0.12. " +
-      "Healthcare sector floor of -10% applies to all healthcare regardless of regulatory bucket. " +
-      "Calibrated to 2018 IRA-fear day-of-news analog.",
+      "Subject = healthcare — managed care, pharma, biotech, providers (sector, industry or " +
+      "fund-category membership; ETF sleeves count per look-through weight). Subject P&L = " +
+      "position_value × -12% × max(1.0, regulatory_risk bucket), so a Very-High-regulatory " +
+      "healthcare name takes ≈ -16.8% while an unclassified healthcare name still takes the full " +
+      "-12%. Everything else takes the spillover leg: 15% of the shock scaled by its own regulatory " +
+      "bucket. Calibrated to a drug-pricing-headline day-of-news analog.",
   },
   {
     id: "crypto_minus_30pct",
@@ -192,9 +354,20 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
     category: "crypto",
     shockMagnitude: -0.30,
     primaryFactor: "crypto_adjacent",
+    subject: {
+      label: "Crypto-adjacent equities — miners, exchanges, crypto-treasury names",
+      fundCategories: ["crypto"],
+      factors: [{ column: "crypto_adjacent", minMultiplier: 0.50 }], // Moderate+
+    },
+    // A BTC drawdown in isolation has little direct read-through to unrelated
+    // equities, so the spillover leg is the smallest in the catalog.
+    spillover: 0.10,
     methodology:
-      "Per-position P&L = position_value × crypto_adjacent_bucket × -0.30. " +
-      "Very-High names (miners, pure exchanges) take ~42% drawdown; Moderate exposure ~15%.",
+      "Subject = crypto-adjacent equities — miners, exchanges, crypto-treasury names " +
+      "(crypto_adjacent Moderate or higher, or a crypto fund category). Subject P&L = " +
+      "position_value × -30% × max(0.5, crypto bucket): Very-High names (miners, pure exchanges) " +
+      "take ≈ -42%, Moderate exposure ≈ -15%. Everything else takes the spillover leg — 10% of the " +
+      "shock scaled by its own crypto bucket — so a book with no crypto exposure is untouched.",
   },
 ];
 
@@ -206,6 +379,10 @@ interface RecipePositionRow {
   security_name: string | null;
   security_type: string;
   sector: string | null;
+  industry: string | null;
+  fund_category: string | null;
+  geography: string | null;
+  currency: string | null;
   market_value: number;
   duration_years: number | null;
   interest_rate_sensitive: string | null;
@@ -229,6 +406,91 @@ interface RecipePositionRow {
 function bucketMultiplier(factor: FactorColumn, bucket: string | null): number {
   if (!bucket) return 0;
   return FACTOR_SHOCK_SENSITIVITIES[factor][bucket] ?? 0;
+}
+
+/** Case-insensitive GICS-aware sector comparison (never string-equal raw). */
+function sectorEquals(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const na = (normalizeSector(a) ?? a).trim().toLowerCase();
+  const nb = (normalizeSector(b) ?? b).trim().toLowerCase();
+  return na !== "" && na === nb;
+}
+
+function matchesAnySubstring(value: string | null, needles: string[] | undefined): boolean {
+  if (!value || !needles?.length) return false;
+  const haystack = value.toLowerCase();
+  return needles.some((needle) => haystack.includes(needle.toLowerCase()));
+}
+
+function isForeignDomiciled(pos: RecipePositionRow): boolean {
+  const currency = pos.currency?.trim().toUpperCase();
+  if (currency && currency !== "USD") return true;
+  const geography = pos.geography?.trim().toLowerCase();
+  return Boolean(geography && !DOMESTIC_GEOGRAPHIES.has(geography));
+}
+
+/**
+ * The multiplier FLOOR this position earns from position-level subject
+ * selectors (industry / fund category / domicile / factor buckets), or null
+ * when it is not a subject by any of them. Sector membership is decided per
+ * look-through slice in computeRecipeScenario, not here.
+ */
+function positionSubjectFloor(subject: ScenarioSubject, pos: RecipePositionRow): number | null {
+  if (matchesAnySubstring(pos.industry, subject.industries)) return STRUCTURAL_SUBJECT_FLOOR;
+  if (matchesAnySubstring(pos.fund_category, subject.fundCategories)) return STRUCTURAL_SUBJECT_FLOOR;
+  if (subject.foreignDomiciled && isForeignDomiciled(pos)) return STRUCTURAL_SUBJECT_FLOOR;
+
+  let floor: number | null = null;
+  for (const selector of subject.factors ?? []) {
+    const mult = bucketMultiplier(selector.column, pos[selector.column]);
+    if (mult >= selector.minMultiplier) floor = Math.max(floor ?? 0, selector.minMultiplier);
+  }
+  return floor;
+}
+
+/**
+ * Fixed income and cash sit OUT of the equity spillover channel: a Treasury
+ * bill does not drift because semiconductors rolled over, whatever Low factor
+ * buckets the classifier hung on it. They still take the SUBJECT path when a
+ * scenario is about them — the rate shock prices bonds off duration — this
+ * only silences the second-order leg. Cash identity is single-sourced through
+ * isCashEquivalentSecurity (never a hand-rolled money_market list).
+ */
+function transmitsEquitySpillover(pos: RecipePositionRow): boolean {
+  if (pos.security_type.toLowerCase() === "bond") return false;
+  return !isCashEquivalentSecurity(pos);
+}
+
+/** Primary bucket + weighted secondary buckets — the position's factor blend. */
+function factorBlend(recipe: ScenarioRecipe, pos: RecipePositionRow): number {
+  let total = bucketMultiplier(recipe.primaryFactor, pos[recipe.primaryFactor]);
+  for (const [factor, weight] of Object.entries(recipe.factorMultipliers ?? {})) {
+    if (!weight) continue;
+    total += bucketMultiplier(factor as FactorColumn, pos[factor as FactorColumn]) * weight;
+  }
+  return total;
+}
+
+/**
+ * Sector floors are a FLOOR, not a replacement: a negative floor takes the
+ * worse of (the position is at least this bad), a positive floor the better
+ * of. Pre-2026-09-03 this was `override ?? fallback`, which made every
+ * scenario's own subject sector its least-affected cohort.
+ */
+export function applySectorFloor(change: number, floor: number | undefined): number {
+  if (floor == null || !Number.isFinite(floor) || floor === 0) return change;
+  return floor < 0 ? Math.min(change, floor) : Math.max(change, floor);
+}
+
+function sectorFloorFor(
+  floors: Record<string, number> | undefined,
+  sector: string | null
+): number | undefined {
+  if (!floors) return undefined;
+  for (const [key, value] of Object.entries(floors)) {
+    if (sectorEquals(key, sector)) return value;
+  }
+  return undefined;
 }
 
 /** Fallback when elasticity inputs are missing (no underlying price / IV /
@@ -270,8 +532,10 @@ function optionElasticity(pos: RecipePositionRow, riskFreeRate: number): number 
 /**
  * Compute the per-position P&L impact for a factor-anchored recipe.
  *
- * Bonds use duration-based pricing for rate scenarios; otherwise the
- * factor-bucket multiplier × shock magnitude is the per-position return.
+ * Subject positions take `shock × max(membership floor, factor blend)`;
+ * everything else takes `shock × spillover × clamp(blend, ±1)`. Bonds use
+ * duration-based pricing for rate scenarios (they ARE the subject there),
+ * and options lever whatever their underlying's path produced.
  */
 export function computeRecipeScenario(
   db: Database.Database,
@@ -306,6 +570,10 @@ export function computeRecipeScenario(
         s.name AS security_name,
         s.security_type,
         COALESCE(s.sector, s_u.sector) AS sector,
+        COALESCE(s.industry, s_u.industry) AS industry,
+        COALESCE(s.fund_category, s_u.fund_category) AS fund_category,
+        COALESCE(s.geography, s_u.geography) AS geography,
+        COALESCE(s.currency, s_u.currency) AS currency,
         s.duration_years,
         s.strike_price,
         s.expiration_date,
@@ -344,46 +612,36 @@ export function computeRecipeScenario(
 
   const currentPortfolioValue = positions.reduce((s, p) => s + p.market_value, 0);
 
-  // ETF look-through weights for sector-override recipes (single source —
-  // same map cash-deploy and the allocation breakdown use).
-  const etfWeights = recipe.sectorOverrides
+  // ETF look-through weights — needed whenever sector membership or a sector
+  // floor can split a fund across buckets (single source: the same map
+  // cash-deploy and the allocation breakdown use).
+  const needsSectorLookThrough = Boolean(recipe.sectorFloors || recipe.subject.sectors?.length);
+  const etfWeights = needsSectorLookThrough
     ? getEtfSectorWeights(db)
     : new Map<string, Array<{ sector: string; weight_pct: number }>>();
 
   const riskFreeRate = getRiskFreeRate(db);
 
   const impacts: PositionImpact[] = positions.map((pos) => {
+    const blend = factorBlend(recipe, pos);
+    const positionFloor = positionSubjectFloor(recipe.subject, pos);
+
     let changePercent: number;
+    let subjectShare: number;
 
-    // The factor-bucket path — the default when no override applies, and the
-    // fallback for ETF slices in sectors without an override.
-    const factorPathChange = (): number => {
-      const primaryMult = bucketMultiplier(recipe.primaryFactor, pos[recipe.primaryFactor]);
-      let total = primaryMult * recipe.shockMagnitude;
-      if (recipe.factorMultipliers) {
-        for (const [factor, weight] of Object.entries(recipe.factorMultipliers)) {
-          if (!weight) continue;
-          const mult = bucketMultiplier(factor as FactorColumn, pos[factor as FactorColumn]);
-          total += mult * weight * recipe.shockMagnitude;
-        }
-      }
-      return total;
-    };
-
-    // Bond duration overrides recipe factor math for rate scenarios
     if (recipe.category === "rate" && pos.security_type.toLowerCase() === "bond") {
+      // Bonds ARE the subject of a rate shock, and duration prices them
+      // better than any factor bucket could.
       const duration = pos.duration_years ?? 5;
       // Recipe shock is the equity-side impact for a 25bp move (~-0.025).
       // Convert to bps: -0.025 = -25bp on equities; the corresponding bond
       // hit is duration × Δy/100.
-      // Approximate: rate move in bps = -recipe.shockMagnitude * 100 (since
-      // a 25bp hike is roughly a -2.5% equity move).
       const rateBpsMove = -recipe.shockMagnitude * 1000; // recipe.shockMagnitude in [-0.5, 0.5] → bps
       changePercent = -duration * rateBpsMove / 10000;
-    } else if (recipe.sectorOverrides) {
-      // Sector overrides apply per sector slice: a fund with cached weights
-      // takes the override on the matching share of its value, the factor
-      // path on the rest. Single-bucket positions behave exactly as before.
+      subjectShare = 1;
+    } else {
+      // Per sector slice: a fund with cached weights can be part subject
+      // (its healthcare sleeve) and part spillover (everything else).
       const parts = explodeHoldingBySector(
         pos.symbol,
         pos.security_type,
@@ -391,19 +649,32 @@ export function computeRecipeScenario(
         etfWeights,
         pos.sector
       );
-      const hasOverride = parts.some((p) => p.sector in recipe.sectorOverrides!);
-      if (hasOverride) {
-        const mv = pos.market_value || 1;
-        const fallback = factorPathChange();
-        changePercent = parts.reduce((sum, part) => {
-          const move = recipe.sectorOverrides![part.sector] ?? fallback;
-          return sum + (part.value / mv) * move;
-        }, 0);
-      } else {
-        changePercent = factorPathChange();
+      const mv = pos.market_value || 1;
+      let weighted = 0;
+      let share = 0;
+      for (const part of parts) {
+        const weight = part.value / mv;
+        const sliceFloor = (recipe.subject.sectors ?? []).some((s) => sectorEquals(s, part.sector))
+          ? STRUCTURAL_SUBJECT_FLOOR
+          : positionFloor;
+        const raw =
+          sliceFloor != null
+            ? // SUBJECT path — the headline move, floored at membership and
+              // scaled up by the position's own factor buckets.
+              recipe.shockMagnitude * Math.max(sliceFloor, blend)
+            : // SPILLOVER path — an explicit fraction of the same move,
+              // scaled by the (capped) blend so unrelated names barely move,
+              // and silenced entirely for bonds / cash.
+              (transmitsEquitySpillover(pos)
+                ? recipe.shockMagnitude *
+                  recipe.spillover *
+                  Math.max(-SPILLOVER_INTENSITY_CAP, Math.min(SPILLOVER_INTENSITY_CAP, blend))
+                : 0);
+        weighted += weight * applySectorFloor(raw, sectorFloorFor(recipe.sectorFloors, part.sector));
+        if (sliceFloor != null) share += weight;
       }
-    } else {
-      changePercent = factorPathChange();
+      changePercent = weighted;
+      subjectShare = share;
     }
 
     // Options: the factor/sector math above describes the UNDERLYING's move
@@ -428,6 +699,7 @@ export function computeRecipeScenario(
       estimatedNewValue: pos.market_value + estimatedChange,
       changePercent,
       beta: 1.0, // factor-based math doesn't use beta; default for type compat
+      subjectShare,
     };
   });
 
@@ -484,7 +756,7 @@ export function recipeToScenarioDefinition(recipe: ScenarioRecipe): ScenarioDefi
     description: recipe.description,
     category: legacyCategory,
     marketMove: recipe.shockMagnitude,
-    sectorMoves: recipe.sectorOverrides,
+    sectorMoves: recipe.sectorFloors,
     primaryFactor: recipe.primaryFactor,
   };
 }
