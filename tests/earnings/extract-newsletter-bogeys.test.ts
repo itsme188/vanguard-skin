@@ -91,6 +91,12 @@ function makeDb(): Database.Database {
       ai_extraction_model TEXT,
       UNIQUE(event_id, source, source_label)
     );
+    CREATE TABLE earnings_worksheet_flags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id INTEGER NOT NULL UNIQUE REFERENCES calendar_events(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      printed_at TEXT
+    );
   `);
   db.prepare(`INSERT INTO research_sources (id, name) VALUES (1, 'TMT Breakout')`).run();
   return db;

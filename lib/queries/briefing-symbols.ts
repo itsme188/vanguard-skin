@@ -1,6 +1,8 @@
 import type Database from "better-sqlite3";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { getArmedEventIds, getArmedSymbolsInHorizon } from "./earnings-worksheet-flags";
+import { todayET } from "@/lib/calendar/date-utils";
 
 /**
  * Returns distinct stock symbols currently held across all accounts (latest
@@ -44,24 +46,28 @@ export function getSecurityIdForSymbol(
   return row?.id ?? null;
 }
 
-export type SymbolStatus = "held" | "watchlist" | "neither";
+export type SymbolStatus = "held" | "watchlist" | "armed" | "neither";
+export interface SymbolStatusReasons {
+  held: boolean;
+  watchlist: boolean;
+  armed: boolean;
+}
 
 /**
- * Classify a batch of symbols as held / watchlist / neither in one round
- * trip. Used by the EarningsHub block on `/dashboard/today` to render a
- * status chip per row, and by Phase-3's email-sweep to filter candidate
- * events to only held + watchlist names (no inbox flooding from S&P-500
- * earnings the user doesn't own or care about).
- *
- * Held wins over watchlist when both apply. Empty input returns `{}`.
+ * Held / watchlist (family-aware, unchanged) plus the DISPLAY-ONLY `armed`
+ * reason: the symbol (or a share-class sibling) has an unsuperseded earnings
+ * event within 14 ET days carrying a worksheet flag. Precedence held >
+ * watchlist > armed > neither. Event decisions never use this — they call
+ * coveredForEvents / isEventArmed (spec §4.1).
  *
  * Symbols are matched case-insensitively on the input + DB sides so the
- * caller doesn't need to upper-case before passing.
+ * caller doesn't need to upper-case before passing. Empty input returns `{}`.
  */
-export function getSymbolStatus(
+export function getSymbolStatusDetailed(
   db: Database.Database,
   symbols: string[],
-): Record<string, SymbolStatus> {
+  opts: { today?: string } = {},
+): Record<string, { status: SymbolStatus; reasons: SymbolStatusReasons }> {
   if (symbols.length === 0) return {};
   const upperInput = symbols.map((s) => s.toUpperCase());
 
@@ -79,8 +85,35 @@ export function getSymbolStatus(
   for (const fam of inputFamilies.values()) {
     for (const m of fam) allFamilyMembers.add(m);
   }
+
+  const armedSymbols = getArmedSymbolsInHorizon(db, { today: opts.today ?? todayET() });
+
+  const buildOut = (
+    held: Set<string>,
+    watched: Set<string>,
+  ): Record<string, { status: SymbolStatus; reasons: SymbolStatusReasons }> => {
+    const out: Record<string, { status: SymbolStatus; reasons: SymbolStatusReasons }> = {};
+    for (const sym of upperInput) {
+      const family = inputFamilies.get(sym) ?? [sym];
+      const reasons: SymbolStatusReasons = {
+        held: family.some((m) => held.has(m)),
+        watchlist: family.some((m) => watched.has(m)),
+        armed: family.some((m) => armedSymbols.has(m)),
+      };
+      const status: SymbolStatus = reasons.held
+        ? "held"
+        : reasons.watchlist
+          ? "watchlist"
+          : reasons.armed
+            ? "armed"
+            : "neither";
+      out[sym] = { status, reasons };
+    }
+    return out;
+  };
+
   if (allFamilyMembers.size === 0) {
-    return Object.fromEntries(upperInput.map((s) => [s, "neither" as const]));
+    return buildOut(new Set(), new Set());
   }
   const distinctInput = Array.from(allFamilyMembers);
   const placeholders = distinctInput.map(() => "?").join(",");
@@ -132,18 +165,63 @@ export function getSymbolStatus(
           AND UPPER(s.symbol) IN (${placeholders})`,
     )
     .all(...distinctInput) as { symbol: string }[];
-  const watchlist = new Set(watchlistRows.map((r) => r.symbol));
+  const watched = new Set(watchlistRows.map((r) => r.symbol));
 
+  return buildOut(held, watched);
+}
+
+/**
+ * Classify a batch of symbols as held / watchlist / armed / neither in one
+ * round trip. Used by the EarningsHub block on `/dashboard/today` to render
+ * a status chip per row, and by Phase-3's email-sweep to filter candidate
+ * events to only held + watchlist names (no inbox flooding from S&P-500
+ * earnings the user doesn't own or care about).
+ *
+ * Held wins over watchlist wins over armed when more than one applies.
+ * DISPLAY-ONLY — an event coverage decision must use coveredForEvents /
+ * isEventArmed instead (spec §4.1), never this status string.
+ */
+export function getSymbolStatus(
+  db: Database.Database,
+  symbols: string[],
+  opts: { today?: string } = {},
+): Record<string, SymbolStatus> {
+  const detailed = getSymbolStatusDetailed(db, symbols, opts);
   const out: Record<string, SymbolStatus> = {};
-  for (const sym of upperInput) {
-    const family = inputFamilies.get(sym) ?? [sym];
-    const familyHeld = family.some((m) => held.has(m));
-    const familyWatched = family.some((m) => watchlist.has(m));
-    if (familyHeld) out[sym] = "held";
-    else if (familyWatched) out[sym] = "watchlist";
-    else out[sym] = "neither";
+  for (const [k, v] of Object.entries(detailed)) out[k] = v.status;
+  return out;
+}
+
+/** Event-scoped coverage (spec §4.1 consumer matrix): held or watchlist
+ *  (family-aware) OR isEventArmed(eventId). Returns the covered event ids. */
+export function coveredForEvents(
+  db: Database.Database,
+  rows: Array<{ symbol: string | null; eventId: number }>,
+): Set<number> {
+  const out = new Set<number>();
+  if (rows.length === 0) return out;
+  const symbols = Array.from(
+    new Set(
+      rows
+        .map((r) => r.symbol)
+        .filter((s): s is string => !!s)
+        .map((s) => s.toUpperCase()),
+    ),
+  );
+  const detailed = getSymbolStatusDetailed(db, symbols);
+  const armed = getArmedEventIds(
+    db,
+    rows.map((r) => r.eventId),
+  );
+  for (const r of rows) {
+    const reasons = r.symbol ? detailed[r.symbol.toUpperCase()]?.reasons : undefined;
+    if ((reasons && (reasons.held || reasons.watchlist)) || armed.has(r.eventId)) out.add(r.eventId);
   }
   return out;
+}
+
+export function coveredForEvent(db: Database.Database, symbol: string | null, eventId: number): boolean {
+  return coveredForEvents(db, [{ symbol, eventId }]).has(eventId);
 }
 
 /**
