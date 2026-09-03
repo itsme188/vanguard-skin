@@ -434,6 +434,101 @@ describe("prepare registry + runner (spec §4.1 prepare work table)", () => {
     warn.mockRestore();
   });
 
+  // ── Fix round 2: the cap must never make a row terminal. Drift revives it. ──
+  it("[R14] a failed row at the attempt cap is REVIVED when its fingerprint drifts, not terminal", async () => {
+    let fp = "v1";
+    let runs = 0;
+    registerPrepareStep("consensus_row", {
+      fingerprint: () => fp,
+      run: async () => {
+        runs += 1;
+        return { status: "done" };
+      },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const id = seedArmed();
+    enqueuePrepareSteps(db, id);
+    db.prepare(
+      `UPDATE earnings_prepare_steps
+          SET status = 'failed', attempts = ?, input_fingerprint = 'v1', last_error = 'boom'
+        WHERE event_id = ?`,
+    ).run(PREPARE_MAX_ATTEMPTS, id);
+
+    // Spent, inputs unchanged: nothing runs.
+    expect(await runPrepareSteps(db, { eventId: id })).toEqual({
+      ran: 0,
+      done: 0,
+      pending: 0,
+      failed: 0,
+      skipped: 1,
+    });
+    expect(runs).toBe(0);
+
+    // The newsletter lands — the inputs changed, so the row comes back to life.
+    fp = "v2";
+    expect(await runPrepareSteps(db, { eventId: id })).toMatchObject({ ran: 1, done: 1 });
+    expect(runs).toBe(1);
+    expect(row(id, "consensus_row")).toMatchObject({
+      status: "done",
+      attempts: 1,
+      input_fingerprint: "v2",
+      last_error: null,
+    });
+    warn.mockRestore();
+  });
+
+  it("[R14] a stale-claimed row at the attempt cap is likewise revived by a fingerprint change", async () => {
+    let fp = "v1";
+    let runs = 0;
+    registerPrepareStep("s", {
+      fingerprint: () => fp,
+      run: async () => {
+        runs += 1;
+        return { status: "done" };
+      },
+    });
+    const id = seedArmed();
+    enqueuePrepareSteps(db, id);
+    db.prepare(
+      `UPDATE earnings_prepare_steps
+          SET status = 'claimed', claim_token = 'dead', claimed_at = datetime('now','-10 minutes'),
+              attempts = ?, input_fingerprint = 'v1'
+        WHERE event_id = ?`,
+    ).run(PREPARE_MAX_ATTEMPTS, id);
+    fp = "v2";
+
+    expect(await runPrepareSteps(db, { eventId: id })).toMatchObject({ ran: 1, done: 1 });
+    expect(runs).toBe(1);
+    expect(row(id, "s")).toMatchObject({
+      status: "done",
+      attempts: 1,
+      input_fingerprint: "v2",
+      claim_token: null,
+    });
+  });
+
+  it("a fingerprint failure clears the claim so no stale worker can finalise on the surviving token", async () => {
+    registerPrepareStep("s", {
+      fingerprint: () => {
+        throw new Error("cannot read inputs");
+      },
+      run: async () => ({ status: "done" }),
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const id = seedArmed();
+    enqueuePrepareSteps(db, id);
+    db.prepare(
+      `UPDATE earnings_prepare_steps
+          SET status = 'claimed', claim_token = 'dead', claimed_at = datetime('now','-10 minutes'), attempts = 1
+        WHERE event_id = ?`,
+    ).run(id);
+
+    expect(await runPrepareSteps(db, { eventId: id })).toMatchObject({ failed: 1 });
+    expect(row(id, "s")).toMatchObject({ status: "failed", attempts: 2, claim_token: null });
+    expect(row(id, "s").last_error).toMatch(/cannot read inputs/);
+    warn.mockRestore();
+  });
+
   it("[R14] a LIVE claim at the attempt cap is left for its own worker, not retired", async () => {
     registerPrepareStep("s", { fingerprint: () => "f", run: async () => ({ status: "done" }) });
     const id = seedArmed();
