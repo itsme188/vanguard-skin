@@ -17,7 +17,13 @@
  * `effectiveCalendarEvents` merges the two: the delta wins only when its
  * generation is strictly greater than the snapshot's watermark, so a snapshot
  * written AFTER a delta can never be dragged backwards by that delta's stale
- * copy. Because the Mac always sends the FULL list plus tombstones (never a
+ * copy.
+ *
+ * HORIZON (Mac-side, R23): the projection publishes LIVE entries only for
+ * armed events dated within the last 14 days. An event older than that is
+ * absent from the payload — and deliberately NOT tombstoned, because it is
+ * still armed; it has simply aged out. Nothing here selects an event that old,
+ * so the only visible effect is a payload that stops growing. Because the Mac always sends the FULL list plus tombstones (never a
  * diff), a dropped or replayed POST is harmless — the newest generation the
  * Worker holds is always a complete, self-consistent picture.
  *
@@ -136,9 +142,10 @@ function projectionToRow(e: ArmedEventEntry): CalendarEventRow {
  *
  * A ≤v10 snapshot (or a v11 one missing its watermark) degrades to exactly
  * today's behaviour: the snapshot's own rows, nothing armed, delta ignored.
- * Never assume the delta is small or recent — the Mac projection has no date
- * filter, so a live armed event never ages out of it. Date windowing is each
- * consumer's own job, applied to `events` exactly as it is applied today.
+ * Never assume the delta is recent enough for a consumer's own window: the
+ * Mac's horizon is 14 days wide (R23), far wider than any window here. Date
+ * windowing stays each consumer's own job, applied to `events` exactly as it
+ * is applied today.
  */
 export function effectiveCalendarEvents(
   snapshot: Snapshot,

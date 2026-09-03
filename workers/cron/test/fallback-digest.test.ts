@@ -140,6 +140,37 @@ describe("runFallbackDigest", () => {
     // Tests override this when needed
   });
 
+  // ── Subrequest budget (F4, Ruling R25) ───────────────────────────────────
+  // The Workers Free plan caps an invocation at 50 subrequests and the digest
+  // already sits within one of it. The armed-events KV read is only ever
+  // useful on a v11 snapshot (the resolver ignores a delta without a
+  // watermark), so a v10 snapshot must not spend a subrequest on it.
+
+  it("[F4] a pre-v11 snapshot does NOT read the armed-events KV key (zero subrequest cost)", async () => {
+    const env = makeEnv();
+    const snap = makeSnapshot();
+    snap.schemaVersion = 10 as Snapshot["schemaVersion"];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+
+    await runFallbackDigest(env);
+
+    expect(env.CRON_KV.get).not.toHaveBeenCalled();
+  });
+
+  it("[F4] a v11 snapshot reads the armed-events delta exactly once", async () => {
+    const env = makeEnv();
+    const snap = makeSnapshot();
+    snap.schemaVersion = 11;
+    snap.armedGeneration = 0;
+    snap.armedEvents = [];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+
+    await runFallbackDigest(env);
+
+    expect(env.CRON_KV.get).toHaveBeenCalledTimes(1);
+    expect((env.CRON_KV.get as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe("armed-events");
+  });
+
   // ── Recipient resolution ─────────────────────────────────────────────────
 
   it("uses snapshot.settings.digest_email_recipients when present", async () => {
