@@ -134,21 +134,38 @@ describe("spec §4.1 consumer matrix — armed event is selected; an in-window u
     // SYMBOL-level count/list (an event-level coverage bug wouldn't move
     // the number), so the meaningful control here is a distinct symbol
     // that must never appear, not a same-symbol twin.
-    const control = seedEvent({ symbol: "DELTA", date: "2026-09-03", tag: "control" });
+    seedEvent({ symbol: "DELTA", date: "2026-09-03", tag: "control" });
 
     const line = renderBogeysReminderLine(db, weekOf);
-    expect(line).toMatch(/ACME/);
-    expect(line).toContain("3"); // exactly ACME + BETA + GAMMA
+    expect(line).not.toBeNull();
+    // Pin the exact rendered count AND symbol set (order-independent — the
+    // underlying SQL has no ORDER BY) rather than a bare substring check.
+    expect(line).toContain("**Bogeys reminder:** 3 held/watchlist names report");
+    const shownMatch = line!.match(/\(([^)]+)\)/);
+    expect(shownMatch).not.toBeNull();
+    expect(shownMatch![1].split(", ").sort()).toEqual(["ACME", "BETA", "GAMMA"]);
     expect(line).not.toContain("DELTA");
-    expect(control).toBeGreaterThan(0);
   });
 
   it("findDateVerificationCandidates skips manual rows by design but keeps an armed vendor row", () => {
     const { armed, sibling } = seedPair();
     db.prepare(`UPDATE calendar_events SET source = 'finnhub' WHERE id = ?`).run(armed);
+    // `sibling` stays source='manual' and is excluded by the SQL's
+    // `ce.source != 'manual'` clause BEFORE coverage ever runs — with only
+    // `armed`+`sibling` in the fixture, deleting the coverage filter
+    // entirely would still yield exactly `[armed]`, so that assertion
+    // alone doesn't prove the coverage filter does anything. A vendor
+    // (finnhub) control closes that gap: different symbol (so the
+    // family dedupe below can't collapse it into `armed`'s family),
+    // in-window, actual_value/date_verified_at both NULL (clears the base
+    // SQL exactly like `armed` does), never armed.
+    const control = seedEvent({ symbol: "BETA", date: "2026-09-03", tag: "control" });
+    db.prepare(`UPDATE calendar_events SET source = 'finnhub' WHERE id = ?`).run(control);
+
     const ids = findDateVerificationCandidates(db, { now: NOW }).map((r) => r.id);
-    expect(ids).toEqual([armed]);
+    expect(ids).toContain(armed);
     expect(ids).not.toContain(sibling);
+    expect(ids).not.toContain(control);
   });
 
   it("findProbeCandidates", () => {
