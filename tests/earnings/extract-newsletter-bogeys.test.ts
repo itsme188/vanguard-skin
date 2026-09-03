@@ -89,6 +89,8 @@ function makeDb(): Database.Database {
       notes TEXT,
       uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
       ai_extraction_model TEXT,
+      eps_consensus_vendor REAL,
+      extra_metrics_json TEXT,
       UNIQUE(event_id, source, source_label)
     );
     CREATE TABLE earnings_worksheet_flags (
