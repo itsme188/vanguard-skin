@@ -16,7 +16,7 @@ beforeEach(() => {
 const RELEASE_DATE = "2026-06-01";
 const NOW_IN_WINDOW = new Date("2026-06-01T11:00:00.000Z"); // 07:00 ET, T-60m
 
-function seedHeldEarnings(symbol: string, releaseTime = "08:00"): number {
+function seedHeldEarnings(symbol: string, releaseTime = "08:00", eventDate = RELEASE_DATE): number {
   const acct = db.prepare("INSERT INTO accounts (name) VALUES (?) RETURNING id").get(`a-${symbol}`) as { id: number };
   const sec = db
     .prepare(
@@ -32,7 +32,7 @@ function seedHeldEarnings(symbol: string, releaseTime = "08:00"): number {
       `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, symbol, title, source_key, week_of)
        VALUES ('finnhub','earnings',?,?,?,?,?,?,?)`,
     )
-    .run(RELEASE_DATE, "BMO", releaseTime, symbol, `${symbol} earnings`, `finnhub:${symbol}:${RELEASE_DATE}`, RELEASE_DATE)
+    .run(eventDate, "BMO", releaseTime, symbol, `${symbol} earnings`, `finnhub:${symbol}:${eventDate}`, eventDate)
     .lastInsertRowid as number;
 }
 
@@ -72,6 +72,40 @@ describe("findProbeCandidates", () => {
     const c = findProbeCandidates(db, new Date("2026-06-01T10:45:00.000Z")); // 06:45 ET
     expect(c).toHaveLength(6);
     expect(c.slice(0, 4).every((x) => x.release_time === "07:30")).toBe(true);
+  });
+});
+
+describe("findProbeCandidates — ET calendar day boundary (v2 slice A, task 3 fix round 1)", () => {
+  // 2026-09-02 23:30 ET == 2026-09-03 03:30 UTC (EDT, UTC-4). By this wall
+  // clock the UTC calendar day has already rolled to 09-03 while the ET
+  // calendar day is still 09-02 — the exact 20:00-24:00 ET band where the
+  // old `new Date(nowMs).toISOString().slice(0,10)` day math and the
+  // ET-anchored `todayET()`/`addDays()` day math disagree on both bounds
+  // of the [yesterday, today] SQL pre-filter window:
+  //   buggy (UTC)  window = [2026-09-02, 2026-09-03]
+  //   correct (ET) window = [2026-09-01, 2026-09-02]
+  const NOW_LATE_ET = new Date("2026-09-03T03:30:00.000Z"); // 23:30 ET, 09-02
+  const ET_TODAY = "2026-09-02";
+  const ET_TOMORROW = "2026-09-03";
+
+  it("at 23:30 ET, a same-ET-day reporter is a candidate and a next-ET-day (post-midnight) reporter is NOT, even though the UTC date has already rolled to tomorrow", () => {
+    // Legitimate: release_time 23:45 ET on TODAY's ET date, 15 min out —
+    // inside the probe window and inside BOTH the buggy and correct SQL
+    // pre-filter ranges (2026-09-02 sits at the boundary of both).
+    const todayId = seedHeldEarnings("ZOOM", "23:45", ET_TODAY);
+    // Spurious under the old UTC day math: release_time 00:45 ET on
+    // TOMORROW's ET date (2026-09-03), 75 min out from 23:30 ET — inside
+    // the probe window's 90-minute pre-release band. The buggy UTC
+    // pre-filter window [2026-09-02, 2026-09-03] would have admitted this
+    // row (its event_date IS "today" by UTC's clock); the correct ET
+    // pre-filter window [2026-09-01, 2026-09-02] excludes it, because the
+    // window design is deliberately [yesterday, today] in ET, not
+    // [today, tomorrow].
+    seedHeldEarnings("XONE", "00:45", ET_TOMORROW);
+
+    const c = findProbeCandidates(db, NOW_LATE_ET);
+    expect(c.map((x) => x.symbol)).toEqual(["ZOOM"]);
+    expect(c.map((x) => x.id)).toEqual([todayId]);
   });
 });
 
