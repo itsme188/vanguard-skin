@@ -63,6 +63,12 @@ export type PrepareStepOutcome =
 
 export interface PrepareStepContext {
   now: () => number;
+  /** [R13, 2026-09-03] ADDITIVE: aborted when the invocation blows PREPARE_STEP_TIMEOUT_MS.
+   *  A step registered through the shim may still type `ctx` as `{ now }` — it stays assignable.
+   *  A long step should check `ctx.signal.aborted` between units of work (and forward it to any
+   *  fetch) and keep its side effects idempotent, because the runner books the row `failed` at
+   *  the deadline whether or not the step notices. */
+  signal: AbortSignal;
 }
 
 export interface PrepareStepDefinition {
@@ -78,6 +84,12 @@ export function __resetPrepareStepsForTests(): void;
 
 /** sha256 hex of JSON.stringify(parts). Used by every step's fingerprint. */
 export function stableHash(parts: unknown[]): string;
+
+export const PREPARE_MAX_ATTEMPTS = 5;
+export const PREPARE_CLAIM_STALE_MS = 5 * 60_000;
+/** [R13, 2026-09-03] Per-invocation deadline. Strictly INSIDE PREPARE_CLAIM_STALE_MS so the
+ *  claim's owner always finalises before another runner could take the row over. */
+export const PREPARE_STEP_TIMEOUT_MS = 4 * 60_000;
 
 /** One pending row per registered step, ON CONFLICT DO NOTHING. Returns rows inserted. */
 export function enqueuePrepareSteps(db: Database.Database, eventId: number): number;

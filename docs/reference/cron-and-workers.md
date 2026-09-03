@@ -209,6 +209,7 @@ cloud digest had been composing on a 7/13 snapshot). Tracked via the gitignored
 | v5 (2026-06-02) | notes + earnings bogeys mirrored to the earnings cloud fallback |
 | v6 | `modelCatalog` — Worker reads the AI model catalog from here |
 | v8 (2026-07-05) | `watchlistSymbols` (additive; older snapshots degrade Worker pushes to held-only) |
+| v11 (2026-09-03) | `armedEvents` + `armedGeneration` (the KV-delta watermark) and `eps_consensus_vendor` on `earningsBogeys` rows — read by `armed-events.ts::effectiveCalendarEvents`. Snapshots ≤ v10 ignore the delta and degrade to held + watchlist (see §15) |
 
 ## 9. Mac-side scheduling (launchd + pmset)
 
@@ -351,6 +352,101 @@ These Mac-side modules have Worker counterparts that are parity-pinned. Change B
   snapshot v6 (`modelCatalog`).
 - `lib/alerts/print-push-message.ts` ⇄ its Worker mirror — byte-parity, parity test.
 - `presence-position.ts` (Worker) holds `formatCombinedExposurePresence` for B7 short presence.
+- `lib/earnings/armed-events-projection.ts::ARMED_EVENT_PROJECTION_KEYS` ⇄
+  `workers/cron/src/armed-events.ts::ARMED_EVENT_ENTRY_KEYS` — parity-tested key SET. The Worker's
+  `parseEntry` DROPS unlisted keys by design, so a field added on the Mac alone would be silently
+  discarded in the cloud with both suites green.
+- `lib/digest/todays-reporters.ts` ⇄ `workers/cron/src/todays-reporters.ts` — the status chip,
+  including the `armed` label (see §15).
+
+## 15. Armed-events cloud parity (live print v2 slice A, 2026-09-03)
+
+Spec `docs/superpowers/specs/2026-09-02-live-print-v2-design.md` §4.1 "Cloud"; rulings in
+`docs/DECISIONS.md` (2026-09-03). Mac-side detail: `docs/reference/earnings-pipeline.md`
+§"Armed coverage + prepare steps".
+
+**The gap this closes.** Cloud coverage used to mean held-or-watchlist, computed from a snapshot
+frozen at 02:00. A worksheet armed at 09:00 for a name the desk does not own was invisible to
+every Worker fallback, so a Mac asleep before the print produced nothing.
+
+**Snapshot v11.** `scripts/snapshot-state-to-r2.ts` reads everything in ONE transaction and adds:
+
+- `armedEvents` — the full armed list at snapshot time, each entry the minimal projection
+  (`eventId`, `symbol`, `eventDate`, `eventTime`, `releaseTime`, `sourceKey`, `source`,
+  `consensusValue`, `expectedImpact`, `securityId`, `epsConsensusVendor`, plus `removed` /
+  `removedAt` on a tombstone);
+- `armedGeneration` — the Mac's `cloud_outbox` `MAX(generation)` observed inside that same read, a
+  **watermark**, not a count. Reading both in one transaction is what stops the pair describing two
+  different instants;
+- `eps_consensus_vendor` on each `earningsBogeys` row (deviation D1 — the vendor EPS never enters
+  `eps_consensus`; every surface labels it "vendor, basis unspecified").
+
+**KV key + endpoints.** The delta lives under KV key `armed-events` = `{ generation, entries }`.
+Deviation D2: **the Mac never writes KV.** Its outbox drain POSTs the full payload to the Worker,
+exactly like every other Mac↔Worker marker:
+
+- `POST /internal/armed-events` — body is the outbox payload. Auth is the shared `/internal/*`
+  gate: a missing or mismatched `X-Cron-Secret` is **401** before any handler runs. The handler
+  does the read-compare-write and applies **only when `generation` is strictly greater** than the
+  stored one, so a replayed or out-of-order POST returns `{ applied: false, generation: <stored> }`
+  rather than regressing the key. A body over the size cap is 413; a malformed body is 400; entries
+  are parsed through a strict allowlist that DROPS unknown keys, so the Worker can never persist
+  (or render) prose the data-flow contract excludes.
+- `GET /internal/armed-events` — read-only twin, same auth, no side effects. Returns the stored
+  generation and entries (0 / `[]` when absent or corrupt). It exists for the sandbox end-to-end
+  and the post-deploy check.
+
+**Resolver.** `workers/cron/src/armed-events.ts::effectiveCalendarEvents(snapshot, delta)` is the
+single collection every Worker earnings consumer reads — never the raw snapshot:
+
+1. start from `snapshot.calendarEvents`, **in their original order** (with no additions the
+   consumers see byte-identical input to before, so the merge can never reorder an existing run);
+2. apply `snapshot.armedEvents`, then the KV delta **only when `delta.generation >
+   snapshot.armedGeneration`** — strictly greater, so a snapshot written AFTER a delta can never be
+   dragged backwards by that delta's stale copy;
+3. a **tombstone is never armed** — it is a statement that the event is NOT armed. It drops the
+   event from the armed set and, when the row came only from the projection, from the collection;
+   a real snapshot row stays (the calendar still knows about the print);
+4. an entry that matches an existing snapshot row overwrites **only the fields the projection
+   owns** (date, time, release time, symbol, security id, expected impact, source, source key,
+   consensus value). Snapshot-only columns are left alone on purpose: blanking `consensus_estimate`
+   or `title` would kill the consensus fallback, empty the reporters table and lose the slot
+   inference, and the enrichment/recap gates read `enriched_at` / `actual_value` /
+   `reaction_snapshot`. An event with NO snapshot row at all is synthesised whole — safe precisely
+   because there is nothing to overwrite;
+5. **degraded-v10**: a snapshot below v11 (or a v11 one with no watermark) ignores the delta and
+   returns exactly today's behaviour — snapshot rows only, nothing armed. Cloud coverage falls back
+   to held + watchlist.
+
+The Mac remains the source of truth; the Worker's read-compare-write is defence in depth, not a
+second authority. **The push gates are untouched on both sides** — armed does not open a push.
+Date windowing stays each consumer's own job: the Mac projection has no date filter, so a live
+armed event never ages out of it.
+
+**Parity tests.** The projection key SET is pinned across the two sides
+(`ARMED_EVENT_PROJECTION_KEYS` ⇄ `ARMED_EVENT_ENTRY_KEYS`) because the Worker's parser drops
+unlisted keys silently; the `armed` status chip is pinned between `lib/digest/todays-reporters.ts`
+and its Worker mirror. Change both sides in the same commit (§14).
+
+**Operational note — a restored Mac DB wedges the key.** Generations come from the local
+`cloud_outbox`. Restore the Mac DB from a backup and the counter restarts lower than the one KV
+holds, so every POST is refused as stale and the cloud stops hearing about arms — silently, since
+`applied:false` is the normal reply to a replay. The fix is to clear the key once, after which the
+next drain re-establishes it:
+
+```bash
+cd workers/cron && npx wrangler kv key delete armed-events --binding CRON_KV --remote   # binding CRON_KV, wrangler.toml; drop --remote to clear a local dev KV
+```
+
+**Post-deploy sequence (slice A ships Electron AND the Worker together).**
+
+1. `cd workers/cron && npx wrangler deploy` — the resolver must be live before a v11 snapshot lands.
+2. Run the snapshot script ONCE by hand so the first v11 snapshot exists within minutes instead of
+   at the next 02:00 launchd run:
+   `PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx scripts/snapshot-state-to-r2.ts`.
+   Until it lands the Worker degrades to held + watchlist (tested, not a failure).
+3. Arm one real upcoming event and confirm both halves: `cloud_outbox.sent_at` is stamped on the
+   Mac, and `GET /internal/armed-events` (with the cron secret) reports that generation.
 
 ## Scheduling conventions (from the Conventions section)
 
