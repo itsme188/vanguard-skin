@@ -33,6 +33,38 @@ export const CONTENT_TYPE_JSON = /json/i;
  *  and EX-99 exhibits (some of which are served as text/plain). */
 export const CONTENT_TYPE_MARKUP = /xml|html|text\/plain/i;
 
+/** Query parameter NAME FAMILIES that must never reach a message, a row, or a
+ *  log (plan M19): token/secret/password/credential/signature/api-key/session/
+ *  access/auth in any spelling (`api_key`, `X-Amz-Signature`, `client_secret`…). */
+export const REDACTED_QUERY_KEYS =
+  /(token|secret|passw|pwd|credential|signature|^sig$|^key$|api[-_]?key|^auth|session|^access|x-amz-)/i;
+
+const REDACTED_URL_MAX = 200;
+
+/**
+ * The ONLY way a URL is rendered into an error message, a road row, a log
+ * line, or the status payload (spec §4.2 "URL"). Drops credentials and the
+ * fragment, deletes the secret-bearing query parameters, truncates to 200
+ * characters. Unparsable input is cut at the first `?`/`#` and truncated.
+ */
+export function redactUrl(raw: string): string {
+  let out: string;
+  try {
+    const url = new URL(raw);
+    url.username = "";
+    url.password = "";
+    url.hash = "";
+    for (const key of Array.from(url.searchParams.keys())) {
+      if (REDACTED_QUERY_KEYS.test(key)) url.searchParams.delete(key);
+    }
+    out = url.toString();
+    if (out.endsWith("?")) out = out.slice(0, -1);
+  } catch {
+    out = raw.replace(/[?#].*$/, "");
+  }
+  return out.length > REDACTED_URL_MAX ? `${out.slice(0, REDACTED_URL_MAX - 1)}…` : out;
+}
+
 export interface HardenedFetchOptions {
   /** Every request — initial URL and every redirect hop — must stay here. */
   host: string;
@@ -55,7 +87,9 @@ export function isSameHost(url: string, host: string): boolean {
 }
 
 /** Read a response body up to `capBytes`, streaming when possible so a
- *  missing or dishonest content-length header cannot bypass the cap. */
+ *  missing or dishonest content-length header cannot bypass the cap.
+ *  `url` must already be `redactUrl`-ed by the caller — this function never
+ *  redacts, it only interpolates. */
 async function readCapped(
   res: Response,
   capBytes: number,
@@ -102,7 +136,7 @@ export async function hardenedFetchText(
   const maxRedirects = opts.maxRedirects ?? MAX_REDIRECT_HOPS;
 
   if (!isSameHost(url, host)) {
-    throw new Error(`${label}: refusing off-host request to ${url} (expected host ${host})`);
+    throw new Error(`${label}: refusing off-host request to ${redactUrl(url)} (expected host ${host})`);
   }
 
   let currentUrl = url;
@@ -116,38 +150,40 @@ export async function hardenedFetchText(
     if (res.status < 300 || res.status >= 400) break;
 
     if (hop >= maxRedirects) {
-      throw new Error(`${label}: exceeded ${maxRedirects} redirect hops fetching ${url}`);
+      throw new Error(`${label}: exceeded ${maxRedirects} redirect hops fetching ${redactUrl(url)}`);
     }
     const location = res.headers.get("location");
     if (!location) {
-      throw new Error(`${label}: redirect ${res.status} with no Location header for ${currentUrl}`);
+      throw new Error(
+        `${label}: redirect ${res.status} with no Location header for ${redactUrl(currentUrl)}`,
+      );
     }
     const nextUrl = new URL(location, currentUrl).toString();
     if (!isSameHost(nextUrl, host)) {
       throw new Error(
-        `${label}: refusing cross-host redirect from ${currentUrl} to ${nextUrl} (expected host ${host})`,
+        `${label}: refusing cross-host redirect from ${redactUrl(currentUrl)} to ${redactUrl(nextUrl)} (expected host ${host})`,
       );
     }
     currentUrl = nextUrl;
   }
 
   if (res.status < 200 || res.status >= 300) {
-    throw new Error(`${label}: HTTP ${res.status} for ${currentUrl}`);
+    throw new Error(`${label}: HTTP ${res.status} for ${redactUrl(currentUrl)}`);
   }
 
   const contentType = res.headers.get("content-type") ?? "";
   if (!opts.contentType.test(contentType)) {
-    throw new Error(`${label}: unexpected content-type "${contentType}" for ${currentUrl}`);
+    throw new Error(`${label}: unexpected content-type "${contentType}" for ${redactUrl(currentUrl)}`);
   }
 
   const contentLength = res.headers.get("content-length");
   if (contentLength && Number(contentLength) > capBytes) {
     throw new Error(
-      `${label}: content-length ${contentLength} exceeds ${capBytes}-byte cap for ${currentUrl}`,
+      `${label}: content-length ${contentLength} exceeds ${capBytes}-byte cap for ${redactUrl(currentUrl)}`,
     );
   }
 
-  return readCapped(res, capBytes, currentUrl, label);
+  return readCapped(res, capBytes, redactUrl(currentUrl), label);
 }
 
 /**
