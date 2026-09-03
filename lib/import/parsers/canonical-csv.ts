@@ -278,7 +278,15 @@ export function parseCanonicalCsv(
         }
         if (!symbol || !row.as_of_date) continue;
         const quantity = parseStrictNumber(row.quantity);
-        if (isNaN(quantity)) continue;
+        if (isNaN(quantity)) {
+          // Silent before this fix: a non-numeric quantity cell (typo,
+          // blank formatted as text, comma-grouped number) just vanished
+          // the row with no signal in the preview.
+          warnings.push(
+            `Skipped holding ${symbol}: non-numeric quantity "${row.quantity ?? ""}"`
+          );
+          continue;
+        }
         holdings.push({
           accountName: row.account?.trim() || "Unknown",
           symbol,
@@ -314,7 +322,14 @@ export function parseCanonicalCsv(
         const symbol = row.symbol?.trim();
         if (!symbol || !row.date || !row.close_price) continue;
         const closePrice = parseStrictNumber(row.close_price);
-        if (isNaN(closePrice)) continue;
+        if (isNaN(closePrice)) {
+          // Silent before this fix: a non-numeric close_price cell just
+          // vanished the row with no signal in the preview.
+          warnings.push(
+            `Skipped price ${symbol} ${row.date.trim()}: non-numeric close_price "${row.close_price}"`
+          );
+          continue;
+        }
         prices.push({
           symbol,
           date: row.date.trim(),
@@ -330,7 +345,14 @@ export function parseCanonicalCsv(
       case "snapshots": {
         if (!row.account || !row.month_end_date || !row.total_value) continue;
         const totalValue = parseStrictNumber(row.total_value);
-        if (isNaN(totalValue)) continue;
+        if (isNaN(totalValue)) {
+          // Silent before this fix: a non-numeric total_value cell just
+          // vanished the row with no signal in the preview.
+          warnings.push(
+            `Skipped snapshot ${row.account.trim()} ${row.month_end_date.trim()}: non-numeric total_value "${row.total_value}"`
+          );
+          continue;
+        }
         snapshots.push({
           accountName: row.account.trim(),
           monthEndDate: row.month_end_date.trim(),

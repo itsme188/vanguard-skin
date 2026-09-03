@@ -428,6 +428,22 @@ IBKR,2025-06-30,VTI,Vanguard,ETF,50,,`;
     expect(result.holdings[0].symbol).toBe("VTI");
   });
 
+  // QA finding `import-preview--canonical-nonnumeric-rows-silently-dropped-regression-1`:
+  // a non-numeric quantity cell was dropped via a bare `continue` with no
+  // warning pushed, unlike the resolvable-security_name branch above it.
+  it("reports a non-numeric quantity drop as a warning, while still parsing the valid row", () => {
+    const csv = `${header}
+IBKR,2025-06-30,AAPL,Apple,Stock,not-a-number,,
+IBKR,2025-06-30,VTI,Vanguard,ETF,50,,`;
+
+    const result = parseCanonicalCsv(csv, "holdings.csv");
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].symbol).toBe("VTI");
+    expect(
+      result.warnings.some((w) => /AAPL/.test(w) && /quantity/i.test(w))
+    ).toBe(true);
+  });
+
   it("skips holdings rows with comma-bearing quantity", () => {
     // parseFloat("1,234") returns 1 — would silently corrupt the quantity.
     // parseStrictNumber() returns NaN, so the existing isNaN guard skips the row.
@@ -480,6 +496,22 @@ VTI,2025-06-30,242.00`;
     const result = parseCanonicalCsv(csv, "prices.csv");
     expect(result.prices).toHaveLength(1);
     expect(result.prices[0].symbol).toBe("VTI");
+  });
+
+  // QA finding `import-preview--canonical-nonnumeric-rows-silently-dropped-regression-1`:
+  // a non-numeric close_price cell was dropped via a bare `continue` with no
+  // warning pushed.
+  it("reports a non-numeric close_price drop as a warning, while still parsing the valid row", () => {
+    const csv = `symbol,date,close_price
+MSFT,2025-06-30,not-a-price
+VTI,2025-06-30,242.00`;
+
+    const result = parseCanonicalCsv(csv, "prices.csv");
+    expect(result.prices).toHaveLength(1);
+    expect(result.prices[0].symbol).toBe("VTI");
+    expect(
+      result.warnings.some((w) => /MSFT/.test(w) && /close_price/i.test(w))
+    ).toBe(true);
   });
 
   it("skips rows with missing fields", () => {
@@ -544,6 +576,22 @@ IBKR,2025-05-31,290000,,,,,,,,`;
     const result = parseCanonicalCsv(csv, "snapshots.csv");
     expect(result.snapshots).toHaveLength(1);
     expect(result.snapshots[0].monthEndDate).toBe("2025-05-31");
+  });
+
+  // QA finding `import-preview--canonical-nonnumeric-rows-silently-dropped-regression-1`:
+  // a non-numeric total_value cell was dropped via a bare `continue` with no
+  // warning pushed.
+  it("reports a non-numeric total_value drop as a warning, while still parsing the valid row", () => {
+    const csv = `${header}
+IBKR,2025-06-30,garbage-total,,,,,,,,
+IBKR,2025-05-31,290000,,,,,,,,`;
+
+    const result = parseCanonicalCsv(csv, "snapshots.csv");
+    expect(result.snapshots).toHaveLength(1);
+    expect(result.snapshots[0].monthEndDate).toBe("2025-05-31");
+    expect(
+      result.warnings.some((w) => /IBKR/.test(w) && /total_value/i.test(w))
+    ).toBe(true);
   });
 });
 

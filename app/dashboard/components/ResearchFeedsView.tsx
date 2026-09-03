@@ -676,7 +676,7 @@ export function ResearchFeedsView({
                 viewMode === "filtered" ? "bg-gold/20 text-gold-ink" : "bg-raised text-ink-faint"
               }`}
             >
-              {filteredCount}
+              {computeFilteredBadgeCount(viewMode, filteredCount, filteredCategoryCounts)}
             </span>
           </button>
         </div>
@@ -940,6 +940,30 @@ function humanizeCategory(category: string): string {
  */
 export function resolveFilteredCategoryLabel(category: string): string {
   return FILTERED_CATEGORY_LABEL[category] ?? humanizeCategory(category);
+}
+
+/**
+ * qa:research-feeds-filtered--badge-ignores-source-filter-regression-1 —
+ * the Filtered pill's badge used to always render the raw `filteredCount`
+ * state, which only ever reflects the GLOBAL count (initialFilteredCount /
+ * getFilteredArticleCount, deliberately unscoped per its doc comment) —
+ * even while the Filtered tab's list and section headers correctly narrow
+ * to the active source/search filter via filteredCategoryCounts (fetched
+ * on the identical buildFilteredArticlesWhere predicate as the list). When
+ * the Filtered tab is the active view, the badge must count the same rows
+ * the tab renders, so it sums filteredCategoryCounts instead — which
+ * already equals the global total when no source/search filter narrows it,
+ * so this is a strict improvement with no behavior change in that case.
+ * On the "all" tab there is no scoped list on screen to disagree with, so
+ * the global count remains the "something to review" teaser.
+ */
+export function computeFilteredBadgeCount(
+  viewMode: "all" | "filtered",
+  filteredCount: number,
+  filteredCategoryCounts: FilteredArticleCategoryCount[],
+): number {
+  if (viewMode !== "filtered") return filteredCount;
+  return filteredCategoryCounts.reduce((sum, c) => sum + c.count, 0);
 }
 
 function FilteredArticlesList({
