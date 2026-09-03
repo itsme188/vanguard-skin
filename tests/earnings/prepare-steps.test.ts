@@ -6,10 +6,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { __resetPrepareStepsForTests } from "@/lib/earnings/prepare-armed-event";
+import {
+  __resetPrepareStepsForTests,
+  registerPrepareStep,
+  enqueuePrepareSteps,
+  runPrepareSteps,
+  getPrepareStepRows,
+} from "@/lib/earnings/prepare-armed-event";
 import { consensusRowStep, readVendorConsensus, FINNHUB_BOGEY_LABEL } from "@/lib/earnings/prepare-steps/consensus-row";
 import { makeIntelStep } from "@/lib/earnings/prepare-steps/intel";
 import { makeConIdStep } from "@/lib/earnings/prepare-steps/con-id";
+import { upsertEarningsIntel } from "@/lib/mutations/earnings-intel";
 
 let db: Database.Database;
 beforeEach(() => { db = new Database(":memory:"); db.pragma("foreign_keys = ON"); runMigrations(db); __resetPrepareStepsForTests(); });
@@ -34,6 +41,15 @@ describe("consensus_row step (spec §4.1 step 2, D1)", () => {
     expect(await consensusRowStep.run(db, id, ctx)).toEqual({ status: "done", note: "vendor consensus withdrawn; finnhub row removed" });
     expect(db.prepare(`SELECT COUNT(*) AS n FROM earnings_bogeys WHERE event_id = ?`).get(id)).toEqual({ n: 0 });
   });
+  it("[nit] partial withdrawal: EPS kept, revenue clears — revenue_consensus_usd goes NULL, not preserved (preserveExisting must stay unset)", async () => {
+    const id = seed("finnhub", RAW);
+    expect(await consensusRowStep.run(db, id, ctx)).toEqual({ status: "done" });
+    const partial = JSON.stringify({ entry: { symbol: "GAMMA", epsEstimate: 4.75, revenueEstimate: null }, finnhub_symbol: "GAMMA" });
+    db.prepare(`UPDATE calendar_events SET raw_json = ? WHERE id = ?`).run(partial, id);
+    expect(await consensusRowStep.run(db, id, ctx)).toEqual({ status: "done" });
+    const row = db.prepare(`SELECT eps_consensus_vendor, revenue_consensus_usd FROM earnings_bogeys WHERE event_id = ? AND source = 'finnhub'`).get(id);
+    expect(row).toEqual({ eps_consensus_vendor: 4.75, revenue_consensus_usd: null });
+  });
   it("upserts ONE finnhub bogey row with the EPS in eps_consensus_vendor and eps_consensus NULL; revenue in revenue_consensus_usd", async () => {
     const id = seed("finnhub", RAW);
     expect(await consensusRowStep.run(db, id, ctx)).toEqual({ status: "done" });
@@ -54,10 +70,22 @@ describe("consensus_row step (spec §4.1 step 2, D1)", () => {
   });
 });
 
-describe("intel step (D4)", () => {
-  it("calls ensureIntelForEvents with the event's IntelEvent shape and is done", async () => {
-    const ensure = vi.fn(async () => {});
+describe("intel step (D4, Ruling R19)", () => {
+  it("[R19] ensure resolving WITHOUT writing an intel row is pending, not an attempt (best-effort contract: never throws, can silently degrade)", async () => {
+    const ensure = vi.fn(async () => {}); // simulates a rate-limited/failed compute that still resolves cleanly
     const id = seed("finnhub", RAW);
+    registerPrepareStep("intel", makeIntelStep({ ensure }));
+    enqueuePrepareSteps(db, id);
+    const report = await runPrepareSteps(db, { eventId: id });
+    expect(report).toEqual({ ran: 1, done: 0, pending: 1, failed: 0, skipped: 0 });
+    const row = getPrepareStepRows(db, id).find((r) => r.step === "intel");
+    expect(row).toMatchObject({ status: "pending", attempts: 0 });
+  });
+  it("[R19] ensure that writes an intel row (getIntelForEvents post-condition) is done, and is called with the event's IntelEvent shape", async () => {
+    const id = seed("finnhub", RAW);
+    const ensure = vi.fn(async (d: Database.Database) => {
+      upsertEarningsIntel(d, { eventId: id, impliedMovePct: null, impliedMethod: null, expiryUsed: null, straddleMid: null, spot: null, computedAt: "2026-09-03 00:00:00" });
+    });
     const step = makeIntelStep({ ensure });
     expect(await step.run(db, id, ctx)).toEqual({ status: "done" });
     expect(ensure).toHaveBeenCalledWith(db, [{ id, symbol: "GAMMA", event_date: "2026-09-03", event_time: "AMC" }], { forceFresh: false });
@@ -94,5 +122,16 @@ describe("con_id step (spec §4.1 step 4)", () => {
   it("an event with no security row resolves the symbol first, and is done with a note when no row exists", async () => {
     const id = seed("manual", null, null);
     expect(await makeConIdStep({ twsUp: () => true, enrich: vi.fn() }).run(db, id, ctx)).toEqual({ status: "done", note: "no securities row for GAMMA" });
+  });
+  it("[R13] a signal aborted while enrich is in flight books pending (\"aborted\"), never a done/failed derived from the abandoned invocation's post-read", async () => {
+    const sec = seedSecurity(null); const id = seed("finnhub", RAW, sec);
+    const controller = new AbortController();
+    const enrich = vi.fn(async (d: Database.Database, ids: number[] = []) => {
+      d.prepare(`UPDATE securities SET ib_con_id = 1 WHERE id = ?`).run(ids[0]);
+      controller.abort(); // simulates the runner's deadline firing while this call was in flight
+      return [];
+    });
+    const abortedCtx = { now: () => Date.now(), signal: controller.signal };
+    expect(await makeConIdStep({ twsUp: () => true, enrich }).run(db, id, abortedCtx)).toEqual({ status: "pending", reason: "aborted" });
   });
 });
