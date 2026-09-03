@@ -12,8 +12,11 @@
  *
  * Ruling R2: Task 10 registers three steps (consensus_row, intel, con_id).
  * Task 11 prepends `newsletter_rescan` and updates the two assertions below
- * to the final four, in run order ["newsletter_rescan", "consensus_row",
- * "intel", "con_id"].
+ * to the final four, in REGISTRATION order ["newsletter_rescan",
+ * "consensus_row", "intel", "con_id"] — `listPrepareSteps()` reflects
+ * insertion order, which is NOT the same as run order: the runner
+ * (prepare-armed-event.ts) always selects work `ORDER BY p.step`
+ * (alphabetical: con_id, consensus_row, intel).
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
@@ -23,7 +26,7 @@ describe("registry-bootstrap cold process (Ruling R1/R2)", () => {
     vi.resetModules();
   });
 
-  it("enqueuePrepareSteps lazily registers exactly the three A steps, in run order, with nothing else imported", async () => {
+  it("enqueuePrepareSteps lazily registers exactly the three A steps, in registration order, with nothing else imported", async () => {
     const { runMigrations } = await import("@/lib/db/migrate");
     const { armWorksheet } = await import("@/lib/mutations/earnings-worksheet-flags");
     const { enqueuePrepareSteps, listPrepareSteps, getPrepareStepRows } = await import(
@@ -51,6 +54,22 @@ describe("registry-bootstrap cold process (Ruling R1/R2)", () => {
     // A second enqueue on the same event is a no-op — steps registered once, rows inserted once.
     const insertedAgain = enqueuePrepareSteps(db, id);
     expect(insertedAgain).toBe(0);
+    expect(listPrepareSteps()).toEqual(["consensus_row", "intel", "con_id"]);
+  });
+
+  it("[nit] registerPrepareStepsOnce is idempotent when called directly, twice, in the same process", async () => {
+    // The above test's "second call registers nothing" only proves the OUTER latch
+    // (bootstrapEarningsRegistries()'s own `done` flag) short-circuits a second
+    // enqueue — registerPrepareStepsOnce() itself is never invoked a second time
+    // through that path. Call it directly to actually exercise its own
+    // `have.has(name)` idempotency guard.
+    const { listPrepareSteps } = await import("@/lib/earnings/prepare-armed-event");
+    const { registerPrepareStepsOnce } = await import("@/lib/earnings/prepare-steps");
+
+    registerPrepareStepsOnce();
+    expect(listPrepareSteps()).toEqual(["consensus_row", "intel", "con_id"]);
+
+    expect(() => registerPrepareStepsOnce()).not.toThrow();
     expect(listPrepareSteps()).toEqual(["consensus_row", "intel", "con_id"]);
   });
 });
