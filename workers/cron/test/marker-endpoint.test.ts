@@ -309,3 +309,99 @@ describe("POST /internal/armed-events", () => {
     expect(store.size).toBe(0);
   });
 });
+
+/**
+ * GET /internal/armed-events — read-only twin of the POST above. The sandbox
+ * end-to-end and the post-deploy check read the highest stored generation
+ * through this; it must never write KV (same auth gate as every /internal/*
+ * route, no side effects).
+ */
+describe("GET /internal/armed-events", () => {
+  let store: Map<string, string>;
+  let env: any;
+  let putSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    store = new Map<string, string>();
+    putSpy = vi.fn(async (key: string, value: string) => {
+      store.set(key, value);
+    });
+    const kv = {
+      get: vi.fn(async (key: string) => store.get(key) ?? null),
+      put: putSpy,
+      delete: vi.fn(async (key: string) => {
+        store.delete(key);
+      }),
+      list: vi.fn(async () => ({ keys: [] })),
+    } as any;
+    env = { CRON_KV: kv, CRON_SHARED_SECRET: "test-secret" };
+  });
+
+  const entry = (eventId: number, symbol: string, eventDate: string) => ({
+    eventId,
+    symbol,
+    eventDate,
+    eventTime: "AMC",
+    releaseTime: "16:15",
+    sourceKey: `manual:${symbol}:${eventDate}:earnings`,
+    source: "manual",
+    consensusValue: null,
+    expectedImpact: null,
+    securityId: null,
+    epsConsensusVendor: null,
+  });
+
+  const post = (body: unknown) =>
+    worker.fetch(
+      new Request("https://worker.test/internal/armed-events", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-cron-secret": "test-secret" },
+        body: JSON.stringify(body),
+      }),
+      env,
+    );
+
+  const get = (headers: Record<string, string> = { "x-cron-secret": "test-secret" }) =>
+    worker.fetch(
+      new Request("https://worker.test/internal/armed-events", { headers }),
+      env,
+    );
+
+  it("rejects a missing secret with 401", async () => {
+    const res = await get({});
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects a mismatched secret with 401", async () => {
+    const res = await get({ "x-cron-secret": "wrong" });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns generation 0 and no entries when nothing is stored", async () => {
+    const res = await get();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toMatch(/application\/json/);
+    expect(await res.json()).toEqual({ ok: true, generation: 0, entries: [] });
+  });
+
+  it("returns the stored generation and entry after a POST", async () => {
+    await post({ generation: 4, entries: [entry(77, "ACME", "2026-09-02")] });
+
+    const res = await get();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      generation: 4,
+      entries: [entry(77, "ACME", "2026-09-02")],
+    });
+  });
+
+  it("never writes to KV", async () => {
+    await post({ generation: 4, entries: [entry(77, "ACME", "2026-09-02")] });
+    const putCallsBefore = putSpy.mock.calls.length;
+
+    await get();
+
+    expect(putSpy.mock.calls.length).toBe(putCallsBefore);
+  });
+});

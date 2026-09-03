@@ -44,7 +44,7 @@ import {
   shouldRunEarningsFallback,
 } from "./calendar-enrich";
 import { runEarningsFallback } from "./fallback-earnings";
-import { applyArmedEventsDelta, ARMED_EVENTS_MAX_BODY_BYTES } from "./armed-events";
+import { applyArmedEventsDelta, readArmedEventsDelta, ARMED_EVENTS_MAX_BODY_BYTES } from "./armed-events";
 import {
   getEarningsMarkerStatus,
   readEarningsMarkers,
@@ -607,6 +607,19 @@ export default {
           { status: 400 },
         );
       }
+    }
+
+    // Read-only twin of the POST above — the sandbox end-to-end and the
+    // post-deploy check read the highest stored generation through this.
+    // No KV write, no side effects; a missing or corrupt stored value reads
+    // back as generation 0 / no entries (readArmedEventsDelta never throws).
+    if (request.method === "GET" && url.pathname === "/internal/armed-events") {
+      const delta = await readArmedEventsDelta(env.CRON_KV);
+      return Response.json({
+        ok: true,
+        generation: delta?.generation ?? 0,
+        entries: delta?.entries ?? [],
+      });
     }
 
     // Cloud-fetched newsletters — Mac polls on wake, inserts each payload
