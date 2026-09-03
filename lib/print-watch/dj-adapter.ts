@@ -248,14 +248,33 @@ function currentGroupKey(g: { headlines: string[] }): string {
   return shortest;
 }
 
+/** Throws a named `AbortError` if `signal` is already aborted. Used both as a
+ *  pre-flight check in `pollDjNews` (between steps) and, symmetrically, inside
+ *  the two request helpers below (mid-flight — see their `signal` handling). */
+function throwIfAborted(signal: AbortSignal | undefined, where: string): void {
+  if (signal?.aborted) {
+    const err = new Error(`pollDjNews aborted ${where}`);
+    err.name = "AbortError";
+    throw err;
+  }
+}
+
 function reqHistoricalNewsOnce(
   ib: IBApiLike,
   args: { conId: number; startDateTime: string; endDateTime: string; totalResults?: number; timeoutMs?: number },
+  signal?: AbortSignal,
 ): Promise<RawHeadline[]> {
   const reqId = nextReqId();
   const timeoutMs = args.timeoutMs ?? 25_000;
 
   return new Promise<RawHeadline[]>((resolve, reject) => {
+    if (signal?.aborted) {
+      const err = new Error("reqHistoricalNews aborted before request");
+      err.name = "AbortError";
+      reject(err);
+      return;
+    }
+
     const out: RawHeadline[] = [];
 
     const timer = setTimeout(() => {
@@ -270,6 +289,18 @@ function reqHistoricalNewsOnce(
       ib.removeListener("historicalNews", onNews);
       ib.removeListener("historicalNewsEnd", onEnd);
       ib.removeListener("error", onError);
+      signal?.removeEventListener("abort", onAbort);
+    }
+
+    // The underlying TWS request cannot be cancelled on the wire — this only
+    // stops anything from waiting on it, and detaches the listeners above so
+    // a late (irrelevant) response can't resolve/reject an already-settled
+    // promise's caller-visible outcome.
+    function onAbort() {
+      cleanup();
+      const err = new Error("reqHistoricalNews aborted");
+      err.name = "AbortError";
+      reject(err);
     }
 
     function onNews(...args: unknown[]) {
@@ -295,6 +326,7 @@ function reqHistoricalNewsOnce(
     ib.on("historicalNews", onNews);
     ib.on("historicalNewsEnd", onEnd);
     ib.on("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
 
     ib.reqHistoricalNews(
       reqId,
@@ -310,11 +342,19 @@ function reqHistoricalNewsOnce(
 function reqNewsArticleOnce(
   ib: IBApiLike,
   args: { providerCode: string; articleId: string; timeoutMs?: number },
+  signal?: AbortSignal,
 ): Promise<string> {
   const reqId = nextReqId();
   const timeoutMs = args.timeoutMs ?? 25_000;
 
   return new Promise<string>((resolve, reject) => {
+    if (signal?.aborted) {
+      const err = new Error("reqNewsArticle aborted before request");
+      err.name = "AbortError";
+      reject(err);
+      return;
+    }
+
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error(`reqNewsArticle timeout (${timeoutMs / 1000}s)`));
@@ -324,6 +364,14 @@ function reqNewsArticleOnce(
       clearTimeout(timer);
       ib.removeListener("newsArticle", onArticle);
       ib.removeListener("error", onError);
+      signal?.removeEventListener("abort", onAbort);
+    }
+
+    function onAbort() {
+      cleanup();
+      const err = new Error("reqNewsArticle aborted");
+      err.name = "AbortError";
+      reject(err);
     }
 
     function onArticle(...args: unknown[]) {
@@ -342,6 +390,7 @@ function reqNewsArticleOnce(
 
     ib.on("newsArticle", onArticle);
     ib.on("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
     ib.reqNewsArticle(reqId, args.providerCode, args.articleId);
   });
 }
@@ -355,6 +404,15 @@ function reqNewsArticleOnce(
  * `nowMs` is a plain epoch-ms clock reading, independent of the two window
  * strings, used only to drive the quiescence timer — callers pass a fresh
  * `Date.now()` (or a fixed value in tests) each poll.
+ *
+ * `signal` (trailing, optional — every existing caller and seam keeps
+ * compiling) lets a caller cancel a hung poll: checked before the
+ * historical-news request and again before each article-body fetch, and
+ * raced INSIDE both TWS request helpers so an abort mid-flight rejects
+ * immediately rather than waiting out the 25s TWS timeout. On abort this
+ * function throws an `Error` named `"AbortError"` and leaves `state` exactly
+ * as it was before the aborted step — no part group mutated, no id marked
+ * seen.
  */
 export async function pollDjNews(
   ib: IBApiLike,
@@ -363,16 +421,22 @@ export async function pollDjNews(
   nowUtc: string,
   state: DjPollState,
   nowMs: number,
+  signal?: AbortSignal,
 ): Promise<DjPollOutput> {
+  throwIfAborted(signal, "before the historical-news request");
   const windowStartMs = parseTwsDateTimeMs(windowStartUtc);
   const windowEndMs = parseTwsDateTimeMs(nowUtc);
 
   // QUIRK: first param = RECENT boundary, second = OLDER boundary.
-  const raw = await reqHistoricalNewsOnce(ib, {
-    conId,
-    startDateTime: nowUtc,
-    endDateTime: windowStartUtc,
-  });
+  const raw = await reqHistoricalNewsOnce(
+    ib,
+    {
+      conId,
+      startDateTime: nowUtc,
+      endDateTime: windowStartUtc,
+    },
+    signal,
+  );
 
   // Results can walk PAST the older boundary — enforce the window client-side.
   const inWindow = raw.filter((h) => {
@@ -498,10 +562,16 @@ export async function pollDjNews(
     try {
       chunks = [];
       for (const part of parts) {
-        const text = await reqNewsArticleOnce(ib, { providerCode: g.providerCode, articleId: part.articleId });
+        throwIfAborted(signal, "between article fetches");
+        const text = await reqNewsArticleOnce(
+          ib,
+          { providerCode: g.providerCode, articleId: part.articleId },
+          signal,
+        );
         chunks.push(text);
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") throw err;
       continue; // leave the group in state — retried next poll
     }
 
