@@ -20,6 +20,7 @@
 import { registerEventMergeHandler } from "@/lib/earnings/event-merge";
 import { registerPrepareStep } from "@/lib/earnings/prepare-armed-event";
 import { mergePrintWatchState, PRINT_WATCH_MERGE_HANDLER_NAME } from "./merge-handler";
+import { mergePrintWatchGoState, PRINT_WATCH_GO_MERGE_HANDLER_NAME } from "./go";
 import { IR_BASELINE_STEP, IR_BASELINE_STEP_NAME } from "./ir-baseline-step";
 
 let registered = false;
@@ -27,6 +28,10 @@ let registered = false;
 export function registerPrintWatch(): void {
   if (registered) return;
   registered = true;
+  // Slice C FIRST, deliberately: B's handler deletes the donor print row at
+  // the end of a both-prints merge, and go rows reference prints with no
+  // cascade — C has to repoint them before that delete (see go.ts).
+  registerEventMergeHandler(PRINT_WATCH_GO_MERGE_HANDLER_NAME, mergePrintWatchGoState);
   registerEventMergeHandler(PRINT_WATCH_MERGE_HANDLER_NAME, mergePrintWatchState);
   registerPrepareStep(IR_BASELINE_STEP_NAME, IR_BASELINE_STEP);
 }
