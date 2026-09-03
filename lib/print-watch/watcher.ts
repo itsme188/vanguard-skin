@@ -1587,7 +1587,9 @@ async function finishIngest(
 ): Promise<IngestResult> {
   const delivery = recordDelivery(db, print.id, kind, source, url, buf, input);
   const status = statusFor(print.id);
-  await dropOrphanBytes(db, delivery, input.bytesPath);
+  // Guarded at the CALL site, not just inside: every other delivery — the
+  // overwhelming majority — then adds no await at all to the ingest chain.
+  if (delivery.matchedBy === "text") await dropOrphanBytes(db, delivery, input.bytesPath);
 
   if (!delivery.contentVerdict.ok) {
     status.sources.gate = `doc ${delivery.id} rejected: ${delivery.contentVerdict.reason}`;
