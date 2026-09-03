@@ -478,19 +478,27 @@ describe("pollEdgar", () => {
 // filing failure that yields a partial "ok" result (Codex round 1, #10).
 // ---------------------------------------------------------------------------
 describe("pollEdgar — cancellation via the caller's fetch", () => {
-  it("rejects when the fetch it was handed throws AbortError, and marks nothing seen", async () => {
+  it("rejects when the fetch it was handed throws AbortError, and never gets past the first request", async () => {
     const seen = new Set<string>();
+    let calls = 0;
     const abortingFetch: FetchLike = async () => {
+      calls += 1;
       throw Object.assign(new Error("aborted"), { name: "AbortError" });
     };
     await expect(
       pollEdgar("0000000001", "2026-09-03T19:55:00.000Z", "2026-09-03T20:40:00.000Z", seen, abortingFetch),
     ).rejects.toMatchObject({ name: "AbortError" });
-    expect(seen.size).toBe(0);
+    // Load-bearing (fix round 1, review finding M2): `pollEdgar` never writes
+    // `seenAccessions` on ANY path (see the module-header note), so asserting
+    // `seen.size === 0` here would be a tautology that can never fail. What
+    // actually proves the abort short-circuited the walk is that it happened
+    // on the very first request (the submissions fetch itself) — nothing
+    // downstream (a filing header, an exhibit) was ever attempted.
+    expect(calls).toBe(1);
   });
 
-  it("rejects with AbortError when the SECOND filing's fetch aborts mid-walk, and marks neither accession seen (the per-filing catch must rethrow, not swallow)", async () => {
-    const { fetchFn: baseFetch } = makeMockFetch(buildRoutes());
+  it("rejects with AbortError when the SECOND filing's fetch aborts mid-walk, and never fetches that filing's exhibit (the per-filing catch must rethrow, not swallow)", async () => {
+    const { fetchFn: baseFetch, calls } = makeMockFetch(buildRoutes());
     const sixKBase = baseUrl(NEW_6K_ACCESSION);
     const abortingFetch: FetchLike = async (url, init) => {
       // The 8-K (first qualifying filing) is left to complete normally; the
@@ -505,10 +513,17 @@ describe("pollEdgar — cancellation via the caller's fetch", () => {
     await expect(pollEdgar(CIK, WINDOW_START, WINDOW_END, seen, abortingFetch)).rejects.toMatchObject({
       name: "AbortError",
     });
-    // pollEdgar rejected rather than returning — the caller never got a
-    // result to mark ANY accession seen from, including the 8-K that had
-    // already completed internally.
-    expect(seen.size).toBe(0);
+    // Load-bearing (fix round 1, review finding M2): `pollEdgar` never writes
+    // `seenAccessions` on any path, so `seen.size === 0` would be a tautology.
+    // What actually proves the rethrow (rather than a swallow-and-continue)
+    // is that the 6-K's exhibit was NEVER fetched — the per-filing catch threw
+    // before the walk ever got that far.
+    expect(calls.some((c) => c.url === `${sixKBase}/ex991.htm`)).toBe(false);
+    // pollEdgar rejected rather than returning a value — the caller never got
+    // a result to mark ANY accession seen from, including the 8-K that had
+    // already completed internally (dropped the `seen.size === 0` tautology
+    // per M2: `pollEdgar` never writes that set on any path, so it could
+    // never have failed regardless of this fix).
   });
 });
 
