@@ -17,11 +17,14 @@ import {
   ARMED_EVENTS_KIND,
   buildArmedEventsEntries,
   readArmedGeneration,
+  readPreviousArmedEntries,
   sameProjection,
   type ArmedEventsPayload,
 } from "./armed-events-projection";
 
 const DEFAULT_TIMEOUT_MS = 3000;
+/** Post-commit pushes hand off to the sweep rather than making a user wait. */
+const DEFAULT_POST_COMMIT_CAP_MS = 2000;
 
 /**
  * Append the current armed projection at generation MAX+1.
@@ -43,15 +46,11 @@ export function writeArmedEventsOutboxRow(
     today: opts.today ?? todayET(),
     nowMs: opts.nowMs,
   });
-  const previous = db
-    .prepare(
-      `SELECT payload_json FROM cloud_outbox WHERE kind = ? ORDER BY generation DESC LIMIT 1`,
-    )
-    .get(ARMED_EVENTS_KIND) as { payload_json: string } | undefined;
-  if (
-    previous &&
-    sameProjection((JSON.parse(previous.payload_json) as ArmedEventsPayload).entries, entries)
-  ) {
+  // Read the previous entries through the projection's GUARDED reader: a
+  // truncated payload must be treated as "no previous entries", never thrown
+  // from inside armWorksheet's transaction, or one corrupt row would wedge
+  // every future arm/disarm/edit.
+  if (sameProjection(readPreviousArmedEntries(db), entries)) {
     return { generation: current, written: false };
   }
   const generation = current + 1;
@@ -62,6 +61,52 @@ export function writeArmedEventsOutboxRow(
     JSON.stringify(payload),
   );
   return { generation, written: true };
+}
+
+export interface PostCommitDrainResult {
+  /** True when the cap fired first — the drain is still running in background. */
+  timedOut: boolean;
+  /** The drain's own result, or null when it timed out or failed. */
+  result: OutboxDrainResult | null;
+}
+
+/**
+ * The post-commit push a mutating route makes after its write lands.
+ *
+ * `drainCloudOutbox` chains onto whatever drain is already in flight, so its
+ * own `timeoutMs` caps only ITS fetches — a caller queued behind a sweep drain
+ * over N rows would wait N × timeout. This caps the WHOLE wait: the chained
+ * drain races a timer, and when the timer wins the caller is handed
+ * `{ timedOut: true }` while the drain keeps running in the background (the
+ * sweep is the backstop either way). Never throws.
+ */
+export async function attemptPostCommitDrain(
+  db: Database.Database,
+  opts: { capMs?: number; deps?: OutboxSenderDeps } = {},
+): Promise<PostCommitDrainResult> {
+  const capMs = opts.capMs ?? DEFAULT_POST_COMMIT_CAP_MS;
+  const drain: Promise<PostCommitDrainResult> = drainCloudOutbox(db, {
+    timeoutMs: capMs,
+    ...opts.deps,
+  }).then(
+    (result) => ({ timedOut: false, result }),
+    (err) => {
+      console.warn("[cloud-outbox] post-commit drain failed:", err);
+      return { timedOut: false, result: null };
+    },
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const capped = new Promise<PostCommitDrainResult>((resolve) => {
+    timer = setTimeout(() => resolve({ timedOut: true, result: null }), capMs);
+  });
+  const out = await Promise.race([drain, capped]);
+  clearTimeout(timer);
+  if (out.timedOut) {
+    console.warn(
+      `[cloud-outbox] post-commit drain still running after ${capMs}ms — handing off to the sweep`,
+    );
+  }
+  return out;
 }
 
 /** [C-8] One drain at a time per process: overlapping callers (a sweep tick and

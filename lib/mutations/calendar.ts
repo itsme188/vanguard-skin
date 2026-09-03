@@ -375,6 +375,11 @@ export function deleteAndSuppressCalendarEvent(
       event_type: row.event_type,
       reason: `user-deleted ${row.source} row #${id}`,
     });
+    // [C-7] Armed worksheets mostly sit on SYNC-sourced rows, so THIS is the
+    // common way an armed event goes away. Read the arm state before the
+    // DELETE cascades the flag row off, and emit the tombstone after — without
+    // it the Worker would keep an event armed that no longer exists.
+    const wasArmed = isEventArmed(db, id);
     if (handBack) repointDependentsBeforeDelete(db, { eventId: id, today });
     db.prepare("DELETE FROM calendar_events WHERE id = ?").run(id);
     if (handBack) {
@@ -383,6 +388,9 @@ export function deleteAndSuppressCalendarEvent(
       // suppressed two statements ago.
       resuppressSuppressedTuples(db, symbol);
     }
+    // After the hand-back, so the projection reflects whatever row the
+    // reconciler just made canonical.
+    if (wasArmed) writeArmedEventsOutboxRow(db, { today });
   });
   txn();
 

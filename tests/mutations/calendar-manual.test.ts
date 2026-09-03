@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { insertCalendarEvent, updateCalendarEvent } from "@/lib/mutations/calendar";
+import {
+  insertCalendarEvent,
+  updateCalendarEvent,
+  deleteAndSuppressCalendarEvent,
+} from "@/lib/mutations/calendar";
 import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 import { readArmedGeneration } from "@/lib/earnings/armed-events-projection";
 
@@ -56,5 +60,37 @@ describe("manual calendar event mutations → armed-events outbox", () => {
     expect(updateCalendarEvent(db, { id })).toBe(true); // no fields → early return
     expect(updateCalendarEvent(db, { id, release_time: "16:15" })).toBe(true); // same value
     expect(readArmedGeneration(db)).toBe(1);
+  });
+});
+
+describe("deleteAndSuppressCalendarEvent → armed-events outbox", () => {
+  const seedSync = (symbol: string, date: string) =>
+    Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, title, source_key, symbol)
+           VALUES ('finnhub','earnings',?,'AMC','16:15',?,?,?)`,
+        )
+        .run(date, `${symbol} earnings`, `finnhub:${symbol}:${date}`, symbol).lastInsertRowid,
+    );
+
+  // Armed worksheets mostly sit on SYNC-sourced rows (Finnhub/WSH), and the
+  // calendar-events DELETE route sends those down the suppress branch — so
+  // this, not deleteCalendarEvent, is the common way an armed event goes away.
+  it("[C-7] deleting an ARMED sync-sourced event writes a tombstone generation", () => {
+    const id = seedSync("ACME", "2026-09-02");
+    armWorksheet(db, id); // gen 1
+    const res = deleteAndSuppressCalendarEvent(db, id, { today: "2026-09-02" });
+    expect(res.deleted).toBe(true);
+    expect(readArmedGeneration(db)).toBe(2);
+    expect(latestEntries()).toEqual([
+      expect.objectContaining({ eventId: id, symbol: "ACME", removed: true }),
+    ]);
+  });
+
+  it("deleting an UNARMED sync-sourced event writes no outbox row", () => {
+    const id = seedSync("BETA", "2026-09-03");
+    expect(deleteAndSuppressCalendarEvent(db, id, { today: "2026-09-02" }).deleted).toBe(true);
+    expect(readArmedGeneration(db)).toBe(0);
   });
 });

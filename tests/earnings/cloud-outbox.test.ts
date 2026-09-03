@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
-import { drainCloudOutbox, writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
+import {
+  attemptPostCommitDrain,
+  drainCloudOutbox,
+  writeArmedEventsOutboxRow,
+} from "@/lib/earnings/cloud-outbox";
+import { readArmedGeneration } from "@/lib/earnings/armed-events-projection";
 
 let db: Database.Database;
 beforeEach(() => {
@@ -130,5 +135,87 @@ describe("drainCloudOutbox", () => {
       }),
     ]);
     expect(seen).toEqual([1, 2]); // never [1,1,2,2] or [1,2,1]
+  });
+});
+
+describe("writeArmedEventsOutboxRow resilience", () => {
+  // A truncated/corrupt newest payload must not throw inside armWorksheet's
+  // transaction — that would wedge every future arm/disarm/edit. The writer
+  // reads the previous entries through the projection's guarded reader, so a
+  // corrupt row simply means "no previous entries".
+  it("a corrupt newest payload does not wedge the next arm", () => {
+    seedArmed(); // gen 1
+    db.prepare(`UPDATE cloud_outbox SET payload_json = '{"generation":1,"entries":[' WHERE generation = 1`).run();
+    const next = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol)
+           VALUES ('manual','earnings','2026-09-03','BETA','k2','BETA')`,
+        )
+        .run().lastInsertRowid,
+    );
+    expect(() => armWorksheet(db, next)).not.toThrow();
+    expect(readArmedGeneration(db)).toBe(2);
+  });
+});
+
+describe("attemptPostCommitDrain", () => {
+  it("caps the WHOLE wait — not just its own fetches — and the chained drain still lands", async () => {
+    const a = seedArmed(); // gen 1
+    const slow = vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+      return new Response("{}", { status: 200 });
+    });
+    const deps = {
+      fetchFn: slow as unknown as typeof fetch,
+      workerUrl: "https://w",
+      secret: "s",
+    };
+    // An in-flight drain that will hold the chain for ~600ms.
+    const inFlight = drainCloudOutbox(db, deps);
+    // A second generation minted while that drain is mid-fetch — the in-flight
+    // drain read its row list before this existed, so only a LATER drain sends it.
+    db.prepare(`UPDATE calendar_events SET release_time = '16:30' WHERE id = ?`).run(a);
+    db.transaction(() => writeArmedEventsOutboxRow(db)).immediate(); // gen 2
+
+    const t0 = Date.now();
+    const out = await attemptPostCommitDrain(db, { capMs: 150, deps });
+    const elapsed = Date.now() - t0;
+    expect(out).toEqual({ timedOut: true, result: null });
+    expect(elapsed).toBeLessThan(450); // the cap, not the 600ms chain ahead of it
+
+    await inFlight;
+    // The chained drain kept running in the background and lands generation 2.
+    const deadline = Date.now() + 5_000;
+    let unsent = 1;
+    while (unsent > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+      unsent = (
+        db.prepare(`SELECT COUNT(*) AS n FROM cloud_outbox WHERE sent_at IS NULL`).get() as {
+          n: number;
+        }
+      ).n;
+    }
+    expect(unsent).toBe(0);
+  }, 15_000);
+
+  it("returns the drain result when it finishes inside the cap", async () => {
+    seedArmed();
+    const fetchFn = vi.fn(async () => new Response("{}", { status: 200 }));
+    const out = await attemptPostCommitDrain(db, {
+      capMs: 2000,
+      deps: { fetchFn: fetchFn as unknown as typeof fetch, workerUrl: "https://w", secret: "s" },
+    });
+    expect(out).toEqual({ timedOut: false, result: { sent: 1, failed: 0, skipped: null } });
+  });
+
+  it("never throws when the drain itself rejects", async () => {
+    seedArmed();
+    db.close(); // every statement in the drain now throws
+    const out = await attemptPostCommitDrain(db, {
+      capMs: 2000,
+      deps: { fetchFn: (async () => new Response("{}")) as unknown as typeof fetch, workerUrl: "https://w", secret: "s" },
+    });
+    expect(out).toEqual({ timedOut: false, result: null });
   });
 });
