@@ -136,6 +136,12 @@ describe("upsertBogey", () => {
     upsertBogey(db, { event_id: 1, source: "finnhub", source_label: "Sell-side consensus (Finnhub)", eps_consensus: null, eps_consensus_vendor: 0.50, revenue_consensus_usd: 1_234_000_000 });
     const row = db.prepare(`SELECT source, eps_consensus, eps_consensus_vendor, revenue_consensus_usd FROM earnings_bogeys WHERE event_id = ?`).get(1);
     expect(row).toEqual({ source: "finnhub", eps_consensus: null, eps_consensus_vendor: 0.50, revenue_consensus_usd: 1_234_000_000 });
+
+    // Production read paths must carry the vendor EPS too — not just raw SQL.
+    const all = getBogeysForEvent(db, 1);
+    expect(all[0].eps_consensus_vendor).toBe(0.50);
+    const primary = getPrimaryBogeyForEvent(db, 1);
+    expect(primary?.eps_consensus_vendor).toBe(0.50);
   });
 });
 

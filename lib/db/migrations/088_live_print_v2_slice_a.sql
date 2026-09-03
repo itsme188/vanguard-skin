@@ -80,6 +80,14 @@ SELECT
   revenue_consensus_usd, revenue_whisper_usd, segment_breakdown_json,
   guidance_notes, notes, uploaded_at, ai_extraction_model, expected_move_pct
 FROM earnings_bogeys;
+-- Carry the AUTOINCREMENT high-water mark across the rebuild. Without this,
+-- earnings_bogeys_new's sqlite_sequence row only reflects MAX(id) of the rows
+-- just copied, which can be LOWER than the pre-rebuild counter (a deleted
+-- highest-id bogey would let a later insert reissue its id). Both rows exist
+-- at this point — the old table isn't dropped yet.
+UPDATE sqlite_sequence
+   SET seq = (SELECT seq FROM sqlite_sequence WHERE name = 'earnings_bogeys')
+ WHERE name = 'earnings_bogeys_new';
 DROP TABLE earnings_bogeys;
 ALTER TABLE earnings_bogeys_new RENAME TO earnings_bogeys;
 CREATE INDEX idx_earnings_bogeys_event ON earnings_bogeys(event_id);
