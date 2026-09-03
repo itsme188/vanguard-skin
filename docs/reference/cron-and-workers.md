@@ -147,7 +147,10 @@ was lifted:
 - **(b) Workers free-tier 50-subrequest cap** — old constants (15 articles × 5 messages ×
   28 sources) blew past it. New: `MAX_ARTICLES_PER_RUN=10`, `MAX_MESSAGES_PER_SOURCE=1` (a named
   constant — was hardcoded 5). 28 list + 10×2 = 48 subrequests, leaving headroom for recipient
-  resolution + Resend.
+  resolution + Resend. *(2026-09-03, Ruling R25: the armed-events KV read took that arithmetic to
+  50, so `MAX_ARTICLES_PER_RUN` is now 9 — 28 list + 9×2 + 1 spark + 1 KV = 48, Resend spends the
+  49th. The KV read itself is skipped below snapshot v11. Recount this line before adding any
+  subrequest.)*
 - **(c) Resend REST rejects comma-joined `to`** — `BRIEFING_EMAIL_TO="a@x.com, b@y.com"` is
   multi-recipient by default; Mac's nodemailer handles it natively but
   `workers/cron/src/resend.ts` was wrapping `to: [opts.to]` without splitting → 422
@@ -420,8 +423,28 @@ single collection every Worker earnings consumer reads — never the raw snapsho
 
 The Mac remains the source of truth; the Worker's read-compare-write is defence in depth, not a
 second authority. **The push gates are untouched on both sides** — armed does not open a push.
-Date windowing stays each consumer's own job: the Mac projection has no date filter, so a live
-armed event never ages out of it.
+Date windowing stays each consumer's own job.
+
+**Live horizon: 14 days (R23).** The Mac projection publishes live entries only for armed events
+dated `>= today − 14`. An event that ages past the horizon simply drops out of the list — it is
+NOT tombstoned, because it is still armed (a tombstone says "no longer armed", and would then be
+re-carried for 48 hours for nothing). The sweep-tick reconcile writes the first post-horizon
+generation naturally, since the entries differ. Nothing in the cloud selects an event that old, so
+the only effect is that the payload stops growing as never-disarmed worksheets accumulate.
+
+**Mac↔Worker coverage asymmetry — accepted.** The Mac's armed leg is CLUSTER-aware (R11: an event
+is covered when it, or any unsuperseded same-symbol/same-date earnings row, carries a worksheet
+flag), while the cloud's is per-id — `isCoveredInCloud` tests `eff.armedEventIds.has(event.id)`.
+Where a vendor twin pair exists and the Mac armed one twin, the Worker covers that twin only. This
+is deliberate: the projection ships event ids, the cloud has no cheap way to re-derive the cluster,
+and the held/watchlist leg still covers both twins for any name the desk owns.
+
+**A refused POST now surfaces on the Mac.** `applied:false` is the normal reply to a replayed
+generation, so it stays a success — EXCEPT when the generation the Worker names is strictly greater
+than the one just posted. That is the restored-DB wedge below, and the drain writes
+`cloud_outbox.send_error` = `"<host>: worker holds generation <X> > local <Y> — KV key armed-events
+needs a reset"` and stops, instead of looping silently forever. Every `send_error` is host-prefixed
+(host and port only, never the secret) so the row names the target it could not reach.
 
 **Parity tests.** The projection key SET is pinned across the two sides
 (`ARMED_EVENT_PROJECTION_KEYS` ⇄ `ARMED_EVENT_ENTRY_KEYS`) because the Worker's parser drops

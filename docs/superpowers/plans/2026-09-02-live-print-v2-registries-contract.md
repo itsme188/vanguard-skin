@@ -124,7 +124,11 @@ export async function runPrepareSteps(
 `lib/print-watch/registry-shim.ts` exports `registerEventMergeHandler`, `registerPrepareStep`,
 `stableHash` with the signatures above, backed by an in-memory collecting registry plus
 `__shimRegistrations()` for tests. `lib/print-watch/register.ts` imports from the shim and is the
-ONLY B file that names the registries. The post-merge integration task (whichever slice merges
+ONLY B file that names the registries. **`register.ts` must perform NO registration at module top
+level** — registration happens inside the function `bootstrapEarningsRegistries()` calls, because
+once the shim is swapped for the real registries the cycle event-merge → registry-bootstrap →
+register → event-merge would evaluate `register.ts` while the registry map is still in its
+temporal dead zone. The post-merge integration task (whichever slice merges
 second) swaps the import to `@/lib/earnings/event-merge` / `@/lib/earnings/prepare-armed-event`,
 deletes the shim, and lands the cross-slice test.
 
