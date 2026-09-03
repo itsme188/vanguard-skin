@@ -71,6 +71,32 @@ describe("migration 088: live print v2 slice A", () => {
     expect(db.prepare(`SELECT COUNT(*) AS n FROM earnings_bogeys`).get()).toEqual({ n: 0 });
   });
 
+  it("carries the AUTOINCREMENT high-water mark across the rebuild even after the highest id is deleted", () => {
+    // Same replay-pre-088-files-then-apply-088 approach as the "preserves ids,
+    // values..." test above: run every migration file up to (not including)
+    // 088 directly via db.exec, then apply 088's SQL text on its own.
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    const fs = require("node:fs") as typeof import("node:fs");
+    const path = require("node:path") as typeof import("node:path");
+    const dir = path.join(process.cwd(), "lib", "db", "migrations");
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
+    for (const f of files.filter((f) => f < "088_")) db.exec(fs.readFileSync(path.join(dir, f), "utf-8"));
+    db.prepare(`INSERT INTO calendar_events (id, source, event_type, event_date, title, source_key, symbol) VALUES (9,'finnhub','earnings','2026-09-03','x','k9','GAMMA')`).run();
+    db.prepare(`INSERT INTO earnings_bogeys (event_id, source, source_label) VALUES (9,'manual','a')`).run();
+    db.prepare(`INSERT INTO earnings_bogeys (event_id, source, source_label) VALUES (9,'manual','b')`).run();
+    db.prepare(`INSERT INTO earnings_bogeys (event_id, source, source_label) VALUES (9,'manual','c')`).run();
+    // Delete the highest id (3) — without the fix, the rebuild's counter
+    // regresses to MAX(id) of the surviving rows (2), and the next insert
+    // reissues id 3.
+    db.prepare(`DELETE FROM earnings_bogeys WHERE id = 3`).run();
+    db.exec(fs.readFileSync(path.join(dir, files.find((f) => f.startsWith("088_"))!), "utf-8"));
+    const seq = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'earnings_bogeys'`).get() as { seq: number };
+    expect(seq.seq).toBe(3);
+    const next = db.prepare(`INSERT INTO earnings_bogeys (event_id, source, source_label) VALUES (9,'manual','d')`).run();
+    expect(next.lastInsertRowid).toBe(4);
+  });
+
   it("[C-15] applies cleanly when a later-numbered migration (slice B's 089) was recorded first", () => {
     const db = new Database(":memory:");
     db.pragma("foreign_keys = ON");

@@ -64,6 +64,7 @@ export function getPrimaryBogeyForEvent(
         `SELECT id, event_id, source, source_label, source_url, raw_pdf_r2_key,
                 research_document_id, research_article_id, eps_consensus, eps_whisper,
                 revenue_consensus_usd, revenue_whisper_usd, expected_move_pct,
+                eps_consensus_vendor,
                 segment_breakdown_json, guidance_notes, notes, uploaded_at,
                 ai_extraction_model
            FROM earnings_bogeys
