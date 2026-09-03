@@ -16,8 +16,9 @@
  */
 
 import { resolveExpectedMove } from "./expected-move";
-import type { Snapshot, CalendarEventRow } from "./state";
+import type { ArmedEventsDelta, Snapshot, CalendarEventRow } from "./state";
 import { issuerSiblings } from "./fallback-earnings";
+import { effectiveCalendarEvents } from "./armed-events";
 import {
   renderTodaysReportersBlock,
   type ReporterRowView,
@@ -69,9 +70,14 @@ function formatCompactConsensus(raw: string | null): string | null {
 export function buildTodaysReportersBlock(
   snapshot: Snapshot,
   today: string,
+  // Armed-events delta (v2 slice A §4.1), read once per run by the caller.
+  // Defaults to null so a pre-v11 snapshot — or a caller that has no KV
+  // handy — renders exactly today's block.
+  delta: ArmedEventsDelta | null = null,
 ): string | null {
   try {
-    const candidates = snapshot.calendarEvents.filter(
+    const eff = effectiveCalendarEvents(snapshot, delta);
+    const candidates = eff.events.filter(
       (e) =>
         e.event_type === "earnings" &&
         e.event_date === today &&
@@ -125,7 +131,16 @@ export function buildTodaysReportersBlock(
     const rows: ReporterRowView[] = [...byKey.values()].map((e) => {
       const sym = e.symbol!.toUpperCase();
       const releaseTime = (e as { release_time?: string | null }).release_time ?? null;
-      const chip = inFamily(sym, held) ? "held" : inFamily(sym, watch) ? "wl" : "";
+      // Precedence mirrors the Mac (lib/digest/todays-reporters.ts):
+      // held > wl > armed > rt > "". The Worker has no read-through reporter
+      // table, so `rt` stays the documented accepted divergence (renders "—").
+      const chip = inFamily(sym, held)
+        ? "held"
+        : inFamily(sym, watch)
+          ? "wl"
+          : eff.armedEventIds.has(e.id)
+            ? "armed"
+            : "";
       const resolved = resolveExpectedMove({
         bogeys: bogeysByEvent.get(e.id) ?? [],
         impliedMovePct: intelById.get(e.id)?.pct ?? null,

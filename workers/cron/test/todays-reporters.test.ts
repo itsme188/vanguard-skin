@@ -176,3 +176,93 @@ describe("buildTodaysReportersBlock", () => {
     expect(block.indexOf("EARLY")).toBeLessThan(block.indexOf("LATE"));
   });
 });
+
+/**
+ * "armed" chip — live print v2 slice A §4.1 (Task 8, cloud half).
+ *
+ * Precedence mirrors the Mac's lib/digest/todays-reporters.ts:
+ *   held > wl > armed > rt > "".
+ *
+ * PARITY NOTE: the Mac half of this chip ships with Task 5. Until it lands,
+ * the renderer parity test above (byte-identical files + identical output for
+ * identical rows) is what pins the two sides — the renderer is chip-agnostic
+ * (`${r.chip || "—"}`), so "armed" renders identically on both sides today and
+ * neither render module needed an edit.
+ */
+describe("armed chip (effective calendar)", () => {
+  const armedEntry = (eventId: number, symbol: string) => ({
+    eventId,
+    symbol,
+    eventDate: TODAY,
+    eventTime: "BMO",
+    releaseTime: "08:00",
+    sourceKey: `manual:${symbol}:${TODAY}:earnings`,
+    source: "manual",
+    consensusValue: null,
+    expectedImpact: null,
+    securityId: null,
+    epsConsensusVendor: null,
+  });
+
+  it("renders `armed` for a delta-only reporter that is neither held nor watchlisted", () => {
+    const snapshot = makeSnapshot({
+      schemaVersion: 11,
+      armedGeneration: 3,
+      armedEvents: [],
+      calendarEvents: [makeEvent({ id: 1, symbol: "HELDCO" })] as never,
+      heldSymbols: ["HELDCO"],
+    });
+    const block = buildTodaysReportersBlock(snapshot, TODAY, {
+      generation: 4,
+      entries: [armedEntry(77, "ACME")],
+    })!;
+    expect(block).toContain("| BMO 08:00 | ACME | armed |");
+    expect(block).toContain("| BMO 08:00 | HELDCO | held |");
+  });
+
+  it("held and watchlist still beat armed (precedence held > wl > armed)", () => {
+    const snapshot = makeSnapshot({
+      schemaVersion: 11,
+      armedGeneration: 3,
+      armedEvents: [],
+      calendarEvents: [
+        makeEvent({ id: 1, symbol: "HELDCO" }),
+        makeEvent({ id: 2, symbol: "WATCHCO" }),
+      ] as never,
+      heldSymbols: ["HELDCO"],
+      watchlistSymbols: ["WATCHCO"],
+    });
+    const block = buildTodaysReportersBlock(snapshot, TODAY, {
+      generation: 4,
+      entries: [armedEntry(1, "HELDCO"), armedEntry(2, "WATCHCO")],
+    })!;
+    expect(block).toContain("| HELDCO | held |");
+    expect(block).toContain("| WATCHCO | wl |");
+  });
+
+  it("a pre-v11 snapshot ignores the delta entirely (today's behaviour, unchanged)", () => {
+    const snapshot = makeSnapshot({
+      calendarEvents: [makeEvent({ id: 1, symbol: "HELDCO" })] as never,
+      heldSymbols: ["HELDCO"],
+    });
+    const block = buildTodaysReportersBlock(snapshot, TODAY, {
+      generation: 9,
+      entries: [armedEntry(77, "ACME")],
+    })!;
+    expect(block).not.toContain("ACME");
+    expect(block).toContain("| HELDCO | held |");
+  });
+
+  it("defaults to no delta, so existing callers keep today's output", () => {
+    const snapshot = makeSnapshot({
+      schemaVersion: 11,
+      armedGeneration: 3,
+      armedEvents: [],
+      calendarEvents: [makeEvent({ id: 1, symbol: "HELDCO" })] as never,
+      heldSymbols: ["HELDCO"],
+    });
+    expect(buildTodaysReportersBlock(snapshot, TODAY)).toBe(
+      buildTodaysReportersBlock(snapshot, TODAY, null),
+    );
+  });
+});

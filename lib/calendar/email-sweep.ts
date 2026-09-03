@@ -38,9 +38,11 @@ import { runMorningDebrief } from "@/lib/earnings/debrief-send";
 import { sendReporterRecapEmail } from "@/lib/earnings/reporter-recap";
 import { printArmedWorksheets } from "@/lib/earnings/worksheet";
 import { todayET } from "@/lib/calendar/date-utils";
+import { drainCloudOutbox, writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 import { fetchSameDayTranscripts } from "@/lib/transcripts/same-day";
 import { recordEarningsEmailSkip } from "@/lib/mutations/earnings-skips";
 import { ensurePrintWatch } from "@/lib/print-watch/watcher";
+import { runPrepareSteps, type PrepareRunReport } from "@/lib/earnings/prepare-armed-event";
 // Shared with lib/earnings/debrief-send.ts (which also drops cloud-delivered
 // members) — moved out of this file 2026-08-02 so both can use it without an
 // email-sweep ↔ debrief-send import cycle.
@@ -65,6 +67,10 @@ export interface SweepSummary {
   recapAlerts: number;
   /** Audit rows backfilled from cloud-sent KV markers this sweep (2026-07-15). */
   cloudReconciled: number;
+  /** armed-events outbox rows delivered to the Worker this tick (v2 slice A). */
+  outboxSent: number;
+  /** True when this tick's reconcile minted a new armed-events generation (R8). */
+  outboxReconciled: boolean;
   /**
    * Result of the 7:45 ET morning debrief pass (2026-08-02, replaces the EOD
    * wrap — see lib/earnings/debrief-send.ts). Null when the pass threw
@@ -75,6 +81,11 @@ export interface SweepSummary {
   debrief: { sent: boolean; covered: string[] } | null;
   /** Same-day transcript fetch attempts that succeeded this pass (#12 B1). */
   transcriptsFetched: number;
+  /**
+   * Prepare pass for armed events (v2 slice A): what this tick's registered
+   * prepare steps did. Zeroed when the pass threw (it never fails the sweep).
+   */
+  prepared: PrepareRunReport;
   results: SweepCandidateResult[];
 }
 
@@ -117,7 +128,11 @@ async function reconcileCloudSentAudits(db: Database.Database): Promise<number> 
 
 export async function runEarningsEmailSweep(
   db: Database.Database,
-  opts: EmailSweepOpts = {},
+  opts: EmailSweepOpts & {
+    /** [F3] Pass-level budget override for the prepare pass. Tests only —
+     *  production uses PREPARE_PASS_BUDGET_MS. */
+    prepareBudgetMs?: number;
+  } = {},
 ): Promise<SweepSummary> {
   // Reap stale (>30 min) 'in_progress' claim rows BEFORE candidate selection
   // — a stale claim from a dead process otherwise hides its event from
@@ -133,6 +148,30 @@ export async function runEarningsEmailSweep(
   // Drain cloud-sent markers into audit rows BEFORE candidate selection so a
   // freshly-backfilled row excludes its event from this very tick's candidates.
   const cloudReconciled = await reconcileCloudSentAudits(db);
+
+  // ── Armed-events outbox reconcile (R8) ────────────────────────────────
+  // The Worker learns about armed worksheets ONLY through cloud_outbox rows,
+  // so without a periodic re-derive it would never hear about an event that
+  // was armed before the outbox existed — or armed by a path whose write was
+  // lost. D10 makes this a no-op on every tick where nothing changed.
+  let outboxReconciled = false;
+  try {
+    outboxReconciled = db
+      .transaction(() => writeArmedEventsOutboxRow(db))
+      .immediate().written;
+  } catch (err) {
+    console.warn("[earnings-sweep] armed-events outbox reconcile failed:", err);
+  }
+
+  // ── Cloud outbox drain (v2 slice A): armed-events delta to the Worker ──
+  // The routes attempt their own post-commit drain; this is the catch-up for
+  // a Worker that was down (or a Mac that was asleep) when the row was written.
+  let outboxSent = 0;
+  try {
+    outboxSent = (await drainCloudOutbox(db)).sent;
+  } catch (err) {
+    console.warn("[earnings-sweep] cloud outbox drain failed:", err);
+  }
 
   const candidates = findEmailCandidates(db, opts);
   const results: SweepCandidateResult[] = [];
@@ -341,6 +380,42 @@ export async function runEarningsEmailSweep(
   // throws.
   await printArmedWorksheets(db, { now: opts.now });
 
+  // ── Mac-aliveness marker (2026-08-05, the APP/MELI preview race) ──────
+  // Posted after EVERY completed tick — quiet ones included — so the
+  // Worker's preview fallback (25-min KV TTL) knows the Mac is alive and
+  // defers previews to the Mac's wider [105,135] window. Recaps stay
+  // un-gated cloud-side. Fire-and-forget: workerFetch swallows
+  // unreachability, and a missed post only re-opens the lean-preview race
+  // for one tick — never blocks or fails the sweep.
+  //
+  // [F3] Everything below this point is preparation for FUTURE prints, and
+  // both passes can legitimately run for minutes (a prepare step gets up to
+  // PREPARE_STEP_TIMEOUT_MS; the transcript pass does network I/O). The
+  // marker is the Mac saying "I am awake" to a Worker whose fallback window
+  // is 25 minutes wide — it must never queue behind that work.
+  try {
+    await postMacRecentEarningsSweepMarker();
+  } catch (err) {
+    console.warn("[earnings-sweep] aliveness-marker post failed (ignored):", err);
+  }
+
+  // ── Prepare pass for armed events (v2 slice A) ────────────────────────
+  // Re-runs every runnable step each tick until the event is past: the
+  // route's post-arm kick is fire-and-forget, so this is the DURABLE path
+  // for a crashed kick, a step registered after the arm, or an arm whose
+  // enqueue never landed. Never fails the sweep. [F3] Bounded by
+  // PREPARE_PASS_BUDGET_MS: whatever it does not reach stays pending and is
+  // picked up by the next tick.
+  let prepared: PrepareRunReport = { ran: 0, done: 0, pending: 0, failed: 0, skipped: 0 };
+  try {
+    prepared = await runPrepareSteps(db, {
+      now: () => (opts.now ?? new Date()).getTime(),
+      passBudgetMs: opts.prepareBudgetMs,
+    });
+  } catch (err) {
+    console.warn("[earnings-sweep] prepare pass failed:", err);
+  }
+
   // ── Same-day transcript orchestrator (#12 B1) ─────────────────────────
   // Best-effort, always last: kicks off fetchTranscript for held/watchlist
   // prints whose actuals landed in the last 36h so a transcript is warm in
@@ -355,19 +430,6 @@ export async function runEarningsEmailSweep(
     transcriptsFetched = 0;
   }
 
-  // ── Mac-aliveness marker (2026-08-05, the APP/MELI preview race) ──────
-  // Posted after EVERY completed tick — quiet ones included — so the
-  // Worker's preview fallback (25-min KV TTL) knows the Mac is alive and
-  // defers previews to the Mac's wider [105,135] window. Recaps stay
-  // un-gated cloud-side. Fire-and-forget: workerFetch swallows
-  // unreachability, and a missed post only re-opens the lean-preview race
-  // for one tick — never blocks or fails the sweep.
-  try {
-    await postMacRecentEarningsSweepMarker();
-  } catch (err) {
-    console.warn("[earnings-sweep] aliveness-marker post failed (ignored):", err);
-  }
-
   return {
     swept: candidates.length,
     sent: results.filter((r) => r.ok && !r.skipped).length,
@@ -375,8 +437,11 @@ export async function runEarningsEmailSweep(
     failed: results.filter((r) => !r.ok).length,
     recapAlerts,
     cloudReconciled,
+    outboxSent,
+    outboxReconciled,
     debrief,
     transcriptsFetched,
+    prepared,
     results,
   };
 }

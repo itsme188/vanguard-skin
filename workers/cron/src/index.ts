@@ -44,6 +44,7 @@ import {
   shouldRunEarningsFallback,
 } from "./calendar-enrich";
 import { runEarningsFallback } from "./fallback-earnings";
+import { applyArmedEventsDelta, readArmedEventsDelta, ARMED_EVENTS_MAX_BODY_BYTES } from "./armed-events";
 import {
   getEarningsMarkerStatus,
   readEarningsMarkers,
@@ -581,6 +582,44 @@ export default {
         expirationTtl: 25 * 60,
       });
       return Response.json({ ok: true });
+    }
+
+    // The Mac's cloud-outbox drain posts the FULL armed-events projection here
+    // whenever an arm/disarm changes it (deviation D2: the Mac never writes KV
+    // directly). Read-compare-write on the generation makes a replayed or
+    // out-of-order POST a harmless no-op — see armed-events.ts.
+    if (request.method === "POST" && url.pathname === "/internal/armed-events") {
+      if (Number(request.headers.get("content-length") ?? 0) > ARMED_EVENTS_MAX_BODY_BYTES) {
+        return Response.json({ ok: false, error: "payload too large" }, { status: 413 });
+      }
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return Response.json({ ok: false, error: "invalid json" }, { status: 400 });
+      }
+      try {
+        const r = await applyArmedEventsDelta(env.CRON_KV, body);
+        return Response.json({ ok: true, ...r });
+      } catch (err) {
+        return Response.json(
+          { ok: false, error: err instanceof Error ? err.message : "bad body" },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Read-only twin of the POST above — the sandbox end-to-end and the
+    // post-deploy check read the highest stored generation through this.
+    // No KV write, no side effects; a missing or corrupt stored value reads
+    // back as generation 0 / no entries (readArmedEventsDelta never throws).
+    if (request.method === "GET" && url.pathname === "/internal/armed-events") {
+      const delta = await readArmedEventsDelta(env.CRON_KV);
+      return Response.json({
+        ok: true,
+        generation: delta?.generation ?? 0,
+        entries: delta?.entries ?? [],
+      });
     }
 
     // Cloud-fetched newsletters — Mac polls on wake, inserts each payload

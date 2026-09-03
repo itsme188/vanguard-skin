@@ -89,7 +89,15 @@ function makeDb(): Database.Database {
       notes TEXT,
       uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
       ai_extraction_model TEXT,
+      eps_consensus_vendor REAL,
+      extra_metrics_json TEXT,
       UNIQUE(event_id, source, source_label)
+    );
+    CREATE TABLE earnings_worksheet_flags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id INTEGER NOT NULL UNIQUE REFERENCES calendar_events(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      printed_at TEXT
     );
   `);
   db.prepare(`INSERT INTO research_sources (id, name) VALUES (1, 'TMT Breakout')`).run();
@@ -143,6 +151,16 @@ function addArticle(
 function daysAgoTimestamp(days: number): string {
   const d = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   return d.toISOString().slice(0, 19).replace("T", " ");
+}
+
+// [C-3] Independent restatement of the issue-date part of `newsletterIssueLabel`:
+// the M/D the label carries is the ET calendar day of the UTC `received_at`.
+function etMonthDay(receivedAt: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "numeric",
+    day: "numeric",
+  }).format(new Date(receivedAt.replace(" ", "T") + "Z"));
 }
 
 describe("buildExtractionPrompt", () => {
@@ -421,8 +439,12 @@ describe("extractBogeysFromNewArticles", () => {
     addSecurity(db, 1, "TSM");
     holdSecurity(db, 1);
     addEvent(db, { id: 1, symbol: "TSM", daysFromToday: 5 });
+    // [C-3] The bogey label is issue-DATED, so pin a known issue timestamp and
+    // assert the label the global scan mints for it.
+    const receivedAt = daysAgoTimestamp(2);
     addArticle(db, {
       subject: "Semis weekly",
+      receivedAt,
       rawText: "TSM reports next week — street watching foundry ASP trends. " + "filler ".repeat(50),
     });
 
@@ -449,7 +471,7 @@ describe("extractBogeysFromNewArticles", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].event_id).toBe(1);
     expect(rows[0].source).toBe("newsletter");
-    expect(rows[0].source_label).toBe("TMT Breakout");
+    expect(rows[0].source_label).toBe(`TMT Breakout ${etMonthDay(receivedAt)}`);
     expect(rows[0].eps_consensus).toBe(3.8);
     expect(rows[0].eps_whisper).toBe(4.0);
     expect(rows[0].revenue_consensus_usd).toBe(40_200_000_000);
@@ -545,34 +567,43 @@ describe("extractBogeysFromNewArticles", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM earnings_bogeys").get()).toEqual({ n: 1 });
   });
 
-  it("6b. a re-mention from the same source on a NEW article upserts in place, not a duplicate row", async () => {
+  it("6b. [C-3] two ISSUES of one newsletter are two dated rows — the later issue never overwrites the earlier one", async () => {
     const db = makeDb();
     addSecurity(db, 1, "TSM");
     holdSecurity(db, 1);
     addEvent(db, { id: 1, symbol: "TSM", daysFromToday: 5 });
+    const issue1 = daysAgoTimestamp(2);
+    const issue2 = daysAgoTimestamp(1);
     addArticle(db, {
       subject: "Semis weekly #1",
       rawText: "TSM reports next week. " + "filler ".repeat(50),
-      receivedAt: daysAgoTimestamp(2),
+      receivedAt: issue1,
     });
     addArticle(db, {
       subject: "Semis weekly #2",
       rawText: "TSM print coming up — updated numbers inside. " + "filler ".repeat(50),
-      receivedAt: daysAgoTimestamp(1),
+      receivedAt: issue2,
     });
 
+    // Articles are scanned newest-first, so issue #2 is the first model call.
     generateTextMock
-      .mockResolvedValueOnce({ text: JSON.stringify([{ symbol: "TSM", eps_consensus: 3.8 }]) })
-      .mockResolvedValueOnce({ text: JSON.stringify([{ symbol: "TSM", eps_consensus: 4.1 }]) });
+      .mockResolvedValueOnce({ text: JSON.stringify([{ symbol: "TSM", eps_consensus: 4.1 }]) })
+      .mockResolvedValueOnce({ text: JSON.stringify([{ symbol: "TSM", eps_consensus: 3.8 }]) });
 
     const result = await extractBogeysFromNewArticles(db, { batchSize: 10 });
 
     expect(result.articlesScanned).toBe(2);
     expect(generateTextMock).toHaveBeenCalledTimes(2);
 
-    const rows = db.prepare("SELECT * FROM earnings_bogeys").all() as Array<Record<string, unknown>>;
-    expect(rows).toHaveLength(1); // upsert-in-place, not a duplicate
-    expect(rows[0].eps_consensus).toBe(4.1); // latest write wins
+    // Before [C-3] both issues collided on the bare publication label and the
+    // SECOND write silently replaced the first. Now each issue keeps its own row.
+    const rows = db
+      .prepare("SELECT source_label, eps_consensus FROM earnings_bogeys ORDER BY eps_consensus")
+      .all() as Array<Record<string, unknown>>;
+    expect(rows).toEqual([
+      { source_label: `TMT Breakout ${etMonthDay(issue1)}`, eps_consensus: 3.8 },
+      { source_label: `TMT Breakout ${etMonthDay(issue2)}`, eps_consensus: 4.1 },
+    ]);
   });
 
   it("6c. [regression 2026-08-26 NVDA/CRWD] a later numberless issue from the same source does NOT erase the earlier numbers", async () => {
@@ -611,13 +642,27 @@ describe("extractBogeysFromNewArticles", () => {
     });
     await extractBogeysFromNewArticles(db, { batchSize: 10 });
 
-    const rows = db.prepare("SELECT * FROM earnings_bogeys").all() as Array<Record<string, unknown>>;
-    expect(rows).toHaveLength(1);
-    expect(rows[0].eps_consensus).toBe(1.02);
-    expect(rows[0].revenue_consensus_usd).toBe(92_400_000_000);
-    expect(rows[0].revenue_whisper_usd).toBe(95_000_000_000);
-    expect(rows[0].guidance_notes).toBe("FQ3 revenue guide $108.5B+ vs Street $105B");
-    expect(rows[0].notes).toBe("no fresh numbers, just positioning chatter");
+    // [C-3] The two issues no longer share a row at all, so the later numberless
+    // one CANNOT reach the earlier one's numbers — the 2026-08-26 erase is now
+    // structurally impossible, not just mitigated by preserveExisting.
+    const rows = db
+      .prepare("SELECT eps_consensus, revenue_consensus_usd, revenue_whisper_usd, guidance_notes, notes FROM earnings_bogeys ORDER BY id")
+      .all() as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual({
+      eps_consensus: 1.02,
+      revenue_consensus_usd: 92_400_000_000,
+      revenue_whisper_usd: 95_000_000_000,
+      guidance_notes: "FQ3 revenue guide $108.5B+ vs Street $105B",
+      notes: "buyside above the guide",
+    });
+    expect(rows[1]).toEqual({
+      eps_consensus: null,
+      revenue_consensus_usd: null,
+      revenue_whisper_usd: null,
+      guidance_notes: null,
+      notes: "no fresh numbers, just positioning chatter",
+    });
   });
 
   it("6d. [regression 2026-08-26] an extraction with nothing at all for the symbol leaves the stored row untouched", async () => {
@@ -645,6 +690,9 @@ describe("extractBogeysFromNewArticles", () => {
     generateTextMock.mockResolvedValueOnce({ text: JSON.stringify([{ symbol: "NVDA" }]) });
     await extractBogeysFromNewArticles(db, { batchSize: 10 });
 
+    // [C-3] fallout: with issue-dated labels the numberless mention would land on
+    // a NEW row rather than being absorbed by upsertBogey's has-content skip, so
+    // an element carrying no content column at all is never written.
     expect(db.prepare("SELECT * FROM earnings_bogeys").all()).toEqual(before);
   });
 

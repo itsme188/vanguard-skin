@@ -170,6 +170,9 @@ export interface SnapshotBogey {
   /** Absolute percent — sheet-stated expected move (feedback #5). Optional:
    * snapshots written before 2026-08-03 lack the field. */
   expected_move_pct?: number | null;
+  /** v11 — vendor (Finnhub) EPS consensus in its own column, basis
+   *  unspecified (D1). Optional: snapshots ≤v10 lack the field. */
+  eps_consensus_vendor?: number | null;
   segment_breakdown_json: string | null;
   guidance_notes: string | null;
   notes: string | null;
@@ -198,8 +201,11 @@ export interface SnapshotBogey {
  *        render the same "Expected move" / "Avg move last 8 prints"
  *        rows as the Mac composer, with an as-of label since the cloud copy
  *        can be hours stale
+ *   v11 — adds armedEvents + armedGeneration (the delta watermark) and
+ *        earningsBogeys[].eps_consensus_vendor, so the cloud honours
+ *        "armed as covered" for events armed after the 2am snapshot
  *
- * All v2–v9 fields are optional for back-compat with older snapshots; the
+ * All v2–v11 fields are optional for back-compat with older snapshots; the
  * fallback gracefully degrades when these are missing.
  */
 /**
@@ -255,8 +261,44 @@ export interface EarningsHistorySnapshotEntry {
   };
 }
 
+/**
+ * One armed earnings worksheet, exactly as the Mac's
+ * lib/earnings/armed-events-projection.ts::ArmedEventProjection defines it.
+ * PARITY-PINNED: this field set is the entire data-flow contract between the
+ * two sides — never notes, reads, callouts, or document text. Change both
+ * files together.
+ *
+ * Reaches the Worker two ways: embedded in the nightly v11 snapshot
+ * (`Snapshot.armedEvents`) and, for arms that happened after the 2am snapshot,
+ * as the KV delta posted to POST /internal/armed-events (deviation D2).
+ */
+export interface ArmedEventEntry {
+  eventId: number;
+  symbol: string;
+  eventDate: string;
+  eventTime: string | null;
+  releaseTime: string | null;
+  sourceKey: string;
+  source: string;
+  consensusValue: string | null;
+  expectedImpact: string | null;
+  securityId: number | null;
+  /** Vendor EPS from the event's 'finnhub' bogey row, basis unspecified (D1). */
+  epsConsensusVendor: number | null;
+  /** Tombstone: the event was disarmed (or deleted) since the last payload. */
+  removed?: true;
+  /** ISO instant the tombstone was first written (D7 48-hour retention). */
+  removedAt?: string;
+}
+
+/** The full armed list at one generation — never a diff (see armed-events.ts). */
+export interface ArmedEventsDelta {
+  generation: number;
+  entries: ArmedEventEntry[];
+}
+
 export interface Snapshot {
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -318,6 +360,16 @@ export interface Snapshot {
   // and carries "→ TARGET (status): hypothesis" lines. Optional/additive:
   // snapshots ≤v9 lack the field and the hook keeps held/watchlist-only.
   readThroughPairs?: ReadThroughPairSnapshotRow[];
+  // v11 — "armed as covered" in the cloud (live print v2 slice A §4.1).
+  // `armedGeneration` is the delta WATERMARK: the MAX(generation) of the Mac's
+  // cloud_outbox at snapshot time. The Worker applies a KV delta only when its
+  // generation is strictly greater, so a snapshot written after a delta can
+  // never be overwritten by that same delta's stale copy. `armedEvents` is the
+  // full armed list (plus D7 tombstones) frozen at snapshot time.
+  // Optional/additive: a ≤v10 snapshot lacks both, and the resolver degrades
+  // to today's held+watchlist coverage (`source: "degraded-v10"`).
+  armedGeneration?: number;
+  armedEvents?: ArmedEventEntry[];
 }
 
 export interface ReadThroughPairSnapshotRow {

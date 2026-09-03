@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { correctEarningsEventDate } from "@/lib/mutations/calendar";
+import { attemptPostCommitDrain } from "@/lib/earnings/cloud-outbox";
 
 export const dynamic = "force-dynamic";
 
@@ -87,6 +88,12 @@ export async function POST(request: Request) {
       { status },
     );
   }
+
+  // Post-commit attempt to hand the fresh armed-events generation to the
+  // Worker (v2 slice A). The whole wait is capped at 2s — including any drain
+  // already in flight — after which the push continues in the background and
+  // the 15-minute sweep is the backstop.
+  await attemptPostCommitDrain(db);
 
   return Response.json({
     success: true,

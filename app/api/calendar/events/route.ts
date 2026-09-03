@@ -8,6 +8,7 @@ import {
 } from "@/lib/mutations/calendar";
 import { mondayOf, addDays } from "@/lib/calendar/date-utils";
 import { getSecurityIdForSymbol } from "@/lib/queries/briefing-symbols";
+import { attemptPostCommitDrain } from "@/lib/earnings/cloud-outbox";
 
 export const dynamic = "force-dynamic";
 
@@ -94,6 +95,10 @@ export async function POST(request: Request) {
       security_id: getSecurityIdForSymbol(db, symbol),
       week_of: mondayOf(body.event_date),
     });
+    // v2 slice A: a fresh manual row is never armed, so this normally sends
+    // nothing — it is the catch-up for any generation still unsent. The whole
+    // wait is capped (2s); the 15-minute sweep is the backstop.
+    await attemptPostCommitDrain(db);
     return Response.json({ success: true, id: id.id });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -161,6 +166,9 @@ export async function PATCH(request: Request) {
     week_of,
   });
 
+  // v2 slice A: an armed event's edit just minted a generation (unarmed edits
+  // mint none) — hand it to the Worker under the same 2s cap.
+  await attemptPostCommitDrain(db);
   return Response.json({ success: ok });
 }
 
@@ -195,6 +203,9 @@ export async function DELETE(request: Request) {
 
   if (existing.source === "manual") {
     const ok = deleteCalendarEvent(db, body.id);
+    // Deleting an ARMED row writes a tombstone generation (D7) — same
+    // time-sensitivity as a disarm, so it gets the same post-commit push.
+    await attemptPostCommitDrain(db);
     return Response.json({ success: ok });
   }
 
@@ -206,6 +217,9 @@ export async function DELETE(request: Request) {
   }
 
   const result = deleteAndSuppressCalendarEvent(db, body.id);
+  // Armed worksheets mostly sit on SYNC-sourced rows, so this branch is the
+  // common tombstone path (D7) — same post-commit push as the manual branch.
+  await attemptPostCommitDrain(db);
   return Response.json({
     success: result.deleted,
     suppressed: result.suppressed,

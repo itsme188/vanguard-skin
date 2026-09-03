@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { addDays } from "@/lib/calendar/date-utils";
 
 /** Armed / printed state per event for UI chips. */
 export function getWorksheetFlagsForEvents(
@@ -106,4 +107,41 @@ export function getUnprintedWorksheetEvents(
     event_date: string;
     release_time: string | null;
   }>;
+}
+
+/** Event-scoped coverage fact (spec §4.1): a flag row exists for this event id. */
+export function isEventArmed(db: Database.Database, eventId: number): boolean {
+  return !!db.prepare(`SELECT 1 FROM earnings_worksheet_flags WHERE event_id = ?`).get(eventId);
+}
+
+export function getArmedEventIds(db: Database.Database, eventIds: number[]): Set<number> {
+  const out = new Set<number>();
+  if (eventIds.length === 0) return out;
+  const placeholders = eventIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(`SELECT event_id FROM earnings_worksheet_flags WHERE event_id IN (${placeholders})`)
+    .all(...eventIds) as { event_id: number }[];
+  for (const r of rows) out.add(r.event_id);
+  return out;
+}
+
+/** Symbol-level display signal only (never an event decision): UPPERCASE symbols
+ *  with an unsuperseded earnings event in [today, today + horizonDays] carrying a flag. */
+export function getArmedSymbolsInHorizon(
+  db: Database.Database,
+  opts: { today: string; horizonDays?: number },
+): Set<string> {
+  const end = addDays(opts.today, opts.horizonDays ?? 14);
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT UPPER(ce.symbol) AS symbol
+         FROM earnings_worksheet_flags f
+         JOIN calendar_events ce ON ce.id = f.event_id
+        WHERE ce.event_type = 'earnings'
+          AND ce.symbol IS NOT NULL
+          AND COALESCE(ce.superseded, 0) = 0
+          AND ce.event_date BETWEEN ? AND ?`,
+    )
+    .all(opts.today, end) as { symbol: string }[];
+  return new Set(rows.map((r) => r.symbol));
 }

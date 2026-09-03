@@ -15,7 +15,7 @@
  */
 
 import type Database from "better-sqlite3";
-import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { addDays } from "@/lib/calendar/date-utils";
 
 // [weekOf, weekOf + WINDOW_DAYS] — the working week the Sunday briefing
@@ -61,13 +61,8 @@ export function renderBogeysReminderLine(
 
   if (rows.length === 0) return null;
 
-  const symbols = Array.from(new Set(rows.map((r) => r.symbol.toUpperCase())));
-  const statuses = getSymbolStatus(db, symbols);
-
-  const reporters = rows.filter((r) => {
-    const status = statuses[r.symbol.toUpperCase()];
-    return status === "held" || status === "watchlist";
-  });
+  const covered = coveredForEvents(db, rows.map((r) => ({ symbol: r.symbol, eventId: r.event_id })));
+  const reporters = rows.filter((r) => covered.has(r.event_id));
 
   const reporterSymbols = Array.from(new Set(reporters.map((r) => r.symbol.toUpperCase())));
   if (reporterSymbols.length < MIN_REPORTERS) return null;
@@ -86,7 +81,9 @@ export function renderBogeysReminderLine(
   const plural = reporterSymbols.length === 1 ? "" : "s";
 
   return (
-    `**Bogeys reminder:** ${reporterSymbols.length} held/watchlist name${plural} ` +
+    // "covered", not "held/watchlist" — since slice A an ARMED name the desk
+    // does not own is counted here too (direction-only text either way).
+    `**Bogeys reminder:** ${reporterSymbols.length} covered name${plural} ` +
     `report${reporterSymbols.length === 1 ? "s" : ""} this week with no bogeys on file yet ` +
     `(${shown.join(", ")}${suffix}) — upload a preview PDF or add numbers manually before the prints.`
   );

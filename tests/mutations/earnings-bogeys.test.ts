@@ -131,6 +131,18 @@ describe("upsertBogey", () => {
     expect(ok).toBe(true);
     expect(getBogeysForEvent(db, 1)).toHaveLength(0);
   });
+
+  it("stores a finnhub row with the vendor EPS apart from eps_consensus", () => {
+    upsertBogey(db, { event_id: 1, source: "finnhub", source_label: "Sell-side consensus (Finnhub)", eps_consensus: null, eps_consensus_vendor: 0.50, revenue_consensus_usd: 1_234_000_000 });
+    const row = db.prepare(`SELECT source, eps_consensus, eps_consensus_vendor, revenue_consensus_usd FROM earnings_bogeys WHERE event_id = ?`).get(1);
+    expect(row).toEqual({ source: "finnhub", eps_consensus: null, eps_consensus_vendor: 0.50, revenue_consensus_usd: 1_234_000_000 });
+
+    // Production read paths must carry the vendor EPS too — not just raw SQL.
+    const all = getBogeysForEvent(db, 1);
+    expect(all[0].eps_consensus_vendor).toBe(0.50);
+    const primary = getPrimaryBogeyForEvent(db, 1);
+    expect(primary?.eps_consensus_vendor).toBe(0.50);
+  });
 });
 
 /**
@@ -351,5 +363,70 @@ describe("upsertBogey preserveExisting (newsletter re-scan)", () => {
     expect(r.created).toBe(true);
     expect(r.skipped).toBeFalsy();
     expect(getBogeysForEvent(db, 1)).toHaveLength(1);
+  });
+});
+
+describe("[R21] bogey read order is the ISSUE date, not the write time", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = makeDb();
+    // A third issue, newest of the three.
+    db.prepare(
+      `INSERT INTO research_articles (id, source_id, received_at, subject, sender, raw_text)
+       VALUES (3, 1, '2026-04-28 08:00:00', 'Buyside Bogeys #3', 'author@example.com', 'body')`,
+    ).run();
+  });
+
+  /** Writes the three newsletter issues in the order the scan paths actually use —
+   *  newest article FIRST — so `uploaded_at` runs backwards relative to issue date. */
+  function seedNewsletterIssuesNewestWrittenFirst(): void {
+    const write = (label: string, articleId: number, eps: number, uploadedAt: string) => {
+      upsertBogey(db, {
+        event_id: 1,
+        source: "newsletter",
+        source_label: label,
+        research_article_id: articleId,
+        eps_consensus: eps,
+        preserveExisting: true,
+      });
+      db.prepare(
+        `UPDATE earnings_bogeys SET uploaded_at = ? WHERE event_id = 1 AND source = 'newsletter' AND source_label = ?`,
+      ).run(uploadedAt, label);
+    };
+    write("TMT Breakout 4/28", 3, 0.48, "2026-04-28 12:00:00"); // newest issue, earliest write
+    write("TMT Breakout 4/27", 2, 0.47, "2026-04-28 12:00:01");
+    write("TMT Breakout 4/26", 1, 0.46, "2026-04-28 12:00:02"); // oldest issue, latest write
+  }
+
+  it("getBogeysForEvent returns newest-ISSUE first even though uploaded_at is the reverse", () => {
+    seedNewsletterIssuesNewestWrittenFirst();
+    // Pre-[R21] this came back 4/26, 4/27, 4/28 — so renderSheetBogeysBlock's
+    // slice(0, 3) would have truncated the NEWEST issue out of the email.
+    expect(getBogeysForEvent(db, 1).map((b) => b.source_label)).toEqual([
+      "TMT Breakout 4/28",
+      "TMT Breakout 4/27",
+      "TMT Breakout 4/26",
+    ]);
+  });
+
+  it("getPrimaryBogeyForEvent picks the newest issue, agreeing with getBogeysForEvent", () => {
+    seedNewsletterIssuesNewestWrittenFirst();
+    expect(getPrimaryBogeyForEvent(db, 1)?.source_label).toBe("TMT Breakout 4/28");
+    expect(getPrimaryBogeyForEvent(db, 1)?.id).toBe(getBogeysForEvent(db, 1)[0].id);
+  });
+
+  it("a row with no linked article (manual/pdf/finnhub) keeps its uploaded_at position", () => {
+    seedNewsletterIssuesNewestWrittenFirst();
+    upsertBogey(db, { event_id: 1, source: "manual", eps_consensus: 0.5 });
+    db.prepare(`UPDATE earnings_bogeys SET uploaded_at = ? WHERE source = 'manual'`).run("2026-04-27 06:00:00");
+
+    // The manual row has no article, so it falls back to uploaded_at (4/27 06:00)
+    // and sorts between the 4/27 and 4/26 issues — untouched by the article join.
+    expect(getBogeysForEvent(db, 1).map((b) => b.source)).toEqual([
+      "newsletter",
+      "newsletter",
+      "manual",
+      "newsletter",
+    ]);
   });
 });

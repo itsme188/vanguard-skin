@@ -10,6 +10,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getLiveReadThroughsForReporter } from "@/lib/alerts/read-through-push";
+import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 let db: Database.Database;
 
@@ -92,5 +94,34 @@ describe("getLiveReadThroughsForReporter", () => {
 
   it("no pairs → empty (the common non-read-through reporter)", () => {
     expect(getLiveReadThroughsForReporter(db, "AAPL")).toEqual([]);
+  });
+
+  // [C-17 / v2 slice A §4.1] Selection consumers switched to coveredForEvents
+  // (armed events get what held names get) — the push gate (and this
+  // read-through-target check that feeds it) is explicitly NOT one of them
+  // and must keep reading getSymbolStatus's held/watchlist union only. A
+  // target that is armed-only (its own earnings event is armed, but the
+  // target itself is neither held nor watchlisted) stays excluded.
+  //
+  // The fixture MUST be dated inside getSymbolStatus's real-wall-clock
+  // 14-day armed horizon, or the target resolves "neither" regardless of
+  // arming and this test would pass even after an erroneous future
+  // widening of the gate to `status === "armed"` (fix round 1, Important
+  // finding #1) — a hardcoded date (the original '2026-09-02' was
+  // in-horizon only on the day it was written, stale from tomorrow).
+  it("drops a pair whose target is armed-only (not held, not watchlist)", () => {
+    seedSecurity("ARMEDTGT"); // securities row exists, no holding, no watchlist
+    const eventDate = addDays(todayET(), 1); // inside the 14-day armed horizon
+    const eventId = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol)
+           VALUES ('manual', 'earnings', ?, 'ARMEDTGT', 'k:armedtgt', 'ARMEDTGT')`,
+        )
+        .run(eventDate).lastInsertRowid,
+    );
+    armWorksheet(db, eventId);
+    seedPair("TER", "ARMEDTGT");
+    expect(getLiveReadThroughsForReporter(db, "TER")).toEqual([]);
   });
 });

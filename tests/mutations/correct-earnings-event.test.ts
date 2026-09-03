@@ -14,6 +14,7 @@ import {
   upsertCalendarEvents,
   type CalendarEventInput,
 } from "@/lib/mutations/calendar";
+import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 
 let db: Database.Database;
 
@@ -63,6 +64,14 @@ function addBogey(db: Database.Database, eventId: number, label: string): void {
     `INSERT INTO earnings_bogeys (event_id, source, source_label, eps_consensus) VALUES (?, 'manual', ?, 0.5)`,
   ).run(eventId, label);
 }
+
+/**
+ * [R23] The armed projection publishes only events inside a 14-day lookback and
+ * the correction path stamps its outbox row with the REAL ET today, so any
+ * fixture that expects a published generation has to sit inside that window.
+ */
+const inLiveHorizon = (offsetDays: number): string =>
+  new Date(Date.now() + offsetDays * 86_400_000).toISOString().slice(0, 10);
 
 describe("correctEarningsEventDate", () => {
   it("moves a wrong date: manual row created, wrong row deleted + suppressed, bogeys migrated", () => {
@@ -446,15 +455,195 @@ describe("correctEarningsEventDate", () => {
   // delete CASCADE destroyed the archived email and made the event a send
   // candidate again (duplicate-preview risk via findEmailCandidates).
 
-  function addSentEmail(db2: import("better-sqlite3").Database, eventId: number, phase: string, md: string): void {
-    db2.prepare(
-      `INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md) VALUES (?, ?, 'me@example.com', ?)`,
-    ).run(eventId, phase, md);
+  function addSentEmail(
+    db2: import("better-sqlite3").Database,
+    eventId: number,
+    phase: string,
+    md: string,
+    sentAt = "2026-08-05 20:00:00", // in-window for a 2026-08-05 correctDate
+  ): void {
+    db2
+      .prepare(
+        `INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md, sent_at)
+         VALUES (?, ?, 'me@example.com', ?, ?)`,
+      )
+      .run(eventId, phase, md, sentAt);
   }
+
+  it("moves an armed doomed row's worksheet flag onto the corrected row, writing exactly one outbox row", () => {
+    const wrongDate = inLiveHorizon(3);
+    const correctDate = inLiveHorizon(5);
+    const wrongId = seedFinnhub(db, "VRTX", wrongDate, { eventTime: "AMC" });
+    armWorksheet(db, wrongId); // generation 1: [wrongId armed]
+    const outboxRows = () =>
+      (db.prepare("SELECT COUNT(*) AS n FROM cloud_outbox").get() as { n: number }).n;
+    const before = outboxRows();
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "VRTX",
+      wrongDate,
+      correctDate,
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    // The arm followed the print instead of dying in the delete CASCADE.
+    expect(db.prepare(`SELECT event_id FROM earnings_worksheet_flags`).all()).toEqual([
+      { event_id: res.newEventId },
+    ]);
+    // [C-13] ONE row for the whole correction, not one per doomed row.
+    expect(outboxRows()).toBe(before + 1);
+  });
+
+  /**
+   * [F5] The in-place slot fix (and the adopt branch) changes the projection
+   * with `anyChanged === false` — no doomed row, so no merge moved anything.
+   * Gating the outbox write on the merge alone left the Worker holding the old
+   * release time for an ARMED print: exactly the row the cloud fallback would
+   * have to act on if the Mac went to sleep.
+   */
+  it("[F5] an in-place slot fix on an ARMED row publishes the new projection", () => {
+    const day = inLiveHorizon(5);
+    const manualId = insertCalendarEvent(db, {
+      symbol: "HD",
+      event_date: day,
+      event_type: "earnings",
+      event_time: "BMO",
+      week_of: "2026-08-17",
+    }).id;
+    armWorksheet(db, manualId); // generation 1 — BMO release time
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "HD",
+      wrongDate: day,
+      correctDate: day,
+      slot: "AMC",
+    });
+    expect(res.ok).toBe(true);
+
+    const row = db
+      .prepare(`SELECT event_time, release_time FROM calendar_events WHERE id = ?`)
+      .get(manualId) as { event_time: string; release_time: string };
+    expect(row.event_time).toBe("AMC");
+    const latest = JSON.parse(
+      (
+        db
+          .prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`)
+          .get() as { payload_json: string }
+      ).payload_json,
+    ) as { generation: number; entries: Array<Record<string, unknown>> };
+    expect(latest.generation).toBe(2);
+    expect(latest.entries).toEqual([
+      expect.objectContaining({
+        eventId: manualId,
+        eventTime: "AMC",
+        releaseTime: row.release_time,
+      }),
+    ]);
+  });
+
+  it("[F5] the same fix on an UNARMED row still publishes nothing", () => {
+    const day = inLiveHorizon(5);
+    const manualId = insertCalendarEvent(db, {
+      symbol: "HD",
+      event_date: day,
+      event_type: "earnings",
+      event_time: "BMO",
+      week_of: "2026-08-17",
+    }).id;
+
+    expect(
+      correctEarningsEventDate(db, { symbol: "HD", wrongDate: day, correctDate: day, slot: "AMC" }).ok,
+    ).toBe(true);
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM cloud_outbox`).get()).toEqual({ n: 0 });
+    expect(manualId).toBeGreaterThan(0);
+  });
+
+  // ── Preview plausibility gate on the correction path (Ruling R15) ────────
+  //
+  // A preview is a promise about ONE print, and findEmailCandidates treats any
+  // preview-phase row on an event as "already handled". So even here — where
+  // the USER is asserting the two dates are the same print — a preview whose
+  // send date could not have covered the CORRECTED date does not follow it:
+  // dragging it would both fabricate "preview sent" for a print the email
+  // never covered and block the genuine preview from ever firing. Recap rows
+  // are post-print audit and follow the print unconditionally.
+
+  it("[R15] does NOT migrate a preview whose send date could not cover the corrected print (it dies with the doomed row)", () => {
+    const wrongId = seedFinnhub(db, "VRTX", "2026-08-03", { eventTime: "AMC" });
+    // Sent for the phantom 08-03 print; the corrected date is 08-05, so the
+    // gate is date('2026-08-03') >= date('2026-08-05','-1 day') → false.
+    addSentEmail(db, wrongId, "preview", "# phantom-date prose", "2026-08-03 20:00:00");
+    db.prepare(
+      `INSERT INTO earnings_email_skips (event_id, phase, skipped_at) VALUES (?, 'preview', '2026-08-03 20:00:00')`,
+    ).run(wrongId);
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "VRTX",
+      wrongDate: "2026-08-03",
+      correctDate: "2026-08-05",
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    // It stayed on the doomed row and went with it in the DELETE cascade —
+    // so the corrected row is clean and the genuine preview can still fire.
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM earnings_emails`).get()).toEqual({ n: 0 });
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM earnings_email_skips`).get()).toEqual({ n: 0 });
+  });
+
+  it("[R15] DOES migrate a preview sent inside the corrected print's window", () => {
+    const wrongId = seedFinnhub(db, "VRTX", "2026-08-03", { eventTime: "AMC" });
+    // One day before the corrected 08-05 print — the gate's boundary, inclusive.
+    addSentEmail(db, wrongId, "preview", "# in-window prose", "2026-08-04 18:00:00");
+    db.prepare(
+      `INSERT INTO earnings_email_skips (event_id, phase, skipped_at) VALUES (?, 'preview', '2026-08-04 18:00:00')`,
+    ).run(wrongId);
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "VRTX",
+      wrongDate: "2026-08-03",
+      correctDate: "2026-08-05",
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(
+      db.prepare(`SELECT event_id, ai_output_md FROM earnings_emails WHERE phase='preview'`).get(),
+    ).toEqual({ event_id: res.newEventId, ai_output_md: "# in-window prose" });
+    expect(db.prepare(`SELECT event_id FROM earnings_email_skips`).get()).toEqual({
+      event_id: res.newEventId,
+    });
+  });
+
+  it("[R15] migrates a RECAP row unconditionally, however far its send date is from the corrected print", () => {
+    const wrongId = seedFinnhub(db, "VRTX", "2026-08-03", { eventTime: "AMC" });
+    addSentEmail(db, wrongId, "recap", "# recap prose", "2026-07-20 21:00:00");
+    db.prepare(
+      `INSERT INTO earnings_email_skips (event_id, phase, skipped_at) VALUES (?, 'recap', '2026-07-20 21:00:00')`,
+    ).run(wrongId);
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "VRTX",
+      wrongDate: "2026-08-03",
+      correctDate: "2026-08-05",
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(
+      db.prepare(`SELECT event_id, ai_output_md FROM earnings_emails WHERE phase='recap'`).get(),
+    ).toEqual({ event_id: res.newEventId, ai_output_md: "# recap prose" });
+    expect(db.prepare(`SELECT event_id FROM earnings_email_skips`).get()).toEqual({
+      event_id: res.newEventId,
+    });
+  });
 
   it("migrates earnings_emails audit rows onto the corrected row on a date change", () => {
     const wrongId = seedFinnhub(db, "VRTX", "2026-08-03");
-    addSentEmail(db, wrongId, "preview", "# VRTX preview prose");
+    // Explicit in-window send date: this test pins the MIGRATION, so it must
+    // not depend on addSentEmail's default clearing the plausibility gate.
+    addSentEmail(db, wrongId, "preview", "# VRTX preview prose", "2026-08-04 20:00:00");
     db.prepare(`INSERT INTO earnings_email_skips (event_id, phase) VALUES (?, 'recap')`).run(wrongId);
 
     const res = correctEarningsEventDate(db, {

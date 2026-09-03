@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export type EarningsBogeySource = "pdf_upload" | "manual" | "newsletter";
+export type EarningsBogeySource = "pdf_upload" | "manual" | "newsletter" | "finnhub";
 
 export interface EarningsBogey {
   id: number;
@@ -17,6 +17,8 @@ export interface EarningsBogey {
   revenue_whisper_usd: number | null;
   /** Absolute percent (±6% → 6) — sheet-stated expected earnings move. */
   expected_move_pct: number | null;
+  /** Vendor EPS consensus (Finnhub), basis unspecified. NEVER the adjusted-EPS bogey (D1). */
+  eps_consensus_vendor: number | null;
   segment_breakdown_json: string | null;
   guidance_notes: string | null;
   notes: string | null;
@@ -27,6 +29,18 @@ export interface EarningsBogey {
 /**
  * All bogeys for an event, newest first. Composer iterates this list to
  * build the "Bogeys (preferred — most recent first):" prompt section.
+ *
+ * [R21] "Newest" is the ISSUE date, not the write time. Since [C-3] gave each
+ * newsletter issue its own row, and both scan paths walk articles newest-first,
+ * `uploaded_at` runs BACKWARDS for newsletter rows: the newest issue is written
+ * first and so carries the EARLIEST uploaded_at. Ordering on it alone fed
+ * `renderSheetBogeysBlock`'s slice(0, 3) the three OLDEST issues and truncated
+ * the newest out of the preview email. Order on the linked article's
+ * `received_at` instead, falling back to `uploaded_at` for the rows that have no
+ * article (pdf_upload / manual / finnhub), which keeps their positions unchanged.
+ *
+ * The WRITE order is deliberately untouched: `compileContracts` reads the first
+ * non-null field by rowid ASC, which under [C-3] is the newest issue.
  */
 export function getBogeysForEvent(
   db: Database.Database,
@@ -37,19 +51,24 @@ export function getBogeysForEvent(
       `SELECT id, event_id, source, source_label, source_url, raw_pdf_r2_key,
               research_document_id, research_article_id, eps_consensus, eps_whisper,
               revenue_consensus_usd, revenue_whisper_usd, expected_move_pct,
+              eps_consensus_vendor,
               segment_breakdown_json, guidance_notes, notes, uploaded_at,
               ai_extraction_model
          FROM earnings_bogeys
         WHERE event_id = ?
-        ORDER BY uploaded_at DESC`,
+        ORDER BY COALESCE(
+                  (SELECT ra.received_at FROM research_articles ra WHERE ra.id = earnings_bogeys.research_article_id),
+                  uploaded_at
+                ) DESC`,
     )
     .all(eventId) as EarningsBogey[];
 }
 
 /**
- * Earliest (most-recently-uploaded) "primary" bogey for an event. Used by
+ * The "primary" bogey for an event — the newest one. Used by
  * `renderHeadlineTable` when bogey consensus should override the Finnhub
- * fallback in the scoreboard.
+ * fallback in the scoreboard. [R21] Same issue-date-first ordering as
+ * `getBogeysForEvent`, so the two can never disagree about which row is newest.
  */
 export function getPrimaryBogeyForEvent(
   db: Database.Database,
@@ -61,11 +80,15 @@ export function getPrimaryBogeyForEvent(
         `SELECT id, event_id, source, source_label, source_url, raw_pdf_r2_key,
                 research_document_id, research_article_id, eps_consensus, eps_whisper,
                 revenue_consensus_usd, revenue_whisper_usd, expected_move_pct,
+                eps_consensus_vendor,
                 segment_breakdown_json, guidance_notes, notes, uploaded_at,
                 ai_extraction_model
            FROM earnings_bogeys
           WHERE event_id = ?
-          ORDER BY uploaded_at DESC
+          ORDER BY COALESCE(
+                  (SELECT ra.received_at FROM research_articles ra WHERE ra.id = earnings_bogeys.research_article_id),
+                  uploaded_at
+                ) DESC
           LIMIT 1`,
       )
       .get(eventId) as EarningsBogey | undefined) ?? null

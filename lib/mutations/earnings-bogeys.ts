@@ -15,6 +15,8 @@ export interface UpsertBogeyInput {
   revenue_whisper_usd?: number | null;
   /** Absolute percent (±6% → 6) — the sheet's stated expected earnings move. */
   expected_move_pct?: number | null;
+  /** Vendor EPS consensus (Finnhub). Stored apart from eps_consensus by design (D1). */
+  eps_consensus_vendor?: number | null;
   segment_breakdown_json?: string | null;
   guidance_notes?: string | null;
   notes?: string | null;
@@ -46,6 +48,7 @@ const CONTENT_COLUMNS = [
   "revenue_consensus_usd",
   "revenue_whisper_usd",
   "expected_move_pct",
+  "eps_consensus_vendor",
   "segment_breakdown_json",
   "guidance_notes",
   "notes",
@@ -55,9 +58,10 @@ const INSERT_SQL = `INSERT INTO earnings_bogeys (
        event_id, source, source_label, source_url, raw_pdf_r2_key,
        research_document_id, research_article_id, eps_consensus, eps_whisper,
        revenue_consensus_usd, revenue_whisper_usd, expected_move_pct,
+       eps_consensus_vendor,
        segment_breakdown_json, guidance_notes, notes, uploaded_at,
        ai_extraction_model
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`;
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`;
 
 const PROVENANCE_UPDATE_SQL = `       source_url = excluded.source_url,
        raw_pdf_r2_key = excluded.raw_pdf_r2_key,
@@ -73,6 +77,7 @@ ${PROVENANCE_UPDATE_SQL},
        revenue_consensus_usd = excluded.revenue_consensus_usd,
        revenue_whisper_usd = excluded.revenue_whisper_usd,
        expected_move_pct = excluded.expected_move_pct,
+       eps_consensus_vendor = excluded.eps_consensus_vendor,
        segment_breakdown_json = excluded.segment_breakdown_json,
        guidance_notes = excluded.guidance_notes,
        notes = excluded.notes,
@@ -165,6 +170,7 @@ export function upsertBogey(
     normalized.revenue_consensus_usd ?? null,
     normalized.revenue_whisper_usd ?? null,
     normalized.expected_move_pct ?? null,
+    normalized.eps_consensus_vendor ?? null,
     normalized.segment_breakdown_json ?? null,
     normalized.guidance_notes ?? null,
     normalized.notes ?? null,
