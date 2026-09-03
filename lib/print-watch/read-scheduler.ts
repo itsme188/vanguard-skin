@@ -69,14 +69,20 @@ let reconcileHandle: ReturnType<typeof setInterval> | null = null;
 
 /**
  * What the reconcile has already ASKED for, per print: the fingerprint it last
- * dispatched a read for. The store is the real gate — this only stops the 60 s
- * tick from asking again for inputs it has already asked about while that ask
- * is still on its way to a row. The entry is dropped the moment the store says
- * the print is no longer schedulable (a read landed, is generating, or failed
- * into a backoff) and whenever a dispatched run rejects, so a retry after a
- * backoff is never lost.
+ * dispatched a read for, and when. The store is the real gate — this only stops
+ * the 60 s tick from asking again for inputs it has already asked about while
+ * that ask is still on its way to a row.
+ *
+ * R-D18: a dedupe, never a latch. It is TTL-bounded (five minutes, comfortably
+ * past a read's own deadline), and dropped outright the moment the store says
+ * the print is not schedulable, the moment the sheet stops yielding a
+ * fingerprint at all, and whenever a dispatched run rejects. A run that
+ * resolves WITHOUT writing a row (the sheet was un-accepted inside the debounce
+ * window, so the read skipped on no_facts) therefore costs at most one TTL of
+ * delay, never a permanently stranded print.
  */
-const askedFingerprint = new Map<number, string>();
+export const ASK_MEMORY_TTL_MS = 5 * 60_000;
+const askedFingerprint = new Map<number, { fp: string; atMs: number }>();
 
 /** Arms/re-arms the per-print debounce. Never throws. */
 export function scheduleFirstPassRead(db: Database.Database, printId: number): void {
@@ -112,6 +118,11 @@ export async function reconcilePendingReads(
   const floor = new Date(Date.parse(`${today}T00:00:00Z`) - READ_RECONCILE_LOOKBACK_DAYS * 86_400_000)
     .toISOString()
     .slice(0, 10);
+  // R-D18: expire the dedupe memory before it is read, so the map is bounded by
+  // the prints seen in one TTL rather than by uptime.
+  for (const [id, asked] of askedFingerprint) {
+    if (nowMs - asked.atMs >= ASK_MEMORY_TTL_MS) askedFingerprint.delete(id);
+  }
   const prints = db
     .prepare(`SELECT id FROM print_watch_prints WHERE state = 'parsed' AND event_date >= ? ORDER BY id`)
     .all(floor) as Array<{ id: number }>;
@@ -121,15 +132,22 @@ export async function reconcilePendingReads(
     try {
       fp = await seams.fingerprintFor(db, id);
     } catch {
-      continue; // a sheet we cannot describe is a sheet we cannot read
+      // A sheet we cannot describe is a sheet we cannot read — and we can no
+      // longer claim to know what we last asked for, so the memory goes too.
+      askedFingerprint.delete(id);
+      continue;
     }
-    if (!fp) continue;
+    if (!fp) {
+      askedFingerprint.delete(id);
+      continue;
+    }
     if (!canScheduleRead(db, id, fp, nowMs)) {
       askedFingerprint.delete(id);
       continue;
     }
-    if (askedFingerprint.get(id) === fp) continue;
-    askedFingerprint.set(id, fp);
+    const asked = askedFingerprint.get(id);
+    if (asked && asked.fp === fp && nowMs - asked.atMs < ASK_MEMORY_TTL_MS) continue;
+    askedFingerprint.set(id, { fp, atMs: nowMs });
     scheduleFirstPassRead(db, id);
     scheduled.push(id);
   }
