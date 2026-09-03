@@ -263,6 +263,7 @@ When debugging data issues, investigate root causes rather than applying smoothi
 
 - Run tests: `PATH=/opt/homebrew/opt/node@24/bin:$PATH npx vitest run` — the project runs on the node@24 LTS keg (pinned by versioned path everywhere since 2026-08-11; the bare `/opt/homebrew/bin/node` moves on every `brew upgrade` and must never be relied on). better-sqlite3 ≥13 is N-API (one binary works across Node ≥22 and Electron), but keep the pin: Next/tooling behavior should not drift with Homebrew's default node. Same prefix for `npx tsx scripts/*.ts`. Still never `npm rebuild` casually — rebuilds are deliberate, full-suite-verified events.
 - All tests use in-memory SQLite (`:memory:`) for isolation
+- **launchd / cron scripts run `npx tsx` FROM THE REPO ROOT** — `cd` first (or wrap in `(cd "$PROJECT_DIR" && …)`): tsx resolves the `@/` alias off the tsconfig it finds from cwd, so an absolute script path launched from launchd's cwd dies with `Cannot find module '@/lib/…'`. Bit twice: the repair-script rehearsal (2026-08-23) and the 2 AM smoke, which ran zero authenticated checks 08-31 → 09-03 because its mint failed this way.
 - Test fixtures in `tests/fixtures/` (anonymized)
 - Real data fixtures in `tests/fixtures/real/` (gitignored)
 - PDF parser tests use mock Claude API response JSON (`tests/fixtures/vanguard-pdf-claude-response.json`)
