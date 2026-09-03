@@ -736,9 +736,11 @@ the armed projection — arm, disarm, manual add/edit, correction, both delete p
 commit together and the generation is allocated under the write lock. The payload is the **full
 current armed list plus tombstones**, never a diff, which is what makes a dropped or replayed row
 harmless. An identical projection writes nothing and reports the generation that already stands
-(D10). Tombstones ride for two ET days past the event date OR 48 hours past the removal, whichever
-lasts longer (D7), so a removal can never be dropped before a snapshot that omits the event
-exists. Every sweep tick re-derives the projection before draining (R8) — a cheap no-op when
+(D10). Live entries are limited to a 14-day lookback (R23): an armed event dated before
+`today − 14` drops out of the payload and is deliberately NOT tombstoned, because it is still armed
+— it has only aged out, and nothing in the cloud selects an event that old. Tombstones ride for two
+ET days past the event date OR 48 hours past the removal, whichever lasts longer (D7), so a removal
+can never be dropped before a snapshot that omits the event exists. Every sweep tick re-derives the projection before draining (R8) — a cheap no-op when
 nothing changed, and a ≤15-minute self-heal for any un-arm path that missed its write or for state
 that predates the outbox. The drain sends unsent rows in generation order, stops at the first
 failure (never N+1 before N), and serialises through one in-process chain. Mutating routes attempt
