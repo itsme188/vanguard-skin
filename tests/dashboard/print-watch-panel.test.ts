@@ -14,6 +14,8 @@ import {
   firstDroppedFile,
   PRE_GATE_DISCLOSURE,
   SUPERSEDED_CONFIRM_COPY,
+  goStatusText,
+  windowText,
 } from "@/app/dashboard/today/PrintWatchPanel";
 import type { LineContract, PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
 
@@ -868,5 +870,44 @@ describe("verify table horizontal scroll affordance (panel source)", () => {
   it("wraps the verify table in ScrollFade rather than a bare overflow-x-auto div", () => {
     expect(src).toMatch(/<ScrollFade>\s*<table className="w-full text-\[13px\]"/);
     expect(src).not.toMatch(/<div className="overflow-x-auto">\s*<table className="w-full text-\[13px\]"/);
+  });
+});
+
+// ── slice C: go request status + effective window (panel pure helpers) ─
+
+describe("goStatusText", () => {
+  it("is null with no request, names the phase while queued/claimed, and lists one road outcome per road when done", () => {
+    expect(goStatusText(null)).toBeNull();
+    expect(goStatusText({ id: 1, status: "queued", attempts: 0, requestedAt: "2026-09-03T20:00:00.000Z", result: null })).toBe("Print is live — queued, waking the watcher…");
+    expect(goStatusText({ id: 1, status: "claimed", attempts: 1, requestedAt: "2026-09-03T20:00:00.000Z", result: null })).toBe("Print is live — acquiring (attempt 1)…");
+    expect(goStatusText({ id: 1, status: "done", attempts: 1, requestedAt: "2026-09-03T20:00:00.000Z", result: [
+      { road: "user-url", outcome: "rejected", detail: "wrong period" }, { road: "dj", outcome: "skipped", detail: "tws offline" }, { road: "edgar", outcome: "ok", detail: "ok — 1 filing(s), 1 exhibit(s)" }, { road: "ir", outcome: "skipped", detail: "IR: none configured" },
+    ] })).toBe("Print is live — link: rejected (wrong period) · DJ: skipped (tws offline) · EDGAR: ok · IR: skipped (IR: none configured)");
+    expect(goStatusText({ id: 1, status: "failed", attempts: 3, requestedAt: "2026-09-03T20:00:00.000Z", result: [{ road: "dj", outcome: "failed", detail: "scheduler exploded" }] })).toBe("Print is live — FAILED after 3 attempt(s): scheduler exploded");
+  });
+});
+
+describe("windowText", () => {
+  const w = { start: "2026-09-03T19:55:00.000Z", end: "2026-09-03T20:50:00.000Z" };
+  it("says when the window opens, that it is open until, or that it closed — in ET — and drop-zone only with no window", () => {
+    expect(windowText(null, Date.parse("2026-09-03T19:00:00.000Z"))).toBe("no auto window — drop zone only");
+    expect(windowText(w, Date.parse("2026-09-03T19:00:00.000Z"))).toBe("window opens 3:55 PM ET");
+    expect(windowText(w, Date.parse("2026-09-03T20:10:00.000Z"))).toBe("window open until 4:50 PM ET");
+    expect(windowText(w, Date.parse("2026-09-03T21:00:00.000Z"))).toBe("window closed 4:50 PM ET");
+  });
+});
+
+describe("PrintWatchPanel source — slice C controls", () => {
+  const src = readFileSync("app/dashboard/today/PrintWatchPanel.tsx", "utf8");
+  it("posts go and extend through apiFetch exactly once each and renders the go status inside the card", () => {
+    expect(src.match(/apiFetch\("\/api\/print-watch\/go"/g)?.length).toBe(1);
+    expect(src.match(/apiFetch\("\/api\/print-watch\/extend"/g)?.length).toBe(1);
+    expect(src).toContain("Print is live");
+    expect(src).toContain("Extend 30 min");
+    // Brief note (task-8-brief.md step 3.4): calling goStatusText directly on
+    // the optional print.goRequest needs `?? null` for strict-null safety, so
+    // the literal call site reads `goStatusText(print.goRequest ?? null)` —
+    // the brief's own fallback names this prefix as the assertion to use.
+    expect(src).toContain("goStatusText(print.goRequest");
   });
 });

@@ -59,6 +59,26 @@ interface PrintStatusEntry {
    *  came from. Optional: a server that predates the map degrades to the
    *  bare "doc #N" label rather than crashing. */
   documents?: Record<number, string>;
+  /** Slice C — ISO UTC of the first "Print is live" press, once made. */
+  forcedOpenAt?: string | null;
+  /** Slice C — ISO UTC written by "Extend 30 min"; presses stack. */
+  windowExtendedUntil?: string | null;
+  /** Slice C — the ONE effective window (lib/print-watch/window.ts), or
+   *  null for an unresolved print with no schedule and no go press yet
+   *  (drop zone only). */
+  effectiveWindow?: { start: string; end: string } | null;
+  /** Slice C — the latest go request against this print, if any. */
+  goRequest?: GoRequestSummary | null;
+}
+
+/** Wire shape of a go request off GET /api/print-watch/status (Task 7's
+ *  route flattens GoRequestRow + parsed result_json into this). */
+export interface GoRequestSummary {
+  id: number;
+  status: "queued" | "claimed" | "done" | "failed";
+  attempts: number;
+  requestedAt: string;
+  result: Array<{ road: string; outcome: string; detail: string }> | null;
 }
 
 interface StatusResponse {
@@ -171,6 +191,36 @@ export function ladderText(sources: Record<string, string>): string {
   return [...known, ...unknown]
     .map((k) => `${LADDER_LABELS[k] ?? capitalize(k)}: ${sources[k]}`)
     .join(" · ");
+}
+
+const ROAD_LABELS: Record<string, string> = { "user-url": "link", "user-drop": "file", dj: "DJ", edgar: "EDGAR", ir: "IR" };
+
+/** One line for the go request's state — plain outcomes, no figures. */
+export function goStatusText(go: GoRequestSummary | null): string | null {
+  if (!go) return null;
+  if (go.status === "queued") return "Print is live — queued, waking the watcher…";
+  if (go.status === "claimed") return `Print is live — acquiring (attempt ${go.attempts})…`;
+  const roads = (go.result ?? []).map((r) => {
+    const label = ROAD_LABELS[r.road] ?? r.road;
+    return r.outcome === "ok" ? `${label}: ok` : `${label}: ${r.outcome}${r.detail ? ` (${r.detail})` : ""}`;
+  });
+  if (go.status === "failed") {
+    const why = (go.result ?? []).find((r) => r.outcome === "failed")?.detail ?? "no detail";
+    return `Print is live — FAILED after ${go.attempts} attempt(s): ${why}`;
+  }
+  return `Print is live — ${roads.join(" · ")}`;
+}
+
+function etClock(iso: string): string {
+  return new Date(iso).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET";
+}
+
+/** The effective window in desk language (public timing, not portfolio data). */
+export function windowText(w: { start: string; end: string } | null, nowMs: number): string {
+  if (!w) return "no auto window — drop zone only";
+  if (nowMs < Date.parse(w.start)) return `window opens ${etClock(w.start)}`;
+  if (nowMs <= Date.parse(w.end)) return `window open until ${etClock(w.end)}`;
+  return `window closed ${etClock(w.end)}`;
 }
 
 interface DeltaResult {
@@ -823,11 +873,14 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
   const [dragActive, setDragActive] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNote, setActionNote] = useState<string | null>(null);
+  const [goPending, setGoPending] = useState(false);
+  const [extending, setExtending] = useState(false);
 
   const ladder = ladderText(print.sources);
   const summary = promoteSummary(print.lines);
   const agreedIds = print.lines.filter((l) => l.state === "agreed").map((l) => l.metric_id);
   const noEventId = print.eventId === undefined;
+  const goLine = goStatusText(print.goRequest ?? null);
 
   async function postAccept(body: {
     /** A metric id accepts the whole line; the object form accepts ONE named
@@ -1026,6 +1079,55 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
     }
   }
 
+  async function handleGo() {
+    if (noEventId) { setActionError("This print has no event reference from the server — cannot press go."); return; }
+    setGoPending(true);
+    setActionError(null);
+    try {
+      const res = await apiFetch("/api/print-watch/go", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ eventId: print.eventId }) });
+      const data = (await res.json()) as { success?: boolean; error?: string; data?: { requestId: number; wakeError?: string | null } };
+      if (!res.ok || !data.success) { setActionError(data.error ?? `Go failed (HTTP ${res.status}).`); return; }
+      // The press itself committed even if the in-process wake-up throws
+      // (task-7-brief.md: POST /go never 500s a durable row over a wake
+      // failure) — that's a soft warning, not a failure: the watcher's own
+      // cadence still picks the request up on its next tick.
+      setActionNote(
+        data.data?.wakeError
+          ? `Print is live — request queued, but could not wake the watcher immediately (${data.data.wakeError}). It will pick this up on its next poll.`
+          : "Print is live — acquiring from every road now.",
+      );
+      await onChanged();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Go failed.");
+    } finally {
+      setGoPending(false);
+    }
+  }
+
+  async function handleExtend() {
+    if (noEventId) { setActionError("This print has no event reference from the server — cannot extend."); return; }
+    setExtending(true);
+    setActionError(null);
+    try {
+      const res = await apiFetch("/api/print-watch/extend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ eventId: print.eventId }) });
+      const data = (await res.json()) as { success?: boolean; error?: string; data?: { windowExtendedUntil: string; wakeError?: string | null } };
+      if (!res.ok || !data.success) { setActionError(data.error ?? `Extend failed (HTTP ${res.status}).`); return; }
+      const base = `Window extended to ${etClock(data.data!.windowExtendedUntil)}.`;
+      // Same non-fatal-wake caveat as handleGo — the extension itself is
+      // durable even when the in-process nudge fails.
+      setActionNote(
+        data.data?.wakeError
+          ? `${base} Could not wake the watcher immediately (${data.data.wakeError}) — it will pick this up on its next poll.`
+          : base,
+      );
+      await onChanged();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Extend failed.");
+    } finally {
+      setExtending(false);
+    }
+  }
+
   // A file dragged onto the card must land IN the card. Without these two
   // handlers the browser takes the drop itself and navigates the tab to the
   // dropped file — mid-print, with the sheet on screen. `preventDefault` on
@@ -1073,25 +1175,47 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
             {stateChip.text}
           </Chip>
         </div>
-        <label
-          className={`relative text-[12px] font-mono border border-edge rounded px-2 py-1 cursor-pointer hover:bg-raised pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 ${
-            uploading ? "opacity-60 pointer-events-none" : ""
-          }`}
-          title={noEventId ? "This print has no event reference from the server — cannot upload." : "Drop or choose the release document (HTML/text)"}
-        >
-          {uploading ? "Uploading… (may take up to 30s)" : "⇪ Drop release"}
-          <input
-            type="file"
-            accept=".html,.htm,.txt,text/html,text/plain"
-            className="hidden"
-            disabled={uploading || noEventId}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (file) void handleDrop(file);
-            }}
-          />
-        </label>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={handleGo}
+            disabled={goPending || print.goRequest?.status === "queued" || print.goRequest?.status === "claimed"}
+            className="text-[12px] font-mono border border-edge rounded px-2 py-1 hover:bg-raised disabled:opacity-60"
+            title="Acquire from every road now and open the window if it is not open"
+          >
+            Print is live
+          </button>
+          {print.effectiveWindow !== null && print.effectiveWindow !== undefined && (
+            <button
+              type="button"
+              onClick={handleExtend}
+              disabled={extending}
+              className="text-[12px] font-mono border border-edge rounded px-2 py-1 hover:bg-raised disabled:opacity-60"
+              title="Keep polling 30 minutes longer (presses stack)"
+            >
+              Extend 30 min
+            </button>
+          )}
+          <label
+            className={`relative text-[12px] font-mono border border-edge rounded px-2 py-1 cursor-pointer hover:bg-raised pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 ${
+              uploading ? "opacity-60 pointer-events-none" : ""
+            }`}
+            title={noEventId ? "This print has no event reference from the server — cannot upload." : "Drop or choose the release document (HTML/text)"}
+          >
+            {uploading ? "Uploading… (may take up to 30s)" : "⇪ Drop release"}
+            <input
+              type="file"
+              accept=".html,.htm,.txt,text/html,text/plain"
+              className="hidden"
+              disabled={uploading || noEventId}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) void handleDrop(file);
+              }}
+            />
+          </label>
+        </div>
       </div>
 
       <p className="text-[11px] font-mono text-ink-faint mb-3">
@@ -1101,6 +1225,11 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
             {print.coverage.join(" · ")}
           </span>
         )}
+      </p>
+
+      <p className="text-[12px] font-mono text-ink-dim">
+        {windowText(print.effectiveWindow ?? null, Date.now())}
+        {goLine ? ` · ${goLine}` : ""}
       </p>
 
       {actionError && <p className="text-[12px] text-down mb-2">{actionError}</p>}
