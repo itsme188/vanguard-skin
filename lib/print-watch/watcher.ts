@@ -61,7 +61,6 @@ import type Database from "better-sqlite3";
 
 import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { normalizeEarningsHour } from "@/lib/calendar/release-times";
-import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { resolveDbDir } from "@/lib/db/db-path";
 import { resolveEarningsReleaseTime } from "@/lib/earnings/wire-times";
 import {
@@ -70,6 +69,9 @@ import {
 } from "@/lib/queries/earnings-worksheet-flags";
 
 import { compileContracts } from "./contracts";
+import { effectiveWindow, windowToIso, type EffectiveWindow } from "./window";
+import { acquisitionScheduler, type PassReason } from "./scheduler";
+import { runGoRequest, safeErrorText } from "./go";
 import {
   createDjPollState,
   formatTwsDateTime,
@@ -87,6 +89,11 @@ import { reconcile } from "./reconcile";
 import { htmlToRawText, htmlToTablesRepresentation } from "./representations";
 import {
   acquireWatcherLease,
+  failCappedGoRequests,
+  getPrintById,
+  latestGoRequest,
+  listForcedLivePrints,
+  listTakeableGoRequests,
   ELIGIBLE_SQL,
   isDocumentEligible,
   claimDocumentParse,
@@ -120,8 +127,10 @@ import {
   PdfToolMissingError,
   PDFTOTEXT_SETTING_KEY,
 } from "./pdf";
+import type { FetchLike } from "./hardened-fetch";
 import type {
   DocumentRow,
+  GoRequestStatus,
   LineContract,
   ExpectedValue,
   ParseCandidate,
@@ -129,6 +138,7 @@ import type {
   PrintWatchDocKind,
   PrintWatchLine,
   PrintWatchState,
+  RoadReport,
   TaggedCandidate,
 } from "./types";
 
@@ -136,20 +146,29 @@ import type {
 // constants
 // ---------------------------------------------------------------------------
 
-/** Window opens T−10m and closes T+45m around the resolved release time (spec §4.2). */
-const WINDOW_PRE_MS = 10 * 60_000;
-const WINDOW_POST_MS = 45 * 60_000;
-/** In-window poll cadence (spec §4.2). */
-const CADENCE_MS = 10_000;
+// The window itself now lives in ONE place (`./window.ts`, spec §4.3):
+// scheduled ± forced ± extension, pooled over whichever terms the print ROW
+// carries. Nothing here recomputes it — `windowForPrint` re-reads the row on
+// every pass, so a go press or an extension written by ANOTHER process is
+// honoured with no cache to invalidate.
+
+/** In-window poll cadence (spec §4.2). Exported for the tests. */
+export const CADENCE_MS = 10_000;
 
 const LEASE_TTL_MS = 60_000;
-const LEASE_RENEW_MS = 20_000;
+export const LEASE_RENEW_MS = 20_000;
 const LEASE_SETTINGS_KEY = "print_watch_lease";
 
-/** Minimal per-host governor (accepted deviation (c) — ≤3 simultaneous prints). */
-const SEC_HOST = "sec.gov";
-const SEC_SPACING_MS = 300;
-const DEFAULT_SPACING_MS = 200;
+/**
+ * How long ONE road of a pass may take before it is CANCELLED. The former
+ * `SOURCE_TIMEOUT_MS`, unchanged in value — what changed is that the deadline
+ * now aborts the road's signal (so `hardenedFetchBytes` closes the socket and
+ * the throttle slot comes back) instead of merely walking away from it.
+ */
+export const ROAD_TIMEOUT_MS = 15_000;
+
+/** How often the lease owner sweeps for go requests ANY process queued. */
+export const GO_DISPATCH_MS = 2_000;
 
 /**
  * A failed parse is retried, but never on the very next tick: three retries
@@ -164,15 +183,6 @@ const MAX_PARSE_ATTEMPTS = 5;
 /** Booked on a document whose LAST claim was abandoned by a dead worker —
  *  the terminal state that lets a person's re-delivery revive it. */
 const ABANDONED_CLAIM_ERROR = "abandoned claim at the attempt cap";
-
-/**
- * A stalled socket must not park `pollOnce` past the lease renewal — a 60s
- * lease expiring under a hung EDGAR fetch is a split-brain invitation (review
- * round 1, important #3). NOTE: this abandons the wait, it does not cancel the
- * request; neither adapter takes an AbortSignal today, so a hung fetch keeps
- * its socket until the runtime drops it.
- */
-const SOURCE_TIMEOUT_MS = 15_000;
 
 /**
  * Flash candidates come off the DJ wire, which produces no document — but
@@ -220,6 +230,21 @@ export interface WatchStatusRow {
   sources: Record<string, string>;
   /** Static capability notes (Codex #23) — what CAN and cannot fire tonight. */
   coverage: string[];
+  /** ISO UTC of the FIRST go press, or null — the once-only forced stamp. */
+  forcedOpenAt: string | null;
+  /** ISO UTC end an "Extend 30 min" press wrote, or null. */
+  windowExtendedUntil: string | null;
+  /** The ONE window (`effectiveWindow`), as ISO UTC — null for an unresolved
+   *  TAS row nobody pressed (drop-zone only). */
+  effectiveWindow: { start: string; end: string } | null;
+  /** The most recent durable go request for this print, if any. */
+  goRequest: {
+    id: number;
+    status: GoRequestStatus;
+    attempts: number;
+    requestedAt: string;
+    result: RoadReport[] | null;
+  } | null;
 }
 
 /**
@@ -275,6 +300,9 @@ export interface WatcherSeams {
   /** Root of the acquired-bytes tree; `<root>/<printId>/<sha256>.<ext>`. */
   storageRoot: () => string;
   twsConnection: () => Promise<{ up: boolean; ib: IBApiLike | null }>;
+  /** The RAW fetch the acquisition scheduler wraps (`fetchFor`). Injected so a
+   *  test can hand the SEC lane an abort-aware fake and never open a socket. */
+  fetchImpl: FetchLike;
   pollDjNews: (
     ib: IBApiLike,
     conId: number,
@@ -282,8 +310,9 @@ export interface WatcherSeams {
     nowUtc: string,
     state: DjPollState,
     nowMs: number,
+    signal?: AbortSignal,
   ) => Promise<DjPollOutput>;
-  resolveCik: (symbol: string) => Promise<string | null>;
+  resolveCik: (symbol: string, fetchFn?: FetchLike) => Promise<string | null>;
   /** Ask TWS for a security's IB contract id (and persist it). Null = TWS
    *  answered but knows no contract for this row. */
   resolveConId: (db: Database.Database, securityId: number) => Promise<number | null>;
@@ -292,11 +321,13 @@ export interface WatcherSeams {
     windowStartIso: string,
     windowEndIso: string,
     seenAccessions: Set<string>,
+    fetchFn?: FetchLike,
   ) => Promise<EdgarFiling[]>;
   pollIrRss: (
     cfg: IrRssConfig,
     seenLinks: Set<string>,
     baseline: boolean,
+    fetchFn?: FetchLike,
   ) => Promise<Array<{ title: string; link: string; html: string }>>;
   /** The SSRF-hardened reader for the stored IR page road — the newsroom page
    *  itself and every release link followed off it. The lane always wraps this
@@ -358,12 +389,13 @@ const DEFAULT_SEAMS: WatcherSeams = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   storageRoot: () => path.join(resolveDbDir(), "print-watch"),
   twsConnection: defaultTwsConnection,
-  pollDjNews: (ib, conId, windowStartUtc, nowUtc, state, nowMs) =>
-    pollDjNews(ib, conId, windowStartUtc, nowUtc, state, nowMs),
-  resolveCik: (symbol) => resolveCik(symbol),
+  fetchImpl: (url, init) => fetch(url, init),
+  pollDjNews: (ib, conId, windowStartUtc, nowUtc, state, nowMs, signal) =>
+    pollDjNews(ib, conId, windowStartUtc, nowUtc, state, nowMs, signal),
+  resolveCik: (symbol, fetchFn) => resolveCik(symbol, fetchFn),
   resolveConId: (db, securityId) => defaultResolveConId(db, securityId),
-  pollEdgar: (cik, startIso, endIso, seen) => pollEdgar(cik, startIso, endIso, seen),
-  pollIrRss: (cfg, seenLinks, baseline) => pollIrRss(cfg, seenLinks, fetch, { baseline }),
+  pollEdgar: (cik, startIso, endIso, seen, fetchFn) => pollEdgar(cik, startIso, endIso, seen, fetchFn),
+  pollIrRss: (cfg, seenLinks, baseline, fetchFn) => pollIrRss(cfg, seenLinks, fetchFn ?? fetch, { baseline }),
   fetchBytes: (url, opts) => hardenedFetchBytes(url, opts),
   extractCandidates: (contracts, text) => extractCandidates(contracts, text),
   pdfToText: async (db, pdfPath) => {
@@ -395,17 +427,14 @@ export function _setTestSeams(overrides: Partial<WatcherSeams> | null): void {
 // module state
 // ---------------------------------------------------------------------------
 
-interface PrintWindow {
-  startMs: number;
-  endMs: number;
-}
-
 interface PrintRuntime {
   printId: number;
   dto: ArmedEventDto;
   issuerName: string | null;
-  /** null = no auto window (an unresolvable TAS row) — drop-zone only. */
-  window: PrintWindow | null;
+  /** The ONE effective window, re-read from the print ROW on every pass so a
+   *  go/extend written by another process is honoured. `null` = no window at
+   *  all (an unresolvable TAS row nobody pressed) — drop-zone only. */
+  window: EffectiveWindow | null;
   live: boolean;
   burst: boolean;
   loop: Promise<void> | null;
@@ -451,11 +480,16 @@ const queues = new Map<number, Promise<unknown>>();
 const parseAttempts = new Map<number, { attempts: number; lastAtMs: number }>();
 /** symbol -> resolved CIK (null = looked up and genuinely absent). */
 const cikCache = new Map<string, string | null>();
-/** host -> epoch ms of the last outbound request (the per-host spacer). */
-const lastRequestAt = new Map<string, number>();
+/** print ids whose go request this process is running right now — one claim
+ *  per print at a time, however often the dispatcher ticks. */
+const goInFlight = new Set<number>();
 
 let leaseNote: string | null = null;
 let leaseRenewedAtMs = 0;
+/** Does THIS process hold the watcher lease? Set by `claimLease`, cleared on
+ *  every path that gives it up — the go dispatcher and `runForcedPass` both
+ *  refuse to act without it. */
+let leaseHeld = false;
 let tmpCounter = 0;
 
 function resetWatcherState(): void {
@@ -465,9 +499,12 @@ function resetWatcherState(): void {
   queues.clear();
   parseAttempts.clear();
   cikCache.clear();
-  lastRequestAt.clear();
+  goInFlight.clear();
+  stopGoDispatcher();
+  acquisitionScheduler.reset();
   leaseNote = null;
   leaseRenewedAtMs = 0;
+  leaseHeld = false;
 }
 
 function statusFor(printId: number): PrintStatus {
@@ -520,12 +557,25 @@ function claimLease(db: Database.Database): boolean {
   const nowMs = seams.now();
   if (!acquireWatcherLease(db, watcherHolder(), nowMs, LEASE_TTL_MS)) {
     leaseNote = `watcher owned by ${readLeaseHolder(db)}`;
+    leaseHeld = false;
     stopAllLoops();
+    stopGoDispatcher();
     return false;
   }
   leaseNote = null;
   leaseRenewedAtMs = nowMs;
+  leaseHeld = true;
+  // The dispatcher runs for the LIFE OF THE LEASE (Codex round 1, finding #1),
+  // not just while somebody is calling `ensurePrintWatch`: a go request queued
+  // by another process — the panel's route in a second server, a sweep tick —
+  // has to be claimed by whoever owns the watcher, idle or not.
+  ensureGoDispatcher(db);
   return true;
+}
+
+/** Does this process own the watcher right now? */
+function holdsLease(): boolean {
+  return leaseHeld;
 }
 
 /** Renewal is due every 20s. Called between sources, not just once per tick,
@@ -590,12 +640,15 @@ export function buildArmedEventDto(db: Database.Database, row: ArmedWorksheetEve
   };
 }
 
-function windowFor(dto: ArmedEventDto): PrintWindow | null {
-  if (!dto.releaseTimeEt) return null;
-  const instant = composeReleaseInstant(dto.eventDate, dto.releaseTimeEt);
-  if (!instant) return null;
-  const t = instant.getTime();
-  return { startMs: t - WINDOW_PRE_MS, endMs: t + WINDOW_POST_MS };
+/**
+ * The ONE window (spec §4.3): scheduled ± forced ± extension, read from the
+ * print ROW rather than from the DTO — so a go press or an "Extend 30 min"
+ * written by ANOTHER process is seen at the very next pass (M-C2), with no
+ * cache to invalidate and no message to miss.
+ */
+function windowForPrint(db: Database.Database, printId: number): EffectiveWindow | null {
+  const row = getPrintById(db, printId);
+  return row ? effectiveWindow(row) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -752,20 +805,39 @@ export function ensurePrintWatch(db: Database.Database): void {
   const today = todayET(new Date(nowMs));
   const dates = [addDays(today, -1), today, addDays(today, 1)];
   const armed = getArmedWorksheetEvents(db, dates);
+
+  // A print whose FORCED window is live is reconciled whatever its event date
+  // (Codex round 1, finding #18): the desk pressing "print is live" IS the
+  // evidence, and a stale calendar date must not strand the watch that press
+  // opened. Their events are fetched by date the same way the armed set is.
+  const forcedPrints = listForcedLivePrints(db, nowMs);
+  const forcedEventIds = new Set(forcedPrints.map((p) => p.event_id));
+  const forcedPrintIds = new Set(forcedPrints.map((p) => p.id));
+  const extraDates = Array.from(new Set(forcedPrints.map((p) => p.event_date))).filter(
+    (d) => !dates.includes(d),
+  );
+  if (extraDates.length > 0) {
+    const known = new Set(armed.map((r) => r.eventId));
+    for (const row of getArmedWorksheetEvents(db, extraDates)) {
+      if (!known.has(row.eventId) && forcedEventIds.has(row.eventId)) armed.push(row);
+    }
+  }
   const armedEventIds = new Set(armed.map((r) => r.eventId));
 
-  const armedPrintIds = new Set<number>();
+  const armedPrintIds = new Set<number>(forcedPrintIds);
   /** Prints with no live loop of their own — see drainStrandedPrints. */
   const strandedPrintIds = new Set<number>();
 
   for (const row of armed) {
     const dto = buildArmedEventDto(db, row);
-    // A print with no resolvable window still EXISTS — the drop zone is the
-    // road for it, and the panel needs a row to drop onto.
-    const window = windowFor(dto);
 
     const printId = upsertPrint(db, dto.eventId, dto.symbol, dto.eventDate, dto.releaseTimeEt);
     armedPrintIds.add(printId);
+    // The window comes from the ROW, AFTER the upsert — it pools the scheduled
+    // term with the forced stamp and any extension. A print with no window at
+    // all still EXISTS: the drop zone is the road for it, and the panel needs a
+    // row to drop onto.
+    const window = windowForPrint(db, printId);
 
     // Recompile while the sheet is still untouched — bogeys are usually
     // curated AFTER arming, and a pre-print re-arm should pick up new
@@ -834,6 +906,10 @@ export function ensurePrintWatch(db: Database.Database): void {
 
   for (const print of listActivePrints(db)) {
     if (armedEventIds.has(print.event_id)) continue;
+    // An unarmed print with a LIVE forced window is treated as armed for this
+    // pass — the press armed it, and disarming it here would close the watch
+    // the desk just opened (finding #18).
+    if (forcedEventIds.has(print.event_id)) continue;
     // An active print with no armed flag is either a genuine disarm or a
     // leftover whose day has passed (the app was closed through its window) —
     // call the stale one `expired`, which is what actually happened to it.
@@ -855,6 +931,12 @@ export function ensurePrintWatch(db: Database.Database): void {
   drainStrandedPrints(db, strandedPrintIds);
 
   retireFinishedRuntimes(db, armedPrintIds);
+
+  // Slice C: go requests queued by ANY process are claimed here, by the lease
+  // owner (M-C3). The 2-second dispatcher `claimLease` armed above keeps doing
+  // it for the life of the lease; this call is the immediate one, so a press
+  // that reached this process is acted on now rather than a tick from now.
+  void dispatchGoRequests(db);
 }
 
 /**
@@ -910,8 +992,37 @@ export function getWatchStatus(db: Database.Database): WatchStatusRow[] {
       state: print.state,
       sources,
       coverage: status?.coverage ?? [],
+      forcedOpenAt: print.forced_open_at,
+      windowExtendedUntil: print.window_extended_until,
+      effectiveWindow: windowToIso(effectiveWindow(print)),
+      goRequest: latestGoRequestFor(db, print.id),
     };
   });
+}
+
+/** The latest durable go request for a print, with its per-road reports
+ *  decoded. A `result_json` that will not parse reads as "no reports yet"
+ *  rather than taking a read-only status route down. */
+function latestGoRequestFor(
+  db: Database.Database,
+  printId: number,
+): WatchStatusRow["goRequest"] {
+  const g = latestGoRequest(db, printId);
+  if (!g) return null;
+  let result: RoadReport[] | null = null;
+  try {
+    const parsed: unknown = g.result_json ? JSON.parse(g.result_json) : null;
+    result = Array.isArray(parsed) ? (parsed as RoadReport[]) : null;
+  } catch {
+    result = null;
+  }
+  return {
+    id: g.id,
+    status: g.status,
+    attempts: g.attempts,
+    requestedAt: g.requested_at,
+    result,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -931,19 +1042,32 @@ function startLoop(db: Database.Database, rt: PrintRuntime): void {
   rt.live = true;
 
   const task = (async () => {
+    let reason: PassReason = "cadence";
     while (rt.live) {
       try {
-        await pollOnce(db, rt);
+        // The scheduler owns pass coalescing: one pass at a time per print, and
+        // a pass requested while one runs is remembered ONCE and runs after.
+        await acquisitionScheduler.runPass(rt.printId, (signal) => pass(db, rt, signal), reason);
       } catch (err) {
         statusFor(rt.printId).sources.loop = errText(err);
       }
       if (!rt.live) break;
       if (rt.burst) {
-        // A hit on any source makes the others worth re-reading NOW.
+        // A hit on any road makes the others worth re-reading NOW.
         rt.burst = false;
+        reason = "burst";
         continue;
       }
-      await seams.sleep(CADENCE_MS);
+      const woke = await cadenceWait(rt.printId);
+      reason = woke === "timeout" ? "cadence" : woke;
+      if (woke !== "timeout") {
+        // R-C10: the reported reason is INFORMATIONAL ONLY — the scheduler
+        // keeps the FIRST remembered reason, so a burst remembered ahead of a
+        // user's go press surfaces as "burst". Every wake therefore does both
+        // things a go needs: it runs a dispatcher tick, and the pass below
+        // re-reads the print row's effective window.
+        void dispatchGoRequests(db);
+      }
     }
   })();
 
@@ -965,17 +1089,62 @@ function startLoop(db: Database.Database, rt: PrintRuntime): void {
   rt.loop = guarded;
 }
 
-async function pollOnce(db: Database.Database, rt: PrintRuntime): Promise<void> {
-  // Lease renewal rides the loop rather than its own timer: the loop is the
-  // only thing the lease protects, so a lost renewal must stop exactly it.
-  // It is re-checked BETWEEN sources, so one slow source can't push the
-  // renewal past the 60s TTL and hand out a second owner.
-  if (!renewLeaseIfDue(db)) return;
+/**
+ * The loop's cadence sleep: `CADENCE_MS`, ended EARLY by an explicit wake (a go
+ * press, an extension) so the desk never waits out a tick it just cancelled.
+ *
+ * The WAKE comes from the scheduler; the DEADLINE runs on the watcher's own
+ * `sleep` seam, which is what keeps the cadence injectable (a replay drill runs
+ * on a real clock and caps every sleep at a few milliseconds — a hard-coded ten
+ * seconds there would be ten seconds of wall time per pass).
+ *
+ * When the deadline wins it DRAINS its own parked waiter with a `wake`: a wake
+ * delivered to a parked waiter is consumed, never remembered, so leaving an
+ * abandoned waiter behind would let it swallow the next go press.
+ */
+async function cadenceWait(printId: number): Promise<PassReason | "timeout"> {
+  let woken = false;
+  const wake = acquisitionScheduler.waitForWake(printId, CADENCE_MS).then((reason) => {
+    woken = true;
+    return reason;
+  });
+  const deadline = seams.sleep(CADENCE_MS).then(() => {
+    if (!woken) acquisitionScheduler.wake(printId, "cadence");
+    return "timeout" as const;
+  });
+  const first = await Promise.race([wake, deadline]);
+  // The deadline's own `wake` resolves the wait branch with "cadence"; report
+  // it as the timeout it actually is.
+  return first === "cadence" ? "timeout" : first;
+}
 
+/** The three automatic roads, in the order every report lists them. */
+const ROADS = ["dj", "edgar", "ir"] as const;
+type RoadName = (typeof ROADS)[number];
+
+/**
+ * One acquisition pass (spec §4.3 "Scheduler").
+ *
+ * The three roads run in PARALLEL under `Promise.allSettled`, each on its own
+ * linked `AbortSignal` with a per-road timer, so a stalled EDGAR never delays a
+ * DJ ingest and a hung request is CANCELLED rather than merely abandoned. Lease
+ * renewal rides a timer for the whole pass — started BEFORE the parse drain,
+ * which is the long phase (a model call is minutes, not seconds) — and losing
+ * the lease aborts every road at once.
+ *
+ * Returns one `RoadReport` per road: what a go request records, built from
+ * outcomes observed in THIS pass, never from a previous one.
+ */
+async function pass(db: Database.Database, rt: PrintRuntime, signal: AbortSignal): Promise<RoadReport[]> {
+  const status = statusFor(rt.printId);
+  if (!renewLeaseIfDue(db)) return skippedReports("lease lost");
+
+  // A go/extend written by ANOTHER process changes the ROW, not our memory.
+  rt.window = windowForPrint(db, rt.printId);
   const window = rt.window;
   if (!window) {
     rt.live = false; // drop-zone-only print: nothing to poll
-    return;
+    return skippedReports("no window");
   }
   if (seams.now() > window.endMs) {
     rt.live = false;
@@ -983,27 +1152,136 @@ async function pollOnce(db: Database.Database, rt: PrintRuntime): Promise<void> 
     if (current && current !== "parsed" && current !== "disarmed") {
       setPrintState(db, rt.printId, "expired");
     }
-    return;
+    return skippedReports("window closed");
   }
 
-  // Crash recovery (Codex #6): anything a previous process acquired but never
-  // parsed gets drained on every tick, not just at ingest time.
-  await runQueue(db, rt.printId);
+  const passController = new AbortController();
+  const passSignal = AbortSignal.any([signal, passController.signal]);
+  // Armed before ANY awaited work (Codex round 1, finding #11): the drain below
+  // can outlast the 60s lease TTL on its own. A renewal that THROWS aborts the
+  // pass exactly like one that returns false — it must never escape a timer
+  // callback and take the process down.
+  const renew = setInterval(() => {
+    try {
+      if (!renewLeaseIfDue(db)) passController.abort(new Error("watcher lease lost mid-pass"));
+    } catch (err) {
+      passController.abort(err instanceof Error ? err : new Error(String(err)));
+    }
+  }, LEASE_RENEW_MS);
 
-  if (!renewLeaseIfDue(db)) return;
-  const twsUp = await pollDjSource(db, rt, window);
-  if (!renewLeaseIfDue(db)) return;
-  await pollEdgarSource(db, rt, window);
-  if (!renewLeaseIfDue(db)) return;
-  await pollIrSource(db, rt);
-  refreshCoverage(db, rt, twsUp);
+  const notes: Record<RoadName, string> = { dj: "", edgar: "", ir: "" };
+  // The RSS lane keeps its own ladder key (the panel labels it "RSS"), but it
+  // IS the IR road as far as a go report is concerned (finding #12).
+  const irKey = irConfigFor(rt.dto.symbol) ? "rss" : "ir";
+  const keyFor = (road: RoadName) => (road === "ir" ? irKey : road);
+  let twsUp: boolean | null = null;
+  try {
+    // Crash recovery (Codex #6): anything a previous process acquired but never
+    // parsed gets drained on every pass, not just at ingest time.
+    await runQueue(db, rt.printId);
+
+    const settled = await Promise.allSettled([
+      withRoad("dj", passSignal, async (s) => {
+        twsUp = await pollDjSource(db, rt, window, s);
+      }),
+      withRoad("edgar", passSignal, (s) => pollEdgarSource(db, rt, window, s)),
+      withRoad("ir", passSignal, (s) => pollIrSource(db, rt, s)),
+    ]);
+
+    const reports: RoadReport[] = ROADS.map((road, i) => {
+      const outcome = settled[i];
+      if (outcome.status === "rejected") {
+        notes[road] = errText(outcome.reason);
+        status.sources[keyFor(road)] = notes[road];
+        return { road, outcome: "failed", detail: safeErrorText(outcome.reason) };
+      }
+      // The lane wrote its own note during THIS pass (one pass runs at a time
+      // per print), so reading it back is reading this pass's own outcome.
+      notes[road] = status.sources[keyFor(road)] ?? "";
+      return { road, outcome: roadOutcome(notes[road]), detail: notes[road] };
+    });
+
+    refreshCoverage(db, rt, twsUp);
+    return reports;
+  } catch (err) {
+    // Not a road at all: the parse drain, the coverage refresh, the window read.
+    return [{ road: "system", outcome: "failed", detail: safeErrorText(err) }];
+  } finally {
+    clearInterval(renew);
+  }
 }
 
 /**
- * Abandon a source that has stopped answering, so the loop keeps its renewal
- * cadence (review round 1, important #3). The underlying request is NOT
- * cancelled — neither adapter accepts an AbortSignal — it is simply no longer
- * waited on.
+ * How a lane's plain-language note reads as a go-report outcome.
+ *
+ *  - `ok …` / `baseline …` — the road ran and answered;
+ *  - "TWS offline", "no conId … wire off", "CIK unresolved", "no IR page
+ *    configured" — the road could not run at all, which is NOT a failure the
+ *    desk should chase (spec §7);
+ *  - anything else — it tried and failed.
+ */
+function roadOutcome(note: string): string {
+  if (note === "") return "skipped";
+  if (/^(ok|baseline|no baseline)\b/i.test(note)) return "ok";
+  if (/offline|no conId|wire off|none configured|no IR page|CIK unresolved|no window|lease lost/i.test(note)) {
+    return "skipped";
+  }
+  return "failed";
+}
+
+function skippedReports(detail: string): RoadReport[] {
+  return ROADS.map((road) => ({ road, outcome: "skipped", detail }));
+}
+
+/**
+ * Run ONE road on its own linked signal.
+ *
+ * The per-road timer ABORTS the road (so `hardenedFetchBytes` / the throttled
+ * SEC fetch close their sockets and hand back their scheduler slot) AND stops
+ * waiting on it: an adapter that ignores its signal must not be able to park
+ * the whole pass past the lease renewal. The pass signal reaches the road the
+ * same way, so a lost lease cancels all three at once.
+ */
+async function withRoad<T>(
+  label: string,
+  parent: AbortSignal,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const ac = new AbortController();
+  const signal = AbortSignal.any([parent, ac.signal]);
+  const abortText = () => {
+    const reason: unknown = signal.reason;
+    return reason instanceof Error ? reason.message : `${label} aborted`;
+  };
+  let onAbort: (() => void) | null = null;
+  const timer = setTimeout(
+    () => ac.abort(new Error(`${label} timed out after ${ROAD_TIMEOUT_MS / 1000}s`)),
+    ROAD_TIMEOUT_MS,
+  );
+  try {
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      if (signal.aborted) {
+        reject(new Error(abortText()));
+        return;
+      }
+      onAbort = () => reject(new Error(abortText()));
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    return await Promise.race([run(signal), cancelled]);
+  } catch (err) {
+    if (signal.aborted) throw new Error(abortText());
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+/**
+ * Abandon a call that has stopped answering, so the pass keeps its renewal
+ * cadence. Still used by the conId backfill, which reaches TWS through
+ * `enrichSecurities` and takes no AbortSignal — the roads themselves are
+ * cancelled properly by `withRoad` (finding #10).
  */
 async function withSourceTimeout<T>(label: string, run: () => Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1012,8 +1290,8 @@ async function withSourceTimeout<T>(label: string, run: () => Promise<T>): Promi
       run(),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
-          () => reject(new Error(`${label} timed out after ${SOURCE_TIMEOUT_MS / 1000}s`)),
-          SOURCE_TIMEOUT_MS,
+          () => reject(new Error(`${label} timed out after ${ROAD_TIMEOUT_MS / 1000}s`)),
+          ROAD_TIMEOUT_MS,
         );
       }),
     ]);
@@ -1026,7 +1304,8 @@ async function withSourceTimeout<T>(label: string, run: () => Promise<T>): Promi
 async function pollDjSource(
   db: Database.Database,
   rt: PrintRuntime,
-  window: PrintWindow,
+  window: EffectiveWindow,
+  signal: AbortSignal,
 ): Promise<boolean | null> {
   const status = statusFor(rt.printId);
   if (rt.dto.conId === null) {
@@ -1045,10 +1324,13 @@ async function pollDjSource(
     const out = await seams.pollDjNews(
       conn.ib,
       rt.dto.conId,
+      // The EFFECTIVE start: on a forced open that is press − 60m, so a wire
+      // item that printed before the desk pressed go is still in range (M-C10).
       formatTwsDateTime(new Date(window.startMs)),
       formatTwsDateTime(new Date(seams.now())),
       rt.djState,
       seams.now(),
+      signal,
     );
 
     for (const release of out.completedReleases) {
@@ -1091,9 +1373,16 @@ async function pollDjSource(
     status.sources.dj = `ok — ${out.completedReleases.length} release(s), ${rt.flashHeadlines.length} flash(es)`;
     return true;
   } catch (err) {
-    status.sources.dj = errText(err);
+    // A cancelled wire read is a deadline, not a wire fault (finding #10).
+    status.sources.dj = isAbortError(err) ? "timed out — aborted" : errText(err);
     return null;
   }
+}
+
+/** An `AbortError` from any layer: the DOM-shaped one the fetch stack throws,
+ *  and the scheduler's own `AbortedError`. */
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
 }
 
 /**
@@ -1144,9 +1433,15 @@ async function backfillConId(db: Database.Database, rt: PrintRuntime): Promise<b
 async function pollEdgarSource(
   db: Database.Database,
   rt: PrintRuntime,
-  window: PrintWindow,
+  window: EffectiveWindow,
+  signal: AbortSignal,
 ): Promise<void> {
   const status = statusFor(rt.printId);
+  // ONE throttled fetch for the whole lane: the SEC family's 2/s budget is
+  // shared across every CIK by the scheduler, and the pass signal rides every
+  // request — so no hand-rolled host spacer, and a cancelled pass closes the
+  // socket instead of leaving it to the runtime.
+  const fetchFn = acquisitionScheduler.fetchFor(signal, seams.fetchImpl);
   try {
     if (rt.dto.cik === null && !rt.cikAttempted) {
       rt.cikAttempted = true;
@@ -1154,10 +1449,7 @@ async function pollEdgarSource(
       if (cached !== undefined) {
         rt.dto.cik = cached;
       } else {
-        await spaceHost(SEC_HOST);
-        const cik = await withSourceTimeout("EDGAR CIK lookup", () =>
-          seams.resolveCik(rt.dto.symbol),
-        );
+        const cik = await seams.resolveCik(rt.dto.symbol, fetchFn);
         cikCache.set(rt.dto.symbol.toUpperCase(), cik);
         rt.dto.cik = cik;
       }
@@ -1167,15 +1459,14 @@ async function pollEdgarSource(
       return;
     }
 
-    await spaceHost(SEC_HOST);
     const cik = rt.dto.cik;
-    const filings = await withSourceTimeout("EDGAR poll", () =>
-      seams.pollEdgar(
-        cik,
-        new Date(window.startMs).toISOString(),
-        new Date(seams.now()).toISOString(),
-        rt.seenAccessions,
-      ),
+    const filings = await seams.pollEdgar(
+      cik,
+      // The EFFECTIVE start, same as the wire's.
+      new Date(window.startMs).toISOString(),
+      new Date(seams.now()).toISOString(),
+      rt.seenAccessions,
+      fetchFn,
     );
 
     let exhibits = 0;
@@ -1212,10 +1503,10 @@ async function pollEdgarSource(
  * RSS keeps precedence — a stored page for NVDA would be a second, weaker
  * reading of the same newsroom.
  */
-async function pollIrSource(db: Database.Database, rt: PrintRuntime): Promise<void> {
+async function pollIrSource(db: Database.Database, rt: PrintRuntime, signal: AbortSignal): Promise<void> {
   const rss = irConfigFor(rt.dto.symbol);
-  if (rss) return pollIrRssSource(db, rt, rss);
-  return pollIrPageSource(db, rt);
+  if (rss) return pollIrRssSource(db, rt, rss, signal);
+  return pollIrPageSource(db, rt, signal);
 }
 
 /** v1's NVDA-feed lane, unchanged. */
@@ -1223,17 +1514,22 @@ async function pollIrRssSource(
   db: Database.Database,
   rt: PrintRuntime,
   cfg: IrRssConfig,
+  signal: AbortSignal,
 ): Promise<void> {
   const status = statusFor(rt.printId);
   try {
-    await spaceHost(cfg.host);
     // The FIRST poll of a watch is a baseline pass: it fetches no article at
     // all, it just records what the feed already held (fix wave, finding A).
     // The flag flips only after the poll returns, so a first poll that fails
     // does not consume the baseline.
     const baseline = !rt.irBaselineDone;
-    const items = await withSourceTimeout("IR feed poll", () =>
-      seams.pollIrRss(cfg, rt.seenIrLinks, baseline),
+    // The feed and every article it follows go through the scheduler's per-host
+    // throttle, on the pass signal (finding #9) — no hand-rolled spacer.
+    const items = await seams.pollIrRss(
+      cfg,
+      rt.seenIrLinks,
+      baseline,
+      acquisitionScheduler.fetchFor(signal, seams.fetchImpl),
     );
     rt.irBaselineDone = true;
 
@@ -1282,7 +1578,11 @@ const IR_REFUSAL_LIMIT = 3;
  * label rather than as a quiet night); the runtime's real seen-set then
  * decides which of those are new. One fetch either way.
  */
-async function pollIrPageSource(db: Database.Database, rt: PrintRuntime): Promise<void> {
+async function pollIrPageSource(
+  db: Database.Database,
+  rt: PrintRuntime,
+  signal: AbortSignal,
+): Promise<void> {
   const status = statusFor(rt.printId);
   // Re-read every poll: a PUT /sources during the window must take effect
   // without a restart, and clearing the row must stop the lane.
@@ -1309,36 +1609,32 @@ async function pollIrPageSource(db: Database.Database, rt: PrintRuntime): Promis
   // every link fetch — `hardenedFetchBytes` re-checks `allowHost` after each
   // redirect, so a 302 off the allowlist is refused rather than followed.
   const allowHost = (h: string) => isAllowedIrLinkHost(`https://${h}/`, irHost);
+  // Every read of this lane — the newsroom page AND each release link, hops
+  // included — carries the M17 host policy, the pass signal, and the
+  // scheduler's per-host slot (finding #9).
   const fetchBytes: typeof hardenedFetchBytes = (url, opts) =>
-    seams.fetchBytes(url, { ...opts, allowHost });
+    throttledFetchBytes(url, { ...opts, allowHost, signal });
 
   const refusals: string[] = [];
   try {
-    await spaceHost(irHost);
     const baselined = hasIrBaseline(db, rt.dto.eventId, irBaselineFingerprint(cfg.irPageUrl));
     const scratch = new Set<string>();
-    const matching = await withSourceTimeout("IR page poll", () =>
-      pollIrPage(cfg, scratch, fetchBytes, { baseline: false }),
-    );
+    const matching = await pollIrPage(cfg, scratch, fetchBytes, { baseline: false });
     const items = matching.filter((item) => !rt.seenIrLinks.has(item.link));
 
     let durable = 0;
     for (const item of items) {
-      let linkHost: string;
       try {
-        linkHost = new URL(item.link).hostname;
+        new URL(item.link);
       } catch {
         // Unreachable via the adapter (it resolves and filters by host first),
         // but a link we cannot even name must not take the whole poll down.
         refusals.push(noteIrRefusal(db, rt, item.link, "unparseable link"));
         continue;
       }
-      await spaceHost(linkHost);
       let result: IngestResult;
       try {
-        const fetched = await withSourceTimeout("IR link fetch", () =>
-          fetchBytes(item.link, { label: "IR page link" }),
-        );
+        const fetched = await fetchBytes(item.link, { label: "IR page link" });
         // The road records the FINAL url (a hop may have moved it WITHIN the
         // allowlist), redacted — a stored newsroom URL can carry a token.
         result = await ingestDocument(
@@ -1413,26 +1709,54 @@ function noteIrRefusal(
 }
 
 /**
- * Minimal per-host governor (Codex #21, accepted deviation (c)): SEC 300ms,
- * everything else 200ms. Module-level so simultaneous prints share the budget
- * — three NVDA/CRWD/other loops hitting EDGAR still queue behind one another.
+ * `hardenedFetchBytes` under the acquisition scheduler's per-host-family
+ * budget. The old hand-rolled `spaceHost` governor is gone: one scheduler now
+ * paces every outbound request the subsystem makes, across prints and across
+ * lanes, and it is the same object the SEC lane's `fetchFor` uses.
+ *
+ * Exported for `go.ts`'s pasted-link road, which passes NO signal on purpose —
+ * a press must not be cancelled by a settling acquisition pass (R-C8).
+ *
+ * Residual (documented in DECISIONS): redirect hops INSIDE `hardenedFetchBytes`
+ * share the one outer slot (max 3 hops), and the DJ wire keeps the TWS
+ * adapter's own pacing — TWS is not an HTTP host.
  */
-async function spaceHost(host: string): Promise<void> {
-  const minGap = host === SEC_HOST ? SEC_SPACING_MS : DEFAULT_SPACING_MS;
-  const last = lastRequestAt.get(host) ?? 0;
-  const wait = last + minGap - seams.now();
-  if (wait > 0) await seams.sleep(wait);
-  lastRequestAt.set(host, seams.now());
-}
+export const throttledFetchBytes: typeof hardenedFetchBytes = async (url, opts) => {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    // Not a URL we can even name: let the hardened fetch refuse it properly
+    // rather than throwing out of the throttle with a worse message.
+    return seams.fetchBytes(url, opts);
+  }
+  const release = await acquisitionScheduler.throttle(host, opts.signal);
+  try {
+    return await seams.fetchBytes(url, opts);
+  } finally {
+    release();
+  }
+};
 
 // ---------------------------------------------------------------------------
 // acquisition + pipeline
 // ---------------------------------------------------------------------------
 
-/** Temp file + atomic rename under `<storageRoot>/<printId>/` — the packaged
- *  app's cwd is a read-only signed bundle, so this anchors at the DB dir. */
-async function writeBytes(printId: number, sha: string, ext: string, buf: Buffer): Promise<string> {
-  const dir = path.join(seams.storageRoot(), String(printId));
+/**
+ * Temp file + atomic rename under `<storageRoot>/<dirKey>/` — the packaged
+ * app's cwd is a read-only signed bundle, so this anchors at the DB dir.
+ *
+ * `dirKey` is a print id for acquired bytes and the literal `"staging"` for a
+ * go press, whose print id does not exist yet (`go.ts`'s `GO_STAGING_DIR_KEY`)
+ * — which is why this is exported rather than private.
+ */
+export async function writeAcquiredBytes(
+  dirKey: number | string,
+  sha: string,
+  ext: string,
+  buf: Buffer,
+): Promise<string> {
+  const dir = path.join(seams.storageRoot(), String(dirKey));
   await fsp.mkdir(dir, { recursive: true });
   const finalPath = path.join(dir, `${sha}.${ext}`);
   tmpCounter += 1;
@@ -1487,7 +1811,7 @@ export async function ingestDocument(
   const sha = sha256Hex(buf);
   const ext = shape === "html" ? "html" : "txt";
   const text = buf.toString("utf8");
-  const bytesPath = await writeBytes(printId, sha, ext, buf);
+  const bytesPath = await writeAcquiredBytes(printId, sha, ext, buf);
   return finishIngest(db, print, kind, source, url, buf, {
     bytesPath,
     text,
@@ -1522,7 +1846,7 @@ async function ingestPdf(
   }
 
   const sha = sha256Hex(buf);
-  const bytesPath = await writeBytes(print.id, sha, "pdf", buf);
+  const bytesPath = await writeAcquiredBytes(print.id, sha, "pdf", buf);
   const refused = async (reason: string): Promise<IngestResult> => {
     // ONLY when nothing owns these bytes. The path is content-addressed, so a
     // RE-delivery of a PDF already in hand (poppler since uninstalled, a
@@ -2067,4 +2391,117 @@ function runFlashLane(db: Database.Database, rt: PrintRuntime): Promise<void> {
       statusFor(rt.printId).sources.flash = errText(err);
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// the go road (slice C): the wake, the forced pass, the dispatcher
+// ---------------------------------------------------------------------------
+
+/**
+ * The in-process go wake (M-C3). Called by `requestGo` after its transaction
+ * commits and by the extend route after it writes.
+ *
+ * Three things, in order: reconcile (so a press that ARMED an event builds the
+ * runtime and opens the loop), end the loop's cadence sleep, and run one
+ * dispatcher tick so the request just queued is claimed NOW rather than up to
+ * `GO_DISPATCH_MS` from now. Safe to call when no watcher runs here at all —
+ * the wake is remembered, and the dispatcher declines without the lease.
+ */
+export async function wakePrintWatch(db: Database.Database, printId: number): Promise<void> {
+  ensurePrintWatch(db);
+  acquisitionScheduler.wake(printId, "go");
+  await dispatchGoRequests(db);
+}
+
+/**
+ * One fan-out pass NOW for a print THIS process runs, with per-road reports —
+ * what a claimed go request records in `result_json`.
+ *
+ * A print this process does not own (no runtime, or the lease is elsewhere)
+ * gets three `skipped` reports naming the reason, never a silent empty list:
+ * the desk has to be able to tell "nothing was found" from "nobody looked".
+ *
+ * `signal` (R-C11) is the CALLER's cancellation — `runGoRequest`'s own claim
+ * controller, never a scheduler pass signal (R-C8). It is linked into the pass
+ * so a request whose claim is taken over mid-acquire cancels its roads instead
+ * of racing the new owner. CAVEAT: the scheduler coalesces passes per print, so
+ * a call that JOINS a pass already in flight cannot cancel that pass — its
+ * signal reaches only a pass this call actually starts.
+ */
+export async function runForcedPass(
+  db: Database.Database,
+  printId: number,
+  signal?: AbortSignal,
+): Promise<RoadReport[]> {
+  const rt = runtimes.get(printId);
+  if (!holdsLease()) return skippedReports(leaseNote ?? "watcher lease held by another process");
+  if (!rt) return skippedReports("watcher not live in this process");
+  return acquisitionScheduler.runPass<RoadReport[]>(
+    printId,
+    (passSignal) => pass(db, rt, signal ? AbortSignal.any([passSignal, signal]) : passSignal),
+    "go",
+  );
+}
+
+/** The 2-second sweep, armed while this process holds the lease. */
+let goDispatcher: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Claim every takeable go request for a print THIS process runs, and run it.
+ *
+ * The claim itself is the store's compare-and-set inside `runGoRequest`; this
+ * only decides WHO tries. Two guards: a print whose runtime lives in another
+ * process is left to that process's dispatcher, and a print already running a
+ * request here is skipped — one claim per print at a time, however often the
+ * tick fires. Returns how many it claimed (exported for the tests).
+ */
+export async function dispatchGoRequests(db: Database.Database): Promise<number> {
+  if (!holdsLease()) return 0;
+  const now = seams.now();
+  let takeable: ReturnType<typeof listTakeableGoRequests>;
+  try {
+    failCappedGoRequests(db, now);
+    takeable = listTakeableGoRequests(db, now);
+  } catch (err) {
+    // A dispatcher tick must never take the process down (a closed handle, a
+    // locked DB): the next tick tries again.
+    console.warn("[print-watch] go dispatcher tick failed:", errText(err));
+    return 0;
+  }
+  let claimed = 0;
+  for (const row of takeable) {
+    if (!runtimes.has(row.print_id)) continue;
+    if (goInFlight.has(row.print_id)) continue;
+    goInFlight.add(row.print_id);
+    claimed += 1;
+    void runGoRequest(db, row.id)
+      .catch((err) => console.warn(`[print-watch] go request ${row.id} failed:`, errText(err)))
+      .finally(() => goInFlight.delete(row.print_id));
+  }
+  return claimed;
+}
+
+/**
+ * Arm the dispatcher for the LIFE OF THE LEASE (Codex round 1, finding #1).
+ *
+ * It deliberately does not stop when it finds nothing: a request queued by
+ * another process an hour into an idle evening still has to be claimed within
+ * `GO_DISPATCH_MS`, and an idle-stop would mean the owner only notices when
+ * somebody happens to call `ensurePrintWatch` again.
+ */
+function ensureGoDispatcher(db: Database.Database): void {
+  if (goDispatcher) return;
+  const timer = setInterval(() => {
+    void dispatchGoRequests(db);
+  }, GO_DISPATCH_MS);
+  // Never hold the process open for this (the sweep is a short-lived caller).
+  timer.unref?.();
+  goDispatcher = timer;
+}
+
+/** Stops on lease loss, on `_setTestSeams`, and on shutdown. */
+function stopGoDispatcher(): void {
+  if (!goDispatcher) return;
+  clearInterval(goDispatcher);
+  goDispatcher = null;
 }

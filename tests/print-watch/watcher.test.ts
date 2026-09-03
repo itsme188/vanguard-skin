@@ -7,26 +7,41 @@ import path from "node:path";
 import { runMigrations } from "@/lib/db/migrate";
 import {
   claimDocumentParse,
+  extendPrintWindow,
   getDocument,
+  getGoRequest,
   getIrBaseline,
+  getPrintById,
   getPrintByEventId,
   getSheet,
+  insertGoRequest,
   listDocumentRoads,
   listDocuments,
   listIrSeenLinks,
   recordIrBaseline,
+  upsertPrint,
   upsertPrintWatchSource,
 } from "@/lib/print-watch/store";
 import { irBaselineFingerprint } from "@/lib/print-watch/ir-baseline-step";
 import { recordDelivery } from "@/lib/print-watch/delivery";
-import type { LineContract, ParseCandidate, TaggedCandidate } from "@/lib/print-watch/types";
+import type { LineContract, ParseCandidate, RoadReport, TaggedCandidate } from "@/lib/print-watch/types";
 import {
   ensurePrintWatch,
   getWatchStatus,
   ingestDocument,
   validateDocForEvent,
   _setTestSeams,
+  runForcedPass,
+  CADENCE_MS,
+  GO_DISPATCH_MS,
+  LEASE_RENEW_MS,
+  ROAD_TIMEOUT_MS,
 } from "@/lib/print-watch/watcher";
+import { requestGo } from "@/lib/print-watch/go";
+import { acquisitionScheduler } from "@/lib/print-watch/scheduler";
+import { FORCED_PRE_MS } from "@/lib/print-watch/window";
+import { formatTwsDateTime } from "@/lib/print-watch/dj-adapter";
+import type { FetchLike } from "@/lib/print-watch/hardened-fetch";
 import {
   textPathFor,
   PdfEncryptedError,
@@ -91,7 +106,9 @@ interface FakeSeamState {
   extractPdfCalls: Array<{ bytes: Buffer }>;
   extractPdf: (contracts: LineContract[], bytes: Buffer) => Promise<ParseCandidate[]>;
   djCalls: number;
-  dj: () => Promise<{
+  /** The signal the pass handed the DJ adapter — a road that only settles when
+   *  it fires is exactly "hung until cancelled". */
+  dj: (signal?: AbortSignal) => Promise<{
     completedReleases: Array<{
       headline: string;
       stitchedText: string;
@@ -104,7 +121,9 @@ interface FakeSeamState {
   /** The seen-accession set as it looked at each poll — the watcher owns it
    *  and must only add to it AFTER a filing's exhibits are ingested. */
   edgarSeen: string[][];
-  edgar: () => Promise<
+  /** The scheduler-throttled fetch the EDGAR lane handed the adapter (slice C):
+   *  calling it is how a fake road proves it is cancelled, not just abandoned. */
+  edgar: (fetchFn?: FetchLike) => Promise<
     Array<{
       accession: string;
       form: string;
@@ -136,6 +155,16 @@ interface FakeSeamState {
   djSeen: string[][];
   /** The conId the DJ poll seam was handed, per poll. */
   djConIds: number[];
+  /** The window-START argument each seam was handed, per poll — the effective
+   *  window (press − 60m on a forced open), not the scheduled one. */
+  djStarts: string[];
+  edgarStarts: string[];
+  /**
+   * The RAW fetch the acquisition scheduler wraps. It never resolves and
+   * rejects with an `AbortError` when its signal fires, so a road built on it
+   * hangs until it is CANCELLED — and no test ever opens a socket.
+   */
+  fetchImpl: FetchLike;
   /** securityIds handed to the conId resolver seam, in order. */
   conIdCalls: number[];
   /** What the conId resolver seam answers (null = TWS knows no such contract). */
@@ -193,6 +222,18 @@ function installSeams(): void {
     storageRoot: null,
     djSeen: [],
     djConIds: [],
+    djStarts: [],
+    edgarStarts: [],
+    fetchImpl: (_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const abortErr = () => Object.assign(new Error("aborted"), { name: "AbortError" });
+        if (signal?.aborted) {
+          reject(abortErr());
+          return;
+        }
+        signal?.addEventListener("abort", () => reject(abortErr()), { once: true });
+      }),
     conIdCalls: [],
     conIdResult: null,
     conIdThrows: null,
@@ -228,14 +269,17 @@ function installSeams(): void {
     pollDjNews: async (
       _ib: unknown,
       conId: number,
-      _windowStartUtc: string,
+      windowStartUtc: string,
       _nowUtc: string,
       state: { seenArticleIds: Set<string> },
+      _nowMs: number,
+      signal?: AbortSignal,
     ) => {
       fake.djCalls += 1;
       fake.djConIds.push(conId);
+      fake.djStarts.push(windowStartUtc);
       fake.djSeen.push([...state.seenArticleIds]);
-      return fake.dj();
+      return fake.dj(signal);
     },
     resolveCik: async () => fake.cik,
     resolveConId: async (_db: unknown, securityId: number) => {
@@ -245,13 +289,15 @@ function installSeams(): void {
     },
     pollEdgar: async (
       _cik: string,
-      _startIso: string,
+      startIso: string,
       _endIso: string,
       seenAccessions: Set<string>,
+      fetchFn?: FetchLike,
     ) => {
       fake.edgarCalls += 1;
+      fake.edgarStarts.push(startIso);
       fake.edgarSeen.push([...seenAccessions]);
-      return fake.edgar();
+      return fake.edgar(fetchFn);
     },
     pollIrRss: async (_cfg, seenLinks: Set<string>, baseline: boolean) => {
       fake.irCalls.push({ baseline, seen: [...seenLinks] });
@@ -274,6 +320,7 @@ function installSeams(): void {
       fake.extractPdfCalls.push({ bytes });
       return fake.extractPdf(contracts, bytes);
     },
+    fetchImpl: (url: string, init?: RequestInit) => fake.fetchImpl(url, init),
   });
 }
 
@@ -1330,7 +1377,10 @@ describe("IR page lane", () => {
     expect(getWatchStatus(db)[0].sources.ir).toMatch(/^ok —/);
 
     page = PAGE_AFTER;
-    await waitUntil(() => listDocuments(db, printId).length === 1, 80);
+    // Wait on the LAST durable effect of the lane, not the first: the document
+    // row exists a few awaits before `recordIrSeenLinks` runs, and waiting on
+    // the document alone lands in that gap often enough to flake.
+    await waitUntil(() => listIrSeenLinks(db, eventId).some((l) => l.link === NEW_LINK), 80);
 
     const [doc] = listDocuments(db, printId);
     expect(doc.kind).toBe("ir-page");
@@ -2397,5 +2447,370 @@ describe("pipeline", () => {
     expect(fs.existsSync(doc.bytes_path)).toBe(true);
     expect(fs.existsSync(textPathFor(doc.bytes_path))).toBe(true);
     expect(listDocuments(db, printId)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// slice C — the ONE effective window, the parallel fan-out, and the go road
+// ---------------------------------------------------------------------------
+
+describe("slice C — window, fan-out, go", () => {
+  const ACME_ISSUER = "ACME Widget Holdings";
+  const ACME_CIK = "0001234567";
+  /** Names the ticker AND this event's quarter, so the gate accepts it. */
+  const ACME_RELEASE_TEXT = "ACME reports Q2 2026 results. Revenue $1,000 million.";
+
+  /**
+   * An in-window armed ACME print whose print ROW already exists, so a test can
+   * install its fakes BEFORE the first `ensurePrintWatch` starts the loop.
+   */
+  function seedAcmePrint(): { eventId: number; printId: number } {
+    const { eventId } = seedArmedEvent({ symbol: "ACME", issuerName: ACME_ISSUER });
+    fake.cik = ACME_CIK;
+    const printId = upsertPrint(db, eventId, "ACME", EVENT_DATE, "16:15");
+    return { eventId, printId };
+  }
+
+  /** An armed ACME event whose scheduled release is `hours` from now — the
+   *  window has NOT opened, so only a go press can make it live. */
+  function seedLaterAcmeEvent(hours: number): number {
+    const { eventId } = seedArmedEvent({
+      symbol: "ACME",
+      issuerName: ACME_ISSUER,
+      eventTime: hhmmEt(fake.nowMs + hours * 60 * 60_000),
+      rawJson: null,
+    });
+    fake.cik = ACME_CIK;
+    return eventId;
+  }
+
+  function acmeRelease() {
+    return {
+      headline: "Press Release: ACME reports Q2 2026 results",
+      stitchedText: ACME_RELEASE_TEXT,
+      partCount: 1,
+      articleIds: ["DJ-N$acme1"],
+    };
+  }
+
+  /** "HH:MM" in America/New_York — the shape `calendar_events.event_time` takes
+   *  when the vendor gave a wall-clock release time. */
+  function hhmmEt(ms: number): string {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date(ms));
+  }
+
+  /** Overwrite the lease row in `acquireWatcherLease`'s own stored shape. */
+  function stealLease(target: Database.Database, holder: string, expiresAtMs: number): void {
+    target
+      .prepare(`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))`)
+      .run("print_watch_lease", JSON.stringify({ holder, expiresAt: expiresAtMs }));
+  }
+
+  function statusRow(target: Database.Database, printId: number) {
+    const row = getWatchStatus(target).find((r) => r.printId === printId);
+    if (!row) throw new Error(`no status row for print ${printId}`);
+    return row;
+  }
+
+  it("polls DJ, EDGAR and IR in ONE pass, concurrently: a stalled EDGAR does not delay the DJ ingest", async () => {
+    const { printId } = seedAcmePrint();
+    let releaseEdgar!: () => void;
+    fake.edgar = () =>
+      new Promise((resolve) => {
+        releaseEdgar = () => resolve([]);
+      });
+    fake.twsUp = true;
+    fake.dj = async () => ({ completedReleases: [acmeRelease()], flashes: [] });
+
+    ensurePrintWatch(db);
+    // The DJ bytes land while the EDGAR road is still parked — impossible if
+    // the roads ran one after another.
+    await waitUntil(() => listDocuments(db, printId).length === 1);
+    expect(fake.edgarCalls).toBe(1);
+
+    releaseEdgar();
+    await waitUntil(() => (statusRow(db, printId).sources.edgar ?? "").startsWith("ok"));
+    // Only NOW is the DJ road guaranteed to have written its own note: the
+    // document lands mid-road, before the lane records its summary.
+    expect(statusRow(db, printId).sources.dj ?? "").toMatch(/^ok/);
+  });
+
+  it("a road that exceeds ROAD_TIMEOUT_MS is ABORTED (its signal fires) and the pass still completes with the other roads' results", async () => {
+    const { printId } = seedAcmePrint();
+    let cancelled = false;
+    // The throttled fetch carries the pass signal: a road that only settles
+    // when that signal fires is exactly "hung until cancelled".
+    fake.edgar = (fetchFn?: FetchLike) =>
+      new Promise<never>((_resolve, reject) => {
+        void fetchFn?.("https://data.sec.gov/probe").catch((err) => {
+          cancelled = true;
+          reject(err as Error);
+        });
+      });
+    fake.twsUp = true;
+    fake.dj = async () => ({ completedReleases: [], flashes: [] });
+
+    ensurePrintWatch(db);
+    await tick(ROAD_TIMEOUT_MS + 1_000);
+
+    expect(cancelled).toBe(true);
+    const row = statusRow(db, printId);
+    expect(row.sources.edgar).toMatch(/timed out|abort/i);
+    expect(row.sources.dj).toMatch(/^ok/);
+  });
+
+  it("a go request before the scheduled window forces it open, runs a pass at once, and lands one report per road", async () => {
+    const eventId = seedLaterAcmeEvent(3);
+    ensurePrintWatch(db);
+    let printId = getPrintByEventId(db, eventId)!.id;
+    expect(getPrintById(db, printId)!.state).toBe("scheduled");
+
+    fake.twsUp = false; // TWS down at go → the wire road is skipped (spec §7)
+    fake.edgar = async () => [];
+
+    // REAL requestGo; its defaults reach THIS process's watcher. Only the
+    // post-commit fan-out (A's prepare pass + the outbox drain) is stubbed —
+    // it is another slice's work and has nothing to do with acquisition.
+    const ack = await requestGo(db, eventId, {}, { postCommit: async () => {} });
+    printId = ack.printId;
+    expect(ack.wakeError).toBeNull();
+
+    await waitUntil(() => getGoRequest(db, ack.requestId)?.status === "done");
+    expect(getPrintById(db, printId)!.state).toBe("window_open");
+
+    const result = JSON.parse(getGoRequest(db, ack.requestId)!.result_json!) as RoadReport[];
+    expect(result.map((r) => r.road)).toEqual(["dj", "edgar", "ir"]);
+    // The pass ran NOW, not at the next cadence tick.
+    expect(fake.edgarCalls).toBeGreaterThanOrEqual(1);
+    expect(result.find((r) => r.road === "dj")).toMatchObject({ outcome: "skipped" });
+  });
+
+  it("the DJ and EDGAR query bounds start at the EFFECTIVE window start (press − 60m), not the scheduled one", async () => {
+    const eventId = seedLaterAcmeEvent(3);
+    ensurePrintWatch(db);
+    fake.twsUp = true;
+    fake.dj = async () => ({ completedReleases: [], flashes: [] });
+    fake.edgar = async () => [];
+
+    const ack = await requestGo(db, eventId, {}, { postCommit: async () => {} });
+    await waitUntil(() => getGoRequest(db, ack.requestId)?.status === "done");
+
+    const startMs = Date.parse(ack.forcedOpenAt) - FORCED_PRE_MS;
+    expect(Date.parse(fake.edgarStarts.at(-1)!)).toBe(startMs);
+    expect(fake.djStarts.at(-1)!).toBe(formatTwsDateTime(new Date(startMs)));
+  });
+
+  it("an extension written by ANOTHER process is honoured at the next pass (the window is re-read from the row)", async () => {
+    const { printId } = seedAcmePrint();
+    fake.twsUp = false;
+    fake.edgar = async () => [];
+    ensurePrintWatch(db);
+
+    const before = statusRow(db, printId).effectiveWindow!;
+    expect(before).not.toBeNull();
+    // "Another process" writes the row; this process never hears about it.
+    extendPrintWindow(db, printId, new Date(Date.parse(before.end) + 30 * 60_000).toISOString());
+    await tick(CADENCE_MS + 100);
+
+    fake.nowMs = Date.parse(before.end) + 10 * 60_000; // past the OLD end, inside the extension
+    await tick(CADENCE_MS + 100);
+
+    expect(getPrintById(db, printId)!.state).toBe("window_open"); // not expired
+    expect(statusRow(db, printId).windowExtendedUntil).not.toBeNull();
+  });
+
+  it("go dispatcher: a request queued by another CONNECTION is claimed within GO_DISPATCH_MS by the lease owner and runs", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "print-watch-godb-"));
+    const file = path.join(dir, "watch.db");
+    const owner = new Database(file);
+    owner.pragma("foreign_keys = ON");
+    runMigrations(owner);
+    const inMemory = db;
+    db = owner; // the seed helpers write through the module-level handle
+    try {
+      const { printId } = seedAcmePrint();
+      fake.twsUp = false;
+      fake.edgar = async () => [];
+      ensurePrintWatch(owner);
+
+      // Ten minutes of idle: no ensure, no press, nothing but the dispatcher.
+      await tick(10 * 60_000);
+
+      const other = new Database(file);
+      const id = insertGoRequest(other, {
+        printId,
+        inputKind: "none",
+        inputUrl: null,
+        inputSha256: null,
+        inputBytesPath: null,
+        requestedAt: new Date(fake.nowMs).toISOString(),
+      });
+      other.close();
+
+      await tick(GO_DISPATCH_MS + 50);
+      await waitUntil(() => getGoRequest(owner, id)?.status === "done");
+      expect(getGoRequest(owner, id)!.attempts).toBe(1);
+    } finally {
+      db = inMemory;
+      _setTestSeams(null); // stop the dispatcher before the file handle closes
+      owner.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("any wake runs the go dispatcher, whatever reason the scheduler reports (R-C10)", async () => {
+    const { printId } = seedAcmePrint();
+    fake.twsUp = false;
+    fake.edgar = async () => [];
+    ensurePrintWatch(db);
+    await tick(1);
+
+    // The scheduler keeps the FIRST remembered reason, so the desk's go press
+    // below is reported as "burst". The reason is informational: the wake must
+    // still dispatch.
+    acquisitionScheduler.wake(printId, "burst");
+    const id = insertGoRequest(db, {
+      printId,
+      inputKind: "none",
+      inputUrl: null,
+      inputSha256: null,
+      inputBytesPath: null,
+      requestedAt: new Date(fake.nowMs).toISOString(),
+    });
+    acquisitionScheduler.wake(printId, "go");
+
+    // Under GO_DISPATCH_MS of fake time: only the WAKE can have claimed it.
+    await waitUntil(() => getGoRequest(db, id)?.status === "done", 3, 500);
+    expect(getGoRequest(db, id)!.attempts).toBe(1);
+  });
+
+  it("losing the lease mid-pass aborts every road of that pass", async () => {
+    const { printId } = seedAcmePrint();
+    fake.twsUp = true;
+    fake.dj = async () => ({ completedReleases: [], flashes: [] });
+    fake.edgar = async () => [];
+
+    // A document waiting to be parsed makes the pass LONG — the parse is the
+    // phase the mid-pass renewal timer exists for (a model call is minutes,
+    // not seconds), and it is the only phase longer than ROAD_TIMEOUT_MS.
+    const bytes = Buffer.from(ACME_RELEASE_TEXT, "utf8");
+    const bytesPath = path.join(tmpRoot, "slow.txt");
+    recordDelivery(db, printId, "user-drop", "slow", null, bytes, {
+      bytesPath,
+      text: ACME_RELEASE_TEXT,
+      gateCtx: { symbol: "ACME", issuerName: ACME_ISSUER, eventDate: EVENT_DATE },
+    });
+    fs.writeFileSync(bytesPath, bytes);
+    fake.extract = () => new Promise((resolve) => setTimeout(() => resolve([]), 30_000));
+
+    ensurePrintWatch(db);
+    await tick(10);
+    // Another process takes the lease: our mid-pass renewal fails.
+    stealLease(db, "other-process", fake.nowMs + 120_000);
+
+    await tick(LEASE_RENEW_MS + 100);
+    await tick(30_000); // the parse finishes; the roads then find the pass aborted
+
+    const row = statusRow(db, printId);
+    expect(row.sources.edgar).toMatch(/abort|lease/i);
+    expect(row.sources.dj).toMatch(/abort|lease/i);
+  });
+
+  it("a renewal that THROWS aborts the pass instead of taking the process down", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { printId } = seedAcmePrint();
+      fake.twsUp = true;
+      fake.dj = async () => ({ completedReleases: [], flashes: [] });
+      fake.edgar = async () => [];
+
+      const bytes = Buffer.from(ACME_RELEASE_TEXT, "utf8");
+      const bytesPath = path.join(tmpRoot, "throwy.txt");
+      recordDelivery(db, printId, "user-drop", "throwy", null, bytes, {
+        bytesPath,
+        text: ACME_RELEASE_TEXT,
+        gateCtx: { symbol: "ACME", issuerName: ACME_ISSUER, eventDate: EVENT_DATE },
+      });
+      fs.writeFileSync(bytesPath, bytes);
+      fake.extract = () => new Promise((resolve) => setTimeout(() => resolve([]), 30_000));
+
+      ensurePrintWatch(db);
+      await tick(10);
+      // The lease WRITE itself starts failing — `acquireWatcherLease`'s UPDATE
+      // raises, so `renewLeaseIfDue` throws rather than returning false.
+      db.exec(
+        `CREATE TRIGGER lease_boom BEFORE UPDATE ON settings BEGIN SELECT RAISE(ABORT, 'lease store is down'); END`,
+      );
+
+      await tick(LEASE_RENEW_MS + 100);
+      await tick(30_000);
+
+      const row = statusRow(db, printId);
+      expect(row.sources.edgar).toMatch(/abort|lease store is down/i);
+      db.exec(`DROP TRIGGER lease_boom`);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("an external signal aborted mid-pass cancels the roads and the pass settles writing nothing (R-C11)", async () => {
+    // A print whose scheduled window has NOT opened: the runtime exists, but no
+    // cadence loop runs, so the only pass in flight is the forced one — the
+    // scheduler cannot coalesce this call into somebody else's.
+    const eventId = seedLaterAcmeEvent(3);
+    ensurePrintWatch(db);
+    const printId = getPrintByEventId(db, eventId)!.id;
+
+    const abortErr = () => Object.assign(new Error("aborted"), { name: "AbortError" });
+    fake.twsUp = true;
+    // Both wire and EDGAR hang until their signal fires; the wire would ingest a
+    // release if it were ever allowed to finish.
+    fake.dj = (signal?: AbortSignal) =>
+      new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(abortErr()), { once: true });
+      });
+    fake.edgar = (fetchFn?: FetchLike) =>
+      new Promise<never>((_resolve, reject) => {
+        void fetchFn?.("https://data.sec.gov/probe").catch(reject);
+      });
+
+    const claim = new AbortController();
+    const running = runForcedPass(db, printId, claim.signal);
+    await flushIo();
+    expect(fake.djCalls).toBe(1); // the pass really is in flight
+
+    claim.abort();
+    const reports = await running;
+
+    expect(reports.map((r) => r.road)).toEqual(["dj", "edgar", "ir"]);
+    expect(reports.find((r) => r.road === "dj")!.outcome).toBe("failed");
+    expect(reports.find((r) => r.road === "edgar")!.outcome).toBe("failed");
+    // Cancelled, not merely abandoned: nothing was written for this print.
+    expect(listDocuments(db, printId)).toEqual([]);
+  });
+
+  it("status carries forcedOpenAt, windowExtendedUntil, effectiveWindow and the latest goRequest", async () => {
+    const eventId = seedLaterAcmeEvent(1);
+    ensurePrintWatch(db);
+    fake.twsUp = false;
+    fake.edgar = async () => [];
+
+    const ack = await requestGo(db, eventId, {}, { postCommit: async () => {} });
+    await waitUntil(() => getGoRequest(db, ack.requestId)?.status === "done");
+
+    const row = statusRow(db, ack.printId);
+    expect(row.forcedOpenAt).toBe(ack.forcedOpenAt);
+    expect(row.windowExtendedUntil).toBeNull();
+    expect(row.effectiveWindow).toEqual({
+      start: new Date(Date.parse(ack.forcedOpenAt) - FORCED_PRE_MS).toISOString(),
+      end: expect.any(String),
+    });
+    expect(row.goRequest).toMatchObject({ id: ack.requestId, status: "done", attempts: 1 });
+    expect(row.goRequest!.result!.map((r) => r.road)).toEqual(["dj", "edgar", "ir"]);
   });
 });
