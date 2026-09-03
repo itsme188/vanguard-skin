@@ -13,6 +13,7 @@ import { sha256Hex } from "./delivery";
 import { decodeEntities } from "./representations";
 import { deltaPctNumber } from "./read-facts";
 import type { DocumentRow, LineContract } from "./types";
+import { INLINE_BAND_PCT } from "./first-pass-types";
 import type { CalloutProposal, CalloutUnit } from "./first-pass-types";
 
 export const VERIFIER_VERSION = 1;
@@ -48,12 +49,35 @@ export interface ParsedValue {
   unit: CalloutUnit;
 }
 
+// R-D17: ONE spelling of the scale-word alternation, reused by every regex
+// below (MONEY_RE, COUNT_RE, POINT_TOKEN, RANGE_TOKEN) and by the R-D6
+// inheritance suffix. Order matters — "million"/"billion" must be tried
+// before their single-letter abbreviations "m"/"b" or the longer word is
+// only ever partially consumed (the bug the old "illion" hack papered over
+// and, for a fully spelled-out range like "$875 million to $878 million",
+// never actually matched).
+const SCALE_WORDS = "billion|million|thousand|bn|mm|m|b|k";
 const SCALE: Record<string, number> = { k: 1e3, thousand: 1e3, m: 1e6, mm: 1e6, million: 1e6, b: 1e9, bn: 1e9, billion: 1e9 };
 const NUM = "(-?\\d[\\d,]*(?:\\.\\d+)?)";
-const MONEY_RE = new RegExp("\\$\\s?" + NUM + "\\s*(billion|million|thousand|bn|mm|m|b|k)?\\b", "gi");
+const MONEY_RE = new RegExp("\\$\\s?" + NUM + "\\s*(" + SCALE_WORDS + ")?\\b", "gi");
 const PCT_RE = new RegExp(NUM + "\\s?%", "g");
-const COUNT_RE = new RegExp("(?<![\\$\\d.,])" + NUM + "(?![\\d,.]*\\s?(%|billion|million|thousand|bn|mm|m|b|k)\\b)", "g");
+const COUNT_RE = new RegExp("(?<![\\$\\d.,])" + NUM + "(?![\\d,.]*\\s?(%|" + SCALE_WORDS + ")\\b)", "gi");
 const PER_SHARE_WORDS = /per (diluted )?share/i;
+
+// A four-digit 19xx/20xx token right after "fiscal"/"FY"/"calendar"/"year"/
+// "into"/"through"/"in"/"for" is a YEAR, not a count ("backlog visibility
+// into fiscal 2026" must never read as a count of 2026). Checked on the
+// matched value itself (shape) plus the one word immediately before the
+// match (numbersIn's "count" branch only — the shape check means a real
+// 3-digit count like "712 customers" is never touched by this).
+const YEAR_LEAD_WORDS = new Set(["fiscal", "fy", "calendar", "year", "into", "through", "in", "for"]);
+const YEAR_SHAPE_RE = /^(?:19|20)\d{2}$/;
+
+function isYearToken(raw: string, text: string, matchIndex: number): boolean {
+  if (!YEAR_SHAPE_RE.test(raw)) return false;
+  const before = text.slice(0, matchIndex).match(/([a-z]+)\s*$/i);
+  return !!before && YEAR_LEAD_WORDS.has(before[1].toLowerCase());
+}
 
 function toNumber(s: string): number {
   return Number(s.replace(/,/g, ""));
@@ -73,7 +97,10 @@ export function numbersIn(text: string, unit: CalloutUnit): number[] {
   } else if (unit === "percent") {
     for (const m of text.matchAll(PCT_RE)) out.push(toNumber(m[1]));
   } else {
-    for (const m of text.matchAll(COUNT_RE)) out.push(toNumber(m[1]));
+    for (const m of text.matchAll(COUNT_RE)) {
+      if (isYearToken(m[1], text, m.index ?? 0)) continue;
+      out.push(toNumber(m[1]));
+    }
   }
   return out;
 }
@@ -101,7 +128,7 @@ export function parseValueText(text: string): ParsedValue | null {
       if (b.unit === "percent") {
         a = parseOne(parts[0] + "%");
       } else if (b.unit === "usd" || b.unit === "per_share") {
-        const scaleWord = parts[1].match(/(billion|million|thousand|bn|mm|m|b|k)\b/i)?.[0] ?? "";
+        const scaleWord = parts[1].match(new RegExp("(" + SCALE_WORDS + ")\\b", "i"))?.[0] ?? "";
         a = parseOne(`$${parts[0]}${scaleWord ? " " + scaleWord : ""}`);
       }
     }
@@ -144,10 +171,16 @@ export interface GuidanceMetric {
   source_index: number;
 }
 
-const CLAUSE_SPLIT = /[.;\n]|\band\b/i;
+// R-D17: a period only splits when it is NOT a decimal point (a digit on
+// neither side); "and" only splits when it is NOT a range connector — i.e.
+// NOT immediately followed by the start of another figure ($/~/digit). The
+// old unconditional split broke "$206.5M" into two clauses at the decimal
+// and "$206M and $208M" into two clauses at the range's own "and".
+const CLAUSE_SPLIT = /[;\n]|(?<!\d)\.(?!\d)|\band\b(?!\s*(?:\$|~|\d))/i;
 const FIGURE_LEAD = /\s*(?:\(|of|at|to|~|about|around|guide[sd]?|consensus|of about)\s*$/i;
-const RANGE_TOKEN = /(?:between\s+)?\$?-?[\d.,]+\s?(?:%|[kmb]n?|illion)?\s*(?:–|—|-|to|and)\s*\$?-?[\d.,]+\s?(?:%|[kmb]n?|illion)?(?:\s*per (?:diluted )?share)?/i;
-const POINT_TOKEN = /~?\$?-?\d[\d,]*(?:\.\d+)?\s?(?:%|billion|million|thousand|bn|mm|m|b|k)?(?:\s*per (?:diluted )?share)?/i;
+const RANGE_NUM = "\\$?-?\\d[\\d,]*(?:\\.\\d+)?\\s?(?:%|" + SCALE_WORDS + ")?";
+const RANGE_TOKEN = new RegExp("(?:between\\s+)?" + RANGE_NUM + "\\s*(?:–|—|-|to|and)\\s*" + RANGE_NUM + "(?:\\s*per (?:diluted )?share)?", "i");
+const POINT_TOKEN = new RegExp("~?\\$?-?\\d[\\d,]*(?:\\.\\d+)?\\s?(?:%|" + SCALE_WORDS + ")?(?:\\s*per (?:diluted )?share)?", "i");
 
 /** One typed metric per guidance clause: the words BEFORE the first figure
  *  are the key; a clause with no figure still names a metric (unit null). */
@@ -231,7 +264,8 @@ export function verifyCallout({ proposal, text, guidanceMetrics, sheetLineKeys: 
   const key = labelNorm(proposal.label);
   const words = contentWords(proposal.label);
   if (!key || words.length === 0) return { ok: false, reason: "label has no content words" };
-  if (!namedByGuidance(words, guidanceMetrics)) return { ok: false, reason: "guidance does not name this metric" };
+  const namedInGuidance = namedByGuidance(words, guidanceMetrics);
+  if (!namedInGuidance) return { ok: false, reason: "guidance does not name this metric" };
   if (lineKeys.includes(key)) return { ok: false, reason: "the sheet already has a line for this metric" };
   const snippet = proposal.snippet.trim();
   if (snippet.length < 8) return { ok: false, reason: "snippet too short" };
@@ -248,13 +282,13 @@ export function verifyCallout({ proposal, text, guidanceMetrics, sheetLineKeys: 
   const window = text.slice(lo, hi).toLowerCase();
   const nearSnippet = words.every((w) => window.includes(w));
   // Because the eligibility gate above already requires the guidance to name
-  // this exact metric key, every content word is by construction a term in
-  // some guidance metric key — so `inGuidance` below is unreachable as a
-  // false branch in practice once the gate has passed. Kept anyway: it is
-  // the spec's OR, and a future relaxation of the eligibility gate must not
-  // silently lose this alternative.
-  const inGuidance = namedByGuidance(words, guidanceMetrics);
-  if (!nearSnippet && !inGuidance) return { ok: false, reason: "label words are not anchored to the snippet or the guidance" };
+  // this exact metric key, `namedInGuidance` is by construction true here —
+  // so this OR's guidance branch is unreachable as a false-tipping factor in
+  // practice once the gate has passed (reusing the same boolean rather than
+  // recomputing it). Kept anyway: it is the spec's OR (R-D1, session
+  // controller ruling — do not change), and a future relaxation of the
+  // eligibility gate must not silently lose this alternative.
+  if (!nearSnippet && !namedInGuidance) return { ok: false, reason: "label words are not anchored to the snippet or the guidance" };
   return { ok: true, parsed, snippetIndex: idx, labelNorm: key };
 }
 
@@ -272,7 +306,7 @@ export function formatValue(value: number, unit: CalloutUnit): string {
 function deltaLabel(expected: number, actual: number): string {
   const d = deltaPctNumber(expected, actual);
   if (d === null) return "n/a";
-  if (Math.abs(d) <= 0.5) return "in-line";
+  if (Math.abs(d) <= INLINE_BAND_PCT) return "in-line";
   return `${d > 0 ? "+" : ""}${d.toFixed(1)}%`;
 }
 
