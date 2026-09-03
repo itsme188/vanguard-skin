@@ -140,7 +140,9 @@ describe("spec §4.1 consumer matrix — armed event is selected; an in-window u
     expect(line).not.toBeNull();
     // Pin the exact rendered count AND symbol set (order-independent — the
     // underlying SQL has no ORDER BY) rather than a bare substring check.
-    expect(line).toContain("**Bogeys reminder:** 3 held/watchlist names report");
+    // [M2] "covered", not "held/watchlist": an armed name the desk does not own
+    // is in this count, and the old wording said otherwise.
+    expect(line).toContain("**Bogeys reminder:** 3 covered names report");
     const shownMatch = line!.match(/\(([^)]+)\)/);
     expect(shownMatch).not.toBeNull();
     expect(shownMatch![1].split(", ").sort()).toEqual(["ACME", "BETA", "GAMMA"]);
@@ -248,5 +250,42 @@ describe("spec §4.1 consumer matrix — armed event is selected; an in-window u
     ].map((r) => r.eventId);
     expect(ids).toContain(armed);
     expect(ids).not.toContain(control);
+  });
+
+  /**
+   * [M1] The cockpit's chip used to come from `getSymbolStatus`, whose `armed`
+   * reason is a SYMBOL fact over [today, +14]. A row the cockpit keeps because
+   * its EVENT is covered can sit outside that horizon — yesterday's armed
+   * carryover is the everyday case — and the status came back "neither",
+   * which the row then cast to the union anyway. Derive it from the same
+   * coverage the row was kept by: held > watchlist > armed, and armed is what
+   * is left once the first two are false.
+   */
+  it("[M1] an armed CARRYOVER row is chipped 'armed' by construction, not by the cast", () => {
+    const carry = seedEvent({
+      symbol: "ZETA",
+      date: "2026-09-01",
+      eventTime: "AMC",
+      releaseTime: "16:15",
+      tag: "carry",
+    });
+    armWorksheet(db, carry);
+
+    const payload = buildCockpitPayload(db, NOW);
+    const row = payload.carryover.find((r) => r.eventId === carry);
+    expect(row).toBeDefined();
+    expect(row!.symbolStatus).toBe("armed");
+  });
+
+  it("[M1] a CLUSTER-covered twin of an armed row is chipped 'armed' too", () => {
+    // Same (symbol, event_date) as the armed row but a different vendor row —
+    // R11 covers it, and the cockpit's dedup may surface either twin.
+    const armed = seedEvent({ symbol: "OMEGA", date: "2026-09-02", eventTime: "AMC", releaseTime: "16:15", tag: "armed" });
+    armWorksheet(db, armed);
+    seedEvent({ symbol: "OMEGA", date: "2026-09-02", eventTime: "AMC", releaseTime: "16:15", tag: "twin" });
+
+    const shown = [...buildCockpitPayload(db, NOW).lanes.amc].filter((r) => r.symbol === "OMEGA");
+    expect(shown).toHaveLength(1);
+    expect(shown[0].symbolStatus).toBe("armed");
   });
 });

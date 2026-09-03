@@ -85,9 +85,12 @@ export async function attemptPostCommitDrain(
   opts: { capMs?: number; deps?: OutboxSenderDeps } = {},
 ): Promise<PostCommitDrainResult> {
   const capMs = opts.capMs ?? DEFAULT_POST_COMMIT_CAP_MS;
+  // The cap governs the WHOLE wait, so it must also govern the fetch inside it:
+  // a caller-supplied `timeoutMs` longer than `capMs` would leave a fetch (and
+  // its abort timer) running well past the handoff. Spread FIRST, cap LAST.
   const drain: Promise<PostCommitDrainResult> = drainCloudOutbox(db, {
-    timeoutMs: capMs,
     ...opts.deps,
+    timeoutMs: capMs,
   }).then(
     (result) => ({ timedOut: false, result }),
     (err) => {
@@ -127,6 +130,27 @@ export interface OutboxDrainResult {
   skipped: "no-worker-config" | null;
 }
 
+/**
+ * The Worker's reply to POST /internal/armed-events. `applied:false` means the
+ * Worker kept what it already had — ordinary for a replayed generation, and the
+ * ONE symptom of the restored-DB wedge when the generation it names is higher
+ * than anything this Mac has ever minted.
+ */
+interface ArmedEventsAck {
+  applied?: unknown;
+  generation?: unknown;
+}
+
+/** Host (with port) of the Worker URL — never its credentials, never the secret.
+ *  A `send_error` that doesn't name its target is unusable in a diagnosis. */
+function targetHost(workerUrl: string): string {
+  try {
+    return new URL(workerUrl).host;
+  } catch {
+    return workerUrl.replace(/^[a-z]+:\/\//i, "").split("/")[0];
+  }
+}
+
 /** Drains unsent rows in generation order via POST /internal/armed-events;
  *  marks sent_at on 2xx; stops at the first failure. */
 export function drainCloudOutbox(
@@ -147,6 +171,7 @@ async function drainCloudOutboxUnlocked(
   const secret = deps.secret === undefined ? (process.env.CRON_SHARED_SECRET ?? null) : deps.secret;
   if (!workerUrl || !secret) return { sent: 0, failed: 0, skipped: "no-worker-config" };
   const fetchFn = deps.fetchFn ?? fetch;
+  const host = targetHost(workerUrl);
   const rows = db
     .prepare(
       `SELECT id, generation, payload_json FROM cloud_outbox
@@ -165,14 +190,51 @@ async function drainCloudOutboxUnlocked(
         signal: controller.signal,
       });
       if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}`);
+      // [F2] The restored-DB wedge. A Mac whose DB came back from a backup
+      // restarts its generation counter below the one KV holds, so every POST
+      // is refused as a stale replay and the cloud silently stops hearing about
+      // arms. `applied:false` alone is NOT that — it is also the correct reply
+      // to a legitimate re-send — so only a generation STRICTLY GREATER than
+      // the one we just posted proves the Worker holds state this Mac never
+      // produced. Anything else (equal/lower generation, a body that isn't
+      // JSON, a 2xx with no body) stays an ordinary success: the status is the
+      // contract, this parse is a diagnostic on top of it.
+      let ack: ArmedEventsAck | null = null;
+      try {
+        ack = (await res.json()) as ArmedEventsAck;
+      } catch {
+        ack = null;
+      }
+      if (
+        ack != null &&
+        ack.applied === false &&
+        typeof ack.generation === "number" &&
+        ack.generation > row.generation
+      ) {
+        db.prepare(`UPDATE cloud_outbox SET send_error = ? WHERE id = ?`).run(
+          `${host}: worker holds generation ${ack.generation} > local ${row.generation} — KV key armed-events needs a reset`.slice(
+            0,
+            200,
+          ),
+          row.id,
+        );
+        console.warn(
+          `[cloud-outbox] ${host} holds generation ${ack.generation} > local ${row.generation} — the KV key needs a reset (see docs/reference/cron-and-workers.md §15)`,
+        );
+        // Same in-order rule as a transport failure: nothing later goes out
+        // while the Worker is refusing this one.
+        return { sent, failed: 1, skipped: null };
+      }
       db.prepare(
         `UPDATE cloud_outbox SET sent_at = datetime('now'), send_error = NULL WHERE id = ?`,
       ).run(row.id);
       sent += 1;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // Name the target: an unadorned "fetch failed" says nothing about WHICH
+      // Worker was unreachable. The host only — never the URL's credentials.
       db.prepare(`UPDATE cloud_outbox SET send_error = ? WHERE id = ?`).run(
-        message.slice(0, 200),
+        `${host}: ${message}`.slice(0, 200),
         row.id,
       );
       // In-order delivery: never send N+1 before N landed.

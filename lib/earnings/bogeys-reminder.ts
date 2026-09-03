@@ -81,7 +81,9 @@ export function renderBogeysReminderLine(
   const plural = reporterSymbols.length === 1 ? "" : "s";
 
   return (
-    `**Bogeys reminder:** ${reporterSymbols.length} held/watchlist name${plural} ` +
+    // "covered", not "held/watchlist" — since slice A an ARMED name the desk
+    // does not own is counted here too (direction-only text either way).
+    `**Bogeys reminder:** ${reporterSymbols.length} covered name${plural} ` +
     `report${reporterSymbols.length === 1 ? "s" : ""} this week with no bogeys on file yet ` +
     `(${shown.join(", ")}${suffix}) — upload a preview PDF or add numbers manually before the prints.`
   );

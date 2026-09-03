@@ -29,10 +29,43 @@ const seed = (source: "finnhub" | "manual", rawJson: string | null, securityId: 
 describe("consensus_row step (spec §4.1 step 2, D1)", () => {
   it("reads the Finnhub estimate pair from raw_json only when the echoed symbol is in the event's issuer family [C-2]", () => {
     expect(readVendorConsensus(RAW, "GAMMA")).toEqual({ eps: 4.75, revenue: 45000000000 });
-    expect(readVendorConsensus(null, "GAMMA")).toBeNull();
-    expect(readVendorConsensus("{}", "GAMMA")).toBeNull();
     expect(readVendorConsensus(RAW.replace('"symbol":"GAMMA"', '"symbol":"GAMMA.MX"'), "GAMMA")).toBeNull();   // foreign-listing echo
     expect(readVendorConsensus(RAW, "BETA")).toBeNull();                                                      // wrong event
+  });
+  /**
+   * [F1] The reader is TRI-state. `undefined` = there is no Finnhub entry on
+   * this row at all (a manual row — e.g. the one correctEarningsEventDate mints,
+   * onto which the merge moved the finnhub bogey); `null` = an entry exists but
+   * its figures are withdrawn / foreign-echoed / from the wrong event. Only the
+   * second is a mandate to delete the engine-owned row.
+   */
+  it("[F1] distinguishes 'no vendor entry at all' (undefined) from 'entry present, figures withdrawn' (null)", () => {
+    expect(readVendorConsensus(null, "GAMMA")).toBeUndefined();     // manual row: nothing to withdraw
+    expect(readVendorConsensus("{}", "GAMMA")).toBeUndefined();     // sync row with no entry key
+    expect(readVendorConsensus(JSON.stringify({ entry: { symbol: "GAMMA", epsEstimate: null, revenueEstimate: null }, finnhub_symbol: "GAMMA" }), "GAMMA")).toBeNull();
+  });
+  it("[F1] a manual row carrying a MERGED finnhub bogey keeps it — the step must not read 'no entry' as a withdrawal", async () => {
+    const id = seed("manual", null);
+    // What Task 7's merge does on a date correction: the donor's finnhub bogey
+    // is repointed onto the freshly-minted manual row.
+    db.prepare(
+      `INSERT INTO earnings_bogeys (event_id, source, source_label, eps_consensus, eps_consensus_vendor, revenue_consensus_usd)
+       VALUES (?, 'finnhub', ?, NULL, 4.75, 45000000000)`,
+    ).run(id, FINNHUB_BOGEY_LABEL);
+    expect(await consensusRowStep.run(db, id, ctx)).toEqual({ status: "done", note: "no vendor data on this row" });
+    expect(
+      db.prepare(`SELECT eps_consensus_vendor, revenue_consensus_usd FROM earnings_bogeys WHERE event_id = ? AND source = 'finnhub'`).get(id),
+    ).toEqual({ eps_consensus_vendor: 4.75, revenue_consensus_usd: 45000000000 });
+  });
+  it("[F1] the fingerprint tells 'no entry' apart from 'entry withdrawn' — one must not look like the other", () => {
+    const id = seed("finnhub", null);
+    const absent = consensusRowStep.fingerprint(db, id);
+    db.prepare(`UPDATE calendar_events SET raw_json = ? WHERE id = ?`).run(
+      JSON.stringify({ entry: { symbol: "GAMMA", epsEstimate: null, revenueEstimate: null }, finnhub_symbol: "GAMMA" }),
+      id,
+    );
+    // Both flatten to JSON `null`; only an explicit encoding makes this drift.
+    expect(consensusRowStep.fingerprint(db, id)).not.toBe(absent);
   });
   it("[C-2] withdrawal: when the vendor estimate disappears, the engine-owned finnhub row is deleted", async () => {
     const id = seed("finnhub", RAW);
@@ -59,7 +92,7 @@ describe("consensus_row step (spec §4.1 step 2, D1)", () => {
   });
   it("a manual event with no vendor consensus is done with a note and writes nothing", async () => {
     const id = seed("manual", null);
-    expect(await consensusRowStep.run(db, id, ctx)).toEqual({ status: "done", note: "no vendor consensus on the event" });
+    expect(await consensusRowStep.run(db, id, ctx)).toEqual({ status: "done", note: "no vendor data on this row" });
     expect(db.prepare(`SELECT COUNT(*) AS n FROM earnings_bogeys`).get()).toEqual({ n: 0 });
   });
   it("fingerprint tracks the consensus fields", () => {

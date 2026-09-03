@@ -92,6 +92,51 @@ describe("armed-events projection + outbox generations", () => {
     ).toEqual([]);
   });
 
+  /**
+   * [R23] The live list is limited to a 14-day lookback. An armed event that
+   * ages past the horizon simply DROPS OUT — it is never tombstoned: nothing
+   * in the Worker selects a 15-day-old event, and a tombstone would be
+   * re-carried for two days for nothing.
+   */
+  it("[R23] emits live entries only for armed events inside the 14-day lookback", () => {
+    const fresh = seed("ACME", "2026-08-20"); // today - 13
+    const stale = seed("BETA", "2026-08-18"); // today - 15
+    armWorksheet(db, fresh);
+    armWorksheet(db, stale);
+    const entries = buildArmedEventsEntries(db, { today: "2026-09-02" });
+    expect(entries.map((e) => e.eventId)).toEqual([fresh]);
+    // The boundary day itself is inside the horizon.
+    const edge = seed("GAMMA", "2026-08-19"); // today - 14
+    armWorksheet(db, edge);
+    expect(
+      buildArmedEventsEntries(db, { today: "2026-09-02" })
+        .map((e) => e.symbol)
+        .sort(),
+    ).toEqual(["ACME", "GAMMA"]);
+  });
+
+  it("[R23] an event that ages past the horizon leaves NO tombstone behind", () => {
+    const a = seed("ACME", "2026-08-20");
+    armWorksheet(db, a); // gen 1, today's real ET date is irrelevant: entries carry the event
+    db.transaction(() =>
+      writeArmedEventsOutboxRow(db, { today: "2026-08-20" }),
+    ).immediate();
+    // 15 days later the event is still ARMED — it has simply aged out.
+    const later = db
+      .transaction(() => writeArmedEventsOutboxRow(db, { today: "2026-09-04" }))
+      .immediate();
+    expect(later.written).toBe(true);
+    const payload = JSON.parse(
+      (
+        db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as {
+          payload_json: string;
+        }
+      ).payload_json,
+    ) as { entries: unknown[] };
+    expect(payload.entries).toEqual([]); // no live row, and NO tombstone
+    expect(buildArmedEventsEntries(db, { today: "2026-09-04" })).toEqual([]);
+  });
+
   it("re-arming an event drops its tombstone instead of carrying both", () => {
     const a = seed("ACME", "2026-09-02");
     armWorksheet(db, a);

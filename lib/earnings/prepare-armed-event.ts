@@ -68,7 +68,17 @@ export interface PrepareStepRow { event_id: number; step: string; status: Prepar
  * They can disagree by design: a row whose fingerprint threw is booked
  * `failed` without the step ever being invoked.
  */
-export interface PrepareRunReport { ran: number; done: number; pending: number; failed: number; skipped: number; }
+export interface PrepareRunReport {
+  ran: number; done: number; pending: number; failed: number; skipped: number;
+  /**
+   * [F3] Present (and `true`) only when the pass-level budget stopped the run
+   * before every runnable row had been reached. The rows it never started are
+   * untouched — pending and unclaimed — so the next tick resumes them; the
+   * field exists so a sweep summary can say so out loud instead of looking
+   * like a quiet pass.
+   */
+  budgetExhausted?: true;
+}
 
 export const PREPARE_MAX_ATTEMPTS = 5;
 export const PREPARE_CLAIM_STALE_MS = 5 * 60_000;
@@ -79,6 +89,15 @@ export const PREPARE_CLAIM_STALE_MS = 5 * 60_000;
  * the double-run the token CAS exists to prevent.
  */
 export const PREPARE_STEP_TIMEOUT_MS = 4 * 60_000;
+/**
+ * [F3] Whole-pass wall-clock budget, checked BETWEEN rows. The per-invocation
+ * deadline caps one step; it does nothing about N hung rows in a row, which at
+ * 4 minutes each would run the 15-minute sweep tick into the next one. The row
+ * in flight is never cut off by this (its claim is live and its finalisation
+ * has to land) — the pass simply stops starting new ones, so a single
+ * pathological step can still overrun by up to PREPARE_STEP_TIMEOUT_MS.
+ */
+export const PREPARE_PASS_BUDGET_MS = 5 * 60_000;
 
 const steps = new Map<string, PrepareStepDefinition>();
 
@@ -160,11 +179,15 @@ export async function runPrepareSteps(
     now?: () => number;
     /** [R13] Per-invocation deadline override. Tests only — production uses the constant. */
     stepTimeoutMs?: number;
+    /** [F3] Whole-pass budget override. Tests only — production uses the constant. */
+    passBudgetMs?: number;
   } = {},
 ): Promise<PrepareRunReport> {
   bootstrapEarningsRegistries();                                            // [C-14] self-bootstrap
   const now = opts.now ?? (() => Date.now());
   const stepTimeoutMs = opts.stepTimeoutMs ?? PREPARE_STEP_TIMEOUT_MS;
+  const passBudgetMs = opts.passBudgetMs ?? PREPARE_PASS_BUDGET_MS;
+  const passStart = now();
   const report: PrepareRunReport = { ran: 0, done: 0, pending: 0, failed: 0, skipped: 0 };
   const today = todayET(new Date(now()));
   // [C-10] Durable path: a sweep-style run (no eventId) first inserts any missing registered
@@ -172,6 +195,18 @@ export async function runPrepareSteps(
   // never happened (crash, or a step registered later) is picked up within one tick.
   if (opts.eventId == null) reconcileMissingPrepareSteps(db, today);
   for (const r of selectRunnable(db, { eventId: opts.eventId, today })) {
+    // [F3] Budget check BEFORE claiming the next row, never mid-row: a claimed
+    // row must reach its finalisation, and a row we simply never start stays
+    // pending with its attempts intact for the next tick. Nothing is counted
+    // as skipped here — skipped means "considered and declined", and these
+    // were not considered at all.
+    if (now() - passStart > passBudgetMs) {
+      report.budgetExhausted = true;
+      console.warn(
+        `[prepare] pass budget ${humanMs(passBudgetMs)} exhausted — stopping before ${r.step} on event ${r.event_id}; the remaining rows resume next tick`,
+      );
+      break;
+    }
     const def = steps.get(r.step);
     if (!def) { report.skipped += 1; continue; }
     const staleBefore = sqlUtc(now() - PREPARE_CLAIM_STALE_MS);

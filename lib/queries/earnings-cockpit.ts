@@ -11,7 +11,7 @@ import {
 import { getEmailStatesForEvents, getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
 import { getSkippedPhasesForEvents } from "@/lib/queries/earnings-skips";
 import {
-  getSymbolStatus,
+  getSymbolStatusDetailed,
   coveredForEvents,
   getSecurityIdForSymbolWithSiblings,
 } from "@/lib/queries/briefing-symbols";
@@ -138,7 +138,15 @@ export function buildCockpitPayload(
 
   const rawById = new Map<number, RawEventRow>(raw.map((r) => [r.id, r]));
   const eventIds = raw.map((r) => r.id);
-  const statusMap = getSymbolStatus(db, raw.map((r) => r.symbol));   // still used for the chip
+  // [M1] Chip inputs. `held` / `watchlist` are family-aware SYMBOL facts and
+  // come straight from the reasons; `armed` is NOT taken from the reasons here,
+  // because that reason is a symbol fact over [todayET(), +14] and this surface
+  // keeps rows by EVENT coverage — yesterday's armed carryover, and a
+  // cluster-covered twin, both sit outside it and used to come back "neither"
+  // for the row to cast away. Below, armed is what is LEFT once held and
+  // watchlist are false, which is true by construction because `kept` is
+  // exactly `coveredIds`. Display-only either way (spec §4.1).
+  const statusReasons = getSymbolStatusDetailed(db, raw.map((r) => r.symbol));
   const coveredIds = coveredForEvents(db, raw.map((r) => ({ symbol: r.symbol, eventId: r.id })));
   const emailStates = getEmailStatesForEvents(db, eventIds);
   const sentPhases = getSentPhasesForEvents(db, eventIds);
@@ -178,7 +186,7 @@ export function buildCockpitPayload(
         const skipped = skipMap[r.id]?.recap ?? false;
         if (sent || skipped || isMuted(r.symbol)) continue;
       }
-      const status = statusMap[r.symbol.toUpperCase()] ?? statusMap[r.symbol];
+      const reasons = statusReasons[r.symbol.toUpperCase()]?.reasons;
       rows.push({
         eventId: r.id,
         symbol: r.symbol,
@@ -189,9 +197,10 @@ export function buildCockpitPayload(
         eventTime: r.event_time,
         releaseTime: r.release_time,
         // `kept` is already restricted to coveredIds (held/watchlist/armed,
-        // R10) — `status` can never actually be "neither" here, but the
-        // Record<string, SymbolStatus> return type can't express that.
-        symbolStatus: status as "held" | "watchlist" | "armed",
+        // R10), so a row that is neither held nor on the watchlist is here
+        // BECAUSE it is armed — no cast, and no dependence on the symbol-level
+        // armed horizon.
+        symbolStatus: reasons?.held ? "held" : reasons?.watchlist ? "watchlist" : "armed",
         consensus: formatFinnhubFigureCompact(r.consensus_value ?? r.consensus_estimate),
         // An implausible Finnhub actual is withheld from the cons→actual
         // figures line (the "act ⚠" stage chip carries the flag) — same

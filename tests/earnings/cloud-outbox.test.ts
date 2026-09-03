@@ -71,7 +71,7 @@ describe("drainCloudOutbox", () => {
     });
     expect(db.prepare(`SELECT sent_at, send_error FROM cloud_outbox`).get()).toEqual({
       sent_at: null,
-      send_error: "HTTP 500",
+      send_error: "w: HTTP 500", // host-prefixed so the row names its target
     });
     expect(await drainCloudOutbox(db, { fetchFn, workerUrl: "https://w", secret: "s" })).toEqual({
       sent: 1,
@@ -97,6 +97,81 @@ describe("drainCloudOutbox", () => {
       }),
     ).toEqual({ sent: 0, failed: 1, skipped: null });
     expect(seen).toEqual([1]);
+  });
+
+  it("send_error names the target host so a silent drain failure is diagnosable, never the secret", async () => {
+    seedArmed();
+    const fetchFn = vi.fn(async () => {
+      throw new Error("fetch failed");
+    });
+    await drainCloudOutbox(db, {
+      fetchFn: fetchFn as unknown as typeof fetch,
+      workerUrl: "http://127.0.0.1:8787",
+      secret: "s3cret",
+    });
+    const { send_error: err } = db
+      .prepare(`SELECT send_error FROM cloud_outbox`)
+      .get() as { send_error: string };
+    expect(err).toBe("127.0.0.1:8787: fetch failed");
+    expect(err).not.toContain("s3cret");
+  });
+
+  /**
+   * [F2] The restored-DB wedge: the Worker holds a generation this Mac never
+   * produced (a DB restored from backup restarts the counter), so every POST
+   * is refused as a stale replay — silently, because `applied:false` is also
+   * the normal reply to a legitimate re-send. Surface it on the row.
+   */
+  it("[F2] applied:false from a HIGHER generation is the KV wedge — surfaced on send_error, drain stops", async () => {
+    const a = seedArmed(); // gen 1
+    db.prepare(`UPDATE calendar_events SET release_time = '16:30' WHERE id = ?`).run(a);
+    db.transaction(() => writeArmedEventsOutboxRow(db)).immediate(); // gen 2
+    const seen: number[] = [];
+    const fetchFn = vi.fn(async (_url: string, init: RequestInit) => {
+      seen.push((JSON.parse(String(init.body)) as { generation: number }).generation);
+      return new Response(JSON.stringify({ applied: false, generation: 47 }), { status: 200 });
+    });
+    expect(
+      await drainCloudOutbox(db, {
+        fetchFn: fetchFn as unknown as typeof fetch,
+        workerUrl: "http://127.0.0.1:8787",
+        secret: "s",
+      }),
+    ).toEqual({ sent: 0, failed: 1, skipped: null });
+    expect(seen).toEqual([1]); // in-order rule: generation 2 never went out
+    expect(db.prepare(`SELECT sent_at, send_error FROM cloud_outbox WHERE generation = 1`).get()).toEqual({
+      sent_at: null,
+      send_error:
+        "127.0.0.1:8787: worker holds generation 47 > local 1 — KV key armed-events needs a reset",
+    });
+  });
+
+  it("[F2] applied:false at an EQUAL generation is an ordinary re-send — still marked sent", async () => {
+    seedArmed();
+    const fetchFn = vi.fn(
+      async () => new Response(JSON.stringify({ applied: false, generation: 1 }), { status: 200 }),
+    );
+    expect(
+      await drainCloudOutbox(db, {
+        fetchFn: fetchFn as unknown as typeof fetch,
+        workerUrl: "https://w",
+        secret: "s",
+      }),
+    ).toEqual({ sent: 1, failed: 0, skipped: null });
+    expect(db.prepare(`SELECT sent_at IS NOT NULL AS sent FROM cloud_outbox`).get()).toEqual({ sent: 1 });
+  });
+
+  it("[F2] a non-JSON 2xx body is still a success (defensive — the status is the contract)", async () => {
+    seedArmed();
+    const fetchFn = vi.fn(async () => new Response("OK", { status: 200 }));
+    expect(
+      await drainCloudOutbox(db, {
+        fetchFn: fetchFn as unknown as typeof fetch,
+        workerUrl: "https://w",
+        secret: "s",
+      }),
+    ).toEqual({ sent: 1, failed: 0, skipped: null });
+    expect(db.prepare(`SELECT sent_at IS NOT NULL AS sent FROM cloud_outbox`).get()).toEqual({ sent: 1 });
   });
 
   it("no Worker config → skipped, nothing marked", async () => {
@@ -208,6 +283,28 @@ describe("attemptPostCommitDrain", () => {
     });
     expect(out).toEqual({ timedOut: false, result: { sent: 1, failed: 0, skipped: null } });
   });
+
+  it("[M2] capMs caps the fetch too — it wins over a caller-supplied deps.timeoutMs", async () => {
+    seedArmed();
+    let seen: AbortSignal | null = null;
+    const fetchFn = vi.fn(async (_url: string, init: RequestInit) => {
+      seen = init.signal as AbortSignal;
+      await new Promise((r) => setTimeout(r, 300));
+      return new Response("{}", { status: 200 });
+    });
+    await attemptPostCommitDrain(db, {
+      capMs: 40,
+      deps: {
+        fetchFn: fetchFn as unknown as typeof fetch,
+        workerUrl: "https://w",
+        secret: "s",
+        timeoutMs: 5_000, // a caller-supplied timeout must never outlive the cap
+      },
+    });
+    await new Promise((r) => setTimeout(r, 350));
+    expect(seen).not.toBeNull();
+    expect((seen as unknown as AbortSignal).aborted).toBe(true);
+  }, 10_000);
 
   it("never throws when the drain itself rejects", async () => {
     seedArmed();
