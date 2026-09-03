@@ -22,6 +22,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { confirmEarningsDate } from "@/lib/mutations/confirm-earnings-date";
+import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 import {
   deleteAndSuppressCalendarEvent,
   deleteCalendarEvent,
@@ -514,6 +515,44 @@ describe("deleteAndSuppressCalendarEvent — sync-owned delete hands the print b
     expect(bogeyEventId(bogey)).toBe(finn);
     expect(emailEventId(recap)).toBe(finn);
     expect(skipEventId(preview)).toBe(finn);
+  });
+
+  it("[R12] hands the ARM (flag + prepare steps) to the twin, and the projection shows the survivor armed with the deleted id as a tombstone", () => {
+    // The repointer moves bogeys/emails/skips, but the worksheet flag and its
+    // prepare-step ledger cascade on the DELETE — so before the registry merge
+    // the print survived on the twin while the arm died with the row.
+    const finn = seedVendor("finnhub", "ORCL", "2026-09-07");
+    const nas = seedVendor("nasdaq", "ORCL", "2026-09-04");
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(state(nas)!.superseded).toBe(0); // nasdaq is the canonical being deleted
+
+    armWorksheet(db, nas); // generation 1: [nas armed]
+    db.prepare(
+      `INSERT INTO earnings_prepare_steps (event_id, step, status, input_fingerprint)
+       VALUES (?, 'intel', 'done', 'fp1')`,
+    ).run(nas);
+
+    deleteAndSuppressCalendarEvent(db, nas, { today: TODAY });
+
+    // The arm MOVED to the survivor rather than cascading away.
+    expect(db.prepare("SELECT event_id FROM earnings_worksheet_flags").all()).toEqual([
+      { event_id: finn },
+    ]);
+    expect(db.prepare("SELECT event_id, status FROM earnings_prepare_steps").all()).toEqual([
+      { event_id: finn, status: "done" },
+    ]);
+
+    // …and the projection written after the delete says exactly that: the
+    // survivor armed, the deleted id carried as a tombstone.
+    const newest = JSON.parse(
+      (
+        db
+          .prepare("SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1")
+          .get() as { payload_json: string }
+      ).payload_json,
+    ) as { entries: Array<{ eventId: number; removed?: true }> };
+    expect(newest.entries.filter((e) => !e.removed).map((e) => e.eventId)).toEqual([finn]);
+    expect(newest.entries.filter((e) => e.removed).map((e) => e.eventId)).toEqual([nas]);
   });
 
   it("still deletes + suppresses a lone sync row with no twin to hand back to", () => {

@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { mergeEarningsEventState } from "@/lib/earnings/event-merge";
+import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 
 // ── Earnings date cross-check reconciliation ────────────────────────
 //
@@ -328,13 +330,30 @@ export function repointDependentsBeforeDelete(
   const key = familyKey(doomed.symbol);
   if (!key) return none;
 
+  // Live print v2 slice A: the arm, its prepare-step ledger and its scan
+  // ledger are dependents too — mergeEarningsEventState (called by the delete
+  // paths with the targetId resolved here) hands them to the survivor. Without
+  // them in this count an ARMED row that happens to carry no bogeys/emails
+  // returns targetId=null, and the arm dies with the row while the print
+  // survives. Registry-handler tables (slice B's print state) hang off armed
+  // events, so the flag count covers them transitively.
   const dependents = db
     .prepare(
       `SELECT (SELECT COUNT(*) FROM earnings_bogeys WHERE event_id = ?)
             + (SELECT COUNT(*) FROM earnings_emails WHERE event_id = ?)
-            + (SELECT COUNT(*) FROM earnings_email_skips WHERE event_id = ?) AS n`,
+            + (SELECT COUNT(*) FROM earnings_email_skips WHERE event_id = ?)
+            + (SELECT COUNT(*) FROM earnings_worksheet_flags WHERE event_id = ?)
+            + (SELECT COUNT(*) FROM earnings_prepare_steps WHERE event_id = ?)
+            + (SELECT COUNT(*) FROM earnings_bogey_scans WHERE event_id = ?) AS n`,
     )
-    .get(opts.eventId, opts.eventId, opts.eventId) as { n: number };
+    .get(
+      opts.eventId,
+      opts.eventId,
+      opts.eventId,
+      opts.eventId,
+      opts.eventId,
+      opts.eventId,
+    ) as { n: number };
   if (dependents.n === 0) return none;
 
   // The reconciler's own gather window, widened so a doomed row parked outside
@@ -479,6 +498,11 @@ export function reconcileEarningsDates(
   const repointDependents = createDependentRepointer(db);
 
   const result: ReconcileResult = { confirmed: 0, conflict: 0, single: 0, userConfirmed: 0 };
+  // [C-13] One outbox row per reconcile transaction, only when the merge
+  // actually moved something. Already-superseded donors revisited on later
+  // syncs report changed:false and write nothing, so the pass stays idempotent
+  // at the outbox level too.
+  let anyChanged = false;
 
   const apply = db.transaction(() => {
     for (const familyRows of byFamily.values()) {
@@ -508,6 +532,9 @@ export function reconcileEarningsDates(
             res.canonicalId,
           );
           repointDependents(r.id, res.canonicalId, canonicalEventDate);
+          // v2 slice A: the repointer moved what it could; the registry merge handles the
+          // (source, source_label) collisions it skipped, flags, steps, scans, and B's tables.
+          anyChanged ||= mergeEarningsEventState(db, r.id, res.canonicalId).changed;
         }
         if (res.status === "confirmed") result.confirmed++;
         else if (res.status === "conflict") result.conflict++;
@@ -516,6 +543,10 @@ export function reconcileEarningsDates(
       }
       }
     }
+    // LAST statement inside the transaction: the arm may have moved onto a new
+    // canonical, so the Worker's armed projection has to hear about it — and it
+    // has to commit with the moves it describes.
+    if (anyChanged) writeArmedEventsOutboxRow(db, { today });
   });
   apply();
 
