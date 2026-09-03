@@ -65,18 +65,26 @@ const COUNT_RE = new RegExp("(?<![\\$\\d.,])" + NUM + "(?![\\d,.]*\\s?(%|" + SCA
 const PER_SHARE_WORDS = /per (diluted )?share/i;
 
 // A four-digit 19xx/20xx token right after "fiscal"/"FY"/"calendar"/"year"/
-// "into"/"through"/"in"/"for" is a YEAR, not a count ("backlog visibility
-// into fiscal 2026" must never read as a count of 2026). Checked on the
-// matched value itself (shape) plus the one word immediately before the
-// match (numbersIn's "count" branch only — the shape check means a real
-// 3-digit count like "712 customers" is never touched by this).
+// "into"/"through"/"in"/"for" is a YEAR, not a count or a guidance figure
+// ("backlog visibility into fiscal 2026" must never read as a count of
+// 2026; "We expect strength in fiscal 2026." must never mint a guidance
+// metric with value 2026). One shared helper, two call sites: numbersIn's
+// "count" branch (below) and extractGuidanceMetrics's figure detection
+// (fix round 2 — the year guard could not see a lead word that sits OUTSIDE
+// the isolated token extractGuidanceMetrics parses in isolation). Checked on
+// the matched value itself (shape) plus the one word immediately before the
+// match — the shape check means a real 3-digit count like "712 customers"
+// is never touched by this.
 const YEAR_LEAD_WORDS = new Set(["fiscal", "fy", "calendar", "year", "into", "through", "in", "for"]);
 const YEAR_SHAPE_RE = /^(?:19|20)\d{2}$/;
 
-function isYearToken(raw: string, text: string, matchIndex: number): boolean {
-  if (!YEAR_SHAPE_RE.test(raw)) return false;
-  const before = text.slice(0, matchIndex).match(/([a-z]+)\s*$/i);
-  return !!before && YEAR_LEAD_WORDS.has(before[1].toLowerCase());
+function endsWithYearLeadWord(before: string): boolean {
+  const m = before.match(/([a-z]+)\s*$/i);
+  return !!m && YEAR_LEAD_WORDS.has(m[1].toLowerCase());
+}
+
+function isYearToken(raw: string, before: string): boolean {
+  return YEAR_SHAPE_RE.test(raw) && endsWithYearLeadWord(before);
 }
 
 function toNumber(s: string): number {
@@ -98,7 +106,7 @@ export function numbersIn(text: string, unit: CalloutUnit): number[] {
     for (const m of text.matchAll(PCT_RE)) out.push(toNumber(m[1]));
   } else {
     for (const m of text.matchAll(COUNT_RE)) {
-      if (isYearToken(m[1], text, m.index ?? 0)) continue;
+      if (isYearToken(m[1], text.slice(0, m.index ?? 0))) continue;
       out.push(toNumber(m[1]));
     }
   }
@@ -171,12 +179,15 @@ export interface GuidanceMetric {
   source_index: number;
 }
 
-// R-D17: a period only splits when it is NOT a decimal point (a digit on
-// neither side); "and" only splits when it is NOT a range connector — i.e.
-// NOT immediately followed by the start of another figure ($/~/digit). The
-// old unconditional split broke "$206.5M" into two clauses at the decimal
-// and "$206M and $208M" into two clauses at the range's own "and".
-const CLAUSE_SPLIT = /[;\n]|(?<!\d)\.(?!\d)|\band\b(?!\s*(?:\$|~|\d))/i;
+// R-D17 (fix round 2 correction): a period is a decimal point ONLY when
+// BOTH neighbours are digits — so it splits whenever EITHER side is not a
+// digit ("(?<!\d)\.|\.(?!\d)", an OR), never only when NEITHER side is a
+// digit (round 1's "(?<!\d)\.(?!\d)", an AND, wrongly suppressed the split
+// after "…for Q4." and "…fiscal 2026." — a digit run ending the SENTENCE
+// before the period, not a decimal — silently dropping or merging the next
+// metric). "and" only splits when it is NOT a range connector — i.e. NOT
+// immediately followed by the start of another figure ($/~/digit).
+const CLAUSE_SPLIT = /[;\n]|(?<!\d)\.|\.(?!\d)|\band\b(?!\s*(?:\$|~|\d))/i;
 const FIGURE_LEAD = /\s*(?:\(|of|at|to|~|about|around|guide[sd]?|consensus|of about)\s*$/i;
 const RANGE_NUM = "\\$?-?\\d[\\d,]*(?:\\.\\d+)?\\s?(?:%|" + SCALE_WORDS + ")?";
 const RANGE_TOKEN = new RegExp("(?:between\\s+)?" + RANGE_NUM + "\\s*(?:–|—|-|to|and)\\s*" + RANGE_NUM + "(?:\\s*per (?:diluted )?share)?", "i");
@@ -192,7 +203,12 @@ export function extractGuidanceMetrics(guidanceTexts: string[]): GuidanceMetric[
       if (!clause) continue;
       const range = clause.match(RANGE_TOKEN);
       const point = range ? null : clause.match(POINT_TOKEN);
-      const m = range ?? point;
+      // Fix round 2 ("adjacent gap"): a lone bare year ("fiscal 2026") is
+      // not a guidance figure — treat the clause as figure-less rather than
+      // minting a bogus `value: 2026` metric. Only applies to a lone point
+      // match (a range's bounds are never a year).
+      const bogusYear = !!point && !range && isYearToken(point[0], clause.slice(0, point.index ?? 0));
+      const m = bogusYear ? null : (range ?? point);
       if (!m || m.index === undefined) {
         const key = labelNorm(clause);
         if (key) out.push({ key, unit: null, value: null, value_high: null, source_index });
