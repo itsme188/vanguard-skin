@@ -35,6 +35,32 @@ import { issuerSiblings } from "./fallback-earnings";
 
 export const ARMED_EVENTS_KV_KEY = "armed-events";
 
+/**
+ * The ONLY keys `parseEntry` will ever keep — the Worker half of the
+ * parity-pinned data-flow contract. PARITY: this must equal the Mac's
+ * `ARMED_EVENT_PROJECTION_KEYS` (lib/earnings/armed-events-projection.ts),
+ * asserted by workers/cron/test/armed-events-parity.test.ts.
+ *
+ * The pin matters because `parseEntry` drops unlisted keys BY DESIGN: without
+ * it, a field added on the Mac would be silently discarded in the cloud with
+ * both suites green.
+ */
+export const ARMED_EVENT_ENTRY_KEYS = [
+  "eventId",
+  "symbol",
+  "eventDate",
+  "eventTime",
+  "releaseTime",
+  "sourceKey",
+  "source",
+  "consensusValue",
+  "expectedImpact",
+  "securityId",
+  "epsConsensusVendor",
+  "removed",
+  "removedAt",
+] as const;
+
 /** Hard caps on what one POST may carry (see applyArmedEventsDelta, [C-19]). */
 export const ARMED_EVENTS_MAX_ENTRIES = 500;
 export const ARMED_EVENTS_MAX_BODY_BYTES = 256 * 1024;
@@ -53,31 +79,56 @@ export interface EffectiveCalendar {
 }
 
 /**
- * A projection entry rendered as a calendar row. The armed projection carries
- * only the fields a cloud consumer needs to window and address the event —
- * `title` is synthesised, and everything the Worker has no business seeing
- * (notes, reads, callouts, document text) is absent by construction.
+ * The calendar columns the armed projection genuinely OWNS — the ones it reads
+ * straight off `calendar_events` on the Mac, so its copy is authoritative and
+ * may overwrite a snapshot row.
+ *
+ * Everything else on a snapshot row is deliberately NOT here.
+ * `consensus_estimate` in particular is a different column with a different
+ * lifecycle from `consensus_value` (Finnhub sync-time vs enrichment-time):
+ * blanking it would kill `effectiveConsensusRaw`'s last fallback in
+ * fallback-earnings, empty the `cons` column in todays-reporters, and hand a
+ * null consensus to calendar-enrich's actual-fetch context. `title` matters
+ * too — slot inference reads "(Before Market Open)" / "(After Market Close)"
+ * out of it when `release_time` is null, which a synthesized title would lose.
+ * `enriched_at` / `actual_value` / `reaction_snapshot` gate the recap roads.
+ */
+function projectionOwnedFields(e: ArmedEventEntry): Partial<CalendarEventRow> {
+  return {
+    event_date: e.eventDate,
+    event_time: e.eventTime,
+    release_time: e.releaseTime,
+    symbol: e.symbol,
+    security_id: e.securityId,
+    expected_impact: e.expectedImpact,
+    source: e.source,
+    source_key: e.sourceKey,
+    consensus_value: e.consensusValue,
+  };
+}
+
+/**
+ * A projection entry rendered as a WHOLE calendar row — used only when the
+ * snapshot has no row for this event at all (an event armed after the 2am
+ * snapshot). `title` is synthesised and `consensus_estimate` is filled from the
+ * projection because a delta-only row has no other source for either; that is
+ * safe precisely because there is no snapshot row to overwrite.
+ *
+ * Everything the Worker has no business seeing (notes, reads, callouts,
+ * document text) is absent by construction.
  */
 function projectionToRow(e: ArmedEventEntry): CalendarEventRow {
   return {
     id: e.eventId,
-    source: e.source,
     event_type: "earnings",
-    event_date: e.eventDate,
-    event_time: e.eventTime,
     title: `${e.symbol} earnings`,
     description: null,
-    security_id: e.securityId,
-    symbol: e.symbol,
-    expected_impact: e.expectedImpact,
     consensus_estimate: e.consensusValue,
     previous_value: null,
     raw_json: null,
-    release_time: e.releaseTime,
-    source_key: e.sourceKey,
-    consensus_value: e.consensusValue,
     superseded: 0,
-  };
+    ...projectionOwnedFields(e),
+  } as CalendarEventRow;
 }
 
 /**
@@ -107,10 +158,16 @@ export function effectiveCalendarEvents(
   const added: number[] = [];
   const upsert = (e: ArmedEventEntry) => {
     const existing = byId.get(e.eventId);
-    if (!existing && !snapshotIds.has(e.eventId) && !added.includes(e.eventId)) {
-      added.push(e.eventId);
+    if (!existing) {
+      // No row in the snapshot at all → synthesize the whole thing.
+      if (!snapshotIds.has(e.eventId) && !added.includes(e.eventId)) added.push(e.eventId);
+      byId.set(e.eventId, projectionToRow(e));
+      return;
     }
-    byId.set(e.eventId, { ...(existing ?? {}), ...projectionToRow(e) });
+    // A real snapshot row exists: overwrite ONLY what the projection owns and
+    // leave every snapshot-only column (consensus_estimate, title, raw_json,
+    // enriched_at, actual_value, superseded, ...) exactly as it was.
+    byId.set(e.eventId, { ...existing, ...projectionOwnedFields(e) });
   };
 
   for (const e of snapshot.armedEvents ?? []) {
@@ -118,7 +175,9 @@ export function effectiveCalendarEvents(
     // is a statement that the event is NOT armed, never a row to add.
     if (e.removed) continue;
     armed.add(e.eventId);
-    if (!byId.has(e.eventId)) upsert(e);
+    // Same merge as the delta path: an event present in BOTH the snapshot's
+    // calendar and its armed list must resolve identically either way.
+    upsert(e);
   }
 
   let source: EffectiveCalendar["source"] = "snapshot";
