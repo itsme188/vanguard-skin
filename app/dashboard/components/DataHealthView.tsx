@@ -292,7 +292,7 @@ export function DataHealthView() {
             {gaps.securitiesNoPrices.length > 0 && (
               <details>
                 <summary className="text-sm text-down cursor-pointer hover:text-down/80">
-                  {gaps.securitiesNoPrices.length} securities with no prices
+                  {gaps.securitiesNoPrices.length} {gaps.securitiesNoPrices.length === 1 ? "security" : "securities"} with no prices
                 </summary>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {gaps.securitiesNoPrices.map((s) => (
@@ -310,7 +310,7 @@ export function DataHealthView() {
             {gaps.securitiesNoTransactions.length > 0 && (
               <details>
                 <summary className="text-sm text-gold-ink cursor-pointer hover:text-gold/80">
-                  {gaps.securitiesNoTransactions.length} securities with no transactions
+                  {gaps.securitiesNoTransactions.length} {gaps.securitiesNoTransactions.length === 1 ? "security" : "securities"} with no transactions
                 </summary>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {gaps.securitiesNoTransactions.map((s) => (
