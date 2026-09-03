@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
+import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 
 vi.mock("@/lib/alerts/print-push", () => ({
   sendEarningsPrintPush: vi.fn(),
@@ -438,6 +439,33 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
         source_key: "finnhub:MUTE:2026-07-28",
         actual: "EPS 0.50 · Rev 100,000,000",
         consensus: null,
+        source: "cloud",
+        reaction: null,
+        fetchedAt: FRESH_FETCHED_AT,
+      },
+    });
+
+    await reconcileCloudEnrichment(db, "secret");
+
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+  });
+
+  // [C-17 / v2 slice A §4.1] Selection consumers switched to coveredForEvents
+  // (armed events get what held names get) — the push gate is explicitly
+  // NOT one of them and must keep reading getSymbolStatus's held/watchlist
+  // union only, through the cloud-reconcile path too. An armed-only, unheld,
+  // unwatched reporter's null→non-null transition must not fire the push.
+  it("does NOT fire for an armed-only reporter (not held, not watchlisted)", async () => {
+    // No seedHeldSecurity — no holding, no watchlist row. Armed only.
+    const eventId = insertCalendarEvent({ symbol: "ARMED2", actual_value: null });
+    armWorksheet(db, eventId);
+
+    mockWorker({
+      [String(eventId)]: {
+        eventId,
+        source_key: "finnhub:ARMED2:2026-07-28",
+        actual: "EPS 0.62 · Rev 100,000,000",
+        consensus: "EPS 0.55 · Rev 90,000,000",
         source: "cloud",
         reaction: null,
         fetchedAt: FRESH_FETCHED_AT,

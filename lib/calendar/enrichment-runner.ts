@@ -22,7 +22,7 @@ import {
 import { captureReactionFromYahoo } from "../../workers/cron/src/yahoo";
 import { sendEarningsPrintPush } from "@/lib/alerts/print-push";
 import { getLiveReadThroughsForReporter } from "@/lib/alerts/read-through-push";
-import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import { getSymbolStatus, coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import {
   getEarningsSettings,
@@ -835,31 +835,27 @@ export function findEmailCandidates(
     .all(yesterdayStr, todayStr) as RecapCandidateRow[];
   const reporterCandidates = dedupeCrossSourceRows(reporterScanRows);
 
-  // ── Held|watchlist filter ───────────────────────────────────────
-  const allSymbols = Array.from(
-    new Set(
-      [...previewCandidates, ...recapCandidates, ...reporterCandidates]
-        .map((r) => r.symbol)
-        .filter((s): s is string => !!s),
-    ),
-  );
-  if (allSymbols.length === 0) return [];
+  // ── Coverage (spec §4.1): held/watchlist family OR the event itself is armed ──
+  const allCandidates = [...previewCandidates, ...recapCandidates, ...reporterCandidates];
+  if (allCandidates.length === 0) return [];
 
-  const status = getSymbolStatus(db, allSymbols);
-  const isCovered = (sym: string | null): boolean =>
-    !!sym && (status[sym.toUpperCase()] === "held" || status[sym.toUpperCase()] === "watchlist");
+  const coveredIds = coveredForEvents(
+    db,
+    allCandidates.map((r) => ({ symbol: r.symbol, eventId: r.id })),
+  );
+  const isCovered = (row: { id: number }): boolean => coveredIds.has(row.id);
 
   const isAllowed = (sym: string | null): boolean =>
     !!sym && shouldSendEarningsEmail(settings, sym);
 
   const out: EmailCandidate[] = [];
   for (const row of previewCandidates) {
-    if (!row.symbol || !isCovered(row.symbol) || !isAllowed(row.symbol)) continue;
+    if (!row.symbol || !isCovered(row) || !isAllowed(row.symbol)) continue;
     out.push({ eventId: row.id, symbol: row.symbol, phase: "preview" });
     if (out.length >= limit) return out;
   }
   for (const row of recapCandidates) {
-    if (!row.symbol || !isCovered(row.symbol) || !isAllowed(row.symbol)) continue;
+    if (!row.symbol || !isCovered(row) || !isAllowed(row.symbol)) continue;
     out.push({ eventId: row.id, symbol: row.symbol, phase: "recap" });
     if (out.length >= limit) return out;
   }
@@ -869,7 +865,7 @@ export function findEmailCandidates(
   // (target currently held/watchlist — the same self-narrowing rule as
   // push-at-print).
   for (const row of reporterCandidates) {
-    if (!row.symbol || isCovered(row.symbol) || !isAllowed(row.symbol)) continue;
+    if (!row.symbol || isCovered(row) || !isAllowed(row.symbol)) continue;
     if (getLiveReadThroughsForReporter(db, row.symbol).length === 0) continue;
     out.push({ eventId: row.id, symbol: row.symbol, phase: "recap", reporterRecap: true });
     if (out.length >= limit) return out;
