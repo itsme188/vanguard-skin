@@ -13,6 +13,7 @@ import { runEnrichment, REACTION_READY_MS } from "@/lib/calendar/enrichment-runn
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { setMutedEarningsSymbols, setEarningsEmailsEnabled } from "@/lib/queries/earnings-settings";
 import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 vi.mock("@/lib/alerts/print-push", () => ({
   sendEarningsPrintPush: vi.fn(),
@@ -1112,29 +1113,43 @@ describe("push-at-print hook (Wave 1 §2)", () => {
   // NOT one of them and must keep reading getSymbolStatus's held/watchlist
   // union only. An armed-only, unheld, unwatched reporter's null→non-null
   // transition must not fire the push.
+  //
+  // The fixture MUST be dated inside getSymbolStatus's real-wall-clock
+  // 14-day armed horizon (the push gate calls getSymbolStatus with no
+  // `today` override — it always resolves against todayET(), independent
+  // of the `now` this test passes to runEnrichment), or the symbol
+  // resolves "neither" regardless of arming and this test would pass even
+  // after an erroneous future widening of the gate to `status === "armed"`
+  // (fix round 1, Important finding #1).
   it("does NOT fire for an armed-only reporter (not held, not watchlisted) — push gate stays held/watchlist/read-through only", async () => {
     seedSecurity(db, 306, "ARMED1", "Technology");
     // No holdings, no watchlist row — armed only.
+    const eventDate = addDays(todayET(), 1); // inside the 14-day armed horizon
 
     mockFinnhubActual({
       symbol: "ARMED1",
-      date: "2026-04-24",
+      date: eventDate,
       epsActual: 0.62,
       epsEstimate: 0.55,
     });
 
     const { lastInsertRowid } = insertEvent(db, {
       source: "finnhub",
-      source_key: "finnhub:ARMED1:2026-04-24",
+      source_key: `finnhub:ARMED1:${eventDate}`,
       event_type: "earnings",
-      event_date: "2026-04-24",
+      event_date: eventDate,
       release_time: "08:00",
       symbol: "ARMED1",
       security_id: 306,
     });
     armWorksheet(db, Number(lastInsertRowid));
 
-    const now = new Date("2026-04-24T16:30:00Z");
+    // release_time 08:00 ET, 4.5h later — inside the earnings 12h window
+    // (same offset the sibling tests in this describe use off a hardcoded
+    // April date; here it's derived so it stays correct regardless of
+    // when the suite runs).
+    const releaseInstant = composeReleaseInstant(eventDate, "08:00")!;
+    const now = new Date(releaseInstant.getTime() + 4.5 * 60 * 60 * 1000);
     await runEnrichment(db, { now });
 
     expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();

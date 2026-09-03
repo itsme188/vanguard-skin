@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
 import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 vi.mock("@/lib/alerts/print-push", () => ({
   sendEarningsPrintPush: vi.fn(),
@@ -181,16 +182,27 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
     event_type?: string;
     actual_value?: string | null;
     consensus_value?: string | null;
+    /** Defaults to the fixed '2026-07-28' fixture date every other test in
+     * this file relies on. Override ONLY when the test cares about the
+     * symbol's real-wall-clock ARMED status (getSymbolStatus's 14-day
+     * horizon is anchored on todayET(), not on any `now` passed elsewhere
+     * in the test) — a hardcoded past date would silently resolve
+     * "neither" instead of "armed" regardless of arming. */
+    event_date?: string;
   }): number {
+    const eventDate = opts.event_date ?? "2026-07-28";
+    const weekOf = opts.event_date ? eventDate : "2026-07-27";
     const r = db
       .prepare(
         `INSERT INTO calendar_events
            (source, source_key, event_type, event_date, week_of, title, symbol, actual_value, consensus_value)
-         VALUES ('finnhub', ?, ?, '2026-07-28', '2026-07-27', ?, ?, ?, ?)`,
+         VALUES ('finnhub', ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        `finnhub:${opts.symbol}:2026-07-28`,
+        `finnhub:${opts.symbol}:${eventDate}`,
         opts.event_type ?? "earnings",
+        eventDate,
+        weekOf,
         opts.symbol,
         opts.symbol,
         opts.actual_value ?? null,
@@ -455,15 +467,23 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
   // NOT one of them and must keep reading getSymbolStatus's held/watchlist
   // union only, through the cloud-reconcile path too. An armed-only, unheld,
   // unwatched reporter's null→non-null transition must not fire the push.
+  //
+  // The fixture MUST be dated inside getSymbolStatus's real-wall-clock
+  // 14-day armed horizon (getSymbolStatus takes no `today` override here —
+  // it always resolves against todayET()), or the symbol resolves
+  // "neither" regardless of arming and this test would pass even after an
+  // erroneous future widening of the gate to `status === "armed"` (fix
+  // round 1, Important finding #1).
   it("does NOT fire for an armed-only reporter (not held, not watchlisted)", async () => {
+    const eventDate = addDays(todayET(), 1); // inside the 14-day armed horizon
     // No seedHeldSecurity — no holding, no watchlist row. Armed only.
-    const eventId = insertCalendarEvent({ symbol: "ARMED2", actual_value: null });
+    const eventId = insertCalendarEvent({ symbol: "ARMED2", actual_value: null, event_date: eventDate });
     armWorksheet(db, eventId);
 
     mockWorker({
       [String(eventId)]: {
         eventId,
-        source_key: "finnhub:ARMED2:2026-07-28",
+        source_key: `finnhub:ARMED2:${eventDate}`,
         actual: "EPS 0.62 · Rev 100,000,000",
         consensus: "EPS 0.55 · Rev 90,000,000",
         source: "cloud",
