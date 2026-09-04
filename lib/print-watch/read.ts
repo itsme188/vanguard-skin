@@ -255,13 +255,24 @@ export async function runFirstPassRead(
         refused++;
         continue;
       }
-      const v = verifyCallout({ proposal: c as CalloutProposal, text: doc.text, guidanceMetrics, sheetLineKeys: lineKeys });
+      // M1: the label is MODEL TEXT and is both stored and rendered, so it is
+      // sanitised BEFORE verification — that way the stored label and the
+      // `label_norm` the verifier derives from it come from the same clean
+      // string. A label that sanitises to nothing (control characters only,
+      // blank, or instruction-shaped) is a refusal, never a silent blank.
+      const [cleanLabel] = sanitizeProseLines([c.label], 1);
+      if (!cleanLabel) {
+        refused++;
+        continue;
+      }
+      const label = cleanLabel.slice(0, LABEL_MAX_CHARS);
+      const v = verifyCallout({ proposal: { ...(c as CalloutProposal), label }, text: doc.text, guidanceMetrics, sheetLineKeys: lineKeys });
       if (!v.ok) {
         refused++;
         continue;
       }
       verified.push({
-        label: c.label.trim().slice(0, LABEL_MAX_CHARS),
+        label,
         label_norm: v.labelNorm,
         value: v.parsed.value,
         value_high: v.parsed.value_high,

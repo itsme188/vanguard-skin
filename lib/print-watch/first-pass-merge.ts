@@ -64,6 +64,11 @@ export function mergeFirstPassState(ctx: EventMergeContext): EventMergeTableResu
       carry.run(d.donor_accepted_at, d.target_id);
       callouts.merged++;
       callouts.notes.push(`callout ${d.target_id} inherits the donor's acceptance`);
+    } else if (d.donor_state === "accepted" && d.target_state !== "accepted") {
+      // R-D19: a superseded or revoked target row is not re-opened by a merge,
+      // so the donor's acceptance is LOST here. No behaviour change — the
+      // report just stops being silent about it (R-D25).
+      callouts.notes.push(`callout ${d.target_id}: donor acceptance dropped (target ${d.target_state})`);
     }
     drop.run(d.donor_id);
     callouts.deleted++;
