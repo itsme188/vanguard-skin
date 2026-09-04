@@ -86,6 +86,7 @@ import { irBaselineFingerprint } from "./ir-baseline-step";
 import { isAllowedIrLinkHost, pollIrPage, type IrPageConfig } from "./ir-page-adapter";
 import { IR_RSS_CONFIGS, pollIrRss, type IrRssConfig } from "./ir-rss-adapter";
 import { reconcile } from "./reconcile";
+import { acquiredBytesPath } from "./storage-path";
 import { htmlToRawText, htmlToTablesRepresentation } from "./representations";
 import {
   acquireWatcherLease,
@@ -1927,9 +1928,14 @@ export async function writeAcquiredBytes(
   ext: string,
   buf: Buffer,
 ): Promise<string> {
-  const dir = path.join(seams.storageRoot(), String(dirKey));
+  // [M1] Composed by an IMPORTED helper rather than inline: Turbopack's tracer
+  // folds `path.join` + a template literal into a glob and warns, on every
+  // build, that this fs argument matches most of the project.
+  // `acquiredBytesPath` is opaque to it — the same reason the PDF text write
+  // below (`textPathFor`) has always been silent. Same string, no warning.
+  const finalPath = acquiredBytesPath(seams.storageRoot(), dirKey, sha, ext);
+  const dir = path.dirname(finalPath);
   await fsp.mkdir(dir, { recursive: true });
-  const finalPath = path.join(dir, `${sha}.${ext}`);
   tmpCounter += 1;
   const tmpPath = `${finalPath}.tmp-${process.pid}-${tmpCounter}`;
   await fsp.writeFile(tmpPath, buf);
