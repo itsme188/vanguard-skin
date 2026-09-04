@@ -1444,7 +1444,7 @@ function newRoadCtx(): RoadCtx {
  * Abandon a call that has stopped answering, so the pass keeps its renewal
  * cadence. Still used by the conId backfill, which reaches TWS through
  * `enrichSecurities` and takes no AbortSignal — the roads themselves are
- * cancelled properly by `withRoad` (finding #10).
+ * cancelled properly by `runRoad` (finding #10).
  */
 async function withSourceTimeout<T>(label: string, run: () => Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
