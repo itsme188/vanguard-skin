@@ -71,7 +71,7 @@ import {
 import { compileContracts } from "./contracts";
 import { effectiveWindow, windowToIso, type EffectiveWindow } from "./window";
 import { acquisitionScheduler, type PassReason } from "./scheduler";
-import { runGoRequest, safeErrorText } from "./go";
+import { runGoRequest, safeErrorText, WatcherLeaseLost } from "./go";
 import {
   createDjPollState,
   formatTwsDateTime,
@@ -130,6 +130,7 @@ import {
 import type { FetchLike } from "./hardened-fetch";
 import type {
   DocumentRow,
+  GoRequestRow,
   GoRequestStatus,
   LineContract,
   ExpectedValue,
@@ -495,6 +496,17 @@ const cikCache = new Map<string, string | null>();
 /** print ids whose go request this process is running right now — one claim
  *  per print at a time, however often the dispatcher ticks. */
 const goInFlight = new Set<number>();
+/** [I1/R-C16] Work a dispatcher tick found and could NOT place, and has already
+ *  spent one `ensurePrintWatch` on: `go:<requestId>` for a takeable row whose
+ *  print has no runtime here, `print:<printId>` for a live forced window with
+ *  no loop behind it. An entry is dropped as soon as the work stops being
+ *  unplaceable, so the next press reconciles again — and kept while it stays
+ *  unplaceable, so a row nothing can run never re-sweeps every two seconds. */
+const reconcileTried = new Set<string>();
+/** True WHILE the dispatcher's own reconcile runs. `ensurePrintWatch` ends with
+ *  `void dispatchGoRequests(db)`, and that nested tick must not reconcile its
+ *  way back in. */
+let reconcileInFlight = false;
 
 let leaseNote: string | null = null;
 let leaseRenewedAtMs = 0;
@@ -512,6 +524,8 @@ function resetWatcherState(): void {
   parseAttempts.clear();
   cikCache.clear();
   goInFlight.clear();
+  reconcileTried.clear();
+  reconcileInFlight = false;
   stopGoDispatcher();
   acquisitionScheduler.reset();
   leaseNote = null;
@@ -918,10 +932,20 @@ export function ensurePrintWatch(db: Database.Database): void {
 
   for (const print of listActivePrints(db)) {
     if (armedEventIds.has(print.event_id)) continue;
-    // An unarmed print with a LIVE forced window is treated as armed for this
-    // pass — the press armed it, and disarming it here would close the watch
-    // the desk just opened (finding #18).
-    if (forcedEventIds.has(print.event_id)) continue;
+    // [I2/R-C17] There USED to be a second `continue` here for any print with a
+    // live forced window — "the press armed it, so treat it as armed for this
+    // pass" (finding #18). What that finding was actually protecting against
+    // was the ±1-DAY date scope: a forced print dated outside it looked unarmed
+    // to the date-scoped query. `extraDates` above now re-fetches exactly those
+    // events through `getArmedWorksheetEvents`, which joins
+    // `earnings_worksheet_flags` — so every forced print whose event is STILL
+    // flagged is already in `armedEventIds` and never reaches this line. The
+    // only prints the skip could still catch were the ones whose flag is GONE,
+    // i.e. the desk pressed Go on the wrong name and then disarmed it. The
+    // user's disarm wins: the print stands down here, `listForcedLivePrints`
+    // stops listing it (it excludes `disarmed`), and the loop's next pass is a
+    // no-op instead of polling every road for 90 minutes.
+    //
     // An active print with no armed flag is either a genuine disarm or a
     // leftover whose day has passed (the app was closed through its window) —
     // call the stale one `expired`, which is what actually happened to it.
@@ -1784,6 +1808,15 @@ async function pollIrPageSource(
           fetched.bytes,
         );
       } catch (err) {
+        // [M6/R-C19] A CANCELLATION is not a refusal. The road's 15-second
+        // timer, the pass-end abort (R-C8) and a lost lease all reach the link
+        // fetch as an AbortError — and this budget is shared across the page
+        // fetch and every link of the road, so three busy polls at the print
+        // minute would retire TONIGHT'S link ("1 link(s) retired after 3
+        // refusals") with no way back. The link refused nothing; we stopped
+        // asking. Rethrow so the lane's page-level catch reports the
+        // cancellation without charging any link for it.
+        if (isAbortError(err)) throw err;
         refusals.push(noteIrRefusal(db, rt, item.link, errText(err)));
         continue;
       }
@@ -2576,9 +2609,14 @@ export async function wakePrintWatch(db: Database.Database, printId: number): Pr
  * One fan-out pass NOW for a print THIS process runs, with per-road reports —
  * what a claimed go request records in `result_json`.
  *
- * A print this process does not own (no runtime, or the lease is elsewhere)
- * gets three `skipped` reports naming the reason, never a silent empty list:
- * the desk has to be able to tell "nothing was found" from "nobody looked".
+ * [M5/R-C18] A print this process cannot run — the lease is elsewhere, the
+ * runtime went with it, or the lease moved DURING the pass — throws
+ * `WatcherLeaseLost` rather than returning three `skipped` reports. Those
+ * reports used to be finalised `done`, which read on the card as the press's
+ * final answer ("DJ: skipped (lease lost) · …") for a fan-out nobody ran; the
+ * throw sends the row back to `queued` instead, and the new owner's dispatcher
+ * takes it. Acquisition itself was never lost — the new owner's cadence loop
+ * polls the same window within 10 s — but the REPORT has to say so.
  *
  * `signal` (R-C11) is the CALLER's cancellation — `runGoRequest`'s own claim
  * controller, never a scheduler pass signal (R-C8). It is linked into the pass
@@ -2593,17 +2631,51 @@ export async function runForcedPass(
   signal?: AbortSignal,
 ): Promise<RoadReport[]> {
   const rt = runtimes.get(printId);
-  if (!holdsLease()) return skippedReports(leaseNote ?? "watcher lease held by another process");
-  if (!rt) return skippedReports("watcher not live in this process");
-  return acquisitionScheduler.runPass<RoadReport[]>(
+  if (!holdsLease()) throw new WatcherLeaseLost(leaseNote ?? "watcher lease held by another process");
+  if (!rt) throw new WatcherLeaseLost("watcher not live in this process");
+  const reports = await acquisitionScheduler.runPass<RoadReport[]>(
     printId,
     (passSignal) => pass(db, rt, signal ? AbortSignal.any([passSignal, signal]) : passSignal),
     "go",
   );
+  // The lease can also move MID-pass: `pass` returns `skippedReports("lease
+  // lost")` when a renewal fails at its head, and its renewal timer aborts
+  // every road when one fails later. Both leave `holdsLease()` false, and both
+  // mean the same thing — nobody looked.
+  if (!holdsLease()) throw new WatcherLeaseLost(leaseNote ?? "watcher lease lost mid-pass");
+  return reports;
 }
 
 /** The 2-second sweep, armed while this process holds the lease. */
 let goDispatcher: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Work this tick found and cannot place, keyed for the reconcile memo (I1).
+ *
+ * Two shapes, both of which mean "the row is durable and takeable but this
+ * process has no runtime to run it on":
+ *
+ *  - a takeable go request whose print has no runtime here — a press from
+ *    another process for an event this owner has not reconciled since its last
+ *    sweep (an event the press itself ARMED, or one dated outside ±1 day);
+ *  - a print whose FORCED window contains now with no live loop behind it — an
+ *    "Extend 30 min" written by another process after this owner's loop had
+ *    already stopped at the old end.
+ */
+function unplaceableWork(
+  db: Database.Database,
+  takeable: GoRequestRow[],
+  nowMs: number,
+): string[] {
+  const keys: string[] = [];
+  for (const row of takeable) if (!runtimes.has(row.print_id)) keys.push(`go:${row.id}`);
+  for (const print of listForcedLivePrints(db, nowMs)) {
+    const window = effectiveWindow(print);
+    if (!window || nowMs < window.startMs || nowMs > window.endMs) continue;
+    if (!runtimes.get(print.id)?.live) keys.push(`print:${print.id}`);
+  }
+  return keys;
+}
 
 /**
  * Claim every takeable go request for a print THIS process runs, and run it.
@@ -2613,6 +2685,17 @@ let goDispatcher: ReturnType<typeof setInterval> | null = null;
  * process is left to that process's dispatcher, and a print already running a
  * request here is skipped — one claim per print at a time, however often the
  * tick fires. Returns how many it claimed (exported for the tests).
+ *
+ * [I1/R-C16] The tick also RECONCILES when it has to. `wakePrintWatch` is
+ * in-process only: a press or an extension written by another process reaches
+ * this owner as a ROW and nothing else, and the guard above would decline it
+ * for as long as it took somebody to call `ensurePrintWatch` again — the
+ * panel's 60-second ensure only ticks while a Today tab is open, and the sweep
+ * is 15 minutes. So when a tick finds takeable work it cannot place, it spends
+ * ONE `ensurePrintWatch` on it and re-reads. Latched two ways: `reconcileTried`
+ * keeps a tick from re-sweeping for work that stays unplaceable, and
+ * `reconcileInFlight` keeps `ensurePrintWatch`'s own trailing
+ * `void dispatchGoRequests(db)` from recursing back in.
  */
 export async function dispatchGoRequests(db: Database.Database): Promise<number> {
   if (!holdsLease()) return 0;
@@ -2621,9 +2704,24 @@ export async function dispatchGoRequests(db: Database.Database): Promise<number>
   try {
     failCappedGoRequests(db, now);
     takeable = listTakeableGoRequests(db, now);
+
+    const unplaceable = unplaceableWork(db, takeable, now);
+    for (const key of Array.from(reconcileTried)) {
+      if (!unplaceable.includes(key)) reconcileTried.delete(key);
+    }
+    if (!reconcileInFlight && unplaceable.some((key) => !reconcileTried.has(key))) {
+      for (const key of unplaceable) reconcileTried.add(key);
+      reconcileInFlight = true;
+      try {
+        ensurePrintWatch(db);
+      } finally {
+        reconcileInFlight = false;
+      }
+      takeable = listTakeableGoRequests(db, seams.now());
+    }
   } catch (err) {
     // A dispatcher tick must never take the process down (a closed handle, a
-    // locked DB): the next tick tries again.
+    // locked DB, a reconcile that threw): the next tick tries again.
     console.warn("[print-watch] go dispatcher tick failed:", errText(err));
     return 0;
   }

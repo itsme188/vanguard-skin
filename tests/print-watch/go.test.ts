@@ -22,6 +22,7 @@ import {
   mergePrintWatchGoState,
   safeErrorText,
   GoRefused,
+  WatcherLeaseLost,
   GO_STAGING_DIR_KEY,
   GO_CLAIM_HEARTBEAT_MS,
   PRINT_WATCH_GO_MERGE_HANDLER_NAME,
@@ -32,6 +33,7 @@ import {
   getPrintById,
   getPrintByEventId,
   upsertPrint,
+  setPrintState,
   latestGoRequest,
   claimGoRequest,
   insertGoRequest,
@@ -373,6 +375,29 @@ describe("requestGo", () => {
     expect(getPrintByEventId(db, eventId)!.forced_open_at).toBe(ack.forcedOpenAt);
   });
 
+  // M7: `upsertPrint` never touches `state`, and `listForcedLivePrints`
+  // excludes `disarmed` — a re-press on a print the desk had disarmed would
+  // otherwise build no runtime for a far-dated event, and the queued row would
+  // sit there forever (attempts 0, so the cap never closes it either).
+  it("re-opens a DISARMED print: the press re-arms the event, so the print goes back to scheduled", async () => {
+    const eventId = seedEvent();
+    const seams = fakeSeams();
+    const first = await requestGo(db, eventId, {}, seams);
+
+    // The desk disarms (the flag goes; the watcher's next sweep stands the
+    // print down), then presses again on the same name.
+    db.prepare(`DELETE FROM earnings_worksheet_flags WHERE event_id = ?`).run(eventId);
+    setPrintState(db, first.printId, "disarmed");
+
+    const second = await requestGo(db, eventId, {}, seams);
+    expect(second.printId).toBe(first.printId);
+    expect(second.newlyArmed).toBe(true);
+    expect(isArmed(eventId)).toBe(true);
+    expect(getPrintById(db, first.printId)!.state).toBe("scheduled");
+    // The once-only stamp is still the FIRST press (spec §9 ruling 2).
+    expect(second.forcedOpenAt).toBe(first.forcedOpenAt);
+  });
+
   // The ONLY test in this file that pays for the watcher's module graph (the
   // default `resolveEvent` reaches `buildArmedEventDto` through the lazy
   // `import("./watcher")`, which pulls in TWS, the scheduler, the PDF and
@@ -469,6 +494,35 @@ describe("runGoRequest", () => {
     expect(final.finished_at).not.toBeNull();
     // Spent: nothing may claim it again.
     expect(await runGoRequest(db, ack.requestId, fakeSeams())).toBeNull();
+  });
+
+  // M5/R-C18. The LEASE moving is not the claim moving: the row is still ours,
+  // but nothing here can acquire anything for it. Finalising `done` off the
+  // watcher's three `skipped` reports told the desk "DJ: skipped (lease lost) ·
+  // …" was the answer to its press, and no owner ever re-ran the fan-out.
+  it("a lost LEASE requeues the request for the new owner instead of finalising done", async () => {
+    const eventId = seedEvent();
+    const ack = await requestGo(db, eventId, {}, fakeSeams());
+    const moved = fakeSeams({
+      acquire: async () => {
+        throw new WatcherLeaseLost("watcher lease held by another process");
+      },
+    });
+
+    const row = (await runGoRequest(db, ack.requestId, moved))!;
+    expect(row.status).toBe("queued");
+    expect(row.finished_at).toBeNull();
+    expect(row.claim_token).toBeNull();
+    expect(row.attempts).toBe(1);
+    const reports = JSON.parse(row.result_json!) as RoadReport[];
+    expect(reports.at(-1)).toMatchObject({ road: "system", outcome: "skipped" });
+    expect(reports.at(-1)!.detail).toContain("lease");
+
+    // Takeable again: the new owner's dispatcher runs the fan-out for real.
+    const done = (await runGoRequest(db, ack.requestId, fakeSeams()))!;
+    expect(done.status).toBe("done");
+    expect(done.attempts).toBe(2);
+    expect(JSON.parse(done.result_json!).map((r: RoadReport) => r.road)).toEqual(["dj", "edgar", "ir"]);
   });
 
   it("a claim lost mid-run (a merge re-homed the row) stops the worker before the fan-out pass", async () => {
@@ -705,6 +759,19 @@ describe("extendGoWindow", () => {
     const out = extendGoWindow(db, eventId, late);
     expect(out.windowExtendedUntil).toBe(extendedUntil(effectiveWindow(print), late));
     expect(Date.parse(out.windowExtendedUntil)).toBe(late + EXTEND_MS);
+  });
+
+  // M9: `effectiveWindow` returns null before the extension term is even
+  // considered, so an extension on an unresolved TAS print that was never
+  // pressed is a dead write the window can never read back.
+  it("refuses an extension on a print with no window at all, and writes nothing", () => {
+    const eventId = seedEvent("go-tas", { eventTime: null });
+    const printId = upsertPrint(db, eventId, "ACME", EVENT_DATE, null);
+    expect(effectiveWindow(getPrintById(db, printId)!)).toBeNull();
+
+    expect(() => extendGoWindow(db, eventId, NOW)).toThrow(GoRefused);
+    expect(() => extendGoWindow(db, eventId, NOW)).toThrow(/press Print is live first/);
+    expect(getPrintById(db, printId)!.window_extended_until).toBeNull();
   });
 });
 
