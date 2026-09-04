@@ -329,6 +329,14 @@ async function fetchExhibitHtml(url: string, fetchFn: FetchLike): Promise<string
  * one per watcher run — marks an accession seen once it has consumed the
  * filing, so a poll abandoned mid-flight (the watcher's source timeout) cannot
  * retire a filing that never reached the pipeline.
+ *
+ * NO signature change for cancellation (Task 4 of live-print v2 slice C): the
+ * caller passes an already signal-carrying `fetchFn` (its throttled fetch),
+ * so every request this module makes is abortable through that. The one
+ * thing this module still owns is the per-filing `try/catch` — its rethrow
+ * of an `AbortError` (rather than swallowing it into `continue`, as an
+ * ordinary filing failure) is what makes an abort reject the WHOLE poll
+ * instead of quietly returning a partial "ok" result.
  */
 export async function pollEdgar(
   cik: string,
@@ -392,7 +400,12 @@ export async function pollEdgar(
         acceptanceDateTime: new Date(acceptedMs).toISOString(),
         exhibits,
       });
-    } catch {
+    } catch (err) {
+      // A cancellation must never be counted as an ordinary filing failure —
+      // that would let the poll settle "ok — N filing(s)" while silently
+      // dropping whatever was in flight when the caller gave up. Rethrow so
+      // the whole poll rejects instead (Task 4 amendment, Codex #10).
+      if (err instanceof Error && err.name === "AbortError") throw err;
       // Left unreported on purpose — retried whole on the next poll.
       continue;
     }

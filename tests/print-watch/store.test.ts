@@ -19,6 +19,22 @@ import {
   recordIrBaseline,
   getIrBaseline,
   hasIrBaseline,
+  getPrintById,
+  stampForcedOpen,
+  extendPrintWindow,
+  insertGoRequest,
+  getGoRequest,
+  latestGoRequest,
+  listTakeableGoRequests,
+  claimGoRequest,
+  heartbeatGoRequest,
+  requeueGoRequest,
+  finalizeGoRequest,
+  failCappedGoRequests,
+  listForcedLivePrints,
+  movePrintGoState,
+  GO_CLAIM_STALE_MS,
+  GO_MAX_ATTEMPTS,
 } from "@/lib/print-watch/store";
 import { recordDelivery } from "@/lib/print-watch/delivery";
 import type {
@@ -108,9 +124,10 @@ describe("print-watch store (migration 085)", () => {
     runMigrations(db);
   });
 
-  // 089 (slice B) adds the five sidecar tables to 085's three; the list is
-  // exhaustive on purpose, so a new print_watch_% table has to be declared here.
-  it("applies migrations 085 + 089 fresh with every print_watch table + index", () => {
+  // 089 (slice B) adds five sidecar tables to 085's three, and 090 (slice C)
+  // adds one more; the list is exhaustive on purpose, so a new print_watch_%
+  // table has to be declared here.
+  it("applies migrations 085 + 089 + 090 fresh with every print_watch table + index", () => {
     const tables = db
       .prepare(
         `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'print_watch_%' ORDER BY name`,
@@ -120,6 +137,7 @@ describe("print-watch store (migration 085)", () => {
       "print_watch_candidate_archive",
       "print_watch_document_roads",
       "print_watch_documents",
+      "print_watch_go_requests",
       "print_watch_ir_baseline",
       "print_watch_ir_seen",
       "print_watch_lines",
@@ -653,6 +671,229 @@ describe("print-watch store (migration 085)", () => {
       // A different holder arriving one millisecond later loses: the seed is
       // already there and still live.
       expect(acquireWatcherLease(db, "second", 1_000_001, 60_000)).toBe(false);
+    });
+  });
+
+  describe("slice C — forced window + go requests", () => {
+    function seedPrint(sourceKey = "go-k"): number {
+      const eventId = Number(
+        db
+          .prepare(
+            `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol) VALUES ('manual','earnings','2026-09-10','ACME',?, 'ACME')`,
+          )
+          .run(sourceKey).lastInsertRowid,
+      );
+      return upsertPrint(db, eventId, "ACME", "2026-09-10", "16:05");
+    }
+
+    it("stampForcedOpen stamps once and returns the first stamp on a repeat press", () => {
+      const printId = seedPrint();
+      expect(stampForcedOpen(db, printId, "2026-09-10T20:01:00.000Z")).toBe("2026-09-10T20:01:00.000Z");
+      expect(stampForcedOpen(db, printId, "2026-09-10T20:30:00.000Z")).toBe("2026-09-10T20:01:00.000Z");
+      expect(getPrintById(db, printId)?.forced_open_at).toBe("2026-09-10T20:01:00.000Z");
+    });
+
+    it("stampForcedOpen returns null (never throws) for an unknown print id", () => {
+      expect(stampForcedOpen(db, 999_999, "2026-09-10T20:01:00.000Z")).toBeNull();
+    });
+
+    it("latestGoRequest returns the newest request for the print, and null when there are none", () => {
+      const printId = seedPrint();
+      const other = seedPrint("go-other");
+      expect(latestGoRequest(db, printId)).toBeNull();
+
+      const first = insertGoRequest(db, {
+        printId,
+        inputKind: "none",
+        inputUrl: null,
+        inputSha256: null,
+        inputBytesPath: null,
+        requestedAt: "2026-09-10T20:00:00.000Z",
+      });
+      const second = insertGoRequest(db, {
+        printId,
+        inputKind: "none",
+        inputUrl: null,
+        inputSha256: null,
+        inputBytesPath: null,
+        requestedAt: "2026-09-10T20:05:00.000Z",
+      });
+      // A request on a DIFFERENT print must never leak into this print's answer.
+      insertGoRequest(db, {
+        printId: other,
+        inputKind: "none",
+        inputUrl: null,
+        inputSha256: null,
+        inputBytesPath: null,
+        requestedAt: "2026-09-10T20:10:00.000Z",
+      });
+
+      expect(latestGoRequest(db, printId)?.id).toBe(second);
+      expect(second).toBeGreaterThan(first);
+    });
+
+    it("extendPrintWindow writes the given instant verbatim", () => {
+      const printId = seedPrint();
+      extendPrintWindow(db, printId, "2026-09-10T23:00:00.000Z");
+      expect(getPrintById(db, printId)?.window_extended_until).toBe("2026-09-10T23:00:00.000Z");
+    });
+
+    it("claimGoRequest is a CAS: one winner, attempts incremented, a live claim is not takeable, a stale one is; a heartbeat keeps a live claim from going stale; an ordinary failure requeues", () => {
+      const printId = seedPrint();
+      const t0 = Date.parse("2026-09-10T20:00:00.000Z");
+      const id = insertGoRequest(db, {
+        printId,
+        inputKind: "none",
+        inputUrl: null,
+        inputSha256: null,
+        inputBytesPath: null,
+        requestedAt: new Date(t0).toISOString(),
+      });
+
+      expect(claimGoRequest(db, id, "tok-a", t0)).toBe(true);
+      expect(claimGoRequest(db, id, "tok-b", t0 + 1_000)).toBe(false);
+      expect(getGoRequest(db, id)?.attempts).toBe(1);
+      expect(listTakeableGoRequests(db, t0 + 1_000)).toEqual([]);
+
+      // A heartbeat renews claimed_at, so the SAME instant that would have
+      // made the original claim stale no longer does.
+      const staleInstant = t0 + GO_CLAIM_STALE_MS + 1_000; // 1s margin: datetime() truncates sub-second
+      expect(heartbeatGoRequest(db, id, "tok-a", t0 + 30_000)).toBe(true);
+      expect(listTakeableGoRequests(db, staleInstant)).toEqual([]);
+      expect(heartbeatGoRequest(db, id, "wrong-token", staleInstant)).toBe(false); // not the owner
+
+      // Genuinely stale, measured from the HEARTBEAT's claimed_at, not the
+      // original claim: it is takeable again.
+      const trulyStale = t0 + 30_000 + GO_CLAIM_STALE_MS + 1_000; // 1s margin: datetime() truncates sub-second
+      expect(listTakeableGoRequests(db, trulyStale).map((r) => r.id)).toEqual([id]);
+      expect(claimGoRequest(db, id, "tok-b", trulyStale)).toBe(true);
+      expect(getGoRequest(db, id)?.attempts).toBe(2);
+
+      // An ordinary failure below the cap REQUEUES — attempts and the partial
+      // report are kept, and the row is takeable again immediately.
+      expect(requeueGoRequest(db, id, "tok-a", "[]")).toBe(false); // tok-a no longer owns it
+      expect(
+        requeueGoRequest(db, id, "tok-b", '[{"road":"dj","outcome":"failed","detail":"parse error"}]'),
+      ).toBe(true);
+      const requeued = getGoRequest(db, id)!;
+      expect(requeued.status).toBe("queued");
+      expect(requeued.attempts).toBe(2);
+      expect(requeued.result_json).toContain("parse error");
+      expect(requeued.claim_token).toBeNull();
+      expect(requeued.claimed_at).toBeNull(); // matches finalizeDocumentParse's sibling CAS (review #8)
+      expect(listTakeableGoRequests(db, trulyStale).map((r) => r.id)).toEqual([id]);
+
+      expect(claimGoRequest(db, id, "tok-c", trulyStale)).toBe(true);
+      expect(finalizeGoRequest(db, id, "tok-a", "done", "[]", trulyStale + 1)).toBe(false);
+      expect(finalizeGoRequest(db, id, "tok-c", "done", "[]", trulyStale + 1)).toBe(true);
+      const finalized = getGoRequest(db, id)!;
+      expect(finalized.status).toBe("done");
+      expect(finalized.claim_token).toBeNull();
+      expect(finalized.claimed_at).toBeNull(); // matches finalizeDocumentParse's sibling CAS (review #8)
+    });
+
+    it("a request at the attempt cap is failed by failCappedGoRequests whether stale-claimed or requeued-to-queued, and never re-claimed", () => {
+      const printId = seedPrint();
+      const t0 = Date.parse("2026-09-10T20:00:00.000Z");
+
+      // Stale-claimed at the cap.
+      const staleId = insertGoRequest(db, {
+        printId,
+        inputKind: "none",
+        inputUrl: null,
+        inputSha256: null,
+        inputBytesPath: null,
+        requestedAt: new Date(t0).toISOString(),
+      });
+      for (let i = 0; i < GO_MAX_ATTEMPTS; i += 1) {
+        expect(claimGoRequest(db, staleId, `tok-${i}`, t0 + i * (GO_CLAIM_STALE_MS + 1_000))).toBe(true);
+      }
+      const later = t0 + GO_MAX_ATTEMPTS * (GO_CLAIM_STALE_MS + 1_000);
+      expect(listTakeableGoRequests(db, later)).toEqual([]);
+
+      // Requeued to plain 'queued' at the cap (an ordinary failure that
+      // happened to be the request's last permitted attempt).
+      const queuedId = insertGoRequest(db, {
+        printId,
+        inputKind: "none",
+        inputUrl: null,
+        inputSha256: null,
+        inputBytesPath: null,
+        requestedAt: new Date(t0).toISOString(),
+      });
+      const lastReport = '[{"road":"edgar","outcome":"failed","detail":"no matching filing"}]';
+      for (let i = 0; i < GO_MAX_ATTEMPTS - 1; i += 1) {
+        expect(claimGoRequest(db, queuedId, `q-${i}`, t0 + i * (GO_CLAIM_STALE_MS + 1_000))).toBe(true);
+        expect(requeueGoRequest(db, queuedId, `q-${i}`, "[]")).toBe(true);
+      }
+      expect(claimGoRequest(db, queuedId, "q-last", later)).toBe(true);
+      expect(requeueGoRequest(db, queuedId, "q-last", lastReport)).toBe(true);
+      expect(getGoRequest(db, queuedId)).toMatchObject({ status: "queued", attempts: GO_MAX_ATTEMPTS });
+      // At the cap, attempts < GO_MAX_ATTEMPTS already excludes it.
+      expect(listTakeableGoRequests(db, later)).toEqual([]);
+
+      expect(failCappedGoRequests(db, later)).toBe(2);
+
+      const staleRow = getGoRequest(db, staleId)!;
+      expect(staleRow.status).toBe("failed");
+      // staleId never had a report written (only stale-claim timeouts, no
+      // requeue) — COALESCE fills the generic marker.
+      expect(staleRow.result_json).toContain("abandoned at the attempt cap");
+
+      const queuedRow = getGoRequest(db, queuedId)!;
+      expect(queuedRow.status).toBe("failed");
+      // queuedId's last requeue already wrote a real report — COALESCE must
+      // NOT clobber it with the generic marker.
+      expect(queuedRow.result_json).toBe(lastReport);
+
+      for (const id of [staleId, queuedId]) {
+        expect(claimGoRequest(db, id, "late-comer", later + 1)).toBe(false); // never re-claimed
+      }
+    });
+
+    it("listForcedLivePrints returns a print with a recent forced stamp and ignores one stamped five hours ago", () => {
+      const live = seedPrint("go-live");
+      const old = seedPrint("go-old");
+      const now = Date.parse("2026-09-10T20:00:00.000Z");
+      stampForcedOpen(db, live, new Date(now - 10 * 60_000).toISOString());
+      stampForcedOpen(db, old, new Date(now - 5 * 60 * 60_000).toISOString());
+
+      const ids = listForcedLivePrints(db, now).map((p) => p.id);
+      expect(ids).toContain(live);
+      expect(ids).not.toContain(old);
+    });
+
+    it("movePrintGoState repoints go rows (invalidating an in-flight claim), and keeps the earliest forced stamp / latest extension", () => {
+      const donor = seedPrint("go-k1");
+      const target = seedPrint("go-k2");
+      const t0 = Date.parse("2026-09-10T20:00:00.000Z");
+      const claimedId = insertGoRequest(db, {
+        printId: donor,
+        inputKind: "none",
+        inputUrl: null,
+        inputSha256: null,
+        inputBytesPath: null,
+        requestedAt: "2026-09-10T20:00:00.000Z",
+      });
+      expect(claimGoRequest(db, claimedId, "tok-donor", t0)).toBe(true);
+      stampForcedOpen(db, donor, "2026-09-10T20:00:00.000Z");
+      stampForcedOpen(db, target, "2026-09-10T21:00:00.000Z");
+      extendPrintWindow(db, donor, "2026-09-10T23:00:00.000Z");
+
+      const out = movePrintGoState(db, donor, target);
+      expect(out).toEqual({
+        moved: 1,
+        forcedOpenAt: "2026-09-10T20:00:00.000Z",
+        windowExtendedUntil: "2026-09-10T23:00:00.000Z",
+      });
+
+      const moved = getGoRequest(db, claimedId)!;
+      expect(moved.print_id).toBe(target);
+      expect(moved.status).toBe("queued"); // in-flight claim invalidated
+      expect(moved.claim_token).toBeNull();
+      expect(moved.attempts).toBe(1); // attempts kept
+      expect(getPrintById(db, target)?.forced_open_at).toBe("2026-09-10T20:00:00.000Z");
+      expect(getPrintById(db, target)?.window_extended_until).toBe("2026-09-10T23:00:00.000Z");
     });
   });
 });

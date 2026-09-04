@@ -61,7 +61,6 @@ import type Database from "better-sqlite3";
 
 import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { normalizeEarningsHour } from "@/lib/calendar/release-times";
-import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { resolveDbDir } from "@/lib/db/db-path";
 import { resolveEarningsReleaseTime } from "@/lib/earnings/wire-times";
 import {
@@ -70,6 +69,9 @@ import {
 } from "@/lib/queries/earnings-worksheet-flags";
 
 import { compileContracts } from "./contracts";
+import { effectiveWindow, windowToIso, type EffectiveWindow } from "./window";
+import { acquisitionScheduler, type PassReason } from "./scheduler";
+import { runGoRequest, safeErrorText, WatcherLeaseLost } from "./go";
 import {
   createDjPollState,
   formatTwsDateTime,
@@ -84,9 +86,15 @@ import { irBaselineFingerprint } from "./ir-baseline-step";
 import { isAllowedIrLinkHost, pollIrPage, type IrPageConfig } from "./ir-page-adapter";
 import { IR_RSS_CONFIGS, pollIrRss, type IrRssConfig } from "./ir-rss-adapter";
 import { reconcile } from "./reconcile";
+import { acquiredBytesPath } from "./storage-path";
 import { htmlToRawText, htmlToTablesRepresentation } from "./representations";
 import {
   acquireWatcherLease,
+  failCappedGoRequests,
+  getPrintById,
+  latestGoRequest,
+  listForcedLivePrints,
+  listTakeableGoRequests,
   ELIGIBLE_SQL,
   isDocumentEligible,
   claimDocumentParse,
@@ -120,8 +128,11 @@ import {
   PdfToolMissingError,
   PDFTOTEXT_SETTING_KEY,
 } from "./pdf";
+import type { FetchLike } from "./hardened-fetch";
 import type {
   DocumentRow,
+  GoRequestRow,
+  GoRequestStatus,
   LineContract,
   ExpectedValue,
   ParseCandidate,
@@ -129,6 +140,7 @@ import type {
   PrintWatchDocKind,
   PrintWatchLine,
   PrintWatchState,
+  RoadReport,
   TaggedCandidate,
 } from "./types";
 
@@ -136,20 +148,37 @@ import type {
 // constants
 // ---------------------------------------------------------------------------
 
-/** Window opens T−10m and closes T+45m around the resolved release time (spec §4.2). */
-const WINDOW_PRE_MS = 10 * 60_000;
-const WINDOW_POST_MS = 45 * 60_000;
-/** In-window poll cadence (spec §4.2). */
-const CADENCE_MS = 10_000;
+// The window itself now lives in ONE place (`./window.ts`, spec §4.3):
+// scheduled ± forced ± extension, pooled over whichever terms the print ROW
+// carries. Nothing here recomputes it — `windowForPrint` re-reads the row on
+// every pass, so a go press or an extension written by ANOTHER process is
+// honoured with no cache to invalidate.
+
+/** In-window poll cadence (spec §4.2). Exported for the tests. */
+export const CADENCE_MS = 10_000;
 
 const LEASE_TTL_MS = 60_000;
-const LEASE_RENEW_MS = 20_000;
+export const LEASE_RENEW_MS = 20_000;
 const LEASE_SETTINGS_KEY = "print_watch_lease";
 
-/** Minimal per-host governor (accepted deviation (c) — ≤3 simultaneous prints). */
-const SEC_HOST = "sec.gov";
-const SEC_SPACING_MS = 300;
-const DEFAULT_SPACING_MS = 200;
+/**
+ * How long ONE road of a pass may take before it is CANCELLED. The former
+ * `SOURCE_TIMEOUT_MS`, unchanged in value — what changed is that the deadline
+ * now aborts the road's signal (so `hardenedFetchBytes` closes the socket and
+ * the throttle slot comes back) instead of merely walking away from it.
+ */
+export const ROAD_TIMEOUT_MS = 15_000;
+
+/**
+ * The hard backstop for a road that IGNORES its cancellation (review I1 /
+ * R-C12). The abort at `ROAD_TIMEOUT_MS` is what a signal-honouring adapter
+ * settles on; this is when the pass stops waiting on one that does not. Kept
+ * under `LEASE_TTL_MS` — the mid-pass renewal (every 20s) covers the park.
+ */
+export const ROAD_ABANDON_MS = 3 * ROAD_TIMEOUT_MS;
+
+/** How often the lease owner sweeps for go requests ANY process queued. */
+export const GO_DISPATCH_MS = 2_000;
 
 /**
  * A failed parse is retried, but never on the very next tick: three retries
@@ -164,15 +193,6 @@ const MAX_PARSE_ATTEMPTS = 5;
 /** Booked on a document whose LAST claim was abandoned by a dead worker —
  *  the terminal state that lets a person's re-delivery revive it. */
 const ABANDONED_CLAIM_ERROR = "abandoned claim at the attempt cap";
-
-/**
- * A stalled socket must not park `pollOnce` past the lease renewal — a 60s
- * lease expiring under a hung EDGAR fetch is a split-brain invitation (review
- * round 1, important #3). NOTE: this abandons the wait, it does not cancel the
- * request; neither adapter takes an AbortSignal today, so a hung fetch keeps
- * its socket until the runtime drops it.
- */
-const SOURCE_TIMEOUT_MS = 15_000;
 
 /**
  * Flash candidates come off the DJ wire, which produces no document — but
@@ -220,6 +240,21 @@ export interface WatchStatusRow {
   sources: Record<string, string>;
   /** Static capability notes (Codex #23) — what CAN and cannot fire tonight. */
   coverage: string[];
+  /** ISO UTC of the FIRST go press, or null — the once-only forced stamp. */
+  forcedOpenAt: string | null;
+  /** ISO UTC end an "Extend 30 min" press wrote, or null. */
+  windowExtendedUntil: string | null;
+  /** The ONE window (`effectiveWindow`), as ISO UTC — null for an unresolved
+   *  TAS row nobody pressed (drop-zone only). */
+  effectiveWindow: { start: string; end: string } | null;
+  /** The most recent durable go request for this print, if any. */
+  goRequest: {
+    id: number;
+    status: GoRequestStatus;
+    attempts: number;
+    requestedAt: string;
+    result: RoadReport[] | null;
+  } | null;
 }
 
 /**
@@ -275,6 +310,9 @@ export interface WatcherSeams {
   /** Root of the acquired-bytes tree; `<root>/<printId>/<sha256>.<ext>`. */
   storageRoot: () => string;
   twsConnection: () => Promise<{ up: boolean; ib: IBApiLike | null }>;
+  /** The RAW fetch the acquisition scheduler wraps (`fetchFor`). Injected so a
+   *  test can hand the SEC lane an abort-aware fake and never open a socket. */
+  fetchImpl: FetchLike;
   pollDjNews: (
     ib: IBApiLike,
     conId: number,
@@ -282,8 +320,9 @@ export interface WatcherSeams {
     nowUtc: string,
     state: DjPollState,
     nowMs: number,
+    signal?: AbortSignal,
   ) => Promise<DjPollOutput>;
-  resolveCik: (symbol: string) => Promise<string | null>;
+  resolveCik: (symbol: string, fetchFn: FetchLike) => Promise<string | null>;
   /** Ask TWS for a security's IB contract id (and persist it). Null = TWS
    *  answered but knows no contract for this row. */
   resolveConId: (db: Database.Database, securityId: number) => Promise<number | null>;
@@ -292,11 +331,17 @@ export interface WatcherSeams {
     windowStartIso: string,
     windowEndIso: string,
     seenAccessions: Set<string>,
+    fetchFn: FetchLike,
   ) => Promise<EdgarFiling[]>;
+  /** `fetchFn` is REQUIRED on all three (review M3): every outbound HTTP
+   *  request this module makes rides the acquisition scheduler, and an
+   *  optional parameter defaulting to the bare global `fetch` is a silent
+   *  escape hatch for the next caller. */
   pollIrRss: (
     cfg: IrRssConfig,
     seenLinks: Set<string>,
     baseline: boolean,
+    fetchFn: FetchLike,
   ) => Promise<Array<{ title: string; link: string; html: string }>>;
   /** The SSRF-hardened reader for the stored IR page road — the newsroom page
    *  itself and every release link followed off it. The lane always wraps this
@@ -358,12 +403,13 @@ const DEFAULT_SEAMS: WatcherSeams = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   storageRoot: () => path.join(resolveDbDir(), "print-watch"),
   twsConnection: defaultTwsConnection,
-  pollDjNews: (ib, conId, windowStartUtc, nowUtc, state, nowMs) =>
-    pollDjNews(ib, conId, windowStartUtc, nowUtc, state, nowMs),
-  resolveCik: (symbol) => resolveCik(symbol),
+  fetchImpl: (url, init) => fetch(url, init),
+  pollDjNews: (ib, conId, windowStartUtc, nowUtc, state, nowMs, signal) =>
+    pollDjNews(ib, conId, windowStartUtc, nowUtc, state, nowMs, signal),
+  resolveCik: (symbol, fetchFn) => resolveCik(symbol, fetchFn),
   resolveConId: (db, securityId) => defaultResolveConId(db, securityId),
-  pollEdgar: (cik, startIso, endIso, seen) => pollEdgar(cik, startIso, endIso, seen),
-  pollIrRss: (cfg, seenLinks, baseline) => pollIrRss(cfg, seenLinks, fetch, { baseline }),
+  pollEdgar: (cik, startIso, endIso, seen, fetchFn) => pollEdgar(cik, startIso, endIso, seen, fetchFn),
+  pollIrRss: (cfg, seenLinks, baseline, fetchFn) => pollIrRss(cfg, seenLinks, fetchFn, { baseline }),
   fetchBytes: (url, opts) => hardenedFetchBytes(url, opts),
   extractCandidates: (contracts, text) => extractCandidates(contracts, text),
   pdfToText: async (db, pdfPath) => {
@@ -395,17 +441,14 @@ export function _setTestSeams(overrides: Partial<WatcherSeams> | null): void {
 // module state
 // ---------------------------------------------------------------------------
 
-interface PrintWindow {
-  startMs: number;
-  endMs: number;
-}
-
 interface PrintRuntime {
   printId: number;
   dto: ArmedEventDto;
   issuerName: string | null;
-  /** null = no auto window (an unresolvable TAS row) — drop-zone only. */
-  window: PrintWindow | null;
+  /** The ONE effective window, re-read from the print ROW on every pass so a
+   *  go/extend written by another process is honoured. `null` = no window at
+   *  all (an unresolvable TAS row nobody pressed) — drop-zone only. */
+  window: EffectiveWindow | null;
   live: boolean;
   burst: boolean;
   loop: Promise<void> | null;
@@ -451,11 +494,27 @@ const queues = new Map<number, Promise<unknown>>();
 const parseAttempts = new Map<number, { attempts: number; lastAtMs: number }>();
 /** symbol -> resolved CIK (null = looked up and genuinely absent). */
 const cikCache = new Map<string, string | null>();
-/** host -> epoch ms of the last outbound request (the per-host spacer). */
-const lastRequestAt = new Map<string, number>();
+/** print ids whose go request this process is running right now — one claim
+ *  per print at a time, however often the dispatcher ticks. */
+const goInFlight = new Set<number>();
+/** [I1/R-C16] Work a dispatcher tick found and could NOT place, and has already
+ *  spent one `ensurePrintWatch` on: `go:<requestId>` for a takeable row whose
+ *  print has no runtime here, `print:<printId>` for a live forced window with
+ *  no loop behind it. An entry is dropped as soon as the work stops being
+ *  unplaceable, so the next press reconciles again — and kept while it stays
+ *  unplaceable, so a row nothing can run never re-sweeps every two seconds. */
+const reconcileTried = new Set<string>();
+/** True WHILE the dispatcher's own reconcile runs. `ensurePrintWatch` ends with
+ *  `void dispatchGoRequests(db)`, and that nested tick must not reconcile its
+ *  way back in. */
+let reconcileInFlight = false;
 
 let leaseNote: string | null = null;
 let leaseRenewedAtMs = 0;
+/** Does THIS process hold the watcher lease? Set by `claimLease`, cleared on
+ *  every path that gives it up — the go dispatcher and `runForcedPass` both
+ *  refuse to act without it. */
+let leaseHeld = false;
 let tmpCounter = 0;
 
 function resetWatcherState(): void {
@@ -465,9 +524,14 @@ function resetWatcherState(): void {
   queues.clear();
   parseAttempts.clear();
   cikCache.clear();
-  lastRequestAt.clear();
+  goInFlight.clear();
+  reconcileTried.clear();
+  reconcileInFlight = false;
+  stopGoDispatcher();
+  acquisitionScheduler.reset();
   leaseNote = null;
   leaseRenewedAtMs = 0;
+  leaseHeld = false;
 }
 
 function statusFor(printId: number): PrintStatus {
@@ -520,12 +584,25 @@ function claimLease(db: Database.Database): boolean {
   const nowMs = seams.now();
   if (!acquireWatcherLease(db, watcherHolder(), nowMs, LEASE_TTL_MS)) {
     leaseNote = `watcher owned by ${readLeaseHolder(db)}`;
+    leaseHeld = false;
     stopAllLoops();
+    stopGoDispatcher();
     return false;
   }
   leaseNote = null;
   leaseRenewedAtMs = nowMs;
+  leaseHeld = true;
+  // The dispatcher runs for the LIFE OF THE LEASE (Codex round 1, finding #1),
+  // not just while somebody is calling `ensurePrintWatch`: a go request queued
+  // by another process — the panel's route in a second server, a sweep tick —
+  // has to be claimed by whoever owns the watcher, idle or not.
+  ensureGoDispatcher(db);
   return true;
+}
+
+/** Does this process own the watcher right now? */
+function holdsLease(): boolean {
+  return leaseHeld;
 }
 
 /** Renewal is due every 20s. Called between sources, not just once per tick,
@@ -590,12 +667,15 @@ export function buildArmedEventDto(db: Database.Database, row: ArmedWorksheetEve
   };
 }
 
-function windowFor(dto: ArmedEventDto): PrintWindow | null {
-  if (!dto.releaseTimeEt) return null;
-  const instant = composeReleaseInstant(dto.eventDate, dto.releaseTimeEt);
-  if (!instant) return null;
-  const t = instant.getTime();
-  return { startMs: t - WINDOW_PRE_MS, endMs: t + WINDOW_POST_MS };
+/**
+ * The ONE window (spec §4.3): scheduled ± forced ± extension, read from the
+ * print ROW rather than from the DTO — so a go press or an "Extend 30 min"
+ * written by ANOTHER process is seen at the very next pass (M-C2), with no
+ * cache to invalidate and no message to miss.
+ */
+function windowForPrint(db: Database.Database, printId: number): EffectiveWindow | null {
+  const row = getPrintById(db, printId);
+  return row ? effectiveWindow(row) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -607,6 +687,25 @@ function readPrintRow(db: Database.Database, printId: number): PrintRow | null {
     | PrintRow
     | undefined;
   return row ?? null;
+}
+
+/**
+ * The CURRENT `event_date` of each of these events, by id (re-review N2).
+ *
+ * `getArmedWorksheetEvents` is date-scoped, and a print row's `event_date` is a
+ * copy taken when the print was last reconciled — so after a calendar sync
+ * corrects an event's date, the two disagree until the next sweep. This is the
+ * one-line indirection that keeps the forced-window lookup keyed on the event
+ * rather than on that stale copy, without duplicating the armed-events query
+ * (whose row shape has one owner in `lib/queries/`).
+ */
+function currentEventDates(db: Database.Database, eventIds: number[]): string[] {
+  if (eventIds.length === 0) return [];
+  const placeholders = eventIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(`SELECT DISTINCT event_date FROM calendar_events WHERE id IN (${placeholders})`)
+    .all(...eventIds) as { event_date: string }[];
+  return rows.map((r) => r.event_date);
 }
 
 function readIssuerName(db: Database.Database, symbol: string): string | null {
@@ -752,20 +851,51 @@ export function ensurePrintWatch(db: Database.Database): void {
   const today = todayET(new Date(nowMs));
   const dates = [addDays(today, -1), today, addDays(today, 1)];
   const armed = getArmedWorksheetEvents(db, dates);
+
+  // A print whose FORCED window is live is reconciled whatever its event date
+  // (Codex round 1, finding #18): the desk pressing "print is live" IS the
+  // evidence, and a stale calendar date must not strand the watch that press
+  // opened. Their events are fetched by date the same way the armed set is.
+  //
+  // [N2] The dates come from the EVENT ROWS, resolved by event id, not from the
+  // print rows alone. A calendar sync that corrects an event's date more than a
+  // day out mid-forced-window leaves `print_watch_prints.event_date` stale for
+  // one sweep; looking up by that stale date misses a still-FLAGGED event, and
+  // with I2's skip gone the stale-print pass would then stand the forced watch
+  // down. "Still flagged ⇒ still armed", whatever the dates say. (The print
+  // row's own date is kept in the set too — it costs one more IN parameter and
+  // covers a print whose event row has moved out from under it.)
+  const forcedPrints = listForcedLivePrints(db, nowMs);
+  const forcedEventIds = new Set(forcedPrints.map((p) => p.event_id));
+  const forcedPrintIds = new Set(forcedPrints.map((p) => p.id));
+  const extraDates = Array.from(
+    new Set([
+      ...forcedPrints.map((p) => p.event_date),
+      ...currentEventDates(db, [...forcedEventIds]),
+    ]),
+  ).filter((d) => !dates.includes(d));
+  if (extraDates.length > 0) {
+    const known = new Set(armed.map((r) => r.eventId));
+    for (const row of getArmedWorksheetEvents(db, extraDates)) {
+      if (!known.has(row.eventId) && forcedEventIds.has(row.eventId)) armed.push(row);
+    }
+  }
   const armedEventIds = new Set(armed.map((r) => r.eventId));
 
-  const armedPrintIds = new Set<number>();
+  const armedPrintIds = new Set<number>(forcedPrintIds);
   /** Prints with no live loop of their own — see drainStrandedPrints. */
   const strandedPrintIds = new Set<number>();
 
   for (const row of armed) {
     const dto = buildArmedEventDto(db, row);
-    // A print with no resolvable window still EXISTS — the drop zone is the
-    // road for it, and the panel needs a row to drop onto.
-    const window = windowFor(dto);
 
     const printId = upsertPrint(db, dto.eventId, dto.symbol, dto.eventDate, dto.releaseTimeEt);
     armedPrintIds.add(printId);
+    // The window comes from the ROW, AFTER the upsert — it pools the scheduled
+    // term with the forced stamp and any extension. A print with no window at
+    // all still EXISTS: the drop zone is the road for it, and the panel needs a
+    // row to drop onto.
+    const window = windowForPrint(db, printId);
 
     // Recompile while the sheet is still untouched — bogeys are usually
     // curated AFTER arming, and a pre-print re-arm should pick up new
@@ -834,6 +964,20 @@ export function ensurePrintWatch(db: Database.Database): void {
 
   for (const print of listActivePrints(db)) {
     if (armedEventIds.has(print.event_id)) continue;
+    // [I2/R-C17] There USED to be a second `continue` here for any print with a
+    // live forced window — "the press armed it, so treat it as armed for this
+    // pass" (finding #18). What that finding was actually protecting against
+    // was the ±1-DAY date scope: a forced print dated outside it looked unarmed
+    // to the date-scoped query. `extraDates` above now re-fetches exactly those
+    // events through `getArmedWorksheetEvents`, which joins
+    // `earnings_worksheet_flags` — so every forced print whose event is STILL
+    // flagged is already in `armedEventIds` and never reaches this line. The
+    // only prints the skip could still catch were the ones whose flag is GONE,
+    // i.e. the desk pressed Go on the wrong name and then disarmed it. The
+    // user's disarm wins: the print stands down here, `listForcedLivePrints`
+    // stops listing it (it excludes `disarmed`), and the loop's next pass is a
+    // no-op instead of polling every road for 90 minutes.
+    //
     // An active print with no armed flag is either a genuine disarm or a
     // leftover whose day has passed (the app was closed through its window) —
     // call the stale one `expired`, which is what actually happened to it.
@@ -855,6 +999,12 @@ export function ensurePrintWatch(db: Database.Database): void {
   drainStrandedPrints(db, strandedPrintIds);
 
   retireFinishedRuntimes(db, armedPrintIds);
+
+  // Slice C: go requests queued by ANY process are claimed here, by the lease
+  // owner (M-C3). The 2-second dispatcher `claimLease` armed above keeps doing
+  // it for the life of the lease; this call is the immediate one, so a press
+  // that reached this process is acted on now rather than a tick from now.
+  void dispatchGoRequests(db);
 }
 
 /**
@@ -910,8 +1060,37 @@ export function getWatchStatus(db: Database.Database): WatchStatusRow[] {
       state: print.state,
       sources,
       coverage: status?.coverage ?? [],
+      forcedOpenAt: print.forced_open_at,
+      windowExtendedUntil: print.window_extended_until,
+      effectiveWindow: windowToIso(effectiveWindow(print)),
+      goRequest: latestGoRequestFor(db, print.id),
     };
   });
+}
+
+/** The latest durable go request for a print, with its per-road reports
+ *  decoded. A `result_json` that will not parse reads as "no reports yet"
+ *  rather than taking a read-only status route down. */
+function latestGoRequestFor(
+  db: Database.Database,
+  printId: number,
+): WatchStatusRow["goRequest"] {
+  const g = latestGoRequest(db, printId);
+  if (!g) return null;
+  let result: RoadReport[] | null = null;
+  try {
+    const parsed: unknown = g.result_json ? JSON.parse(g.result_json) : null;
+    result = Array.isArray(parsed) ? (parsed as RoadReport[]) : null;
+  } catch {
+    result = null;
+  }
+  return {
+    id: g.id,
+    status: g.status,
+    attempts: g.attempts,
+    requestedAt: g.requested_at,
+    result,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -931,19 +1110,32 @@ function startLoop(db: Database.Database, rt: PrintRuntime): void {
   rt.live = true;
 
   const task = (async () => {
+    let reason: PassReason = "cadence";
     while (rt.live) {
       try {
-        await pollOnce(db, rt);
+        // The scheduler owns pass coalescing: one pass at a time per print, and
+        // a pass requested while one runs is remembered ONCE and runs after.
+        await acquisitionScheduler.runPass(rt.printId, (signal) => pass(db, rt, signal), reason);
       } catch (err) {
         statusFor(rt.printId).sources.loop = errText(err);
       }
       if (!rt.live) break;
       if (rt.burst) {
-        // A hit on any source makes the others worth re-reading NOW.
+        // A hit on any road makes the others worth re-reading NOW.
         rt.burst = false;
+        reason = "burst";
         continue;
       }
-      await seams.sleep(CADENCE_MS);
+      const woke = await cadenceWait(rt.printId);
+      reason = woke === "timeout" ? "cadence" : woke;
+      if (woke !== "timeout") {
+        // R-C10: the reported reason is INFORMATIONAL ONLY — the scheduler
+        // keeps the FIRST remembered reason, so a burst remembered ahead of a
+        // user's go press surfaces as "burst". Every wake therefore does both
+        // things a go needs: it runs a dispatcher tick, and the pass below
+        // re-reads the print row's effective window.
+        void dispatchGoRequests(db);
+      }
     }
   })();
 
@@ -965,17 +1157,65 @@ function startLoop(db: Database.Database, rt: PrintRuntime): void {
   rt.loop = guarded;
 }
 
-async function pollOnce(db: Database.Database, rt: PrintRuntime): Promise<void> {
-  // Lease renewal rides the loop rather than its own timer: the loop is the
-  // only thing the lease protects, so a lost renewal must stop exactly it.
-  // It is re-checked BETWEEN sources, so one slow source can't push the
-  // renewal past the 60s TTL and hand out a second owner.
-  if (!renewLeaseIfDue(db)) return;
+/**
+ * The loop's cadence sleep: `CADENCE_MS`, ended EARLY by an explicit wake (a go
+ * press, an extension) so the desk never waits out a tick it just cancelled.
+ *
+ * The WAKE comes from the scheduler; the DEADLINE runs on the watcher's own
+ * `sleep` seam, which is what keeps the cadence injectable (a replay drill runs
+ * on a real clock and caps every sleep at a few milliseconds — a hard-coded ten
+ * seconds there would be ten seconds of wall time per pass).
+ *
+ * When the deadline wins it DRAINS its own parked waiter with a `wake`: a wake
+ * delivered to a parked waiter is consumed, never remembered, so leaving an
+ * abandoned waiter behind would let it swallow the next go press.
+ */
+async function cadenceWait(printId: number): Promise<PassReason | "timeout"> {
+  let woken = false;
+  const wake = acquisitionScheduler.waitForWake(printId, CADENCE_MS).then((reason) => {
+    woken = true;
+    return reason;
+  });
+  const deadline = seams.sleep(CADENCE_MS).then(() => {
+    if (!woken) acquisitionScheduler.wake(printId, "cadence");
+    return "timeout" as const;
+  });
+  const first = await Promise.race([wake, deadline]);
+  // The deadline's own `wake` resolves the wait branch with "cadence"; report
+  // it as the timeout it actually is. RESERVED REASON: `"cadence"` is this
+  // function's private handshake — nothing else may call
+  // `acquisitionScheduler.wake(printId, "cadence")`, or its wake would be read
+  // as a timeout here and skip the dispatcher tick R-C10 requires.
+  return first === "cadence" ? "timeout" : first;
+}
 
+/** The three automatic roads, in the order every report lists them. */
+const ROADS = ["dj", "edgar", "ir"] as const;
+type RoadName = (typeof ROADS)[number];
+
+/**
+ * One acquisition pass (spec §4.3 "Scheduler").
+ *
+ * The three roads run in PARALLEL under `Promise.allSettled`, each on its own
+ * linked `AbortSignal` with a per-road timer, so a stalled EDGAR never delays a
+ * DJ ingest and a hung request is CANCELLED rather than merely abandoned. Lease
+ * renewal rides a timer for the whole pass — started BEFORE the parse drain,
+ * which is the long phase (a model call is minutes, not seconds) — and losing
+ * the lease aborts every road at once.
+ *
+ * Returns one `RoadReport` per road: what a go request records, built from
+ * outcomes observed in THIS pass, never from a previous one.
+ */
+async function pass(db: Database.Database, rt: PrintRuntime, signal: AbortSignal): Promise<RoadReport[]> {
+  const status = statusFor(rt.printId);
+  if (!renewLeaseIfDue(db)) return skippedReports("lease lost");
+
+  // A go/extend written by ANOTHER process changes the ROW, not our memory.
+  rt.window = windowForPrint(db, rt.printId);
   const window = rt.window;
   if (!window) {
     rt.live = false; // drop-zone-only print: nothing to poll
-    return;
+    return skippedReports("no window");
   }
   if (seams.now() > window.endMs) {
     rt.live = false;
@@ -983,27 +1223,259 @@ async function pollOnce(db: Database.Database, rt: PrintRuntime): Promise<void> 
     if (current && current !== "parsed" && current !== "disarmed") {
       setPrintState(db, rt.printId, "expired");
     }
-    return;
+    return skippedReports("window closed");
   }
 
-  // Crash recovery (Codex #6): anything a previous process acquired but never
-  // parsed gets drained on every tick, not just at ingest time.
-  await runQueue(db, rt.printId);
+  const passController = new AbortController();
+  const passSignal = AbortSignal.any([signal, passController.signal]);
+  // Armed before ANY awaited work (Codex round 1, finding #11): the drain below
+  // can outlast the 60s lease TTL on its own. A renewal that THROWS aborts the
+  // pass exactly like one that returns false — it must never escape a timer
+  // callback and take the process down.
+  const renew = setInterval(() => {
+    try {
+      if (!renewLeaseIfDue(db)) passController.abort(new Error("watcher lease lost mid-pass"));
+    } catch (err) {
+      passController.abort(err instanceof Error ? err : new Error(String(err)));
+    }
+  }, LEASE_RENEW_MS);
 
-  if (!renewLeaseIfDue(db)) return;
-  const twsUp = await pollDjSource(db, rt, window);
-  if (!renewLeaseIfDue(db)) return;
-  await pollEdgarSource(db, rt, window);
-  if (!renewLeaseIfDue(db)) return;
-  await pollIrSource(db, rt);
-  refreshCoverage(db, rt, twsUp);
+  // The RSS lane keeps its own ladder key (the panel labels it "RSS"), but it
+  // IS the IR road as far as a go report is concerned (finding #12).
+  const irKey = irConfigFor(rt.dto.symbol) ? "rss" : "ir";
+  const keyFor = (road: RoadName) => (road === "ir" ? irKey : road);
+  const ctx: Record<RoadName, RoadCtx> = { dj: newRoadCtx(), edgar: newRoadCtx(), ir: newRoadCtx() };
+  let twsUp: boolean | null = null;
+  try {
+    // Crash recovery (Codex #6): anything a previous process acquired but never
+    // parsed gets drained on every pass, not just at ingest time.
+    await runQueue(db, rt.printId);
+
+    const settled = await Promise.allSettled([
+      runRoad("dj", passSignal, ctx.dj, async (c) => {
+        twsUp = await pollDjSource(db, rt, window, c);
+      }),
+      runRoad("edgar", passSignal, ctx.edgar, (c) => pollEdgarSource(db, rt, window, c)),
+      runRoad("ir", passSignal, ctx.ir, (c) => pollIrSource(db, rt, c)),
+    ]);
+
+    const reports: RoadReport[] = ROADS.map((road, i) => {
+      const outcome = settled[i];
+      const delivered = ctx[road].delivered;
+      if (outcome.status === "rejected") {
+        // R-C12: a road that RECORDED bytes did its job, even if it was then
+        // cancelled or abandoned — its parse is still running, and `failed` is
+        // the one verdict `result_json` keeps forever.
+        const note = delivered
+          ? `ok — ${delivered} document(s) delivered; then ${errText(outcome.reason)}`
+          : errText(outcome.reason);
+        status.sources[keyFor(road)] = note;
+        return { road, outcome: delivered ? "ok" : "failed", detail: safeErrorText(note) };
+      }
+      // The lane wrote its own note during THIS pass (one pass runs at a time
+      // per print), so reading it back is reading this pass's own outcome.
+      const note = status.sources[keyFor(road)] ?? "";
+      return {
+        road,
+        outcome: delivered ? "ok" : roadOutcome(note),
+        // M1: scrubbed on BOTH paths — every detail here persists into a go
+        // request's `result_json`.
+        detail: safeErrorText(note),
+      };
+    });
+
+    refreshCoverage(db, rt, twsUp);
+    return reports;
+  } catch (err) {
+    // Not a road at all: the parse drain, the coverage refresh, the window read.
+    return [{ road: "system", outcome: "failed", detail: safeErrorText(err) }];
+  } finally {
+    clearInterval(renew);
+  }
 }
 
 /**
- * Abandon a source that has stopped answering, so the loop keeps its renewal
- * cadence (review round 1, important #3). The underlying request is NOT
- * cancelled — neither adapter accepts an AbortSignal — it is simply no longer
- * waited on.
+ * How a lane's plain-language note reads as a go-report outcome.
+ *
+ *  - `ok …` / `baseline …` — the road ran and answered;
+ *  - "TWS offline", "no conId … wire off", "CIK unresolved", "no IR page
+ *    configured" — the road could not run at all, which is NOT a failure the
+ *    desk should chase (spec §7);
+ *  - anything else — it tried and failed.
+ */
+function roadOutcome(note: string): string {
+  if (note === "") return "skipped";
+  if (/^(ok|baseline|no baseline)\b/i.test(note)) return "ok";
+  if (/offline|no conId|wire off|none configured|no IR page|CIK unresolved|no window|lease lost/i.test(note)) {
+    return "skipped";
+  }
+  return "failed";
+}
+
+function skippedReports(detail: string): RoadReport[] {
+  return ROADS.map((road) => ({ road, outcome: "skipped", detail }));
+}
+
+/**
+ * One road's slice of a pass: the signal every request of that road rides, the
+ * delivery counter its report settles on, and the ingest escape hatch.
+ */
+interface RoadCtx {
+  /** Installed by `runRoad`; every request this road makes rides it. */
+  signal: AbortSignal;
+  /**
+   * How many documents this road has RECORDED in this pass (R-C12). It is
+   * incremented the moment `recordDelivery` returns — before the parse — and a
+   * road that delivered is never reported `failed`, whatever happens to it
+   * afterwards. `result_json` keeps a go request's verdict forever; writing
+   * "timed out" over the road that just carried the print is the one error the
+   * desk cannot correct.
+   */
+  delivered: number;
+  /**
+   * Record + parse one road document. Runs OUTSIDE the road's budgets: an
+   * ingest ends in `runQueue` → a Claude call, which is minutes, and counting
+   * it as acquisition time reported a successful wire road as timed out and
+   * aborted the IR links the lane had not read yet (review I1). The road's
+   * deadline covers ACQUISITION only.
+   */
+  ingest: (
+    db: Database.Database,
+    printId: number,
+    kind: PrintWatchDocKind,
+    source: string,
+    url: string | null,
+    buf: Buffer,
+  ) => Promise<IngestResult>;
+}
+
+/**
+ * Run ONE road under two budgets, both measured over ACQUISITION time only
+ * (R-C12) — `ctx.ingest` suspends them for the duration of a record + parse.
+ *
+ *  - at `ROAD_TIMEOUT_MS` the road's signal is ABORTED. That is what closes the
+ *    socket and hands the scheduler slot back, and a signal-honouring lane
+ *    settles on its own the moment it lands;
+ *  - at `ROAD_ABANDON_MS` the pass stops WAITING. Nothing else does: an adapter
+ *    that ignores its cancellation must not be able to park a pass past the
+ *    lease TTL, and it is the only case this second budget exists for.
+ *
+ * Splitting the two is the whole of review I1: the old single deadline rejected
+ * the road at 15s whatever it was doing, so a wire road that had just delivered
+ * the print and was inside its parse was written `failed — timed out` into a go
+ * request's `result_json`, permanently, and the IR lane's unread links died on
+ * the aborted signal.
+ *
+ * A road that is already cancelled when it starts (the lease was lost during
+ * the pre-road drain) never runs its lane at all. Once running, the pass signal
+ * reaches the lane through `ctx.signal` and the lane decides — a settling pass
+ * therefore never orphans a half-written document (R-C8: the ingest takes no
+ * signal and always completes).
+ *
+ * ACCEPTED LIMIT: a road stuck INSIDE an ingest parks the pass, because both
+ * budgets are suspended there. That is the same exposure the pre-road
+ * `runQueue` has always had — a parse that never returns — and the mid-pass
+ * lease renewal keeps the lease alive across it.
+ */
+async function runRoad(
+  label: RoadName,
+  parent: AbortSignal,
+  ctx: RoadCtx,
+  run: (ctx: RoadCtx) => Promise<void>,
+): Promise<void> {
+  const ac = new AbortController();
+  const signal = AbortSignal.any([parent, ac.signal]);
+  ctx.signal = signal;
+
+  const abortText = () => {
+    const reason: unknown = signal.reason;
+    return reason instanceof Error ? reason.message : `${label} aborted`;
+  };
+  /** Said only of a road that IGNORED its cancellation — the desk should be
+   *  able to tell that from a road that stopped when it was told to. */
+  const abandonText = () =>
+    `${label} timed out after ${ROAD_TIMEOUT_MS / 1000}s and ignored it — abandoned after ${ROAD_ABANDON_MS / 1000}s`;
+
+  let abortTimer: ReturnType<typeof setTimeout> | undefined;
+  let abandonTimer: ReturnType<typeof setTimeout> | undefined;
+  let abortLeftMs = ROAD_TIMEOUT_MS;
+  let abandonLeftMs = ROAD_ABANDON_MS;
+  let armedAtMs = 0;
+  let ingesting = 0;
+  let abandoned = false;
+  let stop: ((err: Error) => void) | null = null;
+
+  const arm = () => {
+    armedAtMs = seams.now();
+    abortTimer = setTimeout(
+      () => ac.abort(new Error(`${label} timed out after ${ROAD_TIMEOUT_MS / 1000}s`)),
+      Math.max(0, abortLeftMs),
+    );
+    abandonTimer = setTimeout(() => {
+      abandoned = true;
+      stop?.(new Error(abandonText()));
+    }, Math.max(0, abandonLeftMs));
+  };
+  const disarm = () => {
+    const spent = Math.max(0, seams.now() - armedAtMs);
+    abortLeftMs = Math.max(0, abortLeftMs - spent);
+    abandonLeftMs = Math.max(0, abandonLeftMs - spent);
+    if (abortTimer) clearTimeout(abortTimer);
+    if (abandonTimer) clearTimeout(abandonTimer);
+    abortTimer = undefined;
+    abandonTimer = undefined;
+  };
+  ctx.ingest = async (db, printId, kind, source, url, buf) => {
+    disarm();
+    ingesting += 1;
+    try {
+      return await ingestDocument(db, printId, kind, source, url, buf, () => {
+        ctx.delivered += 1;
+      });
+    } finally {
+      ingesting -= 1;
+      if (ingesting === 0) arm();
+    }
+  };
+
+  // Cancelled before it started: don't open a socket under a lease we lost.
+  if (signal.aborted) throw new Error(abortText());
+
+  arm();
+  try {
+    const abandoned = new Promise<never>((_resolve, reject) => {
+      stop = reject;
+    });
+    await Promise.race([run(ctx), abandoned]);
+  } catch (err) {
+    if (abandoned) throw new Error(abandonText());
+    // A lane that honoured its cancellation rejects with whatever its adapter
+    // threw; name the real reason instead ("… timed out after 15s", "watcher
+    // lease lost mid-pass").
+    if (signal.aborted && ingesting === 0) throw new Error(abortText());
+    throw err;
+  } finally {
+    stop = null;
+    disarm();
+  }
+}
+
+/** A road's context before its runner exists — `runRoad` installs the real
+ *  signal and ingest; `pass` keeps the object so it can read `delivered` even
+ *  when the road is cancelled or abandoned. */
+function newRoadCtx(): RoadCtx {
+  return {
+    signal: AbortSignal.abort(),
+    delivered: 0,
+    ingest: () => Promise.reject(new Error("road context used outside its road")),
+  };
+}
+
+/**
+ * Abandon a call that has stopped answering, so the pass keeps its renewal
+ * cadence. Still used by the conId backfill, which reaches TWS through
+ * `enrichSecurities` and takes no AbortSignal — the roads themselves are
+ * cancelled properly by `runRoad` (finding #10).
  */
 async function withSourceTimeout<T>(label: string, run: () => Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1012,8 +1484,8 @@ async function withSourceTimeout<T>(label: string, run: () => Promise<T>): Promi
       run(),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
-          () => reject(new Error(`${label} timed out after ${SOURCE_TIMEOUT_MS / 1000}s`)),
-          SOURCE_TIMEOUT_MS,
+          () => reject(new Error(`${label} timed out after ${ROAD_TIMEOUT_MS / 1000}s`)),
+          ROAD_TIMEOUT_MS,
         );
       }),
     ]);
@@ -1026,7 +1498,8 @@ async function withSourceTimeout<T>(label: string, run: () => Promise<T>): Promi
 async function pollDjSource(
   db: Database.Database,
   rt: PrintRuntime,
-  window: PrintWindow,
+  window: EffectiveWindow,
+  road: RoadCtx,
 ): Promise<boolean | null> {
   const status = statusFor(rt.printId);
   if (rt.dto.conId === null) {
@@ -1045,15 +1518,18 @@ async function pollDjSource(
     const out = await seams.pollDjNews(
       conn.ib,
       rt.dto.conId,
+      // The EFFECTIVE start: on a forced open that is press − 60m, so a wire
+      // item that printed before the desk pressed go is still in range (M-C10).
       formatTwsDateTime(new Date(window.startMs)),
       formatTwsDateTime(new Date(seams.now())),
       rt.djState,
       seams.now(),
+      road.signal,
     );
 
     for (const release of out.completedReleases) {
       rt.burst = true;
-      await ingestDocument(
+      await road.ingest(
         db,
         rt.printId,
         "dj-release",
@@ -1091,9 +1567,16 @@ async function pollDjSource(
     status.sources.dj = `ok — ${out.completedReleases.length} release(s), ${rt.flashHeadlines.length} flash(es)`;
     return true;
   } catch (err) {
-    status.sources.dj = errText(err);
+    // A cancelled wire read is a deadline, not a wire fault (finding #10).
+    status.sources.dj = isAbortError(err) ? "timed out — aborted" : errText(err);
     return null;
   }
+}
+
+/** An `AbortError` from any layer: the DOM-shaped one the fetch stack throws,
+ *  and the scheduler's own `AbortedError`. */
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
 }
 
 /**
@@ -1144,9 +1627,15 @@ async function backfillConId(db: Database.Database, rt: PrintRuntime): Promise<b
 async function pollEdgarSource(
   db: Database.Database,
   rt: PrintRuntime,
-  window: PrintWindow,
+  window: EffectiveWindow,
+  road: RoadCtx,
 ): Promise<void> {
   const status = statusFor(rt.printId);
+  // ONE throttled fetch for the whole lane: the SEC family's 2/s budget is
+  // shared across every CIK by the scheduler, and the pass signal rides every
+  // request — so no hand-rolled host spacer, and a cancelled pass closes the
+  // socket instead of leaving it to the runtime.
+  const fetchFn = acquisitionScheduler.fetchFor(road.signal, seams.fetchImpl);
   try {
     if (rt.dto.cik === null && !rt.cikAttempted) {
       rt.cikAttempted = true;
@@ -1154,10 +1643,7 @@ async function pollEdgarSource(
       if (cached !== undefined) {
         rt.dto.cik = cached;
       } else {
-        await spaceHost(SEC_HOST);
-        const cik = await withSourceTimeout("EDGAR CIK lookup", () =>
-          seams.resolveCik(rt.dto.symbol),
-        );
+        const cik = await seams.resolveCik(rt.dto.symbol, fetchFn);
         cikCache.set(rt.dto.symbol.toUpperCase(), cik);
         rt.dto.cik = cik;
       }
@@ -1167,15 +1653,14 @@ async function pollEdgarSource(
       return;
     }
 
-    await spaceHost(SEC_HOST);
     const cik = rt.dto.cik;
-    const filings = await withSourceTimeout("EDGAR poll", () =>
-      seams.pollEdgar(
-        cik,
-        new Date(window.startMs).toISOString(),
-        new Date(seams.now()).toISOString(),
-        rt.seenAccessions,
-      ),
+    const filings = await seams.pollEdgar(
+      cik,
+      // The EFFECTIVE start, same as the wire's.
+      new Date(window.startMs).toISOString(),
+      new Date(seams.now()).toISOString(),
+      rt.seenAccessions,
+      fetchFn,
     );
 
     let exhibits = 0;
@@ -1183,7 +1668,7 @@ async function pollEdgarSource(
       for (const exhibit of filing.exhibits) {
         rt.burst = true;
         exhibits += 1;
-        await ingestDocument(
+        await road.ingest(
           db,
           rt.printId,
           "edgar-ex99",
@@ -1212,10 +1697,10 @@ async function pollEdgarSource(
  * RSS keeps precedence — a stored page for NVDA would be a second, weaker
  * reading of the same newsroom.
  */
-async function pollIrSource(db: Database.Database, rt: PrintRuntime): Promise<void> {
+async function pollIrSource(db: Database.Database, rt: PrintRuntime, road: RoadCtx): Promise<void> {
   const rss = irConfigFor(rt.dto.symbol);
-  if (rss) return pollIrRssSource(db, rt, rss);
-  return pollIrPageSource(db, rt);
+  if (rss) return pollIrRssSource(db, rt, rss, road);
+  return pollIrPageSource(db, rt, road);
 }
 
 /** v1's NVDA-feed lane, unchanged. */
@@ -1223,23 +1708,28 @@ async function pollIrRssSource(
   db: Database.Database,
   rt: PrintRuntime,
   cfg: IrRssConfig,
+  road: RoadCtx,
 ): Promise<void> {
   const status = statusFor(rt.printId);
   try {
-    await spaceHost(cfg.host);
     // The FIRST poll of a watch is a baseline pass: it fetches no article at
     // all, it just records what the feed already held (fix wave, finding A).
     // The flag flips only after the poll returns, so a first poll that fails
     // does not consume the baseline.
     const baseline = !rt.irBaselineDone;
-    const items = await withSourceTimeout("IR feed poll", () =>
-      seams.pollIrRss(cfg, rt.seenIrLinks, baseline),
+    // The feed and every article it follows go through the scheduler's per-host
+    // throttle, on the pass signal (finding #9) — no hand-rolled spacer.
+    const items = await seams.pollIrRss(
+      cfg,
+      rt.seenIrLinks,
+      baseline,
+      acquisitionScheduler.fetchFor(road.signal, seams.fetchImpl),
     );
     rt.irBaselineDone = true;
 
     for (const item of items) {
       rt.burst = true;
-      await ingestDocument(
+      await road.ingest(
         db,
         rt.printId,
         "ir-page",
@@ -1282,7 +1772,11 @@ const IR_REFUSAL_LIMIT = 3;
  * label rather than as a quiet night); the runtime's real seen-set then
  * decides which of those are new. One fetch either way.
  */
-async function pollIrPageSource(db: Database.Database, rt: PrintRuntime): Promise<void> {
+async function pollIrPageSource(
+  db: Database.Database,
+  rt: PrintRuntime,
+  road: RoadCtx,
+): Promise<void> {
   const status = statusFor(rt.printId);
   // Re-read every poll: a PUT /sources during the window must take effect
   // without a restart, and clearing the row must stop the lane.
@@ -1309,39 +1803,35 @@ async function pollIrPageSource(db: Database.Database, rt: PrintRuntime): Promis
   // every link fetch — `hardenedFetchBytes` re-checks `allowHost` after each
   // redirect, so a 302 off the allowlist is refused rather than followed.
   const allowHost = (h: string) => isAllowedIrLinkHost(`https://${h}/`, irHost);
+  // Every read of this lane — the newsroom page AND each release link, hops
+  // included — carries the M17 host policy, the pass signal, and the
+  // scheduler's per-host slot (finding #9).
   const fetchBytes: typeof hardenedFetchBytes = (url, opts) =>
-    seams.fetchBytes(url, { ...opts, allowHost });
+    throttledFetchBytes(url, { ...opts, allowHost, signal: road.signal });
 
   const refusals: string[] = [];
   try {
-    await spaceHost(irHost);
     const baselined = hasIrBaseline(db, rt.dto.eventId, irBaselineFingerprint(cfg.irPageUrl));
     const scratch = new Set<string>();
-    const matching = await withSourceTimeout("IR page poll", () =>
-      pollIrPage(cfg, scratch, fetchBytes, { baseline: false }),
-    );
+    const matching = await pollIrPage(cfg, scratch, fetchBytes, { baseline: false });
     const items = matching.filter((item) => !rt.seenIrLinks.has(item.link));
 
     let durable = 0;
     for (const item of items) {
-      let linkHost: string;
       try {
-        linkHost = new URL(item.link).hostname;
+        new URL(item.link);
       } catch {
         // Unreachable via the adapter (it resolves and filters by host first),
         // but a link we cannot even name must not take the whole poll down.
         refusals.push(noteIrRefusal(db, rt, item.link, "unparseable link"));
         continue;
       }
-      await spaceHost(linkHost);
       let result: IngestResult;
       try {
-        const fetched = await withSourceTimeout("IR link fetch", () =>
-          fetchBytes(item.link, { label: "IR page link" }),
-        );
+        const fetched = await fetchBytes(item.link, { label: "IR page link" });
         // The road records the FINAL url (a hop may have moved it WITHIN the
         // allowlist), redacted — a stored newsroom URL can carry a token.
-        result = await ingestDocument(
+        result = await road.ingest(
           db,
           rt.printId,
           "ir-page",
@@ -1350,6 +1840,25 @@ async function pollIrPageSource(db: Database.Database, rt: PrintRuntime): Promis
           fetched.bytes,
         );
       } catch (err) {
+        // [M6/R-C19] A CANCELLATION is not a refusal. The road's 15-second
+        // timer, the pass-end abort (R-C8) and a lost lease all cancel this
+        // fetch — and the budget is shared across the page fetch and every
+        // link of the road, so three busy polls at the print minute would
+        // retire TONIGHT'S link ("1 link(s) retired after 3 refusals") with no
+        // way back. The link refused nothing; we stopped asking.
+        //
+        // THE ROAD'S SIGNAL DECIDES, not the error's name (re-review N1). A
+        // cancellation surfaces as two different shapes depending on WHERE it
+        // lands: aborted while queued for a host token is the scheduler's
+        // `AbortedError` (name `AbortError`), but aborted IN FLIGHT — the
+        // common case on a slow newsroom, and the one this finding was written
+        // about — is `hardenedFetchBytes` mapping every caller abort to
+        // `UrlFetchRefused("… aborted by the caller …")`, whose name is
+        // `UrlFetchRefused`. Keying on the name alone covered only the first.
+        // Reading the signal covers both and any future shape, and errs safe:
+        // a genuine refusal that happens to coincide with a cancellation costs
+        // the link nothing, which is the right way to be wrong here.
+        if (isAbortError(err) || road.signal.aborted) throw err;
         refusals.push(noteIrRefusal(db, rt, item.link, errText(err)));
         continue;
       }
@@ -1413,28 +1922,61 @@ function noteIrRefusal(
 }
 
 /**
- * Minimal per-host governor (Codex #21, accepted deviation (c)): SEC 300ms,
- * everything else 200ms. Module-level so simultaneous prints share the budget
- * — three NVDA/CRWD/other loops hitting EDGAR still queue behind one another.
+ * `hardenedFetchBytes` under the acquisition scheduler's per-host-family
+ * budget. The old hand-rolled `spaceHost` governor is gone: one scheduler now
+ * paces every outbound request the subsystem makes, across prints and across
+ * lanes, and it is the same object the SEC lane's `fetchFor` uses.
+ *
+ * Exported for `go.ts`'s pasted-link road, which passes NO signal on purpose —
+ * a press must not be cancelled by a settling acquisition pass (R-C8).
+ *
+ * Residual (documented in DECISIONS): redirect hops INSIDE `hardenedFetchBytes`
+ * share the one outer slot (max 3 hops), and the DJ wire keeps the TWS
+ * adapter's own pacing — TWS is not an HTTP host.
  */
-async function spaceHost(host: string): Promise<void> {
-  const minGap = host === SEC_HOST ? SEC_SPACING_MS : DEFAULT_SPACING_MS;
-  const last = lastRequestAt.get(host) ?? 0;
-  const wait = last + minGap - seams.now();
-  if (wait > 0) await seams.sleep(wait);
-  lastRequestAt.set(host, seams.now());
-}
+export const throttledFetchBytes: typeof hardenedFetchBytes = async (url, opts) => {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    // Not a URL we can even name: let the hardened fetch refuse it properly
+    // rather than throwing out of the throttle with a worse message.
+    return seams.fetchBytes(url, opts);
+  }
+  const release = await acquisitionScheduler.throttle(host, opts.signal);
+  try {
+    return await seams.fetchBytes(url, opts);
+  } finally {
+    release();
+  }
+};
 
 // ---------------------------------------------------------------------------
 // acquisition + pipeline
 // ---------------------------------------------------------------------------
 
-/** Temp file + atomic rename under `<storageRoot>/<printId>/` — the packaged
- *  app's cwd is a read-only signed bundle, so this anchors at the DB dir. */
-async function writeBytes(printId: number, sha: string, ext: string, buf: Buffer): Promise<string> {
-  const dir = path.join(seams.storageRoot(), String(printId));
+/**
+ * Temp file + atomic rename under `<storageRoot>/<dirKey>/` — the packaged
+ * app's cwd is a read-only signed bundle, so this anchors at the DB dir.
+ *
+ * `dirKey` is a print id for acquired bytes and the literal `"staging"` for a
+ * go press, whose print id does not exist yet (`go.ts`'s `GO_STAGING_DIR_KEY`)
+ * — which is why this is exported rather than private.
+ */
+export async function writeAcquiredBytes(
+  dirKey: number | string,
+  sha: string,
+  ext: string,
+  buf: Buffer,
+): Promise<string> {
+  // [M1] Composed by an IMPORTED helper rather than inline: Turbopack's tracer
+  // folds `path.join` + a template literal into a glob and warns, on every
+  // build, that this fs argument matches most of the project.
+  // `acquiredBytesPath` is opaque to it — the same reason the PDF text write
+  // below (`textPathFor`) has always been silent. Same string, no warning.
+  const finalPath = acquiredBytesPath(seams.storageRoot(), dirKey, sha, ext);
+  const dir = path.dirname(finalPath);
   await fsp.mkdir(dir, { recursive: true });
-  const finalPath = path.join(dir, `${sha}.${ext}`);
   tmpCounter += 1;
   const tmpPath = `${finalPath}.tmp-${process.pid}-${tmpCounter}`;
   await fsp.writeFile(tmpPath, buf);
@@ -1466,6 +2008,11 @@ export async function ingestDocument(
   source: string,
   url: string | null,
   buf: Buffer,
+  /** Fired the moment `recordDelivery` returns — BEFORE the parse (R-C12).
+   *  A road's report settles here: bytes recorded is what "the road worked"
+   *  means, and everything after this point is the parse, which outlives the
+   *  pass. Optional, so every other caller is unchanged. */
+  onDelivered?: () => void,
 ): Promise<IngestResult> {
   const print = readPrintRow(db, printId);
   if (!print) throw new Error(`print-watch: print ${printId} not found`);
@@ -1482,17 +2029,22 @@ export async function ingestDocument(
       rejectReason: "binary content — print-watch reads HTML, plain text, or PDF",
     };
   }
-  if (shape === "pdf") return ingestPdf(db, print, kind, source, url, buf);
+  if (shape === "pdf") return ingestPdf(db, print, kind, source, url, buf, onDelivered);
 
   const sha = sha256Hex(buf);
   const ext = shape === "html" ? "html" : "txt";
   const text = buf.toString("utf8");
-  const bytesPath = await writeBytes(printId, sha, ext, buf);
-  return finishIngest(db, print, kind, source, url, buf, {
-    bytesPath,
-    text,
-    gateCtx: gateContextFor(db, print),
-  });
+  const bytesPath = await writeAcquiredBytes(printId, sha, ext, buf);
+  return finishIngest(
+    db,
+    print,
+    kind,
+    source,
+    url,
+    buf,
+    { bytesPath, text, gateCtx: gateContextFor(db, print) },
+    onDelivered,
+  );
 }
 
 /**
@@ -1515,6 +2067,7 @@ async function ingestPdf(
   source: string,
   url: string | null,
   buf: Buffer,
+  onDelivered?: () => void,
 ): Promise<IngestResult> {
   const bytesCheck = checkPdfBytes(buf);
   if (!bytesCheck.ok) {
@@ -1522,7 +2075,7 @@ async function ingestPdf(
   }
 
   const sha = sha256Hex(buf);
-  const bytesPath = await writeBytes(print.id, sha, "pdf", buf);
+  const bytesPath = await writeAcquiredBytes(print.id, sha, "pdf", buf);
   const refused = async (reason: string): Promise<IngestResult> => {
     // ONLY when nothing owns these bytes. The path is content-addressed, so a
     // RE-delivery of a PDF already in hand (poppler since uninstalled, a
@@ -1560,11 +2113,16 @@ async function ingestPdf(
   await fsp.writeFile(tmpTextPath, text, "utf8");
   await fsp.rename(tmpTextPath, textPath);
 
-  return finishIngest(db, print, kind, source, url, buf, {
-    bytesPath,
-    text,
-    gateCtx: gateContextFor(db, print),
-  });
+  return finishIngest(
+    db,
+    print,
+    kind,
+    source,
+    url,
+    buf,
+    { bytesPath, text, gateCtx: gateContextFor(db, print) },
+    onDelivered,
+  );
 }
 
 /**
@@ -1584,8 +2142,13 @@ async function finishIngest(
   url: string | null,
   buf: Buffer,
   input: DeliveryInput,
+  onDelivered?: () => void,
 ): Promise<IngestResult> {
   const delivery = recordDelivery(db, print.id, kind, source, url, buf, input);
+  // The bytes are DURABLE from here on. Everything below — the gate verdict,
+  // the parse — is about what they turn into, and a road's report has already
+  // settled (R-C12).
+  onDelivered?.();
   const status = statusFor(print.id);
   // Guarded at the CALL site, not just inside: every other delivery — the
   // overwhelming majority — then adds no await at all to the ingest chain.
@@ -2067,4 +2630,182 @@ function runFlashLane(db: Database.Database, rt: PrintRuntime): Promise<void> {
       statusFor(rt.printId).sources.flash = errText(err);
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// the go road (slice C): the wake, the forced pass, the dispatcher
+// ---------------------------------------------------------------------------
+
+/**
+ * The in-process go wake (M-C3). Called by `requestGo` after its transaction
+ * commits and by the extend route after it writes.
+ *
+ * Three things, in order: reconcile (so a press that ARMED an event builds the
+ * runtime and opens the loop), end the loop's cadence sleep, and run one
+ * dispatcher tick so the request just queued is claimed NOW rather than up to
+ * `GO_DISPATCH_MS` from now. Safe to call when no watcher runs here at all —
+ * the wake is remembered, and the dispatcher declines without the lease.
+ */
+export async function wakePrintWatch(db: Database.Database, printId: number): Promise<void> {
+  ensurePrintWatch(db);
+  acquisitionScheduler.wake(printId, "go");
+  await dispatchGoRequests(db);
+}
+
+/**
+ * One fan-out pass NOW for a print THIS process runs, with per-road reports —
+ * what a claimed go request records in `result_json`.
+ *
+ * [M5/R-C18] A print this process cannot run — the lease is elsewhere, the
+ * runtime went with it, or the lease moved DURING the pass — throws
+ * `WatcherLeaseLost` rather than returning three `skipped` reports. Those
+ * reports used to be finalised `done`, which read on the card as the press's
+ * final answer ("DJ: skipped (lease lost) · …") for a fan-out nobody ran; the
+ * throw sends the row back to `queued` instead, and the new owner's dispatcher
+ * takes it. Acquisition itself was never lost — the new owner's cadence loop
+ * polls the same window within 10 s — but the REPORT has to say so.
+ *
+ * `signal` (R-C11) is the CALLER's cancellation — `runGoRequest`'s own claim
+ * controller, never a scheduler pass signal (R-C8). It is linked into the pass
+ * so a request whose claim is taken over mid-acquire cancels its roads instead
+ * of racing the new owner. CAVEAT: the scheduler coalesces passes per print, so
+ * a call that JOINS a pass already in flight cannot cancel that pass — its
+ * signal reaches only a pass this call actually starts.
+ */
+export async function runForcedPass(
+  db: Database.Database,
+  printId: number,
+  signal?: AbortSignal,
+): Promise<RoadReport[]> {
+  const rt = runtimes.get(printId);
+  if (!holdsLease()) throw new WatcherLeaseLost(leaseNote ?? "watcher lease held by another process");
+  if (!rt) throw new WatcherLeaseLost("watcher not live in this process");
+  const reports = await acquisitionScheduler.runPass<RoadReport[]>(
+    printId,
+    (passSignal) => pass(db, rt, signal ? AbortSignal.any([passSignal, signal]) : passSignal),
+    "go",
+  );
+  // The lease can also move MID-pass: `pass` returns `skippedReports("lease
+  // lost")` when a renewal fails at its head, and its renewal timer aborts
+  // every road when one fails later. Both leave `holdsLease()` false, and both
+  // mean the same thing — nobody looked.
+  if (!holdsLease()) throw new WatcherLeaseLost(leaseNote ?? "watcher lease lost mid-pass");
+  return reports;
+}
+
+/** The 2-second sweep, armed while this process holds the lease. */
+let goDispatcher: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Work this tick found and cannot place, keyed for the reconcile memo (I1).
+ *
+ * Two shapes, both of which mean "the row is durable and takeable but this
+ * process has no runtime to run it on":
+ *
+ *  - a takeable go request whose print has no runtime here — a press from
+ *    another process for an event this owner has not reconciled since its last
+ *    sweep (an event the press itself ARMED, or one dated outside ±1 day);
+ *  - a print whose FORCED window contains now with no live loop behind it — an
+ *    "Extend 30 min" written by another process after this owner's loop had
+ *    already stopped at the old end.
+ */
+function unplaceableWork(
+  db: Database.Database,
+  takeable: GoRequestRow[],
+  nowMs: number,
+): string[] {
+  const keys: string[] = [];
+  for (const row of takeable) if (!runtimes.has(row.print_id)) keys.push(`go:${row.id}`);
+  for (const print of listForcedLivePrints(db, nowMs)) {
+    const window = effectiveWindow(print);
+    if (!window || nowMs < window.startMs || nowMs > window.endMs) continue;
+    if (!runtimes.get(print.id)?.live) keys.push(`print:${print.id}`);
+  }
+  return keys;
+}
+
+/**
+ * Claim every takeable go request for a print THIS process runs, and run it.
+ *
+ * The claim itself is the store's compare-and-set inside `runGoRequest`; this
+ * only decides WHO tries. Two guards: a print whose runtime lives in another
+ * process is left to that process's dispatcher, and a print already running a
+ * request here is skipped — one claim per print at a time, however often the
+ * tick fires. Returns how many it claimed (exported for the tests).
+ *
+ * [I1/R-C16] The tick also RECONCILES when it has to. `wakePrintWatch` is
+ * in-process only: a press or an extension written by another process reaches
+ * this owner as a ROW and nothing else, and the guard above would decline it
+ * for as long as it took somebody to call `ensurePrintWatch` again — the
+ * panel's 60-second ensure only ticks while a Today tab is open, and the sweep
+ * is 15 minutes. So when a tick finds takeable work it cannot place, it spends
+ * ONE `ensurePrintWatch` on it and re-reads. Latched two ways: `reconcileTried`
+ * keeps a tick from re-sweeping for work that stays unplaceable, and
+ * `reconcileInFlight` keeps `ensurePrintWatch`'s own trailing
+ * `void dispatchGoRequests(db)` from recursing back in.
+ */
+export async function dispatchGoRequests(db: Database.Database): Promise<number> {
+  if (!holdsLease()) return 0;
+  const now = seams.now();
+  let takeable: ReturnType<typeof listTakeableGoRequests>;
+  try {
+    failCappedGoRequests(db, now);
+    takeable = listTakeableGoRequests(db, now);
+
+    const unplaceable = unplaceableWork(db, takeable, now);
+    for (const key of Array.from(reconcileTried)) {
+      if (!unplaceable.includes(key)) reconcileTried.delete(key);
+    }
+    if (!reconcileInFlight && unplaceable.some((key) => !reconcileTried.has(key))) {
+      for (const key of unplaceable) reconcileTried.add(key);
+      reconcileInFlight = true;
+      try {
+        ensurePrintWatch(db);
+      } finally {
+        reconcileInFlight = false;
+      }
+      takeable = listTakeableGoRequests(db, seams.now());
+    }
+  } catch (err) {
+    // A dispatcher tick must never take the process down (a closed handle, a
+    // locked DB, a reconcile that threw): the next tick tries again.
+    console.warn("[print-watch] go dispatcher tick failed:", errText(err));
+    return 0;
+  }
+  let claimed = 0;
+  for (const row of takeable) {
+    if (!runtimes.has(row.print_id)) continue;
+    if (goInFlight.has(row.print_id)) continue;
+    goInFlight.add(row.print_id);
+    claimed += 1;
+    void runGoRequest(db, row.id)
+      .catch((err) => console.warn(`[print-watch] go request ${row.id} failed:`, errText(err)))
+      .finally(() => goInFlight.delete(row.print_id));
+  }
+  return claimed;
+}
+
+/**
+ * Arm the dispatcher for the LIFE OF THE LEASE (Codex round 1, finding #1).
+ *
+ * It deliberately does not stop when it finds nothing: a request queued by
+ * another process an hour into an idle evening still has to be claimed within
+ * `GO_DISPATCH_MS`, and an idle-stop would mean the owner only notices when
+ * somebody happens to call `ensurePrintWatch` again.
+ */
+function ensureGoDispatcher(db: Database.Database): void {
+  if (goDispatcher) return;
+  const timer = setInterval(() => {
+    void dispatchGoRequests(db);
+  }, GO_DISPATCH_MS);
+  // Never hold the process open for this (the sweep is a short-lived caller).
+  timer.unref?.();
+  goDispatcher = timer;
+}
+
+/** Stops on lease loss, on `_setTestSeams`, and on shutdown. */
+function stopGoDispatcher(): void {
+  if (!goDispatcher) return;
+  clearInterval(goDispatcher);
+  goDispatcher = null;
 }

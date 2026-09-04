@@ -52,10 +52,14 @@ describe("print-watch × slice A registries", () => {
     expect(listPrepareSteps()).toContain("ir_baseline");
   });
 
-  it("registers exactly the print-watch handler and the ir_baseline step, once (idempotent)", () => {
+  it("registers exactly the two print-watch handlers and the ir_baseline step, once (idempotent)", () => {
     registerPrintWatch();
     registerPrintWatch();
-    expect(listEventMergeHandlers()).toEqual(["print-watch"]);
+    // ORDER IS LOAD-BEARING (slice C): C's go handler repoints go rows to the
+    // surviving print before B's handler deletes the donor print row —
+    // `print_watch_go_requests.print_id` has no cascade, so the reverse order
+    // fails the merge with a FOREIGN KEY error.
+    expect(listEventMergeHandlers()).toEqual(["print-watch-go", "print-watch"]);
     expect(listPrepareSteps()).toEqual(["ir_baseline"]);
   });
 

@@ -47,6 +47,14 @@ export async function GET() {
         state: row.state,
         sources: row.sources,
         coverage: row.coverage,
+        // Slice C's window fields. `getWatchStatus` already computed all four
+        // (the once-only forced stamp, the stacked extension, the ONE
+        // effective window and the latest durable go request), so this GET
+        // stays the pure read the doc comment above promises.
+        forcedOpenAt: row.forcedOpenAt,
+        windowExtendedUntil: row.windowExtendedUntil,
+        effectiveWindow: row.effectiveWindow,
+        goRequest: row.goRequest,
         lines: getSheet(db, row.printId),
         documents: Object.fromEntries(docs.map((doc) => [doc.id, doc.kind])) as Record<
           number,
