@@ -15,7 +15,11 @@
  * expected to grow by exactly the pending set):
  *   - its row count is unchanged
  *   - its `sqlite_sequence.seq` (if it has one) is unchanged
- * and for every index that existed before, it still exists; `schema_migrations`
+ *   - its stored DDL (`sqlite_master.sql`) is BYTE-IDENTICAL — the strongest
+ *     additive proof there is: a create-copy-drop-rename rebuild, a dropped
+ *     CHECK constraint or an added column all change it (review M8)
+ * and for every index that existed before, it still exists with byte-identical
+ * DDL; `schema_migrations`
  * gained EXACTLY the expected pending filenames (no more, no fewer);
  * `PRAGMA foreign_key_check` returns no rows; `PRAGMA integrity_check` is 'ok'.
  *
@@ -28,9 +32,12 @@
  * before running anything (bad path, missing file, safety guard) or a
  * non-check error (e.g. the DB would not open).
  *
- * Safety (this script never runs on the live database, only a copy):
- * refuses any path that resolves under the live checkout's `data/` directory
- * or whose basename is literally `vanguard.db`.
+ * Safety (this script never runs on the live database, only a copy): refuses
+ * a path whose basename is literally `vanguard.db`, the database path the app
+ * itself would open (`resolveDbPath`), and anything that resolves under that
+ * path's directory. The live location is READ FROM THE RESOLVER, never
+ * hardcoded — this repo is public and a developer's home directory is not a
+ * constant (R-D23).
  */
 import Database from "better-sqlite3";
 import fs from "node:fs";
@@ -38,6 +45,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runMigrations, migrationOrder } from "@/lib/db/migrate";
 import { CODE_MIGRATIONS } from "@/lib/db/code-migrations";
+import { resolveDbPath } from "@/lib/db/db-path";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,10 +54,6 @@ const __dirname = path.dirname(__filename);
 // relative to its OWN file location, not cwd — this mirrors that so the
 // "same discovery the runner uses" holds regardless of invocation cwd).
 const MIGRATIONS_DIR = path.join(__dirname, "..", "lib", "db", "migrations");
-
-// The live checkout's database directory — this script only ever runs
-// against a COPY, never this path or anything under it.
-const LIVE_DATA_DIR = "/Users/Yitzi/code/vanguard-skin/data";
 
 // The bookkeeping table itself is expected to gain rows (one per pending
 // migration) — it is asserted separately ("gained exactly the expected
@@ -68,23 +72,38 @@ interface SeqRow {
   seq: number;
 }
 
+/** `realpath` where the file exists (so a symlinked temp dir compares against
+ *  the same physical path the resolver's directory resolves to), plain
+ *  resolution otherwise. */
+function physical(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
 function assertSafeTarget(dbPath: string): void {
   if (path.basename(dbPath) === "vanguard.db") {
     throw new Error(
       `refusing: basename is "vanguard.db" — this script only ever runs on a copy (${dbPath})`,
     );
   }
-  let real: string;
-  try {
-    real = fs.realpathSync(dbPath);
-  } catch {
-    real = path.resolve(dbPath);
+  // The app's own resolution (DATABASE_PATH → VANGUARD_DB_DIR → <cwd>/data),
+  // never a hardcoded home directory.
+  const livePath = resolveDbPath();
+  const liveDir = path.dirname(livePath);
+  const real = physical(dbPath);
+  if (real === physical(livePath)) {
+    throw new Error(
+      `refusing: that is the database this app would open (${livePath}) — this script only ever runs on a copy (${dbPath})`,
+    );
   }
-  const rel = path.relative(LIVE_DATA_DIR, real);
+  const rel = path.relative(physical(liveDir), real);
   const underLiveDataDir = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
   if (underLiveDataDir) {
     throw new Error(
-      `refusing: path resolves under the live database directory (${LIVE_DATA_DIR}) — this script only ever runs on a copy (${dbPath})`,
+      `refusing: path resolves under the live database directory (${liveDir}) — this script only ever runs on a copy (${dbPath})`,
     );
   }
   if (!fs.existsSync(dbPath)) {
@@ -128,6 +147,21 @@ function indexNames(db: Database.Database): string[] {
   ).map((r) => r.name);
 }
 
+/** Every pre-existing table's and index's stored DDL, keyed `type:name`.
+ *  `sqlite_master.sql` is the exact text SQLite stored when the object was
+ *  created, so ANY structural change — a rebuild, a dropped constraint, an
+ *  added column — changes it. Implicit indexes carry a NULL `sql` and are
+ *  covered by the "index still exists" check instead. */
+function ddlByName(db: Database.Database): Map<string, string | null> {
+  const rows = db
+    .prepare(
+      `SELECT type, name, sql FROM sqlite_master
+        WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%' ORDER BY type, name`,
+    )
+    .all() as { type: string; name: string; sql: string | null }[];
+  return new Map(rows.map((r) => [`${r.type} "${r.name}"`, r.sql]));
+}
+
 function appliedMigrations(db: Database.Database): Set<string> {
   const hasTable = db
     .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`)
@@ -164,6 +198,7 @@ export async function rehearseAdditiveMigrations(dbPath: string): Promise<Rehear
     const beforeCounts = tableCounts(db, beforeTables);
     const beforeSeq = seqRows(db);
     const beforeIndexes = indexNames(db);
+    const beforeDdl = ddlByName(db);
     const beforeMigrations = appliedMigrations(db);
     const pending = computePending(beforeMigrations);
 
@@ -181,6 +216,7 @@ export async function rehearseAdditiveMigrations(dbPath: string): Promise<Rehear
     const afterCounts = tableCounts(db, afterTables);
     const afterSeq = seqRows(db);
     const afterIndexes = indexNames(db);
+    const afterDdl = ddlByName(db);
     const afterMigrations = appliedMigrations(db);
 
     const failures: string[] = [];
@@ -233,6 +269,20 @@ export async function rehearseAdditiveMigrations(dbPath: string): Promise<Rehear
       failures.push(`index(es) missing after migration: ${missingIndexes.join(", ")}`);
     }
     checks.push({ name: "pre-existing indexes still exist", pass: indexesOk });
+
+    // 3b. Every pre-existing table's and index's DDL is byte-identical
+    //     (review M8): the strongest statement of "additive" there is.
+    let ddlOk = true;
+    for (const [key, sql] of beforeDdl) {
+      if (!afterDdl.has(key)) {
+        ddlOk = false;
+        failures.push(`${key} no longer exists after migration`);
+      } else if (afterDdl.get(key) !== sql) {
+        ddlOk = false;
+        failures.push(`DDL changed for ${key}`);
+      }
+    }
+    checks.push({ name: "pre-existing table and index DDL byte-identical", pass: ddlOk });
 
     // 4. schema_migrations gained EXACTLY the expected pending filenames.
     const newlyApplied = [...afterMigrations].filter((f) => !beforeMigrations.has(f)).sort();

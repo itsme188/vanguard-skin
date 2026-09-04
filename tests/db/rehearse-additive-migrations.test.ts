@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { runMigrations } from "@/lib/db/migrate";
+import { CODE_MIGRATIONS } from "@/lib/db/code-migrations";
 import { rehearseAdditiveMigrations } from "@/scripts/rehearse-additive-migrations";
 
 let tmpDir: string;
@@ -97,5 +98,53 @@ describe("rehearseAdditiveMigrations", () => {
     const dbPath = path.join(tmpDir, "does-not-exist.db");
 
     await expect(rehearseAdditiveMigrations(dbPath)).rejects.toThrow(/no such file/);
+  });
+
+  it("refuses anything under the directory the app's own resolver points at (R-D23)", async () => {
+    // The live location is READ FROM THE RESOLVER, never hardcoded — so point
+    // the resolver at this temp directory and a copy inside it must be refused
+    // exactly as the real data directory would be. `assertSafeTarget` reads
+    // `process.env` through the resolver's default argument, so the env is set
+    // and restored here rather than injected.
+    const dbPath = path.join(tmpDir, "copy-inside-the-live-dir.db");
+    buildFullyMigratedDb(dbPath);
+    const savedDir = process.env.VANGUARD_DB_DIR;
+    const savedPath = process.env.DATABASE_PATH;
+    try {
+      delete process.env.DATABASE_PATH;
+      process.env.VANGUARD_DB_DIR = tmpDir;
+      await expect(rehearseAdditiveMigrations(dbPath)).rejects.toThrow(/live database directory/);
+    } finally {
+      if (savedDir === undefined) delete process.env.VANGUARD_DB_DIR;
+      else process.env.VANGUARD_DB_DIR = savedDir;
+      if (savedPath === undefined) delete process.env.DATABASE_PATH;
+      else process.env.DATABASE_PATH = savedPath;
+    }
+  });
+
+  it("FAILS when a pending migration changes a pre-existing table's DDL (review M8)", async () => {
+    // "Additive" means the chain may CREATE, never rewrite. The only lever a
+    // test has over the pending set is the code-migration registry the runner
+    // and the script both read, so a throwaway migration is registered here
+    // (and removed in `finally`) that touches a table 091 never sees. An
+    // ALTER … ADD COLUMN is the mildest possible rewrite and must still be
+    // caught: it changes the stored DDL while leaving row counts, sequences
+    // and indexes untouched.
+    const dbPath = path.join(tmpDir, "rehearse-ddl-probe.db");
+    buildFullyMigratedDb(dbPath);
+    const probe = "092_ddl_probe_not_a_real_migration.ts";
+    CODE_MIGRATIONS[probe] = (db) => db.exec(`ALTER TABLE calendar_events ADD COLUMN qa_ddl_probe TEXT`);
+    try {
+      const result = await rehearseAdditiveMigrations(dbPath);
+      expect(result.pending).toEqual([probe]);
+      expect(result.ok).toBe(false);
+      expect(result.failures).toContain('DDL changed for table "calendar_events"');
+      expect(result.report).toContain("[FAIL] pre-existing table and index DDL byte-identical");
+      expect(result.report).toContain("RESULT: FAIL");
+      // Nothing else moved: this is a DDL-only failure.
+      expect(result.failures).toHaveLength(1);
+    } finally {
+      delete CODE_MIGRATIONS[probe];
+    }
   });
 });
