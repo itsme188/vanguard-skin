@@ -40,6 +40,14 @@ extraResources:
       - "!qa/**"
       - "!tests/**"
       - "!test-results/**"
+      # Local Worker dev state (miniflare KV/R2/cache SQLite). The tracer
+      # sweeps it in whenever `wrangler dev` has ever run in this checkout,
+      # and those KV blobs carry armed-event projection data. Gitignored,
+      # never read at runtime — the Worker runs on Cloudflare, not here.
+      # NOTE: only the .wrangler STATE is excluded; workers/cron/src IS
+      # imported at runtime (lib/calendar/enrichment-runner.ts), so the
+      # source tree must stay traceable.
+      - "!workers/cron/.wrangler/**"
       - "!docs/**"
       - "!scripts/**"
       - "!*.png"
