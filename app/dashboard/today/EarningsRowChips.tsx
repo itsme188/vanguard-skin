@@ -7,6 +7,9 @@ import {
   EarningsEmailViewer,
   type InlineEmailData,
 } from "../components/EarningsEmailViewer";
+import { BogeysEditModal } from "./BogeysEditModal";
+import { StageChipStrip, RowIntelLine, fmtCountdown } from "./hub-live/send-state-chips";
+import type { CockpitRowWire } from "./hub-live/types";
 import apiFetch from "@/lib/http/apiFetch";
 
 interface EarningsRowChipsProps {
@@ -17,6 +20,10 @@ interface EarningsRowChipsProps {
   recapSkipped: boolean;
   worksheetArmed: boolean;
   worksheetPrinted: boolean;
+  /** Task 9 (next wave) replaces this prop with useHubLive() context — both
+   *  are correct at their own wave boundary. Optional: a Hub row outside the
+   *  cockpit's coverage set renders with no cockpit row at all. */
+  cockpitRow?: CockpitRowWire | null;
 }
 
 type Phase = "preview" | "recap";
@@ -49,11 +56,13 @@ export function EarningsRowChips({
   recapSkipped,
   worksheetArmed,
   worksheetPrinted,
+  cockpitRow,
 }: EarningsRowChipsProps) {
   const { toast } = useToast();
   const router = useRouter();
   const [openPhase, setOpenPhase] = useState<Phase | null>(null);
   const [sheetBusy, setSheetBusy] = useState(false);
+  const [actualsOpen, setActualsOpen] = useState(false);
 
   // Worksheet chip (feedback #6): tap toggles the auto-print arm; the armed
   // state prints once at the preview tick (printed → ✓ styling). Honest
@@ -90,6 +99,19 @@ export function EarningsRowChips({
   }
   const [inlineData, setInlineData] = useState<InlineEmailData | null>(null);
   const [generating, setGenerating] = useState(false);
+
+  // Cockpit chips (StageChipStrip) reuse this component's existing view/modal
+  // machinery: preview/recap open the same email viewer as the ✓-chips below,
+  // actuals opens the same BogeysEditModal wired the way EarningsCockpit.tsx
+  // wires it today.
+  function handleCockpitOpen(what: "preview" | "recap" | "actuals") {
+    if (what === "actuals") {
+      setActualsOpen(true);
+      return;
+    }
+    setInlineData(null);
+    setOpenPhase(what);
+  }
 
   // Show "Generate" only when the recap hasn't fired and isn't skipped —
   // otherwise the user already has a path to view it (the sent ✓-chip)
@@ -180,6 +202,24 @@ export function EarningsRowChips({
        2026-07-27 "+ BOG silently skipped the recap" bug, re-caught by
        elementFromPoint verification 2026-08-04). */
     <span ref={rootRef} className="flex flex-wrap items-center justify-end gap-x-1.5 gap-y-1 min-w-0">
+      {/* Cockpit chips (M-F4): the stage-chip strip, its release countdown and
+          the intel/exposure line, ahead of the row's own controls. Additive —
+          absent whenever the caller has no live cockpit row for this event
+          (outside the cockpit's coverage set), so every existing action below
+          renders exactly as it did before this prop existed. */}
+      {cockpitRow && (
+        <span className="flex flex-col items-end gap-0.5 shrink-0">
+          <span className="inline-flex items-center gap-1.5">
+            <StageChipStrip row={cockpitRow} onOpen={handleCockpitOpen} />
+            {cockpitRow.stages.released.state === "upcoming" && cockpitRow.stages.released.releaseInstant && (
+              <span className="text-[10px] font-mono text-ink-faint whitespace-nowrap">
+                {fmtCountdown(new Date(cockpitRow.stages.released.releaseInstant).getTime() - Date.now())}
+              </span>
+            )}
+          </span>
+          <RowIntelLine row={cockpitRow} />
+        </span>
+      )}
       {/* Group 1 — email lifecycle chips. shrink-0 so wrapping only ever
           happens BETWEEN groups, never mid-group. */}
       <span className="inline-flex items-center gap-1.5 shrink-0">
@@ -259,6 +299,17 @@ export function EarningsRowChips({
           inlineData={
             openPhase === "recap" && inlineData ? inlineData : null
           }
+        />
+      )}
+      {cockpitRow && (
+        <BogeysEditModal
+          eventId={cockpitRow.eventId}
+          symbol={cockpitRow.symbol}
+          open={actualsOpen}
+          onClose={() => {
+            setActualsOpen(false);
+            router.refresh();
+          }}
         />
       )}
     </span>
