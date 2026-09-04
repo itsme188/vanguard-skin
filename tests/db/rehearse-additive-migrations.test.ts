@@ -122,27 +122,45 @@ describe("rehearseAdditiveMigrations", () => {
     }
   });
 
-  it("FAILS when a pending migration changes a pre-existing table's DDL (review M8)", async () => {
-    // "Additive" means the chain may CREATE, never rewrite. The only lever a
-    // test has over the pending set is the code-migration registry the runner
-    // and the script both read, so a throwaway migration is registered here
-    // (and removed in `finally`) that touches a table 091 never sees. An
-    // ALTER … ADD COLUMN is the mildest possible rewrite and must still be
-    // caught: it changes the stored DDL while leaving row counts, sequences
-    // and indexes untouched.
-    const dbPath = path.join(tmpDir, "rehearse-ddl-probe.db");
+  it("PASSES an ALTER TABLE … ADD COLUMN, naming it a column-append (review M8, R-D30)", async () => {
+    // "Additive" means the chain may CREATE and may APPEND columns, never
+    // rewrite. The only lever a test has over the pending set is the
+    // code-migration registry the runner and the script both read, so a
+    // throwaway migration is registered here (and removed in `finally`) that
+    // touches a table 091 never sees. Slice C's 090 may add columns at the
+    // rebase, so this has to pass — visibly, with the table named.
+    const dbPath = path.join(tmpDir, "rehearse-ddl-append.db");
     buildFullyMigratedDb(dbPath);
     const probe = "092_ddl_probe_not_a_real_migration.ts";
     CODE_MIGRATIONS[probe] = (db) => db.exec(`ALTER TABLE calendar_events ADD COLUMN qa_ddl_probe TEXT`);
     try {
       const result = await rehearseAdditiveMigrations(dbPath);
       expect(result.pending).toEqual([probe]);
+      expect(result.failures).toEqual([]);
+      expect(result.ok).toBe(true);
+      expect(result.report).toContain("[PASS] pre-existing table and index DDL additive (column-append: calendar_events)");
+      expect(result.report).toContain("RESULT: PASS");
+    } finally {
+      delete CODE_MIGRATIONS[probe];
+    }
+  });
+
+  it("FAILS when a pending migration rewrites a pre-existing index (review M8, R-D30)", async () => {
+    // An index has no additive form: a definition that changed is a rewrite,
+    // whatever route it took to get there.
+    const dbPath = path.join(tmpDir, "rehearse-ddl-rewrite.db");
+    buildFullyMigratedDb(dbPath);
+    const probe = "092_ddl_probe_not_a_real_migration.ts";
+    CODE_MIGRATIONS[probe] = (db) => {
+      db.exec(`DROP INDEX idx_pw_documents_print`);
+      db.exec(`CREATE INDEX idx_pw_documents_print ON print_watch_documents(kind)`);
+    };
+    try {
+      const result = await rehearseAdditiveMigrations(dbPath);
       expect(result.ok).toBe(false);
-      expect(result.failures).toContain('DDL changed for table "calendar_events"');
-      expect(result.report).toContain("[FAIL] pre-existing table and index DDL byte-identical");
+      expect(result.failures).toEqual(['DDL changed for index "idx_pw_documents_print"']);
+      expect(result.report).toContain("[FAIL] pre-existing table and index DDL additive");
       expect(result.report).toContain("RESULT: FAIL");
-      // Nothing else moved: this is a DDL-only failure.
-      expect(result.failures).toHaveLength(1);
     } finally {
       delete CODE_MIGRATIONS[probe];
     }
