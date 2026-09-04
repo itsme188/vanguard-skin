@@ -1,0 +1,130 @@
+/**
+ * What happens to a candidate whose document was merged into another
+ * (controller ruling R-B7b) — the ONE definition, shared by migration 089's
+ * phase (5) rebuild and the event-merge handler's phase 2 so the two can
+ * never drift.
+ *
+ * The rule: no line may carry two candidates that are the SAME READING of one
+ * surviving document — same document, same `representation`. Identity is
+ * (survivingDocId, representation), never the candidate's fields and never the
+ * document alone:
+ *
+ *  - keyed on the FIELDS, two extractions of one content hash that differ only
+ *    in `representation` would both survive, and `reconcile()`'s `independent()`
+ *    reads them as an independent pair and greens `agreed` off ONE source (the
+ *    false green 089 exists to remove);
+ *  - keyed on the DOCUMENT alone, a merged twin carrying the legitimate
+ *    repA/repB pair — v1's two readings of one document, which reconcile has
+ *    always treated as independent — would lose one of them and drop from
+ *    `agreed` to `single_source` on every date-correction merge (R-B7b).
+ *
+ * Nothing is ever dropped: a candidate that loses this comparison is ARCHIVED
+ * with its provenance (`duplicate-of:<survivor>`), and a candidate whose
+ * document's bytes are gone is archived as `bytes-missing`. `kept.length +
+ * archived.length === candidates.length` always — that is the conservation
+ * invariant 089 hard-gates.
+ *
+ * NO IMPORTS beyond the shared types: migration 089 loads this module through a
+ * RELATIVE import (the rehearsal script runs it under tsx, where the `@/` alias
+ * does not resolve for dynamic imports), the merge handler through `@/`.
+ */
+import type { TaggedCandidate } from "./types";
+
+/** Archive reason for evidence whose document can no longer be re-read (M7/M16). */
+export const BYTES_MISSING_REASON = "bytes-missing";
+
+/** Archive reason for the second reading of one (document, representation). */
+export function duplicateReason(survivorId: number): string {
+  return `duplicate-of:${survivorId}`;
+}
+
+/** The slot a candidate occupies on a line: one reading of one document. */
+export function candidateSlot(docId: number, representation: string): string {
+  return `${docId}|${representation}`;
+}
+
+export interface CandidateRemapPolicy {
+  /**
+   * The document a candidate's evidence belongs to after the rebuild/merge:
+   * its own id when the document survived under it, the survivor's id when it
+   * was merged away, and `null` when this candidate is NOT ours to rewrite —
+   * the flash sentinel (doc_id 0), or a doc_id this pass never saw.
+   */
+  survivorOf(docId: number): number | null;
+  /** True when the surviving document's bytes are gone from disk (089 only). */
+  bytesMissing?(survivorId: number): boolean;
+}
+
+export interface ArchivedCandidate {
+  candidate: TaggedCandidate;
+  reason: string;
+}
+
+export interface DedupeResult {
+  /** What the line carries now, in input order, doc ids remapped. */
+  kept: TaggedCandidate[];
+  /** What the caller must write to `print_watch_candidate_archive`, in order. */
+  archived: ArchivedCandidate[];
+  /** True when anything moved or was archived — the caller's "re-reconcile?" flag. */
+  touched: boolean;
+}
+
+/**
+ * Decide every candidate's fate in ONE order-independent pass.
+ *
+ * `taken` seeds the occupied slots with candidates that are NOT in
+ * `candidates` but already sit on the same line — the merge handler's TARGET
+ * evidence. Slots held by candidates that keep their own document are
+ * pre-registered before anything is remapped, so a remapped twin is archived
+ * whether it appears before or after the survivor's own reading.
+ */
+export function dedupeRemappedCandidates(
+  candidates: TaggedCandidate[],
+  policy: CandidateRemapPolicy,
+  taken: Iterable<TaggedCandidate> = [],
+): DedupeResult {
+  const slots = new Set<string>();
+  for (const c of taken) slots.add(candidateSlot(c.doc_id, c.representation));
+
+  /** Where this candidate's evidence lands, or null when it stays put. */
+  const movedTo = (c: TaggedCandidate): number | null => {
+    const survivor = policy.survivorOf(c.doc_id);
+    if (survivor === null || survivor === c.doc_id) return null;
+    return survivor;
+  };
+  const gone = (c: TaggedCandidate): boolean => {
+    const survivor = policy.survivorOf(c.doc_id);
+    return survivor !== null && (policy.bytesMissing?.(survivor) ?? false);
+  };
+
+  // Pass 1 — every candidate that keeps its own document holds its slot.
+  for (const c of candidates) {
+    if (!gone(c) && movedTo(c) === null) slots.add(candidateSlot(c.doc_id, c.representation));
+  }
+
+  const kept: TaggedCandidate[] = [];
+  const archived: ArchivedCandidate[] = [];
+  let touched = false;
+  for (const c of candidates) {
+    if (gone(c)) {
+      // Evidence that can no longer be re-read is retracted, not kept (M7/M16).
+      archived.push({ candidate: c, reason: BYTES_MISSING_REASON });
+      touched = true;
+      continue;
+    }
+    const survivor = movedTo(c);
+    if (survivor === null) {
+      kept.push(c);
+      continue;
+    }
+    touched = true;
+    const slot = candidateSlot(survivor, c.representation);
+    if (slots.has(slot)) {
+      archived.push({ candidate: c, reason: duplicateReason(survivor) });
+      continue;
+    }
+    slots.add(slot);
+    kept.push({ ...c, doc_id: survivor });
+  }
+  return { kept, archived, touched };
+}

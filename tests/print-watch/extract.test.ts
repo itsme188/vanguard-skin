@@ -6,7 +6,11 @@
 // module has no db and no feature-key wiring).
 
 import { describe, it, expect, vi } from "vitest";
-import { extractCandidates, type AnthropicLike } from "@/lib/print-watch/extract";
+import {
+  extractCandidates,
+  extractCandidatesFromPdf,
+  type AnthropicLike,
+} from "@/lib/print-watch/extract";
 import { SONNET_MODEL } from "@/lib/claude-models";
 import type { LineContract, ExpectedValue } from "@/lib/print-watch/types";
 
@@ -345,5 +349,63 @@ describe("extractCandidates", () => {
     const userContent = params.messages[0].content as string;
     expect(userContent).toContain("revenue_q");
     expect(userContent).toContain(DOC_TEXT);
+  });
+});
+
+describe("extractCandidatesFromPdf", () => {
+  it("sends the PDF as a document block ahead of the contract text, same tool + system prompt", async () => {
+    const create = vi.fn().mockResolvedValue(
+      toolUseResponse([
+        {
+          metric_id: "revenue_q",
+          not_disclosed: false,
+          value: 1,
+          raw_text: "1",
+          snippet: "s",
+          location_hint: null,
+        },
+      ]),
+    );
+
+    const pdfBytes = Buffer.from("%PDF-1.7 fake");
+    const out = await extractCandidatesFromPdf([REVENUE_CONTRACT, EPS_CONTRACT], pdfBytes, {
+      anthropic: mockClient(create),
+    });
+    expect(out).toHaveLength(1);
+
+    const params = create.mock.calls[0][0];
+    const content = params.messages[0].content as Array<{
+      type: string;
+      source?: { media_type: string; data: string };
+      text?: string;
+    }>;
+    expect(content[0].type).toBe("document");
+    expect(content[0].source?.media_type).toBe("application/pdf");
+    expect(content[0].source?.data).toBe(pdfBytes.toString("base64"));
+    expect(content[1].type).toBe("text");
+    expect(content[1].text).toContain("=== CONTRACT LINES");
+    expect(content[1].text).not.toMatch(/expected|bogey|consensus/i);
+
+    // Same forced tool and same system prompt as the text road - the PDF
+    // reading differs ONLY in how the document reaches the model.
+    expect(params.tool_choice).toEqual({ type: "tool", name: "emit_candidates" });
+    expect(params.tools[0].name).toBe("emit_candidates");
+    expect(params.system).toContain("deterministic figure-extraction engine");
+  });
+
+  it("names ITSELF in the failure a caller records, not the text reading", async () => {
+    // The message lands in parse_last_error and the panel's parse_failed copy,
+    // so a PDF's native reading must not report under extractCandidates' name.
+    const create = vi.fn().mockResolvedValue(toolUseResponse([]));
+    await expect(
+      extractCandidatesFromPdf([REVENUE_CONTRACT], Buffer.from("%PDF-1.7 fake"), {
+        anthropic: mockClient(create),
+      }),
+    ).rejects.toThrow(/^extractCandidatesFromPdf: no candidates parsed/);
+
+    const textCreate = vi.fn().mockResolvedValue(toolUseResponse([]));
+    await expect(
+      extractCandidates([REVENUE_CONTRACT], DOC_TEXT, { anthropic: mockClient(textCreate) }),
+    ).rejects.toThrow(/^extractCandidates: no candidates parsed/);
   });
 });

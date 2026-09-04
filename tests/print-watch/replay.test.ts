@@ -47,10 +47,10 @@ import {
   getPrintByEventId,
   getSheet,
   listDocuments,
-  listUnparsedDocuments,
-  insertDocument,
+  listParseQueue,
   upsertLines,
 } from "@/lib/print-watch/store";
+import { recordDelivery } from "@/lib/print-watch/delivery";
 import { ensurePrintWatch, ingestDocument, _setTestSeams } from "@/lib/print-watch/watcher";
 import type { WatcherSeams } from "@/lib/print-watch/watcher";
 import { compileContracts } from "@/lib/print-watch/contracts";
@@ -568,34 +568,32 @@ describe("restart-after-insert drill (Task 13)", () => {
     expect(print.state).toBe("window_open");
     const printId = print.id;
 
-    expect(listUnparsedDocuments(db, printId)).toHaveLength(0);
+    expect(listParseQueue(db, printId)).toHaveLength(0);
 
-    // Simulate a PRIOR process that acquired bytes to disk and inserted the
-    // document row (i.e. it already passed the gate), then crashed before
-    // the pipeline ever parsed it — bypass ingestDocument entirely and go
-    // straight through the store, per Codex #6's crash-recovery contract.
+    // Simulate a PRIOR process that acquired bytes to disk and recorded the
+    // delivery (i.e. it already passed the gate), then crashed before the
+    // pipeline ever parsed it — bypass ingestDocument entirely and go straight
+    // through the store's delivery entry, per Codex #6's crash-recovery
+    // contract.
     const bytes = await fsp.readFile(SYNTHETIC_HTML_PATH);
     const sha = sha256(bytes);
     const dir = path.join(tmpRoot, String(printId));
     await fsp.mkdir(dir, { recursive: true });
     const bytesPath = path.join(dir, `${sha}.html`);
     await fsp.writeFile(bytesPath, bytes);
-    const { id: docId } = insertDocument(
-      db,
-      printId,
-      "edgar-ex99",
-      "edgar:restart-drill",
-      null,
-      sha,
+    const text = bytes.toString("utf8");
+    const { id: docId } = recordDelivery(db, printId, "edgar-ex99", "edgar:restart-drill", null, bytes, {
       bytesPath,
-    );
+      text,
+      gateCtx: { symbol: "SYNX", issuerName: "Synthex Corp", eventDate: EVENT_DATE },
+    });
 
-    expect(listUnparsedDocuments(db, printId).map((d) => d.id)).toEqual([docId]);
+    expect(listParseQueue(db, printId).map((d) => d.id)).toEqual([docId]);
     expect(listDocuments(db, printId)[0].parsed_at).toBeNull();
 
     // A watcher tick — the polling loop already running because the print
     // is in-window — must drain it with no further ingestDocument call.
-    await waitUntil(() => listUnparsedDocuments(db, printId).length === 0);
+    await waitUntil(() => listParseQueue(db, printId).length === 0);
 
     expect(listDocuments(db, printId).find((d) => d.id === docId)!.parsed_at).not.toBeNull();
 

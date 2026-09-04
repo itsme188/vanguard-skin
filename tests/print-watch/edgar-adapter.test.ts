@@ -531,6 +531,24 @@ describe("EDGAR outbound hardening", () => {
     );
   });
 
+  it("never echoes a secret-bearing query parameter in a hardened-fetch error", async () => {
+    // The cross-host redirect refusal (above) is the concrete hardened-fetch
+    // error path an attacker-controlled Location header can reach: a redirect
+    // to an off-host URL carrying ?token=SECRET-VALUE must never surface that
+    // token in the rejection message.
+    const routes = buildRoutes();
+    routes[`https://data.sec.gov/submissions/CIK${CIK}.json`] = {
+      status: 302,
+      body: null,
+      headers: { location: "https://evil.example.com/submissions.json?token=SECRET-VALUE" },
+    };
+
+    const { fetchFn } = makeMockFetch(routes);
+    await expect(
+      pollEdgar(CIK, WINDOW_START, WINDOW_END, new Set(), fetchFn),
+    ).rejects.not.toThrow(/SECRET-VALUE/);
+  });
+
   it("sends redirect: 'manual' and follows a same-host hop", async () => {
     const routes = buildRoutes();
     const ex991 = `${baseUrl(NEW_8K_ACCESSION)}/ex991.htm`;

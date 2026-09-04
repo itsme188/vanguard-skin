@@ -6,18 +6,24 @@ import {
   setPrintState,
   getPrintByEventId,
   listActivePrints,
-  insertDocument,
-  markDocumentParsed,
-  listUnparsedDocuments,
-  listDocuments,
   upsertLines,
   getSheet,
   markLineAccepted,
   clearLineAccepted,
   acquireWatcherLease,
+  upsertPrintWatchSource,
+  getPrintWatchSource,
+  deletePrintWatchSource,
+  listIrSeenLinks,
+  recordIrSeenLinks,
+  recordIrBaseline,
+  getIrBaseline,
+  hasIrBaseline,
 } from "@/lib/print-watch/store";
+import { recordDelivery } from "@/lib/print-watch/delivery";
 import type {
   PrintWatchLine,
+  PrintWatchDocKind,
   LineContract,
   ExpectedValue,
   TaggedCandidate,
@@ -51,6 +57,33 @@ function makeExpected(value: number): ExpectedValue {
   return { value, value_high: null, whisper: null, source_label: "consensus" };
 }
 
+/**
+ * A real document row for tests that need a live `source_doc_id` FK.
+ *
+ * The old hand-insert entry point retired with migration 089: documents are
+ * now recorded by CONTENT through the one delivery entry, so the seed text has
+ * to pass the gate for this print (issuer named + a plausible quarter for the
+ * event date). `marker` makes each seeded document a distinct sha256 AND a
+ * distinct normalised text, so two calls yield two documents rather than one
+ * merged one.
+ */
+function seedDoc(
+  db: Database.Database,
+  printId: number,
+  kind: PrintWatchDocKind,
+  source: string,
+  marker: string,
+  eventDate = "2026-08-20",
+): number {
+  const text = `ACME reports Q2 2026 results. ${marker}`;
+  const bytes = Buffer.from(text, "utf8");
+  return recordDelivery(db, printId, kind, source, null, bytes, {
+    bytesPath: `/tmp/${marker}`,
+    text,
+    gateCtx: { symbol: "ACME", issuerName: "Acme Corp", eventDate },
+  }).id;
+}
+
 function makeLine(metricId: string, value: number | null, opts: Partial<PrintWatchLine> = {}): PrintWatchLine {
   return {
     metric_id: metricId,
@@ -75,16 +108,23 @@ describe("print-watch store (migration 085)", () => {
     runMigrations(db);
   });
 
-  it("applies migration 085 fresh with the three tables + index", () => {
+  // 089 (slice B) adds the five sidecar tables to 085's three; the list is
+  // exhaustive on purpose, so a new print_watch_% table has to be declared here.
+  it("applies migrations 085 + 089 fresh with every print_watch table + index", () => {
     const tables = db
       .prepare(
         `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'print_watch_%' ORDER BY name`,
       )
       .all() as Array<{ name: string }>;
     expect(tables.map((t) => t.name)).toEqual([
+      "print_watch_candidate_archive",
+      "print_watch_document_roads",
       "print_watch_documents",
+      "print_watch_ir_baseline",
+      "print_watch_ir_seen",
       "print_watch_lines",
       "print_watch_prints",
+      "print_watch_sources",
     ]);
 
     const indexes = db
@@ -133,45 +173,65 @@ describe("print-watch store (migration 085)", () => {
     expect(ids).toEqual([p1, p2].sort((a, b) => a - b));
   });
 
-  it("insertDocument dedupes on (print_id, kind, sha256): second insert is not new, no duplicate row", () => {
-    const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
-    const printId = upsertPrint(db, eventId, "ACME", "2026-08-20", null);
-
-    const first = insertDocument(db, printId, "dj-release", "dj", "https://example.com/1", "sha-abc", "/path/1");
-    expect(first.isNew).toBe(true);
-
-    const second = insertDocument(db, printId, "dj-release", "dj", "https://example.com/1-dup", "sha-abc", "/path/1-dup");
-    expect(second.isNew).toBe(false);
-    expect(second.id).toBe(first.id);
-
-    const rows = db
-      .prepare(`SELECT * FROM print_watch_documents WHERE print_id = ? AND sha256 = ?`)
-      .all(printId, "sha-abc");
-    expect(rows).toHaveLength(1);
+  it("upsertPrintWatchSource / getPrintWatchSource / deletePrintWatchSource round-trip, keyed by upper-cased symbol", () => {
+    const row = upsertPrintWatchSource(db, {
+      symbol: "acme",
+      irPageUrl: "https://ir.acme.example/news",
+      linkMustContain: "Results",
+    });
+    expect(row).toMatchObject({
+      symbol: "ACME",
+      ir_page_url: "https://ir.acme.example/news",
+      link_must_contain: "Results",
+    });
+    expect(getPrintWatchSource(db, "ACME")?.ir_page_url).toBe("https://ir.acme.example/news");
+    upsertPrintWatchSource(db, {
+      symbol: "ACME",
+      irPageUrl: "https://ir.acme.example/press",
+      linkMustContain: null,
+    });
+    expect(getPrintWatchSource(db, "acme")).toMatchObject({
+      ir_page_url: "https://ir.acme.example/press",
+      link_must_contain: null,
+    });
+    expect(deletePrintWatchSource(db, "ACME")).toBe(true);
+    expect(getPrintWatchSource(db, "ACME")).toBeNull();
   });
 
-  it("listUnparsedDocuments returns only parsed_at IS NULL; markDocumentParsed removes it from the list", () => {
-    const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
-    const printId = upsertPrint(db, eventId, "ACME", "2026-08-20", null);
+  it("IR baseline is atomic and versioned by the source fingerprint; later links persist per event (M5)", () => {
+    const eventId = insertCalendarEvent(db, "k-ir");
+    expect(hasIrBaseline(db, eventId, "fp-1")).toBe(false);
+    expect(recordIrBaseline(db, eventId, "fp-1", ["https://ir.x/a", "https://ir.x/b"])).toBe(2);
+    expect(hasIrBaseline(db, eventId, "fp-1")).toBe(true);
+    expect(hasIrBaseline(db, eventId, "fp-2")).toBe(false); // a changed IR URL is a new baseline
+    expect(getIrBaseline(db, eventId)).toMatchObject({ source_fingerprint: "fp-1", link_count: 2 });
+    expect(recordIrSeenLinks(db, eventId, ["https://ir.x/a", "https://ir.x/c"], false)).toBe(1);
+    expect(listIrSeenLinks(db, eventId)).toEqual([
+      { link: "https://ir.x/a", baseline: true },
+      { link: "https://ir.x/b", baseline: true },
+      { link: "https://ir.x/c", baseline: false },
+    ]);
+    // An empty page is still a completed baseline.
+    const empty = insertCalendarEvent(db, "k-ir-empty");
+    expect(recordIrBaseline(db, empty, "fp-1", [])).toBe(0);
+    expect(hasIrBaseline(db, empty, "fp-1")).toBe(true);
+  });
 
-    const docA = insertDocument(db, printId, "dj-release", "dj", null, "sha-a", "/a");
-    const docB = insertDocument(db, printId, "edgar-ex99", "edgar", null, "sha-b", "/b");
+  it("a baseline whose link insert fails leaves NO marker (one transaction)", () => {
+    const eventId = insertCalendarEvent(db, "k-ir-atomic");
+    expect(() => recordIrBaseline(db, eventId, "fp-1", ["https://ir.x/a", null as unknown as string])).toThrow();
+    expect(getIrBaseline(db, eventId)).toBeNull();
+    expect(listIrSeenLinks(db, eventId)).toEqual([]);
+  });
 
-    let unparsed = listUnparsedDocuments(db, printId);
-    expect(unparsed.map((d) => d.id).sort()).toEqual([docA.id, docB.id].sort());
-
-    markDocumentParsed(db, docA.id);
-
-    unparsed = listUnparsedDocuments(db, printId);
-    expect(unparsed.map((d) => d.id)).toEqual([docB.id]);
-
-    const parsedRow = db.prepare(`SELECT parsed_at FROM print_watch_documents WHERE id = ?`).get(docA.id) as {
-      parsed_at: string | null;
-    };
-    expect(parsedRow.parsed_at).not.toBeNull();
-
-    const all = listDocuments(db, printId);
-    expect(all.map((d) => d.id).sort()).toEqual([docA.id, docB.id].sort());
+  it("upsertLines preserves audit_json unless the caller supplies one", () => {
+    const eventId = insertCalendarEvent(db, "k-audit");
+    const printId = upsertPrint(db, eventId, "ACME", "2026-08-20", "16:05");
+    upsertLines(db, printId, [makeLine("m", 1, { audit_json: JSON.stringify({ acceptances: [1] }) })]);
+    upsertLines(db, printId, [makeLine("m", 2)]);
+    expect(getSheet(db, printId)[0].audit_json).toBe(JSON.stringify({ acceptances: [1] }));
+    upsertLines(db, printId, [makeLine("m", 3, { audit_json: null })]);
+    expect(getSheet(db, printId)[0].audit_json).toBe(JSON.stringify({ acceptances: [1] })); // null = "not supplied"
   });
 
   it("upsertLines/getSheet round-trip including expected_json", () => {
@@ -306,8 +366,8 @@ describe("print-watch store (migration 085)", () => {
     function seedAcceptedLine(candidates: TaggedCandidate[], value: number | null = 1.42) {
       const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
       const printId = upsertPrint(db, eventId, "ACME", "2026-08-20", null);
-      const docA = insertDocument(db, printId, "dj-release", "dj", null, "sha-a", "/tmp/a").id;
-      const docB = insertDocument(db, printId, "edgar-ex99", "edgar", null, "sha-b", "/tmp/b").id;
+      const docA = seedDoc(db, printId, "dj-release", "dj", "seed-a");
+      const docB = seedDoc(db, printId, "edgar-ex99", "edgar", "seed-b");
       upsertLines(db, printId, [
         makeLine("eps_adj_q", value, {
           state: "agreed",
@@ -456,7 +516,7 @@ describe("print-watch store (migration 085)", () => {
     it("keeps the residue when contract_json names a DIFFERENT metric than this row (drifted contract)", () => {
       const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
       const printId = upsertPrint(db, eventId, "ACME", "2026-08-20", null);
-      const docA = insertDocument(db, printId, "dj-release", "dj", null, "sha-mismatch-a", "/tmp/a").id;
+      const docA = seedDoc(db, printId, "dj-release", "dj", "seed-mismatch-a");
 
       // Carries the ROW's real metric_id ("eps_adj_q") — real evidence, just
       // invisible to reconcile() once contract.metric_id has drifted.
