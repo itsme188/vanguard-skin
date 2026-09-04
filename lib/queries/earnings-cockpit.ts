@@ -62,6 +62,10 @@ export interface CockpitPayload {
   lanes: { bmo: CockpitRow[]; amc: CockpitRow[]; unknown: CockpitRow[] };
   carryover: CockpitRow[];
   skippedRows: number;
+  /** NEW (slice F, M-F5) — every row in the requested window, keyed by event
+   *  id. With no `weekOf` this covers exactly today + yesterday, i.e. the
+   *  same rows the lanes and carryover already hold. */
+  rowsByEvent: Record<number, CockpitRow>;
 }
 
 interface RawEventRow {
@@ -90,10 +94,22 @@ function laneFor(row: RawEventRow): "bmo" | "amc" | "unknown" {
 
 export function buildCockpitPayload(
   db: Database.Database,
-  now: Date = new Date()
+  now: Date = new Date(),
+  opts: { weekOf?: string } = {}
 ): CockpitPayload {
   const today = todayET(now);
   const yesterday = addDays(today, -1);
+
+  // The window. Without weekOf this is exactly the historical two days. With
+  // weekOf it is the Hub's seven days PLUS yesterday — carryover keeps its
+  // meaning (yesterday's unfinished prints) even when the viewed week does not
+  // contain yesterday, which is how a Monday morning still shows Sunday night.
+  const windowDates = opts.weekOf
+    ? Array.from(
+        new Set([...Array.from({ length: 7 }, (_, i) => addDays(opts.weekOf!, i)), yesterday])
+      ).sort()
+    : [today, yesterday];
+  const placeholders = windowDates.map(() => "?").join(", ");
 
   // Finnhub-preferred dedup, same PARTITION as getEarningsForWeekDeduped.
   const raw = db
@@ -106,7 +122,7 @@ export function buildCockpitPayload(
                            datetime(created_at) DESC
                 ) AS rn
            FROM calendar_events
-          WHERE event_date IN (?, ?)
+          WHERE event_date IN (${placeholders})
             AND event_type = 'earnings'
             AND COALESCE(superseded, 0) = 0
             AND symbol IS NOT NULL
@@ -118,7 +134,7 @@ export function buildCockpitPayload(
         WHERE rn = 1
         ORDER BY event_date ASC, release_time ASC NULLS LAST, symbol ASC`
     )
-    .all(today, yesterday) as RawEventRow[];
+    .all(...windowDates) as RawEventRow[];
 
   // deriveEventStages runs the plausibility guard on manual_actuals_at, and
   // the dedup above keeps only one twin per print — resolve the acceptance
@@ -133,6 +149,7 @@ export function buildCockpitPayload(
       lanes: { bmo: [], amc: [], unknown: [] },
       carryover: [],
       skippedRows: 0,
+      rowsByEvent: {},
     };
   }
 
@@ -222,8 +239,14 @@ export function buildCockpitPayload(
     }
   }
 
+  const rowsByEvent: Record<number, CockpitRow> = {};
+  for (const row of rows) rowsByEvent[row.eventId] = row;
+
   const carryover = rows.filter((r) => r.carryover);
-  const todayRows = rows.filter((r) => !r.carryover);
+  // Widened window (weekOf) can carry rows from other days of the week — those
+  // belong in rowsByEvent only, never in a lane. Without weekOf every
+  // non-carryover row IS today, so this filter is a no-op there.
+  const todayRows = rows.filter((r) => !r.carryover && r.eventDate === today);
   const lanes = {
     bmo: todayRows.filter((r) => laneFor(rawById.get(r.eventId)!) === "bmo"),
     amc: todayRows.filter((r) => laneFor(rawById.get(r.eventId)!) === "amc"),
@@ -262,5 +285,6 @@ export function buildCockpitPayload(
     lanes,
     carryover,
     skippedRows,
+    rowsByEvent,
   };
 }
