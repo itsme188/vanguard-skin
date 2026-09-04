@@ -211,3 +211,257 @@ export function composePrintSheetHtml(
   const css = opts.compact ? `${PRINT_CSS}\n${COMPACT_CSS}` : PRINT_CSS;
   return html.replace("</body>", `${css}\n</body>`);
 }
+
+// ── Post-print sheet (live print v2 slice E) ────────────────────────
+//
+// The pre-print sheet re-renders the PREVIEW email. This one has no email to
+// re-render: it is composed from the print itself — the reconciled sheet, the
+// callouts the desk accepted, the first-pass read, the bogeys by source and the
+// desk's notes. Pure, like everything else in this file: the LOADER
+// (lib/earnings/post-print-sheet.ts) computes every delta and formats every
+// figure, so this module never needs a database or a formatter (M-E15).
+//
+// Paper is LOCAL. Nothing here is privacy-masked — a fill-in sheet with masked
+// figures is not a sheet.
+
+export interface PostPrintSheetLine {
+  metricId: string;
+  label: string;
+  /** "accepted" / "agreed" / "single source" / "flash" / "conflict" / "blank". */
+  stateWord: string;
+  bogeyText: string;
+  reportedText: string;
+  deltaText: string;
+}
+
+export interface PostPrintSheetCallout {
+  label: string;
+  valueText: string;
+  vsBogeyText: string;
+}
+
+export interface PostPrintSheetInputs {
+  symbol: string; // upper-cased
+  eventDate: string; // YYYY-MM-DD
+  slot: string | null; // BMO / AMC
+  lines: PostPrintSheetLine[];
+  callouts: PostPrintSheetCallout[];
+  read: { read: string[]; call_watch: string[]; caveats: string[] } | null;
+  /** renderSheetBogeysBlock output ("" ok) — the FLEXIBLE block, dropped first. */
+  bogeysMd: string;
+  notes: PrintSheetNote[];
+  /** ET wall-clock, already formatted by the loader. */
+  printedAtEt: string;
+}
+
+/**
+ * Escapes markdown-table-breaking pipe characters in a cell — same rule (and
+ * same reason) as `escapeCell` in lib/digest/send-earnings-email.ts: an
+ * unescaped "|" in a label or a figure shifts every column after it. Copied
+ * rather than imported because this module must stay pure (M-E15) and
+ * send-earnings-email.ts is DB-aware.
+ */
+function escapeCell(text: string): string {
+  return text.replace(/\|/g, "\\|");
+}
+
+function scoreboardMarkdown(lines: PostPrintSheetLine[]): string {
+  if (lines.length === 0) return "";
+  const rows = lines
+    .map(
+      (l) =>
+        `| ${escapeCell(l.label)} | ${escapeCell(l.bogeyText)} | ${escapeCell(l.reportedText)} | ${escapeCell(l.deltaText)} | ${escapeCell(l.stateWord)} |`,
+    )
+    .join("\n");
+  return `## Scoreboard\n\n| Metric | Bogey | Reported | Δ | State |\n|---|---|---|---|---|\n${rows}`;
+}
+
+export function composePostPrintSheetHtml(
+  inputs: PostPrintSheetInputs,
+  opts: { dropFlexible?: boolean; compact?: boolean } = {},
+): string {
+  const slot = inputs.slot ? ` (${inputs.slot.toUpperCase()})` : "";
+  const calloutsMd = inputs.callouts.length
+    ? `## Accepted callouts\n\n${inputs.callouts
+        .map((c) => `- **${escapeCell(c.label)}** ${escapeCell(c.valueText)} — ${escapeCell(c.vsBogeyText)}`)
+        .join("\n")}`
+    : "";
+  const readMd =
+    inputs.read && inputs.read.read.length
+      ? `## First-pass read\n\n${inputs.read.read.map((l) => `- ${l}`).join("\n")}`
+      : "";
+  const watchMd =
+    inputs.read && inputs.read.call_watch.length
+      ? `## Watch on the call\n\n${inputs.read.call_watch.map((l) => `- ${l}`).join("\n")}`
+      : "";
+  const caveatsMd =
+    inputs.read && inputs.read.caveats.length
+      ? `## Caveats\n\n${inputs.read.caveats.map((l) => `- ${l}`).join("\n")}`
+      : "";
+  const notesMd = inputs.notes.length
+    ? `## Your notes\n\n${inputs.notes
+        .map((n) => `**[${n.date}] · ${n.noteType} · ${n.symbol}**\n\n${n.content}`)
+        .join("\n\n")}`
+    : "";
+  const md = [
+    scoreboardMarkdown(inputs.lines),
+    calloutsMd,
+    readMd,
+    watchMd,
+    caveatsMd,
+    // The FLEXIBLE block: the first thing the one-sheet ladder drops. It is the
+    // most reconstructible section (the same table is in the preview email and
+    // on screen) and the least useful once the numbers on the left are real.
+    opts.dropFlexible ? "" : inputs.bogeysMd,
+    notesMd,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const title = `${inputs.symbol} post-print sheet — ${inputs.eventDate}${slot}`;
+  const html = briefingToHtml(md, title, `printed ${inputs.printedAtEt}`);
+  const css = opts.compact ? `${PRINT_CSS}\n${COMPACT_CSS}` : PRINT_CSS;
+  return html.replace("</body>", `${css}\n</body>`);
+}
+
+// ── Monospace fallback ──────────────────────────────────────────────
+//
+// Same `WIDTH`/`pad` idiom as composeWorksheet (lib/earnings/worksheet.ts) —
+// copied, not imported, because worksheet.ts is DB-aware and this module is
+// pure (M-E15).
+
+const TEXT_WIDTH = 80;
+
+/** Scoreboard column widths. STATE is last and absorbs the remainder to 80 so
+ *  a long state word ("single source") never truncates. */
+const COL_METRIC = 24;
+const COL_BOGEY = 12;
+const COL_REPORTED = 14;
+const COL_DELTA = 9;
+const COL_STATE = TEXT_WIDTH - (COL_METRIC + COL_BOGEY + COL_REPORTED + COL_DELTA);
+
+function pad(s: string, w: number): string {
+  return s.length >= w ? s.slice(0, w - 1) + "…" : s.padEnd(w);
+}
+
+/** Greedy word wrap at `width`, hard-splitting any single word longer than it
+ *  (a pasted URL must never produce an over-wide line). Blank source lines are
+ *  preserved so a multi-paragraph note keeps its shape. */
+function wrap(text: string, width: number): string[] {
+  const out: string[] = [];
+  for (const rawLine of text.split("\n")) {
+    const words = rawLine.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      out.push("");
+      continue;
+    }
+    let line = "";
+    const flush = () => {
+      if (line) out.push(line);
+      line = "";
+    };
+    for (const w of words) {
+      let word = w;
+      // A word that can never share a line goes out in width-sized chunks.
+      while (word.length > width) {
+        flush();
+        out.push(word.slice(0, width));
+        word = word.slice(width);
+      }
+      if (!line) line = word;
+      else if (line.length + 1 + word.length <= width) line += ` ${word}`;
+      else {
+        flush();
+        line = word;
+      }
+    }
+    flush();
+  }
+  return out;
+}
+
+/** "- " bullets with a 2-space hanging indent, wrapped inside 80 columns. */
+function bulletLines(items: string[]): string[] {
+  return items.flatMap((item) =>
+    wrap(item, TEXT_WIDTH - 2).map((l, i) => (i === 0 ? `- ${l}` : `  ${l}`)),
+  );
+}
+
+/**
+ * Monospace fallback for the day Chrome is missing or the PDF road throws —
+ * the same "always produce SOME paper" rule the worksheet has followed since
+ * 2026-08-07. Fixed 80-column layout, like composeWorksheet. The bogeys-by-
+ * source markdown table is deliberately absent: it is the flexible block, and
+ * a markdown table printed as raw pipes is worse than no table.
+ */
+export function composePostPrintText(inputs: PostPrintSheetInputs): string {
+  const slot = inputs.slot ? ` (${inputs.slot.toUpperCase()})` : "";
+  const body: string[] = [];
+
+  const title = `${inputs.symbol} POST-PRINT SHEET — ${inputs.eventDate}${slot}`;
+  body.push(title.length > TEXT_WIDTH ? title.slice(0, TEXT_WIDTH - 1) + "…" : title);
+  body.push(`printed ${inputs.printedAtEt}`);
+  body.push("=".repeat(TEXT_WIDTH));
+
+  if (inputs.lines.length) {
+    body.push("");
+    body.push("SCOREBOARD");
+    body.push(
+      (
+        pad("METRIC", COL_METRIC) +
+        pad("BOGEY", COL_BOGEY) +
+        pad("REPORTED", COL_REPORTED) +
+        pad("Δ", COL_DELTA) +
+        pad("STATE", COL_STATE)
+      ).trimEnd(),
+    );
+    body.push("-".repeat(TEXT_WIDTH));
+    for (const l of inputs.lines) {
+      body.push(
+        (
+          pad(l.label, COL_METRIC) +
+          pad(l.bogeyText, COL_BOGEY) +
+          pad(l.reportedText, COL_REPORTED) +
+          pad(l.deltaText, COL_DELTA) +
+          pad(l.stateWord, COL_STATE)
+        ).trimEnd(),
+      );
+    }
+  }
+
+  if (inputs.callouts.length) {
+    body.push("");
+    body.push("CALLOUTS");
+    body.push(
+      ...bulletLines(inputs.callouts.map((c) => `${c.label} ${c.valueText} — ${c.vsBogeyText}`)),
+    );
+  }
+
+  if (inputs.read?.read.length) {
+    body.push("");
+    body.push("FIRST-PASS READ");
+    body.push(...bulletLines(inputs.read.read));
+  }
+  if (inputs.read?.call_watch.length) {
+    body.push("");
+    body.push("WATCH ON THE CALL");
+    body.push(...bulletLines(inputs.read.call_watch));
+  }
+  if (inputs.read?.caveats.length) {
+    body.push("");
+    body.push("CAVEATS");
+    body.push(...bulletLines(inputs.read.caveats));
+  }
+
+  if (inputs.notes.length) {
+    body.push("");
+    body.push("YOUR NOTES");
+    for (const n of inputs.notes) {
+      body.push(...wrap(`[${n.date}] · ${n.noteType} · ${n.symbol}`, TEXT_WIDTH));
+      body.push(...wrap(n.content, TEXT_WIDTH));
+      body.push("");
+    }
+    if (body[body.length - 1] === "") body.pop();
+  }
+
+  return body.join("\n") + "\n";
+}
