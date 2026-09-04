@@ -201,6 +201,7 @@ describe("cockpitRowsToIntelEvents", () => {
       lanes: { bmo: [], amc: [upcoming, released, unknown], unknown: [] },
       carryover: [carryover],
       skippedRows: 0,
+      rowsByEvent: {},
     };
 
     const events = cockpitRowsToIntelEvents(payload);
@@ -217,6 +218,7 @@ describe("cockpitRowsToIntelEvents", () => {
       lanes: { bmo: [], amc: [upcoming], unknown: [] },
       carryover: [],
       skippedRows: 0,
+      rowsByEvent: {},
     };
     expect(cockpitRowsToIntelEvents(payload)).toEqual([
       { id: 10, symbol: "TER", event_date: "2026-07-14", event_time: "AMC" },
@@ -234,6 +236,7 @@ describe("cockpitRowsToIntelEvents", () => {
       lanes: { bmo: [], amc: [wrongSlot, normalUpcoming], unknown: [] },
       carryover: [],
       skippedRows: 0,
+      rowsByEvent: {},
     };
 
     const events = cockpitRowsToIntelEvents(payload);
