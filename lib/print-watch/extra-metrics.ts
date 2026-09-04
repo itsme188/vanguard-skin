@@ -50,15 +50,25 @@ export function isUuidV4(value: string): boolean {
 }
 
 /**
- * Accepted spellings, per unit. `usd` mirrors lib/format.ts::parseLargeUSD
- * EXACTLY — optional sign, optional `$`, digits with thousands commas, optional
- * decimals, optional k/m/b scale word — so "$3,850,000,000", "3.85B" and "850M"
- * all parse and "6%", "1e3" and "three billion" do not. The scale word is the
- * ONLY multiplier: nothing here ever scales a percent.
+ * Accepted spellings, per unit. `usd` mirrors lib/format.ts::parseLargeUSD —
+ * optional sign, optional `$`, digits with thousands commas, optional decimals,
+ * optional k/m/b scale word — so "$3,850,000,000", "3.85B" and "850M" all parse
+ * and "6%", "1e3" and "three billion" do not. The scale word is the ONLY
+ * multiplier: nothing here ever scales a percent.
+ *
+ * ONE deliberate divergence (R-F16), enforced below rather than in the regex:
+ * a mantissa with no digit in it ("," / "$,,," / ",.5") is an ERROR here, where
+ * parseLargeUSD returns 0. See the comment at the check for why.
  */
 const USD_GRAMMAR = /^(-?)\s*\$?\s*([\d,]+(?:\.\d+)?)\s*([bmk])?\s*$/i;
-/** per_share / count / pct: a plain decimal, nothing else. */
-const DECIMAL_GRAMMAR = /^-?\d+(\.\d+)?$/;
+/**
+ * per_share / count / pct: a plain decimal, nothing else. An explicit leading
+ * `+` is accepted because lib/format.ts::coercePercent (the repo's other manual
+ * percent reader, used by the existing bogey fields) accepts it — a desk that
+ * types `+27.5` must not get two different answers from two adjacent inputs.
+ * `Number("+27.5")` is 27.5, so nothing downstream changes.
+ */
+const DECIMAL_GRAMMAR = /^[-+]?\d+(\.\d+)?$/;
 
 const UNIT_HINT: Record<ExtraMetricUnit, string> = {
   usd: "a dollar figure like 3.85B, 850M or $3,850,000,000",
@@ -106,7 +116,23 @@ function readNumberForUnit(
       return undefined;
     }
     const sign = m[1] === "-" ? -1 : 1;
-    const numeric = Number(m[2].replace(/,/g, ""));
+    const mantissa = m[2].replace(/,/g, "");
+    // DELIBERATE DIVERGENCE from lib/format.ts::parseLargeUSD (ruling R-F16).
+    // `[\d,]+` happily matches a run of commas with no digit in it, so ","
+    // and "$,,," strip to "" and `Number("")` is 0 — a finite, accepted value.
+    // parseLargeUSD carries the same hole; here it would turn a keystroke slip
+    // into a $0 consensus the desk gets measured against at 16:05, and $0 is
+    // not a small number, it is a wrong number presented as a measurement.
+    // Requiring digits BEFORE the decimal point also rejects ",.5" (which does
+    // contain a digit). Comma PLACEMENT is deliberately left alone — "1,2,3"
+    // still reads as 123, exactly as parseLargeUSD reads it, because that value
+    // is transcribed rather than invented. Do not "fix" parseLargeUSD instead:
+    // other callers depend on its current behaviour, and this module is pure.
+    if (!/^\d+(\.\d+)?$/.test(mantissa)) {
+      errors.push(`Metric ${index}: ${field} must be ${UNIT_HINT.usd}, or empty.`);
+      return undefined;
+    }
+    const numeric = Number(mantissa);
     if (!Number.isFinite(numeric)) {
       errors.push(`Metric ${index}: ${field} must be ${UNIT_HINT.usd}, or empty.`);
       return undefined;
@@ -132,6 +158,14 @@ function readNumberForUnit(
   return n;
 }
 
+/**
+ * ALL-OR-NOTHING: if ANY metric on the row fails ANY check, `specs` comes back
+ * EMPTY — not "the rows that passed". A caller that ignores `errors` therefore
+ * compiles no extra lines at all for that bogey row rather than a partial sheet,
+ * which is the safe direction for a set of numbers a print is measured against.
+ * The write path validates first, so a stored row that fails here is already an
+ * anomaly; `errors` is what the modal renders.
+ */
 export function parseExtraMetrics(json: string | null): { specs: ExtraMetricSpec[]; errors: string[] } {
   if (json === null || json.trim() === "") return { specs: [], errors: [] };
   let parsed: unknown;
@@ -168,10 +202,23 @@ export function parseExtraMetrics(json: string | null): { specs: ExtraMetricSpec
     } else if (seen.has(id)) {
       errors.push(`Metric ${n}: id ${id} appears twice on this sheet.`);
       bad = true;
+    } else {
+      // Recorded as soon as the id itself is well-formed, BEFORE the row's other
+      // checks can bail out (M-6): otherwise a first occurrence that also failed
+      // something else hides the duplicate until the desk's next submit.
+      seen.add(id);
     }
     const label = typeof row.label === "string" ? row.label.trim() : "";
     if (label.length < 1 || label.length > MAX_LABEL) {
       errors.push(`Metric ${n}: label must be 1 to ${MAX_LABEL} characters.`);
+      bad = true;
+    }
+    // Absent / null stays the legal "no definition" case; a present-but-wrong
+    // type must NOT collapse to "" — the definition is the text the extractor
+    // searches the release with, so silently blanking it yields a compiled line
+    // that can never be found, with no trace of why.
+    if (row.definition !== undefined && row.definition !== null && typeof row.definition !== "string") {
+      errors.push(`Metric ${n}: definition must be text.`);
       bad = true;
     }
     const definition = typeof row.definition === "string" ? row.definition.trim() : "";
@@ -208,7 +255,6 @@ export function parseExtraMetrics(json: string | null): { specs: ExtraMetricSpec
     if (consensus === undefined || whisper === undefined) bad = true;
     if (bad) return;
 
-    seen.add(id);
     specs.push({
       id,
       label,
