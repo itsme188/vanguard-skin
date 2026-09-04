@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { deltaPctNumber, verdictFor, factsFromLines, directionSafeFacts, isContradictedAccepted } from "@/lib/print-watch/read-facts";
-import { needsReverify } from "@/app/dashboard/today/PrintWatchPanel";
+import { needsReverify } from "@/app/dashboard/today/live-print/helpers";
 import type { LineContract, PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
 
 function contract(metricId: string, o: Partial<LineContract> = {}): LineContract {
