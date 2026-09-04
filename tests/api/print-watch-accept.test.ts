@@ -27,13 +27,14 @@ import {
   upsertLines,
   getSheet,
   markLineAccepted,
-  insertDocument,
 } from "@/lib/print-watch/store";
+import { recordDelivery } from "@/lib/print-watch/delivery";
 import type {
   LineContract,
   ExpectedValue,
   PrintWatchLine,
   LineStateKind,
+  PrintWatchDocKind,
   TaggedCandidate,
 } from "@/lib/print-watch/types";
 
@@ -134,6 +135,24 @@ function makeContract(metricId: string, overrides: Partial<LineContract> = {}): 
 }
 
 const EXPECTED: ExpectedValue = { value: 1.5, value_high: null, whisper: null, source_label: "consensus" };
+
+/**
+ * A real document row for the accept route's `source_doc_id` FK.
+ *
+ * Migration 089 retired the hand-insert path: documents are recorded by
+ * CONTENT through the one delivery entry, so the seed text has to pass the
+ * gate for this print (issuer named + a plausible quarter for the 2026-08-10
+ * event date these tests use). `marker` keeps each seeded document a distinct
+ * sha256 AND a distinct normalised text, so two calls yield two documents.
+ */
+function seedDoc(printId: number, kind: PrintWatchDocKind, source: string, marker: string): number {
+  const text = `ACME reports Q2 2026 results. ${marker}`;
+  return recordDelivery(hoisted.db, printId, kind, source, null, Buffer.from(text, "utf8"), {
+    bytesPath: `/tmp/${marker}`,
+    text,
+    gateCtx: { symbol: "ACME", issuerName: "Acme Corp", eventDate: "2026-08-10" },
+  }).id;
+}
 
 function makeLine(
   metricId: string,
@@ -500,8 +519,8 @@ describe("POST /api/print-watch/accept", () => {
     ) {
       const eventId = insertCalendarEvent({ eventDate: "2026-08-10" });
       const printId = upsertPrint(hoisted.db, eventId, "ACME", "2026-08-10", null);
-      const docA = insertDocument(hoisted.db, printId, "dj-release", "dj", null, "sha-a", "/a").id;
-      const docB = insertDocument(hoisted.db, printId, "edgar-ex99", "sec", null, "sha-b", "/b").id;
+      const docA = seedDoc(printId, "dj-release", "dj", "sha-a");
+      const docB = seedDoc(printId, "edgar-ex99", "sec", "sha-b");
       upsertLines(hoisted.db, printId, [
         makeLine("eps_adj_q", "conflict", null, {
           snippet: null,
@@ -737,8 +756,8 @@ describe("POST /api/print-watch/accept", () => {
     it("lands a disagreeing pool on 'conflict' with the stale figure cleared and every rival kept", async () => {
       const eventId = insertCalendarEvent({ eventDate: "2026-08-10" });
       const printId = upsertPrint(hoisted.db, eventId, "ACME", "2026-08-10", null);
-      const docA = insertDocument(hoisted.db, printId, "dj-release", "dj", null, "s-a", "/a").id;
-      const docB = insertDocument(hoisted.db, printId, "edgar-ex99", "sec", null, "s-b", "/b").id;
+      const docA = seedDoc(printId, "dj-release", "dj", "s-a");
+      const docB = seedDoc(printId, "edgar-ex99", "sec", "s-b");
       const pool: TaggedCandidate[] = [
         {
           metric_id: "eps_adj_q",
@@ -1170,8 +1189,8 @@ describe("POST /api/print-watch/accept", () => {
     ) {
       const eventId = insertCalendarEvent({ eventDate: "2026-08-10" });
       const printId = upsertPrint(hoisted.db, eventId, "ACME", "2026-08-10", null);
-      const docA = insertDocument(hoisted.db, printId, "dj-release", "dj", null, "sha-order-a", "/a").id;
-      const docB = insertDocument(hoisted.db, printId, "edgar-ex99", "sec", null, "sha-order-b", "/b").id;
+      const docA = seedDoc(printId, "dj-release", "dj", "sha-order-a");
+      const docB = seedDoc(printId, "edgar-ex99", "sec", "sha-order-b");
       upsertLines(hoisted.db, printId, [
         makeLine("eps_adj_q", "conflict", null, {
           snippet: null,

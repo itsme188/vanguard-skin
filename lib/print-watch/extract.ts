@@ -318,8 +318,36 @@ export async function extractCandidates(
 ): Promise<ParseCandidate[]> {
   const modelId = resolveExtractionModelId(opts.model);
   const client = opts.anthropic ?? defaultClient();
-  const userMessage = buildUserMessage(contracts, representationText);
+  return callExtraction(
+    client,
+    modelId,
+    buildUserMessage(contracts, representationText),
+    "extractCandidates",
+  );
+}
 
+/**
+ * The ONE model call, shared by every reading (text or PDF). Takes the user
+ * message as either a plain string (a text representation) or a content-block
+ * array (a `document` block plus the contract text) — everything else about
+ * the call, including the system prompt, the forced tool and the one retry, is
+ * identical, because the readings must differ only in HOW the document reaches
+ * the model, never in what it is asked to do.
+ *
+ * One malformed/empty response (no tool_use candidates AND no parseable text
+ * fallback) gets ONE retry. If both attempts fail this throws rather than
+ * returning an empty array, so a full-contract miss surfaces as an error the
+ * caller can record instead of looking like "everything not_disclosed".
+ */
+async function callExtraction(
+  client: AnthropicLike,
+  modelId: string,
+  content: string | Anthropic.ContentBlockParam[],
+  /** Which READING is calling. It reaches `parse_last_error` and, from
+   *  there, the panel's parse_failed copy — so a PDF's native reading must
+   *  not report itself under the text reading's name. */
+  label: string,
+): Promise<ParseCandidate[]> {
   let lastCandidates: ParseCandidate[] = [];
   let lastError: Error | null = null;
 
@@ -335,7 +363,7 @@ export async function extractCandidates(
         system: SYSTEM_PROMPT,
         tools: [TOOL],
         tool_choice: { type: "tool", name: TOOL_NAME },
-        messages: [{ role: "user", content: userMessage }],
+        messages: [{ role: "user", content }],
       });
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
@@ -359,10 +387,55 @@ export async function extractCandidates(
 
     lastCandidates = candidates;
     lastError = new Error(
-      `extractCandidates: no candidates parsed from model response (stop_reason=${response.stop_reason ?? "null"})`,
+      `${label}: no candidates parsed from model response (stop_reason=${response.stop_reason ?? "null"})`,
     );
   }
 
   if (lastCandidates.length === 0 && lastError) throw lastError;
   return lastCandidates;
+}
+
+/** The PDF twin of `buildUserMessage`: the document is the attachment, so the
+ *  text half carries only the contract lines and says where the document is.
+ *  Like its sibling it has no slot for `expected` — the bogey numbers cannot
+ *  reach this prompt because the signature never receives them. */
+function buildPdfUserMessage(contracts: LineContract[]): string {
+  return [
+    "=== CONTRACT LINES (extract exactly these, one candidate each) ===",
+    JSON.stringify(contracts, null, 2),
+    "",
+    "=== DOCUMENT ===",
+    "(the document is the attached PDF)",
+    "=== END OF DOCUMENT ===",
+  ].join("\n");
+}
+
+/**
+ * Reading TWO of a PDF: the bytes themselves as a Claude `document` block
+ * (the `lib/research-documents/extract.ts` path), with the SAME system
+ * prompt and the SAME forced tool as the text road. Its candidates are
+ * tagged `pdfNative` and — until the holdout pre-registered in
+ * `docs/DECISIONS.md` (2026-09-02) passes — carry `weak_pair`, so agreeing
+ * with the poppler reading caps the line at single_source rather than
+ * greening it.
+ */
+export async function extractCandidatesFromPdf(
+  contracts: LineContract[],
+  pdfBytes: Buffer,
+  opts: { model?: string; anthropic?: AnthropicLike } = {},
+): Promise<ParseCandidate[]> {
+  const modelId = resolveExtractionModelId(opts.model);
+  const client = opts.anthropic ?? defaultClient();
+  return callExtraction(
+    client,
+    modelId,
+    [
+      {
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: pdfBytes.toString("base64") },
+      },
+      { type: "text", text: buildPdfUserMessage(contracts) },
+    ],
+    "extractCandidatesFromPdf",
+  );
 }

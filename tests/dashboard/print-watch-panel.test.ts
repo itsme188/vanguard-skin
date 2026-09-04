@@ -124,6 +124,15 @@ describe("ladderText", () => {
   it("appends unrecognized keys alphabetically after the canonical ladder", () => {
     expect(ladderText({ zzz: "custom note", dj: "ok" })).toBe("DJ: ok · Zzz: custom note");
   });
+
+  // R-B16: the stored-IR-page lane is a KNOWN rung — before it was listed it
+  // fell through to the unknown-key branch and rendered "Ir: ok — IR: …",
+  // out of order and capitalised like a typo.
+  it("renders the stored-IR-page lane as a known rung, right after RSS", () => {
+    expect(
+      ladderText({ ir: "ok — 3 matching links, 1 new", rss: "no feed", dj: "ok" }),
+    ).toBe("DJ: ok · RSS: no feed · IR: ok — 3 matching links, 1 new");
+  });
 });
 
 // ── printStateLabel ─────────────────────────────────────────────────────

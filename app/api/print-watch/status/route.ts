@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getWatchStatus } from "@/lib/print-watch/watcher";
-import { getSheet, listDocuments } from "@/lib/print-watch/store";
+import { getSheet, listDocumentRoads, listDocuments } from "@/lib/print-watch/store";
 
 /**
  * GET /api/print-watch/status — the panel's poll loop (Task 10).
@@ -26,21 +26,46 @@ import { getSheet, listDocuments } from "@/lib/print-watch/store";
  * user-drop" tells it everything. The map is sent alongside rather than
  * denormalized into each candidate so `TaggedCandidate` (a stored, reconciled
  * shape) keeps its schema.
+ *
+ * `documentRoads` is the same idea one level deeper (089/M13): identity is
+ * CONTENT, so one document is now routinely delivered by several roads, and
+ * the kind map can only name one of them. Two roads agreeing on the same bytes
+ * is the strongest provenance the desk gets — and a road the gate REFUSED
+ * (verdict `rejected`) is exactly what explains a stored document that never
+ * parsed. Both are reads; the GET stays mutation-free.
  */
 export async function GET() {
   try {
-    const prints = getWatchStatus(db).map((row) => ({
-      printId: row.printId,
-      eventId: row.eventId,
-      symbol: row.symbol,
-      state: row.state,
-      sources: row.sources,
-      coverage: row.coverage,
-      lines: getSheet(db, row.printId),
-      documents: Object.fromEntries(
-        listDocuments(db, row.printId).map((doc) => [doc.id, doc.kind]),
-      ) as Record<number, string>,
-    }));
+    const prints = getWatchStatus(db).map((row) => {
+      const docs = listDocuments(db, row.printId);
+      // One read per print, indexed in memory — not one query per document.
+      const roads = listDocumentRoads(db, row.printId);
+      return {
+        printId: row.printId,
+        eventId: row.eventId,
+        symbol: row.symbol,
+        state: row.state,
+        sources: row.sources,
+        coverage: row.coverage,
+        lines: getSheet(db, row.printId),
+        documents: Object.fromEntries(docs.map((doc) => [doc.id, doc.kind])) as Record<
+          number,
+          string
+        >,
+        documentRoads: Object.fromEntries(
+          docs.map((doc) => [
+            doc.id,
+            roads
+              .filter((road) => road.document_id === doc.id)
+              .map((road) => ({
+                kind: road.kind,
+                source: road.source,
+                verdict: road.road_verdict,
+              })),
+          ]),
+        ) as Record<number, Array<{ kind: string; source: string; verdict: string }>>,
+      };
+    });
 
     return NextResponse.json({ success: true, data: { prints } });
   } catch (error) {

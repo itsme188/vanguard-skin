@@ -5,7 +5,7 @@
 // bootstraps — the cycle prepare-armed-event → registry-bootstrap → prepare-steps
 // → prepare-armed-event must only ever be traversed lazily, inside a function body.
 import { registerPrepareStepsOnce } from "./prepare-steps";
-// import { registerPrintWatch } from "@/lib/print-watch/register";   // slice B — enabled by the post-merge integration task
+import { registerPrintWatch } from "@/lib/print-watch/register"; // slice B (R-B1: the real registries, no shim)
 
 let done = false;
 let suppressed = false;
@@ -14,7 +14,7 @@ export function bootstrapEarningsRegistries(): void {
   if (done || suppressed) return;
   done = true;
   registerPrepareStepsOnce();
-  // registerPrintWatch();   // slice B (integration task)
+  registerPrintWatch();
 }
 
 /** Unit tests that register their own steps/handlers call this (via the two __reset helpers)

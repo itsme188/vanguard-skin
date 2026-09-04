@@ -5,12 +5,14 @@ import type Database from "better-sqlite3";
 import { reconcile } from "./reconcile";
 import type {
   PrintWatchState,
-  PrintWatchDocKind,
   PrintWatchLine,
   LineContract,
   LineStateKind,
   PrintRow,
   DocumentRow,
+  DocumentRoadRow,
+  IrBaselineRow,
+  PrintWatchSourceRow,
   TaggedCandidate,
 } from "./types";
 
@@ -83,48 +85,6 @@ export function listTodaysExpiredPrints(db: Database.Database, todayEt: string):
     .all(todayEt) as PrintRow[];
 }
 
-export function insertDocument(
-  db: Database.Database,
-  printId: number,
-  kind: PrintWatchDocKind,
-  source: string,
-  url: string | null,
-  sha256: string,
-  bytesPath: string,
-): { id: number; isNew: boolean } {
-  // SELECT-then-INSERT is non-atomic (a race could double-insert between the
-  // two statements), but every writer to this table runs under the single
-  // watcher lease (acquireWatcherLease) — no concurrent caller exists in v1,
-  // so the UNIQUE(print_id, kind, sha256) constraint is a backstop, not the
-  // primary dedupe path.
-  const existing = db
-    .prepare(
-      `SELECT id FROM print_watch_documents WHERE print_id = ? AND kind = ? AND sha256 = ?`,
-    )
-    .get(printId, kind, sha256) as { id: number } | undefined;
-  if (existing) return { id: existing.id, isNew: false };
-
-  const result = db
-    .prepare(
-      `INSERT INTO print_watch_documents (print_id, kind, source, url, sha256, bytes_path)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    )
-    .run(printId, kind, source, url, sha256, bytesPath);
-  return { id: Number(result.lastInsertRowid), isNew: true };
-}
-
-export function markDocumentParsed(db: Database.Database, docId: number): void {
-  db.prepare(`UPDATE print_watch_documents SET parsed_at = datetime('now') WHERE id = ?`).run(docId);
-}
-
-export function listUnparsedDocuments(db: Database.Database, printId: number): DocumentRow[] {
-  return db
-    .prepare(
-      `SELECT * FROM print_watch_documents WHERE print_id = ? AND parsed_at IS NULL ORDER BY id`,
-    )
-    .all(printId) as DocumentRow[];
-}
-
 export function listDocuments(db: Database.Database, printId: number): DocumentRow[] {
   return db
     .prepare(`SELECT * FROM print_watch_documents WHERE print_id = ? ORDER BY id`)
@@ -140,8 +100,8 @@ export function listDocuments(db: Database.Database, printId: number): DocumentR
 export function upsertLines(db: Database.Database, printId: number, lines: PrintWatchLine[]): void {
   const upsert = db.prepare(
     `INSERT INTO print_watch_lines
-       (print_id, metric_id, contract_json, expected_json, state, value, value_high, snippet, source_doc_id, candidates_json, updated_at)
-     VALUES (@print_id, @metric_id, @contract_json, @expected_json, @state, @value, @value_high, @snippet, @source_doc_id, @candidates_json, datetime('now'))
+       (print_id, metric_id, contract_json, expected_json, state, value, value_high, snippet, source_doc_id, candidates_json, audit_json, updated_at)
+     VALUES (@print_id, @metric_id, @contract_json, @expected_json, @state, @value, @value_high, @snippet, @source_doc_id, @candidates_json, @audit_json, datetime('now'))
      ON CONFLICT(print_id, metric_id) DO UPDATE SET
        contract_json = CASE WHEN print_watch_lines.state = 'accepted' THEN print_watch_lines.contract_json ELSE excluded.contract_json END,
        expected_json = CASE WHEN print_watch_lines.state = 'accepted' THEN print_watch_lines.expected_json ELSE excluded.expected_json END,
@@ -151,6 +111,7 @@ export function upsertLines(db: Database.Database, printId: number, lines: Print
        value_high = CASE WHEN print_watch_lines.state = 'accepted' THEN print_watch_lines.value_high ELSE excluded.value_high END,
        snippet = CASE WHEN print_watch_lines.state = 'accepted' THEN print_watch_lines.snippet ELSE excluded.snippet END,
        source_doc_id = CASE WHEN print_watch_lines.state = 'accepted' THEN print_watch_lines.source_doc_id ELSE excluded.source_doc_id END,
+       audit_json = COALESCE(excluded.audit_json, print_watch_lines.audit_json),
        updated_at = datetime('now')`,
   );
 
@@ -167,6 +128,9 @@ export function upsertLines(db: Database.Database, printId: number, lines: Print
         snippet: line.snippet,
         source_doc_id: line.source_doc_id,
         candidates_json: line.candidates_json,
+        // undefined/null from the caller means "not supplied": the COALESCE in
+        // the conflict clause keeps whatever trail the row already carries.
+        audit_json: line.audit_json ?? null,
       });
     }
   });
@@ -186,6 +150,7 @@ export function getSheet(db: Database.Database, printId: number): PrintWatchLine
     snippet: string | null;
     source_doc_id: number | null;
     candidates_json: string;
+    audit_json: string | null;
   }>;
 
   return rows.map((r) => ({
@@ -198,6 +163,7 @@ export function getSheet(db: Database.Database, printId: number): PrintWatchLine
     snippet: r.snippet,
     source_doc_id: r.source_doc_id,
     candidates_json: r.candidates_json,
+    audit_json: r.audit_json,
   }));
 }
 
@@ -267,8 +233,14 @@ const FLASH_DOC_ID = 0;
  * a candidate whose document row was never written (a legacy sheet, hand-built
  * evidence). Nulling those keeps an un-accept CLICK from turning into a
  * foreign-key exception — the line simply reports no document of record.
+ *
+ * EXPORTED (R-B8 fix round 1): evidence retraction re-derives lines the same
+ * way un-accept does and hits the same hazard — migration 089 deliberately
+ * PRESERVES candidates whose `doc_id` names no document row, so `reconcile()`
+ * can hand back a dangling id. Both callers must resolve through this one
+ * function; a second copy is how the two paths drift apart.
  */
-function resolveSourceDocId(db: Database.Database, docId: number | null): number | null {
+export function resolveSourceDocId(db: Database.Database, docId: number | null): number | null {
   if (docId === null || docId === FLASH_DOC_ID) return null;
   const row = db.prepare(`SELECT 1 AS ok FROM print_watch_documents WHERE id = ?`).get(docId) as
     | { ok: number }
@@ -441,4 +413,282 @@ export function acquireWatcherLease(
     .run(value, LEASE_SETTINGS_KEY, holder, nowMs);
 
   return swapped.changes > 0;
+}
+
+// ---------------------------------------------------------------------------
+// documents (migration 089): content identity, per-road provenance, parse CAS
+//
+// Writes go through `recordDelivery` (lib/print-watch/delivery.ts) — the ONE
+// transactional entry every road records through. What lives here is the read
+// side plus the parse-claim compare-and-set, which is a pure row-state
+// transition and has no business being inside the delivery transaction.
+// ---------------------------------------------------------------------------
+
+/** How long a parse claim may sit untouched before another worker may take it
+ *  over. Long enough to cover a slow model call, short enough that a crashed
+ *  worker does not strand a document for the whole print window. */
+export const PARSE_CLAIM_STALE_MS = 5 * 60_000;
+
+/**
+ * Eligibility is CONTENT **and** ROAD (spec §4.2): the bytes must belong to
+ * this event AND at least one road that delivered them must be trusted for
+ * this event. A document accepted on content but delivered only by a road the
+ * gate refused (a months-old IR newsroom post) is stored, visible, and never
+ * parsed — until a road that does accept it delivers the same bytes.
+ */
+export const ELIGIBLE_SQL = `d.gate_verdict = 'accepted'
+       AND EXISTS (SELECT 1 FROM print_watch_document_roads r WHERE r.document_id = d.id AND r.road_verdict = 'accepted')`;
+
+/**
+ * ONE definition of "eligible", asked about one document.
+ *
+ * Exported because four call sites ask the same question — the parse queue and
+ * `hasParsableDocuments` (in SQL, above), `recordDelivery` before and after a
+ * verdict, the watcher's post-model re-check and its stale-claim takeover, and
+ * the event-merge re-verdict. Hand-rolled copies drifted apart once already
+ * (the merge retracted on a content flip but not a road flip), so every one of
+ * them now reads through this or through `ELIGIBLE_SQL` itself.
+ */
+export function isDocumentEligible(db: Database.Database, docId: number): boolean {
+  return (
+    db
+      .prepare(`SELECT 1 AS one FROM print_watch_documents d WHERE d.id = ? AND ${ELIGIBLE_SQL} LIMIT 1`)
+      .get(docId) !== undefined
+  );
+}
+
+/** Documents this print may parse right now: content accepted, >=1 road accepted, state queued. */
+export function listParseQueue(db: Database.Database, printId: number): DocumentRow[] {
+  return db
+    .prepare(
+      `SELECT d.* FROM print_watch_documents d
+        WHERE d.print_id = ? AND d.parse_state = 'queued' AND ${ELIGIBLE_SQL}
+        ORDER BY d.id`,
+    )
+    .all(printId) as DocumentRow[];
+}
+
+/** Anything eligible that is not yet parsed or failed (queued OR claimed) —
+ *  the "is there still work to do for this print?" question. A document held
+ *  by another worker's live claim counts: the work exists, it is just not ours. */
+export function hasParsableDocuments(db: Database.Database, printId: number): boolean {
+  const row = db
+    .prepare(
+      `SELECT 1 AS one FROM print_watch_documents d
+        WHERE d.print_id = ? AND d.parse_state IN ('queued','claimed') AND ${ELIGIBLE_SQL}
+        LIMIT 1`,
+    )
+    .get(printId);
+  return row !== undefined;
+}
+
+/**
+ * Take ownership of a document's parse, compare-and-set.
+ *
+ * The claim IS the attempt (M15): `parse_attempts` increments HERE, durably,
+ * so a crash mid-parse never resets the budget and a second process sees the
+ * same count. One statement decides ownership — a caller whose read of the
+ * row happened before the winner's write simply matches nothing and is told
+ * it lost, rather than clobbering the winner (the same CAS shape as
+ * `acquireWatcherLease`). A claim older than PARSE_CLAIM_STALE_MS is takeable.
+ */
+export function claimDocumentParse(
+  db: Database.Database,
+  docId: number,
+  token: string,
+  nowMs: number,
+): boolean {
+  const nowIso = new Date(nowMs).toISOString();
+  const staleBefore = new Date(nowMs - PARSE_CLAIM_STALE_MS).toISOString();
+  const r = db
+    .prepare(
+      `UPDATE print_watch_documents
+          SET parse_state = 'claimed', parse_claim_token = ?, parse_claimed_at = ?,
+              parse_attempts = parse_attempts + 1
+        WHERE id = ?
+          AND (parse_state = 'queued'
+               OR (parse_state = 'claimed' AND datetime(parse_claimed_at) < datetime(?)))`,
+    )
+    .run(token, nowIso, docId, staleBefore);
+  return r.changes > 0;
+}
+
+/**
+ * Release a claim with an outcome. Guarded by the claim token: a worker whose
+ * claim was taken over while it was still running finalises NOTHING (returns
+ * false) instead of stamping its stale result over the live worker's.
+ *
+ * 'parsed' stamps `parsed_at` and clears the error; 'queued' returns the
+ * document to the queue for another attempt; 'failed' retires it (only an
+ * explicit user re-delivery re-queues it — see `recordDelivery`).
+ */
+export function finalizeDocumentParse(
+  db: Database.Database,
+  docId: number,
+  token: string,
+  state: "parsed" | "queued" | "failed",
+  error: string | null = null,
+): boolean {
+  const r = db
+    .prepare(
+      `UPDATE print_watch_documents
+          SET parse_state = ?, parse_claim_token = NULL, parse_claimed_at = NULL,
+              parse_last_error = ?,
+              parsed_at = CASE WHEN ? = 'parsed' THEN datetime('now') ELSE parsed_at END
+        WHERE id = ? AND parse_claim_token = ?`,
+    )
+    .run(state, state === "parsed" ? null : error, state, docId, token);
+  return r.changes > 0;
+}
+
+export function getDocument(db: Database.Database, docId: number): DocumentRow | null {
+  return (
+    (db.prepare(`SELECT * FROM print_watch_documents WHERE id = ?`).get(docId) as DocumentRow | undefined) ?? null
+  );
+}
+
+export function listDocumentRoads(db: Database.Database, printId: number): DocumentRoadRow[] {
+  return db
+    .prepare(
+      `SELECT r.* FROM print_watch_document_roads r
+         JOIN print_watch_documents d ON d.id = r.document_id
+        WHERE d.print_id = ? ORDER BY r.document_id, r.kind, r.source`,
+    )
+    .all(printId) as DocumentRoadRow[];
+}
+
+export function anyRoadAccepted(db: Database.Database, docId: number): boolean {
+  return (
+    db
+      .prepare(
+        `SELECT 1 AS one FROM print_watch_document_roads WHERE document_id = ? AND road_verdict = 'accepted' LIMIT 1`,
+      )
+      .get(docId) !== undefined
+  );
+}
+
+// ---------------------------------------------------------------------------
+// per-symbol IR sources
+// ---------------------------------------------------------------------------
+
+export function upsertPrintWatchSource(
+  db: Database.Database,
+  input: { symbol: string; irPageUrl: string; linkMustContain: string | null },
+): PrintWatchSourceRow {
+  const symbol = input.symbol.trim().toUpperCase();
+  db.prepare(
+    `INSERT INTO print_watch_sources (symbol, ir_page_url, link_must_contain) VALUES (?, ?, ?)
+     ON CONFLICT(symbol) DO UPDATE SET
+       ir_page_url = excluded.ir_page_url,
+       link_must_contain = excluded.link_must_contain,
+       updated_at = datetime('now')`,
+  ).run(symbol, input.irPageUrl, input.linkMustContain);
+  return getPrintWatchSource(db, symbol)!;
+}
+
+export function getPrintWatchSource(db: Database.Database, symbol: string): PrintWatchSourceRow | null {
+  return (
+    (db.prepare(`SELECT * FROM print_watch_sources WHERE symbol = ?`).get(symbol.trim().toUpperCase()) as
+      | PrintWatchSourceRow
+      | undefined) ?? null
+  );
+}
+
+export function deletePrintWatchSource(db: Database.Database, symbol: string): boolean {
+  return db.prepare(`DELETE FROM print_watch_sources WHERE symbol = ?`).run(symbol.trim().toUpperCase()).changes > 0;
+}
+
+// ---------------------------------------------------------------------------
+// IR-page seen links + baseline
+// ---------------------------------------------------------------------------
+
+export function listIrSeenLinks(
+  db: Database.Database,
+  eventId: number,
+): Array<{ link: string; baseline: boolean }> {
+  return (
+    db.prepare(`SELECT link, baseline FROM print_watch_ir_seen WHERE event_id = ? ORDER BY link`).all(eventId) as {
+      link: string;
+      baseline: number;
+    }[]
+  ).map((r) => ({ link: r.link, baseline: r.baseline === 1 }));
+}
+
+/**
+ * Record links as seen; returns how many were NEW.
+ *
+ * `ON CONFLICT(event_id, link) DO NOTHING` rather than `INSERT OR IGNORE`
+ * ON PURPOSE: the only violation we want to swallow is "already seen". OR
+ * IGNORE also swallows NOT NULL and CHECK failures, which would let a
+ * malformed link vanish silently and — worse — let `recordIrBaseline` stamp a
+ * COMPLETED marker over a baseline that never captured that link, so the
+ * missing link would look like a new post forever after.
+ */
+export function recordIrSeenLinks(
+  db: Database.Database,
+  eventId: number,
+  links: string[],
+  baseline: boolean,
+): number {
+  const stmt = db.prepare(
+    `INSERT INTO print_watch_ir_seen (event_id, link, baseline) VALUES (?, ?, ?)
+     ON CONFLICT(event_id, link) DO NOTHING`,
+  );
+  let n = 0;
+  for (const link of links) n += stmt.run(eventId, link, baseline ? 1 : 0).changes;
+  return n;
+}
+
+/** ONE transaction for the links AND the completion marker (M5): a crash
+ *  between them leaves no marker, so the baseline is re-taken rather than
+ *  trusted half-done. */
+export function recordIrBaseline(
+  db: Database.Database,
+  eventId: number,
+  sourceFingerprint: string,
+  links: string[],
+): number {
+  return db
+    .transaction((): number => {
+      const inserted = recordIrSeenLinks(db, eventId, links, true);
+      db.prepare(
+        `INSERT INTO print_watch_ir_baseline (event_id, source_fingerprint, link_count, completed_at)
+         VALUES (?, ?, ?, datetime('now'))
+         ON CONFLICT(event_id) DO UPDATE SET
+           source_fingerprint = excluded.source_fingerprint,
+           link_count = excluded.link_count,
+           completed_at = datetime('now')`,
+      ).run(eventId, sourceFingerprint, links.length);
+      return inserted;
+    })
+    .immediate();
+}
+
+export function getIrBaseline(db: Database.Database, eventId: number): IrBaselineRow | null {
+  return (
+    (db.prepare(`SELECT * FROM print_watch_ir_baseline WHERE event_id = ?`).get(eventId) as
+      | IrBaselineRow
+      | undefined) ?? null
+  );
+}
+
+/**
+ * True only when a COMPLETED baseline exists for THIS fingerprint — a changed
+ * IR page URL is a new baseline, not a page full of new posts.
+ *
+ * The fingerprint is the stored page URL ALONE (`irBaselineFingerprint`), and
+ * `link_must_contain` is deliberately NOT part of it: the match rule narrows
+ * what we NOTICE on the page, it does not make last quarter's posts new. Were
+ * it in the key, a desk edit to the filter mid-window would drift the
+ * fingerprint, discard a live baseline, and re-baseline the page — marking
+ * tonight's already-posted release "seen" and blinding the road for the night.
+ */
+export function hasIrBaseline(db: Database.Database, eventId: number, sourceFingerprint: string): boolean {
+  return (
+    db
+      .prepare(
+        `SELECT 1 AS one FROM print_watch_ir_baseline WHERE event_id = ? AND source_fingerprint = ? LIMIT 1`,
+      )
+      .get(eventId, sourceFingerprint) !== undefined
+  );
 }

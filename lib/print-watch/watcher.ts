@@ -22,10 +22,19 @@
  *    per-print promise chain: ONE document parses at a time, in doc-id order.
  *
  *  - THE GATE COMES BEFORE THE PARSE (Codex #1). Bytes only become candidates
- *    after `validateDocForEvent` agrees the document is this issuer's release
- *    for this period. A failing document is still STORED (it is evidence of
- *    what the wire served) but under the source `rejected:<reason>`, and the
- *    pipeline skips those forever.
+ *    after the gate agrees the document is this issuer's release for this
+ *    period AND at least one road that delivered it is trusted for this event.
+ *    A failing document is still STORED (it is evidence of what the wire
+ *    served) with its verdict in `gate_verdict`/`road_verdict`; the parse
+ *    queue simply never sees it. Slice B moved that decision out of the
+ *    source string and into `recordDelivery` (lib/print-watch/delivery.ts),
+ *    which is now the ONE way bytes enter the store.
+ *
+ *  - IDENTITY IS CONTENT, NOT ROAD (089/M13). The same bytes arriving by
+ *    EDGAR and by a drop are ONE document with TWO roads — one extraction,
+ *    one honest `single_source`. The parse itself is claimed by token
+ *    (compare-and-set) so two processes never parse one document twice, and a
+ *    crashed worker's claim is taken over after PARSE_CLAIM_STALE_MS.
  *
  *  - EXPECTED VALUES NEVER TOUCH EXTRACTION. `compileContracts` returns
  *    contracts and a PARALLEL expected map; only `contracts` is ever passed to
@@ -70,23 +79,47 @@ import {
   type IBApiLike,
 } from "./dj-adapter";
 import { pollEdgar, resolveCik, type EdgarFiling } from "./edgar-adapter";
-import { extractCandidates } from "./extract";
+import { extractCandidates, extractCandidatesFromPdf } from "./extract";
+import { irBaselineFingerprint } from "./ir-baseline-step";
+import { isAllowedIrLinkHost, pollIrPage, type IrPageConfig } from "./ir-page-adapter";
 import { IR_RSS_CONFIGS, pollIrRss, type IrRssConfig } from "./ir-rss-adapter";
 import { reconcile } from "./reconcile";
 import { htmlToRawText, htmlToTablesRepresentation } from "./representations";
 import {
   acquireWatcherLease,
+  ELIGIBLE_SQL,
+  isDocumentEligible,
+  claimDocumentParse,
+  finalizeDocumentParse,
+  getDocument,
   getSheet,
-  insertDocument,
+  hasParsableDocuments,
   listActivePrints,
   listDocuments,
+  listParseQueue,
   listTodaysExpiredPrints,
-  listUnparsedDocuments,
-  markDocumentParsed,
   setPrintState,
   upsertLines,
   upsertPrint,
+  getPrintWatchSource,
+  hasIrBaseline,
+  listIrSeenLinks,
+  recordIrSeenLinks,
+  PARSE_CLAIM_STALE_MS,
 } from "./store";
+import { recordDelivery, sha256Hex, type DeliveryInput } from "./delivery";
+import { classifyBytes, hardenedFetchBytes } from "./url-fetch";
+import { redactUrl } from "./hardened-fetch";
+import {
+  checkPdfBytes,
+  checkPdfText,
+  resolvePdftotextPath,
+  runPdftotext,
+  textPathFor,
+  PdfEncryptedError,
+  PdfToolMissingError,
+  PDFTOTEXT_SETTING_KEY,
+} from "./pdf";
 import type {
   DocumentRow,
   LineContract,
@@ -128,6 +161,10 @@ const DEFAULT_SPACING_MS = 200;
 const PARSE_RETRY_SPACING_MS = 30_000;
 const MAX_PARSE_ATTEMPTS = 5;
 
+/** Booked on a document whose LAST claim was abandoned by a dead worker —
+ *  the terminal state that lets a person's re-delivery revive it. */
+const ABANDONED_CLAIM_ERROR = "abandoned claim at the attempt cap";
+
 /**
  * A stalled socket must not park `pollOnce` past the lease renewal — a 60s
  * lease expiring under a hung EDGAR fetch is a split-brain invitation (review
@@ -136,8 +173,6 @@ const MAX_PARSE_ATTEMPTS = 5;
  * its socket until the runtime drops it.
  */
 const SOURCE_TIMEOUT_MS = 15_000;
-
-const REJECTED_PREFIX = "rejected:";
 
 /**
  * Flash candidates come off the DJ wire, which produces no document — but
@@ -191,42 +226,48 @@ export interface WatchStatusRow {
  * What actually happened to a set of acquired bytes — the drop route forwards
  * this verbatim so the panel can say something true and final.
  *
- *  - `parsed`    — new document, passed the issuer/period gate, parse awaited.
- *  - `rejected`  — stored as evidence under `rejected:<reason>`, never parsed.
+ *  - `parsed`    — the document is eligible and its parse was awaited and
+ *                  landed on the sheet.
+ *  - `rejected`  — stored as evidence, with the gate's verdict on the row
+ *                  (content) or on the delivering road; never parsed.
  *  - `duplicate` — these exact bytes are already this print's; nothing re-ran.
- *  - `queued`    — stored and gate-passed, but the parse did NOT run: another
+ *  - `queued`    — stored and eligible, but the parse did NOT run: another
  *                  process holds the watcher lease, so the drain deferred to
  *                  the owner (fix wave, finding C). Saying "parsed" here was a
  *                  lie the desk could not see through — the sheet had not
  *                  moved and nothing on screen said so.
+ *  - `refused`   — NOTHING was stored (plan M11): the bytes are not a document
+ *                  this subsystem can read at all — binary, or a PDF that is
+ *                  encrypted, oversize, over 60 pages, image-only, or that
+ *                  poppler is not installed to read. A refusal is about the
+ *                  FILE, so there is no document row to point at and `docId`
+ *                  is 0.
+ *  - `parse_failed` — stored and eligible, the parse ATTEMPT ran and failed
+ *                  (M15). `rejectReason` carries the durable
+ *                  `parse_last_error`, and the document is queued for another
+ *                  attempt unless its budget is spent.
  */
-export type IngestOutcome = "parsed" | "rejected" | "duplicate" | "queued";
+export type IngestOutcome =
+  | "parsed"
+  | "rejected"
+  | "duplicate"
+  | "queued"
+  | "refused"
+  | "parse_failed";
 
 export interface IngestResult {
+  /** 0 on `refused` — nothing was stored, so there is no row to name. */
   docId: number;
   isNew: boolean;
   outcome: IngestOutcome;
-  /** Present only on `rejected` — the gate's own plain-language reason. */
+  /** Present on `rejected` (the gate's plain-language reason), on `refused`
+   *  (why the file is unreadable) and on `parse_failed` (`parse_last_error`). */
   rejectReason?: string;
 }
 
-export interface DocGateContext {
-  symbol: string;
-  issuerName: string | null;
-  eventDate: string;
-  /**
-   * Which source produced the bytes. Only `ir-page` changes the verdict (fix
-   * wave, finding A): an IR newsroom article is the one input whose ARRIVAL
-   * carries no period evidence at all — EDGAR filings passed an acceptance-
-   * window filter and DJ items came from a windowed news query for this
-   * conId, but a newsroom feed serves last quarter's release from the same
-   * URL space, matching the same title regex, forever. Omitted (or any other
-   * kind) keeps the historical, generous behaviour.
-   */
-  kind?: PrintWatchDocKind;
-}
-
-export type DocGateVerdict = { ok: true } | { ok: false; reason: string };
+import { validateDocForEvent, type DocGateContext, type DocGateVerdict } from "./gate";
+export { validateDocForEvent };
+export type { DocGateContext, DocGateVerdict };
 
 export interface WatcherSeams {
   now: () => number;
@@ -257,7 +298,16 @@ export interface WatcherSeams {
     seenLinks: Set<string>,
     baseline: boolean,
   ) => Promise<Array<{ title: string; link: string; html: string }>>;
+  /** The SSRF-hardened reader for the stored IR page road — the newsroom page
+   *  itself and every release link followed off it. The lane always wraps this
+   *  with its `allowHost` predicate before handing it on (M17). */
+  fetchBytes: typeof hardenedFetchBytes;
   extractCandidates: (contracts: LineContract[], representationText: string) => Promise<ParseCandidate[]>;
+  /** Reading ONE of a PDF: poppler's text layer for the file at `pdfPath`.
+   *  Takes the db because WHERE poppler lives is a setting. */
+  pdfToText: (db: Database.Database, pdfPath: string) => Promise<string>;
+  /** Reading TWO of a PDF: the bytes themselves, as a Claude document block. */
+  extractCandidatesFromPdf: (contracts: LineContract[], bytes: Buffer) => Promise<ParseCandidate[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +364,18 @@ const DEFAULT_SEAMS: WatcherSeams = {
   resolveConId: (db, securityId) => defaultResolveConId(db, securityId),
   pollEdgar: (cik, startIso, endIso, seen) => pollEdgar(cik, startIso, endIso, seen),
   pollIrRss: (cfg, seenLinks, baseline) => pollIrRss(cfg, seenLinks, fetch, { baseline }),
+  fetchBytes: (url, opts) => hardenedFetchBytes(url, opts),
   extractCandidates: (contracts, text) => extractCandidates(contracts, text),
+  pdfToText: async (db, pdfPath) => {
+    const binary = resolvePdftotextPath(db);
+    if (!binary) {
+      throw new PdfToolMissingError(
+        `pdftotext not found — install poppler (brew install poppler) or set settings.${PDFTOTEXT_SETTING_KEY}`,
+      );
+    }
+    return runPdftotext(binary, pdfPath);
+  },
+  extractCandidatesFromPdf: (contracts, bytes) => extractCandidatesFromPdf(contracts, bytes),
 };
 
 let seams: WatcherSeams = { ...DEFAULT_SEAMS };
@@ -356,6 +417,11 @@ interface PrintRuntime {
    *  (fix wave, finding A). A failed first poll leaves it false, so the
    *  baseline happens on the first poll that actually reads the feed. */
   irBaselineDone: boolean;
+  /** Stored-IR-page road only: link -> how many times acquiring it has been
+   *  refused. A refusal is not evidence of anything, so the link is retried;
+   *  at IR_REFUSAL_LIMIT it is retired (marked seen) so one poison anchor
+   *  cannot spend every poll of the window re-fetching itself. */
+  irRefusals: Map<string, number>;
   flashHeadlines: string[];
   seenFlashKeys: Set<string>;
   cikAttempted: boolean;
@@ -533,102 +599,6 @@ function windowFor(dto: ArmedEventDto): PrintWindow | null {
 }
 
 // ---------------------------------------------------------------------------
-// document-to-event gate (Codex #1)
-// ---------------------------------------------------------------------------
-
-const CORPORATE_SUFFIXES =
-  /\b(incorporated|inc|corporation|corp|company|co|holdings|holding|group|plc|ltd|limited|sa|nv|ag|technologies|systems)\b\.?/gi;
-
-const QUARTER_WORD_RE = /\b(first|second|third|fourth)\s+quarter\b|\bq[1-4]\b/i;
-const FISCAL_YEAR_RE = /\bfiscal(\s+year)?\s+20\d\d\b|\bfy\s?20\d\d\b/i;
-const ORDINALS = ["", "first", "second", "third", "fourth"];
-
-/** Company name reduced to its distinctive head ("NVIDIA Corporation" ->
- *  "nvidia"). Returns null when nothing distinctive survives, so a name like
- *  "Holdings Inc" can never match every document on earth. */
-function issuerNeedle(issuerName: string | null): string | null {
-  if (!issuerName) return null;
-  const stripped = issuerName
-    .replace(/[,.]/g, " ")
-    .replace(CORPORATE_SUFFIXES, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-  return stripped.length >= 3 ? stripped : null;
-}
-
-/** Calendar quarter of the event date, plus the preceding one: a print on
- *  2026-08-26 is nearly always ABOUT the quarter that just ended. */
-function candidateQuarters(eventDate: string): Array<{ q: number; year: number }> {
-  const [y, m] = eventDate.split("-").map(Number);
-  if (!Number.isFinite(y) || !Number.isFinite(m)) return [];
-  const q = Math.floor((m - 1) / 3) + 1;
-  const prev = q === 1 ? { q: 4, year: y - 1 } : { q: q - 1, year: y };
-  return [{ q, year: y }, prev];
-}
-
-/**
- * The gate a document must pass before a single one of its numbers is allowed
- * near a contract line: it must NAME this issuer (ticker or company head) and
- * state a plausible fiscal period.
- *
- * The period rule is deliberately generous on the FISCAL side (the CRWD
- * lesson: a release printed in June 2026 legitimately says "First Quarter
- * Fiscal Year 2027", which matches no calendar-quarter token at all). Once the
- * symbol itself appears, any "fiscal 20xx" + quarter-word pairing counts. The
- * narrow guards that keep this honest live upstream: EDGAR filings already
- * passed the acceptance-window filter, and DJ items came from a windowed news
- * query for this conId.
- *
- * EXCEPT for `ir-page` documents (fix wave, finding A). A newsroom feed has no
- * upstream guard at all: last quarter's results announcement sits in it
- * permanently and matches the same title regex, so the loose branch would wave
- * through a months-old article and green LAST quarter's numbers as tonight's
- * print. An IR page must therefore match one of the strict expected-quarter
- * branches derived from the event date; the any-fiscal-year fallback is not
- * available to it.
- */
-export function validateDocForEvent(text: string, ctx: DocGateContext): DocGateVerdict {
-  const lower = text.toLowerCase();
-
-  // Dots survive (BRK.B) but are escaped — an unescaped "." would make the
-  // ticker a wildcard and match half the document.
-  const symbolPattern = ctx.symbol.replace(/[^A-Za-z0-9.]/g, "").replace(/\./g, "\\.");
-  const symbolRe = new RegExp(`\\b${symbolPattern}\\b`, "i");
-  const symbolMatched = symbolRe.test(text);
-  const needle = issuerNeedle(ctx.issuerName);
-  const issuerMatched = needle !== null && lower.includes(needle);
-
-  if (!symbolMatched && !issuerMatched) {
-    return { ok: false, reason: `issuer not named (${ctx.symbol})` };
-  }
-
-  for (const { q, year } of candidateQuarters(ctx.eventDate)) {
-    if (new RegExp(`\\bq${q}\\b[^\\n]{0,24}${year}`, "i").test(lower)) return { ok: true };
-    if (new RegExp(`${year}[^\\n]{0,24}\\bq${q}\\b`, "i").test(lower)) return { ok: true };
-    // The ordinal branch carries the same year requirement as the Qn branches
-    // (review round 1, minor #6) — "second quarter" on its own appears in
-    // prior-year comparatives and in last year's release just as readily.
-    if (lower.includes(`${ORDINALS[q]} quarter`) && new RegExp(`\\b${year}\\b`).test(lower)) {
-      return { ok: true };
-    }
-  }
-
-  if (ctx.kind === "ir-page") {
-    return {
-      ok: false,
-      reason: "IR page does not name this event's quarter (an older newsroom post?)",
-    };
-  }
-
-  if (symbolMatched && FISCAL_YEAR_RE.test(lower) && QUARTER_WORD_RE.test(lower)) {
-    return { ok: true };
-  }
-
-  return { ok: false, reason: "no fiscal-period token for this event" };
-}
-
-// ---------------------------------------------------------------------------
 // local reads (store.ts is task-1-owned; these are watcher-local lookups)
 // ---------------------------------------------------------------------------
 
@@ -646,17 +616,18 @@ function readIssuerName(db: Database.Database, symbol: string): string | null {
   return row?.name ?? null;
 }
 
-function gateContextFor(
-  db: Database.Database,
-  print: PrintRow,
-  kind: PrintWatchDocKind,
-): DocGateContext {
+/**
+ * The identity the gate judges a document against. No `kind` any more: the
+ * CONTENT verdict is about the bytes and must be the same whichever road
+ * carried them (089/M13 — one document, many roads), and the per-road verdict
+ * is computed by `recordDelivery` from the kind it was handed.
+ */
+function gateContextFor(db: Database.Database, print: PrintRow): DocGateContext {
   const rt = runtimes.get(print.id);
   return {
     symbol: print.symbol,
     issuerName: rt ? rt.issuerName : readIssuerName(db, print.symbol),
     eventDate: print.event_date,
-    kind,
   };
 }
 
@@ -702,7 +673,7 @@ function advanceState(db: Database.Database, printId: number, next: "acquired" |
   if (row.state !== next) setPrintState(db, printId, next);
 }
 
-function refreshCoverage(rt: PrintRuntime, twsUp: boolean | null): void {
+function refreshCoverage(db: Database.Database, rt: PrintRuntime, twsUp: boolean | null): void {
   if (twsUp !== null) rt.lastTwsUp = twsUp;
 
   // No window means no source ever polls for this print — say exactly that
@@ -711,7 +682,7 @@ function refreshCoverage(rt: PrintRuntime, twsUp: boolean | null): void {
   if (!rt.window) {
     statusFor(rt.printId).coverage = [
       "TAS — release time unknown; drop-zone only",
-      "drop: HTML/text",
+      "drop: HTML/text/PDF, or a pasted link",
     ];
     return;
   }
@@ -721,9 +692,26 @@ function refreshCoverage(rt: PrintRuntime, twsUp: boolean | null): void {
   if (rt.lastTwsUp === false) notes.push("TWS offline");
   if (rt.dto.cik) notes.push(`EDGAR: CIK ${rt.dto.cik}`);
   else notes.push(rt.cikAttempted ? "EDGAR: CIK unresolved" : "EDGAR: CIK pending");
-  notes.push(irConfigFor(rt.dto.symbol) ? `RSS: ${rt.dto.symbol} IR feed` : "RSS: NVDA only");
-  notes.push("drop: HTML/text");
+  // Read fresh rather than cached on the runtime: a PUT /sources mid-window
+  // must show up on the panel without restarting the app, and the lane itself
+  // re-reads the row on every poll for the same reason.
+  if (irConfigFor(rt.dto.symbol)) notes.push(`RSS: ${rt.dto.symbol} IR feed`);
+  else notes.push(irPageNote(db, rt.dto.symbol));
+  notes.push("drop: HTML/text/PDF, or a pasted link");
   statusFor(rt.printId).coverage = notes;
+}
+
+/** What the stored-IR-page road can do for this symbol, in one phrase. */
+function irPageNote(db: Database.Database, symbol: string): string {
+  const source = getPrintWatchSource(db, symbol);
+  if (!source) return "IR: none configured";
+  try {
+    return `IR: ${new URL(source.ir_page_url).hostname}`;
+  } catch {
+    // A stored row that no longer parses is a configuration fault, not a
+    // crash: say so on the panel instead of throwing out of a status refresh.
+    return "IR: stored page is not a URL";
+  }
 }
 
 /**
@@ -803,8 +791,13 @@ export function ensurePrintWatch(db: Database.Database): void {
         loop: null,
         djState: createDjPollState(),
         seenAccessions: new Set(),
-        seenIrLinks: new Set(),
+        // Seeded from the DURABLE seen-set (the ir_baseline step's snapshot of
+        // what the newsroom already held, plus anything a previous process
+        // ingested). A fresh process that started with an empty set would read
+        // last quarter's permanently-parked post as tonight's print.
+        seenIrLinks: new Set(listIrSeenLinks(db, dto.eventId).map((l) => l.link)),
         irBaselineDone: false,
+        irRefusals: new Map(),
         flashHeadlines: [],
         seenFlashKeys: new Set(),
         cikAttempted: false,
@@ -836,7 +829,7 @@ export function ensurePrintWatch(db: Database.Database): void {
     // behind a lease it lost has nothing else to come back for it.
     if (rt.window === null) strandedPrintIds.add(printId);
 
-    refreshCoverage(rt, null);
+    refreshCoverage(db, rt, null);
   }
 
   for (const print of listActivePrints(db)) {
@@ -1003,7 +996,7 @@ async function pollOnce(db: Database.Database, rt: PrintRuntime): Promise<void> 
   await pollEdgarSource(db, rt, window);
   if (!renewLeaseIfDue(db)) return;
   await pollIrSource(db, rt);
-  refreshCoverage(rt, twsUp);
+  refreshCoverage(db, rt, twsUp);
 }
 
 /**
@@ -1212,13 +1205,26 @@ async function pollEdgarSource(
   }
 }
 
+/**
+ * The IR road. Exactly one of two lanes runs for a symbol: the hardcoded RSS
+ * feed if there is one (v1's NVDA newsroom, which has a real feed and a
+ * curated title pattern), otherwise the per-company page the desk stored.
+ * RSS keeps precedence — a stored page for NVDA would be a second, weaker
+ * reading of the same newsroom.
+ */
 async function pollIrSource(db: Database.Database, rt: PrintRuntime): Promise<void> {
+  const rss = irConfigFor(rt.dto.symbol);
+  if (rss) return pollIrRssSource(db, rt, rss);
+  return pollIrPageSource(db, rt);
+}
+
+/** v1's NVDA-feed lane, unchanged. */
+async function pollIrRssSource(
+  db: Database.Database,
+  rt: PrintRuntime,
+  cfg: IrRssConfig,
+): Promise<void> {
   const status = statusFor(rt.printId);
-  const cfg = irConfigFor(rt.dto.symbol);
-  if (!cfg) {
-    status.sources.rss = "no IR feed for this symbol";
-    return;
-  }
   try {
     await spaceHost(cfg.host);
     // The FIRST poll of a watch is a baseline pass: it fetches no article at
@@ -1252,6 +1258,160 @@ async function pollIrSource(db: Database.Database, rt: PrintRuntime): Promise<vo
   }
 }
 
+/** A refused or thrown link is retried on later polls; at this many refusals
+ *  it is retired (marked seen) with the reason in the lane's note (M17). */
+const IR_REFUSAL_LIMIT = 3;
+
+/**
+ * The stored-IR-page lane (spec section 4.2).
+ *
+ * THE WATCHER NEVER BASELINES (plan M5). Only the `ir_baseline` prepare step
+ * does, before the window opens. Two consequences the tests pin:
+ *
+ *  - with a baseline, `print_watch_ir_seen` already holds last quarter's
+ *    posts, so the only links this lane follows are ones that appeared AFTER
+ *    arming — which is what "tonight's print" means on a newsroom page;
+ *  - with NO baseline (armed late, or the step never ran), every matching link
+ *    is a candidate and the strict `ir-page` period gate is what separates
+ *    tonight's release from the parked one. A late go must never re-baseline:
+ *    that would mark tonight's release "already there" and blind the road.
+ *
+ * The page is read with a SCRATCH seen-set so the adapter reports every
+ * allowed matching link on the page (the count the panel shows, so a newsroom
+ * that changes shape reads as "0 matching links" under the panel's own IR
+ * label rather than as a quiet night); the runtime's real seen-set then
+ * decides which of those are new. One fetch either way.
+ */
+async function pollIrPageSource(db: Database.Database, rt: PrintRuntime): Promise<void> {
+  const status = statusFor(rt.printId);
+  // Re-read every poll: a PUT /sources during the window must take effect
+  // without a restart, and clearing the row must stop the lane.
+  const source = getPrintWatchSource(db, rt.dto.symbol);
+  if (!source) {
+    status.sources.ir = "no IR page configured";
+    return;
+  }
+
+  const cfg: IrPageConfig = {
+    symbol: source.symbol,
+    irPageUrl: source.ir_page_url,
+    linkMustContain: source.link_must_contain,
+  };
+  let irHost: string;
+  try {
+    irHost = new URL(cfg.irPageUrl).hostname;
+  } catch {
+    status.sources.ir = `stored IR page is not a URL (${redactUrl(cfg.irPageUrl)})`;
+    return;
+  }
+
+  // M17: the fixed-host policy rides on the page fetch AND on every hop of
+  // every link fetch — `hardenedFetchBytes` re-checks `allowHost` after each
+  // redirect, so a 302 off the allowlist is refused rather than followed.
+  const allowHost = (h: string) => isAllowedIrLinkHost(`https://${h}/`, irHost);
+  const fetchBytes: typeof hardenedFetchBytes = (url, opts) =>
+    seams.fetchBytes(url, { ...opts, allowHost });
+
+  const refusals: string[] = [];
+  try {
+    await spaceHost(irHost);
+    const baselined = hasIrBaseline(db, rt.dto.eventId, irBaselineFingerprint(cfg.irPageUrl));
+    const scratch = new Set<string>();
+    const matching = await withSourceTimeout("IR page poll", () =>
+      pollIrPage(cfg, scratch, fetchBytes, { baseline: false }),
+    );
+    const items = matching.filter((item) => !rt.seenIrLinks.has(item.link));
+
+    let durable = 0;
+    for (const item of items) {
+      let linkHost: string;
+      try {
+        linkHost = new URL(item.link).hostname;
+      } catch {
+        // Unreachable via the adapter (it resolves and filters by host first),
+        // but a link we cannot even name must not take the whole poll down.
+        refusals.push(noteIrRefusal(db, rt, item.link, "unparseable link"));
+        continue;
+      }
+      await spaceHost(linkHost);
+      let result: IngestResult;
+      try {
+        const fetched = await withSourceTimeout("IR link fetch", () =>
+          fetchBytes(item.link, { label: "IR page link" }),
+        );
+        // The road records the FINAL url (a hop may have moved it WITHIN the
+        // allowlist), redacted — a stored newsroom URL can carry a token.
+        result = await ingestDocument(
+          db,
+          rt.printId,
+          "ir-page",
+          `ir-page:${item.title.slice(0, 120)}`,
+          redactUrl(fetched.finalUrl),
+          fetched.bytes,
+        );
+      } catch (err) {
+        refusals.push(noteIrRefusal(db, rt, item.link, errText(err)));
+        continue;
+      }
+      if (result.outcome === "refused") {
+        // Nothing was stored (plan M11) — there is no durable record that we
+        // ever saw this link, so it is NOT seen.
+        refusals.push(noteIrRefusal(db, rt, item.link, result.rejectReason ?? "refused"));
+        continue;
+      }
+      // Every other outcome — parsed / duplicate / rejected / queued /
+      // parse_failed — means a document row exists for these bytes. THAT is
+      // what makes the link safe to retire: re-fetching it could only produce
+      // the same row again.
+      //
+      // Burst is set HERE and not at the fetch: it means "evidence landed, so
+      // re-read the other sources now", and it skips the cadence sleep. A
+      // refusal that set it would put the lane in a tight re-fetch loop and
+      // spend all three of a bad link's strikes inside one second, instead of
+      // retrying it on later polls the way the budget intends.
+      rt.burst = true;
+      rt.seenIrLinks.add(item.link);
+      recordIrSeenLinks(db, rt.dto.eventId, [item.link], false);
+      durable += 1;
+    }
+
+    const head = baselined
+      ? "ok"
+      : "no baseline (armed late) — period gate filtering";
+    // A per-poll refusal note is gone by the next poll, but GIVING UP on a
+    // link is a durable fact about tonight's coverage — the desk has to keep
+    // seeing that the road stopped trying, not just a quiet "0 new".
+    const retired = [...rt.irRefusals.values()].filter((n) => n >= IR_REFUSAL_LIMIT).length;
+    // No "IR: " prefix: the panel renders this lane under its own IR label
+    // (LADDER_LABELS), so carrying one here printed "IR: ok — IR: 3 matching…".
+    const summary =
+      `${head} — ${matching.length} matching links, ${durable} new` +
+      (retired > 0 ? ` (${retired} link(s) retired after ${IR_REFUSAL_LIMIT} refusals)` : "");
+    status.sources.ir = [summary, ...refusals].join("; ");
+  } catch (err) {
+    // A page-level failure (refused, 503, timed out) leaves every link
+    // unseen, so the next poll simply tries again.
+    status.sources.ir = [errText(err), ...refusals].join("; ");
+  }
+}
+
+/** Count a refusal against a link's budget, retiring it at the limit, and
+ *  return the note the lane's status line carries for it. */
+function noteIrRefusal(
+  db: Database.Database,
+  rt: PrintRuntime,
+  link: string,
+  reason: string,
+): string {
+  const n = (rt.irRefusals.get(link) ?? 0) + 1;
+  rt.irRefusals.set(link, n);
+  if (n >= IR_REFUSAL_LIMIT) {
+    rt.seenIrLinks.add(link);
+    recordIrSeenLinks(db, rt.dto.eventId, [link], false);
+  }
+  return `link refused (${n}/${IR_REFUSAL_LIMIT}): ${reason}`;
+}
+
 /**
  * Minimal per-host governor (Codex #21, accepted deviation (c)): SEC 300ms,
  * everything else 200ms. Module-level so simultaneous prints share the budget
@@ -1269,17 +1429,6 @@ async function spaceHost(host: string): Promise<void> {
 // acquisition + pipeline
 // ---------------------------------------------------------------------------
 
-function sha256(buf: Buffer): string {
-  return crypto.createHash("sha256").update(buf).digest("hex");
-}
-
-/** Cheap sniff — decides the stored extension, which in turn decides whether
- *  the pipeline builds two representations or one. */
-function looksLikeHtml(text: string): boolean {
-  const head = text.slice(0, 2048).trimStart().toLowerCase();
-  return head.startsWith("<") || head.includes("<html") || head.includes("<table");
-}
-
 /** Temp file + atomic rename under `<storageRoot>/<printId>/` — the packaged
  *  app's cwd is a read-only signed bundle, so this anchors at the DB dir. */
 async function writeBytes(printId: number, sha: string, ext: string, buf: Buffer): Promise<string> {
@@ -1294,24 +1443,21 @@ async function writeBytes(printId: number, sha: string, ext: string, buf: Buffer
 }
 
 /**
- * Store acquired bytes for a print and (when they pass the gate) parse them.
+ * Store acquired bytes for a print and (when they are eligible) parse them.
  *
- * Idempotent on (print, kind, sha256): re-dropping the same file returns the
- * existing document and parses nothing. A gate failure is recorded, never
- * thrown — the caller acquired a real document, it simply isn't this event's.
+ * Idempotent on CONTENT (089/M13): the same bytes down a second road return
+ * the same document id, add a road, and parse nothing. A gate failure is
+ * recorded, never thrown — the caller acquired a real document, it simply
+ * isn't this event's.
  *
  * Returns its VERDICT, not just an id (final fix wave). The outcomes are
  * genuinely different things to tell the desk — the sheet just moved, the
  * document was refused as another issuer's/period's, these exact bytes were
- * already in hand, or the parse is waiting on the process that owns the
- * watcher — and only this function knows which happened. Callers that guessed
- * from `isNew` alone had to say something vague and permanent ("parsing now…")
- * that no later poll could ever correct.
- *
- * `parsed` means the document passed the gate and its parse was awaited. A
- * parse that then failed inside the pipeline leaves the document unparsed for
- * a later retry and reports itself through the `pipeline` source note, which
- * the panel's ladder already renders.
+ * already in hand, the parse is waiting on the process that owns the watcher,
+ * the file is not readable at all, or the parse ran and failed — and only this
+ * function knows which happened. Callers that guessed from `isNew` alone had
+ * to say something vague and permanent ("parsing now…") that no later poll
+ * could ever correct.
  */
 export async function ingestDocument(
   db: Database.Database,
@@ -1324,31 +1470,209 @@ export async function ingestDocument(
   const print = readPrintRow(db, printId);
   if (!print) throw new Error(`print-watch: print ${printId} not found`);
 
+  // A REFUSAL is not a rejection (plan M11). A rejected document is real
+  // evidence of what a road served and is kept; bytes we cannot read at all
+  // are not a document, so nothing is stored and there is no id to return.
+  const shape = classifyBytes(buf);
+  if (shape === "binary") {
+    return {
+      docId: 0,
+      isNew: false,
+      outcome: "refused",
+      rejectReason: "binary content — print-watch reads HTML, plain text, or PDF",
+    };
+  }
+  if (shape === "pdf") return ingestPdf(db, print, kind, source, url, buf);
+
+  const sha = sha256Hex(buf);
+  const ext = shape === "html" ? "html" : "txt";
   const text = buf.toString("utf8");
-  const sha = sha256(buf);
-  const ext = looksLikeHtml(text) ? "html" : "txt";
   const bytesPath = await writeBytes(printId, sha, ext, buf);
+  return finishIngest(db, print, kind, source, url, buf, {
+    bytesPath,
+    text,
+    gateCtx: gateContextFor(db, print),
+  });
+}
 
-  const verdict = validateDocForEvent(text, gateContextFor(db, print, kind));
-  const storedSource = verdict.ok ? source : `${REJECTED_PREFIX}${verdict.reason}`;
-  const { id, isNew } = insertDocument(db, printId, kind, storedSource, url, sha, bytesPath);
-
-  if (!verdict.ok) {
-    statusFor(printId).sources.gate = `doc ${id} rejected: ${verdict.reason}`;
-    return { docId: id, isNew, outcome: "rejected", rejectReason: verdict.reason };
+/**
+ * The PDF road (Task 10). A PDF becomes a document only once poppler has
+ * produced a text layer we can actually gate and read: the gate runs on that
+ * TEXT, not on the bytes, and the text is persisted beside the bytes so the
+ * parse (and Task 13's merge) never re-spawns poppler for the same file.
+ *
+ * REFUSALS LEAVE NOTHING BEHIND (plan M11/M14). The bytes have to be on disk
+ * before poppler can read them, so a refusal that happens after that write
+ * removes both files: no row references them, and a later delivery of the
+ * same bytes rewrites them content-addressed. Each refusal keeps its own
+ * message — encrypted, oversize, too many pages, image-only, poppler missing
+ * — because they are four different things for the desk to do about it.
+ */
+async function ingestPdf(
+  db: Database.Database,
+  print: PrintRow,
+  kind: PrintWatchDocKind,
+  source: string,
+  url: string | null,
+  buf: Buffer,
+): Promise<IngestResult> {
+  const bytesCheck = checkPdfBytes(buf);
+  if (!bytesCheck.ok) {
+    return { docId: 0, isNew: false, outcome: "refused", rejectReason: bytesCheck.reason };
   }
 
-  if (!isNew) return { docId: id, isNew, outcome: "duplicate" };
+  const sha = sha256Hex(buf);
+  const bytesPath = await writeBytes(print.id, sha, "pdf", buf);
+  const refused = async (reason: string): Promise<IngestResult> => {
+    // ONLY when nothing owns these bytes. The path is content-addressed, so a
+    // RE-delivery of a PDF already in hand (poppler since uninstalled, a
+    // pdftotext timeout) writes the very file an existing document row points
+    // at — deleting it there would strand that row's bytes and its text, and
+    // every later re-parse of it would ENOENT.
+    const owner = db
+      .prepare(`SELECT id FROM print_watch_documents WHERE print_id = ? AND sha256 = ?`)
+      .get(print.id, sha) as { id: number } | undefined;
+    if (!owner) {
+      await fsp.rm(bytesPath, { force: true });
+      await fsp.rm(textPathFor(bytesPath), { force: true });
+    }
+    return { docId: 0, isNew: false, outcome: "refused", rejectReason: reason };
+  };
 
-  advanceState(db, printId, "acquired");
-  const drain = await runQueue(db, printId);
+  let text: string;
+  try {
+    text = await seams.pdfToText(db, bytesPath);
+  } catch (err) {
+    if (err instanceof PdfToolMissingError || err instanceof PdfEncryptedError) {
+      return refused(err.message);
+    }
+    return refused(`could not read the PDF's text layer: ${errText(err)}`);
+  }
+
+  const textCheck = checkPdfText(text);
+  if (!textCheck.ok) return refused(textCheck.reason);
+
+  // Temp file + atomic rename, same as the bytes: a half-written text file
+  // would parse as a truncated release, which is worse than no file at all.
+  const textPath = textPathFor(bytesPath);
+  tmpCounter += 1;
+  const tmpTextPath = `${textPath}.tmp-${process.pid}-${tmpCounter}`;
+  await fsp.writeFile(tmpTextPath, text, "utf8");
+  await fsp.rename(tmpTextPath, textPath);
+
+  return finishIngest(db, print, kind, source, url, buf, {
+    bytesPath,
+    text,
+    gateCtx: gateContextFor(db, print),
+  });
+}
+
+/**
+ * The shared tail of every ingest: record the delivery (one transaction —
+ * document by content, road by (kind, source), both verdicts), then parse only
+ * if a parse is actually owed.
+ *
+ * The bytes are on disk BEFORE this runs, on purpose: `recordDelivery` holds a
+ * write lock and must never wait on a syscall, and a rolled-back transaction
+ * must never leave a `bytes_path` pointing at a file that was never written.
+ */
+async function finishIngest(
+  db: Database.Database,
+  print: PrintRow,
+  kind: PrintWatchDocKind,
+  source: string,
+  url: string | null,
+  buf: Buffer,
+  input: DeliveryInput,
+): Promise<IngestResult> {
+  const delivery = recordDelivery(db, print.id, kind, source, url, buf, input);
+  const status = statusFor(print.id);
+  // Guarded at the CALL site, not just inside: every other delivery — the
+  // overwhelming majority — then adds no await at all to the ingest chain.
+  if (delivery.matchedBy === "text") await dropOrphanBytes(db, delivery, input.bytesPath);
+
+  if (!delivery.contentVerdict.ok) {
+    status.sources.gate = `doc ${delivery.id} rejected: ${delivery.contentVerdict.reason}`;
+    return {
+      docId: delivery.id,
+      isNew: delivery.isNew,
+      outcome: "rejected",
+      rejectReason: delivery.contentVerdict.reason,
+    };
+  }
+  if (!delivery.eligible) {
+    // Content is this event's, but no road we trust has carried it yet — an
+    // IR newsroom post that names no quarter is the live case. The same bytes
+    // down an accepting road (a drop) make it eligible with no re-store.
+    const reason = delivery.roadVerdict.ok ? "no accepting road yet" : delivery.roadVerdict.reason;
+    status.sources.gate = `doc ${delivery.id} road ${kind} rejected: ${reason}`;
+    return { docId: delivery.id, isNew: delivery.isNew, outcome: "rejected", rejectReason: reason };
+  }
+  if (!delivery.needsParse) {
+    return { docId: delivery.id, isNew: delivery.isNew, outcome: "duplicate" };
+  }
+
+  // A parse is genuinely owed for THIS document right now — it is new, it just
+  // became eligible, or a person re-delivered it after its budget ran out (the
+  // only case `recordDelivery` re-queues). In every one of those the durable
+  // budget is what governs; the process-local retry SPACING is a cool-down on a
+  // document nobody asked about again, and a fresh delivery IS that ask. Left
+  // in place it would answer a person's "try it again" with a 30-second no-op.
+  parseAttempts.delete(delivery.id);
+
+  advanceState(db, print.id, "acquired");
+  const drain = await runQueue(db, print.id);
   // The drain can END without parsing: another process owns the watcher, so
   // the parse belongs to it, not us (fix wave, finding C). Reporting that as
   // `parsed` told the desk the sheet had moved when it had not — and for an
   // expired or TAS print there is no loop coming back to correct it, which is
   // why ensurePrintWatch now drains those explicitly.
-  if (drain === "lease_blocked") return { docId: id, isNew, outcome: "queued" };
-  return { docId: id, isNew, outcome: "parsed" };
+  if (drain === "lease_blocked") {
+    return { docId: delivery.id, isNew: delivery.isNew, outcome: "queued" };
+  }
+
+  // M15: report the DURABLE state of this document after the drain — never the
+  // drain's return value, which only says the pass ran. The pass may have
+  // parsed a DIFFERENT document, or this one may have failed while another
+  // worker's claim was live.
+  const after = getDocument(db, delivery.id);
+  if (after?.parse_state === "parsed") {
+    return { docId: delivery.id, isNew: delivery.isNew, outcome: "parsed" };
+  }
+  if (after?.parse_state === "claimed") {
+    return { docId: delivery.id, isNew: delivery.isNew, outcome: "queued" };
+  }
+  return {
+    docId: delivery.id,
+    isNew: delivery.isNew,
+    outcome: "parse_failed",
+    rejectReason: after?.parse_last_error ?? "the parse did not complete",
+  };
+}
+
+/**
+ * Text identity (M13) can dedupe the bytes we just wrote onto an EXISTING
+ * document whose `bytes_path` points somewhere else — a re-saved PDF, a text
+ * wrapper of the same release. Nothing then references the file this delivery
+ * wrote: no row, no re-parse, no retention rule ever reads it again, so it is
+ * a private release left on disk forever. Delete it (and its poppler text)
+ * here, where the outcome is known.
+ *
+ * ONLY when the survivor's path DIFFERS. The paths are content-addressed, so a
+ * byte-identical re-delivery writes the very file the surviving row points at
+ * — deleting that would strand the document's own bytes and ENOENT every later
+ * re-parse (the same rule `ingestPdf`'s refusal cleanup follows).
+ */
+async function dropOrphanBytes(
+  db: Database.Database,
+  delivery: { id: number; matchedBy: "new" | "bytes" | "text" },
+  writtenPath: string,
+): Promise<void> {
+  if (delivery.matchedBy !== "text") return;
+  const survivor = getDocument(db, delivery.id);
+  if (!survivor || survivor.bytes_path === writtenPath) return;
+  await fsp.rm(writtenPath, { force: true });
+  if (writtenPath.endsWith(".pdf")) await fsp.rm(textPathFor(writtenPath), { force: true });
 }
 
 /**
@@ -1391,27 +1715,67 @@ function runQueue(db: Database.Database, printId: number): Promise<DrainOutcome>
   return enqueueWrite(printId, () => drainQueue(db, printId));
 }
 
-/** Is this document eligible for a parse attempt right now? Rejected docs
- *  never are; a doc that just failed waits out PARSE_RETRY_SPACING_MS so its
- *  budget isn't spent on three ticks of the same transient failure. */
+/**
+ * Is this document worth a parse attempt right now?
+ *
+ * The BUDGET is read off the row (M15): `claimDocumentParse` increments
+ * `parse_attempts` durably, so a crash, a restart or a takeover by another
+ * process can never hand a document a fresh five attempts. Only the SPACING
+ * — "not again for 30s" — is process-local, because it exists to stop one
+ * transient failure (a model 529, a half-written file) from burning the whole
+ * budget inside half a minute, and a brand-new process has no reason to
+ * inherit another one's cool-down.
+ *
+ * Ineligible documents (gate-rejected, no accepting road) never reach here:
+ * `listParseQueue` filters them in SQL.
+ */
 function parseEligible(doc: DocumentRow, nowMs: number): boolean {
-  if (doc.source.startsWith(REJECTED_PREFIX)) return false;
+  if (doc.parse_attempts >= MAX_PARSE_ATTEMPTS) return false;
   const record = parseAttempts.get(doc.id);
   if (!record) return true;
-  if (record.attempts >= MAX_PARSE_ATTEMPTS) return false;
   return nowMs - record.lastAtMs >= PARSE_RETRY_SPACING_MS;
+}
+
+/**
+ * Claims older than PARSE_CLAIM_STALE_MS belong to a worker that died holding
+ * one. The takeover decision lives HERE rather than in the store so there is
+ * exactly ONE place that decides a claim is abandoned — `listParseQueue` stays
+ * the honest "nobody holds this" read. Eligibility still applies (a stale claim
+ * is worth nothing on a document the gate has since withdrawn), and it is the
+ * store's `ELIGIBLE_SQL` verbatim rather than a second copy of the rule: the
+ * two drifted once already, and a takeover reading a stale definition would
+ * hand the model a document `listParseQueue` refuses to show it.
+ */
+function listStaleClaims(db: Database.Database, printId: number, nowMs: number): DocumentRow[] {
+  return db
+    .prepare(
+      `SELECT d.* FROM print_watch_documents d
+        WHERE d.print_id = ? AND d.parse_state = 'claimed'
+          AND datetime(d.parse_claimed_at) < datetime(?)
+          AND ${ELIGIBLE_SQL}
+        ORDER BY d.id`,
+    )
+    .all(printId, new Date(nowMs - PARSE_CLAIM_STALE_MS).toISOString()) as DocumentRow[];
 }
 
 async function drainQueue(db: Database.Database, printId: number): Promise<DrainOutcome> {
   const attemptedThisPass = new Set<number>();
   for (;;) {
     const nowMs = seams.now();
-    const pending = listUnparsedDocuments(db, printId).filter(
+    const pending = listParseQueue(db, printId).filter(
       (doc) => !attemptedThisPass.has(doc.id) && parseEligible(doc, nowMs),
     );
-    if (pending.length === 0) return "drained";
+    // A stale claim is worth taking either to RETRY the document or — once its
+    // budget is spent — purely to CLOSE it (the reap below).
+    const stale = listStaleClaims(db, printId, nowMs).filter(
+      (doc) =>
+        !attemptedThisPass.has(doc.id) &&
+        (doc.parse_attempts >= MAX_PARSE_ATTEMPTS || parseEligible(doc, nowMs)),
+    );
+    const candidates = [...pending, ...stale];
+    if (candidates.length === 0) return "drained";
 
-    const doc = pending[0];
+    const doc = candidates[0];
     attemptedThisPass.add(doc.id);
 
     // Don't even spend a model call — let alone an attempt — when this
@@ -1421,16 +1785,73 @@ async function drainQueue(db: Database.Database, printId: number): Promise<Drain
       return "lease_blocked";
     }
 
-    const record = parseAttempts.get(doc.id);
-    parseAttempts.set(doc.id, { attempts: (record?.attempts ?? 0) + 1, lastAtMs: nowMs });
-    try {
-      await processDocument(db, printId, doc);
-    } catch (err) {
-      // The document stays unparsed on purpose — a later tick retries it,
-      // spaced out, up to MAX_PARSE_ATTEMPTS.
-      statusFor(printId).sources.pipeline = `doc ${doc.id}: ${errText(err)}`;
+    const token = crypto.randomUUID();
+    if (!claimDocumentParse(db, doc.id, token, nowMs)) continue; // another worker got there first
+
+    // REAP an abandoned claim (fix round 1, finding 1). A document whose LAST
+    // attempt was claimed by a process that then died sits `claimed` forever:
+    // no retry can take it (its budget is gone), `recordDelivery` re-queues
+    // only `failed` rows so a person's re-drop returns `duplicate` with nothing
+    // to explain it, and `hasParsableDocuments` keeps counting it as work, so
+    // every reconcile kicks a drain that can do nothing. Taking the claim only
+    // to book it `failed` closes all three: the row reaches the one state a
+    // human can clear, and the drain goes quiet. No model call — there is no
+    // attempt left to spend on one.
+    if (doc.parse_attempts >= MAX_PARSE_ATTEMPTS) {
+      statusFor(printId).sources.pipeline = `doc ${doc.id}: ${ABANDONED_CLAIM_ERROR}`;
+      recordFinalize(db, printId, doc.id, token, "failed", ABANDONED_CLAIM_ERROR);
+      continue;
     }
+
+    // The claim incremented `parse_attempts` durably; read the count BACK
+    // rather than adding one to the snapshot we listed — between the two,
+    // another process may have taken an attempt of its own and handed the row
+    // back. The in-memory map now carries only the retry SPACING.
+    const attempts = getDocument(db, doc.id)?.parse_attempts ?? doc.parse_attempts + 1;
+    parseAttempts.set(doc.id, { attempts, lastAtMs: nowMs });
+
+    let pass: ParsePassResult;
+    try {
+      pass = await processDocument(db, printId, doc);
+    } catch (err) {
+      const message = errText(err);
+      statusFor(printId).sources.pipeline = `doc ${doc.id}: ${message}`;
+      pass = { state: "queued", error: message };
+    }
+    // A pass that did not parse and has spent the budget is booked `failed`
+    // (M15) — NOT left `queued` at five attempts, which no retry would ever
+    // pick up again and which `recordDelivery` would refuse to re-queue on a
+    // person's re-delivery. `failed` is the state a human can clear.
+    const terminal = pass.state !== "parsed" && attempts >= MAX_PARSE_ATTEMPTS;
+    recordFinalize(
+      db,
+      printId,
+      doc.id,
+      token,
+      pass.state === "parsed" ? "parsed" : terminal ? "failed" : "queued",
+      pass.error,
+    );
   }
+}
+
+/**
+ * Finalize under the claim token and SAY SO when the token no longer matches.
+ * A refused finalize means this worker's claim was taken over while it was
+ * running: its result was discarded, and the row the panel is showing belongs
+ * to whoever holds the document now. Swallowing that boolean left the desk
+ * looking at a document whose note claimed an error that was never recorded.
+ */
+function recordFinalize(
+  db: Database.Database,
+  printId: number,
+  docId: number,
+  token: string,
+  state: "parsed" | "queued" | "failed",
+  error: string | null,
+): void {
+  if (finalizeDocumentParse(db, docId, token, state, error)) return;
+  statusFor(printId).sources.pipeline =
+    `doc ${docId}: claim was taken over mid-parse — this result was discarded`;
 }
 
 /**
@@ -1448,9 +1869,7 @@ function drainStrandedPrints(db: Database.Database, printIds: Iterable<number>):
   for (const printId of printIds) {
     let parsable = false;
     try {
-      parsable = listUnparsedDocuments(db, printId).some(
-        (doc) => !doc.source.startsWith(REJECTED_PREFIX),
-      );
+      parsable = hasParsableDocuments(db, printId);
     } catch {
       // A failed read here must never break the sweep.
       continue;
@@ -1465,12 +1884,16 @@ function tag(
   docId: number,
   representation: TaggedCandidate["representation"],
   weakPair: boolean,
+  /** Only PDF readings carry one today — written ONLY when present, so a
+   *  non-PDF candidate's JSON keeps exactly the shape it always had. */
+  pairNote?: TaggedCandidate["pair_note"],
 ): TaggedCandidate[] {
   return candidates.map((c) => ({
     ...c,
     doc_id: docId,
     representation,
     weak_pair: weakPair,
+    ...(pairNote ? { pair_note: pairNote } : {}),
   }));
 }
 
@@ -1521,40 +1944,93 @@ function writeLines(
   return true;
 }
 
+/**
+ * What one parse pass produced, for the CAS finalize. `parsed` stamps the
+ * document; `queued` returns it with a durable reason, which is what the panel
+ * and the next attempt both read.
+ */
+type ParsePassResult =
+  | { state: "parsed"; error: null }
+  | { state: "queued"; error: string };
+
+/**
+ * The two readings of one PDF: poppler's persisted text through the ordinary
+ * text extractor, and the PDF bytes themselves as a Claude document block.
+ *
+ * BOTH are tagged `weak_pair` with `pair_note: "pdf-weak"` — the gate
+ * pre-registered in `docs/DECISIONS.md` (2026-09-02). Nothing has measured
+ * whether these two readings fail independently, so agreement between them is
+ * NOT the independent corroboration the reconciler greens on: a PDF alone
+ * caps at single_source and can only green by agreeing with a DIFFERENT
+ * document. Flipping either flag needs the holdout in that decision record.
+ */
+async function pdfCandidates(
+  contracts: LineContract[],
+  doc: DocumentRow,
+): Promise<TaggedCandidate[]> {
+  const text = await fsp.readFile(textPathFor(doc.bytes_path), "utf8");
+  const fromText = await seams.extractCandidates(contracts, text);
+  const bytes = await fsp.readFile(doc.bytes_path);
+  const fromNative = await seams.extractCandidatesFromPdf(contracts, bytes);
+  return [
+    ...tag(fromText, doc.id, "pdfText", true, "pdf-weak"),
+    ...tag(fromNative, doc.id, "pdfNative", true, "pdf-weak"),
+  ];
+}
+
 async function processDocument(
   db: Database.Database,
   printId: number,
   doc: DocumentRow,
-): Promise<void> {
+): Promise<ParsePassResult> {
   const print = readPrintRow(db, printId);
-  if (!print) return;
+  if (!print) return { state: "queued", error: "the print row vanished mid-parse" };
 
-  const raw = await fsp.readFile(doc.bytes_path, "utf8");
   const { contracts } = compileContracts(db, print.event_id, print.symbol);
 
   const fresh: TaggedCandidate[] = [];
-  if (doc.bytes_path.endsWith(".html")) {
-    // Two genuinely different readings of the same bytes — the pair reconcile
-    // treats as independent (different representation, weak_pair false).
-    const repA = await seams.extractCandidates(contracts, htmlToTablesRepresentation(raw));
-    fresh.push(...tag(repA, doc.id, "repA", false));
-    const repB = await seams.extractCandidates(contracts, htmlToRawText(raw));
-    fresh.push(...tag(repB, doc.id, "repB", false));
+  if (doc.bytes_path.endsWith(".pdf")) {
+    fresh.push(...(await pdfCandidates(contracts, doc)));
   } else {
-    // Plain text has ONE reading. Parsing it twice with the same prompt would
-    // be a correlated pair, so it gets a single call and can only ever green
-    // by agreeing with ANOTHER document (reconcile rule 3).
-    const only = await seams.extractCandidates(contracts, raw);
-    fresh.push(...tag(only, doc.id, "repB", false));
+    const raw = await fsp.readFile(doc.bytes_path, "utf8");
+    if (doc.bytes_path.endsWith(".html")) {
+      // Two genuinely different readings of the same bytes — the pair reconcile
+      // treats as independent (different representation, weak_pair false).
+      const repA = await seams.extractCandidates(contracts, htmlToTablesRepresentation(raw));
+      fresh.push(...tag(repA, doc.id, "repA", false));
+      const repB = await seams.extractCandidates(contracts, htmlToRawText(raw));
+      fresh.push(...tag(repB, doc.id, "repB", false));
+    } else {
+      // Plain text has ONE reading. Parsing it twice with the same prompt would
+      // be a correlated pair, so it gets a single call and can only ever green
+      // by agreeing with ANOTHER document (reconcile rule 3).
+      const only = await seams.extractCandidates(contracts, raw);
+      fresh.push(...tag(only, doc.id, "repB", false));
+    }
+  }
+
+  // A CLAIM OUTLIVES A GATE FLIP (Task 8 handoff note 2). We have been at the
+  // model for up to a few minutes; in that window a corrected event date could
+  // have re-fingerprinted the gate into a rejection, or the last accepting
+  // road could have been withdrawn — and `recordDelivery` would already have
+  // RETRACTED this document's earlier evidence. Writing now would re-green
+  // exactly what was just retracted, so drop the reading instead. The document
+  // stays `queued`, which is invisible to the queue while it is ineligible and
+  // parses again by itself the moment a road accepts it.
+  const still = getDocument(db, doc.id);
+  if (!still || !isDocumentEligible(db, doc.id)) {
+    const note = `doc ${doc.id}: the gate withdrew this document mid-parse — reading dropped`;
+    statusFor(printId).sources.pipeline = note;
+    return { state: "queued", error: "the gate withdrew this document mid-parse" };
   }
 
   const existing = collectCandidates(db, printId).filter((c) => c.doc_id !== doc.id);
   const written = writeLines(db, printId, print.event_id, print.symbol, [...existing, ...fresh]);
   // Only stamp the document parsed if its candidates actually landed —
   // stamping a refused write would strand the document forever.
-  if (!written) return;
-  markDocumentParsed(db, doc.id);
+  if (!written) return { state: "queued", error: "sheet write refused — lease lost" };
   advanceState(db, printId, "parsed");
+  return { state: "parsed", error: null };
 }
 
 /**
