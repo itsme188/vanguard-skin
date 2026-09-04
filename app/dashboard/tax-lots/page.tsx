@@ -90,6 +90,13 @@ export default async function TaxLotsPage(props: {
       ? accountSummaries.find((a) => a.account_name === selectedAccount)
       : null;
 
+  // Engine-synthesized RECONCILE_CLOSE rows inside the narrowed view, for the
+  // tiles' "(incl. M engine-estimated closes, +$Y)" disclosure when the
+  // account-wide activeSummary can't be used.
+  const engineEstimatedRows = closedSales.filter((s) => s.is_synthetic_close);
+  const sumUsd = (rows: typeof closedSales) =>
+    rows.reduce((sum, s) => sum + (s.currency === "USD" ? s.realized_gain_loss : 0), 0);
+
   // Clear-filter link preserves year/account, drops only ?security=.
   const clearFilterParams = new URLSearchParams();
   if (searchParams.year) clearFilterParams.set("year", searchParams.year);
@@ -152,6 +159,18 @@ export default async function TaxLotsPage(props: {
                 longTermGain: activeSummary?.longTermGain ?? closedSales.filter(s => s.is_long_term && s.currency === "USD").reduce((sum, s) => sum + s.realized_gain_loss, 0),
                 shortTermGain: activeSummary?.shortTermGain ?? closedSales.filter(s => !s.is_long_term && s.currency === "USD").reduce((sum, s) => sum + s.realized_gain_loss, 0),
                 excludedNonUsdSales: activeSummary?.excludedNonUsdSales ?? closedSales.filter(s => s.currency !== "USD").length,
+                // "Disclose, never exclude" (QA:
+                // tax-lots--headline-tiles-include-reconcile-close-engine-rows):
+                // the filtered tiles keep their engine-estimated closes AND
+                // say how many/how much, same as the unfiltered ones. Counts
+                // cover every currency (like totalClosedSales); gains are
+                // USD-only (like the totals above).
+                engineEstimatedSales: activeSummary?.engineEstimatedSales ?? engineEstimatedRows.length,
+                engineEstimatedGain: activeSummary?.engineEstimatedGain ?? sumUsd(engineEstimatedRows),
+                engineEstimatedLongTermSales: activeSummary?.engineEstimatedLongTermSales ?? engineEstimatedRows.filter(s => s.is_long_term).length,
+                engineEstimatedLongTermGain: activeSummary?.engineEstimatedLongTermGain ?? sumUsd(engineEstimatedRows.filter(s => s.is_long_term)),
+                engineEstimatedShortTermSales: activeSummary?.engineEstimatedShortTermSales ?? engineEstimatedRows.filter(s => !s.is_long_term).length,
+                engineEstimatedShortTermGain: activeSummary?.engineEstimatedShortTermGain ?? sumUsd(engineEstimatedRows.filter(s => !s.is_long_term)),
               }}
               year={selectedYear}
             />
