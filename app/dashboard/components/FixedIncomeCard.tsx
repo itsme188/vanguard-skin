@@ -60,7 +60,7 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
       <EmptySection
         title="Fixed Income Exposure"
         reason="No bond positions in this scope."
-        hint="Bond duration, credit quality, and rate-sensitivity metrics appear once you hold treasuries, corporates, or municipals. Bond ETFs (AGG, BND, etc.) classify as ETFs by default — see Bond duration backfill in Stream D4 for held bonds with missing duration data."
+        hint="Bond duration, credit quality, and rate-sensitivity metrics appear once you hold treasuries, corporates, or municipals. Bond ETFs (AGG, BND, etc.) classify as ETFs by default, so they are not counted here."
       />
     );
   }
