@@ -799,10 +799,15 @@ describe("mergePrintWatchGoState", () => {
 
   it("R-C7: registered AHEAD of B's handler, so B's donor-print delete never hits the go-row FK", async () => {
     registerPrintWatch();
-    expect(listEventMergeHandlers()).toEqual([
-      PRINT_WATCH_GO_MERGE_HANDLER_NAME,
-      PRINT_WATCH_MERGE_HANDLER_NAME,
-    ]);
+    // R-C7 is an ORDERING invariant, not a census: assert go-before-B by
+    // position so a later slice registering its own handler (D's
+    // "print-watch-first-pass" already does) cannot fail this test for a
+    // reason that has nothing to do with the go-row foreign key.
+    const names = listEventMergeHandlers();
+    expect(names).toContain(PRINT_WATCH_GO_MERGE_HANDLER_NAME);
+    expect(names.indexOf(PRINT_WATCH_GO_MERGE_HANDLER_NAME)).toBeLessThan(
+      names.indexOf(PRINT_WATCH_MERGE_HANDLER_NAME),
+    );
 
     const donorEvent = seedEvent("go-d");
     const targetEvent = seedEvent("go-t");
@@ -822,15 +827,12 @@ describe("mergePrintWatchGoState", () => {
     const targetPrintId = upsertPrint(db, targetEvent, "ACME", EVENT_DATE, "16:05");
 
     const report = db.transaction(() => mergeEarningsEventState(db, donorEvent, targetEvent))();
-    expect(report.handlers.map((h) => h.name)).toEqual([
-      "builtin:worksheet_flags",
-      "builtin:prepare_steps",
-      "builtin:bogey_scans",
-      "builtin:bogeys",
-      "builtin:email_audit",
-      PRINT_WATCH_GO_MERGE_HANDLER_NAME,
-      PRINT_WATCH_MERGE_HANDLER_NAME,
-    ]);
+    // Again the ordering, not the census — the run order is what R-C7 is about.
+    const ran = report.handlers.map((h) => h.name);
+    expect(ran).toEqual(expect.arrayContaining(["builtin:worksheet_flags", "builtin:email_audit"]));
+    expect(ran.indexOf(PRINT_WATCH_GO_MERGE_HANDLER_NAME)).toBeLessThan(
+      ran.indexOf(PRINT_WATCH_MERGE_HANDLER_NAME),
+    );
     // B deleted the donor print — only possible because C repointed the go rows first.
     expect(getPrintById(db, donorPrintId)).toBeNull();
     expect(getGoRequest(db, queued.requestId)).toMatchObject({ print_id: targetPrintId, status: "queued" });
