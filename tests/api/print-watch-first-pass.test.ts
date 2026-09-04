@@ -6,6 +6,13 @@ import { runMigrations } from "@/lib/db/migrate";
 import { upsertPrint, upsertLines } from "@/lib/print-watch/store";
 import { listReads, claimRead, finalizeReadDone } from "@/lib/print-watch/read-store";
 import { _setReadSeams } from "@/lib/print-watch/read";
+import {
+  enableFirstPassScheduler,
+  disableFirstPassScheduler,
+  _setSchedulerSeams,
+  __pendingReadTimers,
+  __resetSchedulerForTests,
+} from "@/lib/print-watch/read-scheduler";
 import { classifyRoute } from "@/lib/auth/route-policy";
 import { decideRequest } from "@/lib/auth/verify-request";
 import type { PrintWatchLine } from "@/lib/print-watch/types";
@@ -121,5 +128,43 @@ describe("GET /api/print-watch/status (#15)", () => {
     expect(entry.activeRead).toMatchObject({ id: r.row.id, status: "generating", nonce: 1 });
     const src = fs.readFileSync("app/api/print-watch/status/route.ts", "utf8");
     expect(src).not.toMatch(/runFirstPassRead|claimRead|scheduleFirstPassRead|acceptCallout|INSERT|UPDATE|DELETE/);
+  });
+});
+
+describe("POST /api/print-watch/accept arms the first-pass read (R-D21)", () => {
+  // Facts are accepted-only, so the parse-time hook always skips a fresh print
+  // on `no_facts`: the desk's accept is the first thing that can produce a
+  // readable sheet, and B's route re-arms the debounce once the write commits.
+  const armed: number[] = [];
+  beforeEach(() => {
+    __resetSchedulerForTests();
+    enableFirstPassScheduler();
+    _setSchedulerSeams({
+      setTimeout: ((fn: () => void) => { armed.push(armed.length); void fn; return armed.length; }) as never,
+      clearTimeout: (() => undefined) as never,
+      setInterval: (() => 0) as never,
+      clearInterval: (() => undefined) as never,
+    });
+    armed.length = 0;
+  });
+  afterEach(() => {
+    __resetSchedulerForTests();
+    disableFirstPassScheduler();
+    _setSchedulerSeams(null);
+  });
+
+  it("a successful accept arms the debounce for that print; a refused accept arms nothing", async () => {
+    const { POST } = await import("@/app/api/print-watch/accept/route");
+    const ok = await POST(json("/api/print-watch/accept", { eventId, accept: ["revenue_q"] }));
+    expect(ok.status).toBe(200);
+    expect(__pendingReadTimers()).toContain(printId);
+    expect(armed).toHaveLength(1);
+
+    __resetSchedulerForTests();
+    armed.length = 0;
+    const refused = await POST(json("/api/print-watch/accept", { eventId, accept: ["not_a_metric"] }));
+    expect(refused.status).toBe(400);
+    expect(__pendingReadTimers()).toEqual([]);
+    expect(armed).toEqual([]);
   });
 });

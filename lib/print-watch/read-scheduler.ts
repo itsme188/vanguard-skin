@@ -1,10 +1,14 @@
 // The first-pass read's triggers (spec §4.4; plan M-D1; Codex round 1 #16/#25).
 //
 // Fast path: a 5-second debounce per print, armed from the watcher's
-// parse-completion point. A burst of documents re-arms the same timer, so one
-// settled sheet produces ONE read rather than one read per document.
+// parse-completion point AND from the desk's accept (R-D21 — facts are
+// accepted-only, so a fresh parse alone always skips on `no_facts`). A burst of
+// documents or clicks re-arms the same timer, so one settled sheet produces ONE
+// read rather than one read per document.
 //
-// Durable path: `reconcilePendingReads`, ticked every 60 s from registration,
+// Durable path: `reconcilePendingReads`, ticked every 60 s from registration
+// (and self-armed by the first `scheduleFirstPassRead` — the email sweep's
+// headless `ensurePrintWatch` never goes through the ensure route),
 // schedules every live parsed print whose CURRENT fingerprint has no
 // done/live-generating row and is not inside a retry backoff — so a crash
 // during the debounce, a merge, a bogey edit or a late document all converge
@@ -14,8 +18,6 @@
 // that merely exercises the watcher can leak a five-second timer.
 import type Database from "better-sqlite3";
 import { todayET } from "@/lib/calendar/date-utils";
-import { runFirstPassRead } from "./read";
-import { buildFirstPassPrompt } from "./first-pass-prompt";
 import { canScheduleRead } from "./read-store";
 
 export const READ_DEBOUNCE_MS = 5_000;
@@ -38,8 +40,14 @@ export interface SchedulerSeams {
 // casts are only there because the timer globals are overloaded — the wrappers
 // forward their arguments unchanged.
 const DEFAULT_SEAMS: SchedulerSeams = {
-  runner: (db, printId) => runFirstPassRead(db, printId),
-  fingerprintFor: async (db, printId) => (await buildFirstPassPrompt(db, printId))?.fingerprint ?? null,
+  // R-D22: LAZY on purpose. `watcher.ts` imports this module, so an eager
+  // `import { runFirstPassRead } from "./read"` dragged the AI wrapper, the
+  // prompt builder and everything they import into memory the moment the
+  // watcher loaded — for a chain that only runs when a read actually fires.
+  // `./read-store` stays eager: it is a thin SQL module.
+  runner: (db, printId) => import("./read").then((m) => m.runFirstPassRead(db, printId)),
+  fingerprintFor: async (db, printId) =>
+    (await (await import("./first-pass-prompt")).buildFirstPassPrompt(db, printId))?.fingerprint ?? null,
   now: () => Date.now(),
   setTimeout: ((fn: () => void, ms?: number) => globalThis.setTimeout(fn, ms)) as unknown as typeof setTimeout,
   clearTimeout: ((handle: ReturnType<typeof setTimeout>) => globalThis.clearTimeout(handle)) as unknown as typeof clearTimeout,
@@ -87,6 +95,11 @@ const askedFingerprint = new Map<number, { fp: string; atMs: number }>();
 /** Arms/re-arms the per-print debounce. Never throws. */
 export function scheduleFirstPassRead(db: Database.Database, printId: number): void {
   if (!schedulerEnabled()) return;
+  // M5: the durable path is armed from the ensure route, but the email sweep's
+  // headless `ensurePrintWatch` never goes through a route — so the first thing
+  // that hands this scheduler a db (a parse, or the desk's accept) arms it too.
+  // Idempotent: the second call finds the handle already set.
+  armReconcileTimer(db);
   const existing = timers.get(printId);
   if (existing !== undefined) seams.clearTimeout(existing);
   const handle = seams.setTimeout(() => {

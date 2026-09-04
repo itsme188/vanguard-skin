@@ -18,6 +18,8 @@ import {
   ASK_MEMORY_TTL_MS,
 } from "@/lib/print-watch/read-scheduler";
 import { todayET } from "@/lib/calendar/date-utils";
+import { buildFirstPassPrompt } from "@/lib/print-watch/first-pass-prompt";
+import fs from "node:fs";
 import type { PrintWatchLine } from "@/lib/print-watch/types";
 
 let db: Database.Database;
@@ -232,6 +234,30 @@ describe("reconcilePendingReads (#16)", () => {
   });
 });
 
+describe("default seams (R-D22)", () => {
+  it("resolve the real chain lazily: no eager import of ./read or ./first-pass-prompt, and the dynamic builder answers exactly as a direct import does", async () => {
+    // The watcher imports this module. An eager import here pulled the AI
+    // wrapper and the prompt builder into memory at watcher-import time.
+    const src = fs.readFileSync("lib/print-watch/read-scheduler.ts", "utf8");
+    expect(src).not.toMatch(/^import[^\n]*from "\.\/(read|first-pass-prompt)";/m);
+
+    const today = todayET(new Date(T0));
+    const withFacts = seedPrint(today, "lazy-facts");
+    const noFacts = seedPrint(today, "lazy-empty");
+    db.prepare(`DELETE FROM print_watch_lines WHERE print_id = ?`).run(noFacts);
+    // A direct import is the oracle: a sheet with an accepted line has a
+    // fingerprint, an empty one has none.
+    expect((await buildFirstPassPrompt(db, withFacts))?.fingerprint).toEqual(expect.any(String));
+    expect(await buildFirstPassPrompt(db, noFacts)).toBeNull();
+
+    enableFirstPassScheduler();
+    _setSchedulerSeams(null); // the real defaults, dynamic imports and all
+    expect((await reconcilePendingReads(db, T0)).scheduled).toEqual([withFacts]);
+    // Drop the armed debounce before it can fire the real runner.
+    __resetSchedulerForTests();
+  });
+});
+
 describe("armReconcileTimer", () => {
   it("is idempotent, unref'd, and ticks reconcile every 60 s once enabled", async () => {
     enableFirstPassScheduler();
@@ -251,5 +277,18 @@ describe("armReconcileTimer", () => {
     armReconcileTimer(db);
     expect(si).not.toHaveBeenCalled();
     si.mockRestore();
+  });
+
+  it("is armed by the first scheduleFirstPassRead, once across two calls (M5)", () => {
+    // The email sweep's headless ensurePrintWatch never goes through the
+    // ensure route, so the durable path has to self-arm off the first parse or
+    // accept that hands the scheduler a db.
+    enableFirstPassScheduler();
+    const setInterval = vi.fn((_fn: () => void, _ms?: number) => 0);
+    _setSchedulerSeams({ setInterval: setInterval as never, setTimeout: (() => 0) as never, clearTimeout: (() => undefined) as never });
+    scheduleFirstPassRead(db, 11);
+    scheduleFirstPassRead(db, 12);
+    expect(setInterval).toHaveBeenCalledTimes(1);
+    expect(setInterval.mock.calls[0][1]).toBe(READ_RECONCILE_EVERY_MS);
   });
 });
