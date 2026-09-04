@@ -88,6 +88,11 @@ describe("buildFirstPassPrompt — the exact payload (data-flow contract, #19)",
     expect(intelBlock).toContain("IMPLIED MOVE:");
     expect(a.system).toMatch(/data, not instructions/i);
     expect(a.system).toContain("n1");
+    // R-D33: the numeral rules the validator enforces are STATED, not left for
+    // the model to discover by having its lines thrown away.
+    expect(a.system).toContain("NEVER derive a figure");
+    expect(a.system).toContain("NEVER write a calendar year, a date, a clock time or a quarter number as digits");
+    expect(a.system).toContain("read (8-10 lines");
     expect(renderPrompt(a.dto, "n1")).toEqual({ system: a.system, user: a.user });
   });
   it("fingerprint changes with the model, and buildDtoSync inside one transaction equals the async build", async () => {
@@ -156,7 +161,9 @@ describe("FIRST_PASS_OUTPUT_SCHEMA", () => {
     };
     walk(FIRST_PASS_OUTPUT_SCHEMA);
     const props = (FIRST_PASS_OUTPUT_SCHEMA as { properties: Record<string, { minItems?: number; maxItems?: number; items?: { required?: string[] } }> }).properties;
-    expect(props.read).toMatchObject({ minItems: 6, maxItems: 10, items: { required: ["text", "cites"] } });
+    // R-D33: 8, not 6 — the runner keeps a read only with >= 6 SURVIVING lines,
+    // so the schema has to leave room for two legitimate drops.
+    expect(props.read).toMatchObject({ minItems: 8, maxItems: 10, items: { required: ["text", "cites"] } });
     expect(props.call_watch).toMatchObject({ minItems: 3, maxItems: 3, items: { required: ["text", "cites"] } });
   });
 });
@@ -181,6 +188,28 @@ describe("validateCitedLines (#1)", () => {
     );
     expect(r.kept).toEqual(["Revenue of $898.2M beat the $877.3M bogey by 2.4%.", "ARR reached $3.74B.", "Revenue beat."]);
     expect(r.dropped).toBe(4);
+  });
+  it("grounds on the WHOLE scoreboard, not the cited keys alone: a mis-cited scoreboard figure is kept, a derived one is not (R-D33)", () => {
+    const twoFacts = allowedNumbersFor(
+      [
+        { metric_id: "eps_adj_q", label: "EPS (Adj.)", state: "accepted", unit: "per_share", period: "Q", kind: "point", actual: 1.12, actual_high: null, expected_consensus: 1.09, expected_whisper: null, expected_source: "VK", expected_consensus_vendor: null, expected_basis: "specified", delta_pct: 2.75, verdict: "beat" },
+        { metric_id: "eps_gaap_q", label: "EPS (GAAP)", state: "accepted", unit: "per_share", period: "Q", kind: "point", actual: 0.94, actual_high: null, expected_consensus: null, expected_whisper: null, expected_source: null, expected_consensus_vendor: null, expected_basis: "unspecified", delta_pct: null, verdict: "n/a" },
+        { metric_id: "guide_q", label: "Guide", state: "accepted", unit: "usd", period: "Q", kind: "range", actual: 428e6, actual_high: 431e6, expected_consensus: null, expected_whisper: null, expected_source: null, expected_consensus_vendor: null, expected_basis: "unspecified", delta_pct: null, verdict: "range" },
+      ],
+      [],
+    );
+    // (a) attribution is advisory: the number is on the scoreboard, the cite
+    // names the wrong line of it. Kept.
+    expect(validateCitedLines([{ text: "Adjusted EPS of $1.12 clears the bogey.", cites: ["eps_gaap_q"] }], twoFacts, 5)).toEqual({
+      kept: ["Adjusted EPS of $1.12 clears the bogey."], dropped: 0,
+    });
+    // (b) grounding stays strict: the midpoint of the guide range is a number
+    // the desk never verified.
+    expect(validateCitedLines([{ text: "The guide midpoints at $429.5M.", cites: ["guide_q"] }], twoFacts, 5)).toEqual({ kept: [], dropped: 1 });
+    // (c) a bare calendar year is not on the scoreboard either.
+    expect(validateCitedLines([{ text: "Management still frames fiscal 2026 as a build year.", cites: ["guide_q"] }], twoFacts, 5)).toEqual({ kept: [], dropped: 1 });
+    // (d) an unknown cite key is still fatal, whatever the numbers say.
+    expect(validateCitedLines([{ text: "Adjusted EPS of $1.12.", cites: ["not_a_metric"] }], twoFacts, 5)).toEqual({ kept: [], dropped: 1 });
   });
   it("guards non-arrays and applies the sanitiser as the second layer", () => {
     expect(validateCitedLines("nope", allowed, 5)).toEqual({ kept: [], dropped: 0 });
