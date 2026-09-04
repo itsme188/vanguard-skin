@@ -3,6 +3,8 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getEmailStatesForEvents } from "@/lib/queries/earnings-emails";
 import { buildCockpitPayload } from "@/lib/queries/earnings-cockpit";
+import { decorateCockpitIntel, cockpitRowsToIntelEvents } from "@/lib/queries/earnings-intel";
+import { replaceReportHistory } from "@/lib/mutations/earnings-intel";
 import { upsertCallNote } from "@/lib/mutations/earnings-call-notes";
 import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -239,5 +241,89 @@ describe("buildCockpitPayload", () => {
     expect(payload.lanes.unknown).toEqual([]);
     expect(payload.carryover).toEqual([]);
     expect(payload.nextRelease).toBeNull();
+  });
+});
+
+describe("buildCockpitPayload — weekOf widening (slice F, M-F5)", () => {
+  it("with no weekOf the payload is unchanged and rowsByEvent covers exactly today plus carryover", () => {
+    seedAccountAndHolding("NVDA");
+    seedAccountAndHolding("JPM");
+    const today = seedEvent({ symbol: "NVDA", eventDate: "2026-07-08", eventTime: "AMC" });
+    const thursday = seedEvent({ symbol: "JPM", eventDate: "2026-07-09", eventTime: "BMO" });
+    const p = buildCockpitPayload(db, NOW);
+    expect(p.lanes.amc.map((r) => r.eventId)).toEqual([today]);
+    expect(Object.keys(p.rowsByEvent).map(Number)).toEqual([today]);
+    expect(p.rowsByEvent[thursday]).toBeUndefined();
+  });
+
+  it("with weekOf, a Thursday event is in rowsByEvent for the week but NOT in today's lanes", () => {
+    seedAccountAndHolding("NVDA");
+    seedAccountAndHolding("JPM");
+    const today = seedEvent({ symbol: "NVDA", eventDate: "2026-07-08", eventTime: "AMC" });
+    const thursday = seedEvent({ symbol: "JPM", eventDate: "2026-07-09", eventTime: "BMO" });
+    const p = buildCockpitPayload(db, NOW, { weekOf: "2026-07-06" });
+    expect(p.lanes.bmo).toEqual([]);
+    expect(p.lanes.amc.map((r) => r.eventId)).toEqual([today]);
+    expect(
+      Object.keys(p.rowsByEvent).map(Number).sort((a, b) => a - b)
+    ).toEqual([today, thursday].sort((a, b) => a - b));
+    expect(p.rowsByEvent[thursday].eventDate).toBe("2026-07-09");
+  });
+
+  it("keeps yesterday's unfinished carryover even when weekOf starts after it", () => {
+    seedAccountAndHolding("NVDA");
+    const yesterday = seedEvent({ symbol: "NVDA", eventDate: "2026-07-07", eventTime: "AMC" });
+    const p = buildCockpitPayload(db, NOW, { weekOf: "2026-07-08" }); // a Wednesday-anchored window
+    expect(p.carryover.map((r) => r.eventId)).toEqual([yesterday]);
+    expect(p.rowsByEvent[yesterday]).toBeDefined();
+  });
+
+  it("nextRelease still looks only at today's rows, not the whole week", () => {
+    seedAccountAndHolding("JPM");
+    seedEvent({ symbol: "JPM", eventDate: "2026-07-09", eventTime: "BMO", releaseTime: "07:00" });
+    const p = buildCockpitPayload(db, NOW, { weekOf: "2026-07-06" });
+    expect(p.nextRelease).toBeNull();
+  });
+});
+
+describe("the week's intel walk covers rowsByEvent (slice F, Codex round 1 #10 / F-S3)", () => {
+  it("decorates a Thursday row and offers it for re-ensure while it is unreleased", () => {
+    seedAccountAndHolding("NVDA");
+    seedAccountAndHolding("JPM");
+    seedEvent({ symbol: "NVDA", eventDate: "2026-07-08", eventTime: "AMC" });
+    const thursday = seedEvent({ symbol: "JPM", eventDate: "2026-07-09", eventTime: "BMO" });
+    // Gives decorateCockpitIntel something non-null to attach even with no
+    // cached intel/bogey row (history alone is enough — see its own guard).
+    replaceReportHistory(db, "JPM", [
+      {
+        reportedDate: "2026-04-14",
+        fiscalDateEnding: "2026-03-31",
+        epsActual: 4.2,
+        epsEstimate: 4.0,
+        surprisePct: 5.0,
+        reportTime: "pre-market",
+        postPrintMovePct: 1.2,
+      },
+    ]);
+    const payload = buildCockpitPayload(db, NOW, { weekOf: "2026-07-06" });
+
+    // It is in NEITHER a lane nor carryover — that is the whole point.
+    expect(
+      payload.lanes.bmo
+        .concat(payload.lanes.amc, payload.lanes.unknown, payload.carryover)
+        .some((r) => r.eventId === thursday)
+    ).toBe(false);
+
+    expect(cockpitRowsToIntelEvents(payload).map((e) => e.id)).toContain(thursday);
+    decorateCockpitIntel(db, payload);
+    expect(payload.rowsByEvent[thursday].intel).not.toBeNull();
+  });
+
+  it("never lists a row twice when it is BOTH in a lane and in rowsByEvent", () => {
+    seedAccountAndHolding("NVDA");
+    const today = seedEvent({ symbol: "NVDA", eventDate: "2026-07-08", eventTime: "AMC" });
+    const payload = buildCockpitPayload(db, NOW, { weekOf: "2026-07-06" });
+    const ids = cockpitRowsToIntelEvents(payload).map((e) => e.id);
+    expect(ids.filter((id) => id === today)).toHaveLength(1);
   });
 });
