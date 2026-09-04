@@ -51,6 +51,8 @@ const READ_LINES_MAX = 10;
 const CALL_WATCH_LINES = 3;
 const CAVEATS_MAX = 6;
 const CALLOUT_PROPOSALS_MAX = 8;
+/** R-D36: an empty call-watch section explains itself. */
+export const NO_CALL_WATCH_CAVEAT = "no call-watch lines survived validation";
 const LABEL_MAX_CHARS = 80;
 const VALUE_TEXT_MAX_CHARS = 40;
 
@@ -292,16 +294,28 @@ export async function runFirstPassRead(
       verified.map((c) => ({ key: `callout:${c.label_norm}`, value: c.value, value_high: c.value_high })),
     );
     const read = validateCitedLines(o.read, allowed, READ_LINES_MAX);
-    const watch = validateCitedLines(o.call_watch, allowed, CALL_WATCH_LINES);
-    const prose: ReadProse = { read: read.kept, call_watch: watch.kept, caveats: sanitizeProseLines(o.caveats, CAVEATS_MAX) };
+    // R-D36: call-watch lines look FORWARD ("what to listen for on the call"),
+    // so they may legitimately cite nothing — an unknown cite is stripped rather
+    // than fatal. The numeral gate and the sanitiser still apply, and the read
+    // finalises on 0-3 survivors: a missing call-watch line is a thinner sheet,
+    // never a reason to throw away a validated scoreboard read.
+    const watch = validateCitedLines(o.call_watch, allowed, CALL_WATCH_LINES, { citesOptional: true });
+    const caveats = sanitizeProseLines(o.caveats, CAVEATS_MAX);
     const dropped = read.dropped + watch.dropped;
-    if (read.kept.length < READ_LINES_MIN || watch.kept.length !== CALL_WATCH_LINES) {
+    if (read.kept.length < READ_LINES_MIN) {
       return fail(
         dropped > 0 ? "cites" : "sanitisation",
-        `prose failed validation: read ${read.kept.length}/${READ_LINES_MIN}+, call_watch ${watch.kept.length}/${CALL_WATCH_LINES}`,
+        `prose failed validation: read ${read.kept.length}/${READ_LINES_MIN}+`,
         true,
       );
     }
+    // The desk is told WHY the section is empty, and the caveat always fits:
+    // it replaces the last model caveat rather than being dropped at the cap.
+    const prose: ReadProse = {
+      read: read.kept,
+      call_watch: watch.kept,
+      caveats: watch.kept.length === 0 ? [...caveats.slice(0, CAVEATS_MAX - 1), NO_CALL_WATCH_CAVEAT] : caveats,
+    };
 
     // #10: ONE transaction writes the callouts, supersedes the stale ones,
     // finalises the read and retires older generating rows.
