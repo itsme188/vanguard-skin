@@ -7,10 +7,13 @@ import {
   extraMetricUnitToContractUnit,
   isUuidV4,
   type ExtraMetricSpec,
+  type ExtraMetricUnit,
 } from "@/lib/print-watch/extra-metrics";
 
 const A = "5b7a1f42-9c3e-4d18-8f6a-2e0b91c7d4a3";
 const B = "0c9e2d71-4a5b-4c6d-9e8f-1a2b3c4d5e6f";
+const C = "7d4c8e10-2b6f-4a92-b3d5-6c8e0f1a2b34";
+const D = "1a2b3c4d-5e6f-4071-89ab-cdef01234567";
 
 const spec = (o: Partial<ExtraMetricSpec> = {}): ExtraMetricSpec => ({
   id: A, label: "Net new ARR", definition: "Sequential change in annual recurring revenue.",
@@ -49,8 +52,8 @@ describe("parseExtraMetrics", () => {
     const bad = JSON.stringify([
       { ...spec(), id: "nope" },
       { ...spec({ id: B }), label: "x".repeat(61) },
-      { ...spec({ id: B }), definition: "y".repeat(301) },
-      { ...spec({ id: B }), unit: "eur" },
+      { ...spec({ id: C }), definition: "y".repeat(301) },
+      { ...spec({ id: D }), unit: "eur" },
     ]);
     const { specs, errors } = parseExtraMetrics(bad);
     expect(specs).toEqual([]);
@@ -117,6 +120,53 @@ describe("parseExtraMetrics", () => {
     const { errors } = one({ unit: "eur", consensus: "nonsense" });
     expect(errors).toEqual(["Metric 1: unit must be one of usd, per_share, pct, count."]);
   });
+
+  // --- fix round 1 ----------------------------------------------------------
+  const USD_ERR = "Metric 1: consensus must be a dollar figure like 3.85B, 850M or $3,850,000,000, or empty.";
+
+  it("R-F16: a digit-free string is an ERROR, never a $0 bogey", () => {
+    for (const raw of [",", "$,,,", ",.5", "$", "-"]) {
+      const { specs, errors } = one({ consensus: raw });
+      expect(errors).toEqual([USD_ERR]);
+      expect(specs).toEqual([]);
+    }
+    // whisper goes down the identical path
+    expect(one({ whisper: "$,,," }).errors).toEqual([
+      "Metric 1: whisper must be a dollar figure like 3.85B, 850M or $3,850,000,000, or empty.",
+    ]);
+    // comma PLACEMENT is deliberately still tolerated: the digits are the desk's
+    // own, only digit-free input diverges from lib/format.ts::parseLargeUSD.
+    expect(one({ consensus: "1,2,3" }).specs[0].consensus).toBe(123);
+  });
+
+  it("R-F17: a present-but-non-text definition is an error, not a silent blank", () => {
+    for (const definition of [12345, { a: 1 }, ["x"]]) {
+      const { specs, errors } = one({ definition });
+      expect(errors).toEqual(["Metric 1: definition must be text."]);
+      expect(specs).toEqual([]);
+    }
+    // absent or null stays the legal "no definition yet" case
+    expect(one({ definition: undefined }).errors).toEqual([]);
+    expect(one({ definition: null }).errors).toEqual([]);
+    expect(one({ definition: null }).specs[0].definition).toBe("");
+  });
+
+  it("M-5: accepts an explicit leading + the way coercePercent does", () => {
+    expect(one({ unit: "pct", consensus: "+27.5" }).specs[0].consensus).toBe(27.5);
+    expect(one({ unit: "pct", consensus: "+27.5%" }).specs[0].consensus).toBe(27.5);
+    expect(one({ unit: "pct", consensus: "-27.5" }).specs[0].consensus).toBe(-27.5);
+    expect(one({ unit: "count", consensus: "+12" }).specs[0].consensus).toBe(12);
+    expect(one({ unit: "pct", consensus: "+" }).errors).toHaveLength(1);
+  });
+
+  it("M-6: reports a duplicate id even when the first occurrence failed another check", () => {
+    const { specs, errors } = parseExtraMetrics(JSON.stringify([spec({ label: "" }), spec()]));
+    expect(specs).toEqual([]);
+    expect(errors).toEqual([
+      "Metric 1: label must be 1 to 60 characters.",
+      `Metric 2: id ${A} appears twice on this sheet.`,
+    ]);
+  });
 });
 
 describe("detectExtraMetricConflicts", () => {
@@ -159,6 +209,8 @@ describe("id and unit mapping", () => {
   it("builds x_<uuid>_<period> and maps pct to percent", () => {
     expect(extraMetricId(spec({ period: "FY_guide" }))).toBe(`x_${A}_FY_guide`);
     expect(extraMetricUnitToContractUnit("pct")).toBe("percent");
-    expect(["usd", "per_share", "count"].map(extraMetricUnitToContractUnit)).toEqual(["usd", "per_share", "count"]);
+    expect((["usd", "per_share", "count"] as ExtraMetricUnit[]).map(extraMetricUnitToContractUnit)).toEqual(
+      ["usd", "per_share", "count"],
+    );
   });
 });
