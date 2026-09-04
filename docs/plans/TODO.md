@@ -253,6 +253,7 @@
 ✅ **VUSXX added to the static classification lookup** (`65bcb85`) beside VMFXX, so a Treasury money-market position counts as cash rather than a holding; the live row was classified `manual`, which auto-classify does not overwrite.
 ✅ **`import-monthly-statements` skill corrected** (`65bcb85`) — Phase 5's unsettled-activity rule rewritten, plus the trust-boundary curl recipe (mutating calls need an `Origin` header), the bundled-parser caveat and its lib-sequence workaround, price-priority behaviour, the new-money-market lookup step, the bond accrued-interest convention, and a quantity-scaled cross-foot tolerance.
 ✅ **Three-pass reconciler live watch closed** — see the Bugs/Quality entry; the import re-opened none of the ten tombstones.
+✅ **Local Worker dev state gated out of the Electron bundle** (`b8c957da`) — `workers/cron/.wrangler` (miniflare KV/R2/cache SQLite, whose KV blobs carry armed-event projection data) was present in the main checkout and Next's tracer sweeps it into `.next/standalone`. CLAUDE.md had flagged the hazard 2026-09-03 with "add the path to the bundle gate's leak list when next touched"; both layers now cover it — an `!workers/cron/.wrangler/**` exclusion in the electron-builder filter and a `workers/cron/.wrangler` entry in `scripts/verify-bundle.js`. Scoped to the state directory on purpose: `lib/calendar/enrichment-runner.ts` imports `workers/cron/src/yahoo` at runtime, so a blanket `workers/**` exclusion would have been wrong.
 
 ## Closed this session (2026-09-03 afternoon — live print v2 slice B built + quick items)
 
