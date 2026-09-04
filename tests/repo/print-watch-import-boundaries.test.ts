@@ -16,8 +16,13 @@
  *     its own intel view from the pure resolver plus the intel query, so the
  *     watcher does not drag the email/AI chain into memory at import time.
  *
- * Both halves are a source scan — import lines are unambiguous, so no parsing
- * is needed beyond a line regex.
+ * Both halves are a source scan. R-D31: the scan collapses newlines FIRST (each
+ * newline becomes a space, so character offsets — and therefore reported line
+ * numbers — are unchanged) and then reads every `from "…"`, `import("…")` and
+ * `require("…")` specifier. A line-by-line regex missed a Prettier-wrapped
+ * import and every dynamic one, which is most of what a boundary guard has to
+ * catch. `"use client"` files are scanned under `app/**` AND `lib/**` — client
+ * modules live in both trees.
  */
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
@@ -53,15 +58,24 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Every `from "<spec>"` on an import/export-from line, with its line number. */
-function importSpecs(source: string): Array<{ spec: string; line: number }> {
+/** Every module specifier in the file — static (`from "…"`, wrapped over as many
+ *  lines as Prettier likes), dynamic (`import("…")`) and `require("…")` — each
+ *  with the 1-based line it starts on. Exported for the self-test below. */
+export function importSpecs(source: string): Array<{ spec: string; line: number }> {
+  // Newline → space keeps every offset identical, so a match index still maps
+  // back to a real line while multi-line statements read as one string.
+  const flat = source.replace(/\n/g, " ");
+  const lineOf = (index: number) => source.slice(0, index).split("\n").length;
   const out: Array<{ spec: string; line: number }> = [];
-  const lines = source.split("\n");
-  lines.forEach((text, i) => {
-    const m = text.match(/^\s*(?:import|export)\b[^"']*from\s*["']([^"']+)["']/) ?? text.match(/^\s*import\s*["']([^"']+)["']/);
-    if (m) out.push({ spec: m[1], line: i + 1 });
-  });
-  return out;
+  const patterns = [
+    /\bfrom\s*["']([^"']+)["']/g,
+    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
+    /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
+  ];
+  for (const re of patterns) {
+    for (const m of flat.matchAll(re)) out.push({ spec: m[1], line: lineOf(m.index ?? 0) });
+  }
+  return out.sort((a, b) => a.line - b.line);
 }
 
 function isUseClient(source: string): boolean {
@@ -76,9 +90,16 @@ function isUseClient(source: string): boolean {
 const rel = (file: string) => path.relative(REPO, file);
 
 describe("print-watch import boundaries", () => {
+  it("the specifier scan sees wrapped and dynamic imports, not just single-line ones (R-D31)", () => {
+    const wrapped = ['import {', '  formatValue,', '} from "@/lib/print-watch/callouts";'].join("\n");
+    expect(importSpecs(wrapped)).toEqual([{ spec: "@/lib/print-watch/callouts", line: 3 }]);
+    const dynamic = 'const m = await import("@/lib/print-watch/callouts");';
+    expect(importSpecs(dynamic)).toEqual([{ spec: "@/lib/print-watch/callouts", line: 1 }]);
+  });
+
   it("a \"use client\" component imports only the client-safe print-watch modules", () => {
     const offenders: string[] = [];
-    for (const file of walk(path.join(REPO, "app"))) {
+    for (const file of [...walk(path.join(REPO, "app")), ...walk(path.join(REPO, "lib"))]) {
       const source = fs.readFileSync(file, "utf8");
       if (!isUseClient(source)) continue;
       for (const { spec, line } of importSpecs(source)) {

@@ -22,6 +22,13 @@ import { buildFirstPassPrompt } from "@/lib/print-watch/first-pass-prompt";
 import fs from "node:fs";
 import type { PrintWatchLine } from "@/lib/print-watch/types";
 
+// F4/R-D22: the default `runner` seam reaches `./read` through a DYNAMIC
+// import. Vitest applies module mocks to those too, so mocking the real module
+// here proves the seam resolves to it — without letting a model call happen.
+// Nothing else in this file imports `@/lib/print-watch/read`.
+const readModule = vi.hoisted(() => ({ runFirstPassRead: vi.fn(async () => ({ kind: "skipped", reason: "no_facts", readId: null })) }));
+vi.mock("@/lib/print-watch/read", () => readModule);
+
 let db: Database.Database;
 const T0 = Date.parse("2026-09-10T20:06:00Z");
 const PROSE = { read: ["1", "2", "3", "4", "5", "6"], call_watch: ["a", "b", "c"], caveats: [] };
@@ -253,8 +260,23 @@ describe("default seams (R-D22)", () => {
     enableFirstPassScheduler();
     _setSchedulerSeams(null); // the real defaults, dynamic imports and all
     expect((await reconcilePendingReads(db, T0)).scheduled).toEqual([withFacts]);
-    // Drop the armed debounce before it can fire the real runner.
+    // Drop the armed debounce before it can fire the runner.
     __resetSchedulerForTests();
+  });
+
+  it("the debounce reaches runFirstPassRead through the lazy import", async () => {
+    // Warm the module cache first: under fake timers a cold dynamic import can
+    // need a macrotask that never arrives, and the point here is WHICH module
+    // the seam reaches, not how long the first import takes.
+    await import("@/lib/print-watch/read");
+    readModule.runFirstPassRead.mockClear();
+    enableFirstPassScheduler();
+    _setSchedulerSeams(null);
+    scheduleFirstPassRead(db, 7);
+    await vi.advanceTimersByTimeAsync(READ_DEBOUNCE_MS + 1);
+    // The dynamic import settles on the microtask queue; give it a few turns.
+    for (let i = 0; i < 20 && readModule.runFirstPassRead.mock.calls.length === 0; i++) await Promise.resolve();
+    expect(readModule.runFirstPassRead).toHaveBeenCalledWith(db, 7);
   });
 });
 
