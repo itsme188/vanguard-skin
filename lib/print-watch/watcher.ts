@@ -118,6 +118,7 @@ import {
 import { recordDelivery, sha256Hex, type DeliveryInput } from "./delivery";
 import { classifyBytes, hardenedFetchBytes } from "./url-fetch";
 import { redactUrl } from "./hardened-fetch";
+import { scheduleFirstPassRead } from "./read-scheduler";
 import {
   checkPdfBytes,
   checkPdfText,
@@ -2593,6 +2594,7 @@ async function processDocument(
   // stamping a refused write would strand the document forever.
   if (!written) return { state: "queued", error: "sheet write refused — lease lost" };
   advanceState(db, printId, "parsed");
+  scheduleFirstPassRead(db, printId); // slice D post-commit hook (plan M-D1) — the ONLY D edit in this file
   return { state: "parsed", error: null };
 }
 

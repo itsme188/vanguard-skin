@@ -33,6 +33,7 @@ import {
   __resetPrepareStepsForTests,
 } from "@/lib/earnings/prepare-armed-event";
 import { registerPrintWatch, __resetRegisterForTests } from "@/lib/print-watch/register";
+import { __resetFirstPassRegisterForTests } from "@/lib/print-watch/first-pass-register";
 import { upsertPrint, getPrintByEventId } from "@/lib/print-watch/store";
 
 let db: Database.Database;
@@ -40,6 +41,7 @@ beforeEach(() => {
   __resetEventMergeHandlersForTests();
   __resetPrepareStepsForTests();
   __resetRegisterForTests();
+  __resetFirstPassRegisterForTests();
   db = new Database(":memory:");
   db.pragma("foreign_keys = ON");
   runMigrations(db);
@@ -55,11 +57,18 @@ describe("print-watch × slice A registries", () => {
   it("registers exactly the two print-watch handlers and the ir_baseline step, once (idempotent)", () => {
     registerPrintWatch();
     registerPrintWatch();
-    // ORDER IS LOAD-BEARING (slice C): C's go handler repoints go rows to the
-    // surviving print before B's handler deletes the donor print row —
-    // `print_watch_go_requests.print_id` has no cascade, so the reverse order
-    // fails the merge with a FOREIGN KEY error.
-    expect(listEventMergeHandlers()).toEqual(["print-watch-go", "print-watch"]);
+    // ORDER IS LOAD-BEARING. Both C's go handler and D's first-pass handler
+    // repoint their own rows to the surviving print BEFORE B's handler deletes
+    // the donor print row: `print_watch_go_requests.print_id`,
+    // `print_watch_reads.print_id` and `print_watch_callouts.print_id` all
+    // reference print_watch_prints with no cascade, so the reverse order fails
+    // the merge with a FOREIGN KEY error (R-C7, plan M-D12). C before D only
+    // matches slice order — no foreign key runs between the two.
+    expect(listEventMergeHandlers()).toEqual([
+      "print-watch-go",
+      "print-watch-first-pass",
+      "print-watch",
+    ]);
     expect(listPrepareSteps()).toEqual(["ir_baseline"]);
   });
 
