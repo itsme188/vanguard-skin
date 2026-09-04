@@ -1,0 +1,39 @@
+-- 092: live print v2, slice E (spec 2026-09-02 §4.5, §5).
+--
+-- The canonical send service records what WE put on the wire and what the
+-- PROVIDER said back. Two additive columns, so a send whose outcome was never
+-- learned can be reconciled by hand against the mailbox or the Resend log:
+--
+--   provider_message_id -- the RFC 5322 Message-ID we MINT before the provider
+--                          call and set on the outbound header. It is OUR id,
+--                          not a provider receipt: nodemailer echoes back the
+--                          header it was given (mime-node returns an existing
+--                          Message-ID rather than generating one), and Resend's
+--                          log shows the same string. It names the LAST ATTEMPT
+--                          on this (event, phase) -- a manual refire replaces it.
+--   provider_response   -- nodemailer's info.response, the relay's own reply
+--                          line (e.g. "250 2.0.0 OK <id>"), which is where a
+--                          provider-side identifier appears if there is one.
+--                          Written by markEmailSent; a hand-confirmed delivery
+--                          appends "; confirmed by hand <ISO now>".
+--
+-- NO new state column. `earnings_emails.error` stays the state column (the
+-- tri-state convention in docs/reference/earnings-pipeline.md §7) and gains two
+-- values, both of which live in `error` and need no schema change because that
+-- column has never carried a CHECK (see 042_earnings_emails.sql):
+--
+--   'sending'          -- the provider call is in flight; the row already carries
+--                        provider_message_id and (for a fresh claim) the prose.
+--                        A LIVE CLAIM: no reader may treat it as delivered, and
+--                        no claim may take it over -- only the reaper may move it.
+--   'delivery_unknown' -- terminal. The provider's answer was never received (our
+--                        90s deadline elapsed, the connection dropped mid-DATA,
+--                        the process died between the provider accepting and the
+--                        audit commit, or that commit itself threw -- spec §7).
+--                        DELIVERED for the purpose of blocking an automatic
+--                        resend; reconciled only by hand, with the two columns
+--                        above as the handle.
+--
+-- The full five-value table and every helper live in lib/earnings/email-states.ts.
+ALTER TABLE earnings_emails ADD COLUMN provider_message_id TEXT;
+ALTER TABLE earnings_emails ADD COLUMN provider_response TEXT;
