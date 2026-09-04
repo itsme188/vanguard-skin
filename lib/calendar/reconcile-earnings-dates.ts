@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { mergeEarningsEventState } from "@/lib/earnings/event-merge";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
+import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 
 // ── Earnings date cross-check reconciliation ────────────────────────
 //
@@ -408,6 +409,203 @@ export function repointDependentsBeforeDelete(
 
   const moved = createDependentRepointer(db)(doomed.id, target.id, target.event_date);
   return { targetId: target.id, ...moved };
+}
+
+/** One vendor row a hypothetical manual add would take off the calendar. */
+export interface DisplacedVendorRow {
+  eventId: number;
+  eventDate: string;
+  /** The vendor pipeline that owns the row: 'finnhub' | 'nasdaq' | 'wsh' | … */
+  source: string;
+  symbol: string | null;
+}
+
+export interface VendorSupersessionCheck {
+  /** True when the add displaces nothing — the caller may write. */
+  ok: boolean;
+  /** Displaced vendor rows, nearest to the proposed date first. Empty when ok. */
+  wouldSupersede: DisplacedVendorRow[];
+  /** Plain-English refusal naming the primary row; null when ok. */
+  message: string | null;
+}
+
+/** Vendor pipeline names as a person would say them. */
+const VENDOR_DISPLAY_NAMES: Record<string, string> = {
+  finnhub: "Finnhub",
+  nasdaq: "Nasdaq",
+  wsh: "Wall Street Horizon",
+};
+
+function vendorDisplayName(source: string): string {
+  return VENDOR_DISPLAY_NAMES[source.toLowerCase()] ?? source;
+}
+
+/** The id the hypothetical row carries during the dry run. Sorts LAST among
+ *  same-date rows, matching where a freshly INSERTed row's rowid puts it in the
+ *  reconciler's `ORDER BY event_date ASC` gather. */
+const HYPOTHETICAL_ROW_ID = Number.MAX_SAFE_INTEGER;
+
+/** Resolve a family's rows exactly as `reconcileEarningsDates` does, returning
+ *  the ids it would leave canonical (every other row it would supersede). */
+function canonicalIdsFor(familyRows: EarningsRow[], today: string): Set<number> {
+  const canonical = new Set<number>();
+  for (const proximityCluster of clusterByProximity(familyRows)) {
+    for (const cluster of splitReportedFromManualCluster(proximityCluster, today)) {
+      canonical.add(resolveCluster(cluster, today).canonicalId);
+    }
+  }
+  return canonical;
+}
+
+/**
+ * Would inserting this manual earnings row take a live VENDOR date off the
+ * calendar? (qa:today-earningshub-add-ticker--manual-add-silently-supersedes-
+ * vendor-date-other-week.)
+ *
+ * A manual / user_confirmed row is rung 1 of `resolveCluster`, so once the next
+ * reconcile pass runs it wins its whole cluster and every vendor row in it goes
+ * `superseded = 1` — invisible to every calendar surface, all of which filter
+ * `COALESCE(superseded,0) = 0`. That is BY DESIGN when the user is confirming
+ * this week's date; it is a surprise when the typed date lands in a different
+ * week from the vendor's (ORCL: manual Sep 2 typed, Finnhub's Sep 7 gone, no
+ * message). User ruling 2026-09-02: refuse with 409 `would_supersede_vendor` +
+ * `force`, mirroring approveLevelGuarded — the semantics once confirmed are
+ * unchanged.
+ *
+ * This is a DRY RUN of the reconciler, not a second rulebook: it gathers the
+ * issuer family, appends the hypothetical row, and re-runs the same
+ * `clusterByProximity` → `splitReportedFromManualCluster` → `resolveCluster`
+ * chain, then reports vendor rows that are canonical BEFORE the add and not
+ * after. Attribution is the reason for the before/after diff rather than a
+ * "does a vendor row exist nearby" predicate: a Nasdaq twin already losing to
+ * an agreeing Finnhub row is not the add's doing and must not be blamed on it.
+ *
+ * Scope (deliberate, all three checked in
+ * tests/calendar/manual-add-supersedes-vendor-guard.test.ts):
+ *  - earnings rows only, on both sides;
+ *  - vendor rows only (`source != 'manual'`) that are live today
+ *    (`COALESCE(superseded,0) = 0`) — a row already superseded for its own
+ *    reasons is not something this add takes away;
+ *  - DIFFERENT week only (`mondayOf` differs). A same-week add IS still a
+ *    supersession, and still the user's date winning by design — but that is
+ *    the confirm-the-date flow the form exists for, so it is never gated.
+ *
+ * Window: the reconciler's own `[today-21, today+30]`, widened to cover the
+ * proposed date's cluster the way `repointDependentsBeforeDelete` widens it. A
+ * pair parked past today's edge would otherwise pass the guard silently and be
+ * superseded a few days later, when the window rolls over them — the delay
+ * doesn't make the outcome less surprising.
+ *
+ * Read-only: no writes, no KV, safe to call before the insert.
+ */
+export function checkManualAddWouldSupersedeVendor(
+  db: Database.Database,
+  opts: {
+    symbol: string;
+    event_date: string;
+    /** Defaults to 'earnings'; anything else is not gated. */
+    event_type?: string;
+    /** ET anchor for the dry run; defaults to todayET(). */
+    today?: string;
+  },
+): VendorSupersessionCheck {
+  const clear: VendorSupersessionCheck = { ok: true, wouldSupersede: [], message: null };
+
+  const eventType = opts.event_type ?? "earnings";
+  if (eventType !== "earnings") return clear;
+
+  const symbol = opts.symbol.trim().toUpperCase();
+  const key = familyKey(symbol);
+  if (!key) return clear;
+
+  const today = opts.today ?? todayET();
+  const newDate = opts.event_date;
+  const newWeek = mondayOf(newDate);
+
+  const lo = minDate(
+    addDaysUTC(today, -GATHER_BACK_DAYS),
+    addDaysUTC(newDate, -CLUSTER_PROXIMITY_DAYS),
+  );
+  const hi = maxDate(
+    addDaysUTC(today, GATHER_FWD_DAYS),
+    addDaysUTC(newDate, CLUSTER_PROXIMITY_DAYS),
+  );
+
+  type GatheredRow = EarningsRow & { superseded: number };
+  const familyRows = (
+    db
+      .prepare(
+        `SELECT ${EARNINGS_ROW_COLUMNS}, COALESCE(superseded, 0) AS superseded
+           FROM calendar_events
+          WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
+          ORDER BY event_date ASC`,
+      )
+      .all(lo, hi) as GatheredRow[]
+  ).filter((r) => familyKey(r.symbol) === key);
+  if (familyRows.length === 0) return clear;
+
+  const hypothetical: EarningsRow = {
+    id: HYPOTHETICAL_ROW_ID,
+    source: "manual",
+    symbol,
+    event_date: newDate,
+    raw_json: null,
+    actual_value: null,
+    date_status: null,
+    consensus_estimate: null,
+    consensus_value: null,
+    reaction_snapshot: null,
+    enriched_at: null,
+    manual_actuals_at: null,
+  };
+
+  const before = canonicalIdsFor(familyRows, today);
+  const after = canonicalIdsFor(
+    [...familyRows, hypothetical].sort(
+      (a, b) => a.event_date.localeCompare(b.event_date) || a.id - b.id,
+    ),
+    today,
+  );
+
+  const displaced = familyRows
+    .filter(
+      (r) =>
+        r.source !== "manual" &&
+        r.superseded === 0 &&
+        before.has(r.id) &&
+        !after.has(r.id) &&
+        mondayOf(r.event_date) !== newWeek,
+    )
+    .sort(
+      (a, b) =>
+        daysBetween(a.event_date, newDate) - daysBetween(b.event_date, newDate) ||
+        a.event_date.localeCompare(b.event_date),
+    );
+
+  if (displaced.length === 0) return clear;
+
+  const primary = displaced[0];
+  const others =
+    displaced.length > 1
+      ? ` (and ${displaced.length - 1} other vendor row${displaced.length === 2 ? "" : "s"} for this issuer)`
+      : "";
+  // Honest about WHEN: the supersession lands on the next reconcile pass (a
+  // calendar sync / "Refresh from Finnhub"), not at the instant of the add.
+  const message =
+    `${vendorDisplayName(primary.source)} already has ${symbol} earnings on ${primary.event_date} — ` +
+    `a different week from the ${newDate} you typed. Adding your date replaces the vendor date${others} ` +
+    `at the next calendar refresh: ${primary.event_date} stops showing until you delete the row you are adding.`;
+
+  return {
+    ok: false,
+    wouldSupersede: displaced.map((r) => ({
+      eventId: r.id,
+      eventDate: r.event_date,
+      source: r.source,
+      symbol: r.symbol,
+    })),
+    message,
+  };
 }
 
 /**

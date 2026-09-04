@@ -17,7 +17,7 @@
 - **Chat** is persistent right rail on desktop ≥1280px + full-screen overlay on mobile (ChatDrawer.tsx). Toggle via header button or Cmd+J.
 - **Cmd+K** is global ticker-jump — typing a symbol routes to `/dashboard/security/[id]` (replaces the prior global-search role).
 - **Alerts** inbox is unified (`/dashboard/alerts`): fired alerts + pending newsletter-extracted levels in one auto-promoted stream. Header bell `<NotificationBell>` shows combined count; old separate `AlertsBell` + `ReviewBell` deleted.
-- **NotesAmbient** overlay (`Cmd+;` or floating FAB) is accessible from any tab; saves to localStorage drafts and posts to Notes.
+- **NotesAmbient** overlay (`⌘;`, keyboard only — the floating button was removed 2026-09-04 per QA ruling; on mobile, notes are reached through the bottom-nav "Notes" entry, i.e. the Notes page) is accessible from any tab; saves to localStorage drafts and posts to Notes.
 - **Reconciliation** merged into Accounts tab as collapsible section.
 - **Notes** renamed to **Research** (redirect from /dashboard/notes)
 - **Research** tab has 3 views: Notes (default) | Feeds | Documents (newsletter articles + uploaded PDFs). Trade Reviews relocated to Analysis sub-view in Phase 5.
