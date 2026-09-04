@@ -5,9 +5,9 @@
  * `VACUUM INTO` copy already migrated to the 089 cutover) to rehearse the
  * FINAL chain the packaged app applies on first launch after the slice C+D
  * deploy: whatever `.sql`/code migrations on disk are not yet in
- * `schema_migrations` (090 from slice C, 091 from slice D — never hardcoded
- * here per controller ruling R-D13, so the same script keeps working if the
- * pending set changes before the deploy).
+ * `schema_migrations` (090 from slice C, 091 from slice D, 092 from slice E —
+ * never hardcoded here per controller ruling R-D13, so the same script keeps
+ * working if the pending set changes before the deploy).
  *
  * Invariant under test: an ADDITIVE migration chain must not touch a single
  * byte of pre-existing data. Concretely, for every table that existed BEFORE
