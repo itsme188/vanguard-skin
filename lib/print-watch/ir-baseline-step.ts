@@ -16,6 +16,18 @@
  * already carried tonight's release, this step is what would have caught it;
  * with no baseline the watcher falls back on the strict period gate instead.
  *
+ * NEITHER DOES THIS STEP, ONCE THE WINDOW IS OPEN (C1 / ruling R-C15). Slice C
+ * gave the desk a press that ARMS the event at the print minute, and a press
+ * enqueues these steps: taking a baseline then would record TONIGHT'S release
+ * as "what the page already had", and the watcher — which seeds its seen-set
+ * from `print_watch_ir_seen` on every runtime it builds, in this process or the
+ * next one — would filter the real release out for the rest of the night while
+ * the lane read "ok — N matching links, 0 new". So the step reads the print row
+ * at RUN time and, once `effectiveWindow` has opened, completes as a no-op with
+ * a note. `done`, not `failed`: nothing went wrong and there is nothing to
+ * retry — the honest state is B's own "no baseline (armed late) — period gate
+ * filtering" fallback, which is exactly what an empty seen-set produces.
+ *
  * Registration lives in the earnings bootstrap (Task 13), NOT here: nothing in
  * this file may register at module-evaluation time, or the import cycle
  * prepare-armed-event → registry-bootstrap → print-watch → prepare-armed-event
@@ -25,7 +37,8 @@ import type Database from "better-sqlite3";
 import { hardenedFetchBytes } from "./url-fetch";
 import { redactUrl } from "./hardened-fetch";
 import { pollIrPage, isAllowedIrLinkHost } from "./ir-page-adapter";
-import { getPrintWatchSource, hasIrBaseline, recordIrBaseline } from "./store";
+import { getPrintByEventId, getPrintWatchSource, hasIrBaseline, recordIrBaseline } from "./store";
+import { effectiveWindow } from "./window";
 import { stableHash, type PrepareStepDefinition } from "@/lib/earnings/prepare-armed-event";
 
 export const IR_BASELINE_STEP_NAME = "ir_baseline";
@@ -87,6 +100,24 @@ export function buildIrBaselineStep(
       const fingerprint = irBaselineFingerprint(source.ir_page_url);
       if (hasIrBaseline(db, eventId, fingerprint)) {
         return { status: "done", note: "baseline already recorded" };
+      }
+
+      // [R-C15] The window is read from the ROW, here, not from anything
+      // captured when the step was enqueued: the press that arms an event
+      // stamps `forced_open_at` in the same transaction that enqueues these
+      // steps, and a press in ANOTHER process is a row this one has not seen
+      // yet either. `now >= startMs` rather than "contains now" on purpose — a
+      // window that has already CLOSED has had tonight's release on the page
+      // for even longer, and a baseline taken then would blind the extension or
+      // the re-press that follows it. RESIDUAL: an event armed from the
+      // worksheet (no press) whose print row `ensurePrintWatch` has not created
+      // yet has no window to read, and baselines as before — that is B's
+      // original arm path, and the press path (the one that arms AT the print)
+      // always writes the print row and the stamp before these steps run.
+      const print = getPrintByEventId(db, eventId);
+      const window = print ? effectiveWindow(print) : null;
+      if (window && ctx.now() >= window.startMs) {
+        return { status: "done", note: "window already open — no baseline possible" };
       }
 
       let irHost: string;

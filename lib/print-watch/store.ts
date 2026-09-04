@@ -14,6 +14,8 @@ import type {
   IrBaselineRow,
   PrintWatchSourceRow,
   TaggedCandidate,
+  GoInputKind,
+  GoRequestRow,
 } from "./types";
 
 const LEASE_SETTINGS_KEY = "print_watch_lease";
@@ -691,4 +693,246 @@ export function hasIrBaseline(db: Database.Database, eventId: number, sourceFing
       )
       .get(eventId, sourceFingerprint) !== undefined
   );
+}
+
+// ---------------------------------------------------------------------------
+// slice C (migration 090): forced window + go requests
+//
+// Timestamps on these columns are ISO-8601 UTC strings written by CODE
+// (`toISOString()`), never `datetime('now')` text — the window arithmetic
+// (extend, stale-claim math) happens in JS against `nowMs`. SQL comparisons
+// against them use `datetime()` on BOTH sides (repo rule) so a stored ISO
+// string and a `datetime(?)`-bound parameter compare as the same instant
+// regardless of literal formatting.
+// ---------------------------------------------------------------------------
+
+// `GO_CLAIM_STALE_MS` is 60_000ms, but every staleness comparison below wraps
+// both sides in SQLite's `datetime()`, which compares at ONE-SECOND
+// resolution (fractional seconds are truncated away). The effective stale
+// window is therefore 60-61s, not exactly 60s — a claim made at `t0` is not
+// yet stale at `t0 + 60.999s` and is stale at `t0 + 61.000s`. Test fixtures
+// against these predicates need >=1s margins, not millisecond ones (review
+// finding #7 — this cost two test failures during Task 1's own TDD pass).
+export const GO_CLAIM_STALE_MS = 60_000;
+export const GO_MAX_ATTEMPTS = 3;
+
+export function getPrintById(db: Database.Database, printId: number): PrintRow | null {
+  const row = db.prepare(`SELECT * FROM print_watch_prints WHERE id = ?`).get(printId) as PrintRow | undefined;
+  return row ?? null;
+}
+
+/** The FIRST go press stamps; every later press reads the stamp back (spec
+ *  §9 ruling 2: "the first go stamps once … a repeat press never extends").
+ *  Returns null for an unknown print id (never throws — review finding #3),
+ *  so a caller can map it to a domain error instead of an opaque 500. */
+export function stampForcedOpen(db: Database.Database, printId: number, nowIso: string): string | null {
+  const updated = db
+    .prepare(
+      `UPDATE print_watch_prints SET forced_open_at = COALESCE(forced_open_at, ?), updated_at = datetime('now') WHERE id = ?`,
+    )
+    .run(nowIso, printId);
+  if (updated.changes === 0) return null; // no print with this id
+  const row = db.prepare(`SELECT forced_open_at FROM print_watch_prints WHERE id = ?`).get(printId) as {
+    forced_open_at: string;
+  };
+  return row.forced_open_at;
+}
+
+/** Writes `untilIso` verbatim — it does NOT enforce "an extension never
+ *  lowers the end" (spec: every press writes `max(now, current end) + 30m`);
+ *  that max() is the CALLER's obligation (review finding #4). A caller
+ *  passing an earlier instant than the current `window_extended_until` will
+ *  silently shorten a live window. */
+export function extendPrintWindow(db: Database.Database, printId: number, untilIso: string): void {
+  db.prepare(
+    `UPDATE print_watch_prints SET window_extended_until = ?, updated_at = datetime('now') WHERE id = ?`,
+  ).run(untilIso, printId);
+}
+
+export function insertGoRequest(
+  db: Database.Database,
+  req: {
+    printId: number;
+    inputKind: GoInputKind;
+    inputUrl: string | null;
+    inputSha256: string | null;
+    inputBytesPath: string | null;
+    requestedAt: string;
+  },
+): number {
+  const r = db
+    .prepare(
+      `INSERT INTO print_watch_go_requests (print_id, status, requested_at, input_kind, input_url, input_sha256, input_bytes_path)
+       VALUES (?, 'queued', ?, ?, ?, ?, ?)`,
+    )
+    .run(req.printId, req.requestedAt, req.inputKind, req.inputUrl, req.inputSha256, req.inputBytesPath);
+  return Number(r.lastInsertRowid);
+}
+
+export function getGoRequest(db: Database.Database, id: number): GoRequestRow | null {
+  const row = db.prepare(`SELECT * FROM print_watch_go_requests WHERE id = ?`).get(id) as GoRequestRow | undefined;
+  return row ?? null;
+}
+
+export function latestGoRequest(db: Database.Database, printId: number): GoRequestRow | null {
+  const row = db
+    .prepare(`SELECT * FROM print_watch_go_requests WHERE print_id = ? ORDER BY id DESC LIMIT 1`)
+    .get(printId) as GoRequestRow | undefined;
+  return row ?? null;
+}
+
+/** queued, or claimed with a stale claim, with attempts left. `datetime()` on
+ *  both sides per the repo rule (Codex round 1 finding #6): the stored value
+ *  is an ISO string written by code, not a `datetime('now')` text value, so a
+ *  bare string compare against the bound stale-cutoff parameter would be
+ *  comparing two different textual shapes rather than the same instant. */
+const GO_TAKEABLE_SQL = `(status = 'queued' OR (status = 'claimed' AND datetime(claimed_at) < datetime(?))) AND attempts < ${GO_MAX_ATTEMPTS}`;
+
+/** queued, or claimed with a stale claim, with attempts left — oldest first. */
+export function listTakeableGoRequests(db: Database.Database, nowMs: number): GoRequestRow[] {
+  const stale = new Date(nowMs - GO_CLAIM_STALE_MS).toISOString();
+  return db
+    .prepare(`SELECT * FROM print_watch_go_requests WHERE ${GO_TAKEABLE_SQL} ORDER BY id ASC`)
+    .all(stale) as GoRequestRow[];
+}
+
+/** Compare-and-set claim: returns true when THIS token now owns the row;
+ *  increments attempts. Mirrors `claimDocumentParse`'s CAS shape above. */
+export function claimGoRequest(db: Database.Database, id: number, token: string, nowMs: number): boolean {
+  const stale = new Date(nowMs - GO_CLAIM_STALE_MS).toISOString();
+  const r = db
+    .prepare(
+      `UPDATE print_watch_go_requests
+          SET status = 'claimed', claim_token = ?, claimed_at = ?, attempts = attempts + 1
+        WHERE id = ? AND ${GO_TAKEABLE_SQL}`,
+    )
+    .run(token, new Date(nowMs).toISOString(), id, stale);
+  return r.changes === 1;
+}
+
+/** Heartbeat: renews claimed_at under the token so a long phase (a PDF ingest
+ *  with model calls) is never mistaken for an abandoned claim. False = the
+ *  token no longer owns the row — the caller must stop. */
+export function heartbeatGoRequest(db: Database.Database, id: number, token: string, nowMs: number): boolean {
+  const r = db
+    .prepare(
+      `UPDATE print_watch_go_requests SET claimed_at = ? WHERE id = ? AND status = 'claimed' AND claim_token = ?`,
+    )
+    .run(new Date(nowMs).toISOString(), id, token);
+  return r.changes === 1;
+}
+
+/** An ordinary failure below the cap: back to queued (attempts kept, partial
+ *  reports kept) so the next dispatcher tick retries. Clears `claimed_at`
+ *  alongside `claim_token` — matching `finalizeDocumentParse`'s sibling CAS
+ *  above — so a queued row never carries a stale claim timestamp that a
+ *  future query might read without also checking `status` (review #8). */
+export function requeueGoRequest(db: Database.Database, id: number, token: string, resultJson: string): boolean {
+  const r = db
+    .prepare(
+      `UPDATE print_watch_go_requests SET status = 'queued', claim_token = NULL, claimed_at = NULL, result_json = ?
+        WHERE id = ? AND status = 'claimed' AND claim_token = ?`,
+    )
+    .run(resultJson, id, token);
+  return r.changes === 1;
+}
+
+/** CAS finalise: false when the token no longer owns the row (taken over).
+ *  Clears `claimed_at` alongside `claim_token` (review #8), matching
+ *  `finalizeDocumentParse`'s sibling CAS above. */
+export function finalizeGoRequest(
+  db: Database.Database,
+  id: number,
+  token: string,
+  status: "done" | "failed",
+  resultJson: string,
+  nowMs: number,
+): boolean {
+  const r = db
+    .prepare(
+      `UPDATE print_watch_go_requests
+          SET status = ?, result_json = ?, finished_at = ?, claim_token = NULL, claimed_at = NULL
+        WHERE id = ? AND status = 'claimed' AND claim_token = ?`,
+    )
+    .run(status, resultJson, new Date(nowMs).toISOString(), id, token);
+  return r.changes === 1;
+}
+
+/** Rows that have spent their attempts — a stale claim OR a requeued row at
+ *  the cap — become `failed`; nothing else could ever finalise them (spec:
+ *  "stale claims that have spent their attempts become failed"). */
+export function failCappedGoRequests(db: Database.Database, nowMs: number): number {
+  const stale = new Date(nowMs - GO_CLAIM_STALE_MS).toISOString();
+  const r = db
+    .prepare(
+      `UPDATE print_watch_go_requests
+          SET status = 'failed', finished_at = ?, claim_token = NULL,
+              result_json = COALESCE(result_json, '[{"road":"system","outcome":"failed","detail":"abandoned at the attempt cap"}]')
+        WHERE attempts >= ${GO_MAX_ATTEMPTS} AND (status = 'queued' OR (status = 'claimed' AND datetime(claimed_at) < datetime(?)))`,
+    )
+    .run(new Date(nowMs).toISOString(), stale);
+  return r.changes;
+}
+
+/** Prints whose FORCED window is live right now, whatever their event date —
+ *  ensurePrintWatch runs these beside the ±1-day armed set (finding #18). The
+ *  4-hour lookback is a backstop only: forced opens and their extensions are
+ *  meant to be closed out (expired/parsed/disarmed) well inside that span; it
+ *  exists so a crashed sweep does not lose track of a print stamped just
+ *  before it went down. */
+export function listForcedLivePrints(db: Database.Database, nowMs: number): PrintRow[] {
+  const since = new Date(nowMs - 4 * 60 * 60_000).toISOString();
+  return db
+    .prepare(
+      `SELECT * FROM print_watch_prints
+        WHERE forced_open_at IS NOT NULL AND datetime(forced_open_at) >= datetime(?) AND state NOT IN ('disarmed')`,
+    )
+    .all(since) as PrintRow[];
+}
+
+/** Merge support (slice C's event-merge handler): go rows follow the surviving
+ *  print, and any IN-FLIGHT claim on a donor row is invalidated (status →
+ *  queued, token cleared, attempts kept) rather than carried over — the old
+ *  worker's next token check against the (now repointed) row fails, and the
+ *  dispatcher picks the request back up against the target print on its next
+ *  tick (finding #8). The forced stamp keeps the EARLIEST press and the
+ *  extension the LATEST end, so a merge can only widen what the desk already
+ *  opened.
+ *
+ *  Runs as two UPDATEs plus two reads, NOT wrapped in its own transaction
+ *  (review #9): the caller MUST invoke this from inside the merge
+ *  transaction (slice B's event-merge handler already does), so a crash
+ *  mid-call rolls back everything together rather than leaving go rows
+ *  repointed with the forced/extension carry unapplied. */
+export function movePrintGoState(
+  db: Database.Database,
+  donorPrintId: number,
+  targetPrintId: number,
+): { moved: number; forcedOpenAt: string | null; windowExtendedUntil: string | null } {
+  const moved = db
+    .prepare(
+      `UPDATE print_watch_go_requests
+          SET print_id = ?,
+              status = CASE WHEN status = 'claimed' THEN 'queued' ELSE status END,
+              claim_token = CASE WHEN status = 'claimed' THEN NULL ELSE claim_token END
+        WHERE print_id = ?`,
+    )
+    .run(targetPrintId, donorPrintId).changes;
+  const donor = getPrintById(db, donorPrintId);
+  const target = getPrintById(db, targetPrintId);
+  if (!donor || !target) {
+    return {
+      moved,
+      forcedOpenAt: target?.forced_open_at ?? null,
+      windowExtendedUntil: target?.window_extended_until ?? null,
+    };
+  }
+  const forced = [donor.forced_open_at, target.forced_open_at].filter((v): v is string => v !== null).sort()[0] ?? null;
+  const extended =
+    [donor.window_extended_until, target.window_extended_until].filter((v): v is string => v !== null).sort().at(-1) ??
+    null;
+  db.prepare(
+    `UPDATE print_watch_prints SET forced_open_at = ?, window_extended_until = ?, updated_at = datetime('now') WHERE id = ?`,
+  ).run(forced, extended, targetPrintId);
+  return { moved, forcedOpenAt: forced, windowExtendedUntil: extended };
 }

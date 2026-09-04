@@ -16,6 +16,8 @@ import {
   listIrSeenLinks,
   hasIrBaseline,
   getIrBaseline,
+  upsertPrint,
+  stampForcedOpen,
 } from "@/lib/print-watch/store";
 import {
   buildIrBaselineStep,
@@ -37,6 +39,17 @@ const BASELINED_LINK = "https://ir.acme.example/news/acme-q2-2026-results";
 function ctx(signal: AbortSignal = new AbortController().signal): PrepareStepContext {
   return { now: () => 0, signal };
 }
+
+/** The same context at a NAMED instant — what the window guard reads. */
+function ctxAt(nowMs: number, signal: AbortSignal = new AbortController().signal): PrepareStepContext {
+  return { now: () => nowMs, signal };
+}
+
+// The seeded event is 2026-09-10 (EDT, UTC−4). An AMC release at 16:15 ET is
+// 20:15Z, so the scheduled window opens at 20:05Z.
+const RELEASE_TIME_ET = "16:15";
+const BEFORE_WINDOW_MS = Date.parse("2026-09-10T12:00:00Z"); // 08:00 ET — hours early
+const PRESS_MS = Date.parse("2026-09-10T20:06:00Z"); // 16:06 ET — a minute past the print
 
 function server(
   body: string,
@@ -272,5 +285,88 @@ describe("ir_baseline prepare step", () => {
       status: "pending",
     });
     expect(fetchBytes).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * C1 / ruling R-C15 — a press that ARMS the event at the print minute enqueues
+ * these steps, and the page it would baseline already carries tonight's
+ * release. Recording that link as `baseline = 1` is durable and silent: every
+ * runtime the watcher builds seeds `seenIrLinks` from `print_watch_ir_seen`,
+ * so the release is filtered out of every poll for the rest of the night while
+ * the lane reads "ok — N matching links, 0 new".
+ */
+describe("ir_baseline × an already-open window", () => {
+  /** The page a newsroom serves once the release is posted. */
+  const LIVE_PAGE = PAGE;
+
+  function seedPress(nowMs: number): number {
+    const printId = upsertPrint(db, eventId, "ACME", "2026-09-10", RELEASE_TIME_ET);
+    stampForcedOpen(db, printId, new Date(nowMs).toISOString());
+    return printId;
+  }
+
+  it("a press from ANOTHER process records no baseline, so the lane still sees tonight's link", async () => {
+    upsertPrintWatchSource(db, { symbol: "ACME", irPageUrl: URL1, linkMustContain: null });
+    // The press happened on :3000; this process (the lease owner's prepare
+    // pass) only ever sees the ROW it left behind.
+    seedPress(PRESS_MS);
+
+    const fetchBytes = vi.fn(server(LIVE_PAGE, URL1));
+    await expect(buildIrBaselineStep({ fetchBytes }).run(db, eventId, ctxAt(PRESS_MS))).resolves.toEqual({
+      status: "done",
+      note: "window already open — no baseline possible",
+    });
+
+    // Nothing fetched, nothing recorded, no marker — a runtime built after
+    // this seeds an EMPTY seen-set and the period gate does the filtering.
+    expect(fetchBytes).not.toHaveBeenCalled();
+    expect(listIrSeenLinks(db, eventId)).toEqual([]);
+    expect(getIrBaseline(db, eventId)).toBeNull();
+    expect(hasIrBaseline(db, eventId, stableHash([URL1]))).toBe(false);
+  });
+
+  it("the same press hours BEFORE the window still baselines (the pre-window arm is unchanged)", async () => {
+    upsertPrintWatchSource(db, { symbol: "ACME", irPageUrl: URL1, linkMustContain: null });
+    // Armed in the morning: a print row and a scheduled release still hours
+    // away, no forced stamp. Whatever is on the page now IS history.
+    upsertPrint(db, eventId, "ACME", "2026-09-10", RELEASE_TIME_ET);
+
+    const fetchBytes = vi.fn(server(PAGE, URL1));
+    await expect(
+      buildIrBaselineStep({ fetchBytes }).run(db, eventId, ctxAt(BEFORE_WINDOW_MS)),
+    ).resolves.toEqual({ status: "done", note: "1 link(s) baselined" });
+    expect(listIrSeenLinks(db, eventId)).toEqual([{ link: BASELINED_LINK, baseline: true }]);
+    expect(hasIrBaseline(db, eventId, stableHash([URL1]))).toBe(true);
+  });
+
+  it("the in-process race: a stamp written between enqueue and run is honoured (the row is read at RUN time)", async () => {
+    upsertPrintWatchSource(db, { symbol: "ACME", irPageUrl: URL1, linkMustContain: null });
+    upsertPrint(db, eventId, "ACME", "2026-09-10", RELEASE_TIME_ET);
+
+    const fetchBytes = vi.fn(server(LIVE_PAGE, URL1));
+    const step = buildIrBaselineStep({ fetchBytes });
+    // The runner fingerprints the row when it enqueues/claims it…
+    expect(step.fingerprint(db, eventId)).toBe(stableHash([URL1]));
+    // …and the press lands in the gap before the invocation actually runs.
+    seedPress(PRESS_MS);
+
+    await expect(step.run(db, eventId, ctxAt(PRESS_MS + 500))).resolves.toEqual({
+      status: "done",
+      note: "window already open — no baseline possible",
+    });
+    expect(fetchBytes).not.toHaveBeenCalled();
+    expect(listIrSeenLinks(db, eventId)).toEqual([]);
+  });
+
+  it("a window that has already CLOSED never baselines either (an extension or a re-press would inherit it)", async () => {
+    upsertPrintWatchSource(db, { symbol: "ACME", irPageUrl: URL1, linkMustContain: null });
+    seedPress(PRESS_MS);
+    const fetchBytes = vi.fn(server(LIVE_PAGE, URL1));
+    // Three hours after the press: forced + 90m is long past.
+    await expect(
+      buildIrBaselineStep({ fetchBytes }).run(db, eventId, ctxAt(PRESS_MS + 3 * 60 * 60_000)),
+    ).resolves.toEqual({ status: "done", note: "window already open — no baseline possible" });
+    expect(listIrSeenLinks(db, eventId)).toEqual([]);
   });
 });

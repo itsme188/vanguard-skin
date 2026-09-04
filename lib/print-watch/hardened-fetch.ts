@@ -123,6 +123,30 @@ async function readCapped(
 }
 
 /**
+ * Give back a response this function is walking away from without reading.
+ *
+ * Every early exit below (each redirect hop, the hop cap, a missing Location,
+ * a cross-host refusal, a non-2xx, a wrong content-type, an over-cap
+ * content-length) used to drop `res` with its body still open. That keeps the
+ * socket, and — when the request came through `AcquisitionScheduler.fetchFor`,
+ * which holds the host family's concurrency slot until the body closes — it
+ * kept the slot too: two ordinary "not posted yet" EDGAR 404s took both SEC
+ * slots and stalled the lane for the scheduler's two-minute watchdog, starting
+ * at the moment a filing landed. Cancelling runs the wrapper stream's cancel
+ * synchronously, so the slot is back before this call returns.
+ *
+ * Never throws: a body that is already errored, locked or consumed needs no
+ * cancelling, and nothing here may change the error the caller is about to see.
+ */
+function discardBody(res: Response): void {
+  try {
+    void res.body?.cancel().catch(() => {});
+  } catch {
+    // Already locked or errored — nothing to give back.
+  }
+}
+
+/**
  * Fetch `url` as text, refusing to leave `opts.host` and refusing to read an
  * oversized or wrong-shaped body. See the module header for the full contract.
  */
@@ -149,10 +173,14 @@ export async function hardenedFetchText(
     });
     if (res.status < 300 || res.status >= 400) break;
 
+    // A redirect is read for its Location header and nothing else, so the body
+    // goes back here — once, covering every way out of this hop below.
+    const location = res.headers.get("location");
+    discardBody(res);
+
     if (hop >= maxRedirects) {
       throw new Error(`${label}: exceeded ${maxRedirects} redirect hops fetching ${redactUrl(url)}`);
     }
-    const location = res.headers.get("location");
     if (!location) {
       throw new Error(
         `${label}: redirect ${res.status} with no Location header for ${redactUrl(currentUrl)}`,
@@ -168,16 +196,19 @@ export async function hardenedFetchText(
   }
 
   if (res.status < 200 || res.status >= 300) {
+    discardBody(res);
     throw new Error(`${label}: HTTP ${res.status} for ${redactUrl(currentUrl)}`);
   }
 
   const contentType = res.headers.get("content-type") ?? "";
   if (!opts.contentType.test(contentType)) {
+    discardBody(res);
     throw new Error(`${label}: unexpected content-type "${contentType}" for ${redactUrl(currentUrl)}`);
   }
 
   const contentLength = res.headers.get("content-length");
   if (contentLength && Number(contentLength) > capBytes) {
+    discardBody(res);
     throw new Error(
       `${label}: content-length ${contentLength} exceeds ${capBytes}-byte cap for ${redactUrl(currentUrl)}`,
     );

@@ -11,9 +11,10 @@
 // back to an inline literal replica of the same data otherwise, so the test
 // is deterministic in any checkout.
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { getEventListeners } from "node:events";
 import {
   pollDjNews,
   createDjPollState,
@@ -126,6 +127,32 @@ class FakeIBApi implements IBApiLike {
   responsesByCall: RawEvent[][] = [];
   /** articleIds that should emit an `error` event instead of `newsArticle`, simulating a fetch failure. */
   failingArticleIds = new Set<string>();
+  /** articleIds that NEVER settle — no `newsArticle`, no `error`, ever. Used to
+   *  prove `reqNewsArticleOnce`'s OWN abort race (fix round 1, review finding
+   *  I1): with this set, the fake genuinely never answers, so the only thing
+   *  that can settle the request is the helper's abort listener or the 25s
+   *  timeout — unlike a fake that always answers on a microtask, where the
+   *  loop-level `throwIfAborted` between iterations could produce the same
+   *  observable rejection for the wrong reason. */
+  neverAnswerArticleIds = new Set<string>();
+  /** When set, `reqHistoricalNews`/`reqNewsArticle` throws this SYNCHRONOUSLY
+   *  (fix round 1, review finding M1) instead of scheduling a response. */
+  throwOnHistoricalNews: Error | null = null;
+  throwOnNewsArticle: Error | null = null;
+  /** Cancellation test hooks (Task 4) — fired SYNCHRONOUSLY so a test can flip
+   *  an AbortController exactly when a request has been placed (listeners —
+   *  including the production code's abort listener — already attached) or
+   *  exactly after one has settled, without racing microtask timing. */
+  onHistoricalNewsRequested?: () => void;
+  onArticleRequested?: (articleId: string) => void;
+  onArticleSettled?: (articleId: string) => void;
+
+  /** Test introspection only — how many listeners the fake is currently
+   *  holding for `event` (used to assert no leak after a synchronous throw,
+   *  fix round 1 M1). */
+  listenerCount(event: string): number {
+    return (this.listeners.get(event) ?? []).length;
+  }
 
   on(event: string, listener: Listener): void {
     const list = this.listeners.get(event) ?? [];
@@ -155,6 +182,8 @@ class FakeIBApi implements IBApiLike {
     totalResults: number,
   ): void {
     this.historicalNewsCalls.push({ conId, providerCodes, startDateTime, endDateTime });
+    this.onHistoricalNewsRequested?.();
+    if (this.throwOnHistoricalNews) throw this.throwOnHistoricalNews;
     const callIndex = this.historicalNewsCalls.length;
     const events = this.responsesByCall[callIndex - 1] ?? [];
     queueMicrotask(() => {
@@ -167,12 +196,17 @@ class FakeIBApi implements IBApiLike {
 
   reqNewsArticle(reqId: number, providerCode: string, articleId: string): void {
     this.newsArticleCalls.push(articleId);
+    this.onArticleRequested?.(articleId);
+    if (this.throwOnNewsArticle) throw this.throwOnNewsArticle;
+    if (this.neverAnswerArticleIds.has(articleId)) return; // genuinely never settles
     queueMicrotask(() => {
       if (this.failingArticleIds.has(articleId)) {
         this.emit("error", new Error(`simulated fetch failure for ${articleId}`), 162, reqId);
+        this.onArticleSettled?.(articleId);
         return;
       }
       this.emit("newsArticle", reqId, 0, `BODY[${articleId}]`);
+      this.onArticleSettled?.(articleId);
     });
   }
 }
@@ -530,5 +564,176 @@ describe("pollDjNews", () => {
 
     expect(out.completedReleases).toEqual([]);
     expect(state.partGroups.size).toBe(2);
+  });
+
+  // -------------------------------------------------------------------
+  // Task 4 (slice C): pollDjNews honours a trailing, optional AbortSignal —
+  // checked before the historical-news request and before each article-body
+  // fetch, and raced INSIDE both TWS request helpers so an abort mid-flight
+  // (request already placed, no response yet) rejects immediately rather
+  // than waiting out the 25s TWS timeout. Reuses this file's own FakeIBApi
+  // (extended with three synchronous cancellation hooks) and the ACME
+  // 2-part fixture already defined above — no second fake.
+  // -------------------------------------------------------------------
+  describe("pollDjNews — cancellation", () => {
+    it("throws AbortError before the historical-news request when the signal is already aborted, touching no state", async () => {
+      api.responsesByCall = [[]];
+      const ac = new AbortController();
+      ac.abort();
+
+      await expect(
+        pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0, ac.signal),
+      ).rejects.toMatchObject({ name: "AbortError" });
+
+      expect(api.historicalNewsCalls).toHaveLength(0);
+      expect(state.seenArticleIds.size).toBe(0);
+      expect(state.partGroups.size).toBe(0);
+    });
+
+    it("throws AbortError between article fetches and leaves the part group retryable", async () => {
+      // Poll 1 creates the 2-part Acme group; poll 2 (+30s, no growth) hits
+      // quiescence and starts fetching bodies — abort right after the first
+      // part's body is delivered, before the second is ever requested.
+      api.responsesByCall = [acmeEvents(), []];
+      await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
+
+      const ac = new AbortController();
+      api.onArticleSettled = (id) => {
+        if (id === ACME_PARTS[0].articleId) ac.abort();
+      };
+
+      await expect(
+        pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 30_000, ac.signal),
+      ).rejects.toMatchObject({ name: "AbortError" });
+
+      expect(api.newsArticleCalls).toEqual([ACME_PARTS[0].articleId]);
+      const group = [...state.partGroups.values()].find((g) => g.articleIds.includes(ACME_PARTS[0].articleId));
+      expect(group?.articleIds.length).toBe(2); // still there for the next poll
+      expect(state.seenArticleIds.size).toBe(0); // nothing retired
+    });
+
+    it("without a signal the behaviour is unchanged (one call, both parts stitched)", async () => {
+      api.responsesByCall = [acmeEvents(), []];
+      await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
+      const out = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 30_000);
+
+      expect(out.completedReleases).toHaveLength(1);
+      expect(out.completedReleases[0].stitchedText).toBe(
+        ACME_PARTS.map((p) => `BODY[${p.articleId}]`).join("\n\n"),
+      );
+    });
+
+    // Codex round 1, finding #10: the helpers themselves must race the
+    // signal, not just the loop-level check between iterations — otherwise
+    // an abort that lands WHILE a request is outstanding (not between two
+    // requests) would still wait out the 25s TWS timeout.
+    it("a historical-news request that never answers rejects the moment the signal aborts (fake timers; no 25s wait)", async () => {
+      vi.useFakeTimers();
+      try {
+        const ac = new AbortController();
+        api.onHistoricalNewsRequested = () => ac.abort();
+        api.responsesByCall = [[]];
+
+        await expect(
+          pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0, ac.signal),
+        ).rejects.toMatchObject({ name: "AbortError" });
+
+        expect(api.historicalNewsCalls).toHaveLength(1); // the request WAS placed
+        expect(state.partGroups.size).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Fix round 1, review finding I1: the fake used to keep answering on a
+    // microtask even after the abort hook fired, so this test passed
+    // identically with `reqNewsArticleOnce`'s own abort listener deleted —
+    // the loop-level `throwIfAborted` between iterations alone satisfied
+    // every assertion. `neverAnswerArticleIds` makes the request GENUINELY
+    // never settle, so the ONLY thing that can reject this promise (short of
+    // the real 25s TWS timeout, which fake timers never advance to) is the
+    // helper's own `signal` listener — the thing amendment #1 actually added.
+    it("a news-article request that never answers rejects the moment the signal aborts (fake timers; no 25s wait)", async () => {
+      vi.useFakeTimers();
+      try {
+        api.responsesByCall = [acmeEvents(), []];
+        await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
+
+        api.neverAnswerArticleIds.add(ACME_PARTS[0].articleId);
+        const ac = new AbortController();
+        api.onArticleRequested = (id) => {
+          if (id === ACME_PARTS[0].articleId) ac.abort();
+        };
+
+        await expect(
+          pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 30_000, ac.signal),
+        ).rejects.toMatchObject({ name: "AbortError" });
+
+        expect(api.newsArticleCalls).toEqual([ACME_PARTS[0].articleId]);
+        const group = [...state.partGroups.values()].find((g) => g.articleIds.includes(ACME_PARTS[0].articleId));
+        expect(group?.articleIds.length).toBe(2);
+        expect(state.seenArticleIds.size).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Fix round 1, review finding M1: a synchronous throw from the raw IBApi
+    // call must not skip cleanup() — otherwise the 25s timer, the TWS
+    // listeners, and (new with this change) the abort listener on the
+    // caller's signal would all leak past the settled promise.
+    it("cleans up the timer and TWS/abort listeners when ib.reqHistoricalNews throws synchronously (M1)", async () => {
+      vi.useFakeTimers();
+      try {
+        const boom = new Error("synchronous TWS failure");
+        api.throwOnHistoricalNews = boom;
+        api.responsesByCall = [[]];
+        const ac = new AbortController(); // never aborted — this is a plain-throw test
+
+        expect(vi.getTimerCount()).toBe(0);
+        await expect(
+          pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0, ac.signal),
+        ).rejects.toBe(boom);
+
+        expect(vi.getTimerCount()).toBe(0); // the 25s timer was cleared, not leaked
+        expect(api.listenerCount("historicalNews")).toBe(0);
+        expect(api.listenerCount("historicalNewsEnd")).toBe(0);
+        expect(api.listenerCount("error")).toBe(0);
+        expect(getEventListeners(ac.signal, "abort")).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cleans up the timer and TWS/abort listeners when ib.reqNewsArticle throws synchronously (M1)", async () => {
+      vi.useFakeTimers();
+      try {
+        // Build the 2-part Acme group first so the second poll's quiescence
+        // sweep actually reaches the reqNewsArticle call.
+        api.responsesByCall = [acmeEvents(), []];
+        await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
+
+        const boom = new Error("synchronous TWS failure");
+        api.throwOnNewsArticle = boom;
+        const ac = new AbortController();
+
+        expect(vi.getTimerCount()).toBe(0);
+        // Not an AbortError, so the part-loop's catch swallows it (same as
+        // any other fetch failure) and leaves the group retryable — the poll
+        // RESOLVES, it does not reject.
+        const out = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 30_000, ac.signal);
+        expect(out.completedReleases).toEqual([]);
+
+        expect(vi.getTimerCount()).toBe(0);
+        expect(api.listenerCount("newsArticle")).toBe(0);
+        expect(api.listenerCount("error")).toBe(0);
+        expect(getEventListeners(ac.signal, "abort")).toHaveLength(0);
+
+        const group = [...state.partGroups.values()].find((g) => g.articleIds.includes(ACME_PARTS[0].articleId));
+        expect(group?.articleIds.length).toBe(2); // untouched — retryable next poll
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
