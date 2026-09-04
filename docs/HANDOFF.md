@@ -38,6 +38,16 @@ Post-deploy health: app serving on 127.0.0.1:3099, startup sync completed in 200
 - **Rejected:** committing the IBKR statement before fixing the parser (would have written a five-figure-magnitude foreign-currency row into the ledger as dollars); importing through the packaged app after the fix (it bundles its own `lib/`, so it would have used the old parser — the route's exact lib sequence was driven from a repo-root tsx script instead); a blanket `workers/**` bundle exclusion.
 - **Left open, with a decision needed on the third:** the sibling currency loops above; a position whose tax-lot quantity exceeds every statement's holding since July, meaning a historical sale is missing from the ledger; and bond accrued interest, which sits inside lot cost basis and proceeds because `netLegDollars` takes lot dollars from `amount` while the canonical row carries dirty cash with a clean price — so bond realized figures differ from the statement's by exactly the accrued leg. Tax exports are already marker-gated NOT-FOR-FILING, so none of this is user-visible as filing data.
 
+### Carried forward from the parallel session (do not lose — this file was overwritten after their close)
+
+The live-print-v2 slice C/D session closed at `92774f4c` and then recorded three user decisions at `c1c45f4f`, 8 minutes before this handoff overwrote the file. Preserved here because they are decisions, not narrative:
+
+- **R-D21 CONFIRMED by the user on 2026-09-04 to stand as built**, to be revisited only when slice F builds out the hub: facts are accepted-only, so the parse hook always found none; slice B's accept route now schedules the read, making the first read follow the desk's FIRST ACCEPT within seconds.
+- **Both disputed Codex findings confirmed by the user on 2026-09-04:** #20 bogeys, actuals and deltas render as public market data with parity to the existing sheet rather than blanket masking; #26 no fake-model seam ships in production code, so the sandbox does one real model call instead.
+- **Nightly-QA PRs #64 / #65 are PARKED by decision** until after the slice merges (recorded in TODO.md, which survives intact).
+
+Full slice C/D detail — files, per-branch test counts, rulings R-C4..R-C19 and R-D1..R-D37 — is in `92774f4c`; `git show 92774f4c:docs/HANDOFF.md`.
+
 ## 4. Uncommitted changes / live-process state (after the deploy)
 
 `main` clean at `2c75754c` and pushed; the working tree has no modified files. The desktop app is the **2026-09-04 16:22 ET build** (previously 2026-09-03 10:41) and is running on 127.0.0.1:3099. Migration state is 088; **089 has not been applied and must still go through `scripts/migrate-089-document-identity.ts --live`.**
