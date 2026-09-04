@@ -46,6 +46,10 @@ import { acquisitionScheduler } from "@/lib/print-watch/scheduler";
 import { FORCED_PRE_MS } from "@/lib/print-watch/window";
 import { formatTwsDateTime } from "@/lib/print-watch/dj-adapter";
 import type { FetchLike } from "@/lib/print-watch/hardened-fetch";
+import { redactUrl } from "@/lib/print-watch/hardened-fetch";
+// The REAL in-flight cancellation shape: `hardenedFetchBytes` maps every caller
+// abort to this, not to an `AbortError` (re-review N1).
+import { UrlFetchRefused } from "@/lib/print-watch/url-fetch";
 import {
   textPathFor,
   PdfEncryptedError,
@@ -1501,7 +1505,11 @@ describe("IR page lane", () => {
   // newsroom is the one that gets cut — and three cancelled polls would retire
   // TONIGHT'S link permanently, with the lane reporting "1 link(s) retired
   // after 3 refusals" and no way back.
-  it("a road cancellation never charges the link's refusal budget (M6)", async () => {
+  //
+  // A cancellation reaches the lane as TWO different shapes (re-review N1), so
+  // both are driven through the same walk: the error's name cannot be the test
+  // of whether the road was cancelled — the road's own signal is.
+  async function cancellationCostsNoStrike(cancelled: (url: string) => Error): Promise<void> {
     const { eventId } = seedAcme();
     upsertPrintWatchSource(db, { symbol: "ACME", irPageUrl: IR_URL, linkMustContain: null });
     recordIrBaseline(db, eventId, FP, [OLD_LINK]);
@@ -1513,7 +1521,7 @@ describe("IR page lane", () => {
         // Settles only when the road's own timer (or the pass end) fires —
         // exactly what a slow newsroom looks like from here.
         return new Promise<FakeFetchResult>((_resolve, reject) => {
-          const abort = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          const abort = () => reject(cancelled(url));
           if (opts.signal?.aborted) abort();
           else opts.signal?.addEventListener("abort", abort, { once: true });
         });
@@ -1533,6 +1541,23 @@ describe("IR page lane", () => {
     hang = false;
     await waitUntil(() => listIrSeenLinks(db, eventId).some((l) => l.link === NEW_LINK), 80);
     expect(listDocuments(db, printIdFor(eventId)).map((d) => d.url)).toContain(NEW_LINK);
+  }
+
+  // Shape 1: aborted while queued for a host token — the scheduler's own
+  // `AbortedError`, whose name IS "AbortError".
+  it("a road cancellation never charges the link's refusal budget (M6)", async () => {
+    await cancellationCostsNoStrike(() => Object.assign(new Error("aborted"), { name: "AbortError" }));
+  });
+
+  // Shape 2, and the one the finding was written about: aborted while the
+  // request is IN FLIGHT. `hardenedFetchBytes` maps every caller abort to a
+  // `UrlFetchRefused` (name "UrlFetchRefused"), so a name test misses it and
+  // the link is charged — exactly what happens on a slow newsroom when the
+  // road's 15-second timer fires mid-request.
+  it("the same for the IN-FLIGHT shape, which is a UrlFetchRefused, not an AbortError (N1)", async () => {
+    await cancellationCostsNoStrike(
+      (url) => new UrlFetchRefused(`IR page link: aborted by the caller (${redactUrl(url)})`),
+    );
   });
 
   it("the NVDA RSS config keeps precedence over a stored IR page", async () => {
@@ -2828,6 +2853,33 @@ describe("slice C — window, fan-out, go", () => {
     await tick(CADENCE_MS * 3);
     expect(fake.edgarCalls).toBe(pollsBefore);
     expect(getPrintById(db, printId)!.state).toBe("disarmed");
+  });
+
+  // N2 — the other half of I2's deletion: the disarm branch may only stand a
+  // forced print down when the flag is GONE, never because the print row's
+  // copy of the event date went stale. A calendar sync correcting the date
+  // mid-window used to be caught by the old skip.
+  it("a still-flagged event whose DATE is corrected mid-forced-window keeps its watch (N2)", async () => {
+    const { eventId, printId } = seedAcmePrint();
+    fake.twsUp = false;
+    fake.edgar = async () => [];
+    stampForcedOpen(db, printId, new Date(fake.nowMs).toISOString());
+    ensurePrintWatch(db);
+    await tick(CADENCE_MS + 100);
+    expect(getPrintById(db, printId)!.state).toBe("window_open");
+    const pollsBefore = fake.edgarCalls;
+
+    // The calendar sync moves the event ten days out. The FLAG is untouched —
+    // the desk still cares about this print, and the press is still open.
+    const correctedDate = addDays(EVENT_DATE, 10);
+    db.prepare(`UPDATE calendar_events SET event_date = ? WHERE id = ?`).run(correctedDate, eventId);
+    expect(getPrintById(db, printId)!.event_date).toBe(EVENT_DATE); // the row's copy is now stale
+
+    ensurePrintWatch(db);
+    expect(getPrintById(db, printId)!.state).toBe("window_open"); // not disarmed, not expired
+    expect(getPrintById(db, printId)!.event_date).toBe(correctedDate); // and re-synced
+    await tick(CADENCE_MS + 100);
+    expect(fake.edgarCalls).toBeGreaterThan(pollsBefore); // still polling
   });
 
   // M5/R-C18: the watcher side of the requeue. `runGoRequest` treats this

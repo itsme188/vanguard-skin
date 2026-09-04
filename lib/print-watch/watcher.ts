@@ -689,6 +689,25 @@ function readPrintRow(db: Database.Database, printId: number): PrintRow | null {
   return row ?? null;
 }
 
+/**
+ * The CURRENT `event_date` of each of these events, by id (re-review N2).
+ *
+ * `getArmedWorksheetEvents` is date-scoped, and a print row's `event_date` is a
+ * copy taken when the print was last reconciled — so after a calendar sync
+ * corrects an event's date, the two disagree until the next sweep. This is the
+ * one-line indirection that keeps the forced-window lookup keyed on the event
+ * rather than on that stale copy, without duplicating the armed-events query
+ * (whose row shape has one owner in `lib/queries/`).
+ */
+function currentEventDates(db: Database.Database, eventIds: number[]): string[] {
+  if (eventIds.length === 0) return [];
+  const placeholders = eventIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(`SELECT DISTINCT event_date FROM calendar_events WHERE id IN (${placeholders})`)
+    .all(...eventIds) as { event_date: string }[];
+  return rows.map((r) => r.event_date);
+}
+
 function readIssuerName(db: Database.Database, symbol: string): string | null {
   const row = db
     .prepare(`SELECT name FROM securities WHERE UPPER(symbol) = UPPER(?) LIMIT 1`)
@@ -837,12 +856,24 @@ export function ensurePrintWatch(db: Database.Database): void {
   // (Codex round 1, finding #18): the desk pressing "print is live" IS the
   // evidence, and a stale calendar date must not strand the watch that press
   // opened. Their events are fetched by date the same way the armed set is.
+  //
+  // [N2] The dates come from the EVENT ROWS, resolved by event id, not from the
+  // print rows alone. A calendar sync that corrects an event's date more than a
+  // day out mid-forced-window leaves `print_watch_prints.event_date` stale for
+  // one sweep; looking up by that stale date misses a still-FLAGGED event, and
+  // with I2's skip gone the stale-print pass would then stand the forced watch
+  // down. "Still flagged ⇒ still armed", whatever the dates say. (The print
+  // row's own date is kept in the set too — it costs one more IN parameter and
+  // covers a print whose event row has moved out from under it.)
   const forcedPrints = listForcedLivePrints(db, nowMs);
   const forcedEventIds = new Set(forcedPrints.map((p) => p.event_id));
   const forcedPrintIds = new Set(forcedPrints.map((p) => p.id));
-  const extraDates = Array.from(new Set(forcedPrints.map((p) => p.event_date))).filter(
-    (d) => !dates.includes(d),
-  );
+  const extraDates = Array.from(
+    new Set([
+      ...forcedPrints.map((p) => p.event_date),
+      ...currentEventDates(db, [...forcedEventIds]),
+    ]),
+  ).filter((d) => !dates.includes(d));
   if (extraDates.length > 0) {
     const known = new Set(armed.map((r) => r.eventId));
     for (const row of getArmedWorksheetEvents(db, extraDates)) {
@@ -1810,14 +1841,24 @@ async function pollIrPageSource(
         );
       } catch (err) {
         // [M6/R-C19] A CANCELLATION is not a refusal. The road's 15-second
-        // timer, the pass-end abort (R-C8) and a lost lease all reach the link
-        // fetch as an AbortError — and this budget is shared across the page
-        // fetch and every link of the road, so three busy polls at the print
-        // minute would retire TONIGHT'S link ("1 link(s) retired after 3
-        // refusals") with no way back. The link refused nothing; we stopped
-        // asking. Rethrow so the lane's page-level catch reports the
-        // cancellation without charging any link for it.
-        if (isAbortError(err)) throw err;
+        // timer, the pass-end abort (R-C8) and a lost lease all cancel this
+        // fetch — and the budget is shared across the page fetch and every
+        // link of the road, so three busy polls at the print minute would
+        // retire TONIGHT'S link ("1 link(s) retired after 3 refusals") with no
+        // way back. The link refused nothing; we stopped asking.
+        //
+        // THE ROAD'S SIGNAL DECIDES, not the error's name (re-review N1). A
+        // cancellation surfaces as two different shapes depending on WHERE it
+        // lands: aborted while queued for a host token is the scheduler's
+        // `AbortedError` (name `AbortError`), but aborted IN FLIGHT — the
+        // common case on a slow newsroom, and the one this finding was written
+        // about — is `hardenedFetchBytes` mapping every caller abort to
+        // `UrlFetchRefused("… aborted by the caller …")`, whose name is
+        // `UrlFetchRefused`. Keying on the name alone covered only the first.
+        // Reading the signal covers both and any future shape, and errs safe:
+        // a genuine refusal that happens to coincide with a cancellation costs
+        // the link nothing, which is the right way to be wrong here.
+        if (isAbortError(err) || road.signal.aborted) throw err;
         refusals.push(noteIrRefusal(db, rt, item.link, errText(err)));
         continue;
       }
