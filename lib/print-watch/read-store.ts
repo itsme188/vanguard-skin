@@ -47,9 +47,30 @@ function totalAttempts(db: Database.Database, printId: number, fingerprint: stri
   ).n;
 }
 
-/** A failure that must never be retried on the same inputs. */
+/** A failure that must never be retried on the same inputs.
+ *
+ *  F2: the attempt CAP is no longer judged from the error code — the code now
+ *  always names the CAUSE (`cites`, `timeout`, …) and the cap is recorded in the
+ *  `error` text instead. Every caller that cared about the cap already checks
+ *  `totalAttempts >= READ_MAX_ATTEMPTS` next to this call, so terminal-ness is
+ *  judged from the attempt count plus `next_retry_at IS NULL`, never from a
+ *  marker that overwrote the reason. `'attempt_cap'` stays in the union (and in
+ *  the CHECK) for rows written before this change, and for the one place that
+ *  has no cause of its own: a generating row ABANDONED at the cap. */
 function isTerminal(code: ReadErrorCode | null): boolean {
   return code === "attempt_cap" || code === "model_drift";
+}
+
+/** The prefix `finalizeReadFailed` puts on the error text when the attempt that
+ *  just failed was the one that reached the cap. Written and read here only —
+ *  `cappedAttempt` is the single reader. */
+export const ATTEMPT_CAP_PREFIX = "attempt cap reached";
+
+/** F2: did this failed row give up for good? Derived, so no migration: the cap
+ *  prefix is written exactly when the cap was reached, and a terminal row never
+ *  carries a retry time. */
+export function cappedAttempt(row: Pick<ReadRow, "status" | "next_retry_at" | "error">): boolean {
+  return row.status === "failed" && row.next_retry_at === null && (row.error ?? "").startsWith(ATTEMPT_CAP_PREFIX);
 }
 
 export function claimRead(
@@ -95,10 +116,15 @@ export function claimRead(
       const hb = newest.heartbeat_at ? Date.parse(newest.heartbeat_at) : 0;
       if (opts.nowMs - hb <= READ_HEARTBEAT_STALE_MS) return { kind: "already_generating", row: newest };
       if (totalAttempts(db, printId, opts.fingerprint) >= READ_MAX_ATTEMPTS) {
+        // The ONLY row that legitimately carries `attempt_cap` as its code: it
+        // was still generating, so it has no failure of its own to name.
         db.prepare(
-          `UPDATE print_watch_reads SET status = 'failed', error = 'abandoned at the attempt cap', error_code = 'attempt_cap', next_retry_at = NULL
+          `UPDATE print_watch_reads SET status = 'failed', error = ?, error_code = 'attempt_cap', next_retry_at = NULL
             WHERE id = ? AND status = 'generating'`,
-        ).run(newest.id);
+        ).run(
+          `${ATTEMPT_CAP_PREFIX} (${totalAttempts(db, printId, opts.fingerprint)}/${READ_MAX_ATTEMPTS}): abandoned mid-generation`,
+          newest.id,
+        );
         return { kind: "failed_cap", row: getRead(db, newest.id) };
       }
       // CAS on the token we read: whoever wins the compare owns the row, and the
@@ -215,7 +241,12 @@ export function finalizeReadDone(
 }
 
 /** #17: a retryable failure books a 60 s backoff; the attempt that reaches the
- *  cap is recorded as `attempt_cap` so the gate stops asking. */
+ *  cap simply gets no retry time, which is what stops the gate asking.
+ *
+ *  F2: `error_code` ALWAYS names the cause. The cap used to overwrite it, so a
+ *  read that died six times on prose validation reported `attempt_cap` to the
+ *  desk and told it nothing. The cap is recorded in the error TEXT instead
+ *  (`cappedAttempt` reads it back). */
 export function finalizeReadFailed(
   db: Database.Database,
   args: { readId: number; token: string; error: string; errorCode: ReadErrorCode; nowMs: number; retryable: boolean },
@@ -224,8 +255,13 @@ export function finalizeReadFailed(
     .transaction((): boolean => {
       const row = liveClaim(db, args.readId, args.token);
       if (!row) return false;
-      const capped = totalAttempts(db, row.print_id, row.fingerprint) >= READ_MAX_ATTEMPTS;
+      const attempts = totalAttempts(db, row.print_id, row.fingerprint);
+      const capped = attempts >= READ_MAX_ATTEMPTS;
       const retry = args.retryable && !capped ? iso(args.nowMs + READ_RETRY_BACKOFF_MS) : null;
+      const error =
+        capped && args.retryable
+          ? `${ATTEMPT_CAP_PREFIX} (${attempts}/${READ_MAX_ATTEMPTS}): ${args.error}`
+          : args.error;
       return (
         db
           .prepare(
@@ -233,8 +269,8 @@ export function finalizeReadFailed(
               WHERE id = ? AND claim_token = ? AND status = 'generating'`,
           )
           .run(
-            args.error.slice(0, 500),
-            capped && args.retryable ? "attempt_cap" : args.errorCode,
+            error.slice(0, 500),
+            args.errorCode,
             retry,
             iso(args.nowMs),
             args.readId,
@@ -279,6 +315,31 @@ export function listReads(db: Database.Database, printId: number): ReadRow[] {
 /** #16/#17: the reconcile's gate — schedule only when nothing done or live-generating
  *  exists for this fingerprint and no backoff/cap applies. A generating row whose
  *  heartbeat has gone stale IS schedulable (claimRead takes it over). */
+/** F10: LIVE work only — what the panel may call "reading…". A terminal or
+ *  retry-pending failure is not live and belongs under `lastAttempt`. */
+export function getGeneratingRead(db: Database.Database, printId: number): ReadRow | null {
+  return (
+    (db
+      .prepare(`SELECT * FROM print_watch_reads WHERE print_id = ? AND status = 'generating' ORDER BY id DESC LIMIT 1`)
+      .get(printId) as ReadRow | undefined) ?? null
+  );
+}
+
+/** F10: the newest FAILED row, with the two things the panel cannot derive on
+ *  its own — whether it gave up (`capped`) and how many attempts the cap
+ *  actually counted (`totalAttempts`, summed across every row for this
+ *  fingerprint, not just this row's). */
+export function getLastFailedAttempt(
+  db: Database.Database,
+  printId: number,
+): { row: ReadRow; capped: boolean; totalAttempts: number } | null {
+  const row = db
+    .prepare(`SELECT * FROM print_watch_reads WHERE print_id = ? AND status = 'failed' ORDER BY id DESC LIMIT 1`)
+    .get(printId) as ReadRow | undefined;
+  if (!row) return null;
+  return { row, capped: cappedAttempt(row), totalAttempts: totalAttempts(db, printId, row.fingerprint) };
+}
+
 export function canScheduleRead(db: Database.Database, printId: number, fingerprint: string, nowMs: number): boolean {
   const newest = newestFor(db, printId, fingerprint);
   if (!newest) return true;
