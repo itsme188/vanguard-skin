@@ -106,6 +106,24 @@ describe("buildFirstPassPrompt — the exact payload (data-flow contract, #19)",
     db.prepare(`UPDATE earnings_bogeys SET expected_move_pct = NULL WHERE event_id = ?`).run(eventId);
     expect((await buildFirstPassPrompt(db, printId))!.dto.implied_move).toEqual({ pct: 4.2, method: "straddle", source_label: null });
   });
+  it("resolves the expected move in the QUERY's recency order, not the id order the DTO uses (R-D29)", async () => {
+    // Two sheets uploaded the same day: the resolver treats equal `uploadedAt`
+    // as a tie and keeps INPUT order, so the order it is handed decides. The
+    // query orders by the article's received_at first, which is the order the
+    // recap email's `loadIntelView` sees — the read must agree with it, even
+    // though the DTO's own bogey array stays sorted by id.
+    const sourceId = Number(db.prepare(`INSERT INTO research_sources (name) VALUES ('Synthetic Weekly')`).run().lastInsertRowid);
+    const articleId = Number(db.prepare(`INSERT INTO research_articles (source_id, received_at, subject, sender, raw_text) VALUES (?, '2026-09-09T18:00:00.000Z', 's', 'x@example.com', 'r')`).run(sourceId).lastInsertRowid);
+    db.prepare(`UPDATE earnings_bogeys SET uploaded_at = '2026-09-08T12:00:00.000Z', expected_move_pct = 5.0 WHERE event_id = ?`).run(eventId);
+    db.prepare(`INSERT INTO earnings_bogeys (event_id, source, source_label, research_article_id, uploaded_at, expected_move_pct) VALUES (?, 'manual', 'LATER', ?, '2026-09-08T12:00:00.000Z', 7.5)`).run(eventId, articleId);
+
+    const rows = (await import("@/lib/queries/earnings-bogeys")).getBogeysForEvent(db, eventId);
+    expect(rows[0].source_label).toBe("LATER"); // the article's received_at wins the query order
+    expect(rows[0].id).toBeGreaterThan(rows[1].id); // …and it is NOT first by id
+    const dto = (await buildFirstPassPrompt(db, printId))!.dto;
+    expect(dto.implied_move).toEqual({ pct: 7.5, method: "sheet", source_label: "LATER" });
+    expect(dto.bogeys.map((b) => b.id)).toEqual([...dto.bogeys.map((b) => b.id)].sort((a, b) => a - b));
+  });
   it("returns null for a print with no facts", async () => {
     const eid = Number(db.prepare(`INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol) VALUES ('manual','earnings','2026-09-11','BETA','k2','BETA')`).run().lastInsertRowid);
     expect(await buildFirstPassPrompt(db, upsertPrint(db, eid, "BETA", "2026-09-11", "16:05"))).toBeNull();

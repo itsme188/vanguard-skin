@@ -21,7 +21,8 @@ function renderWithPrivacy(props: Parameters<typeof FirstPassRead>[0]): string {
 
 describe("helpers", () => {
   it("readStatusLabel covers every done/active combination (#15)", () => {
-    expect(readStatusLabel(null, null)).toMatch(/no read yet/);
+    // R-D21: facts are accepted-only, so the copy names the ACCEPT, not the parse.
+    expect(readStatusLabel(null, null)).toBe("no read yet — generates after the first accept");
     expect(readStatusLabel(null, generating)).toBe("reading…");
     expect(readStatusLabel(null, failed)).toBe("read failed — model_error");
     expect(readStatusLabel(done, null)).toBe("read · 16:07 ET");

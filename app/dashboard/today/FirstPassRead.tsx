@@ -27,7 +27,7 @@ function etClock(iso: string): string {
 export function readStatusLabel(read: FirstPassReadDto | null, active: ActiveReadDto | null): string {
   const tail = !active ? "" : active.status === "generating" ? "updating…" : `update failed — ${active.error_code ?? "unknown"}`;
   if (!read) {
-    if (!active) return "no read yet — generates after the first parse";
+    if (!active) return "no read yet — generates after the first accept";
     return active.status === "generating" ? "reading…" : `read failed — ${active.error_code ?? "unknown"}`;
   }
   const base = `read · ${read.generated_at ? etClock(read.generated_at) : "?"} ET`;

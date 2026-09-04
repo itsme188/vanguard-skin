@@ -113,7 +113,14 @@ export function buildDtoSync(
     if (!print) return null;
     const facts = buildReadFacts(db, printId).sort((a, b) => (a.metric_id < b.metric_id ? -1 : a.metric_id > b.metric_id ? 1 : 0));
     if (facts.length === 0) return null;
-    const bogeyRows = getBogeysForEvent(db, print.event_id).slice().sort((a, b) => a.id - b.id);
+    // R-D29: two orders, on purpose. `resolveExpectedMove` returns 0 for equal
+    // (or absent) `uploadedAt`, so INPUT ORDER is its tie-break — it must see
+    // the query's own recency order (received_at, then uploaded_at, DESC), the
+    // same rows `loadIntelView` hands it, or the read and the email could pick
+    // different same-date sheets. The DTO's `bogeys` array stays id-sorted so
+    // the fingerprint does not move with an article's arrival time.
+    const bogeyRowsByRecency = getBogeysForEvent(db, print.event_id);
+    const bogeyRows = bogeyRowsByRecency.slice().sort((a, b) => a.id - b.id);
     const bogeys = bogeyRows.map((b) => ({ id: b.id, source_label: b.source_label, eps_consensus: b.eps_consensus, eps_whisper: b.eps_whisper, revenue_consensus_usd: b.revenue_consensus_usd, revenue_whisper_usd: b.revenue_whisper_usd, eps_consensus_vendor: b.eps_consensus_vendor, expected_move_pct: b.expected_move_pct, guidance_notes: b.guidance_notes }));
     const terms = guidanceTerms(bogeyRows.map((b) => b.guidance_notes ?? ""));
     const snippetsByDoc = new Map<number, string[]>();
@@ -134,7 +141,7 @@ export function buildDtoSync(
     const history = getReportHistoryBefore(db, print.symbol, print.event_date, 1)[0];
     const intel = getIntelForEvents(db, [print.event_id]).get(print.event_id) ?? null;
     const expectedMove = resolveExpectedMove({
-      bogeys: bogeyRows.map((b) => ({ expectedMovePct: b.expected_move_pct, sourceLabel: b.source_label, uploadedAt: b.uploaded_at })),
+      bogeys: bogeyRowsByRecency.map((b) => ({ expectedMovePct: b.expected_move_pct, sourceLabel: b.source_label, uploadedAt: b.uploaded_at })),
       impliedMovePct: intel?.impliedMovePct ?? null,
       impliedMethod: intel?.impliedMethod ?? null,
     });
