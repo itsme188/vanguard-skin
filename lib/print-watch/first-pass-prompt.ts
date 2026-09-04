@@ -246,7 +246,20 @@ function numberMatches(token: string, allowed: number[]): boolean {
   const n = Number(token.replace(/,/g, ""));
   return allowed.some((a) => Math.abs(Math.abs(a) - Math.abs(n)) <= Math.max(0.05, Math.abs(a) * 0.002));
 }
-export function validateCitedLines(lines: unknown, allowed: Map<string, number[]>, max: number): { kept: string[]; dropped: number } {
+/**
+ * R-D36: `citesOptional` is the call-watch mode. A call-watch line is
+ * forward-looking ("what to listen for on the call") and often cites nothing at
+ * all, so an unknown cite is STRIPPED and an empty cite list is fine — while
+ * the numeral gate and the sanitiser still apply unchanged, because a
+ * forward-looking line may still state only numbers the desk has verified.
+ * `read` lines keep the strict rule (>= 1 cite, every cite a known key).
+ */
+export function validateCitedLines(
+  lines: unknown,
+  allowed: Map<string, number[]>,
+  max: number,
+  opts: { citesOptional?: boolean } = {},
+): { kept: string[]; dropped: number } {
   if (!Array.isArray(lines)) return { kept: [], dropped: 0 };
   const kept: string[] = []; let dropped = 0;
   // ONE pool for every line (R-D33): the whole scoreboard.
@@ -255,7 +268,7 @@ export function validateCitedLines(lines: unknown, allowed: Map<string, number[]
     const l = raw as Partial<CitedLine>;
     if (!l || typeof l !== "object" || typeof l.text !== "string" || !Array.isArray(l.cites)) { dropped++; continue; }
     const cites = l.cites.filter((c): c is string => typeof c === "string");
-    if (cites.length === 0 || !cites.every((c) => allowed.has(c))) { dropped++; continue; }
+    if (!opts.citesOptional && (cites.length === 0 || !cites.every((c) => allowed.has(c)))) { dropped++; continue; }
     const numbers = l.text.match(NUMBER_TOKEN) ?? [];
     if (!numbers.every((t) => numberMatches(t, pool))) { dropped++; continue; }
     const [clean] = sanitizeProseLines([l.text], 1);
