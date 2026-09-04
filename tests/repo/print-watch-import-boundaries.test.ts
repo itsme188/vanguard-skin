@@ -69,6 +69,7 @@ export function importSpecs(source: string): Array<{ spec: string; line: number 
   const out: Array<{ spec: string; line: number }> = [];
   const patterns = [
     /\bfrom\s*["']([^"']+)["']/g,
+    /\bimport\s*["']([^"']+)["']/g, // bare side-effect import — cannot match `import(`, whose next char is `(`
     /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
     /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
   ];
@@ -95,6 +96,8 @@ describe("print-watch import boundaries", () => {
     expect(importSpecs(wrapped)).toEqual([{ spec: "@/lib/print-watch/callouts", line: 3 }]);
     const dynamic = 'const m = await import("@/lib/print-watch/callouts");';
     expect(importSpecs(dynamic)).toEqual([{ spec: "@/lib/print-watch/callouts", line: 1 }]);
+    const sideEffect = 'import "@/lib/print-watch/callouts";';
+    expect(importSpecs(sideEffect)).toEqual([{ spec: "@/lib/print-watch/callouts", line: 1 }]);
   });
 
   it("a \"use client\" component imports only the client-safe print-watch modules", () => {
