@@ -23,7 +23,18 @@ const standalone = path.join(
   "standalone",
 );
 
-const mustNotExist = ["data", ".git", "qa", "tests", "docs", ".env.local", ".env"];
+const mustNotExist = [
+  "data",
+  ".git",
+  "qa",
+  "tests",
+  "docs",
+  ".env.local",
+  ".env",
+  // Local Worker dev state — miniflare KV blobs carry armed-event data.
+  // Scoped to .wrangler on purpose: workers/cron/src is a runtime import.
+  "workers/cron/.wrangler",
+];
 const mustExist = [
   "node_modules/next/dist/compiled/next-server/app-route-turbo.runtime.prod.js",
   "node_modules/next/dist/compiled/next-server/app-page-turbo.runtime.prod.js",
