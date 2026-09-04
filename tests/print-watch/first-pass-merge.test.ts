@@ -99,6 +99,25 @@ describe("mergeFirstPassState", () => {
     expect(db.pragma("foreign_key_check")).toEqual([]);
   });
 
+  it("reports a donor acceptance the merge had to drop because the target twin is no longer live (R-D25)", () => {
+    const dDoc = doc(donorPrint, "twin"); const tDoc = doc(targetPrint, "twin");
+    doneRead(donorPrint, "fpD", [{ label: "ARR", docId: dDoc, sha: "twin" }]);
+    db.prepare(`UPDATE print_watch_callouts SET state = 'accepted', accepted_at = '2026-09-10T20:10:00.000Z' WHERE print_id = ? AND label_norm = 'arr'`).run(donorPrint);
+    doneRead(targetPrint, "fpT", [{ label: "ARR", docId: tDoc, sha: "twin" }]);
+    const targetArrId = (db.prepare(`SELECT id FROM print_watch_callouts WHERE print_id = ? AND label_norm = 'arr'`).get(targetPrint) as { id: number }).id;
+    // A later target read stops proposing the figure: its row is superseded,
+    // and per R-D19 a merge never re-opens it.
+    doneRead(targetPrint, "fpT2", []);
+    expect(db.prepare(`SELECT state FROM print_watch_callouts WHERE id = ?`).get(targetArrId)).toEqual({ state: "superseded" });
+
+    const report = db.transaction(() => mergeEarningsEventState(db, donor, target))();
+    const mine = report.handlers.find((h) => h.name === FIRST_PASS_MERGE_HANDLER_NAME)!;
+    const calloutTable = mine.tables.find((t) => t.table === "print_watch_callouts")!;
+    expect(calloutTable.notes).toContain(`callout ${targetArrId}: donor acceptance dropped (target superseded)`);
+    expect(calloutTable.merged).toBe(0);
+    expect(db.prepare(`SELECT state FROM print_watch_callouts WHERE id = ?`).get(targetArrId)).toEqual({ state: "superseded" });
+  });
+
   it("when only the donor has a print, its rows follow the print B re-homes (nothing to do here)", () => {
     db.prepare(`DELETE FROM print_watch_prints WHERE id = ?`).run(targetPrint);
     doneRead(donorPrint, "fpA");

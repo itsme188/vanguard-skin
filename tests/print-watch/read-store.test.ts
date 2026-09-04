@@ -137,6 +137,21 @@ describe("callouts", () => {
     expect(revokeCalloutsForIneligibleDocs(db, printId, T0)).toBe(1);
     expect(acceptCallout(db, 424242, true, { nowMs: T0, verifierVersion: 1 })).toEqual({ ok: false, reason: "not_found" });
   });
+  it("re-proposing a revoked callout clears revoked_at as well as the supersede pointer (M7)", () => {
+    // The document came back (or a byte-twin of it did) and the read proposed
+    // the same figure again: the row is live evidence once more, so the
+    // revocation stamp must not linger on it.
+    const docId = seedDoc();
+    const a = claim("fp1"); if (a.kind !== "claimed") throw new Error();
+    finalizeReadDone(db, { readId: a.row.id, token: a.token, facts: [], prose: PROSE, callouts: [callout(docId)], nowMs: T0 });
+    db.prepare(`UPDATE print_watch_documents SET gate_verdict = 'rejected' WHERE id = ?`).run(docId);
+    expect(revokeCalloutsForIneligibleDocs(db, printId, T0)).toBe(1);
+    expect(listCallouts(db, printId)[0]).toMatchObject({ state: "revoked", revoked_at: new Date(T0).toISOString() });
+    db.prepare(`UPDATE print_watch_documents SET gate_verdict = 'accepted' WHERE id = ?`).run(docId);
+    const b = claim("fp2", T0 + 1000); if (b.kind !== "claimed") throw new Error();
+    finalizeReadDone(db, { readId: b.row.id, token: b.token, facts: [], prose: PROSE, callouts: [callout(docId)], nowMs: T0 + 2000 });
+    expect(listCallouts(db, printId)[0]).toMatchObject({ state: "proposed", effective_state: "proposed", revoked_at: null });
+  });
   it("a callout whose document row was deleted resolves through documents.sha256 = doc_sha256 (B's identity)", () => {
     const d1 = seedDoc("shared", "user-drop");
     const a = claim("fp1"); if (a.kind !== "claimed") throw new Error();

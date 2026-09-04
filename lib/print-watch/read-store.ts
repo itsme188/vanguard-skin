@@ -181,7 +181,7 @@ export function finalizeReadDone(
            snippet = excluded.snippet, doc_id = excluded.doc_id, evidence_sha256 = excluded.evidence_sha256, verifier_version = excluded.verifier_version,
            vs_bogey_text = excluded.vs_bogey_text, updated_at = excluded.updated_at,
            state = CASE WHEN print_watch_callouts.state = 'accepted' THEN 'accepted' ELSE 'proposed' END,
-           superseded_by_read_id = NULL`,
+           superseded_by_read_id = NULL, revoked_at = NULL`,
       );
       let upserted = 0;
       for (const c of args.callouts) {
