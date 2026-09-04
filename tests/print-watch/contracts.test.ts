@@ -22,6 +22,7 @@ interface BogeyInput {
   revenue_whisper_usd?: number | null;
   segment_breakdown_json?: string | null;
   guidance_notes?: string | null;
+  extra_metrics_json?: string | null;
 }
 
 function insertBogey(db: Database.Database, eventId: number, input: BogeyInput = {}): number {
@@ -29,9 +30,11 @@ function insertBogey(db: Database.Database, eventId: number, input: BogeyInput =
     .prepare(
       `INSERT INTO earnings_bogeys
          (event_id, source, source_label, eps_consensus, eps_whisper,
-          revenue_consensus_usd, revenue_whisper_usd, segment_breakdown_json, guidance_notes)
+          revenue_consensus_usd, revenue_whisper_usd, segment_breakdown_json, guidance_notes,
+          extra_metrics_json)
        VALUES (@event_id, @source, @source_label, @eps_consensus, @eps_whisper,
-               @revenue_consensus_usd, @revenue_whisper_usd, @segment_breakdown_json, @guidance_notes)`,
+               @revenue_consensus_usd, @revenue_whisper_usd, @segment_breakdown_json, @guidance_notes,
+               @extra_metrics_json)`,
     )
     .run({
       event_id: eventId,
@@ -43,6 +46,7 @@ function insertBogey(db: Database.Database, eventId: number, input: BogeyInput =
       revenue_whisper_usd: input.revenue_whisper_usd ?? null,
       segment_breakdown_json: input.segment_breakdown_json ?? null,
       guidance_notes: input.guidance_notes ?? null,
+      extra_metrics_json: input.extra_metrics_json ?? null,
     });
   return Number(result.lastInsertRowid);
 }
@@ -281,5 +285,126 @@ describe("compileContracts", () => {
 
     const { contracts } = compileContracts(db, eventId, "ACME");
     assertNoDigitLeak(contracts);
+  });
+});
+
+describe("compileContracts — desk-defined extra metric lines (spec §4.7)", () => {
+  let db: Database.Database;
+
+  const A = "5b7a1f42-9c3e-4d18-8f6a-2e0b91c7d4a3";
+  const B = "0c9e2d71-4a5b-4c6d-9e8f-1a2b3c4d5e6f";
+
+  const metric = (o: Record<string, unknown> = {}) => ({
+    id: A,
+    label: "Net new ARR",
+    definition: "Sequential change in ARR.",
+    unit: "usd",
+    kind: "point",
+    period: "Q",
+    basis: "na",
+    ...o,
+  });
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("emits one x_<uuid>_<period> line per merged id, with the mapped unit and the merged numbers", () => {
+    const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
+    insertBogey(db, eventId, {
+      source_label: "Sheet A",
+      extra_metrics_json: JSON.stringify([metric({ whisper: 310_000_000 })]),
+    });
+    insertBogey(db, eventId, {
+      source_label: "Sheet B",
+      extra_metrics_json: JSON.stringify([metric({ consensus: 300_000_000 })]),
+    });
+
+    const { contracts, expected, conflicts } = compileContracts(db, eventId, "ACME");
+    expect(conflicts).toEqual([]);
+    const line = contracts.find((c) => c.metric_id === `x_${A}_Q`);
+    expect(line).toEqual({
+      metric_id: `x_${A}_Q`,
+      label: "Net new ARR",
+      definition: "Sequential change in ARR.",
+      basis: "na",
+      period: "Q",
+      currency: "USD",
+      unit: "usd",
+      kind: "point",
+      segment: null,
+    });
+    expect(expected[`x_${A}_Q`]).toEqual({
+      value: 300_000_000,
+      value_high: null,
+      whisper: 310_000_000,
+      source_label: "Sheet B",
+    });
+  });
+
+  it("maps pct to the contract unit percent and carries kind range through", () => {
+    const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
+    insertBogey(db, eventId, {
+      source_label: "A",
+      extra_metrics_json: JSON.stringify([
+        metric({
+          id: B,
+          unit: "pct",
+          kind: "range",
+          period: "FY_guide",
+          basis: "non_gaap",
+          label: "FY op margin",
+        }),
+      ]),
+    });
+
+    const { contracts } = compileContracts(db, eventId, "ACME");
+    expect(contracts.find((c) => c.metric_id === `x_${B}_FY_guide`)).toMatchObject({
+      unit: "percent",
+      kind: "range",
+      period: "FY_guide",
+      basis: "non_gaap",
+      currency: "USD",
+      segment: null,
+    });
+  });
+
+  it("does NOT compile a conflicting id and reports it in the new conflicts key", () => {
+    const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
+    insertBogey(db, eventId, {
+      source_label: "A",
+      extra_metrics_json: JSON.stringify([metric()]),
+    });
+    insertBogey(db, eventId, {
+      source_label: "B",
+      extra_metrics_json: JSON.stringify([metric({ unit: "pct" })]),
+    });
+
+    const { contracts, expected, conflicts } = compileContracts(db, eventId, "ACME");
+    expect(conflicts).toEqual([{ id: A, fields: ["unit"] }]);
+    expect(contracts.some((c) => c.metric_id.startsWith("x_"))).toBe(false);
+    expect(expected[`x_${A}_Q`]).toBeUndefined();
+  });
+
+  it("ignores an unreadable extra_metrics_json without losing the rest of the sheet", () => {
+    const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
+    const bogeyId = insertBogey(db, eventId, { source_label: "A", eps_consensus: 1.23 });
+    db.prepare(`UPDATE earnings_bogeys SET extra_metrics_json = '{not json' WHERE id = ?`).run(bogeyId);
+
+    const { contracts, expected, conflicts } = compileContracts(db, eventId, "ACME");
+    expect(conflicts).toEqual([]);
+    expect(contracts.map((c) => c.metric_id)).toEqual(["eps_gaap_q", "eps_adj_q", "revenue_q"]);
+    expect(expected["eps_adj_q"]).toMatchObject({ value: 1.23 });
+  });
+
+  it("is byte-identical to the pre-slice-F output when no row carries extra metrics", () => {
+    const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
+    insertBogey(db, eventId, { source_label: "A", eps_consensus: 0.46 });
+
+    const out = compileContracts(db, eventId, "ACME");
+    expect(out.conflicts).toEqual([]);
+    expect(out.contracts.map((c) => c.metric_id)).toEqual(["eps_gaap_q", "eps_adj_q", "revenue_q"]);
   });
 });

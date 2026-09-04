@@ -7,6 +7,12 @@
 
 import type Database from "better-sqlite3";
 import type { LineContract, ExpectedValue } from "./types";
+import {
+  parseExtraMetrics,
+  mergeExtraMetrics,
+  extraMetricId,
+  extraMetricUnitToContractUnit,
+} from "./extra-metrics";
 
 interface BogeyRow {
   id: number;
@@ -17,6 +23,7 @@ interface BogeyRow {
   segment_breakdown_json: string | null;
   guidance_notes: string | null;
   source_label: string | null;
+  extra_metrics_json: string | null;
 }
 
 type SegmentBreakdown = Record<string, { consensus?: number | null; whisper?: number | null } | undefined>;
@@ -91,13 +98,17 @@ export function compileContracts(
   db: Database.Database,
   eventId: number,
   symbol: string,
-): { contracts: LineContract[]; expected: Record<string, ExpectedValue> } {
+): {
+  contracts: LineContract[];
+  expected: Record<string, ExpectedValue>;
+  conflicts: Array<{ id: string; fields: string[] }>;
+} {
   void symbol;
 
   const rows = db
     .prepare(
       `SELECT id, eps_consensus, eps_whisper, revenue_consensus_usd, revenue_whisper_usd,
-              segment_breakdown_json, guidance_notes, source_label
+              segment_breakdown_json, guidance_notes, source_label, extra_metrics_json
          FROM earnings_bogeys
         WHERE event_id = ?
         ORDER BY id ASC`,
@@ -232,5 +243,42 @@ export function compileContracts(
     });
   }
 
-  return { contracts, expected };
+  // Desk-defined extra metric lines (spec §4.7). A row whose stored JSON does
+  // not parse contributes NOTHING and takes nothing else down — the same
+  // convention segment_breakdown_json already uses above. Conflicting ids are
+  // not compiled; the modal reports them from the additive `conflicts` key.
+  const extraRows = rows.map((row) => ({
+    id: row.id,
+    sourceLabel: row.source_label,
+    specs: parseExtraMetrics(row.extra_metrics_json).specs,
+  }));
+  const { specs: extraSpecs, conflicts, sourceLabelById } = mergeExtraMetrics(extraRows);
+
+  for (const spec of extraSpecs) {
+    const metricId = extraMetricId(spec);
+    if (contracts.some((c) => c.metric_id === metricId)) continue; // never shadow a built-in id
+    contracts.push({
+      metric_id: metricId,
+      label: spec.label,
+      definition: spec.definition,
+      basis: spec.basis,
+      period: spec.period,
+      currency: "USD",
+      unit: extraMetricUnitToContractUnit(spec.unit),
+      kind: spec.kind,
+      segment: null,
+    });
+    const consensus = spec.consensus ?? null;
+    const whisper = spec.whisper ?? null;
+    if (consensus !== null || whisper !== null) {
+      expected[metricId] = {
+        value: consensus,
+        value_high: null,
+        whisper,
+        source_label: sourceLabelById[spec.id] ?? null,
+      };
+    }
+  }
+
+  return { contracts, expected, conflicts };
 }
