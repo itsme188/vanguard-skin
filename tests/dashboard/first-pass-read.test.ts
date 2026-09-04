@@ -135,12 +135,18 @@ describe("mount", () => {
   });
 
 
-  it("PrintWatchPanel mounts FirstPassRead exactly once with the card's onChanged", () => {
-    const src = readFileSync("app/dashboard/today/PrintWatchPanel.tsx", "utf8");
+  it("LivePrintRow mounts FirstPassRead exactly once with the row's onChanged", () => {
+    // Slice F task 8: the panel's PrintCard became LivePrintRow, and the status
+    // wire shape it renders moved to hub-live/types.ts (M-F18 — a client file
+    // may not import the server cockpit types, so the wire shapes are
+    // re-declared there). Same two facts, pinned on the two files that now
+    // carry them.
+    const src = readFileSync("app/dashboard/today/LivePrintRow.tsx", "utf8");
     expect(src.match(/<FirstPassRead\b/g)).toHaveLength(1);
     expect(src).toMatch(/<FirstPassRead[^>]*onChanged=\{onChanged\}/);
-    expect(src).toMatch(/read\?: FirstPassReadDto \| null/);
-    expect(src).toMatch(/activeRead\?: ActiveReadDto \| null/);
-    expect(src).toMatch(/callouts\?: CalloutView\[\]/);
+    const wire = readFileSync("app/dashboard/today/hub-live/types.ts", "utf8");
+    expect(wire).toMatch(/read\?: FirstPassReadDto \| null/);
+    expect(wire).toMatch(/activeRead\?: ActiveReadDto \| null/);
+    expect(wire).toMatch(/callouts\?: CalloutView\[\]/);
   });
 });

@@ -16,7 +16,7 @@ import {
   SUPERSEDED_CONFIRM_COPY,
   goStatusText,
   windowText,
-} from "@/app/dashboard/today/PrintWatchPanel";
+} from "@/app/dashboard/today/live-print/helpers";
 import type { LineContract, PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
 
 // ── fixtures ────────────────────────────────────────────────────────────
@@ -801,8 +801,13 @@ describe("acceptableRivals", () => {
   });
 });
 
-describe("per-candidate accept control (panel source)", () => {
-  const src = readFileSync("app/dashboard/today/PrintWatchPanel.tsx", "utf8");
+// Slice F task 8: `PrintCard` became `LivePrintRow` and `LineRow` moved to
+// `live-print/LineRow.tsx`. The split is the one the panel already had — the
+// markup lives on the line, the handler on the row — so each assertion follows
+// the code it was written about.
+describe("per-candidate accept control (live-print source)", () => {
+  const src = readFileSync("app/dashboard/today/live-print/LineRow.tsx", "utf8");
+  const rowSrc = readFileSync("app/dashboard/today/LivePrintRow.tsx", "utf8");
 
   it("renders an 'accept this' control against each rival of a conflict row", () => {
     expect(src).toMatch(/acceptableRivals\(line\)/);
@@ -810,23 +815,24 @@ describe("per-candidate accept control (panel source)", () => {
   });
 
   it("posts the metric AND the document it verified", () => {
-    expect(src).toMatch(
+    expect(rowSrc).toMatch(
       /postAccept\(\{ accept: \[\{ metric_id: metricId, doc_id: docId, representation \}\] \}\)/,
     );
   });
 
   it("reverts the in-flight state and explains a failure rather than swallowing it", () => {
-    expect(src).toMatch(/setAcceptingCandidateKey\(null\)/);
-    expect(src).not.toMatch(/catch \{\s*\}/);
+    expect(rowSrc).toMatch(/setAcceptingCandidateKey\(null\)/);
+    expect(rowSrc).not.toMatch(/catch \{\s*\}/);
   });
 
   it("has its own supersession confirm — a candidate accept is not a promote", () => {
-    expect(src).toMatch(/SUPERSEDED_CANDIDATE_CONFIRM_COPY/);
+    expect(rowSrc).toMatch(/SUPERSEDED_CANDIDATE_CONFIRM_COPY/);
   });
 });
 
-describe("per-line accept control (panel source)", () => {
-  const src = readFileSync("app/dashboard/today/PrintWatchPanel.tsx", "utf8");
+describe("per-line accept control (live-print source)", () => {
+  const src = readFileSync("app/dashboard/today/live-print/LineRow.tsx", "utf8");
+  const rowSrc = readFileSync("app/dashboard/today/LivePrintRow.tsx", "utf8");
 
   it("renders an accept button for non-accepted lines, not only unaccept for accepted ones", () => {
     expect(src).toMatch(/canAcceptLine\(line\)/);
@@ -834,17 +840,17 @@ describe("per-line accept control (panel source)", () => {
   });
 
   it("posts the single metric through the same accept route the bulk path uses", () => {
-    expect(src).toMatch(/postAccept\(\{ accept: \[metricId\] \}\)/);
+    expect(rowSrc).toMatch(/postAccept\(\{ accept: \[metricId\] \}\)/);
     // ...and the bulk path it mirrors, so both still go through the one
     // postAccept helper that owns the pre_print / superseded 409 handling.
-    expect(src).toMatch(/postAccept\(\{ accept: agreedIds \}\)/);
-    expect(src).toMatch(/apiFetch\("\/api\/print-watch\/accept"/);
+    expect(rowSrc).toMatch(/postAccept\(\{ accept: agreedIds \}\)/);
+    expect(rowSrc).toMatch(/apiFetch\("\/api\/print-watch\/accept"/);
   });
 
   it("reverts the in-flight state and explains a failure rather than swallowing it", () => {
-    expect(src).toMatch(/setAcceptingId\(null\)/);
-    expect(src).toMatch(/if \(!res\.ok \|\| !data\?\.success\)/);
-    expect(src).not.toMatch(/catch \{\s*\}/);
+    expect(rowSrc).toMatch(/setAcceptingId\(null\)/);
+    expect(rowSrc).toMatch(/if \(!res\.ok \|\| !data\?\.success\)/);
+    expect(rowSrc).not.toMatch(/catch \{\s*\}/);
   });
 
   it("keeps the control visible rather than hover-only (touch tap-trap rule)", () => {
@@ -860,8 +866,8 @@ describe("per-line accept control (panel source)", () => {
 // for horizontally-scrolling tables is the shared <ScrollFade> wrapper
 // (see HoldingsTable/AllHoldingsTable) — this pins that it wraps the verify
 // table directly, not nested inside a second scroller.
-describe("verify table horizontal scroll affordance (panel source)", () => {
-  const src = readFileSync("app/dashboard/today/PrintWatchPanel.tsx", "utf8");
+describe("verify table horizontal scroll affordance (live-print source)", () => {
+  const src = readFileSync("app/dashboard/today/LivePrintRow.tsx", "utf8");
 
   it("imports the shared ScrollFade component", () => {
     expect(src).toMatch(/import \{ ScrollFade \} from "\.\.\/components\/ScrollFade"/);
@@ -897,9 +903,13 @@ describe("windowText", () => {
   });
 });
 
-describe("PrintWatchPanel source — slice C controls", () => {
-  const src = readFileSync("app/dashboard/today/PrintWatchPanel.tsx", "utf8");
+describe("live-print source — slice C controls", () => {
+  const src = readFileSync("app/dashboard/today/live-print/GoControls.tsx", "utf8");
+  const rowSrc = readFileSync("app/dashboard/today/LivePrintRow.tsx", "utf8");
   it("posts go and extend through apiFetch exactly once each and renders the go status inside the card", () => {
+    // Slice F folded the button press, the pasted link and the pasted file into
+    // ONE call site, so "exactly once" still holds — and now means all three
+    // share the same 200/4xx handling and the same non-fatal-wake caveat.
     expect(src.match(/apiFetch\("\/api\/print-watch\/go"/g)?.length).toBe(1);
     expect(src.match(/apiFetch\("\/api\/print-watch\/extend"/g)?.length).toBe(1);
     expect(src).toContain("Print is live");
@@ -908,6 +918,6 @@ describe("PrintWatchPanel source — slice C controls", () => {
     // the optional print.goRequest needs `?? null` for strict-null safety, so
     // the literal call site reads `goStatusText(print.goRequest ?? null)` —
     // the brief's own fallback names this prefix as the assertion to use.
-    expect(src).toContain("goStatusText(print.goRequest");
+    expect(rowSrc).toContain("goStatusText(print.goRequest");
   });
 });

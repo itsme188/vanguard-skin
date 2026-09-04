@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { validatePublicUrl } from "@/lib/print-watch/ssrf";
-import { upsertPrintWatchSource, deletePrintWatchSource } from "@/lib/print-watch/store";
+import { upsertPrintWatchSource, deletePrintWatchSource, getPrintWatchSource } from "@/lib/print-watch/store";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +35,47 @@ export const dynamic = "force-dynamic";
  *  RDS-A), 1–12 characters. Deliberately narrower than "any string" and wider
  *  than plain A–Z. */
 const SYMBOL_RE = /^[A-Z0-9.\-]{1,12}$/;
+
+/**
+ * GET /api/print-watch/sources?symbol=XMPL1 — what is stored for one symbol.
+ *
+ * A PURE read (`getPrintWatchSource` is a single SELECT), so the
+ * no-state-changing-GET guard stays satisfied. It exists because the PUT below
+ * treats an empty `irPageUrl` as CLEAR: without a read, the first UI for this
+ * route (slice F's IrPageField) would open with an empty box over a configured
+ * row and erase it on the first Save. Returns `null` — not a 404 — for a symbol
+ * with nothing stored: "nothing configured" is an ordinary answer, not a
+ * missing resource.
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const raw = new URL(request.url).searchParams.get("symbol");
+    if (typeof raw !== "string" || !raw.trim()) {
+      return NextResponse.json({ success: false, error: "Query param 'symbol' is required." }, { status: 400 });
+    }
+    const symbol = raw.trim().toUpperCase();
+    if (!SYMBOL_RE.test(symbol)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Query param 'symbol' must be a ticker (letters, digits, '.' or '-', up to 12 characters).",
+        },
+        { status: 400 },
+      );
+    }
+    const row = getPrintWatchSource(db, symbol);
+    return NextResponse.json({
+      success: true,
+      data: row
+        ? { symbol: row.symbol, irPageUrl: row.ir_page_url, linkMustContain: row.link_must_contain }
+        : null,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
+  }
+}
+
 export async function PUT(request: NextRequest) {
   try {
     let body: { symbol?: unknown; irPageUrl?: unknown; linkMustContain?: unknown };
