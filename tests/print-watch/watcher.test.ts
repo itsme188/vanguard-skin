@@ -17,11 +17,14 @@ import {
   insertGoRequest,
   listDocumentRoads,
   listDocuments,
+  listForcedLivePrints,
   listIrSeenLinks,
   recordIrBaseline,
+  stampForcedOpen,
   upsertPrint,
   upsertPrintWatchSource,
 } from "@/lib/print-watch/store";
+import { addDays } from "@/lib/calendar/date-utils";
 import { irBaselineFingerprint } from "@/lib/print-watch/ir-baseline-step";
 import { recordDelivery } from "@/lib/print-watch/delivery";
 import type { LineContract, ParseCandidate, RoadReport, TaggedCandidate } from "@/lib/print-watch/types";
@@ -38,7 +41,7 @@ import {
   LEASE_RENEW_MS,
   ROAD_TIMEOUT_MS,
 } from "@/lib/print-watch/watcher";
-import { requestGo } from "@/lib/print-watch/go";
+import { requestGo, WatcherLeaseLost } from "@/lib/print-watch/go";
 import { acquisitionScheduler } from "@/lib/print-watch/scheduler";
 import { FORCED_PRE_MS } from "@/lib/print-watch/window";
 import { formatTwsDateTime } from "@/lib/print-watch/dj-adapter";
@@ -1493,6 +1496,45 @@ describe("IR page lane", () => {
     expect(getWatchStatus(db)[0].sources.ir).toMatch(/1 link\(s\) retired after 3 refusals/);
   });
 
+  // M6/R-C19. The budget is shared across the page fetch and every link of the
+  // road (suspended only during an ingest), so a late link on a hammered
+  // newsroom is the one that gets cut — and three cancelled polls would retire
+  // TONIGHT'S link permanently, with the lane reporting "1 link(s) retired
+  // after 3 refusals" and no way back.
+  it("a road cancellation never charges the link's refusal budget (M6)", async () => {
+    const { eventId } = seedAcme();
+    upsertPrintWatchSource(db, { symbol: "ACME", irPageUrl: IR_URL, linkMustContain: null });
+    recordIrBaseline(db, eventId, FP, [OLD_LINK]);
+    let hang = true;
+    let linkFetches = 0;
+    fake.fetchBytes = async (url: string, opts: FakeFetchOptions) => {
+      if (url === NEW_LINK && hang) {
+        linkFetches += 1;
+        // Settles only when the road's own timer (or the pass end) fires —
+        // exactly what a slow newsroom looks like from here.
+        return new Promise<FakeFetchResult>((_resolve, reject) => {
+          const abort = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          if (opts.signal?.aborted) abort();
+          else opts.signal?.addEventListener("abort", abort, { once: true });
+        });
+      }
+      return pageServer(() => PAGE_AFTER)(url);
+    };
+    fake.extract = async () => [candidate("eps_adj_q", 1.05)];
+
+    ensurePrintWatch(db);
+    await waitUntil(() => linkFetches >= 3, 80, 5_000);
+    expect(listIrSeenLinks(db, eventId).some((l) => l.link === NEW_LINK)).toBe(false);
+    expect(getWatchStatus(db)[0].sources.ir ?? "").not.toMatch(/link refused/);
+    expect(getWatchStatus(db)[0].sources.ir ?? "").not.toMatch(/retired/);
+
+    // The newsroom answers on a later poll: the link was never retired, so
+    // tonight's release is still acquired.
+    hang = false;
+    await waitUntil(() => listIrSeenLinks(db, eventId).some((l) => l.link === NEW_LINK), 80);
+    expect(listDocuments(db, printIdFor(eventId)).map((d) => d.url)).toContain(NEW_LINK);
+  });
+
   it("the NVDA RSS config keeps precedence over a stored IR page", async () => {
     const { eventId } = seedArmedEvent(); // NVDA — the one hardcoded RSS feed
     upsertPrintWatchSource(db, {
@@ -2668,6 +2710,139 @@ describe("slice C — window, fan-out, go", () => {
       owner.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // I1/R-C16. The one the two-connection test above could NOT prove: it seeds
+  // the print and calls `ensurePrintWatch` BEFORE the foreign insert, so the
+  // owner already has a runtime. The real topology is packaged :3099 holding
+  // the lease while the desk presses on dev :3000 for an event :3099 has not
+  // reconciled — an event the press itself armed, or one dated outside ±1 day.
+  // `wakePrintWatch` is in-process, so nothing but the tick can place that row.
+  it("go dispatcher: a press for a print the owner has NEVER reconciled is still claimed within GO_DISPATCH_MS (I1)", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "print-watch-godb-"));
+    const file = path.join(dir, "watch.db");
+    const owner = new Database(file);
+    owner.pragma("foreign_keys = ON");
+    runMigrations(owner);
+    const inMemory = db;
+    db = owner;
+    try {
+      // Ten days out: outside the ±1-day armed scope, and its scheduled window
+      // is days away — only the press can make this print live.
+      const farDate = addDays(EVENT_DATE, 10);
+      const { eventId } = seedArmedEvent({
+        symbol: "ACME",
+        issuerName: ACME_ISSUER,
+        eventDate: farDate,
+      });
+      fake.cik = ACME_CIK;
+      fake.twsUp = false;
+      fake.edgar = async () => [];
+
+      ensurePrintWatch(owner);
+      expect(getPrintByEventId(owner, eventId)).toBeNull(); // out of scope: no runtime here
+      await tick(10 * 60_000); // idle: no ensure, only the dispatcher
+
+      // The press happens in ANOTHER process. All this one ever sees is rows.
+      const other = new Database(file);
+      other.pragma("foreign_keys = ON");
+      const printId = upsertPrint(other, eventId, "ACME", farDate, "16:15");
+      stampForcedOpen(other, printId, new Date(fake.nowMs).toISOString());
+      const id = insertGoRequest(other, {
+        printId,
+        inputKind: "none",
+        inputUrl: null,
+        inputSha256: null,
+        inputBytesPath: null,
+        requestedAt: new Date(fake.nowMs).toISOString(),
+      });
+      other.close();
+
+      await tick(GO_DISPATCH_MS + 50);
+      // Claimed inside one tick — `claimGoRequest` runs synchronously at the
+      // head of `runGoRequest`, so "not queued" here IS "claimed within 2 s".
+      expect(getGoRequest(owner, id)!.status).not.toBe("queued");
+
+      await waitUntil(() => getGoRequest(owner, id)?.status === "done");
+      expect(getGoRequest(owner, id)!.attempts).toBe(1);
+      expect(getPrintById(owner, printId)!.state).toBe("window_open");
+    } finally {
+      db = inMemory;
+      _setTestSeams(null);
+      owner.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The same gap on the extend control: the owner's loop stopped at the old
+  // end, and the extension arrives as a row nobody in this process announced.
+  it("an extension written by another process AFTER the loop stopped brings the loop back within one tick (I1)", async () => {
+    const { eventId, printId } = seedAcmePrint();
+    void eventId;
+    fake.twsUp = false;
+    fake.edgar = async () => [];
+    stampForcedOpen(db, printId, new Date(fake.nowMs).toISOString()); // the press
+    ensurePrintWatch(db);
+    await tick(CADENCE_MS + 100);
+    const window = statusRow(db, printId).effectiveWindow!;
+
+    // Past the end: the loop's next pass expires the print and stands down.
+    fake.nowMs = Date.parse(window.end) + 60_000;
+    await tick(CADENCE_MS + 100);
+    expect(getPrintById(db, printId)!.state).toBe("expired");
+    const pollsWhileExpired = fake.edgarCalls;
+    await tick(CADENCE_MS * 2);
+    expect(fake.edgarCalls).toBe(pollsWhileExpired); // genuinely stopped
+
+    // "Extend 30 min" on the other process — a row write, nothing more.
+    extendPrintWindow(db, printId, new Date(fake.nowMs + 30 * 60_000).toISOString());
+    await tick(GO_DISPATCH_MS + 50);
+    expect(getPrintById(db, printId)!.state).toBe("window_open");
+    await tick(CADENCE_MS + 100);
+    expect(fake.edgarCalls).toBeGreaterThan(pollsWhileExpired);
+  });
+
+  // I2/R-C17. The skip this replaces claimed to protect "the press armed it",
+  // but `extraDates` already re-fetches a forced print's event through the
+  // flag-joined query — so the only print it could still reach was one whose
+  // flag the desk had just REMOVED.
+  it("a disarm after a press ends the forced watch — the user's disarm wins (I2)", async () => {
+    const { eventId, printId } = seedAcmePrint();
+    fake.twsUp = false;
+    fake.edgar = async () => [];
+    stampForcedOpen(db, printId, new Date(fake.nowMs).toISOString()); // pressed the wrong name
+    ensurePrintWatch(db);
+    await tick(CADENCE_MS + 100);
+    expect(getPrintById(db, printId)!.state).toBe("window_open");
+    const pollsBefore = fake.edgarCalls;
+    expect(pollsBefore).toBeGreaterThan(0);
+
+    // The arm chip, pressed again: the flag goes, nothing touches the print.
+    db.prepare(`DELETE FROM earnings_worksheet_flags WHERE event_id = ?`).run(eventId);
+    ensurePrintWatch(db);
+
+    expect(getPrintById(db, printId)!.state).toBe("disarmed");
+    // …and no consumer resurrects it: the forced-window list excludes it, so
+    // the dispatcher's own reconcile (I1) cannot bring the loop back either.
+    expect(listForcedLivePrints(db, fake.nowMs).map((p) => p.id)).not.toContain(printId);
+    await tick(CADENCE_MS * 3);
+    expect(fake.edgarCalls).toBe(pollsBefore);
+    expect(getPrintById(db, printId)!.state).toBe("disarmed");
+  });
+
+  // M5/R-C18: the watcher side of the requeue. `runGoRequest` treats this
+  // throw as "nobody looked" and puts the row back on the queue.
+  it("runForcedPass THROWS WatcherLeaseLost once the lease has moved, instead of answering with skipped reports (M5)", async () => {
+    const { printId } = seedAcmePrint();
+    fake.twsUp = false;
+    fake.edgar = async () => [];
+    ensurePrintWatch(db);
+    await tick(1);
+
+    stealLease(db, "someone-else@3099", fake.nowMs + 60_000);
+    ensurePrintWatch(db); // notices the lease is gone and stands the loops down
+
+    await expect(runForcedPass(db, printId)).rejects.toBeInstanceOf(WatcherLeaseLost);
   });
 
   it("any wake runs the go dispatcher, whatever reason the scheduler reports (R-C10)", async () => {

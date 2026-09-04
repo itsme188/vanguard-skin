@@ -43,6 +43,7 @@ import {
   upsertPrint,
   getPrintByEventId,
   getPrintById,
+  setPrintState,
   stampForcedOpen,
   extendPrintWindow,
   insertGoRequest,
@@ -60,6 +61,20 @@ import type { GoInputKind, GoRequestRow, RoadReport } from "./types";
 
 /** A press the desk can fix: bad input, or an event that cannot be pressed. → HTTP 400. */
 export class GoRefused extends Error {}
+
+/**
+ * [M5/R-C18] The watcher could not run this fan-out because the LEASE moved
+ * (or the print's runtime went away with it). NOT this request's failure and
+ * NOT a road outcome: nobody looked, so the row goes back to `queued` for the
+ * new owner's dispatcher instead of finalising `done` with three `skipped`
+ * reports the desk would read as the press's final answer.
+ *
+ * Declared HERE rather than in the watcher because `go.ts` must never import
+ * `./watcher` statically (the dispatcher imports `runGoRequest` from here — see
+ * the module header); the watcher imports this class the way it already imports
+ * `runGoRequest`.
+ */
+export class WatcherLeaseLost extends Error {}
 
 export interface GoInput {
   url?: string;
@@ -394,6 +409,14 @@ export async function requestGo(
         const newlyArmed = armWorksheet(db, eventId);
         enqueuePrepareSteps(db, eventId);
         const printId = upsertPrint(db, eventId, ev.symbol, ev.eventDate, ev.releaseTimeEt);
+        // [M7] The press RE-ARMS the event, so a print the desk had disarmed
+        // re-opens. `upsertPrint` never touches `state`, and
+        // `listForcedLivePrints` excludes `disarmed` — a re-press on a print
+        // dated outside the ±1-day scope would otherwise build no runtime, and
+        // the row would sit `queued` forever (attempts 0, so the cap never
+        // closes it either). `scheduled` is the honest reset:
+        // `ensurePrintWatch` reads the forced stamp and opens it from there.
+        if (getPrintById(db, printId)?.state === "disarmed") setPrintState(db, printId, "scheduled");
         const forcedOpenAt = stampForcedOpen(db, printId, nowIso);
         if (forcedOpenAt === null) throw new Error(`print-watch/go: print ${printId} vanished mid-press`);
         const requestId = insertGoRequest(db, {
@@ -552,6 +575,17 @@ export async function runGoRequest(
     // A lost claim is not this request's failure: the row belongs to someone
     // else now, so write NOTHING — no report, no requeue, no attempt spent.
     if (err instanceof GoClaimLost || claim.signal.aborted) return null;
+    // [R-C18] A lost LEASE is different: the row is still ours, but nothing in
+    // this process can acquire anything for it. Requeue (attempts kept, partial
+    // reports kept) so the new owner's dispatcher runs the fan-out — never
+    // `done`, which would tell the desk "skipped: lease lost" was the answer to
+    // its press. At the attempt cap the requeued row is closed out by
+    // `failCappedGoRequests` on a later tick, with these reports intact.
+    if (err instanceof WatcherLeaseLost) {
+      reports.push({ road: "system", outcome: "skipped", detail: safeErrorText(err) });
+      if (!requeueGoRequest(db, requestId, token, JSON.stringify(reports))) return null;
+      return getGoRequest(db, requestId);
+    }
     reports.push({ road: "system", outcome: "failed", detail: safeErrorText(err) });
     const attempts = getGoRequest(db, requestId)?.attempts ?? GO_MAX_ATTEMPTS;
     if (attempts < GO_MAX_ATTEMPTS) {
@@ -593,7 +627,15 @@ export function extendGoWindow(
       if (!print) {
         throw new GoRefused("No print-watch row for this event — arm it (or press Print is live) first.");
       }
-      const until = extendedUntil(effectiveWindow(print), nowMs);
+      // [M9] Nothing to extend on an unresolved TAS row that was never pressed:
+      // `effectiveWindow` returns null with no scheduled and no forced term, so
+      // the extension would be a dead write the window never reads back. The
+      // panel already hides Extend in that state; the route says why.
+      const current = effectiveWindow(print);
+      if (!current) {
+        throw new GoRefused("No window to extend — press Print is live first.");
+      }
+      const until = extendedUntil(current, nowMs);
       extendPrintWindow(db, print.id, until);
       return {
         printId: print.id,
