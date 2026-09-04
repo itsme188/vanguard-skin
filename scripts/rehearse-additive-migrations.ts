@@ -15,11 +15,14 @@
  * expected to grow by exactly the pending set):
  *   - its row count is unchanged
  *   - its `sqlite_sequence.seq` (if it has one) is unchanged
- *   - its stored DDL (`sqlite_master.sql`) is BYTE-IDENTICAL — the strongest
- *     additive proof there is: a create-copy-drop-rename rebuild, a dropped
- *     CHECK constraint or an added column all change it (review M8)
+ *   - its stored DDL (`sqlite_master.sql`) is unchanged, OR changed only by
+ *     APPENDING column definitions before the closing parenthesis — an
+ *     `ALTER TABLE … ADD COLUMN` is additive and is reported as a
+ *     `column-append`, while a rebuild, a dropped CHECK or a removed column
+ *     fails (review M8, ruling R-D30)
  * and for every index that existed before, it still exists with byte-identical
- * DDL; `schema_migrations`
+ * DDL (an index has no additive form — a changed definition is a rewrite);
+ * `schema_migrations`
  * gained EXACTLY the expected pending filenames (no more, no fewer);
  * `PRAGMA foreign_key_check` returns no rows; `PRAGMA integrity_check` is 'ok'.
  *
@@ -162,6 +165,32 @@ function ddlByName(db: Database.Database): Map<string, string | null> {
   return new Map(rows.map((r) => [`${r.type} "${r.name}"`, r.sql]));
 }
 
+const collapse = (sql: string): string => sql.replace(/\s+/g, " ").trim();
+
+/**
+ * R-D30: is `after` just `before` with more columns appended?
+ *
+ * `ALTER TABLE … ADD COLUMN` rewrites the stored DDL by inserting the new
+ * column definition immediately before the table's final `)`. So the change is
+ * additive exactly when, whitespace aside, everything up to that final paren is
+ * unchanged as a PREFIX (nothing removed, no constraint edited), the addition
+ * starts a new comma-separated item, and whatever follows the paren
+ * (`WITHOUT ROWID`, `STRICT`) is unchanged.
+ */
+function isColumnAppend(before: string, after: string): boolean {
+  const b = collapse(before);
+  const a = collapse(after);
+  const bi = b.lastIndexOf(")");
+  const ai = a.lastIndexOf(")");
+  if (bi === -1 || ai === -1) return false;
+  if (collapse(b.slice(bi + 1)) !== collapse(a.slice(ai + 1))) return false;
+  const bBody = b.slice(0, bi).trim();
+  const aBody = a.slice(0, ai).trim();
+  if (!aBody.startsWith(bBody)) return false;
+  const added = aBody.slice(bBody.length).trim();
+  return added.startsWith(",") && added.length > 1;
+}
+
 function appliedMigrations(db: Database.Database): Set<string> {
   const hasTable = db
     .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`)
@@ -270,19 +299,31 @@ export async function rehearseAdditiveMigrations(dbPath: string): Promise<Rehear
     }
     checks.push({ name: "pre-existing indexes still exist", pass: indexesOk });
 
-    // 3b. Every pre-existing table's and index's DDL is byte-identical
-    //     (review M8): the strongest statement of "additive" there is.
+    // 3b. Every pre-existing table's and index's DDL is unchanged, or changed
+    //     only by appending columns to a TABLE (review M8, R-D30).
     let ddlOk = true;
+    const columnAppends: string[] = [];
     for (const [key, sql] of beforeDdl) {
-      if (!afterDdl.has(key)) {
+      const after = afterDdl.get(key);
+      if (after === undefined) {
         ddlOk = false;
         failures.push(`${key} no longer exists after migration`);
-      } else if (afterDdl.get(key) !== sql) {
-        ddlOk = false;
-        failures.push(`DDL changed for ${key}`);
+        continue;
       }
+      if (after === sql) continue;
+      if (key.startsWith('table "') && sql !== null && after !== null && isColumnAppend(sql, after)) {
+        columnAppends.push(key.slice('table "'.length, -1));
+        continue;
+      }
+      ddlOk = false;
+      failures.push(`DDL changed for ${key}`);
     }
-    checks.push({ name: "pre-existing table and index DDL byte-identical", pass: ddlOk });
+    checks.push({
+      name:
+        "pre-existing table and index DDL additive" +
+        (columnAppends.length > 0 ? ` (column-append: ${columnAppends.join(", ")})` : ""),
+      pass: ddlOk,
+    });
 
     // 4. schema_migrations gained EXACTLY the expected pending filenames.
     const newlyApplied = [...afterMigrations].filter((f) => !beforeMigrations.has(f)).sort();
