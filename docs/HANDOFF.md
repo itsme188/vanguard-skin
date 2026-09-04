@@ -3,57 +3,58 @@
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Session date:** 2026-09-03 18:00 ET → 2026-09-04 16:30 ET. Focus: the monthly brokerage-statement import (a data-entry task) which surfaced a real parser defect, a wrong rule in the skill that governs it, and a bundle-leak hazard. Ran in parallel with the live-print-v2 slice C/D session; that session's handoff is `92774f4c` and its work is untouched here.
+**Session date:** 2026-09-04 16:30 ET → 17:05 ET. Focus: land the live-print-v2 merge chain (slices B, C, D) and the 089 cutover, then rebuild. The chain landed and the app is rebuilt and healthy — but the 089 cutover did NOT happen through its runner: the slice B merge armed the migration and the next test run applied it to the live database unattended. That incident, the seatbelt that closes it, and a second still-open door are the substance of this handoff.
 
 ## 1. Goal + exact files changed
 
-Import the August 2026 statements (two Vanguard PDFs, one IBKR activity CSV) through the `import-monthly-statements` skill. Application code changed in three commits on `main`:
+Merge `print-v2-slice-b`, `-c` and `-d` to `main` in the pinned order, run the 089 cutover between B and C, rebuild.
 
-- **`65bcb85`** — `lib/import/parsers/ibkr-activity.ts` (Interest section rewritten as per-currency blocks), `tests/import/ibkr-activity-interest-fx.test.ts` (new, 5 tests), `lib/data/security-classifications.ts` (one lookup row: `VUSXX`, mirroring `VMFXX`), `.claude/skills/import-monthly-statements/SKILL.md`.
-- **`b8c957da`** — `electron-builder.yml` (one exclusion) and `scripts/verify-bundle.js` (one leak-list entry).
-- **`c4b4ee5f`**, **`2c75754c`** — `docs/plans/TODO.md`, `CLAUDE.md` (docs reconciliation).
+Merges (no application code authored by this session beyond the three fixes below):
 
-No other application code was touched. The canonical CSVs and the gates record are archived outside the repo under `~/Desktop/Trading - Local/canonical/2026-08/` (real figures — deliberately not committed).
+- **`ff37c881`** — merge slice B (34 commits, 52 files, +9522/−471). Clean, zero conflicts.
+- **`51fa458e`** — merge slice C (25 commits). Clean.
+- **merge slice D**, rebased onto C first (29 commits, one dropped as already upstream). **Three conflicts**, all resolved by keeping both sides:
+  - `app/dashboard/today/PrintWatchPanel.tsx` — `PrintStatusEntry` now carries C's `forcedOpenAt`/`windowExtendedUntil`/`effectiveWindow`/`goRequest` AND D's `read`/`activeRead`/`callouts`. C's hunk also opened the `GoRequestSummary` interface, so the brace structure needed care, not just concatenation.
+  - `docs/DECISIONS.md` — C's bullet block and D's new `##` section both kept.
+  - `lib/print-watch/register.ts` — **both** C's go handler and D's first-pass handler now register ahead of B's. `print_watch_go_requests.print_id`, `print_watch_reads.print_id` and `print_watch_callouts.print_id` all reference `print_watch_prints` with **no** `ON DELETE CASCADE`, so each slice must repoint its own rows before B's donor-print delete. C before D only matches slice order — I checked migration 090 and 091 and no foreign key runs between the go tables and the first-pass tables, so the two are genuinely independent.
 
-## 2. Tests / E2E / deploy result
+Fixes authored this session:
+
+- **`4da7daa3`** — `tests/setup/db-guard.ts` (new), `tests/repo/tests-never-touch-live-db.test.ts` (new), `vitest.config.ts`. The seatbelt; see §3.
+- **`e5250c60`** — `tests/print-watch/go.test.ts`. R-C7's two assertions were a handler **census** (exact arrays), valid only while C was the sole slice ahead of B. Both now assert position, the way D's sibling test in `first-pass-merge.test.ts` already did.
+- **`3bbcdf5e`** — `docs/plans/TODO.md` reconciliation.
+
+## 2. Tests / build / deploy result
 
 | Check | Result |
 |---|---|
-| `npx vitest run` (full) | 7,648 passed, 1 failed — `tests/auth/boundary-matrix.test.ts` ESLint guard, a 57 s load timeout; passes solo in 28 s, no commit in range touches it |
-| `npx vitest run tests/import` | 373 passed / 31 files |
-| New FX tests | 5, written first and watched fail for the right reason before the parser changed |
-| `tsc --noEmit` | no new errors in the changed files |
+| Suite after B merge | **7,938 passed / 0 failed** (664 files) |
+| Suite after C merge | **8,085 passed / 0 failed** (670 files) |
+| Suite after D merge | 8,216 passed / **1 failed** — the stale R-C7 census assertion, fixed in `e5250c60` |
+| Suite, final merged tree | **8,217 passed / 0 failed** (684 files), exit 0 |
+| `npx next build` | clean, exit 0 |
+| `tsc --noEmit` | 20 errors in four test files — the documented pre-existing baseline; **zero** of those files appear in this session's commit range |
 | `npm run verify:changed` | clean |
-| `scripts/audit-twr-vs-statements.ts` | unchanged verdict; its GATE FAIL is four pre-existing 2024–25 `investigate` rows, none from this work |
-| **Deploy** | **`npm run electron:deploy` exit 0** — compiled, signed, **notarization successful**, `verify-bundle: OK (no leaks, runtime pieces present)`, installed to `/Applications` and relaunched at 16:22 ET |
+| **Deploy** | **`npm run electron:deploy` exit 0** — signed, **notarization successful**, `verify-bundle: OK (no leaks, runtime pieces present)`, installed and relaunched 16:59 ET |
 
-Post-deploy health: app serving on 127.0.0.1:3099, startup sync completed in 200.8 s, and all three accounts' month-end anchors reconcile to their statement with zero delta both before and after the startup purge and valuation recompute.
+**Post-deploy verification (real app, not tests):** migration chain now 088 → 089 → 090 → 091, `integrity_check` ok, `foreign_key_check` clean. Minted a QA session, loaded `/dashboard/today` (**200**, 230,853 bytes) and `GET /api/print-watch/status` — one payload carrying **all three slices' fields at once**: B's `documents` map (`{8: dj-release, 9: edgar-ex99}`), C's computed `effectiveWindow`, D's `read`/`activeRead`/`callouts`. Zero errors in the server log, which also proves `register.ts`'s registration cycle loads cleanly in the packaged runtime (a TDZ there was the live risk of that conflict). Slice D then ran for real: a first-pass read created 17:00:13 ET and `done` 24 seconds later, one attempt, model `claude-fable-5`. QA session revoked afterwards; verified 401.
 
 ## 3. Open concerns / rejected approaches / decisions
 
-- **The skill's unsettled-activity rule was FALSE and had already cost a month of ledger accuracy.** Phase 5 asserted that the next statement re-lists the prior month's "Unsettled activity" rows in its Completed section. It does not — verified by grepping the whole August statement for prior-month trade dates and finding none. Nine July trades had therefore never entered the ledger, and `computeTaxLots` had masked the missing sale with a synthesized `RECONCILE_CLOSE`. They were imported from the July statement as their own canonical file and the real sale superseded the stand-in. Rule corrected in the skill and in `CLAUDE.md`.
-- **IBKR statement sections are per-currency blocks.** Native rows, a native `Total`, then IBKR's own `Total in USD`. The parser read every Amount column as dollars, so a KRW debit-interest row would have entered the ledger at that magnitude in USD. July's equivalent row was tiny, which is why the defect never surfaced. Non-USD blocks now scale by the block's own Total-in-USD ratio; the native figure is retained in the note **and in the source key**, so re-importing an older statement dedupes against the row it already wrote rather than twinning it; a non-USD block with no conversion line is skipped with a warning rather than stored. **The sibling Dividends / Fees / Deposits & Withdrawals loops still read Amount raw** — same defect class, filed in TODO, not fixed because no non-USD row has appeared there and I did not want to change three more loops without a fixture.
-- **Deploy decision — this session deliberately overrode the previous handoff's "Deploy: NONE".** That decision rested on two grounds: (a) "main gained no bundled application code", which stopped being true when the parser fix landed, and (b) "the 089 cutover must precede the next rebuild". Ground (b) was checked rather than assumed: the actual hazard, as TODO states it, is that `lib/db.ts` runs migrations at module load, so **a relaunch applies 089 without the cutover runner's backup/holder/missing-bytes gates**. That hazard exists only once slice B is merged. B is unmerged (34 commits ahead), `main` carries nothing above 088, and 088 was already applied — so the build bundled no 089. **Verified after the relaunch: `schema_migrations` still tops out at 088 (applied 2026-09-03), 089 absent.** The cutover gate is intact and the ordering `merge B → cutover → merge C → merge D → rebuild` is unaffected, except that a rebuild has now already happened and the post-cutover one will supersede it.
-- **Bundle leak closed.** `workers/cron/.wrangler` (miniflare KV/R2/cache SQLite; the KV blobs carry armed-event projection data) was present in the main checkout, and Next's tracer sweeps it into `.next/standalone`. `CLAUDE.md` had flagged this on 2026-09-03 with "add the path to the bundle gate's leak list when next touched". Both layers now cover it. **Scoped to `.wrangler` on purpose:** `lib/calendar/enrichment-runner.ts` imports `workers/cron/src/yahoo` at runtime, so the blanket `workers/**` exclusion I first considered would have been wrong.
-- **Rejected:** committing the IBKR statement before fixing the parser (would have written a five-figure-magnitude foreign-currency row into the ledger as dollars); importing through the packaged app after the fix (it bundles its own `lib/`, so it would have used the old parser — the route's exact lib sequence was driven from a repo-root tsx script instead); a blanket `workers/**` bundle exclusion.
-- **Left open, with a decision needed on the third:** the sibling currency loops above; a position whose tax-lot quantity exceeds every statement's holding since July, meaning a historical sale is missing from the ledger; and bond accrued interest, which sits inside lot cost basis and proceeds because `netLegDollars` takes lot dollars from `amount` while the canonical row carries dirty cash with a clean price — so bond realized figures differ from the statement's by exactly the accrued leg. Tax exports are already marker-gated NOT-FOR-FILING, so none of this is user-visible as filing data.
+- **[INCIDENT] Migration 089 applied itself to the LIVE database from the test suite, at 16:33:59 ET.** `lib/db.ts` runs `runMigrations(db)` at MODULE LOAD against `resolveDbPath()`, which with no `DATABASE_PATH` is `<cwd>/data/vanguard.db`. Merging B put `089_print_watch_document_identity.ts` into the default `CODE_MIGRATIONS` registry, and the first full-suite run afterwards applied it 20 seconds in — bypassing `scripts/migrate-089-document-identity.ts` and every gate it exists to enforce (fresh verified backup, no other process holding the file, bytes-on-disk for every survivor, a human-read conservation report).
+  - **Why three review rounds missed it:** every slice was verified in a **worktree**, where `data/vanguard.db` does not exist — the identical code path silently creates a throwaway DB and migrates that. All three slice worktrees hold one (976K–996K vs the real 161M). Verification in isolation, normally the safe choice, is precisely what hid this.
+  - **Accepted rather than rolled back, by user ruling.** The end state is the one `--live` would have produced, and I verified it independently: the migration's own candidate-conservation invariant ran and passed (it throws otherwise, and the transaction committed), `integrity_check` ok, `foreign_key_check` clean, and all 9 surviving documents have their bytes on disk — so the one substantive skipped gate would have passed anyway. Genuinely lost: a pre-089 backup (none existed; the newest was 2026-08-23) and the human acknowledgement. Post-incident backup at `data/backups/post-089-incident-2026-09-04T20-36-10Z.db`.
+  - Rejected: restoring from the 2026-08-23 backup, which would discard 12 days including the August statement import and the July unsettled-trade rescue.
+- **[STILL OPEN — the same class, a second door] `next build` also opens the live database and runs migrations.** Proved directly: `DATABASE_PATH=<empty dir>/vanguard.db npx next build` creates the file and applies migrations. This — not the app launch — is what applied **090 and 091 at 20:50:20 UTC**, inside `electron:deploy`'s build step, nine minutes before the new server started at 20:59:06. The seatbelt is scoped to vitest and does **not** cover this. Two real consequences: a build on a dev machine mutates the production database, and between build and install the OLD binary runs against the NEW schema. That window was harmless today only because I had already quit the app. **Not fixed — it is beyond the approved scope and touches either the build scripts or `lib/db.ts`; flagged to the user with two options (a scratch `DATABASE_PATH` in the build scripts, or skipping migrations when `NEXT_PHASE === 'phase-production-build'`).**
+- **Seatbelt design, and why not an import ban.** `tests/setup/db-guard.ts` pins `DATABASE_PATH` at a per-worker-**process** scratch file before any test module loads, so parallel workers never race one file. An explicitly-set `DATABASE_PATH` is still honoured (the QA sandbox recipe uses one) unless it IS the live database — tested by realpath plus `(dev, ino)`, the same identity check the 089 runner uses, so a symlink or hardlink spelling cannot slip past. The guard test asserts where the database **resolves**, not which modules are imported, because the incident came through a **transitive** import: all four tests that name `@/lib/db` mock it, so an import ban would have caught nothing. Its third case loads the real unmocked singleton so the seal is exercised on every run. Verified: real singleton import lands on scratch with the live file's mtime unchanged; absolute, relative and symlink spellings of the live path all refused; every full-suite run since left the live DB untouched.
+- **The cutover order still held its purpose.** C and D were merged only after 089 was on the database, so the `--live` runner's "refuses while a later migration is pending" rule was never violated in substance — just enforced by accident rather than by the runner.
 
-### Carried forward from the parallel session (do not lose — this file was overwritten after their close)
+## 4. Uncommitted changes / live-process state
 
-The live-print-v2 slice C/D session closed at `92774f4c` and then recorded three user decisions at `c1c45f4f`, 8 minutes before this handoff overwrote the file. Preserved here because they are decisions, not narrative:
+`main` clean and **not yet pushed at the time of writing** — 4 local commits plus three merges ahead of `origin/main`; push pending user confirmation. The desktop app is the **2026-09-04 16:59 ET build**, running on 127.0.0.1:3099, database at migration 091.
 
-- **R-D21 CONFIRMED by the user on 2026-09-04 to stand as built**, to be revisited only when slice F builds out the hub: facts are accepted-only, so the parse hook always found none; slice B's accept route now schedules the read, making the first read follow the desk's FIRST ACCEPT within seconds.
-- **Both disputed Codex findings confirmed by the user on 2026-09-04:** #20 bogeys, actuals and deltas render as public market data with parity to the existing sheet rather than blanket masking; #26 no fake-model seam ships in production code, so the sandbox does one real model call instead.
-- **Nightly-QA PRs #64 / #65 are PARKED by decision** until after the slice merges (recorded in TODO.md, which survives intact).
-
-Full slice C/D detail — files, per-branch test counts, rulings R-C4..R-C19 and R-D1..R-D37 — is in `92774f4c`; `git show 92774f4c:docs/HANDOFF.md`.
-
-## 4. Uncommitted changes / live-process state (after the deploy)
-
-`main` clean at `2c75754c` and pushed; the working tree has no modified files. The desktop app is the **2026-09-04 16:22 ET build** (previously 2026-09-03 10:41) and is running on 127.0.0.1:3099. Migration state is 088; **089 has not been applied and must still go through `scripts/migrate-089-document-identity.ts --live`.**
-
-Four worktrees remain, all clean and belonging to the other session: `../vanguard-skin-print-v2-b` (`702baaf8`), `../vanguard-skin-print-v2-c` (`c37ed1e0`), `../vanguard-skin-print-v2-d` (`4c33e361`), and `../vanguard-skin-qa-fix` (the nightly fixer's parked worktree — leave it alone). Open PRs **#64** and **#65** from the nightly QA automation are still unreviewed. No dev servers; the temporary QA session minted for the import API was revoked. The Worker is unchanged.
+Four worktrees remain, all clean: `../vanguard-skin-print-v2-b`, `-c`, `-d` (now merged — safe to remove, and their SDD ledgers are already archived under `docs/private/`) and `../vanguard-skin-qa-fix` (the nightly fixer's — leave it alone). A safety tag `pre-rebase-slice-d` marks D's pre-rebase head. Nightly-QA PRs **#64** and **#65** are now **unblocked** (they were parked behind exactly this merge sequence) and are the natural next review; both predate the slice merges, so expect Today-panel conflicts. Nothing is armed for earnings until ORCL on 2026-09-07 16:15.
 
 ## 5. Claude session link
 
-https://claude.ai/code/session_01N5oAfTW3wTiVzn21mYB8Mk
+https://claude.ai/code/session_01SHUM6GCPDui3xocDhHhzTQ
