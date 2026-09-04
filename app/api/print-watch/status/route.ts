@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { getWatchStatus } from "@/lib/print-watch/watcher";
 import { getSheet, listDocumentRoads, listDocuments } from "@/lib/print-watch/store";
 import { getLatestDoneRead, getActiveRead, listCallouts } from "@/lib/print-watch/read-store";
-import { sanitizeProseLines } from "@/lib/print-watch/first-pass-prompt";
+import { sanitizeProseLines } from "@/lib/print-watch/first-pass-format";
 import type { ReadRow } from "@/lib/print-watch/first-pass-types";
 
 /**

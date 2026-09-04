@@ -205,8 +205,11 @@ describe("verifyCallout", () => {
         sheetLineKeys: keys,
       }),
     ).toMatchObject({ ok: false, reason: expect.stringMatching(/value/) });
-    // R-D1: anchoring is an OR — "growth" is nowhere near this snippet, but
-    // the guidance names "arr growth", so the guidance branch anchors it.
+    // R-D1: anchoring is still an OR — "growth" is nowhere near this snippet,
+    // yet the guidance names "arr growth", so the guidance branch anchors the
+    // label. R-D24 is a SEPARATE eligibility check on top of it: the guidance
+    // types "arr growth" as a percent, so a COUNT proposal for it is refused
+    // however well anchored it is.
     expect(
       verifyCallout({
         proposal: { label: "ARR growth", value_text: "712", snippet: "The company had 712 customers above $1 million in ARR", doc_id: 1 },
@@ -214,7 +217,28 @@ describe("verifyCallout", () => {
         guidanceMetrics: guidance,
         sheetLineKeys: keys,
       }),
+    ).toMatchObject({ ok: false, reason: "guidance types this metric as percent; the proposal is a count" });
+    // Same label, same guidance-only anchoring, agreeing unit: eligible.
+    expect(
+      verifyCallout({
+        proposal: { label: "ARR growth", value_text: "24%", snippet: "Annual recurring revenue (ARR) reached $3.74 billion, up 24%", doc_id: 1 },
+        text: TEXT,
+        guidanceMetrics: guidance,
+        sheetLineKeys: keys,
+      }),
     ).toMatchObject({ ok: true, labelNorm: "arr growth" });
+  });
+  it("a figure-less guidance clause types nothing, so a count proposal it names stays eligible (R-D24)", () => {
+    // "Annual recurring revenue commentary." carries no figure — unit null —
+    // so it names the metric without typing it.
+    expect(
+      verifyCallout({
+        proposal: { label: "Annual recurring revenue", value_text: "712", snippet: "The company had 712 customers above $1 million in ARR", doc_id: 1 },
+        text: TEXT,
+        guidanceMetrics: guidance,
+        sheetLineKeys: keys,
+      }),
+    ).toMatchObject({ ok: true, parsed: { value: 712, unit: "count" }, labelNorm: "annual recurring revenue" });
   });
   it("refuses a label with no content words", () => {
     expect(
