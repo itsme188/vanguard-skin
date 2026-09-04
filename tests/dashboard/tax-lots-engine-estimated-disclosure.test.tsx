@@ -106,15 +106,15 @@ describe("TaxLotSummaryCards engine-estimated disclosure", () => {
     );
     // Realized tile: 2 closes, +$700
     expect(html).toContain(
-      "(incl. <span>2</span> engine-estimated closes, <span>+$700</span>)"
+      "(incl. <span>2</span> engine-estimated closes, <span class=\"whitespace-nowrap\"><span>+$700</span>)</span>"
     );
     // Long-term tile: 1 close, +$400 — singular, no stray "closes"
     expect(html).toContain(
-      "(incl. <span>1</span> engine-estimated close, <span>+$400</span>)"
+      "(incl. <span>1</span> engine-estimated close, <span class=\"whitespace-nowrap\"><span>+$400</span>)</span>"
     );
     // Short-term tile: 1 close, +$300
     expect(html).toContain(
-      "(incl. <span>1</span> engine-estimated close, <span>+$300</span>)"
+      "(incl. <span>1</span> engine-estimated close, <span class=\"whitespace-nowrap\"><span>+$300</span>)</span>"
     );
     // Three disclosures, one per affected tile — the Unrealized tile has none.
     expect(html.match(/engine-estimated close/g) ?? []).toHaveLength(3);
