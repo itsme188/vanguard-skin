@@ -112,7 +112,7 @@ describe("POST /api/print-watch/callouts/accept (#12)", () => {
 });
 
 describe("GET /api/print-watch/status (#15)", () => {
-  it("returns the newest DONE read as `read`, a newer generating/failed attempt as `activeRead`, callouts, and stays a pure read", async () => {
+  it("returns the newest DONE read as `read`, a newer generating attempt as `activeRead`, callouts, and stays a pure read", async () => {
     const { GET } = await import("@/app/api/print-watch/status/route");
     let entry = (await (await GET()).json()).data.prints.find((p: { printId: number }) => p.printId === printId);
     expect(entry.read).toBeNull(); expect(entry.activeRead).toBeNull(); expect(entry.callouts).toEqual([]);

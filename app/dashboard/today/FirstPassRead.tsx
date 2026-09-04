@@ -98,9 +98,20 @@ export default function FirstPassRead({ eventId, read, activeRead, lastAttempt =
   // R-D35: the note reports what the last CLICK did ("Regenerating…", a
   // refusal). The moment the read rows move underneath it — a new attempt, a
   // finish, a failure — it describes a state that no longer exists, so it goes.
+  //
+  // R-D37: F10 narrowed `activeRead` to LIVE work only and moved a terminal
+  // failure into `lastAttempt`. If the poll never observes the row while it
+  // is `generating` — the whole attempt can start and fail between two polls
+  // — `read` and `activeRead` never change, so those deps alone miss the
+  // transition and "Regenerating…" is left on screen describing an attempt
+  // that already failed. `lastAttempt?.id` is a fresh DB row id per attempt
+  // (a failed row is immutable once written — see read-store.ts — and any
+  // in-place generating→failed transition on the SAME id also flips
+  // `activeRead` to null, which the existing deps already catch), so it alone
+  // is the correct, minimal key for "a NEW terminal attempt landed."
   useEffect(() => {
     setNote(null);
-  }, [read?.id, activeRead?.id, activeRead?.status]);
+  }, [read?.id, activeRead?.id, activeRead?.status, lastAttempt?.id]);
 
   async function regenerate() {
     if (!eventId) { setNote("No event id on this print — cannot regenerate"); return; }

@@ -89,13 +89,49 @@ describe("render (react-dom/server; #28)", () => {
   });
 });
 
+// R-D37: mirrors the literal effect-deps array pinned below. There is no
+// jsdom harness to mount the component and watch React's own dependency
+// compare fire, so this is a manual stand-in for it — kept honest by the
+// source-pin test asserting the component's actual array matches this same
+// field list.
+function noteEffectDeps(props: {
+  read: FirstPassReadDto | null;
+  activeRead: ActiveReadDto | null;
+  lastAttempt?: LastAttemptDto | null;
+}): readonly unknown[] {
+  return [props.read?.id, props.activeRead?.id, props.activeRead?.status, props.lastAttempt?.id];
+}
+function depsEqual(a: readonly unknown[], b: readonly unknown[]): boolean {
+  return a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
+}
+
 describe("mount", () => {
-  it("clears the action note whenever the read rows move (R-D35) — source pin, no jsdom harness in this repo", () => {
+  it("clears the action note whenever the read rows move (R-D35/R-D37) — source pin, no jsdom harness in this repo", () => {
     // Precedent for the source pin: tests/dashboard/narrative-block-refresh.test.ts
     // (this repo has no jsdom/@testing-library harness, and renderToStaticMarkup
     // never runs effects).
     const src = readFileSync("app/dashboard/today/FirstPassRead.tsx", "utf8");
-    expect(src).toMatch(/useEffect\(\s*\(\)\s*=>\s*\{\s*setNote\(null\);?\s*\}\s*,\s*\[read\?\.id, activeRead\?\.id, activeRead\?\.status\]\)/);
+    expect(src).toMatch(/useEffect\(\s*\(\)\s*=>\s*\{\s*setNote\(null\);?\s*\}\s*,\s*\[read\?\.id, activeRead\?\.id, activeRead\?\.status, lastAttempt\?\.id\]\)/);
+  });
+
+  it("R-D37: a new terminal attempt changes the deps even when read/activeRead never move — the poll-missed-the-generating-row case", () => {
+    // Before R-D37: the FE's poll can jump straight from "nothing happening"
+    // to "a terminal failure landed" without ever observing the row as
+    // `activeRead` (F10 made `activeRead` live-work-only). `read` stays
+    // whatever it was, `activeRead` stays null throughout — the OLD deps
+    // never move, so a stale "Regenerating…" note would survive forever.
+    const before = noteEffectDeps({ read: null, activeRead: null, lastAttempt: null });
+    const after = noteEffectDeps({ read: null, activeRead: null, lastAttempt: failed });
+    expect(depsEqual(before, after)).toBe(false);
+
+    // Same failed row observed again on the next poll (nothing new happened)
+    // must NOT look like a fresh change — no re-render churn on a steady state.
+    const again = noteEffectDeps({ read: null, activeRead: null, lastAttempt: failed });
+    expect(depsEqual(after, again)).toBe(true);
+
+    // The done-read case (R-D35's original scenario) still moves the deps too.
+    const doneAfter = noteEffectDeps({ read: done, activeRead: null, lastAttempt: null });
+    expect(depsEqual(before, doneAfter)).toBe(false);
   });
 
 
