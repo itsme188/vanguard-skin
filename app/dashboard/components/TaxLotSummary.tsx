@@ -29,7 +29,11 @@ function EngineEstimatedNote({
   return (
     <span className={className} title={ENGINE_ESTIMATED_TITLE}>
       (incl. <Count value={count} /> engine-estimated close
-      {count !== 1 ? "s" : ""}, <Money value={gain} signed />)
+      {count !== 1 ? "s" : ""},{" "}
+      {/* Keep the sign glued to its figure: the note can wrap inside a
+          tile, and a line break between "−" and "$704" reads as two
+          tokens (same class as the security-detail Amount column fix). */}
+      <span className="whitespace-nowrap"><Money value={gain} signed />)</span>
     </span>
   );
 }
