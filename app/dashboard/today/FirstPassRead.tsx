@@ -2,11 +2,15 @@
 
 // The first-pass read block under the print-watch sheet (spec §4.4; §2 "The
 // first output is the on-screen first-pass read"). Privacy (controller ruling
-// on Codex #20): model prose, model-derived labels and vs_bogey_text render
-// inside <PrivateText> — one span per line, inside the block element; facts,
-// bogeys and deltas are public market data and render like the sheet's own
-// actuals. Slice F re-lays the panel; this block is self-contained.
-import { useState } from "react";
+// on Codex #20, extended by R-D34): model prose, model-derived labels and
+// vs_bogey_text render inside <PrivateText> — one span per line, inside the
+// block element — and so do the BOGEY and DELTA cells of the facts table: B's
+// sheet masks its bogey column because the expected figure is the desk's own
+// curated number (see PrintWatchPanel's header), and a delta reconstructs that
+// bogey from the public actual. The ACTUAL cell and the verdict word stay
+// plain, matching B's actual column — they are the printed market figure.
+// Slice F re-lays the panel; this block is self-contained.
+import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 import { PrivateText } from "@/lib/privacy/components";
 // R-D20: ONLY the client-safe module here — `callouts.ts` pulls in node:fs and
@@ -61,6 +65,13 @@ export default function FirstPassRead({ eventId, read, activeRead, callouts, onC
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
+  // R-D35: the note reports what the last CLICK did ("Regenerating…", a
+  // refusal). The moment the read rows move underneath it — a new attempt, a
+  // finish, a failure — it describes a state that no longer exists, so it goes.
+  useEffect(() => {
+    setNote(null);
+  }, [read?.id, activeRead?.id, activeRead?.status]);
+
   async function regenerate() {
     if (!eventId) { setNote("No event id on this print — cannot regenerate"); return; }
     setBusy("read"); setNote(null);
@@ -105,8 +116,8 @@ export default function FirstPassRead({ eventId, read, activeRead, callouts, onC
               <tr key={f.metric_id}>
                 <td className="py-0.5 pr-3">{r.label}</td>
                 <td className="py-0.5 pr-3 font-mono">{r.actual}</td>
-                <td className="py-0.5 pr-3 font-mono text-ink-dim">{r.bogey}</td>
-                <td className="py-0.5 pr-3 font-mono text-right">{r.delta}</td>
+                <td className="py-0.5 pr-3 font-mono text-ink-dim"><PrivateText>{r.bogey}</PrivateText></td>
+                <td className="py-0.5 pr-3 font-mono text-right"><PrivateText>{r.delta}</PrivateText></td>
                 <td className="py-0.5 font-mono" aria-label={r.verdict}>{verdictGlyph(r.verdict)} {r.verdict}</td>
               </tr>
             ); })}

@@ -47,7 +47,12 @@ describe("render (react-dom/server; #28)", () => {
   it("renders the done read with prose lines inside per-line PrivateText spans, public figures in clear, and the active line", () => {
     const html = renderWithPrivacy({ eventId: 5, read: done, activeRead: generating, callouts: [callout()], onChanged: async () => undefined });
     expect(html).toContain("read · 16:07 ET · updating…");
-    expect(html).toContain("$898.2M"); expect(html).toContain("$877.3M (VK)"); expect(html).toContain("+2.4%");
+    // R-D34: the printed ACTUAL is public and renders bare; the BOGEY (the
+    // desk's own curated expectation, masked in B's sheet) and the DELTA (which
+    // reconstructs that bogey from the public actual) render inside PrivateText.
+    expect(html).toMatch(/<td[^>]*>\$898\.2M<\/td>/);
+    expect(html).toMatch(/<td[^>]*><span[^>]*>\$877\.3M \(VK\)<\/span><\/td>/);
+    expect(html).toMatch(/<td[^>]*><span[^>]*>\+2\.4%<\/span><\/td>/);
     expect(html).toMatch(/<li[^>]*><span[^>]*>Revenue of \$898\.2M beat by 2\.4%\.<\/span><\/li>/);
     expect(html).toMatch(/<li[^>]*><span[^>]*>FY27 framework<\/span><\/li>/);
     expect(html).toMatch(/<span[^>]*>no bogey on file<\/span>/);
@@ -61,6 +66,15 @@ describe("render (react-dom/server; #28)", () => {
 });
 
 describe("mount", () => {
+  it("clears the action note whenever the read rows move (R-D35) — source pin, no jsdom harness in this repo", () => {
+    // Precedent for the source pin: tests/dashboard/narrative-block-refresh.test.ts
+    // (this repo has no jsdom/@testing-library harness, and renderToStaticMarkup
+    // never runs effects).
+    const src = readFileSync("app/dashboard/today/FirstPassRead.tsx", "utf8");
+    expect(src).toMatch(/useEffect\(\s*\(\)\s*=>\s*\{\s*setNote\(null\);?\s*\}\s*,\s*\[read\?\.id, activeRead\?\.id, activeRead\?\.status\]\)/);
+  });
+
+
   it("PrintWatchPanel mounts FirstPassRead exactly once with the card's onChanged", () => {
     const src = readFileSync("app/dashboard/today/PrintWatchPanel.tsx", "utf8");
     expect(src.match(/<FirstPassRead\b/g)).toHaveLength(1);
