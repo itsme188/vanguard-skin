@@ -11,6 +11,7 @@ import {
 import { saveManualActuals } from "@/lib/earnings/actuals";
 import type { SaveManualActualsResult } from "@/lib/earnings/actuals";
 import type { PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
+import { scheduleFirstPassRead } from "@/lib/print-watch/read-scheduler";
 
 export const dynamic = "force-dynamic";
 
@@ -673,6 +674,15 @@ export async function POST(request: NextRequest) {
     }
     throw err;
   }
+
+  // R-D21: the desk's accept is what makes a fact ACCEPTED, and the read's
+  // facts are accepted-only — so the parse-time hook always skipped a fresh
+  // print on `no_facts` and nothing else ever armed the first read. Every
+  // successful POST re-arms the 5 s debounce, un-accepts included (they change
+  // the fact set too); the debounce coalesces a burst into one run and the
+  // runner skips on `no_facts` when the sheet ends up empty. Post-commit, never
+  // inside the transaction.
+  scheduleFirstPassRead(db, print.id);
 
   return NextResponse.json({
     success: true,
