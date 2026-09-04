@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { NextRequest } from "next/server";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertPrint, upsertLines } from "@/lib/print-watch/store";
-import { listReads, claimRead, finalizeReadDone } from "@/lib/print-watch/read-store";
+import { listReads, claimRead, finalizeReadDone, finalizeReadFailed, READ_RETRY_BACKOFF_MS } from "@/lib/print-watch/read-store";
 import { _setReadSeams } from "@/lib/print-watch/read";
 import {
   enableFirstPassScheduler,
@@ -128,6 +128,63 @@ describe("GET /api/print-watch/status (#15)", () => {
     expect(entry.activeRead).toMatchObject({ id: r.row.id, status: "generating", nonce: 1 });
     const src = fs.readFileSync("app/api/print-watch/status/route.ts", "utf8");
     expect(src).not.toMatch(/runFirstPassRead|claimRead|scheduleFirstPassRead|acceptCallout|INSERT|UPDATE|DELETE/);
+  });
+});
+
+describe("GET /api/print-watch/status — activeRead is live work only (F10)", () => {
+  /** Fails the print's read until the attempt cap stops it. Only the FIRST
+   *  claim regenerates (that is what opens a new nonce past the done read);
+   *  the rest are ordinary retries after their backoff, which is the path the
+   *  cap actually counts. */
+  function failUntilCapped(): void {
+    let now = T0;
+    let regenerate = true;
+    for (let i = 0; i < 6; i++) {
+      const c = claimRead(db, printId, { fingerprint: "fp-c", recompute: () => "fp-c", nowMs: now, modelId: "m", regenerate });
+      regenerate = false;
+      if (c.kind === "failed_cap") return;
+      if (c.kind !== "claimed") throw new Error(c.kind);
+      finalizeReadFailed(db, { readId: c.row.id, token: c.token, error: "prose failed validation: read 5/6+", errorCode: "cites", nowMs: now, retryable: true });
+      now += READ_RETRY_BACKOFF_MS + 1;
+    }
+    throw new Error("never capped");
+  }
+  /** A done read on the current fingerprint, whatever came before it. */
+  function landDoneRead(nowMs: number): number {
+    const c = claimRead(db, printId, { fingerprint: "fp-c", recompute: () => "fp-c", nowMs, modelId: "m", regenerate: true });
+    if (c.kind !== "claimed") throw new Error(c.kind);
+    finalizeReadDone(db, { readId: c.row.id, token: c.token, facts: [], prose: PROSE, callouts: [], nowMs });
+    return c.row.id;
+  }
+  const entryOf = async () => (await (await (await import("@/app/api/print-watch/status/route")).GET()).json()).data.prints.find((p: { printId: number }) => p.printId === printId);
+
+  it("a terminal failure lands in lastAttempt with its CAUSE and `capped`, never in activeRead", async () => {
+    seedCallout();
+    const doneId = (db.prepare(`SELECT id FROM print_watch_reads WHERE print_id = ?`).get(printId) as { id: number }).id;
+    failUntilCapped();
+    const entry = await entryOf();
+    expect(entry.activeRead).toBeNull();
+    expect(entry.read.id).toBe(doneId); // the good read still stands
+    // F2: the cap no longer eats the reason; the total is what the cap counted.
+    expect(entry.lastAttempt).toMatchObject({ error_code: "cites", capped: true, next_retry_at: null });
+    expect(entry.lastAttempt.attempts).toBeGreaterThanOrEqual(3);
+    expect(entry.lastAttempt.error).toMatch(/^attempt cap reached/);
+  });
+
+  it("a live generating row is the activeRead; a failure the newest done read already answered is not surfaced", async () => {
+    const f = claimRead(db, printId, { fingerprint: "fp-c", recompute: () => "fp-c", nowMs: T0, modelId: "m" });
+    if (f.kind !== "claimed") throw new Error();
+    finalizeReadFailed(db, { readId: f.row.id, token: f.token, error: "boom", errorCode: "model_error", nowMs: T0, retryable: true });
+    expect((await entryOf()).lastAttempt).toMatchObject({ id: f.row.id, capped: false, error_code: "model_error" });
+
+    landDoneRead(T0 + 1000); // a good read lands AFTER that failure
+    expect((await entryOf()).lastAttempt).toBeNull();
+
+    const g = claimRead(db, printId, { fingerprint: "fp-c", recompute: () => "fp-c", nowMs: T0, modelId: "m", regenerate: true });
+    if (g.kind !== "claimed") throw new Error();
+    const entry = await entryOf();
+    expect(entry.activeRead).toMatchObject({ id: g.row.id, status: "generating" });
+    expect(entry.lastAttempt).toBeNull();
   });
 });
 

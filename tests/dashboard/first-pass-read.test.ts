@@ -2,15 +2,18 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import FirstPassRead, { readStatusLabel, verdictGlyph, calloutStateLabel, factRow, type FirstPassReadDto, type ActiveReadDto } from "@/app/dashboard/today/FirstPassRead";
+import FirstPassRead, { readStatusLabel, verdictGlyph, calloutStateLabel, factRow, type FirstPassReadDto, type ActiveReadDto, type LastAttemptDto } from "@/app/dashboard/today/FirstPassRead";
 import type { CalloutView, ReadFact } from "@/lib/print-watch/first-pass-types";
 import { PrivacyProvider } from "@/lib/privacy/context";
 
 const fact = (o: Partial<ReadFact> = {}): ReadFact => ({ metric_id: "revenue_q", label: "Revenue", state: "accepted", unit: "usd", period: "Q", kind: "point", actual: 898.2e6, actual_high: null, expected_consensus: 877.3e6, expected_whisper: null, expected_source: "VK", expected_consensus_vendor: null, expected_basis: "specified", delta_pct: 2.38, verdict: "beat", ...o });
 const callout = (o: Partial<CalloutView> = {}): CalloutView => ({ id: 1, print_id: 1, read_id: 1, label: "ARR", label_norm: "arr", value: 3.74e9, value_high: null, unit: "usd", value_text: "$3.74B", snippet: "ARR reached $3.74 billion", doc_id: 1, doc_sha256: "d", evidence_sha256: "e", verifier_version: 1, vs_bogey_text: "no bogey on file", state: "proposed", accepted_at: null, revoked_at: null, superseded_by_read_id: null, created_at: "2026-09-10T20:07:00.000Z", updated_at: "2026-09-10T20:07:00.000Z", effective_state: "proposed", doc_kind: "user-drop", ...o });
 const done: FirstPassReadDto = { id: 1, status: "done", nonce: 0, model_id: "m", generated_at: "2026-09-10T20:07:00.000Z", facts: [fact()], prose: { read: ["Revenue of $898.2M beat by 2.4%.", "Second line."], call_watch: ["FY27 framework", "Net new ARR", "Capex"], caveats: ["One document so far."] } };
-const generating: ActiveReadDto = { id: 2, status: "generating", nonce: 1, attempts: 1, error_code: null, error: null, next_retry_at: null, claimed_at: "2026-09-10T20:08:00.000Z" };
-const failed: ActiveReadDto = { ...generating, status: "failed", error_code: "model_error", error: "model call failed" };
+const generating: ActiveReadDto = { id: 2, status: "generating", nonce: 1, attempts: 1, claimed_at: "2026-09-10T20:08:00.000Z" };
+// F10: a failure is a lastAttempt, never an "active" read.
+const failed: LastAttemptDto = { id: 2, nonce: 1, attempts: 1, error_code: "model_error", error: "model call failed", next_retry_at: null, capped: false, claimed_at: "2026-09-10T20:08:00.000Z" };
+const retrying: LastAttemptDto = { ...failed, error_code: "cites", error: "prose failed validation: read 5/6+", next_retry_at: "2026-09-10T20:12:00.000Z" };
+const gaveUp: LastAttemptDto = { ...failed, error_code: "cites", error: "attempt cap reached (3/3): prose failed validation", attempts: 3, capped: true };
 
 // R-D12: usePrivacy() throws outside a PrivacyProvider, so every render call
 // wraps the component. On the server renderer useState/useEffect never run a
@@ -20,14 +23,21 @@ function renderWithPrivacy(props: Parameters<typeof FirstPassRead>[0]): string {
 }
 
 describe("helpers", () => {
-  it("readStatusLabel covers every done/active combination (#15)", () => {
+  it("readStatusLabel covers every done/active/last-attempt combination (#15, F10)", () => {
     // R-D21: facts are accepted-only, so the copy names the ACCEPT, not the parse.
     expect(readStatusLabel(null, null)).toBe("no read yet — generates after the first accept");
     expect(readStatusLabel(null, generating)).toBe("reading…");
-    expect(readStatusLabel(null, failed)).toBe("read failed — model_error");
     expect(readStatusLabel(done, null)).toBe("read · 16:07 ET");
     expect(readStatusLabel(done, generating)).toBe("read · 16:07 ET · updating…");
-    expect(readStatusLabel(done, failed)).toBe("read · 16:07 ET · update failed — model_error");
+    // F10: the store's token becomes a word, and the desk is told what happens next.
+    expect(readStatusLabel(null, null, failed)).toBe("read failed — model call failed");
+    expect(readStatusLabel(null, null, retrying)).toBe("read failed — prose failed validation · retrying at 16:12 ET");
+    expect(readStatusLabel(null, null, gaveUp)).toBe("read failed — prose failed validation · gave up after 3 attempts");
+    expect(readStatusLabel(done, null, gaveUp)).toBe("read · 16:07 ET · update failed — prose failed validation · gave up after 3 attempts");
+    // Live work outranks a past failure: the retry IS the answer to it.
+    expect(readStatusLabel(done, generating, gaveUp)).toBe("read · 16:07 ET · updating…");
+    // An unmapped code falls through as itself rather than inventing a description.
+    expect(readStatusLabel(null, null, { ...failed, error_code: null })).toBe("read failed — unknown");
   });
   it("verdictGlyph and calloutStateLabel are text, never colour alone", () => {
     expect(verdictGlyph("range")).toBe("↔"); expect(verdictGlyph("n/a")).toBe("·");
@@ -61,7 +71,21 @@ describe("render (react-dom/server; #28)", () => {
   });
   it("renders the empty state and a failed attempt", () => {
     expect(renderWithPrivacy({ read: null, activeRead: null, callouts: [], onChanged: async () => undefined })).toMatch(/no read yet/);
-    expect(renderWithPrivacy({ read: null, activeRead: failed, callouts: [], onChanged: async () => undefined })).toContain("read failed — model_error");
+    const html = renderWithPrivacy({ read: null, activeRead: null, lastAttempt: gaveUp, callouts: [], onChanged: async () => undefined });
+    expect(html).toContain("read failed — prose failed validation · gave up after 3 attempts");
+    // F10: a terminal failure must not disable the way out of it. (The class
+    // list carries "disabled:opacity-50"; the ATTRIBUTE is what matters, and
+    // React renders a true `disabled` as `disabled=""`.)
+    expect(html).toContain("regenerate");
+    expect(html).not.toContain('disabled=""');
+  });
+
+  it("renders no call-watch heading or list when every call-watch line dropped (R-D36)", () => {
+    const noWatch: FirstPassReadDto = { ...done, prose: { ...done.prose, call_watch: [], caveats: ["no call-watch lines survived validation"] } };
+    const html = renderWithPrivacy({ read: noWatch, activeRead: null, callouts: [], onChanged: async () => undefined });
+    expect(html).not.toContain("Call watch");
+    expect(html).not.toContain("<ol");
+    expect(html).toContain("no call-watch lines survived validation");
   });
 });
 

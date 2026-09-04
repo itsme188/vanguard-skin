@@ -25,7 +25,7 @@ import { ScrollFade } from "../components/ScrollFade";
 import { PrivateText } from "@/lib/privacy/components";
 import { formatLargeUSD, formatPercent } from "@/lib/format";
 import { reconcile } from "@/lib/print-watch/reconcile";
-import FirstPassRead, { type ActiveReadDto, type FirstPassReadDto } from "./FirstPassRead";
+import FirstPassRead, { type ActiveReadDto, type FirstPassReadDto, type LastAttemptDto } from "./FirstPassRead";
 import type { CalloutView } from "@/lib/print-watch/first-pass-types";
 import type {
   ExpectedValue,
@@ -76,6 +76,7 @@ interface PrintStatusEntry {
    *  omits them. */
   read?: FirstPassReadDto | null;
   activeRead?: ActiveReadDto | null;
+  lastAttempt?: LastAttemptDto | null;
   callouts?: CalloutView[];
 }
 
@@ -1275,7 +1276,7 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
           </tbody>
         </table>
       </ScrollFade>
-      <FirstPassRead eventId={print.eventId} read={print.read ?? null} activeRead={print.activeRead ?? null} callouts={print.callouts ?? []} onChanged={onChanged} />
+      <FirstPassRead eventId={print.eventId} read={print.read ?? null} activeRead={print.activeRead ?? null} lastAttempt={print.lastAttempt ?? null} callouts={print.callouts ?? []} onChanged={onChanged} />
 
       <div className="flex items-center gap-2 mt-3 flex-wrap">
         <button
