@@ -55,6 +55,12 @@ import {
   PdfEncryptedError,
   PdfToolMissingError,
 } from "@/lib/print-watch/pdf";
+import {
+  _setSchedulerSeams,
+  enableFirstPassScheduler,
+  disableFirstPassScheduler,
+  __resetSchedulerForTests,
+} from "@/lib/print-watch/read-scheduler";
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -2521,6 +2527,42 @@ describe("pipeline", () => {
     expect(fs.existsSync(doc.bytes_path)).toBe(true);
     expect(fs.existsSync(textPathFor(doc.bytes_path))).toBe(true);
     expect(listDocuments(db, printId)).toHaveLength(1);
+  });
+
+  // slice D (M-D1): the parse-completion point is the ONLY place the watcher
+  // knows about the first-pass read. Every other test in this file runs with
+  // the scheduler disabled (it is inert under VITEST unless a test opts in),
+  // so no debounce timer can leak out of the watcher suite.
+  it("schedules a first-pass read once the parse lands (post-commit hook, M-D1)", async () => {
+    enableFirstPassScheduler();
+    const runner = vi.fn(async () => undefined);
+    _setSchedulerSeams({
+      runner,
+      setTimeout: ((fn: () => void) => {
+        fn();
+        return 0;
+      }) as unknown as typeof setTimeout,
+    });
+    try {
+      const { printId } = seedAcmePrint();
+      fake.extract = async () => [candidate("revenue_q", 1000)];
+
+      const result = await ingestDocument(
+        db,
+        printId,
+        "user-drop",
+        "user-drop:release.txt",
+        null,
+        Buffer.from("ACME reports Q2 2026 results. Revenue $1,000 million.", "utf8"),
+      );
+
+      expect(result.outcome).toBe("parsed");
+      expect(runner).toHaveBeenCalledWith(db, printId);
+    } finally {
+      __resetSchedulerForTests();
+      _setSchedulerSeams(null);
+      disableFirstPassScheduler();
+    }
   });
 });
 

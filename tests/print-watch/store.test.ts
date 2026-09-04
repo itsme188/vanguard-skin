@@ -134,6 +134,7 @@ describe("print-watch store (migration 085)", () => {
       )
       .all() as Array<{ name: string }>;
     expect(tables.map((t) => t.name)).toEqual([
+      "print_watch_callouts",
       "print_watch_candidate_archive",
       "print_watch_document_roads",
       "print_watch_documents",
@@ -142,6 +143,7 @@ describe("print-watch store (migration 085)", () => {
       "print_watch_ir_seen",
       "print_watch_lines",
       "print_watch_prints",
+      "print_watch_reads",
       "print_watch_sources",
     ]);
 
