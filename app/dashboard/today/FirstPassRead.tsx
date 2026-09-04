@@ -22,17 +22,47 @@ import { formatValue, sanitizeProseLines } from "@/lib/print-watch/first-pass-fo
 import type { CalloutView, ReadErrorCode, ReadFact, ReadProse, ReadVerdict } from "@/lib/print-watch/first-pass-types";
 
 export interface FirstPassReadDto { id: number; status: "done"; nonce: number; model_id: string | null; generated_at: string | null; facts: ReadFact[]; prose: ReadProse }
-export interface ActiveReadDto { id: number; status: "generating" | "failed"; nonce: number; attempts: number; error_code: ReadErrorCode | null; error: string | null; next_retry_at: string | null; claimed_at: string | null }
+/** F10: LIVE work only — a failed row is never "active". */
+export interface ActiveReadDto { id: number; status: "generating"; nonce: number; attempts: number; claimed_at: string | null }
+/** F10: the newest failed attempt, when it came after the read on display.
+ *  `attempts` is the total the cap counts; `capped` means it gave up. */
+export interface LastAttemptDto { id: number; nonce: number; attempts: number; error_code: ReadErrorCode | null; error: string | null; next_retry_at: string | null; capped: boolean; claimed_at: string | null }
 
 function etClock(iso: string): string {
   return new Date(iso).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
-export function readStatusLabel(read: FirstPassReadDto | null, active: ActiveReadDto | null): string {
-  const tail = !active ? "" : active.status === "generating" ? "updating…" : `update failed — ${active.error_code ?? "unknown"}`;
+/** F10: the desk reads words, not the store's tokens. Anything unmapped falls
+ *  through as the raw code rather than inventing a description for it. */
+const ERROR_WORDS: Record<string, string> = {
+  cites: "prose failed validation",
+  sanitisation: "prose failed validation",
+  model_drift: "model changed",
+  model_error: "model call failed",
+  timeout: "timed out",
+  takeover: "taken over",
+  attempt_cap: "abandoned at the attempt cap",
+};
+
+/** "prose failed validation · retrying at 16:12 ET" / "… · gave up after 3 attempts". */
+function attemptWords(a: LastAttemptDto): string {
+  const why = a.error_code ? (ERROR_WORDS[a.error_code] ?? a.error_code) : "unknown";
+  if (a.next_retry_at) return `${why} · retrying at ${etClock(a.next_retry_at)} ET`;
+  if (a.capped) return `${why} · gave up after ${a.attempts} attempts`;
+  return why;
+}
+
+export function readStatusLabel(
+  read: FirstPassReadDto | null,
+  active: ActiveReadDto | null,
+  lastAttempt: LastAttemptDto | null = null,
+): string {
+  // Live work outranks a past failure: the retry IS the answer to it.
+  const tail = active ? "updating…" : lastAttempt ? `update failed — ${attemptWords(lastAttempt)}` : "";
   if (!read) {
-    if (!active) return "no read yet — generates after the first accept";
-    return active.status === "generating" ? "reading…" : `read failed — ${active.error_code ?? "unknown"}`;
+    if (active) return "reading…";
+    if (lastAttempt) return `read failed — ${attemptWords(lastAttempt)}`;
+    return "no read yet — generates after the first accept";
   }
   const base = `read · ${read.generated_at ? etClock(read.generated_at) : "?"} ET`;
   return tail ? `${base} · ${tail}` : base;
@@ -61,7 +91,7 @@ export function factRow(f: ReadFact): { label: string; actual: string; bogey: st
   return { label: f.label, actual, bogey, delta, verdict: f.verdict };
 }
 
-export default function FirstPassRead({ eventId, read, activeRead, callouts, onChanged }: { eventId?: number; read: FirstPassReadDto | null; activeRead: ActiveReadDto | null; callouts: CalloutView[]; onChanged: () => Promise<void> }) {
+export default function FirstPassRead({ eventId, read, activeRead, lastAttempt = null, callouts, onChanged }: { eventId?: number; read: FirstPassReadDto | null; activeRead: ActiveReadDto | null; lastAttempt?: LastAttemptDto | null; callouts: CalloutView[]; onChanged: () => Promise<void> }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
@@ -103,8 +133,8 @@ export default function FirstPassRead({ eventId, read, activeRead, callouts, onC
     <section className="mt-4 border-t border-edge pt-3" aria-label="First-pass read">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-[11px] font-mono uppercase text-ink-faint whitespace-nowrap!" style={{ letterSpacing: "0.14em" }}>First-pass read</h3>
-        <span className="text-[11px] font-mono text-ink-faint">{readStatusLabel(read, activeRead)}</span>
-        <button type="button" className="text-[11px] font-mono underline text-ink-dim disabled:opacity-50" disabled={busy !== null || activeRead?.status === "generating"} onClick={regenerate}>
+        <span className="text-[11px] font-mono text-ink-faint">{readStatusLabel(read, activeRead, lastAttempt)}</span>
+        <button type="button" className="text-[11px] font-mono underline text-ink-dim disabled:opacity-50" disabled={busy !== null || activeRead !== null} onClick={regenerate}>
           {busy === "read" ? "requesting…" : "regenerate"}
         </button>
       </div>
@@ -127,8 +157,15 @@ export default function FirstPassRead({ eventId, read, activeRead, callouts, onC
       {prose && (
         <div className="mt-2 text-[13px] leading-snug">
           <ul className="list-disc pl-4">{prose.read.map((l, i) => <li key={i}><PrivateText>{l}</PrivateText></li>)}</ul>
-          <p className="mt-2 text-[11px] font-mono uppercase text-ink-faint">Call watch</p>
-          <ol className="list-decimal pl-4">{prose.call_watch.map((l, i) => <li key={i}><PrivateText>{l}</PrivateText></li>)}</ol>
+          {/* R-D36: call-watch lines may all drop (they are forward-looking and
+              often cite nothing). No empty heading and no empty list — the
+              caveat below carries the explanation. */}
+          {prose.call_watch.length > 0 && (
+            <>
+              <p className="mt-2 text-[11px] font-mono uppercase text-ink-faint">Call watch</p>
+              <ol className="list-decimal pl-4">{prose.call_watch.map((l, i) => <li key={i}><PrivateText>{l}</PrivateText></li>)}</ol>
+            </>
+          )}
           {prose.caveats.length > 0 && <p className="mt-1 text-[12px] text-ink-dim"><PrivateText>{prose.caveats.join(" · ")}</PrivateText></p>}
         </div>
       )}

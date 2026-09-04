@@ -5,6 +5,7 @@ import { upsertPrint } from "@/lib/print-watch/store";
 import {
   claimRead, heartbeatRead, finalizeReadDone, finalizeReadFailed, markReadSuperseded, getLatestDoneRead, getActiveRead, listReads,
   canScheduleRead, listCallouts, acceptCallout, revokeCalloutsForIneligibleDocs, READ_HEARTBEAT_STALE_MS, READ_RETRY_BACKOFF_MS,
+  getGeneratingRead, getLastFailedAttempt, cappedAttempt,
   type VerifiedCalloutInput,
 } from "@/lib/print-watch/read-store";
 
@@ -64,7 +65,30 @@ describe("claimRead", () => {
     finalizeReadFailed(db, { readId: c.row.id, token: c.token, error: "e", errorCode: "model_error", nowMs: T0 + 150_000, retryable: true });
     expect(claim("fp1", T0 + 400_000).kind).toBe("failed_cap");
     expect(canScheduleRead(db, printId, "fp1", T0 + 400_000)).toBe(false);
-    expect(getActiveRead(db, printId)?.error_code).toBe("attempt_cap");
+    // F2: the cap no longer overwrites the CAUSE. The code still names why the
+    // last attempt died; the cap lives in the error text, and `capped` reads it
+    // back so the panel can say "gave up" without losing the reason.
+    const last = getLastFailedAttempt(db, printId)!;
+    expect(last.row.error_code).toBe("model_error");
+    expect(last.row.error).toMatch(/^attempt cap reached \(3\/3\): /);
+    expect(last.row.next_retry_at).toBeNull();
+    expect(last.capped).toBe(true);
+    expect(last.totalAttempts).toBe(3);
+    expect(cappedAttempt(last.row)).toBe(true);
+  });
+
+  it("a retry-pending failure is not capped, and a live claim is not a last attempt (F2, F10)", () => {
+    const a = claim("fp1"); if (a.kind !== "claimed") throw new Error();
+    finalizeReadFailed(db, { readId: a.row.id, token: a.token, error: "prose failed validation: read 5/6+", errorCode: "cites", nowMs: T0, retryable: true });
+    const pending = getLastFailedAttempt(db, printId)!;
+    expect(pending.row.error_code).toBe("cites");
+    expect(pending.row.error).toBe("prose failed validation: read 5/6+"); // no cap prefix
+    expect(pending.capped).toBe(false);
+    expect(getGeneratingRead(db, printId)).toBeNull();
+    const b = claim("fp1", T0 + READ_RETRY_BACKOFF_MS + 1); if (b.kind !== "claimed") throw new Error();
+    expect(getGeneratingRead(db, printId)?.id).toBe(b.row.id);
+    // The failed row is still the last ATTEMPT while the retry generates.
+    expect(getLastFailedAttempt(db, printId)?.row.id).toBe(a.row.id);
   });
   it("a non-retryable failure (model_drift) schedules no retry", () => {
     const a = claim("fp1"); if (a.kind !== "claimed") throw new Error();
