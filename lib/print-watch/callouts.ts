@@ -15,6 +15,11 @@ import { deltaPctNumber } from "./read-facts";
 import type { DocumentRow, LineContract } from "./types";
 import { INLINE_BAND_PCT } from "./first-pass-types";
 import type { CalloutProposal, CalloutUnit } from "./first-pass-types";
+// R-D20: `formatValue` lives in the client-safe module (this file pulls in
+// node:fs and ./pdf, so a `"use client"` component can never import it). It is
+// re-exported here so every existing server caller and test keeps its import.
+import { formatValue } from "./first-pass-format";
+export { formatValue } from "./first-pass-format";
 
 export const VERIFIER_VERSION = 1;
 export const LABEL_WINDOW_CHARS = 240;
@@ -267,21 +272,24 @@ function nearly(a: number, b: number): boolean {
 }
 
 /** R-D8: word-SUBSET match — every content word of `words` appears among the
- *  words of some guidance metric's key. Used for the eligibility gate and
- *  for the guidance branch of anchoring (both differ from `vsBogeyText`'s
- *  strict key equality — that function's association is typed, this one's
- *  is topical). */
-function namedByGuidance(words: string[], guidanceMetrics: GuidanceMetric[]): boolean {
-  return guidanceMetrics.some((m) => {
+ *  words of a guidance metric's key. The list form feeds the eligibility gate,
+ *  R-D24's unit agreement and the guidance branch of anchoring; the boolean is
+ *  the same test read as a yes/no. Both differ from `vsBogeyText`'s strict key
+ *  equality — that function's association is typed, this one's is topical. */
+function guidanceMetricsNaming(words: string[], guidanceMetrics: GuidanceMetric[]): GuidanceMetric[] {
+  return guidanceMetrics.filter((m) => {
     const metricWords = m.key.split(" ");
     return words.every((w) => metricWords.includes(w));
   });
 }
+function namedByGuidance(words: string[], guidanceMetrics: GuidanceMetric[]): boolean {
+  return guidanceMetricsNaming(words, guidanceMetrics).length > 0;
+}
 
 /**
- * Order of checks (R-D1): content words -> guidance names it -> sheet lacks
- * it -> snippet length -> verbatim -> value_text parses -> value in snippet
- * in that unit -> anchoring.
+ * Order of checks (R-D1, R-D24): content words -> guidance names it -> sheet
+ * lacks it -> snippet length -> verbatim -> value_text parses -> the naming
+ * guidance's unit agrees -> value in snippet in that unit -> anchoring.
  *
  * Anchoring (R-D1) is an OR, matching spec §4.4: the label's content words
  * either all sit within LABEL_WINDOW_CHARS of the snippet, OR all match
@@ -294,7 +302,8 @@ export function verifyCallout({ proposal, text, guidanceMetrics, sheetLineKeys: 
   const key = labelNorm(proposal.label);
   const words = contentWords(proposal.label);
   if (!key || words.length === 0) return { ok: false, reason: "label has no content words" };
-  const namedInGuidance = namedByGuidance(words, guidanceMetrics);
+  const naming = guidanceMetricsNaming(words, guidanceMetrics);
+  const namedInGuidance = naming.length > 0;
   if (!namedInGuidance) return { ok: false, reason: "guidance does not name this metric" };
   if (lineKeys.includes(key)) return { ok: false, reason: "the sheet already has a line for this metric" };
   const snippet = proposal.snippet.trim();
@@ -303,6 +312,17 @@ export function verifyCallout({ proposal, text, guidanceMetrics, sheetLineKeys: 
   if (idx === -1) return { ok: false, reason: "snippet is not verbatim in the document text" };
   const parsed = parseValueText(proposal.value_text);
   if (!parsed) return { ok: false, reason: "value_text does not parse" };
+  // R-D24: the guidance that makes this metric eligible also TYPES it. If every
+  // guidance metric naming the label carries a unit and none of them is the
+  // unit the proposal parsed as, the model has attached a number of the wrong
+  // kind to a real metric name ("ARR growth" guided in percent, proposed as a
+  // customer count). A figure-less clause ("Operating income commentary",
+  // unit null) types nothing and leaves the proposal eligible. This is an
+  // eligibility check, separate from R-D1's anchoring OR, which is untouched.
+  const typed = naming.filter((m) => m.unit !== null);
+  if (typed.length === naming.length && typed.every((m) => m.unit !== parsed.unit)) {
+    return { ok: false, reason: `guidance types this metric as ${typed[0].unit}; the proposal is a ${parsed.unit}` };
+  }
   const inSnippet = numbersIn(snippet, parsed.unit);
   const hasLow = inSnippet.some((n) => nearly(n, parsed.value));
   const hasHigh = parsed.value_high === null || inSnippet.some((n) => nearly(n, parsed.value_high!));
@@ -320,17 +340,6 @@ export function verifyCallout({ proposal, text, guidanceMetrics, sheetLineKeys: 
   // eligibility gate must not silently lose this alternative.
   if (!nearSnippet && !namedInGuidance) return { ok: false, reason: "label words are not anchored to the snippet or the guidance" };
   return { ok: true, parsed, snippetIndex: idx, labelNorm: key };
-}
-
-export function formatValue(value: number, unit: CalloutUnit): string {
-  if (unit === "percent") return `${value.toFixed(1)}%`;
-  if (unit === "per_share") return `$${value.toFixed(2)}`;
-  if (unit === "count") return Number.isInteger(value) ? String(value) : value.toFixed(1);
-  const abs = Math.abs(value);
-  if (abs >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `$${(value / 1e6).toFixed(1)}M`;
-  if (abs >= 1e3) return `$${(value / 1e3).toFixed(1)}K`;
-  return `$${value.toFixed(2)}`;
 }
 
 function deltaLabel(expected: number, actual: number): string {

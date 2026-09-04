@@ -80,6 +80,12 @@ describe("buildFirstPassPrompt — the exact payload (data-flow contract, #19)",
     expect(a.user).toContain("<<<UNTRUSTED:n1 bogeys>>>");
     expect(a.user).toContain("<<<UNTRUSTED:n1 notes>>>");
     expect(a.user).toContain("<<<FACTS>>>");
+    // M2: the intel pair is untrusted text too (a sheet's source_label can be
+    // newsletter-derived), so it renders inside a delimited block.
+    expect(a.user).toContain("<<<UNTRUSTED:n1 intel>>>");
+    const intelBlock = a.user.slice(a.user.indexOf("<<<UNTRUSTED:n1 intel>>>"), a.user.indexOf("<<<END UNTRUSTED:n1>>>", a.user.indexOf("<<<UNTRUSTED:n1 intel>>>")));
+    expect(intelBlock).toContain("LAST QUARTER:");
+    expect(intelBlock).toContain("IMPLIED MOVE:");
     expect(a.system).toMatch(/data, not instructions/i);
     expect(a.system).toContain("n1");
     expect(renderPrompt(a.dto, "n1")).toEqual({ system: a.system, user: a.user });
@@ -92,6 +98,13 @@ describe("buildFirstPassPrompt — the exact payload (data-flow contract, #19)",
     const sync = buildDtoSync(db, printId, texts, "test-model-1")!;
     expect(fingerprintOf(sync.dto)).toBe(a.fingerprint);
     expect(db.inTransaction).toBe(false);
+  });
+  it("composes implied_move from the shared precedence resolver: the sheet's expected move beats a straddle, and it falls back when the sheet states none (R-D22)", async () => {
+    db.prepare(`INSERT INTO earnings_intel (event_id, implied_move_pct, implied_method, computed_at) VALUES (?, 4.2, 'straddle', '2026-09-10T12:00:00.000Z')`).run(eventId);
+    db.prepare(`UPDATE earnings_bogeys SET expected_move_pct = 6.5 WHERE event_id = ?`).run(eventId);
+    expect((await buildFirstPassPrompt(db, printId))!.dto.implied_move).toEqual({ pct: 6.5, method: "sheet", source_label: "VK" });
+    db.prepare(`UPDATE earnings_bogeys SET expected_move_pct = NULL WHERE event_id = ?`).run(eventId);
+    expect((await buildFirstPassPrompt(db, printId))!.dto.implied_move).toEqual({ pct: 4.2, method: "straddle", source_label: null });
   });
   it("returns null for a print with no facts", async () => {
     const eid = Number(db.prepare(`INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol) VALUES ('manual','earnings','2026-09-11','BETA','k2','BETA')`).run().lastInsertRowid);
