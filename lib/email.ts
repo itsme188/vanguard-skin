@@ -17,6 +17,19 @@ export interface SendEmailOptions {
   fromLocalPart?: string;
   /** Reply-To header so user replies don't disappear into a no-reply mailbox. */
   replyTo?: string;
+  /**
+   * Caller-minted Message-ID, same `<uuid@domain>` shape this function mints
+   * by default. The earnings send service (lib/earnings/send-service.ts) mints
+   * it BEFORE the provider call and stores it on the audit row, so a send whose
+   * outcome is never learned can still be found in the mailbox or the Resend log.
+   */
+  messageId?: string;
+}
+
+/** What the provider said. `response` is nodemailer's raw SMTP reply line. */
+export interface SendEmailResult {
+  messageId: string;
+  response: string;
 }
 
 /**
@@ -25,7 +38,7 @@ export interface SendEmailOptions {
  * Reads RESEND_API_KEY + RESEND_FROM_DOMAIN from env. Throws if either is
  * missing — caller surfaces that as a 500.
  */
-export async function sendEmail(opts: SendEmailOptions): Promise<void> {
+export async function sendEmail(opts: SendEmailOptions): Promise<SendEmailResult> {
   const apiKey = process.env.RESEND_API_KEY;
   const domain = process.env.RESEND_FROM_DOMAIN;
   if (!apiKey || !domain) {
@@ -43,8 +56,8 @@ export async function sendEmail(opts: SendEmailOptions): Promise<void> {
     process.env.REPLY_TO_ADDRESS ??
     `replies@${domain}`;
 
-  // Generate unique Message-ID
-  const messageId = `<${randomUUID()}@${domain}>`;
+  // Caller-minted Message-ID wins; otherwise mint one, same as before.
+  const messageId = opts.messageId ?? `<${randomUUID()}@${domain}>`;
 
   const transporter = nodemailer.createTransport({
     host: "smtp.resend.com",
@@ -53,7 +66,7 @@ export async function sendEmail(opts: SendEmailOptions): Promise<void> {
     auth: { user: "resend", pass: apiKey },
   });
 
-  await transporter.sendMail({
+  const info = (await transporter.sendMail({
     from: `"${FROM_NAME}" <${fromAddress}>`,
     to: Array.isArray(opts.to) ? opts.to.join(", ") : opts.to,
     replyTo: replyToAddress,
@@ -67,5 +80,14 @@ export async function sendEmail(opts: SendEmailOptions): Promise<void> {
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
       "Message-ID": messageId,
     },
-  });
+  })) as { messageId?: unknown; response?: unknown } | undefined;
+
+  // nodemailer reports the header we set (mime-node returns an existing
+  // Message-ID rather than generating one), but never trust a transport to
+  // populate a field: the id we PUT on the wire is the id we stored, so it is
+  // the honest fallback.
+  return {
+    messageId: typeof info?.messageId === "string" && info.messageId ? info.messageId : messageId,
+    response: typeof info?.response === "string" ? info.response : "",
+  };
 }
