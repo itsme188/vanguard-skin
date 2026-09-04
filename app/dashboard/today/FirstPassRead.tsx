@@ -9,15 +9,19 @@
 import { useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 import { PrivateText } from "@/lib/privacy/components";
-import { formatValue } from "@/lib/print-watch/callouts";
-import { sanitizeProseLines } from "@/lib/print-watch/first-pass-prompt";
+// R-D20: ONLY the client-safe module here — `callouts.ts` pulls in node:fs and
+// ./pdf (node:child_process) and `first-pass-prompt.ts` pulls in node:crypto,
+// the AI SDK and DB queries, so importing either from this `"use client"`
+// component broke `next build`. Guarded by
+// tests/repo/print-watch-import-boundaries.test.ts.
+import { formatValue, sanitizeProseLines } from "@/lib/print-watch/first-pass-format";
 import type { CalloutView, ReadErrorCode, ReadFact, ReadProse, ReadVerdict } from "@/lib/print-watch/first-pass-types";
 
 export interface FirstPassReadDto { id: number; status: "done"; nonce: number; model_id: string | null; generated_at: string | null; facts: ReadFact[]; prose: ReadProse }
 export interface ActiveReadDto { id: number; status: "generating" | "failed"; nonce: number; attempts: number; error_code: ReadErrorCode | null; error: string | null; next_retry_at: string | null; claimed_at: string | null }
 
 function etClock(iso: string): string {
-  return new Date(iso).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false });
+  return new Date(iso).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
 export function readStatusLabel(read: FirstPassReadDto | null, active: ActiveReadDto | null): string {

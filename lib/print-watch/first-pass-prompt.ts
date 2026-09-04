@@ -12,14 +12,26 @@ import { jsonSchema } from "ai";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { getBogeysForEvent } from "@/lib/queries/earnings-bogeys";
 import { getCallNoteForEvent } from "@/lib/queries/earnings-call-notes";
-import { getReportHistoryBefore } from "@/lib/queries/earnings-intel";
-import { loadIntelView } from "@/lib/digest/send-earnings-email";
+import { getReportHistoryBefore, getIntelForEvents } from "@/lib/queries/earnings-intel";
+// R-D22: the expected-move fields are composed HERE rather than through
+// `loadIntelView` — importing `@/lib/digest/send-earnings-email` dragged the
+// whole email/AI chain (and `lib/env` → `@stoqey/ib`) into every module that
+// reaches this one. The precedence rule itself is NOT forked: `resolveExpectedMove`
+// is the same zero-import resolver `loadIntelView` calls (sheet > straddle >
+// iv_approx, always source-labelled). Change both call sites together.
+import { resolveExpectedMove } from "@/lib/earnings/expected-move";
 import { getSheet, listDocuments, isDocumentEligible } from "./store";
 import { sha256Hex } from "./delivery";
 import { buildReadFacts } from "./read-facts";
 import { documentText, evidenceSha256, contentWords } from "./callouts";
 import type { PrintWatchDocKind, TaggedCandidate } from "./types";
 import type { ReadFact } from "./first-pass-types";
+// R-D20: the sanitiser and its instruction-shape list live in the client-safe
+// module (this file pulls in node:crypto, the AI SDK and DB queries, so no
+// `"use client"` component can import it). Re-exported here so every existing
+// server caller and test keeps its import.
+import { sanitizeProseLines } from "./first-pass-format";
+export { sanitizeProseLines, INSTRUCTION_LIKE } from "./first-pass-format";
 
 export const PROMPT_VERSION = 2;
 export const SCHEMA_VERSION = 2;
@@ -88,7 +100,10 @@ export async function preloadEvidence(db: Database.Database, printId: number): P
   return texts;
 }
 
-/** ONE read transaction (#8): every DB input of the DTO from a single snapshot; collections sorted with id tie-breakers. */
+/** ONE read transaction (#8): every DB input of the DTO from a single snapshot;
+ *  collections sorted with id tie-breakers. M3: the fact sort is a plain
+ *  code-point comparator — ICU collation is locale- and build-dependent and
+ *  must never decide the order of something that feeds a fingerprint. */
 export function buildDtoSync(
   db: Database.Database, printId: number, texts: EvidenceTexts, modelId: string,
 ): { dto: FirstPassPromptDto; docTexts: Map<number, { doc_sha256: string; text: string }> } | null {
@@ -96,7 +111,7 @@ export function buildDtoSync(
     const print = db.prepare(`SELECT id, event_id, symbol, event_date, release_time_et FROM print_watch_prints WHERE id = ?`).get(printId) as
       | { id: number; event_id: number; symbol: string; event_date: string; release_time_et: string | null } | undefined;
     if (!print) return null;
-    const facts = buildReadFacts(db, printId).sort((a, b) => a.metric_id.localeCompare(b.metric_id));
+    const facts = buildReadFacts(db, printId).sort((a, b) => (a.metric_id < b.metric_id ? -1 : a.metric_id > b.metric_id ? 1 : 0));
     if (facts.length === 0) return null;
     const bogeyRows = getBogeysForEvent(db, print.event_id).slice().sort((a, b) => a.id - b.id);
     const bogeys = bogeyRows.map((b) => ({ id: b.id, source_label: b.source_label, eps_consensus: b.eps_consensus, eps_whisper: b.eps_whisper, revenue_consensus_usd: b.revenue_consensus_usd, revenue_whisper_usd: b.revenue_whisper_usd, eps_consensus_vendor: b.eps_consensus_vendor, expected_move_pct: b.expected_move_pct, guidance_notes: b.guidance_notes }));
@@ -117,14 +132,19 @@ export function buildDtoSync(
     }
     const note = getCallNoteForEvent(db, print.event_id);
     const history = getReportHistoryBefore(db, print.symbol, print.event_date, 1)[0];
-    const intel = loadIntelView(db, print.event_id, print.symbol);
+    const intel = getIntelForEvents(db, [print.event_id]).get(print.event_id) ?? null;
+    const expectedMove = resolveExpectedMove({
+      bogeys: bogeyRows.map((b) => ({ expectedMovePct: b.expected_move_pct, sourceLabel: b.source_label, uploadedAt: b.uploaded_at })),
+      impliedMovePct: intel?.impliedMovePct ?? null,
+      impliedMethod: intel?.impliedMethod ?? null,
+    });
     const dto: FirstPassPromptDto = {
       prompt_version: PROMPT_VERSION, schema_version: SCHEMA_VERSION, model_id: modelId,
       symbol: print.symbol, event_date: print.event_date, release_time_et: print.release_time_et,
       facts, evidence, bogeys,
       event_notes: { call_note: note ? { guidance: note.guidance, tone: note.tone, surprises: note.surprises, follow_ups: note.follow_ups } : null },
       last_quarter: history ? { reported_date: history.reportedDate, eps_actual: history.epsActual, eps_estimate: history.epsEstimate, surprise_pct: history.surprisePct, post_print_move_pct: history.postPrintMovePct } : null,
-      implied_move: { pct: intel.impliedMovePct, method: intel.impliedMethod, source_label: intel.sheetSourceLabel },
+      implied_move: { pct: expectedMove?.pct ?? null, method: expectedMove?.method ?? null, source_label: expectedMove?.method === "sheet" ? expectedMove.sourceLabel : null },
     };
     return { dto, docTexts };
   })();
@@ -154,8 +174,13 @@ export function renderPrompt(dto: FirstPassPromptDto, nonce: string): { system: 
   parts.push("<<<FACTS>>>"); parts.push(canonicalJson(dto.facts)); parts.push("<<<END FACTS>>>");
   parts.push(`<<<UNTRUSTED:${nonce} bogeys>>>`); parts.push(canonicalJson(dto.bogeys)); parts.push(`<<<END UNTRUSTED:${nonce}>>>`);
   parts.push(`<<<UNTRUSTED:${nonce} notes>>>`); parts.push(canonicalJson(dto.event_notes)); parts.push(`<<<END UNTRUSTED:${nonce}>>>`);
+  // M2: both of these carry untrusted text — `implied_move.source_label` is the
+  // sheet's own label, which can be newsletter-derived — so they render INSIDE
+  // the nonce-delimited data block the system prompt names as quoted data.
+  parts.push(`<<<UNTRUSTED:${nonce} intel>>>`);
   parts.push("LAST QUARTER:"); parts.push(canonicalJson(dto.last_quarter));
   parts.push("IMPLIED MOVE:"); parts.push(canonicalJson(dto.implied_move));
+  parts.push(`<<<END UNTRUSTED:${nonce}>>>`);
   for (const e of dto.evidence) {
     parts.push(`<<<EVIDENCE:${nonce} doc=${e.doc_id} kind=${e.kind}>>>`);
     for (const s of e.snippets) parts.push(s);
@@ -213,28 +238,4 @@ export function validateCitedLines(lines: unknown, allowed: Map<string, number[]
     if (kept.length >= max) break;
   }
   return { kept, dropped };
-}
-
-// Control characters are stripped with a class built from char codes: never
-// type a backslash-u escape into this file (see memory "Unicode-escape write hazard").
-const CONTROL_CLASS = new RegExp("[" + String.fromCharCode(0) + "-" + String.fromCharCode(8) + String.fromCharCode(11) + String.fromCharCode(12) + String.fromCharCode(14) + "-" + String.fromCharCode(31) + String.fromCharCode(127) + "]", "g");
-export const INSTRUCTION_LIKE: RegExp[] = [
-  /^\s*(system|assistant|user)\s*:/i,
-  /\b(ignore|disregard|forget)\b.{0,40}\b(previous|prior|above|earlier)\b.{0,30}\b(instruction|prompt|rule)/i,
-  /\byou are (now|an? )\b/i,
-  /^\s*(#{1,6}\s|<\||\[INST\])/,
-  /\bas an ai\b/i,
-];
-const LINE_MAX = 600;
-export function sanitizeProseLines(value: unknown, max: number): string[] {
-  if (!Array.isArray(value)) return [];
-  const out: string[] = []; const seen = new Set<string>();
-  for (const v of value) {
-    if (typeof v !== "string") continue;
-    const s = v.replace(CONTROL_CLASS, "").replace(/\s+/g, " ").trim().slice(0, LINE_MAX);
-    if (!s || seen.has(s) || INSTRUCTION_LIKE.some((re) => re.test(s))) continue;
-    seen.add(s); out.push(s);
-    if (out.length >= max) break;
-  }
-  return out;
 }
