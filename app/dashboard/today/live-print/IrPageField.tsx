@@ -16,7 +16,13 @@ import apiFetch from "@/lib/http/apiFetch";
  *   loaded, nothing stored — empty boxes, Save live once something is typed,
  *                           clear disabled with a title saying why.
  *   refused   — the read failed: the field stays UNLOADED, so no write can be
- *               made over a configuration this control never saw.
+ *               made over a configuration this control never saw, and it SAYS
+ *               so (review I-1). It used to wear the loading state's copy —
+ *               "loading…" in the box, "Reading what is stored…" on Save —
+ *               which claimed a read was still in flight forever after it had
+ *               already failed. It now names the failure and offers "retry the
+ *               read", so the desk is not left collapsing and re-expanding the
+ *               row to get a second attempt.
  */
 export default function IrPageField({
   symbol,
@@ -28,6 +34,12 @@ export default function IrPageField({
   onError: (text: string) => void;
 }) {
   const [loaded, setLoaded] = useState(false);
+  /** The read was attempted and REFUSED — distinct from "not loaded yet", which
+   *  is what the copy used to conflate (I-1). */
+  const [readFailed, setReadFailed] = useState(false);
+  /** Bumped by "retry the read"; the effect keys on it, so a retry is one more
+   *  run of the same read rather than a second code path. */
+  const [attempt, setAttempt] = useState(0);
   const [hasStored, setHasStored] = useState(false);
   const [value, setValue] = useState("");
   const [mustContain, setMustContain] = useState("");
@@ -36,6 +48,7 @@ export default function IrPageField({
   useEffect(() => {
     const ac = new AbortController();
     setLoaded(false);
+    setReadFailed(false);
     (async () => {
       try {
         const res = await apiFetch(`/api/print-watch/sources?symbol=${encodeURIComponent(symbol)}`, {
@@ -46,6 +59,7 @@ export default function IrPageField({
           | null;
         if (ac.signal.aborted) return;
         if (!res.ok || !data?.success) {
+          setReadFailed(true);
           onError(data?.error ?? `Could not read the stored IR page (HTTP ${res.status}).`);
           return; // stays UNLOADED, so Save stays disabled
         }
@@ -55,6 +69,7 @@ export default function IrPageField({
         setLoaded(true);
       } catch (err) {
         if (ac.signal.aborted) return;
+        setReadFailed(true);
         onError(err instanceof Error ? err.message : "Could not reach the server for the stored IR page.");
       }
     })();
@@ -62,7 +77,7 @@ export default function IrPageField({
     // `onError` is a dependency by the rules of hooks; LivePrintRow hands down
     // a `useCallback`-stable setter for exactly that reason, so this read runs
     // once per symbol and not once per poll tick.
-  }, [symbol, onError]);
+  }, [symbol, onError, attempt]);
 
   async function put(body: Record<string, unknown>, describe: (cleared: boolean | undefined) => string) {
     setBusy(true);
@@ -111,7 +126,13 @@ export default function IrPageField({
           type="url"
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          placeholder={loaded ? "https://investors.example.com/news" : "loading…"}
+          placeholder={
+            loaded
+              ? "https://investors.example.com/news"
+              : readFailed
+                ? "could not read what is stored"
+                : "loading…"
+          }
           disabled={!loaded || busy}
           className="w-[22rem] max-w-full bg-raised border border-edge rounded px-2 py-1 font-mono text-[12px] text-ink focus:outline-none focus:border-gold"
         />
@@ -122,7 +143,7 @@ export default function IrPageField({
           type="text"
           value={mustContain}
           onChange={(e) => setMustContain(e.target.value)}
-          placeholder="press-release"
+          placeholder={readFailed ? "could not read what is stored" : "press-release"}
           disabled={!loaded || busy}
           className="w-[11rem] max-w-full bg-raised border border-edge rounded px-2 py-1 font-mono text-[12px] text-ink focus:outline-none focus:border-gold"
         />
@@ -132,11 +153,13 @@ export default function IrPageField({
         onClick={save}
         disabled={!loaded || busy || value.trim() === ""}
         title={
-          !loaded
-            ? "Reading what is stored for this symbol…"
-            : value.trim() === ""
-              ? "Type a page address, or use “clear the stored page”."
-              : "Save this IR page"
+          readFailed
+            ? "Save is disabled because the stored value could not be read — saving now would overwrite a configuration this field never saw. Retry the read first."
+            : !loaded
+              ? "Reading what is stored for this symbol…"
+              : value.trim() === ""
+                ? "Type a page address, or use “clear the stored page”."
+                : "Save this IR page"
         }
         className="border border-edge rounded px-2 py-1 text-ink-dim hover:text-gold disabled:opacity-50"
       >
@@ -146,11 +169,28 @@ export default function IrPageField({
         type="button"
         onClick={clear}
         disabled={!loaded || busy || !hasStored}
-        title={!hasStored ? "Nothing is stored for this symbol." : "Remove the stored IR page"}
+        title={
+          readFailed
+            ? "Could not read what is stored for this symbol — retry the read first."
+            : !hasStored
+              ? "Nothing is stored for this symbol."
+              : "Remove the stored IR page"
+        }
         className="border border-edge rounded px-2 py-1 text-ink-faint hover:text-down disabled:opacity-50"
       >
         clear the stored page
       </button>
+      {readFailed && (
+        <button
+          type="button"
+          onClick={() => setAttempt((n) => n + 1)}
+          disabled={busy}
+          title="Read the stored IR page for this symbol again"
+          className="border border-edge rounded px-2 py-1 text-ink-dim hover:text-gold disabled:opacity-50"
+        >
+          retry the read
+        </button>
+      )}
     </div>
   );
 }

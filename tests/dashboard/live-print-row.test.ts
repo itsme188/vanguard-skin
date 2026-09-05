@@ -8,16 +8,28 @@
  * and wiring with no render surface is pinned with `readFileSync` source scans.
  * Every identifier here is synthetic (R-F8).
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PrivacyProvider } from "@/lib/privacy/context";
+import LivePrintRow from "@/app/dashboard/today/LivePrintRow";
 import PrintOutputs from "@/app/dashboard/today/live-print/PrintOutputs";
 import PrepareStatus from "@/app/dashboard/today/live-print/PrepareStatus";
-import { presentState } from "@/app/dashboard/today/live-print/helpers";
-import type { PrintOutputsWire, PrepareStepWire } from "@/app/dashboard/today/hub-live/types";
+import { PRE_GATE_DISCLOSURE, presentState } from "@/app/dashboard/today/live-print/helpers";
+import type {
+  PrintOutputsWire,
+  PrepareStepWire,
+  PrintStatusEntry,
+} from "@/app/dashboard/today/hub-live/types";
 import type { PrintWatchLine } from "@/lib/print-watch/types";
+
+// `LivePrintRow` calls `useRouter()` for its post-promote refresh. There is no
+// app-router context in an SSR-only harness, so it is stubbed exactly as the
+// repo's other server-render tests stub it.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
+}));
 
 const render = (el: ReactElement) => renderToStaticMarkup(createElement(PrivacyProvider, null, el));
 
@@ -79,6 +91,12 @@ describe("the Δ column is masked whenever the bogey is (M-F19)", () => {
     expect(deltaCell).toMatch(/<PrivateText/);
     expect(deltaCell).toMatch(/line\.expected \? <PrivateText>/);
   });
+  it("drops the beat/miss colour too, so the SIGN does not survive the mask (M-1)", () => {
+    // Masking the magnitude while the cell stays green or red still tells the
+    // room whether the desk's own bogey was beaten.
+    expect(src).toMatch(/const maskDelta = isPrivate && line\.expected != null;/);
+    expect(src).toMatch(/maskDelta\s*\?\s*"text-ink-dim"/);
+  });
   it("gives a retired line no accept control and dims it (M-F17)", () => {
     expect(src).toMatch(/const isRetired = line\.state === "retired";/);
     expect(src).toMatch(/isRetired \? "opacity-60" : ""/);
@@ -130,9 +148,11 @@ describe("PrintOutputs (contract §2/§3)", () => {
       ...outputs,
       sendRecap: { enabled: false, reason: "sent", state: "sent", providerMessageId: "re_123" },
     };
+    // "unsent" also contains "sent", so the state word has to be asserted with
+    // its label attached or the case cannot fail (review M-6).
     expect(
       render(createElement(PrintOutputs, { printId: 1, outputs: sent, onChanged: async () => undefined, promote })),
-    ).toContain("sent");
+    ).toContain("recap · sent");
   });
   const src = readFileSync("app/dashboard/today/live-print/PrintOutputs.tsx", "utf8");
   it("posts the two E routes exactly once each and renders data.outcome + data.reason verbatim", () => {
@@ -214,6 +234,20 @@ describe("GoControls — the paste box (contract §4)", () => {
     expect(src).toMatch(/data\?\.error/);
     expect(src).not.toMatch(/catch\s*\{\s*\}/);
   });
+  it("never claims acquisition is under way in the same note that says the wake failed (I-2)", () => {
+    // The panel said "request queued, but could not wake…". The fold briefly
+    // composed the SUCCESS note with the wake warning, producing "acquiring
+    // from every road now. Could not wake the watcher…" — two halves asserting
+    // opposite things. The wake-error branch takes its own note.
+    expect(src).toMatch(/\$\{queuedNote\} Could not wake the watcher immediately/);
+    expect(src).not.toMatch(/\$\{okNote\} Could not wake/);
+    expect(src).toMatch(/"Print is live — request queued\."/);
+    expect(src).toMatch(/"Link accepted — request queued\."/);
+    expect(src).toMatch(/"File accepted — request queued\."/);
+  });
+  it("clears the typed link only in the lane that submitted it, and only on success (M-2)", () => {
+    expect(src).toMatch(/if \(ok\) setUrl\(""\);/);
+  });
 });
 
 describe("IrPageField reads before it writes (Codex 11)", () => {
@@ -232,6 +266,18 @@ describe("IrPageField reads before it writes (Codex 11)", () => {
     expect(src).toMatch(/will stop polling it/);
     expect(src).toMatch(/from the next poll/);
     expect(src).not.toMatch(/catch\s*\{\s*\}/);
+  });
+  it("gives the REFUSED read its own copy instead of the loading state's, and a way forward (I-1)", () => {
+    // The refused state deliberately stays unloaded so Save cannot overwrite a
+    // configuration this field never read — but it used to SAY "loading…"
+    // forever, which is the one direction a failure must never lie in.
+    expect(src).toMatch(/setReadFailed\(true\)/);
+    expect(src).toMatch(/readFailed[\s\S]{0,80}"could not read what is stored"/);
+    expect(src).toMatch(/Save is disabled because the stored value could not be read/);
+    expect(src).toContain("retry the read");
+    // …and the loading copy is still reachable, on the state that is genuinely
+    // still loading.
+    expect(src).toMatch(/"Reading what is stored for this symbol…"/);
   });
 });
 
@@ -256,5 +302,57 @@ describe("LivePrintRow — no hover-only affordances, no div onClick, keyboard-f
     expect(src).toMatch(/SUPERSEDED_ACCEPT_CONFIRM_COPY/);
     expect(src).toMatch(/SUPERSEDED_CANDIDATE_CONFIRM_COPY/);
     expect(src.match(/apiFetch\("\/api\/print-watch\/accept"/g)).toHaveLength(1);
+  });
+});
+
+/**
+ * R-F23. `PRE_GATE_DISCLOSURE` is the desk's standing instruction not to trust
+ * a machine-read number without checking it, and the sheet is the one surface
+ * where machine-read numbers get accepted. Its only render site used to be the
+ * panel's section header — the shell task 9 replaces and task 10 deletes — so a
+ * text-equality assertion on the constant would have stayed green while the
+ * line itself silently left the product.
+ *
+ * This is therefore a RENDER assertion, not a constant check: the string has to
+ * come out of `LivePrintRow`'s own markup.
+ */
+describe("LivePrintRow renders the pre-gate disclosure (R-F23)", () => {
+  const entry = (o: Partial<PrintStatusEntry> = {}): PrintStatusEntry => ({
+    printId: 1,
+    eventId: 11,
+    symbol: "XMPL1",
+    state: "window_open",
+    sources: { edgar: "ok" },
+    coverage: [],
+    lines: [line()],
+    ...o,
+  });
+
+  const rowHtml = (o: Partial<PrintStatusEntry> = {}) =>
+    render(
+      createElement(LivePrintRow, {
+        print: entry(o),
+        prepareSteps: undefined,
+        onChanged: async () => undefined,
+      }),
+    );
+
+  it("puts the disclosure in the expansion header, where the accept controls are", () => {
+    expect(rowHtml()).toContain(PRE_GATE_DISCLOSURE);
+  });
+
+  it("still says it when the sheet has no lines yet — the values are unread, not trusted", () => {
+    const html = rowHtml({ lines: [] });
+    expect(html).toContain(PRE_GATE_DISCLOSURE);
+    expect(html).toContain("No sheet lines compiled yet");
+  });
+
+  it("says it exactly once per expansion, not once per line", () => {
+    const html = rowHtml({ lines: [line(), line({ metric_id: "eps_adj_q" })] });
+    expect(html.split(PRE_GATE_DISCLOSURE)).toHaveLength(2);
+  });
+
+  it("renders it as a caption, not an alarm — the panel's own treatment", () => {
+    expect(rowHtml()).toMatch(/text-ink-faint[^>]*"[^>]*font-size:11px/);
   });
 });

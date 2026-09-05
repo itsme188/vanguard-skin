@@ -33,6 +33,7 @@ import LineRow from "./live-print/LineRow";
 import PrepareStatus from "./live-print/PrepareStatus";
 import PrintOutputs, { PromoteButton } from "./live-print/PrintOutputs";
 import {
+  PRE_GATE_DISCLOSURE,
   SUPERSEDED_ACCEPT_CONFIRM_COPY,
   SUPERSEDED_CANDIDATE_CONFIRM_COPY,
   SUPERSEDED_CONFIRM_COPY,
@@ -392,6 +393,17 @@ export default function LivePrintRow({
             />
           </label>
         </div>
+        {/* R-F23 — the standing pre-gate disclosure, which the panel showed
+            ONCE in a section header above every print. Its home is here now,
+            and this is a better home than the old one: it sits directly above
+            the sheet and the accept controls it is talking about, once per
+            expansion, so the desk reads it at the moment it is deciding
+            whether to trust a machine-read number. Same caption treatment as
+            the panel's (`text-ink-faint`, 11px) — a standing condition of the
+            build, not an alarm. */}
+        <p className="basis-full text-ink-faint" style={{ fontSize: "11px" }}>
+          {PRE_GATE_DISCLOSURE}
+        </p>
       </div>
 
       <p className="text-[11px] font-mono text-ink-faint mb-3">
