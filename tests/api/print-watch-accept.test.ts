@@ -29,6 +29,12 @@ import {
   markLineAccepted,
 } from "@/lib/print-watch/store";
 import { recordDelivery } from "@/lib/print-watch/delivery";
+import { compileContracts } from "@/lib/print-watch/contracts";
+import {
+  recompileContracts,
+  retiredMetricId,
+  isRetiredMetricId,
+} from "@/lib/print-watch/recompile";
 import type {
   LineContract,
   ExpectedValue,
@@ -1468,6 +1474,269 @@ describe("POST /api/print-watch/accept", () => {
       expect(status).toBe(400);
       expect(json.success).toBe(false);
       expect(json.error).toMatch(/array/i);
+    });
+  });
+
+  // ── retired lines are RECORDS (R-F28 / whole-branch review I1) ──────────
+  //
+  // `recompileContracts` retires a line by RENAMING it to
+  // `<metric_id>~retired~<n>` and setting state = 'retired'. The row is the
+  // record of a reading taken under a definition the desk has since changed,
+  // and its candidate pool is re-tagged to the renamed id — which is exactly
+  // what makes `resolveCandidate` able to find it again. Accepting it would
+  // publish a number nothing on the sheet still measures, and because the
+  // panel dims by `state` while only `recompile.ts` keys on the id, the row
+  // would then render as an ordinary full-opacity verified line forever
+  // (recompile never re-examines a retired key).
+  //
+  // Every fixture here is seeded the way production produces one: a real
+  // bogey sheet, a real compile, real evidence, then a real semantic change
+  // put through `recompileContracts`. The retired id is taken from the
+  // recompile report, never written by hand.
+  describe("retired lines refuse every per-line mutation (R-F28 / I1)", () => {
+    const EXTRA_UUID = "5b7a1f42-9c3e-4d18-8f6a-2e0b91c7d4a3";
+    const BASE_ID = `x_${EXTRA_UUID}_Q`;
+    const RETIRED_ERROR =
+      "This line was retired when its definition changed — it is a record of what was measured and cannot be accepted.";
+
+    const extraMetric = (overrides: Record<string, unknown> = {}) => ({
+      id: EXTRA_UUID,
+      label: "Net new ARR",
+      definition: "Sequential change in ARR.",
+      unit: "usd",
+      kind: "point",
+      period: "Q",
+      basis: "na",
+      ...overrides,
+    });
+
+    function poolFor(metricId: string, value: number, docA: number, docB: number): TaggedCandidate[] {
+      const one = (docId: number, representation: TaggedCandidate["representation"]): TaggedCandidate => ({
+        metric_id: metricId,
+        value,
+        value_high: null,
+        raw_text: String(value),
+        snippet: `${metricId} of ${value}`,
+        location_hint: null,
+        not_disclosed: false,
+        doc_id: docId,
+        representation,
+        weak_pair: false,
+      });
+      return [one(docA, "repA"), one(docB, "repA")];
+    }
+
+    /**
+     * A print carrying ONE retired line and one live sibling, both with a
+     * two-document candidate pool, so a per-candidate accept is a real option
+     * on each of them.
+     *
+     * `alreadyAccepted` reproduces the residue this defect can leave behind:
+     * a retired row that the unguarded route already flipped to 'accepted'.
+     * That row is the whole reason the gate reads the ID and not `state` —
+     * see the dedicated test below.
+     */
+    function seedRetired(opts: { alreadyAccepted?: boolean } = {}) {
+      const eventId = insertCalendarEvent({ eventDate: "2026-08-10" });
+      hoisted.db
+        .prepare(
+          `INSERT INTO earnings_bogeys
+             (event_id, source, source_label, eps_consensus, revenue_consensus_usd, extra_metrics_json)
+           VALUES (?, 'manual', 'Sheet A', 1.40, 3850000000, ?)`,
+        )
+        .run(eventId, JSON.stringify([extraMetric()]));
+      const printId = upsertPrint(hoisted.db, eventId, "ACME", "2026-08-10", null);
+
+      // The sheet exactly as the watcher compiles it from those bogeys.
+      const { contracts, expected } = compileContracts(hoisted.db, eventId, "ACME");
+      upsertLines(
+        hoisted.db,
+        printId,
+        contracts.map((c) => ({
+          metric_id: c.metric_id,
+          contract: c,
+          expected: expected[c.metric_id] ?? null,
+          state: "pending" as const,
+          value: null,
+          value_high: null,
+          snippet: null,
+          source_doc_id: null,
+          candidates_json: "[]",
+        })),
+      );
+
+      const docA = seedDoc(printId, "dj-release", "dj", "sha-retired-a");
+      const docB = seedDoc(printId, "edgar-ex99", "sec", "sha-retired-b");
+
+      const setLine = hoisted.db.prepare(
+        `UPDATE print_watch_lines
+            SET state = 'agreed', value = ?, snippet = ?, source_doc_id = ?, candidates_json = ?
+          WHERE print_id = ? AND metric_id = ?`,
+      );
+      // Evidence is what makes the recompile RETIRE the line rather than
+      // overwrite it in place.
+      setLine.run(
+        275_000_000,
+        "net new ARR of $275.0 million",
+        docA,
+        JSON.stringify(poolFor(BASE_ID, 275_000_000, docA, docB)),
+        printId,
+        BASE_ID,
+      );
+      // The live sibling, same print, same two documents, agreeing.
+      setLine.run(
+        1.42,
+        "adjusted EPS of $1.42",
+        docA,
+        JSON.stringify(poolFor("eps_adj_q", 1.42, docA, docB)),
+        printId,
+        "eps_adj_q",
+      );
+
+      // The desk changes the metric's DEFINITION — a semantic field — so the
+      // measured line is retired and a fresh pending one takes the base id.
+      hoisted.db
+        .prepare(`UPDATE earnings_bogeys SET extra_metrics_json = ? WHERE event_id = ?`)
+        .run(JSON.stringify([extraMetric({ basis: "non_gaap" })]), eventId);
+      const report = recompileContracts(hoisted.db, printId);
+      expect(report.retired).toEqual([retiredMetricId(BASE_ID, new Set())]);
+      const retiredId = report.retired[0];
+
+      if (opts.alreadyAccepted) markLineAccepted(hoisted.db, printId, retiredId);
+
+      return { eventId, printId, docA, docB, retiredId };
+    }
+
+    /** Every column of one line row — a guard that refuses but still writes
+     *  is worse than no guard, so the assertions compare the whole row. */
+    function rawLine(printId: number, metricId: string): Record<string, unknown> {
+      return hoisted.db
+        .prepare(`SELECT * FROM print_watch_lines WHERE print_id = ? AND metric_id = ?`)
+        .get(printId, metricId) as Record<string, unknown>;
+    }
+
+    it("seeds a retired row the way production does: renamed key, state 'retired', pool re-tagged", () => {
+      const { printId, retiredId, docA, docB } = seedRetired();
+
+      expect(retiredId).toBe(`${BASE_ID}~retired~0`);
+      const row = rawLine(printId, retiredId);
+      expect(row.state).toBe("retired");
+      expect(row.value).toBe(275_000_000);
+      // The re-tag is what re-opened the per-candidate door — without it the
+      // accept could never resolve a candidate on this row at all.
+      const pool = JSON.parse(row.candidates_json as string) as TaggedCandidate[];
+      expect(pool.map((c) => c.metric_id)).toEqual([retiredId, retiredId]);
+      expect(pool.map((c) => c.doc_id)).toEqual([docA, docB]);
+      // The fresh line took the base id back, pending and empty.
+      expect(rawLine(printId, BASE_ID).state).toBe("pending");
+    });
+
+    it("409s a whole-line accept of a retired line, leaving the row byte-identical", async () => {
+      const { eventId, printId, retiredId } = seedRetired();
+      const before = rawLine(printId, retiredId);
+
+      const { status, json } = await callAccept({ eventId, accept: [retiredId] });
+
+      expect(status).toBe(409);
+      expect(json.success).toBe(false);
+      expect(json.error).toBe(RETIRED_ERROR);
+      expect(rawLine(printId, retiredId)).toEqual(before);
+      expect(saveManualActuals).not.toHaveBeenCalled();
+    });
+
+    it("409s a per-candidate accept of a retired line, leaving the row byte-identical", async () => {
+      const { eventId, printId, docB, retiredId } = seedRetired();
+      const before = rawLine(printId, retiredId);
+
+      const { status, json } = await callAccept({
+        eventId,
+        accept: [{ metric_id: retiredId, doc_id: docB }],
+      });
+
+      expect(status).toBe(409);
+      expect(json.success).toBe(false);
+      expect(json.error).toBe(RETIRED_ERROR);
+      expect(rawLine(printId, retiredId)).toEqual(before);
+      expect(saveManualActuals).not.toHaveBeenCalled();
+    });
+
+    it("409s an un-accept of a retired line, leaving the row byte-identical", async () => {
+      const { eventId, printId, retiredId } = seedRetired();
+      const before = rawLine(printId, retiredId);
+
+      const { status, json } = await callAccept({ eventId, unaccept: [retiredId] });
+
+      expect(status).toBe(409);
+      expect(json.success).toBe(false);
+      expect(json.error).toBe(RETIRED_ERROR);
+      expect(rawLine(printId, retiredId)).toEqual(before);
+    });
+
+    // THE POINT OF THE RULING. `state` is not stable under the mutation being
+    // guarded: the unguarded route flips a retired row to 'accepted' on the
+    // first accept, and a `state === 'retired'` gate would then wave through
+    // every request that followed — including the un-accept whose re-derive
+    // reads a pool measured under the retired definition. The id is immutable,
+    // so this row is refused however many times it has already been defeated.
+    it("still refuses a retired row that an earlier accept already flipped to 'accepted'", async () => {
+      const { eventId, printId, docB, retiredId } = seedRetired({ alreadyAccepted: true });
+      expect(rawLine(printId, retiredId).state).toBe("accepted"); // NOT 'retired'
+      const before = rawLine(printId, retiredId);
+
+      for (const body of [
+        { eventId, accept: [retiredId] },
+        { eventId, accept: [{ metric_id: retiredId, doc_id: docB }] },
+        { eventId, unaccept: [retiredId] },
+      ]) {
+        const { status, json } = await callAccept(body);
+        expect(status).toBe(409);
+        expect(json.error).toBe(RETIRED_ERROR);
+        expect(rawLine(printId, retiredId)).toEqual(before);
+      }
+    });
+
+    it("refuses the whole request when a retired id rides along with a live one", async () => {
+      const { eventId, printId, retiredId } = seedRetired();
+      const before = rawLine(printId, retiredId);
+
+      const { status, json } = await callAccept({ eventId, accept: ["eps_adj_q", retiredId] });
+
+      expect(status).toBe(409);
+      expect(json.error).toBe(RETIRED_ERROR);
+      expect(rawLine(printId, retiredId)).toEqual(before);
+      expect(rawLine(printId, "eps_adj_q").state).toBe("agreed"); // rolled back
+    });
+
+    // The guard must not become a blanket refusal: the same print, the same
+    // request shapes, on the line that is still live.
+    it("a live sibling on the same print still accepts, per-candidate accepts and un-accepts", async () => {
+      const { eventId, printId, docB } = seedRetired();
+
+      const whole = await callAccept({ eventId, accept: ["eps_adj_q"] });
+      expect(whole.status).toBe(200);
+      expect(rawLine(printId, "eps_adj_q").state).toBe("accepted");
+
+      const undo = await callAccept({ eventId, unaccept: ["eps_adj_q"] });
+      expect(undo.status).toBe(200);
+      expect(rawLine(printId, "eps_adj_q").state).not.toBe("accepted");
+
+      const perCandidate = await callAccept({
+        eventId,
+        accept: [{ metric_id: "eps_adj_q", doc_id: docB }],
+      });
+      expect(perCandidate.status).toBe(200);
+      const line = rawLine(printId, "eps_adj_q");
+      expect(line.state).toBe("accepted");
+      expect(line.value).toBe(1.42);
+      expect(line.source_doc_id).toBe(docB);
+    });
+
+    // Drift guard: the route's gate and the retirement that mints the id have
+    // to agree on the marker. `retiredMetricId` is the producer; the route
+    // reads the same exported predicate, and this pins the pair.
+    it("the id the retirement mints is one the route's predicate recognises", () => {
+      expect(isRetiredMetricId(retiredMetricId("revenue_q", new Set()))).toBe(true);
+      expect(isRetiredMetricId("revenue_q")).toBe(false);
     });
   });
 });

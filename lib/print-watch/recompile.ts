@@ -55,9 +55,25 @@ export interface RecompileReport {
  *  bogey, not identity. */
 const SEMANTIC: Array<keyof LineContract> = ["unit", "kind", "basis", "period"];
 
+/**
+ * The infix a retirement stamps into the line KEY (`<metric_id>~retired~<n>`).
+ *
+ * It is the row's permanent identity, and the only marker that survives what
+ * the desk does to the row afterwards — `state` does not: accepting a retired
+ * row flips it to 'accepted', so a state-based test stops guarding the moment
+ * it is defeated (R-F28 / whole-branch review I1). Every reader that has to
+ * tell a RECORD apart from a live line keys on this, never on `state`.
+ */
+export const RETIRED_MARKER = "~retired~";
+
+/** True for a line key minted by a retirement — see `RETIRED_MARKER`. */
+export function isRetiredMetricId(metricId: string): boolean {
+  return metricId.includes(RETIRED_MARKER);
+}
+
 export function retiredMetricId(base: string, taken: ReadonlySet<string>): string {
   for (let n = 0; ; n += 1) {
-    const candidate = `${base}~retired~${n}`;
+    const candidate = `${base}${RETIRED_MARKER}${n}`;
     if (!taken.has(candidate)) return candidate;
   }
 }
@@ -224,7 +240,7 @@ export function recompileContracts(db: Database.Database, printId: number): Reco
     for (const row of rows) {
       // A row already retired by an earlier recompile is history: never
       // re-examined, never re-retired, never deleted.
-      if (row.metric_id.includes("~retired~")) continue;
+      if (isRetiredMetricId(row.metric_id)) continue;
 
       const next = byId.get(row.metric_id);
       if (!next) {
