@@ -24,6 +24,9 @@ import { WorkspacePanel } from "../components/analysis/WorkspacePanel";
 import { AnalysisViewToggle } from "../components/AnalysisViewToggle";
 import { GivingView } from "../components/giving/GivingView";
 import { resolveAnalysisView } from "@/lib/analysis/view-param";
+import { SignificantMovesCard } from "../components/SignificantMovesCard";
+import { MomentumPulse } from "../components/MomentumPulse";
+import { computeMomentumPulse } from "@/lib/compute/momentum-spread";
 import Link from "next/link";
 
 interface PageProps {
@@ -311,6 +314,15 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
       </div>
 
       <AnalysisViewToggle currentView="diagnostics" scope={params.scope} />
+
+      {/* ── Moved off Today by live print v2 (spec §4.6): the two market-wide
+              read-outs belong with the other diagnostics, not on the earnings
+              surface. SignificantMovesCard self-loads from the db singleton;
+              MomentumPulse is prop-driven, so the pulse is computed here. ── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+        <SignificantMovesCard />
+        <MomentumPulse pulse={computeMomentumPulse(db)} />
+      </div>
 
       <TrustStrip scope={scope} />
 

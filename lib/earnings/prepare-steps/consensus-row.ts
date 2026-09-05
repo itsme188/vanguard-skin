@@ -11,7 +11,7 @@
  * would otherwise silently start trusting an unlabelled basis).
  */
 import type Database from "better-sqlite3";
-import { upsertBogey } from "@/lib/mutations/earnings-bogeys";
+import { saveBogeyWithRecompile } from "@/lib/mutations/earnings-bogeys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { stableHash, type PrepareStepDefinition } from "../prepare-armed-event";
 
@@ -93,7 +93,7 @@ export const consensusRowStep: PrepareStepDefinition = {
     }
     // D1: the vendor EPS goes to eps_consensus_vendor; eps_consensus stays NULL so
     // compileContracts can never adopt it as the adjusted-EPS expected value.
-    upsertBogey(db, {
+    saveBogeyWithRecompile(db, {
       event_id: eventId, source: "finnhub", source_label: FINNHUB_BOGEY_LABEL,
       eps_consensus: null, eps_consensus_vendor: vendor.eps, revenue_consensus_usd: vendor.revenue,
       notes: "Vendor consensus (Finnhub) — EPS basis unspecified; shown labelled, never the adjusted-EPS bogey.",

@@ -12,6 +12,7 @@ import { saveManualActuals } from "@/lib/earnings/actuals";
 import type { SaveManualActualsResult } from "@/lib/earnings/actuals";
 import type { PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
 import { scheduleFirstPassRead } from "@/lib/print-watch/read-scheduler";
+import { isRetiredMetricId } from "@/lib/print-watch/recompile";
 
 export const dynamic = "force-dynamic";
 
@@ -85,6 +86,38 @@ class RequestRefused extends Error {
   ) {
     super(payload.error);
   }
+}
+
+/**
+ * A retired line is a RECORD, not a live figure — refuse every per-line
+ * mutation on it (R-F28, whole-branch review I1).
+ *
+ * `recompileContracts` retires a line by RENAMING it to
+ * `<metric_id>~retired~<n>` and setting `state = 'retired'`: the reading is
+ * kept verbatim under the definition it was actually measured against, and a
+ * fresh line takes the base id. Turning that record back into an accepted
+ * figure would publish a number nothing on the sheet still measures.
+ *
+ * WHY THE ID AND NOT `state`. `state` is not stable under the very mutation
+ * this guards: the first accept flips it to 'accepted', after which a
+ * state-based test waves through every later request AND — because only
+ * `recompile.ts` keys on the retired marker while the panel keys on `state` —
+ * the row renders as a normal full-opacity verified line forever, since
+ * recompile never re-examines a retired key. The id is immutable and is the
+ * row's real identity, so it is what the gate reads.
+ *
+ * Thrown as `RequestRefused` from inside the transaction, alongside every
+ * other guard, so a refusal rolls back and writes nothing.
+ *
+ * The promote path needs no equivalent: it selects the hardcoded `eps_adj_q` /
+ * `eps_gaap_q` / `revenue_q` ids, which a retired row can no longer carry.
+ */
+const RETIRED_LINE_ERROR =
+  "This line was retired when its definition changed — it is a record of what was measured and cannot be accepted.";
+
+function refuseIfRetired(metricId: string): void {
+  if (!isRetiredMetricId(metricId)) return;
+  throw new RequestRefused(409, { success: false, error: RETIRED_LINE_ERROR });
 }
 
 // Ruling (progress.md, wave {10,11,12} dispatch note): single_source and
@@ -453,6 +486,9 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      // BEFORE the per-candidate branch, so it covers BOTH shapes of accept.
+      refuseIfRetired(metricId);
+
       // ── per-candidate accept ──
       //
       // The line-state gate is deliberately SKIPPED here: naming a document is
@@ -529,6 +565,18 @@ export async function POST(request: NextRequest) {
           error: `Unknown metric "${metricId}" — no line on this print's sheet.`,
         });
       }
+      // Un-accept never passes through the accept loop above, so it needs its
+      // own check: `clearLineAccepted` would otherwise re-derive a retired row
+      // off a candidate pool measured under the retired definition.
+      //
+      // ORDER IS LOAD-BEARING — this must stay BELOW the unknown-metric check
+      // (review M3). `unacceptList` is a cast (`body.unaccept as string[]`),
+      // not an element-checked parse, so a non-string element would reach
+      // `String.prototype.includes` inside `isRetiredMetricId` and surface as a
+      // 500. It cannot today only because `byMetric.has()` above misses on any
+      // non-string and refuses it as a 400 first. Reordering these two opens
+      // that 500.
+      refuseIfRetired(metricId);
       if (acceptList.includes(metricId)) {
         throw new RequestRefused(400, {
           success: false,

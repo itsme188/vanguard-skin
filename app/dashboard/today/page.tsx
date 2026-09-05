@@ -2,36 +2,19 @@ export const dynamic = "force-dynamic";
 
 import { db } from "@/lib/db";
 import Link from "next/link";
-import { getAlerts } from "@/lib/queries/security-levels";
-import { getLevelsNearPrice } from "@/lib/queries/briefing-levels";
 import { getAccountByName } from "@/lib/queries/accounts";
 import { getPortfolioTotals } from "@/lib/queries/dashboard";
 import { getEventsByWeek } from "@/lib/queries/calendar";
 import { getCurrentMonday, todayET, resolveWeekOfParam } from "@/lib/calendar/date-utils";
 import { getIbkrTodayHoldings, type TodayHolding } from "@/lib/queries/today-holdings";
-import type { LevelAlert, CalendarEvent } from "@/lib/types";
-import { NearbyLevelsCard } from "../components/NearbyLevelsCard";
+import type { CalendarEvent } from "@/lib/types";
 import { OpenChatButton } from "../components/OpenChatButton";
-import { SignificantMovesCard } from "./SignificantMovesCard";
-import { Money, Pct, PrivateText, Shares } from "@/lib/privacy/components";
-import { formatUSDPrecise } from "@/lib/format";
+import { Count, Money, Pct } from "@/lib/privacy/components";
 import { TodayReleases } from "../components/TodayReleases";
-import { MomentumPulse } from "../components/MomentumPulse";
-import { computeMomentumPulse } from "@/lib/compute/momentum-spread";
-import { EarningsCockpit } from "./EarningsCockpit";
 import { EarningsHub } from "./EarningsHub";
-import PrintWatchPanel from "./PrintWatchPanel";
 import { WeekAheadView } from "./WeekAheadView";
 import { IbkrRefreshButton } from "./IbkrRefreshButton";
 import { SnapshotAge } from "../components/SnapshotAge";
-
-interface EnrichedAlert extends LevelAlert {
-  symbol: string | null;
-  security_name: string | null;
-  level_type: string | null;
-  level_price: number | null;
-  source_author: string | null;
-}
 
 function fmtShortDate(iso: string): string {
   const [, month, day] = iso.split("T")[0].split("-");
@@ -44,17 +27,6 @@ function daysAgo(iso: string): number {
   const now = new Date();
   now.setHours(0, 0, 0, 0);
   return Math.floor((now.getTime() - then.getTime()) / 86_400_000);
-}
-
-function triggeredToday(isoTs: string): boolean {
-  const t = new Date(isoTs);
-  if (isNaN(t.getTime())) return false;
-  return t.toDateString() === new Date().toDateString();
-}
-
-function formatPriceSource(source: string): string {
-  const m = /^(sma|ema)_(\d+)$/.exec(source);
-  return m ? `${m[1].toUpperCase()} ${m[2]}` : source;
 }
 
 function qualityChip(days: number, source: string | null): { label: string; className: string } {
@@ -87,35 +59,6 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
     return <WeekAheadView events={events} weekOf={weekOf} />;
   }
 
-  // ── Pending alerts (enriched in a single JOIN, same shape as /api/alerts) ──
-  const alertRows = getAlerts(db, { response: "pending", limit: 20 });
-  const alerts: EnrichedAlert[] = alertRows.map((a) => {
-    const sec = db
-      .prepare("SELECT symbol, name FROM securities WHERE id = ?")
-      .get(a.security_id) as { symbol: string; name: string | null } | undefined;
-    const level = db
-      .prepare(
-        "SELECT level_type, price, price_source, source_author FROM security_levels WHERE id = ?"
-      )
-      .get(a.level_id) as
-      | { level_type: string; price: number; price_source: string; source_author: string | null }
-      | undefined;
-    return {
-      ...a,
-      symbol: sec?.symbol ?? null,
-      security_name: sec?.name ?? null,
-      level_type: level?.level_type ?? null,
-      level_price: level?.price ?? null,
-      source_author: level?.source_author ?? null,
-    };
-  });
-
-  const alertsToday = alerts.filter((a) => triggeredToday(a.triggered_at));
-  const alertsOlder = alerts.filter((a) => !triggeredToday(a.triggered_at));
-
-  // ── Levels within 5% of current price ─────────────────────────────────────
-  const nearbyLevels = getLevelsNearPrice(db, 0.05);
-
   // ── IBKR holdings snapshot ────────────────────────────────────────────────
   const ibkrAccount = getAccountByName(db, "IBKR");
   let holdings: TodayHolding[] = [];
@@ -133,6 +76,17 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
         .sort()
         .at(-1) ?? null;
   }
+
+  // One-line snapshot (spec §2: "Portfolio snapshot shrinks to one line"). The
+  // per-name list lives on Accounts now. A null today_gain is UNKNOWN, never
+  // zero: names with no prior close contribute to neither sum, and when NO name
+  // has one there is no move to report at all — `null`, not `0`.
+  const moved = holdings.filter((h) => h.today_gain !== null);
+  const todayGain = moved.length === 0 ? null : moved.reduce((sum, h) => sum + (h.today_gain ?? 0), 0);
+  const priorClose =
+    todayGain === null ? null : moved.reduce((sum, h) => sum + (h.current_value ?? 0), 0) - todayGain;
+  const todayPct =
+    todayGain !== null && priorClose !== null && priorClose > 0 ? (todayGain / priorClose) * 100 : null;
 
   // ── Today's calendar releases (with release_time set) ─────────────
   // ET-anchored: calendar event_date is an ET market date, so "today" must be
@@ -167,9 +121,6 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
   const releases = todayReleases.length > 0 ? todayReleases : upcomingReleases;
   const releasesMode: "today" | "upcoming" =
     todayReleases.length > 0 ? "today" : "upcoming";
-
-  // ── Momentum factor pulse (renders for every state — see component) ──
-  const momentumPulse = computeMomentumPulse(db);
 
   // ── Portfolio totals for the hero (Overview absorption — IA Phase 3) ──
   const portfolio = getPortfolioTotals(db);
@@ -252,235 +203,84 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
         </span>
       </div>
 
-      {/* ── Today header row — releases (left) + momentum pulse (right) ──
-              Both halves always render so the row reads in order: the left
-              falls back to upcoming releases when today is empty; the right
-              renders for every momentum state (incl. neutral / no-data). ── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-        {releases.length > 0 ? (
-          <TodayReleases releases={releases} mode={releasesMode} />
-        ) : (
-          <section className="rounded-xl bg-panel p-4">
-            <h2 className="text-sm font-medium text-ink">Releases</h2>
-            <p className="mt-2 text-[13px] text-ink-faint">
-              No upcoming releases scheduled.
-            </p>
-          </section>
-        )}
-        <MomentumPulse pulse={momentumPulse} />
-      </div>
+      {/* ── Today's releases (full width — the momentum tile moved to
+              Analysis · Diagnostics, spec §4.6) ── */}
+      {releases.length > 0 ? (
+        <TodayReleases releases={releases} mode={releasesMode} />
+      ) : (
+        <section className="rounded-xl bg-panel p-4">
+          <h2 className="text-sm font-medium text-ink">Releases</h2>
+          <p className="mt-2 text-[13px] text-ink-faint">
+            No upcoming releases scheduled.
+          </p>
+        </section>
+      )}
 
-      {/* ── Earnings-day cockpit (auto-appears on report days) ── */}
-      <EarningsCockpit />
-
-      {/* ── Week-ahead Earnings Hub (full width — primary attention magnet) ── */}
+      {/* ── Week-ahead Earnings Hub (full width — primary attention magnet;
+              this is now the one earnings surface — cockpit + print panel
+              have been folded into the Hub row and its expansion) ── */}
       <EarningsHub />
-
-      {/* ── Live Print Watch — armed prints fill in real time as the wire/
-          EDGAR/IR feeds land; renders nothing extra when nothing is armed
-          (EmptySection) ── */}
-      <PrintWatchPanel />
-
-      {/* ── Alerts | Levels @ 5% — side-by-side only when both have content ── */}
-      <div className={nearbyLevels.length > 0 ? "grid grid-cols-1 md:grid-cols-2 gap-4" : ""}>
-      <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
-        <div className="mb-2 flex items-baseline justify-between">
-          <h2 className="text-sm font-medium text-ink">Alerts</h2>
-          <span className="text-[11px] text-ink-faint font-mono">
-            {alerts.length} pending
-          </span>
-        </div>
-
-        {alerts.length === 0 ? (
-          <div className="space-y-2">
-            <p className="text-[14px] text-ink-faint">
-              No pending alerts. Levels are armed — you&rsquo;ll be notified when they trigger.
-            </p>
-            <Link
-              href="/dashboard/alerts?view=armed"
-              className="block text-[13px] font-medium text-gold-ink hover:text-gold/80"
-            >
-              View armed levels &rarr;
-            </Link>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {alertsToday.length > 0 && (
-              <AlertGroup title="Triggered today" alerts={alertsToday} />
-            )}
-            {alertsOlder.length > 0 && (
-              <AlertGroup title="Older pending" alerts={alertsOlder} dim />
-            )}
-            <div className="flex items-center justify-center gap-4 py-1">
-              <Link
-                href="/dashboard/alerts"
-                className="text-[14px] font-medium text-gold-ink hover:text-gold"
-              >
-                Respond in alerts inbox &rarr;
-              </Link>
-              <Link
-                href="/dashboard/alerts?view=armed"
-                className="text-[13px] text-ink-dim hover:text-ink"
-              >
-                View armed levels
-              </Link>
-            </div>
-          </div>
-        )}
-      </section>
-
-      {/* ── Levels near price ── */}
-      <NearbyLevelsCard levels={nearbyLevels} />
-      </div>
-
-      {/* ── Significant moves in Vanguard holdings vs. beta-expected ── */}
-      <SignificantMovesCard />
 
       {/* ── Chat ── */}
       <OpenChatButton />
 
-      {/* ── Holdings ── */}
-      <section className="rounded-xl bg-panel p-4 card-elev">
-        <div className="mb-2 flex items-baseline justify-between gap-3 flex-wrap">
-          <h2 className="text-sm font-medium text-ink">IBKR today</h2>
-          <div className="flex items-baseline gap-3">
-            <span className="text-[11px] text-ink-faint font-mono">
-              {holdings.length} · today&rsquo;s move
-            </span>
-            {ibkrAccount && holdings.length > 0 && (
-              <IbkrRefreshButton latestPriceDate={latestPriceDate} />
-            )}
-          </div>
-        </div>
-
+      {/* ── IBKR today — one line (spec §4.6). The per-name list is on Accounts. ──
+              md:mb-20 is FAB clearance, not decoration. `NotesAmbient`'s
+              floating button is `fixed bottom-6 right-6` (h-12), so on a
+              fine-pointer desktop it owns the bottom-right 24–72px band of the
+              viewport, and the dashboard shell's own `md:pb-6` widens that band
+              only for coarse pointers (`md:pointer-coarse:pb-24`). Folding the
+              per-name list into this one line made Today short enough that its
+              last row — the right-aligned `Accounts →` link — lands inside the
+              band at max scroll: 5 of 11 sample points across the link hit the
+              FAB at 1280 and 1440 with the rail open (sandbox E2E 2026-09-04).
+              80px here puts 90–120px between the link and the page bottom, clearing
+              the 72px band with room to spare. Below md the shell already pays
+              `pb-36` (144px) for the bottom nav plus the phone FAB's higher
+              `bottom-20`, so this is a desktop-only correction. ── */}
+      <section className="rounded-xl bg-panel p-4 card-elev md:mb-20">
         {!ibkrAccount ? (
-          <p className="text-[14px] text-ink-faint">
-            No IBKR account set up yet.
-          </p>
+          <p className="text-[14px] text-ink-faint">No IBKR account set up yet.</p>
         ) : holdings.length === 0 ? (
           <p className="text-[14px] text-ink-faint">
             No holdings found. Connect TWS or import IBKR activity files.
           </p>
         ) : (
-          <ul className="divide-y divide-edge -mx-4">
-            {holdings.map((h) => (
-              <li key={h.security_id} className="px-4 py-2">
-                <Link
-                  href={`/dashboard/security/${h.security_id}`}
-                  className="flex items-center gap-3 group"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-baseline gap-2">
-                      <span className="font-mono text-[14px] font-medium text-ink group-hover:text-gold">
-                        {h.symbol}
-                      </span>
-                      {h.security_name && h.security_name !== h.symbol ? (
-                        <span className="text-[11px] text-ink-faint truncate">
-                          {h.security_name}
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="text-[12px] text-ink-faint font-mono mt-0.5 flex items-center gap-2">
-                      <span>
-                        <Shares value={h.quantity} />
-                        {" @ "}
-                        <Money value={h.current_price} precise />
-                      </span>
-                      <span>=</span>
-                      <span>
-                        <Money value={h.current_value} />
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div
-                      className={`text-[14px] font-mono tabular-nums ${
-                        h.today_gain === null
-                          ? "text-ink-faint"
-                          : h.today_gain >= 0
-                            ? "text-up"
-                            : "text-down"
-                      }`}
-                    >
-                      {h.today_gain === null ? (
-                        <span title="No prior-close price — today's move unavailable">&mdash;</span>
-                      ) : (
-                        <Money value={h.today_gain} signed />
-                      )}
-                    </div>
-                    {h.today_pct !== null && (
-                      <div
-                        className={`text-[12px] font-mono tabular-nums ${
-                          h.today_pct >= 0 ? "text-up" : "text-down"
-                        }`}
-                      >
-                        <Pct value={h.today_pct * 100} digits={2} signed />
-                      </div>
-                    )}
-                  </div>
-                </Link>
-              </li>
-            ))}
-          </ul>
+          <div className="flex items-baseline gap-3 flex-wrap text-[13px]">
+            <h2 className="text-sm font-medium text-ink whitespace-nowrap!">IBKR today</h2>
+            <span className="text-ink-dim font-mono tabular-nums">
+              <Count value={holdings.length} /> names
+            </span>
+            {todayGain === null ? (
+              <span
+                className="font-mono tabular-nums text-ink-faint"
+                title="no prior-close prices yet — today's move is unavailable"
+              >
+                —
+              </span>
+            ) : (
+              <span className={`font-mono tabular-nums ${todayGain >= 0 ? "text-up" : "text-down"}`}>
+                <Money value={todayGain} signed />
+                {todayPct !== null && (
+                  <> (<Pct value={todayPct} digits={2} signed />)</>
+                )}
+              </span>
+            )}
+            {moved.length < holdings.length && (
+              <span
+                className="text-[11px] text-ink-faint"
+                title="Names with no prior close are excluded from today's move"
+              >
+                <Count value={holdings.length - moved.length} /> without a prior close
+              </span>
+            )}
+            <IbkrRefreshButton latestPriceDate={latestPriceDate} />
+            <Link href="/dashboard/accounts" className="ml-auto text-[13px] text-gold-ink hover:text-gold">
+              Accounts &rarr;
+            </Link>
+          </div>
         )}
       </section>
-    </div>
-  );
-}
-
-function AlertGroup({
-  title,
-  alerts,
-  dim = false,
-}: {
-  title: string;
-  alerts: EnrichedAlert[];
-  dim?: boolean;
-}) {
-  return (
-    <div>
-      <h3 className={`text-[11px] uppercase tracking-widest mb-2 ${dim ? "text-ink-faint" : "text-ink-dim"}`}>
-        {title}
-      </h3>
-      <ul className="space-y-1.5">
-        {alerts.map((a) => (
-          <li key={a.id} className="text-[14px]">
-            <Link
-              href={`/dashboard/security/${a.security_id}`}
-              className="flex items-baseline gap-2 group"
-            >
-              <span className="font-mono font-medium text-ink group-hover:text-gold w-14 shrink-0">
-                {a.symbol ?? "—"}
-              </span>
-              <span className="flex-1 text-ink-dim">
-                <span className="uppercase">{a.level_type?.replace("_", " ") ?? "level"}</span>
-                {" @ "}
-                {/* Newsletter/level prices are public market data, not portfolio-derived —
-                    rendered unmasked under privacy mode per the privacy-masks-portfolio-only
-                    rule, matching /dashboard/alerts (QA: today-alerts-nearby-levels--privacy-
-                    masks-public-level-prices-inbox-shows-clear). */}
-                <span className="text-ink">
-                  {a.level_price !== null ? formatUSDPrecise(a.level_price) : "—"}
-                </span>
-                {a.level_price !== null && a.triggered_price != null && (
-                  <span className="text-ink-faint">
-                    {" "}(hit {formatUSDPrecise(a.triggered_price)})
-                  </span>
-                )}
-                {a.source_author && (
-                  <span className="text-ink-faint italic"> — {a.source_author}</span>
-                )}
-              </span>
-            </Link>
-            {a.suggested_action && (
-              <p className="ml-16 mt-0.5 text-[12px] text-ink-faint italic">
-                {/* AI prose embeds portfolio figures at generation time — mask the whole block */}
-                <PrivateText>{a.suggested_action}</PrivateText>
-              </p>
-            )}
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

@@ -204,7 +204,7 @@ Full route catalog: `docs/reference/api-patterns.md`. Every new/edited route:
 
 ## UI Structure
 
-- 6 desktop tabs: Today | Accounts | Analysis | Research | Charts | Import. Chat is a persistent right rail ≥1280px (Cmd+J); Cmd+K is global ticker-jump; NotesAmbient overlay on Cmd+;. Old routes redirect.
+- 6 desktop tabs: Today | Accounts | Analysis | Research | Charts | Import. **Today is six blocks: header · Portfolio strip · Releases · Earnings Hub · chat button · a one-line IBKR snapshot** (alerts, nearby levels, the cockpit and the print panel were removed by live print v2 slice F; Significant Moves + Momentum Pulse live on Analysis · Diagnostics). An armed Hub row expands in place into `LivePrintRow`. Chat is a persistent right rail ≥1280px (Cmd+J); Cmd+K is global ticker-jump; NotesAmbient overlay on Cmd+;. Old routes redirect.
 - Mobile: bottom nav (5 icons), `md:` (768px) separates phone from desktop, `pb-safe` + `viewport-fit=cover` for iPhone. ChatDrawer renders at layout root — do NOT wrap in `hidden md:flex`.
 - Security detail hub: `/dashboard/security/[id]` — every symbol links there via `SymbolLink`.
 - Benchmark prices live in `benchmark_prices` (not `prices`); TWS `getHistoricalData` needs `conId`; risk metrics compute from `daily_valuations`; Sharpe uses `getRiskFreeRate`.

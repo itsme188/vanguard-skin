@@ -920,3 +920,59 @@ read — a WATERMARK the Worker compares a KV delta against, not a count), plus 
 each bogey row. `lib/earnings/armed-events-projection.ts` owns the projection so both the script
 and the mutations build the identical shape; `ARMED_EVENT_PROJECTION_KEYS` is parity-pinned
 against the Worker's `ARMED_EVENT_ENTRY_KEYS`.
+
+## Extra metric lines and recompilation (v2 slice F)
+
+`earnings_bogeys.extra_metrics_json` holds the desk's own metric definitions:
+`[{ id: <uuid v4, immutable>, label, definition, unit: usd|per_share|pct|count,
+kind: point|range, period: Q|NQ_guide|FY_guide, basis: gaap|non_gaap|na,
+consensus?, whisper? }]`. `lib/print-watch/extra-metrics.ts` parses them strictly
+(unknown keys rejected, label ≤ 60, definition ≤ 300) and is CLIENT-SAFE, so the
+bogeys modal validates with the same code the route validates with. A `usd`
+figure requires at least one real digit in its comma-stripped mantissa — a
+digit-free string (`","`, `"$,,,"`, `",.5"`) is a parse ERROR, never a silent
+`$0`, because `$0` on this surface is a wrong number presented as a
+measurement, not a small one.
+
+`compileContracts` emits one line per merged id, `metric_id = x_<uuid>_<period>`,
+`pct` mapped to the contract unit `percent`. **The same id on two bogey sheets
+must agree on unit, kind, period and basis**; when it does not, NEITHER compiles
+and the id comes back in the additive `conflicts` key, which
+`GET /api/earnings/bogeys` republishes as `extraMetricConflicts` and the modal
+renders as a banner. Numbers merge first-non-null by bogey rowid.
+
+`recompileContracts(db, printId)` (`lib/print-watch/recompile.ts`) is explicit and
+runs in ONE immediate transaction; `POST` and `DELETE /api/earnings/bogeys` call
+it for the event's live print (any state but `expired`/`disarmed`) — the two
+direct `upsertBogey` callers (the bogeys-upload route and the `consensus_row`
+prepare step) do NOT recompile, which is benign because an extra metric only
+ever originates from the modal, and the watcher self-heals `expected` on the
+next parse. Per existing line: same semantics → update `contract_json`/
+`expected_json` in place; semantic change (unit / kind / basis / period) WITH
+evidence (`value IS NOT NULL`, a non-empty `candidates_json`, or
+`state = 'accepted'`) → the old row is RENAMED to `<metric_id>~retired~<n>` and
+booked `retired`, and a fresh `pending` line is inserted; semantic change
+without evidence → overwritten in place; no longer compiled → retired if it has
+evidence, else deleted; newly compiled → inserted `pending`. The rename is
+forced by the `(print_id, metric_id)` primary key. **The rename also re-tags
+every candidate inside the retired row's own `candidates_json` to the renamed
+id** (`retagCandidatePool`) — `collectCandidates` walks the whole sheet with no
+state filter, so without the re-tag a later document agreeing with the OLD
+reading would turn the fresh line green under a definition it was never
+measured against. It is safe because `upsertLines` never deletes and never
+touches a `metric_id` absent from its input, and `~retired~` ids are never
+compiled — so no later parse can resurrect or clobber one. `retractDocument`
+already treats `retired` like `accepted`; `sheetLineKeys` reads COMPILED
+contracts (so a retired line never suppresses a callout) and
+`isContradictedAccepted` short-circuits on any state that is not `accepted`.
+
+**Known gap, not slice F's to fix.** `app/api/print-watch/accept/route.ts`'s
+per-candidate branch keys its guard on `metric_id === line.metric_id`, which
+now matches a retired row's re-tagged pool — so a candidate that predates the
+retirement can be accepted onto it after the fact, flipping its `state` to
+`accepted` and rendering it as a normal, permanently-verified line (recompile
+never revisits an `accepted` row). There is no UI path to it (a retired row
+renders collapsed with no accept control) and it cannot reach promote or any
+outbound send. The route is outside slice F's edit list; the fix has to gate
+on the `~retired~` id substring rather than on `state`, because `state` is what
+the bug flips.

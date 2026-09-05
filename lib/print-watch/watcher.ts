@@ -2499,12 +2499,26 @@ function writeLines(
     statusFor(printId).sources.pipeline = "lease lost mid-parse — sheet write refused";
     return false;
   }
-  const { contracts, expected } = compileContracts(db, eventId, symbol);
-  const accepted = getSheet(db, printId).filter((l) => l.state === "accepted");
-  const lines = reconcile(contracts, expected, all, accepted).map((line) =>
-    line.source_doc_id === FLASH_DOC_ID ? { ...line, source_doc_id: null } : line,
-  );
-  upsertLines(db, printId, lines);
+  // Slice F (R-F4): compile → read → reconcile → write is ONE transaction.
+  // `recompileContracts` (lib/print-watch/recompile.ts) rewrites the same rows
+  // from the same compiler when the desk edits a bogey, and the two run in
+  // different PROCESSES (the launchd sweep holds the lease while the Next
+  // server serves POST /api/earnings/bogeys). Without this, a compile taken
+  // before the recompile can be written after it and silently revert a
+  // definition the desk just changed. Both sides use .immediate(), so SQLite
+  // orders them either way round and each sees the other's committed state.
+  // The lease claim stays OUTSIDE: it is the cross-process arbiter, not part
+  // of the write, and holding a write lock across it would serialise the whole
+  // watcher against every reader.
+  const run = db.transaction(() => {
+    const { contracts, expected } = compileContracts(db, eventId, symbol);
+    const accepted = getSheet(db, printId).filter((l) => l.state === "accepted");
+    const lines = reconcile(contracts, expected, all, accepted).map((line) =>
+      line.source_doc_id === FLASH_DOC_ID ? { ...line, source_doc_id: null } : line,
+    );
+    upsertLines(db, printId, lines);
+  });
+  run.immediate();
   return true;
 }
 
