@@ -22,6 +22,9 @@ export interface EarningsBogey {
   segment_breakdown_json: string | null;
   guidance_notes: string | null;
   notes: string | null;
+  /** Desk-defined extra metric lines (spec §4.7), a JSON array as stored.
+   *  Read it through `parseExtraMetrics` — never `JSON.parse` it by hand. */
+  extra_metrics_json: string | null;
   uploaded_at: string;
   ai_extraction_model: string | null;
 }
@@ -52,7 +55,7 @@ export function getBogeysForEvent(
               research_document_id, research_article_id, eps_consensus, eps_whisper,
               revenue_consensus_usd, revenue_whisper_usd, expected_move_pct,
               eps_consensus_vendor,
-              segment_breakdown_json, guidance_notes, notes, uploaded_at,
+              segment_breakdown_json, guidance_notes, notes, extra_metrics_json, uploaded_at,
               ai_extraction_model
          FROM earnings_bogeys
         WHERE event_id = ?
@@ -81,7 +84,7 @@ export function getPrimaryBogeyForEvent(
                 research_document_id, research_article_id, eps_consensus, eps_whisper,
                 revenue_consensus_usd, revenue_whisper_usd, expected_move_pct,
                 eps_consensus_vendor,
-                segment_breakdown_json, guidance_notes, notes, uploaded_at,
+                segment_breakdown_json, guidance_notes, notes, extra_metrics_json, uploaded_at,
                 ai_extraction_model
            FROM earnings_bogeys
           WHERE event_id = ?

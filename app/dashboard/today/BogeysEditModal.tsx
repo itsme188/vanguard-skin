@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { coercePercent, formatEnrichedAtET, formatLargeUSD, parseLargeUSD } from "@/lib/format";
@@ -9,6 +9,30 @@ import { formatBogeyFields, formatBogeyFieldLine } from "@/lib/earnings/format-b
 import { PrivateText } from "@/lib/privacy/components";
 import type { EarningsBogey } from "@/lib/queries/earnings-bogeys";
 import apiFetch from "@/lib/http/apiFetch";
+import {
+  isUuidV4,
+  parseExtraMetrics,
+  MAX_LABEL,
+  MAX_DEFINITION,
+  type ExtraMetricSpec,
+} from "@/lib/print-watch/extra-metrics";
+
+/**
+ * Mirrors `lib/print-watch/recompile.ts::RecompileReport`, the shape POST/DELETE
+ * /api/earnings/bogeys returns under `recompiled`. RE-DECLARED, not imported
+ * (ruling R-F29): that module is genuinely server-only (`recompile` → `./store`
+ * → better-sqlite3), it is not on the client-safe allowlist, and the two
+ * boundary guards are dumb text scans that do not distinguish `import type` —
+ * so naming it here at all reds them. Client files re-declare the wire shapes
+ * they consume; `hub-live/types.ts` follows the same precedent (M-F18).
+ */
+interface RecompileReport {
+  added: string[];
+  updated: string[];
+  retired: string[];
+  deleted: string[];
+  conflicts: Array<{ id: string; fields: string[] }>;
+}
 
 interface Props {
   eventId: number;
@@ -50,6 +74,105 @@ const EMPTY_ACTUALS: ActualsState = {
 };
 
 /**
+ * One desk-defined extra metric line while it is being edited (spec §4.7).
+ * Rows hold STRINGS and ship strings: `parseExtraMetrics` reads each number
+ * against its row's own unit (usd takes the parseLargeUSD grammar, pct takes a
+ * decimal with an optional %), and nothing here coerces. Parsing in the modal
+ * would have to duplicate that table — and did, wrongly: parseLargeUSD applied
+ * to a `pct` row turned a typed "27.5%" into "no bogey".
+ */
+interface ExtraRow {
+  id: string;
+  label: string;
+  definition: string;
+  unit: ExtraMetricSpec["unit"];
+  kind: ExtraMetricSpec["kind"];
+  period: ExtraMetricSpec["period"];
+  basis: ExtraMetricSpec["basis"];
+  consensus: string;
+  whisper: string;
+}
+
+const EMPTY_EXTRA_ROW = {
+  label: "",
+  definition: "",
+  unit: "usd",
+  kind: "point",
+  period: "Q",
+  basis: "na",
+  consensus: "",
+  whisper: "",
+} satisfies Omit<ExtraRow, "id">;
+
+function extraRowsToJson(rows: ExtraRow[]): string | null {
+  if (rows.length === 0) return null;
+  return JSON.stringify(rows.map((r) => ({
+    id: r.id,
+    label: r.label.trim(),
+    definition: r.definition.trim(),
+    unit: r.unit,
+    kind: r.kind,
+    period: r.period,
+    basis: r.basis,
+    consensus: r.consensus.trim() === "" ? null : r.consensus.trim(),
+    whisper: r.whisper.trim() === "" ? null : r.whisper.trim(),
+  })));
+}
+
+const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+
+/**
+ * What the save actually did to the live sheet, in desk language (review I-2).
+ * The POST already returns this report and the modal used to throw it away, so
+ * a save that compiled NO line (two sheets disagree on a metric's semantics) or
+ * that RETIRED a live line closed in silence. A retirement is the one the desk
+ * must see: a line it may be watching has stopped being measured under its old
+ * definition, and its reading is frozen where it stood.
+ */
+function describeRecompile(report: RecompileReport): string {
+  const parts: string[] = [];
+  if (report.added.length > 0) parts.push(`${plural(report.added.length, "line")} added`);
+  if (report.updated.length > 0) parts.push(`${plural(report.updated.length, "line")} updated`);
+  if (report.retired.length > 0) {
+    parts.push(
+      `${plural(report.retired.length, "line")} retired — no longer measured under the old definition, ` +
+        "and any reading already taken is kept as it stood",
+    );
+  }
+  if (report.deleted.length > 0) parts.push(`${plural(report.deleted.length, "line")} removed`);
+  if (parts.length === 0) return "Saved. The live sheet was already what these bogeys describe.";
+  return `Saved. Live sheet: ${parts.join(" · ")}.`;
+}
+
+/**
+ * Which outcomes the modal may NOT close on. A line compiled or refreshed is
+ * what the desk just asked for and needs no ceremony; a line that was retired
+ * or removed, an id that compiles NO line because two sheets disagree, and a
+ * save that moved the sheet not at all are the outcomes the desk would
+ * otherwise learn about at the next open, if ever.
+ */
+function needsAcknowledgement(report: RecompileReport): boolean {
+  return (
+    report.conflicts.length > 0 ||
+    report.retired.length > 0 ||
+    report.deleted.length > 0 ||
+    report.added.length + report.updated.length === 0
+  );
+}
+
+/** What GET /api/earnings/bogeys adds to each stored row: its specs already
+ *  parsed, so the editor can preserve ids instead of re-minting them. */
+type BogeyWithSpecs = EarningsBogey & {
+  extraMetrics?: ExtraMetricSpec[];
+  extraMetricErrors?: string[];
+};
+
+interface ExtraMetricConflict {
+  id: string;
+  fields: string[];
+}
+
+/**
  * Per-event bogeys editor. Lists existing bogey rows from any source
  * (PDF / manual / newsletter) and lets the user add or update a manual
  * entry. Revenue inputs accept "$4.34B" / "4340M" / "4,340,000,000" via
@@ -57,7 +180,7 @@ const EMPTY_ACTUALS: ActualsState = {
  */
 export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
   const router = useRouter();
-  const [existing, setExisting] = useState<EarningsBogey[]>([]);
+  const [existing, setExisting] = useState<BogeyWithSpecs[]>([]);
   const [form, setForm] = useState<FormState>(EMPTY);
   const [actuals, setActuals] = useState<ActualsState>(EMPTY_ACTUALS);
   const [actualsEnrichedAt, setActualsEnrichedAt] = useState<string | null>(null);
@@ -70,6 +193,34 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
   const [clearingActuals, setClearingActuals] = useState(false);
   const [clearedActualsMsg, setClearedActualsMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [extraRows, setExtraRows] = useState<ExtraRow[]>([]);
+  const [extraErrors, setExtraErrors] = useState<string[]>([]);
+  const [conflicts, setConflicts] = useState<ExtraMetricConflict[]>([]);
+  const [reuseId, setReuseId] = useState("");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  /** The row whose "copy id" the browser refused — a clipboard problem, kept
+   *  out of the parser's validation list (review M-3). */
+  const [copyFailedId, setCopyFailedId] = useState<string | null>(null);
+  /** Why the stored extra metrics of the sheet this save will overwrite could
+   *  not be read. Non-empty BLOCKS the save (review I-1): the editor shows zero
+   *  rows in that case, and saving would write NULL over definitions the desk
+   *  is measured against. */
+  const [hydrationErrors, setHydrationErrors] = useState<string[]>([]);
+  /** The deliberate way out of that block — the desk says "discard them". */
+  const [discardUnreadable, setDiscardUnreadable] = useState(false);
+  /** "Loading this sheet moved your typed rows" — never silent (review M-1). */
+  const [hydrationNote, setHydrationNote] = useState<string | null>(null);
+  /** What the last save did to the live sheet, in words (review I-2). */
+  const [saveSummary, setSaveSummary] = useState<string | null>(null);
+  /** The source label whose stored metrics are already in the editor, so a
+   *  hydration can never overwrite the desk's own edits mid-typing. */
+  const hydratedLabelRef = useRef<string | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // "copied" is a two-second acknowledgement, not a permanent label (M-4).
+  useEffect(() => () => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -84,9 +235,26 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     // from a previous open/close cycle.
     setPrintedOk(false);
     setPrintedRoad(null);
+    setExtraRows([]);
+    setExtraErrors([]);
+    setConflicts([]);
+    setReuseId("");
+    setCopiedId(null);
+    setCopyFailedId(null);
+    setHydrationErrors([]);
+    setDiscardUnreadable(false);
+    setHydrationNote(null);
+    setSaveSummary(null);
+    hydratedLabelRef.current = null;
     Promise.all([
       fetch(`/api/earnings/bogeys?eventId=${eventId}`).then(
-        (res) => res.json() as Promise<{ bogeys?: EarningsBogey[]; error?: string }>,
+        (res) =>
+          res.json() as Promise<{
+            success?: boolean;
+            bogeys?: BogeyWithSpecs[];
+            extraMetricConflicts?: ExtraMetricConflict[];
+            error?: string;
+          }>,
       ),
       fetch(`/api/earnings/actuals?eventId=${eventId}`).then(
         (res) =>
@@ -101,8 +269,17 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     ])
       .then(([bogeysData, actualsData]) => {
         if (cancelled) return;
-        if (bogeysData.error) setError(bogeysData.error);
-        setExisting(bogeysData.bogeys ?? []);
+        // Additive envelope (the route keeps its `bogeys` key): a failure
+        // carries `error` and no rows, so say so rather than rendering an
+        // empty modal that reads as "this event has no bogeys".
+        if (!bogeysData.success) {
+          setError(bogeysData.error ?? "Could not load this event's bogeys.");
+          setExisting([]);
+          setConflicts([]);
+        } else {
+          setExisting(bogeysData.bogeys ?? []);
+          setConflicts(bogeysData.extraMetricConflicts ?? []);
+        }
         if (!actualsData.error) {
           setActuals({
             eps_actual: actualsData.eps_actual != null ? actualsData.eps_actual.toFixed(2) : "",
@@ -131,6 +308,104 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
+
+  /**
+   * Editing an existing sheet must not re-mint its ids: a new id retires the
+   * live line and starts a fresh one, losing its continuity (R-F2). The manual
+   * form always upserts (event, 'manual', source_label), so it hydrates from
+   * the MANUAL row with that label — the row this save will overwrite — and
+   * only ONCE per label, so the desk's own edits are never clobbered.
+   */
+  useEffect(() => {
+    const label = (form.source_label ?? "").trim();
+    if (hydratedLabelRef.current === label) return;
+    const match = existing.find(
+      (b) => b.source === "manual" && (b.source_label ?? "").trim() === label,
+    );
+    if (!match) {
+      // No stored manual row under this label: the save creates one, so it can
+      // overwrite nothing — a warning left over from a previously-typed label
+      // no longer applies. Same-reference when already empty, so this cannot
+      // loop through the `extraRows` dependency below.
+      setHydrationErrors((prev) => (prev.length === 0 ? prev : []));
+      setDiscardUnreadable(false);
+      setHydrationNote(null);
+      return;
+    }
+    hydratedLabelRef.current = label;
+    // An unreadable stored value hydrates as ZERO rows (parseExtraMetrics is
+    // all-or-nothing), which used to look exactly like "this sheet has no extra
+    // metrics" — and the next save wrote NULL over it. Say so, and block the
+    // save until the desk decides (review I-1).
+    setHydrationErrors(match.extraMetricErrors ?? []);
+    setDiscardUnreadable(false);
+    const stored = (match.extraMetrics ?? []).map((sp) => ({
+      id: sp.id,
+      label: sp.label,
+      definition: sp.definition,
+      unit: sp.unit,
+      kind: sp.kind,
+      period: sp.period,
+      basis: sp.basis,
+      consensus: sp.consensus === null || sp.consensus === undefined ? "" : String(sp.consensus),
+      whisper: sp.whisper === null || sp.whisper === undefined ? "" : String(sp.whisper),
+    }));
+    // Rows the desk typed before the label matched are KEPT (review M-1) —
+    // dropping them threw away work with no notice. Stored ids win, so the
+    // R-F2 identity protocol is unchanged: an id already on the sheet keeps its
+    // stored definition rather than the half-typed one.
+    const storedIds = new Set(stored.map((r) => r.id));
+    const kept = extraRows.filter((r) => !storedIds.has(r.id));
+    setExtraRows([...stored, ...kept]);
+    setHydrationNote(
+      extraRows.length === 0
+        ? null
+        : `Loaded ${plural(stored.length, "stored metric")} for this sheet label` +
+          (kept.length > 0 ? `; ${plural(kept.length, "row")} you had typed kept below.` : "."),
+    );
+  }, [form.source_label, existing, extraRows]);
+
+  /**
+   * The id is minted at add-row time and immutable after that (M-F8). A pasted
+   * id is how the desk points a SECOND sheet at the same metric — the compiler
+   * then requires the two to agree on unit/kind/period/basis, which is what the
+   * conflict banner above the rows reports.
+   */
+  function addExtraRow() {
+    const pasted = reuseId.trim().toLowerCase();
+    const reused = isUuidV4(pasted);
+    // A truncated or mistyped paste used to fail open: it minted a FRESH id, so
+    // the save compiled a new line instead of joining the one the desk meant.
+    // Still add the row — the click did something — but say which id it got
+    // (review M-2).
+    setExtraErrors(
+      pasted !== "" && !reused
+        ? [`"${pasted}" is not a full v4 uuid, so a new metric id was minted instead of reusing that one — paste the whole id (use "copy id" on the other sheet) to point both sheets at one metric.`]
+        : [],
+    );
+    const id = reused ? pasted : crypto.randomUUID();
+    setReuseId("");
+    setExtraRows((rows) => [...rows, { id, ...EMPTY_EXTRA_ROW }]);
+  }
+
+  async function copyId(id: string) {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    try {
+      await navigator.clipboard.writeText(id);
+      setCopyFailedId(null);
+      setCopiedId(id);
+      // "copied" is an acknowledgement, not a label: without this it stuck for
+      // the life of the modal, so the next copy looked like it did nothing (M-4).
+      copyTimerRef.current = setTimeout(() => setCopiedId(null), 2000);
+    } catch {
+      // A browser that refuses clipboard access is not a failure worth a modal —
+      // the id is already on screen and selectable. Say so beside the button
+      // rather than in the parser's error list, where a browser problem reads
+      // as a data problem (review M-3).
+      setCopiedId(null);
+      setCopyFailedId(id);
+    }
+  }
 
   // Print the deterministic desk worksheet immediately (feedback #6) —
   // independent of the auto-print arm; honest outcome via inline error.
@@ -171,7 +446,19 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     e.preventDefault();
     setSaving(true);
     setError(null);
+    setSaveSummary(null);
     try {
+      // The stored extra metrics of the row this save overwrites could not be
+      // read, so the editor is showing none of them. Saving now would write
+      // NULL over the desk's own definitions (review I-1). Refuse until the
+      // desk explicitly discards them.
+      if (hydrationErrors.length > 0 && !discardUnreadable) {
+        setError(
+          "This sheet's stored extra metrics cannot be read, so none are loaded — saving now would erase them. " +
+            "Use “discard the unreadable metrics” above if you mean to replace them.",
+        );
+        return;
+      }
       const eps_consensus = form.eps_consensus.trim() ? parseLargeUSD(form.eps_consensus) : null;
       const eps_whisper = form.eps_whisper.trim() ? parseLargeUSD(form.eps_whisper) : null;
       const revenue_consensus_usd = form.revenue_consensus.trim()
@@ -183,6 +470,16 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
       const expected_move_pct = form.expected_move.trim()
         ? coercePercent(form.expected_move)
         : null;
+
+      // The server re-validates with this same parser — the client check is a
+      // fast, identical refusal, never the only one.
+      const extra_metrics_json = extraRowsToJson(extraRows);
+      const { errors } = parseExtraMetrics(extra_metrics_json);
+      if (errors.length > 0) {
+        setExtraErrors(errors);
+        return;
+      }
+      setExtraErrors([]);
 
       const res = await apiFetch("/api/earnings/bogeys", {
         method: "POST",
@@ -197,14 +494,35 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
           expected_move_pct,
           guidance_notes: form.guidance_notes.trim() || null,
           notes: form.notes.trim() || null,
+          extra_metrics_json,
         }),
       });
-      const data = (await res.json()) as { error?: string; id?: number };
-      if (!res.ok || data.error) {
-        setError(data.error ?? `Server returned ${res.status}`);
+      const data = (await res.json().catch(() => null)) as
+        | { success?: boolean; error?: string; id?: number; recompiled?: RecompileReport }
+        | null;
+      if (!res.ok || !data?.success) {
+        setError(data?.error ?? `Server returned ${res.status}`);
         return;
       }
       router.refresh();
+      // The save is committed either way; what is left is telling the desk what
+      // it did to the live sheet (review I-2). A conflict means NO line compiles
+      // for that id, and a retirement means a line stopped being measured under
+      // its old definition — neither may close the modal in silence.
+      const recompiled = data.recompiled;
+      if (recompiled && needsAcknowledgement(recompiled)) {
+        setConflicts(recompiled.conflicts);
+        // The stored row now IS what the editor holds, so a re-open would
+        // hydrate the same rows; drop the stale "cannot be read" block.
+        setHydrationErrors([]);
+        setDiscardUnreadable(false);
+        setSaveSummary(
+          recompiled.conflicts.length > 0
+            ? `${describeRecompile(recompiled)} No line is compiled for ${plural(recompiled.conflicts.length, "metric id")} until every sheet agrees on it — see above.`
+            : describeRecompile(recompiled),
+        );
+        return;
+      }
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
@@ -322,10 +640,23 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
   async function remove(id: number) {
     if (!confirm("Delete this bogey?")) return;
     const res = await apiFetch(`/api/earnings/bogeys?id=${id}`, { method: "DELETE" });
-    if (!res.ok) {
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
-      setError(data.error ?? `Server returned ${res.status}`);
+    const data = (await res.json().catch(() => null)) as
+      | { success?: boolean; deleted?: boolean; error?: string; recompiled?: RecompileReport }
+      | null;
+    if (!res.ok || !data?.success) {
+      setError(data?.error ?? `Server returned ${res.status}`);
       return;
+    }
+    // Removing a sheet can retire a live line — the same silence I-2 named, on
+    // the delete road. The modal stays open here, so simply say it.
+    if (data.recompiled) {
+      setConflicts(data.recompiled.conflicts);
+      setSaveSummary(describeRecompile(data.recompiled));
+    }
+    if (!data.deleted) {
+      // Someone else already removed it. Drop it from the list either way —
+      // but say what happened rather than letting the click look effective.
+      setError("That bogey was already gone — nothing was deleted.");
     }
     setExisting((prev) => prev.filter((b) => b.id !== id));
     router.refresh();
@@ -560,8 +891,172 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                 className="w-full bg-raised border border-edge rounded px-2 py-1.5 text-[14px] text-ink focus:outline-none focus:border-gold resize-none"
               />
             </Field>
+
+            {/* Extra metrics — desk-defined sheet lines (spec §4.7). The id is
+                the identity: adding one compiles a line, dropping one retires
+                it with its evidence, and a re-mint is both. */}
+            <div className="mt-4 border-t border-edge pt-3">
+              <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                <span className="text-[11px] uppercase tracking-wider text-ink-faint whitespace-nowrap!">
+                  Extra metrics
+                </span>
+                <span className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={reuseId}
+                    onChange={(e) => setReuseId(e.target.value)}
+                    placeholder="paste an id to reuse (optional)"
+                    aria-label="Reuse an existing metric id"
+                    className="w-[15rem] max-w-full bg-raised border border-edge rounded px-2 py-0.5 font-mono text-[11px] text-ink-dim focus:outline-none focus:border-gold"
+                  />
+                  <button
+                    type="button"
+                    onClick={addExtraRow}
+                    className="relative text-[11px] text-ink-dim hover:text-gold border border-edge rounded px-2 py-0.5 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                  >
+                    + add metric
+                  </button>
+                </span>
+              </div>
+              {conflicts.length > 0 && (
+                <p className="mt-2 rounded border border-warn/40 bg-warn/10 px-2 py-1.5 text-[12px] text-warn">
+                  {conflicts.map((c) => `${c.id.slice(0, 8)}… — sheets disagree on ${c.fields.join(" and ")}`).join(" · ")}
+                  {" "}— no line is compiled for these until every sheet agrees.
+                </p>
+              )}
+              {/* The stored value could not be read, so the editor below is
+                  EMPTY for a reason — say it, and refuse the save until the
+                  desk decides (review I-1). */}
+              {hydrationErrors.length > 0 && (
+                <div className="mt-2 rounded border border-down/40 bg-down/10 px-2 py-1.5 text-[12px] text-down">
+                  <p>
+                    This sheet&rsquo;s stored extra metrics could not be read, so none are loaded
+                    below. Saving would erase them.
+                  </p>
+                  <ul className="list-disc pl-4 mt-1">
+                    {hydrationErrors.map((e) => <li key={e}>{e}</li>)}
+                  </ul>
+                  {discardUnreadable ? (
+                    <p className="mt-1 text-ink-dim">
+                      The next save will replace them with whatever rows are below.
+                    </p>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setDiscardUnreadable(true)}
+                      className="relative mt-1 text-[11px] text-ink-dim hover:text-down border border-edge rounded px-2 py-0.5 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                    >
+                      discard the unreadable metrics
+                    </button>
+                  )}
+                </div>
+              )}
+              {hydrationNote && (
+                <p className="mt-2 text-[12px] text-ink-dim">{hydrationNote}</p>
+              )}
+              {extraErrors.length > 0 && (
+                <ul className="mt-2 text-[12px] text-down list-disc pl-4">
+                  {extraErrors.map((e) => <li key={e}>{e}</li>)}
+                </ul>
+              )}
+              {extraRows.map((row, i) => (
+                <div key={row.id} className="mt-2 rounded border border-edge p-2">
+                  <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                    <span className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={row.id}
+                        readOnly
+                        aria-label="Metric id"
+                        title="Immutable id — the sheet line is keyed on it"
+                        className="bg-transparent font-mono text-[11px] text-ink-dim w-[19rem] max-w-full"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void copyId(row.id)}
+                        className="relative text-[11px] text-ink-dim hover:text-gold underline pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                      >
+                        {copiedId === row.id ? "copied" : "copy id"}
+                      </button>
+                      {copyFailedId === row.id && (
+                        <span className="text-[11px] text-ink-dim">
+                          clipboard blocked — select the id and copy it by hand.
+                        </span>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setExtraRows((rows) => rows.filter((r) => r.id !== row.id))}
+                      className="relative text-[11px] text-ink-faint hover:text-down pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                    >
+                      remove
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 mt-1">
+                    <Field label={`Label (max ${MAX_LABEL})`}>
+                      <input type="text" maxLength={MAX_LABEL} value={row.label}
+                        onChange={(e) => setExtraRows((rows) => rows.map((r, j) => j === i ? { ...r, label: e.target.value } : r))}
+                        placeholder="Net new ARR"
+                        className="w-full bg-raised border border-edge rounded px-2 py-1.5 text-[14px] font-mono text-ink focus:outline-none focus:border-gold" />
+                    </Field>
+                    <Field label="Unit">
+                      <select value={row.unit}
+                        onChange={(e) => setExtraRows((rows) => rows.map((r, j) => j === i ? { ...r, unit: e.target.value as ExtraRow["unit"] } : r))}
+                        className="w-full bg-raised border border-edge rounded px-2 py-1.5 text-[14px] font-mono text-ink focus:outline-none focus:border-gold">
+                        <option value="usd">usd</option><option value="per_share">per_share</option>
+                        <option value="pct">pct</option><option value="count">count</option>
+                      </select>
+                    </Field>
+                    <Field label="Kind">
+                      <select value={row.kind}
+                        onChange={(e) => setExtraRows((rows) => rows.map((r, j) => j === i ? { ...r, kind: e.target.value as ExtraRow["kind"] } : r))}
+                        className="w-full bg-raised border border-edge rounded px-2 py-1.5 text-[14px] font-mono text-ink focus:outline-none focus:border-gold">
+                        <option value="point">point</option><option value="range">range</option>
+                      </select>
+                    </Field>
+                    <Field label="Period">
+                      <select value={row.period}
+                        onChange={(e) => setExtraRows((rows) => rows.map((r, j) => j === i ? { ...r, period: e.target.value as ExtraRow["period"] } : r))}
+                        className="w-full bg-raised border border-edge rounded px-2 py-1.5 text-[14px] font-mono text-ink focus:outline-none focus:border-gold">
+                        <option value="Q">Q</option><option value="NQ_guide">NQ_guide</option><option value="FY_guide">FY_guide</option>
+                      </select>
+                    </Field>
+                    <Field label="Basis">
+                      <select value={row.basis}
+                        onChange={(e) => setExtraRows((rows) => rows.map((r, j) => j === i ? { ...r, basis: e.target.value as ExtraRow["basis"] } : r))}
+                        className="w-full bg-raised border border-edge rounded px-2 py-1.5 text-[14px] font-mono text-ink focus:outline-none focus:border-gold">
+                        <option value="na">na</option><option value="gaap">gaap</option><option value="non_gaap">non_gaap</option>
+                      </select>
+                    </Field>
+                    <Field label="Consensus">
+                      <input type="text" value={row.consensus}
+                        onChange={(e) => setExtraRows((rows) => rows.map((r, j) => j === i ? { ...r, consensus: e.target.value } : r))}
+                        placeholder={row.unit === "pct" ? "27.5%" : row.unit === "usd" ? "$300M" : "0.46"}
+                        className="w-full bg-raised border border-edge rounded px-2 py-1.5 text-[14px] font-mono text-ink focus:outline-none focus:border-gold" />
+                    </Field>
+                    <Field label="Whisper">
+                      <input type="text" value={row.whisper}
+                        onChange={(e) => setExtraRows((rows) => rows.map((r, j) => j === i ? { ...r, whisper: e.target.value } : r))}
+                        placeholder={row.unit === "pct" ? "28.0%" : row.unit === "usd" ? "$310M" : "0.50"}
+                        className="w-full bg-raised border border-edge rounded px-2 py-1.5 text-[14px] font-mono text-ink focus:outline-none focus:border-gold" />
+                    </Field>
+                  </div>
+                  <Field label={`Definition (max ${MAX_DEFINITION})`}>
+                    <textarea rows={2} maxLength={MAX_DEFINITION} value={row.definition}
+                      onChange={(e) => setExtraRows((rows) => rows.map((r, j) => j === i ? { ...r, definition: e.target.value } : r))}
+                      placeholder="Sequential change in annual recurring revenue."
+                      className="w-full bg-raised border border-edge rounded px-2 py-1.5 text-[13px] text-ink focus:outline-none focus:border-gold" />
+                  </Field>
+                </div>
+              ))}
+            </div>
             {error && (
               <p className="text-[12px] text-down">{error}</p>
+            )}
+            {/* What the save did to the live sheet — the modal stays open when
+                there is something here, so it cannot be missed (review I-2). */}
+            {saveSummary && (
+              <p className="text-[12px] text-ink-dim">{saveSummary}</p>
             )}
             <div className="flex items-center justify-end gap-2 pt-1">
               <button

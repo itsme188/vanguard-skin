@@ -32,7 +32,7 @@ const REPO = process.cwd();
 const PRINT_WATCH_DIR = path.join(REPO, "lib", "print-watch");
 
 /** The ONLY `lib/print-watch` modules a `"use client"` file may import. */
-const CLIENT_SAFE = ["types", "first-pass-types", "reconcile", "first-pass-format"] as const;
+const CLIENT_SAFE = ["types", "first-pass-types", "reconcile", "first-pass-format", "extra-metrics"] as const;
 
 /** What a client-safe module may never reach for. */
 const SERVER_ONLY_PREFIXES = [

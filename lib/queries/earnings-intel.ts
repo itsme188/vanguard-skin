@@ -90,7 +90,25 @@ export function isHistoryStale(db: Database.Database, symbol: string): boolean {
 }
 
 function allCockpitRows(payload: CockpitPayload): CockpitRow[] {
-  return [...payload.lanes.bmo, ...payload.lanes.amc, ...payload.lanes.unknown, ...payload.carryover];
+  const rows = [...payload.lanes.bmo, ...payload.lanes.amc, ...payload.lanes.unknown, ...payload.carryover];
+  // Slice F: with `weekOf`, `rowsByEvent` covers the whole Hub week. Lanes are
+  // TODAY only and carryover is yesterday only, so a Thursday row is in neither
+  // — without this it would render with no implied move and no history, and
+  // ensureIntelForEvents would never see it until its own day. Deduped by
+  // eventId so a row that IS in a lane keeps its single identity. `rowsByEvent`
+  // is typed REQUIRED (every in-process producer, buildCockpitPayload, always
+  // sets it) but is still read defensively here: a payload can arrive over the
+  // wire from an older server across a version skew, where a missing field is
+  // data (an old release), not a type error — the type system can't see across
+  // that boundary.
+  const extra = payload.rowsByEvent ? Object.values(payload.rowsByEvent) : [];
+  const seen = new Set(rows.map((r) => r.eventId));
+  for (const row of extra) {
+    if (seen.has(row.eventId)) continue;
+    seen.add(row.eventId);
+    rows.push(row);
+  }
+  return rows;
 }
 
 /**

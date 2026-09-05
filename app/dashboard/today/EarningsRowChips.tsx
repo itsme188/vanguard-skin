@@ -7,6 +7,9 @@ import {
   EarningsEmailViewer,
   type InlineEmailData,
 } from "../components/EarningsEmailViewer";
+import { BogeysEditModal } from "./BogeysEditModal";
+import { StageChipStrip, RowIntelLine, fmtCountdown } from "./hub-live/send-state-chips";
+import { useHubLive } from "./EarningsHubLive";
 import apiFetch from "@/lib/http/apiFetch";
 
 interface EarningsRowChipsProps {
@@ -50,10 +53,18 @@ export function EarningsRowChips({
   worksheetArmed,
   worksheetPrinted,
 }: EarningsRowChipsProps) {
+  // Task 9: the live cockpit row comes from the Hub's ONE controller through
+  // context, not as a prop the server-rendered row would have to thread down.
+  // `useHubLive()` returns null outside the provider (and on the very first
+  // paint before hydration), so every control below renders from its server
+  // props exactly as it did before the cockpit chips existed.
+  const live = useHubLive();
+  const cockpitRow = live?.cockpitByEvent[eventId] ?? null;
   const { toast } = useToast();
   const router = useRouter();
   const [openPhase, setOpenPhase] = useState<Phase | null>(null);
   const [sheetBusy, setSheetBusy] = useState(false);
+  const [actualsOpen, setActualsOpen] = useState(false);
 
   // Worksheet chip (feedback #6): tap toggles the auto-print arm; the armed
   // state prints once at the preview tick (printed → ✓ styling). Honest
@@ -90,6 +101,19 @@ export function EarningsRowChips({
   }
   const [inlineData, setInlineData] = useState<InlineEmailData | null>(null);
   const [generating, setGenerating] = useState(false);
+
+  // Cockpit chips (StageChipStrip) reuse this component's existing view/modal
+  // machinery: preview/recap open the same email viewer as the ✓-chips below,
+  // actuals opens the same BogeysEditModal wired the way EarningsCockpit.tsx
+  // wires it today.
+  function handleCockpitOpen(what: "preview" | "recap" | "actuals") {
+    if (what === "actuals") {
+      setActualsOpen(true);
+      return;
+    }
+    setInlineData(null);
+    setOpenPhase(what);
+  }
 
   // Show "Generate" only when the recap hasn't fired and isn't skipped —
   // otherwise the user already has a path to view it (the sent ✓-chip)
@@ -180,6 +204,48 @@ export function EarningsRowChips({
        2026-07-27 "+ BOG silently skipped the recap" bug, re-caught by
        elementFromPoint verification 2026-08-04). */
     <span ref={rootRef} className="flex flex-wrap items-center justify-end gap-x-1.5 gap-y-1 min-w-0">
+      {/* Cockpit chips (M-F4): the stage-chip strip, its release countdown and
+          the intel/exposure line, ahead of the row's own controls. Additive —
+          absent whenever the caller has no live cockpit row for this event
+          (outside the cockpit's coverage set), so every existing action below
+          renders exactly as it did before this prop existed. */}
+      {cockpitRow && (
+        /* min-w-0 + max-w-full and NO shrink-0, for exactly the reason the
+           root above carries them. A shrink-0 lane sizes to max-content
+           (~267px of chips); inside a 160px Email grid cell a `justify-end`
+           flex line lays that out from the RIGHT edge leftwards, so the strip
+           escaped its own cell and painted over the Δ and Bogeys columns
+           (sandbox E2E 2026-09-04: 4 of the 5 rows carrying a Δ were
+           overprinted at BOTH 1440 and 1920 — a grid defect, not a
+           narrow-viewport artifact). Letting the lane shrink to its cell is
+           what makes its own flex-wrap engage, so the chips stack onto a
+           second line INSIDE the cell instead of spilling out of it. Nothing
+           is hidden: `Chip` carries no whitespace-nowrap, so even the longest
+           chip text ("rec ? delivery unknown") has a small min-content and
+           wraps rather than forcing the lane wide again. */
+        <span className="flex flex-col items-end gap-0.5 min-w-0 max-w-full">
+          <span className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 max-w-full">
+            <StageChipStrip row={cockpitRow} onOpen={handleCockpitOpen} />
+            {/* The chips paint on the SERVER (EarningsHub seeds the provider
+                with a server-built cockpit payload), but a second-granular
+                countdown cannot: the server's clock would go into the HTML and
+                the browser's into hydration, and every row inside an hour of
+                its release would hydrate with a text mismatch. `nowMs` is 0
+                until the client clock starts, so this renders from the first
+                client tick onwards — milliseconds after paint. */}
+            {cockpitRow.stages.released.state === "upcoming" &&
+              cockpitRow.stages.released.releaseInstant &&
+              !!live?.nowMs && (
+                <span className="text-[10px] font-mono text-ink-faint whitespace-nowrap">
+                  {fmtCountdown(
+                    new Date(cockpitRow.stages.released.releaseInstant).getTime() - live.nowMs,
+                  )}
+                </span>
+              )}
+          </span>
+          <RowIntelLine row={cockpitRow} />
+        </span>
+      )}
       {/* Group 1 — email lifecycle chips. shrink-0 so wrapping only ever
           happens BETWEEN groups, never mid-group. */}
       <span className="inline-flex items-center gap-1.5 shrink-0">
@@ -259,6 +325,17 @@ export function EarningsRowChips({
           inlineData={
             openPhase === "recap" && inlineData ? inlineData : null
           }
+        />
+      )}
+      {cockpitRow && (
+        <BogeysEditModal
+          eventId={cockpitRow.eventId}
+          symbol={cockpitRow.symbol}
+          open={actualsOpen}
+          onClose={() => {
+            setActualsOpen(false);
+            router.refresh();
+          }}
         />
       )}
     </span>
