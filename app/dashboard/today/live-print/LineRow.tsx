@@ -8,7 +8,9 @@
  *      a bogey (M-F19, standing user ruling). The bogey beside it is the
  *      desk's own curated number and is masked; a delta against a masked bogey
  *      hands the bogey back by division, so masking one and not the other was
- *      a leak, not a style choice.
+ *      a leak, not a style choice. The cell's green/red goes neutral on the
+ *      same condition (review M-1) — otherwise the mask hid the magnitude and
+ *      the colour still announced beat-or-miss.
  *   2. A `retired` line (M-F17) renders dimmed and offers no accept control —
  *      it is the audit trail of a definition that no longer applies, not a
  *      measurement in progress. (`canAcceptLine` already refuses it; the
@@ -19,6 +21,7 @@
 import { useState } from "react";
 import { Chip } from "../../components/Chip";
 import { PrivateText } from "@/lib/privacy/components";
+import { usePrivacy } from "@/lib/privacy/context";
 import {
   acceptableRivals,
   basisNote,
@@ -54,6 +57,7 @@ export default function LineRow({
   noEventId: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const { isPrivate } = usePrivacy();
   const presentation = presentState(line);
   const basis = basisNote(line.contract);
   const delta = deltaPct(line.expected?.value ?? null, line.value);
@@ -62,6 +66,15 @@ export default function LineRow({
   // applies. It stays on the sheet as evidence, dimmed, with nothing to
   // accept.
   const isRetired = line.state === "retired";
+  /**
+   * The delta text is masked whenever the bogey is (M-F19) — but the cell's
+   * green/red also came off `delta.sign`, so a masked Δ still said "beat" or
+   * "miss" in colour (review M-1). That is one bit of the masked bogey
+   * surviving the mask, and it is the "never colour alone" rule in reverse:
+   * the colour was carrying information the text refused to. With privacy on
+   * and a bogey present, the cell goes neutral and says nothing.
+   */
+  const maskDelta = isPrivate && line.expected != null;
 
   let candidates: TaggedCandidate[] = [];
   if (line.state === "conflict") {
@@ -106,7 +119,15 @@ export default function LineRow({
         </td>
         <td
           className={`py-2 pr-3 align-top text-right font-mono tabular-nums ${
-            delta === null ? "text-ink-faint" : delta.sign === 1 ? "text-up" : delta.sign === -1 ? "text-down" : "text-ink-dim"
+            delta === null
+              ? "text-ink-faint"
+              : maskDelta
+                ? "text-ink-dim"
+                : delta.sign === 1
+                  ? "text-up"
+                  : delta.sign === -1
+                    ? "text-down"
+                    : "text-ink-dim"
           }`}
         >
           {/* M-F19: the bogey cell above is the desk's own curated number and

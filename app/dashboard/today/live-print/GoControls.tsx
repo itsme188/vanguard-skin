@@ -51,6 +51,14 @@ export default function GoControls({
 
   const noEventId = eventId === undefined;
   const busy = pending !== null;
+  /**
+   * A durable go request the server has not finished. It greys the BUTTON — a
+   * second identical "acquire from every road" press adds nothing — but
+   * deliberately NOT the paste lane (review M-3): handing the release over
+   * directly is precisely what the desk does when the queued go is not
+   * producing, so gating it on the stuck request would remove the escape
+   * hatch at the moment it is needed.
+   */
   const goInFlight = goRequest?.status === "queued" || goRequest?.status === "claimed";
 
   /**
@@ -63,11 +71,27 @@ export default function GoControls({
    * route never 500s a durable row over a wake failure) — that is a soft
    * warning, not a failure: the watcher's own cadence picks the request up on
    * its next tick.
+   *
+   * That branch takes its OWN note (`queuedNote`), never the success note
+   * (review I-2). "Acquiring from every road now" and "could not wake the
+   * watcher" are opposite claims, and the panel never made both at once — it
+   * said "request queued, but could not wake…". A note whose two halves
+   * contradict each other is worse than no note, because the desk cannot tell
+   * which half to act on.
+   *
+   * Returns whether the request was accepted, so a caller can clear its own
+   * input on its own success (review M-2) instead of every press clearing a
+   * box it never wrote to.
    */
-  async function postGo(body: Record<string, unknown>, okNote: string, which: Pending) {
+  async function postGo(
+    body: Record<string, unknown>,
+    okNote: string,
+    which: Pending,
+    queuedNote: string,
+  ): Promise<boolean> {
     if (noEventId) {
       onError("This print has no event reference from the server — cannot press go.");
-      return;
+      return false;
     }
     setPending(which);
     try {
@@ -81,37 +105,50 @@ export default function GoControls({
         | null;
       if (!res.ok || !data?.success) {
         onError(data?.error ?? `Go failed (HTTP ${res.status}).`);
-        return;
+        return false;
       }
       onNote(
         data.data?.wakeError
-          ? `${okNote} Could not wake the watcher immediately (${data.data.wakeError}) — it will pick this up on its next poll.`
+          ? `${queuedNote} Could not wake the watcher immediately (${data.data.wakeError}) — it will pick this up on its next poll.`
           : okNote,
       );
-      setUrl("");
       await onChanged();
+      return true;
     } catch (err) {
       onError(err instanceof Error ? err.message : "Go failed.");
+      return false;
     } finally {
       setPending(null);
     }
   }
 
   const handleGo = () =>
-    void postGo({ eventId }, "Print is live — acquiring from every road now.", "go");
+    void postGo(
+      { eventId },
+      "Print is live — acquiring from every road now.",
+      "go",
+      "Print is live — request queued.",
+    );
 
-  const submitUrl = () => {
+  const submitUrl = async () => {
     if (url.trim() === "") {
       onError("Paste the release link first — an empty box has nothing to fetch.");
       return;
     }
-    void postGo({ eventId, url: url.trim() }, "Link accepted — acquiring now.", "url");
+    // The body literal stays on the call line deliberately: the plan pins this
+    // request shape by source scan, so wrapping it would break the pin without
+    // changing a byte of what is sent.
+    const ok = await postGo({ eventId, url: url.trim() }, "Link accepted — acquiring now.", "url", "Link accepted — request queued.");
+    // Only THIS lane empties its own box, and only once the server took the
+    // link (M-2). A button press or a pasted file used to discard a link the
+    // desk had typed but not yet submitted.
+    if (ok) setUrl("");
   };
 
   const submitFile = async (file: File) => {
     try {
       const contentBase64 = await fileToBase64(file);
-      await postGo({ eventId, contentBase64, filename: file.name }, "File accepted — parsing now.", "file");
+      await postGo({ eventId, contentBase64, filename: file.name }, "File accepted — parsing now.", "file", "File accepted — request queued.");
     } catch (err) {
       onError(err instanceof Error ? err.message : "Could not read that file.");
     }
@@ -192,7 +229,7 @@ export default function GoControls({
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
-            submitUrl();
+            void submitUrl();
           }
         }}
         placeholder="Paste the release link"
@@ -202,7 +239,7 @@ export default function GoControls({
       />
       <button
         type="button"
-        onClick={submitUrl}
+        onClick={() => void submitUrl()}
         disabled={busy || noEventId || url.trim() === ""}
         className="text-[12px] font-mono border border-edge rounded px-2 py-1 hover:bg-raised disabled:opacity-60"
         title={
