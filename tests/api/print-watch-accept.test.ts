@@ -1583,7 +1583,9 @@ describe("POST /api/print-watch/accept", () => {
         printId,
         BASE_ID,
       );
-      // The live sibling, same print, same two documents, agreeing.
+      // The live siblings, same print, same two documents, agreeing. Both
+      // headline lines are seeded so the promote pair is complete — the
+      // promote path has to be exercisable with a retired row on the sheet.
       setLine.run(
         1.42,
         "adjusted EPS of $1.42",
@@ -1591,6 +1593,14 @@ describe("POST /api/print-watch/accept", () => {
         JSON.stringify(poolFor("eps_adj_q", 1.42, docA, docB)),
         printId,
         "eps_adj_q",
+      );
+      setLine.run(
+        3_900_000_000,
+        "revenue of $3.90 billion",
+        docA,
+        JSON.stringify(poolFor("revenue_q", 3_900_000_000, docA, docB)),
+        printId,
+        "revenue_q",
       );
 
       // The desk changes the metric's DEFINITION — a semantic field — so the
@@ -1729,6 +1739,38 @@ describe("POST /api/print-watch/accept", () => {
       expect(line.state).toBe("accepted");
       expect(line.value).toBe(1.42);
       expect(line.source_doc_id).toBe(docB);
+    });
+
+    // The promote path is provably out of the guard's blast radius — it selects
+    // the hardcoded eps_adj_q / eps_gaap_q / revenue_q ids, which a retired row
+    // can no longer carry — but it runs inside the SAME transaction as the
+    // guard, so "provably untouched" is exactly the claim that should have a
+    // test before a future edit to the guard catches promote by accident
+    // (review M4).
+    it("promotes the headline normally while a retired row sits on the same sheet", async () => {
+      const { eventId, printId, retiredId } = seedRetired();
+      const retiredBefore = rawLine(printId, retiredId);
+
+      const { status, json } = await callAccept({
+        eventId,
+        accept: ["eps_adj_q", "revenue_q"],
+        promoteHeadline: true,
+      });
+
+      expect(status).toBe(200);
+      expect(json.success).toBe(true);
+      expect(json.data!.promoted!.basis).toBe("adj");
+      expect(saveManualActuals).toHaveBeenCalledTimes(1);
+
+      expect(rawLine(printId, "eps_adj_q").state).toBe("accepted");
+      expect(rawLine(printId, "revenue_q").state).toBe("accepted");
+      // The record on the same sheet took part in none of it.
+      expect(rawLine(printId, retiredId)).toEqual(retiredBefore);
+
+      const event = hoisted.db
+        .prepare(`SELECT actual_value FROM calendar_events WHERE id = ?`)
+        .get(eventId) as { actual_value: string | null };
+      expect(event.actual_value).not.toBeNull();
     });
 
     // Drift guard: the route's gate and the retirement that mints the id have
