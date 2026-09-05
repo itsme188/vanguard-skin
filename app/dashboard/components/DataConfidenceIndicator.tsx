@@ -1,12 +1,17 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import type { DataConfidence, DataAction, DimensionScore } from "@/lib/queries/data-confidence";
 import type { IntegrityHit } from "@/lib/queries/integrity-checks";
 import { PrivateText, Money, Count } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
 import { Chip } from "./Chip";
+import { popoverAnchorFor } from "./data-confidence-popover-anchor";
+
+// Fallback popover width (Tailwind `w-96` = 384px) used when the popover
+// element hasn't rendered yet at measurement time.
+const DEFAULT_POPOVER_WIDTH = 384;
 
 const LEVEL_CONFIG = {
   high: { color: "bg-up", label: "Data reliable" },
@@ -29,7 +34,9 @@ export function DataConfidenceIndicator() {
   const [showPopover, setShowPopover] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
+  const [anchor, setAnchor] = useState<"left" | "right">("right");
   const popoverRef = useRef<HTMLDivElement>(null);
+  const popoverContentRef = useRef<HTMLDivElement>(null);
   // Ref mirrors `confidence` so the fetch callback can read the latest value
   // without depending on it (which would invalidate the callback on every state
   // change and cause a render/poll loop — previously fired ~300k requests/hr).
@@ -103,6 +110,20 @@ export function DataConfidenceIndicator() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, [showPopover]);
 
+  // Pick which edge the popover hangs off of, based on available viewport
+  // width — runs before paint so there's no visible flash from re-anchoring.
+  // Resets to "right" (the default) when the popover closes.
+  useLayoutEffect(() => {
+    if (!showPopover) {
+      setAnchor("right");
+      return;
+    }
+    if (!popoverRef.current) return;
+    const triggerRect = popoverRef.current.getBoundingClientRect();
+    const popoverWidth = popoverContentRef.current?.getBoundingClientRect().width ?? DEFAULT_POPOVER_WIDTH;
+    setAnchor(popoverAnchorFor(triggerRect, popoverWidth, window.innerWidth));
+  }, [showPopover]);
+
   if (!confidence) {
     if (syncing) {
       return (
@@ -155,7 +176,10 @@ export function DataConfidenceIndicator() {
 
       {showPopover && (
         <div
-          className="absolute right-0 top-full mt-2 z-50 w-96 rounded-xl border border-edge bg-panel shadow-xl p-4 space-y-3"
+          ref={popoverContentRef}
+          className={`absolute top-full mt-2 z-50 w-96 max-w-[calc(100vw-1rem)] rounded-xl border border-edge bg-panel shadow-xl p-4 space-y-3 ${
+            anchor === "left" ? "left-0" : "right-0"
+          }`}
           style={{ backgroundColor: "var(--panel)" }}
         >
           {/* Header */}
