@@ -64,6 +64,68 @@ describe("createPollController — generations", () => {
     expect(applied).toEqual(["new"]); // "old" never reaches onResult
   });
 
+  it("a SUPERSEDED run cannot re-arm the timer while the newer one is still in flight", async () => {
+    // What this pins that the test above does not: the generation counter
+    // itself. `fire` aborts the previous controller BEFORE stamping the new
+    // generation, so at the `onResult` gate `generation !== s.generation` is
+    // redundant with `controller.signal.aborted` — delete the counter and the
+    // race test above still passes. The counter is NOT dead code, though: the
+    // `generation === s.generation` clause in fire()'s `finally` is what stops
+    // a superseded run from RESCHEDULING. Without it the stale run below arms a
+    // timer, that timer fires mid-flight, aborts the live generation and issues
+    // a fourth-wall request — the self-overlap the recursive setTimeout exists
+    // to prevent.
+    const applied: string[] = [];
+    const { impl, calls } = deferredFetch();
+    const c = createPollController({
+      streams: [stream({ intervalMs: () => 2_000, onResult: (v) => applied.push(v) })],
+      fetchImpl: impl,
+    });
+    c.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toHaveLength(1); // generation 1, in flight
+
+    c.refresh("status");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toHaveLength(2); // generation 2 issued; generation 1 aborted
+
+    // The stale run's promise ignores its own abort signal and lands late —
+    // what a cached response, a service worker or any fetch stub can do.
+    calls[0].resolve("stale");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(applied).toEqual([]);
+
+    // A full cadence later: still exactly two requests, and the NEWER one is
+    // still alive rather than aborted by a ghost timer.
+    await vi.advanceTimersByTimeAsync(2_100);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].signal.aborted).toBe(false);
+    c.stop();
+  });
+
+  it("stamps a generation PER STREAM, never one shared counter (the generationOf seam)", async () => {
+    const { impl, calls } = deferredFetch();
+    const c = createPollController({
+      streams: [stream(), stream({ name: "cockpit", intervalMs: () => 60_000 })],
+      fetchImpl: impl,
+    });
+    expect(c.generationOf("status")).toBe(0); // nothing issued yet
+    c.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.generationOf("status")).toBe(1);
+    expect(c.generationOf("cockpit")).toBe(1);
+
+    c.refresh("status");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.generationOf("status")).toBe(2);
+    expect(c.generationOf("cockpit")).toBe(1); // a sibling refresh never bumps it
+    expect(c.generationOf("no-such-stream")).toBe(0);
+
+    calls.forEach((k) => k.resolve("x"));
+    await vi.advanceTimersByTimeAsync(0);
+    c.stop();
+  });
+
   it("aborts the in-flight request on pause and applies nothing", async () => {
     const applied: string[] = [];
     const { impl, calls } = deferredFetch();

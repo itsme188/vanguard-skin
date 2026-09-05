@@ -17,8 +17,22 @@ import {
   EXPANDED_KEY_PREFIX,
   type ExpansionSnapshot,
 } from "@/app/dashboard/today/hub-live/expansion";
+import fs from "node:fs";
 import type { PrintWatchState } from "@/lib/print-watch/types";
-import type { PrintWatchStateWire } from "@/app/dashboard/today/hub-live/types";
+import type {
+  CockpitIntelWire,
+  CockpitPayloadWire,
+  CockpitRowWire,
+  PrintWatchStateWire,
+} from "@/app/dashboard/today/hub-live/types";
+// Type-only, so it is erased before vitest ever loads a module: no db, no
+// server stack. The client-boundary guard scans app/dashboard/today/**, not
+// tests/**, and a test is not bundled for the browser either way.
+import type {
+  CockpitIntel,
+  CockpitPayload,
+  CockpitRow,
+} from "@/lib/queries/earnings-cockpit";
 
 const snap = (o: Partial<ExpansionSnapshot> = {}): ExpansionSnapshot => ({
   printId: 1,
@@ -186,10 +200,84 @@ describe("manual toggle persistence", () => {
   });
 });
 
-describe("the wire state union tracks the server union", () => {
-  it("is assignable both ways (a server-side addition fails to compile here)", () => {
+/** Top-level field names of `export interface <name>` in a TS source file.
+ *  Brace-depth aware, so `lanes: { bmo: … }` contributes `lanes` and nothing
+ *  else, and comment lines contribute nothing. */
+function interfaceFields(source: string, name: string): string[] {
+  const start = source.indexOf(`export interface ${name} {`);
+  if (start < 0) throw new Error(`interface ${name} not found — the mirror has nothing to pin against`);
+  const lines = source.slice(start).split("\n");
+  const fields: string[] = [];
+  let depth = 0;
+  for (const [i, raw] of lines.entries()) {
+    const line = raw.trim();
+    const isComment = line.startsWith("*") || line.startsWith("/*") || line.startsWith("//");
+    if (i > 0 && depth === 1 && !isComment) {
+      const m = line.match(/^([A-Za-z_$][\w$]*)\??\s*:/);
+      if (m) fields.push(m[1]);
+    }
+    if (!isComment) depth += (line.match(/{/g)?.length ?? 0) - (line.match(/}/g)?.length ?? 0);
+    if (i > 0 && depth === 0) break;
+  }
+  return fields.sort();
+}
+
+describe("the wire mirrors track the server shapes", () => {
+  it("the state union is assignable both ways", () => {
+    // NOTE: the `expect` below is a tautology. The real assertion is the two
+    // casts, and ONLY `tsc --noEmit` / `next build` evaluates them — vitest
+    // strips types with esbuild and never typechecks. A green vitest run is
+    // therefore NOT evidence that the unions are in step; the wave's tsc gate
+    // is. The key-set test underneath is the half that has teeth here.
     const toWire: PrintWatchStateWire = "window_open" as PrintWatchState;
     const toServer: PrintWatchState = "window_open" as PrintWatchStateWire;
     expect([toWire, toServer]).toEqual(["window_open", "window_open"]);
+  });
+
+  it("the three cockpit mirrors are assignable both ways (tsc-only, like the union above)", () => {
+    const rowOut: CockpitRowWire = null as unknown as CockpitRow;
+    const rowIn: CockpitRow = null as unknown as CockpitRowWire;
+    const payOut: CockpitPayloadWire = null as unknown as CockpitPayload;
+    const payIn: CockpitPayload = null as unknown as CockpitPayloadWire;
+    const intelOut: CockpitIntelWire = null as unknown as CockpitIntel;
+    const intelIn: CockpitIntel = null as unknown as CockpitIntelWire;
+    expect([rowOut, rowIn, payOut, payIn, intelOut, intelIn]).toEqual([
+      null, null, null, null, null, null,
+    ]);
+  });
+
+  it("carries the SAME field set as the server types — a widening there fails HERE, under vitest", () => {
+    // Drift in these three is silent at runtime: a hand copy that is missing a
+    // field still typechecks in every consumer that does not read the field,
+    // and the desk sees `undefined` at 16:05. `rowsByEvent` (M-F5) is exactly
+    // how that happens — it was added to CockpitPayload this same wave.
+    const server = fs.readFileSync("lib/queries/earnings-cockpit.ts", "utf8");
+    const wire = fs.readFileSync("app/dashboard/today/hub-live/types.ts", "utf8");
+    for (const [serverName, wireName] of [
+      ["CockpitIntel", "CockpitIntelWire"],
+      ["CockpitRow", "CockpitRowWire"],
+      ["CockpitPayload", "CockpitPayloadWire"],
+    ] as const) {
+      expect(interfaceFields(wire, wireName), `${wireName} has drifted from ${serverName}`).toEqual(
+        interfaceFields(server, serverName),
+      );
+    }
+  });
+
+  it("the field reader is brace-depth aware, so a nested object type is ONE field", () => {
+    const src = [
+      "export interface X {",
+      "  /** doc: not a field */",
+      "  a: string;",
+      "  lanes: { bmo: number[]; amc: number[] };",
+      "  nested: {",
+      "    inner: string;",
+      "  };",
+      "  b?: number | null;",
+      "}",
+      "export interface Y { z: string }",
+    ].join("\n");
+    expect(interfaceFields(src, "X")).toEqual(["a", "b", "lanes", "nested"]);
+    expect(() => interfaceFields(src, "Nope")).toThrow(/not found/);
   });
 });
