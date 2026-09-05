@@ -21,6 +21,8 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
 import { getSymbolStatus, type SymbolStatus } from "@/lib/queries/briefing-symbols";
+import { buildCockpitPayload } from "@/lib/queries/earnings-cockpit";
+import { decorateCockpitIntel } from "@/lib/queries/earnings-intel";
 import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
@@ -32,6 +34,7 @@ import { EarningsHubAddForm } from "./EarningsHubAddForm";
 import { RecapFigureButton } from "./RecapFigureButton";
 import { EarningsHubRefreshButton } from "./EarningsHubRefreshButton";
 import { EarningsRowChips } from "./EarningsRowChips";
+import EarningsHubLive, { LivePrintSlot } from "./EarningsHubLive";
 import { EarningsDeleteButton } from "./EarningsDeleteButton";
 import { EarningsDateChip } from "./EarningsDateChip";
 import { BogeysUploadButton } from "./BogeysUploadButton";
@@ -112,6 +115,13 @@ export function EarningsHub() {
   const skipMap = getSkippedPhasesForEvents(db, events.map((e) => e.id));
   const worksheetMap = getWorksheetFlagsForEvents(db, events.map((e) => e.id));
 
+  // The first paint carries the stage chips with no client fetch (spec 4.6).
+  // Both calls are read-only: decorateCockpitIntel reads already-computed intel
+  // rows; the refresh that WRITES them stays on the route's POST, which the
+  // client controller only issues on its 60-second timer.
+  const initialCockpit = buildCockpitPayload(db, new Date(), { weekOf });
+  decorateCockpitIntel(db, initialCockpit);
+
   const enriched: EnrichedRow[] = events.map((e) => ({
     ...e,
     status: e.symbol ? (statusMap[e.symbol.toUpperCase()] ?? "neither") : "neither",
@@ -171,87 +181,99 @@ export function EarningsHub() {
         </div>
       </div>
 
-      {events.length === 0 ? (
-        <p className="px-5 py-6 text-[14px] text-ink-faint">
-          No earnings events this week. Click <span className="text-gold-ink">↻ Refresh from Finnhub</span> below
-          or add one manually.
-        </p>
-      ) : (
-        <>
-          {/* Desktop: explicit-column grid table.
-              earnings-hub-desktop is the responsive hook in globals.css —
-              when the chat rail is open and viewport is below 2xl, the
-              desktop grid is force-hidden and the mobile card layout takes
-              over (avoids the 4×~20px column-collapse bug at 1280px). */}
-          <div className="hidden md:block earnings-hub-desktop">
-            {/* Column headers */}
-            <div
-              className="grid items-baseline px-5 py-2 border-b border-edge font-mono uppercase bg-raised text-ink-faint"
-              style={{
-                gridTemplateColumns: DESKTOP_GRID_COLUMNS,
-                gap: "16px",
-                fontSize: "10px",
-                letterSpacing: "0.22em",
-              }}
-            >
-              <span>When</span>
-              <span>Pos</span>
-              <span>Ticker</span>
-              <span>Cons EPS</span>
-              <span>Act EPS</span>
-              <span>Cons Rev</span>
-              <span>Act Rev</span>
-              <span style={{ textAlign: "right" }}>Δ</span>
-              <span style={{ textAlign: "center" }}>Bogeys</span>
-              <span style={{ textAlign: "right" }}>Email</span>
+      <EarningsHubLive
+        weekOf={weekOf}
+        eventIds={enriched.map((e) => e.id)}
+        initialCockpit={initialCockpit}
+      >
+        {events.length === 0 ? (
+          <p className="px-5 py-6 text-[14px] text-ink-faint">
+            No earnings events this week. Click <span className="text-gold-ink">↻ Refresh from Finnhub</span> below
+            or add one manually.
+          </p>
+        ) : (
+          <>
+            {/* Desktop: explicit-column grid table.
+                earnings-hub-desktop is the responsive hook in globals.css —
+                when the chat rail is open and viewport is below 2xl, the
+                desktop grid is force-hidden and the mobile card layout takes
+                over (avoids the 4×~20px column-collapse bug at 1280px). */}
+            <div className="hidden md:block earnings-hub-desktop">
+              {/* Column headers */}
+              <div
+                className="grid items-baseline px-5 py-2 border-b border-edge font-mono uppercase bg-raised text-ink-faint"
+                style={{
+                  gridTemplateColumns: DESKTOP_GRID_COLUMNS,
+                  gap: "16px",
+                  fontSize: "10px",
+                  letterSpacing: "0.22em",
+                }}
+              >
+                <span>When</span>
+                <span>Pos</span>
+                <span>Ticker</span>
+                <span>Cons EPS</span>
+                <span>Act EPS</span>
+                <span>Cons Rev</span>
+                <span>Act Rev</span>
+                <span style={{ textAlign: "right" }}>Δ</span>
+                <span style={{ textAlign: "center" }}>Bogeys</span>
+                <span style={{ textAlign: "right" }}>Email</span>
+              </div>
+              {days.map((day) => {
+                const dayLabel = fmtDayLong(day);
+                return (
+                  <div key={day}>
+                    {/* Day separator — gold-tinted brand micro-label */}
+                    <div
+                      className="px-5 py-2 flex items-baseline gap-3 border-b border-edge bg-raised font-mono uppercase"
+                      style={{ fontSize: "11px", letterSpacing: "0.18em" }}
+                    >
+                      <span className="text-gold-ink font-semibold">{dayLabel.weekday}</span>
+                      <span className="text-ink-faint">· {dayLabel.date}</span>
+                      <span className="text-ink-faint ml-auto" style={{ fontSize: "10px" }}>
+                        {byDay.get(day)!.length} event{byDay.get(day)!.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    {byDay.get(day)!.map((e) => (
+                      <div key={e.id}>
+                        <DesktopRow event={e} />
+                        <LivePrintSlot eventId={e.id} symbol={e.symbol ?? ""} armed={e.worksheetArmed} />
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
             </div>
-            {days.map((day) => {
-              const dayLabel = fmtDayLong(day);
-              return (
-                <div key={day}>
-                  {/* Day separator — gold-tinted brand micro-label */}
-                  <div
-                    className="px-5 py-2 flex items-baseline gap-3 border-b border-edge bg-raised font-mono uppercase"
-                    style={{ fontSize: "11px", letterSpacing: "0.18em" }}
-                  >
-                    <span className="text-gold-ink font-semibold">{dayLabel.weekday}</span>
-                    <span className="text-ink-faint">· {dayLabel.date}</span>
-                    <span className="text-ink-faint ml-auto" style={{ fontSize: "10px" }}>
-                      {byDay.get(day)!.length} event{byDay.get(day)!.length === 1 ? "" : "s"}
-                    </span>
-                  </div>
-                  {byDay.get(day)!.map((e) => (
-                    <DesktopRow key={e.id} event={e} />
-                  ))}
-                </div>
-              );
-            })}
-          </div>
 
-          {/* Mobile: stacked card per event, day separators inline.
-              earnings-hub-mobile is the responsive hook in globals.css —
-              promoted to block at md+ when the chat rail squeezes content. */}
-          <div className="block md:hidden divide-y divide-edge earnings-hub-mobile">
-            {days.map((day) => {
-              const dayLabel = fmtDayLong(day);
-              return (
-                <div key={day}>
-                  <div
-                    className="px-5 py-2 bg-raised font-mono uppercase flex items-baseline gap-2"
-                    style={{ fontSize: "11px", letterSpacing: "0.18em" }}
-                  >
-                    <span className="text-gold-ink font-semibold">{dayLabel.weekday}</span>
-                    <span className="text-ink-faint">· {dayLabel.date}</span>
+            {/* Mobile: stacked card per event, day separators inline.
+                earnings-hub-mobile is the responsive hook in globals.css —
+                promoted to block at md+ when the chat rail squeezes content. */}
+            <div className="block md:hidden divide-y divide-edge earnings-hub-mobile">
+              {days.map((day) => {
+                const dayLabel = fmtDayLong(day);
+                return (
+                  <div key={day}>
+                    <div
+                      className="px-5 py-2 bg-raised font-mono uppercase flex items-baseline gap-2"
+                      style={{ fontSize: "11px", letterSpacing: "0.18em" }}
+                    >
+                      <span className="text-gold-ink font-semibold">{dayLabel.weekday}</span>
+                      <span className="text-ink-faint">· {dayLabel.date}</span>
+                    </div>
+                    {byDay.get(day)!.map((e) => (
+                      <div key={e.id}>
+                        <MobileCard event={e} />
+                        <LivePrintSlot eventId={e.id} symbol={e.symbol ?? ""} armed={e.worksheetArmed} />
+                      </div>
+                    ))}
                   </div>
-                  {byDay.get(day)!.map((e) => (
-                    <MobileCard key={e.id} event={e} />
-                  ))}
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
+                );
+              })}
+            </div>
+          </>
+        )}
+      </EarningsHubLive>
 
       {/* Footer toolbar — secondary action row */}
       <div className="flex flex-col gap-2 px-5 py-3 border-t border-edge bg-raised rounded-b-xl">

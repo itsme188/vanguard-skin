@@ -9,7 +9,7 @@ import {
 } from "../components/EarningsEmailViewer";
 import { BogeysEditModal } from "./BogeysEditModal";
 import { StageChipStrip, RowIntelLine, fmtCountdown } from "./hub-live/send-state-chips";
-import type { CockpitRowWire } from "./hub-live/types";
+import { useHubLive } from "./EarningsHubLive";
 import apiFetch from "@/lib/http/apiFetch";
 
 interface EarningsRowChipsProps {
@@ -20,10 +20,6 @@ interface EarningsRowChipsProps {
   recapSkipped: boolean;
   worksheetArmed: boolean;
   worksheetPrinted: boolean;
-  /** Task 9 (next wave) replaces this prop with useHubLive() context — both
-   *  are correct at their own wave boundary. Optional: a Hub row outside the
-   *  cockpit's coverage set renders with no cockpit row at all. */
-  cockpitRow?: CockpitRowWire | null;
 }
 
 type Phase = "preview" | "recap";
@@ -56,8 +52,14 @@ export function EarningsRowChips({
   recapSkipped,
   worksheetArmed,
   worksheetPrinted,
-  cockpitRow,
 }: EarningsRowChipsProps) {
+  // Task 9: the live cockpit row comes from the Hub's ONE controller through
+  // context, not as a prop the server-rendered row would have to thread down.
+  // `useHubLive()` returns null outside the provider (and on the very first
+  // paint before hydration), so every control below renders from its server
+  // props exactly as it did before the cockpit chips existed.
+  const live = useHubLive();
+  const cockpitRow = live?.cockpitByEvent[eventId] ?? null;
   const { toast } = useToast();
   const router = useRouter();
   const [openPhase, setOpenPhase] = useState<Phase | null>(null);
@@ -211,11 +213,22 @@ export function EarningsRowChips({
         <span className="flex flex-col items-end gap-0.5 shrink-0">
           <span className="inline-flex items-center gap-1.5">
             <StageChipStrip row={cockpitRow} onOpen={handleCockpitOpen} />
-            {cockpitRow.stages.released.state === "upcoming" && cockpitRow.stages.released.releaseInstant && (
-              <span className="text-[10px] font-mono text-ink-faint whitespace-nowrap">
-                {fmtCountdown(new Date(cockpitRow.stages.released.releaseInstant).getTime() - Date.now())}
-              </span>
-            )}
+            {/* The chips paint on the SERVER (EarningsHub seeds the provider
+                with a server-built cockpit payload), but a second-granular
+                countdown cannot: the server's clock would go into the HTML and
+                the browser's into hydration, and every row inside an hour of
+                its release would hydrate with a text mismatch. `nowMs` is 0
+                until the client clock starts, so this renders from the first
+                client tick onwards — milliseconds after paint. */}
+            {cockpitRow.stages.released.state === "upcoming" &&
+              cockpitRow.stages.released.releaseInstant &&
+              !!live?.nowMs && (
+                <span className="text-[10px] font-mono text-ink-faint whitespace-nowrap">
+                  {fmtCountdown(
+                    new Date(cockpitRow.stages.released.releaseInstant).getTime() - live.nowMs,
+                  )}
+                </span>
+              )}
           </span>
           <RowIntelLine row={cockpitRow} />
         </span>
