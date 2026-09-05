@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { CalendarEvent } from "@/lib/types";
-import { addDays, formatWeekRange, todayET, getCurrentMonday } from "@/lib/calendar/date-utils";
+import { addDays, formatWeekRange, todayET, getCurrentMonday, mondayOf } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
@@ -46,15 +46,49 @@ function fmtTime(t: string | null): string | null {
   return `${h12}:${m.toString().padStart(2, "0")} ${period}`;
 }
 
+// QA finding today-week-ahead--weekend-current-week-labelled-past-week-this-week-jumps-forward-regression-1:
+// getCurrentMonday() deliberately returns NEXT Monday on Sat/Sun (the
+// business week is over — that's the intended default landing for this
+// view). But comparing weekOf straight against getCurrentMonday() meant
+// that on a weekend, the week that actually CONTAINS today got mislabeled
+// "Past week" and "This week" pointed at next week. This helper checks
+// mondayOf(todayIso) — the week containing today — before falling back to
+// past/upcoming, so a weekend user still sees their current week as
+// current.
+export function weekAheadHeaderState(
+  weekOf: string,
+  todayIso: string,
+  currentMonday: string,
+): {
+  microLabel: "Week ahead" | "This week" | "Past week" | "Upcoming week";
+  thisWeekMonday: string;
+  showThisWeekLink: boolean;
+} {
+  const thisWeekMonday = mondayOf(todayIso);
+  const microLabel =
+    weekOf === currentMonday
+      ? "Week ahead"
+      : weekOf === thisWeekMonday
+        ? "This week"
+        : addDays(weekOf, 6) < todayIso
+          ? "Past week"
+          : "Upcoming week";
+  return {
+    microLabel,
+    thisWeekMonday,
+    showThisWeekLink: weekOf !== thisWeekMonday,
+  };
+}
+
 export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
   const todayIso = todayET();
   const currentMonday = getCurrentMonday();
   const isCurrentWeek = weekOf === currentMonday;
-  const microLabel = isCurrentWeek
-    ? "Week ahead"
-    : weekOf < currentMonday
-      ? "Past week"
-      : "Upcoming week";
+  const { microLabel, thisWeekMonday, showThisWeekLink } = weekAheadHeaderState(
+    weekOf,
+    todayIso,
+    currentMonday,
+  );
   const days = WEEKDAYS.map((label, idx) => {
     const date = addDays(weekOf, idx);
     return {
@@ -96,9 +130,9 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
           <Link href={weekHref(addDays(weekOf, -7))} className={chevronClass} title="Previous week">
             ‹
           </Link>
-          {!isCurrentWeek && (
+          {showThisWeekLink && (
             <Link
-              href={weekHref(currentMonday)}
+              href={weekHref(thisWeekMonday)}
               className="relative text-[11px] uppercase tracking-widest text-ink-faint hover:text-gold border border-edge rounded-full px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
             >
               This week
