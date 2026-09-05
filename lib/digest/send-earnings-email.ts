@@ -37,6 +37,14 @@ import {
   applyClusterManualActuals,
   withClusterManualActuals,
 } from "@/lib/queries/manual-actuals-cluster";
+import { sendPushover, type PushoverMessage } from "@/lib/alerts/notify-pushover";
+import {
+  DELIVERY_UNKNOWN,
+  IN_PROGRESS,
+  notLiveClaimSql,
+  SENDING,
+  SENT_BY_CLOUD,
+} from "@/lib/earnings/email-states";
 import { getIntelForEvents, getReportHistoryForFamily } from "@/lib/queries/earnings-intel";
 import { summarizeHistory, type HistorySummary } from "@/lib/earnings/report-history";
 import { ensureIntelForEvents } from "@/lib/earnings/intel";
@@ -341,64 +349,330 @@ async function sendEarningsEmail(
   };
 }
 
-// ── Cross-process send claims ──────────────────────────────────────
+// ── Cross-process send claims and the delivery lifecycle ───────────
 //
 // The launchd shell has a curl timeout + tsx fallback chain; on a heavy tick
-// the fallback re-runs the sweep while the first invocation is still
-// composing (60-180s per Claude call), and audit rows land only post-send —
-// so in-flight candidates used to send twice (audit 2026-07-04, bug B3).
-// The UNIQUE(event_id, phase) constraint doubles as a cross-process mutex:
-// claim the slot with error='in_progress' BEFORE composing. States:
-//   error='in_progress'   → claim held by a live send (or a crashed one; reaped after 30 min)
-//   error='sent-by-cloud' → Worker fallback delivered (email-sweep.ts writes these)
-//   error IS NULL         → completed local send
-// A failed send releases its fresh claim so the next tick retries.
+// the fallback re-runs the sweep while the first invocation is still composing
+// (60-180s per Claude call), and audit rows land only post-send — so in-flight
+// candidates used to send twice (audit 2026-07-04, bug B3). The
+// UNIQUE(event_id, phase) constraint doubles as a cross-process mutex.
 //
-// Note for future readers: `error` stores non-error states too
-// ('in_progress', 'sent-by-cloud') — don't treat `error IS NOT NULL` as a
-// failure signal; those two sentinels must be checked explicitly.
+// Slice E (2026-09-04) makes the row a full lifecycle. lib/earnings/email-states.ts
+// documents the five values `error` can hold and is the ONLY place those words
+// are spelled out — nothing below writes one, in SQL or in a type. The service
+// in lib/earnings/send-service.ts is the only thing that drives them.
+//
+//   claim (fresh)    -> IN_PROGRESS       composing; reaped after 30 min
+//   markEmailSending -> SENDING           provider call in flight; message id stored
+//   markEmailSent    -> NULL              provider accepted, row committed
+//   markEmailDeliveryUnknown / the reaper -> DELIVERY_UNKNOWN   terminal
+//   release          -> row deleted       definitive rejection of a FRESH send
+//
+// TWO CLAIM MODES. `automatic` (the default — sweep, nudge, debrief, wrap)
+// NEVER refires a completed row: the audit row IS the "already delivered"
+// answer. `manual` (POST /api/earnings/email) refires, because a human asking
+// again is asking for a second copy on purpose.
+//
+// A live SENDING row is NEVER taken over by a claim, however old: a message
+// may be on the wire, and a second send is worse than a late one. Only the
+// reaper moves it, to DELIVERY_UNKNOWN.
+//
+// Note for future readers: `error` stores non-error states too — never treat
+// `error IS NOT NULL` as a failure signal. Ask isLiveClaim / isDeliveredStrict.
 
 const CLAIM_STALE_MINUTES = 30;
+export { CLAIM_STALE_MINUTES };
+
+/**
+ * The provider call's deadline. Resend's SMTP relay answers in well under a
+ * second; 90 s is the "the socket is gone and nobody told us" bound.
+ * lib/earnings/send-service.ts re-exports this; it is declared here so the
+ * reaper's threshold below can sit next to it without an import cycle
+ * (send-service imports THIS file — M-E19/M-E5).
+ */
+export const SEND_TIMEOUT_MS = 90_000;
+
+/**
+ * A SENDING row older than this is assumed orphaned by a dead process.
+ * The margin over SEND_TIMEOUT_MS is deliberate and is pinned by a static test
+ * (tests/digest/earnings-email-claims.test.ts): the service must always win its
+ * own race, so the reaper may not fire until the deadline has passed PLUS
+ * enough slack for a slow SMTP handshake before the deadline started and for
+ * the reaper's own 15-minute tick granularity. 5 min = 300 s ≥ 90 s + 120 s.
+ */
+export const SENDING_STALE_MINUTES = 5;
+
+export type ClaimMode = "automatic" | "manual";
+
+export interface EarningsEmailClaim {
+  claimed: boolean;
+  mode: "fresh" | "refire";
+  token?: string;
+  /**
+   * Only when `claimed` is false. The live-claim reason covers BOTH live
+   * values — a caller only needs to know that another process owns the row.
+   * The state words are referenced as `typeof <const>` rather than retyped so
+   * this file stays free of raw state literals; the resolved union is
+   * `"in_progress" | "already_sent" | "delivery_unknown"`, unchanged.
+   */
+  reason?: typeof IN_PROGRESS | "already_sent" | typeof DELIVERY_UNKNOWN;
+  /** Only on a manual refire — what the row said before this claim took it. */
+  prior?: "sent" | typeof SENT_BY_CLOUD | typeof DELIVERY_UNKNOWN;
+  priorError?: string | null;
+  priorSentAt?: string;
+}
+
+export function getSendRow(
+  db: Database.Database,
+  eventId: number,
+  phase: "preview" | "recap",
+): {
+  error: string | null;
+  sent_at: string;
+  provider_message_id: string | null;
+  provider_response: string | null;
+} | null {
+  return (
+    (db
+      .prepare(
+        `SELECT error, sent_at, provider_message_id, provider_response FROM earnings_emails
+          WHERE event_id = ? AND phase = ?`,
+      )
+      .get(eventId, phase) as
+      | {
+          error: string | null;
+          sent_at: string;
+          provider_message_id: string | null;
+          provider_response: string | null;
+        }
+      | undefined) ?? null
+  );
+}
 
 export function claimEarningsEmailSlot(
   db: Database.Database,
   eventId: number,
   phase: "preview" | "recap",
   recipient: string,
-): { claimed: boolean; mode: "fresh" | "refire"; token?: string; reason?: "in_progress" } {
+  opts: { mode?: ClaimMode } = {},
+): EarningsEmailClaim {
+  const mode = opts.mode ?? "automatic";
   const token = randomUUID();
   const ins = db
     .prepare(
       `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error, claim_token)
-       VALUES (?, ?, ?, datetime('now'), NULL, NULL, 'in_progress', ?)
+       VALUES (?, ?, ?, datetime('now'), NULL, NULL, '${IN_PROGRESS}', ?)
        ON CONFLICT(event_id, phase) DO NOTHING`,
     )
     .run(eventId, phase, recipient, token);
   if (ins.changes === 1) return { claimed: true, mode: "fresh", token };
 
-  const existing = db
-    .prepare(
-      `SELECT error FROM earnings_emails WHERE event_id = ? AND phase = ?`,
-    )
-    .get(eventId, phase) as { error: string | null } | undefined;
+  const existing = getSendRow(db, eventId, phase);
 
-  if (existing?.error === "in_progress") {
+  if (existing?.error === SENDING) {
+    // Never taken over by a claim — the reaper owns this transition.
+    return { claimed: false, mode: "fresh", reason: IN_PROGRESS };
+  }
+
+  if (existing?.error === IN_PROGRESS) {
     // Take over only if the holder looks dead (claim older than the stale cutoff).
     const takeover = db
       .prepare(
         `UPDATE earnings_emails
             SET sent_at = datetime('now'), recipient = ?, claim_token = ?
-          WHERE event_id = ? AND phase = ? AND error = 'in_progress'
+          WHERE event_id = ? AND phase = ? AND error = '${IN_PROGRESS}'
             AND datetime(sent_at) <= datetime('now', '-${CLAIM_STALE_MINUTES} minutes')`,
       )
       .run(recipient, token, eventId, phase);
     if (takeover.changes === 1) return { claimed: true, mode: "fresh", token };
-    return { claimed: false, mode: "fresh", reason: "in_progress" };
+    return { claimed: false, mode: "fresh", reason: IN_PROGRESS };
   }
 
-  // Completed row (local send or cloud-sent placeholder): this is a manual
-  // re-fire — allowed; the final audit upsert overwrites in place.
-  return { claimed: true, mode: "refire" };
+  // A completed row: NULL, SENT_BY_CLOUD, DELIVERY_UNKNOWN, or legacy text.
+  const priorError = existing?.error ?? null;
+  const prior: "sent" | typeof SENT_BY_CLOUD | typeof DELIVERY_UNKNOWN =
+    priorError === SENT_BY_CLOUD
+      ? SENT_BY_CLOUD
+      : priorError === DELIVERY_UNKNOWN
+        ? DELIVERY_UNKNOWN
+        : "sent";
+  if (mode === "automatic") {
+    return {
+      claimed: false,
+      mode: "fresh",
+      reason: prior === DELIVERY_UNKNOWN ? DELIVERY_UNKNOWN : "already_sent",
+    };
+  }
+  // Manual refire: a token is minted but NOTHING is written until
+  // markEmailSending, and the prior state travels with the claim so a
+  // definitive rejection can restore the delivered row byte for byte.
+  return {
+    claimed: true,
+    mode: "refire",
+    token,
+    prior,
+    priorError,
+    priorSentAt: existing?.sent_at ?? "",
+  };
+}
+
+/**
+ * The row moves to SENDING BEFORE the provider call, carrying the Message-ID
+ * we are about to put on the wire. Compare-and-set, so a claim that was taken
+ * over (or reaped) between the claim and here cannot send.
+ *
+ * Prose is written here for a FRESH claim (the row has none to lose) and
+ * DEFERRED to markEmailSent for a refire (M-E13): a refire's row already holds
+ * a delivered email's prose, and a failed refire must not destroy it.
+ *
+ * A refire ALSO CASes on the row identity the claim saw — `priorError` and
+ * `priorSentAt` (R-E8). Without that, two refires racing on the same
+ * (event, phase) both match "any completed row", and the slower one can
+ * overwrite the FASTER one's freshly delivered email — pairing the loser's
+ * message id with the winner's body. `error IS ?` is SQLite's null-safe
+ * comparison, so one bound value covers NULL, the two delivered sentinels and
+ * legacy failure text; the second disjunct is kept because the ruling states
+ * it and costs nothing.
+ */
+export function markEmailSending(
+  db: Database.Database,
+  eventId: number,
+  phase: "preview" | "recap",
+  token: string,
+  input: {
+    mode: "fresh" | "refire";
+    recipient: string;
+    aiInputHash: string | null;
+    aiOutputMd: string;
+    providerMessageId: string;
+    /** Refire only — the row identity the claim saw. The CAS fails if the row moved. */
+    priorError?: string | null;
+    priorSentAt?: string;
+  },
+): boolean {
+  if (input.mode === "fresh") {
+    return (
+      db
+        .prepare(
+          `UPDATE earnings_emails
+              SET error = '${SENDING}', sent_at = datetime('now'), recipient = ?,
+                  ai_input_hash = ?, ai_output_md = ?, provider_message_id = ?,
+                  provider_response = NULL
+            WHERE event_id = ? AND phase = ? AND claim_token = ? AND error = '${IN_PROGRESS}'`,
+        )
+        .run(
+          input.recipient,
+          input.aiInputHash,
+          input.aiOutputMd,
+          input.providerMessageId,
+          eventId,
+          phase,
+          token,
+        ).changes === 1
+    );
+  }
+  // Refire: completed -> SENDING DIRECTLY. Never through the composing state,
+  // or the 30-minute reaper (which DELETEs those rows) could destroy a
+  // delivered row when a refire's process dies.
+  const priorError = input.priorError ?? null;
+  return (
+    db
+      .prepare(
+        `UPDATE earnings_emails
+            SET error = '${SENDING}', sent_at = datetime('now'), claim_token = ?,
+                provider_message_id = ?, provider_response = NULL
+          WHERE event_id = ? AND phase = ?
+            AND ${notLiveClaimSql("error")}
+            AND (error IS ? OR error = ?)
+            AND sent_at = ?`,
+      )
+      .run(
+        token,
+        input.providerMessageId,
+        eventId,
+        phase,
+        priorError,
+        priorError,
+        input.priorSentAt ?? "",
+      ).changes === 1
+  );
+}
+
+/** The provider accepted and we saw it say so. CAS on the token AND SENDING:
+ *  0 rows means the reaper already called it DELIVERY_UNKNOWN, and the caller
+ *  must NOT resend. `providerResponse` is nodemailer's `info.response` — the
+ *  relay's reply line, which is where a provider-side identifier appears if
+ *  there is one. `provider_message_id` (what WE put on the wire) is left as
+ *  markEmailSending wrote it. */
+export function markEmailSent(
+  db: Database.Database,
+  eventId: number,
+  phase: "preview" | "recap",
+  token: string,
+  input: {
+    recipient: string;
+    aiInputHash: string | null;
+    aiOutputMd: string;
+    providerResponse: string | null;
+  },
+): boolean {
+  return (
+    db
+      .prepare(
+        `UPDATE earnings_emails
+            SET error = NULL, sent_at = datetime('now'), recipient = ?,
+                ai_input_hash = ?, ai_output_md = ?, provider_response = ?
+          WHERE event_id = ? AND phase = ? AND claim_token = ? AND error = '${SENDING}'`,
+      )
+      .run(
+        input.recipient,
+        input.aiInputHash,
+        input.aiOutputMd,
+        input.providerResponse,
+        eventId,
+        phase,
+        token,
+      ).changes === 1
+  );
+}
+
+/** Terminal: we never learned what the provider did. `sent_at` deliberately
+ *  stays at the moment the call started — that is the `since` the desk needs. */
+export function markEmailDeliveryUnknown(
+  db: Database.Database,
+  eventId: number,
+  phase: "preview" | "recap",
+  token: string,
+): boolean {
+  return (
+    db
+      .prepare(
+        `UPDATE earnings_emails SET error = '${DELIVERY_UNKNOWN}'
+          WHERE event_id = ? AND phase = ? AND claim_token = ? AND error = '${SENDING}'`,
+      )
+      .run(eventId, phase, token).changes === 1
+  );
+}
+
+/** A refire whose provider call was DEFINITIVELY rejected: put the delivered
+ *  row back exactly as it was, prose included (it was never overwritten). */
+export function restorePriorDelivered(
+  db: Database.Database,
+  eventId: number,
+  phase: "preview" | "recap",
+  token: string,
+  priorError: string | null,
+  priorSentAt: string,
+): boolean {
+  return (
+    db
+      .prepare(
+        `UPDATE earnings_emails
+            SET error = ?, sent_at = ?, claim_token = NULL, provider_message_id = NULL
+          WHERE event_id = ? AND phase = ? AND claim_token = ? AND error = '${SENDING}'`,
+      )
+      .run(priorError, priorSentAt, eventId, phase, token).changes === 1
+  );
 }
 
 export function releaseEarningsEmailClaim(
@@ -407,22 +681,119 @@ export function releaseEarningsEmailClaim(
   phase: "preview" | "recap",
   token: string,
 ): void {
-  // Token-conditional: a late finisher must not delete a successor's
-  // takeover claim (migration 063).
+  // Token-conditional: a late finisher must not delete a successor's takeover
+  // claim (migration 063). Covers the SENDING state too — a FRESH send that
+  // the provider definitively rejected never happened, so the row must go.
   db.prepare(
     `DELETE FROM earnings_emails
-      WHERE event_id = ? AND phase = ? AND error = 'in_progress' AND claim_token = ?`,
+      WHERE event_id = ? AND phase = ? AND claim_token = ?
+        AND error IN ('${IN_PROGRESS}', '${SENDING}')`,
   ).run(eventId, phase, token);
 }
 
-export function reapStaleEarningsEmailClaims(db: Database.Database): number {
-  return db
+/**
+ * Two sweeps, run at the top of every earnings tick.
+ *
+ * 1. A dead process's composing claim (>30 min) is DELETED: nothing was ever
+ *    sent, and the row would otherwise hide its event from findEmailCandidates
+ *    forever.
+ * 2. A dead process's SENDING row (>5 min) is FLIPPED to DELIVERY_UNKNOWN: a
+ *    message may have gone out, so it must never be deleted and never
+ *    automatically resent (spec §7). One Pushover per flipped row names the
+ *    symbol and the stored Message-ID so the desk can check the mailbox or the
+ *    Resend log and resend by hand if needed.
+ *
+ * DB-ONLY, on purpose. The reaper runs on every tick from a cron path that may
+ * have no Worker reachability, so it takes no KV seam and writes no marker.
+ * R-E4's "the reaper's flip also claims the phase in KV" is satisfied by the
+ * CALLER: `flipped` names every (event, phase) this call actually moved, and
+ * lib/calendar/email-sweep.ts writes one mac-sent marker per entry (R-E4b).
+ *
+ * That handoff is NOT optional and cannot be deferred to the next candidate
+ * pass: findEmailCandidates LEFT JOINs earnings_emails and keeps only rows
+ * where `ee.id IS NULL`, so ANY row for a (event, phase) — a DELIVERY_UNKNOWN
+ * row included — removes the event from candidacy. The send path is therefore
+ * never invoked for it and would never write the marker, leaving the Worker
+ * free to send a second copy of a recap that may already have gone out.
+ */
+export async function reapStaleEarningsEmailClaims(
+  db: Database.Database,
+  opts: { now?: () => Date; notify?: (msg: PushoverMessage) => Promise<unknown> } = {},
+): Promise<{
+  reaped: number;
+  flippedUnknown: number;
+  /** R-E4b: every (event, phase) this call actually flipped to the terminal
+   *  unknown state (i.e. whose CAS returned changes === 1). The sweep claims
+   *  each one in KV so the Worker fallback cannot resend it. */
+  flipped: Array<{ eventId: number; phase: "preview" | "recap" }>;
+}> {
+  const nowIso = (opts.now ? opts.now() : new Date()).toISOString();
+  const notify = opts.notify ?? sendPushover;
+
+  const reaped = db
     .prepare(
       `DELETE FROM earnings_emails
-        WHERE error = 'in_progress'
-          AND datetime(sent_at) <= datetime('now', '-${CLAIM_STALE_MINUTES} minutes')`,
+        WHERE error = '${IN_PROGRESS}'
+          AND datetime(sent_at) <= datetime(?, '-${CLAIM_STALE_MINUTES} minutes')`,
     )
-    .run().changes;
+    .run(nowIso).changes;
+
+  // `phase` is CHECK-constrained to the two values in migration 042.
+  const stale = db
+    .prepare(
+      `SELECT ee.event_id, ee.phase, ee.sent_at, ee.claim_token, ee.provider_message_id, ce.symbol
+         FROM earnings_emails ee
+         JOIN calendar_events ce ON ce.id = ee.event_id
+        WHERE ee.error = '${SENDING}'
+          AND datetime(ee.sent_at) <= datetime(?, '-${SENDING_STALE_MINUTES} minutes')`,
+    )
+    .all(nowIso) as Array<{
+    event_id: number;
+    phase: "preview" | "recap";
+    sent_at: string;
+    claim_token: string | null;
+    provider_message_id: string | null;
+    symbol: string | null;
+  }>;
+
+  let flippedUnknown = 0;
+  const flipped: Array<{ eventId: number; phase: "preview" | "recap" }> = [];
+  for (const row of stale) {
+    // ONE compare-and-set, on the token AND the sent_at the SELECT saw (R-E7).
+    //
+    // The old shape — UPDATE ... WHERE event_id AND phase AND error = SENDING —
+    // is an ABA race: between this loop's SELECT and its UPDATE the owner can
+    // finish (error -> NULL) and a manual refire can drive the SAME (event,
+    // phase) back to SENDING with a NEW token and a new sent_at. That fresh,
+    // healthy attempt would then be flipped to the terminal unknown state and
+    // pushed, and its own markEmailSent would lose its CAS. Pinning the token
+    // and the timestamp means we can only ever flip the exact row we measured.
+    const changed = db
+      .prepare(
+        `UPDATE earnings_emails SET error = '${DELIVERY_UNKNOWN}'
+          WHERE event_id = ? AND phase = ? AND error = '${SENDING}'
+            AND claim_token IS ? AND sent_at = ?`,
+      )
+      .run(row.event_id, row.phase, row.claim_token, row.sent_at).changes;
+    if (changed !== 1) continue; // the owner finished, or a newer attempt owns the row
+    flippedUnknown += 1;
+    flipped.push({ eventId: row.event_id, phase: row.phase });
+    const sym = row.symbol ?? `event ${row.event_id}`;
+    try {
+      await notify({
+        title: `${sym} ${row.phase}: delivery unknown`,
+        message:
+          `${sym} ${row.phase}: delivery unknown — message ${row.provider_message_id ?? "(no id recorded)"}; ` +
+          `check the mailbox / Resend log, then resend by hand if it never arrived.`,
+        priority: 0,
+      });
+    } catch (err) {
+      // A push failure must never block the flip — the row is already terminal.
+      console.warn(`[earnings-claims] delivery-unknown push failed for event ${row.event_id}:`, err);
+    }
+  }
+
+  return { reaped, flippedUnknown, flipped };
 }
 
 // ── Calendar event helper ──────────────────────────────────────────

@@ -123,10 +123,11 @@ export async function runMorningDebrief(
   // window.
   setDebriefLastRunDay(db, today);
 
-  // Claim every candidate's recap slot BEFORE composing anything. A per-member
-  // conflict (live 'in_progress' claim held by another process, or a refire —
-  // the recap was already completed between findDebriefCandidates and here)
-  // just drops that member; it never aborts the batch (see file header).
+  // Claim every candidate's recap slot BEFORE composing anything. Anything that
+  // is not a FRESH claim just drops that member — a live claim held by another
+  // process, a recap already completed between findDebriefCandidates and here,
+  // or one that ended in the terminal delivery-unknown state. It never aborts
+  // the batch (see file header).
   const claims: FreshClaim[] = [];
   for (const candidate of unsent) {
     const claim = claimEarningsEmailSlot(db, candidate.eventId, "recap", recipient);

@@ -134,15 +134,44 @@ export async function runEarningsEmailSweep(
     prepareBudgetMs?: number;
   } = {},
 ): Promise<SweepSummary> {
-  // Reap stale (>30 min) 'in_progress' claim rows BEFORE candidate selection
-  // — a stale claim from a dead process otherwise hides its event from
+  // Reap stale (>30 min) composing claim rows BEFORE candidate selection — a
+  // stale claim from a dead process otherwise hides its event from
   // findEmailCandidates forever (the claim row satisfies the "already
-  // audited" exclusion but no email was ever sent). See B3.
-  const reaped = reapStaleEarningsEmailClaims(db);
-  if (reaped > 0) {
+  // audited" exclusion but no email was ever sent). See B3. The same call also
+  // flips an orphaned in-flight send to the terminal delivery-unknown state
+  // (slice E) and reports which (event, phase) pairs it actually moved.
+  const reapResult = await reapStaleEarningsEmailClaims(db);
+  if (reapResult.reaped > 0) {
     console.warn(
-      `[earnings-sweep] reaped ${reaped} stale in-progress claim(s) from a dead process`,
+      `[earnings-sweep] reaped ${reapResult.reaped} stale in-progress claim(s) from a dead process`,
     );
+  }
+  if (reapResult.flippedUnknown > 0) {
+    console.warn(
+      `[earnings-sweep] ${reapResult.flippedUnknown} send(s) left in flight by a dead process → delivery unknown (pushed)`,
+    );
+  }
+  // R-E4b: a flipped row must ALSO claim its (phase, event) in KV, or the
+  // Worker fallback is free to send a second copy of a recap that may already
+  // have gone out. The reaper itself stays DB-only (it runs on every tick from
+  // a cron path that may have no Worker reachability), so the marker write
+  // lives here, where every other marker call already does.
+  //
+  // This cannot be deferred to the next candidate pass: findEmailCandidates
+  // LEFT JOINs earnings_emails and keeps only `ee.id IS NULL`, so ANY row for
+  // that (event, phase) — the delivery-unknown row included — removes the
+  // event from candidacy, the send path is never invoked for it, and no marker
+  // would ever be written. Fail-open: the flip is already committed and a
+  // marker write is idempotent, so a KV failure is a warning and nothing more.
+  for (const flip of reapResult.flipped) {
+    try {
+      await writeMacSentEarningsMarker(flip.phase, flip.eventId);
+    } catch (err) {
+      console.warn(
+        `[earnings-sweep] delivery-unknown marker write failed for event ${flip.eventId} (${flip.phase}):`,
+        err,
+      );
+    }
   }
 
   // Drain cloud-sent markers into audit rows BEFORE candidate selection so a

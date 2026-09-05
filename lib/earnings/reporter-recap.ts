@@ -270,7 +270,12 @@ export async function sendReporterRecapEmail(
 
   // Claim BEFORE compose — the (event, 'recap') row doubles as the
   // cross-process mutex, exactly like the AI recap path.
-  const claim = claimEarningsEmailSlot(db, eventId, "recap", recipient);
+  //
+  // Slice E: `manual` mode preserves TODAY's exact behaviour here (a completed
+  // row is re-fired) now that `automatic` is the default and refuses one. This
+  // whole send path is replaced by a composer + the canonical send service in
+  // the next wave; the argument exists so nothing changes in the meantime.
+  const claim = claimEarningsEmailSlot(db, eventId, "recap", recipient, { mode: "manual" });
   if (!claim.claimed) {
     throw new EarningsEmailError(
       `Recap slot for event ${eventId} is claimed by another process.`,
