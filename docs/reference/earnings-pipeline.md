@@ -270,25 +270,82 @@ viewer once its window closed (observed 7/14).
 Read-only on the KV side **by design**: the marker doubles as the Worker's own send dedup, so the Mac
 must **NOT** delete it. The audit row's `INSERT .. DO NOTHING` is the idempotency; a 30h TTL cleans KV.
 
-### `earnings_emails.error` is a tri-state, NOT a failure flag
+### `earnings_emails.error` is a FIVE-state column, NOT a failure flag
 
-| Value | Meaning |
+Single-sourced in `lib/earnings/email-states.ts` (slice E, migration 092). Never write
+`error IS NOT NULL` to mean "this send failed" — three of the five values are healthy.
+
+| Value | Meaning | Live claim? | Blocks an automatic resend? |
+| --- | --- | --- | --- |
+| `NULL` | completed local send (the provider accepted and the row committed) | no | yes |
+| `'in_progress'` | claimed; composing | yes | no |
+| `'sending'` | provider call in flight; `provider_message_id` (and, for a fresh claim, the prose) already written | yes | no |
+| `'sent-by-cloud'` | Worker delivered (`ai_output_md` NULL — the viewer shows "no local copy") | no | yes |
+| `'delivery_unknown'` | terminal; the provider's answer was never received | no | yes (manual reconciliation only) |
+| any other string | legacy failure text | no | yes |
+
+Helpers, and which question each answers: `isLiveClaim` / `notLiveClaimSql(col)` — "may this row be
+ignored by a reader?"; `isDelivered` — "should a chip say sent?" (legacy text counts);
+`isDeliveredStrict` / `deliveredSql(col)` — "did an email definitely go out?" (sentinels only);
+`sendStateFor` / `sentByFor` — the display mapping. `tests/repo/no-handrolled-email-states.test.ts`
+fails on any of the four literal sentinel strings appearing under `lib/**` or `app/api/**` outside
+that module (`app/dashboard/**` is exempt by design — slice F needs the chip words).
+
+**Two claim modes (slice E).** `automatic` (sweep, nudge, debrief, wrap) NEVER refires a completed
+row. `manual` (`POST /api/earnings/email`) does, and its refire goes completed → `sending` DIRECTLY,
+never through `in_progress`, so the 30-minute reaper can never delete a delivered row. The
+`UNIQUE(event_id, phase)` row is the **cross-process mutex** — claimed BEFORE compose, now via
+`claimEarningsEmailSlot` (`lib/digest/send-earnings-email.ts`), called from
+`lib/earnings/send-service.ts::sendEarningsCandidate`, the one path every automatic and manual send
+goes through (`debrief-send.ts` and `wrap-send.ts` batch several events under one claim of their
+own — `tests/repo/one-claim-owner.test.ts` pins that short list). Since **migration 063** claims
+carry a `claim_token` and every transition is compare-and-set on it, so a late finisher can't clobber
+a successor's takeover claim.
+
+**The reaper runs two sweeps** at the top of each earnings tick: `in_progress` older than 30 minutes
+is DELETED (nothing was sent); `sending` older than 5 minutes is FLIPPED to `delivery_unknown` and
+Pushovers once with the stored Message-ID. A `sending` row is NEVER taken over by a claim, however
+old — a message may be on the wire. **The flip claims the phase through the SWEEP tick, not one
+step later (R-E4b).** `findEmailCandidates` (`lib/calendar/enrichment-runner.ts`) LEFT JOINs
+`earnings_emails … AND ee.id IS NULL` on both its preview and recap SELECTs, so ANY existing audit
+row — a freshly-flipped `delivery_unknown` row included — removes the event from candidacy; the send
+path is never invoked for it in a later pass, so no marker would ever be written from there. So
+`reapStaleEarningsEmailClaims` itself returns `flipped: Array<{eventId, phase}>`, and
+`runEarningsEmailSweep` writes one mac-sent marker per flip immediately after the reap call
+(fail-open, same tick).
+
+Every new reader must exclude live claims via `isLiveClaim` / `notLiveClaimSql`
+(pattern: `getSentPhasesForEvents` / `getEmailAudit`) — never a literal.
+
+Benign coordination outcomes still land in `SweepSummary.skipped` with `ok:true` — now
+`claim-held`, `not-ready`, `already-sent` and `delivery-unknown`. Never count them as failures, and
+`alertBlockedRecaps` respects the muted-symbols setting (no stamp on a muted skip, so unmuting
+re-arms).
+
+**One row per (event, phase) — and what each field means when a refire is involved.**
+The audit row is a CURRENT-STATE record, not an attempt log (a delivery-attempts table was
+considered in the slice E review and deliberately deferred — spec §5 reserves 092 for the two
+states). So:
+
+| Field | Meaning |
 | --- | --- |
-| `'in_progress'` | live claim |
-| `'sent-by-cloud'` | Worker delivered (`ai_output_md` NULL — viewer shows "no local copy") |
-| `NULL` | completed local send |
+| `provider_message_id` | the RFC 5322 `Message-ID` **we minted and set on the wire** for the LAST ATTEMPT. Not a provider receipt — nodemailer echoes back the header it was given. It is what the mailbox and the Resend log can be searched on. |
+| `provider_response` | the relay's own reply line from that attempt (`info.response`, e.g. `250 2.0.0 Ok: queued as …`). This is where a provider-side identifier appears if there is one. A hand-confirmed delivery appends `; confirmed by hand <ISO>`. |
+| `ai_output_md` | the last DELIVERED body. A refire replaces it only at `markEmailSent`, so a refire that failed or ended unknown leaves the previously delivered copy intact (M-E13). |
+| `sent_at` | for `sending` and `delivery_unknown`, the moment the provider call STARTED — the `since` a human needs. For `NULL`/`sent-by-cloud`, the delivery time. |
 
-The `'in_progress'` claim: the `UNIQUE(event_id, phase)` row doubles as a **cross-process mutex** —
-claimed BEFORE compose in `sendEarningsEmail`, released on failure so retries survive, with 30-min
-stale takeover/reap. Since **migration 063** claims carry a `claim_token` UUID and release is
-token-conditional, so a late finisher can't delete a successor's takeover claim — the reap is
-deliberately un-tokened.
+`GET /api/earnings/email-content` returns `deliveryState` beside `sentBy` so the viewer can say
+which of those it is looking at: during a refire's `sending` window it is showing the PREVIOUS
+email, and that is intended.
 
-Every new reader must exclude `'in_progress'` (pattern: `getSentPhasesForEvents` / `getEmailAudit`).
+A manual refire CASes on the prior row identity (`error` + `sent_at` as the claim saw them), so
+two refires racing cannot leave the loser's message id paired with the winner's body.
 
-Benign 409s (`EarningsEmailError.code` = `claim_held` / `not_ready`) land in `SweepSummary.skipped`
-with `ok:true` — **never count them as failures** — and `alertBlockedRecaps` respects the
-muted-symbols setting (no stamp on a muted skip, so unmuting re-arms).
+**Closing a `delivery_unknown` row.** Two roads, both explicit and both human-initiated:
+`POST /api/earnings/email { eventId, phase, markDelivered: true }` confirms the email DID arrive
+and flips the row to sent without sending anything (`sent_at` untouched, the confirmation appended
+to `provider_response`); or the same route without the flag REFIRES, which is a real second email.
+Nothing automatic ever resends an unknown row — not the sweep, not the nudge, not the Worker.
 
 ### Worker preview window is Mac-first
 
@@ -534,6 +591,88 @@ stampless for retry (ruling recorded 2026-08-07 — never-silent wins over route
 Manual "Print now" and `printArmedWorksheets`' wait-for-local-preview gate / stamp-retry semantics
 are unchanged; a no-local-preview event still uses the unchanged deterministic one-page composer
 (`composeWorksheetForEvent` in `lib/earnings/worksheet.ts`).
+
+### Outputs are buttons (slice E, 2026-09-04)
+
+Spec §4.5, ruling: *"The first output is the on-screen first-pass read. Paper and email are buttons
+pressed afterwards, never automatic."* Nothing in this slice fires on a timer.
+
+`lib/earnings/print-outputs.ts::evaluatePrintOutputs(db, printId)` is the single answer to "what
+should the two buttons look like", and `GET /api/print-watch/status` carries it per print. The UI
+never re-derives a gate, so a disabled button and a route refusal can never disagree. Its
+`sendRecap.state` type is spelled `"unsent" | DeliveryStateWord` rather than five literal strings —
+the display word `"sent-by-cloud"` is byte-identical to the DB sentinel and trips the state-literal
+guard; the resolved value set is exactly the contract's five words, pinned at compile time by a
+`Record<RecapSendState, true>` exhaustiveness check in the test.
+
+**Post-print sheet** — `POST /api/print-watch/print-sheet { printId }`.
+`lib/earnings/post-print-sheet.ts` loads the print (scoreboard rows with the delta computed in code,
+accepted callouts, the newest done first-pass read, the bogeys-by-source table, the family notes),
+`lib/earnings/print-sheet.ts::composePostPrintSheetHtml` lays it out, and
+`lib/earnings/print-ladder.ts::printHtmlOneSheet` — the SAME 3-rung ladder the pre-print worksheet
+uses, extracted in this slice — renders, counts, drops the FLEXIBLE block (here: the bogeys table),
+compacts, and prints. Any PDF-road failure downgrades to a monospace sheet; only a failure of both
+roads throws. Disabled with "No line has a value yet — the sheet prints once the first figure
+lands." Paper is local and is never privacy-masked.
+
+**Send recap now** — `POST /api/print-watch/send-recap { printId }`.
+`lib/earnings/recap-nudge-gate.ts` refuses with domain copy until the headline pair is ACCEPTED
+(the promote route's pair-completeness and promote-identity rules, re-stated — an accepted EPS line,
+adjusted preferred with a GAAP fallback, and an accepted `revenue_q`, both with a reported value on
+the CHOSEN line) and PROMOTED (cluster-scoped `manual_actuals_at` AND a non-null `actual_value`; a
+recap without an actual is never sent). The promote-identity check normalises both sides through
+`mergeFinnhubActual` — the same formatter the promote path uses — so a formatting-only rewrite (the
+Worker renders revenue through `toLocaleString`, the local formatter does not) can never wedge the
+button shut; if the two genuinely disagree the desk is told to promote again
+(`GATE_PAIR_CHANGED`). The gate deliberately does NOT model the accept route's supersession
+recheck — the route also allows `forceSuperseded`, and modelling it naively would wedge a
+deliberately-forced promote's recap shut with no escape; the desk's protection there is the panel's
+own "superseded — re-verify" state plus the fact that sending is an explicit button press. Every
+coordination outcome is a 200 the desk reads verbatim.
+
+**One send path.** `lib/earnings/send-service.ts::sendEarningsCandidate` is the only thing that
+turns a claim into an email — the sweep loop, the nudge and `POST /api/earnings/email` all call it.
+It resolves the recipient, claims, AWAITS the running marker, composes, mints the Message-ID, CASes
+the row to `sending`, races the provider against `SEND_TIMEOUT_MS` (90 s), then CASes to `sent` and
+awaits the mac-sent and clear markers. Two callers keep their own claims because they batch several
+events into ONE email: `debrief-send.ts` and `wrap-send.ts`. `tests/repo/one-claim-owner.test.ts`
+pins that list.
+
+**Failure classification.** A send is `delivery_unknown` only when the message MAY have been
+transmitted: our own deadline elapsed, or nodemailer reported `ECONNECTION`/`ESOCKET`/`ETIMEDOUT`/
+`ESTREAM` with `command === "DATA"`. Everything else — an explicit server refusal (`EENVELOPE`,
+`EMESSAGE`, `EAUTH`, `EPROTOCOL`), a failure before DATA, or a plain `Error` with no code — is a
+definitive non-delivery: the claim is released (or, for a refire, the delivered row is restored byte
+for byte) and the next tick retries.
+
+**The recap sees the read.** `lib/digest/print-watch-read-block.ts` adds a `## Print-watch read`
+block to the recap prompt AND the recap body: verdict words (`DirectionSafeFacts` — the type
+boundary; a `ReadFact` number cannot compile into it), the sanitised first-pass prose, and the
+callouts the desk accepted. This is what closed the "recap email is blind to the print-watch sheet"
+TODO.
+
+**One lifecycle primitive.** `lib/earnings/send-service.ts::deliverClaimedBatch` implements steps
+5–7 (the `sending` CAS, the single provider call, the classification, the terminal transitions and
+the per-member mac-sent markers) for N already-claimed members covered by ONE email.
+`sendEarningsCandidate` calls it with one member; the 07:45 ET morning debrief
+(`lib/earnings/debrief-send.ts`) calls it with N. `lib/earnings/wrap-send.ts` is retired and is
+OUTSIDE the lifecycle — it must adopt `deliverClaimedBatch` before it is ever revived (it has no
+production caller today, so nothing calls it as things stand).
+
+**An unknown ending CLAIMS the phase.** nodemailer offers no way to abort an in-flight `sendMail`:
+after our 90-second deadline the call and its socket keep running, and the message may still be
+delivered. So on every `delivery_unknown` path — our timeout, an ambiguous provider failure, a
+post-accept persistence failure, or a row the reaper already flipped — the service writes the
+mac-sent KV marker BEFORE releasing the running marker. The Worker then treats the phase as taken
+and never sends a second copy. Marker writes are best-effort (fail-open); the DB flip is what
+blocks a local resend.
+
+**The cloud pre-check belongs to the service.** `checkEarningsCloudMarker` runs inside
+`sendEarningsCandidate` for the AUTOMATIC modes (`sweep`, `nudge`) and not for `manual` — a human
+refiring is asking for a second copy on purpose. It used to live in the sweep loop only, which left
+the nudge able to duplicate a recap the Worker had already delivered; that sweep-loop copy is
+deleted. The morning debrief keeps its own PER-MEMBER pre-check; that is a different question over
+a batch.
 
 ---
 
