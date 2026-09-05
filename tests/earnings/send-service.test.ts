@@ -470,6 +470,62 @@ describe("the crash boundaries (Codex round 1)", () => {
     expect(db.prepare(`SELECT * FROM earnings_emails WHERE event_id = ?`).get(eventId)).toEqual(before);
   });
 
+  it("a post-accept failure whose RECOVERY READ also throws still ends delivery_unknown, never a 500 (R-E-C10)", async () => {
+    // The realistic trigger for the post-accept catch is a SQLite fault, and a
+    // database in that state can just as easily fail the SELECT the recovery
+    // path makes to report `since`. That read sits INSIDE the catch, so an
+    // unguarded throw escapes the handler entirely, propagates through the
+    // `finally`, and the sweep's backstop books ok:false / status 500 — the
+    // one outcome R-E5 forbids once the provider has said yes.
+    //
+    // LOAD-BEARING: drop the try/catch in `safeSentAt` and this test throws
+    // "database is locked" out of sendEarningsCandidate instead of returning.
+    const claims = await import("@/lib/digest/send-earnings-email");
+    const boom = () =>
+      Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+    let postAccept = false;
+    const sentSpy = vi.spyOn(claims, "markEmailSent").mockImplementation(() => {
+      postAccept = true; // the provider has already accepted by this point
+      throw boom();
+    });
+    // Only the RECOVERY read fails — the claim path's reads still work, so the
+    // send reaches the post-accept window exactly as it does in production.
+    const realGetSendRow = claims.getSendRow;
+    const rowSpy = vi.spyOn(claims, "getSendRow").mockImplementation((...args) => {
+      if (postAccept) throw boom();
+      return realGetSendRow(...args);
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { markers, order } = markerSpies();
+
+    const res = await sendEarningsCandidate(db, CAND(), {
+      mode: "sweep",
+      recipient: RECIPIENT,
+      seams: {
+        compose: async () => composed,
+        sendEmail: async (o) => ({ messageId: o.messageId!, response: "250 OK" }),
+        markers,
+      },
+    });
+
+    // No exception, and the outcome shape is unchanged — `since` simply falls
+    // back to "" exactly as it already does for a row that cannot be found.
+    expect(res).toMatchObject({ outcome: "delivery_unknown", since: "" });
+    expect((res as { note?: string }).note).toContain("post-accept persistence failed");
+    // The row was still flipped terminal and the phase still claimed in KV, so
+    // neither the next tick nor the Worker fallback can resend it.
+    expect(
+      (db.prepare(`SELECT error FROM earnings_emails WHERE event_id = ?`).get(eventId) as {
+        error: string;
+      }).error,
+    ).toBe("delivery_unknown");
+    expect(order).toEqual(["setRunning", "writeMacSent", "clearRunning"]);
+
+    rowSpy.mockRestore();
+    sentSpy.mockRestore();
+    warn.mockRestore();
+  });
+
   it("a post-accept SQLite error ends delivery_unknown with a note — never a 500", async () => {
     const claims = await import("@/lib/digest/send-earnings-email");
     const spy = vi.spyOn(claims, "markEmailSent").mockImplementation(() => {

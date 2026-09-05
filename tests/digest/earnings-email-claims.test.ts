@@ -533,43 +533,96 @@ describe("earnings email claims and delivery lifecycle", () => {
       });
     });
 
-    it("ABA: a row that completed and was re-fired between the SELECT and the UPDATE is NOT flipped", async () => {
-      // The stale row the reaper would select.
+    it("a row re-fired BEFORE the reaper runs is young, so it is never selected", async () => {
+      // The AGE FILTER, on its own. A refire that landed before the tick reset
+      // sent_at, so the stale SELECT does not see the row at all and the CAS
+      // is never reached. (Named honestly: this test does NOT exercise the
+      // SELECT → UPDATE window — the row is young by the time the reaper runs.
+      // The production CAS is pinned by the ABA test below.)
       db.prepare(
         `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, error, claim_token, provider_message_id)
          VALUES (?, 'recap', 'x@y.com', datetime('now', '-6 minutes'), 'sending', 'tok-old', '<old@d>')`,
       ).run(eventId);
       const notify = vi.fn(async (_msg: PushoverMessage) => ({ sent: true }));
-      // Drive the row to a NEW attempt after seeding, then reap — the
-      // deterministic equivalent of the owner finishing and a manual refire
-      // landing inside the reaper's SELECT → UPDATE window.
       db.prepare(
         `UPDATE earnings_emails
             SET error = 'sending', sent_at = datetime('now'), claim_token = 'tok-new',
                 provider_message_id = '<new@d>'
           WHERE event_id = ?`,
       ).run(eventId);
-      // The fresh attempt is young, so nothing is stale and nothing flips.
       expect(await reapStaleEarningsEmailClaims(db, { notify })).toEqual({
         reaped: 0,
         flippedUnknown: 0,
         flipped: [],
       });
-      // And the CAS itself refuses a stale (token, sent_at) pair even when the
-      // row IS in flight — this is the assertion that actually pins R-E7.
-      expect(
-        db
-          .prepare(
-            `UPDATE earnings_emails SET error = 'delivery_unknown'
-              WHERE event_id = ? AND phase = 'recap' AND error = 'sending'
-                AND claim_token IS ? AND sent_at = ?`,
-          )
-          .run(eventId, "tok-old", "1970-01-01 00:00:00").changes,
-      ).toBe(0);
       expect(
         db.prepare(`SELECT error, claim_token FROM earnings_emails WHERE event_id = ?`).get(eventId),
       ).toEqual({ error: "sending", claim_token: "tok-new" });
       expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("ABA: a row re-fired INSIDE the reaper's SELECT → UPDATE window is NOT flipped (R-E7)", async () => {
+      // R-E7 exercised through reapStaleEarningsEmailClaims ITSELF — no
+      // hand-copied UPDATE, no sleep, no wall-clock dependency, one connection.
+      //
+      // TWO stale `sending` rows. The reaper SELECTs both, flips the first and
+      // then AWAITS its Pushover — and that await IS the window. The notify
+      // seam uses it to drive the OTHER row (the one already measured but not
+      // yet updated) to a fresh attempt: new claim_token, new sent_at. That is
+      // exactly what happens in production when the first row's owner finishes
+      // and a manual refire re-enters SENDING. The second row's CAS then
+      // measures a (token, sent_at) pair that no longer exists, so it declines
+      // and the healthy in-flight send survives.
+      //
+      // LOAD-BEARING: delete `AND claim_token IS ? AND sent_at = ?` from the
+      // reaper's UPDATE and this test fails — flippedUnknown becomes 2, the
+      // refired row is driven to the terminal unknown state, and a second
+      // Pushover goes out about a send that was perfectly healthy.
+      const second = db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, title, symbol, source_key, week_of)
+           VALUES ('finnhub', 'earnings', '2026-07-05', 'XMPLB earnings', 'XMPLB', 'finnhub:XMPLB:2026-07-05', '2026-06-29')`,
+        )
+        .run().lastInsertRowid as number;
+
+      const seed = db.prepare(
+        `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, error, claim_token, provider_message_id)
+         VALUES (?, 'recap', 'x@y.com', datetime('now', '-6 minutes'), 'sending', ?, ?)`,
+      );
+      seed.run(eventId, "tok-a", "<a@d>");
+      seed.run(second, "tok-b", "<b@d>");
+
+      // Order-independent by construction: the row the reaper just flipped is
+      // no longer `sending`, so this UPDATE can only ever hit the OTHER one.
+      const notify = vi.fn(async (_msg: PushoverMessage) => {
+        db.prepare(
+          `UPDATE earnings_emails
+              SET claim_token = 'tok-refired', sent_at = datetime('now', '+1 second'),
+                  provider_message_id = '<refired@d>'
+            WHERE error = 'sending'`,
+        ).run();
+        return { sent: true };
+      });
+
+      const result = await reapStaleEarningsEmailClaims(db, { notify });
+
+      expect(result.reaped).toBe(0);
+      expect(result.flippedUnknown).toBe(1);
+      expect(result.flipped).toHaveLength(1);
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      const rows = db
+        .prepare(`SELECT event_id, error, claim_token FROM earnings_emails ORDER BY event_id`)
+        .all() as Array<{ event_id: number; error: string; claim_token: string }>;
+      const unknown = rows.filter((r) => r.error === "delivery_unknown");
+      const stillSending = rows.filter((r) => r.error === "sending");
+      expect(unknown).toHaveLength(1);
+      expect(stillSending).toHaveLength(1);
+      // The survivor is the REFIRED attempt, carrying its new token — untouched.
+      expect(stillSending[0].claim_token).toBe("tok-refired");
+      // ...and the reaper reported only the row it really moved.
+      expect(result.flipped[0]).toEqual({ eventId: unknown[0].event_id, phase: "recap" });
+      expect(result.flipped[0].eventId).not.toBe(stillSending[0].event_id);
     });
   });
 });

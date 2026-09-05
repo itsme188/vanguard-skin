@@ -9,11 +9,14 @@
  *     The two halves are checked IN THAT ORDER (R-E-C3): the EPS line is chosen
  *     by accepted-ness ALONE, and only the CHOSEN line is then required to
  *     carry a number — never "the first EPS line that happens to have one".
- *     That is the promote gate's own rule, re-stated here rather than imported:
- *     it lives in app/api/print-watch/accept/route.ts (a route) and
+ *     That is the promote route's PAIR-COMPLETENESS rule (both halves accepted,
+ *     the chosen one carrying a reported value) and its PROMOTE-IDENTITY rule
+ *     (which EPS line the promote commits to), re-stated here rather than
+ *     imported: they live in app/api/print-watch/accept/route.ts (a route) and
  *     app/dashboard/today/PrintWatchPanel.tsx (a client component), and slice E
  *     may import neither. tests/earnings/recap-nudge-gate.test.ts drives the
- *     accept route over a matrix and asserts the two answers agree.
+ *     accept route over a matrix and asserts the two answers agree on those
+ *     two rules. It is NOT the whole promote gate — see the exclusion below.
  *  2. PROMOTED — the promote actually landed on the event: a cluster-scoped
  *     manual_actuals_at stamp AND a non-null actual_value. The recap composer
  *     reads its scoreboard from calendar_events, and CLAUDE.md's standing rule
@@ -26,6 +29,28 @@
  *     re-stamped the event. The gate therefore RE-DERIVES what promoting the
  *     currently accepted pair would write and refuses when that differs from
  *     what the event stores.
+ *
+ * ── DELIBERATELY NOT MODELLED: the supersession recheck (R-E-C6) ───────────
+ * app/api/print-watch/accept/route.ts also refuses a promote with 409
+ * `superseded` when a STRICTLY LATER document carries a candidate whose value
+ * diverges from the accepted number. A supersession leaves the accepted line's
+ * value and state untouched, so condition 3 still passes and this gate can
+ * answer `ok` on a print whose promote button would 409. That divergence is
+ * known and accepted, not an oversight.
+ *
+ * The shared check exists and is importable (`isContradictedAccepted`,
+ * lib/print-watch/read-facts.ts). It is not wired in because the route ALSO
+ * accepts `forceSuperseded`: a desk that deliberately forced the promote
+ * through would then be unable to send the recap at all, because condition 3
+ * passes (the stored actual_value DOES reflect the accepted pair) and a
+ * supersession refusal would never clear. Telling "contradicted since the
+ * promote" apart from "contradicted and promoted on purpose" needs state this
+ * slice does not carry, and an output wedged shut with no escape hatch is
+ * worse than an email the desk enabled by promoting.
+ *
+ * The desk's protection here is the panel's own "superseded — re-verify" state
+ * on screen, plus the fact that sending is an explicit button press, never
+ * automatic.
  *
  * The copy is quoted verbatim from the E/F outputs contract §3; slice F renders
  * `reason` as-is, so these strings are the user interface.

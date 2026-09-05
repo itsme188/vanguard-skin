@@ -43,6 +43,16 @@
  * fast-glob (undeclared dep), per-OCCURRENCE validation never whole-file (a
  * bad predicate added to an already-allowlisted file still fails), and a
  * per-occurrence anchor-substring allowlist with a justification field.
+ *
+ * ── ONE DELIBERATE DIVERGENCE FROM THAT ANCESTOR (R-E-C7) ──────────────────
+ * The inherited lexer has no REGEX-LITERAL state, which makes it unsound in
+ * the false-negative direction: an unpaired quote inside a regex (`/don't/`,
+ * and this tree really contains several) opens a phantom string that swallows
+ * every following predicate to the next matching quote. The Task 2 review
+ * demonstrated it — two planted bad predicates hidden, guard reported PASSED.
+ * `tokenize` below therefore lexes regex literals too. The latest-holdings
+ * guard still carries the hole; closing it there belongs to that slice's
+ * owner and is filed in docs/plans/TODO.md, NOT fixed here.
  */
 
 import fs from "node:fs";
@@ -109,12 +119,109 @@ function isExempt(relFile: string): boolean {
 // each match a precisely-bounded enclosing literal as its validation context.
 // `${...}` interpolation is tracked only for brace depth (this codebase's SQL
 // template literals interpolate identifiers/calls, never nested strings).
-// Verbatim in structure from tests/repo/no-handrolled-latest-holdings.test.ts.
+// Structure follows tests/repo/no-handrolled-latest-holdings.test.ts, plus the
+// regex-literal state that guard lacks (R-E-C7 — see the header).
 
 interface Segment {
-  type: "code" | "comment" | "string" | "template";
+  type: "code" | "comment" | "string" | "template" | "regex";
   start: number;
   end: number;
+}
+
+// ─── Regex literal vs division (R-E-C7) ───────────────────────────────────
+// A `/` in code position is EITHER a division operator OR the opening of a
+// regex literal, and the character alone does not decide it — the previous
+// significant token does. Guessing wrong is unsound in BOTH directions, and
+// both failure modes end in the same place: a MISSED hand-rolled predicate.
+//
+//   * regex mistaken for division — the regex BODY is scanned as code, so an
+//     apostrophe inside it opens a phantom string that swallows everything up
+//     to the next quote. Not hypothetical: lib/apis/analyst-estimates.ts
+//     carries /\b403\b|don'?t have access/i and lib/transcripts/same-day.ts
+//     carries /i(?:'|’)ll produce the/im. The Task 2 review planted
+//     `const apos = /don't/;` above two genuinely bad predicates and this
+//     guard reported 12/12 PASSED.
+//   * division mistaken for a regex — the "regex" swallows code to the next `/`.
+//
+// The heuristic is the standard one: `/` opens a regex only when the previous
+// significant token CANNOT end an expression. An identifier, a number, a
+// string/template/regex literal, `)` and `]` all CAN end one, so a `/` after
+// them is division; the punctuation in PRE_REGEX_PUNCT and the keywords in
+// PRE_REGEX_KEYWORDS cannot. Two safety valves keep a misjudgement cheap:
+//
+//   1. a `/` that is the first significant character on its line opens a
+//      regex. Verified empirically at authoring time: `^\s*/[^/*]` over the
+//      589 scanned files matches 89 lines and every one is a regex literal —
+//      this tree never breaks a division across a line (Prettier keeps binary
+//      operators at the END of the line).
+//   2. a regex scan that reaches a newline before closing is ABANDONED and the
+//      `/` is re-read as ordinary code, so a false regex can never swallow
+//      more than the remainder of its own line.
+//
+// `>` earns its place in PRE_REGEX_PUNCT on its own: without it the very
+// common `(l) => /^…$/.test(l)` reads the arrow's `>` as an expression end and
+// lexes the whole regex as code.
+
+const PRE_REGEX_PUNCT = new Set([
+  "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";",
+  "+", "-", "*", "%", "^", "~", "<", ">",
+]);
+
+const PRE_REGEX_KEYWORDS = new Set([
+  "return", "typeof", "case", "in", "of", "new", "delete", "void",
+  "instanceof", "do", "else", "yield", "await", "throw",
+]);
+
+const WORD_CHAR = /[A-Za-z0-9_$]/;
+
+/** Does a `/` at `slash` open a regex literal, given the index of the last
+ *  significant (non-whitespace, non-comment) character before it? */
+function regexCanStartAt(src: string, lastSig: number, slash: number): boolean {
+  if (lastSig < 0) return true; // first token in the file
+  if (src.slice(lastSig + 1, slash).includes("\n")) return true; // valve 1
+  const ch = src[lastSig];
+  if (PRE_REGEX_PUNCT.has(ch)) return true;
+  if (WORD_CHAR.test(ch)) {
+    let s = lastSig;
+    while (s >= 0 && WORD_CHAR.test(src[s])) s--;
+    return PRE_REGEX_KEYWORDS.has(src.slice(s + 1, lastSig + 1));
+  }
+  return false; // `)`, `]`, a quote, a regex's own closing `/` or its flags
+}
+
+/** Scan a regex literal starting at `start` (which must be a `/`). Returns the
+ *  index just past the closing `/` and its flags, or -1 when this is not a
+ *  well-formed single-line regex literal (valve 2). Handles `\/` escapes and
+ *  `[/]` character classes, inside which `/` does NOT close the literal. */
+function scanRegexLiteral(src: string, start: number): number {
+  const n = src.length;
+  let i = start + 1;
+  let inClass = false;
+  while (i < n) {
+    const ch = src[i];
+    if (ch === "\n") return -1;
+    if (ch === "\\") {
+      i += 2;
+      continue;
+    }
+    if (inClass) {
+      if (ch === "]") inClass = false;
+      i++;
+      continue;
+    }
+    if (ch === "[") {
+      inClass = true;
+      i++;
+      continue;
+    }
+    if (ch === "/") {
+      i++;
+      while (i < n && /[a-z]/i.test(src[i])) i++; // flags
+      return i;
+    }
+    i++;
+  }
+  return -1;
 }
 
 function tokenize(src: string): Segment[] {
@@ -122,6 +229,10 @@ function tokenize(src: string): Segment[] {
   const n = src.length;
   let i = 0;
   let codeStart = 0;
+  // Index of the last significant character seen in CODE position. Comments
+  // never update it; a closed string/template/regex sets it to its own final
+  // character, all of which correctly read as "an expression just ended".
+  let lastSig = -1;
 
   const flushCode = (end: number) => {
     if (end > codeStart) segments.push({ type: "code", start: codeStart, end });
@@ -151,6 +262,21 @@ function tokenize(src: string): Segment[] {
       continue;
     }
 
+    // A `/` that is not a comment opener is either a regex literal or a
+    // division operator. `scanRegexLiteral` returning -1 is the second safety
+    // valve: an unterminated "regex" is re-read as ordinary code below.
+    if (c === "/" && regexCanStartAt(src, lastSig, i)) {
+      const end = scanRegexLiteral(src, i);
+      if (end !== -1) {
+        flushCode(i);
+        segments.push({ type: "regex", start: i, end });
+        i = end;
+        codeStart = i;
+        lastSig = i - 1;
+        continue;
+      }
+    }
+
     if (c === '"' || c === "'") {
       flushCode(i);
       const quote = c;
@@ -163,6 +289,7 @@ function tokenize(src: string): Segment[] {
       i = Math.min(n, i + 1);
       segments.push({ type: "string", start, end: i });
       codeStart = i;
+      lastSig = i - 1;
       continue;
     }
 
@@ -195,9 +322,11 @@ function tokenize(src: string): Segment[] {
       }
       segments.push({ type: "template", start, end: i });
       codeStart = i;
+      lastSig = i - 1;
       continue;
     }
 
+    if (!/\s/.test(c)) lastSig = i;
     i++;
   }
   flushCode(n);
@@ -408,6 +537,80 @@ describe("earnings_emails state sentinels are single-sourced", () => {
     const occs = findOccurrences("lib/calendar/email-sweep.ts", bad);
     expect(occs).toHaveLength(1);
     expect(isAllowlisted(occs[0])).toBe(false);
+  });
+
+  // ─── R-E-C7: the lexer's regex-literal state, in BOTH directions ───────
+
+  it("self-test: an apostrophe inside a regex literal does not blind the guard", () => {
+    // THE HOLE. Without a regex-literal state the `'` in /don't/ opens a
+    // phantom string that runs to the next `'` — which is the one opening
+    // 'in_progress' — so both planted predicates below went unseen and the
+    // guard reported PASSED. This tree really does carry such regexes
+    // (lib/apis/analyst-estimates.ts, lib/transcripts/same-day.ts).
+    // REVERT THE REGEX STATE IN `tokenize` AND THIS TEST MUST FAIL.
+    const bad = `
+      const apos = /don't/;
+      export const bad1 = db.prepare(\`SELECT 1 WHERE error != 'in_progress'\`);
+      const dq = /say"hi/;
+      export const bad2 = db.prepare(\`SELECT 1 WHERE error != 'sending'\`);
+    `;
+    const occs = findOccurrences("lib/queries/planted-regex-apostrophe.ts", bad);
+    expect(occs.map((o) => o.sentinel)).toEqual(["in_progress", "sending"]);
+    expect(occs.every((o) => o.shape === "sql-literal")).toBe(true);
+  });
+
+  it("self-test: division is NOT read as a regex — no phantom skip, no crash", () => {
+    // The other direction. Two `/` operators whose operands are ordinary
+    // identifiers: if either were lexed as a regex opener, the "literal" would
+    // swallow forward to the next `/` and the sentinel after it would vanish.
+    const src = `
+      const r = a / b;
+      const s = c / d;
+      export const bad = db.prepare(\`SELECT 1 WHERE error = 'delivery_unknown'\`);
+      const t = (x + y) / 2 / 3;
+      export const alsoBad = (e: string | null) => e === "sent-by-cloud";
+    `;
+    const occs = findOccurrences("lib/queries/planted-division.ts", src);
+    expect(occs.map((o) => o.sentinel)).toEqual(["delivery_unknown", "sent-by-cloud"]);
+  });
+
+  it("self-test: a legitimate regex whose PATTERN contains a sentinel is not flagged", () => {
+    // A regex is code, not a string literal, and prose inside one is prose.
+    const fine = `
+      const isSending = /sending/.test(state);
+      const anyLive = /^(in_progress|sending)$/;
+      const cloud = str.replace(/sent-by-cloud/g, "");
+      const quoted = /error = 'delivery_unknown'/;
+    `;
+    expect(findOccurrences("lib/earnings/planted-regex-prose.ts", fine)).toEqual([]);
+  });
+
+  it("self-test: regex escapes, character classes and arrow-returned regexes lex correctly", () => {
+    // `\\/` and `[/]` both contain a `/` that must NOT close the literal, and
+    // `=> /…/` is the shape that forces `>` into PRE_REGEX_PUNCT. If any of
+    // these mis-lexes, the trailing predicate is swallowed and goes unseen.
+    const src = `
+      const path = /a\\/b/;
+      const cls = /[/'"]+/g;
+      const arrow = (l: string) => /^\\d+$/.test(l);
+      const flags = /x/gimsuy;
+      export const bad = db.prepare(\`SELECT 1 WHERE error != 'in_progress'\`);
+    `;
+    const occs = findOccurrences("lib/queries/planted-regex-shapes.ts", src);
+    expect(occs).toHaveLength(1);
+    expect(occs[0]).toMatchObject({ sentinel: "in_progress", shape: "sql-literal" });
+  });
+
+  it("self-test: an unterminated regex-looking slash never swallows past its line", () => {
+    // Safety valve 2. `a = / b` has no closing `/` on its line, so the scan is
+    // abandoned and the `/` is re-read as ordinary code rather than eating the
+    // rest of the file.
+    const src = `
+      const weird = fn(/ , x);
+      export const bad = db.prepare(\`SELECT 1 WHERE error = 'sending'\`);
+    `;
+    const occs = findOccurrences("lib/queries/planted-unterminated.ts", src);
+    expect(occs.map((o) => o.sentinel)).toEqual(["sending"]);
   });
 
   it("self-test: the vocabulary module and the migrations are exempt", () => {
