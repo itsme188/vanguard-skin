@@ -5,12 +5,21 @@ import { runMigrations } from "@/lib/db/migrate";
 import { recompileContracts, retiredMetricId } from "@/lib/print-watch/recompile";
 import { upsertLines, getSheet } from "@/lib/print-watch/store";
 import { compileContracts } from "@/lib/print-watch/contracts";
-import type { PrintWatchLine } from "@/lib/print-watch/types";
+import { reconcile } from "@/lib/print-watch/reconcile";
+import type { PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
 
 const A = "5b7a1f42-9c3e-4d18-8f6a-2e0b91c7d4a3";
 const metric = (o: Record<string, unknown> = {}) => ({
   id: A, label: "Net new ARR", definition: "Sequential change in ARR.",
   unit: "usd", kind: "point", period: "Q", basis: "na", ...o,
+});
+
+/** One tagged candidate as the parser would have written it into the pool. */
+const candidate = (o: Partial<TaggedCandidate> = {}): TaggedCandidate => ({
+  metric_id: `x_${A}_Q`, value: 275_000_000, value_high: null,
+  raw_text: "$275.0 million", snippet: "net new ARR of $275.0 million",
+  location_hint: null, not_disclosed: false,
+  doc_id: 7, representation: "repA", weak_pair: false, ...o,
 });
 
 let seq = 0;
@@ -228,6 +237,101 @@ describe("recompileContracts", () => {
     db.close();
   });
 
+  it("re-tags a retired row's candidate pool so it can never manufacture a green on the fresh line (review Critical 1)", () => {
+    const { db, eventId, printId } = fixture([metric()]);
+    seedSheet(db, printId, eventId);
+    db.prepare(`UPDATE print_watch_lines SET candidates_json = ? WHERE print_id = ? AND metric_id = ?`)
+      .run(JSON.stringify([candidate({ doc_id: 7 })]), printId, `x_${A}_Q`);
+    db.prepare(`UPDATE earnings_bogeys SET extra_metrics_json = ? WHERE event_id = ?`)
+      .run(JSON.stringify([metric({ basis: "non_gaap" })]), eventId);
+
+    const r = recompileContracts(db, printId);
+    expect(r.retired).toEqual([`x_${A}_Q~retired~0`]);
+
+    const sheet = getSheet(db, printId);
+    const old = sheet.find((l) => l.metric_id === `x_${A}_Q~retired~0`)!;
+    const pool = JSON.parse(old.candidates_json) as TaggedCandidate[];
+    // (a) the pool follows the retired row, reading preserved verbatim …
+    expect(pool.map((c) => c.metric_id)).toEqual([`x_${A}_Q~retired~0`]);
+    expect(pool[0].value).toBe(275_000_000);
+    expect(pool[0].snippet).toBe("net new ARR of $275.0 million");
+    // (b) … and nothing under the fresh line's id survives in it.
+    expect(pool.some((c) => c.metric_id === `x_${A}_Q`)).toBe(false);
+
+    // The consequence, driven through the real machinery: collectCandidates
+    // (watcher.ts) pools the WHOLE sheet, retired rows included, and reconcile
+    // buckets by the candidate's own metric_id. A SECOND document agreeing
+    // with the stale GAAP reading must NOT green the fresh non-GAAP line.
+    const pooled = sheet.flatMap((l) => JSON.parse(l.candidates_json) as TaggedCandidate[]);
+    const { contracts, expected } = compileContracts(db, eventId, "XMPL1");
+    const live = reconcile(contracts, expected, [...pooled, candidate({ doc_id: 8 })], [])
+      .find((l) => l.metric_id === `x_${A}_Q`)!;
+    expect(live.state).toBe("single_source");                        // not "agreed"
+    expect(JSON.parse(live.candidates_json) as TaggedCandidate[]).toHaveLength(1);
+    db.close();
+  });
+
+  it("leaves an UNREADABLE candidate pool exactly as stored and still retires the row", () => {
+    const { db, eventId, printId } = fixture([metric()]);
+    seedSheet(db, printId, eventId);
+    db.prepare(`UPDATE print_watch_lines SET candidates_json = '{not json' WHERE print_id = ? AND metric_id = ?`)
+      .run(printId, `x_${A}_Q`);
+    db.prepare(`UPDATE earnings_bogeys SET extra_metrics_json = NULL WHERE event_id = ?`).run(eventId);
+
+    const r = recompileContracts(db, printId);
+    expect(r.retired).toEqual([`x_${A}_Q~retired~0`]);
+    expect(getSheet(db, printId).find((l) => l.metric_id === `x_${A}_Q~retired~0`)!.candidates_json)
+      .toBe("{not json");
+    db.close();
+  });
+
+  it("RETIRES a line whose ONLY evidence is a candidate pool; an empty or blank pool is NOT evidence", () => {
+    for (const [pool, verdict] of [
+      [`[{"metric_id":"x_${A}_Q","value":275000000,"doc_id":7}]`, "retired"],
+      ["[]", "deleted"],
+      ["   ", "deleted"],
+    ] as const) {
+      const { db, eventId, printId } = fixture([metric()]);
+      seedSheet(db, printId, eventId);
+      db.prepare(`UPDATE print_watch_lines SET candidates_json = ? WHERE print_id = ? AND metric_id = ?`)
+        .run(pool, printId, `x_${A}_Q`);
+      db.prepare(`UPDATE earnings_bogeys SET extra_metrics_json = NULL WHERE event_id = ?`).run(eventId);
+
+      const r = recompileContracts(db, printId);
+      expect(r.retired, pool).toEqual(verdict === "retired" ? [`x_${A}_Q~retired~0`] : []);
+      expect(r.deleted, pool).toEqual(verdict === "deleted" ? [`x_${A}_Q`] : []);
+      db.close();
+    }
+  });
+
+  it("a SECOND retirement of the same base takes ~retired~1 and leaves ~retired~0 untouched", () => {
+    const { db, eventId, printId } = fixture([metric()]);
+    seedSheet(db, printId, eventId);
+    db.prepare(`UPDATE print_watch_lines SET state = 'accepted', value = 275000000 WHERE print_id = ? AND metric_id = ?`)
+      .run(printId, `x_${A}_Q`);
+    db.prepare(`UPDATE earnings_bogeys SET extra_metrics_json = ? WHERE event_id = ?`)
+      .run(JSON.stringify([metric({ basis: "non_gaap" })]), eventId);
+    expect(recompileContracts(db, printId).retired).toEqual([`x_${A}_Q~retired~0`]);
+
+    // the replacement line earns its own evidence, then the definition moves again
+    db.prepare(`UPDATE print_watch_lines SET snippet = 'net new ARR of $280.0 million' WHERE print_id = ? AND metric_id = ?`)
+      .run(printId, `x_${A}_Q`);
+    db.prepare(`UPDATE earnings_bogeys SET extra_metrics_json = ? WHERE event_id = ?`)
+      .run(JSON.stringify([metric({ basis: "non_gaap", unit: "pct" })]), eventId);
+    expect(recompileContracts(db, printId).retired).toEqual([`x_${A}_Q~retired~1`]);
+
+    const sheet = getSheet(db, printId);
+    const first = sheet.find((l) => l.metric_id === `x_${A}_Q~retired~0`)!;
+    expect(first.state).toBe("retired");
+    expect(first.value).toBe(275_000_000);
+    expect(first.contract.basis).toBe("na");
+    const second = sheet.find((l) => l.metric_id === `x_${A}_Q~retired~1`)!;
+    expect(second.state).toBe("retired");
+    expect(second.snippet).toBe("net new ARR of $280.0 million");
+    expect(second.contract.basis).toBe("non_gaap");
+    db.close();
+  });
+
   it("passes the compiler's conflicts straight through and compiles no line for them", () => {
     const { db, eventId, printId } = fixture([metric()]);
     seedSheet(db, printId, eventId);
@@ -250,6 +354,12 @@ describe("recompileContracts", () => {
 describe("writeLines is serialised against recompileContracts (R-F4)", () => {
   const src = readFileSync("lib/print-watch/watcher.ts", "utf8");
   const body = src.slice(src.indexOf("function writeLines("), src.indexOf("type ParsePassResult"));
+  it("slices the real function body, not the rest of the file (anchor guard)", () => {
+    // If either anchor vanished the slice would run to EOF and every assertion
+    // below would pass vacuously against unrelated code.
+    expect(body.length).toBeGreaterThan(200);
+    expect(body.length).toBeLessThan(4000);
+  });
   it("wraps compile → getSheet → reconcile → upsertLines in ONE immediate transaction", () => {
     expect(body).toMatch(/db\.transaction\(/);
     expect(body).toMatch(/\.immediate\(\)/);
@@ -259,5 +369,25 @@ describe("writeLines is serialised against recompileContracts (R-F4)", () => {
   });
   it("keeps the lease claim OUTSIDE the transaction (it is the cross-process arbiter, not the write)", () => {
     expect(body.indexOf("claimLease(db)")).toBeLessThan(body.indexOf("db.transaction("));
+  });
+});
+
+/** The recompile half of the R-F4 race, and the F-S6 read placement. Both are
+ *  invisible to a single-threaded in-memory test — only a source scan can fail
+ *  when someone drops `.immediate()` or hoists the print read back out. */
+describe("recompileContracts is ONE immediate transaction with the print read inside it (R-F4 / F-S6)", () => {
+  const src = readFileSync("lib/print-watch/recompile.ts", "utf8");
+  const body = src.slice(src.indexOf("export function recompileContracts("));
+  it("slices the real function body (anchor guard)", () => {
+    expect(body.length).toBeGreaterThan(200);
+  });
+  it("opens an IMMEDIATE transaction", () => {
+    expect(body).toMatch(/db\.transaction\(/);
+    expect(body).toMatch(/\.immediate\(\)/);
+  });
+  it("reads the print INSIDE that transaction (F-S6)", () => {
+    const tx = body.indexOf("db.transaction(");
+    expect(tx).toBeGreaterThan(-1);
+    expect(body.indexOf("getPrintById(")).toBeGreaterThan(tx);
   });
 });
