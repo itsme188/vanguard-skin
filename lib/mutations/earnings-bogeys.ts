@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 import type { EarningsBogeySource } from "@/lib/queries/earnings-bogeys";
+import { recompileContracts, type RecompileReport } from "@/lib/print-watch/recompile";
+import { getPrintByEventId } from "@/lib/print-watch/store";
 
 export interface UpsertBogeyInput {
   event_id: number;
@@ -20,6 +22,9 @@ export interface UpsertBogeyInput {
   segment_breakdown_json?: string | null;
   guidance_notes?: string | null;
   notes?: string | null;
+  /** Desk-defined extra metric lines (spec §4.7). Validated by the ROUTE
+   *  through parseExtraMetrics before it reaches here; stored verbatim. */
+  extra_metrics_json?: string | null;
   ai_extraction_model?: string | null;
   /**
    * Null-preserving conflict semantics for RE-SCAN callers (newsletter
@@ -42,7 +47,7 @@ export interface UpsertBogeyInput {
  * research_article_id, uploaded_at, ai_extraction_model) is PROVENANCE and
  * always takes the incoming value: it describes the write, not the numbers.
  */
-const CONTENT_COLUMNS = [
+export const CONTENT_COLUMNS = [
   "eps_consensus",
   "eps_whisper",
   "revenue_consensus_usd",
@@ -52,6 +57,7 @@ const CONTENT_COLUMNS = [
   "segment_breakdown_json",
   "guidance_notes",
   "notes",
+  "extra_metrics_json",
 ] as const;
 
 const INSERT_SQL = `INSERT INTO earnings_bogeys (
@@ -59,9 +65,9 @@ const INSERT_SQL = `INSERT INTO earnings_bogeys (
        research_document_id, research_article_id, eps_consensus, eps_whisper,
        revenue_consensus_usd, revenue_whisper_usd, expected_move_pct,
        eps_consensus_vendor,
-       segment_breakdown_json, guidance_notes, notes, uploaded_at,
+       segment_breakdown_json, guidance_notes, notes, extra_metrics_json, uploaded_at,
        ai_extraction_model
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`;
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`;
 
 const PROVENANCE_UPDATE_SQL = `       source_url = excluded.source_url,
        raw_pdf_r2_key = excluded.raw_pdf_r2_key,
@@ -81,6 +87,7 @@ ${PROVENANCE_UPDATE_SQL},
        segment_breakdown_json = excluded.segment_breakdown_json,
        guidance_notes = excluded.guidance_notes,
        notes = excluded.notes,
+       extra_metrics_json = excluded.extra_metrics_json,
        uploaded_at = datetime('now'),
        ai_extraction_model = excluded.ai_extraction_model`;
 
@@ -113,6 +120,13 @@ function normalizeTextContent(value: string | null | undefined): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
+/** Named so the route and the tests can talk about it. */
+export interface UpsertBogeyResult {
+  id: number;
+  created: boolean;
+  skipped?: boolean;
+}
+
 /**
  * Idempotent insert keyed on (event_id, source, source_label). Re-upload of
  * the same source PDF for the same event refreshes the numbers in place
@@ -129,7 +143,7 @@ function normalizeTextContent(value: string | null | undefined): string | null {
 export function upsertBogey(
   db: Database.Database,
   input: UpsertBogeyInput,
-): { id: number; created: boolean; skipped?: boolean } {
+): UpsertBogeyResult {
   // Normalize the textual content columns (blank/whitespace-only -> null)
   // BEFORE the has-content check and the SQL bind, for both modes — a blank
   // string is "no content" and must never reach COALESCE or the row.
@@ -138,6 +152,7 @@ export function upsertBogey(
     segment_breakdown_json: normalizeTextContent(input.segment_breakdown_json),
     guidance_notes: normalizeTextContent(input.guidance_notes),
     notes: normalizeTextContent(input.notes),
+    extra_metrics_json: normalizeTextContent(input.extra_metrics_json),
   };
 
   const before = db
@@ -174,6 +189,7 @@ export function upsertBogey(
     normalized.segment_breakdown_json ?? null,
     normalized.guidance_notes ?? null,
     normalized.notes ?? null,
+    normalized.extra_metrics_json ?? null,
     normalized.ai_extraction_model ?? null,
   );
 
@@ -188,4 +204,56 @@ export function deleteBogey(db: Database.Database, id: number): boolean {
     .prepare("DELETE FROM earnings_bogeys WHERE id = ?")
     .run(id);
   return r.changes > 0;
+}
+
+/**
+ * A print that is `expired` or `disarmed` has finished measuring: its sheet is
+ * the RECORD of what was measured and is never re-derived. No print at all is
+ * the ordinary case (most events never arm).
+ */
+function recompileLivePrint(db: Database.Database, eventId: number): RecompileReport | null {
+  const print = getPrintByEventId(db, eventId);
+  if (!print || print.state === "expired" || print.state === "disarmed") return null;
+  return recompileContracts(db, print.id);
+}
+
+/**
+ * Save a bogey and re-derive the event's live sheet in ONE transaction
+ * (Codex round 1, finding 6). Committing the bogey and then recompiling
+ * separately leaves a window — and, if the recompile throws, a permanent
+ * state — in which the stored sheet disagrees with the stored bogeys: lines
+ * for metrics nobody defines any more, or no line for one the desk just added
+ * and is about to be judged against at 16:05.
+ *
+ * `recompileContracts` opens its own `.immediate()`; nested, better-sqlite3
+ * runs it as a SAVEPOINT (lib/methods/transaction.js::wrapTransaction switches
+ * to SAVEPOINT/RELEASE/ROLLBACK TO whenever db.inTransaction), so a throw
+ * inside it unwinds this whole transaction — bogey write included.
+ */
+export function saveBogeyWithRecompile(
+  db: Database.Database,
+  input: UpsertBogeyInput,
+): { result: UpsertBogeyResult; recompile: RecompileReport | null } {
+  const run = db.transaction(() => {
+    const result = upsertBogey(db, input);
+    return { result, recompile: recompileLivePrint(db, input.event_id) };
+  });
+  return run.immediate();
+}
+
+/** The same guarantee for a removal — and the row's `event_id` is read BEFORE
+ *  the DELETE, inside the transaction, so nothing can race between them. */
+export function deleteBogeyWithRecompile(
+  db: Database.Database,
+  id: number,
+): { deleted: boolean; recompile: RecompileReport | null } {
+  const run = db.transaction(() => {
+    const row = db.prepare(`SELECT event_id FROM earnings_bogeys WHERE id = ?`).get(id) as
+      | { event_id: number }
+      | undefined;
+    const deleted = deleteBogey(db, id);
+    if (!deleted || !row) return { deleted, recompile: null };
+    return { deleted: true, recompile: recompileLivePrint(db, row.event_id) };
+  });
+  return run.immediate();
 }
