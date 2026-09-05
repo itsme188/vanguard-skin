@@ -17,6 +17,23 @@ import {
   type ExtraMetricSpec,
 } from "@/lib/print-watch/extra-metrics";
 
+/**
+ * Mirrors `lib/print-watch/recompile.ts::RecompileReport`, the shape POST/DELETE
+ * /api/earnings/bogeys returns under `recompiled`. RE-DECLARED, not imported
+ * (ruling R-F29): that module is genuinely server-only (`recompile` → `./store`
+ * → better-sqlite3), it is not on the client-safe allowlist, and the two
+ * boundary guards are dumb text scans that do not distinguish `import type` —
+ * so naming it here at all reds them. Client files re-declare the wire shapes
+ * they consume; `hub-live/types.ts` follows the same precedent (M-F18).
+ */
+interface RecompileReport {
+  added: string[];
+  updated: string[];
+  retired: string[];
+  deleted: string[];
+  conflicts: Array<{ id: string; fields: string[] }>;
+}
+
 interface Props {
   eventId: number;
   symbol: string;
@@ -102,6 +119,47 @@ function extraRowsToJson(rows: ExtraRow[]): string | null {
   })));
 }
 
+const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+
+/**
+ * What the save actually did to the live sheet, in desk language (review I-2).
+ * The POST already returns this report and the modal used to throw it away, so
+ * a save that compiled NO line (two sheets disagree on a metric's semantics) or
+ * that RETIRED a live line closed in silence. A retirement is the one the desk
+ * must see: a line it may be watching has stopped being measured under its old
+ * definition, and its reading is frozen where it stood.
+ */
+function describeRecompile(report: RecompileReport): string {
+  const parts: string[] = [];
+  if (report.added.length > 0) parts.push(`${plural(report.added.length, "line")} added`);
+  if (report.updated.length > 0) parts.push(`${plural(report.updated.length, "line")} updated`);
+  if (report.retired.length > 0) {
+    parts.push(
+      `${plural(report.retired.length, "line")} retired — no longer measured under the old definition, ` +
+        "and any reading already taken is kept as it stood",
+    );
+  }
+  if (report.deleted.length > 0) parts.push(`${plural(report.deleted.length, "line")} removed`);
+  if (parts.length === 0) return "Saved. The live sheet was already what these bogeys describe.";
+  return `Saved. Live sheet: ${parts.join(" · ")}.`;
+}
+
+/**
+ * Which outcomes the modal may NOT close on. A line compiled or refreshed is
+ * what the desk just asked for and needs no ceremony; a line that was retired
+ * or removed, an id that compiles NO line because two sheets disagree, and a
+ * save that moved the sheet not at all are the outcomes the desk would
+ * otherwise learn about at the next open, if ever.
+ */
+function needsAcknowledgement(report: RecompileReport): boolean {
+  return (
+    report.conflicts.length > 0 ||
+    report.retired.length > 0 ||
+    report.deleted.length > 0 ||
+    report.added.length + report.updated.length === 0
+  );
+}
+
 /** What GET /api/earnings/bogeys adds to each stored row: its specs already
  *  parsed, so the editor can preserve ids instead of re-minting them. */
 type BogeyWithSpecs = EarningsBogey & {
@@ -140,9 +198,29 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
   const [conflicts, setConflicts] = useState<ExtraMetricConflict[]>([]);
   const [reuseId, setReuseId] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  /** The row whose "copy id" the browser refused — a clipboard problem, kept
+   *  out of the parser's validation list (review M-3). */
+  const [copyFailedId, setCopyFailedId] = useState<string | null>(null);
+  /** Why the stored extra metrics of the sheet this save will overwrite could
+   *  not be read. Non-empty BLOCKS the save (review I-1): the editor shows zero
+   *  rows in that case, and saving would write NULL over definitions the desk
+   *  is measured against. */
+  const [hydrationErrors, setHydrationErrors] = useState<string[]>([]);
+  /** The deliberate way out of that block — the desk says "discard them". */
+  const [discardUnreadable, setDiscardUnreadable] = useState(false);
+  /** "Loading this sheet moved your typed rows" — never silent (review M-1). */
+  const [hydrationNote, setHydrationNote] = useState<string | null>(null);
+  /** What the last save did to the live sheet, in words (review I-2). */
+  const [saveSummary, setSaveSummary] = useState<string | null>(null);
   /** The source label whose stored metrics are already in the editor, so a
    *  hydration can never overwrite the desk's own edits mid-typing. */
   const hydratedLabelRef = useRef<string | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // "copied" is a two-second acknowledgement, not a permanent label (M-4).
+  useEffect(() => () => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -162,6 +240,11 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     setConflicts([]);
     setReuseId("");
     setCopiedId(null);
+    setCopyFailedId(null);
+    setHydrationErrors([]);
+    setDiscardUnreadable(false);
+    setHydrationNote(null);
+    setSaveSummary(null);
     hydratedLabelRef.current = null;
     Promise.all([
       fetch(`/api/earnings/bogeys?eventId=${eventId}`).then(
@@ -239,22 +322,48 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     const match = existing.find(
       (b) => b.source === "manual" && (b.source_label ?? "").trim() === label,
     );
-    if (!match) return;
+    if (!match) {
+      // No stored manual row under this label: the save creates one, so it can
+      // overwrite nothing — a warning left over from a previously-typed label
+      // no longer applies. Same-reference when already empty, so this cannot
+      // loop through the `extraRows` dependency below.
+      setHydrationErrors((prev) => (prev.length === 0 ? prev : []));
+      setDiscardUnreadable(false);
+      setHydrationNote(null);
+      return;
+    }
     hydratedLabelRef.current = label;
-    setExtraRows(
-      (match.extraMetrics ?? []).map((sp) => ({
-        id: sp.id,
-        label: sp.label,
-        definition: sp.definition,
-        unit: sp.unit,
-        kind: sp.kind,
-        period: sp.period,
-        basis: sp.basis,
-        consensus: sp.consensus === null || sp.consensus === undefined ? "" : String(sp.consensus),
-        whisper: sp.whisper === null || sp.whisper === undefined ? "" : String(sp.whisper),
-      })),
+    // An unreadable stored value hydrates as ZERO rows (parseExtraMetrics is
+    // all-or-nothing), which used to look exactly like "this sheet has no extra
+    // metrics" — and the next save wrote NULL over it. Say so, and block the
+    // save until the desk decides (review I-1).
+    setHydrationErrors(match.extraMetricErrors ?? []);
+    setDiscardUnreadable(false);
+    const stored = (match.extraMetrics ?? []).map((sp) => ({
+      id: sp.id,
+      label: sp.label,
+      definition: sp.definition,
+      unit: sp.unit,
+      kind: sp.kind,
+      period: sp.period,
+      basis: sp.basis,
+      consensus: sp.consensus === null || sp.consensus === undefined ? "" : String(sp.consensus),
+      whisper: sp.whisper === null || sp.whisper === undefined ? "" : String(sp.whisper),
+    }));
+    // Rows the desk typed before the label matched are KEPT (review M-1) —
+    // dropping them threw away work with no notice. Stored ids win, so the
+    // R-F2 identity protocol is unchanged: an id already on the sheet keeps its
+    // stored definition rather than the half-typed one.
+    const storedIds = new Set(stored.map((r) => r.id));
+    const kept = extraRows.filter((r) => !storedIds.has(r.id));
+    setExtraRows([...stored, ...kept]);
+    setHydrationNote(
+      extraRows.length === 0
+        ? null
+        : `Loaded ${plural(stored.length, "stored metric")} for this sheet label` +
+          (kept.length > 0 ? `; ${plural(kept.length, "row")} you had typed kept below.` : "."),
     );
-  }, [form.source_label, existing]);
+  }, [form.source_label, existing, extraRows]);
 
   /**
    * The id is minted at add-row time and immutable after that (M-F8). A pasted
@@ -264,20 +373,37 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
    */
   function addExtraRow() {
     const pasted = reuseId.trim().toLowerCase();
-    const id = isUuidV4(pasted) ? pasted : crypto.randomUUID();
+    const reused = isUuidV4(pasted);
+    // A truncated or mistyped paste used to fail open: it minted a FRESH id, so
+    // the save compiled a new line instead of joining the one the desk meant.
+    // Still add the row — the click did something — but say which id it got
+    // (review M-2).
+    setExtraErrors(
+      pasted !== "" && !reused
+        ? [`"${pasted}" is not a full v4 uuid, so a new metric id was minted instead of reusing that one — paste the whole id (use "copy id" on the other sheet) to point both sheets at one metric.`]
+        : [],
+    );
+    const id = reused ? pasted : crypto.randomUUID();
     setReuseId("");
     setExtraRows((rows) => [...rows, { id, ...EMPTY_EXTRA_ROW }]);
   }
 
   async function copyId(id: string) {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
     try {
       await navigator.clipboard.writeText(id);
+      setCopyFailedId(null);
       setCopiedId(id);
+      // "copied" is an acknowledgement, not a label: without this it stuck for
+      // the life of the modal, so the next copy looked like it did nothing (M-4).
+      copyTimerRef.current = setTimeout(() => setCopiedId(null), 2000);
     } catch {
       // A browser that refuses clipboard access is not a failure worth a modal —
-      // the id is already on screen and selectable. Say so instead of nothing.
+      // the id is already on screen and selectable. Say so beside the button
+      // rather than in the parser's error list, where a browser problem reads
+      // as a data problem (review M-3).
       setCopiedId(null);
-      setExtraErrors([`Could not reach the clipboard — select the id (${id}) and copy it by hand.`]);
+      setCopyFailedId(id);
     }
   }
 
@@ -320,7 +446,19 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     e.preventDefault();
     setSaving(true);
     setError(null);
+    setSaveSummary(null);
     try {
+      // The stored extra metrics of the row this save overwrites could not be
+      // read, so the editor is showing none of them. Saving now would write
+      // NULL over the desk's own definitions (review I-1). Refuse until the
+      // desk explicitly discards them.
+      if (hydrationErrors.length > 0 && !discardUnreadable) {
+        setError(
+          "This sheet's stored extra metrics cannot be read, so none are loaded — saving now would erase them. " +
+            "Use “discard the unreadable metrics” above if you mean to replace them.",
+        );
+        return;
+      }
       const eps_consensus = form.eps_consensus.trim() ? parseLargeUSD(form.eps_consensus) : null;
       const eps_whisper = form.eps_whisper.trim() ? parseLargeUSD(form.eps_whisper) : null;
       const revenue_consensus_usd = form.revenue_consensus.trim()
@@ -360,13 +498,31 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
         }),
       });
       const data = (await res.json().catch(() => null)) as
-        | { success?: boolean; error?: string; id?: number }
+        | { success?: boolean; error?: string; id?: number; recompiled?: RecompileReport }
         | null;
       if (!res.ok || !data?.success) {
         setError(data?.error ?? `Server returned ${res.status}`);
         return;
       }
       router.refresh();
+      // The save is committed either way; what is left is telling the desk what
+      // it did to the live sheet (review I-2). A conflict means NO line compiles
+      // for that id, and a retirement means a line stopped being measured under
+      // its old definition — neither may close the modal in silence.
+      const recompiled = data.recompiled;
+      if (recompiled && needsAcknowledgement(recompiled)) {
+        setConflicts(recompiled.conflicts);
+        // The stored row now IS what the editor holds, so a re-open would
+        // hydrate the same rows; drop the stale "cannot be read" block.
+        setHydrationErrors([]);
+        setDiscardUnreadable(false);
+        setSaveSummary(
+          recompiled.conflicts.length > 0
+            ? `${describeRecompile(recompiled)} No line is compiled for ${plural(recompiled.conflicts.length, "metric id")} until every sheet agrees on it — see above.`
+            : describeRecompile(recompiled),
+        );
+        return;
+      }
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
@@ -485,11 +641,17 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     if (!confirm("Delete this bogey?")) return;
     const res = await apiFetch(`/api/earnings/bogeys?id=${id}`, { method: "DELETE" });
     const data = (await res.json().catch(() => null)) as
-      | { success?: boolean; deleted?: boolean; error?: string }
+      | { success?: boolean; deleted?: boolean; error?: string; recompiled?: RecompileReport }
       | null;
     if (!res.ok || !data?.success) {
       setError(data?.error ?? `Server returned ${res.status}`);
       return;
+    }
+    // Removing a sheet can retire a live line — the same silence I-2 named, on
+    // the delete road. The modal stays open here, so simply say it.
+    if (data.recompiled) {
+      setConflicts(data.recompiled.conflicts);
+      setSaveSummary(describeRecompile(data.recompiled));
     }
     if (!data.deleted) {
       // Someone else already removed it. Drop it from the list either way —
@@ -762,6 +924,36 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                   {" "}— no line is compiled for these until every sheet agrees.
                 </p>
               )}
+              {/* The stored value could not be read, so the editor below is
+                  EMPTY for a reason — say it, and refuse the save until the
+                  desk decides (review I-1). */}
+              {hydrationErrors.length > 0 && (
+                <div className="mt-2 rounded border border-down/40 bg-down/10 px-2 py-1.5 text-[12px] text-down">
+                  <p>
+                    This sheet&rsquo;s stored extra metrics could not be read, so none are loaded
+                    below. Saving would erase them.
+                  </p>
+                  <ul className="list-disc pl-4 mt-1">
+                    {hydrationErrors.map((e) => <li key={e}>{e}</li>)}
+                  </ul>
+                  {discardUnreadable ? (
+                    <p className="mt-1 text-ink-dim">
+                      The next save will replace them with whatever rows are below.
+                    </p>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setDiscardUnreadable(true)}
+                      className="relative mt-1 text-[11px] text-ink-dim hover:text-down border border-edge rounded px-2 py-0.5 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                    >
+                      discard the unreadable metrics
+                    </button>
+                  )}
+                </div>
+              )}
+              {hydrationNote && (
+                <p className="mt-2 text-[12px] text-ink-dim">{hydrationNote}</p>
+              )}
               {extraErrors.length > 0 && (
                 <ul className="mt-2 text-[12px] text-down list-disc pl-4">
                   {extraErrors.map((e) => <li key={e}>{e}</li>)}
@@ -786,6 +978,11 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                       >
                         {copiedId === row.id ? "copied" : "copy id"}
                       </button>
+                      {copyFailedId === row.id && (
+                        <span className="text-[11px] text-ink-dim">
+                          clipboard blocked — select the id and copy it by hand.
+                        </span>
+                      )}
                     </span>
                     <button
                       type="button"
@@ -855,6 +1052,11 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
             </div>
             {error && (
               <p className="text-[12px] text-down">{error}</p>
+            )}
+            {/* What the save did to the live sheet — the modal stays open when
+                there is something here, so it cannot be missed (review I-2). */}
+            {saveSummary && (
+              <p className="text-[12px] text-ink-dim">{saveSummary}</p>
             )}
             <div className="flex items-center justify-end gap-2 pt-1">
               <button
