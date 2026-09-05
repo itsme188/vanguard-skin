@@ -289,3 +289,138 @@ describe("the trigger tells a stream WHY it is running (Codex round 1 #7 / F-S2)
     expect(() => stop()).not.toThrow();
   });
 });
+
+describe("refresh() settles when the refetch LANDS, not when it is issued (R-F24)", () => {
+  it("does not resolve until onResult has been applied", async () => {
+    // Why this matters: every mutating control in LivePrintRow does
+    // `await onChanged()` and drops its busy state in the `finally`. If the
+    // promise resolved when the request was merely ISSUED, an accept button
+    // would re-arm while the row still showed the pre-mutation sheet.
+    const order: string[] = [];
+    const { impl, calls } = deferredFetch();
+    const c = createPollController({
+      streams: [stream({ onResult: (v) => order.push(`applied:${v}`) })],
+      fetchImpl: impl,
+    });
+    c.start();
+    await vi.advanceTimersByTimeAsync(0);
+    calls[0].resolve("first");
+    await vi.advanceTimersByTimeAsync(0);
+    order.length = 0; // the start run is not what is under test
+
+    const settled = c.refresh("status").then(() => order.push("settled"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toHaveLength(2); // issued, and still in flight
+    expect(order).toEqual([]); // ⇐ fire-and-forget would already read ["settled"]
+
+    calls[1].resolve("landed");
+    await vi.advanceTimersByTimeAsync(0);
+    await settled;
+    expect(order).toEqual(["applied:landed", "settled"]); // and in THAT order
+    c.stop();
+  });
+
+  it("RESOLVES (never rejects) when the run throws — a failed refetch is UI state", async () => {
+    const errors: unknown[] = [];
+    const c = createPollController({
+      streams: [
+        stream({
+          intervalMs: () => 1_000,
+          run: async () => {
+            throw new Error("boom");
+          },
+          onError: (e) => errors.push(e),
+        }),
+      ],
+      fetchImpl: (async () => new Response("{}")) as FetchImpl,
+    });
+    c.start();
+    await vi.advanceTimersByTimeAsync(0);
+    errors.length = 0;
+
+    let outcome = "pending";
+    await c.refresh("status").then(
+      () => (outcome = "resolved"),
+      () => (outcome = "rejected"),
+    );
+    expect(outcome).toBe("resolved");
+    expect((errors[0] as Error).message).toBe("boom"); // onError still saw it
+    c.stop();
+  });
+
+  it("RESOLVES even when the stream's own onError throws", async () => {
+    // The one path that can still reject `fire`: a throwing handler inside the
+    // catch. A click handler must not have to guard a stream's bug.
+    const c = createPollController({
+      streams: [
+        stream({
+          intervalMs: () => 1_000,
+          run: async () => {
+            throw new Error("boom");
+          },
+          onError: () => {
+            throw new Error("handler is broken too");
+          },
+        }),
+      ],
+      fetchImpl: (async () => new Response("{}")) as FetchImpl,
+    });
+    c.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    let outcome = "pending";
+    await c.refresh("status").then(
+      () => (outcome = "resolved"),
+      () => (outcome = "rejected"),
+    );
+    expect(outcome).toBe("resolved");
+    c.stop();
+  });
+
+  it("an unknown stream and a paused controller resolve immediately rather than hanging", async () => {
+    const { impl } = deferredFetch();
+    const c = createPollController({ streams: [stream()], fetchImpl: impl });
+    await expect(c.refresh("status")).resolves.toBeUndefined(); // not running yet
+    c.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(c.refresh("no-such-stream")).resolves.toBeUndefined();
+    c.pause();
+    await expect(c.refresh("status")).resolves.toBeUndefined();
+    c.stop();
+  });
+
+  it("refreshAll() resolves only once EVERY stream has settled", async () => {
+    const order: string[] = [];
+    const { impl, calls } = deferredFetch();
+    const c = createPollController({
+      streams: [
+        stream({ onResult: (v) => order.push(`status:${v}`) }),
+        stream({
+          name: "cockpit",
+          intervalMs: () => 60_000,
+          onResult: (v) => order.push(`cockpit:${v}`),
+        }),
+      ],
+      fetchImpl: impl,
+    });
+    c.start();
+    await vi.advanceTimersByTimeAsync(0);
+    calls.forEach((k) => k.resolve("x"));
+    await vi.advanceTimersByTimeAsync(0);
+    order.length = 0;
+    const before = calls.length;
+
+    const settled = c.refreshAll().then(() => order.push("settled"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toHaveLength(before + 2);
+
+    calls[before].resolve("a");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(order).toEqual(["status:a"]); // one landed; the other has not
+    calls[before + 1].resolve("b");
+    await vi.advanceTimersByTimeAsync(0);
+    await settled;
+    expect(order).toEqual(["status:a", "cockpit:b", "settled"]);
+    c.stop();
+  });
+});
