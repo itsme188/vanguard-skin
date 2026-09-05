@@ -28,7 +28,9 @@
  * the send service and (after slice F) a browser-bundled chip all need it, so
  * it must never drag a server dependency across a boundary.
  * `tests/repo/no-handrolled-email-states.test.ts` fails on any of these string
- * literals appearing anywhere else under `lib/**` or `app/**`.
+ * literals appearing anywhere else under `lib/**` or `app/api/**`
+ * (`app/dashboard/**` is exempt by design — R-E13 / contract §1 — because UI
+ * files carry these words as union members and display keys, never as SQL).
  */
 
 export const IN_PROGRESS = "in_progress";
@@ -78,6 +80,15 @@ export function sendStateFor(error: string | null): DeliveryStateWord {
   return "sent";
 }
 
+/**
+ * WHO attempted the send — not whether it arrived. `'sent-by-cloud'` is the
+ * only value that means the Worker fallback did it; everything else, INCLUDING
+ * `'delivery_unknown'`, answers `"local"`. That is true (this Mac did make the
+ * provider call) but misleading on its own, because an unknown row may never
+ * have been delivered at all. So every render site must carry the delivery
+ * state from `sendStateFor` ALONGSIDE this — see the `deliveryState` field on
+ * GET /api/earnings/email-content (E-S6).
+ */
 export function sentByFor(error: string | null): "local" | "cloud" {
   return error === SENT_BY_CLOUD ? "cloud" : "local";
 }

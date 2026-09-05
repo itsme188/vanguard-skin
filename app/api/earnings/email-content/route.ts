@@ -6,6 +6,7 @@ import {
   loadIntelView,
 } from "@/lib/digest/send-earnings-email";
 import { getEmailAudit } from "@/lib/queries/earnings-emails";
+import { sendStateFor, sentByFor } from "@/lib/earnings/email-states";
 import { withClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { parseDbTimestamp } from "@/lib/calendar/date-utils";
 import { repairCitationLineBreaks } from "@/lib/earnings/repair-citation-linebreaks";
@@ -23,12 +24,18 @@ export const dynamic = "force-dynamic";
  * even when the email itself was sent before enrichment landed. The AI
  * prose comes verbatim from earnings_emails.ai_output_md.
  *
- * getEmailAudit already filters out live 'in_progress' claim rows (a claim
- * hasn't delivered anything — see the tri-state note in
- * lib/digest/send-earnings-email.ts), so those 404 the same as a missing row.
- * 'sent-by-cloud' rows DO come back but have ai_output_md = NULL (no local
- * prose copy) — the `sentBy` field tells the viewer to explain that instead
- * of rendering a silently near-empty email.
+ * getEmailAudit already filters out LIVE CLAIM rows — both of them, the
+ * claimed-and-composing one and the provider-call-in-flight one (a claim
+ * hasn't delivered anything; see lib/earnings/email-states.ts) — so those 404
+ * the same as a missing row.
+ *
+ * `deliveryState` reports which of three things the caller is looking at:
+ * "sent" (delivered locally, or a legacy row the sweep left behind),
+ * "sent-by-cloud" (the Worker delivered it — ai_output_md is NULL, no local
+ * prose copy, so the viewer explains that instead of rendering a silently
+ * near-empty email), or "delivery-unknown" (we put a message on the wire and
+ * never learned the outcome — the prose IS here and IS shown, with the
+ * caveat). `sentBy` stays for its existing callers.
  */
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -109,7 +116,18 @@ export async function GET(request: Request) {
     eventDate: event.event_date,
     symbol,
     phase,
-    sentBy: audit.error === "sent-by-cloud" ? "cloud" : "local",
+    sentBy: sentByFor(audit.error),
+    // Slice E (R-E14 / E-S6): `sentBy` alone cannot express "we never learned",
+    // and it answers "local" for a delivery_unknown row — true (we made the
+    // call) but misleading on its own, so the delivery state ALWAYS travels
+    // with it and the viewer can show the caveat banner.
+    //
+    // E-S9: during a manual refire's `sending` window this route still returns
+    // the PREVIOUSLY DELIVERED body — a refire writes its new prose only at
+    // markEmailSent (M-E13), precisely so a failed refire cannot destroy the
+    // delivered copy. That is correct and intended; `deliveryState` is what
+    // tells the reader which body they are looking at.
+    deliveryState: sendStateFor(audit.error),
     fullHtml,
   });
 }
