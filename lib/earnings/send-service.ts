@@ -276,6 +276,52 @@ function undoMember(db: Database.Database, m: BatchMember): void {
  * are fail-open by architecture — see the recorded disagreement on Codex #6);
  * the DB flip is what actually blocks a local resend.
  */
+/**
+ * Run a seam without letting it break the send. Marker failures are fail-open
+ * by architecture ruling R-E6, and the cloud pre-check degrades to "unknown".
+ *
+ * The call goes INSIDE the try deliberately (review M-1): the older shape
+ * `Promise.resolve(seam(...)).catch(...)` evaluates `seam(...)` BEFORE
+ * `Promise.resolve` ever wraps it, so a seam that throws SYNCHRONOUSLY sails
+ * straight past that `.catch`. The three production markers are `async`, which
+ * turns a throw into a rejection and hides the hole; a non-async seam — a test
+ * double, or a later rewrite — would not.
+ */
+async function safeSeam<T>(what: string, run: () => T | Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    console.warn(`[send-service] seam ${what} failed (ignored, fail-open per R-E6):`, err);
+    return fallback;
+  }
+}
+
+/**
+ * The `sent_at` a delivery-unknown outcome reports, GUARDED (R-E-C10).
+ *
+ * One of the three call sites sits inside the post-accept catch — the handler
+ * whose entire job is "the provider accepted and something after that threw;
+ * never surface a 500" (R-E5 / spec §7). The realistic trigger for that catch
+ * is a SQLite fault out of `markEmailSent` (the suite injects SQLITE_BUSY), and
+ * the SAME fault can make this SELECT throw. Unguarded, that exception escapes
+ * the catch, the sweep's per-candidate backstop books `ok:false, status:500`,
+ * and the one thing R-E5 forbids happens anyway.
+ *
+ * No double-send can result either way (`bookUnknown` has already flipped the
+ * row and written the mac-sent marker, and the reaper self-heals), so this is
+ * reporting hygiene — but it is the last line that could still produce a
+ * post-accept 500. The fallback is `""`, exactly what the outcome already
+ * carries when the row cannot be found, so the shape never changes.
+ */
+function safeSentAt(db: Database.Database, m: BatchMember): string {
+  try {
+    return getSendRow(db, m.eventId, m.phase)?.sent_at ?? "";
+  } catch (err) {
+    console.warn(`[send-service] could not re-read sent_at for ${m.phase} ${m.eventId}:`, err);
+    return "";
+  }
+}
+
 async function bookUnknown(
   db: Database.Database,
   members: BatchMember[],
@@ -291,7 +337,7 @@ async function bookUnknown(
         err,
       );
     }
-    await Promise.resolve(markers.writeMacSent(m.phase, m.eventId)).catch(() => null);
+    await safeSeam("writeMacSent", () => markers.writeMacSent(m.phase, m.eventId), null);
   }
 }
 
@@ -384,7 +430,7 @@ export async function deliverClaimedBatch(
       return {
         outcome: DELIVERY_UNKNOWN,
         providerMessageId,
-        since: getSendRow(db, owned[0].eventId, owned[0].phase)?.sent_at ?? "",
+        since: safeSentAt(db, owned[0]),
         note,
         members: owned,
       };
@@ -419,13 +465,13 @@ export async function deliverClaimedBatch(
       return {
         outcome: DELIVERY_UNKNOWN,
         providerMessageId,
-        since: getSendRow(db, owned[0].eventId, owned[0].phase)?.sent_at ?? "",
+        since: safeSentAt(db, owned[0]),
         note: "the stale-send reaper flipped this row while the provider was answering",
         members: owned,
       };
     }
     for (const m of delivered) {
-      await Promise.resolve(markers.writeMacSent(m.phase, m.eventId)).catch(() => null);
+      await safeSeam("writeMacSent", () => markers.writeMacSent(m.phase, m.eventId), null);
     }
     return { outcome: "sent", providerMessageId, providerResponse: info.response, delivered };
   } catch (err) {
@@ -434,7 +480,7 @@ export async function deliverClaimedBatch(
     return {
       outcome: DELIVERY_UNKNOWN,
       providerMessageId,
-      since: getSendRow(db, owned[0].eventId, owned[0].phase)?.sent_at ?? "",
+      since: safeSentAt(db, owned[0]),
       note,
       members: owned,
     };
@@ -466,7 +512,7 @@ export async function sendEarningsCandidate(
 
   // (1b) cloud pre-check — automatic modes only (R-E6)
   if (opts.mode !== "manual") {
-    const marker = await Promise.resolve(checkCloud(phase, eventId)).catch(() => null);
+    const marker = await safeSeam("checkCloudSent", () => checkCloud(phase, eventId), null);
     if (marker?.sentBy != null) {
       // Only a CLOUD send needs a local audit row; sentBy "mac" means a local
       // row (or a permanent skip) already exists — reporting is enough. The
@@ -493,7 +539,7 @@ export async function sendEarningsCandidate(
       // A row the reaper (or an earlier attempt) already booked terminal.
       // Claim the phase for the cloud too, so the fallback never resends it
       // (R-E4 — the reaper itself writes no KV; this is where that happens).
-      await Promise.resolve(markers.writeMacSent(phase, eventId)).catch(() => null);
+      await safeSeam("writeMacSent", () => markers.writeMacSent(phase, eventId), null);
       return {
         outcome: DELIVERY_UNKNOWN,
         providerMessageId: row?.provider_message_id ?? null,
@@ -510,12 +556,12 @@ export async function sendEarningsCandidate(
   const clearOnce = async (): Promise<void> => {
     if (cleared) return;
     cleared = true;
-    await Promise.resolve(markers.clearRunning(phase, eventId)).catch(() => null);
+    await safeSeam("clearRunning", () => markers.clearRunning(phase, eventId), null);
   };
 
   try {
     // (3) running marker — awaited
-    await Promise.resolve(markers.setRunning(phase, eventId)).catch(() => null);
+    await safeSeam("setRunning", () => markers.setRunning(phase, eventId), null);
 
     // (4) compose
     let composed: ComposedSend;
