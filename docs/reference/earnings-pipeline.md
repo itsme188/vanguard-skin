@@ -270,6 +270,14 @@ viewer once its window closed (observed 7/14).
 Read-only on the KV side **by design**: the marker doubles as the Worker's own send dedup, so the Mac
 must **NOT** delete it. The audit row's `INSERT .. DO NOTHING` is the idempotency; a 30h TTL cleans KV.
 
+**A `mac` marker with no local row now answers `already_sent` (slice E, 2026-09-04).** The canonical
+send path's cloud pre-check (`sendEarningsCandidate`'s call to `checkEarningsCloudMarker`) short-
+circuits on ANY marker `sentBy` value, where the old sweep acted only on `"cloud"` — so a `mac`
+marker that outlives a database restore inside its own 30-hour TTL, with the local `earnings_emails`
+row it should have been written alongside now gone, reports `already_sent` rather than sending a
+second time; this is deliberate (re-sending would be the worse error), and the service logs a
+`console.warn` naming the marker as the reason.
+
 ### `earnings_emails.error` is a FIVE-state column, NOT a failure flag
 
 Single-sourced in `lib/earnings/email-states.ts` (slice E, migration 092). Never write
