@@ -184,6 +184,14 @@ export function getLatestDailyBar(
  * recent bar date, not calendar today — otherwise a 3-day weekend drops us
  * out of range. Returns null when fewer than 10 bars exist (arbitrary floor
  * — below that, "range" is just noise).
+ *
+ * Corrupt-bar consumer guard: some stored bars have real open/high but a
+ * zero-priced low/close (a TWS data defect, not a genuine price). A
+ * zero-priced bar is never a real 52-week extreme, so `high`/`low` only
+ * aggregate over positive values (`CASE WHEN ... > 0`), and the `n >= 10`
+ * floor only counts bars with a positive low — a security with a pile of
+ * zero-low bars and few real ones should read as thin history, not padded
+ * out by corrupt rows.
  */
 export function get52WeekRange(
   db: Database.Database,
@@ -192,11 +200,11 @@ export function get52WeekRange(
   const row = db
     .prepare(
       `SELECT
-        MAX(high) AS high,
-        MIN(low) AS low,
+        MAX(CASE WHEN high > 0 THEN high END) AS high,
+        MIN(CASE WHEN low > 0 THEN low END) AS low,
         MIN(bar_date) AS startDate,
         MAX(bar_date) AS endDate,
-        COUNT(*) AS n
+        SUM(CASE WHEN low > 0 THEN 1 ELSE 0 END) AS n
        FROM ohlcv_bars
        WHERE security_id = ?
          AND bar_size = '1 day'
