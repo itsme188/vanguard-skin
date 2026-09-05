@@ -36,6 +36,18 @@ describe("Today keeps only the blocks the spec keeps (§2 ruling, §4.6)", () =>
     // The per-name list is gone: no map over holdings and no per-row security link.
     expect(today).not.toMatch(/holdings\.map\(/);
   });
+  it("leaves the notes FAB room below the last line, now that Today ends this short", () => {
+    // NotesAmbient's button is `fixed bottom-6 right-6` + h-12, so on a
+    // fine-pointer desktop it owns the bottom-right 24–72px band of the
+    // viewport. Folding the per-name IBKR list into one line made Today short
+    // enough that its right-aligned `Accounts →` link lands inside that band at
+    // max scroll — 5 of 11 sample points across the link hit the FAB at 1280
+    // and 1440 with the chat rail open (sandbox E2E 2026-09-04). The shell's
+    // `md:pb-6` (24px) plus the section's own `p-4` (16px) is 40px, short of 72.
+    const sectionAt = today.indexOf("<section", today.indexOf("IBKR today — one line"));
+    const openTag = today.slice(sectionAt, today.indexOf(">", sectionAt));
+    expect(openTag).toMatch(/md:mb-(1[6-9]|2\d)\b/);
+  });
   it("keeps force-dynamic and renders an EmptySection-equivalent rather than nothing when there is no IBKR account", () => {
     expect(today).toMatch(/export const dynamic = "force-dynamic"/);
     expect(today).toMatch(/No IBKR account/);

@@ -563,4 +563,25 @@ describe("EarningsRowChips reads the live cockpit row from context", () => {
     // arm / skip / generate controls below it are untouched.
     expect(src).toMatch(/live\?\.cockpitByEvent\[eventId\] \?\? null/);
   });
+
+  it("keeps the cockpit chip lane inside its grid cell instead of spilling over Δ and Bogeys", () => {
+    // Sandbox E2E 2026-09-04: the lane was `flex flex-col items-end gap-0.5
+    // shrink-0`, which sizes to max-content (~267px) inside a 160px Email
+    // column. A `justify-end` flex line lays an oversized item out from the
+    // RIGHT edge leftwards, so the chips painted across the Δ and Bogeys
+    // columns — 4 of the 5 rows carrying a Δ, at 1440 AND at 1920. Same class
+    // of defect as the 2026-07-27 "+ BOG silently skipped the recap" bug the
+    // root's own comment records, and the same fix: let it shrink so its
+    // flex-wrap engages.
+    const lane = src.slice(src.indexOf("{cockpitRow && ("));
+    const laneOpen = lane.slice(lane.indexOf("<span className=\"flex flex-col"), lane.indexOf("<StageChipStrip"));
+    expect(laneOpen).not.toMatch(/shrink-0/);
+    expect(laneOpen).toMatch(/min-w-0/);
+    // The row holding the chips + countdown must wrap too — a non-wrapping
+    // inline-flex there just moves the overflow one level down.
+    expect(laneOpen).toMatch(/flex-wrap/);
+    // The two groups BELOW the lane keep their shrink-0: wrapping is meant to
+    // happen between groups, never mid-group.
+    expect(src).toMatch(/inline-flex items-center gap-1\.5 shrink-0/);
+  });
 });
