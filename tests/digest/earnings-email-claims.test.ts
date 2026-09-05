@@ -159,10 +159,12 @@ describe("earnings email claims and delivery lifecycle", () => {
       ).toBe("tok-live");
     });
 
-    it("manual mode refires a completed row: a token, the prior state and the prior sent_at", () => {
+    it("manual mode refires a completed row: a token, the prior state, sent_at and BOTH provider columns", () => {
       db.prepare(
-        `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_output_md, error)
-         VALUES (?, 'preview', 'x@y.com', '2026-07-05 12:00:00', '# sent', NULL)`,
+        `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_output_md, error,
+                                      provider_message_id, provider_response)
+         VALUES (?, 'preview', 'x@y.com', '2026-07-05 12:00:00', '# sent', NULL,
+                 '<orig@example.invalid>', '250 2.0.0 OK orig')`,
       ).run(eventId);
       const b = claimEarningsEmailSlot(db, eventId, "preview", "z@y.com", { mode: "manual" });
       expect(b.claimed).toBe(true);
@@ -171,6 +173,10 @@ describe("earnings email claims and delivery lifecycle", () => {
       expect(b.prior).toBe("sent");
       expect(b.priorError).toBeNull();
       expect(b.priorSentAt).toBe("2026-07-05 12:00:00");
+      // I1: the delivered send's provider evidence travels with the claim, so a
+      // rejected refire can put it back. getSendRow already reads both columns.
+      expect(b.priorProviderMessageId).toBe("<orig@example.invalid>");
+      expect(b.priorProviderResponse).toBe("250 2.0.0 OK orig");
       // Nothing is written until markEmailSending.
       expect(
         db.prepare(`SELECT error, claim_token FROM earnings_emails WHERE event_id = ?`).get(eventId),
@@ -386,9 +392,17 @@ describe("earnings email claims and delivery lifecycle", () => {
     });
 
     it("a definitively-rejected refire restores the delivered row exactly as it was", () => {
+      // "Exactly as it was" includes the PROVIDER EVIDENCE (whole-branch review
+      // I1). markEmailSending's refire branch overwrites provider_message_id
+      // with the new attempt's id and blanks provider_response; before the fix
+      // the restore left BOTH NULL, so a refire the provider rejected outright
+      // destroyed the original send's Message-ID and relay reply line — the one
+      // handle the desk has for reconciling that send by hand (R-E10).
       db.prepare(
-        `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error)
-         VALUES (?, 'preview', 'x@y.com', '2026-07-05 12:00:00', 'old-hash', '# OLD', NULL)`,
+        `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error,
+                                      provider_message_id, provider_response)
+         VALUES (?, 'preview', 'x@y.com', '2026-07-05 12:00:00', 'old-hash', '# OLD', NULL,
+                 '<orig@example.invalid>', '250 2.0.0 OK orig')`,
       ).run(eventId);
       const c = claimEarningsEmailSlot(db, eventId, "preview", "z@y.com", { mode: "manual" });
       markEmailSending(db, eventId, "preview", c.token!, {
@@ -396,17 +410,33 @@ describe("earnings email claims and delivery lifecycle", () => {
         recipient: "z@y.com",
         aiInputHash: "h",
         aiOutputMd: "# NEW",
-        providerMessageId: "<m@d>",
+        providerMessageId: "<refire@example.invalid>",
         priorError: c.priorError,
         priorSentAt: c.priorSentAt,
       });
+      // Precondition: the in-flight row really has lost both, so the restore
+      // below is the only thing that can bring them back.
       expect(
-        restorePriorDelivered(db, eventId, "preview", c.token!, c.priorError!, c.priorSentAt!),
+        db
+          .prepare(
+            `SELECT provider_message_id, provider_response FROM earnings_emails WHERE event_id = ?`,
+          )
+          .get(eventId),
+      ).toEqual({ provider_message_id: "<refire@example.invalid>", provider_response: null });
+
+      expect(
+        restorePriorDelivered(db, eventId, "preview", c.token!, {
+          priorError: c.priorError ?? null,
+          priorSentAt: c.priorSentAt ?? "",
+          priorProviderMessageId: c.priorProviderMessageId ?? null,
+          priorProviderResponse: c.priorProviderResponse ?? null,
+        }),
       ).toBe(true);
       expect(
         db
           .prepare(
-            `SELECT error, sent_at, ai_output_md, claim_token FROM earnings_emails WHERE event_id = ?`,
+            `SELECT error, sent_at, ai_output_md, claim_token, provider_message_id, provider_response
+               FROM earnings_emails WHERE event_id = ?`,
           )
           .get(eventId),
       ).toEqual({
@@ -414,6 +444,51 @@ describe("earnings email claims and delivery lifecycle", () => {
         sent_at: "2026-07-05 12:00:00",
         ai_output_md: "# OLD",
         claim_token: null,
+        provider_message_id: "<orig@example.invalid>",
+        provider_response: "250 2.0.0 OK orig",
+      });
+    });
+
+    it("restores a delivered row that never had provider evidence to NULL, not to the refire's id", () => {
+      // The legacy shape: a row delivered before R-E10 stored either column.
+      // The restore must still end at NULL/NULL — never leave the rejected
+      // refire's own Message-ID behind as if that send had landed.
+      db.prepare(
+        `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error)
+         VALUES (?, 'preview', 'x@y.com', '2026-07-05 12:00:00', 'old-hash', '# OLD', NULL)`,
+      ).run(eventId);
+      const c = claimEarningsEmailSlot(db, eventId, "preview", "z@y.com", { mode: "manual" });
+      expect(c.priorProviderMessageId).toBeNull();
+      expect(c.priorProviderResponse).toBeNull();
+      markEmailSending(db, eventId, "preview", c.token!, {
+        mode: "refire",
+        recipient: "z@y.com",
+        aiInputHash: "h",
+        aiOutputMd: "# NEW",
+        providerMessageId: "<refire@example.invalid>",
+        priorError: c.priorError,
+        priorSentAt: c.priorSentAt,
+      });
+      expect(
+        restorePriorDelivered(db, eventId, "preview", c.token!, {
+          priorError: c.priorError ?? null,
+          priorSentAt: c.priorSentAt ?? "",
+          priorProviderMessageId: c.priorProviderMessageId ?? null,
+          priorProviderResponse: c.priorProviderResponse ?? null,
+        }),
+      ).toBe(true);
+      expect(
+        db
+          .prepare(
+            `SELECT error, sent_at, provider_message_id, provider_response
+               FROM earnings_emails WHERE event_id = ?`,
+          )
+          .get(eventId),
+      ).toEqual({
+        error: null,
+        sent_at: "2026-07-05 12:00:00",
+        provider_message_id: null,
+        provider_response: null,
       });
     });
 

@@ -419,9 +419,15 @@ describe("delivery_unknown", () => {
   });
 
   it("a definitive rejection of a manual REFIRE restores the delivered row untouched", async () => {
+    // "Untouched" includes the PROVIDER EVIDENCE (whole-branch review I1): the
+    // original send's Message-ID and the relay's own reply line are the desk's
+    // only handle for reconciling that send by hand (R-E10), and the refire
+    // overwrites both before the wire. Seed them, and pin them byte for byte.
     db.prepare(
-      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error)
-       VALUES (?, 'recap', 'me@example.com', '2026-09-10 20:30:00', 'old', '# OLD', NULL)`,
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error,
+                                    provider_message_id, provider_response)
+       VALUES (?, 'recap', 'me@example.com', '2026-09-10 20:30:00', 'old', '# OLD', NULL,
+               '<orig@example.invalid>', '250 2.0.0 OK orig')`,
     ).run(eventId);
     const res = await sendEarningsCandidate(db, CAND(), {
       mode: "manual",
@@ -436,13 +442,18 @@ describe("delivery_unknown", () => {
     expect(res).toMatchObject({ outcome: "failed" });
     expect(
       db
-        .prepare(`SELECT error, sent_at, ai_output_md, recipient FROM earnings_emails WHERE event_id = ?`)
+        .prepare(
+          `SELECT error, sent_at, ai_output_md, recipient, provider_message_id, provider_response
+             FROM earnings_emails WHERE event_id = ?`,
+        )
         .get(eventId),
     ).toEqual({
       error: null,
       sent_at: "2026-09-10 20:30:00",
       ai_output_md: "# OLD",
       recipient: "me@example.com",
+      provider_message_id: "<orig@example.invalid>",
+      provider_response: "250 2.0.0 OK orig",
     });
   });
 });
@@ -622,6 +633,65 @@ describe("the cloud pre-check lives in the service (R-E6)", () => {
         error: string;
       }).error,
     ).toBe("sent-by-cloud");
+  });
+
+  it("a mac marker with NO local row answers already_sent and WARNS that the row was lost", async () => {
+    // The old sweep acted only on sentBy === "cloud"; this arm short-circuits on
+    // ANY sentBy, so a "mac" marker with no local audit row now answers
+    // already_sent too (review M1). Reachable only after the row was LOST — a
+    // database restore inside the marker's 30-hour TTL — because the Mac writes
+    // row and marker together. Keep the behaviour (the Mac did handle the
+    // phase; a second copy is worse) but make the reason visible: already_sent
+    // carries no `note`, so the log is the only place it can be said.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const compose = vi.fn();
+    const sendEmail = vi.fn();
+    const recordCloudSent = vi.fn();
+    const res = await sendEarningsCandidate(db, CAND(), {
+      mode: "sweep",
+      recipient: RECIPIENT,
+      seams: {
+        compose,
+        sendEmail,
+        recordCloudSent,
+        checkCloudMarker: async () => ({ sentBy: "mac" as const }),
+      },
+    });
+    expect(res).toMatchObject({ outcome: "already_sent", sentAt: "", sentBy: "local" });
+    expect(compose).not.toHaveBeenCalled();
+    expect(sendEmail).not.toHaveBeenCalled();
+    // A mac marker is NOT a cloud send — no sent-by-cloud row is invented.
+    expect(recordCloudSent).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT 1 FROM earnings_emails WHERE event_id = ?`).get(eventId)).toBeUndefined();
+    const warned = warn.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(warned).toContain("mac-sent KV marker");
+    expect(warned).toContain("NO local");
+    expect(warned).toMatch(/lost/i);
+    warn.mockRestore();
+  });
+
+  it("a mac marker WITH a local row is silent — nothing was lost", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_output_md, error)
+       VALUES (?, 'recap', 'me@example.com', '2026-09-10 20:30:00', '# OLD', NULL)`,
+    ).run(eventId);
+    const res = await sendEarningsCandidate(db, CAND(), {
+      mode: "sweep",
+      recipient: RECIPIENT,
+      seams: {
+        compose: vi.fn(),
+        sendEmail: vi.fn(),
+        checkCloudMarker: async () => ({ sentBy: "mac" as const }),
+      },
+    });
+    expect(res).toMatchObject({
+      outcome: "already_sent",
+      sentAt: "2026-09-10 20:30:00",
+      sentBy: "local",
+    });
+    expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).not.toContain("mac-sent KV marker");
+    warn.mockRestore();
   });
 
   it("manual mode never consults the cloud marker — a refire is an explicit second copy", async () => {
@@ -915,6 +985,75 @@ describe("deliverClaimedBatch (R-E9)", () => {
     expect(res).toMatchObject({ outcome: "failed" });
     expect(db.prepare(`SELECT COUNT(*) c FROM earnings_emails`).get()).toEqual({ c: 0 });
     expect(markers.writeMacSent).not.toHaveBeenCalled();
+  });
+
+  it("a definitive rejection RESTORES a refire member (all four columns) while releasing a fresh one", async () => {
+    // undoMember's two arms in one batch: the fresh member's row is DELETED (that
+    // send never happened), the refire member's DELIVERED row is put back —
+    // error, sent_at and BOTH provider columns (review I1).
+    const fresh = seedEvent(db, "k2");
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error,
+                                    provider_message_id, provider_response)
+       VALUES (?, 'recap', 'me@example.com', '2026-09-10 20:30:00', 'old', '# OLD', NULL,
+               '<orig@example.invalid>', '250 2.0.0 OK orig')`,
+    ).run(eventId);
+    const refire = claimEarningsEmailSlot(db, eventId, "recap", RECIPIENT, { mode: "manual" });
+    expect(refire.mode).toBe("refire");
+    const freshClaim = claimEarningsEmailSlot(db, fresh, "recap", RECIPIENT);
+    const { markers } = markerSpies();
+    const res = await deliverClaimedBatch(
+      db,
+      {
+        members: [
+          {
+            eventId,
+            phase: "recap",
+            token: refire.token!,
+            mode: "refire",
+            priorError: refire.priorError,
+            priorSentAt: refire.priorSentAt,
+            priorProviderMessageId: refire.priorProviderMessageId,
+            priorProviderResponse: refire.priorProviderResponse,
+          },
+          { eventId: fresh, phase: "recap", token: freshClaim.token!, mode: "fresh" },
+        ],
+        recipient: RECIPIENT,
+        subject: "s",
+        html: "<p>h</p>",
+        aiInputHash: "new",
+        aiOutputMd: "# NEW",
+      },
+      {
+        sendEmail: async () => {
+          throw Object.assign(new Error("Invalid recipient"), {
+            code: "EENVELOPE",
+            command: "RCPT TO",
+          });
+        },
+        markers,
+      },
+    );
+    expect(res).toMatchObject({ outcome: "failed" });
+    expect(markers.writeMacSent).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT 1 FROM earnings_emails WHERE event_id = ?`).get(fresh)).toBeUndefined();
+    expect(
+      db
+        .prepare(
+          `SELECT error, sent_at, ai_output_md, recipient, claim_token,
+                  provider_message_id, provider_response
+             FROM earnings_emails WHERE event_id = ?`,
+        )
+        .get(eventId),
+    ).toEqual({
+      error: null,
+      sent_at: "2026-09-10 20:30:00",
+      ai_output_md: "# OLD",
+      recipient: "me@example.com",
+      claim_token: null,
+      provider_message_id: "<orig@example.invalid>",
+      provider_response: "250 2.0.0 OK orig",
+    });
   });
 
   it("a member whose row moved is dropped, not fatal; zero survivors refuses before the wire", async () => {

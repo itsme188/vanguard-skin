@@ -81,6 +81,15 @@ import { recordCloudSentAudit } from "@/lib/mutations/earnings-emails";
  * next to SENDING_STALE_MINUTES (the reaper's threshold has to sit beside the
  * deadline it must never beat, and the reverse import would be a cycle — M-E5)
  * and re-exported here so every consumer reads it from the service.
+ *
+ * The relationship between the two is PINNED by a static test —
+ * tests/digest/earnings-email-claims.test.ts, "the stale threshold clears the
+ * send deadline with margin (static, not behavioural)", which asserts
+ * SENDING_STALE_MINUTES * 60_000 >= SEND_TIMEOUT_MS + 2 * 60_000. Named here so
+ * the next reader who wants to move either number finds the pin without
+ * grepping (review M3). tests/earnings/send-service.test.ts ("the deadline is
+ * the one declared next to the reaper's threshold") pins the value as read
+ * through THIS re-export, so a divergent re-export fails there too.
  */
 export { SEND_TIMEOUT_MS } from "@/lib/digest/send-earnings-email";
 
@@ -157,6 +166,13 @@ export interface BatchMember {
   /** Refire only — the row identity the claim saw, for the CAS and the restore. */
   priorError?: string | null;
   priorSentAt?: string;
+  /**
+   * Refire only — the delivered send's provider evidence, carried so a
+   * definitive rejection restores it (review I1). A FRESH member has none:
+   * its row is deleted, not restored.
+   */
+  priorProviderMessageId?: string | null;
+  priorProviderResponse?: string | null;
 }
 
 export interface DeliverBatchInput {
@@ -254,10 +270,25 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Put a claimed member back the way the claim found it. */
+/**
+ * Put a claimed member back the way the claim found it.
+ *
+ * A REFIRE is restored — its row is a DELIVERED email that this attempt
+ * borrowed — and the restore covers all four columns the refire moved,
+ * `provider_message_id` and `provider_response` included (review I1): those two
+ * are the delivered send's reconciliation handle (R-E10) and blanking them on a
+ * failed refire is unrecoverable. A FRESH member is DELETED instead: that send
+ * never happened, and the row would otherwise hide its event from
+ * findEmailCandidates forever.
+ */
 function undoMember(db: Database.Database, m: BatchMember): void {
   if (m.mode === "refire") {
-    restorePriorDelivered(db, m.eventId, m.phase, m.token, m.priorError ?? null, m.priorSentAt ?? "");
+    restorePriorDelivered(db, m.eventId, m.phase, m.token, {
+      priorError: m.priorError ?? null,
+      priorSentAt: m.priorSentAt ?? "",
+      priorProviderMessageId: m.priorProviderMessageId ?? null,
+      priorProviderResponse: m.priorProviderResponse ?? null,
+    });
   } else {
     releaseEarningsEmailClaim(db, m.eventId, m.phase, m.token);
   }
@@ -520,6 +551,23 @@ export async function sendEarningsCandidate(
       // is a DO NOTHING upsert, so an existing local row always wins.
       if (marker.sentBy === "cloud") recordCloud(db, eventId, phase);
       const row = getSendRow(db, eventId, phase);
+      if (marker.sentBy === "mac" && row == null) {
+        // The old sweep only short-circuited on a CLOUD marker; this arm short-
+        // circuits on ANY sentBy, so a "mac" marker with no local audit row now
+        // answers already_sent as well (review M1). That combination is only
+        // reachable after the audit row was LOST — a database restore inside the
+        // marker's 30-hour TTL — because the Mac writes the row and the marker
+        // together. The behaviour is deliberate: the Mac really did handle this
+        // phase, and a second copy is the worse error. But `already_sent` has no
+        // `note` field to explain itself, so say it here: this is a lost row,
+        // not a send being suppressed by mistake.
+        console.warn(
+          `[send-service] ${phase} ${eventId}: a mac-sent KV marker exists but there is NO local ` +
+            `audit row — reporting already_sent without sending. The Mac writes row and marker ` +
+            `together, so the row was lost (a database restore inside the marker's TTL), not ` +
+            `never written. Check the mailbox or the Resend log if the email is actually missing.`,
+        );
+      }
       return {
         outcome: "already_sent",
         sentAt: row?.sent_at ?? "",
@@ -588,6 +636,8 @@ export async function sendEarningsCandidate(
         mode: claimMode,
         priorError: claim.priorError,
         priorSentAt: claim.priorSentAt,
+        priorProviderMessageId: claim.priorProviderMessageId,
+        priorProviderResponse: claim.priorProviderResponse,
       });
       if (err instanceof EarningsEmailError) {
         return err.code === "not_ready"
@@ -609,6 +659,8 @@ export async function sendEarningsCandidate(
             mode: claimMode,
             priorError: claim.priorError,
             priorSentAt: claim.priorSentAt,
+            priorProviderMessageId: claim.priorProviderMessageId,
+            priorProviderResponse: claim.priorProviderResponse,
           },
         ],
         recipient,
@@ -699,7 +751,14 @@ async function sendManual(
         409,
       );
     case "already_sent":
-      // Unreachable in manual mode (it always claims) — defensive.
+      // UNREACHABLE in manual mode, for two independent reasons, and the throw
+      // is defensive only (review M4). (1) The cloud pre-check (1b) is skipped
+      // entirely when mode === "manual" (ruling R-E6: a human pressing refire is
+      // asking for a second copy on purpose), so the marker arm that returns
+      // already_sent never runs. (2) claimEarningsEmailSlot in manual mode
+      // REFIRES a completed row rather than refusing it, so the claim arm that
+      // returns already_sent never runs either. If this ever fires, one of those
+      // two invariants broke — do NOT "fix" it into a resend; fix the invariant.
       throw new EarningsEmailError(`Event ${eventId} ${phase} was already sent at ${res.sentAt}.`, 409);
   }
 }
