@@ -52,10 +52,22 @@ export interface PollController {
   pause(): void;
   /** One immediate run per stream, then the timers restart. Idempotent. */
   resume(): void;
-  /** Fire one stream now, out of band (the onChanged path). */
-  refresh(name: string): void;
-  /** Fire every stream now. */
-  refreshAll(): void;
+  /** Fire one stream now, out of band (the onChanged path).
+   *
+   *  Resolves when that run has SETTLED — its `onResult` applied, or it was
+   *  dropped as stale, aborted, or errored (R-F24). Every mutating control in
+   *  `LivePrintRow` does `await onChanged()` and then drops its busy state; if
+   *  this resolved when the request was merely ISSUED, an accept button would
+   *  re-arm while the row still showed the pre-mutation sheet, on the one
+   *  surface where the desk accepts machine-read numbers against a clock.
+   *
+   *  NEVER rejects. A failed refetch is a UI state — `onError` has already seen
+   *  it — not an exception for a click handler to swallow. Callers that ignore
+   *  the promise are unaffected; returning one is purely additive. */
+  refresh(name: string): Promise<void>;
+  /** Fire every stream now. Resolves once ALL of them have settled; like
+   *  `refresh`, never rejects. */
+  refreshAll(): Promise<void>;
   stop(): void;
   /** Test seam: the generation last ISSUED for a stream. */
   generationOf(name: string): number;
@@ -97,7 +109,7 @@ export function createPollController(opts: {
     if (!running) return;
     s.timer = setT(() => {
       s.timer = null;
-      void fire(s, "timer");
+      void fireSettled(s, "timer");
     }, s.spec.intervalMs());
   }
 
@@ -124,6 +136,20 @@ export function createPollController(opts: {
     }
   }
 
+  /** `fire` with the caller-facing contract of R-F24: settles when the run is
+   *  done, and never rejects. `fire` already routes a failed RUN to `onError`,
+   *  so the only way its promise rejects is a stream's own `onError` or
+   *  `intervalMs` throwing — a bug in the stream, and still not something an
+   *  awaiting click handler should have to guard.
+   *
+   *  Every internal fire (`start` / `resume` / the timer) goes through it too:
+   *  those discard the promise with `void`, so without the catch that same
+   *  stream bug lands as an unhandled rejection in the browser console
+   *  instead of anywhere a reader would look. */
+  function fireSettled(s: StreamState, trigger: StreamTrigger): Promise<void> {
+    return fire(s, trigger).catch(() => undefined);
+  }
+
   // F-S9: `pause` is captured as a closure so `stop()` never reaches for
   // `this` — a destructured `const { stop } = controller` would otherwise
   // throw at the call site rather than at the mistake.
@@ -140,21 +166,28 @@ export function createPollController(opts: {
     start() {
       if (running) return;
       running = true;
-      for (const s of states.values()) void fire(s, "start");
+      for (const s of states.values()) void fireSettled(s, "start");
     },
     pause,
     resume() {
       if (running) return;
       running = true;
-      for (const s of states.values()) void fire(s, "resume");
+      for (const s of states.values()) void fireSettled(s, "resume");
     },
     refresh(name: string) {
       const s = states.get(name);
-      if (s && running) void fire(s, "refresh");
+      // An unknown stream or a paused controller has nothing to wait for, so
+      // the caller's `await` falls through immediately rather than hanging.
+      if (!s || !running) return Promise.resolve();
+      return fireSettled(s, "refresh");
     },
     refreshAll() {
-      if (!running) return;
-      for (const s of states.values()) void fire(s, "refresh");
+      if (!running) return Promise.resolve();
+      // In parallel: the streams are independent requests and whoever awaits
+      // this is waiting on the slowest, not on the sum.
+      return Promise.all([...states.values()].map((s) => fireSettled(s, "refresh"))).then(
+        () => undefined,
+      );
     },
     stop() {
       pause();

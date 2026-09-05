@@ -149,6 +149,16 @@ describe("EarningsHubLive source", () => {
     expect(src).toMatch(/earnings-data-changed/);
   });
 
+  it("onChanged AWAITS both refreshes, in parallel (R-F24)", () => {
+    // Children drop their busy state in the `finally` after `await onChanged()`.
+    // Resolving when the requests were merely ISSUED re-arms an accept button
+    // while the row still shows the pre-mutation sheet. Parallel, not serial:
+    // two independent requests, and the desk waits on the slower one.
+    expect(src).toMatch(
+      /await Promise\.all\(\[controller\.refresh\("status"\), controller\.refresh\("cockpit"\)\]\)/,
+    );
+  });
+
   it("uses the shared controller rather than its own timers", () => {
     expect(src).toMatch(/createPollController/);
     expect(src).not.toMatch(/setInterval\(/);

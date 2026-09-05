@@ -270,10 +270,20 @@ export default function EarningsHubLive({
 
   /** Every child mutation lands here: one immediate status read and one
    *  immediate cockpit GET, so the sheet and the chips agree without waiting
-   *  out a poll interval. */
+   *  out a poll interval.
+   *
+   *  It AWAITS both (R-F24). Children do `await onChanged()` inside a `try` and
+   *  drop their busy state in the `finally`, so resolving when the requests were
+   *  merely ISSUED would re-arm an accept button while the row still showed the
+   *  pre-mutation sheet — a control that looks ready before its effect is
+   *  visible is what invites the second click. In parallel, not serially: two
+   *  independent requests, and the desk is waiting on the slower one, not on
+   *  their sum. `PollController.refresh` never rejects, so no `catch` belongs
+   *  here. */
   const onChanged = useCallback(async () => {
-    controllerRef.current?.refresh("status");
-    controllerRef.current?.refresh("cockpit");
+    const controller = controllerRef.current;
+    if (!controller) return;
+    await Promise.all([controller.refresh("status"), controller.refresh("cockpit")]);
   }, []);
 
   // The same custom-DOM-event idiom EarningsRowChips already dispatches on a
