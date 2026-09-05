@@ -29,6 +29,12 @@ import type Database from "better-sqlite3";
 // merge → registry-bootstrap → (slice handlers) → merge must only be
 // traversed at call time.
 import { bootstrapEarningsRegistries, __isBootstrapSuppressedForTests } from "./registry-bootstrap";
+import {
+  DELIVERY_UNKNOWN,
+  isDeliveredStrict,
+  isLiveClaim,
+  notLiveClaimSql,
+} from "@/lib/earnings/email-states";
 
 export interface EventMergeContext {
   db: Database.Database;
@@ -330,10 +336,39 @@ function mergeBogeys({ db, donorEventId, targetEventId }: EventMergeContext): Ev
 }
 
 /**
+ * Delivery evidence, ranked (slice E, R-E11). Higher wins a collision.
+ *
+ *   2  confirmed — NULL (local send the provider accepted) or 'sent-by-cloud'
+ *   1  delivery_unknown — an email MAY have gone out; a stored body and a
+ *      provider message id, but nobody ever heard back
+ *   0  legacy failure text — a send that never completed
+ *
+ * Treating 1 as equal to 2 (the pre-slice-E test did, once delivery_unknown
+ * became a "delivered" sentinel) would let a target's unknown row keep its
+ * place over a donor row that DEFINITELY went out, throwing away the better
+ * audit record — body, sent_at, provider_message_id and provider_response —
+ * during a reconcile or a re-import. Live claims never reach here: the donor
+ * SELECT excludes them and the target is checked before the comparison.
+ *
+ * Module-private on purpose: the ORDERING is merge policy, not vocabulary, so
+ * it does not belong in email-states.ts beside the shared predicates.
+ */
+function deliveryRank(error: string | null): 0 | 1 | 2 {
+  if (error === DELIVERY_UNKNOWN) return 1;
+  return isDeliveredStrict(error) ? 2 : 0;
+}
+
+/**
  * [C-5] Spec: "a sent phase on either side counts as sent for the target, so nothing refires";
  * a skip on either side counts as skipped. UPDATE OR IGNORE alone would keep a target's
- * FAILED row over a donor's DELIVERED one and re-open the send. Live 'in_progress' claims
- * are never touched (tri-state rule).
+ * FAILED row over a donor's DELIVERED one and re-open the send. LIVE CLAIMS — both
+ * 'in_progress' and 'sending' — are never touched (the five-value rule in
+ * lib/earnings/email-states.ts).
+ *
+ * A collision between two non-live rows is decided by deliveryRank (above), not by a
+ * two-way delivered/not-delivered boolean: 'delivery_unknown' is delivered enough to
+ * block an automatic resend but is WEAKER evidence than a confirmed send, and the
+ * stronger evidence has to win (slice E, R-E11).
  *
  * The PREVIEW plausibility gate from createDependentRepointer applies here too, and is not
  * optional: a preview is a promise about ONE print, and findEmailCandidates treats any
@@ -369,7 +404,7 @@ function mergeEmailAudit({
   const donorEmails = db
     .prepare(
       `SELECT id, phase, sent_at, error FROM earnings_emails
-        WHERE event_id = ? AND (error IS NULL OR error != 'in_progress')`,
+        WHERE event_id = ? AND ${notLiveClaimSql("error")}`,
     )
     .all(donorEventId) as Array<{
     id: number;
@@ -390,17 +425,18 @@ function mergeEmailAudit({
       moved += 1;
       continue;
     }
-    if (t.error === "in_progress") continue; // live claim on the target: leave both
-    const donorDelivered = d.error === null || d.error === "sent-by-cloud";
-    const targetDelivered = t.error === null || t.error === "sent-by-cloud";
-    if (donorDelivered && !targetDelivered) {
-      // delivered history wins — the target must not re-fire a send that already happened
+    if (isLiveClaim(t.error)) continue; // live claim on the target: leave both
+    if (deliveryRank(d.error) > deliveryRank(t.error)) {
+      // Stronger evidence wins — the target must not re-fire a send that
+      // already happened, and must not lose the record of one. Moving the row
+      // carries provider_message_id and provider_response with it (the UPDATE
+      // re-homes the whole row), which is the point.
       db.prepare(`DELETE FROM earnings_emails WHERE id = ?`).run(t.id);
       db.prepare(`UPDATE earnings_emails SET event_id = ? WHERE id = ?`).run(targetEventId, d.id);
       merged += 1;
       deleted += 1;
     }
-    // else: the target keeps its row; the donor's dies with the cascade
+    // else: equal or weaker — the target keeps its row; the donor's dies with the cascade
   }
   out.push({ table: "earnings_emails", moved, merged, deleted, notes });
 

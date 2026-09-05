@@ -218,6 +218,19 @@ const MAX_CANDIDATES_PER_RUN = 5;
 
 export const WRAP_THRESHOLD = 3;
 
+/**
+ * MAC PARITY — mirrors lib/earnings/email-states.ts::LIVE_CLAIM_STATES.
+ * A live claim means a Mac process owns the (event, phase) but nothing has been
+ * delivered, so it must NOT suppress the cloud fallback. 'delivery_unknown' is
+ * the opposite: terminal, possibly delivered, and it DOES suppress.
+ * tests/workers/fallback-earnings-live-claims.test.ts (main repo) reads this
+ * file and fails if either literal leaves either filter below.
+ */
+const LIVE_CLAIM_STATES: readonly string[] = ["in_progress", "sending"];
+function isLiveClaim(error: string | null | undefined): boolean {
+  return typeof error === "string" && LIVE_CLAIM_STATES.includes(error);
+}
+
 export type WrapSlot = "BMO" | "AMC";
 
 // Parity with lib/earnings/wrap.ts::SLOT_DEADLINES_ET (user-set 2026-07-16).
@@ -309,11 +322,14 @@ function buildWrapCluster(
   const muted = new Set(
     (snapshot.earningsSettings?.mutedSymbols ?? []).map((s) => s.toUpperCase()),
   );
-  // Completed local send (error IS NULL) or sent-by-cloud rows exclude the
-  // member; a live 'in_progress' claim does NOT — nothing delivered yet.
+  // Any recap row that is not a LIVE CLAIM excludes the member: a completed
+  // local send (error IS NULL), a 'sent-by-cloud' row, a terminal
+  // 'delivery_unknown' (possibly delivered — never automatically resent), or
+  // legacy failure text. A live claim ('in_progress' or 'sending') does NOT —
+  // nothing has been delivered yet and the Mac may still die mid-send.
   const auditedRecap = new Set(
     (snapshot.earningsEmails ?? [])
-      .filter((r) => r.phase === "recap" && r.error !== "in_progress")
+      .filter((r) => r.phase === "recap" && !isLiveClaim(r.error))
       .map((r) => r.event_id),
   );
 
@@ -612,15 +628,18 @@ async function findCandidatesFromSnapshot(
     (snapshot.earningsSettings?.mutedSymbols ?? []).map((s) => s.toUpperCase()),
   );
   const auditKey = (eventId: number, phase: EarningsPhase) => `${eventId}:${phase}`;
-  // Skip live 'in_progress' claim rows — a claim (in-flight or crashed Mac
-  // send) hasn't delivered anything, so it must not suppress the cloud
-  // fallback. The 2am R2 snapshot can ship a claim that's still alive (or
-  // stale-and-never-reaped) at scan time, which would otherwise block the
-  // cloud path for that (event, phase) for the rest of the day. 'sent-by-
-  // cloud' and completed local-send rows (error IS NULL) DO count as audited.
+  // Skip LIVE CLAIM rows — both 'in_progress' (claimed, composing) and
+  // 'sending' (the provider call is on the wire). A claim (in-flight or
+  // crashed Mac send) hasn't delivered anything, so it must not suppress the
+  // cloud fallback. The 2am R2 snapshot can ship a claim that's still alive
+  // (or stale-and-never-reaped) at scan time, which would otherwise block the
+  // cloud path for that (event, phase) for the rest of the day. Everything
+  // else DOES count as audited: 'sent-by-cloud', completed local sends (error
+  // IS NULL) and terminal 'delivery_unknown' rows, which may well have been
+  // delivered and are reconciled by hand on the Mac, never resent from here.
   const auditedSet = new Set(
     (snapshot.earningsEmails ?? [])
-      .filter((r) => r.error !== "in_progress")
+      .filter((r) => !isLiveClaim(r.error))
       .map((r) => auditKey(r.event_id, r.phase)),
   );
 

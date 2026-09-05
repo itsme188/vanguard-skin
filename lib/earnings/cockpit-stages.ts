@@ -2,17 +2,29 @@
  * Pure stage state machine for the earnings-day cockpit. No DB access —
  * callers pass event fields + pre-fetched email/skip/mute state. The cockpit
  * is READ-ONLY over the pipeline: this derives display state, never advances it.
+ *
+ * The email-shaped half of every stage union is `DeliveryStateWord`, imported
+ * from lib/earnings/email-states.ts rather than re-spelled here (slice E) —
+ * that module is the single source of truth for the five values
+ * `earnings_emails.error` can hold and for the mapping (`sendStateFor`) that
+ * produces these words, and it has no imports of its own, so nothing is
+ * dragged across a boundary by naming it. Widening the vocabulary is
+ * therefore a one-file change; deriveEventStages below needs no new branch,
+ * because it passes the incoming state straight through — a
+ * `'delivery_unknown'` audit row yields the stage `"delivery-unknown"` and
+ * can never yield `"sent"`.
  */
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { isPlausibleEarnings } from "@/lib/earnings/plausibility";
 import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { REACTION_READY_MS } from "@/lib/calendar/enrichment-runner";
+import type { DeliveryStateWord } from "@/lib/earnings/email-states";
 
 /** Mirrors email-sweep's module-local BLOCKED_RECAP_MIN_AGE_MS (2h). */
 export const COCKPIT_BLOCKED_MIN_AGE_MS = 2 * 60 * 60 * 1000;
 
-export type EmailSendState = "sent" | "sent-by-cloud" | "in-flight" | null;
-export type PreviewStage = "sent" | "sent-by-cloud" | "in-flight" | "skipped" | "pending" | "missed";
+export type EmailSendState = DeliveryStateWord | null;
+export type PreviewStage = DeliveryStateWord | "skipped" | "pending" | "missed";
 export interface ReleasedStage {
   state: "upcoming" | "released" | "unknown";
   releaseInstant: string | null;
@@ -23,7 +35,7 @@ export interface ReactionStage {
   source: string | null;
   readyAt: string | null;
 }
-export type RecapStage = "sent" | "sent-by-cloud" | "in-flight" | "skipped" | "waiting" | "blocked";
+export type RecapStage = DeliveryStateWord | "skipped" | "waiting" | "blocked";
 
 export interface EventStages {
   preview: PreviewStage;
