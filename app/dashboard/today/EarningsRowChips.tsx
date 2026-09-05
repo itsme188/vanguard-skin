@@ -210,8 +210,21 @@ export function EarningsRowChips({
           (outside the cockpit's coverage set), so every existing action below
           renders exactly as it did before this prop existed. */}
       {cockpitRow && (
-        <span className="flex flex-col items-end gap-0.5 shrink-0">
-          <span className="inline-flex items-center gap-1.5">
+        /* min-w-0 + max-w-full and NO shrink-0, for exactly the reason the
+           root above carries them. A shrink-0 lane sizes to max-content
+           (~267px of chips); inside a 160px Email grid cell a `justify-end`
+           flex line lays that out from the RIGHT edge leftwards, so the strip
+           escaped its own cell and painted over the Δ and Bogeys columns
+           (sandbox E2E 2026-09-04: 4 of the 5 rows carrying a Δ were
+           overprinted at BOTH 1440 and 1920 — a grid defect, not a
+           narrow-viewport artifact). Letting the lane shrink to its cell is
+           what makes its own flex-wrap engage, so the chips stack onto a
+           second line INSIDE the cell instead of spilling out of it. Nothing
+           is hidden: `Chip` carries no whitespace-nowrap, so even the longest
+           chip text ("rec ? delivery unknown") has a small min-content and
+           wraps rather than forcing the lane wide again. */
+        <span className="flex flex-col items-end gap-0.5 min-w-0 max-w-full">
+          <span className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 max-w-full">
             <StageChipStrip row={cockpitRow} onOpen={handleCockpitOpen} />
             {/* The chips paint on the SERVER (EarningsHub seeds the provider
                 with a server-built cockpit payload), but a second-granular

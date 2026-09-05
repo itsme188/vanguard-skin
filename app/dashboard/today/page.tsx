@@ -224,8 +224,21 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
       {/* ── Chat ── */}
       <OpenChatButton />
 
-      {/* ── IBKR today — one line (spec §4.6). The per-name list is on Accounts. ── */}
-      <section className="rounded-xl bg-panel p-4 card-elev">
+      {/* ── IBKR today — one line (spec §4.6). The per-name list is on Accounts. ──
+              md:mb-20 is FAB clearance, not decoration. `NotesAmbient`'s
+              floating button is `fixed bottom-6 right-6` (h-12), so on a
+              fine-pointer desktop it owns the bottom-right 24–72px band of the
+              viewport, and the dashboard shell's own `md:pb-6` widens that band
+              only for coarse pointers (`md:pointer-coarse:pb-24`). Folding the
+              per-name list into this one line made Today short enough that its
+              last row — the right-aligned `Accounts →` link — lands inside the
+              band at max scroll: 5 of 11 sample points across the link hit the
+              FAB at 1280 and 1440 with the rail open (sandbox E2E 2026-09-04).
+              80px here puts 90–120px between the link and the page bottom, clearing
+              the 72px band with room to spare. Below md the shell already pays
+              `pb-36` (144px) for the bottom nav plus the phone FAB's higher
+              `bottom-20`, so this is a desktop-only correction. ── */}
+      <section className="rounded-xl bg-panel p-4 card-elev md:mb-20">
         {!ibkrAccount ? (
           <p className="text-[14px] text-ink-faint">No IBKR account set up yet.</p>
         ) : holdings.length === 0 ? (

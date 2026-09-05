@@ -57,7 +57,15 @@ import {
   type PollController,
   type StreamSpec,
 } from "./hub-live/poll-controller";
-import { COOL_POLL_MS, ENSURE_INTERVAL_MS, HOT_POLL_MS, printStateLabel, windowText } from "./live-print/helpers";
+import {
+  COOL_POLL_MS,
+  ENSURE_INTERVAL_MS,
+  HOT_POLL_MS,
+  printHeadlineText,
+  printStateLabel,
+  stateAndWindowSegments,
+  windowText,
+} from "./live-print/helpers";
 import type {
   CockpitPayloadWire,
   CockpitRowWire,
@@ -729,10 +737,18 @@ export function LivePrintSlot({
   // state and the window. EXPANDED, `LivePrintRow` prints both immediately
   // below it (review M1) — repeating them here says the same thing twice and,
   // before the clock fix, could say it two different ways.
+  //
+  // `printHeadlineText` (not a template literal) because the two halves can
+  // ALSO say the same thing as each other: an `expired` print's state label is
+  // the phrase "window closed" and so is the opening of its window sentence,
+  // which printed "live print · window closed · window closed 5:00 PM ET".
   const headline = print
     ? open
       ? "live print"
-      : `live print · ${stateChip!.text} · ${windowText(print.effectiveWindow ?? null, live?.nowMs ?? 0)}`
+      : printHeadlineText(
+          stateChip!.text,
+          windowText(print.effectiveWindow ?? null, live?.nowMs ?? 0),
+        )
     : "armed — the watch window opens automatically ahead of the release";
 
   return (
@@ -818,8 +834,16 @@ export function LivePrintsOutsideWeek({
       {prints.map((p) => (
         <div key={p.printId} className="mt-2">
           <p className="text-[12px] font-mono text-ink-dim">
-            {p.symbol} · {printStateLabel(p.state).text}
-            {p.effectiveWindow ? ` · ${windowText(p.effectiveWindow, clock)}` : ""}
+            {/* Same de-duplication as the slot headline above: an orphan whose
+                window has closed would otherwise read
+                "XMPL2 · window closed · window closed 5:00 PM ET". */}
+            {[
+              p.symbol,
+              ...stateAndWindowSegments(
+                printStateLabel(p.state).text,
+                p.effectiveWindow ? windowText(p.effectiveWindow, clock) : null,
+              ),
+            ].join(" · ")}
           </p>
           <LivePrintSlot eventId={p.eventId!} symbol={p.symbol} armed />
         </div>

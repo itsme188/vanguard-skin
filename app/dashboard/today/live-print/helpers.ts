@@ -192,6 +192,37 @@ export function printStateLabel(state: PrintWatchState): { text: string; tone: C
 }
 
 /**
+ * The " · "-joined segments for "<state> · <window>", with the repeat removed.
+ *
+ * The state token and the window sentence are two different facts and are
+ * normally both worth printing ("parsed · window closed 4:50 PM ET"). They
+ * COLLIDE on exactly one state: `printStateLabel("expired")` is deliberately
+ * the phrase "window closed" (the raw word `expired` lies to the desk — see
+ * above), and `windowText` on a closed window opens with the same phrase, so a
+ * plain join printed "window closed · window closed 5:00 PM ET" (sandbox E2E
+ * 2026-09-04).
+ *
+ * The window sentence is the half that survives, because it is the half
+ * carrying the timestamp. Prefix-matched rather than special-cased on
+ * `expired`, so any future state label that repeats its own window sentence
+ * de-duplicates for free.
+ */
+export function stateAndWindowSegments(
+  stateText: string,
+  windowSentence: string | null,
+): string[] {
+  if (windowSentence === null) return [stateText];
+  return windowSentence.toLowerCase().startsWith(stateText.toLowerCase())
+    ? [windowSentence]
+    : [stateText, windowSentence];
+}
+
+/** The collapsed live-print slot's one-line headline. */
+export function printHeadlineText(stateText: string, windowSentence: string): string {
+  return ["live print", ...stateAndWindowSegments(stateText, windowSentence)].join(" · ");
+}
+
+/**
  * The header's count line. `expired` prints are listed alongside active ones
  * (their drop zone is still live), so counting the whole list as "active"
  * puts "2 active prints" above two chips both reading WINDOW CLOSED. Closed

@@ -16,6 +16,8 @@ import {
   SUPERSEDED_CONFIRM_COPY,
   goStatusText,
   windowText,
+  printHeadlineText,
+  stateAndWindowSegments,
 } from "@/app/dashboard/today/live-print/helpers";
 import type { LineContract, PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
 
@@ -900,6 +902,42 @@ describe("windowText", () => {
     expect(windowText(w, Date.parse("2026-09-03T19:00:00.000Z"))).toBe("window opens 3:55 PM ET");
     expect(windowText(w, Date.parse("2026-09-03T20:10:00.000Z"))).toBe("window open until 4:50 PM ET");
     expect(windowText(w, Date.parse("2026-09-03T21:00:00.000Z"))).toBe("window closed 4:50 PM ET");
+  });
+});
+
+describe("stateAndWindowSegments / printHeadlineText — the state word is never printed twice", () => {
+  const w = { start: "2026-09-03T19:55:00.000Z", end: "2026-09-03T20:50:00.000Z" };
+  const closed = windowText(w, Date.parse("2026-09-03T21:00:00.000Z"));
+  const open = windowText(w, Date.parse("2026-09-03T20:10:00.000Z"));
+
+  it("drops the state token when the window sentence already opens with it", () => {
+    // The exact string the sandbox E2E caught (2026-09-04): an `expired`
+    // print's state label IS "window closed", and so is the start of its
+    // window sentence, so the naive join read
+    // "live print · window closed · window closed 5:00 PM ET".
+    expect(printStateLabel("expired").text).toBe("window closed");
+    expect(stateAndWindowSegments("window closed", closed)).toEqual(["window closed 4:50 PM ET"]);
+    expect(printHeadlineText("window closed", closed)).toBe("live print · window closed 4:50 PM ET");
+    // The timestamp is what survives — the point of keeping the sentence half.
+    expect(printHeadlineText("window closed", closed)).toContain("4:50 PM ET");
+  });
+
+  it("keeps both halves whenever they say different things", () => {
+    expect(stateAndWindowSegments("parsed", open)).toEqual(["parsed", "window open until 4:50 PM ET"]);
+    expect(printHeadlineText("parsed", open)).toBe("live print · parsed · window open until 4:50 PM ET");
+    // "window open" is NOT a prefix of "window closed …" — a live print whose
+    // window has since shut must still say both.
+    expect(printHeadlineText("window open", closed)).toBe(
+      "live print · window open · window closed 4:50 PM ET",
+    );
+  });
+
+  it("prints the state alone when there is no window at all (the outside-week line)", () => {
+    expect(stateAndWindowSegments("scheduled", null)).toEqual(["scheduled"]);
+  });
+
+  it("matches case-insensitively, so a re-cased label cannot re-introduce the repeat", () => {
+    expect(stateAndWindowSegments("Window Closed", closed)).toEqual(["window closed 4:50 PM ET"]);
   });
 });
 
