@@ -345,6 +345,19 @@ export interface EarningsEmailClaim {
   prior?: "sent" | typeof SENT_BY_CLOUD | typeof DELIVERY_UNKNOWN;
   priorError?: string | null;
   priorSentAt?: string;
+  /**
+   * Refire only — the DELIVERED send's provider evidence, snapshotted here so
+   * a definitively-rejected refire can put both columns back (whole-branch
+   * review I1). markEmailSending's refire branch overwrites
+   * `provider_message_id` with the new attempt's id and blanks
+   * `provider_response`; without this snapshot the restore left BOTH NULL and
+   * the original send's Message-ID and `250 …` line — the only handle the desk
+   * has for reconciling that send by hand against the mailbox or the Resend
+   * log (R-E10) — were gone for good. `getSendRow` already reads both columns,
+   * so this costs no extra query.
+   */
+  priorProviderMessageId?: string | null;
+  priorProviderResponse?: string | null;
 }
 
 export function getSendRow(
@@ -438,6 +451,8 @@ export function claimEarningsEmailSlot(
     prior,
     priorError,
     priorSentAt: existing?.sent_at ?? "",
+    priorProviderMessageId: existing?.provider_message_id ?? null,
+    priorProviderResponse: existing?.provider_response ?? null,
   };
 }
 
@@ -579,24 +594,52 @@ export function markEmailDeliveryUnknown(
   );
 }
 
-/** A refire whose provider call was DEFINITIVELY rejected: put the delivered
- *  row back exactly as it was, prose included (it was never overwritten). */
+/**
+ * A refire whose provider call was DEFINITIVELY rejected: put the delivered
+ * row back exactly as it was, prose included (it was never overwritten).
+ *
+ * "Exactly as it was" means ALL FOUR columns the refire touched, the two
+ * provider columns included (review I1). markEmailSending's refire branch
+ * moved `provider_message_id` to the NEW attempt's id and blanked
+ * `provider_response`; restoring only `error` and `sent_at` left the delivered
+ * row with both provider columns NULL, destroying the original send's
+ * Message-ID and relay reply line — the reconciliation handle R-E10 exists to
+ * preserve. The snapshot travels on the claim (`EarningsEmailClaim`) and, for
+ * a batch, on `BatchMember`.
+ *
+ * The four restore values are an OPTIONS OBJECT on purpose: four positional
+ * nullable strings in a row is a transposition waiting to happen, and two of
+ * them are Message-ID-shaped.
+ */
 export function restorePriorDelivered(
   db: Database.Database,
   eventId: number,
   phase: "preview" | "recap",
   token: string,
-  priorError: string | null,
-  priorSentAt: string,
+  prior: {
+    priorError: string | null;
+    priorSentAt: string;
+    priorProviderMessageId: string | null;
+    priorProviderResponse: string | null;
+  },
 ): boolean {
   return (
     db
       .prepare(
         `UPDATE earnings_emails
-            SET error = ?, sent_at = ?, claim_token = NULL, provider_message_id = NULL
+            SET error = ?, sent_at = ?, claim_token = NULL,
+                provider_message_id = ?, provider_response = ?
           WHERE event_id = ? AND phase = ? AND claim_token = ? AND error = '${SENDING}'`,
       )
-      .run(priorError, priorSentAt, eventId, phase, token).changes === 1
+      .run(
+        prior.priorError,
+        prior.priorSentAt,
+        prior.priorProviderMessageId,
+        prior.priorProviderResponse,
+        eventId,
+        phase,
+        token,
+      ).changes === 1
   );
 }
 
