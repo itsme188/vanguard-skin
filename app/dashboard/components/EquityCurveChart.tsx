@@ -16,6 +16,7 @@ import {
 import type { MonthlySnapshot } from "@/lib/types";
 import type { DailyValuation } from "@/lib/queries/daily-valuations";
 import { usePrivateFormatter } from "@/lib/privacy/components";
+import { formatUSD } from "@/lib/format";
 
 // Hex colors are intentionally hardcoded here — these must stay visible in both
 // light (Amber) and dark (Bloomberg-pro) themes. #60A5FA (blue-400) and #34D399
@@ -360,6 +361,7 @@ export function EquityCurveChart({
   const [selectedRange, setSelectedRange] = useState(5); // default: All
   const [showLines, setShowLines] = useState(showBreakdown);
   const currencyTickFormatter = usePrivateFormatter(formatCurrency);
+  const currencyTooltipFormatter = usePrivateFormatter(formatUSD);
 
   // Merge monthly snapshots (authoritative) with daily valuations (inter-month granularity).
   // Monthly snapshots come from actual statements and are always correct.
@@ -482,7 +484,7 @@ export function EquityCurveChart({
                 labelFormatter={(label) => dateFormatter(String(label))}
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 formatter={(value: any, name: any) => [
-                  currencyTickFormatter(Number(value)),
+                  currencyTooltipFormatter(Number(value)),
                   String(name) === "total"
                     ? "Total Value"
                     : String(name) === "holdings"
@@ -576,7 +578,7 @@ export function EquityCurveChart({
                 labelFormatter={(label) => dateFormatter(String(label))}
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 formatter={(value: any) => [
-                  currencyTickFormatter(Number(value)),
+                  currencyTooltipFormatter(Number(value)),
                   "Value",
                 ]}
               />
