@@ -1,5 +1,5 @@
 /**
- * Significant Moves in Vanguard Holdings (vs. expected) — Today-tab surface.
+ * Significant Moves in Vanguard Holdings (vs. expected) — Analysis · Diagnostics surface.
  *
  * Server component reusing the SAME engine that powers the evening email's
  * anomaly block (lib/digest/anomalies.ts::computeAnomalies). Flags Vanguard
