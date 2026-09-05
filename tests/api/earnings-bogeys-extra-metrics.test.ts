@@ -215,18 +215,61 @@ describe("extra-metric identity is the id: add + remove, never an edit (R-F2)", 
 });
 
 describe("the bogey write and the recompile are ONE transaction (Codex 6)", () => {
-  it("a throwing recompile rolls the bogey write back", async () => {
+  it("a throwing recompile rolls the bogey write back — and the same call commits when nothing throws", async () => {
     const { saveBogeyWithRecompile } = await import("@/lib/mutations/earnings-bogeys");
     const eventId = seedEvent();
     seedPrint(eventId, "acquired");
+    const count = () =>
+      (db.prepare(`SELECT COUNT(*) AS n FROM earnings_bogeys`).get() as { n: number }).n;
+
+    // CONTROL (review M-5): the identical call down the identical path, with the
+    // sheet table intact, DOES write. Without it the assertion below cannot tell
+    // "rolled back" from "never written at all" — a refactor that moved the
+    // recompile ahead of the upsert would keep the old test green while proving
+    // nothing about atomicity.
+    saveBogeyWithRecompile(db, {
+      event_id: eventId, source: "manual", source_label: "Sheet A", eps_consensus: 0.46,
+    });
+    expect(count()).toBe(1);
+
     // A print row whose FK target the recompile's INSERT cannot satisfy is hard
     // to fake honestly, so break the sheet table for the duration instead: the
     // point is that ANY throw inside the recompile unwinds the outer write.
     db.exec(`DROP TABLE print_watch_lines`);
     expect(() =>
-      saveBogeyWithRecompile(db, { event_id: eventId, source: "manual", source_label: "Sheet A", eps_consensus: 0.46 }),
+      // A DIFFERENT source_label, so this is a second INSERT rather than an
+      // update of the row the control wrote — the count below can see it.
+      saveBogeyWithRecompile(db, { event_id: eventId, source: "manual", source_label: "Sheet B", eps_consensus: 0.46 }),
     ).toThrow();
+    expect(count()).toBe(1);
+    expect(
+      db.prepare(`SELECT COUNT(*) AS n FROM earnings_bogeys WHERE source_label = 'Sheet B'`).get(),
+    ).toEqual({ n: 0 });
+  });
+
+  it("the bogey is written BEFORE the recompile, so its absence afterwards is a rollback", async () => {
+    const { saveBogeyWithRecompile } = await import("@/lib/mutations/earnings-bogeys");
+    const eventId = seedEvent();
+    seedPrint(eventId, "acquired");
+    // A sheet-line write that refuses ONLY once this very call's bogey row is
+    // visible. Dropping the table (above) proves "a throw unwinds the write",
+    // but it throws before the recompile can observe anything, so it cannot
+    // tell a rollback from a write that never happened — a refactor moving the
+    // recompile ahead of the upsert would keep it green (review M-5). Here the
+    // same refactor makes the guard silent, the call succeed, and this test red.
+    const guard =
+      `WHEN (SELECT COUNT(*) FROM earnings_bogeys WHERE source_label = 'Sheet B') = 1 ` +
+      `BEGIN SELECT RAISE(ABORT, 'the bogey row was already written'); END`;
+    db.exec(`CREATE TRIGGER t_line_ins AFTER INSERT ON print_watch_lines ${guard};`);
+    db.exec(`CREATE TRIGGER t_line_upd AFTER UPDATE ON print_watch_lines ${guard};`);
+
+    expect(() =>
+      saveBogeyWithRecompile(db, {
+        event_id: eventId, source: "manual", source_label: "Sheet B", eps_consensus: 0.46,
+      }),
+    ).toThrow(/already written/);
     expect(db.prepare(`SELECT COUNT(*) AS n FROM earnings_bogeys`).get()).toEqual({ n: 0 });
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM print_watch_lines`).get()).toEqual({ n: 0 });
   });
 });
 
