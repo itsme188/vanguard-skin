@@ -19,9 +19,6 @@
 
 import type Database from "better-sqlite3";
 import {
-  claimEarningsEmailSlot,
-  releaseEarningsEmailClaim,
-  recordEarningsEmailAudit,
   renderHeadlineTable,
   getCrossAccountPositions,
   EarningsEmailError,
@@ -35,7 +32,6 @@ import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { checkPrePrintFloor } from "@/lib/earnings/pre-print-floor";
 import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
-import { sendEmail } from "@/lib/email";
 import { todayET } from "@/lib/calendar/date-utils";
 import type { CalendarEvent } from "@/lib/types";
 
@@ -103,7 +99,7 @@ function fmtShortDate(iso: string): string {
 
 /**
  * Pure composer — deterministic markdown from the event row + resolved pairs.
- * Exported for tests; sendReporterRecapEmail resolves the inputs.
+ * Exported for tests; composeReporterRecapEmail resolves the inputs.
  */
 export function composeReporterRecap(
   event: Pick<
@@ -188,20 +184,41 @@ export function getNextPrintForTarget(
 }
 
 /**
- * Send the reporter recap for one event. Same claim discipline as
- * sendEarningsEmail: claim the (event, 'recap') slot BEFORE compose,
- * token-conditional release on failure, audit row stores the full markdown
- * so EarningsEmailViewer + EarningsHub chips work unchanged.
- *
- * Throws EarningsEmailError with benign-409 codes for coordination outcomes
- * (claim held; actuals unusable) — the sweep logs those as skips, not
- * failures.
+ * What one composed reporter recap is. The service (lib/earnings/send-service.ts)
+ * turns this into an email: it owns the recipient, the claim, the markers, the
+ * provider call and the audit row. This module owns the CONTENT and the gates.
  */
-export async function sendReporterRecapEmail(
+export interface ReporterRecapComposed {
+  symbol: string;
+  title: string;
+  /** Already carries its own glyph — the service must not prefix another. */
+  subject: string;
+  html: string;
+  markdown: string;
+  /** Same string as `markdown`: this road is deterministic, so what is stored
+   *  as the audit's "AI output" IS the whole email body. */
+  aiMarkdown: string;
+  /** Always null — nothing was prompted, so there is no prompt to hash. */
+  promptHash: null;
+  targets: string[];
+}
+
+/**
+ * Compose the reporter recap for one event. COMPOSER ONLY (slice E): the claim,
+ * the recipient, the provider call and the audit row moved to the canonical
+ * send service, so a withheld recap now writes nothing at all — there is no
+ * claim to release, which is exactly the failure mode the old release/catch
+ * pair existed to undo.
+ *
+ * Every gate is unchanged and still throws EarningsEmailError with the benign
+ * 409 `not_ready` code: the service releases the fresh claim and reports
+ * `refused`, which the sweep books as a skip, not a failure — the same net
+ * effect as before.
+ */
+export async function composeReporterRecapEmail(
   db: Database.Database,
   eventId: number,
-  opts: { recipient?: string } = {},
-): Promise<{ subject: string; targets: string[] }> {
+): Promise<ReporterRecapComposed> {
   // Cluster-scoped acceptance stamp — reporterActualsUsable below bypasses
   // the plausibility gate on it, and it can sit on a superseded twin of this
   // same print (lib/queries/manual-actuals-cluster.ts).
@@ -260,79 +277,43 @@ export async function sendReporterRecapEmail(
     );
   }
 
-  const recipient = opts.recipient || process.env.BRIEFING_EMAIL_TO;
-  if (!recipient) {
-    throw new EarningsEmailError(
-      "No recipient. Set BRIEFING_EMAIL_TO env var or pass 'recipient'.",
-      500,
-    );
-  }
+  const today = todayET();
+  const pairs: ReporterRecapPair[] = live.map((p) => ({
+    target: p.target,
+    targetStatus: p.targetStatus,
+    hypothesis: p.hypothesis,
+    nextPrint: getNextPrintForTarget(db, p.target, today),
+    positionLines: getCrossAccountPositions(db, [...issuerSiblings(p.target)]).map((pos) =>
+      formatPositionPresence({
+        symbol: pos.symbol,
+        accountName: pos.account_name,
+        quantity: pos.quantity,
+        securityType: pos.security_type,
+        optionMeta:
+          pos.security_type.toLowerCase() === "option"
+            ? {
+                underlyingSymbol: pos.underlying_symbol,
+                strikePrice: pos.strike_price,
+                expirationDate: pos.expiration_date,
+                optionType: pos.option_type,
+              }
+            : null,
+      }),
+    ),
+  }));
 
-  // Claim BEFORE compose — the (event, 'recap') row doubles as the
-  // cross-process mutex, exactly like the AI recap path.
-  const claim = claimEarningsEmailSlot(db, eventId, "recap", recipient);
-  if (!claim.claimed) {
-    throw new EarningsEmailError(
-      `Recap slot for event ${eventId} is claimed by another process.`,
-      409,
-      "claim_held",
-    );
-  }
+  const content = composeReporterRecap(event, pairs);
+  const footer = `Read-through reporter recap — deterministic, sent at first actuals. Reaction + enriched scoreboard live in the in-app viewer.`;
+  const html = briefingToHtml(content.markdown, content.subject, footer);
 
-  try {
-    const today = todayET();
-    const pairs: ReporterRecapPair[] = live.map((p) => ({
-      target: p.target,
-      targetStatus: p.targetStatus,
-      hypothesis: p.hypothesis,
-      nextPrint: getNextPrintForTarget(db, p.target, today),
-      positionLines: getCrossAccountPositions(db, [...issuerSiblings(p.target)]).map((pos) =>
-        formatPositionPresence({
-          symbol: pos.symbol,
-          accountName: pos.account_name,
-          quantity: pos.quantity,
-          securityType: pos.security_type,
-          optionMeta:
-            pos.security_type.toLowerCase() === "option"
-              ? {
-                  underlyingSymbol: pos.underlying_symbol,
-                  strikePrice: pos.strike_price,
-                  expirationDate: pos.expiration_date,
-                  optionType: pos.option_type,
-                }
-              : null,
-        }),
-      ),
-    }));
-
-    const content = composeReporterRecap(event, pairs);
-    const footer = `Read-through reporter recap — deterministic, sent at first actuals. Reaction + enriched scoreboard live in the in-app viewer.`;
-    const html = briefingToHtml(content.markdown, content.subject, footer);
-
-    await sendEmail({
-      to: recipient,
-      subject: content.subject,
-      html,
-      fromLocalPart: "earnings",
-    });
-
-    // Complete the audit row in place (claim → completed; error NULL) via
-    // the shared helper — a hand-copied upsert would drift silently if the
-    // completion write ever gains a column.
-    recordEarningsEmailAudit(db, {
-      eventId,
-      phase: "recap",
-      recipient,
-      aiInputHash: null,
-      aiOutputMd: content.markdown,
-      error: null,
-    });
-
-    return { subject: content.subject, targets: pairs.map((p) => p.target) };
-  } catch (err) {
-    if (claim.mode === "fresh" && claim.token) {
-      releaseEarningsEmailClaim(db, eventId, "recap", claim.token);
-    }
-    throw err;
-  }
+  return {
+    symbol,
+    title: content.subject,
+    subject: content.subject,
+    html,
+    markdown: content.markdown,
+    aiMarkdown: content.markdown,
+    promptHash: null,
+    targets: pairs.map((p) => p.target),
+  };
 }

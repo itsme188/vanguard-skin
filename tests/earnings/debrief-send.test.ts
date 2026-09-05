@@ -3,6 +3,11 @@
  * gate, wrap-style claim choreography (with the debrief's per-member-drop
  * instead of whole-batch-abort on conflict), compose → send, and per-member
  * audit rows of runMorningDebrief.
+ *
+ * Slice E (R-E9) added the last describe block: delivery now goes through
+ * `deliverClaimedBatch`, and every assertion here about the debrief's
+ * OBSERVABLE result — `{ sent, covered, skippedReason? }` — is unchanged on
+ * purpose, because the sweep reads it and must not be able to tell.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
@@ -35,7 +40,7 @@ vi.mock("@/lib/cron/earnings-marker-check", () => ({
 
 const mockedFindCandidates = vi.mocked(findDebriefCandidates);
 
-import { sendEmail } from "@/lib/email";
+import { sendEmail, type SendEmailOptions } from "@/lib/email";
 import {
   checkEarningsCloudMarker,
   writeMacSentEarningsMarker,
@@ -66,6 +71,14 @@ beforeEach(() => {
   mockedCloudMarker.mockResolvedValue(null);
   mockedMacSent.mockReset();
   mockedMacSent.mockResolvedValue(null);
+  // Slice E (R-E9): the debrief delivers through deliverClaimedBatch, which
+  // READS the provider's answer (`info.response` lands in provider_response).
+  // The module-level @/lib/email mock still intercepts, because the send
+  // service resolves `seams.sendEmail ?? sendEmail` — but it now has to
+  // resolve like the real mailer. Tests that need to steer the wire inject
+  // `seams.sendEmail` instead.
+  mockedSend.mockReset();
+  mockedSend.mockResolvedValue({ messageId: "<debrief@example.com>", response: "250 OK" });
 });
 
 function seedHeld(symbol: string): void {
@@ -482,5 +495,170 @@ describe("runMorningDebrief", () => {
       if (prev !== undefined) process.env.BRIEFING_EMAIL_TO = prev;
       else delete process.env.BRIEFING_EMAIL_TO;
     }
+  });
+});
+
+/**
+ * Slice E, R-E9. The morning debrief no longer owns a provider call: its N
+ * claimed members are delivered by `deliverClaimedBatch`, the one lifecycle
+ * primitive, so a stapled debrief gets the same in-flight state, the same
+ * shared Message-ID, the same timeout classification and the same terminal
+ * delivery-unknown ending as every other earnings email.
+ *
+ * The observable contract (`{ sent, covered, skippedReason? }`) is UNCHANGED on
+ * purpose — the sweep reads it and must not be able to tell.
+ */
+describe("the debrief goes out through the one lifecycle primitive (slice E, R-E9)", () => {
+  /** Three held, ready, TODAY-dated names — one stapled email covering N members. */
+  function seedThreeDebriefCandidates(): number[] {
+    return ["AAA", "BBB", "CCC"].map((s) => seedCandidate(s));
+  }
+
+  it("moves every member to 'sending' with ONE shared message id BEFORE the provider call", async () => {
+    const ids = seedThreeDebriefCandidates();
+    let seenAtCallTime: { error: string | null; provider_message_id: string | null }[] = [];
+    const seamSend = vi.fn(async (o: SendEmailOptions) => {
+      seenAtCallTime = db
+        .prepare(`SELECT error, provider_message_id FROM earnings_emails ORDER BY event_id`)
+        .all() as typeof seenAtCallTime;
+      return { messageId: o.messageId!, response: "250 OK" };
+    });
+
+    const res = await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: stubGenerate("## Debrief\n\nbody"),
+      seams: { sendEmail: seamSend },
+    });
+
+    expect(res.sent).toBe(true);
+    expect(res.covered.slice().sort()).toEqual(["AAA", "BBB", "CCC"]);
+    expect(seamSend).toHaveBeenCalledTimes(1);
+    // The module never reaches @/lib/email itself any more.
+    expect(mockedSend).not.toHaveBeenCalled();
+
+    // Every member is in flight, carrying the id we are about to put on the
+    // wire, BEFORE the provider is called.
+    expect(seenAtCallTime).toHaveLength(3);
+    expect(new Set(seenAtCallTime.map((r) => r.error))).toEqual(new Set(["sending"]));
+    expect(new Set(seenAtCallTime.map((r) => r.provider_message_id)).size).toBe(1);
+    expect(seenAtCallTime[0].provider_message_id).toBe(seamSend.mock.calls[0][0].messageId);
+
+    const after = db
+      .prepare(
+        `SELECT event_id, error, ai_output_md, provider_response
+           FROM earnings_emails ORDER BY event_id`,
+      )
+      .all() as {
+      event_id: number;
+      error: string | null;
+      ai_output_md: string;
+      provider_response: string;
+    }[];
+    expect(after).toHaveLength(3);
+    expect(after.map((r) => r.event_id)).toEqual([...ids].sort((a, b) => a - b));
+    for (const r of after) {
+      expect(r.error).toBeNull();
+      expect(r.ai_output_md).toContain("body"); // every member shares the stapled email
+      expect(r.provider_response).toBe("250 OK");
+    }
+  });
+
+  it("a timeout leaves all three delivery_unknown, reports sent, and never deletes a row", async () => {
+    seedThreeDebriefCandidates();
+
+    const res = await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: stubGenerate("## Debrief\n\nbody"),
+      // Never answers: the deadline decides. 20 ms keeps the test instant; the
+      // production deadline is SEND_TIMEOUT_MS.
+      seams: { sendEmail: () => new Promise<never>(() => {}), timeoutMs: 20 },
+    });
+
+    // The email may well have gone out — the safe reading, and the reason the
+    // day key was stamped before compose.
+    expect(res.sent).toBe(true);
+    expect(res.covered).toHaveLength(3);
+    expect(
+      db.prepare(`SELECT COUNT(*) c FROM earnings_emails WHERE error = 'delivery_unknown'`).get(),
+    ).toEqual({ c: 3 });
+    // Terminal-unknown claims the phase for each member so the Worker fallback
+    // never sends a second copy of a recap that did arrive.
+    expect(mockedMacSent).toHaveBeenCalledTimes(3);
+  });
+
+  it("a definitive rejection releases every claim and reports not-sent", async () => {
+    seedThreeDebriefCandidates();
+
+    const res = await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: stubGenerate("## Debrief\n\nbody"),
+      seams: {
+        sendEmail: async () => {
+          throw Object.assign(new Error("Invalid recipient"), {
+            code: "EENVELOPE",
+            command: "RCPT TO",
+          });
+        },
+      },
+    });
+
+    expect(res).toEqual({ sent: false, covered: [] });
+    expect(db.prepare(`SELECT COUNT(*) c FROM earnings_emails`).get()).toEqual({ c: 0 });
+    expect(mockedMacSent).not.toHaveBeenCalled();
+  });
+
+  it("a compose failure still releases the claims itself (the primitive was never reached)", async () => {
+    seedThreeDebriefCandidates();
+    const seamSend = vi.fn();
+
+    const res = await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: vi.fn().mockRejectedValue(new Error("model exploded")),
+      seams: { sendEmail: seamSend },
+    });
+
+    expect(res).toEqual({ sent: false, covered: [] });
+    expect(seamSend).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT COUNT(*) c FROM earnings_emails`).get()).toEqual({ c: 0 });
+    // The day key stays stamped: one debrief ATTEMPT per ET day.
+    expect(settingsValue("last_debrief_date")).toBe(TODAY);
+  });
+
+  it("the per-member cloud-marker drop still happens BEFORE the batch", async () => {
+    // R-E6 moved the SINGLE-candidate cloud pre-check into the send service.
+    // The debrief's own PER-MEMBER pre-check is a different thing — pre-flight
+    // over a batch, before one email is composed for the survivors — and stays
+    // here.
+    const ids = seedThreeDebriefCandidates();
+    const cloudOwned = ids[1]; // BBB
+    mockedCloudMarker.mockImplementation(async (_phase, eventId) =>
+      eventId === cloudOwned ? { sentBy: "cloud" } : null,
+    );
+    const seamSend = vi.fn(async (o: SendEmailOptions) => ({
+      messageId: o.messageId!,
+      response: "250 OK",
+    }));
+
+    const res = await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: stubGenerate("## Debrief\n\nbody"),
+      seams: { sendEmail: seamSend },
+    });
+
+    expect(res.sent).toBe(true);
+    expect(res.covered).toEqual(["AAA", "CCC"]);
+    expect(seamSend).toHaveBeenCalledTimes(1);
+    expect(seamSend.mock.calls[0][0].html).not.toContain("BBB");
+    expect(
+      db.prepare(`SELECT COUNT(*) c FROM earnings_emails WHERE error = 'sent-by-cloud'`).get(),
+    ).toEqual({ c: 1 });
+    expect(db.prepare(`SELECT COUNT(*) c FROM earnings_emails WHERE error IS NULL`).get()).toEqual({
+      c: 2,
+    });
   });
 });

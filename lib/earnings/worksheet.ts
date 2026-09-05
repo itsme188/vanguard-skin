@@ -44,9 +44,6 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { getBogeysForEvent, getExpectedMoveBogeysForEvents, type EarningsBogey } from "@/lib/queries/earnings-bogeys";
 import { getIntelForEvents } from "@/lib/queries/earnings-intel";
@@ -82,10 +79,10 @@ import {
 } from "@/lib/earnings/print-sheet";
 import {
   chromeBinaryPath,
-  countPdfPages,
   printPdfViaLp,
   renderHtmlToPdf,
 } from "@/lib/earnings/print-pdf";
+import { printHtmlOneSheet } from "@/lib/earnings/print-ladder";
 
 const WIDTH = 80;
 const MAX_LINES = 62; // one US-letter page at 12cpi with margins
@@ -322,6 +319,23 @@ export function loadRichWorksheetInputs(
 }
 
 /**
+ * The `PrintSheetNote` rows for a symbol's family — shared by the pre-print
+ * sheet and slice E's post-print sheet so the date/symbol fallbacks (which
+ * mirror `renderUserNotesBlock` in lib/digest/send-earnings-email.ts) live in
+ * ONE place. Complete note content, newest first (the query orders it).
+ */
+export function loadPrintSheetNotes(db: Database.Database, symbol: string): PrintSheetNote[] {
+  return getNotesForFamily(db, [...issuerSiblings(symbol)]).map((n) => ({
+    // Mirrors renderUserNotesBlock's date choice (send-earnings-email.ts)
+    // and its `n.symbol ?? <event symbol>` fallback for family-linked notes.
+    date: n.event_date ?? n.created_at.slice(0, 10),
+    noteType: n.note_type,
+    symbol: n.symbol ?? symbol.toUpperCase(),
+    content: n.content,
+  }));
+}
+
+/**
  * Email-identical print-sheet inputs (2026-08-06 print/prose round). Null
  * when there's no LOCAL preview email yet (not sent, or a 'sent-by-cloud'
  * row with no stored prose — same nullness as `loadRichWorksheetInputs`) or
@@ -350,16 +364,7 @@ export function loadPrintSheetInputs(
 
   const symbol = event.symbol.toUpperCase();
   const intelView = loadIntelView(db, eventId, symbol);
-  const notes: PrintSheetNote[] = getNotesForFamily(db, [...issuerSiblings(event.symbol)]).map(
-    (n) => ({
-      // Mirrors renderUserNotesBlock's date choice (send-earnings-email.ts)
-      // and its `n.symbol ?? <event symbol>` fallback for family-linked notes.
-      date: n.event_date ?? n.created_at.slice(0, 10),
-      noteType: n.note_type,
-      symbol: n.symbol ?? symbol,
-      content: n.content,
-    }),
-  );
+  const notes = loadPrintSheetNotes(db, event.symbol);
 
   return {
     symbol,
@@ -401,7 +406,7 @@ export function composeWorksheetForEvent(
 }
 
 /** Optional named printer (settings key worksheet_printer_name; blank = default). */
-function printerName(db: Database.Database): string | null {
+export function printerName(db: Database.Database): string | null {
   try {
     const row = db
       .prepare(`SELECT value FROM settings WHERE key = 'worksheet_printer_name'`)
@@ -468,7 +473,9 @@ export function printViaLp(
  * unparseable/0-page render, a print error — falls back to the
  * deterministic/rich monospace sheet (`composeWorksheetForEvent`,
  * unchanged), so a print always produces SOME paper. One-sheet rule
- * (2026-08-07: extended to a 3-render ladder, capped — never loops): if the
+ * (2026-08-07: extended to a 3-render ladder, capped — never loops; extracted
+ * to `printHtmlOneSheet`, lib/earnings/print-ladder.ts, in live print v2 slice
+ * E so the post-print sheet shares the SAME ladder): if the
  * first PDF render comes out longer than 2 pages, re-render WITHOUT the
  * "Past prints" section (the flexible, lowest-priority block); if THAT is
  * still longer than 2 pages, re-render once more with `{ compact: true }`
@@ -497,8 +504,6 @@ export async function printWorksheetNow(
     printText?: typeof printViaLp;
   } = {},
 ): Promise<{ symbol: string; road: "pdf" | "monospace" }> {
-  const renderPdf = seams.renderPdf ?? renderHtmlToPdf;
-  const printPdf = seams.printPdf ?? printPdfViaLp;
   const printText = seams.printText ?? printViaLp;
 
   // loadPrintSheetInputs does DB reads + markdown assembly — best-effort,
@@ -512,51 +517,22 @@ export async function printWorksheetNow(
   }
 
   if (sheet && (seams.renderPdf || chromeBinaryPath())) {
+    const printSheet = sheet;
     try {
-      let html = composePrintSheetHtml(sheet);
-      let pdf = await renderPdf(html);
-      let pages = countPdfPages(pdf);
-      // A 0-page count means the renderer produced something unparseable
-      // (garbage bytes, a truncated file) — 0 is NOT <= 2 in a way that
-      // should ever be trusted as "fits on one sheet"; treat it as a render
-      // failure so it lands in the catch below and degrades to monospace.
-      if (pages === 0) throw new Error("unparseable PDF (no /Type /Page objects)");
-      if (pages > 2) {
-        // Step 2 of the one-sheet ladder: drop Past prints (the flexible,
-        // lowest-priority block) and try again.
-        html = composePrintSheetHtml(sheet, { includePastPrints: false });
-        pdf = await renderPdf(html);
-        pages = countPdfPages(pdf);
-        if (pages === 0) throw new Error("unparseable PDF (no /Type /Page objects)");
-        if (pages > 2) {
-          // Step 3: still doesn't fit — compact the layout (smaller font,
-          // tighter spacing) instead of truncating anything, stacked on top
-          // of the already-dropped Past prints. If this is STILL >2 pages,
-          // fall through and print it anyway — notes and the bogies table
-          // never truncate to force a page count. Capped here: never a
-          // fourth render.
-          html = composePrintSheetHtml(sheet, { includePastPrints: false, compact: true });
-          pdf = await renderPdf(html);
-          pages = countPdfPages(pdf);
-          if (pages === 0) throw new Error("unparseable PDF (no /Type /Page objects)");
-        }
-      }
-      const dir = mkdtempSync(join(tmpdir(), "vgs-sheet-"));
-      const pdfPath = join(dir, `${sheet.symbol}-sheet.pdf`);
-      try {
-        writeFileSync(pdfPath, pdf);
-        await printPdf(pdfPath, { printer: printerName(db), title: `${sheet.symbol} earnings sheet` });
-      } finally {
-        // Best-effort: a cleanup throw here must NOT be caught by the outer
-        // try — that would re-enter the monospace fallback AFTER lp already
-        // accepted the PDF job (double paper) and misreport `road`.
-        try {
-          rmSync(dir, { recursive: true, force: true });
-        } catch (err) {
-          console.warn(`[worksheet] temp-dir cleanup failed for ${dir}:`, err);
-        }
-      }
-      return { symbol: sheet.symbol, road: "pdf" };
+      // The three-rung ladder now lives in lib/earnings/print-ladder.ts so the
+      // post-print sheet shares ONE implementation with this one. Behaviour is
+      // unchanged: the pre-print sheet's FLEXIBLE block is "Past prints", a
+      // 0-page render throws, and a still-oversized third render prints anyway.
+      const { pages } = await printHtmlOneSheet({
+        compose: ({ dropFlexible, compact }) =>
+          composePrintSheetHtml(printSheet, { includePastPrints: !dropFlexible, compact }),
+        symbol: printSheet.symbol,
+        title: `${printSheet.symbol} earnings sheet`,
+        printer: printerName(db),
+        seams: { renderPdf: seams.renderPdf, printPdf: seams.printPdf },
+      });
+      void pages; // the worksheet's public shape is unchanged
+      return { symbol: printSheet.symbol, road: "pdf" };
     } catch (err) {
       // PDF-road lp failure deliberately falls through to monospace — paper
       // now beats stampless retries of a road that will keep failing;

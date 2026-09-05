@@ -32,9 +32,24 @@ export interface ReadFact {
   verdict: ReadVerdict;
 }
 
-/** The ONLY view slice E's recap composer may receive (spec §4.4 data-flow
- *  contract): verdict words, no numbers. */
-export type DirectionSafeFacts = ReadonlyArray<{ metric_id: string; label: string; verdict: ReadVerdict }>;
+declare const DIRECTION_SAFE: unique symbol;
+
+/**
+ * The ONLY view slice E's recap composer may receive (spec §4.4 data-flow
+ * contract): verdict words, no numbers.
+ *
+ * NOMINALLY BRANDED (slice E, R-E2). Structurally this is a subset of
+ * ReadFact[], so without the phantom property TypeScript would accept a
+ * ReadFact — numbers and all — wherever this type is expected, and the
+ * "boundary" would be a comment. The brand is applied in exactly ONE place,
+ * read-facts.ts::directionSafeFacts; nothing else in the codebase may assert
+ * this type, because that assertion IS the privacy boundary.
+ */
+export type DirectionSafeFacts = ReadonlyArray<{
+  metric_id: string;
+  label: string;
+  verdict: ReadVerdict;
+}> & { readonly [DIRECTION_SAFE]: true };
 
 export type ReadStatus = "generating" | "done" | "failed" | "superseded";
 

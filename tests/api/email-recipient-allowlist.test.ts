@@ -65,9 +65,15 @@ vi.mock("@/lib/digest/send-briefing", () => ({
   },
 }));
 
-vi.mock("@/lib/digest/send-earnings-email", () => ({
+// Slice E: the two manual entry points moved to the canonical send service,
+// so THAT is the mock target now; the error class the route catches is still
+// defined in the composer module.
+vi.mock("@/lib/earnings/send-service", () => ({
   sendEarningsPreview: hoisted.sendEarningsPreview,
   sendEarningsRecap: hoisted.sendEarningsRecap,
+}));
+
+vi.mock("@/lib/digest/send-earnings-email", () => ({
   EarningsEmailError: class EarningsEmailError extends Error {
     status: number;
     code?: string;
@@ -222,6 +228,76 @@ describe.each(routeCases)("$name — recipient allowlist + rate limit", (rc) => 
     expect(body.error).toMatch(/too many/i);
     // Still only 5 — the 6th request never reached the composer.
     expect(rc.mockFn()).toHaveBeenCalledTimes(5);
+  });
+});
+
+// ── markDelivered: closing a delivery-unknown row by hand (slice E, R-E14) ──
+//
+// The desk checked the mailbox (or the Resend log) and the email DID arrive.
+// No email is composed and none is sent, so the flag is handled BEFORE the
+// recipient allowlist and the rate limit — there is no recipient to check and
+// nothing leaves the machine. A RESEND is the existing path: the same route
+// without this flag.
+
+describe("POST /api/earnings/email — markDelivered", () => {
+  function seedUnknownRow(error: string | null): number {
+    const eventId = Number(
+      hoisted.db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, title, symbol, source_key)
+           VALUES ('manual','earnings','2026-09-10','XMPL earnings','XMPL','k1')`,
+        )
+        .run().lastInsertRowid,
+    );
+    hoisted.db
+      .prepare(
+        `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, error, provider_message_id)
+         VALUES (?, 'recap', 'me@example.com', '2026-09-10 20:30:00', ?, '<m7@d>')`,
+      )
+      .run(eventId, error);
+    return eventId;
+  }
+
+  it("closes a delivery-unknown row: 200, resolved, and nothing is sent", async () => {
+    const eventId = seedUnknownRow("delivery_unknown");
+
+    const res = await earningsEmailPOST(
+      jsonRequest("http://localhost/api/earnings/email", {
+        eventId,
+        phase: "recap",
+        markDelivered: true,
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, phase: "recap", eventId, resolved: "delivered" });
+    expect(hoisted.sendEarningsRecap).not.toHaveBeenCalled();
+    expect(hoisted.sendEarningsPreview).not.toHaveBeenCalled();
+    const row = hoisted.db
+      .prepare(`SELECT error, sent_at, provider_response FROM earnings_emails WHERE event_id = ?`)
+      .get(eventId) as { error: string | null; sent_at: string; provider_response: string | null };
+    expect(row.error).toBeNull();
+    // sent_at stays the moment the provider call started — never the day
+    // someone confirmed it.
+    expect(row.sent_at).toBe("2026-09-10 20:30:00");
+    expect(row.provider_response).toContain("confirmed by hand");
+  });
+
+  it("409s when the row is not awaiting confirmation, and still sends nothing", async () => {
+    const eventId = seedUnknownRow(null);
+
+    const res = await earningsEmailPOST(
+      jsonRequest("http://localhost/api/earnings/email", {
+        eventId,
+        phase: "recap",
+        markDelivered: true,
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("nothing to confirm");
+    expect(hoisted.sendEarningsRecap).not.toHaveBeenCalled();
   });
 });
 

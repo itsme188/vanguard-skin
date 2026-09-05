@@ -115,5 +115,9 @@ export function buildReadFacts(db: Database.Database, printId: number): ReadFact
 }
 
 export function directionSafeFacts(facts: ReadFact[]): DirectionSafeFacts {
-  return facts.map((f) => ({ metric_id: f.metric_id, label: f.label, verdict: f.verdict }));
+  const mapped = facts.map((f) => ({ metric_id: f.metric_id, label: f.label, verdict: f.verdict }));
+  // THE ONE PLACE the direction-safe brand is applied (R-E2). Freezing makes
+  // the runtime match the readonly type, so a consumer cannot push a fact with
+  // numbers back in after the sanitising map.
+  return Object.freeze(mapped) as DirectionSafeFacts;
 }

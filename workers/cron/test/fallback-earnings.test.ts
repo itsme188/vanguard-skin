@@ -235,6 +235,55 @@ describe("runEarningsFallback claim-aware dedup (final-review fix pass)", () => 
     expect(result.sent).toBe(1);
   });
 
+  it("does NOT skip a candidate whose only snapshot audit row is a live 'sending' claim", async () => {
+    // Slice E: 'sending' joined 'in_progress' as a LIVE CLAIM — the Mac has a
+    // provider call on the wire but nothing is delivered, so the snapshot's
+    // audit row must not suppress the cloud fallback. Parity is pinned from
+    // the main repo by tests/workers/fallback-earnings-live-claims.test.ts.
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).earningsEmails = [
+      {
+        id: 1,
+        event_id: 1,
+        phase: "preview",
+        recipient: "user@example.com",
+        sent_at: "2026-06-15 12:00:00",
+        error: "sending",
+      },
+    ];
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.swept).toBe(1);
+    expect(result.sent).toBe(1);
+  });
+
+  it("DOES skip a candidate whose snapshot audit row is a terminal 'delivery_unknown'", async () => {
+    // The opposite of a live claim: terminal, possibly delivered, never
+    // automatically resent. A cloud send here would be the duplicate the
+    // state exists to prevent.
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).earningsEmails = [
+      {
+        id: 1,
+        event_id: 1,
+        phase: "preview",
+        recipient: "user@example.com",
+        sent_at: "2026-06-15 12:00:00",
+        error: "delivery_unknown",
+      },
+    ];
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.swept).toBe(0);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
   it("DOES skip a candidate with a completed local send (error IS NULL) in the snapshot", async () => {
     const snap = makeEarningsSnapshot();
     (snap as unknown as Snapshot).earningsEmails = [
@@ -1365,6 +1414,51 @@ describe("EOD earnings wrap (suppress-only, 2026-08-02)", () => {
     expect(sendEmail).toHaveBeenCalledTimes(3);
     expect(result.sent).toBe(3);
     expect(wrapSkipsOf(result)).toHaveLength(0);
+  });
+
+  it("a member whose recap reached delivery_unknown leaves the cluster (no automatic resend)", async () => {
+    const now = new Date("2026-06-15T20:00:00Z"); // 16:00 ET
+    // Same shape as the completed-audit-row case below: 3 raw members, but id
+    // 3's recap is terminal-unknown -> cluster of 2 -> below threshold -> the
+    // other two fire individually and id 3 is never resent.
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"], [
+        { event_id: 3, phase: "recap", error: "delivery_unknown" },
+      ]),
+    );
+
+    const result = await runEarningsFallback(makeEnv(), { now });
+
+    expect(result.sent).toBe(2); // AAPL + MSFT only
+    expect(subjectsOfAllSends().some((s) => s.includes("NVDA"))).toBe(false);
+    expect(wrapSkipsOf(result)).toHaveLength(0);
+  });
+
+  it("a member whose recap is a live 'sending' claim STAYS in the cluster", async () => {
+    const now = new Date("2026-06-15T20:00:00Z"); // 16:00 ET
+    // A claim is not a send: all 3 members remain, the cluster reaches
+    // WRAP_THRESHOLD and nothing goes out from the cloud.
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"], [
+        { event_id: 3, phase: "recap", error: "sending" },
+      ]),
+    );
+
+    const result = await runEarningsFallback(makeEnv(), { now });
+
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(result.sent).toBe(0);
+    expect(wrapSkipsOf(result).map((d) => d.eventId).sort()).toEqual([1, 2, 3]);
   });
 
   it("members with a completed recap audit row don't count toward the threshold", async () => {

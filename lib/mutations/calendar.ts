@@ -660,7 +660,7 @@ export function correctEarningsEventDate(
     let anyChanged = false;
     for (const row of doomedRows) {
       // Registry merge (v2 slice A): flags, prepare steps, scan ledger, bogeys (repoint +
-      // collision rule), email/skip audit (delivered history wins, in_progress untouched),
+      // collision rule), email/skip audit (delivered history wins, live claims untouched),
       // every registered slice handler. Replaces the two UPDATE OR IGNORE loops that were
       // here — the bogey repoint is the merge's own first statement, and the audit tables
       // keep the same "target's row wins on a UNIQUE collision" outcome.

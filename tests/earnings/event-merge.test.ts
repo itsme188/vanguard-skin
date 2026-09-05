@@ -422,6 +422,28 @@ describe("mergeEarningsEventState — A's merge matrix (spec §4.1)", () => {
     });
   });
 
+  it("[R-E11] a donor's delivery_unknown recap beats the target's failed row, and loses to a confirmed one", () => {
+    // Spot check of the full 3x3 matrix below, kept inside the original
+    // describe so it sits beside its [C-5] sibling.
+    const donor = seed("ACME", "2026-09-02");
+    const target = seed("ACME", "2026-09-03");
+    const email = (eventId: number, error: string | null) =>
+      db
+        .prepare(
+          `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, error)
+           VALUES (?, 'recap', 'me@example.com', datetime('now'), ?)`,
+        )
+        .run(eventId, error);
+    email(donor, "delivery_unknown");
+    email(target, "provider 500");
+
+    db.transaction(() => mergeEarningsEventState(db, donor, target))();
+
+    expect(db.prepare(`SELECT event_id, error FROM earnings_emails`).all()).toEqual([
+      { event_id: target, error: "delivery_unknown" },
+    ]);
+  });
+
   it("refuses to run outside a transaction, and a donor === target call is a no-op", () => {
     const donor = seed("ACME", "2026-09-02");
     expect(() => mergeEarningsEventState(db, donor, donor)).toThrow(/transaction/);
@@ -430,5 +452,134 @@ describe("mergeEarningsEventState — A's merge matrix (spec §4.1)", () => {
     const report = db.transaction(() => mergeEarningsEventState(db, donor, donor))();
     expect(report.changed).toBe(false);
     expect(db.prepare(`SELECT COUNT(*) AS n FROM earnings_worksheet_flags`).get()).toEqual({ n: 1 });
+  });
+});
+
+/**
+ * R-E11 — the collision precedence rank inside builtin:email_audit.
+ *
+ * `delivery_unknown` became a DELIVERED sentinel in slice E (it blocks an
+ * automatic resend), but it is weaker evidence than a confirmed send: an email
+ * MAY have gone out, and we hold a body plus a provider message id but never
+ * heard back. A two-way delivered/not-delivered boolean would rank it equal to
+ * a confirmed send and let a target's unknown row keep its place over a donor
+ * row that DEFINITELY went out — throwing away the better audit record. The
+ * rank is 2 (confirmed) > 1 (unknown) > 0 (legacy failure text).
+ *
+ * mergeEarningsEventState THROWS outside a transaction, so every call is
+ * wrapped. All identifiers are synthetic.
+ */
+describe("event-merge keeps the stronger delivery evidence", () => {
+  const CONFIRMED = null,
+    UNKNOWN = "delivery_unknown",
+    FAILED = "Send failed: boom";
+
+  const merge = (donorId: number, targetId: number) =>
+    db.transaction(() => mergeEarningsEventState(db, donorId, targetId))();
+
+  /**
+   * Two events on the SAME event_date (so the preview plausibility gate is
+   * satisfied whichever phase a case uses) with one earnings_emails row each,
+   * carrying distinguishable provider columns so the test can see WHICH row
+   * survived rather than only which error value did.
+   */
+  function seedMergePair(
+    phase: "preview" | "recap",
+    donorError: string | null,
+    targetError: string | null,
+  ): { donorId: number; targetId: number } {
+    const date = "2026-09-10";
+    const event = (symbol: string) =>
+      Number(
+        db
+          .prepare(
+            `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol)
+             VALUES ('manual','earnings',?,?,?,?)`,
+          )
+          .run(date, `${symbol} earnings`, `k:${symbol}:${date}`, symbol).lastInsertRowid,
+      );
+    const donorId = event("XMPL");
+    const targetId = event("XMPLB");
+    const email = (eventId: number, error: string | null, side: "donor" | "target") =>
+      db
+        .prepare(
+          `INSERT INTO earnings_emails
+             (event_id, phase, recipient, sent_at, error, provider_message_id, provider_response)
+           VALUES (?, ?, 'me@example.com', datetime('now'), ?, ?, ?)`,
+        )
+        .run(eventId, phase, error, `<${side}@d>`, `250 ${side}`);
+    email(donorId, donorError, "donor");
+    email(targetId, targetError, "target");
+    return { donorId, targetId };
+  }
+
+  it.each([
+    // [donor, target, expect the DONOR row to win]
+    [CONFIRMED, CONFIRMED, false],
+    [CONFIRMED, UNKNOWN, true],
+    [CONFIRMED, FAILED, true],
+    [UNKNOWN, CONFIRMED, false],
+    [UNKNOWN, UNKNOWN, false],
+    [UNKNOWN, FAILED, true],
+    [FAILED, CONFIRMED, false],
+    [FAILED, UNKNOWN, false],
+    [FAILED, FAILED, false],
+  ])("donor %s vs target %s → donor wins: %s", (donorError, targetError, donorWins) => {
+    const { donorId, targetId } = seedMergePair("recap", donorError, targetError);
+    merge(donorId, targetId);
+    const row = db
+      .prepare(
+        `SELECT error, provider_message_id, provider_response FROM earnings_emails WHERE event_id = ?`,
+      )
+      .get(targetId) as {
+      error: string | null;
+      provider_message_id: string | null;
+      provider_response: string | null;
+    };
+    expect(row.error).toBe(donorWins ? donorError : targetError);
+    // The row MOVES whole, so the provider columns travel with the winner —
+    // that is the audit history Codex #11 said the old rule could destroy.
+    expect(row.provider_message_id).toBe(donorWins ? "<donor@d>" : "<target@d>");
+    expect(row.provider_response).toBe(donorWins ? "250 donor" : "250 target");
+    // When the donor wins, the target's row is DELETED and the donor's is
+    // re-homed — one row survives. When it loses, the merge leaves the donor's
+    // row where it is (it dies later with the donor event's own delete
+    // cascade), so both rows are still present and the donor's has not moved.
+    expect(db.prepare(`SELECT COUNT(*) c FROM earnings_emails`).get()).toEqual({
+      c: donorWins ? 1 : 2,
+    });
+    expect(
+      db.prepare(`SELECT COUNT(*) c FROM earnings_emails WHERE event_id = ?`).get(donorId),
+    ).toEqual({ c: donorWins ? 0 : 1 });
+  });
+
+  it("a live claim on the target leaves BOTH rows untouched, whatever the donor holds", () => {
+    for (const live of ["in_progress", "sending"]) {
+      const { donorId, targetId } = seedMergePair("recap", null, live);
+      merge(donorId, targetId);
+      expect(
+        (
+          db.prepare(`SELECT error FROM earnings_emails WHERE event_id = ?`).get(targetId) as {
+            error: string;
+          }
+        ).error,
+      ).toBe(live);
+      expect(db.prepare(`SELECT 1 FROM earnings_emails WHERE event_id = ?`).get(donorId)).toBeTruthy();
+      db.prepare(`DELETE FROM earnings_emails`).run();
+      db.prepare(`DELETE FROM calendar_events`).run();
+    }
+  });
+
+  it("a live claim on the DONOR never moves — it is not even selected", () => {
+    const { donorId, targetId } = seedMergePair("recap", "sending", "Send failed: boom");
+    merge(donorId, targetId);
+    // The donor's live claim stays on the donor; the target keeps its failed
+    // row (a claim is not delivery evidence and must not displace anything).
+    expect(
+      db.prepare(`SELECT event_id, error FROM earnings_emails ORDER BY event_id`).all(),
+    ).toEqual([
+      { event_id: donorId, error: "sending" },
+      { event_id: targetId, error: "Send failed: boom" },
+    ]);
   });
 });

@@ -22,12 +22,12 @@
  * differences:
  *   1. Window is [yesterday ET, today ET] by event_date, not a same-day
  *      (date, slot) cluster.
- *   2. A live 'in_progress' recap claim EXCLUDES the event from `unsent`
- *      (another process — the sweep, a manual send — is actively sending
- *      it right now; the debrief must not race it or duplicate the email).
- *      wrap.ts treats an in_progress claim as a cluster MEMBER because the
- *      wrap send itself often holds that very claim; the debrief is a
- *      separate, later pass with no such self-claim to reconcile.
+ *   2. A LIVE recap claim — either 'in_progress' or 'sending' — EXCLUDES the
+ *      event from `unsent` (another process, the sweep or a manual send, is
+ *      actively sending it right now; the debrief must not race it or
+ *      duplicate the email). wrap.ts treats a live claim as a cluster MEMBER
+ *      because the wrap send itself often holds that very claim; the debrief
+ *      is a separate, later pass with no such self-claim to reconcile.
  */
 
 import type Database from "better-sqlite3";
@@ -40,6 +40,7 @@ import { loadIntelView, renderHeadlineTable } from "@/lib/digest/send-earnings-e
 import { getCallNoteNearDateForFamily } from "@/lib/queries/earnings-call-notes";
 import { withClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { wrapSlotFor } from "@/lib/earnings/wrap";
+import { deliveredSql } from "@/lib/earnings/email-states";
 import { demoteEmbeddedHeadings, truncateAtWordBoundary } from "@/lib/digest/call-transcripts";
 import type { CalendarEvent } from "@/lib/types";
 
@@ -109,8 +110,10 @@ export function findDebriefCandidates(
   const yesterday = addDays(today, -1);
   const lookbackStart = addDays(today, -UNSENT_LOOKBACK_DAYS);
 
-  // Any recap row at all — including a live 'in_progress' claim — excludes
-  // an event from `unsent`: someone else is (or already did) send it.
+  // Any recap row at all — including a live claim, 'in_progress' or
+  // 'sending' — excludes an event from `unsent`: someone else is (or already
+  // did) send it. The LEFT JOIN below carries no error predicate at all, which
+  // is exactly that rule.
   const rawRows = db
     .prepare(
       `SELECT ce.id AS eventId, ce.symbol, ce.event_date, ce.event_time, ce.release_time
@@ -165,13 +168,18 @@ export function findDebriefCandidates(
   // "these already went out overnight" line, and a 3-day roster would list
   // names the reader got emails about days ago. Only the UNSENT lookback
   // widens (nothing else recaps those).
+  // deliveredSql is the STRICT delivered reading (NULL, 'sent-by-cloud' or
+  // 'delivery_unknown') — never notLiveClaimSql: a legacy failure string is a
+  // send that never completed, and this line tells the reader "you already got
+  // an email about these". 'delivery_unknown' joins the roster because an
+  // email probably DID go out; saying so twice is the lesser error.
   const alreadyRecapped = db
     .prepare(
       `SELECT ce.symbol, ee.sent_at AS sentAt
          FROM earnings_emails ee
          JOIN calendar_events ce ON ce.id = ee.event_id
         WHERE ee.phase = 'recap'
-          AND (ee.error IS NULL OR ee.error = 'sent-by-cloud')
+          AND ${deliveredSql("ee.error")}
           AND ce.event_date IN (?, ?)
         ORDER BY ee.sent_at`,
     )
