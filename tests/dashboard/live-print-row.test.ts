@@ -279,6 +279,23 @@ describe("IrPageField reads before it writes (Codex 11)", () => {
     // still loading.
     expect(src).toMatch(/"Reading what is stored for this symbol…"/);
   });
+
+  // 2026-09-04: measured live in the DOM at 390px wide (iPhone width): each
+  // `<label className="flex flex-col gap-1">` is a flex item with the
+  // default `min-width:auto`, so it sizes to its max-content width (352px)
+  // rather than shrinking to its 272px share of the row — the input's
+  // `max-w-full` then resolves against that already-oversized label, not the
+  // row. Result: the row (and the whole page, since this sits inside an
+  // expanded live-print row) scrolled horizontally by 24px. Adding
+  // `min-w-0` lets the label shrink below its content size, which brought
+  // `scrollWidth` from 408 back to exactly 384 at 390px wide.
+  it("every flex-column label carries min-w-0 so it can shrink below its content width (390px overflow, 2026-09-04)", () => {
+    const labelClassNames = [...src.matchAll(/<label className="([^"]*flex flex-col[^"]*)"/g)].map((m) => m[1]);
+    expect(labelClassNames.length).toBeGreaterThanOrEqual(2);
+    for (const cls of labelClassNames) {
+      expect(cls).toContain("min-w-0");
+    }
+  });
 });
 
 describe("LivePrintRow — no hover-only affordances, no div onClick, keyboard-first", () => {

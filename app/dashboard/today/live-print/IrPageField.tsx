@@ -120,7 +120,13 @@ export default function IrPageField({
 
   return (
     <div className="flex flex-wrap items-end gap-2 text-[12px]">
-      <label className="flex flex-col gap-1">
+      {/* min-w-0: both labels below are flex items whose default min-width is
+          `auto`, which sizes them to their max-content width (352px) instead
+          of shrinking to their share of the row (272px) — the input's
+          max-w-full then resolves against that oversized label, not the row,
+          producing a 24px horizontal page scroll at 390px wide (measured
+          live in the DOM, 2026-09-04). min-w-0 lets the label shrink. */}
+      <label className="flex flex-col gap-1 min-w-0">
         <span className="text-[10px] uppercase tracking-wider text-ink-faint">IR page</span>
         <input
           type="url"
@@ -137,7 +143,7 @@ export default function IrPageField({
           className="w-[22rem] max-w-full bg-raised border border-edge rounded px-2 py-1 font-mono text-[12px] text-ink focus:outline-none focus:border-gold"
         />
       </label>
-      <label className="flex flex-col gap-1">
+      <label className="flex flex-col gap-1 min-w-0">
         <span className="text-[10px] uppercase tracking-wider text-ink-faint">Link must contain</span>
         <input
           type="text"
