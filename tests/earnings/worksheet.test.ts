@@ -106,6 +106,7 @@ function bogey(overrides: Partial<EarningsBogey>): EarningsBogey {
     segment_breakdown_json: null,
     guidance_notes: null,
     notes: null,
+    extra_metrics_json: null,
     uploaded_at: "2026-08-01 12:00:00",
     ai_extraction_model: null,
     ...overrides,
