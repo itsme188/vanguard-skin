@@ -568,6 +568,14 @@ export async function POST(request: NextRequest) {
       // Un-accept never passes through the accept loop above, so it needs its
       // own check: `clearLineAccepted` would otherwise re-derive a retired row
       // off a candidate pool measured under the retired definition.
+      //
+      // ORDER IS LOAD-BEARING — this must stay BELOW the unknown-metric check
+      // (review M3). `unacceptList` is a cast (`body.unaccept as string[]`),
+      // not an element-checked parse, so a non-string element would reach
+      // `String.prototype.includes` inside `isRetiredMetricId` and surface as a
+      // 500. It cannot today only because `byMetric.has()` above misses on any
+      // non-string and refuses it as a 400 first. Reordering these two opens
+      // that 500.
       refuseIfRetired(metricId);
       if (acceptList.includes(metricId)) {
         throw new RequestRefused(400, {
