@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { ScrollFade } from "./ScrollFade";
 import { EMAIL_FRAME_SANDBOX, withExternalLinkTarget } from "@/lib/email/archive-srcdoc";
 
-interface EmailContentResponse {
+export interface EmailContentResponse {
   title: string;
   sentAt: string;
   sentTo: string;
@@ -14,7 +14,56 @@ interface EmailContentResponse {
   phase: "preview" | "recap";
   /** "cloud" = Worker fallback delivered this one — no local ai_output_md copy exists. */
   sentBy?: "local" | "cloud";
+  /**
+   * Additive — older payloads (and the inline-compose shape below, which
+   * never sets it) may lack the field. "sent-by-cloud" and
+   * "delivery-unknown" ALSO need to widen `sentBy`'s "local" answer:
+   * `sentBy` says who attempted the send, this says whether it is known to
+   * have arrived. A `sentBy === "local"` row can still be
+   * "delivery-unknown" — see lib/earnings/email-states.ts.
+   */
+  deliveryState?: "sent" | "sent-by-cloud" | "delivery-unknown";
   fullHtml: string;
+}
+
+/**
+ * Pure header block for the email viewer modal. Pulled out of
+ * EarningsEmailViewer (which fetches in a useEffect and has no
+ * fixture-driven render path) so it can be exercised directly with
+ * react-dom/server in tests — see
+ * tests/dashboard/earnings-email-viewer-delivery-state.test.ts.
+ */
+export function EmailViewerHeader({ data }: { data: EmailContentResponse | null }) {
+  return (
+    <div className="flex flex-col min-w-0">
+      <h2 className="text-sm font-medium text-ink truncate whitespace-nowrap!">
+        {data?.title ?? "Earnings email"}
+      </h2>
+      {data && data.sentAt && data.sentTo && (
+        <p className="text-[11px] text-ink-faint font-mono mt-0.5 truncate">
+          {data.deliveryState === "delivery-unknown" ? "Delivery unknown" : "Sent"}{" "}
+          {formatSentAt(data.sentAt)} ET to {data.sentTo}
+        </p>
+      )}
+      {data && !data.sentAt && (
+        <p className="text-[11px] text-ink-faint font-mono mt-0.5 truncate">
+          Live preview — not sent
+        </p>
+      )}
+      {data && data.sentBy === "cloud" && (
+        <p className="text-[11px] text-gold-ink font-mono mt-0.5 truncate">
+          Delivered by cloud fallback — no local copy of the prose (scoreboard below is
+          still live-rebuilt)
+        </p>
+      )}
+      {data && data.deliveryState === "delivery-unknown" && (
+        <p className="text-[11px] text-gold-ink font-mono mt-0.5 truncate">
+          The provider never confirmed this email was delivered — check the mailbox or the
+          Resend log for the message id before sending it again.
+        </p>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -134,27 +183,7 @@ export function EarningsEmailViewer({
       <div className="relative w-full max-w-4xl mx-auto my-8 electron:mt-12 max-h-[85dvh] overflow-y-auto rounded-xl border border-edge bg-panel shadow-2xl">
         {/* Sticky header */}
         <div className="sticky top-0 z-10 flex items-baseline justify-between px-5 py-3.5 border-b border-edge bg-panel/95 backdrop-blur-sm rounded-t-xl gap-3">
-          <div className="flex flex-col min-w-0">
-            <h2 className="text-sm font-medium text-ink truncate whitespace-nowrap!">
-              {data?.title ?? "Earnings email"}
-            </h2>
-            {data && data.sentAt && data.sentTo && (
-              <p className="text-[11px] text-ink-faint font-mono mt-0.5 truncate">
-                Sent {formatSentAt(data.sentAt)} ET to {data.sentTo}
-              </p>
-            )}
-            {data && !data.sentAt && (
-              <p className="text-[11px] text-ink-faint font-mono mt-0.5 truncate">
-                Live preview — not sent
-              </p>
-            )}
-            {data && data.sentBy === "cloud" && (
-              <p className="text-[11px] text-gold-ink font-mono mt-0.5 truncate">
-                Delivered by cloud fallback — no local copy of the prose (scoreboard below is
-                still live-rebuilt)
-              </p>
-            )}
-          </div>
+          <EmailViewerHeader data={data} />
           <button
             onClick={onClose}
             className="relative text-ink-faint hover:text-ink text-lg leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-raised shrink-0 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
