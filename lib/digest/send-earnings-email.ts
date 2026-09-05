@@ -9,6 +9,7 @@ import {
   formatPositionPresence,
   formatCombinedExposurePresence,
 } from "@/lib/digest/presence-only-position";
+import { loadPrintWatchReadBlock } from "@/lib/digest/print-watch-read-block";
 import { formatLargeUSD } from "@/lib/format";
 import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
@@ -244,10 +245,17 @@ export async function composeEarningsEmail(
   const pastPrintsBlock =
     phase === "preview" ? renderPastPrintsBlock(intelView?.history ?? []) : "";
   const sheetBogeysBlock = renderSheetBogeysBlock(getBogeysForEvent(db, event.id));
+  // Slice E: the recap's body carries the same direction-safe block the prompt
+  // carried, so the email says what the model was told. A preview has no live
+  // watch to show (the print has not happened yet), so this is recap-only by
+  // construction.
+  const printWatchBlock =
+    phase === "recap" ? ((ctx as RecapContext).printWatchReadBlock ?? "") : "";
   const markdown = assembleEmailMarkdown([
     headlineTable,
     pastPrintsBlock || null,
     sheetBogeysBlock || null,
+    printWatchBlock || null,
     aiMarkdown,
   ]);
   const dateStr = formatDateLong(event.event_date);
@@ -863,6 +871,16 @@ interface RecapContext extends PreviewContext {
   reactionSnapshotMarkdown: string | null;
   freshPressReleases: string | null;
   callNote: EarningsCallNote | null;
+  /** "## Print-watch read" — the direction-safe verdicts and prose the desk's
+   *  own live watch produced for this print; "" when there is no print or no
+   *  completed read (slice E). Never carries a figure the watch computed.
+   *
+   *  OPTIONAL for the same reason `intel` is: four existing test files build an
+   *  `EarningsRecapContext` literal by hand and they are outside this slice's
+   *  ownership. Absence can only mean "render no block", never a wider
+   *  disclosure, so optionality costs the privacy contract nothing —
+   *  `buildRecapContext` (the one producer) always sets it. */
+  printWatchReadBlock?: string;
 }
 
 function buildPreviewContext(
@@ -1075,6 +1093,7 @@ function buildRecapContext(
     reactionSnapshotMarkdown,
     freshPressReleases,
     callNote,
+    printWatchReadBlock: loadPrintWatchReadBlock(db, event.id),
   };
 }
 
@@ -1888,6 +1907,7 @@ export function renderRecapPrompt(ctx: RecapContext): string {
 ${userNotesBlock}
 ${renderCallNoteBlock(ctx.callNote)}
 ${bogeysBlock}
+${ctx.printWatchReadBlock ? `\n${ctx.printWatchReadBlock}\n` : ""}
 ${consensusBlock}
 ${actualBlock}
 ${reactionBlock}
