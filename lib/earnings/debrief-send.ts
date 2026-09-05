@@ -21,7 +21,24 @@
  * the Worker already delivered is dropped, its claim released and a
  * sent-by-cloud audit row recorded in its place) and a mac-sent WRITE per
  * covered member after the send, so the Worker's recap fallback backs off.
- * Both helpers no-op gracefully when WORKER_MARKER_URL is unset.
+ * The READ stays in this module: it is per-member pre-flight over a BATCH, a
+ * different thing from the single-candidate pre-check R-E6 moved into the send
+ * service. The WRITE moved INTO `deliverClaimedBatch` with the rest of the
+ * endgame. Both helpers no-op gracefully when WORKER_MARKER_URL is unset.
+ *
+ * Delivery (live print v2 slice E, R-E9): this module owns no provider call of
+ * its own. The front of the send lifecycle stays here — recipient, claim,
+ * compose — because ONE stapled email covers N events and must claim them all
+ * before composing. (No running marker: that per-event key belongs to the
+ * single-candidate path, which clears it in its own `finally`.) The endgame
+ * belongs to `deliverClaimedBatch` (lib/earnings/send-service.ts), the single
+ * implementation of "a claim becomes a delivered email": every member moves to
+ * the in-flight state carrying the SAME Message-ID before the wire, and
+ * afterwards every member takes the same classification — delivered,
+ * terminal-unknown, or released. Before that, this module mailed and then
+ * audited in a loop of its own, so a crash between the provider accepting and
+ * the loop left N rows on a live claim until the 30-minute reaper deleted them,
+ * and the next morning re-sent the same recaps.
  *
  * Gate: an Intl-derived ET wall-clock window (07:45–08:20) plus a
  * once-per-ET-day settings key (`last_debrief_date`), stamped BEFORE compose
@@ -44,14 +61,15 @@ import {
   claimEarningsEmailSlot,
   releaseEarningsEmailClaim,
 } from "@/lib/digest/send-earnings-email";
+import { checkEarningsCloudMarker } from "@/lib/cron/earnings-marker-check";
 import {
-  checkEarningsCloudMarker,
-  writeMacSentEarningsMarker,
-} from "@/lib/cron/earnings-marker-check";
+  deliverClaimedBatch,
+  type SendServiceSeams,
+} from "@/lib/earnings/send-service";
+import { DELIVERY_UNKNOWN } from "@/lib/earnings/email-states";
 import { recordCloudSentAudit } from "@/lib/mutations/earnings-emails";
 import { generateTextForFeature } from "@/lib/ai/generate";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
-import { sendEmail } from "@/lib/email";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { todayET } from "@/lib/calendar/date-utils";
 
@@ -84,6 +102,8 @@ export async function runMorningDebrief(
     recipient?: string;
     /** DI seam for tests — defaults to generateTextForFeature("earningsDebrief", ...). */
     generate?: (prompt: string) => Promise<string>;
+    /** Passed straight to deliverClaimedBatch — tests inject the provider seam. */
+    seams?: SendServiceSeams;
   } = {},
 ): Promise<DebriefResult> {
   const now = opts.now ?? new Date();
@@ -123,10 +143,11 @@ export async function runMorningDebrief(
   // window.
   setDebriefLastRunDay(db, today);
 
-  // Claim every candidate's recap slot BEFORE composing anything. A per-member
-  // conflict (live 'in_progress' claim held by another process, or a refire —
-  // the recap was already completed between findDebriefCandidates and here)
-  // just drops that member; it never aborts the batch (see file header).
+  // Claim every candidate's recap slot BEFORE composing anything. Anything that
+  // is not a FRESH claim just drops that member — a live claim held by another
+  // process, a recap already completed between findDebriefCandidates and here,
+  // or one that ended in the terminal delivery-unknown state. It never aborts
+  // the batch (see file header).
   const claims: FreshClaim[] = [];
   for (const candidate of unsent) {
     const claim = claimEarningsEmailSlot(db, candidate.eventId, "recap", recipient);
@@ -172,29 +193,69 @@ export async function runMorningDebrief(
     const subject = `☕ ${title}`;
     const html = briefingToHtml(markdown, title);
 
-    await sendEmail({ to: recipient, subject, html, fromLocalPart: "earnings" });
+    // ONE send path (slice E, R-E9). deliverClaimedBatch moves every claimed
+    // member into the in-flight state carrying the SAME Message-ID before the
+    // wire, makes ONE provider call raced against SEND_TIMEOUT_MS, and
+    // afterwards moves every member together: delivered (with a mac-sent
+    // marker each), terminal-unknown (also with a mac-sent marker each, so the
+    // Worker fallback never sends a second copy), or released. Every name
+    // shares the same ai_output_md, exactly as this module's own audit loop
+    // used to write it, so the in-app viewer still shows the whole debrief for
+    // whichever name is opened.
+    const res = await deliverClaimedBatch(
+      db,
+      {
+        members: claims.map((c) => ({
+          eventId: c.candidate.eventId,
+          phase: "recap" as const,
+          token: c.token,
+          mode: "fresh" as const,
+        })),
+        recipient,
+        subject,
+        html,
+        aiInputHash: null,
+        aiOutputMd: markdown,
+      },
+      opts.seams,
+    );
 
-    // Success: convert every fresh claim into a completed audit row. Every
-    // covered name shares the same email, so every row shares the same
-    // ai_output_md — the in-app viewer then shows the full debrief for
-    // whichever name the user opens. Each name also gets its own mac-sent KV
-    // marker (same per-member choreography the retired wrap used) so the
-    // Worker's recap fallback backs off for a name the Mac just covered.
-    for (const c of claims) {
-      recordDebriefAudit(db, { eventId: c.candidate.eventId, recipient, aiOutputMd: markdown });
-      await writeMacSentEarningsMarker("recap", c.candidate.eventId).catch(() => null);
+    if (res.outcome === "failed") {
+      // Definitive non-delivery: the primitive already released every fresh
+      // claim, so the members return to candidacy on the next
+      // findDebriefCandidates call (tomorrow — today's day key is stamped).
+      console.warn(`[debrief] send failed; claims released: ${res.reason}`);
+      return { sent: false, covered: [] };
     }
 
+    // The full claimed list even if the primitive dropped a member whose row
+    // moved under it (it warns per dropped member): the email named every one
+    // of them, so the log line is honest about what was in the message.
     const covered = claimedCandidates.map((c) => c.symbol);
+
+    if (res.outcome === DELIVERY_UNKNOWN) {
+      // The email MAY have gone out, and every member is already terminal with
+      // a mac-sent marker, so nothing resends it automatically. Reported as
+      // SENT: that is the safe reading, and the day key was stamped before
+      // compose either way. The desk reconciles from the message id — POST
+      // /api/earnings/email with markDelivered, or an explicit refire.
+      console.warn(
+        `[debrief] delivery unknown (message ${res.providerMessageId}) — ${res.note}; ` +
+          `covered ${covered.length} name(s): ${covered.join(", ")} — reconcile by hand`,
+      );
+      return { sent: true, covered };
+    }
+
     console.log(`[debrief] sent — covered ${covered.length} name(s): ${covered.join(", ")}`);
     return { sent: true, covered };
   } catch (err) {
-    // Never throw to the sweep: release every fresh claim so the members
-    // return to candidacy on the next findDebriefCandidates call (tomorrow —
-    // the day key above stays stamped, so there's no retry today).
+    // COMPOSE-side failures only now: deliverClaimedBatch never throws, it
+    // returns an outcome. Release every fresh claim so the members return to
+    // candidacy tomorrow (the day key above stays stamped, so there is no
+    // retry today).
     releaseFreshClaims(db, claims);
     console.warn(
-      "[debrief] compose/send failed; released fresh claim(s):",
+      "[debrief] compose failed; released fresh claim(s):",
       err instanceof Error ? err.message : err,
     );
     return { sent: false, covered: [] };
@@ -210,26 +271,6 @@ function releaseFreshClaims(db: Database.Database, claims: FreshClaim[]): void {
   for (const c of claims) {
     releaseEarningsEmailClaim(db, c.candidate.eventId, "recap", c.token);
   }
-}
-
-// Same upsert shape as recordWrapAudit (module-private in wrap-send.ts) /
-// recordEarningsEmailAudit (module-private in send-earnings-email.ts):
-// converts the 'in_progress' claim row into a completed row (error = NULL).
-// UNIQUE(event_id, phase) makes it idempotent.
-function recordDebriefAudit(
-  db: Database.Database,
-  input: { eventId: number; recipient: string; aiOutputMd: string },
-): void {
-  db.prepare(
-    `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error)
-     VALUES (?, 'recap', ?, datetime('now'), NULL, ?, NULL)
-     ON CONFLICT(event_id, phase) DO UPDATE SET
-       recipient = excluded.recipient,
-       sent_at = excluded.sent_at,
-       ai_input_hash = excluded.ai_input_hash,
-       ai_output_md = excluded.ai_output_md,
-       error = excluded.error`,
-  ).run(input.eventId, input.recipient, input.aiOutputMd);
 }
 
 // ─── Window + once-per-day gate ────────────────────────────────────────────

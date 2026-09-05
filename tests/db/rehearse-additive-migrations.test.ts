@@ -5,7 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { runMigrations } from "@/lib/db/migrate";
 import { CODE_MIGRATIONS } from "@/lib/db/code-migrations";
-import { rehearseAdditiveMigrations } from "@/scripts/rehearse-additive-migrations";
+import {
+  rehearseAdditiveMigrations,
+  isColumnAppend,
+  splitTopLevelItems,
+  stripSqlComments,
+} from "@/scripts/rehearse-additive-migrations";
 
 let tmpDir: string;
 
@@ -164,5 +169,235 @@ describe("rehearseAdditiveMigrations", () => {
     } finally {
       delete CODE_MIGRATIONS[probe];
     }
+  });
+  // ─── R-E-C9: ADD COLUMN against a table with TRAILING CONSTRAINTS ────────
+  // The 092 case, and the one the original prefix test got wrong.
+
+  it("PASSES ADD COLUMN twice on a table whose body ends in a TABLE CONSTRAINT (the 092 case, R-E-C9)", async () => {
+    // `earnings_emails` ends `…, error TEXT, UNIQUE(event_id, phase))`, so
+    // SQLite splices an added column in BEFORE that constraint, not before the
+    // closing paren. The original prefix test therefore reported this genuinely
+    // additive migration as a REBUILD — the live-copy rehearsal of 092 failed
+    // on exactly this. Two columns, because 092 adds two.
+    //
+    // REVERT isColumnAppend TO THE PREFIX TEST AND THIS TEST FAILS.
+    const dbPath = path.join(tmpDir, "rehearse-ddl-constrained.db");
+    buildFullyMigratedDb(dbPath);
+    const probe = "092_ddl_probe_not_a_real_migration.ts";
+    CODE_MIGRATIONS[probe] = (db) => {
+      db.exec(`ALTER TABLE earnings_emails ADD COLUMN qa_probe_message_id TEXT`);
+      db.exec(`ALTER TABLE earnings_emails ADD COLUMN qa_probe_response TEXT`);
+    };
+    try {
+      const result = await rehearseAdditiveMigrations(dbPath);
+      expect(result.pending).toEqual([probe]);
+      expect(result.failures).toEqual([]);
+      expect(result.ok).toBe(true);
+      expect(result.report).toContain(
+        "[PASS] pre-existing table and index DDL additive (column-append: earnings_emails)",
+      );
+      expect(result.report).toContain("RESULT: PASS");
+    } finally {
+      delete CODE_MIGRATIONS[probe];
+    }
+  });
+
+  it("FAILS when a pending migration RENAMES a pre-existing column (not additive)", async () => {
+    // The item-list comparison must stay a real guard: a renamed column is an
+    // edited item, not an inserted one.
+    const dbPath = path.join(tmpDir, "rehearse-ddl-rename.db");
+    buildFullyMigratedDb(dbPath);
+    const probe = "092_ddl_probe_not_a_real_migration.ts";
+    CODE_MIGRATIONS[probe] = (db) =>
+      db.exec(`ALTER TABLE earnings_emails RENAME COLUMN ai_output_md TO qa_probe_renamed`);
+    try {
+      const result = await rehearseAdditiveMigrations(dbPath);
+      expect(result.ok).toBe(false);
+      expect(result.failures).toEqual(['DDL changed for table "earnings_emails"']);
+      expect(result.report).toContain("RESULT: FAIL");
+    } finally {
+      delete CODE_MIGRATIONS[probe];
+    }
+  });
+
+  // ─── isColumnAppend, directly (R-E-C9) ──────────────────────────────────
+
+  describe("isColumnAppend", () => {
+    // A table with BOTH hazards: a CHECK carrying a comma inside parens AND
+    // trailing table constraints.
+    const base =
+      `CREATE TABLE t (\n` +
+      `  id INTEGER PRIMARY KEY AUTOINCREMENT,\n` +
+      `  kind TEXT NOT NULL CHECK (kind IN ('a', 'b')),\n` +
+      `  price NUMERIC(10, 2),\n` +
+      `  note TEXT,\n` +
+      `  UNIQUE(id, kind)\n` +
+      `)`;
+
+    it("accepts a column inserted before the trailing table constraint", () => {
+      const after = base.replace("  UNIQUE(id, kind)", "  extra TEXT,\n  UNIQUE(id, kind)");
+      expect(isColumnAppend(base, after)).toBe(true);
+    });
+
+    it("accepts a column appended to a table with NO trailing constraint (today's case, unbroken)", () => {
+      const plain = `CREATE TABLE t (id INTEGER PRIMARY KEY, note TEXT)`;
+      expect(isColumnAppend(plain, `CREATE TABLE t (id INTEGER PRIMARY KEY, note TEXT, extra TEXT)`)).toBe(true);
+    });
+
+    it("REJECTS a column inserted BETWEEN two existing columns (review Important 2)", () => {
+      // SQLite records the offset of the END of the last column definition
+      // (`Table.addColOffset`) and splices an added column exactly there, so
+      // `ALTER TABLE … ADD COLUMN` can never produce a mid-table column. Only a
+      // table REBUILD can — and a rebuild is the class this check exists to
+      // catch. The subsequence walk on its own ACCEPTS this shape; the
+      // splice-point clause (`j !== lastColIdx + 1`) is what rejects it.
+      //
+      // DELETE THAT CLAUSE AND THIS TEST FAILS: `expected true to be false` on
+      // the first assertion below.
+      const mid = base.replace("  price NUMERIC(10, 2),", "  extra TEXT,\n  price NUMERIC(10, 2),");
+      expect(isColumnAppend(base, mid)).toBe(false);
+
+      // ...at the very front of the body, too.
+      const front = base.replace(
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,",
+        "  extra TEXT,\n  id INTEGER PRIMARY KEY AUTOINCREMENT,",
+      );
+      expect(isColumnAppend(base, front)).toBe(false);
+
+      // ...and a legitimate trailing append alongside it does NOT launder the
+      // mid-table one: ANY insertion before a surviving column definition is
+      // enough to reject the whole change.
+      const both = mid.replace("  UNIQUE(id, kind)", "  extra2 TEXT,\n  UNIQUE(id, kind)");
+      expect(isColumnAppend(base, both)).toBe(false);
+    });
+
+    it("REJECTS a mid-table insertion on a table with NO trailing constraint either", () => {
+      const plain = `CREATE TABLE t (id INTEGER PRIMARY KEY, note TEXT)`;
+      expect(
+        isColumnAppend(plain, `CREATE TABLE t (id INTEGER PRIMARY KEY, extra TEXT, note TEXT)`),
+      ).toBe(false);
+      // The same column at the end is the real ADD COLUMN shape and still passes.
+      expect(
+        isColumnAppend(plain, `CREATE TABLE t (id INTEGER PRIMARY KEY, note TEXT, extra TEXT)`),
+      ).toBe(true);
+    });
+
+    it("REJECTS a column inserted AFTER a trailing TABLE CONSTRAINT (fix round 3)", () => {
+      // SQLite splices an added column IMMEDIATELY after the last pre-existing
+      // column definition — `Table.addColOffset` is that exact byte offset —
+      // so in the rewritten DDL a column definition always PRECEDES the table
+      // constraints. `…, UNIQUE(id, kind), extra TEXT)` is therefore a
+      // hand-written rebuild's shape, not an append, even though `extra TEXT`
+      // does sit after the last column definition.
+      //
+      // WIDEN THE POSITION TEST BACK TO `j <= lastColIdx` AND THIS TEST FAILS:
+      // `expected true to be false` on the first assertion below.
+      const trailing = base.replace("  UNIQUE(id, kind)", "  UNIQUE(id, kind),\n  extra TEXT");
+      expect(isColumnAppend(base, trailing)).toBe(false);
+
+      // ...and between two trailing table constraints is the same class.
+      const twoConstraints = base.replace("  UNIQUE(id, kind)", "  UNIQUE(id, kind),\n  CHECK (price > 0)");
+      const wedged = twoConstraints.replace("  CHECK (price > 0)", "  extra TEXT,\n  CHECK (price > 0)");
+      expect(isColumnAppend(twoConstraints, wedged)).toBe(false);
+
+      // ...while the SAME column one item earlier — immediately after `note
+      // TEXT`, where SQLite actually writes it — is a genuine append. Both
+      // sides of the boundary, so the test pins the splice point itself.
+      const spliced = twoConstraints.replace("  UNIQUE(id, kind)", "  extra TEXT,\n  UNIQUE(id, kind)");
+      expect(isColumnAppend(twoConstraints, spliced)).toBe(true);
+    });
+
+    it("REJECTS a rebuild that drops a CHECK", () => {
+      const rebuilt = base.replace(" CHECK (kind IN ('a', 'b'))", "");
+      expect(isColumnAppend(base, rebuilt)).toBe(false);
+      // ...even when it also adds a column, which is the sneaky shape.
+      expect(isColumnAppend(base, rebuilt.replace("  note TEXT,", "  note TEXT,\n  extra TEXT,"))).toBe(false);
+    });
+
+    it("REJECTS a rebuild that REORDERS two existing columns", () => {
+      const reordered =
+        `CREATE TABLE t (\n` +
+        `  id INTEGER PRIMARY KEY AUTOINCREMENT,\n` +
+        `  price NUMERIC(10, 2),\n` +
+        `  kind TEXT NOT NULL CHECK (kind IN ('a', 'b')),\n` +
+        `  note TEXT,\n` +
+        `  UNIQUE(id, kind)\n` +
+        `)`;
+      expect(isColumnAppend(base, reordered)).toBe(false);
+    });
+
+    it("REJECTS a changed TABLE CONSTRAINT", () => {
+      expect(isColumnAppend(base, base.replace("UNIQUE(id, kind)", "UNIQUE(id)"))).toBe(false);
+    });
+
+    it("REJECTS an INSERTED table constraint (ADD COLUMN cannot produce one)", () => {
+      const after = base.replace("  UNIQUE(id, kind)", "  CHECK (price > 0),\n  UNIQUE(id, kind)");
+      expect(isColumnAppend(base, after)).toBe(false);
+    });
+
+    it("REJECTS a dropped column, a renamed column, a renamed table and an unchanged body", () => {
+      expect(isColumnAppend(base, base.replace("  note TEXT,\n", ""))).toBe(false);
+      expect(isColumnAppend(base, base.replace("note TEXT", "notes TEXT"))).toBe(false);
+      expect(isColumnAppend(base, base.replace("CREATE TABLE t (", "CREATE TABLE t2 ("))).toBe(false);
+      expect(isColumnAppend(base, base)).toBe(false); // nothing added is not an append
+    });
+
+    it("REJECTS a changed trailing table option (WITHOUT ROWID / STRICT)", () => {
+      const wr = `CREATE TABLE t (a TEXT, b TEXT, PRIMARY KEY (a)) WITHOUT ROWID`;
+      expect(isColumnAppend(wr, `CREATE TABLE t (a TEXT, b TEXT, c TEXT, PRIMARY KEY (a)) WITHOUT ROWID`)).toBe(true);
+      expect(isColumnAppend(wr, `CREATE TABLE t (a TEXT, b TEXT, c TEXT, PRIMARY KEY (a))`)).toBe(false);
+    });
+
+    it("is immune to `--` comments inside the stored DDL, apostrophes included", () => {
+      // 19 real tables carry `--` notes inside CREATE TABLE; collapsing
+      // whitespace would fold one over the rest of the body.
+      const commented =
+        `CREATE TABLE t (\n` +
+        `  id INTEGER PRIMARY KEY, -- the desk's own id, don't reuse\n` +
+        `  note TEXT,\n` +
+        `  UNIQUE(id)\n` +
+        `)`;
+      const after = commented.replace("  UNIQUE(id)", "  extra TEXT,\n  UNIQUE(id)");
+      expect(isColumnAppend(commented, after)).toBe(true);
+      expect(isColumnAppend(commented, commented.replace("  note TEXT,\n", ""))).toBe(false);
+    });
+  });
+
+  describe("splitTopLevelItems", () => {
+    it("does not split a column definition on a comma nested in parens or quotes", () => {
+      expect(
+        splitTopLevelItems(
+          `id INTEGER, kind TEXT CHECK (kind IN ('a', 'b')), price NUMERIC(10, 2), ref INTEGER REFERENCES t(a, b), UNIQUE(id, kind)`,
+        ),
+      ).toEqual([
+        "id INTEGER",
+        "kind TEXT CHECK (kind IN ('a', 'b'))",
+        "price NUMERIC(10, 2)",
+        "ref INTEGER REFERENCES t(a, b)",
+        "UNIQUE(id, kind)",
+      ]);
+    });
+
+    it("treats a comma inside a quoted default or a quoted identifier as text", () => {
+      expect(splitTopLevelItems(`a TEXT DEFAULT 'x, y', "b, c" TEXT, [d, e] TEXT`)).toEqual([
+        "a TEXT DEFAULT 'x, y'",
+        '"b, c" TEXT',
+        "[d, e] TEXT",
+      ]);
+    });
+  });
+
+  describe("stripSqlComments", () => {
+    it("removes line and block comments but never touches quoted text", () => {
+      expect(stripSqlComments(`a TEXT, -- don't split me\n b TEXT`).replace(/\s+/g, " ").trim()).toBe(
+        "a TEXT, b TEXT",
+      );
+      expect(stripSqlComments(`a TEXT /* b TEXT */, c TEXT`).replace(/\s+/g, " ").trim()).toBe(
+        "a TEXT , c TEXT",
+      );
+      expect(stripSqlComments(`a TEXT DEFAULT '-- not a comment'`)).toBe(
+        `a TEXT DEFAULT '-- not a comment'`,
+      );
+    });
   });
 });

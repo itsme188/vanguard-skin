@@ -3,11 +3,21 @@
  * (/api/cron/earnings-sweep) and the launchd tsx fallback
  * (scripts/sweep-earnings-emails.ts).
  *
- * Carries the Phase-4 Mac↔cloud KV marker dance that previously lived only
- * in the (uncalled) per-event routes /api/cron/earnings-{preview,recap} —
- * without it, the Worker fallback and the Mac sweep double-sent every
- * preview whenever the Mac was awake (audit 2026-07-04, bug B1). Marker
- * helpers no-op gracefully when WORKER_MARKER_URL is unset.
+ * SELECTION AND BOOKKEEPING, not sending (slice E). This file decides WHICH
+ * candidates to offer the canonical send service (lib/earnings/send-service.ts)
+ * and turns each outcome it gets back into a SweepCandidateResult. The
+ * Phase-4 Mac↔cloud KV marker dance that used to live here — the cloud
+ * pre-check, the running marker, the mac-sent write — moved INTO the service
+ * (R-E6/spec §4.5) so the Today nudge and the manual route get it too; without
+ * that dance the Worker fallback and the Mac double-sent every preview
+ * whenever the Mac was awake (audit 2026-07-04, bug B1).
+ *
+ * Two marker writes stay here, because neither sits on a send path: the
+ * already-reported preview skip (nothing is ever offered to the service for
+ * that candidate) and the reaper's delivery-unknown flips (R-E4b — any
+ * earnings_emails row removes its event from findEmailCandidates, so the
+ * service would never see it). Marker helpers no-op gracefully when
+ * WORKER_MARKER_URL is unset.
  */
 
 import type Database from "better-sqlite3";
@@ -15,16 +25,13 @@ import {
   findEmailCandidates,
   type EmailSweepOpts,
 } from "./enrichment-runner";
+import { reapStaleEarningsEmailClaims } from "@/lib/digest/send-earnings-email";
+// ONE send path (slice E): the service owns the claim, the awaited markers, the
+// cloud pre-check, the provider call and every state transition on the audit
+// row. The sweep decides WHICH candidates to offer it and books what came back.
+import { sendEarningsCandidate, type SendOutcome } from "@/lib/earnings/send-service";
+import { DELIVERY_UNKNOWN, IN_PROGRESS, notLiveClaimSql } from "@/lib/earnings/email-states";
 import {
-  sendEarningsPreview,
-  sendEarningsRecap,
-  EarningsEmailError,
-  reapStaleEarningsEmailClaims,
-} from "@/lib/digest/send-earnings-email";
-import {
-  checkEarningsCloudMarker,
-  setEarningsRunningMarker,
-  clearEarningsRunningMarker,
   writeMacSentEarningsMarker,
   fetchCloudSentEarnings,
   postMacRecentEarningsSweepMarker,
@@ -35,7 +42,6 @@ import { sendPushover } from "@/lib/alerts/notify-pushover";
 import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earnings-settings";
 import { getExpectedRecapCluster, wrapSlotFor, WRAP_THRESHOLD } from "@/lib/earnings/wrap";
 import { runMorningDebrief } from "@/lib/earnings/debrief-send";
-import { sendReporterRecapEmail } from "@/lib/earnings/reporter-recap";
 import { printArmedWorksheets } from "@/lib/earnings/worksheet";
 import { todayET } from "@/lib/calendar/date-utils";
 import { drainCloudOutbox, writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
@@ -53,7 +59,18 @@ export interface SweepCandidateResult {
   symbol: string;
   phase: "preview" | "recap";
   ok: boolean;
-  skipped?: "cloud-already-sent" | "claim-held" | "not-ready" | "wrap-pending" | "already-reported";
+  skipped?:
+    | "cloud-already-sent"
+    | "claim-held"
+    | "not-ready"
+    | "wrap-pending"
+    | "already-reported"
+    /** A completed row already exists for this (event, phase) — the Mac sent it
+     *  (or the desk confirmed it) and the service refused to refire. */
+    | "already-sent"
+    /** Terminal: an earlier attempt never learned the provider's answer. Never
+     *  resent automatically (spec §7) — reconciled by hand. */
+    | "delivery-unknown";
   status?: number;
   message?: string;
   durationMs: number;
@@ -134,15 +151,44 @@ export async function runEarningsEmailSweep(
     prepareBudgetMs?: number;
   } = {},
 ): Promise<SweepSummary> {
-  // Reap stale (>30 min) 'in_progress' claim rows BEFORE candidate selection
-  // — a stale claim from a dead process otherwise hides its event from
+  // Reap stale (>30 min) composing claim rows BEFORE candidate selection — a
+  // stale claim from a dead process otherwise hides its event from
   // findEmailCandidates forever (the claim row satisfies the "already
-  // audited" exclusion but no email was ever sent). See B3.
-  const reaped = reapStaleEarningsEmailClaims(db);
-  if (reaped > 0) {
+  // audited" exclusion but no email was ever sent). See B3. The same call also
+  // flips an orphaned in-flight send to the terminal delivery-unknown state
+  // (slice E) and reports which (event, phase) pairs it actually moved.
+  const reapResult = await reapStaleEarningsEmailClaims(db);
+  if (reapResult.reaped > 0) {
     console.warn(
-      `[earnings-sweep] reaped ${reaped} stale in-progress claim(s) from a dead process`,
+      `[earnings-sweep] reaped ${reapResult.reaped} stale in-progress claim(s) from a dead process`,
     );
+  }
+  if (reapResult.flippedUnknown > 0) {
+    console.warn(
+      `[earnings-sweep] ${reapResult.flippedUnknown} send(s) left in flight by a dead process → delivery unknown (pushed)`,
+    );
+  }
+  // R-E4b: a flipped row must ALSO claim its (phase, event) in KV, or the
+  // Worker fallback is free to send a second copy of a recap that may already
+  // have gone out. The reaper itself stays DB-only (it runs on every tick from
+  // a cron path that may have no Worker reachability), so the marker write
+  // lives here, where every other marker call already does.
+  //
+  // This cannot be deferred to the next candidate pass: findEmailCandidates
+  // LEFT JOINs earnings_emails and keeps only `ee.id IS NULL`, so ANY row for
+  // that (event, phase) — the delivery-unknown row included — removes the
+  // event from candidacy, the send path is never invoked for it, and no marker
+  // would ever be written. Fail-open: the flip is already committed and a
+  // marker write is idempotent, so a KV failure is a warning and nothing more.
+  for (const flip of reapResult.flipped) {
+    try {
+      await writeMacSentEarningsMarker(flip.phase, flip.eventId);
+    } catch (err) {
+      console.warn(
+        `[earnings-sweep] delivery-unknown marker write failed for event ${flip.eventId} (${flip.phase}):`,
+        err,
+      );
+    }
   }
 
   // Drain cloud-sent markers into audit rows BEFORE candidate selection so a
@@ -250,20 +296,6 @@ export async function runEarningsEmailSweep(
       }
     }
 
-    const cloudMarker = await checkEarningsCloudMarker(cand.phase, cand.eventId);
-    if (cloudMarker?.sentBy === "cloud") {
-      recordCloudSentAudit(db, cand.eventId, cand.phase);
-      results.push({
-        eventId: cand.eventId,
-        symbol: cand.symbol,
-        phase: cand.phase,
-        ok: true,
-        skipped: "cloud-already-sent",
-        durationMs: Date.now() - t0,
-      });
-      continue;
-    }
-
     // Already-reported guard (2026-07-23, IMAX): a wrong AMC/BMO slot from
     // the calendar source can put a preview candidate in-window AFTER the
     // real print — the window is measured against the RECORDED release
@@ -308,47 +340,85 @@ export async function runEarningsEmailSweep(
       }
     }
 
-    void setEarningsRunningMarker(cand.phase, cand.eventId);
+    // The service is handed the candidate and gives back ONE outcome; every
+    // branch below is bookkeeping. Nothing in THIS block composes, claims,
+    // sends or touches a marker any more — the per-candidate cloud pre-check
+    // moved into the service too (R-E6), so the Today nudge gets it as well.
+    // (The already-reported guard above keeps its own marker write: no send is
+    // attempted there, so the service never sees that candidate.)
+    let outcome: SendOutcome;
     try {
-      if (cand.phase === "preview") {
-        await sendEarningsPreview(db, cand.eventId);
-      } else if (cand.reporterRecap) {
-        // Lean deterministic read-through reporter recap (feedback #3) —
-        // fires at first actuals, zero AI, same claim + marker discipline.
-        await sendReporterRecapEmail(db, cand.eventId);
-      } else {
-        await sendEarningsRecap(db, cand.eventId);
-      }
-      void writeMacSentEarningsMarker(cand.phase, cand.eventId);
-      results.push({
-        eventId: cand.eventId,
-        symbol: cand.symbol,
-        phase: cand.phase,
-        ok: true,
-        durationMs: Date.now() - t0,
-      });
+      outcome = await sendEarningsCandidate(
+        db,
+        {
+          eventId: cand.eventId,
+          symbol: cand.symbol,
+          phase: cand.phase,
+          reporterRecap: cand.reporterRecap,
+        },
+        { mode: "sweep" },
+      );
     } catch (err) {
-      const eErr = err instanceof EarningsEmailError ? err : null;
-      const status = eErr ? eErr.status : 500;
-      const message = err instanceof Error ? err.message : String(err);
-      // Benign cross-process 409s (another process holds the claim; recap
-      // actuals not ready) are coordination outcomes, not failures — season
-      // launchd logs should read clean (2026-07-04 review minor).
-      const benign409 = eErr !== null && status === 409;
+      // BACKSTOP ONLY. The service classifies every ending itself and is not
+      // meant to throw; if it ever does (a bug, or a failure outside its own
+      // try), one candidate must not take the whole tick down with it — the
+      // blocked-recap alerts, the print-watch ensure, the aliveness marker and
+      // the prepare pass all still have to run. This replaces the per-candidate
+      // try/catch the old inline send path carried.
+      console.error(`[email-sweep] ${cand.symbol} ${cand.phase}: the send service threw:`, err);
       results.push({
         eventId: cand.eventId,
         symbol: cand.symbol,
         phase: cand.phase,
-        ok: benign409,
-        skipped: benign409
-          ? (eErr!.code === "claim_held" ? "claim-held" : "not-ready")
-          : undefined,
-        status,
-        message,
+        ok: false,
+        status: 500,
+        message: err instanceof Error ? err.message : String(err),
         durationMs: Date.now() - t0,
       });
-    } finally {
-      void clearEarningsRunningMarker(cand.phase, cand.eventId);
+      continue;
+    }
+    const base = {
+      eventId: cand.eventId,
+      symbol: cand.symbol,
+      phase: cand.phase,
+      durationMs: Date.now() - t0,
+    };
+    switch (outcome.outcome) {
+      case "sent":
+        results.push({ ...base, ok: true });
+        break;
+      case IN_PROGRESS:
+        // Benign cross-process coordination, not a failure — season launchd
+        // logs must read clean (2026-07-04 review minor).
+        results.push({ ...base, ok: true, skipped: "claim-held", status: 409 });
+        break;
+      case "already_sent":
+        results.push({
+          ...base,
+          ok: true,
+          skipped: outcome.sentBy === "cloud" ? "cloud-already-sent" : "already-sent",
+        });
+        break;
+      case DELIVERY_UNKNOWN:
+        // Terminal and NOT resendable automatically (spec §7). The reaper has
+        // already pushed; this line is the sweep's own breadcrumb.
+        console.warn(
+          `[email-sweep] ${cand.symbol} ${cand.phase}: delivery unknown since ${outcome.since} (message ${outcome.providerMessageId ?? "unrecorded"}) — reconcile by hand`,
+        );
+        results.push({ ...base, ok: true, skipped: "delivery-unknown" });
+        break;
+      case "refused":
+        results.push({
+          ...base,
+          ok: true,
+          skipped: "not-ready",
+          status: outcome.status,
+          message: outcome.reason,
+        });
+        break;
+      case "failed":
+        results.push({ ...base, ok: false, status: outcome.status, message: outcome.reason });
+        break;
     }
   }
 
@@ -485,7 +555,7 @@ export async function alertBlockedRecaps(
          FROM calendar_events ce
          JOIN earnings_emails ep
            ON ep.event_id = ce.id AND ep.phase = 'preview'
-          AND (ep.error IS NULL OR ep.error NOT IN ('in_progress'))
+          AND ${notLiveClaimSql("ep.error")}
          LEFT JOIN earnings_emails er
            ON er.event_id = ce.id AND er.phase = 'recap'
          LEFT JOIN earnings_email_skips es

@@ -1,4 +1,17 @@
 /**
+ * RETIRED (2026-08-02) — nothing calls runWrapPass any more; the morning
+ * debrief replaced it. It is kept because its clustering logic is the only
+ * record of how slot wraps were assembled.
+ *
+ * IT IS OUTSIDE THE SLICE-E SEND LIFECYCLE: it claims slots and calls sendEmail
+ * directly, so it writes no in-flight row, records no Message-ID, cannot
+ * classify a provider timeout and can never produce a terminal delivery-unknown
+ * state. BEFORE REVIVING IT, port it onto
+ * lib/earnings/send-service.ts::deliverClaimedBatch exactly as
+ * lib/earnings/debrief-send.ts did — the batch primitive exists for this shape
+ * of caller. tests/repo/one-claim-owner.test.ts allowlists this file WITH that
+ * justification and asserts this comment still says so.
+ *
  * RETIRED from the sweep 2026-08-02 — the EOD wrap was replaced by the 7:45
  * ET morning debrief (lib/earnings/debrief-send.ts). The Worker's wrap-send
  * fallback is ALSO retired (2026-08-02 evening, suppress-but-never-send —
@@ -51,6 +64,7 @@ import {
   renderHeadlineTable,
   EarningsEmailError,
 } from "@/lib/digest/send-earnings-email";
+import { DELIVERY_UNKNOWN } from "@/lib/earnings/email-states";
 import { sendEmail } from "@/lib/email";
 import { withClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
@@ -121,9 +135,11 @@ export interface ClaimReadyMembersResult {
   claims: Claimed[];
   /**
    * Event ids whose recap was ALREADY completed by a concurrent process
-   * between cluster-build and claim (`claimEarningsEmailSlot` returned mode
-   * "refire" — a completed row exists, not a live 'in_progress' conflict). No
-   * token was issued for these, so there's nothing to release; the caller
+   * between cluster-build and claim. Slice E: in the default `automatic` mode
+   * `claimEarningsEmailSlot` now REFUSES a completed row, with `reason`
+   * already_sent or delivery_unknown, where it used to return mode "refire" —
+   * either way it is a completed row, not a live-claim conflict, and either
+   * way no token was issued, so there is still nothing to release. The caller
    * must drop them silently: never composed, never stapled, never counted in
    * `wrapped`, never re-audited.
    */
@@ -133,18 +149,18 @@ export interface ClaimReadyMembersResult {
 /**
  * Claim EVERY ready member's recap slot BEFORE composing anything.
  *
- * A live claim conflict ('in_progress' held by another process, not stale
- * enough to take over) aborts the whole batch: every claim taken so far in
- * this call is released and an empty result is returned so the caller
- * no-ops the whole tick (next tick retries everyone, including the members
- * that claimed fine here).
+ * A live claim conflict (a claim held by another process, not stale enough to
+ * take over) aborts the whole batch: every claim taken so far in this call is
+ * released and an empty result is returned so the caller no-ops the whole tick
+ * (next tick retries everyone, including the members that claimed fine here).
  *
- * A "refire" claim means the slot already has a COMPLETED row — the
- * member's individual recap was sent by a concurrent process sometime
- * between the cluster being built and this claim attempt. That is NOT a
- * conflict and must NOT abort the batch; it just means this member is
- * already delivered, so it goes into `delivered` instead of `claims` and is
- * never touched again by the wrap.
+ * A COMPLETED row means the slot already has an email — the member's
+ * individual recap was sent by a concurrent process sometime between the
+ * cluster being built and this claim attempt. That is NOT a conflict and must
+ * NOT abort the batch; it just means this member is already delivered, so it
+ * goes into `delivered` instead of `claims` and is never touched again by the
+ * wrap. Slice E surfaces it as a refusal carrying `reason` already_sent or
+ * delivery_unknown rather than as a "refire" claim.
  */
 export function claimReadyMembers(
   db: Database.Database,
@@ -156,12 +172,15 @@ export function claimReadyMembers(
   for (const m of ready) {
     const claim = claimEarningsEmailSlot(db, m.eventId, "recap", recipient);
     if (!claim.claimed) {
+      // A COMPLETED row (already_sent / delivery_unknown) is not a conflict —
+      // that member is already delivered, so it drops out and the batch goes
+      // on. Only a LIVE claim held by another process aborts the tick.
+      if (claim.reason === "already_sent" || claim.reason === DELIVERY_UNKNOWN) {
+        delivered.push(m.eventId);
+        continue;
+      }
       releaseFreshClaims(db, claims);
       return { claims: [], delivered: [] };
-    }
-    if (claim.mode === "refire") {
-      delivered.push(m.eventId);
-      continue;
     }
     claims.push({ member: m, mode: claim.mode, token: claim.token });
   }

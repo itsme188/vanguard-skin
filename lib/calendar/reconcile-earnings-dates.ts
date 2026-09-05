@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { mergeEarningsEventState } from "@/lib/earnings/event-merge";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
+import { notLiveClaimSql } from "@/lib/earnings/email-states";
 
 // ── Earnings date cross-check reconciliation ────────────────────────
 //
@@ -233,16 +234,18 @@ function createDependentRepointer(db: Database.Database) {
   const repointBogeys = db.prepare(
     "UPDATE OR IGNORE earnings_bogeys SET event_id = ? WHERE event_id = ?",
   );
-  // `error = 'in_progress'` is a LIVE claim (claimEarningsEmailSlot in
-  // lib/digest/send-earnings-email.ts) — a delete/reconcile racing an
-  // in-flight send must never move it onto the target event out from under
-  // the sender. earnings_emails.error is a tri-state and every reader
-  // already excludes 'in_progress'; this writer follows the same rule.
+  // A LIVE CLAIM is either of two values — `error = 'in_progress'` (claimed,
+  // composing, claimEarningsEmailSlot in lib/digest/send-earnings-email.ts) or
+  // `error = 'sending'` (the provider call is on the wire). A delete/reconcile
+  // racing either must never move the row onto the target event out from under
+  // the sender. earnings_emails.error is a five-value state column
+  // (lib/earnings/email-states.ts) and every reader already excludes both live
+  // values; this writer follows the same rule, through the same helper.
   const repointRecapEmails = db.prepare(
     `UPDATE OR IGNORE earnings_emails
         SET event_id = ?
       WHERE event_id = ? AND phase = 'recap'
-        AND (error IS NULL OR error != 'in_progress')`,
+        AND ${notLiveClaimSql("error")}`,
   );
   const repointRecapSkips = db.prepare(
     "UPDATE OR IGNORE earnings_email_skips SET event_id = ? WHERE event_id = ? AND phase = 'recap'",
@@ -251,7 +254,7 @@ function createDependentRepointer(db: Database.Database) {
     `UPDATE OR IGNORE earnings_emails
         SET event_id = ?
       WHERE event_id = ? AND phase = 'preview' AND date(sent_at) >= date(?, '-1 day')
-        AND (error IS NULL OR error != 'in_progress')`,
+        AND ${notLiveClaimSql("error")}`,
   );
   const repointPreviewSkips = db.prepare(
     `UPDATE OR IGNORE earnings_email_skips

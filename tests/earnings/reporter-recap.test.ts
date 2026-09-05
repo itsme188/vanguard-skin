@@ -1,26 +1,29 @@
 /**
- * Read-through reporter recap (feedback #3) — candidacy, composer, send path.
+ * Read-through reporter recap (feedback #3) — candidacy, composer, gates.
  *
  * A pure read-through reporter (NOT held/watchlist) with FIRST ACTUALS
  * captured and ≥1 live pair gets a lean deterministic email — zero AI, fires
  * before enrichment completes. Spec:
  * docs/superpowers/specs/2026-08-03-reporter-recap-design.md
+ *
+ * Slice E: this module is a COMPOSER. The claim, the recipient, the provider
+ * call and the audit row belong to lib/earnings/send-service.ts, so nothing
+ * here can reach @/lib/email and a withheld recap now writes nothing at all —
+ * there is no claim left to release. The two tests that were about the SEND
+ * (a live claim; a claim released when the provider throws) live in
+ * tests/earnings/send-service.test.ts.
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 
-vi.mock("@/lib/email", () => ({ sendEmail: vi.fn(async () => undefined) }));
-import { sendEmail } from "@/lib/email";
-const mockedSend = vi.mocked(sendEmail);
-
 import { findEmailCandidates } from "@/lib/calendar/enrichment-runner";
 import {
   composeReporterRecap,
   reporterActualsUsable,
   getNextPrintForTarget,
-  sendReporterRecapEmail,
+  composeReporterRecapEmail,
 } from "@/lib/earnings/reporter-recap";
 import { EarningsEmailError } from "@/lib/digest/send-earnings-email";
 
@@ -95,7 +98,6 @@ beforeEach(() => {
   db.pragma("foreign_keys = ON");
   runMigrations(db);
   vi.clearAllMocks();
-  mockedSend.mockResolvedValue(undefined as never);
 });
 
 const NOW = new Date("2026-07-31T12:00:00Z"); // 08:00 ET on the PRLB print day
@@ -252,63 +254,56 @@ describe("getNextPrintForTarget", () => {
   });
 });
 
-describe("sendReporterRecapEmail", () => {
+describe("composeReporterRecapEmail", () => {
   function seedFullScenario(): number {
     seedHolding("XMTR");
     seedPair("PRLB", "XMTR");
     return seedReporterEvent("PRLB", "2026-07-31");
   }
 
-  it("sends, completes the audit row with the markdown, and reports targets", async () => {
+  it("composes the subject, the markdown, the HTML and the targets — and writes NOTHING", async () => {
     const eventId = seedFullScenario();
-    const res = await sendReporterRecapEmail(db, eventId, { recipient: "me@example.com" });
-    expect(res.targets).toEqual(["XMTR"]);
-    expect(mockedSend).toHaveBeenCalledTimes(1);
-    const call = mockedSend.mock.calls[0][0];
-    expect(call.subject).toContain("PRLB printed");
-    expect(call.fromLocalPart).toBe("earnings");
+    const composed = await composeReporterRecapEmail(db, eventId);
 
-    const audit = db
-      .prepare(`SELECT error, ai_output_md FROM earnings_emails WHERE event_id = ? AND phase = 'recap'`)
-      .get(eventId) as { error: string | null; ai_output_md: string | null };
-    expect(audit.error).toBeNull();
-    expect(audit.ai_output_md).toContain("Read-through: XMTR");
+    expect(composed.targets).toEqual(["XMTR"]);
+    expect(composed.symbol).toBe("PRLB");
+    expect(composed.subject).toContain("PRLB printed");
+    // The subject already carries its own glyph — the service must not add one.
+    expect(composed.title).toBe(composed.subject);
+    expect(composed.markdown).toContain("Read-through: XMTR");
+    // Deterministic road: what is stored as the audit's "AI output" IS the body,
+    // and there is no prompt, so there is no hash.
+    expect(composed.aiMarkdown).toBe(composed.markdown);
+    expect(composed.promptHash).toBeNull();
+    expect(composed.html).toContain("<");
+
+    // The composer owns no row: the send service writes the audit row (see
+    // tests/earnings/send-service.test.ts, the reporter-recap case).
+    expect(
+      db.prepare(`SELECT COUNT(*) AS n FROM earnings_emails WHERE event_id = ?`).get(eventId),
+    ).toEqual({ n: 0 });
   });
 
-  it("withholds on implausible actuals — 409 not_ready, no audit row", async () => {
+  it("withholds on implausible actuals — 409 not_ready, nothing written", async () => {
     seedHolding("XMTR");
     seedPair("PRLB", "XMTR");
     const eventId = seedReporterEvent("PRLB", "2026-07-31", { actual: "EPS 2.20 · Rev 149,300,000" });
-    await expect(
-      sendReporterRecapEmail(db, eventId, { recipient: "me@example.com" }),
-    ).rejects.toMatchObject({ status: 409, code: "not_ready" });
-    expect(mockedSend).not.toHaveBeenCalled();
+    await expect(composeReporterRecapEmail(db, eventId)).rejects.toMatchObject({
+      status: 409,
+      code: "not_ready",
+    });
     expect(
       db.prepare(`SELECT COUNT(*) AS n FROM earnings_emails WHERE event_id = ?`).get(eventId),
     ).toEqual({ n: 0 });
   });
 
-  it("respects a live claim (409 claim_held)", async () => {
-    const eventId = seedFullScenario();
-    db.prepare(
-      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, error, claim_token)
-       VALUES (?, 'recap', 'other@x.com', datetime('now'), 'in_progress', 'tok-1')`,
-    ).run(eventId);
-    await expect(
-      sendReporterRecapEmail(db, eventId, { recipient: "me@example.com" }),
-    ).rejects.toMatchObject({ status: 409, code: "claim_held" });
-    expect(mockedSend).not.toHaveBeenCalled();
-  });
-
-  it("releases its claim when the send throws (no lingering in_progress row)", async () => {
-    const eventId = seedFullScenario();
-    mockedSend.mockRejectedValueOnce(new Error("smtp down"));
-    await expect(
-      sendReporterRecapEmail(db, eventId, { recipient: "me@example.com" }),
-    ).rejects.toThrow("smtp down");
-    expect(
-      db.prepare(`SELECT COUNT(*) AS n FROM earnings_emails WHERE event_id = ?`).get(eventId),
-    ).toEqual({ n: 0 });
+  it("withholds when there is no live read-through pair left — 409 not_ready", async () => {
+    seedPair("PRLB", "XMTR"); // XMTR never held → the pair is not live
+    const eventId = seedReporterEvent("PRLB", "2026-07-31");
+    await expect(composeReporterRecapEmail(db, eventId)).rejects.toMatchObject({
+      status: 409,
+      code: "not_ready",
+    });
   });
 
   it("withholds when actuals exist but the release instant is still in the future (pre-print typo floor)", async () => {
@@ -318,14 +313,13 @@ describe("sendReporterRecapEmail", () => {
       // hasn't happened yet (manual-entry typo scenario).
       vi.setSystemTime(new Date("2026-07-31T10:00:00Z"));
       const eventId = seedFullScenario(); // release_time 07:30 ET = 11:30 UTC
-      await expect(
-        sendReporterRecapEmail(db, eventId, { recipient: "me@example.com" }),
-      ).rejects.toMatchObject({ status: 409, code: "not_ready" });
-      expect(mockedSend).not.toHaveBeenCalled();
-      // Past the release → the same event sends.
+      await expect(composeReporterRecapEmail(db, eventId)).rejects.toMatchObject({
+        status: 409,
+        code: "not_ready",
+      });
+      // Past the release → the same event composes.
       vi.setSystemTime(new Date("2026-07-31T12:30:00Z"));
-      const res = await sendReporterRecapEmail(db, eventId, { recipient: "me@example.com" });
-      expect(res.targets).toEqual(["XMTR"]);
+      expect((await composeReporterRecapEmail(db, eventId)).targets).toEqual(["XMTR"]);
     } finally {
       vi.useRealTimers();
     }
@@ -335,7 +329,7 @@ describe("sendReporterRecapEmail", () => {
     const eventId = seedFullScenario();
     db.prepare(`UPDATE calendar_events SET actual_value = NULL WHERE id = ?`).run(eventId);
     try {
-      await sendReporterRecapEmail(db, eventId, { recipient: "me@example.com" });
+      await composeReporterRecapEmail(db, eventId);
       expect.unreachable();
     } catch (err) {
       expect(err).toBeInstanceOf(EarningsEmailError);

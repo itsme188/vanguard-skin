@@ -6,8 +6,11 @@
  * count reaches WRAP_THRESHOLD. Expected = covered (held/watchlist
  * family-aware, or the event itself armed — spec §4.1), family-deduped,
  * not superseded/skipped/muted, recap not completed.
- * An 'in_progress' claim row keeps the event a member (someone is sending
- * it — usually the wrap itself mid-flight).
+ * A LIVE CLAIM row keeps the event a member — 'in_progress' (composing) and
+ * so does 'sending' (the provider call is on the wire); someone is sending
+ * it, usually the wrap itself mid-flight. Only a STRICTLY delivered row
+ * (NULL, 'sent-by-cloud' or 'delivery_unknown' — deliveredSql) takes the
+ * event out of the cluster.
  *
  * Spec: docs/superpowers/specs/2026-07-16-eod-earnings-wrap-design.md
  */
@@ -18,6 +21,7 @@ import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
 import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earnings-settings";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { deliveredSql } from "@/lib/earnings/email-states";
 import type { CalendarEvent } from "@/lib/types";
 
 export const WRAP_THRESHOLD = 3;
@@ -106,7 +110,7 @@ export function getExpectedRecapCluster(
     (db.prepare(
       `SELECT event_id FROM earnings_emails
         WHERE phase = 'recap' AND event_id IN (${ph})
-          AND (error IS NULL OR error = 'sent-by-cloud')`,
+          AND ${deliveredSql("error")}`,
     ).all(...ids) as { event_id: number }[]).map((r) => r.event_id),
   );
   const skipped = new Set(

@@ -5,9 +5,9 @@
  * `VACUUM INTO` copy already migrated to the 089 cutover) to rehearse the
  * FINAL chain the packaged app applies on first launch after the slice C+D
  * deploy: whatever `.sql`/code migrations on disk are not yet in
- * `schema_migrations` (090 from slice C, 091 from slice D — never hardcoded
- * here per controller ruling R-D13, so the same script keeps working if the
- * pending set changes before the deploy).
+ * `schema_migrations` (090 from slice C, 091 from slice D, 092 from slice E —
+ * never hardcoded here per controller ruling R-D13, so the same script keeps
+ * working if the pending set changes before the deploy).
  *
  * Invariant under test: an ADDITIVE migration chain must not touch a single
  * byte of pre-existing data. Concretely, for every table that existed BEFORE
@@ -16,10 +16,14 @@
  *   - its row count is unchanged
  *   - its `sqlite_sequence.seq` (if it has one) is unchanged
  *   - its stored DDL (`sqlite_master.sql`) is unchanged, OR changed only by
- *     APPENDING column definitions before the closing parenthesis — an
- *     `ALTER TABLE … ADD COLUMN` is additive and is reported as a
- *     `column-append`, while a rebuild, a dropped CHECK or a removed column
- *     fails (review M8, ruling R-D30)
+ *     ADDING column definitions — an `ALTER TABLE … ADD COLUMN` is additive
+ *     and is reported as a `column-append`, while a rebuild, a dropped CHECK,
+ *     a removed or reordered column, a column inserted anywhere but SQLite's
+ *     own splice point (between two existing columns, or after a trailing
+ *     table constraint), or a changed table constraint fails (review M8,
+ *     rulings R-D30 and R-E-C9). NOTE that splice point is IMMEDIATELY after
+ *     the last COLUMN DEFINITION, which on a table with trailing table
+ *     constraints is NOT at the end of the body — see `isColumnAppend`.
  * and for every index that existed before, it still exists with byte-identical
  * DDL (an index has no additive form — a changed definition is a rewrite);
  * `schema_migrations`
@@ -168,27 +172,242 @@ function ddlByName(db: Database.Database): Map<string, string | null> {
 const collapse = (sql: string): string => sql.replace(/\s+/g, " ").trim();
 
 /**
- * R-D30: is `after` just `before` with more columns appended?
+ * Remove SQL comments (`-- …` to end of line, and block comments) from a DDL
+ * string WITHOUT touching comment-looking text inside a quoted literal or
+ * identifier.
  *
- * `ALTER TABLE … ADD COLUMN` rewrites the stored DDL by inserting the new
- * column definition immediately before the table's final `)`. So the change is
- * additive exactly when, whitespace aside, everything up to that final paren is
- * unchanged as a PREFIX (nothing removed, no constraint edited), the addition
- * starts a new comma-separated item, and whatever follows the paren
- * (`WITHOUT ROWID`, `STRICT`) is unchanged.
+ * This is not hygiene, it is correctness: 19 of this schema's tables carry
+ * `--` notes INSIDE their CREATE TABLE body (calendar_events, corporate_actions,
+ * print_watch_callouts, …), and `sqlite_master.sql` stores that text verbatim.
+ * Once whitespace is collapsed onto one line such a comment swallows whatever
+ * followed it, and a comment containing an odd number of apostrophes ("-- the
+ * desk's own note") would derail the item splitter's quote tracking outright.
+ * Comments carry no schema meaning, so they come out before anything is
+ * compared — leaving the comparison about columns and constraints only.
  */
-function isColumnAppend(before: string, after: string): boolean {
-  const b = collapse(before);
-  const a = collapse(after);
-  const bi = b.lastIndexOf(")");
-  const ai = a.lastIndexOf(")");
-  if (bi === -1 || ai === -1) return false;
-  if (collapse(b.slice(bi + 1)) !== collapse(a.slice(ai + 1))) return false;
-  const bBody = b.slice(0, bi).trim();
-  const aBody = a.slice(0, ai).trim();
-  if (!aBody.startsWith(bBody)) return false;
-  const added = aBody.slice(bBody.length).trim();
-  return added.startsWith(",") && added.length > 1;
+export function stripSqlComments(sql: string): string {
+  let out = "";
+  let quote: string | null = null; // the CLOSING delimiter we are waiting for
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (quote !== null) {
+      out += ch;
+      if (ch === quote) {
+        if (quote !== "]" && sql[i + 1] === quote) {
+          out += sql[i + 1];
+          i++;
+          continue;
+        }
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === "[") {
+      quote = "]";
+      out += ch;
+      continue;
+    }
+    if (ch === "-" && sql[i + 1] === "-") {
+      while (i < sql.length && sql[i] !== "\n") i++;
+      out += "\n"; // keep the line break so tokens either side stay separate
+      continue;
+    }
+    if (ch === "/" && sql[i + 1] === "*") {
+      i += 2;
+      while (i < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) i++;
+      i += 1; // the loop's own i++ steps past the closing "/"
+      out += " ";
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Split a collapsed CREATE TABLE body into its TOP-LEVEL comma-separated items
+ * — column definitions and table constraints. Commas nested inside parentheses
+ * (`CHECK (x IN ('a','b'))`, `NUMERIC(10, 2)`, `FOREIGN KEY (a) REFERENCES
+ * t(b, c)`) or inside a quoted string / quoted identifier must NOT split.
+ * SQLite quotes with `'`, `"`, backticks and `[...]`, and escapes the first
+ * three by doubling.
+ */
+export function splitTopLevelItems(body: string): string[] {
+  const items: string[] = [];
+  let depth = 0;
+  let quote: string | null = null; // the CLOSING delimiter we are waiting for
+  let start = 0;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (quote !== null) {
+      if (ch === quote) {
+        if (quote !== "]" && body[i + 1] === quote) {
+          i++; // a doubled delimiter is an escaped one, not the end
+          continue;
+        }
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "[") {
+      quote = "]";
+      continue;
+    }
+    if (ch === "(") {
+      depth++;
+      continue;
+    }
+    if (ch === ")") {
+      depth--;
+      continue;
+    }
+    if (ch === "," && depth === 0) {
+      items.push(body.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  items.push(body.slice(start).trim());
+  return items.filter((s) => s.length > 0);
+}
+
+/** A TABLE CONSTRAINT rather than a column definition. Inserting one of these
+ *  is NOT an additive column append — `ALTER TABLE … ADD COLUMN` cannot
+ *  produce it, so its appearance means the table was rebuilt. Matched on the
+ *  item's first word, case-insensitively; a column that borrowed one of these
+ *  reserved words as its NAME would be rejected, which is the safe direction. */
+export function isTableConstraintItem(item: string): boolean {
+  const first = item.trim().split(/[\s(]/)[0] ?? "";
+  return ["UNIQUE", "PRIMARY", "FOREIGN", "CHECK", "CONSTRAINT"].includes(first.toUpperCase());
+}
+
+/**
+ * R-D30 / R-E-C9: is `after` just `before` with more COLUMNS added?
+ *
+ * The original form of this test assumed SQLite inserts a new column
+ * immediately before the body's final `)`, and asked whether the old body is a
+ * string PREFIX of the new one. That assumption is WRONG, and slice E's
+ * migration 092 is where it broke: SQLite inserts an added column after the
+ * last COLUMN DEFINITION, which on a table carrying trailing TABLE CONSTRAINTS
+ * sits BEFORE them. `earnings_emails` ends `…, error TEXT, UNIQUE(event_id,
+ * phase))`, so `ALTER TABLE … ADD COLUMN provider_message_id TEXT` produces
+ * `…, error TEXT, provider_message_id TEXT, UNIQUE(event_id, phase))` — the
+ * prefix test fails and a genuinely additive migration is reported as a
+ * rebuild. Slices C and D never hit it because 090 and 091 CREATE tables; 092
+ * is the first ADD COLUMN this script has seen against a constrained table.
+ *
+ * So the comparison is on ITEM LISTS, not on a string prefix. Additive iff:
+ *   - the header (`CREATE TABLE "name"`) and anything after the closing paren
+ *     (`WITHOUT ROWID`, `STRICT`) are unchanged;
+ *   - every BEFORE item appears in AFTER, byte-identical once whitespace is
+ *     collapsed, in the SAME RELATIVE ORDER;
+ *   - the only difference is one or more INSERTED items;
+ *   - every inserted item is a COLUMN DEFINITION, never a table constraint; and
+ *   - every inserted item sits IMMEDIATELY AFTER the last pre-existing COLUMN
+ *     DEFINITION — i.e. at SQLite's one and only splice point.
+ *
+ * That last clause is the review's Important 2, tightened in fix round 3.
+ * SQLite records the offset of the END of the last column definition
+ * (`Table.addColOffset`) and splices an added column exactly there, so an
+ * added column ALWAYS lands after every pre-existing column and BEFORE every
+ * table constraint. Two shapes are therefore impossible for `ALTER TABLE …
+ * ADD COLUMN`, and both are rejected: a column wedged BETWEEN two existing
+ * columns, and a column sitting AFTER a trailing table constraint
+ * (`…, UNIQUE(a), extra TEXT)`). Each means the table was REBUILT, which is
+ * the class this whole check exists to catch. The subsequence walk on its own
+ * accepted both.
+ *
+ * So, stated positively, this function returns true for EXACTLY ONE kind of
+ * change: one or more whole new column definitions appearing as an unbroken
+ * run at the splice point, with every other byte of the DDL — header, every
+ * pre-existing column, every table constraint, the trailing table options —
+ * untouched and in the same order.
+ *
+ * It returns false for everything else, including: a rebuild; a dropped or
+ * added CHECK; a removed, renamed or retyped column; a REORDER of two existing
+ * columns; an inserted or changed table constraint; a changed trailing table
+ * option (`WITHOUT ROWID` / `STRICT`); a renamed table; an unchanged body
+ * (nothing added is not an append); and a table whose BEFORE body has no
+ * column definition at all (`lastColIdx === -1` — not a shape SQLite produces,
+ * and failing closed there costs nothing).
+ *
+ * Against the string-prefix test it replaces, it is NOT simply "stronger" (an
+ * earlier revision of this comment claimed that and the review disproved it).
+ * The two differ in both directions, and each difference is deliberate:
+ *   - STRICTER by one shape — the prefix test accepted a column appended at
+ *     the very end of the body, AFTER any trailing table constraint. That is
+ *     a hand-written rebuild's shape, not one SQLite writes, and it is now
+ *     rejected.
+ *   - LOOSER by one shape — it accepts the 092 shape, columns added before a
+ *     trailing table constraint, which is what SQLite ACTUALLY writes and
+ *     which the prefix test wrongly reported as a rebuild.
+ * Everything else the prefix test rejected is still rejected, the mid-table
+ * insertion included (which the FIRST item-list revision briefly let through).
+ * Net: the accepted set is now exactly SQLite's own `ADD COLUMN` output —
+ * neither wider nor narrower.
+ */
+export function isColumnAppend(before: string, after: string): boolean {
+  // Comments are stripped BEFORE collapsing — see stripSqlComments.
+  const b = collapse(stripSqlComments(before));
+  const a = collapse(stripSqlComments(after));
+
+  const bClose = b.lastIndexOf(")");
+  const aClose = a.lastIndexOf(")");
+  if (bClose === -1 || aClose === -1) return false;
+  // Trailing table options (WITHOUT ROWID, STRICT) must be untouched.
+  if (collapse(b.slice(bClose + 1)) !== collapse(a.slice(aClose + 1))) return false;
+
+  const bOpen = b.indexOf("(");
+  const aOpen = a.indexOf("(");
+  if (bOpen === -1 || aOpen === -1 || bOpen >= bClose || aOpen >= aClose) return false;
+  // `CREATE TABLE "name"` — a renamed table is not an append.
+  if (collapse(b.slice(0, bOpen)) !== collapse(a.slice(0, aOpen))) return false;
+
+  const bItems = splitTopLevelItems(b.slice(bOpen + 1, bClose));
+  const aItems = splitTopLevelItems(a.slice(aOpen + 1, aClose));
+  if (bItems.length === 0 || aItems.length <= bItems.length) return false;
+
+  // The index of the LAST pre-existing column definition. SQLite splices an
+  // added column immediately after it, so nothing may be inserted at or before
+  // this point. A table with no column definition at all is not a shape we can
+  // reason about — fail closed.
+  let lastColIdx = -1;
+  for (let i = 0; i < bItems.length; i++) {
+    if (!isTableConstraintItem(bItems[i])) lastColIdx = i;
+  }
+  if (lastColIdx === -1) return false;
+
+  // Walk AFTER left to right, consuming BEFORE in order. Anything that does
+  // not match the next expected BEFORE item is an INSERTION.
+  const inserted: string[] = [];
+  let j = 0;
+  for (const item of aItems) {
+    if (j < bItems.length && item === bItems[j]) {
+      j++;
+      continue;
+    }
+    // `j` is the next BEFORE item still to be matched, and SQLite's splice
+    // point is IMMEDIATELY after the last pre-existing column definition, so
+    // the only position an ADD COLUMN can occupy is `j === lastColIdx + 1`.
+    // `j <= lastColIdx` means a pre-existing COLUMN DEFINITION is still ahead
+    // of this insertion (a mid-table insertion); `j > lastColIdx + 1` means a
+    // pre-existing TABLE CONSTRAINT has already been consumed, so the item was
+    // spliced in after the constraints. ADD COLUMN can do neither.
+    if (j !== lastColIdx + 1) return false;
+    inserted.push(item);
+  }
+  // A BEFORE item that never matched was dropped, edited or reordered.
+  if (j !== bItems.length) return false;
+  if (inserted.length === 0) return false;
+  return inserted.every((item) => !isTableConstraintItem(item));
 }
 
 function appliedMigrations(db: Database.Database): Set<string> {
