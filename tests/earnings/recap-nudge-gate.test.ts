@@ -153,7 +153,7 @@ describe("acceptedHeadlinePair / hasAcceptedHeadlinePair", () => {
         line("revenue_q"),
       ]),
     ).toEqual({ eps: 2.4, revenue: 100_000_000 });
-    // …and GAAP is the fallback when adj is present but unusable
+    // …and GAAP is the fallback when adj is NOT ACCEPTED
     expect(
       acceptedHeadlinePair([
         line("eps_adj_q", { state: "conflict", value: null }),
@@ -161,6 +161,16 @@ describe("acceptedHeadlinePair / hasAcceptedHeadlinePair", () => {
         line("revenue_q"),
       ]),
     ).toEqual({ eps: 1.1, revenue: 100_000_000 });
+    // R-E-C3: but an ACCEPTED adj line is the chosen line even when it carries
+    // no number ("not disclosed"), so there is no fall-through to GAAP — the
+    // accept route commits to adj and 400s, and the gate must agree.
+    expect(
+      acceptedHeadlinePair([
+        line("eps_adj_q", { value: null }),
+        line("eps_gaap_q", { value: 1.1 }),
+        line("revenue_q"),
+      ]),
+    ).toBeNull();
     expect(acceptedHeadlinePair([line("eps_adj_q")])).toBeNull();
   });
 });
@@ -248,6 +258,40 @@ describe("evaluateRecapNudge", () => {
     expect(evaluateRecapNudge(db, printId)).toEqual({ ok: false, reason: GATE_PAIR_CHANGED });
   });
 
+  it("passes when another writer reformatted the SAME pair on the event (R-E-C4)", () => {
+    // `mergeFinnhubActual` renders revenue with no separators, but other
+    // writers of calendar_events.actual_value use toLocaleString("en-US")
+    // (lib/calendar/enrich-actuals.ts, workers/cron/src/enrich-actuals.ts), and
+    // lib/calendar/cloud-reconcile.ts writes the column with
+    // `COALESCE(?, actual_value)` and no manual_actuals_at guard — so a Worker
+    // tick after a local promote can rewrite the IDENTICAL pair with commas.
+    // Same numbers, different string: NOT a changed pair.
+    upsertLines(db, printId, [line("eps_adj_q"), line("revenue_q")]);
+    promote();
+    const canonical = mergeFinnhubActual(null, { eps: 2, revenue: 100_000_000 }) ?? "";
+    const withSeparators = canonical.replace("100000000", (100_000_000).toLocaleString("en-US"));
+    // Prove the fixture really exercises the difference the ruling is about.
+    expect(withSeparators).not.toBe(canonical);
+    expect(withSeparators).toContain(",");
+    db.prepare(`UPDATE calendar_events SET actual_value = ? WHERE id = ?`).run(
+      withSeparators,
+      eventId,
+    );
+    expect(evaluateRecapNudge(db, printId)).toEqual({ ok: true, eventId, symbol: "XMPL" });
+  });
+
+  it("still refuses free text that names no figure at all", () => {
+    // Normalising the stored value must not soften a real refusal: Finnhub
+    // occasionally writes prose ("Pre-announcement only"), which parses to
+    // neither field and normalises to null — nothing to narrate, so the gate
+    // still refuses.
+    upsertLines(db, printId, [line("eps_adj_q"), line("revenue_q")]);
+    db.prepare(
+      `UPDATE calendar_events SET actual_value = ?, manual_actuals_at = datetime('now') WHERE id = ?`,
+    ).run("Pre-announcement only", eventId);
+    expect(evaluateRecapNudge(db, printId)).toEqual({ ok: false, reason: GATE_PAIR_CHANGED });
+  });
+
   it("is a pure read — it writes nothing", () => {
     upsertLines(db, printId, [line("eps_adj_q"), line("revenue_q")]);
     promote();
@@ -273,8 +317,11 @@ describe("evaluateRecapNudge", () => {
 
 describe("parity with the server's own promote rule", () => {
   /** Seeds a fresh event + print with `lines`, then drives the REAL accept
-   *  route with promoteHeadline:true and returns its status. */
-  async function promoteThroughAcceptRoute(lines: PrintWatchLine[]): Promise<number> {
+   *  route with promoteHeadline:true and returns its status AND its error copy
+   *  — a bare status would let an unrelated 404/500 read as agreement. */
+  async function promoteThroughAcceptRoute(
+    lines: PrintWatchLine[],
+  ): Promise<{ status: number; error: string | null }> {
     const caseEventId = insertEvent();
     const casePrintId = upsertPrint(db, caseEventId, "XMPL", TODAY, "16:05");
     upsertLines(db, casePrintId, lines);
@@ -285,26 +332,55 @@ describe("parity with the server's own promote rule", () => {
         body: JSON.stringify({ eventId: caseEventId, promoteHeadline: true }),
       }),
     );
-    return res.status;
+    const body = (await res.json()) as { success: boolean; error?: string };
+    return { status: res.status, error: body.error ?? null };
   }
 
   it("agrees with POST /api/print-watch/accept over the whole matrix", async () => {
     // See M-E16: the gate re-states the rule rather than importing it, so this
     // drives the ROUTE that owns it. (The panel's promoteSummary is not used —
     // slice F deletes that file.)
-    const cases: Array<{ lines: PrintWatchLine[]; expectOk: boolean }> = [
-      { lines: [line("eps_adj_q"), line("revenue_q")], expectOk: true },
-      { lines: [line("eps_gaap_q"), line("revenue_q")], expectOk: true },
-      { lines: [line("eps_adj_q")], expectOk: false },
+    const cases: Array<{ name: string; lines: PrintWatchLine[]; expectOk: boolean }> = [
+      { name: "adjusted EPS + revenue", lines: [line("eps_adj_q"), line("revenue_q")], expectOk: true },
+      { name: "GAAP EPS + revenue", lines: [line("eps_gaap_q"), line("revenue_q")], expectOk: true },
+      { name: "EPS only — no revenue line", lines: [line("eps_adj_q")], expectOk: false },
       {
+        name: "revenue accepted blank — accepted, but no number",
         lines: [line("eps_adj_q"), line("revenue_q", { value: null, state: "blank" })],
+        expectOk: false,
+      },
+      {
+        // R-E-C3, the row that DISCRIMINATES: the desk accepted eps_adj_q as
+        // "not disclosed" (accepted, value null — markLineAccepted flips state
+        // without touching value, and `blank` is in ACCEPTABLE_ACCEPT_STATES)
+        // while eps_gaap_q carries the real number. The route chooses by
+        // accepted-ness, so it commits to adj and refuses. A gate that picked
+        // the first EPS line WITH a number would fall back to GAAP and report
+        // the pair complete — "you may send" where the app will not promote.
+        name: "accepted-but-blank adjusted EPS beside a good GAAP line",
+        lines: [
+          line("eps_adj_q", { value: null }),
+          line("eps_gaap_q", { value: 1.1 }),
+          line("revenue_q"),
+        ],
         expectOk: false,
       },
     ];
     for (const c of cases) {
-      expect(hasAcceptedHeadlinePair(c.lines)).toBe(c.expectOk);
-      const status = await promoteThroughAcceptRoute(c.lines);
-      expect(status === 200).toBe(c.expectOk);
+      expect(hasAcceptedHeadlinePair(c.lines), c.name).toBe(c.expectOk);
+      const { status, error } = await promoteThroughAcceptRoute(c.lines);
+      if (c.expectOk) {
+        expect(status, c.name).toBe(200);
+      } else {
+        // Not merely "non-200" (review Minor 1): the refusal has to be the
+        // PROMOTE guard's own 400 — either the complete-pair guard or the
+        // reported-value guard — not an unrelated failure that happens to
+        // agree by accident.
+        expect(status, c.name).toBe(400);
+        expect(error, c.name).toMatch(
+          /^Promoting the headline needs a (COMPLETE pair|REPORTED value)/,
+        );
+      }
     }
   });
 });
