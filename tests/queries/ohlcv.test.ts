@@ -125,6 +125,50 @@ describe("ohlcv queries — KPI row", () => {
       // 2026-04-23).
       expect(range!.high).toBeLessThan(200);
     });
+
+    it("ignores corrupt zero-low bars when computing the 52-week low", () => {
+      const id = seedSecurity(db, "CORRUPT");
+      seedDailyBars(db, id, "2026-04-23", 30, 100, 0.1);
+      const trueMinLow = db
+        .prepare(
+          `SELECT MIN(low) AS low FROM ohlcv_bars WHERE security_id = ? AND low > 0`,
+        )
+        .get(id) as { low: number };
+      // Corrupt two already-seeded in-window bars in place: real open/high
+      // kept, but low and close wrongly zeroed (the observed bug shape —
+      // TWS bars where open/high are real but low/close came back 0).
+      db.prepare(
+        `UPDATE ohlcv_bars SET open = 2780, high = 2960, low = 0, close = 0
+         WHERE security_id = ? AND bar_date = ?`,
+      ).run(id, "2026-04-20");
+      db.prepare(
+        `UPDATE ohlcv_bars SET open = 2790, high = 2965, low = 0, close = 0
+         WHERE security_id = ? AND bar_date = ?`,
+      ).run(id, "2026-04-21");
+      const range = get52WeekRange(db, id);
+      expect(range).not.toBeNull();
+      expect(range!.low).toBeCloseTo(trueMinLow.low, 6);
+      expect(range!.low).toBeGreaterThan(0);
+    });
+
+    it("ignores corrupt zero-high bars when computing the 52-week high", () => {
+      const id = seedSecurity(db, "CORRUPTHIGH");
+      seedDailyBars(db, id, "2026-04-23", 30, 100, 0.1);
+      const trueMaxHigh = db
+        .prepare(
+          `SELECT MAX(high) AS high FROM ohlcv_bars WHERE security_id = ? AND high > 0`,
+        )
+        .get(id) as { high: number };
+      // A corrupt bar with high = 0 (and low = 0) must not drag the high
+      // down or otherwise be counted as an extreme.
+      db.prepare(
+        `UPDATE ohlcv_bars SET open = 50, high = 0, low = 0, close = 0
+         WHERE security_id = ? AND bar_date = ?`,
+      ).run(id, "2026-04-22");
+      const range = get52WeekRange(db, id);
+      expect(range).not.toBeNull();
+      expect(range!.high).toBeCloseTo(trueMaxHigh.high, 6);
+    });
   });
 
   describe("getKpisForSecurity", () => {
@@ -160,6 +204,23 @@ describe("ohlcv queries — KPI row", () => {
       expect(kpis!.dayHigh).not.toBeNull();
       // 12 bars < 10 floor? No, 12 >= 10 so range should exist
       expect(kpis!.week52High).not.toBeNull();
+    });
+
+    it("never reports a zero 52-week low from corrupt zero-priced bars", () => {
+      const id = seedSecurity(db, "NVDA");
+      seedDailyBars(db, id, "2026-04-23", 30, 100, 0.1);
+      // Corrupt an already-seeded in-window bar in place: real open/high,
+      // low and close wrongly 0.
+      db.prepare(
+        `UPDATE ohlcv_bars SET open = 2780, high = 2960, low = 0, close = 0
+         WHERE security_id = ? AND bar_date = ?`,
+      ).run(id, "2026-04-21");
+      // No security_quotes row, so the KPI falls through to the bars-derived
+      // range — this is the exact path that rendered $0.00 on the page.
+      const kpis = getKpisForSecurity(db, id);
+      expect(kpis).not.toBeNull();
+      expect(kpis!.week52Low).not.toBeNull();
+      expect(kpis!.week52Low!).toBeGreaterThan(0);
     });
   });
 });
