@@ -249,11 +249,11 @@ describe("rehearseAdditiveMigrations", () => {
       // (`Table.addColOffset`) and splices an added column exactly there, so
       // `ALTER TABLE … ADD COLUMN` can never produce a mid-table column. Only a
       // table REBUILD can — and a rebuild is the class this check exists to
-      // catch. The subsequence walk on its own ACCEPTS this shape; the "after
-      // the last pre-existing column definition" clause is what rejects it.
+      // catch. The subsequence walk on its own ACCEPTS this shape; the
+      // splice-point clause (`j !== lastColIdx + 1`) is what rejects it.
       //
-      // DELETE THAT CLAUSE (`if (j <= lastColIdx) return false`) AND THIS TEST
-      // FAILS: `expected true to be false` on the first assertion below.
+      // DELETE THAT CLAUSE AND THIS TEST FAILS: `expected true to be false` on
+      // the first assertion below.
       const mid = base.replace("  price NUMERIC(10, 2),", "  extra TEXT,\n  price NUMERIC(10, 2),");
       expect(isColumnAppend(base, mid)).toBe(false);
 
@@ -280,6 +280,31 @@ describe("rehearseAdditiveMigrations", () => {
       expect(
         isColumnAppend(plain, `CREATE TABLE t (id INTEGER PRIMARY KEY, note TEXT, extra TEXT)`),
       ).toBe(true);
+    });
+
+    it("REJECTS a column inserted AFTER a trailing TABLE CONSTRAINT (fix round 3)", () => {
+      // SQLite splices an added column IMMEDIATELY after the last pre-existing
+      // column definition — `Table.addColOffset` is that exact byte offset —
+      // so in the rewritten DDL a column definition always PRECEDES the table
+      // constraints. `…, UNIQUE(id, kind), extra TEXT)` is therefore a
+      // hand-written rebuild's shape, not an append, even though `extra TEXT`
+      // does sit after the last column definition.
+      //
+      // WIDEN THE POSITION TEST BACK TO `j <= lastColIdx` AND THIS TEST FAILS:
+      // `expected true to be false` on the first assertion below.
+      const trailing = base.replace("  UNIQUE(id, kind)", "  UNIQUE(id, kind),\n  extra TEXT");
+      expect(isColumnAppend(base, trailing)).toBe(false);
+
+      // ...and between two trailing table constraints is the same class.
+      const twoConstraints = base.replace("  UNIQUE(id, kind)", "  UNIQUE(id, kind),\n  CHECK (price > 0)");
+      const wedged = twoConstraints.replace("  CHECK (price > 0)", "  extra TEXT,\n  CHECK (price > 0)");
+      expect(isColumnAppend(twoConstraints, wedged)).toBe(false);
+
+      // ...while the SAME column one item earlier — immediately after `note
+      // TEXT`, where SQLite actually writes it — is a genuine append. Both
+      // sides of the boundary, so the test pins the splice point itself.
+      const spliced = twoConstraints.replace("  UNIQUE(id, kind)", "  extra TEXT,\n  UNIQUE(id, kind)");
+      expect(isColumnAppend(twoConstraints, spliced)).toBe(true);
     });
 
     it("REJECTS a rebuild that drops a CHECK", () => {
