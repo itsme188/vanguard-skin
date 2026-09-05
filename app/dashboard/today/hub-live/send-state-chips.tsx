@@ -30,25 +30,30 @@ import type {
  * F's display unions are the server's CURRENT members plus the one slice E is
  * adding in a parallel branch (contract §1). F must render "delivery-unknown"
  * before E merges, so the chips cannot key off the server union alone. Once E
- * merges these collapse to the server unions and the bridge below proves it.
+ * merges, these collapse to the server unions plus "delivery-unknown" — see
+ * the `Record<AllStagesDisplay, …>` typing on `SEND_TONES`/`SEND_GLYPHS`
+ * below for the enforcement that keeps this true.
  */
 export type PreviewStageDisplay = PreviewStage | "delivery-unknown";
 export type RecapStageDisplay = RecapStage | "delivery-unknown";
 export type EmailSendStateDisplay = NonNullable<EmailSendState> | "delivery-unknown";
 
-/**
- * Compile-time bridge, and it points the direction that actually catches things:
- * if E widens PreviewStage/RecapStage with a member F has no tone and no glyph
- * for, Exclude<> stops being `never` and this fails to compile AT THE MERGE —
- * visibly, instead of a raw state word appearing on the desk's screen at 16:05.
- */
-type _PreviewCovered = Exclude<PreviewStage, PreviewStageDisplay> extends never ? true : never;
-type _RecapCovered = Exclude<RecapStage, RecapStageDisplay> extends never ? true : never;
-type _SendCovered = Exclude<NonNullable<EmailSendState>, EmailSendStateDisplay> extends never ? true : never;
-
 /** Every member the tone/glyph maps must carry a key for. */
 type AllStagesDisplay = PreviewStageDisplay | RecapStageDisplay | EmailSendStateDisplay | ActualStageState;
 
+/**
+ * The REAL compile-time enforcement lives here, not in a separate bridge type:
+ * `Record<AllStagesDisplay, ChipTone>` requires the object literal below to
+ * supply a key for every member of the union (the trailing `& Record<string,
+ * ChipTone>` only permits extra keys — it does not relax the required ones).
+ * `AllStagesDisplay` is built from the server's stage unions, so when slice E
+ * widens `PreviewStage`/`RecapStage`/`EmailSendState` with a new member, this
+ * object literal is missing that key and fails to compile AT THE MERGE —
+ * visibly, instead of a raw state word appearing on the desk's screen at
+ * 16:05. Same enforcement on `SEND_GLYPHS` below. The `…Display` unions exist
+ * because F must render `"delivery-unknown"` before slice E merges it into
+ * the server unions.
+ */
 export const SEND_TONES: Record<AllStagesDisplay, ChipTone> & Record<string, ChipTone> = {
   sent: "up",
   "sent-by-cloud": "info",
