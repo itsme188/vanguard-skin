@@ -7550,28 +7550,37 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH DATABASE_PATH="$S/vanguard-e2e.db" npx 
   ).run("manual", "earnings", today, "AMC", "16:05", "XMPL earnings", "XMPL", key, "EPS 0.91 / Rev 877,300,000").lastInsertRowid);
   const promoted = mk("e2e:XMPL:promoted");
   const twin = mk("e2e:XMPL:unpromoted");
+  const acceptedNotPromoted = mk("e2e:XMPL:acceptednotpromoted");
   db.prepare(`UPDATE calendar_events SET actual_value = ?, manual_actuals_at = datetime("now") WHERE id = ?`)
     .run("EPS 0.96 / Rev 898,200,000", promoted);
   const contract = (id: string, label: string, unit: string) => ({
     metric_id: id, label, definition: "d", basis: "na", period: "Q", currency: "USD", unit, kind: "point", segment: null,
   });
-  for (const [eventId, accept] of [[promoted, true], [twin, false]] as const) {
+  // NOTE (M2 fix, 2026-09-04): an `agreed` line has not been ACCEPTED — the gate answers
+  // GATE_NOT_ACCEPTED for it, never GATE_NOT_PROMOTED (confirmed live in the sandbox E2E,
+  // e2e-report.md part A rows 1b/1c). Exercising the promote refusal needs a THIRD print
+  // whose headline lines ARE accepted but whose event carries no promoted `actual_value`.
+  for (const [eventId, state, label] of [
+    [promoted, "accepted", "promotedPrintId"],
+    [twin, "agreed", "unpromotedPrintId"],
+    [acceptedNotPromoted, "accepted", "acceptedNotPromotedPrintId"],
+  ] as const) {
     const printId = upsertPrint(db, eventId, "XMPL", today, "16:05");
     upsertLines(db, printId, [
       { metric_id: "eps_adj_q", contract: contract("eps_adj_q", "Adjusted EPS", "per_share"),
         expected: { value: 0.91, value_high: null, whisper: null, source_label: "VK" },
-        state: accept ? "accepted" : "agreed", value: 0.96, value_high: null, snippet: null, source_doc_id: null, candidates_json: "[]" },
+        state, value: 0.96, value_high: null, snippet: null, source_doc_id: null, candidates_json: "[]" },
       { metric_id: "revenue_q", contract: contract("revenue_q", "Revenue", "usd"),
         expected: { value: 877.3e6, value_high: null, whisper: null, source_label: "VK" },
-        state: accept ? "accepted" : "agreed", value: 898.2e6, value_high: null, snippet: null, source_doc_id: null, candidates_json: "[]" },
+        state, value: 898.2e6, value_high: null, snippet: null, source_doc_id: null, candidates_json: "[]" },
     ]);
-    console.log(accept ? "promotedPrintId" : "unpromotedPrintId", printId);
+    console.log(label, printId);
   }
   db.close();
 '
 ```
 
-Then, with `VGS_SESSION` / `VGS_CSRF` exported from `$S/e2e-session.env` and `P_OK` / `P_BAD` the two printIds the seeder logged:
+Then, with `VGS_SESSION` / `VGS_CSRF` exported from `$S/e2e-session.env` and `P_OK` / `P_BAD` / `P_NOT_PROMOTED` the three printIds the seeder logged:
 
 ```bash
 H=(-H "Cookie: vgs_session=$VGS_SESSION; vgs_csrf=$VGS_CSRF" -H "x-csrf-token: $VGS_CSRF" \
@@ -7582,8 +7591,9 @@ curl -s "${H[@]}" http://127.0.0.1:3095/api/print-watch/status | python3 -c '
 import json,sys
 for p in json.load(sys.stdin)["data"]["prints"]:
     print(p["printId"], p["symbol"], p["outputs"])'
-#    expect: the promoted print → printSheet enabled, sendRecap enabled/state "unsent"
-#            the twin        → sendRecap disabled with the "Promote the headline pair first — …" copy
+#    expect: the promoted print              → printSheet enabled, sendRecap enabled/state "unsent"
+#            the twin (agreed, not accepted) → sendRecap disabled with the "Accept the headline pair first — …" copy
+#            the accepted-not-promoted print → sendRecap disabled with the "Promote the headline pair first — …" copy
 
 # 2. THE SHEET COMES OUT OF THE REAL PRINTER. This is a real side effect.
 curl -s "${H[@]}" -d "{\"printId\":$P_OK}" http://127.0.0.1:3095/api/print-watch/print-sheet
@@ -7594,8 +7604,14 @@ curl -s "${H[@]}" -d "{\"printId\":$P_OK}" http://127.0.0.1:3095/api/print-watch
 curl -s -o /dev/null -w '%{http_code}\n' "${H[@]}" -d '{"printId":<a print with no values>}' \
   http://127.0.0.1:3095/api/print-watch/print-sheet          # expect 409
 
-# 4. the gate refuses the unpromoted twin, verbatim
+# 4. the gate refuses the agreed twin — an agreed line has not been ACCEPTED, so this is the
+#    accept refusal, not the promote refusal (M2 fix: an `agreed` line can never reach
+#    GATE_NOT_PROMOTED, since hasAcceptedHeadlinePair fails first)
 curl -s "${H[@]}" -d "{\"printId\":$P_BAD}" http://127.0.0.1:3095/api/print-watch/send-recap
+#    expect {"success":true,"data":{"outcome":"refused","reason":"Accept the headline pair first — …"}}
+
+# 4b. the gate refuses the accepted-but-not-promoted print with the promote refusal
+curl -s "${H[@]}" -d "{\"printId\":$P_NOT_PROMOTED}" http://127.0.0.1:3095/api/print-watch/send-recap
 #    expect {"success":true,"data":{"outcome":"refused","reason":"Promote the headline pair first — …"}}
 
 # 5. the promoted one, with NO Resend key: a DEFINITIVE failure that releases the claim
