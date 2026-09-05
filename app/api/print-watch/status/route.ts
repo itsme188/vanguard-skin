@@ -4,6 +4,7 @@ import { getWatchStatus } from "@/lib/print-watch/watcher";
 import { getSheet, listDocumentRoads, listDocuments } from "@/lib/print-watch/store";
 import { getLatestDoneRead, getGeneratingRead, getLastFailedAttempt, listCallouts } from "@/lib/print-watch/read-store";
 import { sanitizeProseLines } from "@/lib/print-watch/first-pass-format";
+import { evaluatePrintOutputs } from "@/lib/earnings/print-outputs";
 import type { ReadRow } from "@/lib/print-watch/first-pass-types";
 
 /**
@@ -49,6 +50,14 @@ import type { ReadRow } from "@/lib/print-watch/first-pass-types";
  * `read-store` reads only; prose is sanitised again here (render-side, M-D15)
  * so every client of this route gets the same guarantee regardless of what
  * slipped past storage-time sanitisation.
+ *
+ * `outputs` (slice E, Task 7) is the one place that says whether this row's
+ * "Print sheet" and "Send recap now" buttons are live and, when they are not,
+ * the domain sentence explaining why. It is derived in
+ * lib/earnings/print-outputs.ts — a store read over the sheet, the recap gate
+ * and the `earnings_emails` audit row — so the panel never re-derives a gate
+ * and a disabled button can never disagree with the refusal its route would
+ * give. Reads only; the GET stays mutation-free.
  */
 function parse(s: string | null): unknown {
   if (!s) return null;
@@ -125,6 +134,9 @@ export async function GET() {
         activeRead: toActiveDto(getGeneratingRead(db, row.printId)),
         lastAttempt: toLastAttemptDto(getLastFailedAttempt(db, row.printId), doneRead?.id ?? null),
         callouts: listCallouts(db, row.printId),
+        // Slice E: what the row's two buttons should look like. Store reads
+        // only — this GET stays the pure read the doc comment above promises.
+        outputs: evaluatePrintOutputs(db, row.printId),
       };
     });
 
