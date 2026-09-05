@@ -15,6 +15,19 @@
  * `retractDocument` (delivery.ts) already treats 'retired' like 'accepted':
  * evidence is trimmed, the reading is left alone.
  *
+ * A retired row's stored `contract_json` still names the PRE-rename metric_id,
+ * by design — that is the definition the reading was measured under. Readers
+ * that treat a `contract.metric_id` / row-key mismatch as "contract drift"
+ * (delivery.ts, store.ts `clearLineAccepted`) must carve `retired` out FIRST,
+ * as `delivery.ts` already does; it is not drift.
+ *
+ * KNOWN BEHAVIOUR CHANGE (recorded, not a bug): the watcher's pre-print re-arm
+ * refreshes contracts only while the sheet is `untouched`
+ * (`sheet.every(l => l.state === 'pending' && l.candidates_json === '[]')`), so
+ * once a retired row exists that refresh stops firing for the print.
+ * `recompileContracts` is the explicit path for that refresh, and retirement
+ * requires evidence — which already makes the sheet "touched" in practice.
+ *
  * `updated` may name a row whose stored `contract_json` differs from the fresh
  * one ONLY in JSON key order (rows written by `upsertLines` before slice F
  * serialised the contract in a different field order). That is an in-place
@@ -52,6 +65,7 @@ export function retiredMetricId(base: string, taken: ReadonlySet<string>): strin
 interface Row {
   metric_id: string;
   contract_json: string;
+  expected_json: string | null;
   state: string;
   value: number | null;
   value_high: number | null;
@@ -72,6 +86,13 @@ interface Row {
  * are archived by migration 089's document-identity rebuild and by the
  * candidate-fate path), so a line whose only trace is an archive row was never
  * measured and is deleted — its archive rows simply stay under the old id.
+ *
+ * The candidate-pool check is deliberately TEXTUAL and conservative: anything
+ * that is neither empty nor the literal `[]` counts, so an unreadable pool is
+ * still treated as a trace and retained rather than deleted. Every writer in
+ * the repo emits either `JSON.stringify(candidates)` (upsertLines) or the
+ * literal `"[]"` (pendingLines), so no real writer produces a spaced empty
+ * array.
  */
 function hasEvidence(row: Row): boolean {
   if (row.state === "accepted") return true;
@@ -93,6 +114,47 @@ function semanticallySame(stored: string, next: LineContract): boolean {
   return SEMANTIC.every((f) => parsed[f] === next[f]);
 }
 
+/**
+ * Re-tags every candidate INSIDE a retiring row's pool to the row's new id.
+ *
+ * WHY (review round 1, Critical 1). The retire renames the row KEY and the
+ * archive rows, but the `metric_id` recorded on each candidate object inside
+ * `candidates_json` is a separate copy — and the fresh line takes the base id
+ * back in the same transaction. `collectCandidates` (watcher.ts) walks the
+ * WHOLE sheet with no state filter and pools every candidate it finds;
+ * `reconcile` then buckets purely by the candidate's own `metric_id`. So a
+ * stale candidate measured under the OLD contract would be handed to the new
+ * line, and a second document agreeing with it would turn that line `agreed`
+ * (green) under a definition it was never measured against — a manufactured
+ * verification, which is the one failure this sheet exists to prevent.
+ *
+ * Re-tagging keeps the reading verbatim under the retired id, where no
+ * compiled contract can ever claim it.
+ *
+ * @returns the rewritten JSON, or null when nothing needs rewriting or the
+ *   pool cannot be read. An unreadable pool is left exactly as stored — the
+ *   same stance `collectCandidates` takes: a corrupt pool costs that metric
+ *   its history, never the run.
+ */
+function retagCandidatePool(candidatesJson: string, from: string, to: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(candidatesJson);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  let changed = false;
+  const retagged = parsed.map((c) => {
+    if (c !== null && typeof c === "object" && !Array.isArray(c) && (c as { metric_id?: unknown }).metric_id === from) {
+      changed = true;
+      return { ...(c as Record<string, unknown>), metric_id: to };
+    }
+    return c;
+  });
+  return changed ? JSON.stringify(retagged) : null;
+}
+
 /** Re-derives one print's sheet from its bogey rows. One immediate
  *  transaction; a print that does not exist returns an all-empty report. */
 export function recompileContracts(db: Database.Database, printId: number): RecompileReport {
@@ -110,7 +172,7 @@ export function recompileContracts(db: Database.Database, printId: number): Reco
 
     const rows = db
       .prepare(
-        `SELECT metric_id, contract_json, state, value, value_high, snippet, candidates_json, audit_json
+        `SELECT metric_id, contract_json, expected_json, state, value, value_high, snippet, candidates_json, audit_json
            FROM print_watch_lines WHERE print_id = ? ORDER BY metric_id`,
       )
       .all(printId) as Row[];
@@ -130,6 +192,9 @@ export function recompileContracts(db: Database.Database, printId: number): Reco
     const renameArchive = db.prepare(
       `UPDATE print_watch_candidate_archive SET metric_id = ? WHERE print_id = ? AND metric_id = ?`,
     );
+    const retagPool = db.prepare(
+      `UPDATE print_watch_lines SET candidates_json = ? WHERE print_id = ? AND metric_id = ?`,
+    );
     const remove = db.prepare(`DELETE FROM print_watch_lines WHERE print_id = ? AND metric_id = ?`);
     const insert = db.prepare(
       `INSERT INTO print_watch_lines
@@ -142,12 +207,16 @@ export function recompileContracts(db: Database.Database, printId: number): Reco
       const e: ExpectedValue | undefined = expected[id];
       return e ? JSON.stringify(e) : null;
     };
-    /** One retirement: rename the line AND the archive rows that belong to it. */
-    const retire = (metricId: string): string => {
-      const renamed = retiredMetricId(metricId, taken);
+    /** One retirement: rename the line, the archive rows AND the candidate
+     *  objects inside the row's own pool — all three carry the old id, and the
+     *  fresh line is about to take that id back (see `retagCandidatePool`). */
+    const retire = (row: Row): string => {
+      const renamed = retiredMetricId(row.metric_id, taken);
       taken.add(renamed);
-      rename.run(renamed, printId, metricId);
-      renameArchive.run(renamed, printId, metricId);
+      rename.run(renamed, printId, row.metric_id);
+      renameArchive.run(renamed, printId, row.metric_id);
+      const retagged = retagCandidatePool(row.candidates_json, row.metric_id, renamed);
+      if (retagged !== null) retagPool.run(retagged, printId, renamed);
       report.retired.push(renamed);
       return renamed;
     };
@@ -159,7 +228,7 @@ export function recompileContracts(db: Database.Database, printId: number): Reco
 
       const next = byId.get(row.metric_id);
       if (!next) {
-        if (hasEvidence(row)) retire(row.metric_id);
+        if (hasEvidence(row)) retire(row);
         else {
           remove.run(printId, row.metric_id);
           report.deleted.push(row.metric_id);
@@ -172,10 +241,7 @@ export function recompileContracts(db: Database.Database, printId: number): Reco
       const nextExpected = expectedJson(row.metric_id);
 
       if (semanticallySame(row.contract_json, next)) {
-        const storedExpected = db
-          .prepare(`SELECT expected_json FROM print_watch_lines WHERE print_id = ? AND metric_id = ?`)
-          .get(printId, row.metric_id) as { expected_json: string | null };
-        if (row.contract_json !== nextContract || storedExpected.expected_json !== nextExpected) {
+        if (row.contract_json !== nextContract || row.expected_json !== nextExpected) {
           setContract.run(nextContract, nextExpected, printId, row.metric_id);
           report.updated.push(row.metric_id);
         }
@@ -183,7 +249,7 @@ export function recompileContracts(db: Database.Database, printId: number): Reco
       }
 
       if (hasEvidence(row)) {
-        retire(row.metric_id);
+        retire(row);
         insert.run(printId, row.metric_id, nextContract, nextExpected);
         report.added.push(row.metric_id);
       } else {
