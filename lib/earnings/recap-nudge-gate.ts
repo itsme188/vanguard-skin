@@ -6,6 +6,9 @@
  *
  *  1. ACCEPTED — the sheet carries an accepted EPS line (adjusted preferred,
  *     GAAP as the fallback) and an accepted revenue_q, each with a real number.
+ *     The two halves are checked IN THAT ORDER (R-E-C3): the EPS line is chosen
+ *     by accepted-ness ALONE, and only the CHOSEN line is then required to
+ *     carry a number — never "the first EPS line that happens to have one".
  *     That is the promote gate's own rule, re-stated here rather than imported:
  *     it lives in app/api/print-watch/accept/route.ts (a route) and
  *     app/dashboard/today/PrintWatchPanel.tsx (a client component), and slice E
@@ -52,6 +55,11 @@ export type RecapNudgeGate =
   | { ok: true; eventId: number; symbol: string }
   | { ok: false; reason: string };
 
+/** Accepted-ness ALONE — which line the promote commits to. */
+function isAccepted(line: PrintWatchLine | undefined): boolean {
+  return !!line && line.state === "accepted";
+}
+
 /** An accepted line that carries a real number — the type predicate narrows
  *  `value` to `number` so the pair below needs no assertion. */
 function acceptedWithValue(
@@ -65,14 +73,35 @@ function acceptedWithValue(
  * fallback, plus revenue_q; both must be accepted and both must carry a value.
  * (A `blank` line is a real answer — "not disclosed" — but it has no number,
  * and the accept route refuses to promote one for exactly that reason.)
+ *
+ * R-E-C3 — the TWO STEPS ARE ORDERED, and the order is the route's:
+ * app/api/print-watch/accept/route.ts commits to eps_adj_q if it is ACCEPTED
+ * (whatever its value), else to eps_gaap_q if that is accepted, and only THEN
+ * refuses when the CHOSEN line has no number. Picking "the first EPS line that
+ * is accepted AND carries a number" instead would diverge on a state the desk
+ * really reaches: `blank` is an acceptable accept state and markLineAccepted
+ * flips state without touching value, so "adjusted EPS was not disclosed, GAAP
+ * carries the number" leaves eps_adj_q accepted with value NULL beside a good
+ * eps_gaap_q. There the route commits to adj and 400s while a fallback rule
+ * would silently report the pair complete — the gate saying "you may send"
+ * where the app itself refuses to promote is precisely the failure this gate
+ * exists to prevent, and it would also make condition 3 below (which re-derives
+ * what a promote of the CHOSEN pair would write) compare the wrong pair.
  */
 export function acceptedHeadlinePair(
   lines: PrintWatchLine[],
 ): { eps: number; revenue: number } | null {
   const byId = new Map(lines.map((l) => [l.metric_id, l]));
-  const epsLine = [byId.get("eps_adj_q"), byId.get("eps_gaap_q")].find(acceptedWithValue);
+  const epsLine = isAccepted(byId.get("eps_adj_q"))
+    ? byId.get("eps_adj_q")
+    : isAccepted(byId.get("eps_gaap_q"))
+      ? byId.get("eps_gaap_q")
+      : undefined;
   const revLine = byId.get("revenue_q");
-  if (!epsLine || !acceptedWithValue(revLine)) return null;
+  // Step 1: both halves accepted at all (the route's complete-pair guard).
+  if (!epsLine || !isAccepted(revLine)) return null;
+  // Step 2: the CHOSEN lines carry numbers (the route's reported-value guard).
+  if (!acceptedWithValue(epsLine) || !acceptedWithValue(revLine)) return null;
   return { eps: epsLine.value, revenue: revLine.value };
 }
 
@@ -113,11 +142,27 @@ export function evaluateRecapNudge(db: Database.Database, printId: number): Reca
   // that pair. One formatter, one source of truth, no new column — and the
   // comparison is deliberately made at the formatter's own precision, because
   // that is exactly the precision the recap will narrate.
+  //
+  // R-E-C4 — compare NORMALISED forms, not raw strings. `mergeFinnhubActual`
+  // renders revenue as `Rev 100000000`, but other writers of this same column
+  // use `toLocaleString("en-US")` (lib/calendar/enrich-actuals.ts,
+  // workers/cron/src/enrich-actuals.ts), and commas are a live production shape
+  // for actual_value. The LOCAL enrichment road cannot clobber a promote, but
+  // the cloud one can: lib/calendar/cloud-reconcile.ts writes
+  // `actual_value = COALESCE(?, actual_value)` with no manual_actuals_at guard,
+  // so a Worker tick after a local promote can rewrite the IDENTICAL pair with
+  // separators. Raw equality would then answer "the accepted pair changed" when
+  // it did not, wedging the button with copy that misdescribes the state.
+  // Running the stored string back through the same formatter costs nothing:
+  // parseFinnhubFigure already strips separators, so every genuinely different
+  // pair still differs, and free text that parses to neither field normalises
+  // to null and still refuses.
   const wouldWrite = mergeFinnhubActual(event.actual_value, {
     eps: pair.eps,
     revenue: pair.revenue,
   });
-  if (wouldWrite !== event.actual_value) {
+  const storedNormalized = mergeFinnhubActual(event.actual_value, {});
+  if (wouldWrite !== storedNormalized) {
     return { ok: false, reason: GATE_PAIR_CHANGED };
   }
 
