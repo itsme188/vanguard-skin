@@ -2,7 +2,7 @@
  * Spec §8, E line: "one claim owner across sweep, nudge, manual route".
  *
  * After slice E exactly four modules may CALL `claimEarningsEmailSlot`, and
- * exactly three may reach the mailer, and each exception is JUSTIFIED in the
+ * exactly two may reach the mailer, and each exception is JUSTIFIED in the
  * tables below rather than merely listed. Anything else that wants to send an
  * earnings email calls `sendEarningsCandidate`; anything that wants to send ONE
  * email covering several claimed events calls `deliverClaimedBatch`.
@@ -51,8 +51,7 @@ interface Exemption {
 }
 
 /**
- * Task 5b amends ONE entry here (debrief-send adopts `deliverClaimedBatch`);
- * keep the shape trivially amendable — a file plus the reason it is allowed.
+ * Keep the shape trivially amendable — a file plus the reason it is allowed.
  */
 const CLAIM_CALLERS: Exemption[] = [
   {
@@ -77,10 +76,6 @@ const MAILER_USERS: Exemption[] = [
   {
     file: "lib/earnings/send-service.ts",
     why: "deliverClaimedBatch is the one provider call for every earnings email — it is the module this whole guard exists to protect.",
-  },
-  {
-    file: "lib/earnings/debrief-send.ts",
-    why: "batch sender: one stapled email for N claimed events. Task 5b removes this entry by routing it through deliverClaimedBatch; until then it holds its own provider call.",
   },
   {
     file: "lib/earnings/wrap-send.ts",
