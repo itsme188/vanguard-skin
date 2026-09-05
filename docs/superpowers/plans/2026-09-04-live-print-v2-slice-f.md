@@ -6207,6 +6207,8 @@ Also amend the ui-structure bullet about the Hub: add a sentence that a live pri
 > 11. **Hidden-tab abort — all four streams.** Switch to another tab for 30 seconds. In the network panel, filtered to this origin, there must be ZERO requests to `/api/print-watch/status`, `/api/print-watch/ensure`, `/api/earnings/cockpit` and `/api/earnings/worksheet` for the whole interval — a 30-second hidden window is longer than the hot status cadence (2 s) and than the other three (60 s), so a leak of any stream shows up. On return, each of the four fires EXACTLY ONCE immediately (the cockpit's return call is a GET, not a POST — check the method), and then resumes its own cadence. Record the four counts before, during and after.
 >
 >    Also assert the mount case: load `/dashboard/today` in a background tab (open it with ⌘-click and do not focus it) and confirm no request from any of the four for 30 seconds; focus it and see one of each.
+>
+>    [Superseded during the real run: the hidden-tab window is 49 s, not 30 s — the measured cadences are 30 s and 60 s, so a 30 s window can sit entirely inside a natural gap and pass vacuously. See Step 3.]
 
 **(e) Step 3 — privacy paragraph REPLACEMENT (16).** Seeding `XMPL` rows into a VACUUM copy of the live database does not remove the real accounts, totals, holdings and earnings events that copy contains, so a Today screenshot can still capture portfolio specifics:
 
