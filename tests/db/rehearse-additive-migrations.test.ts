@@ -244,6 +244,44 @@ describe("rehearseAdditiveMigrations", () => {
       expect(isColumnAppend(plain, `CREATE TABLE t (id INTEGER PRIMARY KEY, note TEXT, extra TEXT)`)).toBe(true);
     });
 
+    it("REJECTS a column inserted BETWEEN two existing columns (review Important 2)", () => {
+      // SQLite records the offset of the END of the last column definition
+      // (`Table.addColOffset`) and splices an added column exactly there, so
+      // `ALTER TABLE … ADD COLUMN` can never produce a mid-table column. Only a
+      // table REBUILD can — and a rebuild is the class this check exists to
+      // catch. The subsequence walk on its own ACCEPTS this shape; the "after
+      // the last pre-existing column definition" clause is what rejects it.
+      //
+      // DELETE THAT CLAUSE (`if (j <= lastColIdx) return false`) AND THIS TEST
+      // FAILS: `expected true to be false` on the first assertion below.
+      const mid = base.replace("  price NUMERIC(10, 2),", "  extra TEXT,\n  price NUMERIC(10, 2),");
+      expect(isColumnAppend(base, mid)).toBe(false);
+
+      // ...at the very front of the body, too.
+      const front = base.replace(
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,",
+        "  extra TEXT,\n  id INTEGER PRIMARY KEY AUTOINCREMENT,",
+      );
+      expect(isColumnAppend(base, front)).toBe(false);
+
+      // ...and a legitimate trailing append alongside it does NOT launder the
+      // mid-table one: ANY insertion before a surviving column definition is
+      // enough to reject the whole change.
+      const both = mid.replace("  UNIQUE(id, kind)", "  extra2 TEXT,\n  UNIQUE(id, kind)");
+      expect(isColumnAppend(base, both)).toBe(false);
+    });
+
+    it("REJECTS a mid-table insertion on a table with NO trailing constraint either", () => {
+      const plain = `CREATE TABLE t (id INTEGER PRIMARY KEY, note TEXT)`;
+      expect(
+        isColumnAppend(plain, `CREATE TABLE t (id INTEGER PRIMARY KEY, extra TEXT, note TEXT)`),
+      ).toBe(false);
+      // The same column at the end is the real ADD COLUMN shape and still passes.
+      expect(
+        isColumnAppend(plain, `CREATE TABLE t (id INTEGER PRIMARY KEY, note TEXT, extra TEXT)`),
+      ).toBe(true);
+    });
+
     it("REJECTS a rebuild that drops a CHECK", () => {
       const rebuilt = base.replace(" CHECK (kind IN ('a', 'b'))", "");
       expect(isColumnAppend(base, rebuilt)).toBe(false);
