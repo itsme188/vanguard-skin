@@ -130,6 +130,40 @@ describe("POST /api/print-watch/print-sheet", () => {
     expect(printNow).not.toHaveBeenCalled();
   });
 
+  // Controller hardening after the Task 6b review of the sibling send-recap
+  // route: a literal `null` body satisfies `typeof body === "object"`, so a
+  // guard that only checks the type reaches `body.printId` on null and throws —
+  // surfacing a malformed request as an unexpected 500. Every malformed shape
+  // must be a 400 with the envelope.
+  it("400s every malformed body shape rather than 500ing on it", async () => {
+    const { POST } = await import("@/app/api/print-watch/print-sheet/route");
+    for (const raw of ["null", "[]", "[1,2]", '"XMPL"', "7", "true"]) {
+      const req = new NextRequest(`http://localhost${PATHNAME}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: raw,
+      });
+      const res = await POST(req);
+      expect(res.status, `body ${raw}`).toBe(400);
+      const body = await res.json();
+      expect(body.success, `body ${raw}`).toBe(false);
+      expect(typeof body.error, `body ${raw}`).toBe("string");
+    }
+    expect(printNow).not.toHaveBeenCalled();
+  });
+
+  it("404s (not 400s) a well-formed but impossible printId", async () => {
+    const { POST } = await import("@/app/api/print-watch/print-sheet/route");
+    for (const id of [-5, 0, Number.MAX_SAFE_INTEGER]) {
+      const res = await POST(json({ printId: id }));
+      expect(res.status, `printId ${id}`).toBe(404);
+    }
+    // ...while a non-integer number is malformed, not merely absent.
+    expect((await POST(json({ printId: 1.5 }))).status).toBe(400);
+    expect((await POST(json({ printId: -0.5 }))).status).toBe(400);
+    expect(printNow).not.toHaveBeenCalled();
+  });
+
   it("409s with the outputs reason, verbatim, when no line has a value", async () => {
     seedPrintWithLines([line("revenue_q", { state: "pending", value: null })]);
     const { POST } = await import("@/app/api/print-watch/print-sheet/route");

@@ -24,10 +24,16 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(request: NextRequest) {
   try {
-    const body = (await request.json().catch(() => ({}))) as { printId?: unknown };
+    // Every malformed shape is a 400, never a 500: unparseable bytes, a literal
+    // `null` (which `typeof` calls an object), an array, a bare primitive, or a
+    // missing/non-integer printId. 500 stays reserved for a genuinely
+    // unexpected exception — same rule as the sibling send-recap route.
+    const body = (await request.json().catch(() => ({}))) as { printId?: unknown } | null;
     if (typeof body !== "object" || body === null || Array.isArray(body)) {
       return NextResponse.json({ success: false, error: "Body must be a JSON object." }, { status: 400 });
     }
+    // Integer-ness only: a negative or absurd id is well-formed and lands on
+    // 404 (no such print), not 400.
     if (typeof body.printId !== "number" || !Number.isInteger(body.printId)) {
       return NextResponse.json(
         { success: false, error: "Body field 'printId' must be an integer." },
