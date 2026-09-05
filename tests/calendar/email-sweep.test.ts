@@ -16,7 +16,13 @@ import { runMigrations } from "@/lib/db/migrate";
 
 const sendPreview = vi.fn(async (..._args: unknown[]) => ({ success: true }));
 const sendRecap = vi.fn(async (..._args: unknown[]) => ({ success: true }));
-const reapStaleClaims = vi.fn((..._args: unknown[]) => 0);
+// Slice E: the reaper is async and returns both counts plus the (event, phase)
+// pairs it flipped to the terminal delivery-unknown state (R-E4b).
+const reapStaleClaims = vi.fn(async (..._args: unknown[]) => ({
+  reaped: 0,
+  flippedUnknown: 0,
+  flipped: [] as Array<{ eventId: number; phase: "preview" | "recap" }>,
+}));
 vi.mock("@/lib/digest/send-earnings-email", () => ({
   sendEarningsPreview: (...a: unknown[]) => sendPreview(...a),
   sendEarningsRecap: (...a: unknown[]) => sendRecap(...a),
@@ -524,6 +530,54 @@ describe("runEarningsEmailSweep marker dance", () => {
     expect(r.ok).toBe(true);
     expect(r.skipped).toBe("claim-held");
     expect(r.status).toBe(409);
+  });
+
+  // ── R-E4b: a reaped delivery-unknown row claims its phase in KV ─────────
+  //
+  // The reaper is DB-only by design (it runs on every tick from a cron path
+  // that may have no Worker reachability), so the marker write lives in the
+  // sweep. It cannot be deferred to the next candidate pass: any
+  // earnings_emails row — the delivery-unknown row included — removes its
+  // event from findEmailCandidates, so the send path is never invoked for it
+  // and no marker would ever be written, leaving the Worker free to send a
+  // second copy of a recap that may already have gone out.
+  it("writes one mac-sent marker per (event, phase) the reaper flipped to delivery_unknown", async () => {
+    const eventId = seedHeldRecapCandidate(db, "XMPL");
+    // The row the reaper just flipped. Its presence also keeps the event out
+    // of findEmailCandidates, so the ONLY marker write this tick can make is
+    // the R-E4b one.
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, error, claim_token, provider_message_id)
+       VALUES (?, 'recap', 'x@y.com', datetime('now', '-6 minutes'), 'delivery_unknown', 'tok', '<m@d>')`,
+    ).run(eventId);
+    reapStaleClaims.mockResolvedValueOnce({
+      reaped: 0,
+      flippedUnknown: 1,
+      flipped: [{ eventId, phase: "recap" }],
+    });
+
+    await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(sendRecap).not.toHaveBeenCalled();
+    expect(writeSent).toHaveBeenCalledTimes(1);
+    expect(writeSent).toHaveBeenCalledWith("recap", eventId);
+  });
+
+  it("a marker failure never fails the sweep (the flip is already committed)", async () => {
+    const eventId = seedHeldRecapCandidate(db, "XMPL");
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, error, claim_token)
+       VALUES (?, 'recap', 'x@y.com', datetime('now', '-6 minutes'), 'delivery_unknown', 'tok')`,
+    ).run(eventId);
+    reapStaleClaims.mockResolvedValueOnce({
+      reaped: 0,
+      flippedUnknown: 1,
+      flipped: [{ eventId, phase: "recap" }],
+    });
+    writeSent.mockRejectedValueOnce(new Error("KV down"));
+
+    await expect(runEarningsEmailSweep(db, { now: NOW })).resolves.toBeDefined();
+    expect(writeSent).toHaveBeenCalledTimes(1);
   });
 });
 
