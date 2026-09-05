@@ -1,4 +1,17 @@
 /**
+ * RETIRED (2026-08-02) — nothing calls runWrapPass any more; the morning
+ * debrief replaced it. It is kept because its clustering logic is the only
+ * record of how slot wraps were assembled.
+ *
+ * IT IS OUTSIDE THE SLICE-E SEND LIFECYCLE: it claims slots and calls sendEmail
+ * directly, so it writes no in-flight row, records no Message-ID, cannot
+ * classify a provider timeout and can never produce a terminal delivery-unknown
+ * state. BEFORE REVIVING IT, port it onto
+ * lib/earnings/send-service.ts::deliverClaimedBatch exactly as
+ * lib/earnings/debrief-send.ts did — the batch primitive exists for this shape
+ * of caller. tests/repo/one-claim-owner.test.ts allowlists this file WITH that
+ * justification and asserts this comment still says so.
+ *
  * RETIRED from the sweep 2026-08-02 — the EOD wrap was replaced by the 7:45
  * ET morning debrief (lib/earnings/debrief-send.ts). The Worker's wrap-send
  * fallback is ALSO retired (2026-08-02 evening, suppress-but-never-send —

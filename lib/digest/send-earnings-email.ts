@@ -2,7 +2,6 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
-import { sendEmail } from "@/lib/email";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
@@ -82,22 +81,14 @@ export interface SendEarningsEmailResult {
 }
 
 // ── Public entry points ────────────────────────────────────────────
-
-export async function sendEarningsPreview(
-  db: Database.Database,
-  eventId: number,
-  opts: SendEarningsEmailOpts = {},
-): Promise<SendEarningsEmailResult> {
-  return sendEarningsEmail(db, eventId, "preview", opts);
-}
-
-export async function sendEarningsRecap(
-  db: Database.Database,
-  eventId: number,
-  opts: SendEarningsEmailOpts = {},
-): Promise<SendEarningsEmailResult> {
-  return sendEarningsEmail(db, eventId, "recap", opts);
-}
+//
+// This module composes and audits; it does NOT send. `sendEarningsPreview` /
+// `sendEarningsRecap` moved to lib/earnings/send-service.ts (slice E) so that
+// the one path which turns a claim into an email lives in one file and the
+// module graph stays a DAG. `composeEarningsEmail` below is the composer that
+// service calls; the claim primitives further down are the state machine it
+// drives. `SendEarningsEmailOpts` / `SendEarningsEmailResult` /
+// `EarningsEmailError` stay here — the service and the route import them.
 
 // ── Earnings-intelligence view (Task 7) ────────────────────────────
 //
@@ -156,8 +147,8 @@ export function loadIntelView(
  * Composer-only path: build context, render prompt, run Claude, assemble
  * markdown + HTML. Does NOT send email and does NOT write the audit row.
  *
- * Shared between the email-send path (`sendEarningsEmail`) and the in-app
- * preview path (`/api/earnings/recap-modal`) so the rendered output is
+ * Shared between the send service (lib/earnings/send-service.ts) and the
+ * in-app preview path (`/api/earnings/recap-modal`) so the rendered output is
  * byte-identical between "what the email looks like" and "what the user
  * sees on the dashboard before sending".
  */
@@ -272,80 +263,6 @@ export async function composeEarningsEmail(
     aiMarkdown,
     html,
     promptHash: hashPrompt(prompt),
-  };
-}
-
-async function sendEarningsEmail(
-  db: Database.Database,
-  eventId: number,
-  phase: "preview" | "recap",
-  opts: SendEarningsEmailOpts,
-): Promise<SendEarningsEmailResult> {
-  const recipient = opts.recipient || process.env.BRIEFING_EMAIL_TO;
-  if (!recipient) {
-    throw new EarningsEmailError(
-      "No recipient. Set BRIEFING_EMAIL_TO env var or pass 'recipient'.",
-      400,
-    );
-  }
-
-  const claim = claimEarningsEmailSlot(db, eventId, phase, recipient);
-  if (!claim.claimed) {
-    throw new EarningsEmailError(
-      `Event ${eventId} ${phase} is already being sent by another process — skipping duplicate.`,
-      409,
-      "claim_held",
-    );
-  }
-
-  let composed: ComposeEarningsResult;
-  try {
-    composed = await composeEarningsEmail(db, eventId, phase, {
-      footerNote: opts.footerNote,
-    });
-
-    const phaseEmoji = phase === "preview" ? "\u{1F50D}" : "\u{1F4CA}";
-    try {
-      await sendEmail({
-        to: recipient,
-        subject: `${phaseEmoji} ${composed.title}`,
-        html: composed.html,
-        fromLocalPart: "earnings",
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new EarningsEmailError(`Send failed: ${msg}`, 500);
-    }
-  } catch (err) {
-    // A fresh claim must not survive a failed compose/send — the next sweep
-    // tick should retry. (Refire mode never wrote a claim row.)
-    if (claim.mode === "fresh" && claim.token) {
-      releaseEarningsEmailClaim(db, eventId, phase, claim.token);
-    }
-    throw err;
-  }
-
-  // Audit row for the EarningsHub UI status chips + Phase-3 cron dedup.
-  // UNIQUE(event_id, phase) — re-fires update in place rather than fail.
-  // This upsert converts the 'in_progress' claim row into the completed row
-  // (or, for a manual refire, overwrites the prior completed row in place).
-  recordEarningsEmailAudit(db, {
-    eventId,
-    phase,
-    recipient,
-    aiInputHash: composed.promptHash,
-    aiOutputMd: composed.aiMarkdown,
-    error: null,
-  });
-
-  return {
-    success: true,
-    eventId,
-    symbol: composed.symbol,
-    phase,
-    sentTo: recipient,
-    title: composed.title,
-    modelOutputChars: composed.markdown.length,
   };
 }
 
