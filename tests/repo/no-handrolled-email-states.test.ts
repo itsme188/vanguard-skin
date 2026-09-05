@@ -53,6 +53,16 @@
  * `tokenize` below therefore lexes regex literals too. The latest-holdings
  * guard still carries the hole; closing it there belongs to that slice's
  * owner and is filed in docs/plans/TODO.md, NOT fixed here.
+ *
+ * KNOWN RESIDUAL of that divergence (review Minor, recorded not chased): the
+ * regex-vs-division heuristic decides on the previous significant token and
+ * `)` CAN end an expression, so a regex written directly after one — as in
+ * `if (c) /don't/.test(s)` — is still read as division and its body lexed as
+ * code, re-opening exactly the phantom-string blindness above; no token
+ * lookback can fix it (only a parser knows whether that `)` closed an `if`
+ * head or a call), and it stays acceptable only because a scan of `lib/**` and
+ * `app/api/**` finds ZERO regex literals in that position carrying an unpaired
+ * quote — so this is a known hole with no instances, not a missed one.
  */
 
 import fs from "node:fs";

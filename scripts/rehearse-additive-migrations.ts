@@ -18,11 +18,12 @@
  *   - its stored DDL (`sqlite_master.sql`) is unchanged, OR changed only by
  *     ADDING column definitions — an `ALTER TABLE … ADD COLUMN` is additive
  *     and is reported as a `column-append`, while a rebuild, a dropped CHECK,
- *     a removed or reordered column, a column inserted BETWEEN two existing
- *     columns, or a changed table constraint fails (review M8, rulings R-D30
- *     and R-E-C9). NOTE the added column lands after the last COLUMN
- *     DEFINITION, which on a table with trailing table constraints is NOT at
- *     the end of the body — see `isColumnAppend`.
+ *     a removed or reordered column, a column inserted anywhere but SQLite's
+ *     own splice point (between two existing columns, or after a trailing
+ *     table constraint), or a changed table constraint fails (review M8,
+ *     rulings R-D30 and R-E-C9). NOTE that splice point is IMMEDIATELY after
+ *     the last COLUMN DEFINITION, which on a table with trailing table
+ *     constraints is NOT at the end of the body — see `isColumnAppend`.
  * and for every index that existed before, it still exists with byte-identical
  * DDL (an index has no additive form — a changed definition is a rewrite);
  * `schema_migrations`
@@ -310,33 +311,48 @@ export function isTableConstraintItem(item: string): boolean {
  *     collapsed, in the SAME RELATIVE ORDER;
  *   - the only difference is one or more INSERTED items;
  *   - every inserted item is a COLUMN DEFINITION, never a table constraint; and
- *   - every inserted item sits AFTER the last pre-existing COLUMN DEFINITION.
+ *   - every inserted item sits IMMEDIATELY AFTER the last pre-existing COLUMN
+ *     DEFINITION — i.e. at SQLite's one and only splice point.
  *
- * That last clause is the review's Important 2 (fix round 2). SQLite records
- * the offset of the END of the last column definition (`Table.addColOffset`)
- * and splices an added column exactly there, so `ALTER TABLE … ADD COLUMN`
- * can NEVER put a column between two existing ones — a mid-table insertion is
- * a table REBUILD, which is the class this whole check exists to catch. The
- * subsequence walk on its own happily accepted that shape.
+ * That last clause is the review's Important 2, tightened in fix round 3.
+ * SQLite records the offset of the END of the last column definition
+ * (`Table.addColOffset`) and splices an added column exactly there, so an
+ * added column ALWAYS lands after every pre-existing column and BEFORE every
+ * table constraint. Two shapes are therefore impossible for `ALTER TABLE …
+ * ADD COLUMN`, and both are rejected: a column wedged BETWEEN two existing
+ * columns, and a column sitting AFTER a trailing table constraint
+ * (`…, UNIQUE(a), extra TEXT)`). Each means the table was REBUILT, which is
+ * the class this whole check exists to catch. The subsequence walk on its own
+ * accepted both.
  *
- * Precisely how this compares with the string-prefix test it replaces:
- *   - it REJECTS everything the prefix test rejected that matters here — a
- *     rebuild, a dropped CHECK, a removed or renamed column, a REORDER of two
- *     existing columns, an inserted or changed table constraint, a changed
- *     trailing table option, and (with the clause above) a column inserted
- *     between two existing columns;
- *   - it ACCEPTS exactly one shape the prefix test wrongly rejected: the 092
- *     shape — one or more columns added after the last column definition but
- *     BEFORE a trailing table constraint, which is what SQLite actually
- *     writes.
+ * So, stated positively, this function returns true for EXACTLY ONE kind of
+ * change: one or more whole new column definitions appearing as an unbroken
+ * run at the splice point, with every other byte of the DDL — header, every
+ * pre-existing column, every table constraint, the trailing table options —
+ * untouched and in the same order.
  *
- * Residual, shared with the prefix test and NOT closed here: a column sitting
- * after a trailing table constraint (`…, UNIQUE(a), extra TEXT)`) is still
- * read as an append. SQLite cannot produce it either — it is a hand-written
- * rebuild's shape — but tightening to "immediately after the last column
- * definition" was outside this round's ruling. The rehearsal's other checks
- * (row counts, `sqlite_sequence`, index existence, `foreign_key_check`,
- * `integrity_check`) still run against such a migration.
+ * It returns false for everything else, including: a rebuild; a dropped or
+ * added CHECK; a removed, renamed or retyped column; a REORDER of two existing
+ * columns; an inserted or changed table constraint; a changed trailing table
+ * option (`WITHOUT ROWID` / `STRICT`); a renamed table; an unchanged body
+ * (nothing added is not an append); and a table whose BEFORE body has no
+ * column definition at all (`lastColIdx === -1` — not a shape SQLite produces,
+ * and failing closed there costs nothing).
+ *
+ * Against the string-prefix test it replaces, it is NOT simply "stronger" (an
+ * earlier revision of this comment claimed that and the review disproved it).
+ * The two differ in both directions, and each difference is deliberate:
+ *   - STRICTER by one shape — the prefix test accepted a column appended at
+ *     the very end of the body, AFTER any trailing table constraint. That is
+ *     a hand-written rebuild's shape, not one SQLite writes, and it is now
+ *     rejected.
+ *   - LOOSER by one shape — it accepts the 092 shape, columns added before a
+ *     trailing table constraint, which is what SQLite ACTUALLY writes and
+ *     which the prefix test wrongly reported as a rebuild.
+ * Everything else the prefix test rejected is still rejected, the mid-table
+ * insertion included (which the FIRST item-list revision briefly let through).
+ * Net: the accepted set is now exactly SQLite's own `ADD COLUMN` output —
+ * neither wider nor narrower.
  */
 export function isColumnAppend(before: string, after: string): boolean {
   // Comments are stripped BEFORE collapsing — see stripSqlComments.
@@ -378,10 +394,14 @@ export function isColumnAppend(before: string, after: string): boolean {
       j++;
       continue;
     }
-    // `j` is the next BEFORE item still to be matched, so `j <= lastColIdx`
-    // means a pre-existing COLUMN DEFINITION is still ahead of this insertion:
-    // the item was inserted mid-table, which ADD COLUMN cannot do.
-    if (j <= lastColIdx) return false;
+    // `j` is the next BEFORE item still to be matched, and SQLite's splice
+    // point is IMMEDIATELY after the last pre-existing column definition, so
+    // the only position an ADD COLUMN can occupy is `j === lastColIdx + 1`.
+    // `j <= lastColIdx` means a pre-existing COLUMN DEFINITION is still ahead
+    // of this insertion (a mid-table insertion); `j > lastColIdx + 1` means a
+    // pre-existing TABLE CONSTRAINT has already been consumed, so the item was
+    // spliced in after the constraints. ADD COLUMN can do neither.
+    if (j !== lastColIdx + 1) return false;
     inserted.push(item);
   }
   // A BEFORE item that never matched was dropped, edited or reordered.
