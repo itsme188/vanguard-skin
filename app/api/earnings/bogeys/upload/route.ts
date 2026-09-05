@@ -4,7 +4,7 @@ import {
   resolveBogeysUploadMediaType,
   BogeysExtractionError,
 } from "@/lib/earnings/extract-bogeys";
-import { upsertBogey } from "@/lib/mutations/earnings-bogeys";
+import { saveBogeyWithRecompile } from "@/lib/mutations/earnings-bogeys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { addDays } from "@/lib/calendar/date-utils";
 import { buildBogeyEventMap } from "@/lib/queries/bogey-event-match";
@@ -126,7 +126,7 @@ export async function POST(request: Request) {
       continue;
     }
 
-    const upsert = upsertBogey(db, {
+    const { result: upsert } = saveBogeyWithRecompile(db, {
       event_id: matchedEventId,
       source: "pdf_upload",
       source_label: sourceLabel,
