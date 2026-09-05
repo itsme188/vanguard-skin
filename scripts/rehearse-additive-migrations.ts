@@ -18,10 +18,11 @@
  *   - its stored DDL (`sqlite_master.sql`) is unchanged, OR changed only by
  *     ADDING column definitions — an `ALTER TABLE … ADD COLUMN` is additive
  *     and is reported as a `column-append`, while a rebuild, a dropped CHECK,
- *     a removed or reordered column, or a changed table constraint fails
- *     (review M8, rulings R-D30 and R-E-C9). NOTE the added column lands after
- *     the last COLUMN DEFINITION, which on a table with trailing table
- *     constraints is NOT at the end of the body — see `isColumnAppend`.
+ *     a removed or reordered column, a column inserted BETWEEN two existing
+ *     columns, or a changed table constraint fails (review M8, rulings R-D30
+ *     and R-E-C9). NOTE the added column lands after the last COLUMN
+ *     DEFINITION, which on a table with trailing table constraints is NOT at
+ *     the end of the body — see `isColumnAppend`.
  * and for every index that existed before, it still exists with byte-identical
  * DDL (an index has no additive form — a changed definition is a rewrite);
  * `schema_migrations`
@@ -307,12 +308,35 @@ export function isTableConstraintItem(item: string): boolean {
  *     (`WITHOUT ROWID`, `STRICT`) are unchanged;
  *   - every BEFORE item appears in AFTER, byte-identical once whitespace is
  *     collapsed, in the SAME RELATIVE ORDER;
- *   - the only difference is one or more INSERTED items; and
- *   - every inserted item is a COLUMN DEFINITION, never a table constraint.
+ *   - the only difference is one or more INSERTED items;
+ *   - every inserted item is a COLUMN DEFINITION, never a table constraint; and
+ *   - every inserted item sits AFTER the last pre-existing COLUMN DEFINITION.
  *
- * That is strictly STRONGER than the prefix test it replaces: a rebuild, a
- * dropped CHECK, a removed or renamed column, a REORDER of two existing
- * columns, and a changed table constraint all still fail.
+ * That last clause is the review's Important 2 (fix round 2). SQLite records
+ * the offset of the END of the last column definition (`Table.addColOffset`)
+ * and splices an added column exactly there, so `ALTER TABLE … ADD COLUMN`
+ * can NEVER put a column between two existing ones — a mid-table insertion is
+ * a table REBUILD, which is the class this whole check exists to catch. The
+ * subsequence walk on its own happily accepted that shape.
+ *
+ * Precisely how this compares with the string-prefix test it replaces:
+ *   - it REJECTS everything the prefix test rejected that matters here — a
+ *     rebuild, a dropped CHECK, a removed or renamed column, a REORDER of two
+ *     existing columns, an inserted or changed table constraint, a changed
+ *     trailing table option, and (with the clause above) a column inserted
+ *     between two existing columns;
+ *   - it ACCEPTS exactly one shape the prefix test wrongly rejected: the 092
+ *     shape — one or more columns added after the last column definition but
+ *     BEFORE a trailing table constraint, which is what SQLite actually
+ *     writes.
+ *
+ * Residual, shared with the prefix test and NOT closed here: a column sitting
+ * after a trailing table constraint (`…, UNIQUE(a), extra TEXT)`) is still
+ * read as an append. SQLite cannot produce it either — it is a hand-written
+ * rebuild's shape — but tightening to "immediately after the last column
+ * definition" was outside this round's ruling. The rehearsal's other checks
+ * (row counts, `sqlite_sequence`, index existence, `foreign_key_check`,
+ * `integrity_check`) still run against such a migration.
  */
 export function isColumnAppend(before: string, after: string): boolean {
   // Comments are stripped BEFORE collapsing — see stripSqlComments.
@@ -335,6 +359,16 @@ export function isColumnAppend(before: string, after: string): boolean {
   const aItems = splitTopLevelItems(a.slice(aOpen + 1, aClose));
   if (bItems.length === 0 || aItems.length <= bItems.length) return false;
 
+  // The index of the LAST pre-existing column definition. SQLite splices an
+  // added column immediately after it, so nothing may be inserted at or before
+  // this point. A table with no column definition at all is not a shape we can
+  // reason about — fail closed.
+  let lastColIdx = -1;
+  for (let i = 0; i < bItems.length; i++) {
+    if (!isTableConstraintItem(bItems[i])) lastColIdx = i;
+  }
+  if (lastColIdx === -1) return false;
+
   // Walk AFTER left to right, consuming BEFORE in order. Anything that does
   // not match the next expected BEFORE item is an INSERTION.
   const inserted: string[] = [];
@@ -344,6 +378,10 @@ export function isColumnAppend(before: string, after: string): boolean {
       j++;
       continue;
     }
+    // `j` is the next BEFORE item still to be matched, so `j <= lastColIdx`
+    // means a pre-existing COLUMN DEFINITION is still ahead of this insertion:
+    // the item was inserted mid-table, which ADD COLUMN cannot do.
+    if (j <= lastColIdx) return false;
     inserted.push(item);
   }
   // A BEFORE item that never matched was dropped, edited or reordered.

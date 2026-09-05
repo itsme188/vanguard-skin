@@ -264,19 +264,6 @@ function undoMember(db: Database.Database, m: BatchMember): void {
 }
 
 /**
- * Book members terminal-unknown and CLAIM THE PHASE for each (R-E4).
- *
- * nodemailer has no way to abort an in-flight `sendMail`: after our deadline
- * elapses the promise and its socket keep running until nodemailer's own
- * timeouts, and the message may well be delivered. So an unknown ending is not
- * "nothing happened" — it is "we do not know", and the only safe reading is
- * "assume it went out". Writing the mac-sent marker BEFORE the caller clears
- * the running marker is what stops the Worker fallback from sending a second
- * copy of a recap that did arrive. Both writes are best-effort (marker failures
- * are fail-open by architecture — see the recorded disagreement on Codex #6);
- * the DB flip is what actually blocks a local resend.
- */
-/**
  * Run a seam without letting it break the send. Marker failures are fail-open
  * by architecture ruling R-E6, and the cloud pre-check degrades to "unknown".
  *
@@ -322,6 +309,19 @@ function safeSentAt(db: Database.Database, m: BatchMember): string {
   }
 }
 
+/**
+ * Book members terminal-unknown and CLAIM THE PHASE for each (R-E4).
+ *
+ * nodemailer has no way to abort an in-flight `sendMail`: after our deadline
+ * elapses the promise and its socket keep running until nodemailer's own
+ * timeouts, and the message may well be delivered. So an unknown ending is not
+ * "nothing happened" — it is "we do not know", and the only safe reading is
+ * "assume it went out". Writing the mac-sent marker BEFORE the caller clears
+ * the running marker is what stops the Worker fallback from sending a second
+ * copy of a recap that did arrive. Both writes are best-effort (marker failures
+ * are fail-open by architecture — see the recorded disagreement on Codex #6);
+ * the DB flip is what actually blocks a local resend.
+ */
 async function bookUnknown(
   db: Database.Database,
   members: BatchMember[],
