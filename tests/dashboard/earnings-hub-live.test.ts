@@ -6,25 +6,39 @@
  *
  * There is NO mounted integration test here and none is possible: React Testing
  * Library and jsdom are not dependencies of this repo and none may be added. So
- * the wiring is proven three ways —
- *   (1) pure exported helpers (`statusIntervalMs`, `orphanPrints`) tested as
- *       functions, which is where every decision that matters actually lives;
- *   (2) `react-dom/server` `renderToStaticMarkup` for the one presentational
+ * the wiring is proven four ways —
+ *   (1) pure exported helpers (`statusIntervalMs`, `orphanPrints`,
+ *       `hasLiveCountdown`) tested as functions, which is where every decision
+ *       that matters actually lives;
+ *   (2) the four polling streams driven through `buildHubStreams` with an
+ *       injected fetch (fix round 2, review I4) — they are plain data over a
+ *       `fetchImpl`, so the URL, the METHOD per trigger and what a failure does
+ *       are all assertable with no DOM;
+ *   (3) `react-dom/server` `renderToStaticMarkup` for the one presentational
  *       piece that takes its rows as a prop (`LivePrintsOutsideWeek`);
- *   (3) `readFileSync` source pins for the effects and the stream wiring, which
- *       have no render surface at all.
+ *   (4) `readFileSync` source pins for the effects that have no render surface
+ *       and no seam at all.
  * Every identifier below is synthetic (R-F8).
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   LivePrintsOutsideWeek,
+  buildHubStreams,
+  hasLiveCountdown,
   orphanPrints,
   statusIntervalMs,
+  type HubStreamArgs,
 } from "@/app/dashboard/today/EarningsHubLive";
-import type { PrintStatusEntry } from "@/app/dashboard/today/hub-live/types";
+import type { FetchImpl, StreamSpec } from "@/app/dashboard/today/hub-live/poll-controller";
+import type {
+  CockpitPayloadWire,
+  CockpitRowWire,
+  PrepareStepWire,
+  PrintStatusEntry,
+} from "@/app/dashboard/today/hub-live/types";
 
 const entry = (o: Partial<PrintStatusEntry> = {}): PrintStatusEntry => ({
   printId: 1,
@@ -96,6 +110,50 @@ describe("statusIntervalMs — polling follows the print state (spec §4.6)", ()
   });
 });
 
+/**
+ * Review I1. The gate used to be `cockpit.nextRelease != null`, which the
+ * cockpit query computes from TODAY's rows only — while M-F5 widened the
+ * payload and the chips render a countdown for the whole WEEK. The tick is now
+ * gated on the rows actually rendered.
+ */
+describe("hasLiveCountdown — the clock runs for what is on screen (review I1)", () => {
+  const row = (
+    state: "upcoming" | "released" | "unknown",
+    releaseInstant: string | null,
+  ): CockpitRowWire =>
+    ({ stages: { released: { state, releaseInstant } } }) as unknown as CockpitRowWire;
+
+  it("does not tick with no rows and no prints", () => {
+    expect(hasLiveCountdown(undefined, 0)).toBe(false);
+    expect(hasLiveCountdown({}, 0)).toBe(false);
+  });
+
+  it("KEEPS TICKING for a week-ahead row on a day with nothing reporting", () => {
+    // The bug this closes: a Monday whose only upcoming releases are Wednesday
+    // rows. `nextRelease` is null there, so the old gate never started the tick
+    // and every Wednesday countdown froze at its mount value all session.
+    expect(hasLiveCountdown({ 42: row("upcoming", "2026-09-09T20:05:00.000Z") }, 0)).toBe(true);
+  });
+
+  it("stops once every rendered release has happened", () => {
+    expect(
+      hasLiveCountdown({ 42: row("released", "2026-09-07T20:05:00.000Z"), 43: row("unknown", null) }, 0),
+    ).toBe(false);
+  });
+
+  it("does not tick for an upcoming row whose release instant is unknown", () => {
+    // Nothing to count down to — the chip renders no countdown for it either.
+    expect(hasLiveCountdown({ 42: row("upcoming", null) }, 0)).toBe(false);
+  });
+
+  it("ticks whenever a live print exists, because the window text reads the same clock", () => {
+    // LivePrintSlot's headline decides "window opens 16:05" vs "window open
+    // until 16:35" off nowMs. A frozen clock there can contradict the state
+    // chip printed beside it in the same sentence.
+    expect(hasLiveCountdown({}, 1)).toBe(true);
+  });
+});
+
 describe("orphanPrints (Codex 14 / F-S10)", () => {
   it("keeps only the prints whose event is not in the rendered week, oldest print first", () => {
     const byEvent = {
@@ -108,6 +166,197 @@ describe("orphanPrints (Codex 14 / F-S10)", () => {
 
   it("skips an entry with no eventId rather than guessing where it belongs", () => {
     expect(orphanPrints({ 0: entry({ printId: 3, eventId: undefined }) }, [10])).toEqual([]);
+  });
+});
+
+/**
+ * Review I4 — the four streams, driven for real.
+ *
+ * They were proven only by source regexes, which cannot tell an inverted
+ * POST/GET ternary from a correct one. `buildHubStreams` takes its fetch from
+ * the controller, so a fake one is all a behavioural test needs.
+ */
+describe("buildHubStreams — the four polls, driven with a fake fetch (review I4)", () => {
+  interface Call {
+    url: string;
+    init: RequestInit | undefined;
+  }
+
+  const jsonRes = (body: unknown, status = 200): Response =>
+    ({ ok: status >= 200 && status < 300, status, json: async () => body }) as unknown as Response;
+
+  function harness(
+    responder: (url: string) => Response,
+    overrides: Partial<HubStreamArgs> = {},
+  ) {
+    const calls: Call[] = [];
+    const seen = {
+      status: [] as PrintStatusEntry[][],
+      statusErrors: [] as string[],
+      cockpit: [] as CockpitPayloadWire[],
+      prepare: [] as Array<Record<number, PrepareStepWire[]>>,
+    };
+    const args: HubStreamArgs = {
+      weekOf: "2026-09-07",
+      eventIds: [10, 11],
+      hasInitialCockpit: false,
+      printsRef: { current: [] },
+      onStatus: (rows) => seen.status.push(rows),
+      onStatusError: (m) => seen.statusErrors.push(m),
+      onCockpit: (p) => seen.cockpit.push(p),
+      onPrepare: (p) => seen.prepare.push(p),
+      ...overrides,
+    };
+    const fetchImpl: FetchImpl = async (input, init) => {
+      calls.push({ url: String(input), init });
+      return responder(String(input));
+    };
+    const byName = new Map<string, StreamSpec<unknown>>(
+      buildHubStreams(args).map((s) => [s.name, s]),
+    );
+    const signal = new AbortController().signal;
+    return { calls, seen, byName, fetchImpl, signal, args };
+  }
+
+  const okStatus = () => jsonRes({ success: true, data: { prints: [entry()] } });
+
+  it("names all four streams", () => {
+    const { byName } = harness(okStatus);
+    expect([...byName.keys()].sort()).toEqual(["cockpit", "ensure", "prepare", "status"]);
+  });
+
+  it("status GETs its route and hands the rows straight back", async () => {
+    const h = harness(okStatus);
+    const rows = await h.byName.get("status")!.run(h.signal, h.fetchImpl, "timer");
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0].url).toBe("/api/print-watch/status");
+    expect(h.calls[0].init?.method).toBeUndefined();
+    h.byName.get("status")!.onResult(rows);
+    expect(h.seen.status[0]?.[0]?.symbol).toBe("XMPL1");
+  });
+
+  it("status throws the SERVER's error string, and that is what the banner shows", async () => {
+    const h = harness(() => jsonRes({ success: false, error: "watcher lease lost" }, 500));
+    const stream = h.byName.get("status")!;
+    await expect(stream.run(h.signal, h.fetchImpl, "timer")).rejects.toThrow("watcher lease lost");
+    stream.onError!(new Error("watcher lease lost"));
+    expect(h.seen.statusErrors).toEqual(["watcher lease lost"]);
+  });
+
+  it("status re-reads its cadence from the ref, so a print going hot needs no restart", () => {
+    const printsRef = { current: [] as PrintStatusEntry[] };
+    const { byName } = harness(okStatus, { printsRef });
+    expect(byName.get("status")!.intervalMs()).toBe(30_000);
+    printsRef.current = [entry({ state: "window_open" })];
+    expect(byName.get("status")!.intervalMs()).toBe(2_000);
+  });
+
+  it("ensure POSTs, and a failure is a console warning — never a user-facing error", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const h = harness(() => jsonRes({ success: false, error: "no lease" }, 503));
+      const stream = h.byName.get("ensure")!;
+      // No onError at all: /ensure only arms the watcher loops, so a failure
+      // must never reach the status banner.
+      expect(stream.onError).toBeUndefined();
+      await expect(stream.run(h.signal, h.fetchImpl, "timer")).resolves.toBeNull();
+      expect(h.calls[0].url).toBe("/api/print-watch/ensure");
+      expect(h.calls[0].init?.method).toBe("POST");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain("no lease");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("ensure stays quiet when it succeeds", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const h = harness(() => jsonRes({ success: true }));
+      await h.byName.get("ensure")!.run(h.signal, h.fetchImpl, "timer");
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  const cockpitPayload: CockpitPayloadWire = {
+    generatedAt: "2026-09-07T13:00:00.000Z",
+    nextRelease: null,
+    lanes: { bmo: [], amc: [], unknown: [] },
+    carryover: [],
+    skippedRows: 0,
+    rowsByEvent: {},
+  };
+
+  it("cockpit issues NO request on start when the server handed a payload down (Codex 7 / F-S2)", async () => {
+    const h = harness(() => jsonRes({ success: true, data: cockpitPayload }), {
+      hasInitialCockpit: true,
+    });
+    await expect(h.byName.get("cockpit")!.run(h.signal, h.fetchImpl, "start")).resolves.toBeNull();
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("cockpit DOES read on start when the server handed nothing down", async () => {
+    const h = harness(() => jsonRes({ success: true, data: cockpitPayload }));
+    await h.byName.get("cockpit")!.run(h.signal, h.fetchImpl, "start");
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0].init?.method).toBeUndefined();
+  });
+
+  it("POSTs the cockpit ONLY on the timer tick — POST is the intel refresh, which writes", async () => {
+    const h = harness(() => jsonRes({ success: true, data: cockpitPayload }), {
+      hasInitialCockpit: true,
+    });
+    const stream = h.byName.get("cockpit")!;
+    await stream.run(h.signal, h.fetchImpl, "timer");
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0].url).toBe("/api/earnings/cockpit?weekOf=2026-09-07");
+    expect(h.calls[0].init?.method).toBe("POST");
+  });
+
+  it("GETs the cockpit on a mutation refresh and on a tab coming back", async () => {
+    const h = harness(() => jsonRes({ success: true, data: cockpitPayload }), {
+      hasInitialCockpit: true,
+    });
+    const stream = h.byName.get("cockpit")!;
+    await stream.run(h.signal, h.fetchImpl, "refresh");
+    await stream.run(h.signal, h.fetchImpl, "resume");
+    expect(h.calls.map((c) => c.init?.method)).toEqual([undefined, undefined]);
+    expect(new Set(h.calls.map((c) => c.url))).toEqual(
+      new Set(["/api/earnings/cockpit?weekOf=2026-09-07"]),
+    );
+  });
+
+  it("cockpit keeps the last good payload rather than blanking a rendered chip strip", async () => {
+    const h = harness(() => jsonRes({ success: false }, 500), { hasInitialCockpit: true });
+    const stream = h.byName.get("cockpit")!;
+    await expect(stream.run(h.signal, h.fetchImpl, "timer")).rejects.toThrow();
+    stream.onError!(new Error("cockpit refresh failed"));
+    expect(h.seen.cockpit).toEqual([]);
+  });
+
+  it("prepare reads the WORKSHEET route for the week's events (M-F15)", async () => {
+    const h = harness(() => jsonRes({ success: true, data: { prepare: { 10: [] } } }));
+    const stream = h.byName.get("prepare")!;
+    const out = await stream.run(h.signal, h.fetchImpl, "timer");
+    expect(h.calls[0].url).toBe("/api/earnings/worksheet?eventIds=10,11");
+    expect(h.calls[0].init?.method).toBeUndefined();
+    stream.onResult(out);
+    expect(h.seen.prepare).toEqual([{ 10: [] }]);
+  });
+
+  it("prepare makes no request at all for an empty week", async () => {
+    const h = harness(okStatus, { eventIds: [] });
+    await expect(h.byName.get("prepare")!.run(h.signal, h.fetchImpl, "timer")).resolves.toEqual({});
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("runs the two slow streams on a flat minute and never faster", () => {
+    const { byName } = harness(okStatus);
+    expect(byName.get("cockpit")!.intervalMs()).toBe(60_000);
+    expect(byName.get("prepare")!.intervalMs()).toBe(60_000);
+    expect(byName.get("ensure")!.intervalMs()).toBe(60_000);
   });
 });
 
@@ -145,6 +394,17 @@ describe("EarningsHubLive source", () => {
     expect(src).toMatch(/\.resume\(\)/);
   });
 
+  it("clears the not-updating banner when the polls stop (review M3)", () => {
+    // Nothing is polling on a hidden tab or after the controller is torn down,
+    // so a surviving banner outlives the condition it describes.
+    const pause = src.indexOf("controller.pause()");
+    const cleared = src.indexOf("setStatusError(null)", pause);
+    expect(pause).toBeGreaterThan(-1);
+    expect(cleared).toBeGreaterThan(pause);
+    // …and again in the effect teardown.
+    expect(src.match(/setStatusError\(null\)/g)!.length).toBeGreaterThanOrEqual(3);
+  });
+
   it("keeps the mutation re-fetch the cockpit had (the earnings-data-changed event)", () => {
     expect(src).toMatch(/earnings-data-changed/);
   });
@@ -164,30 +424,69 @@ describe("EarningsHubLive source", () => {
     expect(src).not.toMatch(/setInterval\(/);
   });
 
-  it("issues NO cockpit request on start when the server handed a payload down (Codex 7 / F-S2)", () => {
-    expect(src).toMatch(/trigger === "start" && initialCockpit/);
-    expect(src).toMatch(/return null;/);
-    expect(src).not.toMatch(/firstCockpitRun/);
-  });
-
-  it("POSTs the cockpit only on the timer tick, and GETs on refresh and resume", () => {
-    expect(src).toMatch(/trigger === "timer"\s*\?\s*\{ signal, method: "POST"/);
+  it("gates the 1 s tick on the rendered rows, not on today-only nextRelease (review I1)", () => {
+    // `nextRelease` is a TODAY-only field; the chips count down the whole week.
+    expect(src).toMatch(/hasUpcoming\s*=\s*useMemo\([\s\S]{0,120}?hasLiveCountdown\(/);
+    expect(src).toMatch(/hasLiveCountdown\(cockpit\?\.rowsByEvent,\s*prints\.length\)/);
+    expect(src).not.toMatch(/hasUpcoming\s*=\s*cockpit/);
   });
 
   it("does not start the controller in a tab that mounts hidden (Codex 9a)", () => {
-    expect(src).toMatch(/document\.visibilityState !== "hidden"\) controller\.start\(\)/);
+    // Whitespace-tolerant (review M2): a Prettier reflow must not fail a green
+    // test with no behaviour change.
+    expect(src).toMatch(/document\.visibilityState !== "hidden"\)\s*\{?\s*controller\.start\(\)/);
   });
 
-  it("captures the previous print id BEFORE overwriting the ref (Codex 8 / F-S1)", () => {
-    expect(src).toMatch(/const prevPrintId = prevRef\.current\?\.printId \?\? null;/);
-    const capture = src.indexOf("const prevPrintId");
-    const write = src.indexOf("prevRef.current = next");
+  it("takes the freshest cockpit payload the server hands down, without clobbering a newer one (review I3)", () => {
+    // Five mutation paths only call router.refresh(); useState's initial value
+    // is read once, so the fresh RSC payload was silently dropped.
+    expect(src).toMatch(/setCockpit\(\(current\)\s*=>/);
+    expect(src).toMatch(/current\.generatedAt > initialCockpit\.generatedAt/);
+    expect(src).toMatch(/\}, \[initialCockpit\]\);/);
+  });
+
+  it("captures the previous print snapshot BEFORE overwriting the ref (Codex 8 / F-S1)", () => {
+    expect(src).toMatch(/const prevSnap = snapRef\.current\[id\] \?\? null;/);
+    const capture = src.indexOf("const prevSnap = snapRef.current[id]");
+    const write = src.indexOf("snapRef.current[id] = snap");
+    expect(capture).toBeGreaterThan(-1);
+    expect(write).toBeGreaterThan(-1);
     expect(capture).toBeLessThan(write);
     expect(src).toMatch(/nextOpenState\(/);
+    expect(src).toMatch(/prevPrintId: prevSnap\?\.printId \?\? null/);
   });
 
-  it("renders the outside-the-week block as a top-level sibling of the children", () => {
-    expect(src).toMatch(/\{children\}\s*<LivePrintsOutsideWeek/);
+  it("keeps ONE expansion decision for both responsive twins (review I2)", () => {
+    // EarningsHub renders a desktop row and a mobile card for every event and
+    // hides one with CSS. Per-slot open state diverged the moment the desk
+    // toggled one, and app/globals.css swaps which twin is visible on the chat
+    // rail attribute with no remount (M-F14's band).
+    expect(src).toMatch(/openByEvent: Record<number, boolean>/);
+    expect(src).toMatch(/toggleRow: \(eventId: number, printId: number \| null\) => void/);
+    expect(src).toMatch(/live\.openByEvent\[eventId\] \?\? false/);
+    // The reducer runs once, in the provider — not once per twin.
+    expect(src.match(/deriveExpansion\(/g)).toHaveLength(1);
+  });
+
+  it("renders the expansion body only in the twin the desk can actually see (review I2)", () => {
+    // Same structural check EarningsRowChips has used since the 4th recurrence:
+    // offsetParent is null under any display:none ancestor. Without it,
+    // IrPageField's mount effect fires GET /api/print-watch/sources twice.
+    expect(src).toMatch(/offsetParent !== null/);
+    expect(src).toMatch(/attributeFilter: \["data-chat-rail"\]/);
+    expect(src.match(/open && isVisibleTwin/g)).toHaveLength(2);
+  });
+
+  it("prints the state and the window ONCE, and never off the wall clock (reviews M1, M4)", () => {
+    // Expanded, LivePrintRow prints its own state chip and window line directly
+    // under this headline. Saying it twice is noise — and before the clock fix
+    // the two copies could disagree, because they read different clocks.
+    expect(src).toMatch(/open\s*\?\s*"live print"/);
+    // Every window string in this file reads the provider's shared nowMs. A
+    // `Date.now()` in render is impure and re-introduces exactly that
+    // disagreement.
+    expect(src).not.toMatch(/windowText\([^)]*Date\.now\(\)/);
+    expect(src).toMatch(/<LivePrintsOutsideWeek[^>]*nowMs=\{nowMs\}/);
   });
 
   it("surfaces a failed status poll ONCE, not once per row", () => {
@@ -208,6 +507,8 @@ describe("EarningsHubLive source", () => {
   it("never defines a component inside another component's body (remount trap)", () => {
     const inner = src.split("export default function EarningsHubLive")[1] ?? "";
     expect(inner).not.toMatch(/\n\s+function [A-Z]/);
+    // The arrow form is the commoner way to fall into it (review M7).
+    expect(inner).not.toMatch(/\n\s+const [A-Z]\w*\s*=\s*(?:\(|function)/);
   });
 });
 

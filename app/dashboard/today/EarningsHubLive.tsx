@@ -17,6 +17,18 @@
  * tree at hydration), so one controller feeds every row with no prop drilling
  * and no second poll.
  *
+ * THE RESPONSIVE TWINS (fix round 2, review I2). `EarningsHub` renders BOTH a
+ * desktop grid row and a mobile card row for every event and lets CSS hide one,
+ * so every client leaf under it mounts TWICE. That is a four-times-fixed hazard
+ * in this subtree (see `EarningsRowChips`' `offsetParent` guard), and it bites
+ * a live-print expansion in two ways: per-row open state kept inside the slot
+ * DIVERGES between the twins the moment the desk toggles one (the chat rail
+ * switches which twin is visible at 1280 with no remount — M-F14's band), and
+ * the expansion's mount effects fire their reads twice. Both are closed here:
+ * the open state lives in the PROVIDER, keyed by event, so the twins cannot
+ * disagree; and the expansion BODY renders only in the twin that is actually
+ * on screen, following the precedent the chip row already set.
+ *
  * CLIENT BOUNDARY (M-F18): every module reached from here is browser-safe. The
  * cockpit payload's wire shapes are re-declared in `./hub-live/types` rather
  * than imported from `@/lib/queries/earnings-cockpit`, which is a server
@@ -40,7 +52,11 @@ import {
   type ExpansionSnapshot,
   type ManualToggle,
 } from "./hub-live/expansion";
-import { createPollController, type PollController } from "./hub-live/poll-controller";
+import {
+  createPollController,
+  type PollController,
+  type StreamSpec,
+} from "./hub-live/poll-controller";
 import { COOL_POLL_MS, ENSURE_INTERVAL_MS, HOT_POLL_MS, printStateLabel, windowText } from "./live-print/helpers";
 import type {
   CockpitPayloadWire,
@@ -48,6 +64,9 @@ import type {
   PrepareStepWire,
   PrintStatusEntry,
 } from "./hub-live/types";
+
+/** The cockpit and prepare streams both run on a flat one-minute cadence. */
+const SLOW_POLL_MS = 60_000;
 
 /**
  * The status cadence, as one pure function (Codex round 1 #9b).
@@ -78,6 +97,38 @@ export function statusIntervalMs(prints: PrintStatusEntry[]): number {
 }
 
 /**
+ * Does anything currently on screen need a ticking clock? (fix round 2, review
+ * I1.)
+ *
+ * This used to be `cockpit.nextRelease != null`, which is wrong now and was
+ * only ever right by accident. `nextRelease` is computed from TODAY's rows
+ * (`lib/queries/earnings-cockpit.ts`), but M-F5 widened the payload and the
+ * chips render a countdown for every row in the WEEK. So on a Monday with
+ * nothing reporting today and three Wednesday rows, the old gate never started
+ * the tick at all: every Wednesday countdown froze at its mount value for the
+ * whole session, and so did `LivePrintSlot`'s headline clock — which decides
+ * "window opens 16:05" vs "window open until 16:35" and could therefore print a
+ * sentence that contradicts the state chip beside it.
+ *
+ * The gate walks the rows that are actually RENDERED, plus the live prints,
+ * which are the surface where a stale clock costs the most. It still stops: a
+ * week whose every release has happened, with no live print left, counts down
+ * to nothing and the tick is torn down.
+ */
+export function hasLiveCountdown(
+  rowsByEvent: Record<number, CockpitRowWire> | undefined,
+  printCount: number,
+): boolean {
+  if (printCount > 0) return true;
+  for (const row of Object.values(rowsByEvent ?? {})) {
+    if (row.stages.released.state === "upcoming" && row.stages.released.releaseInstant !== null) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Pure, so the selection is testable without a DOM. A status entry with no
  * `eventId` cannot be placed at all and is left out rather than guessed at.
  */
@@ -91,10 +142,137 @@ export function orphanPrints(
     .sort((a, b) => a.printId - b.printId);
 }
 
+/** What `buildHubStreams` needs from the provider. Everything is data or a
+ *  callback, and the fetch arrives through the controller — so the four streams
+ *  are testable end to end with no DOM (fix round 2, review I4). */
+export interface HubStreamArgs {
+  weekOf: string;
+  eventIds: number[];
+  /** True when the server handed a payload down, in which case the cockpit's
+   *  `start` run must fetch NOTHING — the server render is the freshest thing
+   *  there is. */
+  hasInitialCockpit: boolean;
+  /** Read (never closed over by value) so a cadence change needs no restart. */
+  printsRef: { current: PrintStatusEntry[] };
+  onStatus: (rows: PrintStatusEntry[]) => void;
+  onStatusError: (message: string) => void;
+  onCockpit: (payload: CockpitPayloadWire) => void;
+  onPrepare: (rows: Record<number, PrepareStepWire[]>) => void;
+}
+
+/**
+ * The four streams the Hub polls (M-F3), as pure data.
+ *
+ * Extracted from the provider body so the wiring can be ASSERTED rather than
+ * pinned by source regex: which URL, which METHOD per trigger, what a failure
+ * does. The POST/GET split on the cockpit is the whole point of `trigger` —
+ * POST is the intel REFRESH (it writes, TTL-guarded server-side at one refresh
+ * per event per 30 min), GET is a cheap read — and a regex over the source
+ * cannot tell an inverted ternary from a correct one.
+ */
+export function buildHubStreams(h: HubStreamArgs): Array<StreamSpec<unknown>> {
+  return [
+    {
+      name: "status",
+      intervalMs: () => statusIntervalMs(h.printsRef.current),
+      run: async (signal, fetchImpl) => {
+        const res = await fetchImpl("/api/print-watch/status", { signal });
+        const data = (await res.json().catch(() => null)) as
+          | { success?: boolean; data?: { prints: PrintStatusEntry[] }; error?: string }
+          | null;
+        if (!res.ok || !data?.success || !data.data) {
+          throw new Error(data?.error ?? `Server returned ${res.status}`);
+        }
+        return data.data.prints;
+      },
+      onResult: (rows) => h.onStatus(rows as PrintStatusEntry[]),
+      onError: (err) =>
+        h.onStatusError(
+          err instanceof Error ? err.message : "Could not reach the server for print-watch status.",
+        ),
+    },
+    {
+      name: "ensure",
+      intervalMs: () => ENSURE_INTERVAL_MS,
+      run: async (signal, fetchImpl) => {
+        const res = await fetchImpl("/api/print-watch/ensure", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+          signal,
+        });
+        const data = (await res.json().catch(() => null)) as
+          | { success?: boolean; error?: string }
+          | null;
+        // Non-blocking by design — /ensure only arms the watcher loops, so a
+        // failure is never a user-facing error (there is deliberately no
+        // `onError` below). But a silently, persistently failing /ensure means
+        // the watcher has stopped being kept alive, so it reaches the console.
+        if (!res.ok || !data?.success) {
+          console.warn(
+            `print-watch: /ensure failed (${data?.error ?? `server returned ${res.status}`})`,
+          );
+        }
+        return null;
+      },
+      onResult: () => undefined,
+    },
+    {
+      name: "cockpit",
+      intervalMs: () => SLOW_POLL_MS,
+      run: async (signal, fetchImpl, trigger) => {
+        // A server-rendered payload is the freshest thing there is, so the
+        // first run after mount fetches NOTHING. A mutation (`refresh`) or a
+        // tab coming back (`resume`) wants a cheap read. Only the 60-second
+        // timer POSTs, because POST is the intel REFRESH — it writes, and
+        // is TTL-guarded server-side at one refresh per event per 30 min.
+        if (trigger === "start" && h.hasInitialCockpit) return null;
+        const url = `/api/earnings/cockpit?weekOf=${encodeURIComponent(h.weekOf)}`;
+        const init: RequestInit =
+          trigger === "timer"
+            ? { signal, method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
+            : { signal };
+        const res = await fetchImpl(url, init);
+        const data = (await res.json().catch(() => null)) as
+          | { success?: boolean; data?: CockpitPayloadWire }
+          | null;
+        if (!res.ok || !data?.success || !data.data) throw new Error("cockpit refresh failed");
+        return data.data;
+      },
+      onResult: (p) => h.onCockpit(p as CockpitPayloadWire),
+      // Keep the last good payload; never blank a rendered chip strip.
+      onError: () => undefined,
+    },
+    {
+      name: "prepare",
+      intervalMs: () => SLOW_POLL_MS,
+      run: async (signal, fetchImpl) => {
+        if (h.eventIds.length === 0) return {};
+        const res = await fetchImpl(`/api/earnings/worksheet?eventIds=${h.eventIds.join(",")}`, {
+          signal,
+        });
+        const data = (await res.json().catch(() => null)) as
+          | { success?: boolean; data?: { prepare: Record<number, PrepareStepWire[]> } }
+          | null;
+        if (!res.ok || !data?.success || !data.data) throw new Error("prepare read failed");
+        return data.data.prepare;
+      },
+      onResult: (p) => h.onPrepare(p as Record<number, PrepareStepWire[]>),
+      onError: () => undefined,
+    },
+  ];
+}
+
 export interface HubLiveValue {
   printByEvent: Record<number, PrintStatusEntry>;
   cockpitByEvent: Record<number, CockpitRowWire>;
   prepareByEvent: Record<number, PrepareStepWire[]>;
+  /** Per EVENT, not per slot — the two responsive twins share one truth
+   *  (review I2). Absent means closed. */
+  openByEvent: Record<number, boolean>;
+  /** Flip one row. `printId` is the print the preference belongs to, or null
+   *  for an armed row whose window has not opened yet (nothing to remember). */
+  toggleRow: (eventId: number, printId: number | null) => void;
   nowMs: number;
   statusError: string | null;
   onChanged: () => Promise<void>;
@@ -148,101 +326,20 @@ export default function EarningsHubLive({
   useEffect(() => {
     const controller = createPollController({
       fetchImpl: (input, init) => apiFetch(input, init),
-      streams: [
-        {
-          name: "status",
-          intervalMs: () => statusIntervalMs(printsRef.current),
-          run: async (signal, fetchImpl) => {
-            const res = await fetchImpl("/api/print-watch/status", { signal });
-            const data = (await res.json().catch(() => null)) as
-              | { success?: boolean; data?: { prints: PrintStatusEntry[] }; error?: string }
-              | null;
-            if (!res.ok || !data?.success || !data.data) {
-              throw new Error(data?.error ?? `Server returned ${res.status}`);
-            }
-            return data.data.prints;
-          },
-          onResult: (rows) => {
-            printsRef.current = rows as PrintStatusEntry[];
-            setPrints(rows as PrintStatusEntry[]);
-            setStatusError(null);
-          },
-          onError: (err) =>
-            setStatusError(
-              err instanceof Error
-                ? err.message
-                : "Could not reach the server for print-watch status.",
-            ),
+      streams: buildHubStreams({
+        weekOf,
+        eventIds,
+        hasInitialCockpit: initialCockpit !== null,
+        printsRef,
+        onStatus: (rows) => {
+          printsRef.current = rows;
+          setPrints(rows);
+          setStatusError(null);
         },
-        {
-          name: "ensure",
-          intervalMs: () => ENSURE_INTERVAL_MS,
-          run: async (signal, fetchImpl) => {
-            const res = await fetchImpl("/api/print-watch/ensure", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: "{}",
-              signal,
-            });
-            const data = (await res.json().catch(() => null)) as
-              | { success?: boolean; error?: string }
-              | null;
-            // Non-blocking by design — /ensure only arms the watcher loops. But
-            // a silently, persistently failing /ensure means the watcher has
-            // stopped being kept alive, so it reaches the console.
-            if (!res.ok || !data?.success) {
-              console.warn(
-                `print-watch: /ensure failed (${data?.error ?? `server returned ${res.status}`})`,
-              );
-            }
-            return null;
-          },
-          onResult: () => undefined,
-        },
-        {
-          name: "cockpit",
-          intervalMs: () => 60_000,
-          run: async (signal, fetchImpl, trigger) => {
-            // A server-rendered payload is the freshest thing there is, so the
-            // first run after mount fetches NOTHING. A mutation (`refresh`) or a
-            // tab coming back (`resume`) wants a cheap read. Only the 60-second
-            // timer POSTs, because POST is the intel REFRESH — it writes, and
-            // is TTL-guarded server-side at one refresh per event per 30 min.
-            if (trigger === "start" && initialCockpit) return null;
-            const url = `/api/earnings/cockpit?weekOf=${encodeURIComponent(weekOf)}`;
-            const init: RequestInit =
-              trigger === "timer"
-                ? { signal, method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
-                : { signal };
-            const res = await fetchImpl(url, init);
-            const data = (await res.json().catch(() => null)) as
-              | { success?: boolean; data?: CockpitPayloadWire }
-              | null;
-            if (!res.ok || !data?.success || !data.data) throw new Error("cockpit refresh failed");
-            return data.data;
-          },
-          onResult: (p) => setCockpit(p as CockpitPayloadWire),
-          // Keep the last good payload; never blank a rendered chip strip.
-          onError: () => undefined,
-        },
-        {
-          name: "prepare",
-          intervalMs: () => 60_000,
-          run: async (signal, fetchImpl) => {
-            if (eventIds.length === 0) return {};
-            const res = await fetchImpl(`/api/earnings/worksheet?eventIds=${eventIds.join(",")}`, {
-              signal,
-            });
-            const data = (await res.json().catch(() => null)) as
-              | { success?: boolean; data?: { prepare: Record<number, PrepareStepWire[]> } }
-              | null;
-            if (!res.ok || !data?.success || !data.data) throw new Error("prepare read failed");
-            return data.data.prepare;
-          },
-          onResult: (p) => setPrepare(p as Record<number, PrepareStepWire[]>),
-          onError: () => undefined,
-        },
-      ],
+        onStatusError: setStatusError,
+        onCockpit: setCockpit,
+        onPrepare: setPrepare,
+      }),
     });
     controllerRef.current = controller;
     // A tab restored in the background must not fire four requests nobody is
@@ -250,14 +347,26 @@ export default function EarningsHubLive({
     // below is what starts it — but only START when the tab is actually shown.
     // `resume()` returns early when already running and `pause()` is
     // idempotent, so a tab that mounts hidden and is then shown starts once.
-    if (document.visibilityState !== "hidden") controller.start();
-    const onVisibility = () =>
-      document.visibilityState === "hidden" ? controller.pause() : controller.resume();
+    if (document.visibilityState !== "hidden") {
+      controller.start();
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        controller.pause();
+        // Nothing is polling any more, so a stale "print watch is not
+        // updating" banner would outlive the condition it describes and be
+        // the first thing the desk reads on returning (review M3).
+        setStatusError(null);
+      } else {
+        controller.resume();
+      }
+    };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       controller.stop();
       controllerRef.current = null;
+      setStatusError(null);
     };
     // `eventIds` and `initialCockpit` are read inside the stream closures.
     // `idsKey` is `eventIds`' stable identity (a fresh array arrives on every
@@ -267,6 +376,32 @@ export default function EarningsHubLive({
     // an in-flight status poll mid-print.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weekOf, idsKey]);
+
+  /**
+   * A FRESH server payload wins (fix round 2, review I3).
+   *
+   * `useState(initialCockpit)` reads its argument once, so every later server
+   * render's payload was silently dropped. That matters because five of the
+   * Hub's mutation paths — the bogeys modal, the date chip, the refresh button
+   * and the bogeys upload — call `router.refresh()` and nothing else: the RSC
+   * re-render recomputes the whole cockpit, and without this the stage chips,
+   * the intel line and the countdown kept the pre-mutation payload for up to a
+   * full minute. Saving bogeys is the sharpest case, since it changes the
+   * sheet-sourced expected move the intel line renders.
+   *
+   * It must not clobber a FRESHER client payload, though: a 60-second POST that
+   * landed after this server render is newer than the render. `generatedAt` is
+   * `new Date().toISOString()` on both sides — one format, so a lexicographic
+   * compare is a chronological one.
+   */
+  useEffect(() => {
+    if (!initialCockpit) return;
+    setCockpit((current) =>
+      current !== null && current.generatedAt > initialCockpit.generatedAt
+        ? current
+        : initialCockpit,
+    );
+  }, [initialCockpit]);
 
   /** Every child mutation lands here: one immediate status read and one
    *  immediate cockpit GET, so the sheet and the chips agree without waiting
@@ -302,9 +437,18 @@ export default function EarningsHubLive({
     setNowMs(Date.now());
   }, []);
 
-  // 1 s countdown tick, and ONLY while something is upcoming — the cockpit's
-  // own rule. Recursive setTimeout so a slow frame cannot queue a backlog.
-  const hasUpcoming = cockpit?.nextRelease != null;
+  const printByEvent = useMemo(() => {
+    const out: Record<number, PrintStatusEntry> = {};
+    for (const p of prints) if (p.eventId !== undefined) out[p.eventId] = p;
+    return out;
+  }, [prints]);
+
+  // 1 s countdown tick, and ONLY while something on screen is still counting
+  // down. Recursive setTimeout so a slow frame cannot queue a backlog.
+  const hasUpcoming = useMemo(
+    () => hasLiveCountdown(cockpit?.rowsByEvent, prints.length),
+    [cockpit, prints.length],
+  );
   useEffect(() => {
     if (!hasUpcoming) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -333,28 +477,116 @@ export default function EarningsHubLive({
     };
   }, []);
 
-  const printByEvent = useMemo(() => {
-    const out: Record<number, PrintStatusEntry> = {};
-    for (const p of prints) if (p.eventId !== undefined) out[p.eventId] = p;
-    return out;
-  }, [prints]);
+  /**
+   * WHICH ROWS ARE EXPANDED — one map, in the provider (review I2).
+   *
+   * This used to live inside each `LivePrintSlot`, which meant the desktop and
+   * mobile twins of the same row held SEPARATE copies: toggling one wrote only
+   * its own state, and `app/globals.css` swaps which twin is visible on the
+   * chat rail's attribute with no remount, so collapsing a print at 1280 and
+   * opening the rail brought it straight back expanded. Keying the map by event
+   * makes the twins two views of one decision.
+   *
+   * The reducer is unchanged and still pure (`hub-live/expansion.ts`); it just
+   * runs ONCE per print here instead of once per twin. `openRef` mirrors the
+   * state so the walk can read the current value without listing it as a
+   * dependency, and `applyOpen` bails when nothing moved, so a poll that
+   * changes no expansion re-renders nothing.
+   */
+  const [openByEvent, setOpenByEvent] = useState<Record<number, boolean>>({});
+  const openRef = useRef<Record<number, boolean>>({});
+  /** eventId -> the desk's manual choice about the print now on that row. */
+  const manualRef = useRef<Record<number, ManualToggle>>({});
+  /** eventId -> what that row's print looked like on the previous payload. */
+  const snapRef = useRef<Record<number, ExpansionSnapshot>>({});
+
+  const applyOpen = useCallback((next: Record<number, boolean>) => {
+    const prev = openRef.current;
+    const keys = new Set([...Object.keys(prev), ...Object.keys(next)]);
+    let changed = false;
+    for (const key of keys) {
+      const id = Number(key);
+      if ((prev[id] ?? false) !== (next[id] ?? false)) {
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) return;
+    openRef.current = next;
+    setOpenByEvent(next);
+  }, []);
+
+  useEffect(() => {
+    const next: Record<number, boolean> = { ...openRef.current };
+    // A row whose print left the payload entirely (expired out of the window,
+    // re-homed by a merge, or the event deleted). Nothing about the old subject
+    // may survive into whatever appears next.
+    for (const key of Object.keys(snapRef.current)) {
+      const id = Number(key);
+      if (printByEvent[id]) continue;
+      delete snapRef.current[id];
+      delete manualRef.current[id];
+      next[id] = false;
+    }
+    for (const [key, print] of Object.entries(printByEvent)) {
+      const id = Number(key);
+      const snap = snapshotOf(print);
+      // CAPTURED BEFORE the ref is overwritten — comparing against the ref
+      // after writing it makes the comparison trivially true, so a re-homed row
+      // would keep the old print's open state.
+      const prevSnap = snapRef.current[id] ?? null;
+      // The stored preference is per PRINT, so it is read when the print id
+      // appears or changes — never once at mount.
+      if (prevSnap === null || prevSnap.printId !== snap.printId) {
+        const stored = readManual(snap.printId);
+        manualRef.current[id] = stored === null ? null : { printId: snap.printId, open: stored };
+      }
+      const manual = manualRef.current[id] ?? null;
+      const decided = deriveExpansion(prevSnap, snap, manual);
+      snapRef.current[id] = snap;
+      next[id] = nextOpenState({
+        was: next[id] ?? false,
+        decided,
+        prevPrintId: prevSnap?.printId ?? null,
+        next: snap,
+        manual,
+      });
+    }
+    applyOpen(next);
+  }, [printByEvent, applyOpen]);
+
+  const toggleRow = useCallback(
+    (eventId: number, printId: number | null) => {
+      const open = !(openRef.current[eventId] ?? false);
+      if (printId !== null) {
+        // The preference belongs to this print, and only this print — a date
+        // correction that re-homes the row must not inherit it.
+        manualRef.current[eventId] = { printId, open };
+        writeManual(printId, open);
+      }
+      applyOpen({ ...openRef.current, [eventId]: open });
+    },
+    [applyOpen],
+  );
 
   const value = useMemo<HubLiveValue>(
     () => ({
       printByEvent,
       cockpitByEvent: cockpit?.rowsByEvent ?? {},
       prepareByEvent: prepare,
+      openByEvent,
+      toggleRow,
       nowMs,
       statusError,
       onChanged,
     }),
-    [printByEvent, cockpit, prepare, nowMs, statusError, onChanged],
+    [printByEvent, cockpit, prepare, openByEvent, toggleRow, nowMs, statusError, onChanged],
   );
 
   return (
     <HubLiveContext.Provider value={value}>
       {children}
-      <LivePrintsOutsideWeek prints={orphanPrints(printByEvent, eventIds)} />
+      <LivePrintsOutsideWeek prints={orphanPrints(printByEvent, eventIds)} nowMs={nowMs} />
       {/* ONE line, once. The status poll feeds every row, so putting this on
           each expansion would print the same sentence N times for a single
           failed request. It says what stopped rather than what is missing: the
@@ -380,6 +612,10 @@ export default function EarningsHubLive({
  * per-day wrapper is a plain `<div>` and the CSS grid lives on each ROW, so a
  * sibling rendered after the row is already full width and `col-span-full`
  * would be inert.
+ *
+ * Whether the row is OPEN is the provider's, not this component's — see the
+ * responsive-twin note at the top of the file. What stays local is the body's
+ * visibility check, because that is a fact about THIS instance.
  */
 export function LivePrintSlot({
   eventId,
@@ -392,11 +628,12 @@ export function LivePrintSlot({
 }) {
   const live = useHubLive();
   const print = live?.printByEvent[eventId] ?? null;
-  const prevRef = useRef<ExpansionSnapshot | null>(null);
-  const [manual, setManual] = useState<ManualToggle>(null);
-  const [open, setOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [fieldError, setFieldError] = useState<string | null>(null);
+  /** Only used when this slot renders OUTSIDE the provider — there is no shared
+   *  map to write to then, and an inert toggle would be a lie. */
+  const [standaloneOpen, setStandaloneOpen] = useState(false);
+  const open = live ? (live.openByEvent[eventId] ?? false) : standaloneOpen;
 
   // IrPageField reads the stored row in an effect keyed on `onError`, so these
   // must be identity-stable or the read re-runs on every poll tick.
@@ -408,58 +645,98 @@ export function LivePrintSlot({
     setFieldError(text);
   }, []);
 
-  // The stored preference is per PRINT, so it is read when the print id
-  // appears or changes — never once at mount.
-  const printId = print?.printId ?? null;
+  /**
+   * IS THIS THE TWIN THE DESK CAN SEE? (review I2, following the precedent in
+   * `EarningsRowChips`.)
+   *
+   * Both twins of a row are in the DOM at once; CSS hides one. The expansion
+   * body mounts `IrPageField`, which reads `GET /api/print-watch/sources` in a
+   * mount effect, so rendering it in both fires two identical reads per
+   * expansion and two more on every symbol change. `offsetParent` is null
+   * whenever any ancestor is `display:none` — a direct structural check with no
+   * viewport-width heuristic to keep in sync with the Tailwind breakpoint.
+   *
+   * It is re-measured on resize AND on the chat rail's `data-chat-rail`
+   * attribute, because `app/globals.css` swaps the twins on that attribute
+   * "instantly … without page reload" — the M-F14 band, where a one-shot
+   * measurement would leave the body mounted in the hidden twin. The
+   * subscription deliberately does NOT depend on `open`: measuring only while
+   * expanded leaves the reading stale across a rail toggle made while the row
+   * was collapsed, and the next expansion would then mount the body in the
+   * wrong twin for a frame. It IS skipped for a slot that renders nothing at
+   * all, so a week of unarmed rows subscribes to nothing.
+   *
+   * Starts false so nothing renders before it is measured. Safe: `open` is
+   * false on every server render (the map starts empty and a print only ever
+   * arrives from a client poll), so this never changes server markup.
+   */
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [isVisibleTwin, setIsVisibleTwin] = useState(false);
+  const rendered = armed || print !== null;
   useEffect(() => {
-    if (printId === null) return;
-    const stored = readManual(printId);
-    setManual(stored === null ? null : { printId, open: stored });
-  }, [printId]);
+    if (!rendered) return;
+    const measure = () => {
+      const visible = rootRef.current !== null && rootRef.current.offsetParent !== null;
+      setIsVisibleTwin((was) => (was === visible ? was : visible));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    const observer = new MutationObserver(measure);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-chat-rail"],
+    });
+    return () => {
+      window.removeEventListener("resize", measure);
+      observer.disconnect();
+    };
+  }, [rendered]);
 
-  useEffect(() => {
-    if (!print) {
-      // The print left the payload entirely (expired out of the window,
-      // re-homed by a merge, or the event was deleted). Nothing about the old
-      // subject may survive into whatever appears next.
-      prevRef.current = null;
-      setManual(null);
-      setOpen(false);
-      return;
-    }
-    const next = snapshotOf(print);
-    // CAPTURED BEFORE the ref is overwritten — this is the whole bug: comparing
-    // against prevRef.current AFTER writing it makes the comparison trivially
-    // true, so a re-homed row kept the old print's open state.
-    const prevPrintId = prevRef.current?.printId ?? null;
-    const decided = deriveExpansion(prevRef.current, next, manual);
-    prevRef.current = next;
-    setOpen((was) => nextOpenState({ was, decided, prevPrintId, next, manual }));
-  }, [print, manual]);
+  /**
+   * Memoised so the sheet does not re-render once a second (review M5). The
+   * provider's `nowMs` is part of the context value, so every consumer
+   * re-renders on each tick; keeping the element identity stable lets React
+   * skip this subtree, which during an upload is the whole print sheet plus its
+   * drop zone.
+   */
+  const prepareSteps = live?.prepareByEvent[eventId];
+  const onChanged = live?.onChanged ?? NO_REFRESH;
+  const sheet = useMemo(
+    () =>
+      print ? (
+        <LivePrintRow print={print} prepareSteps={prepareSteps} onChanged={onChanged} />
+      ) : null,
+    [print, prepareSteps, onChanged],
+  );
 
   if (!armed && !print) return null;
 
   const toggle = () => {
-    const next = !open;
-    if (print) {
-      // The preference belongs to this print, and only this print — a date
-      // correction that re-homes the row must not inherit it.
-      setManual({ printId: print.printId, open: next });
-      writeManual(print.printId, next);
-    }
-    setOpen(next);
+    if (live) live.toggleRow(eventId, print?.printId ?? null);
+    else setStandaloneOpen((was) => !was);
   };
 
   const stateChip = print ? printStateLabel(print.state) : null;
-  // `|| Date.now()`, not `??`: nowMs is 0 until the client clock starts. A
-  // print can only be here after a client poll has landed, so the fallback is
-  // unreachable in practice and never reaches server-rendered markup.
+  // The SHARED clock, never `Date.now()` in render — reading the wall clock
+  // during a render is impure (`react-hooks/purity`) and, worse, would make
+  // this line disagree with the identical line inside `LivePrintRow`. `nowMs`
+  // is 0 until the client clock starts, which `windowText` reads as
+  // "window opens …"; a print can only be here after a client poll, and the
+  // clock effect fires at mount, so that reading is unreachable in practice and
+  // never reaches server-rendered markup.
+  //
+  // COLLAPSED, this line is the only thing the desk can see, so it carries the
+  // state and the window. EXPANDED, `LivePrintRow` prints both immediately
+  // below it (review M1) — repeating them here says the same thing twice and,
+  // before the clock fix, could say it two different ways.
   const headline = print
-    ? `live print · ${stateChip!.text} · ${windowText(print.effectiveWindow ?? null, live?.nowMs || Date.now())}`
+    ? open
+      ? "live print"
+      : `live print · ${stateChip!.text} · ${windowText(print.effectiveWindow ?? null, live?.nowMs ?? 0)}`
     : "armed — the watch window opens automatically ahead of the release";
 
   return (
-    <div className="px-5 py-2 border-b border-edge bg-canvas">
+    <div ref={rootRef} className="px-5 py-2 border-b border-edge bg-canvas">
       <div className="flex items-baseline justify-between gap-2 flex-wrap">
         <p className="text-[12px] font-mono text-ink-dim">{headline}</p>
         <button
@@ -472,14 +749,8 @@ export function LivePrintSlot({
           {open ? "collapse" : "expand"}
         </button>
       </div>
-      {open && print && (
-        <LivePrintRow
-          print={print}
-          prepareSteps={live?.prepareByEvent[eventId]}
-          onChanged={live?.onChanged ?? NO_REFRESH}
-        />
-      )}
-      {open && !print && (
+      {open && isVisibleTwin && print && sheet}
+      {open && isVisibleTwin && !print && (
         <div className="mt-2 space-y-1.5">
           {/* Before the window opens there is no sheet to show — what the desk
               CAN still do is the two things that decide whether the print is
@@ -498,7 +769,7 @@ export function LivePrintSlot({
           ) : (
             <IrPageField symbol={symbol} onNote={onNote} onError={onError} />
           )}
-          <PrepareStatus steps={live?.prepareByEvent[eventId]} />
+          <PrepareStatus steps={prepareSteps} />
           {fieldError && <p className="text-[12px] text-down">{fieldError}</p>}
           {note && !fieldError && <p className="text-[12px] text-up">{note}</p>}
         </div>
@@ -522,9 +793,23 @@ export function LivePrintSlot({
  * callouts — and F may not edit that route, E owns it), so the line names the
  * symbol, the state and the effective window instead of inventing a date. That
  * is a recorded residual, not a gap to paper over with a client-side lookup.
+ *
+ * `nowMs` is the provider's shared clock (review M4) — this used to read
+ * `Date.now()` in render, which is impure and could disagree with the very
+ * headline printed one line below it. It is optional so the component stays
+ * renderable on its own in a test, and 0 reads as "window opens …", which is
+ * unreachable in practice: a non-empty `prints` can only come from a client
+ * poll, by which time the clock has started.
  */
-export function LivePrintsOutsideWeek({ prints }: { prints: PrintStatusEntry[] }) {
+export function LivePrintsOutsideWeek({
+  prints,
+  nowMs,
+}: {
+  prints: PrintStatusEntry[];
+  nowMs?: number;
+}) {
   if (prints.length === 0) return null;
+  const clock = nowMs ?? 0;
   return (
     <div className="mt-3 border-t border-edge px-5 py-3">
       <h3 className="text-[11px] uppercase tracking-wider text-ink-faint whitespace-nowrap!">
@@ -534,7 +819,7 @@ export function LivePrintsOutsideWeek({ prints }: { prints: PrintStatusEntry[] }
         <div key={p.printId} className="mt-2">
           <p className="text-[12px] font-mono text-ink-dim">
             {p.symbol} · {printStateLabel(p.state).text}
-            {p.effectiveWindow ? ` · ${windowText(p.effectiveWindow, Date.now())}` : ""}
+            {p.effectiveWindow ? ` · ${windowText(p.effectiveWindow, clock)}` : ""}
           </p>
           <LivePrintSlot eventId={p.eventId!} symbol={p.symbol} armed />
         </div>
