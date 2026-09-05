@@ -155,3 +155,96 @@ Add new entries at the bottom.
 - **The attempt cap must not erase the cause (F2):** `error_code` always names the causal failure; the cap is recorded as an `attempt cap reached (N/N): …` prefix on the error text and derived back as `capped`. Terminal-ness is judged from the attempt total plus a null `next_retry_at`, never from a marker code; `'attempt_cap'` stays in the union for old rows and for a generating row ABANDONED at the cap, which has no cause of its own.
 - **`activeRead` is live work only (F10):** the status DTO's `activeRead` is the newest `generating` row; a failed attempt appears under `lastAttempt` (with `capped` and the attempt total the cap counted) and only while it is newer than the read on display. A terminal failure used to sit in `activeRead` forever, so the block read "read failed — attempt_cap" and nothing else.
 - **Callout unit agreement (R-D24):** where the guidance metrics naming a label all carry a unit and none matches the proposal's parsed unit, the callout is refused — a real metric name with the wrong kind of number. A figure-less guidance clause (unit null) types nothing and leaves the proposal eligible; R-D1's anchoring OR is untouched.
+
+## 2026-09-04 — Live print v2 slice E (outputs are buttons)
+
+- **Migration 092 adds TWO columns, not one (R-E10).** `provider_message_id` (the RFC 5322
+  `Message-ID` the Mac mints and sets on the wire — not a provider receipt) and
+  `provider_response` (the relay's own reply line, `info.response`, e.g. `250 2.0.0 Ok: queued as
+  …`). The Message-ID is ours; the response line is the provider's, and it is the only place a
+  provider-side identifier would ever appear. `042_earnings_emails.sql` puts a CHECK on `phase`,
+  never on `error`, so `'sending'` and `'delivery_unknown'` needed no schema change of their own.
+- **`delivery_unknown` is terminal and blocks automatic resends** (spec §7). It is reconciled by
+  hand through `POST /api/earnings/email` in manual mode — either `markDelivered: true` (confirm,
+  nothing sent) or a plain refire (a real second email) — with the stored Message-ID as the handle.
+- **An unknown delivery claims the phase** (R-E4). There is no way to abort a nodemailer send, so
+  "we do not know" is treated as "assume it went out": the mac-sent marker is written before the
+  running marker is released, and no automatic sender — cloud included — will try again.
+- **The reaper's flip claims the phase through the SWEEP tick, not one step later (R-E4b) —
+  corrected from the plan's original reasoning.** `findEmailCandidates`
+  (`lib/calendar/enrichment-runner.ts`) LEFT JOINs `earnings_emails … AND ee.id IS NULL` on both its
+  preview and recap SELECTs, so ANY existing audit row — a freshly-flipped `delivery_unknown` row
+  included — removes the event from candidacy; the send path is never invoked for it later, so no
+  marker would ever be written from that pass. `reapStaleEarningsEmailClaims` therefore returns
+  `flipped: Array<{eventId, phase}>` itself, and `runEarningsEmailSweep` writes one mac-sent marker
+  per flip (fail-open) immediately after the reap call, in the same tick that did the flipping.
+- **A send is ambiguous only when the message may have been transmitted (M-E14).** Wedging a recap
+  that certainly never left is worse than one extra retry; the opposite mistake sends twice. Pinned
+  against nodemailer 8.0.4's own `code`/`command` assignment.
+- **A manual refire never destroys a delivered email's stored copy (M-E13).** The refire's
+  `sending` transition writes only the message id at claim time; `ai_output_md` is replaced only at
+  `markEmailSent` — one step later than contract §1's "prose at `sending`" describes, deliberately.
+  So a refire that fails or ends unknown leaves the previously delivered body intact, and a
+  definitive rejection additionally restores `error`, `sent_at` and the prose exactly as they were.
+- **The nudge is an explicit desk action (M-E17):** no mute check, no recipient allowlist check —
+  the body carries no recipient, so a press can only ever reach `BRIEFING_EMAIL_TO`.
+- **The send-recap gate re-states the promote route's pair-completeness and promote-identity
+  rules, not its whole gate (M-E16 / R-E-C3 / R-E-C4 / R-E-C6) — narrower than the plan's original
+  text.** It mirrors the accept route's EPS selection exactly: by accepted-ness (adjusted preferred,
+  GAAP fallback), THEN a reported value required on the CHOSEN line. Its promote-identity check
+  normalises both sides through `mergeFinnhubActual`, the same formatter the promote path uses, so
+  a formatting-only rewrite (the Worker renders revenue through `toLocaleString`, the local
+  formatter does not) can never wedge the button shut — if the two genuinely disagree the desk is
+  told to promote again. It deliberately does NOT model the route's supersession recheck
+  (R-E-C6): the route also allows `forceSuperseded`, and modelling the recheck naively would wedge a
+  deliberately-forced promote's recap shut with no escape — telling "contradicted since the
+  promote" from "contradicted and promoted on purpose" needs state this slice does not carry. The
+  desk's protection there is the panel's own "superseded — re-verify" state plus the fact that
+  sending is an explicit button press. A parity test drives `POST /api/print-watch/accept` over a
+  5-row matrix to prove gate and route agree, including the accepted-but-blank-adjusted-EPS row.
+- **The manual entry points moved to `lib/earnings/send-service.ts` (M-E19), and
+  `SEND_TIMEOUT_MS` / `SENDING_STALE_MINUTES` stayed in `lib/digest/send-earnings-email.ts` rather
+  than moving to the service (M-E5) — both to keep the module graph a DAG.** The service imports
+  `send-earnings-email.ts` for the claim state machine; moving the constants the other way would
+  make that an ESM cycle.
+- **The cloud pre-check moved into the service (R-E6) — corrected from the plan's original text,
+  which said it "stays in the sweep."** `checkEarningsCloudMarker` now runs inside
+  `sendEarningsCandidate` for the two AUTOMATIC modes (`sweep`, `nudge`) only — a human refiring is
+  asking for a second copy on purpose — and the sweep loop's own copy of the check was DELETED. It
+  used to live in the sweep only, which left the nudge free to duplicate a recap the Worker had
+  already delivered. The 07:45 morning debrief keeps its OWN per-member pre-check
+  (`debrief-send.ts`) — a different question asked over a batch, not the same check relocated
+  twice.
+- **`scripts/rehearse-additive-migrations.ts` needed a real fix for 092, not zero code change
+  (M-E11, corrected).** `isColumnAppend` compared the `CREATE TABLE` body as a string PREFIX, which
+  is wrong whenever SQLite inserts the new column before a trailing TABLE CONSTRAINT — exactly
+  `earnings_emails`'s shape (it ends in `UNIQUE(event_id, phase)`). Slices before E never hit this
+  because 090/091 CREATE tables rather than ALTER them. The rehearsal against a `VACUUM INTO` copy
+  of the live database FAILED on the first run; `isColumnAppend` was rewritten to compare top-level
+  ITEM LISTS (paren/quote-aware, with stored `--`/block SQL comments stripped first — 19 of 78
+  live tables carry them) rather than a string prefix, rejecting an inserted table constraint.
+  Re-run: PASS, `column-append: earnings_emails` for both new columns.
+- **Paper is never privacy-masked (M-E9).** Deliberate: the pre-print worksheet has always printed
+  real figures, and a masked fill-in sheet is not a sheet.
+- **`RecapSendState` is spelled `"unsent" | DeliveryStateWord`, not five re-spelled literals.** The
+  display word `"sent-by-cloud"` is byte-identical to the DB sentinel and trips
+  `tests/repo/no-handrolled-email-states.test.ts`; `"in-flight"` and `"delivery-unknown"` do not
+  collide (they differ from `'sending'` / `'delivery_unknown'`) but the alias covers all five
+  uniformly. The resolved value set is unchanged and is pinned at compile time by a
+  `Record<RecapSendState, true>` exhaustiveness check — a false positive of that guard, worth
+  knowing about since it will recur wherever a display word happens to match a DB sentinel.
+- **Disputes recorded for the user, not resolved by this slice:**
+  - **R-E1 — accepted callouts are dropped from the recap's read block entirely**, while the read's
+    own prose lines (`read`, `call_watch`) stay, sanitised. The prose was generated under slice D's
+    own prompt contract and the recap already carries the desk's call note verbatim, so it
+    introduces no new privacy class while being exactly the context the "recap is blind" TODO
+    complained about — but the desk may still want the callout figures themselves in the email. If
+    ruled the other way, the fix is two `parts.push` lines plus one test.
+  - **R-E6's fail-open markers.** Every marker write (mac-sent, running, clear) is logged and
+    swallowed on failure everywhere in the service; the DB flip, not the marker, is what actually
+    blocks a local resend. If marker delivery becomes unreliable this trades an occasional
+    duplicate Worker send for never blocking a legitimate local one, and that trade carries no
+    retry path today.
+  - **R-E8 — no delivery-attempts table.** `earnings_emails` stays a CURRENT-STATE row per
+    (event, phase); a refire overwrites the previous attempt's message id and nothing logs the
+    prior attempt. Considered in review and deliberately deferred — see `docs/plans/TODO.md`.
