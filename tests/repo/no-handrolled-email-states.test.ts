@@ -275,15 +275,13 @@ interface AllowlistEntry {
 const norm = (s: string) => s.replace(/\s+/g, " ").trim();
 
 const ALLOWLIST: AllowlistEntry[] = [
-  // TEMPORARY. This array is empty at the end of the slice — that is the whole
-  // point of the guard — and the "no dead exemptions" test below is what
-  // forces the deletion once the owning task lands.
-  {
-    file: "lib/calendar/email-sweep.ts",
-    anchor: "ep.error NOT IN ('in_progress')",
-    justification:
-      "Task 5 of this slice owns this file; entry removed in that task. The sweep's candidate query still spells the live-claim exclusion by hand and must learn 'sending' at the same time it learns the rest of the send service, which is Task 5's whole subject.",
-  },
+  // EMPTY, and meant to stay that way — that is the whole point of the guard.
+  // The one temporary entry (lib/calendar/email-sweep.ts, whose blocked-recap
+  // query spelled the live-claim exclusion by hand) went away in Task 5 when
+  // that predicate became notLiveClaimSql("ep.error") and learned 'sending'
+  // along with the rest of the send service. Any new entry needs a
+  // per-occurrence anchor and a real justification, and the "no dead
+  // exemptions" test below deletes it again the moment it stops matching.
 ];
 
 function isAllowlisted(occ: Occurrence): boolean {

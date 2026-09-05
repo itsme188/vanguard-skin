@@ -14,8 +14,24 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 
-const sendPreview = vi.fn(async (..._args: unknown[]) => ({ success: true }));
-const sendRecap = vi.fn(async (..._args: unknown[]) => ({ success: true }));
+// Slice E: the sweep no longer composes, claims, sends or (per candidate)
+// touches a KV marker. It hands each candidate to the ONE send service and
+// books the outcome that comes back, so a single mock replaces the old
+// preview / recap / reporter-recap trio. The claim + marker choreography those
+// old mocks stood in for is pinned in tests/earnings/send-service.test.ts.
+const SENT_OUTCOME = {
+  outcome: "sent" as const,
+  sentTo: "desk@example.com",
+  providerMessageId: "<m@d>",
+  title: "T",
+  modelOutputChars: 10,
+  symbol: "XMPL",
+};
+const sendCandidate = vi.fn(async (..._args: unknown[]) => SENT_OUTCOME as unknown);
+vi.mock("@/lib/earnings/send-service", () => ({
+  sendEarningsCandidate: (...a: unknown[]) => sendCandidate(...a),
+}));
+
 // Slice E: the reaper is async and returns both counts plus the (event, phase)
 // pairs it flipped to the terminal delivery-unknown state (R-E4b).
 const reapStaleClaims = vi.fn(async (..._args: unknown[]) => ({
@@ -24,21 +40,7 @@ const reapStaleClaims = vi.fn(async (..._args: unknown[]) => ({
   flipped: [] as Array<{ eventId: number; phase: "preview" | "recap" }>,
 }));
 vi.mock("@/lib/digest/send-earnings-email", () => ({
-  sendEarningsPreview: (...a: unknown[]) => sendPreview(...a),
-  sendEarningsRecap: (...a: unknown[]) => sendRecap(...a),
   reapStaleEarningsEmailClaims: (...a: unknown[]) => reapStaleClaims(...a),
-  // Mirrors the real EarningsEmailError shape (message, status, optional
-  // benign-409 `code` discriminator) — Task 5 needs to construct real
-  // instances from the test body, not just a bare status=500 stand-in.
-  EarningsEmailError: class extends Error {
-    status: number;
-    code?: "claim_held" | "not_ready";
-    constructor(message: string, status: number, code?: "claim_held" | "not_ready") {
-      super(message);
-      this.status = status;
-      this.code = code;
-    }
-  },
 }));
 
 const checkMarker = vi.fn(async (..._args: unknown[]) => null as { sentBy: string } | null);
@@ -50,11 +52,6 @@ const fetchCloudSent = vi.fn(
     [] as { phase: "preview" | "recap"; eventId: number; sentAt: string | null }[],
 );
 const postAliveMarker = vi.fn(async (..._args: unknown[]) => null);
-const sendReporterRecap = vi.fn(async (..._args: unknown[]) => ({ subject: "s", targets: ["T"] }));
-vi.mock("@/lib/earnings/reporter-recap", () => ({
-  sendReporterRecapEmail: (...a: unknown[]) => sendReporterRecap(...a),
-}));
-
 vi.mock("@/lib/cron/earnings-marker-check", () => ({
   checkEarningsCloudMarker: (...a: unknown[]) => checkMarker(...a),
   setEarningsRunningMarker: (...a: unknown[]) => setRunning(...a),
@@ -113,7 +110,7 @@ vi.mock("@/lib/transcripts/same-day", () => ({
 // no-armed-flags behavior every pre-existing fixture in this file produces
 // (nothing here sets earnings_worksheet_flags.armed=1), so mocking this out
 // doesn't change any other test's outcome — it only lets the new ordering
-// test below observe invocationCallOrder against sendPreview.
+// test below observe invocationCallOrder against the send service.
 // R8 (v2 slice A): the sweep now reconciles the armed-events outbox before
 // draining it. The WRITER must stay real (these tests assert the row it
 // writes); only the sender is stubbed, so a developer with WORKER_MARKER_URL
@@ -134,13 +131,25 @@ vi.mock("@/lib/earnings/worksheet", () => ({
 }));
 
 import { runEarningsEmailSweep, alertBlockedRecaps } from "@/lib/calendar/email-sweep";
-import { EarningsEmailError } from "@/lib/digest/send-earnings-email";
 import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
 import { readArmedGeneration } from "@/lib/earnings/armed-events-projection";
 import {
   registerPrepareStep,
   __resetPrepareStepsForTests,
 } from "@/lib/earnings/prepare-armed-event";
+
+/** The candidates this tick handed the send service, filtered by phase. */
+function sendCalls(phase: "preview" | "recap") {
+  return sendCandidate.mock.calls.filter(
+    (c) => (c[1] as { phase: "preview" | "recap" }).phase === phase,
+  );
+}
+
+/** Reset the send mock to its default "sent" outcome between tests — mockReset
+ *  also drops any queued mockResolvedValueOnce a previous test never consumed. */
+function resetSendMock() {
+  sendCandidate.mockReset();
+}
 
 // 2h before 16:30 ET release = 20:30 UTC. Same construction as
 // tests/calendar/findEmailCandidates-skip.test.ts's AAPL preview case —
@@ -306,8 +315,7 @@ describe("runEarningsEmailSweep marker dance", () => {
     db.pragma("foreign_keys = ON");
     runMigrations(db);
 
-    sendPreview.mockClear();
-    sendRecap.mockClear();
+    resetSendMock();
     reapStaleClaims.mockClear();
     checkMarker.mockClear();
     setRunning.mockClear();
@@ -318,7 +326,6 @@ describe("runEarningsEmailSweep marker dance", () => {
     printArmed.mockClear();
     runMorningDebrief.mockClear();
     runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
-    sendReporterRecap.mockClear();
     fetchSameDayTranscripts.mockClear();
     fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
   });
@@ -346,7 +353,7 @@ describe("runEarningsEmailSweep marker dance", () => {
     const summary = await runEarningsEmailSweep(db, { now: NOW });
 
     expect(summary.cloudReconciled).toBe(1);
-    expect(sendPreview).not.toHaveBeenCalled();
+    expect(sendCalls("preview")).toHaveLength(0);
 
     const audit = db
       .prepare(
@@ -421,8 +428,8 @@ describe("runEarningsEmailSweep marker dance", () => {
     expect(audit?.error).toBe("sent-by-cloud");
   });
 
-  it("checks cloud marker, sets running, sends, writes mac-sent, clears running, in order", async () => {
-    seedHeldPreviewCandidate(db, "AAPL");
+  it("hands the candidate to the send service and books a sent outcome — no marker dance of its own", async () => {
+    const eventId = seedHeldPreviewCandidate(db, "AAPL");
 
     const summary = await runEarningsEmailSweep(db, { now: NOW });
 
@@ -431,25 +438,24 @@ describe("runEarningsEmailSweep marker dance", () => {
     // no pre-existing earnings_emails row can't also be a "blocked recap"
     // candidate, so the alert pass must report zero.
     expect(summary.recapAlerts).toBe(0);
-    expect(checkMarker).toHaveBeenCalledWith("preview", expect.any(Number));
-    expect(setRunning).toHaveBeenCalled();
-    expect(sendPreview).toHaveBeenCalledTimes(1);
-    expect(writeSent).toHaveBeenCalled();
-    expect(clearRunning).toHaveBeenCalled();
+    expect(sendCandidate).toHaveBeenCalledTimes(1);
+    expect(sendCandidate).toHaveBeenCalledWith(
+      expect.anything(),
+      { eventId, symbol: "AAPL", phase: "preview", reporterRecap: undefined },
+      { mode: "sweep" },
+    );
+    const booked = summary.results.find((x) => x.eventId === eventId)!;
+    expect(booked.ok).toBe(true);
+    expect(booked.skipped).toBeUndefined();
 
-    // Marker call-order pin (Task 7 reviewer follow-up): checkMarker must
-    // resolve before the running marker is set, which must precede the
-    // actual send, which must precede the mac-sent write, which must
-    // precede clearing the running marker.
-    const checkOrder = checkMarker.mock.invocationCallOrder[0];
-    const setRunningOrder = setRunning.mock.invocationCallOrder[0];
-    const sendOrder = sendPreview.mock.invocationCallOrder[0];
-    const writeSentOrder = writeSent.mock.invocationCallOrder[0];
-    const clearRunningOrder = clearRunning.mock.invocationCallOrder[0];
-    expect(checkOrder).toBeLessThan(setRunningOrder);
-    expect(setRunningOrder).toBeLessThan(sendOrder);
-    expect(sendOrder).toBeLessThan(writeSentOrder);
-    expect(writeSentOrder).toBeLessThan(clearRunningOrder);
+    // Slice E: the cloud pre-check and the whole running/mac-sent marker dance
+    // moved INTO the service (R-E6), so the nudge and the manual route get them
+    // too. The sweep itself must touch none of them on a send path — their
+    // ordering is pinned in tests/earnings/send-service.test.ts.
+    expect(checkMarker).not.toHaveBeenCalled();
+    expect(setRunning).not.toHaveBeenCalled();
+    expect(clearRunning).not.toHaveBeenCalled();
+    expect(writeSent).not.toHaveBeenCalled();
   });
 
   // Task 5 (2026-08-05, rich-preview-print plan): the worksheet auto-print
@@ -462,65 +468,104 @@ describe("runEarningsEmailSweep marker dance", () => {
 
     await runEarningsEmailSweep(db, { now: NOW });
 
-    expect(sendPreview).toHaveBeenCalled();
+    expect(sendCalls("preview")).toHaveLength(1);
     expect(printArmed).toHaveBeenCalledTimes(1);
     // vitest global invocation ordering: send must precede print.
     expect(printArmed.mock.invocationCallOrder[0]).toBeGreaterThan(
-      sendPreview.mock.invocationCallOrder[0],
+      sendCandidate.mock.invocationCallOrder[0],
     );
   });
 
-  it("skips the send when the cloud already delivered, and records a local audit row", async () => {
-    seedHeldPreviewCandidate(db, "MSFT");
-    checkMarker.mockResolvedValueOnce({ sentBy: "cloud" });
+  // The cloud pre-check itself now lives in the service (R-E6) — including the
+  // sent-by-cloud audit row it writes, which tests/earnings/send-service.test.ts
+  // asserts. What the SWEEP owns is the vocabulary: a cloud-sourced
+  // already_sent keeps today's "cloud-already-sent" skip word, a local one gets
+  // the new "already-sent".
+  it.each([
+    ["cloud" as const, "cloud-already-sent"],
+    ["local" as const, "already-sent"],
+  ])("books an already_sent outcome from %s as skipped=%s", async (sentBy, skipped) => {
+    const eventId = seedHeldPreviewCandidate(db, "MSFT");
+    sendCandidate.mockResolvedValueOnce({
+      outcome: "already_sent",
+      sentAt: "2026-06-01 18:00:00",
+      sentBy,
+    });
 
     const summary = await runEarningsEmailSweep(db, { now: NOW });
 
     expect(summary.skipped).toBe(1);
-    expect(sendPreview).not.toHaveBeenCalled();
-
-    const audit = db
-      .prepare("SELECT error FROM earnings_emails WHERE phase = 'preview'")
-      .get() as { error: string } | undefined;
-    expect(audit?.error).toBe("sent-by-cloud");
+    expect(summary.failed).toBe(0);
+    expect(summary.results.find((x) => x.eventId === eventId)).toMatchObject({ ok: true, skipped });
   });
 
-  it("clears the running marker even when the send throws", async () => {
-    seedHeldPreviewCandidate(db, "GOOG");
-    sendPreview.mockRejectedValueOnce(new Error("boom"));
+  it.each([
+    [
+      { outcome: "delivery_unknown", providerMessageId: "<m@d>", since: "2026-06-01 18:00:00" },
+      "delivery-unknown",
+    ],
+    [{ outcome: "refused", reason: "no actuals yet", status: 409 }, "not-ready"],
+  ])("maps %o to a skip, never a failure", async (outcome, skipped) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const eventId = seedHeldPreviewCandidate(db, "MSFT");
+    sendCandidate.mockResolvedValueOnce(outcome);
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.results.find((x) => x.eventId === eventId)).toMatchObject({ ok: true, skipped });
+    expect(summary.failed).toBe(0);
+    warn.mockRestore();
+  });
+
+  it("a failed outcome is a failure carrying the service's status and message", async () => {
+    const eventId = seedHeldPreviewCandidate(db, "GOOG");
+    sendCandidate.mockResolvedValueOnce({
+      outcome: "failed",
+      reason: "Send failed: boom",
+      status: 500,
+    });
 
     const summary = await runEarningsEmailSweep(db, { now: NOW });
 
     expect(summary.failed).toBe(1);
-    expect(clearRunning).toHaveBeenCalled();
+    expect(summary.results.find((x) => x.eventId === eventId)).toMatchObject({
+      ok: false,
+      status: 500,
+      message: "Send failed: boom",
+    });
   });
 
-  // Task 5: sendEarningsEmail throws EarningsEmailError(msg, 409, "claim_held")
-  // when another process already holds the (event_id, phase) claim slot —
-  // a benign cross-process coordination outcome, not a failure. Pre-fix this
-  // landed in `failed`, making season launchd logs read as broken every time
-  // two processes raced a send.
-  //
-  // Note on fixture shape: the brief's suggested arrangement (pre-insert an
-  // `earnings_emails` row with error='in_progress' before the sweep runs)
-  // isn't reachable here — findEmailCandidates LEFT JOINs earnings_emails on
-  // (event_id, phase) and excludes any row that already has an audit row,
-  // so the candidate would never be selected in the first place and
-  // sendPreview would never be invoked. Since this file mocks
-  // sendEarningsPreview/sendEarningsRecap wholesale (the real claim-check
-  // logic never runs here), the equivalent — and the pattern this file
-  // already uses for the "clears the running marker" throw test above — is
-  // to have the mock reject with a real EarningsEmailError(status=409,
-  // code="claim_held") for an otherwise-eligible candidate.
-  it("counts a cross-process 409 claim refusal as skipped, not failed", async () => {
+  // The service classifies every ending itself, so this can only fire on a bug
+  // in it — but one candidate must never take the whole tick down with it (the
+  // blocked-recap alerts, the aliveness marker and the prepare pass all still
+  // have to run).
+  it("a send service that THROWS fails only that candidate; the tick still completes", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const eventId = seedHeldPreviewCandidate(db, "GOOG");
+    sendCandidate.mockRejectedValueOnce(new Error("boom"));
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.failed).toBe(1);
+    expect(summary.results.find((x) => x.eventId === eventId)).toMatchObject({
+      ok: false,
+      status: 500,
+      message: "boom",
+    });
+    // The rest of the tick ran.
+    expect(postAliveMarker).toHaveBeenCalled();
+    expect(printArmed).toHaveBeenCalledTimes(1);
+    err.mockRestore();
+  });
+
+  // A benign cross-process coordination outcome, not a failure: another
+  // process holds the (event_id, phase) claim. Pre-fix this landed in `failed`,
+  // making season launchd logs read as broken every time two processes raced a
+  // send. Slice E: the service RESOLVES with `in_progress` instead of throwing
+  // a 409, and the sweep keeps today's "claim-held" vocabulary.
+  it("counts a cross-process claim refusal as skipped, not failed", async () => {
     const eventId = seedHeldPreviewCandidate(db, "NFLX");
-    sendPreview.mockRejectedValueOnce(
-      new EarningsEmailError(
-        `Event ${eventId} preview is already being sent by another process — skipping duplicate.`,
-        409,
-        "claim_held",
-      ),
-    );
+    sendCandidate.mockResolvedValueOnce({ outcome: "in_progress" });
 
     const summary = await runEarningsEmailSweep(db, { now: NOW });
 
@@ -558,7 +603,7 @@ describe("runEarningsEmailSweep marker dance", () => {
 
     await runEarningsEmailSweep(db, { now: NOW });
 
-    expect(sendRecap).not.toHaveBeenCalled();
+    expect(sendCalls("recap")).toHaveLength(0);
     expect(writeSent).toHaveBeenCalledTimes(1);
     expect(writeSent).toHaveBeenCalledWith("recap", eventId);
   });
@@ -599,8 +644,7 @@ describe("wrap-mode suppression (#17 T3)", () => {
     db.pragma("foreign_keys = ON");
     runMigrations(db);
 
-    sendPreview.mockClear();
-    sendRecap.mockClear();
+    resetSendMock();
     reapStaleClaims.mockClear();
     checkMarker.mockClear();
     setRunning.mockClear();
@@ -611,7 +655,6 @@ describe("wrap-mode suppression (#17 T3)", () => {
     printArmed.mockClear();
     runMorningDebrief.mockClear();
     runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
-    sendReporterRecap.mockClear();
     fetchSameDayTranscripts.mockClear();
     fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
   });
@@ -630,7 +673,7 @@ describe("wrap-mode suppression (#17 T3)", () => {
       expect(r.ok).toBe(true);
       expect(r.skipped).toBe("wrap-pending");
     }
-    expect(sendRecap).not.toHaveBeenCalled();
+    expect(sendCalls("recap")).toHaveLength(0);
     // The wrap-pending suppression math itself is unchanged (Task 4 scope
     // guard) — only the pass that runs AFTER the candidate loop changed from
     // runWrapPass to runMorningDebrief.
@@ -684,11 +727,14 @@ describe("wrap-mode suppression (#17 T3)", () => {
     const rpt = summary.results.find((x) => x.eventId === reporterId)!;
     expect(rpt.ok).toBe(true);
     expect(rpt.skipped).toBeUndefined();
-    expect(sendReporterRecap).toHaveBeenCalledTimes(1);
-    expect(sendReporterRecap).toHaveBeenCalledWith(db, reporterId);
-    expect(sendRecap).not.toHaveBeenCalled(); // held ones stayed suppressed
-    // Marker dance ran for the reporter send.
-    expect(writeSent).toHaveBeenCalledWith("recap", reporterId);
+    // ONE send path: the reporter candidate goes to the same service, flagged
+    // so it composes deterministically instead of calling the model.
+    expect(sendCalls("recap")).toHaveLength(1); // only the reporter; held ones stayed suppressed
+    expect(sendCandidate).toHaveBeenCalledWith(
+      expect.anything(),
+      { eventId: reporterId, symbol: "RPT", phase: "recap", reporterRecap: true },
+      { mode: "sweep" },
+    );
   });
 
   /**
@@ -713,7 +759,7 @@ describe("wrap-mode suppression (#17 T3)", () => {
       expect(r.ok).toBe(true);
       expect(r.skipped).toBeUndefined();
     }
-    expect(sendRecap).toHaveBeenCalledTimes(3);
+    expect(sendCalls("recap")).toHaveLength(3);
     expect(summary.results.some((r) => r.skipped === "wrap-pending")).toBe(false);
   });
 
@@ -726,7 +772,7 @@ describe("wrap-mode suppression (#17 T3)", () => {
       const r = summary.results.find((x) => x.eventId === id)!;
       expect(r.skipped).toBeUndefined();
     }
-    expect(sendRecap).toHaveBeenCalledTimes(2);
+    expect(sendCalls("recap")).toHaveLength(2);
     expect(summary.results.some((r) => r.skipped === "wrap-pending")).toBe(false);
   });
 
@@ -744,7 +790,7 @@ describe("wrap-mode suppression (#17 T3)", () => {
       expect(r.skipped).toBeUndefined();
       expect(r.ok).toBe(true);
     }
-    expect(sendPreview).toHaveBeenCalledTimes(3);
+    expect(sendCalls("preview")).toHaveLength(3);
   });
 
   /**
@@ -788,7 +834,7 @@ describe("wrap-mode suppression (#17 T3)", () => {
       expect(r.ok).toBe(true);
       expect(r.skipped).toBeUndefined();
     }
-    expect(sendRecap).toHaveBeenCalledTimes(3);
+    expect(sendCalls("recap")).toHaveLength(3);
     expect(summary.results.some((r) => r.skipped === "wrap-pending")).toBe(false);
     // The morning debrief pass still runs every tick (its own window/day gate
     // decides whether it actually sends) — the sweep invokes it unconditionally.
@@ -812,8 +858,7 @@ describe("morning debrief pass (Task 4)", () => {
     db.pragma("foreign_keys = ON");
     runMigrations(db);
 
-    sendPreview.mockClear();
-    sendRecap.mockClear();
+    resetSendMock();
     reapStaleClaims.mockClear();
     checkMarker.mockClear();
     setRunning.mockClear();
@@ -824,7 +869,6 @@ describe("morning debrief pass (Task 4)", () => {
     printArmed.mockClear();
     runMorningDebrief.mockClear();
     runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
-    sendReporterRecap.mockClear();
     fetchSameDayTranscripts.mockClear();
     fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
   });
@@ -854,7 +898,7 @@ describe("morning debrief pass (Task 4)", () => {
     expect(summary.sent).toBe(1);
     expect(runMorningDebrief).toHaveBeenCalledTimes(1);
     expect(runMorningDebrief.mock.invocationCallOrder[0]).toBeLessThan(
-      sendPreview.mock.invocationCallOrder[0],
+      sendCandidate.mock.invocationCallOrder[0],
     );
   });
 
@@ -889,8 +933,7 @@ describe("already-reported preview guard (IMAX 7/23 case)", () => {
     db.pragma("foreign_keys = ON");
     runMigrations(db);
 
-    sendPreview.mockClear();
-    sendRecap.mockClear();
+    resetSendMock();
     reapStaleClaims.mockClear();
     checkMarker.mockClear();
     setRunning.mockClear();
@@ -901,7 +944,6 @@ describe("already-reported preview guard (IMAX 7/23 case)", () => {
     printArmed.mockClear();
     runMorningDebrief.mockClear();
     runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
-    sendReporterRecap.mockClear();
     fetchSameDayTranscripts.mockClear();
     fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
     probeFinnhubActualExists.mockClear();
@@ -916,7 +958,7 @@ describe("already-reported preview guard (IMAX 7/23 case)", () => {
 
     const summary = await runEarningsEmailSweep(db, { now: NOW });
 
-    expect(sendPreview).not.toHaveBeenCalled();
+    expect(sendCalls("preview")).toHaveLength(0);
     const r = summary.results.find((x) => x.eventId === eventId)!;
     expect(r.skipped).toBe("already-reported");
     expect(r.ok).toBe(true);
@@ -943,7 +985,7 @@ describe("already-reported preview guard (IMAX 7/23 case)", () => {
 
     const summary = await runEarningsEmailSweep(db, { now: NOW });
 
-    expect(sendPreview).not.toHaveBeenCalled();
+    expect(sendCalls("preview")).toHaveLength(0);
     expect(summary.results.find((x) => x.eventId === eventId)!.skipped).toBe("already-reported");
   });
 
@@ -953,7 +995,7 @@ describe("already-reported preview guard (IMAX 7/23 case)", () => {
 
     await runEarningsEmailSweep(db, { now: NOW });
 
-    expect(sendPreview).toHaveBeenCalledTimes(1);
+    expect(sendCalls("preview")).toHaveLength(1);
   });
 
   it("a probe failure never blocks the send (guard is best-effort)", async () => {
@@ -962,7 +1004,7 @@ describe("already-reported preview guard (IMAX 7/23 case)", () => {
 
     await runEarningsEmailSweep(db, { now: NOW });
 
-    expect(sendPreview).toHaveBeenCalledTimes(1);
+    expect(sendCalls("preview")).toHaveLength(1);
   });
 
   it("recap candidates are never probed", async () => {
@@ -971,7 +1013,7 @@ describe("already-reported preview guard (IMAX 7/23 case)", () => {
     await runEarningsEmailSweep(db, { now: NOW });
 
     expect(probeFinnhubActualExists).not.toHaveBeenCalled();
-    expect(sendRecap).toHaveBeenCalledTimes(1);
+    expect(sendCalls("recap")).toHaveLength(1);
   });
 });
 
