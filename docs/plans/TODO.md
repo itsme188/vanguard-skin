@@ -11,7 +11,7 @@
 
 ## User roadmap (added 2026-07-03)
 
-- [ ] **Codex reliability fixes — implemented, awaiting browser acceptance and landing (2026-09-05):** Research background-sync cooldown now requires terminal SSE completion; Security Detail upcoming events and regression-cache dates use ET. Seven changed files in `/private/tmp/portfolio-desk-astra-2026-09-04`, branch `codex/shabbos-reliability-2026-09-04`; full suite 8,231 passed on the pre-E/F base. Recovery patch and evidence in gitignored `docs/private/astra-reliability-2026-09-05.{patch,md}`. Finish browser verification, integrate with current main, verify the combined tree, then commit/ship with approval. See `docs/HANDOFF-CODEX-2026-09-05.md`. This tracks the Research debounce and two security-date portions of the existing pairing-session follow-ups; the broader UTC sweep remains open.
+- [x] ✅ **Codex reliability fixes — LANDED 2026-09-05 (`689534f6` research background-sync cooldown requires the terminal SSE `complete` event; `90c13d42` Security Detail upcoming-events window + regression-cache day anchored to ET):** implemented by Codex in `/private/tmp/portfolio-desk-astra-2026-09-04` (branch `codex/shabbos-reliability-2026-09-04`), landed by Claude after Codex's usage limit ended its session mid-landing — the combined tree (main `ee33415e` + the seven-file patch) passed the full suite (720 files, 8,788 tests) with only the 20 baseline type errors; browser acceptance on Codex's secret-free :3093 server (the `/reliability-qa` harness 5/5 with the real hook, Security Detail's ET window verified at 22:01 ET with UTC already the next day, Research page clean). Evidence in gitignored `docs/private/reliability-landing-progress.md` + `docs/private/reliability-landing-2026-09-05/`. The broader UTC sweep (the remaining `toISOString().slice(0,10)` sites) stays open below.
 
 > R1/R1b (away-from-home refresh), R2 (long-email ingestion), R3 (Defense/Hedging tab), and the earnings skip-touch fix all shipped — see archive.
 
@@ -262,6 +262,13 @@
 - **E2E browser tests** (Theme J2, ~15 hr) — dedicated session.
 
 ---
+
+## Closed this session (2026-09-05 evening — Codex reliability fixes landed)
+
+✅ **Research background sync no longer burns its 5-minute cooldown on a failed refresh** (`689534f6`, Codex-implemented) — new `lib/research/sync-completion.ts` drains the SSE stream and credits the sync only when the route's terminal `complete` event arrives with no terminal `error`; a 409 (lock held), a Gmail failure after the 200, or a truncated stream all stay retryable, while per-stage `status: "error"` events remain recoverable. 8 new tests; browser harness 5/5 with the real `useResearchSync` hook.
+✅ **Security Detail upcoming events + regression-cache day anchored to ET** (`90c13d42`, Codex-implemented) — both derived "today" from `toISOString()` (UTC), so between 20:00 and 24:00 ET a same-day event vanished from the page and cache rows were stamped tomorrow. Verified in the browser at 22:01 ET (UTC already Sept 6): the Sept 5 event shown, Sept 4 excluded. A fake-clock test pins the 23:30 ET / 03:30 UTC boundary.
+✅ **Codex session-start skill adapted** (`b1d39541`, user-requested, Codex-authored) — points at the shared `.claude/session-start.md` with the Codex-specific adaptations plus the `openai.yaml` descriptor.
+✅ **Cross-agent resume worked** — Codex's resumable log (`docs/private/reliability-landing-progress.md`, gitignored) let Claude pick up mid-task: the integration worktree, the finished suite log and the still-running :3093 QA server were reused rather than redone.
 
 ## Closed this session (2026-09-04 — August 2026 statement import + IBKR interest FX fix)
 
