@@ -3,14 +3,14 @@
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Session date:** 2026-09-06 (Sunday) ~16:15 ET → evening. Focus (user pick from the session-start menu): land the five stranded nightly-QA PRs (#64–#68, 19 commits) plus three quick items (deploy-permission rule, worktree cleanup, ORCL date).
+**Session date:** 2026-09-06 (Sunday) ~16:15 ET → ~18:00 ET. Focus (user pick from the session-start menu): land the five stranded nightly-QA PRs (#64–#68, 19 commits) plus three quick items (deploy-permission rule, worktree cleanup, ORCL date).
 
 ## 1. Goal + exact files changed
 
 **Quick items**
 - **ORCL date corrected** through the app's own route (`POST /api/earnings/correct-date`, minted session, Origin + CSRF): Finnhub had the Q1 FY27 print on 2026-09-07 = Labor Day (a market holiday in `lib/calendar/market-holidays.ts`); Oracle IR's 09-02 press release says Thursday 2026-09-10 after the close. Old row 1493 deleted, new manual row 1586 on 09-10 AMC (release_time 16:15 kept). ORCL is NOT held / watchlisted / armed, so it stays uncovered unless armed — the user decides.
 - **Four fully-landed worktrees removed** (`/private/tmp/portfolio-desk-astra-2026-09-04`, `/private/tmp/portfolio-desk-reliability-landing`, `../vanguard-skin-print-v2-e`, `../vanguard-skin-print-v2-f`) after verifying byte-identity with main / merged status; their four branches deleted. Only `main` and the nightly `../vanguard-skin-qa-fix` worktree remain.
-- **Permission rule BLOCKED:** the auto-mode classifier refused Claude editing `.claude/settings.json` twice (scripted write, then the Edit tool). Not retried. The exact snippet for the user to paste is in §3.
+- **Permission rule:** the auto-mode classifier refused Claude editing `.claude/settings.json` twice (scripted write, then the Edit tool); not retried. Claude prepared a validated merged copy of the file in the scratchpad and **the user copied it over `.claude/settings.json` at session end** (7 `permissions.allow` rules for the three electron scripts, plus an `autoMode.allow` classifier hint carrying `$defaults`); committed in the closing chore commit, loads on the next restart. First real test = the next deploy.
 
 **Landing (all on local `main`, 35 commits `3edd56f4..f97ad7cf`, NOT pushed)**
 - Four read-only Opus landing reviews ran BEFORE any merge (one per PR; #67+#68 shared one). Merges: #67 `c83f625d`, #68 `c5cb0940`, #64 `f023761b`, #65 `11a3fceb` (one import conflict in `lib/calendar/reconcile-earnings-dates.ts`, both lines kept). **#66 was NOT merged**: its commit `33db63aa` hard-codes a real account balance in `tests/dashboard/equity-curve-tooltip-precision.test.ts`; its four commits were cherry-picked (`256833e5`, `516a6eb4`, `f184d841`, `2a3b3c76`) with the fixture replaced by a synthetic figure on the same rounding boundary. PR #66 is to be closed unmerged and its remote branch deleted at push time.
@@ -54,7 +54,7 @@ Incidental (filed in TODO, not a regression): two OTHER Data Health tables ("Unm
 ## 3. Open concerns / rejected approaches / decisions for the user
 
 - **Push + PR hygiene: DONE on approval** (pushed, #66 closed with a comment, five remote branches deleted, four PRs merged). The real figure in `33db63aa` stays reachable via GitHub's `refs/pull/66/head` after the branch is gone — decide whether to ask GitHub Support for a purge (precedents 2026-04-07, 2026-08-23).
-- **Permission rule snippet to paste into `.claude/settings.json`** (merge into the existing object; the file currently has only `worktree` + `hooks`):
+- **Permission rule snippet (APPLIED by the user at session end — kept here for the record):**
   ```json
   "permissions": { "allow": [
     "Bash(npm run electron:deploy*)", "Bash(npm run electron:pack*)", "Bash(npm run electron:install*)",
@@ -74,7 +74,7 @@ Incidental (filed in TODO, not a regression): two OTHER Data Health tables ("Unm
 
 ## 4. Uncommitted changes / live-process state
 
-- Main checkout clean and PUSHED (`a111245d` + this follow-up). PRs #64/#65/#67/#68 MERGED, #66 CLOSED unmerged with a note; the five `qa-auto-fixes-*`/`qa-deep-fixes-*` branches deleted on origin and locally; `qa-fix-work-2026090{4,5,6}` (content duplicates of the landed PRs) left for the user. `CombinedPortfolioChart.tsx` deleted per the user's ruling.
+- Main checkout clean and PUSHED (`a111245d`, `623acd67`, then the closing chore + handoff commits). No production code changed after the 17:31 deploy, so no second rebuild. PRs #64/#65/#67/#68 MERGED, #66 CLOSED unmerged with a note; the five `qa-auto-fixes-*`/`qa-deep-fixes-*` branches deleted on origin and locally; `qa-fix-work-2026090{4,5,6}` (content duplicates of the landed PRs) left for the user. `CombinedPortfolioChart.tsx` deleted per the user's ruling.
 - ORCL 1586 ARMED on user approval (flag row 25, five prepare steps enqueued, `cloud_outbox` generation 3) — first live print on v2 = Thursday 2026-09-10 AMC.
 - `/Applications/Vanguard Dashboard.app` = today's build from `a111245d`, installed 17:37 ET, running on :3099.
 - Codex: live worktree `codex/trade-lot-direction-2026-09-06` on :3093, untouched; rebase note left in the coordination file.
