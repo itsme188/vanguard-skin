@@ -3,12 +3,18 @@
 import { useState } from "react";
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
 import apiFetch from "@/lib/http/apiFetch";
+import {
+  hasDeskNote,
+  isFilingRow,
+  kindLabel,
+  sourceLabel,
+} from "@/lib/transcripts/presentation";
 
-const SOURCE_BADGES: Record<string, { label: string; className: string }> = {
-  edgar_8k: { label: "8-K", className: "bg-gold/20 text-gold-ink" },
-  motley_fool: { label: "MF", className: "bg-blue/20 text-blue" },
-  api_ninjas: { label: "API", className: "bg-up/20 text-up" },
-  alpha_vantage: { label: "AV", className: "bg-up/20 text-up" },
+const SOURCE_BADGE_CLASSES: Record<string, string> = {
+  edgar_8k: "bg-gold/20 text-gold-ink",
+  motley_fool: "bg-blue/20 text-blue",
+  api_ninjas: "bg-up/20 text-up",
+  alpha_vantage: "bg-up/20 text-up",
 };
 
 const SENTIMENT_STYLES: Record<string, string> = {
@@ -43,18 +49,43 @@ export function TranscriptCard({
   const [loadingFull, setLoadingFull] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const source = SOURCE_BADGES[t.source] || {
-    label: t.source,
-    className: "bg-muted text-ink-dim",
+  const source = {
+    label: sourceLabel(t),
+    className: SOURCE_BADGE_CLASSES[t.source] ?? "bg-muted text-ink-dim",
   };
 
-  // edgar_8k rows are SEC Form 8-K cover pages (an earnings-release filing
-  // header — no "Operator", a signature block at the end), never a real
+  // edgar_8k rows are the SEC Form 8-K earnings press release, never a real
   // earnings-call transcript. The kind badge/CTA/modal title and the
-  // summary/guidance/risk-factors sections must say so honestly instead of
-  // presenting mechanically-truncated filing boilerplate as call analysis
+  // guidance/risk-factors sections must say so honestly instead of presenting
+  // filing boilerplate as call analysis
   // (qa:research-transcripts-list--8k-cover-pages-labelled-transcript-duplicate-quarter-cards-regression-1).
-  const isEdgar8k = t.source === "edgar_8k";
+  //
+  // But a FAT 8-K (>= 5,000 chars) carries a real AI desk note in `summary` —
+  // summarizeTranscript runs on any source — and the morning digest renders
+  // it, so discarding it here showed less on the wall than in the email
+  // (PR #65 follow-up). Show the note, labeled as a filing note; show the
+  // placeholder only when the summary is the mechanical cover-page excerpt.
+  // Both rules live in lib/transcripts/presentation.ts.
+  const isFiling = isFilingRow(t);
+  const showFilingDeskNote = isFiling && hasDeskNote(t);
+
+  // Shared between the call branch and the filing desk-note branch so the
+  // expand/collapse affordance behaves identically on both.
+  const summaryBody = t.summary ? (
+    <p className="text-sm text-ink-dim leading-relaxed mb-3">
+      {t.summary.length > 300 && !expanded
+        ? t.summary.slice(0, 300) + "..."
+        : t.summary}
+      {t.summary.length > 300 && (
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="ml-1 text-xs text-gold-ink hover:text-gold/80"
+        >
+          {expanded ? "Show less" : "Read more"}
+        </button>
+      )}
+    </p>
+  ) : null;
 
   async function loadFullTranscript() {
     if (fullText) {
@@ -104,7 +135,7 @@ export function TranscriptCard({
           >
             {source.label}
           </span>
-          {!isEdgar8k && t.sentiment_label && (
+          {!isFiling && t.sentiment_label && (
             <span
               className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${SENTIMENT_STYLES[t.sentiment_label] ?? ""}`}
             >
@@ -118,33 +149,27 @@ export function TranscriptCard({
             </span>
           )}
           <span className="text-[10px] font-medium uppercase tracking-wider text-ink-faint bg-muted px-1.5 py-0.5 rounded">
-            {isEdgar8k ? "8-K filing" : "transcript"}
+            {kindLabel(t)}
           </span>
         </div>
 
         {/* Summary */}
-        {isEdgar8k ? (
-          <p className="text-xs text-ink-faint italic mb-3">
-            SEC 8-K cover page — no call transcript is available from any
-            source for this quarter.
-          </p>
+        {isFiling ? (
+          showFilingDeskNote ? (
+            <>
+              <p className="text-[11px] font-medium uppercase tracking-wider text-ink-faint mb-1">
+                Desk note from the 8-K press release
+              </p>
+              {summaryBody}
+            </>
+          ) : (
+            <p className="text-xs text-ink-faint italic mb-3">
+              SEC 8-K filing — no call transcript is cached for this quarter.
+            </p>
+          )
         ) : (
           <>
-            {t.summary && (
-              <p className="text-sm text-ink-dim leading-relaxed mb-3">
-                {t.summary.length > 300 && !expanded
-                  ? t.summary.slice(0, 300) + "..."
-                  : t.summary}
-                {t.summary.length > 300 && (
-                  <button
-                    onClick={() => setExpanded(!expanded)}
-                    className="ml-1 text-xs text-gold-ink hover:text-gold/80"
-                  >
-                    {expanded ? "Show less" : "Read more"}
-                  </button>
-                )}
-              </p>
-            )}
+            {summaryBody}
 
             {/* Expandable sections */}
             {(t.guidance || t.risk_factors) && (
@@ -182,7 +207,7 @@ export function TranscriptCard({
               disabled={loadingFull}
               className="text-xs text-gold-ink hover:text-gold/80 disabled:opacity-40"
             >
-              {loadingFull ? "Loading..." : isEdgar8k ? "View filing" : "View Full Transcript"}
+              {loadingFull ? "Loading..." : isFiling ? "View filing" : "View Full Transcript"}
             </button>
           )}
           {onFetch && (
@@ -215,7 +240,7 @@ export function TranscriptCard({
                   {t.ticker}
                 </span>
                 <span className="text-sm text-ink-dim">
-                  Q{t.quarter} {t.year} {isEdgar8k ? "8-K Filing" : "Earnings"}
+                  Q{t.quarter} {t.year} {isFiling ? "8-K Filing" : "Earnings"}
                 </span>
                 <span
                   className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${source.className}`}

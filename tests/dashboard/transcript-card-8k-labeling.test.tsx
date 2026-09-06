@@ -79,7 +79,10 @@ describe("TranscriptCard — edgar_8k cover pages are labeled as filings, not tr
     expect(html).not.toContain("Risk Factors");
     // The raw press-release excerpt must not be presented as an AI summary.
     expect(html).not.toContain("Item 2.02 Results of Operations");
-    expect(html).toContain("no call transcript is available");
+    // Softened wording: the card only knows what is CACHED, so it can't claim
+    // nothing exists "from any source".
+    expect(html).toContain("no call transcript is cached for this quarter");
+    expect(html).not.toContain("from any source");
   });
 
   it("titles the full-filing modal honestly (rendered via showFullTranscript state is unreachable via SSR, so this pins the closed-modal card only)", () => {
@@ -100,6 +103,83 @@ describe("TranscriptCard — edgar_8k cover pages are labeled as filings, not tr
       "utf8"
     );
     expect(source).toMatch(/8-K Filing/);
+  });
+});
+
+// PR #65 follow-up: the 8-K branch discarded `summary` for EVERY edgar_8k row.
+// A FAT 8-K press release (>= MIN_TRANSCRIPT_CHARS_FOR_AI = 5,000 chars) gets
+// the same AI desk note any transcript gets (summarizeTranscript runs on any
+// source), and the morning digest already renders it — so the Research wall
+// was showing strictly less than the email. Show the desk note, labeled for
+// what it is; keep the honest placeholder for a thin cover page only.
+const FAT_8K_DESK_NOTE = [
+  "**Guidance**",
+  "- Full-year revenue outlook raised on cloud strength; margin guide unchanged.",
+  "",
+  "**Tone**",
+  "Confident on demand, measured on cost.",
+  "",
+  "**Surprises**",
+  "- Buyback larger than expected.",
+].join("\n");
+
+describe("TranscriptCard — a fat 8-K's AI desk note is shown, labeled as a filing note", () => {
+  it("renders the desk note under an 8-K-press-release label instead of the placeholder", () => {
+    const html = renderToStaticMarkup(
+      <TranscriptCard
+        transcript={sampleTranscript({
+          source: "edgar_8k",
+          summary: FAT_8K_DESK_NOTE,
+          guidance: "safe-harbor boilerplate captured by extractGuidance",
+          risk_factors: "more boilerplate",
+          sentiment_label: null,
+          sentiment_score: null,
+        })}
+      />
+    );
+
+    expect(html).toContain("Desk note from the 8-K press release");
+    expect(html).toContain("Full-year revenue outlook raised on cloud strength");
+    // Still a filing, never a call.
+    expect(html).toContain("8-K filing");
+    expect(html).not.toContain(">transcript<");
+    // The placeholder belongs to cover-page-only rows.
+    expect(html).not.toContain("no call transcript is cached");
+    // PR #65's correct half stays: the keyword-extractive guidance /
+    // risk-factor columns are safe-harbor boilerplate on a filing.
+    expect(html).not.toContain("Risk Factors");
+    expect(html).not.toContain("safe-harbor boilerplate captured");
+  });
+
+  it("keeps the call branch's expand/collapse affordance for a long desk note", () => {
+    const long = `${FAT_8K_DESK_NOTE}\n${"Additional desk-note detail. ".repeat(20)}Buyback authorization doubled.`;
+    const html = renderToStaticMarkup(
+      <TranscriptCard
+        transcript={sampleTranscript({ source: "edgar_8k", summary: long })}
+      />
+    );
+
+    expect(long.length).toBeGreaterThan(300);
+    expect(html).toContain("Read more");
+    // Collapsed by default: the tail of the note is not in the initial markup.
+    expect(html).not.toContain("Buyback authorization doubled.");
+  });
+
+  it("still shows the honest placeholder when the 8-K summary is only a mechanical excerpt", () => {
+    const html = renderToStaticMarkup(
+      <TranscriptCard
+        transcript={sampleTranscript({
+          source: "edgar_8k",
+          summary:
+            "Item 2.02 Results of Operations and Financial Condition. On May 1, 2026, the Company issued a press release...",
+        })}
+      />
+    );
+
+    expect(html).toContain("SEC 8-K filing");
+    expect(html).toContain("no call transcript is cached for this quarter");
+    expect(html).not.toContain("Desk note from the 8-K press release");
+    expect(html).not.toContain("Item 2.02 Results of Operations");
   });
 });
 

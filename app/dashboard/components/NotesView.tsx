@@ -6,6 +6,9 @@ import type { NoteWithContext, EarningsTimelineEntry } from "@/lib/queries/notes
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
 import type { NoteType, NoteSentiment } from "@/lib/types";
 import { TranscriptCard, FetchTranscriptButton } from "./TranscriptCard";
+// Group headers count calls and filings separately — an edgar_8k row on this
+// wall is an SEC 8-K press release, and the cards beside it already say so.
+import { transcriptCountLabel } from "@/lib/transcripts/presentation";
 import { useToast } from "./Toast";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
@@ -652,7 +655,7 @@ function EarningsView({
               <span className="text-ink-faint text-xs">
                 ({entry.notes.length} note{entry.notes.length !== 1 ? "s" : ""}
                 {tickerTranscripts.length > 0 &&
-                  `, ${tickerTranscripts.length} transcript${tickerTranscripts.length !== 1 ? "s" : ""}`}
+                  `, ${transcriptCountLabel(tickerTranscripts)}`}
                 )
               </span>
             </div>
@@ -693,7 +696,7 @@ function EarningsView({
                 {ticker}
               </span>
               <span className="text-ink-faint text-xs">
-                ({transcripts.length} transcript{transcripts.length !== 1 ? "s" : ""})
+                ({transcriptCountLabel(transcripts)})
               </span>
             </div>
             <div className="space-y-2 pl-3 border-l-2 border-[#818CF8]/30">

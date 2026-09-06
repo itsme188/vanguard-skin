@@ -42,6 +42,7 @@ import { withClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { wrapSlotFor } from "@/lib/earnings/wrap";
 import { deliveredSql } from "@/lib/earnings/email-states";
 import { demoteEmbeddedHeadings, truncateAtWordBoundary } from "@/lib/digest/call-transcripts";
+import { hasDeskNote, kindHeadingLabel } from "@/lib/transcripts/presentation";
 import type { CalendarEvent } from "@/lib/types";
 
 export interface DebriefCandidate {
@@ -236,7 +237,9 @@ function deskNoteExcerpt(rawSummary: string): string {
     if (tone) out += `\n\n**Tone:** ${tone}`;
     return out;
   }
-  // extractive-only teaser
+  // Desk note with no **Guidance** section of its own (Tone/Surprises only):
+  // teaser the note itself. Callers gate on hasDeskNote, so a purely
+  // extractive summary never reaches this line.
   return truncateAtWordBoundary(summary, SUMMARY_EXCERPT_CHAR_CAP);
 }
 
@@ -297,8 +300,18 @@ export function renderDebriefSections(
       | { summary: string; source: string; fetched_at: string }
       | undefined;
 
-    if (tx) {
-      parts.push("", `**From the call** (desk note):\n\n${deskNoteExcerpt(tx.summary)}`);
+    // Source-aware heading, and only for a REAL desk note. An edgar_8k row is
+    // the SEC 8-K earnings press release — no Q&A, no management dialogue — so
+    // "From the call" was a false claim in an outbound email. And a row whose
+    // `summary` is only `generateSummary`'s mechanical excerpt (a thin 8-K
+    // cover page: "Item 2.02 Results of Operations…") is not a desk note at
+    // all: skip the block rather than ship boilerplate under a "(desk note)"
+    // label. Both rules live in lib/transcripts/presentation.ts.
+    if (tx && hasDeskNote(tx)) {
+      parts.push(
+        "",
+        `**From the ${kindHeadingLabel(tx)}** (desk note):\n\n${deskNoteExcerpt(tx.summary)}`,
+      );
     }
 
     // Freshest call note for the family via a DATE-BOUNDED, family-aware
