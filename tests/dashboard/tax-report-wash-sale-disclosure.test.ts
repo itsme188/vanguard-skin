@@ -113,6 +113,14 @@ describe("Tax-lots summary strip short-term stat (render test)", () => {
     longTermGain: 200,
     shortTermGain: 300,
     excludedNonUsdSales: 0,
+    // No engine-estimated (RECONCILE_CLOSE) closes here — that disclosure has
+    // its own coverage in tests/dashboard/tax-lots-engine-estimated-disclosure.test.tsx.
+    engineEstimatedSales: 0,
+    engineEstimatedGain: 0,
+    engineEstimatedLongTermSales: 0,
+    engineEstimatedLongTermGain: 0,
+    engineEstimatedShortTermSales: 0,
+    engineEstimatedShortTermGain: 0,
   };
 
   function renderSummary(): string {

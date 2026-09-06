@@ -52,7 +52,42 @@ export interface TaxLotSaleWithDetails {
   is_synthetic_close: boolean;
 }
 
-export interface TaxLotSummary {
+/**
+ * How much of a realized bucket comes from engine-synthesized
+ * `RECONCILE_CLOSE` sales rather than real broker activity.
+ *
+ * Per the "disclose, never exclude" ruling (QA finding
+ * tax-lots--headline-tiles-include-reconcile-close-engine-rows), the headline
+ * tiles KEEP those rows — the economic view is deliberately whole — but must
+ * SAY how much of each figure is engine-estimated, because the TAX REPORT
+ * card and the 8949 exports on the same page drop them (`filingOnly`) and the
+ * two numbers otherwise disagree on one screen with nothing explaining it.
+ *
+ * Conventions, mirroring the fields these sit beside:
+ * - the `…Gain` sums are USD-only (`USD_ONLY`), exactly like
+ *   `totalRealizedGain` / `longTermGain` / `shortTermGain`;
+ * - the `…Sales` counts cover every currency, exactly like
+ *   `totalClosedSales` (the non-USD exclusion carries its own disclosure via
+ *   `excludedNonUsdSales`).
+ *
+ * Premium-rollover rows are deliberately NOT counted here. `filingOnly` drops
+ * those too, but they are zero-gain BY CONSTRUCTION in `computeTaxLots`
+ * (proceeds is forced equal to cost_basis_allocated), so they move no tile
+ * figure — and calling them "engine-estimated closes" would name a count the
+ * user cannot reconcile to the "Estimated" chips in the Closed Sales table.
+ */
+export interface EngineEstimatedDisclosure {
+  /** RECONCILE_CLOSE-sourced sales in the window (all currencies). */
+  engineEstimatedSales: number;
+  /** USD realized gain contributed by those sales. */
+  engineEstimatedGain: number;
+  engineEstimatedLongTermSales: number;
+  engineEstimatedLongTermGain: number;
+  engineEstimatedShortTermSales: number;
+  engineEstimatedShortTermGain: number;
+}
+
+export interface TaxLotSummary extends EngineEstimatedDisclosure {
   totalOpenLots: number;
   totalClosedSales: number;
   totalUnrealizedGain: number;
@@ -63,7 +98,7 @@ export interface TaxLotSummary {
   excludedNonUsdSales: number;
 }
 
-export interface AccountTaxSummary {
+export interface AccountTaxSummary extends EngineEstimatedDisclosure {
   account_id: number;
   account_name: string;
   totalClosedSales: number;
@@ -75,6 +110,28 @@ export interface AccountTaxSummary {
 
 /** Realized G/L is stored native per security; only USD rows may sum into USD totals. */
 const USD_ONLY = `COALESCE(s.currency, 'USD') = 'USD'`;
+
+/**
+ * The engine-owned reconciliation close. Written exactly as
+ * `getClosedTaxLotSales`'s `filingOnly` predicate does, off the SAME
+ * `transactions` join, so the tiles' disclosure and the filing surface can
+ * never drift apart on what counts as engine-estimated.
+ */
+const ENGINE_ESTIMATED = `t.type = 'RECONCILE_CLOSE'`;
+
+/**
+ * The six `EngineEstimatedDisclosure` columns. Requires `tls`, `s` and a
+ * `JOIN transactions t ON t.id = tls.sale_transaction_id` in scope.
+ * `sale_transaction_id` is NOT NULL with an FK to `transactions`, so the join
+ * is row-preserving — the surrounding COUNT(*) totals are unaffected.
+ */
+const ENGINE_ESTIMATED_COLUMNS = `
+        COALESCE(SUM(CASE WHEN ${ENGINE_ESTIMATED} THEN 1 ELSE 0 END), 0) AS engineEstimatedSales,
+        COALESCE(SUM(CASE WHEN ${ENGINE_ESTIMATED} AND ${USD_ONLY} THEN tls.realized_gain_loss ELSE 0 END), 0) AS engineEstimatedGain,
+        COALESCE(SUM(CASE WHEN ${ENGINE_ESTIMATED} AND tls.is_long_term = 1 THEN 1 ELSE 0 END), 0) AS engineEstimatedLongTermSales,
+        COALESCE(SUM(CASE WHEN ${ENGINE_ESTIMATED} AND ${USD_ONLY} AND tls.is_long_term = 1 THEN tls.realized_gain_loss ELSE 0 END), 0) AS engineEstimatedLongTermGain,
+        COALESCE(SUM(CASE WHEN ${ENGINE_ESTIMATED} AND tls.is_long_term = 0 THEN 1 ELSE 0 END), 0) AS engineEstimatedShortTermSales,
+        COALESCE(SUM(CASE WHEN ${ENGINE_ESTIMATED} AND ${USD_ONLY} AND tls.is_long_term = 0 THEN tls.realized_gain_loss ELSE 0 END), 0) AS engineEstimatedShortTermGain`;
 
 export function getOpenTaxLots(db: Database.Database): TaxLotWithSecurity[] {
   return db
@@ -178,15 +235,17 @@ export function getTaxLotSummary(
         COALESCE(SUM(CASE WHEN ${USD_ONLY} THEN tls.realized_gain_loss ELSE 0 END), 0) AS totalRealizedGain,
         COALESCE(SUM(CASE WHEN ${USD_ONLY} AND tls.is_long_term = 1 THEN tls.realized_gain_loss ELSE 0 END), 0) AS longTermGain,
         COALESCE(SUM(CASE WHEN ${USD_ONLY} AND tls.is_long_term = 0 THEN tls.realized_gain_loss ELSE 0 END), 0) AS shortTermGain,
-        COALESCE(SUM(CASE WHEN NOT (${USD_ONLY}) THEN 1 ELSE 0 END), 0) AS excludedNonUsdSales
+        COALESCE(SUM(CASE WHEN NOT (${USD_ONLY}) THEN 1 ELSE 0 END), 0) AS excludedNonUsdSales,
+        ${ENGINE_ESTIMATED_COLUMNS.trim()}
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
-      JOIN securities s ON s.id = tl.security_id`;
+      JOIN securities s ON s.id = tl.security_id
+      JOIN transactions t ON t.id = tls.sale_transaction_id`;
 
   const closedSales = (year
     ? db.prepare(`${closedSalesSql} WHERE tls.sale_date >= ? AND tls.sale_date <= ?`).get(`${year}-01-01`, `${year}-12-31`)
     : db.prepare(closedSalesSql).get()
-  ) as {
+  ) as EngineEstimatedDisclosure & {
       totalClosedSales: number;
       totalRealizedGain: number;
       longTermGain: number;
@@ -202,6 +261,12 @@ export function getTaxLotSummary(
     longTermGain: closedSales.longTermGain,
     shortTermGain: closedSales.shortTermGain,
     excludedNonUsdSales: closedSales.excludedNonUsdSales,
+    engineEstimatedSales: closedSales.engineEstimatedSales,
+    engineEstimatedGain: closedSales.engineEstimatedGain,
+    engineEstimatedLongTermSales: closedSales.engineEstimatedLongTermSales,
+    engineEstimatedLongTermGain: closedSales.engineEstimatedLongTermGain,
+    engineEstimatedShortTermSales: closedSales.engineEstimatedShortTermSales,
+    engineEstimatedShortTermGain: closedSales.engineEstimatedShortTermGain,
   };
 }
 
@@ -218,11 +283,13 @@ export function getTaxLotSummaryByAccount(
         COALESCE(SUM(CASE WHEN ${USD_ONLY} THEN tls.realized_gain_loss ELSE 0 END), 0) AS totalRealizedGain,
         COALESCE(SUM(CASE WHEN ${USD_ONLY} AND tls.is_long_term = 1 THEN tls.realized_gain_loss ELSE 0 END), 0) AS longTermGain,
         COALESCE(SUM(CASE WHEN ${USD_ONLY} AND tls.is_long_term = 0 THEN tls.realized_gain_loss ELSE 0 END), 0) AS shortTermGain,
-        COALESCE(SUM(CASE WHEN NOT (${USD_ONLY}) THEN 1 ELSE 0 END), 0) AS excludedNonUsdSales
+        COALESCE(SUM(CASE WHEN NOT (${USD_ONLY}) THEN 1 ELSE 0 END), 0) AS excludedNonUsdSales,
+        ${ENGINE_ESTIMATED_COLUMNS.trim()}
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN accounts a ON a.id = tl.account_id
       JOIN securities s ON s.id = tl.security_id
+      JOIN transactions t ON t.id = tls.sale_transaction_id
       WHERE tls.sale_date >= ? AND tls.sale_date <= ?
       GROUP BY tl.account_id
       ORDER BY a.name`

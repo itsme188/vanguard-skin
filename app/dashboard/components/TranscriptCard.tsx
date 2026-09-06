@@ -48,6 +48,14 @@ export function TranscriptCard({
     className: "bg-muted text-ink-dim",
   };
 
+  // edgar_8k rows are SEC Form 8-K cover pages (an earnings-release filing
+  // header — no "Operator", a signature block at the end), never a real
+  // earnings-call transcript. The kind badge/CTA/modal title and the
+  // summary/guidance/risk-factors sections must say so honestly instead of
+  // presenting mechanically-truncated filing boilerplate as call analysis
+  // (qa:research-transcripts-list--8k-cover-pages-labelled-transcript-duplicate-quarter-cards-regression-1).
+  const isEdgar8k = t.source === "edgar_8k";
+
   async function loadFullTranscript() {
     if (fullText) {
       setShowFullTranscript(true);
@@ -96,7 +104,7 @@ export function TranscriptCard({
           >
             {source.label}
           </span>
-          {t.sentiment_label && (
+          {!isEdgar8k && t.sentiment_label && (
             <span
               className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${SENTIMENT_STYLES[t.sentiment_label] ?? ""}`}
             >
@@ -110,51 +118,60 @@ export function TranscriptCard({
             </span>
           )}
           <span className="text-[10px] font-medium uppercase tracking-wider text-ink-faint bg-muted px-1.5 py-0.5 rounded">
-            transcript
+            {isEdgar8k ? "8-K filing" : "transcript"}
           </span>
         </div>
 
         {/* Summary */}
-        {t.summary && (
-          <p className="text-sm text-ink-dim leading-relaxed mb-3">
-            {t.summary.length > 300 && !expanded
-              ? t.summary.slice(0, 300) + "..."
-              : t.summary}
-            {t.summary.length > 300 && (
-              <button
-                onClick={() => setExpanded(!expanded)}
-                className="ml-1 text-xs text-gold-ink hover:text-gold/80"
-              >
-                {expanded ? "Show less" : "Read more"}
-              </button>
-            )}
+        {isEdgar8k ? (
+          <p className="text-xs text-ink-faint italic mb-3">
+            SEC 8-K cover page — no call transcript is available from any
+            source for this quarter.
           </p>
-        )}
+        ) : (
+          <>
+            {t.summary && (
+              <p className="text-sm text-ink-dim leading-relaxed mb-3">
+                {t.summary.length > 300 && !expanded
+                  ? t.summary.slice(0, 300) + "..."
+                  : t.summary}
+                {t.summary.length > 300 && (
+                  <button
+                    onClick={() => setExpanded(!expanded)}
+                    className="ml-1 text-xs text-gold-ink hover:text-gold/80"
+                  >
+                    {expanded ? "Show less" : "Read more"}
+                  </button>
+                )}
+              </p>
+            )}
 
-        {/* Expandable sections */}
-        {(t.guidance || t.risk_factors) && (
-          <div className="space-y-2 mb-3">
-            {t.guidance && (
-              <details className="group">
-                <summary className="text-xs font-medium text-blue cursor-pointer hover:text-blue/80">
-                  Guidance
-                </summary>
-                <p className="text-xs text-ink-dim mt-1 pl-3 border-l border-blue/30 leading-relaxed">
-                  {t.guidance}
-                </p>
-              </details>
+            {/* Expandable sections */}
+            {(t.guidance || t.risk_factors) && (
+              <div className="space-y-2 mb-3">
+                {t.guidance && (
+                  <details className="group">
+                    <summary className="text-xs font-medium text-blue cursor-pointer hover:text-blue/80">
+                      Guidance
+                    </summary>
+                    <p className="text-xs text-ink-dim mt-1 pl-3 border-l border-blue/30 leading-relaxed">
+                      {t.guidance}
+                    </p>
+                  </details>
+                )}
+                {t.risk_factors && (
+                  <details className="group">
+                    <summary className="text-xs font-medium text-down cursor-pointer hover:text-down/80">
+                      Risk Factors
+                    </summary>
+                    <p className="text-xs text-ink-dim mt-1 pl-3 border-l border-down/30 leading-relaxed">
+                      {t.risk_factors}
+                    </p>
+                  </details>
+                )}
+              </div>
             )}
-            {t.risk_factors && (
-              <details className="group">
-                <summary className="text-xs font-medium text-down cursor-pointer hover:text-down/80">
-                  Risk Factors
-                </summary>
-                <p className="text-xs text-ink-dim mt-1 pl-3 border-l border-down/30 leading-relaxed">
-                  {t.risk_factors}
-                </p>
-              </details>
-            )}
-          </div>
+          </>
         )}
 
         {/* Actions */}
@@ -165,7 +182,7 @@ export function TranscriptCard({
               disabled={loadingFull}
               className="text-xs text-gold-ink hover:text-gold/80 disabled:opacity-40"
             >
-              {loadingFull ? "Loading..." : "View Full Transcript"}
+              {loadingFull ? "Loading..." : isEdgar8k ? "View filing" : "View Full Transcript"}
             </button>
           )}
           {onFetch && (
@@ -198,7 +215,7 @@ export function TranscriptCard({
                   {t.ticker}
                 </span>
                 <span className="text-sm text-ink-dim">
-                  Q{t.quarter} {t.year} Earnings
+                  Q{t.quarter} {t.year} {isEdgar8k ? "8-K Filing" : "Earnings"}
                 </span>
                 <span
                   className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${source.className}`}
