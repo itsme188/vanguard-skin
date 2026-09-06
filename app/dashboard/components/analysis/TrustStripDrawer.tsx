@@ -477,9 +477,9 @@ function BondDurationContent({ state }: { state: AnalysisTrustState }) {
           </div>
           {bondDuration.withDuration < bondDuration.totalBonds && (
             <p className="text-xs text-ink-faint">
-              The bonds without a duration have no maturity date on file, which
-              is what duration is derived from. Importing a statement that
-              carries the maturity date fills them in.
+              Duration is derived from each bond&apos;s maturity date. These
+              bonds are waiting on that derivation, which runs as a
+              maintenance step rather than on import.
             </p>
           )}
         </>
