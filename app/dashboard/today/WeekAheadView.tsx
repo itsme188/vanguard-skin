@@ -1,7 +1,8 @@
 import Link from "next/link";
 import type { CalendarEvent } from "@/lib/types";
 import { addDays, formatWeekRange, todayET, getCurrentMonday } from "@/lib/calendar/date-utils";
-import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
+import { formatFinnhubFigure, parseFinnhubFigure } from "@/lib/format/finnhub-figure";
+import { formatCompactUSD } from "@/lib/format";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { epsDelta } from "@/lib/earnings/eps-delta";
@@ -183,6 +184,27 @@ function DayCard({ day, todayIso }: DayCardProps) {
   );
 }
 
+// QA finding today-earnings--zero-revenue-consensus-renders-dollar-zero: this
+// card sits next to sibling cards on the same row that show revenue as
+// "$259.2M" / "$13.37B" (formatLargeUSD, via the shared
+// formatFinnhubFigureCompact), but formatLargeUSD only abbreviates from $1M
+// up — a small-cap print like $190,000 rendered as "$190,000", visually
+// inconsistent on this narrow card. formatCompactUSD renders >=$1M values
+// IDENTICALLY to formatLargeUSD and only differs below $1M, where it
+// abbreviates to K — use it here (this card only; other surfaces keep
+// formatLargeUSD's comma band by design, see lib/format.ts formatCompactUSD
+// doc comment). Reuses formatFinnhubFigure for the "is revenue present" and
+// EPS-string logic (including its zero-revenue-is-absent rule) and only
+// re-bands the revenue number itself.
+function formatWeekCardFigure(s: string | null | undefined): string {
+  const f = formatFinnhubFigure(s);
+  if (f.fallback) return f.fallback;
+  const parsed = parseFinnhubFigure(s);
+  const revStr =
+    f.revenue != null && parsed.revenue != null ? formatCompactUSD(parsed.revenue) : null;
+  return [f.eps, revStr].filter((v): v is string => !!v).join(" · ");
+}
+
 // Earnings events store consensus + actual as Finnhub-shaped strings
 // ("EPS X.XX · Rev N"). Macro events (FRED/FOMC) store raw values
 // ("3.2%", "250K"). Only earnings need the compact formatter — and only
@@ -198,7 +220,7 @@ export function eventFigureDisplays(
   const consensus = effectiveConsensus(event);
   const consensusDisplay = consensus
     ? isEarnings
-      ? formatFinnhubFigureCompact(consensus)
+      ? formatWeekCardFigure(consensus)
       : consensus
     : null;
   const implausible =
@@ -207,7 +229,7 @@ export function eventFigureDisplays(
   const actualDisplay =
     event.actual_value && !implausible
       ? isEarnings
-        ? formatFinnhubFigureCompact(event.actual_value)
+        ? formatWeekCardFigure(event.actual_value)
         : event.actual_value
       : null;
   return { consensusDisplay, actualDisplay };
