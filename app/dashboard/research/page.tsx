@@ -23,6 +23,8 @@ import { ResearchFeedsView } from "../components/ResearchFeedsView";
 import { ResearchViewToggle } from "../components/ResearchViewToggle";
 import { ResearchDocumentsView } from "../components/ResearchDocumentsView";
 
+const NOTE_TYPES: readonly NoteType[] = ["journal", "earnings", "trade_thesis"];
+
 interface PageProps {
   searchParams: Promise<{
     type?: string;
@@ -42,7 +44,13 @@ export default async function ResearchPage({ searchParams }: PageProps) {
   }
 
   const view = params.view ?? "notes";
-  const noteType = (params.type as NoteType) || undefined;
+  // ?type= is user-editable and shareable, so an unknown value (notably the
+  // guessable "all") must fall back to "no filter" rather than being cast
+  // straight through — a bogus note_type matches no row and renders the
+  // "No notes yet" empty state over a full notebook.
+  const noteType = NOTE_TYPES.includes(params.type as NoteType)
+    ? (params.type as NoteType)
+    : undefined;
   const securityId = params.security_id ?? params.security;
 
   // NotesView is the only consumer of the queries below, and EarningsView
