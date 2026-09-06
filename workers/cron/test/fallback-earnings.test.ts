@@ -997,6 +997,28 @@ describe("recap safety gates (B8)", () => {
     expect(md).toContain("+3.15%");
   });
 
+  // PARITY (Mac: lib/format/finnhub-figure.ts::parseFinnhubFigure) — a
+  // literal "Rev 0" is Finnhub's placeholder for "no revenue figure
+  // published", never a real $0 print. The scoreboard's Revenue row must
+  // render "—" for it, on both the Consensus and Actual columns, exactly as
+  // the Mac's renderHeadlineTable does via formatRevenueDisplay(null).
+  it("scoreboard renders '—' (never '$0') for a zero-revenue consensus placeholder", () => {
+    const ev = baseEvent();
+    (ev as Record<string, unknown>).consensus_estimate = "EPS 1.50 · Rev 0";
+    (ev as Record<string, unknown>).actual_value = "EPS 1.60 · Rev 91,000,000,000";
+    const md = renderScoreboard(ev, "recap", null, false);
+    const revRow = md.split("\n").find((l) => l.includes("**Revenue**"))!;
+    expect(revRow).toBe("| **Revenue** | — | $91.00B | — |");
+  });
+
+  it("scoreboard renders '—' (never '$0') for a zero-revenue actual placeholder", () => {
+    const ev = baseEvent();
+    (ev as Record<string, unknown>).actual_value = "EPS 1.60 · Rev 0";
+    const md = renderScoreboard(ev, "recap", null, false);
+    const revRow = md.split("\n").find((l) => l.includes("**Revenue**"))!;
+    expect(revRow).toBe("| **Revenue** | $90.00B | — | — |");
+  });
+
   it("end-to-end: snapshot-road recap with enriched_at but NULL actual is skipped markerless", async () => {
     const snap = makeEarningsSnapshot();
     const ev = snap.calendarEvents[0] as Record<string, unknown>;
