@@ -1,3 +1,8 @@
+/**
+ * Manual calendar-event CRUD. Note: POST /api/earnings/correct-date is NOT
+ * gated by the would_supersede_vendor guard used by POST/PATCH below — it
+ * names the wrong date explicitly, so user intent there is already explicit.
+ */
 import { db } from "@/lib/db";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import {
@@ -152,11 +157,21 @@ export async function POST(request: Request) {
 /**
  * PATCH /api/calendar/events — Update a manual calendar event.
  *
- * Body: { id, ...partial fields from CalendarEventInput }
+ * Body: { id, ...partial fields from CalendarEventInput, force? }
  *
  * Only allowed on rows where source='manual'. Returns 403 for sync-owned
  * rows (Finnhub/WSH/FRED) — those should be updated through their own
- * sync paths.
+ * sync paths. That 403 check always runs first; `force` never bypasses it.
+ *
+ * Same `would_supersede_vendor` 409 as POST (landing-review sibling defect,
+ * PR #65): moving a manual row's event_date to a different week has
+ * byte-identical reconcile consequences to adding one there — rung 1 of
+ * resolveCluster still wins and silently supersedes a vendor row in the
+ * destination cluster. Only runs when `event_date` is present and differs
+ * from the stored value (a title/notes-only PATCH never invokes it); the
+ * dry run excludes the row's own CURRENT occurrence (excludeEventId) so its
+ * pre-move position can't manufacture a false before/after diff. `force:
+ * true` skips the check, same envelope and error code as POST.
  */
 export async function PATCH(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
@@ -169,6 +184,7 @@ export async function PATCH(request: Request) {
     expected_impact?: string | null;
     consensus_estimate?: string | null;
     description?: string | null;
+    force?: boolean;
   };
 
   if (typeof body.id !== "number" || !Number.isInteger(body.id)) {
@@ -177,14 +193,45 @@ export async function PATCH(request: Request) {
 
   // Read-first guard so we can return 404 vs 403 distinctly.
   const existing = db
-    .prepare("SELECT source FROM calendar_events WHERE id = ?")
-    .get(body.id) as { source: string } | undefined;
+    .prepare("SELECT source, symbol, event_date, event_type FROM calendar_events WHERE id = ?")
+    .get(body.id) as
+    | { source: string; symbol: string | null; event_date: string; event_type: string }
+    | undefined;
   if (!existing) return Response.json({ error: "Event not found." }, { status: 404 });
   if (existing.source !== "manual") {
     return Response.json(
       { error: `Cannot edit a ${existing.source}-sourced event via this endpoint. Only manual rows are user-editable.` },
       { status: 403 },
     );
+  }
+
+  if (
+    typeof body.event_date === "string" &&
+    body.event_date !== existing.event_date &&
+    body.force !== true
+  ) {
+    const symbol = (body.symbol ?? existing.symbol ?? "").trim().toUpperCase();
+    const eventType = body.event_type ?? existing.event_type;
+    const guard = checkManualAddWouldSupersedeVendor(db, {
+      symbol,
+      event_date: body.event_date,
+      event_type: eventType,
+      excludeEventId: body.id,
+    });
+    if (!guard.ok) {
+      const vendor = guard.wouldSupersede[0];
+      return Response.json(
+        {
+          success: false,
+          error: guard.message,
+          code: "would_supersede_vendor",
+          vendorEventId: vendor.eventId,
+          vendorDate: vendor.eventDate,
+          vendorSource: vendor.source,
+        },
+        { status: 409 },
+      );
+    }
   }
 
   const week_of = body.event_date ? mondayOf(body.event_date) : undefined;

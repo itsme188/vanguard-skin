@@ -500,6 +500,10 @@ function canonicalIdsFor(familyRows: EarningsRow[], today: string): Set<number> 
  * doesn't make the outcome less surprising.
  *
  * Read-only: no writes, no KV, safe to call before the insert.
+ *
+ * Also used for a PATCH that moves an existing manual row's event_date
+ * (app/api/calendar/events/route.ts): pass `excludeEventId` so the row's own
+ * pre-move occurrence doesn't ride along in the gather as a phantom extra row.
  */
 export function checkManualAddWouldSupersedeVendor(
   db: Database.Database,
@@ -510,6 +514,16 @@ export function checkManualAddWouldSupersedeVendor(
     event_type?: string;
     /** ET anchor for the dry run; defaults to todayET(). */
     today?: string;
+    /**
+     * Excludes this row's CURRENT (pre-edit) occurrence from both the before
+     * and after gathers. For PATCH (moving an existing manual row to a new
+     * event_date), the row already sits in the family at its OLD date — left
+     * in, it would ride along as an unrelated extra row in both the before
+     * and after clusters and could manufacture a false diff. Omitted (the
+     * POST / new-add case), this is a no-op: no real row carries
+     * HYPOTHETICAL_ROW_ID or `undefined`.
+     */
+    excludeEventId?: number;
   },
 ): VendorSupersessionCheck {
   const clear: VendorSupersessionCheck = { ok: true, wouldSupersede: [], message: null };
@@ -544,7 +558,7 @@ export function checkManualAddWouldSupersedeVendor(
           ORDER BY event_date ASC`,
       )
       .all(lo, hi) as GatheredRow[]
-  ).filter((r) => familyKey(r.symbol) === key);
+  ).filter((r) => familyKey(r.symbol) === key && r.id !== opts.excludeEventId);
   if (familyRows.length === 0) return clear;
 
   const hypothetical: EarningsRow = {
