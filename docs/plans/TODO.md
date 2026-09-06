@@ -716,3 +716,5 @@ New open items filed above: 7/17 digest-blocks debut soak, EOD-wrap debut watch,
 - ✅ **Trade-lot direction and stale-review safeguards** — `14a90c5c`; reviewed and integrated with Claude's completed QA changes. Historical data repair and review regeneration remain open above.
 - ✅ **Unified session-end authorization** — `477e7ab9`; explicit invocation authorizes this session's commit, push, normal integration, and reviewed deployment. The receiving agent owns closeout; summaries, skill discussion, and editor closure do not invoke it. Both global agent instruction files and the dispatcher were updated locally.
 - Reconciled open GitHub work: no open PRs; #34 remains an ongoing review-workflow issue, not a completed defect to close. Claude's latest handoff commit contains no additional unrecorded production fix.
+
+- ✅ **Desktop deployment verified (2026-09-06 18:47 ET)** — integrated `ebc67084` built, signed, installed and relaunched; matching installed BUILD_ID. Final closeout details: `docs/HANDOFF-CODEX-2026-09-06.md`. The remaining history rollout above is still open.
