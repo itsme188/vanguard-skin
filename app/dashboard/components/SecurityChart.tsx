@@ -1231,10 +1231,7 @@ export function SecurityChart({
               <LegendDot color="#ef4444" label="resistance / stop" />
             </div>
           </div>
-          {/* pr-14 keeps this right-edge label clear of the Notes FAB
-              (fixed bottom-right, ~72px corner zone) when the chart card
-              bottom lands at the viewport bottom. */}
-          <span className="pr-14">{isIntraday ? `${activeTimeframe} intraday` : "Daily OHLCV"} via TWS</span>
+          <span>{isIntraday ? `${activeTimeframe} intraday` : "Daily OHLCV"} via TWS</span>
         </div>
       )}
     </div>

@@ -170,11 +170,6 @@ export function EarningsDateChip({
   const [verticalFlip, setVerticalFlip] = useState(false);
   const POPOVER_W = 240; // matches w-60
   const EDGE_PAD = 8;
-  const MOBILE_BREAKPOINT = 768; // Tailwind `md` — matches MobileBottomNav's `md:hidden` cutoff
-  // NotesAmbient's closed-state FAB floats bottom-right on mobile
-  // (`bottom-20 right-4 w-12`) — a right-flush popover otherwise lands its
-  // primary "Fix date" CTA under it.
-  const FAB_CLEARANCE = 72; // 48px (w-12) + 16px (right-4) + 8px gap
   useLayoutEffect(() => {
     if (!open) {
       setAlignOverride(null);
@@ -185,10 +180,9 @@ export function EarningsDateChip({
       const rect = wrapRef.current?.getBoundingClientRect();
       if (!rect) return;
       const vw = window.innerWidth;
-      const rightBoundaryPad = vw < MOBILE_BREAKPOINT ? FAB_CLEARANCE : EDGE_PAD;
       if (
         popoverAlign === "right" &&
-        (rect.right - POPOVER_W < EDGE_PAD || vw - rect.right < rightBoundaryPad) &&
+        (rect.right - POPOVER_W < EDGE_PAD || vw - rect.right < EDGE_PAD) &&
         rect.left + POPOVER_W <= vw - EDGE_PAD
       ) {
         setAlignOverride("left");

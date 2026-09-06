@@ -71,21 +71,19 @@ export default function DashboardLayout({
         {/* Digest catch-up notification */}
         <DigestCatchup />
 
-        {/* Content. Mobile pb must clear BOTH fixed layers stacked at the
-            bottom: MobileBottomNav AND the NotesAmbient FAB (bottom-20 +
-            h-12 → its top edge is 128px up) — pb-20 left the last row of
-            any list pinned behind the FAB at max scroll.
-
-            At >=768px MobileBottomNav is gone but the NotesAmbient FAB is
-            still fixed bottom-6 (24px) + h-12 (48px), i.e. it occupies
-            24-72px off the bottom edge — md:pb-6 (24px) left that whole
-            band overlapping the last row(s) of any long list (finding #3,
-            iPad tablet/touch tier). Widen it only for coarse-pointer
-            devices (touch — no cursor to hover the FAB out of the way
-            first) so mouse/desktop is unchanged; Tailwind resolves
-            `md:pointer-coarse:pb-24` after the plain `md:pb-6` regardless
-            of source order since it stacks one more variant. */}
-        <main id="main-content" className="max-w-[1600px] mx-auto px-4 md:px-6 pt-4 md:pt-6 pb-36 md:pb-6 md:pointer-coarse:pb-24">
+        {/* Content. Mobile pb clears the fixed MobileBottomNav alone — the
+            other floating overlay this used to also clear was removed
+            2026-09-04 (QA ruling; see NotesAmbient.tsx's own comment).
+            MobileBottomNav's own box is ~69px (pt-2 8 + [py-2 16 + 24px icon
+            + gap-0.5 2 + 10px/1.5-leading text ≈15] + pb-1 4) plus its
+            `pb-safe` inset, which is 0 on most devices and up to ~34px on a
+            notched iPhone — pb-20 (80px) is the value that shipped and
+            cleared it with no regressions from the first mobile-responsive
+            commit (5f4a0080) through 434be9d9, which raised it only because
+            that other overlay sat higher than the nav, not because the nav
+            itself needed more. At >=768px MobileBottomNav doesn't render at
+            all (`md:hidden`), so md:pb-6 is plain breathing room. */}
+        <main id="main-content" className="max-w-[1600px] mx-auto px-4 md:px-6 pt-4 md:pt-6 pb-20 md:pb-6">
           {children}
         </main>
 
