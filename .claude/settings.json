@@ -55,5 +55,22 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(npm run electron:deploy*)",
+      "Bash(npm run electron:pack*)",
+      "Bash(npm run electron:install*)",
+      "Bash(PATH=/opt/homebrew/opt/node@24/bin:$PATH npm run electron:deploy*)",
+      "Bash(PATH=/opt/homebrew/opt/node@24/bin:$PATH npm run electron:pack*)",
+      "Bash(PATH=/opt/homebrew/opt/node@24/bin:$PATH npm run electron:install*)",
+      "Bash(source ~/.zshrc >/dev/null 2>&1)"
+    ]
+  },
+  "autoMode": {
+    "allow": [
+      "$defaults",
+      "Running this project's Electron rebuild/install npm scripts is pre-authorized by the repo CLAUDE.md and .claude/session-end.md: `npm run electron:deploy`, `npm run electron:pack`, `npm run electron:install`, optionally prefixed with `source ~/.zshrc` and a node@24 PATH. They build, sign, notarize and reinstall the user's own desktop app at /Applications/Vanguard Dashboard.app; the rm -rf inside electron:install targets only that app bundle and is part of the pre-authorized reinstall."
+    ]
   }
 }
