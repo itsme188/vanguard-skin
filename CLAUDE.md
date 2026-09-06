@@ -82,6 +82,8 @@ Detail: `docs/reference/auto-refresh.md`
 
 ## Conventions
 
+- **Trade-lot direction and review validity (2026-09-06):** preserve IBKR O/C and timestamps in transaction notes; replay lots chronologically with explicit long/short predicates. Never infer a short from an unmatched legacy sale. v3 tax convention requires fresh recompute and broker acceptance; deploying code does not authorize historical metadata backfill or repair. Saved-review pairing mismatches warn instead of silently rewriting AI prose. Runbook: `docs/reference/conventions-detail.md`.
+
 Detail: `docs/reference/conventions-detail.md`, `docs/reference/earnings-pipeline.md`.
 
 **Data layer**
@@ -258,6 +260,8 @@ Detail: `docs/reference/calendar.md`
 
 ## Workflow Rules
 
+- **Session-end ownership (2026-09-06):** explicit session-end invocation authorizes the receiving agent to verify, commit, push, integrate its work, and deploy the reviewed result. Preserve concurrent work; discussions and summaries do not invoke shipping. Shared workflow: `.claude/session-end.md`; global approval rules have the same exception.
+
 After implementing a fix or feature, always run the full test suite (`npx vitest run`) and report the result before committing. This project has 1600+ tests — use them. Report the test count and pass/fail status. Do not commit if tests are failing.
 
 Before the full suite, run `npm run verify:changed` to execute the smallest relevant checks for your diff, and `npm run verify:smoke` for UI-visible changes. The loop + evidence template: `docs/reference/verification-loop.md`.
@@ -310,7 +314,3 @@ These areas are working correctly and should not be refactored or "improved" unl
 - The Claude API PDF parsing integration
 - The migration system
 - The chat AI SDK integration (route.ts uses streamText, ChatInterface.tsx uses useChat)
-
-- **Trade-lot direction and review validity (2026-09-06):** preserve IBKR O/C and timestamps in transaction notes; replay lots chronologically with explicit long/short predicates. Never infer a short from an unmatched legacy sale. v3 tax convention requires fresh recompute and broker acceptance; deploying code does not authorize historical metadata backfill or repair. Saved-review pairing mismatches warn instead of silently rewriting AI prose. Runbook: `docs/reference/conventions-detail.md`.
-- **Session-end ownership (2026-09-06):** explicit session-end invocation authorizes the receiving agent to verify, commit, push, integrate its work, and deploy the reviewed result. Preserve concurrent work; discussions and summaries do not invoke shipping. Shared workflow: `.claude/session-end.md`; global approval rules have the same exception.
-
