@@ -133,7 +133,10 @@ function seedTranscript(opts: {
     opts.ticker,
     opts.year ?? 2026,
     opts.quarter ?? 2,
-    opts.source ?? "edgar_8k",
+    // Default is a real CALL transcript source: the section heading is
+    // source-aware now, and an edgar_8k row is an 8-K press release, not a
+    // call (see the filing tests below, which opt in explicitly).
+    opts.source ?? "alpha_vantage",
     opts.summary,
     `test:${opts.ticker}:${transcriptCounter}`,
     opts.fetchedAt,
@@ -405,7 +408,7 @@ describe("renderDebriefSections", () => {
     expect(section.markdown).not.toContain("Margin beat driven by mix shift.");
   });
 
-  it("desk-note excerpt: caps the **Guidance** span at 900 chars, adds a Tone line when present; extractive-only summaries get a 600-char teaser; no transcript omits the block silently", () => {
+  it("desk-note excerpt: caps the **Guidance** span at 900 chars, adds a Tone line when present; a desk note with no Guidance section gets a 600-char teaser; no transcript omits the block silently", () => {
     // Case A: guidance span longer than 900 chars gets capped.
     seedHeld("CAPD");
     seedEvent({ symbol: "CAPD" });
@@ -416,10 +419,11 @@ describe("renderDebriefSections", () => {
       fetchedAt: `${TODAY} 05:00:00`,
     });
 
-    // Case B: extractive-only summary (no **Guidance** marker) — 600-char teaser.
+    // Case B: a real desk note that happens to carry no **Guidance** section —
+    // still a desk note, so it renders as a 600-char teaser.
     seedHeld("TEASE");
     seedEvent({ symbol: "TEASE" });
-    const extractive = "Plain extractive summary text. ".repeat(30); // > 600 chars
+    const extractive = `**Tone**: steady. ${"Plain desk-note prose. ".repeat(30)}`; // > 600 chars
     seedTranscript({
       ticker: "TEASE",
       summary: extractive,
@@ -448,6 +452,53 @@ describe("renderDebriefSections", () => {
 
     const notx = byName.get("NOTX")!;
     expect(notx.markdown).not.toContain("**From the call**");
+  });
+
+  /**
+   * An edgar_8k row is the SEC 8-K earnings PRESS RELEASE, not a call: no Q&A,
+   * no management dialogue. Heading it "From the call" put a false claim in an
+   * outbound email. And a row whose `summary` is only `generateSummary`'s
+   * mechanical excerpt (a thin cover page) is not a desk note at all, so the
+   * "(desk note)" block is skipped rather than shipped — better no email than
+   * a wrong one. Both rules come from lib/transcripts/presentation.ts.
+   */
+  it("an 8-K row's desk note is headed 'From the 8-K press release', never 'From the call'", () => {
+    seedHeld("FILING");
+    seedEvent({ symbol: "FILING" });
+    seedTranscript({
+      ticker: "FILING",
+      source: "edgar_8k",
+      summary: "**Guidance**: FY26 revenue guide raised.\n**Tone**: measured.",
+      fetchedAt: `${TODAY} 05:00:00`,
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const section = renderDebriefSections(db, unsent).find((s) => s.symbol === "FILING")!;
+
+    expect(section.markdown).toContain("**From the 8-K press release** (desk note):");
+    expect(section.markdown).not.toContain("**From the call**");
+    expect(section.markdown).toContain("FY26 revenue guide raised.");
+  });
+
+  it("skips the desk-note block entirely when the only cached summary is a mechanical excerpt", () => {
+    seedHeld("COVER");
+    seedEvent({ symbol: "COVER" });
+    seedTranscript({
+      ticker: "COVER",
+      source: "edgar_8k",
+      summary:
+        "Item 2.02 Results of Operations and Financial Condition. On August 2, 2026, the Company issued a press release, furnished as Exhibit 99.1.",
+      fetchedAt: `${TODAY} 05:00:00`,
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const section = renderDebriefSections(db, unsent).find((s) => s.symbol === "COVER")!;
+
+    expect(section.markdown).not.toContain("desk note");
+    expect(section.markdown).not.toContain("Item 2.02");
+    // The rest of the section (heading + scoreboard) still renders.
+    expect(section.markdown).toContain("### COVER — 2026-08-02");
+    expect(section.markdown).toContain("scoreboard");
   });
 
   /**

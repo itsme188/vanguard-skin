@@ -12,6 +12,11 @@
 
 import type Database from "better-sqlite3";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import {
+  hasDeskNote,
+  isFilingRow,
+  kindHeadingLabel,
+} from "@/lib/transcripts/presentation";
 
 interface RecentTranscriptRow {
   ticker: string;
@@ -169,7 +174,11 @@ function extractDeskNoteSection(demotedSummary: string, label: string): string |
 
 function renderTranscriptSection(row: RecentTranscriptRow, linkBase: string | null): string {
   const date = row.call_date ? formatCallDate(row.call_date) : null;
-  const header = `### ${row.ticker} — Q${row.quarter} ${row.year} call${date ? ` (${date})` : ""}`;
+  // An edgar_8k row is the SEC 8-K earnings press release, not a call — the
+  // heading and the pointer label say which one this is
+  // (lib/transcripts/presentation.ts is the single source for the rule).
+  const filing = isFilingRow(row);
+  const header = `### ${row.ticker} — Q${row.quarter} ${row.year} ${kindHeadingLabel(row)}${date ? ` (${date})` : ""}`;
   const lines = [header, ""];
 
   // Demote BEFORE section extraction/truncation so heading-styled desk notes
@@ -193,7 +202,11 @@ function renderTranscriptSection(row: RecentTranscriptRow, linkBase: string | nu
   // safe-harbor boilerplate + opening Q&A (7/20 NFLX digest). The desk
   // note's own Guidance section is the only guidance surface.
 
-  const label = guidanceSection ? "Full transcript + desk note" : "Full transcript";
+  const label = filing
+    ? "Filing"
+    : guidanceSection
+      ? "Full transcript + desk note"
+      : "Full transcript";
   if (summary) lines.push("");
   if (linkBase && row.security_id) {
     const base = linkBase.replace(/\/+$/, "");
@@ -260,10 +273,26 @@ export function composeCallTranscriptsBlock(
       return st === "held" || st === "watchlist" || st === "armed";
     });
 
-    if (covered.length === 0) return null;
+    // A filing row (edgar_8k press release) earns a slot only when it carries
+    // a real AI desk note. A thin cover page's `summary` is `generateSummary`'s
+    // mechanical excerpt of Item 2.02 boilerplate — shipping that in an
+    // outbound email says nothing and implies analysis that was never done
+    // ("better no email than a wrong one"). Call rows keep their extractive
+    // fallback: that excerpt comes off a real transcript.
+    const sendable = covered.filter((row) => !isFilingRow(row) || hasDeskNote(row));
 
-    const sections = covered.map((row) => renderTranscriptSection(row, linkBase)).join("\n\n");
-    return ["## Call transcripts", "", sections].join("\n");
+    if (sendable.length === 0) return null;
+
+    const sections = sendable.map((row) => renderTranscriptSection(row, linkBase)).join("\n\n");
+    // The block header can't claim "call transcripts" over a filing-only block.
+    const filingCount = sendable.filter((row) => isFilingRow(row)).length;
+    const heading =
+      filingCount === 0
+        ? "## Call transcripts"
+        : filingCount === sendable.length
+          ? "## Earnings press releases"
+          : "## Call transcripts & press releases";
+    return [heading, "", sections].join("\n");
   } catch (err) {
     console.warn(
       "[digest] call-transcripts block failed (omitted):",

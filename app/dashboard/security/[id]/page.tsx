@@ -28,6 +28,7 @@ import { QuoteStats } from "../../components/QuoteStats";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import { computeLotCoverageGaps } from "@/lib/compute/lot-coverage";
 import type { EarningsTranscript } from "@/lib/types";
+import { hasDeskNote, isFilingRow, kindLabel } from "@/lib/transcripts/presentation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 function gainClass(value: number | null): string {
@@ -98,6 +99,14 @@ const TD_MONO = "px-4 py-2.5 text-sm text-ink font-mono tabular-nums border-b bo
 
 const TRANSCRIPTS_VISIBLE = 8;
 
+/**
+ * One cached row. An `edgar_8k` row is the SEC 8-K earnings press release, not
+ * a call transcript, and its `summary` is only an AI desk note when the filing
+ * was fat enough to summarize — so the badge names the KIND (never the raw
+ * `source` token) and the analysis surfaces (summary + sentiment chip) render
+ * only when there is something real behind them. Same rules, same wording as
+ * the Research-wall card: lib/transcripts/presentation.ts.
+ */
 function TranscriptRow({
   transcript: t,
   showTopBorder,
@@ -105,13 +114,14 @@ function TranscriptRow({
   transcript: EarningsTranscript;
   showTopBorder: boolean;
 }) {
+  const showAnalysis = !isFilingRow(t) || hasDeskNote(t);
   return (
     <div className={`px-5 py-3.5 ${showTopBorder ? "border-t border-edge" : ""}`}>
       <div className="flex items-center gap-2.5 mb-1.5 flex-wrap">
         <span className="text-sm font-semibold text-ink font-mono">
           Q{t.quarter} {t.year}
         </span>
-        {t.sentiment_label && (
+        {showAnalysis && t.sentiment_label && (
           <Chip tone={sentimentTone(t.sentiment_label)} size="xs">
             {t.sentiment_label}
           </Chip>
@@ -120,11 +130,16 @@ function TranscriptRow({
           className="ml-auto font-mono uppercase text-ink-faint"
           style={{ fontSize: "11px", letterSpacing: "0.14em" }}
         >
-          {t.source}
+          {kindLabel(t)}
         </span>
       </div>
-      {t.summary && (
+      {showAnalysis && t.summary && (
         <p className="line-clamp-2 text-sm leading-snug text-ink-dim">{t.summary}</p>
+      )}
+      {!showAnalysis && (
+        <p className="text-xs italic leading-snug text-ink-faint">
+          SEC 8-K filing — no call transcript is cached for this quarter.
+        </p>
       )}
     </div>
   );
@@ -868,8 +883,8 @@ export default async function SecurityDetailPage(props: {
       <Section
         title={
           transcripts.length > 0
-            ? `Earnings Transcripts · ${transcripts.length}`
-            : "Earnings Transcripts"
+            ? `Earnings Transcripts & Filings · ${transcripts.length}`
+            : "Earnings Transcripts & Filings"
         }
         action={<TranscriptsRefreshButton ticker={security.symbol} />}
       >

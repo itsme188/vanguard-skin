@@ -393,6 +393,129 @@ describe("composeCallTranscriptsBlock", () => {
   });
 });
 
+// ─── 8-K rows are press releases, never calls ──────────────────────────────
+//
+// An edgar_8k row is the SEC Form 8-K earnings PRESS RELEASE — no Q&A, no
+// management dialogue. The block used to head every row "### TICKER — Qn YYYY
+// call" and offer a "Full transcript →" link, so an 8-K-only name shipped an
+// outbound email calling a press release a call. A FAT 8-K still earns a real
+// AI desk note (summarizeTranscript runs on any source ≥ 5,000 chars) and that
+// note is worth sending; a thin cover page's mechanical excerpt is not, and
+// per "better no email than a wrong one" it is omitted rather than shipped.
+
+const DESK_NOTE_8K = [
+  "**Guidance**",
+  "- FY26 revenue guide raised to the high end of the prior range.",
+  "",
+  "**Tone**",
+  "Measured, focused on cost discipline.",
+].join("\n");
+
+describe("composeCallTranscriptsBlock — 8-K filing rows", () => {
+  it("heads a fat 8-K's desk note as a press release, never a call, and links it as a Filing", () => {
+    const sec = seedHeld("EIGHTK");
+    insertTranscript({
+      ticker: "EIGHTK",
+      securityId: sec,
+      source: "edgar_8k",
+      callDate: "2026-07-16",
+      summary: DESK_NOTE_8K,
+      fetchedAt: hoursAgo(2),
+    });
+
+    const block = composeCallTranscriptsBlock(db, {
+      now: NOW,
+      linkBase: "http://100.96.0.1:3099",
+    })!;
+
+    expect(block).toContain("### EIGHTK — Q2 2026 8-K press release (Thu 7/16)");
+    expect(block).not.toContain("EIGHTK — Q2 2026 call");
+    expect(block).not.toContain("Full transcript");
+    expect(block).toContain(
+      `Filing → [EIGHTK in Portfolio Desk](http://100.96.0.1:3099/dashboard/security/${sec})`,
+    );
+    // The desk note itself still renders compactly.
+    expect(block).toContain("- FY26 revenue guide raised to the high end of the prior range.");
+    expect(block).toContain("Tone: Measured, focused on cost discipline.");
+  });
+
+  it("omits a cover-page-only 8-K (mechanical excerpt, no desk note) — block is null when it is the only row", () => {
+    seedHeld("THIN");
+    insertTranscript({
+      ticker: "THIN",
+      source: "edgar_8k",
+      summary:
+        "Item 2.02 Results of Operations and Financial Condition. On July 16, 2026, the Company issued a press release announcing results, furnished as Exhibit 99.1.",
+      fetchedAt: hoursAgo(2),
+    });
+
+    expect(composeCallTranscriptsBlock(db, { now: NOW })).toBeNull();
+  });
+
+  it("keeps a real call's extractive summary while dropping a cover-page-only 8-K from the same block", () => {
+    seedHeld("REAL");
+    seedHeld("THIN2");
+    insertTranscript({
+      ticker: "REAL",
+      source: "alpha_vantage",
+      summary: "Management walked through the quarter and took analyst questions.",
+      fetchedAt: hoursAgo(2),
+    });
+    insertTranscript({
+      ticker: "THIN2",
+      source: "edgar_8k",
+      summary: "Item 2.02 Results of Operations and Financial Condition, Exhibit 99.1.",
+      fetchedAt: hoursAgo(3),
+    });
+
+    const block = composeCallTranscriptsBlock(db, { now: NOW })!;
+
+    expect(block).toContain("### REAL — Q2 2026 call");
+    expect(block).not.toContain("THIN2");
+    expect(block).not.toContain("Item 2.02");
+  });
+
+  it("the block header never says 'Call transcripts' over a filing-only block", () => {
+    const sec = seedHeld("ONLY8K");
+    insertTranscript({
+      ticker: "ONLY8K",
+      securityId: sec,
+      source: "edgar_8k",
+      summary: DESK_NOTE_8K,
+      fetchedAt: hoursAgo(2),
+    });
+
+    const block = composeCallTranscriptsBlock(db, { now: NOW })!;
+
+    expect(block).toContain("## Earnings press releases");
+    expect(block).not.toContain("## Call transcripts");
+  });
+
+  it("a mixed block names both kinds in its header", () => {
+    seedHeld("MIXC");
+    const sec = seedHeld("MIXF");
+    insertTranscript({
+      ticker: "MIXC",
+      source: "alpha_vantage",
+      summary: "Extractive call summary body.",
+      fetchedAt: hoursAgo(2),
+    });
+    insertTranscript({
+      ticker: "MIXF",
+      securityId: sec,
+      source: "edgar_8k",
+      summary: DESK_NOTE_8K,
+      fetchedAt: hoursAgo(3),
+    });
+
+    const block = composeCallTranscriptsBlock(db, { now: NOW })!;
+
+    expect(block).toContain("## Call transcripts & press releases");
+    expect(block).toContain("### MIXC — Q2 2026 call");
+    expect(block).toContain("### MIXF — Q2 2026 8-K press release");
+  });
+});
+
 // ─── Wiring: morning-only, positioned after Overnight ──────────────────────
 
 const composeOvernight = vi.fn(async (..._args: unknown[]) => null as string | null);
