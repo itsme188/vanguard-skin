@@ -221,7 +221,7 @@ export function getDailyValuationsForAccounts(
 
 /**
  * Get daily valuations pivoted by account name — same shape as getPortfolioChartData().
- * Returns { date, "Vanguard Taxable": X, "IBKR": Y, ... } for use in CombinedPortfolioChart.
+ * Returns { date, "Vanguard Taxable": X, "IBKR": Y, ... } — one column per account, for stacked charts.
  */
 export function getDailyValuationsPivoted(
   db: Database.Database
