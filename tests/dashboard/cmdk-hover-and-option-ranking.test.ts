@@ -8,6 +8,20 @@
  * layout change even with no real pointer motion), silently moving the
  * keyboard-active row away from the default (index 0, the exact match).
  *
+ * QA finding cmdk--hover-steals-enter-target-expired-options-ranked-above-stock-regression-3
+ * (third occurrence): the regression-2 fix (onMouseEnter -> onMouseMove)
+ * stopped the PHANTOM case above but not GENUINE cursor drift. The pointer
+ * routinely parks mid-viewport after almost any click, and mousemove fires
+ * on real (non-phantom) motion too — so typing MSFT (stock at row 0, option
+ * contracts after) while the cursor happened to sit or drift over row 4
+ * still silently moved the keyboard-active row there, and Enter landed on
+ * an unrelated expired option. Cmd+K -> type -> Enter is the default
+ * gesture, so this misfired routinely. Fix: the pointer no longer writes
+ * selectedIndex at all — ArrowUp/ArrowDown and the result-list reset are the
+ * only writers. Rows keep a CSS-only :hover tint so hovering still looks
+ * interactive, and a click on a row still navigates that row; only "which
+ * row does Enter target" stops following the pointer.
+ *
  * CommandPalette is "use client" with no jsdom/@testing-library/react
  * harness in this repo (see precedent note in
  * tests/dashboard/narrative-block-refresh.test.ts) — the hover fix is
@@ -33,8 +47,25 @@ describe("CommandPalette hover wiring (source pin)", () => {
     expect(src).not.toMatch(/onMouseEnter=\{\(\) => setSelectedIndex/);
   });
 
-  it("updates the keyboard selection from onMouseMove instead (only ever fires on genuine pointer movement)", () => {
-    expect(src).toMatch(/onMouseMove=\{\(\) => setSelectedIndex\(i\)\}/);
+  it("regression-3: does not update the keyboard selection from ANY pointer event, including onMouseMove — genuine cursor drift (not just phantom hover) was still stealing the Enter target", () => {
+    expect(src).not.toMatch(/on(Mouse|Pointer)\w*=\{[^}]*setSelectedIndex/);
+  });
+
+  it("keeps a CSS-only hover tint on result rows, distinct from the keyboard-selected row's solid background, so hovering still looks interactive without moving the keyboard selection", () => {
+    expect(src).toMatch(/hover:bg-raised\/50/);
+  });
+
+  it("still navigates a row on click (unaffected by the pointer/selectedIndex fix)", () => {
+    expect(src).toMatch(/onClick=\{\(\) => navigate\(result\.href\)\}/);
+  });
+
+  it("keeps the ↵ badge tied only to i === selectedIndex", () => {
+    expect(src).toMatch(/\{i === selectedIndex && \(/);
+  });
+
+  it("keeps ArrowUp/ArrowDown and the result-list reset as the only writers of selectedIndex", () => {
+    expect(src).toMatch(/setSelectedIndex\(\(i\) => Math\.min\(i \+ 1, results\.length - 1\)\)/);
+    expect(src).toMatch(/setSelectedIndex\(\(i\) => Math\.max\(i - 1, 0\)\)/);
   });
 });
 

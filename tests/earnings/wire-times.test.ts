@@ -451,11 +451,90 @@ describe("checkUserReleaseTimeAgainstUpcomingSlot", () => {
     ).toEqual({ ok: true });
   });
 
-  it("ok when the upcoming event's slot can't be derived (no event_time, no raw_json hour)", () => {
-    seedEvent("EARL", "2099-01-01"); // event_time null, raw_json null
+  it("ok when the upcoming event's slot can't be derived (no event_time, no raw_json hour, no release_time)", () => {
+    seedEvent("EARL", "2099-01-01"); // event_time null, raw_json null, release_time null
     expect(
       checkUserReleaseTimeAgainstUpcomingSlot(db, "EARL", "07:30", { today }),
     ).toEqual({ ok: true });
+  });
+
+  // QA finding today-earningshub-release-time--slot-guard-never-fires-on-
+  // vendor-rows (2026-09-06): vendor rows (finnhub/nasdaq) carry event_time
+  // NULL, and Finnhub frequently sends raw_json.entry.hour === "" (not a
+  // BMO/AMC/dmh/unknown value deriveEarningsSlot recognizes). With no
+  // fallback, deriveEarningsSlot returned null and the guard `continue`d —
+  // a user could save a wire time on the wrong side of noon against a row
+  // the app itself displays with a release_time on the other side. The guard
+  // now passes { allowReleaseTimeFallback: true } so the row's OWN
+  // release_time (already stored on calendar_events) is consulted as a last
+  // resort when vendor evidence gives no slot. Verified against a copy of
+  // the live DB: event ORCL 1493 had event_time NULL, raw_json entry.hour
+  // "", release_time "16:15".
+  describe("vendor rows with no derivable slot fall back to release_time", () => {
+    /** A vendor-shaped row: event_time NULL, raw_json.entry.hour as given,
+     *  and a release_time already stamped on the row (as the enrichment
+     *  cascade would have left it). */
+    function seedVendorEvent(
+      symbol: string,
+      date: string,
+      hour: string,
+      releaseTime: string | null,
+    ): number {
+      return db
+        .prepare(
+          `INSERT INTO calendar_events
+             (source, event_type, event_date, symbol, title, source_key, week_of, event_time, raw_json, release_time)
+           VALUES ('finnhub','earnings',?,?,?,?,?,NULL,?,?)`,
+        )
+        .run(
+          date,
+          symbol,
+          `${symbol} earnings`,
+          `finnhub:${symbol}:${date}`,
+          date,
+          JSON.stringify({ entry: { hour } }),
+          releaseTime,
+        ).lastInsertRowid as number;
+    }
+
+    it('not-ok: a before-open time against a vendor row with hour "" but release_time 16:15 (falls back to AMC)', () => {
+      const id = seedVendorEvent("ORCL", "2099-01-01", "", "16:15");
+      expect(
+        checkUserReleaseTimeAgainstUpcomingSlot(db, "ORCL", "07:30", { today }),
+      ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id });
+    });
+
+    it("ok: an after-close time against the same vendor row (same side of noon as the AMC fallback)", () => {
+      seedVendorEvent("ORCL", "2099-01-01", "", "16:15");
+      expect(
+        checkUserReleaseTimeAgainstUpcomingSlot(db, "ORCL", "16:45", { today }),
+      ).toEqual({ ok: true });
+    });
+
+    it('ok: vendor row with hour "" AND release_time NULL — still nothing to check', () => {
+      seedVendorEvent("ORCL", "2099-01-01", "", null);
+      expect(
+        checkUserReleaseTimeAgainstUpcomingSlot(db, "ORCL", "07:30", { today }),
+      ).toEqual({ ok: true });
+    });
+
+    it("vendor hour wins over a contradictory release_time (precedence unchanged)", () => {
+      // raw_json says bmo, release_time says 16:15 (amc) — deriveEarningsSlot
+      // resolves vendor evidence FIRST and never reaches the fallback, so the
+      // slot is bmo and a 07:30 entry agrees with it.
+      seedVendorEvent("ORCL", "2099-01-01", "bmo", "16:15");
+      expect(
+        checkUserReleaseTimeAgainstUpcomingSlot(db, "ORCL", "07:30", { today }),
+      ).toEqual({ ok: true });
+    });
+
+    it("a TAS row with a release_time stamped is still skipped (TAS early-continue unchanged)", () => {
+      const id = seedVendorEvent("ORCL", "2099-01-01", "", "16:15");
+      db.prepare("UPDATE calendar_events SET event_time = 'TAS' WHERE id = ?").run(id);
+      expect(
+        checkUserReleaseTimeAgainstUpcomingSlot(db, "ORCL", "07:30", { today }),
+      ).toEqual({ ok: true });
+    });
   });
 
   it("walks issuer siblings (a GOOGL check finds GOOG's upcoming event)", () => {
