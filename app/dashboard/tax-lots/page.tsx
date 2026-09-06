@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import { db } from "@/lib/db";
+import { todayET } from "@/lib/calendar/date-utils";
 import {
   getOpenTaxLots,
   getClosedTaxLotSales,
@@ -32,7 +33,7 @@ export default async function TaxLotsPage(props: {
     throw new Error("Failed to load tax lot data. The database may be unavailable.");
   }
 
-  const currentCalendarYear = new Date().getFullYear();
+  const currentCalendarYear = Number(todayET().slice(0, 4));
 
   // ?year= is user-supplied: a non-numeric or out-of-range value (`?year=all`)
   // used to flow NaN into the tiles ("NAN REALIZED") and the report card
@@ -99,9 +100,12 @@ export default async function TaxLotsPage(props: {
   const sumUsd = (rows: typeof closedSales) =>
     rows.reduce((sum, s) => sum + (s.currency === "USD" ? s.realized_gain_loss : 0), 0);
 
-  // Clear-filter link preserves year/account, drops only ?security=.
+  // Clear-filter link preserves year/account, drops only ?security=. Forward
+  // the RESOLVED year, not the raw param — from `?year=all` (or any invalid
+  // value) that would otherwise re-carry the same invalid string onto the
+  // cleared URL (QA follow-up).
   const clearFilterParams = new URLSearchParams();
-  if (searchParams.year) clearFilterParams.set("year", searchParams.year);
+  if (searchParams.year) clearFilterParams.set("year", String(selectedYear));
   if (searchParams.account) clearFilterParams.set("account", searchParams.account);
   const clearFilterQuery = clearFilterParams.toString();
   const clearFilterHref = `/dashboard/tax-lots${clearFilterQuery ? `?${clearFilterQuery}` : ""}`;

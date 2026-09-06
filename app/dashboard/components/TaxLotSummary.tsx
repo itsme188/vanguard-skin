@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { TaxLotSummary, AccountTaxSummary } from "@/lib/queries/tax-lots";
 import { Count, Money } from "@/lib/privacy/components";
 
@@ -47,7 +48,7 @@ function GainCard({
 }: {
   label: string;
   value: number;
-  sublabel?: string;
+  sublabel?: ReactNode;
   engineEstimatedCount?: number;
   engineEstimatedGain?: number;
 }) {
@@ -94,7 +95,12 @@ export function TaxLotSummaryCards({
         <GainCard
           label={`${year} Realized`}
           value={summary.totalRealizedGain}
-          sublabel={`${summary.totalClosedSales} sale${summary.totalClosedSales !== 1 ? "s" : ""}`}
+          sublabel={
+            <>
+              <Count value={summary.totalClosedSales} /> sale
+              {summary.totalClosedSales !== 1 ? "s" : ""}
+            </>
+          }
           engineEstimatedCount={summary.engineEstimatedSales}
           engineEstimatedGain={summary.engineEstimatedGain}
         />
@@ -166,7 +172,7 @@ export function AccountSummaryCards({
                 className="block text-[11px] text-ink-faint mt-1"
               />
               <div className="text-[11px] text-ink-faint mt-1">
-                {acct.totalClosedSales} sale{acct.totalClosedSales !== 1 ? "s" : ""}
+                <Count value={acct.totalClosedSales} /> sale{acct.totalClosedSales !== 1 ? "s" : ""}
                 {/* Also shown when the LT figure nets to zero BUT carries
                     engine-estimated closes — otherwise offsetting engine
                     rows would hide their own disclosure. */}

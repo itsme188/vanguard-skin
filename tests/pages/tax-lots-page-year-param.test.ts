@@ -18,7 +18,11 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
+import Link from "next/link";
 import { runMigrations } from "@/lib/db/migrate";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { YearSelector } from "@/app/dashboard/components/YearSelector";
@@ -103,6 +107,18 @@ describe("resolveSelectedYear", () => {
     expect(resolveSelectedYear("all", [2025, 2024], 2026)).toBe(2025);
     expect(resolveSelectedYear("all", [], 2026)).toBe(2026);
   });
+
+  // QA follow-up: the page used `parseInt`, which stops at the first
+  // non-digit and accepts the leading digits — "2024abc" and "2024.9" both
+  // resolved to 2024. /api/tax-report (app/api/tax-report/route.ts) parses
+  // with `Number(yearParam)` instead, which is NaN for both, so the page
+  // was accepting years the API's own endpoint would 400 on. The doc
+  // comment above claims this file mirrors that window; this pins it.
+  it("rejects trailing-garbage numeric strings exactly as the API's Number() check does", () => {
+    expect(resolveSelectedYear("2024abc", available, 2026)).toBe(2026);
+    expect(resolveSelectedYear("2024.9", available, 2026)).toBe(2026);
+    expect(resolveSelectedYear("2024", available, 2026)).toBe(2024);
+  });
 });
 
 describe("TaxLotsPage — non-numeric ?year= (QA regression)", () => {
@@ -139,5 +155,58 @@ describe("TaxLotsPage — non-numeric ?year= (QA regression)", () => {
     const element = await TaxLotsPage({ searchParams: Promise.resolve({ year: "2024" }) });
     expect(findByType(element, YearSelector)!.props!.currentYear).toBe(2024);
     expect(findByType(element, TaxReportCard)!.props!.year).toBe(2024);
+  });
+
+  // QA follow-up: the "Clear filter" chip (rendered when ?security= is set)
+  // forwarded `searchParams.year` VERBATIM, so from `?year=all&security=<id>`
+  // the cleared URL still read `?year=all` — one click away from re-tripping
+  // the exact NaN-tiles bug this page just fixed. It must forward the
+  // already-resolved (finite, in-window) year instead. Clock-independent:
+  // compares against the no-param baseline's resolved year, same idiom as
+  // the tests above.
+  it("clear-filter link forwards the resolved year, never the raw invalid one", async () => {
+    const { default: TaxLotsPage } = await import("@/app/dashboard/tax-lots/page");
+    const secId = (
+      db.prepare("SELECT id FROM securities WHERE symbol = 'AAPL'").get() as { id: number }
+    ).id;
+
+    const baseline = await TaxLotsPage({ searchParams: Promise.resolve({}) });
+    const baselineYear = findByType(baseline, YearSelector)!.props!.currentYear as number;
+
+    const withAllAndSecurity = await TaxLotsPage({
+      searchParams: Promise.resolve({ year: "all", security: String(secId) }),
+    });
+    const clearLink = findByType(withAllAndSecurity, Link);
+    expect(clearLink, "clear-filter Link must render").not.toBeNull();
+    const href = clearLink!.props!.href as string;
+    expect(href).not.toContain("year=all");
+    expect(href).toContain(`year=${baselineYear}`);
+  });
+});
+
+describe("TaxLotsPage source — default year is ET-anchored (QA follow-up)", () => {
+  const pageSource = fs.readFileSync(
+    path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../app/dashboard/tax-lots/page.tsx",
+    ),
+    "utf8",
+  );
+
+  // CLAUDE.md (Dates & time): every user-facing "today" is ET-anchored via
+  // `todayET()` — never `new Date().getFullYear()`, which uses the Mac's
+  // local timezone and can disagree with ET around midnight.
+  it("imports todayET from the ET-anchor helper", () => {
+    expect(pageSource).toMatch(
+      /import\s*\{[^}]*\btodayET\b[^}]*\}\s*from\s*["']@\/lib\/calendar\/date-utils["']/,
+    );
+  });
+
+  it("never calls the system clock's getFullYear() directly", () => {
+    expect(pageSource).not.toContain("new Date().getFullYear()");
+  });
+
+  it("derives currentCalendarYear from todayET()", () => {
+    expect(pageSource).toMatch(/currentCalendarYear\s*=\s*Number\(todayET\(\)\.slice\(0,\s*4\)\)/);
   });
 });
