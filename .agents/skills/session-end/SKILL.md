@@ -1,6 +1,6 @@
 ---
 name: session-end
-description: "Close a Portfolio Desk work session using the shared Claude/Codex checklist: verify changes, reconcile GitHub and TODOs, update project memory and handoff, and complete authorized commits, pushes, and deployment. Use when the user asks to end the session, wrap up, or run session-end; not when merely discussing or editing this skill."
+description: "Close a Portfolio Desk work session using the shared Claude/Codex checklist: verify changes, reconcile GitHub and TODOs, update project memory and handoff, and complete authorized commits, pushes, and deployment. Use when the user explicitly invokes session-end or asks to run the session-end workflow; not for discussion, skill edits, summary requests, or editor closure."
 ---
 
 # Portfolio Desk — Session End for Codex
@@ -11,8 +11,8 @@ Apply these Codex adaptations while following the shared checklist:
 
 ## Scope and authorization
 
-- Follow the user's current instructions and approvals. Preserve existing authorization across the session; do not ask again for an already approved commit, push, or rebuild. The shared checklist's claim that invocation grants approval does not override a user instruction requiring confirmation. If authority is missing, finish the checks and prepare exact files, commit messages, branch/destination, and deployment scope before asking once for the remaining actions.
-- Creating or editing this skill does not invoke it. A request for a summary alone does not authorize shipping.
+- An explicit session-end invocation is the user's standing authorization for this session's commit, push, normal integration, and reviewed deployment, as recorded in the global instructions and shared checklist. The receiving agent owns closeout; do not hand shipping to Claude by assumption or ask again for authorized actions. Honor explicit user limits. If safe integration is blocked, finish independent steps and report the concrete blocker.
+- Discussing or editing this skill, requesting a summary, saying only "we're done", or closing the editor does not invoke it. An accompanying explicit request to run session-end does invoke it.
 - Check status in the active worktree and main checkout, read `docs/CODEX-CLAUDE-COORDINATION.md` if present, and establish ownership before staging or updating shared docs. Commit only this session's changes by explicit paths; do not include another agent's edits or stage their changes to a shared file.
 - Report other worktrees and PRs. Do not automatically delete worktrees, switch the shared checkout's branch, merge unrelated work, force-push, or repair production data.
 - If a step is blocked, complete independent closeout work and record the blocker. Never label unmerged, untested, or undeployed work as shipped.

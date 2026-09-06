@@ -2,15 +2,21 @@
 
 Perform these steps in order. Skip any that don't apply.
 
-**`/session-end` itself is the authorization** — do NOT pause for commit / push / rebuild confirmation. The user invoking the command IS the green light. Only stop for destructive operations (force-push, branch delete, dropping data).
+**Explicit session-end authorization:** When I explicitly invoke `session-end` (including `$session-end`, `/session-end`, or `/skills session-end`) or ask you to run the session-end workflow, that authorizes committing this session's changes, pushing, integrating this session's branch through the project's normal workflow, and building and deploying the reviewed result. The agent receiving the request owns the closeout; do not assume another agent will ship it or ask again for these actions. Complete verification and preserve other agents' work. If unfinished concurrent work prevents safe integration or deployment, finish independent closeout steps and report the specific blocker. Discussing/editing session-end, requesting a summary, saying only 'we're done', or closing the editor does not invoke it. Explicit limits such as 'session-end without deploying' override the default. Historical production-data repairs, destructive actions, and unrelated work still require separate authorization.
+
+This file owns the shared Claude/Codex workflow. Agent-specific adapters supply environment details, not a different approval policy. GitHub issue comments/closures and external communications require their own user authorization; otherwise prepare a closure proposal.
 
 ## 1. Uncommitted changes
 
-Run `git status --short` in the main repo (and any worktrees if working in one).
+Run `git status --short` in the main repo and active worktree. Read `docs/CODEX-CLAUDE-COORDINATION.md` and the latest handoff when present; establish ownership and whether another agent is landing or deploying. Preserve their work and handoff. Before committing production code, follow `docs/reference/verification-loop.md`; reuse completed checks for unchanged code.
 
-If anything is uncommitted: stage + commit straight through. Follow the project's commit conventions (descriptive 1-2 sentence message focused on "why," `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` trailer, name files explicitly — never `git add -A`). Multi-commit splits are fine when they reflect distinct concerns (e.g., feature code + docs reconciliation), and the established project pattern is to land docs reconciliation as a separate `chore(claude)` commit after the feature commit so commit hashes can be cross-referenced from TODO.md / MEMORY.md.
+Commit only this session's verified changes using explicit paths for staging AND committing; never sweep another agent's staged or unstaged work. Use descriptive messages focused on why, with the actual agent's attribution (no hardcoded model identity). Multi-commit splits are fine when they reflect distinct concerns (e.g., feature code + docs reconciliation), and the established project pattern is to land docs reconciliation as a separate `chore(claude)` commit after the feature commit so commit hashes can be cross-referenced from TODO.md / MEMORY.md.
 
-After committing: `git push origin <current-branch>`. Don't ask. If push fails (auth, network, conflict), surface the failure and stop — do not retry destructively.
+Reconcile TODOs against the resulting commits before pushing. Push this session's reviewed branch to origin. If push fails, report the failure; never force-push to bypass it.
+
+### Integrate before deployment
+
+Bring this session's branch up to the current integration branch in its isolated worktree. Preserve both sides of overlaps and review the combined diff. Rerun checks affected by integration and the full suite when production code changed. Land through the established project workflow only after the integration checkout is clean and no concurrent landing/deployment owns it; use a fast-forward where possible. Never stash, reset, or switch the shared checkout's branch to make room. Push the integrated result, and deploy from that reviewed commit. Do not deploy an unmerged feature branch or another agent's unfinished edits. If the boundary is unavailable, finish branch commits, verification, and handoff and report integration/deployment as pending.
 
 ## 2. Open PRs
 
@@ -29,7 +35,7 @@ Read `docs/plans/TODO.md` and reconcile it against what actually shipped this se
 - Match the file's existing convention: completed items move from "Open items" to the "Closed this session" block with `✅`, today's date, and commit hash(es). Do NOT introduce a new convention.
 - Add any new TODOs discovered this session (bugs found, deferred work, follow-ups the user mentioned) to "Open items" with enough context (files, ~time estimate, why) that next session can pick them up cold.
 - If the session closed a roadmap-level theme (Theme A / Theme D / etc.), update the "Backlog themes" list too.
-- **GitHub issue reconcile (Codex request 2026-08-11):** sweep ALL open issues against landed commits, not just this session's fixes — `gh issue list` and, for each open issue, check whether a commit on `main` already implements it (grep for the issue's file paths / function names; check commit messages). A fix that landed in an earlier session without closing its issue is the known failure mode (issue #36 sat open 4 days after `8529729` shipped it). Close each satisfied issue with a comment linking the commit hash(es) and the verification evidence (test names / suite count). This is Codex's feedback loop. Issues triaged into TODO.md whose fix hasn't shipped stay open.
+- **GitHub issue reconcile (Codex request 2026-08-11):** sweep ALL open issues against landed commits, not just this session's fixes — `gh issue list` and, for each open issue, check whether a commit on `main` already implements it (grep for the issue's file paths / function names; check commit messages). A fix that landed in an earlier session without closing its issue is the known failure mode (issue #36 sat open 4 days after `8529729` shipped it). For each satisfied issue, prepare a closure proposal linking commit hashes and verification evidence. Post comments and close issues only when the user separately authorizes that external communication. This is Codex's feedback loop. Issues triaged into TODO.md whose fix hasn't shipped stay open.
 
 ## 5. Update auto-memory
 
@@ -49,7 +55,9 @@ If any of these changed during the session, update `CLAUDE.md` accordingly:
 
 ## 7. Rebuild Electron DMG (pre-authorized)
 
-If the session changed any production code (anything outside `tests/`, `docs/`, `.claude/`, or memory files):
+If this session changed production code, deploy the verified integrated commit after reading `docs/reference/electron-build.md`. Tests, docs, skills (`.agents/`, `.claude/`), and memory-only changes do not need a rebuild. Builds must use the project's `npm run build` wrapper so build-time imports cannot migrate the live database. Do not run historical data backfills or repair scripts as part of deployment. Separately deployed services such as Workers require their own authorization.
+
+Use the project's normal deployment command:
 
 ```bash
 source ~/.zshrc >/dev/null 2>&1; PATH=/opt/homebrew/opt/node@24/bin:$PATH npm run electron:deploy
@@ -67,17 +75,17 @@ Skip this step if the session was docs-only / memory-only / `.claude/` config-on
 
 Runs AFTER step 7 deliberately (Codex request 2026-08-10): the handoff must report the FINAL deploy/E2E result and the true ending process state, not the state before deployment. If the deploy is still running in the background, wait for it before writing.
 
-Overwrite `docs/HANDOFF.md` (rolling file; git history is the archive) with a brief handoff for Codex, which reviews this repo via GitHub. Cover exactly these five items:
+Write the final handoff in `docs/HANDOFF.md` when owned by this session. Preserve another agent's handoff by writing `docs/HANDOFF-<AGENT>-<DATE>.md` and linking it from the coordination note. Use the actual executing agent's attribution. Cover exactly these five items:
 
 1. **Current goal + exact files changed** this session (paths, not vague areas).
 2. **Tests/E2E checks run and their results** (e.g., "`npx vitest run` — 4,571 passed" or "not run — docs-only session"), plus the step-7 deploy outcome (deployed + relaunched / skipped / failed-with-reason).
 3. **Open concerns, rejected approaches, and user decisions** — the "why" a reviewer can't get from the diff. Include anything decided but not yet implemented.
 4. **Uncommitted changes or live-process state** as of AFTER the deploy (worktrees, running dev servers, in-flight branches, pending PRs, which app build is live). "None" is a valid and useful answer.
-5. **Claude session link** (the `https://claude.ai/code/session_...` URL from this session's environment, if available). Access-control verified 2026-08-10: sessions are private-by-default (login wall + owner-only; opaque ID, no metadata leak), and the same links already ride every commit trailer in this repo. NEVER toggle a session on this project to public visibility — session context contains real portfolio data.
+5. **Agent identity and session link** (the `https://claude.ai/code/session_...` URL from this session's environment, if available). Access-control verified 2026-08-10: sessions are private-by-default (login wall + owner-only; opaque ID, no metadata leak), and the same links already ride every commit trailer in this repo. NEVER toggle a session on this project to public visibility — session context contains real portfolio data.
 
 **Sanitization (public repo):** describe work in code terms only. No dollar amounts, share counts, position counts, return percentages, or any portfolio-derived figures — same rule as PR bodies and README assets.
 
-Commit it as its own final `chore(claude): session handoff` commit and push — this is the session's last commit, so `docs/HANDOFF.md` on GitHub always reflects the true end state. Skip this step only if the session made no decisions and changed nothing (pure Q&A).
+Commit it as its own final `chore(<agent>): session handoff` commit and push — this is the session's last commit, so `docs/HANDOFF.md` on GitHub always reflects the true end state. Skip this step only if the session made no decisions and changed nothing (pure Q&A).
 
 ## 9. Summary
 
