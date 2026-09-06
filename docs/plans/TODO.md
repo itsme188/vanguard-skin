@@ -314,6 +314,8 @@ New open items from the same audit (added above): Worker synthesis held-ticker b
 
 ## Reminders (no code action)
 
+- [ ] **Permission rule for the Electron install step (2026-09-05):** the auto-mode permission classifier refused the full deploy script during the Codex-rescue landing even though it is pre-authorized in CLAUDE.md, `.claude/session-end.md` and memory; the build-only pack script was allowed and the user ran `npm run electron:install` by hand. Add a Bash permission rule (settings.json) covering the deploy/install scripts so an unattended session-end or rescue can finish end to end. Config only; no code.
+
 - **Monthly statement import — the unsettled-activity rule was WRONG and is corrected (2026-09-04)** — a Vanguard statement does NOT re-list the prior month's "Unsettled activity" rows in its Completed section (verified against the August statement: zero prior-month trade dates appear). Those trades must be imported in the SAME month as their own canonical file, or they never enter the ledger and the engine papers over the gap with a synthesized `RECONCILE_CLOSE`. The `import-monthly-statements` skill's Phase 5 was corrected at `65bcb85`; gates records live beside each month's canonical set under `~/Desktop/Trading - Local/canonical/`.
 - **Hand ChatGPT the refreshed GitHub link** — README / screenshots / CHANGELOG were refreshed 2026-07-08 (`2430bf3`), so the factor-analysis collaboration can resume against a repo that matches post-redesign reality.
 
