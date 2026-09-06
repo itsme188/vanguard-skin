@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { SecurityRegression } from "@/lib/compute/security-regression";
+import { todayET } from "@/lib/calendar/date-utils";
 
 export interface CachedRegression extends SecurityRegression {
   computedAtDay: string; // YYYY-MM-DD
@@ -34,14 +35,14 @@ export function getCachedRegression(
  *
  * `now` is a TEST SEAM (not a feature) so the cache-picks-most-recent test
  * can pin two distinct days. Production callers should omit it and let it
- * default to today's ISO date.
+ * default to today's ET date.
  */
 export function upsertRegression(
   db: Database.Database,
   args: { securityId: number; benchmarkSymbol: string; result: SecurityRegression },
   now?: string
 ): void {
-  const computedAtDay = now ?? new Date().toISOString().slice(0, 10);
+  const computedAtDay = now ?? todayET();
   db.prepare(
     `INSERT INTO security_regressions
        (security_id, benchmark_symbol, computed_at_day, beta, vol, correlation, r_squared, data_points)
