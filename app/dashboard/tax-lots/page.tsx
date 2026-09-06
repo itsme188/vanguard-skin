@@ -17,6 +17,7 @@ import { RecomputeButton } from "../components/RecomputeButton";
 import { YearSelector, AccountSelector } from "../components/YearSelector";
 import { EmptyState } from "../components/EmptyState";
 import { TaxReportCard } from "../components/TaxReportCard";
+import { resolveSelectedYear } from "./select-year";
 
 export default async function TaxLotsPage(props: {
   searchParams: Promise<{ year?: string; account?: string; security?: string }>;
@@ -33,11 +34,12 @@ export default async function TaxLotsPage(props: {
 
   const currentCalendarYear = new Date().getFullYear();
 
-  const selectedYear = searchParams.year
-    ? parseInt(searchParams.year, 10)
-    : availableYears.includes(currentCalendarYear)
-      ? currentCalendarYear
-      : availableYears[0] ?? currentCalendarYear;
+  // ?year= is user-supplied: a non-numeric or out-of-range value (`?year=all`)
+  // used to flow NaN into the tiles ("NAN REALIZED") and the report card
+  // (`/api/tax-report?year=NaN` -> 400). resolveSelectedYear validates it
+  // against the API's own [2000, 2100] window and otherwise falls back exactly
+  // like an absent param.
+  const selectedYear = resolveSelectedYear(searchParams.year, availableYears, currentCalendarYear);
 
   const selectedAccount = searchParams.account ?? "";
 
