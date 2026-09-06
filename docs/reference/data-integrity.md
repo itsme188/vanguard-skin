@@ -365,8 +365,11 @@ The upsert echoes every other cached column (full-replace UPSERT — a partial p
 ### 14.5 Digest surface (redesigned 2026-07-20, user decision)
 
 `lib/digest/call-transcripts.ts::composeCallTranscriptsBlock` (sync, never throws) renders last-24h
-held/watchlist transcripts as `## Call transcripts` in the **MORNING digest only**, as a compact
-desk-note notice:
+held/watchlist transcripts in the **MORNING digest only**, as a compact desk-note notice. The block
+header is source-aware since 2026-09-06 (`## Call transcripts`, `## Earnings press releases`, or
+`## Call transcripts & press releases`): an `edgar_8k` row renders as an "8-K press release" with a
+"Filing →" link, and a filing WITHOUT a real AI desk note (`hasDeskNote`, `lib/transcripts/presentation.ts`)
+is omitted rather than shipped as a call — better no email than a wrong one:
 
 - When the (heading-demoted) summary has a `**Guidance**` section → Guidance section (900-char cap) +
   a one-line `Tone:` digest + a deep link to Security Detail via `PUSHOVER_LINK_BASE` (plain text
