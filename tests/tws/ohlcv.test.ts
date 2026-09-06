@@ -66,7 +66,7 @@ describe("OHLCV mutations", () => {
       { date: "2025-02-03", open: 197, high: 200, low: 196, close: 199.0, volume: 900 },
     ];
 
-    const count = upsertOhlcvBars(db, secId, "1 day", bars);
+    const { inserted: count } = upsertOhlcvBars(db, secId, "1 day", bars);
     expect(count).toBe(3);
 
     const stored = getOhlcvBars(db, secId, "1 day");

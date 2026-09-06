@@ -164,7 +164,7 @@ export async function fetchOhlcvBars(
   }
 
   // Store in database
-  const inserted = upsertOhlcvBars(db, sec.id, barSizeStr, bars);
+  const { inserted } = upsertOhlcvBars(db, sec.id, barSizeStr, bars);
   options.onProgress?.(`${sec.symbol}: stored ${inserted} bars`);
 
   // Return full cached set (includes previously stored bars for complete chart)
