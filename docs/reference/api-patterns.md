@@ -36,6 +36,7 @@ parameter, env var, table, helper, date, and rationale from the original CLAUDE.
 - [Plaid](#plaid)
 
 ---
+- Print watch (live print v2)
 
 ## Import & compute
 
@@ -519,12 +520,22 @@ Manual trigger for an earnings preview / recap email.
 - Driver scripts: `scripts/preflight-earnings-data.ts <syms...>` and
   `scripts/fire-earnings-emails.ts <preview|recap> <YYYY-MM-DD> [bmo|amc] [--dry-run]`.
 
+- **`markDelivered: true` (live print v2 slice E, 2026-09-04):** closes a `delivery_unknown` audit row the desk
+  confirmed by hand — no email is composed or sent, so it runs BEFORE the recipient allowlist and the rate
+  limit; 200 `{ ok, phase, eventId, resolved: "delivered" }`, 409 when the row is not `delivery_unknown`.
+  A resend is the same route WITHOUT the flag (manual mode refires explicitly). Every other caller — the
+  sweep loop, the Today nudge — goes through `lib/earnings/send-service.ts` in automatic mode and never refires.
+
 ### `GET /api/earnings/email-content?eventId=&phase=`
 
 Read-only. Returns the full rendered HTML of a previously-sent earnings email so the in-app
 `<EarningsEmailViewer>` modal can iframe it. Scoreboard is rebuilt deterministically from current
 `calendar_events` fields via the exported `renderHeadlineTable`; AI prose comes verbatim from
 `earnings_emails.ai_output_md`.
+
+- Response carries `deliveryState: "sent" | "sent-by-cloud" | "delivery-unknown"` beside `sentBy` (slice E):
+  a `delivery_unknown` row HAS a stored body (the attempted one, or the previously delivered one after a
+  refire) and the viewer renders it with a "Delivery unknown" header and a reconciliation caveat.
 
 ### `POST /api/earnings/bogeys/upload` (multipart)
 
@@ -738,3 +749,31 @@ Import side: `daf-contributions` is a first-class format through the standard pi
 `donations` block (count/new/updated/identityConflicts/absentPriorRows/unresolvedSymbols; computed via a
 rolled-back transaction — never persists), commit is a metadata upsert for existing source keys, and undoing
 a transactions batch referenced by donation links/assignments is refused 409 before the rate limit is burned.
+
+## Print watch (live print v2, 2026-08-21 → 2026-09-04)
+
+All routes are `human` by the proxy's default classification (session cookie + double-submit CSRF +
+trusted `Origin` on unsafe methods); none has a `lib/auth/route-policy.ts` entry. Logic lives in
+`lib/print-watch/*` and `lib/earnings/*`; the routes parse and delegate. Detail: `earnings-pipeline.md`.
+
+- `GET /api/print-watch/status` — PURE READ (guarded by `tests/api/no-state-changing-get.test.ts`). One entry per
+  live print: state, sources ladder, lines, `documents` + `documentRoads` (B), `forcedOpenAt` /
+  `windowExtendedUntil` / `effectiveWindow` / `goRequest` (C), `read` / `activeRead` / `lastAttempt` / `callouts`
+  (D), and `outputs` (E: `printSheet { enabled, reason }`, `sendRecap { enabled, reason, state, providerMessageId }`
+  — the ONLY source the Today buttons render from, so a dark button and its route's refusal can never disagree).
+- `POST /api/print-watch/ensure` — keeps the in-process watcher lease alive (the Hub polls it every 60 s).
+- `POST /api/print-watch/drop` — a dropped release file or a pasted `url` (B; SSRF-hardened fetch).
+- `POST /api/print-watch/accept` — accept a line / a candidate, un-accept, `promoteHeadline` (validates inside an
+  `.immediate()` transaction; 409 `superseded` + `forceSuperseded`). Refuses any `~retired~` line id (F).
+- `POST /api/print-watch/go` (`{ eventId, url? }` or `{ eventId, contentBase64, filename? }`), `GET /api/print-watch/go?requestId=`,
+  `POST /api/print-watch/extend` — the "print is live" action, its status, and the 30-minute window extension (C).
+- `POST /api/print-watch/read` — regenerate the first-pass read (returns `generating`; the panel polls status);
+  `POST /api/print-watch/callouts/accept` — flip a verified callout `proposed` ↔ `accepted` (D).
+- `GET /api/print-watch/sources?symbol=` (pure read; `data: null` when nothing is stored) and
+  `PUT /api/print-watch/sources` (`{ symbol, irPageUrl, linkMustContain? }`; an empty `irPageUrl` CLEARS) — the
+  stored IR page (B route, F UI).
+- `POST /api/print-watch/print-sheet { printId }` — the post-print paper sheet through the one-sheet ladder;
+  409 with `outputs.printSheet.reason` verbatim when no line has a value; 200 `{ road: "pdf" | "monospace", pages, symbol }` (E).
+- `POST /api/print-watch/send-recap { printId }` — 200 for EVERY coordination outcome, rendered verbatim by the row:
+  `sent | in_progress | already_sent | delivery_unknown | refused | failed` (E). The gate requires the accepted
+  headline pair, the promote stamp, and that the currently accepted pair still matches the stored `actual_value`.
