@@ -1378,6 +1378,14 @@ function renderBogeysBlock(bogeys: SnapshotBogey[]): string {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
+// PARITY (Mac: lib/format/finnhub-figure.ts::parseFinnhubFigure) — Finnhub
+// emits a literal "Rev 0" as its placeholder for "no revenue figure
+// published" for this print, not a real $0 print. A $0 revenue line carries
+// no information an absent one does not, so it is nulled out HERE, at the
+// parse layer, exactly as the Mac's parser does — every reader below
+// (evaluateRecapContent's plausibility gate, renderScoreboard) then agrees
+// with the screen. EPS of exactly 0 is a real, legitimate value and is
+// never nulled. Change both sides together.
 function parseFinnhubFigure(s: string | null | undefined): {
   eps: string | null;
   revenue: string | null;
@@ -1387,7 +1395,10 @@ function parseFinnhubFigure(s: string | null | undefined): {
   const epsMatch = /EPS\s+(-?\d+(?:\.\d+)?)/i.exec(s);
   if (epsMatch) out.eps = epsMatch[1];
   const revMatch = /Rev\s+([\d.,]+)/i.exec(s);
-  if (revMatch) out.revenue = revMatch[1].replace(/,/g, "");
+  if (revMatch) {
+    const cleaned = revMatch[1].replace(/,/g, "");
+    out.revenue = Number(cleaned) === 0 ? null : cleaned;
+  }
   return out;
 }
 

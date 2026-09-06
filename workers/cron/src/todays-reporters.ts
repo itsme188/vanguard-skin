@@ -46,25 +46,47 @@ function slotFor(e: {
 
 const SLOT_ORDER: Record<string, number> = { BMO: 0, AMC: 1, TBD: 2 };
 
+// Word-bounded, mirroring lib/format/finnhub-figure.ts's EPS_TOKEN_RE/
+// REV_TOKEN_RE — "Revenue guidance withdrawn" (real free text) must not
+// count as a recognizable "Rev N" token.
+const EPS_TOKEN_RE = /\bEPS\b/i;
+const REV_TOKEN_RE = /\bRev\b/i;
+
 /**
  * Compact "$3.80 · $12.84B" consensus — same output shape as the Mac's
  * formatFinnhubFigureCompact for Finnhub-shaped strings ("EPS X · Rev N").
+ *
+ * PARITY (Mac: lib/format/finnhub-figure.ts) — Finnhub emits a literal
+ * "Rev 0" as its placeholder for "no revenue figure published", not a real
+ * $0 print. A $0 revenue line carries no information an absent one does
+ * not, so it is OMITTED here exactly as the Mac's parser nulls it out. EPS
+ * of exactly 0 is a real, legitimate value and is never omitted. Falls back
+ * to the raw string only when it carries NO recognizable EPS/Rev token at
+ * all (genuine Finnhub free text, e.g. "Pre-announcement only") — a
+ * recognizable-but-unusable token (the placeholder above, or an unparseable
+ * "Rev abc") renders null (the caller's "—"), never the raw token. Change
+ * both sides together.
  */
 function formatCompactConsensus(raw: string | null): string | null {
   if (!raw) return null;
   const parts: string[] = [];
   const epsMatch = /EPS\s+(-?\d+(?:\.\d+)?)/i.exec(raw);
-  if (epsMatch) parts.push(`$${Number(epsMatch[1]).toFixed(2)}`);
+  if (epsMatch) {
+    const v = Number(epsMatch[1]);
+    if (Number.isFinite(v)) parts.push(`${v < 0 ? "-" : ""}$${Math.abs(v).toFixed(2)}`);
+  }
   const revMatch = /Rev\s+([\d.,]+)/i.exec(raw);
   if (revMatch) {
     const n = Number(revMatch[1].replace(/,/g, ""));
-    if (Number.isFinite(n)) {
+    if (Number.isFinite(n) && n !== 0) {
       if (n >= 1_000_000_000) parts.push(`$${(n / 1_000_000_000).toFixed(2)}B`);
       else if (n >= 1_000_000) parts.push(`$${(n / 1_000_000).toFixed(1)}M`);
       else parts.push(`$${n.toLocaleString("en-US")}`);
     }
   }
-  return parts.length > 0 ? parts.join(" · ") : null;
+  if (parts.length > 0) return parts.join(" · ");
+  const hasRecognizedToken = EPS_TOKEN_RE.test(raw) || REV_TOKEN_RE.test(raw);
+  return hasRecognizedToken ? null : raw.trim() || null;
 }
 
 export function buildTodaysReportersBlock(

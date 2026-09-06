@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import * as workerRender from "../src/todays-reporters-render";
 import * as macRender from "../../../lib/digest/todays-reporters-render";
 import { buildTodaysReportersBlock } from "../src/todays-reporters";
+import { formatFinnhubFigureCompact } from "../../../lib/format/finnhub-figure";
 import type { Snapshot } from "../src/state";
 
 const TODAY = "2026-07-16";
@@ -174,6 +175,62 @@ describe("buildTodaysReportersBlock", () => {
     });
     const block = buildTodaysReportersBlock(snapshot, TODAY)!;
     expect(block.indexOf("EARLY")).toBeLessThan(block.indexOf("LATE"));
+  });
+});
+
+/**
+ * PARITY (Mac: lib/format/finnhub-figure.ts::parseFinnhubFigure) — Finnhub's
+ * literal "Rev 0" is a placeholder for "no revenue figure published", never
+ * a real $0 print. formatCompactConsensus (this file's private mirror of the
+ * Mac's formatFinnhubFigureCompact) must omit it exactly as the Mac does.
+ * Change both sides together.
+ */
+describe("formatCompactConsensus — zero-revenue placeholder (parity with the Mac)", () => {
+  it("omits a zero-revenue placeholder alongside a real EPS", () => {
+    const snapshot = makeSnapshot({
+      calendarEvents: [makeEvent({ symbol: "X", consensus_estimate: "EPS 1.20 · Rev 0" })] as never,
+    });
+    const block = buildTodaysReportersBlock(snapshot, TODAY)!;
+    expect(block).toContain("| BMO 08:00 | X | — | $1.20 | — |");
+  });
+
+  it("renders '—' (never '$0') for a bare 'Rev 0' placeholder", () => {
+    const snapshot = makeSnapshot({
+      calendarEvents: [makeEvent({ symbol: "X", consensus_estimate: "Rev 0" })] as never,
+    });
+    const block = buildTodaysReportersBlock(snapshot, TODAY)!;
+    expect(block).toContain("| BMO 08:00 | X | — | — | — |");
+  });
+
+  it("EPS of exactly 0 stays a real value even with a zero-revenue placeholder alongside it", () => {
+    const snapshot = makeSnapshot({
+      calendarEvents: [makeEvent({ symbol: "X", consensus_estimate: "EPS 0 · Rev 0" })] as never,
+    });
+    const block = buildTodaysReportersBlock(snapshot, TODAY)!;
+    expect(block).toContain("| BMO 08:00 | X | — | $0.00 | — |");
+  });
+
+  // Cross-side pin: for each fixture, the Worker's rendered "Cons" cell must
+  // agree with the Mac's own formatFinnhubFigureCompact (empty compact ==
+  // the renderer's "—", per lib/digest/todays-reporters-render.ts).
+  it("agrees with the Mac's formatFinnhubFigureCompact across the zero-revenue fixture set", () => {
+    const fixtures = [
+      "EPS 1.20 · Rev 0",
+      "Rev 0",
+      "EPS 0 · Rev 0",
+      "EPS -0.14 · Rev 190000",
+      "Pre-announcement only",
+    ];
+    for (const fixture of fixtures) {
+      const snapshot = makeSnapshot({
+        calendarEvents: [makeEvent({ symbol: "X", consensus_estimate: fixture })] as never,
+      });
+      const block = buildTodaysReportersBlock(snapshot, TODAY)!;
+      const row = block.split("\n").find((l) => l.startsWith("| BMO 08:00 | X |"))!;
+      const consCell = row.split("|")[4].trim();
+      const macCompact = formatFinnhubFigureCompact(fixture);
+      expect(consCell, `fixture ${JSON.stringify(fixture)}`).toBe(macCompact || "—");
+    }
   });
 });
 
