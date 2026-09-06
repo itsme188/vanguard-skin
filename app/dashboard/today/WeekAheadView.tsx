@@ -81,10 +81,31 @@ export function weekAheadHeaderState(
   };
 }
 
+// Empty-state copy for the week-ahead grid. Must agree with the header's own
+// present/past framing — this used to be driven by an independently
+// computed `isCurrentWeek = weekOf === currentMonday` (the DEFAULT landing
+// week), so on a weekend, navigating to the week containing today (which
+// the header labels "This week", since currentMonday has rolled forward to
+// next Monday) fell through to the "no events recorded... history since
+// spring 2026" copy: a past-tense sentence under a present-tense header (QA
+// follow-up, landing review 256833e5). Deriving from the SAME
+// weekAheadHeaderState the header itself renders — rather than a second,
+// independent comparison — makes the two impossible to disagree.
+export function weekAheadEmptyStateCopy(
+  weekOf: string,
+  todayIso: string,
+  currentMonday: string,
+): string {
+  const { microLabel } = weekAheadHeaderState(weekOf, todayIso, currentMonday);
+  const isPresentWeek = microLabel === "This week" || microLabel === "Week ahead";
+  return isPresentWeek
+    ? "No events scheduled this week. Calendar sync may not have run yet — check Charts › Calendar (or trigger via the Sunday briefing)."
+    : `No events recorded for the week of ${weekOf}. Calendar sync covers roughly four weeks ahead and history since spring 2026.`;
+}
+
 export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
   const todayIso = todayET();
   const currentMonday = getCurrentMonday();
-  const isCurrentWeek = weekOf === currentMonday;
   const { microLabel, thisWeekMonday, showThisWeekLink } = weekAheadHeaderState(
     weekOf,
     todayIso,
@@ -154,9 +175,7 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
       {totalEvents === 0 ? (
         <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
           <p className="text-[14px] text-ink-faint">
-            {isCurrentWeek
-              ? "No events scheduled this week. Calendar sync may not have run yet — check Charts › Calendar (or trigger via the Sunday briefing)."
-              : `No events recorded for the week of ${weekOf}. Calendar sync covers roughly four weeks ahead and history since spring 2026.`}
+            {weekAheadEmptyStateCopy(weekOf, todayIso, currentMonday)}
           </p>
         </section>
       ) : (
@@ -230,6 +249,23 @@ function DayCard({ day, todayIso }: DayCardProps) {
 // doc comment). Reuses formatFinnhubFigure for the "is revenue present" and
 // EPS-string logic (including its zero-revenue-is-absent rule) and only
 // re-bands the revenue number itself.
+
+// A formatted figure string can come back empty even when its raw input
+// wasn't — an all-placeholder Finnhub consensus (the literal "Rev 0" used
+// as "no revenue estimate published") parses to no usable EPS or revenue,
+// so formatWeekCardFigure's eps/revStr pieces are both null and the joined
+// string is "". Left unguarded, a caller that only checks "was there a raw
+// consensus string" (rather than "did formatting produce anything") would
+// hand back that empty string as `consensusDisplay`/`actualDisplay` instead
+// of null — the same failure class TodayReleases.tsx guards against in
+// preReleaseEstimateText (a "Cons: "/"actual " label rendering with nothing
+// after it). Pure and standalone so it never depends on how
+// lib/format/finnhub-figure.ts happens to represent "nothing usable" today.
+export function figureOrAbsent(s: string): string | null {
+  const trimmed = s.trim();
+  return trimmed ? trimmed : null;
+}
+
 function formatWeekCardFigure(s: string | null | undefined): string {
   const f = formatFinnhubFigure(s);
   if (f.fallback) return f.fallback;
@@ -254,7 +290,7 @@ export function eventFigureDisplays(
   const consensus = effectiveConsensus(event);
   const consensusDisplay = consensus
     ? isEarnings
-      ? formatWeekCardFigure(consensus)
+      ? figureOrAbsent(formatWeekCardFigure(consensus))
       : consensus
     : null;
   const implausible =
@@ -263,7 +299,7 @@ export function eventFigureDisplays(
   const actualDisplay =
     event.actual_value && !implausible
       ? isEarnings
-        ? formatWeekCardFigure(event.actual_value)
+        ? figureOrAbsent(formatWeekCardFigure(event.actual_value))
         : event.actual_value
       : null;
   return { consensusDisplay, actualDisplay };
@@ -360,7 +396,12 @@ function EventRow({ event, todayIso }: { event: CalendarEvent; todayIso: string 
           </span>
         )}
       </div>
-      <p className="text-[13px] text-ink-dim leading-snug line-clamp-2">{event.title}</p>
+      <p
+        className="text-[13px] text-ink-dim leading-snug line-clamp-2"
+        title={event.title ?? undefined}
+      >
+        {event.title}
+      </p>
       {/* Consensus stays visible even after the actual lands — an enriched
           past week is only useful if the print can be judged against the
           street (a bare "actual $6.18" hides a 16% miss). */}
