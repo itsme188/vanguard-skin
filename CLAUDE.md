@@ -310,3 +310,7 @@ These areas are working correctly and should not be refactored or "improved" unl
 - The Claude API PDF parsing integration
 - The migration system
 - The chat AI SDK integration (route.ts uses streamText, ChatInterface.tsx uses useChat)
+
+- **Trade-lot direction and review validity (2026-09-06):** preserve IBKR O/C and timestamps in transaction notes; replay lots chronologically with explicit long/short predicates. Never infer a short from an unmatched legacy sale. v3 tax convention requires fresh recompute and broker acceptance; deploying code does not authorize historical metadata backfill or repair. Saved-review pairing mismatches warn instead of silently rewriting AI prose. Runbook: `docs/reference/conventions-detail.md`.
+- **Session-end ownership (2026-09-06):** explicit session-end invocation authorizes the receiving agent to verify, commit, push, integrate its work, and deploy the reviewed result. Preserve concurrent work; discussions and summaries do not invoke shipping. Shared workflow: `.claude/session-end.md`; global approval rules have the same exception.
+
