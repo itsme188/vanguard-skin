@@ -45,13 +45,15 @@ const DATE_RANGES: DateRange[] = [
 
 // ─── Formatters ─────────────────────────────────────────────────
 
-function formatCurrency(value: number): string {
+export function formatCurrency(value: number): string {
   // One decimal place is not enough resolution for an axis tick: a gridline at
   // $1,350,000 rendered as "$1.4M" mislabels the line by $50K. Keep up to two
   // decimals and strip trailing zeros so round values stay compact ($2M, $1.5M)
-  // while a half-step tick reads honestly ($1.35M).
+  // while a half-step tick reads honestly ($1.35M). The same rounding defect
+  // exists one magnitude down ($12,500 -> "$13K" mislabels by $500), so the K
+  // band uses the identical two-decimals-trimmed rule.
   if (value >= 1_000_000) return `$${trimZeros((value / 1_000_000).toFixed(2))}M`;
-  if (value >= 1_000) return `$${(value / 1_000).toFixed(0)}K`;
+  if (value >= 1_000) return `$${trimZeros((value / 1_000).toFixed(2))}K`;
   return `$${value.toFixed(0)}`;
 }
 
