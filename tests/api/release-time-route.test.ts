@@ -68,6 +68,33 @@ function seedAmcEventWithWebVerified(symbol: string, eventDate: string) {
     .run(symbol, eventDate);
 }
 
+/**
+ * Seed a VENDOR-shaped AMC-slotted upcoming earnings row: event_time NULL,
+ * raw_json.entry.hour "" (no derivable slot from vendor evidence — the
+ * Finnhub shape QA finding today-earningshub-release-time--slot-guard-never-
+ * fires-on-vendor-rows reproduced), release_time already stamped "16:15".
+ * Before the fix, checkUserReleaseTimeAgainstUpcomingSlot derived slot=null
+ * on this shape and let a wrong-side write through; it now falls back to
+ * the row's own release_time.
+ */
+function seedVendorAmcEvent(symbol: string, eventDate: string) {
+  hoisted.db
+    .prepare(
+      `INSERT INTO calendar_events
+         (source, event_type, event_date, event_time, raw_json, release_time, symbol, title, source_key, week_of)
+       VALUES ('finnhub','earnings',?,NULL,?,?,?,?,?,?)`,
+    )
+    .run(
+      eventDate,
+      JSON.stringify({ entry: { hour: "" } }),
+      "16:15",
+      symbol,
+      `${symbol} earnings`,
+      `finnhub:${symbol}:${eventDate}`,
+      eventDate,
+    );
+}
+
 describe("POST /api/earnings/release-time — slot-mismatch guard (409)", () => {
   it("rejects a before-open time against an AMC-slotted upcoming event with 409 + code slot_mismatch", async () => {
     seedAmcEventWithWebVerified("XMTR", "2099-01-01");
@@ -140,5 +167,17 @@ describe("POST /api/earnings/release-time — slot-mismatch guard (409)", () => 
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
+  });
+
+  it("rejects a before-open time against a vendor row with no derivable slot but a stamped AMC release_time (409, falls back to release_time)", async () => {
+    seedVendorAmcEvent("ORCL", "2099-01-01");
+
+    const res = await POST(postReq({ symbol: "ORCL", releaseTime: "07:30" }));
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.code).toBe("slot_mismatch");
+    expect(body.data).toEqual({ slot: "amc", eventDate: "2099-01-01" });
   });
 });

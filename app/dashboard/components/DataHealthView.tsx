@@ -10,6 +10,7 @@ import type {
   DataHealthSummary,
 } from "@/lib/queries/data-health";
 import { Money } from "@/lib/privacy/components";
+import { ScrollFade } from "./ScrollFade";
 
 interface DataHealthResponse {
   success: boolean;
@@ -223,7 +224,7 @@ export function DataHealthView() {
             </span>
           </h3>
         </div>
-        <div className="overflow-x-auto">
+        <ScrollFade>
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-ink-faint border-b border-edge">
@@ -269,7 +270,7 @@ export function DataHealthView() {
                 ))}
             </tbody>
           </table>
-        </div>
+        </ScrollFade>
         {priceFreshness.filter((p) => p.hasHoldings).length > 50 && (
           <div className="px-5 py-2 border-t border-edge text-xs text-ink-faint">
             Showing the 50 stalest rows —{" "}
@@ -368,7 +369,7 @@ export function DataHealthView() {
               </span>
             </h3>
           </div>
-          <div className="overflow-x-auto">
+          <ScrollFade>
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-xs text-ink-faint border-b border-edge">
@@ -399,7 +400,7 @@ export function DataHealthView() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </ScrollFade>
         </section>
       )}
 
@@ -414,7 +415,7 @@ export function DataHealthView() {
               </span>
             </h3>
           </div>
-          <div className="overflow-x-auto">
+          <ScrollFade>
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-xs text-ink-faint border-b border-edge">
@@ -468,7 +469,7 @@ export function DataHealthView() {
                 })}
               </tbody>
             </table>
-          </div>
+          </ScrollFade>
         </section>
       )}
     </div>

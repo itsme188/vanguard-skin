@@ -92,6 +92,32 @@ describe("eventFigureDisplays (WeekAheadView Next-releases card)", () => {
   });
 });
 
+// QA finding today-earnings--zero-revenue-consensus-renders-dollar-zero:
+// NAUT on the week of 2026-07-27 read "Cons: -$0.14 · $0.00" above
+// "actual -$0.11 · $190,000" — Finnhub's literal "Rev 0" is a placeholder for
+// "no revenue consensus", not a real $0 print, AND the real $190,000 actual
+// read inconsistently with sibling cards showing "$259.2M" / "$13.37B"
+// (formatLargeUSD only abbreviates from $1M up). This card routes revenue
+// through formatCompactUSD instead (K/M/B all the way down) — verified
+// identical to formatLargeUSD at >=$1M, so only the sub-$1M band changes.
+describe("eventFigureDisplays revenue banding (WeekAheadView Next-releases card)", () => {
+  it("bands sub-$1M revenue to K instead of comma-grouping, and drops a zero-revenue consensus", () => {
+    const d = eventFigureDisplays(
+      earningsEvent("EPS -0.14 · Rev 0", "EPS -0.11 · Rev 190000"),
+    );
+    expect(d.consensusDisplay).toBe("-$0.14");
+    expect(d.consensusDisplay).not.toContain("$0.00");
+    expect(d.actualDisplay).toBe("-$0.11 · $190K");
+  });
+
+  it("still renders M/B revenue identically to the EarningsHub scoreboard", () => {
+    const d = eventFigureDisplays(earningsEvent(null, "EPS 0.45 · Rev 259200000"));
+    expect(d.actualDisplay).toBe("$0.45 · $259.2M");
+    const d2 = eventFigureDisplays(earningsEvent(null, "EPS 0.45 · Rev 13370000000"));
+    expect(d2.actualDisplay).toBe("$0.45 · $13.37B");
+  });
+});
+
 // ── releasedFigureGates (qa: prior-quarter reaction rendered on future print) ──
 // A date correction can carry a prior print's actual/reaction onto a FUTURE
 // row; the forward-looking week view must never render post-release data for

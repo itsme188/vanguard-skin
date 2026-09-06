@@ -50,7 +50,13 @@ export interface FormattedFinnhubFigure {
 
 export function formatFinnhubFigure(s: string | null | undefined): FormattedFinnhubFigure {
   const parsed = parseFinnhubFigure(s);
-  if (parsed.eps == null && parsed.revenue == null) {
+  // Finnhub emits a literal "Rev 0" as a placeholder for "no revenue
+  // consensus/actual published" — it is not a real $0 print (QA finding
+  // today-earnings--zero-revenue-consensus-renders-dollar-zero). Treat it the
+  // same way a genuinely absent revenue is already treated below (null
+  // field). EPS of exactly 0 is a real, legitimate value and stays untouched.
+  const revenue = parsed.revenue === 0 ? null : parsed.revenue;
+  if (parsed.eps == null && revenue == null) {
     return {
       eps: null,
       revenue: null,
@@ -62,7 +68,7 @@ export function formatFinnhubFigure(s: string | null | undefined): FormattedFinn
       parsed.eps != null
         ? `${parsed.eps < 0 ? "-" : ""}$${Math.abs(parsed.eps).toFixed(2)}`
         : null,
-    revenue: parsed.revenue != null ? formatLargeUSD(parsed.revenue) : null,
+    revenue: revenue != null ? formatLargeUSD(revenue) : null,
     fallback: null,
   };
 }

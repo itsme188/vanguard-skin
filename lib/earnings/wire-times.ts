@@ -393,8 +393,21 @@ export function resolveEarningsReleaseTime(
  * (issuer family, event_date >= today, actual_value IS NULL, enriched_at IS
  * NULL, not superseded), narrowed to the single nearest row. Skips the
  * check (ok: true) when there's no upcoming event, the row is TAS, or the
- * row's slot can't be derived — mirroring resolveEarningsReleaseTime's own
- * TAS/null-slot handling, where slot=null means "no side of noon to check".
+ * row's slot can't be derived even from its own release_time — mirroring
+ * resolveEarningsReleaseTime's own TAS/null-slot handling, where slot=null
+ * means "no side of noon to check".
+ *
+ * Derives the slot with allowReleaseTimeFallback (QA finding
+ * today-earningshub-release-time--slot-guard-never-fires-on-vendor-rows,
+ * 2026-09-06): vendor rows (finnhub/nasdaq) carry event_time NULL, and
+ * Finnhub frequently sends raw_json.entry.hour === "" — neither is evidence
+ * deriveEarningsSlot recognizes, so without a fallback the guard saw
+ * slot=null on exactly the rows it most needs to check and `continue`d,
+ * letting a user save a wire time on the wrong side of noon. The fallback
+ * reads the row's OWN release_time — the value the app already displays for
+ * it — as a last resort; vendor evidence (event_time/raw_json) still wins
+ * whenever it's present, and the check still no-ops when even release_time
+ * is null.
  */
 export function checkUserReleaseTimeAgainstUpcomingSlot(
   db: Database.Database,
@@ -412,6 +425,7 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
     raw_json: string | null;
     symbol: string | null;
     event_date: string;
+    release_time: string | null;
   };
   let rows: Row[];
   try {
@@ -419,7 +433,7 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
     const ph = family.map(() => "?").join(",");
     rows = db
       .prepare(
-        `SELECT id, event_type, event_time, raw_json, symbol, event_date
+        `SELECT id, event_type, event_time, raw_json, symbol, event_date, release_time
          FROM calendar_events
          WHERE event_type = 'earnings' AND UPPER(symbol) IN (${ph})
            AND event_date >= ? AND actual_value IS NULL AND enriched_at IS NULL
@@ -442,7 +456,7 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
   for (const row of rows) {
     if (row.event_date !== nearestDate) break;
     if (row.event_time?.trim().toUpperCase() === "TAS") continue;
-    const slot = deriveEarningsSlot(row);
+    const slot = deriveEarningsSlot(row, { allowReleaseTimeFallback: true });
     if (slot === null) continue;
     if (!sameSideOfNoon(releaseTime, slot)) {
       return { ok: false, slot, eventDate: row.event_date, eventId: row.id };

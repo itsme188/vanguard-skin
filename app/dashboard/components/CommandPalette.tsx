@@ -159,18 +159,24 @@ export function CommandPalette() {
               <button
                 key={`security-${result.id}`}
                 onClick={() => navigate(result.href)}
-                // onMouseMove, not onMouseEnter: results re-render as the
-                // debounced search resolves per keystroke, and browsers
-                // synthesize a mouseenter/mouseover for a NEW element that
-                // appears under an already-stationary pointer (hit-testing
-                // recompute on layout change, not a real input event) — that
-                // phantom event was silently stealing the keyboard/Enter
-                // target away from the typed exact match onto whatever row
-                // happened to sit under the resting cursor (QA:
-                // cmdk--hover-steals-enter-target-expired-options-ranked-above-stock-regression-2).
-                // mousemove only ever fires from genuine pointer movement, so
-                // deliberate hovering still updates the selection as before.
-                onMouseMove={() => setSelectedIndex(i)}
+                // The pointer never writes selectedIndex (third occurrence,
+                // QA: cmdk--hover-steals-enter-target-expired-options-ranked-above-stock-regression-3).
+                // The regression-2 fix (onMouseEnter -> onMouseMove) only
+                // stopped PHANTOM hover — a new row rendering under a
+                // stationary cursor synthesizes a hit-test event with no
+                // real motion. It did NOT stop GENUINE cursor drift: the
+                // pointer routinely parks mid-viewport after almost any
+                // click, and mousemove fires on real movement too. Typing an
+                // exact ticker (stock at row 0, option contracts after)
+                // while the cursor happened to sit or drift over a later row
+                // still silently moved the keyboard-active row there, so the
+                // default Cmd+K -> type -> Enter gesture misfired onto an
+                // unrelated (often expired) option contract. Keyboard
+                // (ArrowUp/ArrowDown) and the result-list reset are now the
+                // ONLY writers of selectedIndex — clicking a row still
+                // navigates it (onClick above), and the row's CSS-only
+                // hover:bg-raised/50 tint below still gives a pointer
+                // affordance without moving the keyboard selection.
                 className={`w-full text-left px-4 py-2.5 flex items-baseline gap-3 transition-colors ${
                   i === selectedIndex
                     ? "bg-raised"

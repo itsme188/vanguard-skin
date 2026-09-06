@@ -58,6 +58,39 @@ describe("formatFinnhubFigure", () => {
   });
 });
 
+// QA finding today-earnings--zero-revenue-consensus-renders-dollar-zero:
+// Finnhub emits a literal "Rev 0" as a placeholder for "no revenue consensus
+// published" — it is not a real $0 print. formatFinnhubFigure /
+// formatFinnhubFigureCompact must treat that the same way they already treat
+// a genuinely absent revenue (null field / omitted from the compact join),
+// never as "$0.00". EPS of exactly 0 is a real, legitimate value and must be
+// untouched.
+describe("formatFinnhubFigure / formatFinnhubFigureCompact — zero revenue is absent", () => {
+  it("treats a literal zero revenue as absent, not $0.00", () => {
+    const r = formatFinnhubFigure("EPS -0.14 · Rev 0");
+    expect(r.eps).toBe("-$0.14");
+    expect(r.revenue).toBeNull();
+  });
+
+  it("compact form omits the zero revenue entirely — no separator, no $0.00", () => {
+    expect(formatFinnhubFigureCompact("EPS -0.14 · Rev 0")).toBe("-$0.14");
+    expect(formatFinnhubFigureCompact("EPS 1.20 · Rev 0")).toBe("$1.20");
+  });
+
+  it("a real (nonzero) revenue still renders normally", () => {
+    expect(formatFinnhubFigureCompact("EPS -0.14 · Rev 190000")).toBe("-$0.14 · $190,000");
+    const r = formatFinnhubFigure("EPS -0.14 · Rev 190000");
+    expect(r.revenue).toBe("$190,000");
+  });
+
+  it("EPS of exactly 0 is a real value, not absent", () => {
+    const r = formatFinnhubFigure("EPS 0 · Rev 4345870107");
+    expect(r.eps).toBe("$0.00");
+    expect(r.revenue).toBe("$4.35B");
+    expect(formatFinnhubFigureCompact("EPS 0 · Rev 0")).toBe("$0.00");
+  });
+});
+
 describe("mergeFinnhubActual (B18 — manual override must not wipe the other field)", () => {
   it("EPS-only save preserves stored revenue", () => {
     expect(mergeFinnhubActual("EPS 1.10 · Rev 4340000000", { eps: 1.23 })).toBe(
