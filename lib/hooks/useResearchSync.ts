@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useCallback } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { researchSyncCompleted } from "@/lib/research/sync-completion";
 
 const SYNC_DEBOUNCE_KEY = "vgs:lastResearchSync";
 const FOCUS_IDLE_MS = 10 * 60 * 1000; // 10 min away counts as "back from idle"
@@ -73,10 +74,9 @@ export function useResearchSync(options: {
       } catch {
         // Pre-flight unreachable — let the sync attempt decide.
       }
-      // The endpoint is SSE — but for our purposes we just need it to fire
-      // and complete. We `read` the stream to drain it; we don't surface
-      // the events. The user's manual sync UI in ResearchFeedsView handles
-      // the verbose progress UI separately.
+      // The endpoint is SSE. Only its terminal completion event earns the
+      // cooldown; a 409 or a failed/truncated stream must remain retryable.
+      // The manual sync UI handles verbose progress separately.
       // Label this pass as the BACKGROUND runner. The manual "Sync Feeds"
       // button POSTs the same route without this header, and the route uses
       // it to acquire the sync lock under the right owner — so a collision
@@ -88,15 +88,7 @@ export function useResearchSync(options: {
         method: "POST",
         headers: { "X-Sync-Runner": "background" },
       });
-      if (res.ok && res.body) {
-        const reader = res.body.getReader();
-        // Drain the stream — we don't care about the contents here.
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const { done } = await reader.read();
-          if (done) break;
-        }
-      }
+      if (!(await researchSyncCompleted(res))) return;
       try {
         localStorage.setItem(SYNC_DEBOUNCE_KEY, String(Date.now()));
       } catch {
