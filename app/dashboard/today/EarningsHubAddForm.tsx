@@ -9,13 +9,13 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { addDays, defaultDateWithinWeek, mondayOf } from "@/lib/calendar/date-utils";
-import apiFetch from "@/lib/http/apiFetch";
+import apiFetch, { type ApiFetch } from "@/lib/http/apiFetch";
 
 interface Props {
   weekOf: string;
 }
 
-type Slot = "BMO" | "AMC";
+export type Slot = "BMO" | "AMC";
 
 /**
  * Copy for a non-blocking notice shown after a successful save whose date
@@ -35,6 +35,93 @@ export function outOfWeekSaveNote(date: string, weekOf: string): string | null {
   return `Saved to the week of ${mondayOf(date)} — not the week shown here.`;
 }
 
+/**
+ * A vendor earnings date this add would knock off the calendar — the 409
+ * `would_supersede_vendor` refusal from POST /api/calendar/events (user ruling
+ * 2026-09-02). Nothing was written; the same add with `force: true` goes
+ * through.
+ */
+export interface VendorSupersedeRefusal {
+  /** The server's plain-English sentence — rendered as-is, never re-worded here. */
+  message: string;
+  vendorDate: string;
+  vendorSource: string;
+  vendorEventId: number | null;
+}
+
+export type ManualAddOutcome =
+  | { kind: "saved"; id: number | null }
+  | { kind: "supersede_refused"; refusal: VendorSupersedeRefusal }
+  | { kind: "failed"; message: string };
+
+interface ManualAddInput {
+  symbol: string;
+  date: string;
+  slot: Slot;
+  /** Skip the would-supersede-a-vendor-date check (the user confirmed). */
+  force?: boolean;
+}
+
+/**
+ * POST the "+ Add ticker" row and classify the reply into the three outcomes
+ * the form can act on. Extracted from the component so the network contract is
+ * directly testable in Node (this repo has no DOM harness) — including that the
+ * confirm path re-sends the identical add with `force: true`.
+ *
+ * Honest-button rules (CLAUDE.md): a 2xx is not success on its own —
+ * `data.success !== true` is a failure with the server's own words; a thrown
+ * fetch is reported, never swallowed.
+ */
+export async function postManualEarningsEvent(
+  input: ManualAddInput,
+  fetchImpl: ApiFetch = apiFetch,
+): Promise<ManualAddOutcome> {
+  try {
+    const res = await fetchImpl("/api/calendar/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        symbol: input.symbol.trim().toUpperCase(),
+        event_date: input.date,
+        event_time: input.slot,
+        event_type: "earnings",
+        ...(input.force ? { force: true } : {}),
+      }),
+    });
+    const data = (await res.json().catch(() => null)) as {
+      success?: boolean;
+      error?: string;
+      id?: number;
+      code?: string;
+      vendorDate?: string;
+      vendorSource?: string;
+      vendorEventId?: number;
+    } | null;
+
+    if (
+      res.status === 409 &&
+      data?.code === "would_supersede_vendor" &&
+      typeof data.error === "string"
+    ) {
+      return {
+        kind: "supersede_refused",
+        refusal: {
+          message: data.error,
+          vendorDate: data.vendorDate ?? "",
+          vendorSource: data.vendorSource ?? "",
+          vendorEventId: data.vendorEventId ?? null,
+        },
+      };
+    }
+    if (!res.ok || data?.success !== true) {
+      return { kind: "failed", message: data?.error ?? `Server returned ${res.status}` };
+    }
+    return { kind: "saved", id: data.id ?? null };
+  } catch (err) {
+    return { kind: "failed", message: err instanceof Error ? err.message : "Network error" };
+  }
+}
+
 export function EarningsHubAddForm({ weekOf }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -44,30 +131,27 @@ export function EarningsHubAddForm({ weekOf }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [outOfWeekNote, setOutOfWeekNote] = useState<string | null>(null);
+  // Set only by a 409 would_supersede_vendor: the add was REFUSED and nothing
+  // was written, so the form stays open with the typed values and asks. Same
+  // shape as the alerts inbox's arm-refusal confirm.
+  const [supersede, setSupersede] = useState<VendorSupersedeRefusal | null>(null);
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function save(force: boolean) {
     if (!symbol.trim()) {
       setError("Symbol is required.");
       return;
     }
     setSubmitting(true);
     setError(null);
+    setSupersede(null);
     try {
-      const res = await apiFetch("/api/calendar/events", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          symbol: symbol.trim().toUpperCase(),
-          event_date: date,
-          event_time: slot,
-          event_type: "earnings",
-        }),
-      });
-      const data = (await res.json()) as { success?: boolean; error?: string };
-      if (!res.ok || !data.success) {
-        setError(data.error ?? `Server returned ${res.status}`);
-        setSubmitting(false);
+      const outcome = await postManualEarningsEvent({ symbol, date, slot, force });
+      if (outcome.kind === "supersede_refused") {
+        setSupersede(outcome.refusal);
+        return;
+      }
+      if (outcome.kind === "failed") {
+        setError(outcome.message);
         return;
       }
       // Reset + close + reload server component; the cockpit is a client
@@ -77,11 +161,14 @@ export function EarningsHubAddForm({ weekOf }: Props) {
       setOpen(false);
       window.dispatchEvent(new Event("earnings-data-changed"));
       router.refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    await save(false);
   }
 
   if (!open) {
@@ -150,6 +237,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
         onClick={() => {
           setOpen(false);
           setError(null);
+          setSupersede(null);
         }}
         disabled={submitting}
         className="text-ink-faint hover:text-ink-dim"
@@ -157,6 +245,33 @@ export function EarningsHubAddForm({ weekOf }: Props) {
         Cancel
       </button>
       {error && <span className="text-[11px] text-down w-full">{error}</span>}
+      {supersede && (
+        // gold-ink, not amber-*: the amber palette is dark-tuned and washes
+        // out on the light theme's panel; gold-ink is the house pair for
+        // readable small gold text in BOTH themes (see the same confirm on
+        // app/dashboard/alerts/page.tsx).
+        <div className="w-full rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] text-gold-ink">
+          {supersede.message}
+          <div className="mt-1.5 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => save(true)}
+              disabled={submitting}
+              className="px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink hover:bg-gold/10 disabled:opacity-50"
+            >
+              {submitting ? "Adding…" : "Add anyway (replaces the vendor date)"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSupersede(null)}
+              disabled={submitting}
+              className="px-3 py-1 text-[11px] rounded text-ink-dim hover:text-ink disabled:opacity-50"
+            >
+              Keep the vendor date
+            </button>
+          </div>
+        </div>
+      )}
     </form>
   );
 }

@@ -9,6 +9,7 @@ import {
 import { mondayOf, addDays } from "@/lib/calendar/date-utils";
 import { getSecurityIdForSymbol } from "@/lib/queries/briefing-symbols";
 import { attemptPostCommitDrain } from "@/lib/earnings/cloud-outbox";
+import { checkManualAddWouldSupersedeVendor } from "@/lib/calendar/reconcile-earnings-dates";
 
 export const dynamic = "force-dynamic";
 
@@ -58,6 +59,15 @@ export async function GET(request: Request) {
  * `manual:{SYMBOL}:{event_date}:{event_type}`. week_of computed from
  * event_date. Returns 409 if a manual row already exists for that
  * symbol+date+type (UNIQUE collision).
+ *
+ * Second 409, `would_supersede_vendor` (user ruling 2026-09-02): a manual
+ * earnings row wins its cluster outright at the next reconcile pass, so an
+ * add in a DIFFERENT week from a live vendor date silently takes that vendor
+ * date off every calendar surface. checkManualAddWouldSupersedeVendor dry-runs
+ * the reconciler and this route refuses the write, naming the date and source
+ * it would replace; `force: true` skips the check and inserts. Same refuse +
+ * override shape as approveLevelGuarded on /api/levels/review. Supersession
+ * itself is unchanged — the user simply gets told before it happens.
  */
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
@@ -69,6 +79,7 @@ export async function POST(request: Request) {
     expected_impact?: string | null;
     consensus_estimate?: string | null;
     description?: string | null;
+    force?: boolean;
   };
 
   if (typeof body.symbol !== "string" || body.symbol.trim() === "") {
@@ -83,10 +94,34 @@ export async function POST(request: Request) {
 
   try {
     const symbol = body.symbol.trim().toUpperCase();
+    const eventType = body.event_type ?? "earnings";
+
+    if (body.force !== true) {
+      const guard = checkManualAddWouldSupersedeVendor(db, {
+        symbol,
+        event_date: body.event_date,
+        event_type: eventType,
+      });
+      if (!guard.ok) {
+        const vendor = guard.wouldSupersede[0];
+        return Response.json(
+          {
+            success: false,
+            error: guard.message,
+            code: "would_supersede_vendor",
+            vendorEventId: vendor.eventId,
+            vendorDate: vendor.eventDate,
+            vendorSource: vendor.source,
+          },
+          { status: 409 },
+        );
+      }
+    }
+
     const id = insertCalendarEvent(db, {
       symbol,
       event_date: body.event_date,
-      event_type: body.event_type ?? "earnings",
+      event_type: eventType,
       event_time: body.event_time ?? "AMC",
       release_time: body.release_time ?? undefined,
       expected_impact: body.expected_impact ?? "high",

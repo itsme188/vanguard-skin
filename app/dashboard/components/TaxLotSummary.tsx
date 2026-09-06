@@ -1,14 +1,55 @@
 import type { TaxLotSummary, AccountTaxSummary } from "@/lib/queries/tax-lots";
-import { Money } from "@/lib/privacy/components";
+import { Count, Money } from "@/lib/privacy/components";
+
+/**
+ * Same wording family as the row-level "Estimated" chip in TaxLotTables /
+ * the security detail hub, so a user who sees the chip on a Closed Sales row
+ * recognises the tile disclosure as the same thing counted up.
+ */
+export const ENGINE_ESTIMATED_TITLE =
+  "Engine-generated reconciliation entries (no matching broker sale) — those realized figures are estimated. They are included in this economic total and excluded from the Tax Report card and the 8949 exports below.";
+
+/**
+ * "(incl. M engine-estimated closes, +$Y)" — the disclosure half of the
+ * "disclose, never exclude" ruling on QA finding
+ * tax-lots--headline-tiles-include-reconcile-close-engine-rows. The figure
+ * beside it stays whole; this line says how much of it the engine estimated.
+ * Renders nothing when the bucket has no engine-estimated close.
+ */
+function EngineEstimatedNote({
+  count,
+  gain,
+  className,
+}: {
+  count: number;
+  gain: number;
+  className?: string;
+}) {
+  if (!count || count <= 0) return null;
+  return (
+    <span className={className} title={ENGINE_ESTIMATED_TITLE}>
+      (incl. <Count value={count} /> engine-estimated close
+      {count !== 1 ? "s" : ""},{" "}
+      {/* Keep the sign glued to its figure: the note can wrap inside a
+          tile, and a line break between "−" and "$704" reads as two
+          tokens (same class as the security-detail Amount column fix). */}
+      <span className="whitespace-nowrap"><Money value={gain} signed />)</span>
+    </span>
+  );
+}
 
 function GainCard({
   label,
   value,
   sublabel,
+  engineEstimatedCount = 0,
+  engineEstimatedGain = 0,
 }: {
   label: string;
   value: number;
   sublabel?: string;
+  engineEstimatedCount?: number;
+  engineEstimatedGain?: number;
 }) {
   const isPositive = value >= 0;
   return (
@@ -26,6 +67,11 @@ function GainCard({
       {sublabel && (
         <div className="text-xs text-ink-faint mt-1">{sublabel}</div>
       )}
+      <EngineEstimatedNote
+        count={engineEstimatedCount}
+        gain={engineEstimatedGain}
+        className="block text-xs text-ink-faint mt-1"
+      />
     </div>
   );
 }
@@ -49,16 +95,22 @@ export function TaxLotSummaryCards({
           label={`${year} Realized`}
           value={summary.totalRealizedGain}
           sublabel={`${summary.totalClosedSales} sale${summary.totalClosedSales !== 1 ? "s" : ""}`}
+          engineEstimatedCount={summary.engineEstimatedSales}
+          engineEstimatedGain={summary.engineEstimatedGain}
         />
         <GainCard
           label={`${year} Long-Term`}
           value={summary.longTermGain}
           sublabel="economic realized · > 365 days"
+          engineEstimatedCount={summary.engineEstimatedLongTermSales}
+          engineEstimatedGain={summary.engineEstimatedLongTermGain}
         />
         <GainCard
           label={`${year} Short-Term`}
           value={summary.shortTermGain}
           sublabel="economic realized · calendar year"
+          engineEstimatedCount={summary.engineEstimatedShortTermSales}
+          engineEstimatedGain={summary.engineEstimatedShortTermGain}
         />
       </div>
       {summary.excludedNonUsdSales > 0 && (
@@ -106,11 +158,25 @@ export function AccountSummaryCards({
                       : "text-down"
                 }`}
               />
+              {/* The headline above is the account's SHORT-TERM economic
+                  figure, so its disclosure is the short-term bucket's. */}
+              <EngineEstimatedNote
+                count={acct.engineEstimatedShortTermSales}
+                gain={acct.engineEstimatedShortTermGain}
+                className="block text-[11px] text-ink-faint mt-1"
+              />
               <div className="text-[11px] text-ink-faint mt-1">
                 {acct.totalClosedSales} sale{acct.totalClosedSales !== 1 ? "s" : ""}
-                {acct.longTermGain !== 0 && (
+                {/* Also shown when the LT figure nets to zero BUT carries
+                    engine-estimated closes — otherwise offsetting engine
+                    rows would hide their own disclosure. */}
+                {(acct.longTermGain !== 0 || acct.engineEstimatedLongTermSales > 0) && (
                   <>
-                    {" "}· LT: <Money value={acct.longTermGain} signed />
+                    {" "}· LT: <Money value={acct.longTermGain} signed />{" "}
+                    <EngineEstimatedNote
+                      count={acct.engineEstimatedLongTermSales}
+                      gain={acct.engineEstimatedLongTermGain}
+                    />
                   </>
                 )}
                 {acct.excludedNonUsdSales > 0 && (

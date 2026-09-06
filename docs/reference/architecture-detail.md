@@ -31,7 +31,9 @@ Cut from top nav:
 Header bell unified to `<NotificationBell>` (fired alerts + pending newsletter-extracted levels in
 one stream). Theme toggle in header (light Amber / dark Bloomberg-pro), persists via `vgs:theme`
 localStorage. Fonts: IBM Plex Sans + Mono only (Instrument Serif removed in Phase 8). NotesAmbient
-overlay accessible from any tab via Cmd+; (FAB + localStorage drafts).
+overlay accessible from any tab via ⌘; (keyboard only — the floating button was removed 2026-09-04
+per QA ruling: it sat over row controls on dense surfaces); on mobile, notes are reached through the
+bottom-nav "Notes" entry (the Notes page). localStorage drafts persist either way.
 
 ### Chat drawer
 
