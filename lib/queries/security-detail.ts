@@ -28,6 +28,7 @@ import { getLatestDailyBar, get52WeekRange, getOhlcvBars } from "@/lib/queries/o
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { computeATR, type OhlcBar } from "@/lib/chart/indicators";
+import { todayET } from "@/lib/calendar/date-utils";
 
 // ─── Result types ──────────────────────────────────────────────
 
@@ -632,7 +633,7 @@ export function getSecurityDetail(
   }
 
   // Upcoming events: filter to future events for this security
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayET();
   const upcomingEvents = getUpcomingEvents(db, {
     securityId: security.id,
     startDate: today,

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
+import { todayET } from "@/lib/calendar/date-utils";
 import {
   computeSecurityRegression,
   regressionBetaVerdict,
@@ -168,7 +169,7 @@ describe("computeSecurityRegression", () => {
     expect(got!.correlation).toBeCloseTo(seeded.correlation, 6);
     expect(got!.rSquared).toBeCloseTo(seeded.rSquared, 6);
     expect(got!.dataPoints).toBe(seeded.dataPoints);
-    expect(got!.computedAtDay).toBe(new Date().toISOString().slice(0, 10));
+    expect(got!.computedAtDay).toBe(todayET());
   });
 
   it("cache picks the most-recent row when multiple days exist", () => {
