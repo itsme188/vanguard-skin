@@ -1,3 +1,4 @@
+import { readIbkrTradeDirection } from "@/lib/import/ibkr-trade-direction";
 import type Database from "better-sqlite3";
 import { marketValue, unitPriceFromMarketValue } from "@/lib/valuation";
 import { stampTaxLotsConventionIfPresent } from "@/lib/compute/tax-convention";
@@ -21,6 +22,7 @@ interface TransactionRow {
   price_per_share: number;
   amount: number;
   fees: number;
+  notes?: string | null;
   /** Lower-cased `securities.security_type` ('' when unset) — unit convention. */
   security_type: string;
   /** `COALESCE(securities.multiplier, 1)` — contract size for options. */
@@ -270,7 +272,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     db.prepare("DELETE FROM tax_lots").run();
     db.prepare("DELETE FROM transactions WHERE type = 'RECONCILE_CLOSE'").run();
 
-    // ── Create tax lots from BUY-like transactions ──
+    // ── Load opening-capable transactions for chronological replay ──
     // Includes: BUY, REINVESTMENT, BUY_TO_OPEN (long option), SELL_TO_OPEN (short option),
     // TRANSFER_IN (ACATS in-kind arrival — the security physically arrived from another
     // broker, so it opens a real FIFO lot at its transferred cost basis). Deliberately
@@ -279,12 +281,12 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     const buys = db
       .prepare(
         `SELECT t.id, t.account_id, t.security_id, t.trade_date, t.type, t.quantity,
-                t.price_per_share, t.amount, t.fees,
+                t.price_per_share, t.amount, t.fees, t.notes,
                 LOWER(COALESCE(s.security_type, '')) AS security_type,
                 COALESCE(s.multiplier, 1) AS multiplier
          FROM transactions t
          JOIN securities s ON s.id = t.security_id
-         WHERE LOWER(t.type) IN ('buy', 'reinvestment', 'buy_to_open', 'sell_to_open', 'transfer_in')
+         WHERE LOWER(t.type) IN ('buy', 'reinvestment', 'buy_to_open', 'sell_to_open', 'short_sell', 'transfer_in')
            AND t.security_id IS NOT NULL
            AND t.price_per_share IS NOT NULL AND t.quantity IS NOT NULL
          ORDER BY t.trade_date, t.id`
@@ -311,22 +313,24 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         multiplier: number;
       }
     >();
-    for (const buy of buys) {
-      const isShort = buy.type.toLowerCase() === "sell_to_open" ? 1 : 0;
+    const createLot = (buy: TransactionRow, isShort: number) => {
       // TRUE ECONOMIC DOLLARS: bonds ÷100, options ×multiplier, fees on the
       // side that bears them. For a short open the stored dollar column is
       // the lot's opening leg — which for a short IS its net proceeds.
-      const costBasis = netLegDollars(
-        buy,
-        buy.price_per_share,
-        isShort ? "short_open" : "acquire"
-      );
+      const saleContributions = pendingSaleRollover.get(buy.id) ?? [];
+      const rollover = (pendingBuyRollover.get(buy.id) ?? 0) +
+        saleContributions.reduce((sum, c) => sum + c.signedDollars, 0);
+      const costBasis = netLegDollars(buy, buy.price_per_share, isShort ? "short_open" : "acquire") + rollover;
+      const acquisitionPrice = rollover === 0 ? buy.price_per_share :
+        unitPriceFromMarketValue(costBasis, buy.quantity, buy.security_type, buy.multiplier) ?? buy.price_per_share;
+      pendingBuyRollover.delete(buy.id);
+      pendingSaleRollover.delete(buy.id);
       const inserted = insertLot.run(
         buy.account_id,
         buy.security_id,
         buy.id,
         buy.trade_date,
-        buy.price_per_share,
+        acquisitionPrice,
         buy.quantity,
         buy.quantity,
         costBasis,
@@ -336,12 +340,12 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         id: inserted.lastInsertRowid as number,
         quantity: buy.quantity,
         costBasis,
-        acquisitionPrice: buy.price_per_share,
+        acquisitionPrice,
         securityType: buy.security_type,
         multiplier: buy.multiplier,
       });
       lotsCreated++;
-    }
+    };
 
     // ── Exercised/assigned option premium → the underlying leg ──
     // LINKS ONLY. The dollars are resolved inside the replay, at the moment
@@ -357,6 +361,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     );
     /** Premium waiting to be absorbed by a not-yet-processed stock SALE leg. */
     const pendingSaleRollover = new Map<number, SaleRolloverContribution[]>();
+    const pendingBuyRollover = new Map<number, number>();
     const processedSellTxnIds = new Set<number>();
     /** An option close's already-written rollover rows, for the partial-fill unwind. */
     const rolloverRowsForTxn = db.prepare(
@@ -437,13 +442,13 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       }
     };
 
-    // ── Process SELL-like transactions ──
+    // ── Load closing-capable transactions for chronological replay ──
     // Includes: SELL, SELL_TO_CLOSE, REDEMPTION, BUY_TO_COVER, EXPIRED,
     //           EXERCISED, ASSIGNED, BUY_TO_CLOSE
     const sells = db
       .prepare(
         `SELECT t.id, t.account_id, t.security_id, t.trade_date, t.type, t.quantity,
-                t.price_per_share, t.amount, t.fees,
+                t.price_per_share, t.amount, t.fees, t.notes,
                 LOWER(COALESCE(s.security_type, '')) AS security_type,
                 COALESCE(s.multiplier, 1) AS multiplier
          FROM transactions t
@@ -497,6 +502,11 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         // same stock purchase, and each one's premium belongs in that basis.
         const lot = lotByBuyTxn.get(link.stockTxnId);
         if (!lot) {
+          const futureBuy = buys.find((buy) => buy.id === link.stockTxnId && buy.trade_date >= sell.trade_date && buy.quantity > 0);
+          if (futureBuy && !readIbkrTradeDirection(futureBuy.notes)?.close) {
+            pendingBuyRollover.set(link.stockTxnId, (pendingBuyRollover.get(link.stockTxnId) ?? 0) + signed);
+            return true;
+          }
           replayWarnings.push(
             `${sell.trade_date}: option close ${sell.id} links to stock transaction ${link.stockTxnId}, which opened no tax lot (no price on the row?) — the premium stays on the option close as a realized result rather than vanishing into the underlying`
           );
@@ -541,7 +551,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       return true;
     };
 
-    const processSell = (sell: TransactionRow) => {
+    const processSell = (sell: TransactionRow, side?: number) => {
       // For EXERCISED/ASSIGNED/EXPIRED, the option closes at $0
       const lowerType = sell.type.toLowerCase();
       const isZeroPriceClose =
@@ -573,6 +583,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       // instead of being stranded. The exercises deposited these while they
       // were processed — earlier in the replay, guaranteed by the sell rank.
       const rolloverContribs = pendingSaleRollover.get(sell.id) ?? [];
+      pendingSaleRollover.delete(sell.id);
       const rolloverOnLeg = rolloverContribs.reduce((sum, c) => sum + c.signedDollars, 0);
 
       const legOpts = { forceDerivation: isZeroPriceClose, amountIsNet: priceFromAmount };
@@ -602,9 +613,10 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
                   quantity_remaining, cost_basis, is_short
            FROM tax_lots
            WHERE account_id = ? AND security_id = ? AND quantity_remaining > 0
+             AND acquisition_date <= ? AND (? IS NULL OR is_short = ?)
            ORDER BY acquisition_date, id`
         )
-        .all(sell.account_id, sell.security_id) as OpenLot[];
+        .all(sell.account_id, sell.security_id, sell.trade_date, side ?? null, side ?? null) as OpenLot[];
 
       // PLAN the FIFO consumption before writing anything. An exercise has to
       // know exactly which lots it takes — and therefore exactly how many
@@ -761,8 +773,12 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
           }
         }
       }
+      if (remainingToSell > 1e-8) {
+        replayWarnings.push(`${sell.trade_date}: transaction ${sell.id} has unmatched closing quantity; import the missing opening history or broker trade direction before trusting its result`);
+      }
       processedSellTxnIds.add(sell.id);
       salesProcessed++;
+      return remainingToSell;
     };
 
     // ── Donation lot consumption (replay events) ──
@@ -861,8 +877,52 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       }
     };
 
+    const processTrade = (trade: TransactionRow) => {
+      const type = trade.type.toLowerCase();
+      const evidence = ["stock", "etf", "option"].includes(trade.security_type)
+        ? readIbkrTradeDirection(trade.notes) : null;
+      const isBuy = ["buy", "buy_to_open", "buy_to_close", "buy_to_cover"].includes(type);
+      if (evidence) {
+        const closeSide = isBuy ? 1 : 0;
+        if (!evidence.close) {
+          createLot(trade, isBuy ? 0 : 1);
+        } else if (!evidence.open) {
+          processSell(trade, closeSide);
+        } else {
+          // A mixed trade closes the existing side and opens only the residual.
+          // With no opening history, the split is unknown: never guess it all short.
+          const { quantity } = db.prepare(`SELECT COALESCE(SUM(quantity_remaining), 0) AS quantity
+            FROM tax_lots WHERE account_id = ? AND security_id = ? AND is_short = ?
+              AND quantity_remaining > 0 AND acquisition_date <= ?`)
+            .get(trade.account_id, trade.security_id, closeSide, trade.trade_date) as { quantity: number };
+          if (quantity <= 0 || quantity >= trade.quantity) {
+            replayWarnings.push(`${trade.trade_date}: mixed opening/closing transaction ${trade.id} cannot be split from the available lots; import its opening history`);
+            // No target leg can absorb an exercise's premium. The empty-side
+            // path unwinds it back to the option rather than dropping money.
+            if (pendingSaleRollover.has(trade.id)) processSell(trade, 2);
+            return;
+          }
+          const part = (qty: number): TransactionRow => ({ ...trade, quantity: qty,
+            amount: trade.amount == null ? trade.amount : trade.amount * qty / trade.quantity,
+            fees: trade.fees * qty / trade.quantity });
+          const contributions = pendingSaleRollover.get(trade.id) ?? [];
+          const scaled = (fraction: number) => contributions.map((c) => ({ ...c,
+            signedDollars: c.signedDollars * fraction, storedDollars: c.storedDollars * fraction }));
+          pendingSaleRollover.set(trade.id, scaled(quantity / trade.quantity));
+          processSell(part(quantity), closeSide);
+          pendingSaleRollover.set(trade.id, scaled(1 - quantity / trade.quantity));
+          createLot(part(trade.quantity - quantity), isBuy ? 0 : 1);
+        }
+      } else if (buyIds.has(trade.id)) {
+        createLot(trade, ["sell_to_open", "short_sell"].includes(type) ? 1 : 0);
+      } else {
+        processSell(trade, ["buy_to_close", "buy_to_cover"].includes(type) ? 1
+          : ["expired", "exercised", "assigned"].includes(type) ? undefined : 0);
+      }
+    };
+
     // ── The chronological replay ──
-    // One merged event stream: sells, donation consumptions, and
+    // One merged event stream: openings, closes, donation consumptions, and
     // import-sourced splits, ordered by (date, kind, id). Same-date kind order
     // is 0 sell → 1 donation → 2 split, which encodes the end-of-day rule
     // (strict '<') by construction: a trade or gift dated the split's
@@ -872,7 +932,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     // no counterpart (e.g. a split after the last sell) simply sort to the end
     // — there is no separate drain step to keep in sync.
     const events: ReplayEvent[] = [
-      ...sells.map((sell): ReplayEvent => {
+      ...[...buys, ...sells].map((sell): ReplayEvent => {
         const t = sell.type.toLowerCase();
         const isExercise = t === "exercised" || t === "assigned";
         // Three-level same-date sub-rank (rationale on the ReplayEvent type):
@@ -883,7 +943,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
           linkTargetsByDate.get(sell.trade_date)?.has(sell.security_id) ?? false;
         return {
           kind: 0,
-          rank: isLinkTargetSecurity ? 2 : isExercise ? 1 : 0,
+          rank: isLinkTargetSecurity && sellIdsInReplay.has(sell.id) ? 2 : isExercise ? 1 : 0,
           date: sell.trade_date,
           id: sell.id,
           sell,
@@ -901,17 +961,23 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         (split): ReplayEvent => ({ kind: 2, date: split.effective_date, id: split.id, split })
       ),
     ];
+    const buyIds = new Set(buys.map((t) => t.id));
+    const tradeOrder = (t: TransactionRow) => {
+      const evidence = readIbkrTradeDirection(t.notes);
+      return evidence?.time.startsWith(t.trade_date) ? evidence.time : `${t.trade_date} ${buyIds.has(t.id) ? "00:00:00" : "23:59:59"}`;
+    };
     const rankOf = (e: ReplayEvent) => (e.kind === 0 ? e.rank : 0);
     events.sort((a, b) =>
       a.date < b.date
         ? -1
         : a.date > b.date
           ? 1
-          : a.kind - b.kind || rankOf(a) - rankOf(b) || a.id - b.id
+          : a.kind - b.kind || rankOf(a) - rankOf(b) ||
+            (a.kind === 0 && b.kind === 0 ? tradeOrder(a.sell).localeCompare(tradeOrder(b.sell)) : 0) || a.id - b.id
     );
 
     for (const event of events) {
-      if (event.kind === 0) processSell(event.sell);
+      if (event.kind === 0) processTrade(event.sell);
       else if (event.kind === 1) applyDonationConsumption(event.donation);
       else applySplitEvent(event.split);
     }
@@ -957,7 +1023,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
                 SELECT MAX(h2.as_of_date) FROM holdings h2
                  WHERE h2.account_id = tl.account_id AND h2.security_id = tl.security_id
               )
-            WHERE tl.quantity_remaining > 0
+            WHERE tl.quantity_remaining > 0 AND tl.is_short = 0
               AND h.quantity = 0
               AND LOWER(COALESCE(s.security_type, '')) IN ('stock', 'etf')
               AND NOT EXISTS (

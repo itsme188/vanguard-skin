@@ -1,3 +1,4 @@
+import { readIbkrTradeDirection } from "@/lib/import/ibkr-trade-direction";
 import type Database from "better-sqlite3";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 
@@ -35,6 +36,7 @@ export interface RoundTrip {
   exitQuantity: number;
   exitProceeds: number;
   holdingDays: number;
+  isShort?: boolean;
   realizedPnl: number;
   returnPct: number;
   saleTransactionId: number;
@@ -107,6 +109,7 @@ export interface GroupedTrade {
   symbol: string;
   securityName: string | null;
   lots: RoundTrip[];
+  isShort?: boolean;
   totalQuantity: number;
   sellTransactionQty: number | null; // actual quantity from the SELL transaction
   lotCoverage: number; // ratio of matched lots to actual sell qty (0-1)
@@ -161,9 +164,12 @@ export function getRoundTrips(
         tls.quantity_sold AS exit_quantity,
         tls.proceeds AS exit_proceeds,
         tls.holding_period_days AS holding_days,
+        tl.is_short,
         tls.realized_gain_loss AS realized_pnl,
         tls.sale_transaction_id,
         ABS(sell_tx.quantity) AS sell_transaction_qty,
+        sell_tx.notes AS transaction_notes,
+        (SELECT SUM(x.quantity_sold) FROM tax_lot_sales x WHERE x.sale_transaction_id=tls.sale_transaction_id) AS matched_quantity,
         COALESCE(fx.usd_per_unit, 1) AS usd_per_unit,
         (sell_tx.type = 'RECONCILE_CLOSE') AS is_synthetic_close
       FROM tax_lot_sales tls
@@ -174,6 +180,7 @@ export function getRoundTrips(
       WHERE tl.account_id = ?
         AND tls.sale_date >= ?
         AND tls.sale_date <= ?
+        AND tl.acquisition_date <= tls.sale_date
       ORDER BY tls.sale_date, s.symbol`
     )
     .all(accountId, periodStart, periodEnd) as Array<{
@@ -191,9 +198,12 @@ export function getRoundTrips(
     exit_quantity: number;
     exit_proceeds: number;
     holding_days: number;
+    is_short: number;
     realized_pnl: number;
     sale_transaction_id: number;
     sell_transaction_qty: number | null;
+    transaction_notes: string | null;
+    matched_quantity: number;
     usd_per_unit: number;
     is_synthetic_close: number | null;
   }>;
@@ -204,6 +214,7 @@ export function getRoundTrips(
   // conventionPending is computed once per call, not per row.
   const conventionPending = isConventionPending(db);
   return rows.map((r) => {
+    const direction = readIbkrTradeDirection(r.transaction_notes);
     const fx = r.usd_per_unit > 0 ? r.usd_per_unit : 1;
     return {
       accountId: r.account_id,
@@ -219,11 +230,12 @@ export function getRoundTrips(
       exitPrice: r.exit_price * fx,
       exitQuantity: r.exit_quantity,
       exitProceeds: r.exit_proceeds * fx,
-      holdingDays: r.holding_days,
+      holdingDays: r.is_short ? Math.abs(r.holding_days) : r.holding_days,
+      isShort: Boolean(r.is_short),
       realizedPnl: r.realized_pnl * fx,
       returnPct: r.entry_cost !== 0 ? (r.realized_pnl / r.entry_cost) * 100 : 0,
       saleTransactionId: r.sale_transaction_id,
-      sellTransactionQty: r.sell_transaction_qty,
+      sellTransactionQty: direction?.open && direction.close ? r.matched_quantity : r.sell_transaction_qty,
       usdPerUnit: fx,
       conventionPending,
       isSyntheticClose: Boolean(r.is_synthetic_close),
@@ -300,118 +312,41 @@ export function computeRoundTripSummary(
  * Find months that have closed trades but no existing trade review.
  * Used by the import hook to prompt the user to generate reviews.
  */
-export function detectNewTradeReviewPeriods(
-  db: Database.Database
-): ReviewPeriod[] {
-  const rows = db
-    .prepare(
-      `WITH per_sale_coverage AS (
-        SELECT
-          tls.sale_transaction_id,
-          tl.account_id,
-          strftime('%Y-%m-01', tls.sale_date) AS period_start,
-          SUM(tls.quantity_sold) AS matched_qty,
-          MAX(ABS(t.quantity)) AS actual_qty
-        FROM tax_lot_sales tls
-        JOIN tax_lots tl ON tl.id = tls.tax_lot_id
-        JOIN transactions t ON t.id = tls.sale_transaction_id
-        WHERE NOT EXISTS (
-          SELECT 1 FROM trade_reviews tr
-          WHERE tr.account_id = tl.account_id
-            AND tr.period_start = strftime('%Y-%m-01', tls.sale_date)
-        )
-        GROUP BY tls.sale_transaction_id, tl.account_id, period_start
-      )
-      SELECT
-        period_start,
-        date(period_start, '+1 month', '-1 day') AS period_end,
-        COUNT(*) AS trade_count,
-        SUM(
-          CASE
-            WHEN actual_qty IS NULL OR actual_qty = 0 THEN 1
-            WHEN matched_qty * 1.0 / actual_qty >= ? THEN 1
-            ELSE 0
-          END
-        ) AS reviewable_count
-      FROM per_sale_coverage
-      GROUP BY period_start
-      ORDER BY period_start DESC`
-    )
-    .all(MIN_LOT_COVERAGE) as Array<{
-    period_start: string;
-    period_end: string;
-    trade_count: number;
-    reviewable_count: number;
-  }>;
-
-  return rows.map((r) => ({
-    periodStart: r.period_start,
-    periodEnd: r.period_end,
-    tradeCount: r.trade_count,
-    reviewableCount: r.reviewable_count,
-  }));
+export function detectNewTradeReviewPeriods(db: Database.Database): ReviewPeriod[] {
+  return reviewPeriods(db, undefined, true);
 }
 
-/**
- * Get all months that have closed trades for a given account,
- * whether or not they have an existing review.
- *
- * Returns both `tradeCount` (raw count of distinct SELL transactions) and
- * `reviewableCount` (subset whose FIFO lot coverage is ≥`MIN_LOT_COVERAGE`).
- * Coverage is computed in SQL via a per-sale CTE that compares matched lot
- * quantity to the actual SELL transaction quantity — mirroring the runtime
- * filter `filterFullyCoveredTrades` applies before the AI sees a review.
- *
- * When `reviewableCount < tradeCount`, the dropdown should surface the gap
- * ("9 of 12 reviewable") so the user knows trades will be silently filtered
- * out at generation time (positions that span import-history boundaries).
- */
-export function getAvailableReviewPeriods(
-  db: Database.Database,
-  accountId: number
-): ReviewPeriod[] {
-  const rows = db
-    .prepare(
-      `WITH per_sale_coverage AS (
-        SELECT
-          tls.sale_transaction_id,
-          strftime('%Y-%m-01', tls.sale_date) AS period_start,
-          SUM(tls.quantity_sold) AS matched_qty,
-          MAX(ABS(t.quantity)) AS actual_qty
-        FROM tax_lot_sales tls
-        JOIN tax_lots tl ON tl.id = tls.tax_lot_id
-        JOIN transactions t ON t.id = tls.sale_transaction_id
-        WHERE tl.account_id = ?
-        GROUP BY tls.sale_transaction_id, period_start
-      )
-      SELECT
-        period_start,
-        date(period_start, '+1 month', '-1 day') AS period_end,
-        COUNT(*) AS trade_count,
-        SUM(
-          CASE
-            WHEN actual_qty IS NULL OR actual_qty = 0 THEN 1
-            WHEN matched_qty * 1.0 / actual_qty >= ? THEN 1
-            ELSE 0
-          END
-        ) AS reviewable_count
-      FROM per_sale_coverage
-      GROUP BY period_start
-      ORDER BY period_start DESC`
-    )
-    .all(accountId, MIN_LOT_COVERAGE) as Array<{
-    period_start: string;
-    period_end: string;
-    trade_count: number;
-    reviewable_count: number;
-  }>;
+export function getAvailableReviewPeriods(db: Database.Database, accountId: number): ReviewPeriod[] {
+  return reviewPeriods(db, accountId, false);
+}
 
-  return rows.map((r) => ({
-    periodStart: r.period_start,
-    periodEnd: r.period_end,
-    tradeCount: r.trade_count,
-    reviewableCount: r.reviewable_count,
-  }));
+/** Use the same broker-aware close quantity as getRoundTrips / grouped coverage. */
+function reviewPeriods(db: Database.Database, accountId: number | undefined, onlyNew: boolean): ReviewPeriod[] {
+  const rows = db.prepare(`SELECT tls.sale_transaction_id,
+      strftime('%Y-%m-01', tls.sale_date) AS period_start,
+      date(tls.sale_date, 'start of month', '+1 month', '-1 day') AS period_end,
+      SUM(tls.quantity_sold) AS matched_qty, MAX(ABS(t.quantity)) AS actual_qty, t.notes
+    FROM tax_lot_sales tls JOIN tax_lots tl ON tl.id=tls.tax_lot_id
+    JOIN transactions t ON t.id=tls.sale_transaction_id
+    WHERE (? IS NULL OR tl.account_id=?) AND tl.acquisition_date<=tls.sale_date
+      AND (?=0 OR NOT EXISTS (SELECT 1 FROM trade_reviews tr
+        WHERE tr.account_id=tl.account_id AND tr.period_start=strftime('%Y-%m-01',tls.sale_date)))
+    GROUP BY tls.sale_transaction_id
+    ORDER BY period_start DESC`).all(accountId ?? null, accountId ?? null, Number(onlyNew)) as Array<{
+      period_start: string; period_end: string; matched_qty: number; actual_qty: number | null; notes: string | null;
+    }>;
+  const periods = new Map<string, ReviewPeriod>();
+  for (const row of rows) {
+    const period = periods.get(row.period_start) ?? {
+      periodStart: row.period_start, periodEnd: row.period_end, tradeCount: 0, reviewableCount: 0,
+    };
+    const evidence = readIbkrTradeDirection(row.notes);
+    const actualQty = evidence?.open && evidence.close ? row.matched_qty : row.actual_qty;
+    period.tradeCount++;
+    if (!actualQty || row.matched_qty / actualQty >= MIN_LOT_COVERAGE) period.reviewableCount++;
+    periods.set(row.period_start, period);
+  }
+  return [...periods.values()];
 }
 
 /**
@@ -456,6 +391,7 @@ export function computeGroupedTrades(roundTrips: RoundTrip[]): GroupedTrade[] {
       securityName: lots[0].securityName,
       securityType: lots[0].securityType,
       lots,
+      isShort: lots.every((l) => l.isShort === true),
       totalQuantity: totalQty,
       sellTransactionQty: sellTxQty,
       lotCoverage: Math.min(coverage, 1), // cap at 1 (rounding)

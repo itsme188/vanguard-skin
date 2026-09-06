@@ -1,3 +1,5 @@
+import { getOpenTaxLots } from "@/lib/queries/tax-lots";
+import { getStaleTradeReviewIds } from "@/lib/queries/trade-review-pairings";
 /**
  * Consolidated queries for the Security Detail page.
  * Aggregates data from holdings, tax lots, transactions, notes, calendar events,
@@ -111,6 +113,7 @@ export interface SecurityDetailData {
 }
 
 export interface TradeGradeEntry {
+  pairings_stale?: boolean;
   grade: string | null;
   entry_date: string;
   exit_date: string;
@@ -221,37 +224,8 @@ export function getHoldingsBySecurity(
 /**
  * Get open tax lots for a specific security.
  */
-export function getOpenTaxLotsBySecurity(
-  db: Database.Database,
-  securityId: number
-): TaxLotWithSecurity[] {
-  return db
-    .prepare(
-      `SELECT
-        tl.id, tl.account_id, a.name AS account_name,
-        tl.security_id, s.symbol, s.name AS security_name,
-        tl.acquisition_date, tl.acquisition_price,
-        tl.quantity_acquired, tl.quantity_remaining,
-        tl.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis, tl.is_from_opening_snapshot,
-        ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS adjusted_cost_basis,
-        p.close_price AS current_price,
-        CASE WHEN p.close_price IS NOT NULL
-          THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-          ELSE NULL END AS current_value,
-        CASE WHEN p.close_price IS NOT NULL
-          THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-               - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-          ELSE NULL END AS unrealized_gain
-      FROM tax_lots tl
-      JOIN accounts a ON a.id = tl.account_id
-      JOIN securities s ON s.id = tl.security_id
-      LEFT JOIN fx_rates fx ON fx.currency = s.currency
-      LEFT JOIN prices p ON p.security_id = tl.security_id
-        AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = tl.security_id)
-      WHERE tl.quantity_remaining > 0 AND tl.security_id = ?
-      ORDER BY a.name, tl.acquisition_date`
-    )
-    .all(securityId) as TaxLotWithSecurity[];
+export function getOpenTaxLotsBySecurity(db: Database.Database, securityId: number): TaxLotWithSecurity[] {
+  return getOpenTaxLots(db, securityId);
 }
 
 /**
@@ -538,6 +512,8 @@ export function getTradeGradesBySecurity(
     )
     .all(securityId) as TradeGradeRow[];
 
+  const staleReviews = getStaleTradeReviewIds(db, rows.map((row) => row.review_id));
+
   // Rows arrive exit_date DESC and every row in a group shares that exit_date,
   // so first-seen Map order is already newest-exit-first — no re-sort needed.
   const groups = new Map<string, { entry: TradeGradeEntry; costSum: number }>();
@@ -557,6 +533,7 @@ export function getTradeGradesBySecurity(
       groups.set(key, {
         entry: {
           grade: row.grade,
+          pairings_stale: staleReviews.has(row.review_id),
           entry_date: row.entry_date,
           exit_date: row.exit_date,
           realized_pnl: row.realized_pnl,

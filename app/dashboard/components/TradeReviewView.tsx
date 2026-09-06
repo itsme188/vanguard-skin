@@ -34,11 +34,14 @@ interface GroupedTradeResponse {
   whatWorked: string | null;
   whatDidnt: string | null;
   totalPnl: number;
+  returnPct: number;
   avgEntryPrice: number;
   exitPrice: number;
   totalQuantity: number;
   maxHoldingDays: number;
   isSyntheticClose: boolean;
+  isShort?: boolean;
+  pairingsStale?: boolean;
   lots: Array<{
     id: number;
     entryDate: string;
@@ -742,6 +745,15 @@ function ReviewDetail({
         </div>
       )}
 
+      {groupedTrades.some((trade) => trade.pairingsStale) && (
+        <div className="px-5 py-3 bg-gold/5 border-l-2 border-gold">
+          <p className="text-xs text-ink-dim leading-5">
+            This saved review uses outdated or unresolved trade pairings. Its dates, metrics and
+            assessments may be wrong. Resolve the lot history, then regenerate the review.
+          </p>
+        </div>
+      )}
+
       {/* Convention-pending note (WS1 pending-state contract): the tax-lot
           dollar convention is pending a recompute right now — a small,
           honest caveat rather than hiding the numbers. */}
@@ -752,9 +764,8 @@ function ReviewDetail({
             <span className="text-gold-ink font-medium">
               Trade P&L figures are pending a recompute.
             </span>{" "}
-            The underlying tax-lot dollar convention is pending a recompute
-            and these figures may be unit-inconsistent — trust them fully
-            once the next recompute completes.
+            Recompute the trade history and review any unresolved opening or
+            closing trades before relying on these figures.
           </p>
         </div>
       )}
@@ -916,27 +927,13 @@ function GroupedTradeCards({
         // Use literal opacity classes so Tailwind's JIT picks them up;
         // dynamic `${pnlColor}/70` would build a string the scanner can't see.
         const pnlMutedColor = isGain ? "text-up/70" : "text-down/70";
-        const returnPctValue =
-          trade.avgEntryPrice > 0
-            ? ((trade.exitPrice - trade.avgEntryPrice) /
-                trade.avgEntryPrice) *
-              100
-            : 0;
+        const returnPctValue = trade.returnPct;
         const tradeKey =
           trade.saleTransactionId != null
             ? `tx:${trade.saleTransactionId}`
             : `${trade.symbol}:${trade.exitDate}:${idx}`;
         const isExpanded = expandedTrade === tradeKey;
-        // The API's `maxHoldingDays` is a quantity-weighted average of each
-        // lot's holding_days CLAMPED at 0 (app/api/trade-review/route.ts) —
-        // it can never itself be negative, so it can never trigger the short
-        // chip below. Detect an all-short grouped trade (every constituent
-        // lot a genuine short round-trip) straight from the unclamped
-        // per-lot `holdingDays` the view already has, and force the chip —
-        // "0d hold" would otherwise misreport an all-short trade as a
-        // same-day hold.
-        const allLotsShort =
-          trade.lots.length > 0 && trade.lots.every((l) => l.holdingDays < 0);
+        const allLotsShort = trade.isShort === true;
 
         return (
           <div
@@ -977,9 +974,9 @@ function GroupedTradeCards({
                       title="FIFO holding period — time between the oldest matched tax lot's acquisition and the sale. For actively traded names this may overstate how long the trader actually held the position."
                     >
                       <HoldingPeriodBadge
-                        days={allLotsShort ? -1 : trade.maxHoldingDays}
+                        days={trade.maxHoldingDays}
                       />{" "}
-                      hold
+                      {allLotsShort ? "short sale" : "hold"}
                     </span>
                     <span>
                       <Shares

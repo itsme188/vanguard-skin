@@ -50,3 +50,15 @@ describe("convention state", () => {
     expect(isYearAccepted(stale, 2026, [1])).toBe(false);
   });
 });
+
+it("a directional recompute never revives a v2 broker acceptance", () => {
+  db.prepare("INSERT INTO settings VALUES ('tax_lots_convention','v2:0')").run();
+  stampBrokerAcceptance(db, [{ accountId: 1, taxYear: 2026 }]);
+  expect(getTaxConventionState(db).recomputeCurrent).toBe(false);
+  stampTaxLotsConvention(db);
+  expect(getTaxConventionState(db).recomputeCurrent).toBe(true);
+  expect(getTaxConventionState(db).acceptance.current).toBe(false);
+  stampBrokerAcceptance(db, [{ accountId: 1, taxYear: 2026 }]);
+  stampTaxLotsConvention(db);
+  expect(getTaxConventionState(db).acceptance.current).toBe(true);
+});

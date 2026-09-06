@@ -489,7 +489,7 @@ export default async function SecurityDetailPage(props: {
               </thead>
               <tbody>
                 {openTaxLots.map((lot) => {
-                  const isLT = holdingPeriodLabel(lot.acquisition_date) === "LT";
+                  const isLT = !lot.is_short && holdingPeriodLabel(lot.acquisition_date) === "LT";
                   return (
                     <tr key={lot.id}>
                       <td className={`${TD_MONO} text-ink-dim`}>{lot.acquisition_date}</td>
@@ -505,7 +505,7 @@ export default async function SecurityDetailPage(props: {
                       </td>
                       <td className={`${TD_CLASS} text-center`}>
                         <Chip tone={isLT ? "up" : "gold"} size="xs" uppercase>
-                          {isLT ? "LT" : "ST"}
+                          {lot.is_short ? "Short sale" : isLT ? "LT" : "ST"}
                         </Chip>
                       </td>
                     </tr>
@@ -580,6 +580,12 @@ export default async function SecurityDetailPage(props: {
             </Link>
           }
         >
+          {tradeGrades.some((grade) => grade.pairings_stale) && (
+            <p className="mb-3 text-xs text-gold-ink">
+              Some saved grades use outdated or unresolved trade pairings. Dates, metrics and
+              assessments may be wrong; resolve the lot history and regenerate those reviews.
+            </p>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>

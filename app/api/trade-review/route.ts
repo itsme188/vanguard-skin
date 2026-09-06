@@ -1,3 +1,4 @@
+import { getStaleTradeReviewIds } from "@/lib/queries/trade-review-pairings";
 import { db } from "@/lib/db";
 import {
   prepareTradeReview,
@@ -21,6 +22,7 @@ interface GroupedTradeResponse {
   whatWorked: string | null;
   whatDidnt: string | null;
   totalPnl: number;
+  returnPct: number;
   avgEntryPrice: number;
   exitPrice: number;
   totalQuantity: number;
@@ -34,6 +36,8 @@ interface GroupedTradeResponse {
    * (finding 1, number-trust durable fixes).
    */
   isSyntheticClose: boolean;
+  isShort: boolean;
+  pairingsStale: boolean;
   lots: Array<{
     id: number;
     entryDate: string;
@@ -72,12 +76,13 @@ export async function GET(request: Request) {
       groupMap.set(key, group);
     }
 
+    const pairingsStale = getStaleTradeReviewIds(db, [review.id]).has(review.id);
     const groupedTrades: GroupedTradeResponse[] = Array.from(
       groupMap.values()
     ).map((lots) => {
       const totalQty = lots.reduce((s, l) => s + l.exit_quantity, 0);
       const totalCost = lots.reduce(
-        (s, l) => s + l.entry_price * l.entry_quantity,
+        (s, l) => s + l.entry_cost,
         0
       );
       const totalPnl = lots.reduce((s, l) => s + l.realized_pnl, 0);
@@ -98,18 +103,21 @@ export async function GET(request: Request) {
         securityType: lot0.security_type ?? null,
         exitDate: lot0.exit_date,
         grade: lot0.grade,
+        isShort: lots.every((l) => l.is_short),
+        pairingsStale,
         assessment: assessmentVal,
         whatWorked: whatWorkedVal,
         whatDidnt: whatDidntVal,
         totalPnl,
-        avgEntryPrice: totalQty > 0 ? totalCost / totalQty : 0,
+        returnPct: totalCost > 0 ? totalPnl / totalCost * 100 : 0,
+        avgEntryPrice: totalQty > 0 ? lots.reduce((sum, l) => sum + l.entry_price * l.exit_quantity, 0) / totalQty : 0,
         exitPrice: lots[0].exit_price,
         totalQuantity: totalQty,
         maxHoldingDays: totalQty > 0
           ? Math.round(
               lots.reduce(
                 (s, l) =>
-                  s + Math.max(0, l.holding_days) * l.exit_quantity,
+                  s + (l.is_short ? Math.abs(l.holding_days) : Math.max(0, l.holding_days)) * l.exit_quantity,
                 0
               ) / totalQty
             )
@@ -120,7 +128,7 @@ export async function GET(request: Request) {
           entryDate: l.entry_date,
           entryPrice: l.entry_price,
           exitQuantity: l.exit_quantity,
-          holdingDays: l.holding_days,
+          holdingDays: l.is_short ? Math.abs(l.holding_days) : l.holding_days,
           realizedPnl: l.realized_pnl,
           returnPct: l.return_pct,
         })),
