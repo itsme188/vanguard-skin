@@ -158,8 +158,17 @@ export interface SecurityFactor {
   updated_at: string | null;
 }
 
-export type NoteType = "journal" | "earnings" | "trade_thesis";
-export type NoteSentiment = "bullish" | "bearish" | "neutral" | "cautious" | "confident";
+export const NOTE_TYPES = ["journal", "earnings", "trade_thesis"] as const;
+export type NoteType = (typeof NOTE_TYPES)[number];
+
+export const NOTE_SENTIMENTS = [
+  "bullish",
+  "bearish",
+  "neutral",
+  "cautious",
+  "confident",
+] as const;
+export type NoteSentiment = (typeof NOTE_SENTIMENTS)[number];
 
 export interface Note {
   id: number;
