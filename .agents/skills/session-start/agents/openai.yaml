@@ -1,0 +1,4 @@
+interface:
+  display_name: "Portfolio Desk Session Start"
+  short_description: "Check handoffs, repo state, and priorities"
+  default_prompt: "Use $session-start to check this Portfolio Desk project's current state and handoffs, then recommend what to work on or resume the task I have already chosen."
