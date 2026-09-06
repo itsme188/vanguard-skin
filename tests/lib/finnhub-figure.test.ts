@@ -34,6 +34,28 @@ describe("parseFinnhubFigure", () => {
   it("returns nulls on null input", () => {
     expect(parseFinnhubFigure(null)).toEqual({ eps: null, revenue: null });
   });
+
+  // Parse-layer pins (moved from the display layer, gap #1 of the PR #68
+  // landing review): Finnhub's literal "Rev 0" is a placeholder for "no
+  // revenue figure published", never a real $0 print. A $0 revenue line
+  // carries no information an absent one does not, so the parser nulls it
+  // out for every consumer — the print-watch worksheet, the earnings email
+  // scoreboard, the cockpit stage machine, reporter read-throughs — not
+  // only the display helpers below. EPS of exactly 0 stays a real value.
+  it("nulls a placeholder 'Rev 0' at the parse layer, even alongside a real EPS", () => {
+    expect(parseFinnhubFigure("EPS 1.20 · Rev 0")).toEqual({ eps: 1.2, revenue: null });
+  });
+
+  it("nulls a bare 'Rev 0' placeholder", () => {
+    expect(parseFinnhubFigure("Rev 0")).toEqual({ eps: null, revenue: null });
+  });
+
+  it("EPS of exactly 0 is a real value, not a placeholder", () => {
+    expect(parseFinnhubFigure("EPS 0 · Rev 4345870107")).toEqual({
+      eps: 0,
+      revenue: 4_345_870_107,
+    });
+  });
 });
 
 describe("formatFinnhubFigure", () => {
@@ -55,6 +77,33 @@ describe("formatFinnhubFigure", () => {
     expect(formatFinnhubFigureCompact("EPS 0.91 · Rev 4345870107")).toBe("$0.91 · $4.35B");
     expect(formatFinnhubFigureCompact("EPS 0.91")).toBe("$0.91");
     expect(formatFinnhubFigureCompact(null)).toBe("");
+  });
+
+  // Gap #2 of the PR #68 landing review: a string whose ONLY parsed field is
+  // the placeholder (e.g. "Rev 0") must never fall into the "nothing
+  // parsed" branch and surface the raw token — CLAUDE.md forbids rendering
+  // a raw Finnhub token. The fallback path is reserved for input with NO
+  // recognizable EPS/Rev token at all.
+  it("a bare 'Rev 0' placeholder renders as fully absent, never the raw token", () => {
+    const r = formatFinnhubFigure("Rev 0");
+    expect(r.eps).toBeNull();
+    expect(r.revenue).toBeNull();
+    expect(r.fallback).toBeNull();
+    expect(formatFinnhubFigureCompact("Rev 0")).toBe("");
+  });
+
+  it("a recognizable token that parses to nothing usable ('Rev abc') is also absent, not the raw token", () => {
+    const r = formatFinnhubFigure("Rev abc");
+    expect(r.eps).toBeNull();
+    expect(r.revenue).toBeNull();
+    expect(r.fallback).toBeNull();
+    expect(formatFinnhubFigureCompact("Rev abc")).toBe("");
+  });
+
+  it("free text with no EPS/Rev token at all still falls back to the raw string", () => {
+    const r = formatFinnhubFigure("Pre-announcement only");
+    expect(r.fallback).toBe("Pre-announcement only");
+    expect(formatFinnhubFigureCompact("Pre-announcement only")).toBe("Pre-announcement only");
   });
 });
 
@@ -118,5 +167,13 @@ describe("mergeFinnhubActual (B18 — manual override must not wipe the other fi
   it("nothing provided and nothing stored returns null", () => {
     expect(mergeFinnhubActual(null, {})).toBeNull();
     expect(mergeFinnhubActual("garbage with no figures", {})).toBeNull();
+  });
+
+  // R1 follow-up: a stored "Rev 0" placeholder parses to a null
+  // existing.revenue, so an EPS-only save DROPS it instead of carrying it
+  // forward — desirable, since the placeholder never carried real
+  // information worth preserving.
+  it("an EPS-only save over a stored 'Rev 0' placeholder drops the placeholder", () => {
+    expect(mergeFinnhubActual("EPS 1.10 · Rev 0", { eps: 1.23 })).toBe("EPS 1.23");
   });
 });

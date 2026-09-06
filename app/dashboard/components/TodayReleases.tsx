@@ -65,6 +65,20 @@ export function isReleaseEnriched(
   );
 }
 
+/**
+ * Pre-release "Est: …" pill text. `consensus` can be a Finnhub-shaped string
+ * whose only recognizable token parses to nothing usable (the "Rev 0"
+ * placeholder, or an unparseable "Rev abc") — formatFinnhubFigureCompact
+ * returns "" for those (gap #2 of the PR #68 landing review), and blindly
+ * concatenating would render "Est: " with nothing after it. Falls through to
+ * "Pending release" whenever there is nothing usable to show, exactly as
+ * when there was no consensus string at all.
+ */
+export function preReleaseEstimateText(consensus: string | null): string {
+  const compact = consensus ? formatFinnhubFigureCompact(consensus) : "";
+  return compact ? `Est: ${compact}` : "Pending release";
+}
+
 function fmtTime(release_time: string): string {
   const [hh, mm] = release_time.split(":");
   const h = parseInt(hh, 10);
@@ -160,9 +174,7 @@ export function TodayReleases({
                   />
                 ) : (
                   <span className="text-ink-faint">
-                    {effectiveConsensus(event)
-                      ? `Est: ${formatFinnhubFigureCompact(effectiveConsensus(event))}`
-                      : "Pending release"}
+                    {preReleaseEstimateText(effectiveConsensus(event))}
                   </span>
                 )}
               </div>
