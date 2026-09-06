@@ -151,7 +151,9 @@ export function DigestCatchup() {
         )}
         <button
           onClick={() => setShow(false)}
-          className="text-ink-faint hover:text-ink"
+          aria-label="Dismiss digest reminder"
+          title="Dismiss"
+          className="relative text-ink-faint hover:text-ink pointer-coarse:p-2 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />

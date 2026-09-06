@@ -477,9 +477,9 @@ function BondDurationContent({ state }: { state: AnalysisTrustState }) {
           </div>
           {bondDuration.withDuration < bondDuration.totalBonds && (
             <p className="text-xs text-ink-faint">
-              Missing bonds can be backfilled by extracting maturity dates from the security name field. Run{" "}
-              <code className="font-mono text-amber-400">scripts/backfill-bond-durations.ts</code> after populating{" "}
-              <code className="font-mono text-amber-400">maturity_date</code> on the securities.
+              The bonds without a duration have no maturity date on file, which
+              is what duration is derived from. Importing a statement that
+              carries the maturity date fills them in.
             </p>
           )}
         </>

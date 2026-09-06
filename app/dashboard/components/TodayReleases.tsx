@@ -132,7 +132,10 @@ export function TodayReleases({
           return (
             <li key={event.id} className="px-4 py-2 space-y-1">
               <div className="flex items-baseline justify-between gap-2">
-                <span className="text-[14px] text-ink font-medium min-w-0 truncate">
+                <span
+                  className="text-[14px] text-ink font-medium min-w-0 truncate"
+                  title={event.title ?? undefined}
+                >
                   {showPill && (
                     <SymbolLink
                       securityId={event.security_id!}
