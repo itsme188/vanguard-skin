@@ -29,7 +29,7 @@
 | `tsc --noEmit` | 20 errors = the documented baseline (same four untouched test files) |
 | `npm run build` (`next build`) | **clean** — compiled, 103 static pages; only the pre-existing headless-Chrome warning |
 | Browser pass (agent-browser, secret-free :3095 sandbox from the MAIN checkout: VACUUM DB copy, minted session, every `.env.local` var overridden) | see §2a below |
-| Electron deploy | NOT run this session (pending the user's push/deploy decision) |
+| Electron deploy | **Deployed 17:31–17:37 ET** on user approval (full chain: build, sign, notarization successful, bundle gate OK, installed + relaunched on :3099); the classifier allowed the whole chain this time |
 
 ### 2a. Browser pass (agent-browser, real Chromium, 13 checks) — 12 PASS, 1 PASS with a data-blocked sub-check, 0 FAIL, 0 console errors
 
@@ -53,7 +53,7 @@ Incidental (filed in TODO, not a regression): two OTHER Data Health tables ("Unm
 
 ## 3. Open concerns / rejected approaches / decisions for the user
 
-- **Push + PR hygiene (user decision):** nothing is pushed. Plan on approval: push `main`; close PR #66 unmerged with a comment; delete `origin/qa-auto-fixes-2026-09-05`; PRs #64/#65/#67/#68 flip to merged on push. The real figure in `33db63aa` stays reachable via GitHub's `refs/pull/66/head` after the branch is gone — decide whether to ask GitHub Support for a purge (precedents 2026-04-07, 2026-08-23).
+- **Push + PR hygiene: DONE on approval** (pushed, #66 closed with a comment, five remote branches deleted, four PRs merged). The real figure in `33db63aa` stays reachable via GitHub's `refs/pull/66/head` after the branch is gone — decide whether to ask GitHub Support for a purge (precedents 2026-04-07, 2026-08-23).
 - **Permission rule snippet to paste into `.claude/settings.json`** (merge into the existing object; the file currently has only `worktree` + `hooks`):
   ```json
   "permissions": { "allow": [
@@ -74,8 +74,10 @@ Incidental (filed in TODO, not a regression): two OTHER Data Health tables ("Unm
 
 ## 4. Uncommitted changes / live-process state
 
-- Main checkout: 35 unpushed commits on `main`; uncommitted docs only (`docs/plans/TODO.md`, `docs/reference/data-integrity.md`, `docs/HANDOFF.md`, `docs/CODEX-CLAUDE-COORDINATION.md`) — to be committed at close.
-- `/Applications/Vanguard Dashboard.app` still = the 2026-09-05 22:15 build (nothing from today deployed yet); running on :3099.
+- Main checkout clean and PUSHED (`a111245d` + this follow-up). PRs #64/#65/#67/#68 MERGED, #66 CLOSED unmerged with a note; the five `qa-auto-fixes-*`/`qa-deep-fixes-*` branches deleted on origin and locally; `qa-fix-work-2026090{4,5,6}` (content duplicates of the landed PRs) left for the user. `CombinedPortfolioChart.tsx` deleted per the user's ruling.
+- ORCL 1586 ARMED on user approval (flag row 25, five prepare steps enqueued, `cloud_outbox` generation 3) — first live print on v2 = Thursday 2026-09-10 AMC.
+- `/Applications/Vanguard Dashboard.app` = today's build from `a111245d`, installed 17:37 ET, running on :3099.
+- Codex: live worktree `codex/trade-lot-direction-2026-09-06` on :3093, untouched; rebase note left in the coordination file.
 - Sandbox dev server on :3095 (main checkout, secret-free) — stopped by PID at close; `.next/dev` from it and `.next` from the build are disposable.
 - Scratchpad evidence (session-local): verify logs, build log, `e2e/` screenshots, `settings-permission-snippet.json`, `vanguard-e2e.db` copy.
 

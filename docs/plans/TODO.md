@@ -268,6 +268,12 @@
 
 ---
 
+## Closed this session (2026-09-06 — five nightly-QA PRs landed + fix wave, ORCL corrected + armed, worktrees cleaned)
+
+- [x] Nightly PRs #64/#65/#67/#68 merged, #66 landed as sanitized cherry-picks and closed; slot-guard fallback reverted (`fae10da1`); nine-fixer wave (`9374d007`…`f97ad7cf`); suite 9,033/0, build clean, browser 12/13; pushed `a111245d`; rebuilt + installed 17:37 ET.
+- [x] ORCL Q1 FY27 corrected to 2026-09-10 AMC (Oracle IR) and ARMED on user approval (event 1586, flag 25).
+- [x] Four landed worktrees + branches removed; `CombinedPortfolioChart.tsx` deleted (user ruling).
+
 ## Closed this session (2026-09-05 evening — Codex reliability fixes landed)
 
 ✅ **Research background sync no longer burns its 5-minute cooldown on a failed refresh** (`689534f6`, Codex-implemented) — new `lib/research/sync-completion.ts` drains the SSE stream and credits the sync only when the route's terminal `complete` event arrives with no terminal `error`; a 409 (lock held), a Gmail failure after the 200, or a truncated stream all stay retryable, while per-stage `status: "error"` events remain recoverable. 8 new tests; browser harness 5/5 with the real `useResearchSync` hook.
