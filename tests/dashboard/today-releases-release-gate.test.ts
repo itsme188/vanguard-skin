@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   upcomingRowReleased,
   isReleaseEnriched,
+  preReleaseEstimateText,
 } from "@/app/dashboard/components/TodayReleases";
 import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot-core";
 
@@ -128,5 +129,32 @@ describe("isReleaseEnriched", () => {
       TODAY,
     );
     expect(enriched).toBe(false);
+  });
+});
+
+// ── preReleaseEstimateText (gap #2 of the PR #68 landing review) ─────────
+// A consensus string whose only recognizable token parses to nothing usable
+// (the "Rev 0" placeholder, or an unparseable "Rev abc") must never render
+// as "Est: " with nothing after it — CLAUDE.md forbids rendering a raw
+// Finnhub token, and a dangling label is its own bug.
+describe("preReleaseEstimateText", () => {
+  it("renders 'Est: <compact>' for a usable consensus", () => {
+    expect(preReleaseEstimateText("EPS 0.91 · Rev 4345870107")).toBe("Est: $0.91 · $4.35B");
+  });
+
+  it("falls through to 'Pending release' for a bare 'Rev 0' placeholder, never 'Est: '", () => {
+    expect(preReleaseEstimateText("Rev 0")).toBe("Pending release");
+  });
+
+  it("falls through to 'Pending release' for a recognizable-but-unusable token ('Rev abc')", () => {
+    expect(preReleaseEstimateText("Rev abc")).toBe("Pending release");
+  });
+
+  it("falls through to 'Pending release' when there is no consensus at all", () => {
+    expect(preReleaseEstimateText(null)).toBe("Pending release");
+  });
+
+  it("still renders free text with no EPS/Rev token (Finnhub free-form consensus)", () => {
+    expect(preReleaseEstimateText("Pre-announcement only")).toBe("Est: Pre-announcement only");
   });
 });

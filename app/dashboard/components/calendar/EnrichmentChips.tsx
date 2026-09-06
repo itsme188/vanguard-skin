@@ -86,9 +86,16 @@ export function EnrichmentRowSummary({
   preferEventSymbol?: boolean;
 }) {
   const snap = snapshot ?? parseReactionSnapshot(snapshotRaw);
-  if (!actual && !snap) return null;
+  // `actual` can be a Finnhub-shaped string whose only recognizable token
+  // parses to nothing usable (the "Rev 0" placeholder, or an unparseable
+  // "Rev abc") — formatFinnhubFigureCompact returns "" for those (gap #2 of
+  // the PR #68 landing review). Gate on `formatted`, not the raw `actual`
+  // string, so a placeholder-only actual with no reaction data renders
+  // nothing (never an empty chip) and never leaves a stray "·" separator
+  // dangling with no figure in front of it.
   const formatted = actual ? formatFinnhubFigureCompact(actual) : null;
   const pairs = reactionSummaryPairs(snap, { preferEventSymbol });
+  if (!formatted && pairs.length === 0) return null;
   return (
     <span className="flex items-center gap-1.5 text-[11px] font-mono">
       {formatted && (
@@ -99,7 +106,7 @@ export function EnrichmentRowSummary({
       )}
       {pairs.length > 0 && (
         <>
-          {actual && <span className="text-ink-faint">·</span>}
+          {formatted && <span className="text-ink-faint">·</span>}
           {pairs.map((p, i) => (
             <span key={p.label} className="flex items-center gap-1.5">
               {i > 0 && <span className="text-ink-faint">/</span>}
@@ -151,7 +158,10 @@ export function EnrichmentDetail({
         )}
       </div>
       <div className="text-sm font-mono font-semibold text-gold-ink mt-0.5">
-        {actual ? formatFinnhubFigureCompact(actual) : "—"}
+        {/* A placeholder-only actual (e.g. "Rev 0") formats to "" — coalesce
+            to the em-dash rather than rendering an empty line (gap #2 of the
+            PR #68 landing review). */}
+        {actual ? formatFinnhubFigureCompact(actual) || "—" : "—"}
       </div>
 
       {snapshot && (
