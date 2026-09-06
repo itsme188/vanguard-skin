@@ -118,10 +118,24 @@ export function DataConfidenceIndicator() {
       setAnchor("right");
       return;
     }
-    if (!popoverRef.current) return;
-    const triggerRect = popoverRef.current.getBoundingClientRect();
-    const popoverWidth = popoverContentRef.current?.getBoundingClientRect().width ?? DEFAULT_POPOVER_WIDTH;
-    setAnchor(popoverAnchorFor(triggerRect, popoverWidth, window.innerWidth));
+    const measure = () => {
+      if (!popoverRef.current) return;
+      const triggerRect = popoverRef.current.getBoundingClientRect();
+      const popoverWidth = popoverContentRef.current?.getBoundingClientRect().width ?? DEFAULT_POPOVER_WIDTH;
+      setAnchor(popoverAnchorFor(triggerRect, popoverWidth, window.innerWidth));
+    };
+    measure();
+    // Re-measure while open (mirrors EarningsDateChip's popover): the effect
+    // only re-ran on showPopover toggling, so a resize (chat rail
+    // opening/closing, browser resize, phone rotation) while the popover
+    // stayed open left it anchored on stale geometry — the original clipping
+    // bug reproduces at 1600px→1280px without a close/reopen in between.
+    window.addEventListener("resize", measure);
+    window.addEventListener("orientationchange", measure);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("orientationchange", measure);
+    };
   }, [showPopover]);
 
   if (!confidence) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { eventFigureDisplays } from "@/app/dashboard/today/WeekAheadView";
+import { eventFigureDisplays, figureOrAbsent } from "@/app/dashboard/today/WeekAheadView";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import type { CalendarEvent } from "@/lib/types";
 
@@ -205,5 +205,57 @@ describe("releasedFigureGates t0 window check", () => {
       TODAY,
     );
     expect(g.showReaction).toBe(true);
+  });
+});
+
+// ── figureOrAbsent (landing-review follow-up #5) ──────────────────────
+// lib/format/finnhub-figure.ts is being changed (by a different task) so an
+// all-placeholder consensus (Finnhub's literal "Rev 0" with no other usable
+// token) yields all-null fields and a null fallback — which makes
+// formatWeekCardFigure's joined compact string empty (""). eventFigureDisplays
+// must never hand that empty string back as `consensusDisplay`/
+// `actualDisplay` (typed `string | null`) — a caller that does
+// `consensusDisplay ?? "—"` would keep the "" and could render a bare label
+// with nothing after it, the same failure class TodayReleases.tsx already
+// guards against in preReleaseEstimateText. figureOrAbsent is pinned here as
+// a pure, standalone function — its own correctness doesn't depend on
+// whatever the other task lands in finnhub-figure.ts.
+describe("figureOrAbsent", () => {
+  it("returns null for an empty string", () => {
+    expect(figureOrAbsent("")).toBeNull();
+  });
+
+  it("returns null for a whitespace-only string", () => {
+    expect(figureOrAbsent("   ")).toBeNull();
+  });
+
+  it("passes through a real formatted figure unchanged", () => {
+    expect(figureOrAbsent("$0.45 · $259.2M")).toBe("$0.45 · $259.2M");
+  });
+
+  it("trims incidental surrounding whitespace", () => {
+    expect(figureOrAbsent("  $0.45  ")).toBe("$0.45");
+  });
+});
+
+describe("eventFigureDisplays never leaks an empty string for consensus/actual", () => {
+  // Regression pin: assert the CONTRACT (string | null, never "") rather than
+  // reproducing the other task's exact placeholder-parsing change. If
+  // formatWeekCardFigure's underlying formatter ever again produces an
+  // empty joined string for a truthy raw consensus/actual, this must still
+  // come back null, not "".
+  it("never returns an empty-string consensusDisplay/actualDisplay for any earnings input", () => {
+    const samples = [
+      earningsEvent("EPS 0.41 · Rev 280000000", "EPS 0.45 · Rev 285000000"),
+      earningsEvent("Rev 0", "Rev 0"),
+      earningsEvent("EPS 0.00 · Rev 0", "EPS 0.00 · Rev 0"),
+      earningsEvent(null, null),
+      earningsEvent("", ""),
+    ];
+    for (const event of samples) {
+      const d = eventFigureDisplays(event);
+      expect(d.consensusDisplay).not.toBe("");
+      expect(d.actualDisplay).not.toBe("");
+    }
   });
 });

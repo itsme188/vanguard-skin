@@ -23,7 +23,7 @@ import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
 import { getSymbolStatus, type SymbolStatus } from "@/lib/queries/briefing-symbols";
 import { buildCockpitPayload } from "@/lib/queries/earnings-cockpit";
 import { decorateCockpitIntel } from "@/lib/queries/earnings-intel";
-import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
+import { getCurrentMonday, addDays, mondayOf, todayET, formatWeekRange } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
@@ -86,6 +86,21 @@ export { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 
 const IMPLAUSIBLE_TOOLTIP =
   "Reported actuals flagged as implausible vs. consensus — see email scoreboard for details.";
+
+// QA follow-up (landing review, commit 256833e5): getCurrentMonday() rolls
+// Sat/Sun FORWARD to next Monday by design (this hub looks ahead), so on a
+// weekend `weekOf` names a week that is not the week containing today.
+// "No earnings events this week." on a weekend describes NEXT week, not
+// the week the reader is standing in. Mirrors WeekAheadView's
+// weekAheadHeaderState (mondayOf(todayIso) = the week containing today) —
+// same "This week" vs. "week of {range}" split, just phrased as an
+// empty-state sentence instead of a header micro-label.
+export function earningsHubEmptyStateCopy(weekOf: string, todayIso: string): string {
+  if (weekOf === mondayOf(todayIso)) {
+    return "No earnings events this week.";
+  }
+  return `No earnings events for the week of ${formatWeekRange(weekOf)}.`;
+}
 
 export function EarningsHub() {
   const weekOf = getCurrentMonday();
@@ -188,7 +203,8 @@ export function EarningsHub() {
       >
         {events.length === 0 ? (
           <p className="px-5 py-6 text-[14px] text-ink-faint">
-            No earnings events this week. Click <span className="text-gold-ink">↻ Refresh from Finnhub</span> below
+            {earningsHubEmptyStateCopy(weekOf, todayET())} Click{" "}
+            <span className="text-gold-ink">↻ Refresh from Finnhub</span> below
             or add one manually.
           </p>
         ) : (
