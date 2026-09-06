@@ -17,13 +17,11 @@ import {
   getFilteredArticleCount,
   getFilteredArticleCategoryCounts,
 } from "@/lib/queries/research";
-import type { NoteType } from "@/lib/types";
+import { coerceNoteType } from "@/lib/notes/coerce";
 import { NotesView } from "../components/NotesView";
 import { ResearchFeedsView } from "../components/ResearchFeedsView";
 import { ResearchViewToggle } from "../components/ResearchViewToggle";
 import { ResearchDocumentsView } from "../components/ResearchDocumentsView";
-
-const NOTE_TYPES: readonly NoteType[] = ["journal", "earnings", "trade_thesis"];
 
 interface PageProps {
   searchParams: Promise<{
@@ -48,9 +46,7 @@ export default async function ResearchPage({ searchParams }: PageProps) {
   // guessable "all") must fall back to "no filter" rather than being cast
   // straight through — a bogus note_type matches no row and renders the
   // "No notes yet" empty state over a full notebook.
-  const noteType = NOTE_TYPES.includes(params.type as NoteType)
-    ? (params.type as NoteType)
-    : undefined;
+  const noteType = coerceNoteType(params.type);
   const securityId = params.security_id ?? params.security;
 
   // NotesView is the only consumer of the queries below, and EarningsView

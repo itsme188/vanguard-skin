@@ -1,10 +1,11 @@
 import type Database from "better-sqlite3";
 import { escapeLikeTerm } from "./like-escape";
+import type { NoteType } from "@/lib/types";
 
 // ─── Filter types ─────────────────────────────────────────────────
 
 export interface NotesFilters {
-  note_type?: "journal" | "earnings" | "trade_thesis";
+  note_type?: NoteType;
   security_id?: number;
   search?: string;
   start_date?: string;

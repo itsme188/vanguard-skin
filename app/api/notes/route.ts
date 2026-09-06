@@ -2,27 +2,26 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getNotesFiltered, getSecurityIdBySymbol } from "@/lib/queries/notes";
 import { createNote, updateNote, deleteNote } from "@/lib/mutations/notes";
-import type { NoteType, NoteSentiment } from "@/lib/types";
+import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
+import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
 import { todayET } from "@/lib/calendar/date-utils";
 
-const VALID_TYPES: NoteType[] = ["journal", "earnings", "trade_thesis"];
-const VALID_SENTIMENTS: NoteSentiment[] = [
-  "bullish",
-  "bearish",
-  "neutral",
-  "cautious",
-  "confident",
-];
+const VALID_TYPES = NOTE_TYPES;
+const VALID_SENTIMENTS = NOTE_SENTIMENTS;
 
 export async function GET(request: NextRequest) {
   try {
     const params = request.nextUrl.searchParams;
-    const noteType = params.get("type") as NoteType | null;
+    // ?type= and ?sentiment= are user-editable and shareable, so an unknown
+    // value (notably the guessable "all") must fall back to "no filter"
+    // rather than being cast straight through — a bogus value matches no
+    // row and renders an empty-notebook state over a full one.
+    const noteType = coerceNoteType(params.get("type"));
     const symbol = params.get("symbol");
     const search = params.get("search");
     const startDate = params.get("start_date");
     const endDate = params.get("end_date");
-    const sentiment = params.get("sentiment");
+    const sentiment = coerceNoteSentiment(params.get("sentiment"));
     const limit = params.get("limit");
 
     let securityId: number | undefined;
@@ -32,12 +31,12 @@ export async function GET(request: NextRequest) {
     }
 
     const notes = getNotesFiltered(db, {
-      note_type: noteType ?? undefined,
+      note_type: noteType,
       security_id: securityId,
       search: search ?? undefined,
       start_date: startDate ?? undefined,
       end_date: endDate ?? undefined,
-      sentiment: sentiment ?? undefined,
+      sentiment,
       limit: limit ? parseInt(limit, 10) : undefined,
     });
 
