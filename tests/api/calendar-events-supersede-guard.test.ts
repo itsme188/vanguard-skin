@@ -22,7 +22,7 @@ import { addDays, mondayOf, todayET } from "@/lib/calendar/date-utils";
 // Static import (vi.mock is hoisted above it): the route pulls a large module
 // graph, and paying that inside the first `it` blows the 5s test timeout on a
 // busy machine.
-import { POST } from "@/app/api/calendar/events/route";
+import { POST, PATCH } from "@/app/api/calendar/events/route";
 
 const hoisted = vi.hoisted(() => ({
   db: null as unknown as Database.Database,
@@ -65,9 +65,33 @@ function seedVendorRow(symbol: string, date: string, source = "finnhub"): number
     ).lastInsertRowid as number;
 }
 
+function seedManualRow(symbol: string, date: string): number {
+  return hoisted.db
+    .prepare(
+      `INSERT INTO calendar_events
+         (source, event_type, event_date, title, symbol, source_key, week_of, raw_json)
+       VALUES ('manual', 'earnings', ?, ?, ?, ?, ?, '{}')`,
+    )
+    .run(
+      date,
+      `${symbol} earnings`,
+      symbol,
+      `manual:${symbol}:${date}:earnings`,
+      mondayOf(date),
+    ).lastInsertRowid as number;
+}
+
 function postReq(body: unknown): Request {
   return new Request("http://test/api/calendar/events", {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function patchReq(body: unknown): Request {
+  return new Request("http://test/api/calendar/events", {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -79,6 +103,16 @@ function manualRows(symbol: string) {
       "SELECT id, event_date FROM calendar_events WHERE source = 'manual' AND symbol = ?",
     )
     .all(symbol) as Array<{ id: number; event_date: string }>;
+}
+
+function eventById(id: number) {
+  return hoisted.db
+    .prepare(
+      "SELECT id, event_date, description, COALESCE(superseded,0) AS superseded FROM calendar_events WHERE id = ?",
+    )
+    .get(id) as
+    | { id: number; event_date: string; description: string | null; superseded: number }
+    | undefined;
 }
 
 describe("POST /api/calendar/events — would_supersede_vendor guard", () => {
@@ -160,5 +194,91 @@ describe("POST /api/calendar/events — would_supersede_vendor guard", () => {
     expect(res.status).toBe(200);
     expect((await res.json()).success).toBe(true);
     expect(manualRows("ZQTEST")).toHaveLength(1);
+  });
+});
+
+// Landing-review sibling defect (PR #65): PATCH moving a manual row's
+// event_date to another week has byte-identical reconcile consequences to a
+// POST add there, but was left ungated. These pin the same guard on PATCH.
+describe("PATCH /api/calendar/events — would_supersede_vendor guard", () => {
+  // Far from both manualDate and vendorDate (30 days out) so the manual
+  // row's PRE-move position never itself interacts with either cluster —
+  // isolating what the guard evaluates to the row's proposed NEW date.
+  const farAwayDate = addDays(vendorDate, 30);
+
+  it("refuses with 409 and leaves the DB unchanged when the move would displace a vendor date in another week", async () => {
+    const vendorId = seedVendorRow("ZQTEST", vendorDate);
+    const manualId = seedManualRow("ZQTEST", farAwayDate);
+
+    const res = await PATCH(patchReq({ id: manualId, event_date: manualDate }));
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as {
+      success: boolean;
+      error: string;
+      code: string;
+      vendorEventId: number;
+      vendorDate: string;
+      vendorSource: string;
+    };
+    expect(body.success).toBe(false);
+    expect(body.code).toBe("would_supersede_vendor");
+    expect(body.vendorEventId).toBe(vendorId);
+    expect(body.vendorDate).toBe(vendorDate);
+    expect(body.vendorSource).toBe("finnhub");
+
+    // Refused means refused: the manual row never moved, and the vendor row
+    // is untouched.
+    expect(eventById(manualId)?.event_date).toBe(farAwayDate);
+    expect(eventById(vendorId)?.superseded).toBe(0);
+  });
+
+  it("moves the date on the same PATCH with force:true", async () => {
+    seedVendorRow("ZQTEST", vendorDate);
+    const manualId = seedManualRow("ZQTEST", farAwayDate);
+
+    const res = await PATCH(
+      patchReq({ id: manualId, event_date: manualDate, force: true }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean };
+    expect(body.success).toBe(true);
+    expect(eventById(manualId)?.event_date).toBe(manualDate);
+  });
+
+  it("never invokes the guard for a PATCH that only changes description (no event_date)", async () => {
+    const vendorId = seedVendorRow("ZQTEST", vendorDate);
+    // Seeded directly AT the conflicting date — if the route mistakenly ran
+    // the guard here (e.g. defaulting to existing.event_date as the "new"
+    // date instead of skipping), this would 409. It must not.
+    const manualId = seedManualRow("ZQTEST", manualDate);
+
+    const res = await PATCH(
+      patchReq({ id: manualId, description: "quarterly notes" }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean };
+    expect(body.success).toBe(true);
+    const row = eventById(manualId);
+    expect(row?.description).toBe("quarterly notes");
+    expect(row?.event_date).toBe(manualDate);
+    expect(eventById(vendorId)?.superseded).toBe(0);
+  });
+
+  it("403s a non-manual row's PATCH even with force:true", async () => {
+    const vendorId = seedVendorRow("ZQTEST", vendorDate);
+
+    const res = await PATCH(
+      patchReq({ id: vendorId, event_date: manualDate, force: true }),
+    );
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string; success?: boolean };
+    expect(body.success).not.toBe(true);
+    expect(body.error).toMatch(/finnhub/i);
+    // Nothing moved.
+    expect(eventById(vendorId)?.event_date).toBe(vendorDate);
   });
 });

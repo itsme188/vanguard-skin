@@ -275,3 +275,62 @@ describe("checkManualAddWouldSupersedeVendor — parity with reconcileEarningsDa
     expect(stateOf(vendorId).superseded).toBe(1);
   });
 });
+
+// excludeEventId — used by PATCH /api/calendar/events (route.ts) when the row
+// being re-dated is itself an existing manual row, not a fresh add. Without
+// it, the row's own pre-move occurrence would ride along in the gather as an
+// unrelated extra row and can corrupt the before/after diff (below).
+describe("checkManualAddWouldSupersedeVendor — excludeEventId (PATCH move dry run)", () => {
+  it("with excludeEventId, still catches a displacement at the NEW date", () => {
+    const vendorId = seedVendor({});
+    // Parked far from both MANUAL_DATE and VENDOR_DATE so its pre-move
+    // position can't interact with the cluster being evaluated below —
+    // isolating what excludeEventId actually does (drop it from the gather).
+    const { id: manualId } = insertCalendarEvent(db, {
+      symbol: "ZQTEST",
+      event_date: "2026-11-01",
+      event_type: "earnings",
+      event_time: "AMC",
+      week_of: mondayOf("2026-11-01"),
+    });
+
+    const result = checkManualAddWouldSupersedeVendor(db, {
+      symbol: "ZQTEST",
+      event_date: MANUAL_DATE,
+      event_type: "earnings",
+      today: TODAY,
+      excludeEventId: manualId,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.wouldSupersede.map((r) => r.eventId)).toEqual([vendorId]);
+  });
+
+  it("omitting excludeEventId lets the row's own pre-existing occurrence mask the displacement it would otherwise report", () => {
+    const vendorId = seedVendor({});
+    // This row already sits exactly at the date under test.
+    const { id: manualId } = insertCalendarEvent(db, {
+      symbol: "ZQTEST",
+      event_date: MANUAL_DATE,
+      event_type: "earnings",
+      event_time: "AMC",
+      week_of: mondayOf(MANUAL_DATE),
+    });
+
+    // Without excludeEventId, this row's un-excluded pre-move occurrence
+    // already clusters with (and out-ranks) the vendor row in BOTH the
+    // before and after gathers, so the diff the guard relies on sees no
+    // change and reports ok — exactly the bug excludeEventId exists to
+    // prevent when the caller is re-checking an existing row's own move.
+    const result = checkManualAddWouldSupersedeVendor(db, {
+      symbol: "ZQTEST",
+      event_date: MANUAL_DATE,
+      event_type: "earnings",
+      today: TODAY,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(manualId).toBeGreaterThan(0);
+    expect(vendorId).toBeGreaterThan(0);
+  });
+});
