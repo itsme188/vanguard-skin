@@ -15,6 +15,13 @@
  *   - anything else — absent, non-numeric, out of range — falls back exactly
  *     like an absent param: the current calendar year when it has sales,
  *     otherwise the most recent year that does, otherwise the calendar year.
+ *
+ * Parsing uses `Number()`, not `parseInt` — `parseInt` stops at the first
+ * non-digit and silently accepts the leading digits ("2024abc" -> 2024,
+ * "2024.9" -> 2024), which is stricter than nothing but looser than the API
+ * it claims to mirror: `/api/tax-report` (app/api/tax-report/route.ts) uses
+ * `Number(yearParam)`, which is `NaN` for both. `Number.isInteger(Number(raw))`
+ * matches that contract exactly.
  */
 export const TAX_YEAR_MIN = 2000;
 export const TAX_YEAR_MAX = 2100;
@@ -25,7 +32,7 @@ export function resolveSelectedYear(
   currentCalendarYear: number,
 ): number {
   if (raw !== undefined && raw !== "") {
-    const parsed = parseInt(raw, 10);
+    const parsed = Number(raw);
     if (Number.isInteger(parsed) && parsed >= TAX_YEAR_MIN && parsed <= TAX_YEAR_MAX) {
       return parsed;
     }
