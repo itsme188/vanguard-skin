@@ -1,0 +1,4 @@
+interface:
+  display_name: "Portfolio Desk Session End"
+  short_description: "Close out work, reconcile records, and hand off"
+  default_prompt: "Use $session-end to close out this Portfolio Desk session, following my existing approvals and reporting verification, deployment, and remaining work."

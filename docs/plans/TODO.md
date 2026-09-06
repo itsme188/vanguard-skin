@@ -11,6 +11,8 @@
 
 ## User roadmap (added 2026-07-03)
 
+- [ ] **Codex reliability fixes — implemented, awaiting browser acceptance and landing (2026-09-05):** Research background-sync cooldown now requires terminal SSE completion; Security Detail upcoming events and regression-cache dates use ET. Seven changed files in `/private/tmp/portfolio-desk-astra-2026-09-04`, branch `codex/shabbos-reliability-2026-09-04`; full suite 8,231 passed on the pre-E/F base. Recovery patch and evidence in gitignored `docs/private/astra-reliability-2026-09-05.{patch,md}`. Finish browser verification, integrate with current main, verify the combined tree, then commit/ship with approval. See `docs/HANDOFF-CODEX-2026-09-05.md`. This tracks the Research debounce and two security-date portions of the existing pairing-session follow-ups; the broader UTC sweep remains open.
+
 > R1/R1b (away-from-home refresh), R2 (long-email ingestion), R3 (Defense/Hedging tab), and the earnings skip-touch fix all shipped — see archive.
 
 - [ ] **Flaky under full-suite load (2026-09-03):** `tests/print-watch/watcher.test.ts` failed one timing assertion in each of two full parallel runs in the main checkout (different test each time: "bursts an immediate extra poll", "baselines the IR feed on the first poll") right after the slice A merge, in an area the merge did not touch; passes 49/49 in isolation and under a 119-file partial load, and the same content passed four full runs in a clean worktree. Difference: `data/print-watch` fixtures in the main checkout enable three env-gated print-watch tests (`replay`, `representations`) that only run there. Fix the watcher tests' reliance on wall-clock cadence (fake timers) or isolate them from the fixture-gated files.

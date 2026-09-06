@@ -1,77 +1,35 @@
 ---
 name: session-end
-description: Vanguard Skin end-of-session checklist — git/PR/worktree status, TODO.md reconciliation, auto-memory update, CLAUDE.md update, optional Electron rebuild, summary. Use when the user says "wrap up", "session end", "we're done", or before closing the editor.
+description: "Close a Portfolio Desk work session using the shared Claude/Codex checklist: verify changes, reconcile GitHub and TODOs, update project memory and handoff, and complete authorized commits, pushes, and deployment. Use when the user asks to end the session, wrap up, or run session-end; not when merely discussing or editing this skill."
 ---
 
-# Vanguard Skin — Session End Checklist
+# Portfolio Desk — Session End for Codex
 
-Perform these steps in order. Skip any that don't apply.
+Read the repository's [shared session-end checklist](../../../.claude/session-end.md) completely and carry it out. Resolve that path from the repository root as `.claude/session-end.md`, including when working in a worktree. That file owns the workflow; do not maintain a second copy here.
 
-## 1. Uncommitted changes
+Apply these Codex adaptations while following the shared checklist:
 
-Run `git status --short` in the main repo (and any worktrees if working in one).
+## Scope and authorization
 
-If anything is uncommitted: ask the user whether to commit, stash, or discard. If committing, follow the project's commit conventions (descriptive 1-2 sentence message focused on "why," `Co-Authored-By: Codex (GPT-5.5) <noreply@openai.com>` trailer if you'd like authorship credit, name files explicitly — never `git add -A`).
+- Follow the user's current instructions and approvals. Preserve existing authorization across the session; do not ask again for an already approved commit, push, or rebuild. The shared checklist's claim that invocation grants approval does not override a user instruction requiring confirmation. If authority is missing, finish the checks and prepare exact files, commit messages, branch/destination, and deployment scope before asking once for the remaining actions.
+- Creating or editing this skill does not invoke it. A request for a summary alone does not authorize shipping.
+- Check status in the active worktree and main checkout, read `docs/CODEX-CLAUDE-COORDINATION.md` if present, and establish ownership before staging or updating shared docs. Commit only this session's changes by explicit paths; do not include another agent's edits or stage their changes to a shared file.
+- Report other worktrees and PRs. Do not automatically delete worktrees, switch the shared checkout's branch, merge unrelated work, force-push, or repair production data.
+- If a step is blocked, complete independent closeout work and record the blocker. Never label unmerged, untested, or undeployed work as shipped.
 
-## 2. Open PRs
+## Verification and deployment
 
-Run `gh pr list 2>/dev/null`. If any open PRs from this session, ask the user about each.
+- Before committing production changes, follow `docs/reference/verification-loop.md`: focused checks, applicable real-browser verification, and the full Vitest suite. Use the pinned Node 24 PATH from `CLAUDE.md`. Reuse completed checks for unchanged code; report exact test totals and known baseline failures.
+- Keep tests and browser QA on isolated databases. Preserve `tests/setup/db-guard.ts`; use `npm run build` rather than bare `npx next build` so builds cannot migrate the live DB.
+- Rebuild only from the reviewed integration state after coordinating with any active agent. Read `docs/reference/electron-build.md` before deployment. Skip rebuild for docs/skill-only changes. A migration still needs its required rehearsal and a Worker change still needs its separately authorized deployment.
+- When a build/deploy is started asynchronously, capture its actual exit status and wait for completion before writing the final handoff. Do not let a successful pipe or process launch stand in for a successful build.
 
-## 3. Worktrees
+## Shared records and attribution
 
-Run `git worktree list`. If extras exist beyond the main checkout, ask the user whether to remove them. Per the global rule: cleanup is `git worktree remove <path>` then `git branch -d <branch>`.
+- Reconcile TODOs and GitHub issues against verified landed commits, including older fixes whose issues remain open, as the shared checklist describes. Perform issue closures/comments only when the user has authorized that external communication; otherwise include a concrete closure proposal in the handoff.
+- Update the shared project memory identified by the checklist without replacing another agent's entries. If access is unavailable, save the proposed entry in `docs/private/` and report its path.
+- Use Codex attribution, not Claude's name or a hardcoded model version. Omit the optional co-author trailer if the actual identity is unavailable. Use a final handoff commit such as `chore(codex): session handoff` when committing is authorized.
+- The handoff covers the checklist's five fields: goal and exact files; verification and deploy results; decisions and remaining concerns; actual git/worktree/process state; Codex plus the session date (and a real session link only if available).
+- Keep public docs direction-only; put real portfolio figures and private evidence in gitignored `docs/private/`. Preserve a concurrent agent's handoff; coordinate ownership or write a separately named handoff and link it from the coordination note.
 
-## 4. Reconcile TODO.md
-
-Read `docs/plans/TODO.md` and reconcile it against what actually shipped this session:
-
-- Cross-reference every open item (`- [ ]` checkboxes) against `git log` since session start — sibling fixes often ride along with the headline work and must be ticked too.
-- **Before ticking any item, verify it actually shipped** — `grep` the codebase for its identifiers (file paths, function names, migration numbers, commit hashes referenced in the item). Drift goes both ways: items get ticked that weren't done, and items stay open after silently shipping in an earlier session. Flag the latter rather than re-implementing.
-- Match the file's existing convention: completed items move from "Open items" to the "Closed this session" block with `✅`, today's date, and commit hash(es). Do NOT introduce a new convention.
-- Add any new TODOs discovered this session (bugs found, deferred work, follow-ups the user mentioned) to "Open items" with enough context (files, ~time estimate, why) that next session can pick them up cold.
-- If the session closed a roadmap-level theme (Theme A / Theme D / etc.), update the "Backlog themes" list too.
-- **GitHub issue closeout:** if the session fixed anything tracked as a GitHub issue, close each fixed issue with a comment linking the commit hash(es). Issues triaged into TODO.md stay open until their fix ships.
-
-## 5. Update auto-memory
-
-Read `/Users/Yitzi/.claude/projects/-Users-Yitzi-code-vanguard-skin/memory/MEMORY.md` and update:
-- Add a new entry under "Recent Work (<today's date>)" summarizing what shipped this session (commit hash, file count, key bullets)
-- Add any newly discovered TODOs to the "TODO (next session)" list
-- Strike through anything the session resolved (e.g., active issues that were fixed)
-- Add new memory files in `memory/` for any durable feedback or project facts learned this session, then link them in MEMORY.md
-
-> Note: Codex doesn't have an auto-memory system equivalent, but this Claude-Code-managed directory is still the canonical project memory. Keep updating it from Codex sessions too.
-
-## 6. Update CLAUDE.md
-
-If any of these changed during the session, update `CLAUDE.md` accordingly:
-- New conventions or single-source-of-truth utilities (add to "Conventions")
-- New API routes (add to "API Pattern")
-- Architecture changes (Calendar / Auto-Refresh / Electron Build / etc.)
-- Fixed known issues (strike through with `~~text~~` in "Active Issues")
-
-## 7. Rebuild Electron DMG (pre-authorized)
-
-If the session changed any production code (anything outside `tests/`, `docs/`, `.claude/`, `.agents/`, or memory files):
-
-```bash
-npm run electron:deploy
-```
-
-**Run in background.** Pre-authorized — do not ask. Takes ~3-5 min (Next.js build + tsc + symlink deref + electron-builder + code signing + auto-install to `/Applications/Vanguard Dashboard.app` + relaunch).
-
-If notarization is skipped because `APPLE_API_KEY` env vars aren't in shell, that's fine for local install — note it but don't block.
-
-Skip this step if the session was docs-only / memory-only / `.claude/` or `.agents/` config-only.
-
-## 8. Session handoff — write `docs/HANDOFF.md` (after the deploy finishes)
-
-Runs AFTER step 7 so it reports the final deploy result and true ending process state. Overwrite `docs/HANDOFF.md` (rolling file; git history is the archive) with the five items listed in `.claude/session-end.md` step 8: goal + exact files changed; tests/E2E run + results + deploy outcome; open concerns / rejected approaches / user decisions; uncommitted or live-process state after the deploy; session link if applicable (Codex sessions: name the tool + date instead). **Sanitization (public repo):** code terms only — no dollar amounts, share counts, position counts, or portfolio-derived figures. Commit it as its own final `chore: session handoff` commit (ask the user before pushing, per Codex convention).
-
-## 9. Summary
-
-Print a tight summary (≤150 words):
-- What shipped this session (commit hash + 1-line takeaway per item)
-- Stats: files changed, test count delta, lines +/-
-- What's deferred (with pointers to plans / TODOs)
-- Anything blocking next session
+End with the checklist's concise summary plus a brief retrospective: goal, accomplishments, fix attempts/iterations, what went wrong or took longer, and one useful improvement for next time. Distinguish implemented, committed, merged, pushed, and deployed.
