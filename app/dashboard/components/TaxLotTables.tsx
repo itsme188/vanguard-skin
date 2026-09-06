@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import type { TaxLotWithSecurity, TaxLotSaleWithDetails } from "@/lib/queries/tax-lots";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { Money, PrivateText, Shares } from "@/lib/privacy/components";
+import { Chip } from "./Chip";
 import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
@@ -175,6 +176,7 @@ export function OpenLotsTable({
                     )}
                     <td className="px-4 py-3 font-mono font-medium text-ink">
                       <SymbolLink securityId={lot.security_id} symbol={lot.symbol} />
+                      {lot.is_short === 1 && <> <Chip tone="gold" size="xs">Short sale</Chip></>}
                     </td>
                     <td className="hidden md:table-cell px-4 py-3 text-ink-faint font-mono text-xs">{lot.acquisition_date}</td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">

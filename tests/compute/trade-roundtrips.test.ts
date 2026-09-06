@@ -50,6 +50,7 @@ function createTestDb(): Database.Database {
       price_per_share REAL,
       amount REAL,
       fees REAL DEFAULT 0,
+      notes TEXT,
       FOREIGN KEY (account_id) REFERENCES accounts(id)
     );
 

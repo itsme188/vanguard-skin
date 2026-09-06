@@ -1,3 +1,4 @@
+import { ibkrTradeDirectionNote } from "../ibkr-trade-direction";
 import type {
   ParsedImportResult,
   ParsedTransaction,
@@ -245,6 +246,7 @@ export function parseIbkrActivity(
   const idxPrice = tCol["T. Price"] ?? 7;
   const idxProceeds = tCol["Proceeds"] ?? 9;
   const idxComm = tCol["Comm/Fee"] ?? 10;
+  const idxCode = tCol["Code"];
 
   for (const row of rows) {
     if (
@@ -264,6 +266,7 @@ export function parseIbkrActivity(
       if (isNaN(quantity) || !symbol) continue;
 
       const isBuy = quantity > 0;
+      const directionNote = ibkrTradeDirectionNote(idxCode == null ? "" : row.fields[idxCode] ?? "", dateTime);
 
       // Real statements label option trades "Equity and Index Options" —
       // match by substring like the Open Positions section does, never by
@@ -283,6 +286,7 @@ export function parseIbkrActivity(
           amount: proceeds,
           pricePerShare: tradePrice,
           fees: Math.abs(commFee),
+          ...(directionNote ? { notes: directionNote } : {}),
           sourceKey: uniqueKey(
             `ibkr:trade:${tradeDate}:${effectiveSymbol}:${quantity}:${proceeds}`
           ),
@@ -308,6 +312,7 @@ export function parseIbkrActivity(
           amount: proceeds,
           pricePerShare: tradePrice,
           fees: Math.abs(commFee),
+          ...(directionNote ? { notes: directionNote } : {}),
           sourceKey: uniqueKey(
             `ibkr:trade:${tradeDate}:${symbol}:${quantity}:${proceeds}`
           ),

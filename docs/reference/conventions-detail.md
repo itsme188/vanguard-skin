@@ -172,8 +172,10 @@ Canonical batch 17 (`dashboard_IBKR_transactions.csv`, the Co-Work-era backfill)
   delete them**; the occupied `source_key`s are what keeps a 2024-statement re-import a no-op.
 - Acceptance tool: `scripts/audit-ibkr-ledger-vs-broker.ts` (`--as-of` for statement-lag). Rebuild
   driver: `scripts/rebuild-ibkr-ledger.ts` (single-use; the batch-17 gate now intentionally fails).
-- **Negative `holding_period_days` in `tax_lot_sales` = genuine short round-trips** (a sale paired
-  with a later cover, 1099-B-consistent) — not a defect; do not "fix" the pairing.
+- A negative duration alone does **not** prove a short. Legacy IBKR imports discarded the
+  broker's opening/closing codes, so the old two-pass engine could consume future long lots.
+  The directional replay uses broker evidence or explicit short types; missing opening history
+  produces warnings rather than consuming a future purchase.
 - Known residual: the statement `Corporate Actions` section is unparsed — CRWD's 2026-07-01 4:1 split
   is a +120-share ledger gap (TODO item, same family as the VGT split repair).
 
@@ -209,8 +211,9 @@ stay per-unit prices, untouched.
   `cost_basis`), basis = what the cover paid — no post-hoc sign negation. §1233 makes every short
   gain/loss short-term regardless of holding period (the substantially-identical-property long-term-
   loss exception is a documented disclosed limitation).
-- **Negative `holding_period_days` in `tax_lot_sales` = genuine short round-trips**, kept signed by
-  design — existing surfaces key off `is_short`, not the sign; do not "fix" it to positive.
+- Explicit short lots (`is_short=1`) retain the signed-duration storage convention. Their opening
+  date is on/before the cover date. Reviews use positive elapsed days and explicit direction;
+  never infer direction from a negative duration on an unflagged long lot.
 - **Anniversary long-term test** (`isLongTermHolding`): the IRS "more than one year" rule is the
   CALENDAR anniversary of acquisition, not a fixed 365-day count — a fixed count misclassifies a
   Feb-29 acquisition's anniversary sale as long-term one day early. Single-sourced for
@@ -1499,3 +1502,30 @@ touch (4), the key is silently absent in the DMG (it works in `npm run dev` beca
 `bootstrapFromEnvLocal` runs every launch: first-run imports all mapped keys; an idempotent backfill
 pass seeds any *empty* setting from the dev `~/code/vanguard-skin/.env.local` (never overwrites user
 edits), so existing installs self-heal when new keys are added.
+
+
+### Directional lot replay and saved reviews (2026-09-06)
+
+IBKR Trades.Code O/C evidence and execution time are retained by `lib/import/ibkr-trade-direction.ts`
+in the existing notes field. Transaction types, cash and source keys stay stable. Re-import remains
+idempotent; it does not upgrade existing rows. The dry-run-default
+`scripts/backfill-ibkr-trade-direction.ts` adds evidence only to exact batch/key/date/symbol/quantity/
+amount matches from original statements; it backs up before `--apply` and invalidates tax acceptance.
+
+The lot engine replays openings and closes chronologically, respecting broker execution time,
+position side, and existing end-of-day exercise/split order. An O+C trade closes its existing side
+and opens the residual only when available lots support the split. Quantities, fees and exercise
+premium must conserve across both portions. Do not turn every uncovered sale into a short: the
+ledger may lack opening history. Forex is not inferred through the stock/option direction path.
+
+Convention marker **v3** retains the v2 economic-dollar basis and adds directional matching.
+An old v2 recompute/acceptance cannot unlock filing exports; a v3 recompute requires fresh broker
+acceptance. The existing recompute script name remains `recompute-tax-lots-v2.ts` for compatibility.
+No schema migration is required. Rehearse the evidence backfill and recompute on a disposable copy
+before proposing any live repair; warnings are unresolved history, not successful reconciliation.
+
+Saved trade reviews are frozen snapshots. `getStaleTradeReviewIds` compares dates, quantity and
+stored dollars against current lots; Analysis and Security Detail flag stale reviews, and prior
+stale narratives are excluded from new review prompts. Recomputing lots never silently rewrites
+saved metrics or AI prose. Review-generation durations are nonnegative for correctly modelled
+shorts; stored short durations remain signed, and same-day direction comes from the closing leg.

@@ -45,7 +45,11 @@ export function bumpTaxInputGeneration(db: Database.Database): number {
 }
 
 export function stampTaxLotsConvention(db: Database.Database): void {
-  writeSetting(db, CONVENTION_KEY, `v2:${getTaxInputGeneration(db)}`);
+  // A new engine convention cannot revive acceptance of the old engine's output.
+  if (!readSetting(db, CONVENTION_KEY)?.startsWith("v3:")) {
+    writeSetting(db, ACCEPTANCE_KEY, JSON.stringify({ generation: -1, coverage: [] }));
+  }
+  writeSetting(db, CONVENTION_KEY, `v3:${getTaxInputGeneration(db)}`);
 }
 
 export function stampBrokerAcceptance(
@@ -62,7 +66,7 @@ export function stampBrokerAcceptance(
 export function getTaxConventionState(db: Database.Database): TaxConventionState {
   const generation = getTaxInputGeneration(db);
   const conv = readSetting(db, CONVENTION_KEY);
-  const m = conv == null ? null : /^v2:(\d+)$/.exec(conv);
+  const m = conv == null ? null : /^v3:(\d+)$/.exec(conv);
   const recomputeCurrent = m != null && Number.parseInt(m[1], 10) === generation;
 
   let acceptance: TaxConventionState["acceptance"] = { current: false, coverage: [] };

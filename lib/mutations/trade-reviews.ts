@@ -262,7 +262,7 @@ export function saveTradeRoundtrips(
         rt.exitPrice,
         rt.exitQuantity,
         rt.exitProceeds,
-        rt.holdingDays,
+        rt.isShort ? -Math.abs(rt.holdingDays) : rt.holdingDays,
         rt.realizedPnl,
         rt.returnPct,
       ];

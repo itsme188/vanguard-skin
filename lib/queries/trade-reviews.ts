@@ -1,3 +1,5 @@
+import { getStaleTradeReviewIds } from "./trade-review-pairings";
+import { readIbkrTradeDirection } from "@/lib/import/ibkr-trade-direction";
 import type Database from "better-sqlite3";
 import type { TradeReview, TradeRoundtrip } from "@/lib/types";
 
@@ -86,10 +88,10 @@ export function getTradeReviewByPeriod(
 export function getTradeRoundtrips(
   db: Database.Database,
   reviewId: number
-): (TradeRoundtrip & { security_type: string | null; is_synthetic_close: boolean })[] {
+): (TradeRoundtrip & { security_type: string | null; is_synthetic_close: boolean; is_short: boolean })[] {
   const rows = db
     .prepare(
-      `SELECT trt.*, s.security_type,
+      `SELECT trt.*, s.security_type, t.type AS close_type, t.notes AS close_notes,
               (t.type = 'RECONCILE_CLOSE') AS is_synthetic_close
        FROM trade_roundtrips trt
        LEFT JOIN securities s ON s.id = trt.security_id
@@ -98,9 +100,16 @@ export function getTradeRoundtrips(
        ORDER BY trt.exit_date, trt.symbol`
     )
     .all(reviewId) as Array<
-    TradeRoundtrip & { security_type: string | null; is_synthetic_close: number | null }
+    TradeRoundtrip & { security_type: string | null; is_synthetic_close: number | null; close_type: string | null; close_notes: string | null }
   >;
-  return rows.map((r) => ({ ...r, is_synthetic_close: Boolean(r.is_synthetic_close) }));
+  return rows.map(({ close_type, close_notes, ...r }) => {
+    const type = close_type?.toUpperCase();
+    const evidence = readIbkrTradeDirection(close_notes);
+    const isShort = r.entry_date <= r.exit_date &&
+      (type === "BUY_TO_COVER" || type === "BUY_TO_CLOSE" ||
+       ((type === "BUY" || type === "BUY_TO_OPEN") && evidence?.close === true) || r.holding_days < 0);
+    return { ...r, is_synthetic_close: Boolean(r.is_synthetic_close), is_short: isShort };
+  });
 }
 
 /**
@@ -116,7 +125,7 @@ export function getPriorReviewSummaries(
   const rows = db
     .prepare(
       `SELECT
-        period_start, period_end,
+        id, period_start, period_end,
         total_trades, win_rate, total_realized_pnl,
         avg_holding_days, profit_factor,
         review_markdown, cumulative_patterns
@@ -126,6 +135,7 @@ export function getPriorReviewSummaries(
        LIMIT ?`
     )
     .all(accountId, beforePeriod, limit) as Array<{
+    id: number;
     period_start: string;
     period_end: string;
     total_trades: number;
@@ -137,7 +147,8 @@ export function getPriorReviewSummaries(
     cumulative_patterns: string | null;
   }>;
 
-  return rows.map((r) => ({
+  const stale = getStaleTradeReviewIds(db, rows.map((r) => r.id));
+  return rows.filter((r) => !stale.has(r.id)).map((r) => ({
     periodStart: r.period_start,
     periodEnd: r.period_end,
     totalTrades: r.total_trades,

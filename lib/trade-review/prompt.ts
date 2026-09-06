@@ -128,7 +128,7 @@ function buildUserPrompt(
   // Grouped trade table
   parts.push(`\n## This Month's Trades\n`);
   parts.push(
-    "| # | Symbol | Entry Date(s) | Avg Entry | Exit Date | Exit Price | Qty | Days | P&L | Return |"
+    "| # | Symbol / Direction | Entry Date(s) | Avg Entry | Exit Date | Exit Price | Qty | Days | P&L | Return |"
   );
   parts.push(
     "|---|--------|---------------|-----------|-----------|------------|-----|------|-----|--------|"
@@ -142,7 +142,7 @@ function buildUserPrompt(
         : `${trade.earliestEntryDate} – ${trade.latestEntryDate}`;
 
     parts.push(
-      `| ${i + 1} | ${trade.symbol} | ${entryDates} | $${trade.avgEntryPrice.toFixed(2)} | ${trade.exitDate} | $${trade.exitPrice.toFixed(2)} | ${formatQty(trade.totalQuantity)} | ${trade.avgHoldingDays} | ${pnlSign}$${trade.realizedPnl.toFixed(2)} | ${pnlSign}${trade.returnPct.toFixed(1)}% |`
+      `| ${i + 1} | ${trade.symbol}${trade.isShort ? " (short: sell → cover)" : " (long)"} | ${entryDates} | $${trade.avgEntryPrice.toFixed(2)} | ${trade.exitDate} | $${trade.exitPrice.toFixed(2)} | ${formatQty(trade.totalQuantity)} | ${trade.avgHoldingDays} | ${pnlSign}$${trade.realizedPnl.toFixed(2)} | ${pnlSign}${trade.returnPct.toFixed(1)}% |`
     );
 
     // Show lot breakdown for multi-lot trades

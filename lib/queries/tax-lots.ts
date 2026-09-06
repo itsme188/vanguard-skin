@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 
 export interface TaxLotWithSecurity {
+  is_short: number;
   id: number;
   account_id: number;
   account_name: string;
@@ -133,23 +134,27 @@ const ENGINE_ESTIMATED_COLUMNS = `
         COALESCE(SUM(CASE WHEN ${ENGINE_ESTIMATED} AND tls.is_long_term = 0 THEN 1 ELSE 0 END), 0) AS engineEstimatedShortTermSales,
         COALESCE(SUM(CASE WHEN ${ENGINE_ESTIMATED} AND ${USD_ONLY} AND tls.is_long_term = 0 THEN tls.realized_gain_loss ELSE 0 END), 0) AS engineEstimatedShortTermGain`;
 
-export function getOpenTaxLots(db: Database.Database): TaxLotWithSecurity[] {
+function remainingLotBasisSql(): string {
+  return "(CASE WHEN tl.quantity_acquired != 0 THEN tl.cost_basis * tl.quantity_remaining / tl.quantity_acquired ELSE 0 END) * COALESCE(fx.usd_per_unit, 1)";
+}
+
+export function getOpenTaxLots(db: Database.Database, securityId?: number): TaxLotWithSecurity[] {
   return db
     .prepare(
       `SELECT
-        tl.id, tl.account_id, a.name AS account_name,
+        tl.id, tl.account_id, a.name AS account_name, tl.is_short,
         tl.security_id, s.symbol, s.name AS security_name,
         tl.acquisition_date, tl.acquisition_price,
         tl.quantity_acquired, tl.quantity_remaining,
         tl.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis, tl.is_from_opening_snapshot,
-        ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS adjusted_cost_basis,
+        ${remainingLotBasisSql()} AS adjusted_cost_basis,
         p.close_price AS current_price,
         CASE WHEN p.close_price IS NOT NULL
           THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
           ELSE NULL END AS current_value,
         CASE WHEN p.close_price IS NOT NULL
-          THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-               - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+          THEN (CASE WHEN tl.is_short=1 THEN -1 ELSE 1 END) * (${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+               - ${remainingLotBasisSql()})
           ELSE NULL END AS unrealized_gain
       FROM tax_lots tl
       JOIN accounts a ON a.id = tl.account_id
@@ -157,10 +162,10 @@ export function getOpenTaxLots(db: Database.Database): TaxLotWithSecurity[] {
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       LEFT JOIN prices p ON p.security_id = tl.security_id
         AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = tl.security_id)
-      WHERE tl.quantity_remaining > 0
+      WHERE tl.quantity_remaining > 0 AND (? IS NULL OR tl.security_id = ?)
       ORDER BY a.name, s.symbol, tl.acquisition_date`
     )
-    .all() as TaxLotWithSecurity[];
+    .all(securityId ?? null, securityId ?? null) as TaxLotWithSecurity[];
 }
 
 export function getClosedTaxLotSales(
@@ -217,8 +222,8 @@ export function getTaxLotSummary(
         COUNT(*) AS totalOpenLots,
         COALESCE(SUM(
           CASE WHEN p.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-                 - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+            THEN (CASE WHEN tl.is_short=1 THEN -1 ELSE 1 END) * (${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+                 - ${remainingLotBasisSql()})
             ELSE 0 END
         ), 0) AS totalUnrealizedGain
       FROM tax_lots tl

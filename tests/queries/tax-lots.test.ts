@@ -1,3 +1,4 @@
+import { marketValue } from "@/lib/valuation";
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
@@ -29,6 +30,8 @@ function seedBuy(
   qty: number,
   price: number
 ): void {
+  const security = db.prepare("SELECT security_type, COALESCE(multiplier,1) multiplier FROM securities WHERE id=?")
+    .get(securityId) as { security_type: string; multiplier: number };
   db.prepare(
     `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount, source_key)
      VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?)`
@@ -38,7 +41,7 @@ function seedBuy(
     date,
     qty,
     price,
-    -(qty * price),
+    -marketValue(qty, price, security.security_type, security.multiplier),
     `buy-${accountId}-${securityId}-${date}-${Math.random()}`
   );
 }
