@@ -192,6 +192,13 @@ export function getLatestDailyBar(
  * floor only counts bars with a positive low — a security with a pile of
  * zero-low bars and few real ones should read as thin history, not padded
  * out by corrupt rows.
+ *
+ * `startDate`/`endDate` use the same priced-bar predicate (`low > 0 AND
+ * high > 0`) rather than a plain MIN/MAX(bar_date) over every row — a raw
+ * MAX(bar_date) can name a trailing corrupt bar that contributed nothing to
+ * either aggregate. `endDate` feeds `week52AsOf` and the bars-vs-quote
+ * freshness arbitration in `lib/queries/security-detail.ts`, so it must
+ * always name a bar that actually contributed a real price.
  */
 export function get52WeekRange(
   db: Database.Database,
@@ -202,8 +209,8 @@ export function get52WeekRange(
       `SELECT
         MAX(CASE WHEN high > 0 THEN high END) AS high,
         MIN(CASE WHEN low > 0 THEN low END) AS low,
-        MIN(bar_date) AS startDate,
-        MAX(bar_date) AS endDate,
+        MIN(CASE WHEN low > 0 AND high > 0 THEN bar_date END) AS startDate,
+        MAX(CASE WHEN low > 0 AND high > 0 THEN bar_date END) AS endDate,
         SUM(CASE WHEN low > 0 THEN 1 ELSE 0 END) AS n
        FROM ohlcv_bars
        WHERE security_id = ?
@@ -217,11 +224,19 @@ export function get52WeekRange(
     | { high: number | null; low: number | null; startDate: string | null; endDate: string | null; n: number }
     | undefined;
 
-  if (!row || row.high == null || row.low == null || row.n < 10) return null;
+  if (
+    !row ||
+    row.high == null ||
+    row.low == null ||
+    row.startDate == null ||
+    row.endDate == null ||
+    row.n < 10
+  )
+    return null;
   return {
     high: row.high,
     low: row.low,
-    startDate: row.startDate as string,
-    endDate: row.endDate as string,
+    startDate: row.startDate,
+    endDate: row.endDate,
   };
 }

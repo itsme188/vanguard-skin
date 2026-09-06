@@ -154,20 +154,66 @@ describe("ohlcv queries — KPI row", () => {
     it("ignores corrupt zero-high bars when computing the 52-week high", () => {
       const id = seedSecurity(db, "CORRUPTHIGH");
       seedDailyBars(db, id, "2026-04-23", 30, 100, 0.1);
+      // Corrupting the LATEST bar (2026-04-23) matters: with positive drift,
+      // that is the date that WOULD be the true max/endDate if the guard
+      // were absent. If we corrupted an earlier date instead, the real max
+      // (still sitting on the last bar) would mask a missing guard and this
+      // test would pass for the wrong reason.
       const trueMaxHigh = db
         .prepare(
-          `SELECT MAX(high) AS high FROM ohlcv_bars WHERE security_id = ? AND high > 0`,
+          `SELECT MAX(high) AS high FROM ohlcv_bars
+           WHERE security_id = ? AND bar_date != ? AND high > 0`,
         )
-        .get(id) as { high: number };
-      // A corrupt bar with high = 0 (and low = 0) must not drag the high
-      // down or otherwise be counted as an extreme.
+        .get(id, "2026-04-23") as { high: number };
       db.prepare(
         `UPDATE ohlcv_bars SET open = 50, high = 0, low = 0, close = 0
          WHERE security_id = ? AND bar_date = ?`,
-      ).run(id, "2026-04-22");
+      ).run(id, "2026-04-23");
       const range = get52WeekRange(db, id);
       expect(range).not.toBeNull();
       expect(range!.high).toBeCloseTo(trueMaxHigh.high, 6);
+      // Without the guard the corrupt bar's high (0) can't produce this —
+      // but a stale MAX(bar_date) picking up the corrupt row would also be
+      // wrong in a different way (see the endDate test below).
+      expect(range!.high).toBeLessThan(103.9);
+    });
+
+    it("returns null once corrupt bars push the priced-bar count below the n>=10 floor, even with 12 raw rows", () => {
+      const id = seedSecurity(db, "THINPRICED");
+      seedDailyBars(db, id, "2026-04-23", 12, 100, 0.1);
+      // 12 raw rows exist, but 5 are corrupted (zero-priced) — only 7 bars
+      // carry a positive low, below the n >= 10 floor. A floor that counted
+      // raw rows (or that dropped back to plain COUNT(*)) would wrongly
+      // return a range here.
+      const corruptDates = [
+        "2026-04-12",
+        "2026-04-13",
+        "2026-04-14",
+        "2026-04-15",
+        "2026-04-16",
+      ];
+      for (const d of corruptDates) {
+        db.prepare(
+          `UPDATE ohlcv_bars SET high = 0, low = 0, close = 0
+           WHERE security_id = ? AND bar_date = ?`,
+        ).run(id, d);
+      }
+      expect(get52WeekRange(db, id)).toBeNull();
+    });
+
+    it("endDate ignores a trailing corrupt bar and names the last bar that actually contributed", () => {
+      const id = seedSecurity(db, "TRAILCORRUPT");
+      seedDailyBars(db, id, "2026-04-23", 30, 100, 0.1);
+      // Corrupt only the very latest bar. A plain MAX(bar_date) would still
+      // report 2026-04-23 as endDate even though that row contributed no
+      // real price — endDate must fall back to the prior (real) bar.
+      db.prepare(
+        `UPDATE ohlcv_bars SET open = 50, high = 0, low = 0, close = 0
+         WHERE security_id = ? AND bar_date = ?`,
+      ).run(id, "2026-04-23");
+      const range = get52WeekRange(db, id);
+      expect(range).not.toBeNull();
+      expect(range!.endDate).toBe("2026-04-22");
     });
   });
 
