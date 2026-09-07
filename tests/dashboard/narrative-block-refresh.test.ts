@@ -41,3 +41,92 @@ describe("formatGeneratedAt (as-of caption date, ET-anchored)", () => {
     expect(formatGeneratedAt("not-a-date")).toBeNull();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// QA 2026-09-07 — analysis-factor-narrative--refresh-regenerate-429-silent-
+// no-feedback. "Refresh to regenerate" sits INSIDE the drift banner, but the
+// only place the component rendered a refresh status was the footer line
+// below the whole prose block (~128px away — the same distance problem the
+// banner button itself was added to solve). A rate-limited click therefore
+// read as "the button does nothing", and the copy it did render named
+// neither the limit nor a retry in words a reader would recognise.
+//
+// The failure copy is now a pure exported helper so it can be tested here
+// (this repo has no jsdom/RTL harness), and the status renders under the
+// button that was actually pressed.
+import { describeRefreshFailure } from "@/app/dashboard/components/analysis/NarrativeBlock";
+import { readFileSync } from "node:fs";
+
+describe("describeRefreshFailure (Refresh to regenerate — domain-language status)", () => {
+  const HOUR = 60 * 60 * 1000;
+  const MINUTE = 60 * 1000;
+
+  it("explains a 429 as a refresh limit and says when to try again, in hours", () => {
+    const msg = describeRefreshFailure(429, { error: "rate-limited", retryAfter: 23 * HOUR });
+    expect(msg).toMatch(/once a day/i);
+    expect(msg).toMatch(/try again/i);
+    expect(msg).toContain("23h");
+    // Never the raw server token.
+    expect(msg).not.toContain("rate-limited");
+  });
+
+  it("rounds a sub-hour wait up into minutes rather than saying 0h", () => {
+    const msg = describeRefreshFailure(429, { error: "rate-limited", retryAfter: 90 * MINUTE });
+    expect(msg).toContain("2h");
+    const mins = describeRefreshFailure(429, { error: "rate-limited", retryAfter: 5 * MINUTE });
+    expect(mins).toMatch(/5 minutes/);
+    expect(mins).not.toMatch(/\b0h\b/);
+  });
+
+  it("still gives a usable sentence when the body carries no retryAfter", () => {
+    const msg = describeRefreshFailure(429, {});
+    expect(msg).toMatch(/once a day/i);
+    expect(msg).toMatch(/try again/i);
+    expect(msg).not.toMatch(/undefined|NaN|Invalid/);
+  });
+
+  it("maps any other non-OK response to a plain failure sentence with a retry", () => {
+    for (const status of [404, 500, 502]) {
+      const msg = describeRefreshFailure(status, { error: "Anthropic 529 overloaded" });
+      expect(msg).toMatch(/couldn't regenerate/i);
+      expect(msg).toMatch(/try again/i);
+      // Raw server/model text never reaches the card.
+      expect(msg).not.toContain("Anthropic");
+    }
+  });
+
+  it("maps a network-level failure to domain copy, never the browser's raw message", () => {
+    const msg = describeRefreshFailure(0, null);
+    expect(msg).toMatch(/couldn't regenerate/i);
+    expect(msg).not.toMatch(/Failed to fetch|TypeError|NetworkError/);
+  });
+});
+
+describe("NarrativeBlock renders the refresh status under the button that was pressed", () => {
+  const src = readFileSync("app/dashboard/components/analysis/NarrativeBlock.tsx", "utf8");
+
+  it("routes every non-OK response and the network catch through describeRefreshFailure", () => {
+    expect(src).toMatch(/setRefreshError\(describeRefreshFailure\(res\.status, data\)\)/);
+    // The catch no longer prints e.message.
+    expect(src).not.toMatch(/setRefreshError\(\s*e instanceof Error/);
+    expect(src).toMatch(/catch\s*\{[^}]*describeRefreshFailure\(0, null\)/);
+    // res.ok AND data.success is still the success predicate.
+    expect(src).toContain("if (res.ok && data.success)");
+  });
+
+  it("tracks which button started the refresh and renders the status beside it", () => {
+    expect(src).toMatch(/refreshOrigin/);
+    expect(src).toMatch(/handleRefresh\("banner"\)/);
+    expect(src).toMatch(/handleRefresh\("footer"\)/);
+    // Two render sites, one per button, each gated on its own origin.
+    expect(src.match(/refreshError && refreshOrigin === "(banner|footer)"/g)).toHaveLength(2);
+  });
+
+  it("puts the banner status inside the drift banner, after the button", () => {
+    const banner = src.slice(src.indexOf("{drifted && ("), src.indexOf("<PrivateText>"));
+    const button = banner.indexOf("Refresh to regenerate");
+    const status = banner.indexOf('refreshError && refreshOrigin === "banner"');
+    expect(button).toBeGreaterThan(-1);
+    expect(status).toBeGreaterThan(button);
+  });
+});
