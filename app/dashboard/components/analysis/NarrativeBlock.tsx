@@ -47,17 +47,45 @@ function driftDetail(surfaceKey: Props["surfaceKey"]): string {
 }
 
 /**
- * Render the POST route's 429 `retryAfter` (ms) as domain language instead
- * of the bare "rate-limited" token — round up to whole hours so "1h" always
- * means "at most 1h left", never "just over 0".
+ * Domain-language status for a refresh that did NOT succeed (QA 2026-09-07,
+ * finding analysis-factor-narrative--refresh-regenerate-429-silent-no-feedback).
+ *
+ * Every non-OK response and the network-level catch come through here, so the
+ * card can never answer a click with silence, with a bare protocol token
+ * ("rate-limited"), or with the browser's raw TypeError ("Failed to fetch").
+ * Raw server/model text is deliberately dropped rather than echoed: a
+ * generation failure carries model prose, and this card renders inside the
+ * privacy-masked analysis surfaces.
+ *
+ * `status` is the HTTP status, or 0 for "the request never completed".
+ * The POST route answers 429 with `retryAfter` in milliseconds
+ * (app/api/analysis/narrative/route.ts — REGEN_WINDOW_MS is 24h), which is
+ * the only wait figure the API offers; it sends no Retry-After header.
  */
-function formatRateLimitMessage(retryAfterMs: unknown): string {
-  const ms = typeof retryAfterMs === "number" && retryAfterMs > 0 ? retryAfterMs : 0;
-  if (ms < MS_PER_HOUR) {
-    return "Narrative refreshes once per day — available again in less than 1h.";
+export function describeRefreshFailure(
+  status: number,
+  data: { error?: unknown; retryAfter?: unknown } | null | undefined,
+): string {
+  if (status === 429) {
+    const limit = "Can't regenerate yet — this narrative refreshes once a day.";
+    const ms =
+      typeof data?.retryAfter === "number" && Number.isFinite(data.retryAfter) && data.retryAfter > 0
+        ? data.retryAfter
+        : 0;
+    if (ms <= 0) return `${limit} Try again later.`;
+    if (ms < MS_PER_MINUTE) return `${limit} Try again in under a minute.`;
+    if (ms < MS_PER_HOUR) {
+      // Round UP so the figure is always "at most this long left".
+      const minutes = Math.ceil(ms / MS_PER_MINUTE);
+      return `${limit} Try again in about ${minutes} minute${minutes === 1 ? "" : "s"}.`;
+    }
+    const hours = Math.ceil(ms / MS_PER_HOUR);
+    return `${limit} Try again in about ${hours}h.`;
   }
-  const hours = Math.ceil(ms / MS_PER_HOUR);
-  return `Narrative refreshes once per day — available again in about ${hours}h.`;
+  if (status === 0) {
+    return "Couldn't regenerate the narrative — could not reach the server. Try again.";
+  }
+  return "Couldn't regenerate the narrative — the request failed. Try again in a few minutes.";
 }
 
 export function NarrativeBlock({ scope, surfaceKey }: Props) {
@@ -67,6 +95,13 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  // Which control started the refresh, so the outcome renders under the
+  // button the user actually pressed. The drift banner's button is ~128px
+  // above the footer line where the status used to be its ONLY home, with
+  // the whole narrative in between — the reason a rate-limited click read
+  // as "the button does nothing" (QA 2026-09-07). "footer" is also the
+  // resting value for the auto-fill call the effect makes on an empty cache.
+  const [refreshOrigin, setRefreshOrigin] = useState<"banner" | "footer">("footer");
   // The cached prose was generated from inputs that have since changed
   // (migration 087). We keep showing it — hiding it would trade a stale
   // reading for no reading — but say so plainly, right above it.
@@ -76,9 +111,10 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
   // { notGenerated: true } on a miss and NEVER generates. handleRefresh is
   // reused both for the manual Refresh button and to auto-fill an empty cache
   // on first view. Routed through apiFetch (#35 task 9-12) since it's a mutating call.
-  const handleRefresh = useCallback(async () => {
+  const handleRefresh = useCallback(async (origin: "banner" | "footer" = "footer") => {
     setRefreshing(true);
     setRefreshError(null);
+    setRefreshOrigin(origin);
     try {
       const res = await apiFetch("/api/analysis/narrative", {
         method: "POST",
@@ -92,18 +128,18 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
         // Regenerated against the current book — the banner has to clear, or
         // the user refreshes forever chasing a warning that never goes away.
         setDrifted(data.drifted === true);
-      } else if (res.status === 429) {
-        // The bare "rate-limited" token means nothing to a user — explain the
-        // 24h window in domain language and surface the actual wait time.
-        setRefreshError(formatRateLimitMessage(data.retryAfter));
       } else {
         // Honest failure surface — never swallow, never silently revert
         // (nothing was optimistically changed above, so the stale narrative
-        // simply stays visible alongside this).
-        setRefreshError(data.error ?? "Refresh failed");
+        // simply stays visible alongside this). One helper covers the
+        // rate limit and every other non-OK status, so no response can
+        // reach the card as a bare token or as nothing at all.
+        setRefreshError(describeRefreshFailure(res.status, data));
       }
-    } catch (e) {
-      setRefreshError(e instanceof Error ? e.message : "Refresh failed");
+    } catch {
+      // Network-level failure (offline, server restarting mid-click). The
+      // browser's raw message ("Failed to fetch") is not domain language.
+      setRefreshError(describeRefreshFailure(0, null));
     } finally {
       setRefreshing(false);
     }
@@ -163,13 +199,21 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
               styled to match its underline-dotted convention. */}
           <button
             type="button"
-            onClick={handleRefresh}
+            onClick={() => handleRefresh("banner")}
             disabled={refreshing}
             aria-label="Refresh narrative now"
             className="text-xs text-warn font-medium underline decoration-dotted underline-offset-2 hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {refreshing ? "Refreshing…" : "Refresh to regenerate"}
           </button>
+          {/* basis-full puts the outcome on its own line directly under the
+              button inside this same banner, so the only remedy the banner
+              offers can never fail silently. */}
+          {refreshError && refreshOrigin === "banner" && (
+            <span className="basis-full text-xs text-warn" role="alert">
+              {refreshError}
+            </span>
+          )}
         </div>
       )}
       {/* AI narrative embeds portfolio-derived figures at generation time, so
@@ -184,14 +228,14 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
         )}
         <button
           type="button"
-          onClick={handleRefresh}
+          onClick={() => handleRefresh("footer")}
           disabled={refreshing}
           aria-label="Refresh narrative"
           className="text-xs text-ink-dim underline decoration-dotted underline-offset-2 hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {refreshing ? "Refreshing…" : "Refresh"}
         </button>
-        {refreshError && (
+        {refreshError && refreshOrigin === "footer" && (
           <span className="text-xs text-warn" role="alert">
             {refreshError}
           </span>
