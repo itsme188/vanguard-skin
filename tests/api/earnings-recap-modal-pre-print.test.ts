@@ -6,10 +6,17 @@
  * bypasses the release-window filter by design, so a click before the print
  * window opens could fetch an erroneous early vendor actual, write it, stamp
  * enriched_at (arming the recap send gate) and fire the print push. The
- * runner now refuses that row on the shared pre-print floor and the route
- * surfaces the refusal as a 409 { code: "pre_print" } envelope — the same
- * vocabulary POST /api/earnings/actuals uses — rather than composing a recap
- * for a print that has not happened.
+ * runner still refuses that row on the shared pre-print floor and the route
+ * still composes nothing.
+ *
+ * TRANSPORT (QA 2026-09-07, finding
+ * today-earningshub-gen-recap--pre-print-409-console-error-red-toast): the
+ * refusal now travels as a 200 carrying { success:false, prePrint:true,
+ * code:"pre_print" } instead of a 409, matching the route's OWN precedent
+ * for the no-actuals-yet guard a few lines below it ("return 200 with a
+ * structured flag so a routine click doesn't log a browser console error").
+ * Clicking "gen recap" on a row whose window has not opened is a routine,
+ * expected click; it must not put a red 409 in the browser console.
  *
  * No force override is plumbed here: the bogeys modal's "Save actuals" road
  * owns the human confirm, and this surface has no such affordance.
@@ -91,7 +98,7 @@ function postReq(body: unknown): Request {
 }
 
 describe("POST /api/earnings/recap-modal — pre-print floor", () => {
-  it("refuses with a 409 pre_print envelope before the slot window opens", async () => {
+  it("refuses with a 200 pre_print envelope before the slot window opens — an expected click is not an HTTP error", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-27T19:30:00Z")); // 15:30 ET
     const eventId = seedAmcEvent();
@@ -99,16 +106,22 @@ describe("POST /api/earnings/recap-modal — pre-print floor", () => {
     const mod = await import("@/app/api/earnings/recap-modal/route");
     const res = await mod.POST(postReq({ eventId }));
 
-    expect(res.status).toBe(409);
+    // 200, not 409: the browser console must stay clean on a routine click.
+    expect(res.status).toBe(200);
     const body = (await res.json()) as {
       success: boolean;
+      prePrint: boolean;
       code: string;
       error: string;
+      opensAt: string | null;
     };
     expect(body.success).toBe(false);
+    expect(body.prePrint).toBe(true);
     expect(body.code).toBe("pre_print");
     expect(body.error).toMatch(/after-close print/);
     expect(body.error).toContain("4:00 PM ET");
+    // The window the caller is waiting for, as an instant it can render.
+    expect(body.opensAt).toBe(new Date("2026-08-27T20:00:00Z").toISOString());
 
     // Nothing fetched, nothing written, nothing pushed, nothing composed.
     expect(global.fetch).not.toHaveBeenCalled();
