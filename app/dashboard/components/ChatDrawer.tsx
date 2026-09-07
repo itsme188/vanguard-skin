@@ -226,6 +226,21 @@ function ChatDrawerInner() {
         role={isLargeDesktop ? "complementary" : "dialog"}
         aria-label="Chat assistant"
         aria-hidden={!railVisible}
+        /* The panel is never unmounted (that would drop the conversation) and
+           hides by sliding off-screen with a transform — which removes it from
+           NOTHING. aria-hidden alone left ~48 enabled controls in the tab
+           order, one "Delete conversation" per stored conversation among
+           them: a single Tab out of <main> put focus ~91px off the right edge
+           with no visible ring, and Chromium refused the aria-hidden outright
+           ("Blocked aria-hidden on an element because its descendant retained
+           focus... Consider using the inert attribute instead"). `inert`
+           (React 19 boolean prop) takes the subtree out of the tab order and
+           the accessibility tree together, on the SAME predicate, so the two
+           can never disagree. Every re-open control lives outside this
+           subtree: the header ChatToggleButton (rendered by the dashboard
+           layout) and the window-level Cmd+J / toggle-mobile-chat / open-chat
+           listeners. QA 2026-09-07. */
+        inert={!railVisible}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
