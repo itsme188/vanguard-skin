@@ -410,9 +410,25 @@ function trimTrailingStructural(html: string): string {
 // ─── Blank-render detection (read-time expand fallback) ──────────────────────
 
 /**
+ * Characters that occupy a code point but render NOTHING. Email senders pad
+ * the inbox preheader with runs of these (U+034F combining grapheme joiner
+ * and U+00AD soft hyphen are the Substack-template staples) so the preview
+ * line stays short — thousands of them can follow two words of real text.
+ *
+ * They are not whitespace, so `\s+` never collapsed them and a body that is
+ * visually blank measured as hundreds of "rendered" characters (QA
+ * 2026-09-07: a 6.4KB raw_html measured ~630 against a 9.2KB raw_text).
+ * Written as \uNNNN escapes on purpose — a raw byte here would be
+ * invisible to the next reader of this file.
+ */
+const INVISIBLE_CHARS =
+  /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u206A-\u206F\u3164\uFEFF\uFFA0]/g;
+
+/**
  * Approximate length of the text an email HTML body actually RENDERS —
  * style/script/head/comment blocks and tags contribute nothing; entities
- * collapse to whitespace (slight undercount, fine for a threshold check).
+ * collapse to whitespace (slight undercount, fine for a threshold check);
+ * invisible code points (INVISIBLE_CHARS above) contribute nothing either.
  * Pure regex like everything else in this module.
  */
 export function visibleHtmlTextLength(html: string): number {
@@ -421,6 +437,7 @@ export function visibleHtmlTextLength(html: string): number {
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/&[a-zA-Z#0-9]{2,8};/g, " ")
+    .replace(INVISIBLE_CHARS, "")
     .replace(/\s+/g, " ")
     .trim();
   return stripped.length;
@@ -438,7 +455,9 @@ export function htmlHidesStoredText(
   rawText: string | null,
 ): boolean {
   if (!html) return false;
-  const rawLen = rawText ? rawText.trim().length : 0;
+  // Measure the raw_text the SAME way: a raw_text that is itself only
+  // preheader padding is not a better thing to show.
+  const rawLen = rawText ? rawText.replace(INVISIBLE_CHARS, "").trim().length : 0;
   if (rawLen === 0) return false; // nothing better to show
   const textLen = visibleHtmlTextLength(html);
   if (textLen < 200) return true;

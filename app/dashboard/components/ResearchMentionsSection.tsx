@@ -6,6 +6,7 @@ import type { ResearchMention } from "@/lib/queries/research";
 import { Section } from "./Section";
 import { Chip, type ChipTone } from "./Chip";
 import { NewsletterArticleFrame } from "./NewsletterArticleFrame";
+import { trimEmailFooter, htmlHidesStoredText } from "@/lib/gmail/sanitize";
 
 interface ArticleDetail {
   id: number;
@@ -180,6 +181,19 @@ function MentionRow({ mention }: { mention: ResearchMention }) {
 }
 
 function ArticleBody({ article }: { article: ArticleDetail }) {
+  // Body choice, identical to the Feeds reader (ResearchFeedsView.handleExpand)
+  // and single-sourced on htmlHidesStoredText.
+  //
+  // A bare `article.raw_html ? frame : text` used to win on truthiness alone.
+  // Substack-style senders store HTML that is little more than an inbox
+  // preheader — two words plus thousands of INVISIBLE padding characters —
+  // while raw_text holds the whole article, so the reader opened a ~490px
+  // blank iframe on that entire class of email (182 rows in the book carry
+  // raw_text > 1.5x raw_html). QA 2026-09-07.
+  const text = article.raw_text ? trimEmailFooter(article.raw_text) : null;
+  const trimmedHtml = article.raw_html ? trimEmailFooter(article.raw_html) : null;
+  const html = trimmedHtml && htmlHidesStoredText(trimmedHtml, text) ? null : trimmedHtml;
+
   return (
     <div>
       {article.source_url && (
@@ -192,13 +206,19 @@ function ArticleBody({ article }: { article: ArticleDetail }) {
           Open on publisher site ↗
         </a>
       )}
-      {article.raw_html ? (
+      {html ? (
         // Same pattern as ResearchFeedsView — a sandboxed iframe, because an
         // email's document-global <style> block restyles the whole app when
         // injected via dangerouslySetInnerHTML (deep-QA style-leak finding).
-        <NewsletterArticleFrame html={article.raw_html} />
+        <NewsletterArticleFrame html={html} />
+      ) : text ? (
+        <div className="prose-reader whitespace-pre-wrap">{text}</div>
       ) : (
-        <div className="prose-reader whitespace-pre-wrap">{article.raw_text}</div>
+        // Say it, rather than leaving an empty pane behind the "read" chip.
+        <p className="text-[11px] text-ink-faint italic">
+          No article body was stored for this email — open it on the publisher
+          site instead.
+        </p>
       )}
     </div>
   );
