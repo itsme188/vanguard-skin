@@ -173,14 +173,29 @@ export function NotesView({
           .filter(Boolean);
       }
 
+      // Both awaits carry their own .catch so a failure is classified where
+      // it happens: a rejected fetch is "could not reach the server", a
+      // non-OK / unparseable response is "the server refused it". Neither may
+      // reach the composer as a raw JS message.
       const res = await apiFetch("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-      });
+      }).catch(() => null);
+      if (!res) {
+        setSaveError(describeNoteSaveFailure({ kind: "network" }));
+        return;
+      }
 
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
+      const data = (await res.json().catch(() => null)) as
+        | { success?: boolean; error?: unknown }
+        | null;
+      if (!res.ok || !data?.success) {
+        setSaveError(
+          describeNoteSaveFailure({ kind: "server", status: res.status, error: data?.error }),
+        );
+        return;
+      }
 
       // Reset form — all stateful fields, not just the visible ones.
       // `formSymbol` was previously missed here: a residual symbol from a
@@ -198,8 +213,10 @@ export function NotesView({
       startTransition(() => {
         router.refresh();
       });
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Failed to save note");
+    } catch {
+      // Safety net only — every await above is already guarded. Whatever
+      // lands here is still reported in English, never as err.message.
+      setSaveError(describeNoteSaveFailure({ kind: "unknown" }));
     } finally {
       setIsSaving(false);
     }
@@ -468,6 +485,45 @@ export function NotesView({
 // notes yet" (hiding that a filter was active), while arriving from a
 // Security page with only ?symbol= claimed a filter was active that "clear
 // it" could not clear.
+/**
+ * Domain-language copy for a note save that did not succeed (QA 2026-09-07,
+ * finding research-notes-composer--raw-failed-to-fetch-error-text).
+ *
+ * The composer used to print `err.message`, so a network-level failure showed
+ * the browser's raw "Failed to fetch" between the Tags input and the Save
+ * Note button. Mirrors the wording the Documents tag editor already uses for
+ * the same two failures (see ResearchDocumentsView.tsx::commit).
+ *
+ * A 4xx body is echoed — those are this route's validation messages
+ * ("Missing required fields: note_type, content") and the user can act on
+ * them. A 5xx body is NOT: those carry raw exception text.
+ *
+ * Exported (like notesListIsFiltered below) so the copy is unit-testable
+ * without a DOM harness.
+ */
+export function describeNoteSaveFailure(
+  failure:
+    | { kind: "network" }
+    | { kind: "server"; status: number; error?: unknown }
+    | { kind: "unknown" },
+): string {
+  if (failure.kind === "network") {
+    return "Couldn't save the note: could not reach the server. Your note is still here — try again.";
+  }
+  if (failure.kind === "server") {
+    const detail =
+      failure.status < 500 &&
+      typeof failure.error === "string" &&
+      failure.error.trim().length > 0
+        ? failure.error.trim()
+        : null;
+    return detail
+      ? `Couldn't save the note: ${detail}`
+      : `Couldn't save the note (server returned ${failure.status}). Your note is still here — try again.`;
+  }
+  return "Couldn't save the note — something went wrong. Your note is still here — try again.";
+}
+
 export function notesListIsFiltered(params: {
   search?: string | null;
   security?: string | number | null;
