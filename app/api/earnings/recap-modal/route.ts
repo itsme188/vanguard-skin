@@ -24,12 +24,17 @@ export const dynamic = "force-dynamic";
  * Returns:
  *   - 200 { success, html, title, eventDate, symbol, phase: "recap",
  *           markdown, enriched: { actual, reaction } | null }
- *   - 409 { success: false, code: "pre_print", error } when the enrichment
- *     runner refuses the row on the pre-print floor — clicking "Generate"
- *     before the print window opens must not fetch, write, or push. No
- *     force override is offered here: the row's actuals road (the bogeys
- *     modal "Save actuals", which owns the force confirm) is where a human
- *     asserts an early print, and nothing on this surface can.
+ *   - 200 { success: false, prePrint: true, code: "pre_print", error,
+ *     opensAt } when the enrichment runner refuses the row on the pre-print
+ *     floor — clicking "Generate" before the print window opens must not
+ *     fetch, write, or push. No force override is offered here: the row's
+ *     actuals road (the bogeys modal "Save actuals", which owns the force
+ *     confirm) is where a human asserts an early print, and nothing on this
+ *     surface can. The refusal rides a 200 for the same reason the
+ *     no-actuals-yet guard below does: a click on a row whose window has
+ *     not opened is a ROUTINE, expected click, and answering it 409 wrote a
+ *     red error into the user's browser console and a loss-coloured toast
+ *     onto the screen for a state that is merely early (QA 2026-09-07).
  *   - 409 if actual_value still missing after enrichment attempt
  *   - 4xx for validation / not-found
  *
@@ -66,16 +71,20 @@ export async function POST(request: Request) {
       // has not happened — a recap composed off a stale or absent actual is
       // exactly the wrong-numbers failure the floor exists to prevent.
       if (r?.reason === "pre_print" && r.prePrint) {
-        return Response.json(
-          {
-            success: false,
-            code: "pre_print",
-            error:
-              describePrePrintFloor(r.prePrint.eventDate, r.prePrint) +
-              " Enrichment and the recap stay locked until then.",
-          },
-          { status: 409 },
-        );
+        // Structured flag on a 200, not a 409 — see the contract above.
+        // `opensAt` is the instant the caller is waiting for: the slot-window
+        // floor when the slot basis refused the row, else the recorded
+        // release instant. Null when neither could be composed.
+        const opensAt = r.prePrint.floor ?? r.prePrint.release;
+        return Response.json({
+          success: false,
+          prePrint: true,
+          code: "pre_print",
+          error:
+            describePrePrintFloor(r.prePrint.eventDate, r.prePrint) +
+            " Enrichment and the recap stay locked until then.",
+          opensAt: opensAt ? opensAt.toISOString() : null,
+        });
       }
       if (r) {
         enrichmentResult = {

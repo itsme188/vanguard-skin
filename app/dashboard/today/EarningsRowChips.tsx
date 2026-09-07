@@ -163,15 +163,27 @@ export function EarningsRowChips({
       const json = (await res.json().catch(() => ({}))) as {
         success?: boolean;
         notReady?: boolean;
+        prePrint?: boolean;
         html?: string;
         title?: string;
         symbol?: string;
         eventDate?: string | null;
         error?: string;
       };
-      if (json.notReady) {
-        // Expected pre-report state — friendly copy, no thrown error.
-        toast(json.error ?? "Not reported yet.", "info");
+      if (json.prePrint || json.notReady) {
+        // Two EXPECTED states, both answered 200 with a structured flag by
+        // the route so a routine click logs no console error:
+        //   prePrint — the print window hasn't opened yet;
+        //   notReady — the company reported but actuals haven't landed.
+        // Neither is a failure, so neither may use the loss-coloured error
+        // toast. The copy the route sends already explains the wait.
+        toast(
+          json.error ??
+            (json.prePrint
+              ? "The print window hasn't opened yet — the recap stays locked until then."
+              : "Not reported yet."),
+          "info",
+        );
         return;
       }
       if (!res.ok || !json.success) {
