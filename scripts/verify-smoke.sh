@@ -11,6 +11,25 @@
 # goes to qa/verify-evidence/<timestamp>/ (gitignored). Privacy mode is
 # enabled before authenticated screenshots. The password is read from
 # VERIFY_SMOKE_PASSWORD and passed to the browser via `eval --stdin` only.
+#
+# Optional env hooks (ADDITIVE — every default below reproduces the behavior
+# described above; scripts/coord/smoke.sh sets them for a task sandbox):
+#   VERIFY_SMOKE_BASE_URL      skip port detection and target this server. The
+#                              /login identity check still runs first, before
+#                              any credential or cookie is used, and the host
+#                              must be localhost or 127.0.0.1.
+#   VERIFY_SMOKE_SESSION_ENV   path to a session.env (VGS_SESSION/VGS_CSRF, as
+#                              minted by scripts/mint-qa-session.ts). When set,
+#                              authenticate by setting those cookies instead of
+#                              typing a password — VERIFY_SMOKE_PASSWORD is then
+#                              not required and never read.
+#   VERIFY_SMOKE_SESSION       agent-browser session name (default verify-smoke-$$).
+#   VERIFY_SMOKE_EVIDENCE_DIR  evidence directory (default qa/verify-evidence/<stamp>).
+#   VERIFY_SMOKE_NO_GLOBAL_CLEANUP=1
+#                              skip the shared agent-browser cleanup, whose EXIT
+#                              trap runs `agent-browser close --all` and would
+#                              close OTHER agents' sessions (2026-09-06
+#                              contention). This script's own `ab close` still runs.
 set -uo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,7 +38,22 @@ export PATH="/opt/homebrew/opt/node@24/bin:/opt/homebrew/bin:$PATH"
 
 # --- Preconditions -----------------------------------------------------------
 command -v agent-browser >/dev/null 2>&1 || { echo "FAIL: agent-browser CLI not on PATH"; exit 1; }
-if [ -z "${VERIFY_SMOKE_PASSWORD:-}" ]; then
+# Authentication: a wrapper-supplied session file (sandbox mode) OR the password
+# (the default, unchanged). Sourcing happens here so a bad file fails before any
+# browser work; the cookies are only USED after the /login identity check.
+SESSION_ENV_FILE="${VERIFY_SMOKE_SESSION_ENV:-}"
+if [ -n "$SESSION_ENV_FILE" ]; then
+  if [ ! -r "$SESSION_ENV_FILE" ]; then
+    echo "FAIL: VERIFY_SMOKE_SESSION_ENV is set but not readable: $SESSION_ENV_FILE"
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  . "$SESSION_ENV_FILE"
+  if [ -z "${VGS_SESSION:-}" ] || [ -z "${VGS_CSRF:-}" ]; then
+    echo "FAIL: $SESSION_ENV_FILE must define VGS_SESSION and VGS_CSRF"
+    exit 1
+  fi
+elif [ -z "${VERIFY_SMOKE_PASSWORD:-}" ]; then
   echo "FAIL: VERIFY_SMOKE_PASSWORD is not set."
   echo "Export the app password (the one the login page accepts) and re-run:"
   echo "  VERIFY_SMOKE_PASSWORD=... npm run verify:smoke"
@@ -30,34 +64,60 @@ echo "NOTE: if you changed server-side code, restart the dev server before trust
 
 # --- Server detection + identity check (before ANY credential use) ----------
 BASE_URL=""
-for port in 3000 3099; do
-  html=$(curl -sf --max-time 5 "http://localhost:${port}/login" 2>/dev/null || true)
+if [ -n "${VERIFY_SMOKE_BASE_URL:-}" ]; then
+  # Explicit target (task sandbox). Loopback only, and the identity marker is
+  # still required BEFORE any credential or cookie use — fail closed.
+  CANDIDATE="${VERIFY_SMOKE_BASE_URL%/}"
+  CANDIDATE_HOST=$(printf '%s' "$CANDIDATE" | sed -e 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' -e 's#/.*$##' -e 's#@.*$##' -e 's#:[0-9]*$##')
+  case "$CANDIDATE_HOST" in
+    localhost|127.0.0.1) ;;
+    *) echo "FAIL: VERIFY_SMOKE_BASE_URL host '$CANDIDATE_HOST' is not loopback — refusing."; exit 1 ;;
+  esac
+  html=$(curl -sf --max-time 5 "${CANDIDATE}/login" 2>/dev/null || true)
   if printf '%s' "$html" | grep -q "Portfolio Desk"; then
-    # localhost (not 127.0.0.1): login cookies default to Secure, and
-    # Secure-over-http is reliably accepted only for the localhost hostname.
-    BASE_URL="http://localhost:${port}"
-    break
-  elif [ -n "$html" ]; then
-    echo "WARN: port ${port} responded but is NOT Portfolio Desk — skipping (no credentials sent)."
+    BASE_URL="$CANDIDATE"
+  else
+    echo "FAIL: $CANDIDATE is not a healthy Portfolio Desk server (no identity marker on /login)."
+    echo "No credentials were sent."
+    exit 1
   fi
-done
-if [ -z "$BASE_URL" ]; then
-  echo "FAIL: no healthy Portfolio Desk server on :3000 or :3099."
-  echo "Start one first (never done by this script — Turbopack is single-writer):"
-  echo "  npm run dev            # dev server on :3000 (needs APP_PASSWORD_HASH in its env)"
-  echo "  open the packaged app  # serves :3099 with keychain-injected auth"
-  exit 1
+else
+  for port in 3000 3099; do
+    html=$(curl -sf --max-time 5 "http://localhost:${port}/login" 2>/dev/null || true)
+    if printf '%s' "$html" | grep -q "Portfolio Desk"; then
+      # localhost (not 127.0.0.1): login cookies default to Secure, and
+      # Secure-over-http is reliably accepted only for the localhost hostname.
+      BASE_URL="http://localhost:${port}"
+      break
+    elif [ -n "$html" ]; then
+      echo "WARN: port ${port} responded but is NOT Portfolio Desk — skipping (no credentials sent)."
+    fi
+  done
+  if [ -z "$BASE_URL" ]; then
+    echo "FAIL: no healthy Portfolio Desk server on :3000 or :3099."
+    echo "Start one first (never done by this script — Turbopack is single-writer):"
+    echo "  npm run dev            # dev server on :3000 (needs APP_PASSWORD_HASH in its env)"
+    echo "  open the packaged app  # serves :3099 with keychain-injected auth"
+    exit 1
+  fi
 fi
 echo "Target: $BASE_URL"
 
 # --- Evidence dir + cleanup --------------------------------------------------
 STAMP=$(TZ=America/New_York date '+%Y-%m-%d-%H%M')
-EVIDENCE="$PROJECT_DIR/qa/verify-evidence/$STAMP"
+EVIDENCE="${VERIFY_SMOKE_EVIDENCE_DIR:-$PROJECT_DIR/qa/verify-evidence/$STAMP}"
 mkdir -p "$EVIDENCE"
 SUMMARY="$EVIDENCE/summary.md"
-SESSION="verify-smoke-$$"
-source "$PROJECT_DIR/qa/lib/agent-browser-cleanup.sh"
-ab_cleanup_init
+SESSION="${VERIFY_SMOKE_SESSION:-verify-smoke-$$}"
+if [ "${VERIFY_SMOKE_NO_GLOBAL_CLEANUP:-}" = "1" ]; then
+  # A wrapper owns the browser lifecycle (scripts/coord/smoke.sh): the shared
+  # cleanup's EXIT trap would `agent-browser close --all` and take out another
+  # agent's session. The per-session `ab close` at the end still runs.
+  echo "NOTE: global agent-browser cleanup skipped (VERIFY_SMOKE_NO_GLOBAL_CLEANUP=1)."
+else
+  source "$PROJECT_DIR/qa/lib/agent-browser-cleanup.sh"
+  ab_cleanup_init
+fi
 
 PASS=0; FAIL=0
 record() { # record <flow> <PASS|FAIL> <detail>
@@ -85,10 +145,27 @@ fi
 # Enable privacy mode BEFORE authenticating (same origin — persists post-login)
 printf '%s' 'localStorage.setItem("vgs:privacyMode","1"); "ok"' | ab_eval >/dev/null
 
-# --- Login (password via stdin eval only; never argv, never echoed) ---------
+# --- Login (secret via stdin eval only; never argv, never echoed) -----------
 # read -r -d '' (quoted heredoc, NO command substitution): apostrophes inside
 # are safe on bash 3.2; $(cat <<EOF) is the documented crash shape — never use it.
-read -r -d '' LOGIN_JS <<'EOF' || true
+if [ -n "$SESSION_ENV_FILE" ]; then
+  # Sandbox mode: adopt the session minted into the sandbox DB copy. Same
+  # origin as the identity check above, so the cookies land on the right host.
+  read -r -d '' COOKIE_JS <<'EOF' || true
+(() => {
+  document.cookie = "vgs_session=" + __SESSION__ + "; path=/";
+  document.cookie = "vgs_csrf=" + __CSRF__ + "; path=/";
+  return "cookies-set";
+})()
+EOF
+  SESSION_JSON=$(VGS_SESSION="$VGS_SESSION" python3 -c 'import json,os;print(json.dumps(os.environ["VGS_SESSION"]))')
+  CSRF_JSON=$(VGS_CSRF="$VGS_CSRF" python3 -c 'import json,os;print(json.dumps(os.environ["VGS_CSRF"]))')
+  COOKIE_JS="${COOKIE_JS/__SESSION__/$SESSION_JSON}"
+  ab open "$BASE_URL/login" >/dev/null 2>&1
+  printf '%s' "${COOKIE_JS/__CSRF__/$CSRF_JSON}" | ab_eval >/dev/null
+  ab open "$BASE_URL/dashboard/today" >/dev/null 2>&1
+else
+  read -r -d '' LOGIN_JS <<'EOF' || true
 (() => {
   const el = document.querySelector("#password");
   if (!el) return "no-input";
@@ -99,9 +176,10 @@ read -r -d '' LOGIN_JS <<'EOF' || true
   return "submitted";
 })()
 EOF
-# Substitute the password as a JSON string literal (handles quotes/backslashes)
-PW_JSON=$(python3 -c 'import json,os;print(json.dumps(os.environ["VERIFY_SMOKE_PASSWORD"]))')
-printf '%s' "${LOGIN_JS/__PW__/$PW_JSON}" | ab_eval >/dev/null
+  # Substitute the password as a JSON string literal (handles quotes/backslashes)
+  PW_JSON=$(python3 -c 'import json,os;print(json.dumps(os.environ["VERIFY_SMOKE_PASSWORD"]))')
+  printf '%s' "${LOGIN_JS/__PW__/$PW_JSON}" | ab_eval >/dev/null
+fi
 ab wait --load networkidle >/dev/null 2>&1
 ab wait 2000 >/dev/null 2>&1
 
