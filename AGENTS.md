@@ -1,6 +1,10 @@
 # Vanguard Skin — Agent Instructions
 
-> **Read `CLAUDE.md` in this directory before any task.** It is the authoritative source for project architecture, conventions, gotchas, API patterns, and the decision log. Codex also auto-loads it via `project_doc_fallback_filenames`. The rest of this file documents the canonical-CSV conversion contract used when ingesting raw brokerage exports.
+> **Read `CLAUDE.md` in this directory before any task.** It is the authoritative source for project architecture, conventions, gotchas, API patterns, and the decision log.
+>
+> **Codex does NOT auto-load `CLAUDE.md` here.** Codex includes at most one instruction file per directory, in the order `AGENTS.override.md` → `AGENTS.md` → `project_doc_fallback_filenames` (verified against the Codex docs 2026-09-08, codex-cli 0.153.4). Because this `AGENTS.md` exists, the `CLAUDE.md` fallback configured in `~/.codex/config.toml` is never consulted at the repo root, so Codex must open `CLAUDE.md` with a file read at the start of every session. (Earlier text here claimed both files load automatically; that was wrong.) Structural fix on the backlog: move the CSV contract below into `docs/canonical-csv-guide.md` and remove this file so the fallback loads `CLAUDE.md` for both agents.
+>
+> Cross-agent coordination (task register, locks, sandbox, deploy wrapper, daily routine): `docs/reference/coordination.md`. The rest of this file documents the canonical-CSV conversion contract used when ingesting raw brokerage exports.
 
 ## Converting Brokerage Data to Canonical CSV
 

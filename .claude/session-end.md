@@ -16,7 +16,7 @@ Reconcile TODOs against the resulting commits before pushing. Push this session'
 
 ### Integrate before deployment
 
-Bring this session's branch up to the current integration branch in its isolated worktree. Preserve both sides of overlaps and review the combined diff. Rerun checks affected by integration and the full suite when production code changed. Land through the established project workflow only after the integration checkout is clean and no concurrent landing/deployment owns it; use a fast-forward where possible. Never stash, reset, or switch the shared checkout's branch to make room. Push the integrated result, and deploy from that reviewed commit. Do not deploy an unmerged feature branch or another agent's unfinished edits. If the boundary is unavailable, finish branch commits, verification, and handoff and report integration/deployment as pending.
+Bring this session's branch up to the current integration branch in its isolated worktree. Preserve both sides of overlaps and review the combined diff. Rerun checks affected by integration and the full suite when production code changed. Land through the established project workflow only after the integration checkout is clean and no concurrent landing/deployment owns it; use a fast-forward where possible. Hold the shared `integration` lock for the landing (`npm run coord -- lock run integration --task <id> -- <merge/push command>`; `npm run coord -- status` shows the holder). A lock held by the other agent is the concrete blocker to report, not something this authorization breaks. Never stash, reset, or switch the shared checkout's branch to make room. Push the integrated result, and deploy from that reviewed commit. Do not deploy an unmerged feature branch or another agent's unfinished edits. If the boundary is unavailable, finish branch commits, verification, and handoff and report integration/deployment as pending.
 
 ## 2. Open PRs
 
@@ -57,11 +57,13 @@ If any of these changed during the session, update `CLAUDE.md` accordingly:
 
 If this session changed production code, deploy the verified integrated commit after reading `docs/reference/electron-build.md`. Tests, docs, skills (`.agents/`, `.claude/`), and memory-only changes do not need a rebuild. Builds must use the project's `npm run build` wrapper so build-time imports cannot migrate the live database. Do not run historical data backfills or repair scripts as part of deployment. Separately deployed services such as Workers require their own authorization.
 
-Use the project's normal deployment command:
+Use the project's deployment wrapper (checked in; it runs the same `electron:pack` → `verify-bundle` → `electron:install` chain under the `integration`/`deploy`/`app-3099` locks, verifies HEAD == origin/main and a clean tree, preserves every step's exit code, and checks the installed BUILD_ID + a fresh :3099 listener afterwards — see `docs/reference/coordination.md`):
 
 ```bash
-source ~/.zshrc >/dev/null 2>&1; PATH=/opt/homebrew/opt/node@24/bin:$PATH npm run electron:deploy
+source ~/.zshrc >/dev/null 2>&1; PATH=/opt/homebrew/opt/node@24/bin:$PATH npm run deploy -- --task <id> [--commit <sha>]
 ```
+
+Do not improvise a deploy script at closeout; if the wrapper refuses, fix the stated precondition or report it. (`npm run electron:deploy` remains the raw chain the wrapper calls.)
 
 (The node@24 PATH prefix is REQUIRED — the project is pinned to the node@24 LTS keg (2026-08-11 migration); the bare `/opt/homebrew/bin/node` moves on every `brew upgrade`. `source ~/.zshrc` carries the APPLE_API_* notarization vars. When backgrounding with a `| tail` pipe, check `PIPESTATUS[0]` or grep the output for "Build error" — the pipe masks the real exit code.)
 
