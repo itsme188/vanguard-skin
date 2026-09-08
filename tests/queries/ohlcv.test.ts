@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
+  getOhlcvBars,
+  getRecentOhlcvBars,
+  getLatestOhlcvDate,
   getLatestDailyBar,
   get52WeekRange,
 } from "@/lib/queries/ohlcv";
@@ -214,6 +217,119 @@ describe("ohlcv queries — KPI row", () => {
       const range = get52WeekRange(db, id);
       expect(range).not.toBeNull();
       expect(range!.endDate).toBe("2026-04-22");
+    });
+  });
+
+  describe("corrupt-bar read guard (getOhlcvBars / getRecentOhlcvBars / getLatestDailyBar / getLatestOhlcvDate)", () => {
+    /**
+     * Seeds 30 real daily bars ending 2026-04-23, then corrupts two of them
+     * in place to the two known TWS defect shapes:
+     *  - the NEWEST bar (2026-04-23): real open/high, low = 0, close = 0
+     *    (the exact shape from the charts-candles finding — a trailing
+     *    corrupt bar, which is the case that would break an incremental
+     *    fetch anchor if getLatestOhlcvDate were ever filtered).
+     *  - a middle bar (2026-04-15): high < low (the other guard condition,
+     *    distinct from the zero-price shape).
+     * Returns the corrupted dates so tests can assert they're excluded.
+     */
+    function seedWithCorruptBars(db: Database.Database, symbol: string) {
+      const id = seedSecurity(db, symbol);
+      seedDailyBars(db, id, "2026-04-23", 30, 100, 0.1);
+      db.prepare(
+        `UPDATE ohlcv_bars SET low = 0, close = 0
+         WHERE security_id = ? AND bar_date = ?`,
+      ).run(id, "2026-04-23");
+      db.prepare(
+        `UPDATE ohlcv_bars SET open = 50, high = 90, low = 95, close = 92
+         WHERE security_id = ? AND bar_date = ?`,
+      ).run(id, "2026-04-15");
+      return { id, corruptDates: ["2026-04-23", "2026-04-15"] };
+    }
+
+    describe("getOhlcvBars", () => {
+      it("skips corrupt bars with no options", () => {
+        const { id, corruptDates } = seedWithCorruptBars(db, "KRWX");
+        const bars = getOhlcvBars(db, id, "1 day");
+        expect(bars.length).toBe(28); // 30 seeded - 2 corrupt
+        for (const d of corruptDates) {
+          expect(bars.some((b) => b.date === d)).toBe(false);
+        }
+        // Newest surviving bar is the day before the corrupted trailing bar.
+        expect(bars[bars.length - 1].date).toBe("2026-04-22");
+      });
+
+      it("skips corrupt bars when limit is set (ASC-then-LIMIT takes oldest priced bars)", () => {
+        const { id, corruptDates } = seedWithCorruptBars(db, "KRWX2");
+        const bars = getOhlcvBars(db, id, "1 day", { limit: 3 });
+        expect(bars.length).toBe(3);
+        for (const b of bars) {
+          expect(corruptDates).not.toContain(b.date);
+        }
+      });
+
+      it("skips a corrupt bar even when it falls inside an explicit start/end window", () => {
+        const { id } = seedWithCorruptBars(db, "KRWX3");
+        // This window brackets the corrupted trailing bar (2026-04-23) —
+        // without the read guard it would be included.
+        const bars = getOhlcvBars(db, id, "1 day", {
+          startDate: "2026-04-20",
+          endDate: "2026-04-23",
+        });
+        expect(bars.some((b) => b.date === "2026-04-23")).toBe(false);
+        expect(bars.every((b) => b.close > 0 && b.low > 0)).toBe(true);
+        expect(bars.length).toBe(3); // 04-20, 04-21, 04-22
+      });
+    });
+
+    describe("getRecentOhlcvBars", () => {
+      it("returns exactly `limit` PRICED bars, newest-first-then-ascending, skipping a trailing corrupt bar", () => {
+        const { id, corruptDates } = seedWithCorruptBars(db, "KRWX4");
+        const bars = getRecentOhlcvBars(db, id, "1 day", 5);
+        expect(bars.length).toBe(5);
+        for (const b of bars) {
+          expect(corruptDates).not.toContain(b.date);
+        }
+        // Strictly ascending dates (oldest to newest within the window).
+        for (let i = 1; i < bars.length; i++) {
+          expect(bars[i].date > bars[i - 1].date).toBe(true);
+        }
+        // The newest returned bar is the newest PRICED bar, not the
+        // corrupted 2026-04-23 trailing row.
+        expect(bars[bars.length - 1].date).toBe("2026-04-22");
+      });
+
+      it("still returns exactly `limit` PRICED bars when the window spans a corrupt bar in the middle", () => {
+        const { id, corruptDates } = seedWithCorruptBars(db, "KRWX5");
+        // 10 newest priced bars, walking back from 2026-04-22, spans across
+        // the 2026-04-15 corrupt bar — the count must not come up short.
+        const bars = getRecentOhlcvBars(db, id, "1 day", 10);
+        expect(bars.length).toBe(10);
+        for (const b of bars) {
+          expect(corruptDates).not.toContain(b.date);
+        }
+      });
+    });
+
+    describe("getLatestDailyBar", () => {
+      it("returns the newest PRICED bar, not a corrupt trailing bar", () => {
+        const { id } = seedWithCorruptBars(db, "KRWX6");
+        const latest = getLatestDailyBar(db, id);
+        expect(latest).not.toBeNull();
+        expect(latest!.date).toBe("2026-04-22");
+        expect(latest!.close).toBeGreaterThan(0);
+        expect(latest!.low).toBeGreaterThan(0);
+      });
+    });
+
+    describe("getLatestOhlcvDate", () => {
+      it("still returns the raw MAX(bar_date), including a corrupt trailing bar (incremental-fetch anchor)", () => {
+        const { id } = seedWithCorruptBars(db, "KRWX7");
+        // Deliberately unfiltered: filtering this anchor would make an
+        // incremental TWS fetch re-request the same window forever once the
+        // write-side guard (upsertOhlcvBars) refuses to re-store the same
+        // corrupt bar.
+        expect(getLatestOhlcvDate(db, id, "1 day")).toBe("2026-04-23");
+      });
     });
   });
 

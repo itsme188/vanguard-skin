@@ -2,6 +2,25 @@ import type Database from "better-sqlite3";
 import type { OhlcvBar } from "@/lib/tws/types";
 
 /**
+ * Shared read-side corrupt-bar guard. Mirrors `isSaneBar` in
+ * `lib/mutations/ohlcv.ts::upsertOhlcvBars` exactly (finite-positive OHLC +
+ * `high >= low`) — that write guard has only rejected NEW bars since
+ * 2026-09-06, so bars stored before that date can still carry the defect
+ * (real open/high, low = 0 AND close = 0; six such rows are known to exist
+ * for one security as of 2026-09-06). It is the strictly stronger form of
+ * `get52WeekRange`'s own inline predicate (`low > 0 AND high > 0`) —
+ * `get52WeekRange` deliberately keeps its own shipped, tested aggregate
+ * form; do not replace it with this constant.
+ *
+ * Applied to the three readers that hand bars straight to a consumer
+ * (candlestick series, "most recent bar" displays, recent-window slices):
+ * `getOhlcvBars`, `getRecentOhlcvBars`, `getLatestDailyBar`. Deliberately
+ * NOT applied to `getLatestOhlcvDate` — see the comment there.
+ */
+const PRICED_BAR_SQL =
+  "(open > 0 AND high > 0 AND low > 0 AND close > 0 AND high >= low)";
+
+/**
  * Get stored OHLCV bars for a security, ordered by date ascending.
  * Returns data shaped for LightweightCharts CandlestickData.
  */
@@ -14,7 +33,7 @@ export function getOhlcvBars(
   let sql = `
     SELECT bar_date as date, open, high, low, close, volume
     FROM ohlcv_bars
-    WHERE security_id = ? AND bar_size = ?
+    WHERE security_id = ? AND bar_size = ? AND ${PRICED_BAR_SQL}
   `;
   const params: (number | string)[] = [securityId, barSize];
 
@@ -47,6 +66,13 @@ export function getOhlcvBars(
  * have its most recent months silently dropped. Implemented as an inner
  * DESC-LIMIT subquery re-sorted ASC in SQL so both the trim and the final
  * order happen in one prepared statement.
+ *
+ * The priced-bar guard (`PRICED_BAR_SQL`) is applied INSIDE the DESC-LIMIT
+ * subquery, not on the outer query — filtering after the LIMIT would leave
+ * a caller with fewer than `limit` bars whenever a corrupt bar fell in the
+ * window; filtering before it means a corrupt bar simply doesn't consume
+ * one of the `limit` slots, so callers still get the newest `limit` REAL
+ * bars.
  */
 export function getRecentOhlcvBars(
   db: Database.Database,
@@ -59,7 +85,7 @@ export function getRecentOhlcvBars(
       `SELECT date, open, high, low, close, volume FROM (
          SELECT bar_date as date, open, high, low, close, volume
          FROM ohlcv_bars
-         WHERE security_id = ? AND bar_size = ?
+         WHERE security_id = ? AND bar_size = ? AND ${PRICED_BAR_SQL}
          ORDER BY bar_date DESC
          LIMIT ?
        ) ORDER BY date ASC`,
@@ -70,6 +96,15 @@ export function getRecentOhlcvBars(
 /**
  * Get the latest bar date for a security+bar_size combo.
  * Used for incremental fetching (only fetch the gap).
+ *
+ * Deliberately NOT filtered by `PRICED_BAR_SQL`. This is the incremental-
+ * fetch anchor (`lib/tws/ohlcv.ts::fetchOhlcvBars`, and the freshness check
+ * in `app/api/tws/chart/route.ts`) — `upsertOhlcvBars` has rejected corrupt
+ * bars on write since 2026-09-06, so a corrupt trailing bar can never be
+ * re-stored. If this read were filtered too, the anchor could never advance
+ * past a pre-existing trailing corrupt bar, and every chart open would
+ * re-request the same already-fetched window from TWS forever. Raw
+ * MAX(bar_date) is correct here even though it's wrong for display readers.
  */
 export function getLatestOhlcvDate(
   db: Database.Database,
@@ -169,7 +204,7 @@ export function getLatestDailyBar(
       .prepare(
         `SELECT bar_date as date, open, high, low, close, volume
          FROM ohlcv_bars
-         WHERE security_id = ? AND bar_size = '1 day'
+         WHERE security_id = ? AND bar_size = '1 day' AND ${PRICED_BAR_SQL}
          ORDER BY bar_date DESC
          LIMIT 1`,
       )
