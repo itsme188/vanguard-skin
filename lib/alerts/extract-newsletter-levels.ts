@@ -1,6 +1,11 @@
 import type Database from "better-sqlite3";
 import { generateTextForFeature } from "@/lib/ai/generate";
 import { upsertLevel } from "@/lib/mutations/security-levels";
+import {
+  indexTrackedSymbols,
+  isOptionType,
+  resolveTrackedSymbolsToEquities,
+} from "@/lib/alerts/option-level-resolution";
 import type {
   LevelType,
   LevelDirection,
@@ -26,12 +31,33 @@ export interface ArticleInput {
   raw_text: string;
 }
 
+/**
+ * Why the user cares about a tracked name.
+ *
+ * "held_via_option" exists because the user can be long a contract without
+ * owning a share of the underlying. The level still belongs on the EQUITY
+ * (a newsletter's "$388" is a share price), so the underlying is pulled into
+ * the tracked set and tagged with how it got there — see
+ * lib/alerts/option-level-resolution.ts.
+ */
+export type SymbolRelationship = "held" | "watchlist" | "held_via_option";
+
+/** Prompt-facing wording for each relationship. */
+const RELATIONSHIP_LABEL: Record<SymbolRelationship, string> = {
+  held: "held",
+  watchlist: "watchlist",
+  held_via_option: "held via option",
+};
+
 export interface RelevantSymbol {
   symbol: string;
   security_id: number;
   current_price: number | null;
-  relationship: "held" | "watchlist";
+  relationship: SymbolRelationship;
   security_type: string | null;
+  /** Populated for option rows by the tracked-symbol query; used to resolve
+   *  the underlying when the symbol is not in a parseable option spelling. */
+  underlying_symbol?: string | null;
 }
 
 /**
@@ -47,7 +73,7 @@ export function buildExtractionPrompt(
   const symbolsList = relevantSymbols
     .map(
       (s) =>
-        `${s.symbol}${s.current_price ? ` (current $${s.current_price.toFixed(2)})` : ""} [${s.relationship}]`
+        `${s.symbol}${s.current_price ? ` (current $${s.current_price.toFixed(2)})` : ""} [${RELATIONSHIP_LABEL[s.relationship] ?? s.relationship}]`
     )
     .join("\n");
 
@@ -179,13 +205,16 @@ export function isImplausibleLevelPrice(
 }
 
 /**
- * Fetch symbols the user holds OR watchlists, with current prices.
- * These are the only symbols we extract levels for — everything else is noise.
+ * Raw tracked set: every security the user holds OR watchlists, with its
+ * latest price. Includes OPTION rows — callers that create levels must fold
+ * those into their underlying equity first (getRelevantSymbols does).
+ * Exported for tests and for the repair script's re-resolution.
  */
-export function getRelevantSymbols(db: Database.Database): RelevantSymbol[] {
+export function getTrackedSecurities(db: Database.Database): RelevantSymbol[] {
   return db
     .prepare(
       `SELECT DISTINCT s.id AS security_id, s.symbol, s.security_type,
+              s.underlying_symbol,
               p.close_price AS current_price,
               CASE WHEN h.security_id IS NOT NULL THEN 'held' ELSE 'watchlist' END AS relationship
        FROM securities s
@@ -203,6 +232,24 @@ export function getRelevantSymbols(db: Database.Database): RelevantSymbol[] {
        WHERE h.security_id IS NOT NULL OR w.security_id IS NOT NULL`
     )
     .all() as RelevantSymbol[];
+}
+
+/**
+ * The symbols we extract levels for: held OR watchlisted, with current prices,
+ * resolved to EQUITY rows only.
+ *
+ * A newsletter quotes SHARE prices. Letting an OCC option row into this list
+ * put a "$388/share" exit on a GOOGL call, where it was compared against the
+ * option premium and could never fire (and the deliberate option exemption
+ * from the plausibility band hid that). Every option row is therefore folded
+ * into its underlying equity — issuer-family aware, so a held GOOGL contract
+ * folds into a held GOOG row — and an option whose underlying has no equity
+ * row anywhere is dropped with a warning. See
+ * lib/alerts/option-level-resolution.ts.
+ */
+export function getRelevantSymbols(db: Database.Database): RelevantSymbol[] {
+  const tracked = getTrackedSecurities(db);
+  return resolveTrackedSymbolsToEquities(db, tracked).symbols;
 }
 
 function getUnscannedArticles(
@@ -241,7 +288,9 @@ export async function extractLevelsFromArticle(
   article: ArticleInput,
   relevantSymbols: RelevantSymbol[]
 ): Promise<{ inserted: number; skipped: number }> {
-  const bySymbol = new Map(relevantSymbols.map((s) => [s.symbol.toUpperCase(), s]));
+  // Issuer-family aware: the prompt lists GOOG but the newsletter (and so the
+  // model) may say GOOGL — same issuer, same level.
+  const bySymbol = indexTrackedSymbols(relevantSymbols);
 
   let responseText: string;
   try {
@@ -273,6 +322,17 @@ export async function extractLevelsFromArticle(
     const sym = bySymbol.get(lvl.symbol.toUpperCase());
     if (!sym) {
       // Claude returned a symbol not in our tracked list — discard
+      skipped++;
+      continue;
+    }
+    if (isOptionType(sym.security_type)) {
+      // Belt and braces: getRelevantSymbols folds options away before they can
+      // reach here, but a caller passing its own list must never be able to
+      // land a share-priced newsletter level on a contract (the option
+      // exemption in isImplausibleLevelPrice would wave it straight through).
+      console.warn(
+        `[levels/extract] Refusing to attach ${lvl.level_type} @ ${lvl.price} to option row ${sym.symbol} — levels belong on the underlying equity (article ${article.id})`
+      );
       skipped++;
       continue;
     }

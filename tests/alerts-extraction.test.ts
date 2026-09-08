@@ -276,6 +276,27 @@ describe("getRelevantSymbols", () => {
     expect(getRelevantSymbols(db)).toEqual([]);
   });
 
+  it("never returns an OPTION row — a share-priced level must not land on a contract", () => {
+    // Regression: the tracked-symbol query had no option filter, so an OCC row
+    // reached the prompt and a "$388/share" exit was written onto a call.
+    // Full coverage in tests/alerts/newsletter-levels-option-resolution.test.ts.
+    const acct = seedAccount("IBKR");
+    const equity = seedSec("ZZZ");
+    const opt = db.prepare(
+      `INSERT INTO securities (symbol, security_type, asset_class, underlying_symbol, multiplier)
+       VALUES ('ZZZ   270115C00220000', 'Option', 'equity', 'ZZZ', 100)`
+    ).run().lastInsertRowid as number;
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (?, ?, 1, '2026-04-20')"
+    ).run(acct, opt);
+
+    const result = getRelevantSymbols(db);
+    expect(result).toHaveLength(1);
+    expect(result[0].symbol).toBe("ZZZ");
+    expect(result[0].security_id).toBe(equity);
+    expect(result[0].relationship).toBe("held_via_option");
+  });
+
   it("ignores inactive watchlist items", () => {
     const aapl = seedSec("AAPL");
     db.prepare(
