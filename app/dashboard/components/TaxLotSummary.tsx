@@ -1,6 +1,63 @@
 import type { ReactNode } from "react";
 import type { TaxLotSummary, AccountTaxSummary } from "@/lib/queries/tax-lots";
+import type { TaxLotStalenessMarker } from "@/lib/compute/tax-convention";
 import { Count, Money } from "@/lib/privacy/components";
+
+/**
+ * QA finding: tax-lots--headline-tiles-stale-until-recompute-no-marker.
+ *
+ * The tiles below are drawn from STORED tax_lots / tax_lot_sales rows. Those
+ * rows only move when someone presses Recompute, so they can lag the
+ * transaction ledger (every material tax-input change advances
+ * `tax_input_generation`) or predate the current engine convention. The page
+ * showed the figures with no hint of either, and Recompute then silently
+ * changed them.
+ *
+ * This says so in plain language, right beside the Recompute button. It is a
+ * pure display of `describeTaxLotStaleness` — rendering the page NEVER starts a
+ * recompute (USER RULING: no auto-recompute on load).
+ */
+export function TaxLotStalenessNotice({
+  marker,
+  className,
+}: {
+  marker: TaxLotStalenessMarker;
+  className?: string;
+}) {
+  if (!marker.stale) return null;
+  const n = marker.inputChangesSince;
+  return (
+    <div
+      role="status"
+      className={`text-xs text-warn border border-warn/40 bg-warn/10 rounded px-2 py-1.5 leading-snug${
+        className ? ` ${className}` : ""
+      }`}
+    >
+      {marker.reason === "legacy" ? (
+        <>
+          These figures were computed under an earlier lot convention
+          {n != null ? (
+            <>
+              , <Count value={n} /> ledger change{n !== 1 ? "s" : ""} ago
+            </>
+          ) : null}
+          {" — press Recompute to refresh them."}
+        </>
+      ) : marker.reason === "never" ? (
+        <>These figures have no recompute stamp — press Recompute to refresh them.</>
+      ) : n != null ? (
+        <>
+          These figures predate <Count value={n} /> ledger change
+          {n !== 1 ? "s" : ""} — press Recompute to refresh them.
+        </>
+      ) : (
+        /* A stamp we cannot measure a distance from — say only what is
+           certain rather than quote a number we do not have. */
+        <>These figures do not match the current ledger — press Recompute to refresh them.</>
+      )}
+    </div>
+  );
+}
 
 /**
  * Same wording family as the row-level "Estimated" chip in TaxLotTables /
