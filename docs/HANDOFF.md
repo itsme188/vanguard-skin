@@ -3,84 +3,58 @@
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Session date:** 2026-09-06 (Sunday) ~16:15 ET → ~18:00 ET. Focus (user pick from the session-start menu): land the five stranded nightly-QA PRs (#64–#68, 19 commits) plus three quick items (deploy-permission rule, worktree cleanup, ORCL date).
+**Session date:** 2026-09-08 (Tuesday) ~12:10 ET → ~13:25 ET. Focus (user task): Claude/Codex coordination helpers, browser/deployment orchestration, Claude hook repair, shared workflow documentation. This task did NOT invoke session-end: everything below is committed on the isolated branch `claude/coordination-2026-09-08` (worktree `/Users/Yitzi/code/vanguard-skin-coord`, base `3b31714e`) — not pushed, not merged into `main`, nothing built or deployed.
 
 ## 1. Goal + exact files changed
 
-**Quick items**
-- **ORCL date corrected** through the app's own route (`POST /api/earnings/correct-date`, minted session, Origin + CSRF): Finnhub had the Q1 FY27 print on 2026-09-07 = Labor Day (a market holiday in `lib/calendar/market-holidays.ts`); Oracle IR's 09-02 press release says Thursday 2026-09-10 after the close. Old row 1493 deleted, new manual row 1586 on 09-10 AMC (release_time 16:15 kept). ORCL is NOT held / watchlisted / armed, so it stays uncovered unless armed — the user decides.
-- **Four fully-landed worktrees removed** (`/private/tmp/portfolio-desk-astra-2026-09-04`, `/private/tmp/portfolio-desk-reliability-landing`, `../vanguard-skin-print-v2-e`, `../vanguard-skin-print-v2-f`) after verifying byte-identity with main / merged status; their four branches deleted. Only `main` and the nightly `../vanguard-skin-qa-fix` worktree remain.
-- **Permission rule:** the auto-mode classifier refused Claude editing `.claude/settings.json` twice (scripted write, then the Edit tool); not retried. Claude prepared a validated merged copy of the file in the scratchpad and **the user copied it over `.claude/settings.json` at session end** (7 `permissions.allow` rules for the three electron scripts, plus an `autoMode.allow` classifier hint carrying `$defaults`); committed in the closing chore commit, loads on the next restart. First real test = the next deploy.
+Five pathspec commits, oldest first:
 
-**Landing (all on local `main`, 35 commits `3edd56f4..f97ad7cf`, NOT pushed)**
-- Four read-only Opus landing reviews ran BEFORE any merge (one per PR; #67+#68 shared one). Merges: #67 `c83f625d`, #68 `c5cb0940`, #64 `f023761b`, #65 `11a3fceb` (one import conflict in `lib/calendar/reconcile-earnings-dates.ts`, both lines kept). **#66 was NOT merged**: its commit `33db63aa` hard-codes a real account balance in `tests/dashboard/equity-curve-tooltip-precision.test.ts`; its four commits were cherry-picked (`256833e5`, `516a6eb4`, `f184d841`, `2a3b3c76`) with the fixture replaced by a synthetic figure on the same rounding boundary. PR #66 is to be closed unmerged and its remote branch deleted at push time.
-- **Reverted** `99d425ef` (PR #68 slot-guard fallback) as `fae10da1`: the fallback read `release_time` as slot evidence, but for a blank-hour vendor row that is the app's own 16:15 default; the cascade that writes the value derives its slot WITHOUT the fallback (`sameSideOfNoon(hhmm, null)` is true) and honors the write — so the guard refused a write the system accepts, with no `force` and a dead-end 409. Ledger finding reopened as needs-decision.
-- **Fix wave (nine fixers, strict per-file ownership, pathspec commits):** `9374d007` trust-strip duration copy (the PR's copy promised imports fill `duration_years`; only `scripts/backfill-bond-durations.ts` writes it); `e1874c41` notes identity single-sourced (`NOTE_TYPES`/`NOTE_SENTIMENTS` in `lib/types.ts`, `lib/notes/coerce.ts`, `GET /api/notes?type=all` no longer empties the notebook); `9533f533` equity-curve K-band ticks two-decimal-trimmed + `formatCurrency` pinned; `a0cd6e8f` tax-lots page ET-anchored year, strict `?year=` parse, clear-filter no longer forwards `year=all`, `<Count>` on the tile sale counts; `23129b82` PATCH on `/api/calendar/events` gated by the same would-supersede-vendor dry run (+`excludeEventId`); `034e8a3b` the four orphaned FAB clearances removed (Today `md:mb-20`, `EarningsDateChip` `FAB_CLEARANCE`, shell `pb-36`→`pb-20` / `md:pointer-coarse:pb-24` dropped, SecurityChart `pr-14`); `edc6f5e1` `upsertOhlcvBars` rejects non-positive / high<low bars with one warn per call and returns `{inserted, rejected}`, `get52WeekRange` start/end dates over priced bars only, the zero-high test now bites; `e605a201` + `71b8e8aa` Finnhub `Rev 0` placeholder moved to the PARSE layer (`parseFinnhubFigure` → `revenue: null`), raw-token fallback only for free text, `TodayReleases` never renders `Est:` with nothing after it, `EnrichmentChips` no empty chip, Worker mirrors (`todays-reporters`, `fallback-earnings`) in parity + a Worker EPS sign bug (`$-0.14`→`-$0.14`) fixed; `38d025ad` `lib/transcripts/presentation.ts` single-sources 8-K vs call (`transcriptKind`, `hasDeskNote` = the store-time `isValidDeskNote` shape, pinned to agree), TranscriptCard renders a fat 8-K's AI desk note under an honest label and softens the thin-8-K placeholder, digest email heads filings as "8-K press release"/"Filing →" and OMITS a filing without a desk note, debrief heading source-aware and skips rows without a desk note (this also drops the old 600-char extractive teaser for CALL rows — intentional, flagged), security page badge via `kindLabel`, NotesView headers count transcripts and filings separately; `f97ad7cf` DataConfidence popover re-measures on resize/orientationchange, EarningsHub weekend empty-state copy names the week, WeekAheadView header/body agree on "this week", event title carries `title=`, `figureOrAbsent` guard.
-- Docs: `docs/plans/TODO.md` (two items closed, six follow-ups/decisions filed, ORCL reminder, permission-rule BLOCKED note), `docs/reference/data-integrity.md` (source-aware digest transcript header), this file, `docs/CODEX-CLAUDE-COORDINATION.md` (Landing 4).
-- QA ledger (gitignored): 26 findings → `fix_status: merged` (+`merged_date`, cherry-picked SHAs remapped), two stranded FAB findings closed on `e655ba00`, the slot-guard finding reopened `known` / `disposition: needs-decision` with three options; backup `qa/findings/ledger.json.bak-2026-09-06-landed`.
+1. `9b097b07` feat(coord): shared task register + named locks CLI — `scripts/coord/coord.py`, `scripts/coord/coord.sh`, `tests/coord/coord-cli.test.ts`.
+2. `d971d49b` fix(claude-hooks): stdin JSON, no masked failures, no full suite on Stop — `.claude/settings.json`, `.claude/hooks/check-todo-reconciled.sh`, `.claude/hooks/post-edit-check.sh` (new), `.claude/hooks/stop-verify.sh` (new), `tests/coord/claude-hooks.test.ts`.
+3. `14b26228` feat(coord): deploy wrapper — `scripts/coord/deploy.sh`, `tests/coord/deploy-wrapper.test.ts`.
+4. `89061141` feat(coord): sandbox + smoke wrappers, additive verify-smoke hooks — `scripts/coord/sandbox.sh`, `scripts/coord/smoke.sh`, `scripts/verify-smoke.sh`, `tests/coord/sandbox-smoke.test.ts`.
+5. `5f158439` docs(coord) — `docs/reference/coordination.md` (new, authoritative workflow), `docs/CODEX-CLAUDE-COORDINATION.md` (now a short live board), `docs/plans/archive/coordination-log-2026-09-04-to-09-06.md` (verbatim move), `docs/superpowers/specs/2026-09-08-agent-coordination-design.md` (design + Codex review fold §11), `AGENTS.md`, `CLAUDE.md` (Workflow Rules + Testing lines), `.claude/session-end.md`, `.claude/session-start.md`, `docs/DECISIONS.md`, `docs/plans/TODO.md`, `package.json` (four entries at the END of the scripts block: `coord`, `deploy`, `sandbox`, `smoke`).
+
+Outside git: `~/.claude/settings.json` `sandbox.excludedCommands` gained the deploy wrapper forms (backup `~/.claude/settings.json.bak-2026-09-08-coord`); the shared coordination directory `/Users/Yitzi/code/vanguard-skin/.git/portfolio-desk-coord/` now exists (mode 0700) with one registered task; private evidence in `docs/private/coordination-evidence-2026-09-08/` and the resumable log `docs/private/coordination-progress-2026-09-08.md` (both gitignored, main checkout).
+
+Verified findings that drove the work: the installed Claude Code 2.1.263 binary has no `CLAUDE_FILE_PATHS` (the eslint + security_type PostToolUse hooks had been no-ops); the Stop hook ran the full suite at every stop behind `| tail -3` (exit code masked); Codex loads at most one instruction file per directory, so with `AGENTS.md` present `CLAUDE.md` was never auto-loaded by Codex (the AGENTS.md claim was wrong); no lock protected landing/deploying; the 09-06 browser contention came from concurrent smokes sharing one agent-browser session plus a `close --all` cleanup.
 
 ## 2. Tests / E2E / deploy result
 
 | Check | Result |
 |---|---|
-| Landing reviews (4× Opus, read-only) | 3 Critical (circular slot guard; false duration copy; real figure in a public fixture) + ~15 Important; all Criticals resolved before/at landing, Importants closed by the fix wave or filed in TODO |
-| `npm run verify:changed` on final HEAD | exit 0 — no focused mapping for this diff (it recommends tsc + next build, both run) |
-| Full suite on final HEAD `f97ad7cf` (`--reporter=verbose`, failures grepped) | **745 files, 9,033 passed, 9 todo, 0 failed** (87s) |
-| `tsc --noEmit` | 20 errors = the documented baseline (same four untouched test files) |
-| `npm run build` (`next build`) | **clean** — compiled, 103 static pages; only the pre-existing headless-Chrome warning |
-| Browser pass (agent-browser, secret-free :3095 sandbox from the MAIN checkout: VACUUM DB copy, minted session, every `.env.local` var overridden) | see §2a below |
-| Electron deploy | **Deployed 17:31–17:37 ET** on user approval (full chain: build, sign, notarization successful, bundle gate OK, installed + relaunched on :3099); the classifier allowed the whole chain this time |
+| `tests/coord` (4 files, new) | 60 passed |
+| Full suite on the branch tip (worktree, no `.env.local`) | 753 files: 9,112 passed, 3 failed, 3 skipped, 9 todo. The 3 failures are `tests/ai/generate.test.ts`, which reads `ANTHROPIC_API_KEY` from the environment (same 3 fail on unmodified `main` in this worktree; pass with a dummy key). Filed as TODO (g). Net: +60 tests, 0 new failures. |
+| `tsc --noEmit` | only the documented 20-error baseline in four untouched test files; none in the new files |
+| `npm run verify:changed` | tooling category, no focused mapping (expected); `tests/coord` run manually as the manual selection |
+| Codex design review (read-only, 1 round) | REVISE, 25 findings; 20 accepted and folded (spec §11), 5 rejected/deferred with reasons |
+| Live proof A — lock contention | two shells: second acquire 75 with holder line; `lock run` refused without running; `--wait` succeeded after release; stale (dead pid + expired TTL) refused without, broken with `--break-stale`, logged |
+| Live proof B — interrupted task | owner pid killed + worktree removed → `OWNER-GONE,WORKTREE-MISSING`; resume pointer readable; `release --by codex --reason`; archive refused while active, allowed after; a late checkpoint on the archived task refused |
+| Live proof C1 — `deploy.sh --dry-run` on the REAL main checkout | refused (exit 65) for two true reasons: dirty `docs/HANDOFF.md` and `workers/cron/.wrangler` present; locks acquired first and released; nothing built |
+| Live proof C2 — sandbox + smoke | real sandbox from this worktree on :3090 in ~7 s (VACUUM copy, minted session, 0 dotenv keys to pin, `TWS_HOST` blocked); single smoke **4/4**; two concurrent smokes serialized on the exclusive `browser` lock (ends at 21 s and 43 s, both 4/4); a second same-worktree sandbox refused (75); live DB size/mtime unchanged; torn down, no listener or lock left |
+| Electron deploy | **not run** (out of scope; the wrapper's dry-run was the only deploy-path execution) |
 
-### 2a. Browser pass (agent-browser, real Chromium, 13 checks) — 12 PASS, 1 PASS with a data-blocked sub-check, 0 FAIL, 0 console errors
-
-| # | Check | Verdict / evidence (direction-only) |
-|---|---|---|
-| C1 | Today 1440: no floating button, no dead band | PASS — zero fixed buttons besides the chat rail; 24px from the last section to the page bottom (the shell's `md:pb-6`) |
-| C2 | Freshness popover inside viewport + re-measure | PASS — fully inside at 1280; resized to 1100 while open → it re-measured and flipped edge, still inside |
-| C3 | Week-ahead weekend label | PASS — the week containing today (Sunday) reads "This week"; the This-week link points at `weekOf=2026-08-31`, not 09-07 |
-| C4 | Cmd+K hover does not steal Enter | PASS — hovered row 3, selection stayed on row 1, Enter opened row 1 |
-| C5 | Tax-lots `?year=abc` / `?year=all` | PASS — no "NaN", report card 200 with the resolved year; Clear-filter href carries the resolved year, never `year=all` |
-| C6 | Equity-curve tooltip + ticks | PASS — tooltip is a comma-separated full-dollar value; ticks compact with ≤2 decimals |
-| C7 | 52-week range on the corrupt-bar security | PASS — non-zero low; stats strip and quote-stats module AGREE (the open two-sources finding did not reproduce here) |
-| C8 | Notes `?type=all` | PASS — cards render, "No notes yet" absent; `GET /api/notes?type=all` → success, non-empty |
-| C9 | 8-K cards / security page heading | PASS with one SKIP — badge "8-K filing" (raw token nowhere), thin-8-K placeholder wording exact, group headers "…, 1 filing", security page heading "Earnings Transcripts & Filings". The fat-8-K desk-note branch is UNOBSERVABLE: none of the 43 `edgar_8k` rows has a desk-note-shaped summary, and LFMD/MP each have an alpha_vantage twin that wins the per-quarter dedupe. Correct by construction (pinned to `isValidDeskNote`), not browser-proven |
-| C10 | Trust-strip duration copy | PASS — "maintenance step" present; no "Importing a statement", no `scripts/` anywhere on the page |
-| C11 | Phone 390: Data Health ScrollFade; Today bottom padding | PASS — the three named tables sit in `scroll-fade is-scrollable`; no floating button; last content bottom 764 vs bottom-nav top 774 |
-| C12 | Releases title attribute | PASS — all macro release titles carry `title` = full text (two actually clip at 390) |
-| C13 | Console on Today / Accounts / Research / Analysis | PASS — zero errors; three benign warnings (smooth-scroll hint, transient Recharts size) |
-
-Incidental (filed in TODO, not a regression): two OTHER Data Health tables ("Unmapped sector ETFs", "Sector disagreements") sit in `overflow-hidden` panels with no scroller at 390px. The circular bottom-left button in dev-server screenshots is the Next.js dev-tools indicator, not an app control. Screenshots: session scratchpad `e2e/` (18 files).
+Before the `--exclusive` fix, two same-task smokes shared one browser session and each lost the Cmd+K flow (3/4) — the 09-06 failure shape reproduced and then removed.
 
 ## 3. Open concerns / rejected approaches / decisions for the user
 
-- **Push + PR hygiene: DONE on approval** (pushed, #66 closed with a comment, five remote branches deleted, four PRs merged). The real figure in `33db63aa` stays reachable via GitHub's `refs/pull/66/head` after the branch is gone — decide whether to ask GitHub Support for a purge (precedents 2026-04-07, 2026-08-23).
-- **Permission rule snippet (APPLIED by the user at session end — kept here for the record):**
-  ```json
-  "permissions": { "allow": [
-    "Bash(npm run electron:deploy*)", "Bash(npm run electron:pack*)", "Bash(npm run electron:install*)",
-    "Bash(PATH=/opt/homebrew/opt/node@24/bin:$PATH npm run electron:deploy*)",
-    "Bash(PATH=/opt/homebrew/opt/node@24/bin:$PATH npm run electron:pack*)",
-    "Bash(PATH=/opt/homebrew/opt/node@24/bin:$PATH npm run electron:install*)",
-    "Bash(source ~/.zshrc >/dev/null 2>&1)" ] },
-  "autoMode": { "allow": [ "$defaults",
-    "Running this project's Electron rebuild/install npm scripts is pre-authorized by the repo CLAUDE.md and .claude/session-end.md: `npm run electron:deploy`, `npm run electron:pack`, `npm run electron:install`, optionally prefixed with `source ~/.zshrc` and a node@24 PATH. They build, sign, notarize and reinstall the user's own desktop app at /Applications/Vanguard Dashboard.app; the rm -rf inside electron:install targets only that app bundle and is part of the pre-authorized reinstall." ] }
-  ```
-- **Slot guard:** reverted, not reworked — a real fix needs `deriveEarningsSlot` to report provenance (vendor vs default). Options + recommendation are in the ledger row.
-- **Debrief change of behaviour:** call-source rows without a real desk note are now skipped in the morning debrief (previously a 600-char extractive teaser). Reverse if the teaser was wanted.
-- **Layout change of behaviour:** the shell's mobile bottom padding went from 144px to 80px and the Today desktop bottom margin is gone — both were FAB clearances; the browser pass checks nothing hides behind the bottom nav.
-- **ORCL** is uncovered until armed (Hub add-ticker). Tonight's Sunday briefing was skipped BY DESIGN (`cron/briefing`: "not the briefing send-day (holiday shift)") and goes Monday 16:30 ET.
-- **Deferred (TODO):** ScrollFade siblings (10 tables), dismiss-button siblings (3), corrupt-bar sibling READERS + a user-run repair of six stored zero bars on one foreign-listed security, `CombinedPortfolioChart.tsx` dead code (delete?), `lib/chat/tools.ts` note enums, allocation-pie tooltip precision, `correctEarningsEventDate` not supersede-gated (doc note), stranded mobile ambient-note drafts (user decision).
-- **Rejected:** merging PR #66's branch (real figure); reworking the slot guard inside the landing; a third attempt at the settings file; deleting `CombinedPortfolioChart.tsx` without asking.
+- **Landing order:** Codex's `codex/verification-reliability-2026-09-08` (touches `package.json` `verify:changed`, `scripts/lib`, `.codex/hooks`) should land first; this branch rebases on top (different `package.json` hunk). Neither branch is authorized to merge itself.
+- **Main checkout blockers the wrapper will keep refusing until fixed:** (a) `docs/HANDOFF.md` is a stale, corrupted working copy (backup kept in the session scratchpad); restore with `git checkout -- docs/HANDOFF.md` from the main checkout — your call, it discards uncommitted text; (b) `workers/cron/.wrangler/` (local KV state from a `wrangler dev` run, newest file 2026-08-28) sits in the main checkout — the bundle gate excludes it, but the wrapper preflight fails closed; delete it (or move it to a sibling worktree) before the next deploy.
+- **AGENTS.md structural fix (user decision, deletes a file):** move the CSV contract to `docs/canonical-csv-guide.md` and remove `AGENTS.md` so Codex's fallback loads `CLAUDE.md` for both agents. Not done here.
+- **Hook activation:** the new hooks take effect in Claude Code sessions whose project settings are the landed `.claude/settings.json` (the file watcher picks up project-settings edits). First live turn after landing: expect one `post-edit-check` warning per edited TS file with a finding and a Stop that blocks once only on a real verification failure.
+- **Codex runner adoption:** `stop-verify.sh` already feature-detects `scripts/verify.sh status --base main`; confirm the 0/3/4 contract live once Codex lands. Until then the fallback (`verify:changed`) cannot distinguish "unverified" from "passed" for unmapped changes.
+- **Rejected/deferred from the Codex review:** lock adoption by the nightly QA scripts; revision-checked task updates; process-tree supervision (needs a daemon); an in-app build stamp (`/api/health`, production code); all filed in TODO with reasons in spec §11.
+- **Stale `.claude/worktrees/*` dirs** (five, March, not registered worktrees) — delete after confirmation.
+- **Nightly fixer branch `qa-fix-work-20260908`** (4 commits) is still undelivered because of the dirty HANDOFF.md above.
 
 ## 4. Uncommitted changes / live-process state
 
-- Main checkout clean and PUSHED (`a111245d`, `623acd67`, then the closing chore + handoff commits). No production code changed after the 17:31 deploy, so no second rebuild. PRs #64/#65/#67/#68 MERGED, #66 CLOSED unmerged with a note; the five `qa-auto-fixes-*`/`qa-deep-fixes-*` branches deleted on origin and locally; `qa-fix-work-2026090{4,5,6}` (content duplicates of the landed PRs) left for the user. `CombinedPortfolioChart.tsx` deleted per the user's ruling.
-- ORCL 1586 ARMED on user approval (flag row 25, five prepare steps enqueued, `cloud_outbox` generation 3) — first live print on v2 = Thursday 2026-09-10 AMC.
-- `/Applications/Vanguard Dashboard.app` = today's build from `a111245d`, installed 17:37 ET, running on :3099.
-- Codex: live worktree `codex/trade-lot-direction-2026-09-06` on :3093, untouched; rebase note left in the coordination file.
-- Sandbox dev server on :3095 (main checkout, secret-free) — stopped by PID at close; `.next/dev` from it and `.next` from the build are disposable.
-- Scratchpad evidence (session-local): verify logs, build log, `e2e/` screenshots, `settings-permission-snippet.json`, `vanguard-e2e.db` copy.
+- Main checkout: unchanged by this session except `docs/private/*` (gitignored) and the new `.git/portfolio-desk-coord/` directory; `docs/HANDOFF.md` still dirty as found. No branch switch, no stash, no reset.
+- Worktree `/Users/Yitzi/code/vanguard-skin-coord` on `claude/coordination-2026-09-08` @ `5f158439` + this handoff commit; clean. Codex's worktree `/private/tmp/portfolio-desk-verification-2026-09-08` untouched. The prunable `/private/tmp/portfolio-desk-trade-lots-2026-09-06` worktree still listed.
+- No dev server, sandbox, browser session or lock left running (sandbox torn down; `coord status` shows one active task, no locks). The installed app on :3099 was never touched.
+- Register: task `coord-helpers-2026-09-08` (owner claude) — set to `landed` by whoever merges this branch.
+- Codex message channel: `/private/tmp/portfolio-claude-to-codex-2026-09-08.md` (interface review + ownership + this branch's state) and the board in `docs/CODEX-CLAUDE-COORDINATION.md`.
 
 ## 5. Claude session link
 
-https://claude.ai/code/session_018eCLt6Mr6Qg2SR7tggBcQ9
+https://claude.ai/code/session_01KyxCGVdtETtp71BFyZk5k1
