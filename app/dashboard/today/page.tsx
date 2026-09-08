@@ -4,10 +4,9 @@ import { db } from "@/lib/db";
 import Link from "next/link";
 import { getAccountByName } from "@/lib/queries/accounts";
 import { getPortfolioTotals } from "@/lib/queries/dashboard";
-import { getEventsByWeek } from "@/lib/queries/calendar";
-import { getCurrentMonday, todayET, resolveWeekOfParam } from "@/lib/calendar/date-utils";
+import { getEventsByWeek, getTodayReleases } from "@/lib/queries/calendar";
+import { getCurrentMonday, resolveWeekOfParam } from "@/lib/calendar/date-utils";
 import { getIbkrTodayHoldings, type TodayHolding } from "@/lib/queries/today-holdings";
-import type { CalendarEvent } from "@/lib/types";
 import { OpenChatButton } from "../components/OpenChatButton";
 import { Count, Money, Pct } from "@/lib/privacy/components";
 import { TodayReleases } from "../components/TodayReleases";
@@ -89,38 +88,11 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
     todayGain !== null && priorClose !== null && priorClose > 0 ? (todayGain / priorClose) * 100 : null;
 
   // ── Today's calendar releases (with release_time set) ─────────────
-  // ET-anchored: calendar event_date is an ET market date, so "today" must be
-  // the ET day regardless of server/Mac local TZ (traveling) or UTC.
-  const today = todayET();
-  const todayReleases = db
-    .prepare(
-      `SELECT * FROM calendar_events
-       WHERE event_date = ?
-         AND release_time IS NOT NULL
-         AND COALESCE(superseded, 0) = 0
-       ORDER BY release_time ASC`,
-    )
-    .all(today) as CalendarEvent[];
-
-  // Fallback: when today has no releases, surface the next few upcoming ones so
-  // the left half of the Today header row is never empty (there's always a
-  // macro event or held-name earnings coming up within the week).
-  const upcomingReleases =
-    todayReleases.length === 0
-      ? (db
-          .prepare(
-            `SELECT * FROM calendar_events
-             WHERE event_date > ?
-               AND release_time IS NOT NULL
-               AND COALESCE(superseded, 0) = 0
-             ORDER BY event_date ASC, release_time ASC
-             LIMIT 4`,
-          )
-          .all(today) as CalendarEvent[])
-      : [];
-  const releases = todayReleases.length > 0 ? todayReleases : upcomingReleases;
-  const releasesMode: "today" | "upcoming" =
-    todayReleases.length > 0 ? "today" : "upcoming";
+  // ET-anchored inside the query (calendar event_date is an ET market date, so
+  // "today" must be the ET day regardless of server/Mac local TZ or UTC), and
+  // it applies the dual-class security_id fallback so a row whose stored
+  // security_id is NULL still links to its security hub.
+  const { releases, mode: releasesMode } = getTodayReleases(db);
 
   // ── Portfolio totals for the hero (Overview absorption — IA Phase 3) ──
   const portfolio = getPortfolioTotals(db);
