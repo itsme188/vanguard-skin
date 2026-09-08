@@ -8,7 +8,7 @@ input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)
 
 case "$cmd" in
-  *electron:deploy*|*electron:pack*) ;;
+  *electron:deploy*|*electron:pack*|*coord/deploy*|*"npm run deploy"*) ;;
   *) exit 0 ;;
 esac
 
