@@ -7,6 +7,7 @@ Goal: get the user to a ranked "pick what to work on" menu within a few minutes.
 - `git status --short` — uncommitted changes from a previous session? Show the user what they are BEFORE doing anything else.
 - `git log --oneline -8` — what landed last session.
 - `git worktree list` — leftover worktrees.
+- `npm run coord -- status` — the shared task register + locks (`docs/reference/coordination.md`): who owns which files/port/branch right now, and any STALE / OWNER-GONE / WORKTREE-MISSING rows to surface before proposing work that overlaps them.
 - QA branch sweep (memory rule — qa fix branches never auto-merge): `git fetch origin --quiet`, then for every local or remote `qa-*` branch, `git log main..<branch> --oneline`. Empty output = merged, just a stale ref; unique commits = unlanded fixes to surface.
 
 ## 2. Cross-agent inboxes

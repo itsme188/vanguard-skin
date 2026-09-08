@@ -260,6 +260,7 @@ Detail: `docs/reference/calendar.md`
 
 ## Workflow Rules
 
+- **Coordination (2026-09-08):** two agents, one Mac — `docs/reference/coordination.md` is the shared workflow. Register every task in the shared register before editing (`npm run coord -- task register …`), checkpoint at milestones, land only under the `integration` lock, deploy only through `npm run deploy` (locked wrapper; never an improvised script), browser-verify through `npm run sandbox` + `npm run smoke` (own DB copy, own port, `browser` lock). State lives in the register (`$(git rev-parse --git-common-dir)/portfolio-desk-coord`, shared by all worktrees); reasoning lives in the Markdown handoffs.
 - **Session-end ownership (2026-09-06):** explicit session-end invocation authorizes the receiving agent to verify, commit, push, integrate its work, and deploy the reviewed result. Preserve concurrent work; discussions and summaries do not invoke shipping. Shared workflow: `.claude/session-end.md`; global approval rules have the same exception.
 
 After implementing a fix or feature, always run the full test suite (`npx vitest run`) and report the result before committing. This project has 1600+ tests — use them. Report the test count and pass/fail status. Do not commit if tests are failing.
@@ -272,6 +273,7 @@ When debugging data issues, investigate root causes rather than applying smoothi
 
 ## Testing
 
+- Claude Code hooks read stdin JSON (`tool_input.file_path`; there is NO `CLAUDE_FILE_PATHS` variable — verified 2026-09-08). The Stop hook (`.claude/hooks/stop-verify.sh`) never runs the full suite: it uses Codex's `scripts/verify.sh status --base main` when present, else `npm run verify:changed`, and blocks once on a real failure. `post-edit-check.sh` is read-only (no `eslint --fix`) and edited-file-only.
 - Run tests: `PATH=/opt/homebrew/opt/node@24/bin:$PATH npx vitest run` — the project runs on the node@24 LTS keg (pinned by versioned path everywhere since 2026-08-11; the bare `/opt/homebrew/bin/node` moves on every `brew upgrade` and must never be relied on). better-sqlite3 ≥13 is N-API (one binary works across Node ≥22 and Electron), but keep the pin: Next/tooling behavior should not drift with Homebrew's default node. Same prefix for `npx tsx scripts/*.ts`. Still never `npm rebuild` casually — rebuilds are deliberate, full-suite-verified events.
 - All tests use in-memory SQLite (`:memory:`) for isolation
 - **launchd / cron scripts run `npx tsx` FROM THE REPO ROOT** — `cd` first (or wrap in `(cd "$PROJECT_DIR" && …)`): tsx resolves the `@/` alias off the tsconfig it finds from cwd, so an absolute script path launched from launchd's cwd dies with `Cannot find module '@/lib/…'`. Bit twice: the repair-script rehearsal (2026-08-23) and the 2 AM smoke, which ran zero authenticated checks 08-31 → 09-03 because its mint failed this way.
