@@ -7,7 +7,7 @@
 
 ## 1. Goal + exact files changed
 
-Five pathspec commits, oldest first:
+Pathspec commits, oldest first (plus the hook follow-up and this handoff):
 
 1. `9b097b07` feat(coord): shared task register + named locks CLI — `scripts/coord/coord.py`, `scripts/coord/coord.sh`, `tests/coord/coord-cli.test.ts`.
 2. `d971d49b` fix(claude-hooks): stdin JSON, no masked failures, no full suite on Stop — `.claude/settings.json`, `.claude/hooks/check-todo-reconciled.sh`, `.claude/hooks/post-edit-check.sh` (new), `.claude/hooks/stop-verify.sh` (new), `tests/coord/claude-hooks.test.ts`.
@@ -28,6 +28,7 @@ Verified findings that drove the work: the installed Claude Code 2.1.263 binary 
 | `tsc --noEmit` | only the documented 20-error baseline in four untouched test files; none in the new files |
 | `npm run verify:changed` | tooling category, no focused mapping (expected); `tests/coord` run manually as the manual selection |
 | Codex design review (read-only, 1 round) | REVISE, 25 findings; 20 accepted and folded (spec §11), 5 rejected/deferred with reasons |
+| Codex reply to the interface review (12:32 ET, read after my first close) | all six Claude requests accepted; two Codex requests folded in a follow-up commit: no per-edit `tsc` in `post-edit-check.sh` (type-check once at completion) and runner exit 4 (no evidence) now blocks the stop once instead of passing quietly (parity with Codex's Stop hook) |
 | Live proof A — lock contention | two shells: second acquire 75 with holder line; `lock run` refused without running; `--wait` succeeded after release; stale (dead pid + expired TTL) refused without, broken with `--break-stale`, logged |
 | Live proof B — interrupted task | owner pid killed + worktree removed → `OWNER-GONE,WORKTREE-MISSING`; resume pointer readable; `release --by codex --reason`; archive refused while active, allowed after; a late checkpoint on the archived task refused |
 | Live proof C1 — `deploy.sh --dry-run` on the REAL main checkout | refused (exit 65) for two true reasons: dirty `docs/HANDOFF.md` and `workers/cron/.wrangler` present; locks acquired first and released; nothing built |
@@ -42,7 +43,7 @@ Before the `--exclusive` fix, two same-task smokes shared one browser session an
 - **Main checkout blockers the wrapper will keep refusing until fixed:** (a) `docs/HANDOFF.md` is a stale, corrupted working copy (backup kept in the session scratchpad); restore with `git checkout -- docs/HANDOFF.md` from the main checkout — your call, it discards uncommitted text; (b) `workers/cron/.wrangler/` (local KV state from a `wrangler dev` run, newest file 2026-08-28) sits in the main checkout — the bundle gate excludes it, but the wrapper preflight fails closed; delete it (or move it to a sibling worktree) before the next deploy.
 - **AGENTS.md structural fix (user decision, deletes a file):** move the CSV contract to `docs/canonical-csv-guide.md` and remove `AGENTS.md` so Codex's fallback loads `CLAUDE.md` for both agents. Not done here.
 - **Hook activation:** the new hooks take effect in Claude Code sessions whose project settings are the landed `.claude/settings.json` (the file watcher picks up project-settings edits). First live turn after landing: expect one `post-edit-check` warning per edited TS file with a finding and a Stop that blocks once only on a real verification failure.
-- **Codex runner adoption:** `stop-verify.sh` already feature-detects `scripts/verify.sh status --base main`; confirm the 0/3/4 contract live once Codex lands. Until then the fallback (`verify:changed`) cannot distinguish "unverified" from "passed" for unmapped changes.
+- **Codex runner adoption:** `stop-verify.sh` already feature-detects `scripts/verify.sh status --base main`; confirm the 0/3/4 contract live once Codex lands. Codex's work is NOT committed — it is delivered as the retained worktree plus `/private/tmp/portfolio-verification-2026-09-08.patch` (handoff `/private/tmp/portfolio-verification-handoff-2026-09-08.md`); `git apply --check` passed on `3b31714e` per Codex. Until then the fallback (`verify:changed`) cannot distinguish "unverified" from "passed" for unmapped changes.
 - **Rejected/deferred from the Codex review:** lock adoption by the nightly QA scripts; revision-checked task updates; process-tree supervision (needs a daemon); an in-app build stamp (`/api/health`, production code); all filed in TODO with reasons in spec §11.
 - **Stale `.claude/worktrees/*` dirs** (five, March, not registered worktrees) — delete after confirmation.
 - **Nightly fixer branch `qa-fix-work-20260908`** (4 commits) is still undelivered because of the dirty HANDOFF.md above.
