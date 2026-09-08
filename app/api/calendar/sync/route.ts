@@ -47,6 +47,7 @@ export async function POST(request: Request) {
             totalSaved: result.totalSaved,
             newEvents: result.newEvents,
             refreshedEvents: result.refreshedEvents,
+            errors: result.errors,
           },
         });
       } catch (error) {
