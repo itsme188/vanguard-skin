@@ -211,17 +211,31 @@ describe("stop-verify.sh", () => {
     expect(logs.length).toBeGreaterThan(0);
   });
 
-  it("advisory exit 4 (no current evidence): exit 0, systemMessage JSON on stdout, stderr empty", () => {
+  it("runner exit 4 (no current evidence) blocks ONCE: exit 2 with a run-verification request on stderr, empty stdout", () => {
     fs.writeFileSync(path.join(repoDir, "dirty.txt"), "x");
     const res = runHook(HOOK, "{}", {
       PD_COORD_DIR: coordDir,
       PD_STOP_VERIFY_CMD: "exit 4",
       CLAUDE_PROJECT_DIR: repoDir,
     });
-    expect(res.status).toBe(0);
-    expect(res.stderr).toBe("");
-    const parsed = JSON.parse(res.stdout);
-    expect(parsed.systemMessage).toContain("no current evidence");
+    expect(res.status).toBe(2);
+    expect(res.stdout).toBe("");
+    expect(res.stderr).toContain("no current verification evidence");
+    expect(res.stderr).toContain("verify.sh changed --base main");
+    const statusFile = path.join(coordDir, "logs", "stop-verify-last-status");
+    expect(fs.readFileSync(statusFile, "utf8")).toMatch(/^unverified\t/);
+
+    // second pass of the same stop cycle: lets go, but says so explicitly
+    const marker = path.join(repoDir, "should-not-run-4");
+    const second = runHook(HOOK, JSON.stringify({ stop_hook_active: true }), {
+      PD_COORD_DIR: coordDir,
+      PD_STOP_VERIFY_CMD: `touch ${marker}`,
+      CLAUDE_PROJECT_DIR: repoDir,
+    });
+    expect(second.status).toBe(0);
+    expect(fs.existsSync(marker)).toBe(false);
+    const parsed = JSON.parse(second.stdout);
+    expect(parsed.systemMessage).toContain("no verification evidence");
   });
 
   it("advisory exit 3 (manual test selection): exit 0, systemMessage JSON on stdout, stderr empty", () => {

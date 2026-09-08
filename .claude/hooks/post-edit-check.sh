@@ -5,9 +5,8 @@
 # no findings, exit 0 with no output. Silently no-ops for anything outside
 # .ts/.tsx/.js/.jsx or outside the project root.
 #
-# Test seams: PD_HOOK_SKIP_ESLINT=1 / PD_HOOK_SKIP_TSC=1 skip the respective
-# check (tests use these so a run doesn't pay for a full tsc pass). Default
-# is to run both.
+# Test seam: PD_HOOK_SKIP_ESLINT=1 skips the eslint check (tests). There is
+# deliberately no per-edit tsc (see (b) below).
 set -u
 set -o pipefail
 
@@ -76,34 +75,12 @@ $trimmed"
   fi
 fi
 
-# (b) tsc --noEmit, bounded at 90s, filtered to lines for THIS file only —
-# the repo carries a 20-error baseline in unrelated test files that must
-# never leak into a single-file check. --incremental false so the hook
-# never writes a tsbuildinfo file (tsconfig.json has incremental:true).
-if [ "${PD_HOOK_SKIP_TSC:-0}" != "1" ]; then
-  tsc_out=$(perl -e 'alarm shift; exec @ARGV' 90 npx tsc --noEmit --pretty false --incremental false 2>&1)
-  tsc_status=$?
-  diag_count=$(printf '%s\n' "$tsc_out" | grep -c 'error TS')
-  if [ "$tsc_status" -ne 0 ] && [ "$diag_count" -eq 0 ]; then
-    # tsc exited non-zero (crash, timeout/alarm-kill, config error) with no
-    # diagnostic lines at all — this is a tooling failure, not a finding
-    # about the edited file. Say so plainly and stop.
-    printf 'post-edit-check: tsc did not run cleanly (exit %s)\n' "$tsc_status" >&2
-    exit 2
-  fi
-  filtered=$(printf '%s\n' "$tsc_out" | python3 -c "
-import sys
-rel = sys.argv[1]
-for line in sys.stdin:
-    line = line.rstrip('\n')
-    if line.startswith(rel + '(') or line.startswith(rel + ':'):
-        print(line)
-" "$rel_file" | head -10)
-  if [ -n "$filtered" ]; then
-    add_finding "tsc:
-$filtered"
-  fi
-fi
+# (b) NO per-edit tsc. A full-project type-check on every edit costs 30-60 s
+# and, filtered to one file, hides regressions in that file's consumers
+# (Codex review 2026-09-08). Type-checking runs ONCE at completion:
+# `bash scripts/verify.sh typecheck` (Codex runner) or `npx tsc --noEmit`,
+# reported against the documented baseline. PD_HOOK_SKIP_TSC is accepted for
+# backward compatibility and ignored.
 
 # (c) security_type case-sensitivity guard — carried over from the OLD
 # hook: per-LINE, not per-file ("test" anywhere on the line is treated as
