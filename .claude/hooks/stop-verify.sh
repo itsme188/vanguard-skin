@@ -52,7 +52,7 @@ emit_message() {
 }
 
 write_status() {
-  # $1 = status word (passed|failed|advice|skipped), $2 = log path (may be "")
+  # $1 = status word (passed|failed|unverified|advice|skipped), $2 = log path (may be "")
   tmp="$status_file.tmp-$$"
   printf '%s\t%s\n' "$1" "$2" > "$tmp" 2>/dev/null && mv -f "$tmp" "$status_file" 2>/dev/null
 }
@@ -66,6 +66,8 @@ if [ "$stop_hook_active" = "true" ]; then
     last_log=$(cut -f2- "$status_file" 2>/dev/null)
     if [ "$last_status" = "failed" ]; then
       emit_message "stop-verify: the previous verification failure may still be unresolved — see $last_log"
+    elif [ "$last_status" = "unverified" ]; then
+      emit_message "stop-verify: the working tree still has no verification evidence (unverified is not passed) — see $last_log"
     fi
   fi
   exit 0
@@ -105,9 +107,15 @@ case "$status" in
     exit 0
     ;;
   4)
-    write_status "advice" "$log"
-    emit_message "verification: no current evidence — run \`bash scripts/verify.sh changed --base main\` (see $log)"
-    exit 0
+    # No current evidence for a dirty tree. Codex parity (2026-09-08): this
+    # must REQUEST verification once, not quietly allow a claimed completion.
+    # Exit 2 blocks the stop exactly once (the stop_hook_active pass above
+    # lets the next stop through with an explicit "unverified" reminder).
+    write_status "unverified" "$log"
+    {
+      printf 'stop-verify: no current verification evidence for the working tree — run `bash scripts/verify.sh changed --base main` (or `npm run verify:changed`) before finishing; see %s\n' "$log"
+    } >&2
+    exit 2
     ;;
   *)
     write_status "failed" "$log"
