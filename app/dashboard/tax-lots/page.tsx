@@ -12,7 +12,15 @@ import {
   getTaxLotAccountNames,
 } from "@/lib/queries/tax-lots";
 import { getSecurityById } from "@/lib/queries/securities";
-import { TaxLotSummaryCards, AccountSummaryCards } from "../components/TaxLotSummary";
+import {
+  getTaxConventionState,
+  describeTaxLotStaleness,
+} from "@/lib/compute/tax-convention";
+import {
+  TaxLotSummaryCards,
+  AccountSummaryCards,
+  TaxLotStalenessNotice,
+} from "../components/TaxLotSummary";
 import { OpenLotsTable, ClosedSalesTable } from "../components/TaxLotTables";
 import { RecomputeButton } from "../components/RecomputeButton";
 import { YearSelector, AccountSelector } from "../components/YearSelector";
@@ -112,9 +120,16 @@ export default async function TaxLotsPage(props: {
 
   const hasData = summary.totalOpenLots > 0 || summary.totalClosedSales > 0;
 
+  // The tiles below read STORED tax_lots / tax_lot_sales rows, which only
+  // move when someone presses Recompute (QA:
+  // tax-lots--headline-tiles-stale-until-recompute-no-marker). Compare the
+  // engine's own stamp against the tax-input generation counter and SAY when
+  // the figures are behind. Read-only: the page never recomputes on load.
+  const staleness = describeTaxLotStaleness(getTaxConventionState(db));
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-medium text-ink">Tax Lots</h2>
           <p className="text-sm text-ink-faint mt-0.5">
@@ -123,7 +138,14 @@ export default async function TaxLotsPage(props: {
             {filterSecurity ? ` · ${filterSecurity.symbol}` : ""}
           </p>
         </div>
-        <RecomputeButton endpoint="/api/compute/tax-lots" label="Recompute" />
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          {/* Adjacent to the button it names, so the fix is one click away
+              from the sentence that asks for it. */}
+          {hasData && staleness.stale && (
+            <TaxLotStalenessNotice marker={staleness} className="max-w-md" />
+          )}
+          <RecomputeButton endpoint="/api/compute/tax-lots" label="Recompute" />
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-4">

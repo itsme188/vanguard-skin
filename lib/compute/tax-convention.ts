@@ -12,7 +12,35 @@ export interface AcceptanceCoverage { accountId: number; taxYear: number }
 export interface TaxConventionState {
   generation: number;
   recomputeCurrent: boolean;
+  /**
+   * Which engine convention wrote the stored lots: "v3" for the current
+   * stamp shape, "legacy" for ANY other non-empty stamp (`v2:42`, or an
+   * unrecognized value after a rollback), null when nothing ever stamped.
+   * Read-only introspection for the UI — `recomputeCurrent` remains the only
+   * gate any engine/export decision may use.
+   */
+  stampedConvention: "v3" | "legacy" | null;
+  /**
+   * The generation embedded in the stamp (`v3:42` -> 42), for either
+   * convention, so the UI can say how many tax-input changes the stored lots
+   * predate. Null when there is no stamp, or when the stamp carries no
+   * parseable generation.
+   */
+  stampedGeneration: number | null;
   acceptance: { current: boolean; coverage: AcceptanceCoverage[] };
+}
+
+/**
+ * Why the stored tax lots do not describe the current inputs, in the shape
+ * the Tax Lots page's staleness notice renders. Pure — derived entirely from
+ * a TaxConventionState, no database access (QA finding
+ * tax-lots--headline-tiles-stale-until-recompute-no-marker).
+ */
+export interface TaxLotStalenessMarker {
+  stale: boolean;
+  /** Tax-input changes recorded since the stored lots were computed. */
+  inputChangesSince: number | null;
+  reason: "behind" | "legacy" | "never" | null;
 }
 
 const GEN_KEY = "tax_input_generation";
@@ -69,6 +97,16 @@ export function getTaxConventionState(db: Database.Database): TaxConventionState
   const m = conv == null ? null : /^v3:(\d+)$/.exec(conv);
   const recomputeCurrent = m != null && Number.parseInt(m[1], 10) === generation;
 
+  const stampedConvention: TaxConventionState["stampedConvention"] =
+    conv == null || conv === "" ? null : m != null ? "v3" : "legacy";
+  // Any `<convention>:<generation>` stamp carries its generation, including
+  // the superseded `v2:` shape — the distance is what the UI quotes, and it
+  // is just as meaningful across a convention change.
+  const stampedGenMatch = conv == null ? null : /^[a-z0-9]+:(\d+)$/i.exec(conv);
+  const parsedStampedGen =
+    stampedGenMatch == null ? NaN : Number.parseInt(stampedGenMatch[1], 10);
+  const stampedGeneration = Number.isFinite(parsedStampedGen) ? parsedStampedGen : null;
+
   let acceptance: TaxConventionState["acceptance"] = { current: false, coverage: [] };
   const rawAcc = readSetting(db, ACCEPTANCE_KEY);
   if (rawAcc != null) {
@@ -80,7 +118,36 @@ export function getTaxConventionState(db: Database.Database): TaxConventionState
       // unparseable stamp = no acceptance (fail closed)
     }
   }
-  return { generation, recomputeCurrent, acceptance };
+  return { generation, recomputeCurrent, stampedConvention, stampedGeneration, acceptance };
+}
+
+/**
+ * Turn a convention state into the staleness notice the Tax Lots page shows
+ * beside its Recompute button. Never triggers anything — the page reads this
+ * and says so; only an explicit Recompute changes the stored lots.
+ *
+ * Reason precedence is deliberate: an earlier lot convention outranks a
+ * plain generation gap, because a v3 recompute moves the figures whether or
+ * not the ledger also moved (commit 14a90c5c changed lot direction/matching).
+ * The change count is still reported alongside it when it is known.
+ */
+export function describeTaxLotStaleness(state: TaxConventionState): TaxLotStalenessMarker {
+  if (state.recomputeCurrent) {
+    return { stale: false, inputChangesSince: null, reason: null };
+  }
+  // A stamp ahead of the counter (restored/edited settings row) yields no
+  // quotable distance — never a negative one.
+  const inputChangesSince =
+    state.stampedGeneration != null && state.generation > state.stampedGeneration
+      ? state.generation - state.stampedGeneration
+      : null;
+  const reason: TaxLotStalenessMarker["reason"] =
+    state.stampedConvention == null
+      ? "never"
+      : state.stampedConvention === "legacy"
+        ? "legacy"
+        : "behind";
+  return { stale: true, inputChangesSince, reason };
 }
 
 export function isYearAccepted(
