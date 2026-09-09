@@ -400,9 +400,13 @@ function TagEditor({
 function DocumentRow({
   doc,
   onDeleted,
+  onTagsChanged,
 }: {
   doc: ResearchDocumentSummary;
   onDeleted: () => void;
+  /** Lifts a saved tag edit back to the list so the collapsed header chips
+   * and the "+N tags" count stop contradicting the open editor. */
+  onTagsChanged: (docId: number, tags: string[]) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState<ResearchDocumentDetail | null>(null);
@@ -474,8 +478,11 @@ function DocumentRow({
   }
 
   function handleTagsChanged(newTags: string[]) {
-    if (!detail) return;
-    setDetail({ ...detail, tags: newTags });
+    if (detail) setDetail({ ...detail, tags: newTags });
+    // The collapsed header renders from the PARENT's row object, so the
+    // list has to be patched too — otherwise the header keeps the old
+    // chips and the old "+N tags" count until a full reload.
+    onTagsChanged(doc.id, newTags);
   }
 
   return (
@@ -803,6 +810,16 @@ export function ResearchDocumentsView() {
     fetchDocuments();
   }, [fetchDocuments]);
 
+  // A row saved new tags: patch just that row in place (immutably) instead of
+  // refetching the whole list, so the collapsed header agrees with the open
+  // editor immediately. `tags` is carried as a JSON string on the summary
+  // row, which is what parseSymbols() reads.
+  const handleTagsChanged = useCallback((docId: number, tags: string[]) => {
+    setDocuments((prev) =>
+      prev.map((d) => (d.id === docId ? { ...d, tags: JSON.stringify(tags) } : d)),
+    );
+  }, []);
+
   return (
     <div className="space-y-4">
       <UploadZone onUploadComplete={fetchDocuments} />
@@ -834,7 +851,12 @@ export function ResearchDocumentsView() {
             {documents.length} of {total} documents
           </div>
           {documents.map((doc) => (
-            <DocumentRow key={doc.id} doc={doc} onDeleted={fetchDocuments} />
+            <DocumentRow
+              key={doc.id}
+              doc={doc}
+              onDeleted={fetchDocuments}
+              onTagsChanged={handleTagsChanged}
+            />
           ))}
         </div>
       )}
