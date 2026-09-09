@@ -2,7 +2,7 @@
 
 import { useState, useEffect, type ReactNode } from "react";
 import type { PortfolioGreeks, PositionGreeks, GreeksDiagnostic } from "@/lib/compute/options-greeks";
-import { PrivateText } from "@/lib/privacy/components";
+import { PrivateText, Count } from "@/lib/privacy/components";
 import { formatUSDPrecise, rendersAsZero } from "@/lib/format";
 import { EmptySection } from "./EmptySection";
 import {
@@ -46,6 +46,15 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
     );
   }
 
+  // Coverage gate: computedPositions is the count of positions whose Greeks
+  // actually solved (greeks !== null); totalPositions is every option row
+  // considered. When NOTHING priced, the raw totals are all still 0 (their
+  // initialization value, never touched by the loop) — showing them as "Net
+  // Delta 0.0 / delta-neutral" would turn "we don't know" into an affirmative
+  // risk claim. See the diagnostics block below for WHY each position failed.
+  const noCoverage = data.totalPositions > 0 && data.computedPositions === 0;
+  const partialCoverage = !noCoverage && data.computedPositions < data.totalPositions;
+
   return (
     <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-4">
       <h3 className="text-sm font-medium text-ink">Options Greeks</h3>
@@ -54,33 +63,46 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <MetricCell
           label="Net Delta"
-          value={<PrivateText>{formatNum(data.totalDelta)}</PrivateText>}
+          value={noCoverage ? <span className="text-ink-dim">—</span> : <PrivateText>{formatNum(data.totalDelta)}</PrivateText>}
           description="Share-equivalents"
-          color={(data.totalDelta ?? 0) > 0 ? "text-up" : (data.totalDelta ?? 0) < 0 ? "text-down" : "text-ink"}
-          interp={interpretDelta(data.totalDelta ?? 0)}
+          color={noCoverage ? "text-ink-dim" : (data.totalDelta ?? 0) > 0 ? "text-up" : (data.totalDelta ?? 0) < 0 ? "text-down" : "text-ink"}
+          interp={noCoverage ? undefined : interpretDelta(data.totalDelta ?? 0)}
         />
         <MetricCell
           label="Net Gamma"
-          value={<PrivateText>{formatNum(data.totalGamma)}</PrivateText>}
+          value={noCoverage ? <span className="text-ink-dim">—</span> : <PrivateText>{formatNum(data.totalGamma)}</PrivateText>}
           description="Per $1 move"
-          color="text-ink"
-          interp={interpretGamma(data.totalGamma ?? 0)}
+          color={noCoverage ? "text-ink-dim" : "text-ink"}
+          interp={noCoverage ? undefined : interpretGamma(data.totalGamma ?? 0)}
         />
         <MetricCell
           label="Daily Theta"
-          value={<PrivateText>{formatDollar(data.totalTheta)}</PrivateText>}
+          value={noCoverage ? <span className="text-ink-dim">—</span> : <PrivateText>{formatDollar(data.totalTheta)}</PrivateText>}
           description="Time decay / day"
-          color="text-down"
-          interp={interpretTheta(data.totalTheta ?? 0)}
+          color={noCoverage ? "text-ink-dim" : "text-down"}
+          interp={noCoverage ? undefined : interpretTheta(data.totalTheta ?? 0)}
         />
         <MetricCell
           label="Net Vega"
-          value={<PrivateText>{formatDollar(data.totalVega)}</PrivateText>}
+          value={noCoverage ? <span className="text-ink-dim">—</span> : <PrivateText>{formatDollar(data.totalVega)}</PrivateText>}
           description="Per 1% IV move"
-          color="text-blue"
-          interp={interpretVega(data.totalVega ?? 0)}
+          color={noCoverage ? "text-ink-dim" : "text-blue"}
+          interp={noCoverage ? undefined : interpretVega(data.totalVega ?? 0)}
         />
       </div>
+
+      {/* Coverage disclosure: never let a partial or empty book read as a
+          complete, affirmative Greeks read. */}
+      {noCoverage && (
+        <p className="text-xs text-ink-faint">
+          Greeks unavailable — 0 of <Count value={data.totalPositions} /> positions could be priced
+        </p>
+      )}
+      {partialCoverage && (
+        <p className="text-xs text-ink-faint">
+          Covers <Count value={data.computedPositions} /> of <Count value={data.totalPositions} /> positions
+        </p>
+      )}
 
       {/* Per-position table */}
       <div className="overflow-x-auto">
