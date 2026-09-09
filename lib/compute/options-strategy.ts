@@ -180,6 +180,30 @@ function detectCoveredStrategies(
     const strike = put.strike!;
     const stockCost = stock.currentPrice ?? 0;
     const putCost = put.currentPrice ?? 0;
+    const contracts = put.quantity;
+    // Puts beyond the share count are outright long puts — their downside is
+    // capped at their own premium, not the (price - strike) share loss. Only
+    // the covered shares carry that leg of the worst case.
+    const putSharesCovered = put.multiplier * contracts;
+    const coveredShares = Math.min(shares, putSharesCovered);
+    const totalPremium = putCost * put.multiplier * contracts;
+    const overHedged = putSharesCovered > shares;
+
+    // Worst case sits at expiry with the stock at the strike: the covered
+    // shares carry the (price - strike) move — negative when the put is
+    // already in-the-money, which nets the intrinsic value back against the
+    // premium so only the time value is at risk — and every contract's premium
+    // is spent regardless. The total is floored at 0 (stale marks can make
+    // premium < intrinsic; a guaranteed gain is not a loss).
+    const maxLoss = Math.max(
+      0,
+      (coveredShares > 0 ? (stockCost - strike) * coveredShares : 0) + totalPremium
+    );
+    // Breakeven spreads the total premium over the covered shares so it and
+    // maxLoss agree on one share count; fall back to price + premium if there
+    // are no covered shares to divide by (e.g. a missing multiplier).
+    const breakeven =
+      coveredShares > 0 ? stockCost + totalPremium / coveredShares : stockCost + putCost;
 
     strategies.push({
       type: "protective_put",
@@ -188,9 +212,9 @@ function detectCoveredStrategies(
       expiration: put.expiration,
       legs: [stock, put],
       maxProfit: null, // unlimited upside
-      maxLoss: (stockCost - strike + putCost) * put.multiplier * put.quantity,
-      breakevens: [stockCost + putCost],
-      description: `Long ${shares} shares + long ${put.quantity} ${formatExpiry(put.expiration)} ${formatStrike(strike)} put${put.quantity > 1 ? "s" : ""}`,
+      maxLoss,
+      breakevens: [breakeven],
+      description: `Long ${shares} shares + long ${contracts} ${formatExpiry(put.expiration)} ${formatStrike(strike)} put${contracts > 1 ? "s" : ""}${overHedged ? ` (${contracts} put${contracts > 1 ? "s" : ""} cover ${putSharesCovered} sh vs ${shares} held)` : ""}`,
     });
   }
 
