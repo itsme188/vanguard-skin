@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { ScrollFade } from "./ScrollFade";
 
 // ── Format definitions ──────────────────────────────────────────────
 
@@ -259,13 +260,18 @@ function FormatSection({ spec }: { spec: FormatSpec }) {
             </span>
             <CopyButton text={buildPromptBlock(spec)} label="prompt" />
           </div>
-          <code className="block text-xs font-mono text-gold-ink bg-raised rounded-md px-3 py-2 overflow-x-auto">
-            {spec.header}
-          </code>
+          <ScrollFade
+            className="rounded-md overflow-hidden [--scroll-fade-color:var(--color-raised)]"
+            scrollerClassName="bg-raised rounded-md px-3 py-2"
+          >
+            <code className="block text-xs font-mono text-gold-ink">
+              {spec.header}
+            </code>
+          </ScrollFade>
         </div>
 
         {/* Column table */}
-        <div className="overflow-x-auto">
+        <ScrollFade>
           <table className="w-full text-xs">
             <thead>
               <tr className="text-ink-faint text-left">
@@ -290,7 +296,7 @@ function FormatSection({ spec }: { spec: FormatSpec }) {
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollFade>
 
         {/* Constraints */}
         {spec.constraints.length > 0 && (
@@ -316,9 +322,14 @@ function FormatSection({ spec }: { spec: FormatSpec }) {
           {/* Single expression: JSX strips the whitespace-only text node
               between two adjacent expression containers, which glued the
               header to the first data row under whitespace-pre. */}
-          <pre className="mt-1 text-xs font-mono text-ink-dim bg-raised rounded-md px-3 py-2 overflow-x-auto whitespace-pre">
-            {`${spec.header}\n${spec.example}`}
-          </pre>
+          <ScrollFade
+            className="mt-1 rounded-md overflow-hidden [--scroll-fade-color:var(--color-raised)]"
+            scrollerClassName="bg-raised rounded-md px-3 py-2"
+          >
+            <pre className="text-xs font-mono text-ink-dim whitespace-pre">
+              {`${spec.header}\n${spec.example}`}
+            </pre>
+          </ScrollFade>
         </div>
       </div>
     </details>
