@@ -41,13 +41,35 @@ describe("print-push-message parity (Worker mirror of lib/alerts/print-push-mess
       reactionJson: JSON.stringify({
         source: "yahoo",
         window_min: 120,
-        symbol: { symbol: "TER", delta_pct: 4.12 },
-        spy: { delta_pct: 0.41 },
+        symbol: { symbol: "TER", t_pre: 100, t_post: 104.12, delta_pct: 4.12 },
+        spy: { t_pre: 600, t_post: 602.46, delta_pct: 0.41 },
       }),
     });
     expect(out.message).toBe(
       "EPS 1.42 vs 1.35 est · Rev 775.2M vs 762.0M (+1.7%) · TER +4.12% vs SPY +0.41% (T+2h)",
     );
+  });
+
+  /**
+   * Regression for the finding (earnings-recap--zero-priced-reaction-snapshot…),
+   * parity twin of tests/alerts/print-push-message.test.ts: a 0/0 sentinel
+   * leg must never publish a confident-looking "+0.00%" in a push — the
+   * whole reaction tail is omitted when either leg is unusable.
+   */
+  it("omits the whole reaction tail when the symbol leg is a 0/0 sentinel, even though spy is usable", () => {
+    const out = composePrintPushMessage({
+      symbol: "TER",
+      actualValue: "EPS 1.42 · Rev 775,200,000",
+      consensusValue: "EPS 1.35 · Rev 762,000,000",
+      reactionJson: JSON.stringify({
+        source: "yahoo", window_min: 120,
+        symbol: { symbol: "TER", t_pre: 0, t_post: 0, delta_pct: 0 },
+        spy: { t_pre: 600, t_post: 601.2, delta_pct: 0.2 },
+      }),
+    });
+    expect(out.message).toBe("EPS 1.42 vs 1.35 est · Rev 775.2M vs 762.0M (+1.7%)");
+    expect(out.message).not.toContain("+0.00%");
+    expect(out.message).not.toContain("T+2h");
   });
 
   it("preserves negative EPS signs (miss vs positive consensus)", () => {

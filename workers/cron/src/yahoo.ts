@@ -35,6 +35,7 @@ import {
   type ReactionSnapshot,
   type TimedClose,
 } from "./reaction-matcher";
+import { isUsableReactionLeg } from "./reaction-leg";
 
 interface YahooChartResult {
   timestamp?: number[];
@@ -193,20 +194,31 @@ export async function captureReactionFromYahoo(
   const anchorFor = (sym: string): number | null =>
     earningsCloseMs != null ? (anchorMap[sym] ?? null) : null;
 
-  const spy = matchBarsToReaction(barsMap.SPY ?? [], releaseMs, anchorFor("SPY"));
-  const qqq = matchBarsToReaction(barsMap.QQQ ?? [], releaseMs, anchorFor("QQQ"));
-  const tlt = matchBarsToReaction(barsMap.TLT ?? [], releaseMs, anchorFor("TLT"));
+  const spyMatch = matchBarsToReaction(barsMap.SPY ?? [], releaseMs, anchorFor("SPY"));
+  const qqqMatch = matchBarsToReaction(barsMap.QQQ ?? [], releaseMs, anchorFor("QQQ"));
+  const tltMatch = matchBarsToReaction(barsMap.TLT ?? [], releaseMs, anchorFor("TLT"));
+  // A leg with a zero/negative/non-finite price is unusable even though
+  // matchBarsToReaction returned non-null (2026-09-10 qa fix: this is also
+  // where the old code substituted a {t_pre:0,t_post:0,delta_pct:0}
+  // sentinel for a MISSING leg — the real incident's shape, source:"yahoo").
+  const spy = isUsableReactionLeg(spyMatch) ? spyMatch : null;
+  const qqq = isUsableReactionLeg(qqqMatch) ? qqqMatch : null;
+  const tlt = isUsableReactionLeg(tltMatch) ? tltMatch : null;
 
+  // If all three core benchmarks are unusable, treat the snapshot as a miss.
   if (!spy && !qqq && !tlt) return null;
 
   const snapshot: ReactionSnapshot = {
     t0_utc: releaseInstant.toISOString(),
     window_min: 120,
     source: "yahoo",
-    spy: spy ?? { t_pre: 0, t_post: 0, delta_pct: 0 },
-    qqq: qqq ?? { t_pre: 0, t_post: 0, delta_pct: 0 },
-    tlt: tlt ?? { t_pre: 0, t_post: 0, delta_pct: 0 },
   };
+  // Omit rather than zero-fill — every reader already treats spy/qqq/tlt
+  // defensively (`snap.spy?.delta_pct`), so a missing key renders as "—"
+  // instead of a confident-looking fabricated "+0.00%".
+  if (spy) snapshot.spy = spy;
+  if (qqq) snapshot.qqq = qqq;
+  if (tlt) snapshot.tlt = tlt;
   // Same honesty rule as the TWS path: label only when an anchor actually
   // applied — an all-null anchor map means the matcher fell back to window
   // semantics.
@@ -219,7 +231,7 @@ export async function captureReactionFromYahoo(
 
   if (sectorEtf && barsMap[sectorEtf]) {
     const sector = matchBarsToReaction(barsMap[sectorEtf], releaseMs, anchorFor(sectorEtf));
-    if (sector) snapshot.sector = { symbol: sectorEtf, ...sector };
+    if (isUsableReactionLeg(sector)) snapshot.sector = { symbol: sectorEtf, ...sector };
   }
 
   if (eventSymbol && barsMap[eventSymbol]) {
@@ -228,7 +240,9 @@ export async function captureReactionFromYahoo(
       releaseMs,
       anchorFor(eventSymbol),
     );
-    if (symbolReaction) snapshot.symbol = { symbol: eventSymbol, ...symbolReaction };
+    if (isUsableReactionLeg(symbolReaction)) {
+      snapshot.symbol = { symbol: eventSymbol, ...symbolReaction };
+    }
   }
 
   return snapshot;

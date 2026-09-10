@@ -107,8 +107,8 @@ describe("captureReactionFromYahoo — earnings prior-close anchor", () => {
     });
     expect(snap).not.toBeNull();
     expect(snap!.pre_anchor).toBe("prior_close");
-    expect(snap!.spy.t_pre).toBe(757.67);
-    expect(snap!.spy.delta_pct).toBe(0.76); // day move, not the 8:00→10:00 window
+    expect(snap!.spy?.t_pre).toBe(757.67);
+    expect(snap!.spy?.delta_pct).toBe(0.76); // day move, not the 8:00→10:00 window
     expect(snap!.symbol?.t_pre).toBe(87.01);
     expect(snap!.symbol?.delta_pct).toBe(2.88);
   });
@@ -123,7 +123,30 @@ describe("captureReactionFromYahoo — earnings prior-close anchor", () => {
     const snap = await captureReactionFromYahoo(RELEASE, null, { pacingMs: 0 });
     expect(snap).not.toBeNull();
     expect(snap!.pre_anchor).toBeUndefined();
-    expect(snap!.spy.t_pre).toBe(760.3);
-    expect(snap!.spy.delta_pct).toBe(0.41);
+    expect(snap!.spy?.t_pre).toBe(760.3);
+    expect(snap!.spy?.delta_pct).toBe(0.41);
+  });
+
+  /**
+   * Regression for the finding (earnings-recap--zero-priced-reaction-snapshot…):
+   * the real incident's stored snapshot carried "source":"yahoo" — this is
+   * the writer that produced it. A zero-priced quote must be OMITTED from
+   * the snapshot, never stored as a {t_pre:0,t_post:0,delta_pct:0} sentinel
+   * (2026-09-10 qa fix). A zero POST quote still produces a non-null match
+   * from matchBarsToReaction (it only guards a zero PRE), so the write-site
+   * guard (isUsableReactionLeg) has to catch it independently.
+   */
+  it("omits a leg whose quote is zero (bad tick) — no qqq key; a normal sibling leg (spy) is unchanged", async () => {
+    stubFetch({
+      SPY: yahooResponse(757.67, 760.3, 763.45),
+      QQQ: yahooResponse(700.07, 707.91, 0), // zero post-quote — dead/bad tick
+      TLT: yahooResponse(82.3, 82.45, 82.6),
+    });
+
+    const snap = await captureReactionFromYahoo(RELEASE, null, { pacingMs: 0 });
+    expect(snap).not.toBeNull();
+    expect(snap!.qqq).toBeUndefined();
+    expect(snap!.spy?.t_pre).toBe(760.3);
+    expect(snap!.spy?.delta_pct).toBe(0.41);
   });
 });

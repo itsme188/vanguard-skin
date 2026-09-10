@@ -82,7 +82,9 @@ async function backfillEvent(eventId: number, dryRun: boolean): Promise<boolean>
   }
 
   console.log(
-    `[${eventId}] reaction: SPY ${snapshot.spy.delta_pct.toFixed(2)}% · QQQ ${snapshot.qqq.delta_pct.toFixed(2)}% · TLT ${snapshot.tlt.delta_pct.toFixed(2)}%` +
+    // Benchmark legs are optional since the 2026-09-10 zero-price guard — an
+    // unusable leg is omitted from the snapshot, so print it as absent.
+    `[${eventId}] reaction: SPY ${snapshot.spy?.delta_pct.toFixed(2) ?? "—"}% · QQQ ${snapshot.qqq?.delta_pct.toFixed(2) ?? "—"}% · TLT ${snapshot.tlt?.delta_pct.toFixed(2) ?? "—"}%` +
       (snapshot.symbol ? ` · ${snapshot.symbol.symbol} ${snapshot.symbol.delta_pct.toFixed(2)}%` : "") +
       (snapshot.sector ? ` · ${snapshot.sector.symbol} ${snapshot.sector.delta_pct.toFixed(2)}%` : ""),
   );
