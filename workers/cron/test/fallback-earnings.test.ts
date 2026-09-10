@@ -926,7 +926,7 @@ describe("recap safety gates (B8)", () => {
   it("implausible actual + reaction present → sends, flagged implausible", () => {
     const ev = baseEvent();
     (ev as Record<string, unknown>).actual_value = "EPS 5.11";
-    (ev as Record<string, unknown>).reaction_snapshot = JSON.stringify({ symbol: { delta_pct: -4.2 } });
+    (ev as Record<string, unknown>).reaction_snapshot = JSON.stringify({ symbol: { t_pre: 100, t_post: 95.8, delta_pct: -4.2 } });
     expect(evaluateRecapContent(ev, null)).toEqual({ send: true, implausible: true });
   });
 
@@ -979,11 +979,36 @@ describe("recap safety gates (B8)", () => {
   it("scoreboard blanks implausible actuals and appends the ⚠ line", () => {
     const ev = baseEvent();
     (ev as Record<string, unknown>).actual_value = "EPS 5.11 · Rev 91,000,000,000";
-    (ev as Record<string, unknown>).reaction_snapshot = JSON.stringify({ symbol: { delta_pct: -4.2 } });
+    (ev as Record<string, unknown>).reaction_snapshot = JSON.stringify({ symbol: { t_pre: 100, t_post: 95.8, delta_pct: -4.2 } });
     const md = renderScoreboard(ev, "recap", null, true);
     expect(md).not.toContain("5.11");
     expect(md).toContain("⚠ Reported actuals were flagged as implausible");
     expect(md).toContain("-4.20%"); // reaction row still renders
+  });
+
+  /**
+   * Regression for the finding (synthetic reproduction, same shape as the
+   * Mac-side pin in tests/digest/reaction-snapshot-format.test.ts): a
+   * stored qqq leg of {t_pre:0,t_post:0,delta_pct:0} is a 0/0 division on
+   * dead quotes, not a real flat move — it must render "—" (never a
+   * confident "+0.00%"), while a genuinely usable sibling leg (spy) still
+   * renders.
+   */
+  it("scoreboard renders '—' (never '+0.00%') for a 0/0 sentinel qqq leg, while spy still renders", () => {
+    const ev = baseEvent();
+    (ev as Record<string, unknown>).actual_value = "EPS 1.60 · Rev 91,000,000,000";
+    (ev as Record<string, unknown>).reaction_snapshot = JSON.stringify({
+      symbol: { t_pre: 100, t_post: 100.002, delta_pct: 0 },
+      qqq: { t_pre: 0, t_post: 0, delta_pct: 0 },
+      spy: { t_pre: 500, t_post: 499.9, delta_pct: -0.02 },
+      pre_anchor: "prior_close",
+      source: "yahoo",
+    });
+    const md = renderScoreboard(ev, "recap", null, false);
+    const qqqRow = md.split("\n").find((l) => l.includes("QQQ @ T+2h"))!;
+    const spyRow = md.split("\n").find((l) => l.includes("SPY @ T+2h"))!;
+    expect(qqqRow).toBe("| **QQQ @ T+2h** | — | — | — |");
+    expect(spyRow).toBe("| **SPY @ T+2h** | — | -0.02% | — |");
   });
 
   it("scoreboard renders the payload reaction when the snapshot has none", () => {
@@ -991,7 +1016,7 @@ describe("recap safety gates (B8)", () => {
     (ev as Record<string, unknown>).actual_value = "EPS 1.60 · Rev 91,000,000,000";
     const md = renderScoreboard(ev, "recap", {
       eventId: 1, source_key: "x", actual: null, consensus: null, source: "finnhub",
-      reaction: { symbol: { delta_pct: 3.15 }, spy: { delta_pct: 0.4 } },
+      reaction: { symbol: { t_pre: 100, t_post: 103.15, delta_pct: 3.15 }, spy: { t_pre: 600, t_post: 602.4, delta_pct: 0.4 } },
       fetchedAt: new Date().toISOString(),
     }, false);
     expect(md).toContain("+3.15%");
@@ -1106,7 +1131,7 @@ describe("intel rows in cloud scoreboard (Task 9: snapshot v9)", () => {
   it("recap phase compares realized reaction against implied move ('inside'/'outside')", () => {
     const ev = baseEvent();
     (ev as unknown as Record<string, unknown>).reaction_snapshot = JSON.stringify({
-      symbol: { delta_pct: 3.1 },
+      symbol: { t_pre: 100, t_post: 103.1, delta_pct: 3.1 },
     });
     const md = renderScoreboard(ev, "recap", null, false, {
       intel: {
@@ -1117,6 +1142,32 @@ describe("intel rows in cloud scoreboard (Task 9: snapshot v9)", () => {
     });
     const row = md.split("\n").find((l) => l.includes("Expected move"))!;
     expect(row).toContain("inside");
+  });
+
+  /**
+   * Regression for the finding, parity twin of the Mac's
+   * tests/digest/earnings-intel-render.test.ts case: an unusable (0/0)
+   * symbol leg must never publish an inside/outside verdict — the realized
+   * cell stays "—" and the verdict names the reason instead of guessing.
+   */
+  it("unusable (0/0) symbol leg blanks the realized cell and names the reason, never a fabricated verdict", () => {
+    const ev = baseEvent();
+    (ev as unknown as Record<string, unknown>).reaction_snapshot = JSON.stringify({
+      symbol: { t_pre: 0, t_post: 0, delta_pct: 0 },
+      spy: { t_pre: 600, t_post: 601.2, delta_pct: 0.2 },
+    });
+    const md = renderScoreboard(ev, "recap", null, false, {
+      intel: {
+        eventId: ev.id, sourceKey: "x", impliedMovePct: 4.8, impliedMethod: "straddle",
+        expiryUsed: "2026-07-18", computedAt: "2026-07-14 06:00:00",
+      },
+      history: null,
+    });
+    const row = md.split("\n").find((l) => l.includes("Expected move"))!;
+    const cells = row.split("|").map((c) => c.trim());
+    // cells: ["", "**Expected move**", impliedCell, impliedActual, impliedVerdict, ""]
+    expect(cells[3]).toBe("—");
+    expect(cells[4]).toBe("— no reaction quote");
   });
 });
 

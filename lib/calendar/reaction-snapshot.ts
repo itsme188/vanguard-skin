@@ -13,6 +13,7 @@
 import { BarSizeSetting, SecType } from "@stoqey/ib";
 import type { IBApiNext } from "@stoqey/ib";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { isUsableReactionLeg } from "./reaction-snapshot-core";
 import type { BenchmarkReaction, ReactionSnapshot } from "./reaction-snapshot-core";
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -411,21 +412,32 @@ export async function captureReactionFromTws(
   const anchorFor = (sym: string): number | null =>
     earnings ? (anchorMap[sym] ?? null) : null;
 
-  const spy = matchBarsToReaction(barsMap.SPY ?? [], releaseMs, anchorFor("SPY"));
-  const qqq = matchBarsToReaction(barsMap.QQQ ?? [], releaseMs, anchorFor("QQQ"));
-  const tlt = matchBarsToReaction(barsMap.TLT ?? [], releaseMs, anchorFor("TLT"));
+  const spyMatch = matchBarsToReaction(barsMap.SPY ?? [], releaseMs, anchorFor("SPY"));
+  const qqqMatch = matchBarsToReaction(barsMap.QQQ ?? [], releaseMs, anchorFor("QQQ"));
+  const tltMatch = matchBarsToReaction(barsMap.TLT ?? [], releaseMs, anchorFor("TLT"));
+  // A leg with a zero/negative/non-finite price is unusable even though
+  // matchBarsToReaction returned non-null (e.g. a bad-tick post bar) —
+  // never let it reach the snapshot (2026-09-10 qa fix: this is also where
+  // the old code substituted a {t_pre:0,t_post:0,delta_pct:0} sentinel for
+  // a MISSING leg, which rendered as a fabricated "+0.00%" downstream).
+  const spy = isUsableReactionLeg(spyMatch) ? spyMatch : null;
+  const qqq = isUsableReactionLeg(qqqMatch) ? qqqMatch : null;
+  const tlt = isUsableReactionLeg(tltMatch) ? tltMatch : null;
 
-  // If all three core benchmarks are null, treat the snapshot as a miss.
+  // If all three core benchmarks are unusable, treat the snapshot as a miss.
   if (!spy && !qqq && !tlt) return null;
 
   const snapshot: ReactionSnapshot = {
     t0_utc: releaseInstant.toISOString(),
     window_min: 120,
     source: "tws",
-    spy: spy ?? { t_pre: 0, t_post: 0, delta_pct: 0 },
-    qqq: qqq ?? { t_pre: 0, t_post: 0, delta_pct: 0 },
-    tlt: tlt ?? { t_pre: 0, t_post: 0, delta_pct: 0 },
   };
+  // Omit rather than zero-fill — every reader already treats spy/qqq/tlt
+  // defensively (`rs.spy?.delta_pct`), so a missing key renders as "—"
+  // instead of a confident-looking fabricated "+0.00%".
+  if (spy) snapshot.spy = spy;
+  if (qqq) snapshot.qqq = qqq;
+  if (tlt) snapshot.tlt = tlt;
   // Label only when an anchor was actually applied — if every anchor lookup
   // failed, the matcher silently fell back to window semantics and labeling
   // the snapshot "prior_close" would misdescribe the numbers.
@@ -435,7 +447,7 @@ export async function captureReactionFromTws(
 
   if (sectorEtf && barsMap[sectorEtf]) {
     const sector = matchBarsToReaction(barsMap[sectorEtf], releaseMs, anchorFor(sectorEtf));
-    if (sector) {
+    if (isUsableReactionLeg(sector)) {
       snapshot.sector = { symbol: sectorEtf, ...sector };
     }
   }
@@ -446,7 +458,7 @@ export async function captureReactionFromTws(
       releaseMs,
       anchorFor(eventSymbol),
     );
-    if (symbolReaction) {
+    if (isUsableReactionLeg(symbolReaction)) {
       snapshot.symbol = { symbol: eventSymbol, ...symbolReaction };
     }
   }

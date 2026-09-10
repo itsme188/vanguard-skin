@@ -228,9 +228,9 @@ describe("captureReactionFromTws", () => {
     expect(snap!.source).toBe("tws");
     expect(snap!.window_min).toBe(120);
     expect(snap!.t0_utc).toBe("2026-04-11T12:30:00.000Z");
-    expect(snap!.spy.delta_pct).toBe(-0.40);
-    expect(snap!.qqq.delta_pct).toBeLessThan(0);
-    expect(snap!.tlt.delta_pct).toBeLessThan(0);
+    expect(snap!.spy?.delta_pct).toBe(-0.40);
+    expect(snap!.qqq?.delta_pct).toBeLessThan(0);
+    expect(snap!.tlt?.delta_pct).toBeLessThan(0);
     expect(snap!.sector).toBeUndefined();
   });
 
@@ -254,7 +254,7 @@ describe("captureReactionFromTws", () => {
     });
     expect(snap?.symbol?.symbol).toBe("GLW");
     expect(snap?.symbol?.delta_pct).toBeGreaterThan(4); // GLW outperformed SPY by ~4.6 pts
-    expect(snap?.spy.delta_pct).toBeLessThan(0);
+    expect(snap?.spy?.delta_pct).toBeLessThan(0);
   });
 
   it("omits the symbol field when eventSymbol bars are unavailable", async () => {
@@ -277,7 +277,7 @@ describe("captureReactionFromTws", () => {
     });
     expect(snap).not.toBeNull();
     expect(snap!.symbol).toBeUndefined();
-    expect(snap!.spy.delta_pct).toBeLessThan(0);
+    expect(snap!.spy?.delta_pct).toBeLessThan(0);
   });
 
   it("includes sector ETF when mapped", async () => {
@@ -323,9 +323,29 @@ describe("captureReactionFromTws", () => {
 
     const snap = await captureReactionFromTws(mockApi, release, null, { pacingMs: 0 });
     expect(snap).not.toBeNull();
-    expect(snap!.spy.delta_pct).toBeGreaterThan(0);
-    // TLT fell back to the zero-filled sentinel
-    expect(snap!.tlt.t_pre).toBe(0);
+    expect(snap!.spy?.delta_pct).toBeGreaterThan(0);
+    // TLT is OMITTED, never a zero-filled sentinel (2026-09-10 qa fix: the
+    // old {t_pre:0,t_post:0,delta_pct:0} placeholder rendered downstream as
+    // a fabricated "+0.00%" — see isUsableReactionLeg).
+    expect(snap!.tlt).toBeUndefined();
+  });
+
+  it("omits a leg whose matched bar has a zero (bad-tick) close, even though matchBarsToReaction returned non-null", async () => {
+    // matchBarsToReaction only guards a zero PRE close; a zero POST close
+    // (a bad print/halted tick) still produces a finite-but-unusable leg.
+    // captureReactionFromTws must catch that at the write site too.
+    const mockApi = {
+      getHistoricalData: async (contract: { symbol: string }) => {
+        const base = release.getTime();
+        if (contract.symbol === "QQQ") return makeBars(base, 495.10, 0);
+        return makeBars(base, 100, 101);
+      },
+    } as unknown as IBApiNext;
+
+    const snap = await captureReactionFromTws(mockApi, release, null, { pacingMs: 0 });
+    expect(snap).not.toBeNull();
+    expect(snap!.spy?.delta_pct).toBeGreaterThan(0);
+    expect(snap!.qqq).toBeUndefined();
   });
 });
 
@@ -390,7 +410,7 @@ describe("captureReactionFromTws — earnings prior-close anchor + extended-hour
     // Symbol anchored to the prior close 87.01, NOT the premarket 94.04 bar.
     expect(snap!.symbol?.t_pre).toBe(87.01);
     expect(snap!.symbol?.delta_pct).toBe(2.88);
-    expect(snap!.spy.t_pre).toBe(87.01);
+    expect(snap!.spy?.t_pre).toBe(87.01);
     // Intraday fetches must request extended-hours bars (useRTH=0) — RTH-only
     // bars start at 9:30 and made every premarket t_pre unfindable.
     expect(rthCalls.length).toBeGreaterThan(0);
@@ -425,7 +445,7 @@ describe("captureReactionFromTws — earnings prior-close anchor + extended-hour
     expect(snap).not.toBeNull();
     expect(snap!.pre_anchor).toBe("prior_close");
     // Anchor is the last bar at/before 16:00 — never the 16:10 after-hours bar.
-    expect(snap!.spy.t_pre).toBe(87.5);
+    expect(snap!.spy?.t_pre).toBe(87.5);
   });
 
   it("macro rows (no earnings opts) keep the release-window semantics unflagged", async () => {
@@ -435,6 +455,6 @@ describe("captureReactionFromTws — earnings prior-close anchor + extended-hour
     });
     expect(snap).not.toBeNull();
     expect(snap!.pre_anchor).toBeUndefined();
-    expect(snap!.spy.t_pre).toBe(100); // nearest-bar pre, not a daily close
+    expect(snap!.spy?.t_pre).toBe(100); // nearest-bar pre, not a daily close
   });
 });
