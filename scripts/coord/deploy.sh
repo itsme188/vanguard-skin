@@ -620,13 +620,20 @@ while [ "$listener_waited" -lt "$LISTENER_WAIT" ]; do
       *" $candidate "*) continue ;;
     esac
     candidate_cmd="$(ps -o command= -p "$candidate" 2>/dev/null)"
-    case "$candidate_cmd" in
-      *"$EXPECT_CMD_SUBSTR"*)
-        NEW_PID="$candidate"
-        NEW_CMD="$candidate_cmd"
-        break
-        ;;
-    esac
+    # Next.js rewrites argv to "next-server". In production require the
+    # standalone cwd AND the actual immediate-parent app executable.
+    # The existing fake HTTP-server chain remains an explicit test-only seam.
+    identity_ok=0
+    if [ "$TEST_MODE" = "1" ]; then
+      case "$candidate_cmd" in *"$EXPECT_CMD_SUBSTR"*) identity_ok=1 ;; esac
+    elif python3 "$SCRIPT_DIR/listener-identity.py" "$candidate" "$INSTALLED_APP"; then
+      identity_ok=1
+    fi
+    if [ "$identity_ok" = "1" ]; then
+      NEW_PID="$candidate"
+      NEW_CMD="$candidate_cmd"
+      break
+    fi
   done
   if [ -n "$NEW_PID" ]; then
     break
@@ -636,7 +643,7 @@ while [ "$listener_waited" -lt "$LISTENER_WAIT" ]; do
 done
 
 if [ -z "$NEW_PID" ]; then
-  log_err "POST-VERIFY FAIL: no new listener on port $PORT matching \"$EXPECT_CMD_SUBSTR\" after ${LISTENER_WAIT}s"
+  log_err "POST-VERIFY FAIL: no new listener on port $PORT belonging to \"$INSTALLED_APP\" after ${LISTENER_WAIT}s"
   exit 70
 fi
 log "POST-VERIFY ok: new listener pid=$NEW_PID cmd=$NEW_CMD"
