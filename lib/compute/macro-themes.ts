@@ -142,6 +142,7 @@ export function buildMacroSignalBlob(
 // ---------------------------------------------------------------------------
 
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
+import { parseJsonArrayLenient } from "@/lib/ai/extract-json";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { resolveScope } from "@/lib/queries/accounts";
 import { getCachedMacroThemes, upsertMacroThemes } from "@/lib/queries/analysis-macro-themes";
@@ -163,31 +164,64 @@ Output JSON array only. Example:
 Inputs:
 {INPUTS_JSON}`;
 
-// Parse the model's themes JSON. Trims a code-fence wrap, then defends against
-// raw control characters INSIDE string literals — Sonnet intermittently emits
-// unescaped newlines there, and JSON.parse rejects them ("Bad control character
-// in string literal"). Collapsing C0 controls to spaces is safe: in legal JSON
-// they only appear between tokens as whitespace, and an in-string control
-// becomes the whitespace the model meant. (2026-07-27 QA: a cold-cache request
-// 500'd and the raw parser message rendered inside the Macro-this-week card.)
+/**
+ * A themes reply we could not turn into validated themes.
+ *
+ * `message` is USER-FACING — it is what the API returns and the Macro-this-week
+ * card renders, so it never carries parser jargon ("Unterminated string in JSON
+ * at position 1074"). `detail` carries that raw text plus the head of the reply
+ * for the server log. (2026-09-10 QA: the raw SyntaxError message rendered in
+ * the card, in red, as the whole card body.)
+ */
+export class MacroThemesParseError extends Error {
+  readonly detail: string;
+  constructor(message: string, detail: string) {
+    super(message);
+    this.name = "MacroThemesParseError";
+    this.detail = detail;
+  }
+}
+
+const UNREADABLE_MESSAGE =
+  "The model's reply couldn't be read as themes — try again in a moment.";
+const WRONG_SHAPE_MESSAGE =
+  "The model's reply didn't match the themes format — try again in a moment.";
+const DETAIL_REPLY_CHARS = 120;
+
+function replySnippet(rawText: string): string {
+  return rawText.slice(0, DETAIL_REPLY_CHARS);
+}
+
+// Parse the model's themes JSON through the project-standard lenient path
+// (fence strip → whole-text parse → first-`[`…last-`]` slice, each with the
+// C0-control-character retry — see lib/ai/extract-json.ts). That tolerates the
+// three shapes Sonnet actually emits despite the "JSON only" system prompt: a
+// prose preamble, a trailing sign-off, and unescaped newlines inside a string
+// literal. A genuinely unreadable reply (usually a truncated one) throws
+// MacroThemesParseError so the failure surfaces in plain English.
 export function parseThemesJson(rawText: string): MacroThemeAi[] {
-  const jsonText = rawText.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-  let raw: unknown;
+  let raw: unknown[];
   try {
-    raw = JSON.parse(jsonText);
+    raw = parseJsonArrayLenient(rawText, "macro themes");
   } catch (err) {
-    try {
-      raw = JSON.parse(jsonText.replace(/[\u0000-\u001f]+/g, " "));
-    } catch {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`AI returned malformed themes: ${msg}`);
-    }
+    // parseJsonArrayLenient keeps the underlying SyntaxError as `cause`.
+    const parserMsg =
+      err instanceof Error
+        ? err.cause instanceof Error
+          ? err.cause.message
+          : err.message
+        : String(err);
+    const detail = `${parserMsg} — reply began: ${replySnippet(rawText)}`;
+    console.error(`[macro-themes] unreadable model reply: ${detail}`);
+    throw new MacroThemesParseError(UNREADABLE_MESSAGE, detail);
   }
   try {
     return MacroThemesSchema.parse(raw);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`AI returned malformed themes: ${msg}`);
+    const detail = `${msg} — reply began: ${replySnippet(rawText)}`;
+    console.error(`[macro-themes] reply failed schema validation: ${detail}`);
+    throw new MacroThemesParseError(WRONG_SHAPE_MESSAGE, detail);
   }
 }
 

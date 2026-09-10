@@ -4,13 +4,13 @@ import { useCallback, useEffect, useState } from "react";
 import { PrivateText } from "@/lib/privacy/components";
 import { formatGeneratedAt, parseDbTimestamp } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
+import { formatRateLimitMessage } from "./rate-limit-message";
 
 interface Props {
   scope: string;
   surfaceKey: "factor-analysis" | "risk-metrics" | "position-risk" | "factor-heatmap" | "defense";
 }
 
-const MS_PER_HOUR = 60 * 60 * 1000;
 const MS_PER_MINUTE = 60 * 1000;
 
 /**
@@ -44,20 +44,6 @@ function driftDetail(surfaceKey: Props["surfaceKey"]): string {
   return surfaceKey === "defense"
     ? "the hedge book or coverage numbers no longer match"
     : "the numbers on this card no longer match";
-}
-
-/**
- * Render the POST route's 429 `retryAfter` (ms) as domain language instead
- * of the bare "rate-limited" token — round up to whole hours so "1h" always
- * means "at most 1h left", never "just over 0".
- */
-function formatRateLimitMessage(retryAfterMs: unknown): string {
-  const ms = typeof retryAfterMs === "number" && retryAfterMs > 0 ? retryAfterMs : 0;
-  if (ms < MS_PER_HOUR) {
-    return "Narrative refreshes once per day — available again in less than 1h.";
-  }
-  const hours = Math.ceil(ms / MS_PER_HOUR);
-  return `Narrative refreshes once per day — available again in about ${hours}h.`;
 }
 
 export function NarrativeBlock({ scope, surfaceKey }: Props) {
@@ -95,7 +81,7 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
       } else if (res.status === 429) {
         // The bare "rate-limited" token means nothing to a user — explain the
         // 24h window in domain language and surface the actual wait time.
-        setRefreshError(formatRateLimitMessage(data.retryAfter));
+        setRefreshError(formatRateLimitMessage("Narrative refreshes", data.retryAfter));
       } else {
         // Honest failure surface — never swallow, never silently revert
         // (nothing was optimistically changed above, so the stale narrative

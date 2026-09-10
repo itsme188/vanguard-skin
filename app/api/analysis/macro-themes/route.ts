@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { generateMacroThemes, type MacroTheme } from "@/lib/compute/macro-themes";
+import { generateMacroThemes, MacroThemesParseError, type MacroTheme } from "@/lib/compute/macro-themes";
 import { getCachedMacroThemes } from "@/lib/queries/analysis-macro-themes";
 import { mondayOf } from "@/lib/calendar/date-utils";
 
@@ -54,8 +54,15 @@ export async function GET(req: NextRequest) {
   });
 }
 
+// The 24h window is stamped only by a SUCCESSFUL generation (see POST): a reply
+// we could not parse is not a generation, and stamping it up front locked the
+// scope out of its Macro card for a full day (2026-09-10 QA). Failures instead
+// get their own short cooldown, so a persistently broken model is still billed
+// at most once per MACRO_FAIL_COOLDOWN_MS rather than on every page load.
 const lastMacroRegenAt = new Map<string, number>();
+const lastMacroFailAt = new Map<string, number>();
 const MACRO_REGEN_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MACRO_FAIL_COOLDOWN_MS = 10 * 60 * 1000;
 
 export async function POST(req: NextRequest) {
   let body: { scope?: string };
@@ -73,19 +80,35 @@ export async function POST(req: NextRequest) {
       { status: 429 }
     );
   }
-  lastMacroRegenAt.set(scope, now);
+  const lastFail = lastMacroFailAt.get(scope) ?? 0;
+  if (now - lastFail < MACRO_FAIL_COOLDOWN_MS) {
+    return NextResponse.json(
+      { success: false, error: "rate-limited", retryAfter: MACRO_FAIL_COOLDOWN_MS - (now - lastFail) },
+      { status: 429 }
+    );
+  }
   const week = mondayOf(new Date().toISOString().slice(0, 10));
   try {
     const r = await generateMacroThemes(db, { scope, weekOf: week, forceRegen: true });
+    lastMacroRegenAt.set(scope, now);
     return NextResponse.json({ success: true, ...r });
   } catch (e) {
-    return NextResponse.json(
-      { success: false, error: e instanceof Error ? e.message : "Failed" },
-      { status: 500 }
-    );
+    lastMacroFailAt.set(scope, now);
+    // The client renders `error` verbatim, so it must stay user-facing; the
+    // parser text / reply snippet goes to the server log only.
+    const message = e instanceof Error ? e.message : "Failed to generate macro themes";
+    const detail = e instanceof MacroThemesParseError ? e.detail : message;
+    console.error(`[macro-themes] generation failed for scope=${scope}: ${detail}`);
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
   }
 }
 
 export function __resetMacroRegenLimitForTests() {
   lastMacroRegenAt.clear();
+  lastMacroFailAt.clear();
+}
+
+/** Clear ONLY the short failure cooldown — proves the 24h window is untouched. */
+export function __clearMacroFailCooldownForTests() {
+  lastMacroFailAt.clear();
 }
