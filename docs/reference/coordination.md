@@ -9,7 +9,7 @@ Authoritative shared workflow for two agents working on one Mac. Agent-specific 
 | Session start | `npm run coord -- status` | who owns what, which port, which lock; STALE / OWNER-GONE rows are your first read |
 | Start a task | `git worktree add ../vanguard-skin-<topic> -b <agent>/<topic>-<date> main` then `npm run coord -- task register --id <id> --owner <claude\|codex> --branch <b> --worktree <path> --paths <a,b> --port <n> --browser-session smoke-<id>` | declare ownership before the first edit |
 | Every milestone | `npm run coord -- task checkpoint <id> --note "…" [--tested-commit <sha>] [--evidence <path>] [--next "…"]` | the other agent can resume without the user relaying history |
-| Verify | `npm run verify:changed` today; `bash scripts/verify.sh changed --base main` once Codex's runner lands; full suite before landing | evidence, not confidence |
+| Verify | `bash scripts/verify.sh changed --base main`; `bash scripts/verify.sh full --base main` at completion; `typecheck` separately | evidence, not confidence |
 | Browser check | `npm run sandbox -- up --task <id>` → `npm run smoke -- --task <id>` → `npm run sandbox -- down --task <id>` | isolated data, own port, own browser session, serialized on the `browser` lock |
 | Land (only under session-end authorization) | `npm run coord -- lock run integration --task <id> -- git -C /Users/Yitzi/code/vanguard-skin merge --ff-only <branch>` then push | exclusive integration |
 | Deploy (only under session-end authorization) | `npm run deploy -- --task <id> [--commit <sha>]` | locked, preflighted, exit codes preserved, installed build verified |
@@ -29,7 +29,7 @@ Staleness is detected, never acted on: `STALE` (active/blocked with no heartbeat
 
 ## Locks (`scripts/coord/coord.sh lock …`)
 
-`mkdir`-atomic directories with an `owner.json` (owner, task, pid + process start time, TTL, token). `acquire NAME --task ID [--ttl 90m] [--wait N]`, `release NAME --task ID`, `status`, `run NAME --task ID -- CMD…` (acquire, run, release, propagate the exit code, forward SIGINT/SIGTERM). Contention exits 75 and names the holder. A same-task re-acquire is idempotent unless `--exclusive` is passed (the smoke and deploy wrappers pass it, so two runs of one task still serialize).
+`mkdir`-atomic directories with an `owner.json` (owner, task, pid + process start time, TTL, token). `acquire NAME --task ID [--ttl 90m] [--wait N]`, `release NAME --task ID`, `status`, `run NAME --task ID -- CMD…` (acquire, run, release, propagate the exit code, forward SIGINT/SIGTERM). Contention exits 75 and names the holder. Bare `acquire` is idempotent for the same task unless `--exclusive` is passed. `lock run` is always exclusive, including two runs with the same task ID; smoke and deploy also acquire exclusively. Failure to spawn the command releases only its acquired token and returns 127 (missing command) or 126 (other launch failure).
 
 Names: `integration` (merge/push/branch switch in the main checkout), `deploy`, `app-3099` (anything that restarts or exercises the installed app), `browser` (the agent-browser daemon; every smoke), `tws` (client id 1), `sandbox:<worktree-basename>` (Turbopack is single-writer per directory).
 
@@ -47,7 +47,13 @@ Wraps the existing chain (`electron:pack` → `scripts/verify-bundle.js` → `el
 
 ## Hooks (Claude Code) and the shared runner
 
-Hook input is stdin JSON (`tool_input.file_path`, `tool_input.command`, `stop_hook_active`); there is no `CLAUDE_FILE_PATHS` variable. `post-edit-check.sh` runs read-only, edited-file-only checks (eslint report, security_type case guard — no per-edit `tsc`; type-check once at completion) and warns through exit 2. `stop-verify.sh` never runs the full suite: it calls `bash scripts/verify.sh status --base main` when Codex's runner exists (else `npm run verify:changed`), blocks once with the failure tail on a real failure and once with a "run verification" request when a dirty tree has no current evidence (runner exit 4); the second pass of a stop cycle lets go with an explicit unresolved/unverified `systemMessage`; `manual selection` (exit 3) is advice only. Runner results: 0 passed / no-relevant-changes, 3 manual-selection-required, 4 stale-or-missing, anything else = real failure. "Unverified" is not "passed": the full suite still runs once before landing.
+Hook input is stdin JSON (`tool_input.file_path`, `tool_input.command`, `stop_hook_active`); there is no `CLAUDE_FILE_PATHS` variable. `post-edit-check.sh` runs read-only, edited-file-only checks (eslint report, security_type case guard — no per-edit `tsc`; type-check once at completion) and warns through exit 2.
+
+`stop-verify.sh` checks `bash scripts/verify.sh status --base main` even on a clean branch. It never runs the full suite. Missing runner or missing/stale evidence blocks once with the full-suite recovery command; a second Stop pass reports unresolved status without another test run. Logs are under `logs/stop-verify/<hash-of-worktree-and-session>/`, with unique per-invocation files. A note to another agent is a durable handoff, not proof that the agent has started work.
+
+Runner results: 0 passed / no-relevant-changes (distinguished by the final `verify: result=…` line), 3 manual-selection-required, 4 stale-or-missing status; subprocess failures preserve their actual code. `full --base <ref>` records authoritative suite evidence; `status` validates it against HEAD, dirty contents and the integration base. Full-suite evidence does not claim typecheck, browser, or build success. See [verification-loop.md](verification-loop.md).
+
+At every user-facing handoff, state **State**, **Waiting on**, and **Next action** explicitly. Distinguish implemented, committed, integrated, pushed and deployed. An explicit session-end makes its receiving agent responsible for closeout; a message file does not transfer that responsibility.
 
 ## Instruction files
 
