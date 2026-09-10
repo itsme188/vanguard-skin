@@ -33,6 +33,13 @@ export interface DimensionScore {
 
 export interface PriceFreshnessScore extends DimensionScore {
   pricedToday: number;
+  /** Held securities priced within RECENT_PRICE_WINDOW_DAYS — the SAME basis
+   *  the dimension detail line and score use. The stale-prices action in
+   *  deriveActions must compute its count as totalHeld - pricedRecent (not
+   *  totalHeld - pricedToday) so it can never disagree with the detail line
+   *  over the same population (qa:header-dataconfidence--prices-detail-
+   *  fresh-count-disagrees-with-actions-stale-count). */
+  pricedRecent: number;
   totalHeld: number;
   stalestSymbol: string | null;
   stalestDays: number | null;
@@ -152,10 +159,19 @@ const WEIGHTS = {
 
 // ── Scoring functions ────────────────────────────────────────────────
 
+/** "Recent" price window (days) — shared by the SQL query, the Prices
+ *  dimension detail/score, and the stale-prices action message so all three
+ *  can never disagree about what counts as stale (qa:header-dataconfidence--
+ *  prices-detail-fresh-count-disagrees-with-actions-stale-count: the action
+ *  used to report totalHeld - pricedToday, a 1-day threshold, while the
+ *  detail/score used pricedRecent, a 3-day threshold, over the SAME
+ *  population). */
+const RECENT_PRICE_WINDOW_DAYS = 3;
+
 function scorePriceFreshness(db: Database.Database, now: Date = new Date()): PriceFreshnessScore {
   const today = todayET(now);
 
-  // Count held securities with prices from today (or last trading day = within 3 days)
+  // Count held securities with prices from today (or last trading day = within RECENT_PRICE_WINDOW_DAYS)
   const row = db.prepare(`
     SELECT
       COUNT(DISTINCT h.security_id) AS totalHeld,
@@ -166,7 +182,7 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
       END) AS pricedToday,
       COUNT(DISTINCT CASE
         WHEN p.latest_date IS NOT NULL
-          AND CAST(julianday(?) - julianday(p.latest_date) AS INTEGER) <= 3
+          AND CAST(julianday(?) - julianday(p.latest_date) AS INTEGER) <= ${RECENT_PRICE_WINDOW_DAYS}
         THEN h.security_id
       END) AS pricedRecent
     FROM holdings h
@@ -215,6 +231,7 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
       whyMatters,
       guidance: "Import holdings to get started.",
       pricedToday: 0,
+      pricedRecent: 0,
       totalHeld: 0,
       stalestSymbol: null,
       stalestDays: null,
@@ -244,6 +261,7 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
     whyMatters,
     guidance,
     pricedToday,
+    pricedRecent,
     totalHeld,
     stalestSymbol: stalest
       ? stalest.latest_date === null
@@ -718,7 +736,9 @@ function deriveActions(
   if (price.score < 80 && price.totalHeld > 0) {
     actions.push({
       severity: price.score < 30 ? "critical" : "warning",
-      message: `${price.totalHeld - price.pricedToday} securities have stale prices`,
+      // Same basis as the Prices dimension detail/score: totalHeld -
+      // pricedRecent, NOT totalHeld - pricedToday (see RECENT_PRICE_WINDOW_DAYS).
+      message: `${price.totalHeld - price.pricedRecent} securities have no price from the last ${RECENT_PRICE_WINDOW_DAYS} days`,
       fix: "Run Quick Refresh to update all prices (~2 min)",
       autoFixable: true,
       apiEndpoint: "/api/tws/auto-refresh",
