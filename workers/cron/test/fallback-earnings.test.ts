@@ -1072,6 +1072,30 @@ describe("intel rows in cloud scoreboard (Task 9: snapshot v9)", () => {
     expect(md).toContain("Avg move last 8 prints");
   });
 
+  it("beat/miss counts that omit flat quarters still show the full quarterCount denominator (parity with Mac)", () => {
+    const md = renderScoreboard(baseEvent(), "preview", null, false, {
+      intel: null,
+      history: {
+        rows: [],
+        summary: { avgAbsMovePct: 4.6, beatCount: 4, missCount: 3, quarterCount: 8 },
+      },
+    });
+    const histRow = md.split("\n").find((l) => l.includes("Avg move last 8 prints"))!;
+    expect(histRow).toContain("±4.6% · beat 4/8");
+  });
+
+  it("falls back to beatCount+missCount when quarterCount is not a positive number (older snapshot)", () => {
+    const md = renderScoreboard(baseEvent(), "preview", null, false, {
+      intel: null,
+      history: {
+        rows: [],
+        summary: { avgAbsMovePct: 4.6, beatCount: 4, missCount: 3, quarterCount: 0 },
+      },
+    });
+    const histRow = md.split("\n").find((l) => l.includes("Avg move last 8 prints"))!;
+    expect(histRow).toContain("±4.6% · beat 4/7");
+  });
+
   it("a sheet expected move renders with its source label and no staleness suffix (feedback #5)", () => {
     const md = renderScoreboard(baseEvent(), "preview", null, false, {
       intel: {

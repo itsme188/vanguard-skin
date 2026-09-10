@@ -1029,7 +1029,13 @@ function fmtImplied(intel: ResolvedIntelView | null | undefined): string {
 function fmtHistSummary(history: EarningsHistorySnapshotEntry | null | undefined): string {
   const s = history?.summary;
   if (!s || s.avgAbsMovePct == null) return "—";
-  const denom = s.beatCount + s.missCount;
+  // Denominator is the number of prints observed (quarterCount), not
+  // beatCount+missCount — that sum silently drops flat (zero-surprise)
+  // quarters, understating the denominator vs the on-screen chip
+  // (histBeatCount/histQuarterCount). Fall back to the old sum only for
+  // older cached summaries that predate quarterCount. Mirrors the Mac's
+  // fmtHistSummary (lib/digest/send-earnings-email.ts) exactly.
+  const denom = s.quarterCount > 0 ? s.quarterCount : s.beatCount + s.missCount;
   const beat = denom > 0 ? ` · beat ${s.beatCount}/${denom}` : "";
   return `±${s.avgAbsMovePct.toFixed(1)}%${beat}`;
 }
