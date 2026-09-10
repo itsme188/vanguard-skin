@@ -13,9 +13,9 @@ describe("parsePorcelainZ", () => {
     ]);
   });
 
-  it("takes the NEW path for renames and skips the original-path field", () => {
+  it("retains both paths for renames so the old domain is verified too", () => {
     const raw = `R  lib/new-name.ts${NUL}lib/old-name.ts${NUL}M  lib/other.ts${NUL}`;
-    expect(parsePorcelainZ(raw)).toEqual(["lib/new-name.ts", "lib/other.ts"]);
+    expect(parsePorcelainZ(raw)).toEqual(["lib/new-name.ts", "lib/old-name.ts", "lib/other.ts"]);
   });
 
   it("handles paths with spaces (unquoted under -z)", () => {

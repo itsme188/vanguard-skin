@@ -89,9 +89,9 @@ describe("planVerification", () => {
     expect(plan.selectedTests).toEqual([]);
   });
 
-  it("tooling/docs paths produce the no-focused-test message, not unmatched", () => {
+  it("verification tooling maps tests while unrelated tooling retains reminders", () => {
     const plan = planVerification(["scripts/verify-changed.ts", "docs/plans/TODO.md", "qa/run-qa.sh"]);
-    expect(plan.selectedTests).toEqual([]);
+    expect(plan.selectedTests).toEqual(["tests/verify/"]);
     expect(plan.unmatched).toEqual([]);
     expect(plan.categories).toContain("tooling");
   });

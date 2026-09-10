@@ -11,22 +11,13 @@ input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)
 
 case "$cmd" in
-  *electron:deploy*|*electron:pack*) ;;
+  *electron:deploy*|*electron:pack*|*coord/deploy*|*"npm run deploy"*) ;;
   *) exit 0 ;;
 esac
 
-repo_root=$(git rev-parse --show-toplevel 2>/dev/null)
-if [ -z "$repo_root" ]; then
-  exit 0
-fi
-
-# Self-gate: only run for vanguard-skin
-case "$repo_root" in
-  */vanguard-skin) ;;
-  *) exit 0 ;;
-esac
-
-cd "$repo_root" || exit 0
+source "$(dirname "$0")/project-root.sh"
+repo_root=$(portfolio_root "$input") || exit 0
+cd "$repo_root" || exit 2
 
 last_todo=$(git log -1 --format=%H -- docs/plans/TODO.md 2>/dev/null)
 

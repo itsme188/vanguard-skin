@@ -39,6 +39,11 @@ const MIRROR_REMINDER =
 
 export const MAPPING: MappingEntry[] = [
   {
+    category: "verification",
+    match: ["scripts/verify.sh", "scripts/verify-runner.ts", "scripts/verify-changed.ts", "scripts/lib/git-changed.ts", "scripts/lib/verification.ts", "scripts/lib/verification-loader.mjs", "scripts/lib/verify-mapping.ts", ".codex/hooks/"],
+    testTargets: ["tests/verify/"], reminders: [], exclusive: true,
+  },
+  {
     category: "migrations",
     match: ["lib/db/migrations/"],
     testTargets: [],
