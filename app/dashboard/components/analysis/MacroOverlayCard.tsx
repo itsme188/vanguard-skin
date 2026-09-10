@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { MacroThemeReceiptDrawer } from "./MacroThemeReceiptDrawer";
 import apiFetch from "@/lib/http/apiFetch";
+import { formatRateLimitMessage } from "./rate-limit-message";
 
 interface MacroTheme {
   name: string;
@@ -26,6 +27,8 @@ interface ApiResponse {
   generatedAt?: string;
   fromCache?: boolean;
   error?: string;
+  /** ms left on the POST route's window — only present on a 429. */
+  retryAfter?: number;
 }
 
 const FACTOR_LABELS: Record<string, string> = {
@@ -77,7 +80,19 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scope }),
       });
-      return (await res.json()) as ApiResponse;
+      const json = (await res.json()) as ApiResponse;
+      if (res.status === 429) {
+        // The route answers with a bare API token; dropping res.status made
+        // that token the entire card body (2026-09-10 QA). Say it in domain
+        // language instead, with the actual wait.
+        return {
+          ...json,
+          success: false,
+          error: formatRateLimitMessage("Macro themes refresh", json.retryAfter),
+        };
+      }
+      // Every other failure now carries a user-facing message from the route.
+      return json;
     };
 
     (async () => {

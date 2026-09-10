@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { NextRequest } from "next/server";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertMacroThemes } from "@/lib/queries/analysis-macro-themes";
@@ -120,6 +121,128 @@ describe("/api/analysis/macro-themes", () => {
       expect(res2.status).toBe(429);
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  // ── Failure handling: a malformed model reply must not lock the scope ─────
+  // QA finding `analysis-macro-themes--cold-cache-500-raw-parser-message-regression-1`:
+  // the route stamped the 24h window BEFORE generating, so one unparseable
+  // Sonnet reply 500'd and then 429'd every later page load for a full day.
+
+  const OK_RESULT = {
+    themes: [],
+    sourceSummary: null,
+    fromCache: false,
+    generatedAt: new Date().toISOString(),
+    underThreshold: true,
+  };
+
+  function makePost(scope: string) {
+    return () =>
+      new Request("http://localhost/api/analysis/macro-themes", {
+        method: "POST",
+        body: JSON.stringify({ scope }),
+        headers: { "Content-Type": "application/json" },
+      }) as unknown as NextRequest;
+  }
+
+  it("POST failure does NOT consume the 24h window", async () => {
+    const macroThemes = await import("@/lib/compute/macro-themes");
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const spy = vi
+      .spyOn(macroThemes, "generateMacroThemes")
+      .mockRejectedValueOnce(
+        new macroThemes.MacroThemesParseError(
+          "The model's reply couldn't be read as themes — try again in a moment.",
+          'Unterminated string in JSON at position 1074 — reply began: [{"name":"QAAA rotation","fa',
+        ),
+      )
+      .mockResolvedValue(OK_RESULT);
+    try {
+      const { POST, __resetMacroRegenLimitForTests, __clearMacroFailCooldownForTests } =
+        await import("@/app/api/analysis/macro-themes/route");
+      __resetMacroRegenLimitForTests();
+      const makeReq = makePost("vanguard");
+
+      const res1 = await POST(makeReq());
+      expect(res1.status).toBe(500);
+
+      // Only the short failure cooldown was stamped. Clear it and the next
+      // request reaches the generator again instead of 429ing for 24h.
+      __clearMacroFailCooldownForTests();
+      const res2 = await POST(makeReq());
+      expect(res2.status).toBe(200);
+      expect((await res2.json()).success).toBe(true);
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+
+  it("POST failure body carries the user-facing message, never the raw parser text", async () => {
+    const macroThemes = await import("@/lib/compute/macro-themes");
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const detail =
+      'Unterminated string in JSON at position 1074 — reply began: [{"name":"QAAA rotation","fa';
+    const spy = vi
+      .spyOn(macroThemes, "generateMacroThemes")
+      .mockRejectedValue(
+        new macroThemes.MacroThemesParseError(
+          "The model's reply couldn't be read as themes — try again in a moment.",
+          detail,
+        ),
+      );
+    try {
+      const { POST, __resetMacroRegenLimitForTests } =
+        await import("@/app/api/analysis/macro-themes/route");
+      __resetMacroRegenLimitForTests();
+      const res = await POST(makePost("ibkr")());
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.success).toBe(false);
+      expect(body.error).toBe(
+        "The model's reply couldn't be read as themes — try again in a moment.",
+      );
+      expect(body.error).not.toMatch(/JSON|position|Unexpected|Unterminated/);
+      expect(body.error).not.toContain(detail);
+      // ...but the operator still gets it in the server log.
+      expect(errSpy.mock.calls.some((c) => String(c[0]).includes("position 1074"))).toBe(true);
+    } finally {
+      spy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+
+  it("POST 429s a retry inside the 10-minute failure cooldown, with a short retryAfter", async () => {
+    const macroThemes = await import("@/lib/compute/macro-themes");
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const spy = vi
+      .spyOn(macroThemes, "generateMacroThemes")
+      .mockRejectedValue(
+        new macroThemes.MacroThemesParseError(
+          "The model's reply couldn't be read as themes — try again in a moment.",
+          "boom",
+        ),
+      );
+    try {
+      const { POST, __resetMacroRegenLimitForTests } =
+        await import("@/app/api/analysis/macro-themes/route");
+      __resetMacroRegenLimitForTests();
+      const makeReq = makePost("roth");
+
+      expect((await POST(makeReq())).status).toBe(500);
+      const res2 = await POST(makeReq());
+      expect(res2.status).toBe(429);
+      const body = await res2.json();
+      expect(body.error).toBe("rate-limited");
+      expect(body.retryAfter).toBeGreaterThan(0);
+      expect(body.retryAfter).toBeLessThanOrEqual(10 * 60 * 1000);
+      // A persistently failing model is re-billed at most once per cooldown.
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+      errSpy.mockRestore();
     }
   });
 });
