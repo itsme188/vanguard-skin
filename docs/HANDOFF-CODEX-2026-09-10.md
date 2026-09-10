@@ -1,59 +1,82 @@
 # Codex session handoff — 2026-09-10
 
-**State:** implementation committed and pushed; authorized landing in progress. Final deployment result will be recorded after completion.
-**Waiting on:** no user approval. The user explicitly approved both handoff preservation/restoration and transfer of the six documentation files to Codex.
-**Next action:** fast-forward under the integration lock, verify the integrated commit, push main and deploy. Preserve original worktrees and unrelated QA work.
+**State:** workflow integrated and pushed; application build `41d0fdc0` installed, notarized, relaunched and independently verified. Final commits after that build change deployment tooling and documentation only.
+**Waiting on:** nobody for this task.
+**Next action:** use `npm run coord -- status` at session start; verify task diffs with the shared runner. Original worktrees and seven unrelated QA PRs remain for separate review.
 
 ## 1. Goal and exact files
 
-Make verification reliable across worktrees, observable on subprocess failures, complete across task diffs, and attributable to the tested commit and dirty state. `796ea7d8` contains Codex's implementation and the reviewed integration fixes atop Claude's eight completed coordination commits through `651823b9`. Codex implementation: 20 files, +645/-209; combined delivered implementation versus main: 42 files, +5968/-326.
+Verification reliability across Claude/Codex worktrees, real failure propagation, full task diffs, exact-state evidence, and explicit handoff ownership. Commits: `796ea7d8` verification and integration fixes; `41d0fdc0` shared documentation; `cb00feea` deployment listener identity correction. Claude's completed coordination commits through `651823b9` are included once, without replay. Combined paths from the original integration base:
 
+- `.claude/hooks/check-todo-reconciled.sh`
+- `.claude/hooks/post-edit-check.sh`
 - `.claude/hooks/stop-verify.sh`
+- `.claude/session-end.md`
+- `.claude/session-start.md`
+- `.claude/settings.json`
 - `.codex/hooks/check-todo-reconciled.sh`
 - `.codex/hooks/post-edit-lint.sh`
 - `.codex/hooks/project-root.sh`
 - `.codex/hooks/smoke-runtime.py`
 - `.codex/hooks/stop-vitest.sh`
+- `AGENTS.md`
+- `CLAUDE.md`
+- `docs/CODEX-CLAUDE-COORDINATION.md`
+- `docs/DECISIONS.md`
+- `docs/HANDOFF-CODEX-2026-09-10.md`
+- `docs/HANDOFF.md`
+- `docs/plans/TODO.md`
+- `docs/plans/archive/coordination-log-2026-09-04-to-09-06.md`
+- `docs/reference/coordination.md`
+- `docs/reference/verification-loop.md`
+- `docs/superpowers/specs/2026-09-08-agent-coordination-design.md`
 - `package.json`
 - `scripts/coord/coord.py`
+- `scripts/coord/coord.sh`
+- `scripts/coord/deploy.sh`
+- `scripts/coord/listener-identity.py`
+- `scripts/coord/sandbox.sh`
+- `scripts/coord/smoke.sh`
 - `scripts/lib/git-changed.ts`
 - `scripts/lib/verification-loader.mjs`
 - `scripts/lib/verification.ts`
 - `scripts/lib/verify-mapping.ts`
 - `scripts/verify-changed.ts`
 - `scripts/verify-runner.ts`
+- `scripts/verify-smoke.sh`
 - `scripts/verify.sh`
 - `tests/coord/claude-hooks.test.ts`
+- `tests/coord/coord-cli.test.ts`
+- `tests/coord/deploy-wrapper.test.ts`
+- `tests/coord/listener-identity.test.ts`
+- `tests/coord/sandbox-smoke.test.ts`
 - `tests/verify/git-changed.test.ts`
 - `tests/verify/verification.test.ts`
 - `tests/verify/verify-mapping.test.ts`
 - `tests/verify/workflow-integration.test.ts`
 
-Six approved documentation updates: `CLAUDE.md`, `docs/reference/coordination.md`, `docs/reference/verification-loop.md`, `docs/CODEX-CLAUDE-COORDINATION.md`, `docs/plans/TODO.md`, `docs/DECISIONS.md`. They reconcile the actual runner/Stop/lock behavior and State/Waiting on/Next action handoffs. This separately named Codex handoff preserves the existing shared handoffs.
-
 ## 2. Verification and deployment
 
-- September 10 focused: 102 passed across 8 files.
-- September 10 full: 9,134 passed, 3 skipped, 9 todo, 755 files, exit0, 85.43s. Command: `ANTHROPIC_API_KEY=verification-fixture-only bash scripts/verify.sh full --base 3b31714e5046c81e584ee080e3905024c8c4e0fd`. Placeholder only; no real service credential.
-- Exact tested commit: `796ea7d8` plus the six documentation proposals. Full run `1789068084128-1f4ca2a3-406e-43b5-966b-4083306f86a9` binds HEAD and dirty contents. The subsequent handoff-only commit is not represented as newly run full-suite evidence; code is unchanged.
-- Typecheck: exit2, same 20 baseline errors in four untouched test files. Not waived.
-- Installed Codex updated to 0.154.0: real local-provider Stop continuation proof passed again; actual global registration query shows all five hooks enabled/trusted. Global commands still point at main, so the new scripts are not yet active there.
-- Reused real-browser proof from September 8: three smokes each 4/4 against the isolated sandbox, simultaneous requests serialized by the browser lock; screenshot checks and sandbox shutdown completed. No application-code changes since that proof.
-- Deployment NOT RUN: main remains dirty and unintegrated. Prior deploy preflight also found `workers/cron/.wrangler`; preserve this local state outside build input before any deployment rather than deleting it blindly. No Worker deployment or production-data repair authorized by this task.
-- Private evidence/proposals/backup: `docs/private/workflow-closeout-2026-09-10/` in main. Earlier browser and recovery details: `/private/tmp/portfolio-workflow-integration-handoff-2026-09-08.md`.
+- Focused completion after listener correction: 108 passed in 9 files.
+- Corrected isolated full regression: 9,140 passed, 3 skipped, 9 todo in 756 files, exit0. Exact command: `ANTHROPIC_API_KEY=verification-fixture-only bash scripts/verify.sh full --base 3b31714e`; synthetic placeholder only. Evidence run `1789069717536-e618b7f1-0e6c-47a5-b22d-85cb535346ef` binds its tested commit and dirty correction.
+- Landed application build commit `41d0fdc0`: 9,135 passed, 9 todo, 755 files. Evidence run `1789068911573-5430b168-9cbd-4051-acde-636d61c68c08` records a clean tree. Counts differ between main and isolated checkout due to environment-dependent tests.
+- Typecheck still has the same 20 baseline errors in four untouched test files; no new checker/test errors. Not waived.
+- Final committed-checkout verification is recorded separately in main's `.git/verification/`; `bash scripts/verify.sh status --base main` checks whether it matches current HEAD and dirty state. Never treat the pre-commit runs above as proof of a later commit. Private final logs: `docs/private/workflow-closeout-2026-09-10/`.
+- Codex 0.154.0: real loopback-provider Stop continuation proof passes; all five actual global registrations enabled and trusted, pointing to the now-integrated main scripts. Both agents share the documented runner interface.
+- Browser evidence reused for unchanged application code: three isolated real smokes each4/4, simultaneous requests serialized by browser locks; screenshots inspected; sandbox stopped. Evidence remains private.
+- Build `41d0fdc0`: Next build, Electron compile, signing, Apple notarization, bundle leak gate and installation passed. Installed BUILD_ID `g-VfmAyhj3XDXiXHwGjVM` matches built ID; new listener PID86424, correct standalone cwd and real parent app executable; codesign and `/login` health passed independently.
+- Original deployment wrapper returned70 because Next's rewritten `next-server` title omitted the bundle path. This real failure remains recorded; it was not relabeled exit0. `cb00feea` fixes that check and adds six regression cases. The corrected helper verified the actual installed listener. No repeated Electron build for this tooling-only correction; no Worker deployment or production-data repair.
 
-## 3. Concerns and decisions
+## 3. Decisions and remaining concerns
 
-Automatic approval review rejected the shared-documentation commit because the original task explicitly reserved those files for Claude. Explicit ownership-transfer approval was requested; no workaround attempted. Main's old handoff changes include reverted historical statements and a stray zero; an exact private backup exists, but the working file was not restored without the pending approval.
+User explicitly authorized session-end, then approved preserving/restoring main's edited handoff and transferring the six documentation updates from Claude to Codex. Those ownership blockers are resolved. Exact old handoff backup and memory backup are in `docs/private/workflow-closeout-2026-09-10/`; the unused local Wrangler cache was moved intact to `/private/tmp/portfolio-wrangler-preserved-2026-09-10`, outside build input, not deleted.
 
-Backlog reviewed: workflow changes do not close application/tax/import/history items. Seven unrelated nightly-QA PRs (#69–75) remain open; the sole open issue #34 is an ongoing review protocol, so no closure is proposed or sent. Existing 20 type errors, mocked AI tests' environment dependence, nightly QA outside coordination locks, AGENTS/stale-worktree decisions and a sandbox dependency-symlink preflight remain follow-ups. Memory update saved as a private proposal while shared-document ownership is unresolved.
+Existing baseline type errors, mocked AI tests' environment-key dependency, nightly QA lock adoption, AGENTS/stale-directory decisions, and a sandbox dependency-symlink preflight remain follow-ups in TODO. Seven unrelated nightly PRs (#69–75) remain open; #34 is an ongoing review protocol, not a resolved defect. No external issue comments or closures sent.
 
-## 4. Actual Git/worktree/process state
+## 4. Git/worktree/process state
 
-Main and origin/main remain `3b31714e`, with only the pre-existing tracked `docs/HANDOFF.md` edit in main. Implementation branch pushed; six documentation proposals remain uncommitted in the integration worktree. Claude source worktree remains at `651823b9`; original Codex verification worktree preserved. Other registered worktrees: prunable trade-lots, original verification, integration review, Claude coordination and detached QA-fix. No worktrees or branches deleted. No sandbox started this closeout, no application restarted, no integration/deploy lock retained. Installed app build unchanged by this session.
+Main and origin/main contain the reviewed workflow and final handoff. Original Codex verification worktree, clean Claude coordination worktree, integration review worktree, detached QA-fix and prunable trade-lots registration were preserved. No branches/worktrees deleted. No sandbox left running. Installed app runs the build identified above; final tooling/docs commits require no app rebuild. Coordination records carry current evidence/next action; do not infer an active agent from a message file.
 
 ## 5. Attribution and retrospective
 
-Codex, 2026-09-10; no session URL available. Goal: finish verified workflow delivery. Accomplished: implementation committed/pushed, fresh focused/full checks, installed-version hook proof, documentation proposal and durable evidence. No code-fix iterations were needed in closeout. Initial runner calls needed filesystem escalation to write Git-directory evidence; no tests ran in those denied attempts. Documentation ownership and main's dirty handoff prevented landing. Improvement: settle the shared-document owner and preserve dirty integration inputs at the first closeout checkpoint, before promising a complete landing.
-
-Ownership resolution: user answered “yes on both”; shared documentation and exact handoff backup/restoration are now explicitly authorized. The prior blocked state below is historical context and will be replaced in the final post-deployment handoff.
+Codex, 2026-09-10; no session URL available. Goal accomplished: tested workflow integrated, pushed and active; app installed and verified. One deployment identity correction followed the first live wrapper false failure; its new test fixture needed one newline-escaping correction. Full regression then passed. Notarization and ownership resolution took the most time. Improvement: use process metadata instead of mutable argv for listener identity, and settle shared-file ownership before closeout. Handoffs now explicitly state State / Waiting on / Next action.
