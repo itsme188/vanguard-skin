@@ -21,7 +21,7 @@ function runHook(
   extraEnv: Record<string, string> = {}
 ): { status: number | null; stdout: string; stderr: string } {
   const res = spawnSync("bash", [scriptPath], {
-    input: stdin,
+    input: stdin ? JSON.stringify({ session_id: "hook-test-session", ...JSON.parse(stdin) }) : stdin,
     encoding: "utf8",
     env: { ...process.env, ...extraEnv },
   });
@@ -187,7 +187,7 @@ describe("stop-verify.sh", () => {
     expect(fs.existsSync(marker)).toBe(false);
   });
 
-  it("clean working tree: exits 0 without running the verify command", () => {
+  it("clean working tree: still asks the runner for current evidence", () => {
     const marker = path.join(repoDir, "marker");
     const res = runHook(HOOK, "{}", {
       PD_COORD_DIR: coordDir,
@@ -195,7 +195,7 @@ describe("stop-verify.sh", () => {
       CLAUDE_PROJECT_DIR: repoDir,
     });
     expect(res.status).toBe(0);
-    expect(fs.existsSync(marker)).toBe(false);
+    expect(fs.existsSync(marker)).toBe(true);
   });
 
   it("real failure (exit 7): exits 2, stderr names the exit code, log file is written", () => {
@@ -207,7 +207,8 @@ describe("stop-verify.sh", () => {
     });
     expect(res.status).toBe(2);
     expect(res.stderr).toContain("FAILED (exit 7)");
-    const logs = fs.readdirSync(path.join(coordDir, "logs")).filter((f) => f.startsWith("stop-verify-") && f.endsWith(".log"));
+    const scopes = fs.readdirSync(path.join(coordDir, "logs", "stop-verify"));
+    const logs = scopes.flatMap((scope) => fs.readdirSync(path.join(coordDir, "logs", "stop-verify", scope))).filter((f) => f.endsWith(".log"));
     expect(logs.length).toBeGreaterThan(0);
   });
 
@@ -221,8 +222,10 @@ describe("stop-verify.sh", () => {
     expect(res.status).toBe(2);
     expect(res.stdout).toBe("");
     expect(res.stderr).toContain("no current verification evidence");
-    expect(res.stderr).toContain("verify.sh changed --base main");
-    const statusFile = path.join(coordDir, "logs", "stop-verify-last-status");
+    expect(res.stderr).toContain("verify.sh full --base main");
+    const scopes = fs.readdirSync(path.join(coordDir, "logs", "stop-verify"));
+    expect(scopes).toHaveLength(1);
+    const statusFile = path.join(coordDir, "logs", "stop-verify", scopes[0], "last-status");
     expect(fs.readFileSync(statusFile, "utf8")).toMatch(/^unverified\t/);
 
     // second pass of the same stop cycle: lets go, but says so explicitly
@@ -260,7 +263,9 @@ describe("stop-verify.sh", () => {
     });
     expect(first.status).toBe(2);
 
-    const statusFile = path.join(coordDir, "logs", "stop-verify-last-status");
+    const scopes = fs.readdirSync(path.join(coordDir, "logs", "stop-verify"));
+    expect(scopes).toHaveLength(1);
+    const statusFile = path.join(coordDir, "logs", "stop-verify", scopes[0], "last-status");
     expect(fs.existsSync(statusFile)).toBe(true);
     expect(fs.readFileSync(statusFile, "utf8")).toMatch(/^failed\t/);
 

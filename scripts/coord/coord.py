@@ -953,7 +953,9 @@ def cmd_lock_run(coord_dir: str, args: argparse.Namespace) -> int:
         wait=args.wait,
         break_stale=getattr(args, "break_stale", False),
         pid=run_pid,
-        exclusive=getattr(args, "exclusive", False),
+        # Every command must own a fresh acquisition/token. Sharing a task
+        # identity is not permission for two processes to run concurrently.
+        exclusive=True,
     )
     if rc != EXIT_OK:
         return report_lock_contention(args, record)
@@ -961,7 +963,20 @@ def cmd_lock_run(coord_dir: str, args: argparse.Namespace) -> int:
     our_token = record.get("token") if record else None
 
     signal_state: Dict[str, Optional[int]] = {"signum": None}
-    proc = subprocess.Popen(cmd)
+    try:
+        proc = subprocess.Popen(cmd)
+    except OSError as exc:
+        # No child exists to reach the normal wait/finally path. Release only
+        # this acquisition: a launch failure must not wedge integration.
+        current = read_lock_owner(coord_dir, args.name)
+        if current is not None and our_token is not None and current.get("token") == our_token:
+            release_ns = argparse.Namespace(
+                name=args.name, task=args.task, force=False, force_live=False,
+                reason=None, token=our_token
+            )
+            cmd_lock_release(coord_dir, release_ns)
+        sys.stderr.write("coord: could not launch %s: %s\n" % (cmd[0], exc))
+        return 127 if isinstance(exc, FileNotFoundError) else 126
 
     def forward_signal(signum: int, _frame: Any) -> None:
         signal_state["signum"] = signum

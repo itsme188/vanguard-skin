@@ -9,7 +9,7 @@
 # is reported as a single `{"systemMessage": "..."}` JSON object on stdout
 # at exit 0 instead — nothing else may go to stdout. A real failure stays
 # exit 2 with the tail of the log on stderr (that path IS surfaced). The
-# clean-tree/skip case and a genuine pass print nothing at all.
+# A genuine pass prints nothing; a clean checkout still needs current task evidence.
 #
 # Test seams: PD_STOP_VERIFY_CMD overrides the verification command (run via
 # `bash -c`, so shell builtins like `exit 7` work); PD_COORD_DIR overrides
@@ -42,9 +42,22 @@ if [ -n "$common_dir" ]; then
 fi
 coord_dir="${PD_COORD_DIR:-${common_dir:+$common_dir/portfolio-desk-coord}}"
 [ -z "$coord_dir" ] && exit 0
-mkdir -p "$coord_dir/logs" 2>/dev/null || exit 0
+mkdir -p "$coord_dir/logs" || { printf "stop-verify: cannot record verification logs\n" >&2; exit 2; }
 
-status_file="$coord_dir/logs/stop-verify-last-status"
+# The coordination root is shared; Stop outcomes are NOT. Partition by
+# canonical worktree and Claude session, and never interpolate input as paths.
+scope=$(printf '%s' "$input" | python3 -c '
+import hashlib, json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+session = d.get("session_id") or d.get("transcript_path") or ("parent:" + sys.argv[2])
+print(hashlib.sha256(json.dumps([os.path.realpath(sys.argv[1]), session]).encode()).hexdigest())
+' "$project_root" "$PPID") || exit 2
+session_logs="$coord_dir/logs/stop-verify/$scope"
+mkdir -p "$session_logs" || exit 2
+status_file="$session_logs/last-status"
 
 emit_message() {
   # $1 = message text -> the ONLY stdout line, as {"systemMessage": "..."}
@@ -73,20 +86,19 @@ if [ "$stop_hook_active" = "true" ]; then
   exit 0
 fi
 
-if [ -z "$(git status --porcelain 2>/dev/null)" ]; then
-  write_status "skipped" ""
-  exit 0
-fi
-
-stamp=$(date -u '+%Y%m%dT%H%M%SZ')
-log="$coord_dir/logs/stop-verify-$stamp.log"
+# A branch can be clean but contain unverified committed task changes.
+# Always ask the runner; it binds evidence to HEAD and the complete task diff.
+log=$(python3 -c 'import os, sys, tempfile; fd, name = tempfile.mkstemp(prefix="run-", suffix=".log", dir=sys.argv[1]); os.close(fd); print(name)' "$session_logs") || exit 2
 
 if [ -n "${PD_STOP_VERIFY_CMD:-}" ]; then
   cmd="$PD_STOP_VERIFY_CMD"
 elif [ -f "scripts/verify.sh" ]; then
   cmd="bash scripts/verify.sh status --base main"
 else
-  cmd="npm run verify:changed"
+  # Focused evidence cannot satisfy an authoritative full-suite gate.
+  write_status "unverified" ""
+  printf 'stop-verify: shared verification runner is unavailable; integrate scripts/verify.sh before claiming verified completion.\n' >&2
+  exit 2
 fi
 
 export PATH="/opt/homebrew/opt/node@24/bin:$PATH"
@@ -98,7 +110,11 @@ status=$?
 
 case "$status" in
   0)
-    write_status "passed" "$log"
+    if grep -q '^verify: result=no-relevant-changes ' "$log"; then
+      write_status "skipped" "$log"
+    else
+      write_status "passed" "$log"
+    fi
     exit 0
     ;;
   3)
@@ -107,13 +123,13 @@ case "$status" in
     exit 0
     ;;
   4)
-    # No current evidence for a dirty tree. Codex parity (2026-09-08): this
+    # No current evidence for this task state (including a clean branch). Codex parity (2026-09-08): this
     # must REQUEST verification once, not quietly allow a claimed completion.
     # Exit 2 blocks the stop exactly once (the stop_hook_active pass above
     # lets the next stop through with an explicit "unverified" reminder).
     write_status "unverified" "$log"
     {
-      printf 'stop-verify: no current verification evidence for the working tree — run `bash scripts/verify.sh changed --base main` (or `npm run verify:changed`) before finishing; see %s\n' "$log"
+      printf 'stop-verify: no current verification evidence for the working tree — run `bash scripts/verify.sh full --base main` before finishing; see %s\n' "$log"
     } >&2
     exit 2
     ;;

@@ -1,29 +1,18 @@
 #!/bin/bash
-# Stop hook: smoke-run the test suite at the end of every Codex session.
-# Self-gates to vanguard-skin (most projects don't use vitest).
-#
-# Codex hook contract: stdout MUST be valid JSON (or empty). Any human-readable
-# output goes to stderr — Codex shows stderr to the user but does not parse it.
-# Exit 0 + empty stdout is also valid (silent success).
-
+# Stop checks authoritative evidence; tests run explicitly through the shared runner.
+# Codex 0.153.4: exit 2 + stderr requests continuation. Never hide runner failure.
 set -u
-
-repo_root=$(git rev-parse --show-toplevel 2>/dev/null)
-[ -z "$repo_root" ] && exit 0
-
-case "$repo_root" in
-  */vanguard-skin) ;;
-  *) exit 0 ;;
-esac
-
-cd "$repo_root" || exit 0
-[ -f package.json ] || exit 0
-
-# Run vitest. Stream the tail to stderr so the user sees the test summary
-# without polluting stdout (which Codex parses as JSON hook output).
-{
-  npx vitest run --reporter=dot --exclude '.claude/**' --exclude '.agents/**' 2>&1 | tail -3
-} >&2
-
-# Empty stdout = silent success per Codex hook contract.
-exit 0
+input=$(cat)
+source "$(dirname "$0")/project-root.sh"
+repo_root=$(portfolio_root "$input") || exit 0
+if bash "$repo_root/scripts/verify.sh" status >&2; then
+  exit 0
+fi
+reason='Portfolio Desk full-suite verification is missing, failed, or stale. Run bash scripts/verify.sh full --base <explicit-integration-base>, inspect its logs, and report any unresolved failures. Do not claim verified completion.'
+# One continuation only: do not turn a pre-existing failure into an infinite loop.
+if [ "$(printf '%s' "$input" | jq -r '.stop_hook_active // false')" = true ]; then
+  jq -n --arg reason "$reason" '{continue:false,stopReason:$reason,systemMessage:$reason}'
+  exit 0
+fi
+printf '%s\n' "$reason" >&2
+exit 2
