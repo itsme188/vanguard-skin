@@ -1,8 +1,8 @@
 # Codex session handoff — 2026-09-10
 
-**State:** implementation committed and pushed on `codex/workflow-integration-review-2026-09-08`; not integrated into main, not deployed.
-**Waiting on:** user decisions to preserve/restore the pre-existing edited main handoff and transfer the six prepared shared-documentation updates from Claude to Codex. Session-end shipping authorization is already granted and remains valid.
-**Next action:** resolve those ownership boundaries, finish documentation, fast-forward under the integration lock, verify the integrated commit, push main and perform applicable deployment. Do not ask again for general shipping authorization.
+**State:** implementation committed and pushed; authorized landing in progress. Final deployment result will be recorded after completion.
+**Waiting on:** no user approval. The user explicitly approved both handoff preservation/restoration and transfer of the six documentation files to Codex.
+**Next action:** fast-forward under the integration lock, verify the integrated commit, push main and deploy. Preserve original worktrees and unrelated QA work.
 
 ## 1. Goal and exact files
 
@@ -29,7 +29,7 @@ Make verification reliable across worktrees, observable on subprocess failures, 
 - `tests/verify/verify-mapping.test.ts`
 - `tests/verify/workflow-integration.test.ts`
 
-Six prepared but uncommitted documentation proposals: `CLAUDE.md`, `docs/reference/coordination.md`, `docs/reference/verification-loop.md`, `docs/CODEX-CLAUDE-COORDINATION.md`, `docs/plans/TODO.md`, `docs/DECISIONS.md`. They reconcile the actual runner/Stop/lock behavior and State/Waiting on/Next action handoffs. This separately named Codex handoff preserves the existing shared handoffs.
+Six approved documentation updates: `CLAUDE.md`, `docs/reference/coordination.md`, `docs/reference/verification-loop.md`, `docs/CODEX-CLAUDE-COORDINATION.md`, `docs/plans/TODO.md`, `docs/DECISIONS.md`. They reconcile the actual runner/Stop/lock behavior and State/Waiting on/Next action handoffs. This separately named Codex handoff preserves the existing shared handoffs.
 
 ## 2. Verification and deployment
 
@@ -55,3 +55,5 @@ Main and origin/main remain `3b31714e`, with only the pre-existing tracked `docs
 ## 5. Attribution and retrospective
 
 Codex, 2026-09-10; no session URL available. Goal: finish verified workflow delivery. Accomplished: implementation committed/pushed, fresh focused/full checks, installed-version hook proof, documentation proposal and durable evidence. No code-fix iterations were needed in closeout. Initial runner calls needed filesystem escalation to write Git-directory evidence; no tests ran in those denied attempts. Documentation ownership and main's dirty handoff prevented landing. Improvement: settle the shared-document owner and preserve dirty integration inputs at the first closeout checkpoint, before promising a complete landing.
+
+Ownership resolution: user answered “yes on both”; shared documentation and exact handoff backup/restoration are now explicitly authorized. The prior blocked state below is historical context and will be replaced in the final post-deployment handoff.
