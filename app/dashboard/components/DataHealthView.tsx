@@ -179,7 +179,7 @@ export function DataHealthView() {
         <SummaryCard
           label="FX Flags"
           value={summary.totalFxFlags}
-          sub={fxFlagged.length > 0 ? `${fxFlagged.length} currencies flagged` : undefined}
+          sub={fxFlagged.length > 0 ? `${fxFlagged.length} ${fxFlagged.length === 1 ? "currency" : "currencies"} flagged` : undefined}
           color={summary.totalFxFlags === 0 ? "up" : "down"}
         />
       </div>
