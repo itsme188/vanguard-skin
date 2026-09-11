@@ -183,7 +183,7 @@ describe("tax report exports print a clean share count", () => {
     addNoisySale(db, 42.99999999999997);
     const csv = generateForm8949CSV(generateTaxReport(db, 2025));
 
-    expect(csv).toContain("100 sh QAAA");
+    expect(csv).toContain("43 sh QAAA");
     expect(csv).not.toContain("42.99999999999997");
   });
 
@@ -192,8 +192,8 @@ describe("tax report exports print a clean share count", () => {
     const report = generateTaxReport(db, 2025);
     const txf = generateTXF(report);
 
-    expect(report.shortTermRows[0].description).toBe("3.483 sh QAAA");
-    expect(txf).toContain("P3.483 sh QAAA");
+    expect(report.shortTermRows[0].description).toBe("7.123 sh QAAA");
+    expect(txf).toContain("P7.123 sh QAAA");
     expect(txf).not.toContain("7.1229999999997354");
   });
 });
