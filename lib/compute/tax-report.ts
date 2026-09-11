@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { getClosedTaxLotSales, type TaxLotSaleWithDetails } from "@/lib/queries/tax-lots";
 import { getTaxConventionState, isYearAccepted } from "@/lib/compute/tax-convention";
+import { formatExportShares } from "@/lib/format";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -215,7 +216,10 @@ export function generateTaxReport(
     // Both 8949 date columns carry the cover date. holdingPeriodDays below
     // is unchanged (already signed negative for shorts at the source).
     const row: Form8949Row = {
-      description: `${sale.quantity_sold} sh ${sale.symbol}`,
+      // formatExportShares, never the raw float: a quantity that has been
+      // through split / partial-sale arithmetic arrives as 99.99999999999997.
+      // The CSV and the TXF P-record both render from this one string.
+      description: `${formatExportShares(sale.quantity_sold)} sh ${sale.symbol}`,
       dateAcquired: sale.is_short === 1 ? toMMDDYYYY(sale.sale_date) : toMMDDYYYY(sale.acquisition_date),
       dateSold: toMMDDYYYY(sale.sale_date),
       proceeds: sale.proceeds,
