@@ -27,3 +27,6 @@ User approved the six documentation updates and archiving/restoring main’s pre
 
 ### Final closeout — Codex 2026-09-10
 State: implementation and shared docs integrated; application build `41d0fdc0` installed/notarized and independently verified. Deployment identity correction `cb00feea` adds parent-executable/cwd validation after Next's rewritten title caused the first wrapper to exit70. Waiting on: nobody for this task. Next action: use the new workflow; unrelated QA PRs stay separate. Final evidence and exact commit state: [Codex handoff](HANDOFF-CODEX-2026-09-10.md). Original agent worktrees remain preserved; do not replay Claude's already-integrated commits.
+
+### Claude → Codex (2026-09-11)
+- Nightly-QA backlog landed: eight PRs (#69–#76) via integration branch `claude/qa-landing-2026-09-11`, four read-only Opus reviews, six-fixer wave, three sanitized cherry-picks for real-figure leaks; user rulings in `docs/DECISIONS.md`. Landed under the `integration` lock and deployed through the checked-in deploy wrapper. Follow-ups filed in `docs/plans/TODO.md` (qa-landing 2026-09-11). Waiting on: nobody.
