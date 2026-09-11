@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
 import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
+import { findEmailCandidates } from "@/lib/calendar/enrichment-runner";
 
 let db: Database.Database;
 
@@ -21,6 +22,15 @@ interface SeedRow {
   dateStatus?: string | null;
   /** The desk's own acceptance stamp (lib/earnings/actuals.ts::saveManualActuals). */
   manualActualsAt?: string | null;
+  /**
+   * When the row was TYPED. Omitted → the schema default (datetime('now')),
+   * "created just now", which is what every pre-existing case here means. Pin
+   * it to separate a manual row created BEFORE a print (a forecast the print
+   * disagreed with) from one created after it (a post-print date correction).
+   */
+  createdAt?: string;
+  enrichedAt?: string | null;
+  reactionSnapshot?: string | null;
 }
 
 function seed(r: SeedRow): number {
@@ -28,8 +38,8 @@ function seed(r: SeedRow): number {
     .prepare(
       `INSERT INTO calendar_events
          (source, event_type, event_date, title, symbol, source_key, actual_value, date_status, raw_json,
-          manual_actuals_at)
-       VALUES (?, 'earnings', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          manual_actuals_at, enriched_at, reaction_snapshot, created_at)
+       VALUES (?, 'earnings', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))`,
     )
     .run(
       r.source,
@@ -41,6 +51,9 @@ function seed(r: SeedRow): number {
       r.dateStatus ?? null,
       JSON.stringify({ entry: { epsActual: r.epsActual ?? null } }),
       r.manualActualsAt ?? null,
+      r.enrichedAt ?? null,
+      r.reactionSnapshot ?? null,
+      r.createdAt ?? null,
     ).lastInsertRowid as number;
 }
 
@@ -529,6 +542,143 @@ describe("reconcileEarningsDates — manual future row vs reported quarter (qa:t
     // Audit follows the print onto the corrected row.
     expect(recapEmailEventId(db)).toBe(correction);
     expect(bogeyEventIds()).toEqual([correction, correction]);
+  });
+
+  // ── USER RULING 2026-09-11: "post-print corrections only" ──────────
+  // The date-proximity leg of "this manual row IS the print" now also
+  // requires the row to have been CREATED on or after the print. Timeline
+  // the two tests below pin (print = the 09-01 vendor row with actuals,
+  // today = 09-11):
+  //
+  //   typed 08-25 ─ manual row dated 09-02 ─ print 09-01 ──▶ PHANTOM (splits)
+  //   print 09-01 ─ typed 09-01 21:30 ─ manual row dated 09-02 ─▶ CORRECTION
+
+  it("RULING: a manual row typed BEFORE the print, one day off it, is a phantom — the vendor keeps the print", () => {
+    const vendor = seedReportedPrint(); // prints 2026-09-01
+    // Typed a week before the print: a forecast the print disagreed with, not
+    // a correction of it. Pre-ruling the 1-day gap alone handed it the whole
+    // cluster — recap, bogeys and all.
+    const phantom = seed({
+      source: "manual",
+      symbol: "ZZMD",
+      date: "2026-09-02",
+      createdAt: "2026-08-25 12:00:00",
+    });
+
+    reconcileEarningsDates(db, { today: SEP_TODAY });
+
+    expectPrintKeptEverything(vendor, phantom);
+
+    // Idempotent: the next sync must not re-open the steal.
+    reconcileEarningsDates(db, { today: SEP_TODAY });
+    expectPrintKeptEverything(vendor, phantom);
+  });
+
+  it("RULING: a manual row typed the EVENING OF the print, one day off it, still wins as a correction", () => {
+    const vendor = seedReportedPrint(); // prints 2026-09-01
+    const correction = seed({
+      source: "manual",
+      symbol: "ZZMD",
+      date: "2026-09-02",
+      createdAt: "2026-09-01 21:30:00",
+    });
+
+    reconcileEarningsDates(db, { today: SEP_TODAY });
+
+    expect(row(correction).superseded).toBe(0);
+    expect(row(correction).date_status).toBe("user_confirmed");
+    expect(row(vendor).superseded).toBe(1);
+    expect(recapEmailEventId(db)).toBe(correction);
+    expect(bogeyEventIds()).toEqual([correction, correction]);
+  });
+
+  it("decides PER MANUAL ROW: a correction takes the print while a phantom future add splits off", () => {
+    const vendor = seedReportedPrint(); // prints 2026-09-01
+    // Sorted date-ASC the correction comes first, the future add second — so
+    // a single `cluster.find(isManual)` read only one of them and applied its
+    // verdict to both.
+    const correction = seed({
+      source: "manual",
+      symbol: "ZZMD",
+      date: "2026-09-02",
+      createdAt: "2026-09-01 21:30:00",
+    });
+    const futureAdd = seed({
+      source: "manual",
+      symbol: "ZZMD",
+      date: "2026-09-10",
+      actualValue: "EPS 2.00 · Rev 800,000,000", // vendor-inherited, not the desk's
+    });
+
+    reconcileEarningsDates(db, { today: SEP_TODAY });
+
+    // The correction owns the print and its audit trail.
+    expect(row(correction).superseded).toBe(0);
+    expect(row(correction).date_status).toBe("user_confirmed");
+    expect(row(vendor).superseded).toBe(1);
+    expect(recapEmailEventId(db)).toBe(correction);
+    expect(bogeyEventIds()).toEqual([correction, correction]);
+
+    // The future add survives as its own live event, stripped of figures it
+    // never earned.
+    expect(row(futureAdd).superseded).toBe(0);
+    expect(row(futureAdd).date_status).toBe("user_confirmed");
+    const stripped = db
+      .prepare("SELECT actual_value, enriched_at FROM calendar_events WHERE id = ?")
+      .get(futureAdd) as { actual_value: string | null; enriched_at: string | null };
+    expect(stripped.actual_value).toBeNull();
+    expect(stripped.enriched_at).toBeNull();
+  });
+
+  it("strips the split-off phantom's inherited actuals so the sweep cannot send a SECOND recap under its date", () => {
+    const vendor = seedReportedPrint(); // prints 2026-09-01, recap already sent
+    // Everything on this row is vendor-inherited: an earlier carryEnrichment
+    // pass, or the enrichment road writing a Finnhub figure onto the manual
+    // row's own date. No desk acceptance (manual_actuals_at NULL).
+    const phantom = seed({
+      source: "manual",
+      symbol: "ZZMD",
+      date: "2026-09-10",
+      actualValue: "EPS 2.00 · Rev 800,000,000",
+      epsActual: 2.0,
+      enrichedAt: "2026-09-11 12:00:00",
+      reactionSnapshot: JSON.stringify({ pct: 4.2 }),
+    });
+    armWorksheet(db, phantom); // armed ⇒ covered, so it takes the AI recap road
+    const now = new Date("2026-09-11T13:00:00Z");
+
+    // Pre-condition: with those inherited figures the phantom IS a live recap
+    // candidate — this is the second email the desk would have received.
+    expect(findEmailCandidates(db, { now }).map((c) => c.eventId)).toContain(phantom);
+
+    reconcileEarningsDates(db, { today: SEP_TODAY });
+
+    expectPrintKeptEverything(vendor, phantom);
+    const after = db
+      .prepare(
+        "SELECT actual_value, enriched_at, reaction_snapshot, raw_json FROM calendar_events WHERE id = ?",
+      )
+      .get(phantom) as {
+      actual_value: string | null;
+      enriched_at: string | null;
+      reaction_snapshot: string | null;
+      raw_json: string;
+    };
+    expect(after.actual_value).toBeNull();
+    expect(after.enriched_at).toBeNull();
+    expect(after.reaction_snapshot).toBeNull();
+    expect(JSON.parse(after.raw_json).entry?.epsActual).toBeUndefined();
+
+    expect(findEmailCandidates(db, { now }).map((c) => c.eventId)).not.toContain(phantom);
+
+    // The strip is a one-time write: a second pass finds the fields already
+    // NULL, writes nothing, and adds no cloud_outbox row.
+    const outboxRows = () =>
+      (db.prepare("SELECT COUNT(*) AS n FROM cloud_outbox").get() as { n: number }).n;
+    const afterFirst = outboxRows();
+    reconcileEarningsDates(db, { today: SEP_TODAY });
+    expect(outboxRows()).toBe(afterFirst);
+    expectPrintKeptEverything(vendor, phantom);
   });
 });
 

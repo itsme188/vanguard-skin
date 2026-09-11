@@ -18,7 +18,11 @@ import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
-import { classificationBucketSql } from "@/lib/queries/analysis";
+import {
+  classificationGroupSql,
+  dimensionInheritsFromUnderlying,
+  underlyingInheritJoinSql,
+} from "@/lib/queries/analysis";
 
 export type ClassificationDimension =
   | "sector"
@@ -95,6 +99,7 @@ export function getHoldingsInBucket(
   const accountParams: number[] = accountIds?.length ? [...accountIds] : [];
 
   let extraWhere = "";
+  let underlyingJoin = "";
   let orderBy = "market_value DESC";
   const filterParams: (string | number)[] = [];
 
@@ -102,13 +107,23 @@ export function getHoldingsInBucket(
     if (!ALLOWED_CLASSIFICATION_DIMENSIONS.includes(filter.dimension)) {
       throw new Error(`unknown classification dimension: ${filter.dimension}`);
     }
-    // Same bucket expression the breakdown (getAllocationByDimension) used to
-    // produce this label — so a NULL/'null' row that rolled up into
-    // 'Unclassified'/'Unknown' filters back in here too. "sector" falls
-    // through to the plain `s.sector` column (see classificationBucketSql —
-    // the ETF look-through bucketing is a separate path this query doesn't
-    // replicate).
-    extraWhere = `AND ${classificationBucketSql(filter.dimension)} = ?`;
+    // Same GROUP expression the breakdown (getAllocationByDimension) used to
+    // produce this label — bucket column AND the option→underlying
+    // inheritance CASE — so:
+    //   • a NULL/'null' row that rolled up into 'Unclassified'/'Unknown'
+    //     filters back in here too, and
+    //   • an OPTION the breakdown counted under its UNDERLYING's bucket
+    //     (geography 'US' for an INTC LEAP) drills back out of that bucket
+    //     instead of hiding under 'Unknown'.
+    // The inheritance CASE reads `s_u`, so the matching join is added below
+    // for exactly the dimensions that need it.
+    // "sector" falls through to the plain `s.sector` column (see
+    // classificationBucketSql — the ETF look-through bucketing is a separate
+    // path this query doesn't replicate).
+    extraWhere = `AND ${classificationGroupSql(filter.dimension)} = ?`;
+    underlyingJoin = dimensionInheritsFromUnderlying(filter.dimension)
+      ? underlyingInheritJoinSql()
+      : "";
     filterParams.push(filter.bucket);
   } else if (filter.kind === "sector") {
     extraWhere = `AND s.sector = ?`;
@@ -144,6 +159,10 @@ export function getHoldingsInBucket(
         ${factorSelect}
       FROM holdings h
       JOIN securities s ON s.id = h.security_id
+      -- s_u (an option's underlying) only when the bucket expression above
+      -- references it. securities.symbol is UNIQUE, so the join is 1:1 and
+      -- cannot fan a holding row out into a double-counted market_value.
+      ${underlyingJoin}
       LEFT JOIN security_factors sf ON sf.security_id = s.id
       LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
       LEFT JOIN (

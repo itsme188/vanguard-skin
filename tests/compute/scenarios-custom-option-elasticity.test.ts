@@ -257,3 +257,51 @@ describe("custom what-if scenarios: options use signed elasticity, not a flat 2x
     expect(mmf.estimatedChange).toBe(0);
   });
 });
+
+describe("optionElasticity: expiration spellings", () => {
+  // The DB carries BOTH shapes: ISO for most rows, the compact YYYYMMDD on
+  // TWS-enriched ones (same two `normalizeExpiration` in
+  // lib/compute/options-strategy.ts handles). `new Date("20270115")` is an
+  // Invalid Date, so the compact spelling used to make T non-finite and every
+  // such option silently took the ±2.5 fallback instead of its real Δ·S/V.
+  const RATE = 0.045;
+
+  function isoInputs(): OptionElasticityInputs {
+    return {
+      option_type: "PUT",
+      strike_price: 95,
+      expiration_date: addDays(todayET(), 90),
+      own_price: 3,
+      underlying_price: 100,
+      underlying_iv: 0.3,
+    };
+  }
+
+  /** The same date, spelled YYYYMMDD. */
+  function compactInputs(): OptionElasticityInputs {
+    const iso = isoInputs();
+    return { ...iso, expiration_date: iso.expiration_date!.replace(/-/g, "") };
+  }
+
+  it("the compact YYYYMMDD spelling produces the SAME elasticity as the ISO one", () => {
+    expect(optionElasticity(compactInputs(), RATE)).toBeCloseTo(
+      optionElasticity(isoInputs(), RATE),
+      6,
+    );
+  });
+
+  it("the compact spelling is priced, not dropped onto the ±2.5 fallback", () => {
+    const omega = optionElasticity(compactInputs(), RATE);
+    expect(omega).toBeLessThan(0); // a put stays signed
+    expect(omega).not.toBeCloseTo(-DEFAULT_OPTION_ELASTICITY, 6);
+  });
+
+  it("an unrecognized expiration spelling still falls back, signed by put/call", () => {
+    const garbled = { ...isoInputs(), expiration_date: "JAN-15-27" };
+    expect(optionElasticity(garbled, RATE)).toBeCloseTo(-DEFAULT_OPTION_ELASTICITY, 6);
+    expect(optionElasticity({ ...garbled, option_type: "CALL" }, RATE)).toBeCloseTo(
+      DEFAULT_OPTION_ELASTICITY,
+      6,
+    );
+  });
+});

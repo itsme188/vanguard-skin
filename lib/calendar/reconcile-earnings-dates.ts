@@ -44,6 +44,15 @@ interface EarningsRow {
   reaction_snapshot: string | null;
   enriched_at: string | null;
   manual_actuals_at: string | null;
+  /**
+   * `calendar_events.created_at` (migration 013, `NOT NULL DEFAULT
+   * datetime('now')`) — WHEN the row was typed, which is what separates a
+   * post-print date correction from a phantom future add sitting one day off
+   * the print. Typed `| null` for the in-memory hypothetical row the
+   * would-supersede dry run appends and for pre-013 shapes; an unknown
+   * creation time counts as NO evidence (see `createdOnOrAfter`).
+   */
+  created_at: string | null;
 }
 
 function addDaysUTC(date: string, days: number): string {
@@ -61,7 +70,7 @@ function daysBetween(a: string, b: string): number {
 /** The columns every resolution step reads. Shared by both gather queries. */
 const EARNINGS_ROW_COLUMNS = `id, source, symbol, event_date, raw_json, actual_value, date_status,
         consensus_estimate, consensus_value, reaction_snapshot, enriched_at,
-        manual_actuals_at`;
+        manual_actuals_at, created_at`;
 
 /**
  * Greedy proximity clustering of ONE issuer family's rows (already sorted by
@@ -138,37 +147,94 @@ const POST_PRINT_CORRECTION_DAYS = 1;
  * dragged the print's recap email and the desk's bogeys onto the phantom (live
  * MDB: manual 09-10 vs the 09-01 print).
  *
- * A manual / user_confirmed row is the print ITSELF only on its OWN evidence:
+ * USER RULING (2026-09-11): the date-proximity leg is a POST-PRINT CORRECTION
+ * ONLY. A manual / user_confirmed row is the print ITSELF only on its OWN
+ * evidence:
  *   - `manual_actuals_at` — the desk accepted actuals ON THIS ROW
  *     (lib/earnings/actuals.ts::saveManualActuals); or
  *   - its date sits within POST_PRINT_CORRECTION_DAYS of a reported vendor row
- *     — a one-day-off date correction describes that same print.
- * Vendor figures sitting in actual_value / raw_json.entry.epsActual are NOT
- * evidence. Everything else splits, and the manual row always lands on the
- * NON-reported side so a past date of its own can't carry it back into the
- * print's group.
+ *     AND the row was CREATED on or after that print's date — only then does a
+ *     one-day-off date describe a print the user had already seen.
+ * A manual row typed BEFORE the print and sitting a day off it is a forecast
+ * the print disagreed with, not a correction of it: it is a phantom, it splits
+ * off, and the vendor row keeps the print with its recap and bogeys. Vendor
+ * figures sitting in actual_value / raw_json.entry.epsActual are NOT evidence.
+ * Phantom manual rows always land on the NON-reported side so a past date of
+ * their own can't carry them back into the print's group.
+ *
+ * Decided PER MANUAL ROW, not off `cluster.find(isManual)`: a cluster can hold
+ * a genuine post-print correction AND a phantom future add at once, and reading
+ * only the first (date-ASC) one either stranded the correction on the wrong
+ * side or let the phantom veto the split for the whole cluster.
+ *
+ * `phantomManuals` rides back out so the caller can strip the vendor-inherited
+ * actuals those rows are sitting on — see `clearInheritedActuals` in
+ * `reconcileEarningsDates`.
  */
+interface ClusterSplit {
+  /** One or two groups; each resolves independently through `resolveCluster`. */
+  groups: EarningsRow[][];
+  /** Manual rows the split pushed OFF the reported print's group. */
+  phantomManuals: EarningsRow[];
+}
+
+function isManualRow(r: EarningsRow): boolean {
+  return r.source === "manual" || r.date_status === "user_confirmed";
+}
+
+/**
+ * Was this row typed on or after `date`? `created_at` is a `datetime('now')`
+ * stamp (UTC, "YYYY-MM-DD HH:MM:SS"); only its date half is compared, so a
+ * print-evening correction counts. An absent/unparseable stamp is NOT
+ * evidence — the conservative direction is "this manual row does not get to
+ * take the print".
+ */
+function createdOnOrAfter(row: EarningsRow, date: string): boolean {
+  const created = (row.created_at ?? "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(created)) return false;
+  return created >= date;
+}
+
+/** Is this manual row a post-print correction of one of `reported`? */
+function manualIsPostPrintCorrection(manual: EarningsRow, reported: EarningsRow[]): boolean {
+  if (manual.manual_actuals_at != null) return true;
+  return reported.some(
+    (r) =>
+      daysBetween(r.event_date, manual.event_date) <= POST_PRINT_CORRECTION_DAYS &&
+      createdOnOrAfter(manual, r.event_date),
+  );
+}
+
 function splitReportedFromManualCluster(
   cluster: EarningsRow[],
   today: string,
-): EarningsRow[][] {
-  const isManual = (r: EarningsRow) =>
-    r.source === "manual" || r.date_status === "user_confirmed";
-  const manual = cluster.find(isManual);
-  if (!manual) return [cluster];
+): ClusterSplit {
+  const whole = (): ClusterSplit => ({ groups: [cluster], phantomManuals: [] });
+  const manuals = cluster.filter(isManualRow);
+  if (manuals.length === 0) return whole();
   const isReported = (r: EarningsRow) => r.event_date < today && hasActual(r);
   // Only a print on some OTHER row needs protecting from rung 1; when the
-  // manual row is the cluster's only reported row there is nothing to split.
-  const reported = cluster.filter((r) => !isManual(r) && isReported(r));
-  if (reported.length === 0) return [cluster];
-  const manualIsThePrint =
-    manual.manual_actuals_at != null ||
-    reported.some(
-      (r) => daysBetween(r.event_date, manual.event_date) <= POST_PRINT_CORRECTION_DAYS,
-    );
-  if (manualIsThePrint) return [cluster];
-  const reportedIds = new Set(reported.map((r) => r.id));
-  return [reported, cluster.filter((r) => !reportedIds.has(r.id))];
+  // manual rows are the cluster's only reported rows there is nothing to split.
+  const reported = cluster.filter((r) => !isManualRow(r) && isReported(r));
+  if (reported.length === 0) return whole();
+  const phantomManuals = manuals.filter((m) => !manualIsPostPrintCorrection(m, reported));
+  // Every manual row in the cluster earned the print on its own evidence —
+  // unchanged behavior, the whole cluster resolves together at rung 1.
+  if (phantomManuals.length === 0) return whole();
+  // The print's side keeps the reported rows AND any correction manual (which
+  // rung 1 then makes canonical, carrying the audit onto the corrected date).
+  const phantomIds = new Set(phantomManuals.map((r) => r.id));
+  const printSideIds = new Set([
+    ...reported.map((r) => r.id),
+    ...manuals.filter((m) => !phantomIds.has(m.id)).map((m) => m.id),
+  ]);
+  return {
+    groups: [
+      cluster.filter((r) => printSideIds.has(r.id)),
+      cluster.filter((r) => !printSideIds.has(r.id)),
+    ],
+    phantomManuals,
+  };
 }
 
 /** Resolve one cluster of rows (all referring to the same reporting event). */
@@ -432,7 +498,7 @@ export function repointDependentsBeforeDelete(
   // an already-reported print), so both fan out here and the doomed row's
   // audit goes with the NEAREST resulting print.
   const canonicals = clusterByProximity(survivors)
-    .flatMap((group) => splitReportedFromManualCluster(group, opts.today))
+    .flatMap((group) => splitReportedFromManualCluster(group, opts.today).groups)
     .map((sub) => {
       const res = resolveCluster(sub, opts.today);
       return sub.find((r) => r.id === res.canonicalId)!;
@@ -487,7 +553,7 @@ const HYPOTHETICAL_ROW_ID = Number.MAX_SAFE_INTEGER;
 function canonicalIdsFor(familyRows: EarningsRow[], today: string): Set<number> {
   const canonical = new Set<number>();
   for (const proximityCluster of clusterByProximity(familyRows)) {
-    for (const cluster of splitReportedFromManualCluster(proximityCluster, today)) {
+    for (const cluster of splitReportedFromManualCluster(proximityCluster, today).groups) {
       canonical.add(resolveCluster(cluster, today).canonicalId);
     }
   }
@@ -608,6 +674,11 @@ export function checkManualAddWouldSupersedeVendor(
     reaction_snapshot: null,
     enriched_at: null,
     manual_actuals_at: null,
+    // Typed right now: `created_at` would be datetime('now'), so against any
+    // print at or before `today` this hypothetical row reads as a post-print
+    // correction — exactly what the user is doing when they type a date a day
+    // off a print that already happened.
+    created_at: today,
   };
 
   const before = canonicalIdsFor(familyRows, today);
@@ -744,6 +815,42 @@ export function reconcileEarningsDates(
        enriched_at = COALESCE(enriched_at, ?)
      WHERE id = ?`,
   );
+  // A phantom manual row (split off the print, no desk acceptance of its own)
+  // keeps whatever actuals it had INHERITED — `carryEnrichment` copied them
+  // from the print on an earlier pass, or the enrichment road wrote a Finnhub
+  // figure onto the manual row's own date. That is enough to make it a live
+  // recap candidate: findEmailCandidates' recap query and the read-through
+  // reporter scan (lib/calendar/enrichment-runner.ts) both select on
+  // `actual_value IS NOT NULL` over non-superseded rows, and the phantom is
+  // canonical in its own group with no earnings_emails/skip row of its own —
+  // so the desk gets a SECOND email carrying the print's numbers under a date
+  // that never printed. Strip the inherited actuals instead: the row survives
+  // as the user's own (future) event, just without figures it never earned.
+  //
+  // `manual_actuals_at IS NULL` is the safety rail — a desk-accepted figure is
+  // never wiped (and such a row is never a phantom in the first place). Only
+  // the actuals fields go; consensus stays, since a forward-looking consensus
+  // on a future date is not a claim that the quarter printed.
+  const clearInheritedActuals = db.prepare(
+    `UPDATE calendar_events SET
+       actual_value = NULL,
+       enriched_at = NULL,
+       reaction_snapshot = NULL,
+       raw_json = CASE
+         WHEN raw_json IS NOT NULL AND json_valid(raw_json)
+           THEN json_remove(raw_json, '$.entry.epsActual', '$.entry.revenueActual')
+         ELSE raw_json
+       END
+     WHERE id = ? AND manual_actuals_at IS NULL`,
+  );
+  /** Does this phantom carry anything the clear above would remove? */
+  const carriesInheritedActuals = (r: EarningsRow): boolean =>
+    r.manual_actuals_at == null &&
+    (r.actual_value != null ||
+      r.enriched_at != null ||
+      r.reaction_snapshot != null ||
+      hasActual(r));
+
   const repointDependents = createDependentRepointer(db);
 
   const result: ReconcileResult = { confirmed: 0, conflict: 0, single: 0, userConfirmed: 0 };
@@ -756,7 +863,8 @@ export function reconcileEarningsDates(
   const apply = db.transaction(() => {
     for (const familyRows of byFamily.values()) {
       for (const proximityCluster of clusterByProximity(familyRows)) {
-      for (const cluster of splitReportedFromManualCluster(proximityCluster, today)) {
+      const split = splitReportedFromManualCluster(proximityCluster, today);
+      for (const cluster of split.groups) {
         const res = resolveCluster(cluster, today);
         setCanonical.run(res.status, res.conflictWith, res.canonicalId);
         const canonicalEventDate = cluster.find((r) => r.id === res.canonicalId)!.event_date;
@@ -789,6 +897,16 @@ export function reconcileEarningsDates(
         else if (res.status === "conflict") result.conflict++;
         else if (res.status === "single") result.single++;
         else result.userConfirmed++;
+      }
+      // LAST for this proximity cluster: the phantom is canonical inside its
+      // own group, so its group's carryEnrichment has already run and could
+      // have re-filled what we are about to strip. Gated on the row's
+      // PRE-pass state so a second reconcile writes nothing (the fields are
+      // NULL by then) and the outbox stays idempotent.
+      for (const phantom of split.phantomManuals) {
+        if (!carriesInheritedActuals(phantom)) continue;
+        clearInheritedActuals.run(phantom.id);
+        anyChanged = true;
       }
       }
     }

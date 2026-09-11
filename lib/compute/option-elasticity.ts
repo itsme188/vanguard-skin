@@ -54,6 +54,22 @@ export function isOptionSecurityType(securityType: string | null | undefined): b
 }
 
 /**
+ * Normalize an expiration to ISO YYYY-MM-DD. The column holds BOTH spellings
+ * the DB actually carries — ISO, and the compact YYYYMMDD on a handful of
+ * TWS-enriched rows — and `new Date("20270115")` is an Invalid Date whose NaN
+ * time made T non-finite, silently dropping every such option onto the ±2.5
+ * fallback instead of its real Δ·S/V. Same two shapes `normalizeExpiration` in
+ * lib/compute/options-strategy.ts parses; that copy is module-private, so this
+ * one is kept deliberately in step rather than imported (neither module then
+ * owns the other's expiry-cutoff semantics).
+ */
+function normalizeExpirationDate(expiry: string): string | null {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) return expiry;
+  const compact = /^(\d{4})(\d{2})(\d{2})$/.exec(expiry);
+  return compact ? `${compact[1]}-${compact[2]}-${compact[3]}` : null;
+}
+
+/**
  * Option elasticity Ω = Δ·S/V: the % move in the option per 1% move in the
  * underlying (linear-delta approximation). Signed — puts carry negative Ω so
  * a down-shock on the underlying produces a positive option move. Falls back
@@ -69,7 +85,9 @@ export function optionElasticity(pos: OptionElasticityInputs, riskFreeRate: numb
   if (S == null || S <= 0 || V == null || V <= 0 || K == null || K <= 0 || !pos.expiration_date) {
     return fallback;
   }
-  const T = (new Date(pos.expiration_date).getTime() - Date.now()) / (365 * 24 * 3600 * 1000);
+  const expiry = normalizeExpirationDate(pos.expiration_date);
+  if (!expiry) return fallback;
+  const T = (new Date(expiry).getTime() - Date.now()) / (365 * 24 * 3600 * 1000);
   if (!Number.isFinite(T) || T <= 0) return fallback;
 
   const sigma = pos.underlying_iv ?? 0.30;
