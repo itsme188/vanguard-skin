@@ -60,6 +60,8 @@ export interface PortfolioGreeks {
   totalVega: number; // $ P&L per 1% IV move
   positions: PositionGreeks[];
   diagnostics: GreeksDiagnostic[];
+  computedPositions: number; // count of positions whose greeks !== null
+  totalPositions: number; // total option positions considered (rows.length)
 }
 
 // ─── Math: Cumulative Normal Distribution ───────────────────────
@@ -393,6 +395,7 @@ export function computePortfolioGreeks(
   let totalGamma = 0;
   let totalTheta = 0;
   let totalVega = 0;
+  let computedPositions = 0;
 
   for (const row of rows) {
     const daysToExpiry = daysBetween(today, row.expiration_date);
@@ -481,6 +484,7 @@ export function computePortfolioGreeks(
     const v = vega(S, row.strike_price, T, r, sigmaForGreeks);
 
     position.greeks = { delta: d, gamma: g, theta: th, vega: v, iv, ivSource };
+    computedPositions++;
 
     // Aggregate to portfolio level
     // Multiply by quantity (signed) and multiplier for dollar-equivalent exposure
@@ -500,6 +504,8 @@ export function computePortfolioGreeks(
     totalVega,
     positions,
     diagnostics,
+    computedPositions,
+    totalPositions: rows.length,
   };
 }
 

@@ -252,6 +252,93 @@ describe("detectStrategies", () => {
     });
   });
 
+  // QA analysis-detected-strategies--protective-put-max-loss-sized-on-option-notional-not-shares:
+  // Max Loss was sized on the FULL option notional even when the puts covered
+  // more (or fewer) shares than were actually held, while breakeven and the
+  // description were built from the share leg. The true worst case only lets
+  // the covered shares carry the (stock - strike) loss; every contract's
+  // premium is spent regardless, and puts beyond the share count are outright
+  // long puts capped at their own premium.
+  describe("protective put max loss sizing", () => {
+    it("over-hedged: 5 puts cover more shares than are held", () => {
+      const positions = [
+        stock("QAAA", 250, 82.67),
+        option("QAAA", "PUT", 72, 5, { price: 0.07 }),
+      ];
+      const strategies = detectStrategies(positions);
+      expect(strategies.length).toBe(1);
+      const pp = strategies[0];
+      expect(pp.type).toBe("protective_put");
+      // (82.67 - 72) * 250 covered shares + 0.07 * 100 * 5 premium
+      expect(pp.maxLoss).toBeCloseTo(2702.5, 2);
+      expect(pp.maxProfit).toBeNull();
+      // breakeven spreads the total premium over the covered shares: 82.67 + 35/250
+      expect(pp.breakevens[0]).toBeCloseTo(82.81, 2);
+      expect(pp.description).toContain("cover 500 sh vs 250 held");
+    });
+
+    it("fully covered: puts cover exactly the held shares", () => {
+      const positions = [
+        stock("QAAA", 250, 82.67),
+        option("QAAA", "PUT", 72, 2, { price: 0.07 }),
+      ];
+      const strategies = detectStrategies(positions);
+      const pp = strategies[0];
+      // (82.67 - 72) * 200 covered shares + 0.07 * 100 * 2 premium
+      expect(pp.maxLoss).toBeCloseTo(2148, 2);
+      expect(pp.description).not.toContain("cover");
+    });
+
+    it("under-hedged: puts cover fewer shares than are held", () => {
+      const positions = [
+        stock("QAAA", 250, 82.67),
+        option("QAAA", "PUT", 72, 1, { price: 0.07 }),
+      ];
+      const strategies = detectStrategies(positions);
+      const pp = strategies[0];
+      // (82.67 - 72) * 100 covered shares + 0.07 * 100 * 1 premium
+      expect(pp.maxLoss).toBeCloseTo(1074, 2);
+      expect(pp.description).not.toContain("cover");
+    });
+
+    it("in-the-money put: only the time value is at risk on the covered shares", () => {
+      const positions = [
+        stock("QAAA", 250, 82.67),
+        option("QAAA", "PUT", 90, 1, { price: 8 }),
+      ];
+      const strategies = detectStrategies(positions);
+      const pp = strategies[0];
+      // strike (90) above spot (82.67): the put's 7.33 intrinsic nets against
+      // the 8.00 premium on the 100 covered shares -> 0.67 x 100 = 67. For any
+      // expiry price at or below 90 the stock loss and the put payoff offset
+      // exactly; above 90 the stock gain outruns the lost premium.
+      expect(pp.maxLoss).toBeCloseTo(67, 2);
+    });
+
+    it("over-hedged in-the-money put: extra contracts add their full premium", () => {
+      const positions = [
+        stock("QAAA", 250, 82.67),
+        option("QAAA", "PUT", 90, 5, { price: 8 }),
+      ];
+      const strategies = detectStrategies(positions);
+      const pp = strategies[0];
+      // (82.67 - 90) * 250 covered shares + 8 * 100 * 5 premium = 2167.5
+      expect(pp.maxLoss).toBeCloseTo(2167.5, 2);
+      expect(pp.description).toContain("cover 500 sh vs 250 held");
+    });
+
+    it("max loss never goes negative when a stale mark prices the put below intrinsic", () => {
+      const positions = [
+        stock("QAAA", 100, 80),
+        option("QAAA", "PUT", 90, 1, { price: 5 }),
+      ];
+      const strategies = detectStrategies(positions);
+      const pp = strategies[0];
+      // (80 - 90) * 100 + 500 = -500 -> floored at 0
+      expect(pp.maxLoss).toBe(0);
+    });
+  });
+
   it("separates strategies by underlying", () => {
     const positions = [
       option("AAPL", "CALL", 180, 1, { price: 10 }),

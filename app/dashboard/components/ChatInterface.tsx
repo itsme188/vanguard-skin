@@ -200,6 +200,7 @@ function ConversationHistory({
 }) {
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const { isPrivate } = usePrivacy();
 
   // Close dropdown on click outside
   useEffect(() => {
@@ -221,12 +222,12 @@ function ConversationHistory({
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1.5 text-xs text-ink-dim hover:text-ink transition-colors max-w-[min(200px,100%)] truncate"
-        title={displayTitle}
+        title={isPrivate ? "Current conversation" : displayTitle}
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
           <polyline points="6 9 12 15 18 9" />
         </svg>
-        <span className="truncate">{displayTitle}</span>
+        <span className="truncate"><PrivateText>{displayTitle}</PrivateText></span>
       </button>
 
       {open && (
@@ -257,10 +258,10 @@ function ConversationHistory({
                 className={`flex-1 min-w-0 text-left pl-3 pr-2 py-2 text-xs ${
                   conv.id === currentId ? "text-ink" : "text-ink-dim group-hover:text-ink"
                 }`}
-                title={conv.title ?? `Conversation ${conv.id}`}
+                title={isPrivate ? `Conversation ${conv.id}` : (conv.title ?? `Conversation ${conv.id}`)}
               >
                 <div className="truncate">
-                  {conv.title ?? `Conversation ${conv.id}`}
+                  <PrivateText>{conv.title ?? `Conversation ${conv.id}`}</PrivateText>
                 </div>
                 <div className="text-[10px] text-ink-faint mt-0.5">
                   {SCOPE_OPTIONS.find((s) => s.value === conv.scope)?.label ?? conv.scope}
@@ -271,7 +272,7 @@ function ConversationHistory({
               <button
                 onClick={(e) => { e.stopPropagation(); onDelete(conv); }}
                 className="shrink-0 p-2 mr-1 text-ink-faint hover:text-down opacity-0 group-hover:opacity-100 focus:opacity-100 pointer-coarse:opacity-100 transition-opacity relative pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
-                aria-label={`Delete conversation ${conv.title ?? conv.id}`}
+                aria-label={isPrivate ? `Delete conversation ${conv.id}` : `Delete conversation ${conv.title ?? conv.id}`}
                 title="Delete"
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
@@ -304,6 +305,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   const [loadedInitial, setLoadedInitial] = useState(false);
   const [deletePending, setDeletePending] = useState<ChatConversation | null>(null);
   const { toast } = useToast();
+  const { isPrivate } = usePrivacy();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -593,9 +595,9 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
                         key={conv.id}
                         onClick={() => loadConversation(conv)}
                         className="text-left px-3 py-1.5 rounded-lg border border-edge text-xs text-ink-dim hover:text-ink hover:border-edge-strong transition-[color,border-color] focus-ring truncate"
-                        title={conv.title ?? `Conversation ${conv.id}`}
+                        title={isPrivate ? `Conversation ${conv.id}` : (conv.title ?? `Conversation ${conv.id}`)}
                       >
-                        {conv.title ?? `Conversation ${conv.id}`}
+                        <PrivateText>{conv.title ?? `Conversation ${conv.id}`}</PrivateText>
                       </button>
                     ))}
                   </div>
