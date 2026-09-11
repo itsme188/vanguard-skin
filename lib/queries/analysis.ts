@@ -110,6 +110,60 @@ function isFactorDimension(dim: AllocationDimension): dim is FactorColumn {
   return (FACTOR_COLUMNS as readonly string[]).includes(dim);
 }
 
+// Single source for the breakdown's per-dimension bucket SQL expression.
+// getHoldingsInBucket (lib/queries/drill-down.ts) filters classification
+// drill-downs through this SAME expression so a bucket label the breakdown
+// produced (e.g. the 'Unclassified' / 'Unknown' NULL-coalesce buckets, or the
+// literal-string-"null" guard) always matches back to the rows that made it
+// up — a plain `s.<dimension> = ?` filter can never match a NULL or
+// literal-'null' row, which opened the drill-down panel empty
+// [qa:analysis-drilldown--unclassified-category-row-opens-empty-panel-count-mismatch].
+//
+// NOTE: "sector" is intentionally NOT resolved through this map — the
+// breakdown's sector bucket goes through ETF look-through
+// (getSectorAllocationWithLookThrough), a separate product-ruled path this
+// helper does not attempt to replicate. Callers asking for "sector" get the
+// plain `s.sector` column, matching drill-down.ts's pre-existing behavior.
+const CLASSIFICATION_BUCKET_COLUMNS: Partial<Record<AllocationDimension, string>> = {
+  fund_category: "COALESCE(s.fund_category, 'Unclassified')",
+  // NULLIF(...,'null') guards rows where an AI classify pass stored the
+  // literal string "null" (prompt enums include a `null` token) — without
+  // it the breakdown renders a category row literally labeled "null".
+  geography: "COALESCE(NULLIF(s.geography, 'null'), 'Unknown')",
+  market_cap_category: "COALESCE(NULLIF(s.market_cap_category, 'null'), 'Unknown')",
+  style: "COALESCE(NULLIF(s.style, 'null'), 'Unknown')",
+  // security_type FIRST: it is the canonical vocabulary (Stock/ETF/Bond/
+  // Option/Mutual Fund). The raw-vendor asset_class column carries junk
+  // synonyms ('equity', 'STK', 'OPT') that split one asset class across
+  // parallel buckets — and 'equity'/'STK' even sit on ETF rows, so they
+  // cannot be alias-mapped. asset_class survives only as a fallback for
+  // rows with no security_type at all.
+  asset_class: "COALESCE(NULLIF(s.security_type, ''), s.asset_class, 'Unknown')",
+  security_type: "COALESCE(s.security_type, 'Unknown')",
+  credit_rating: "COALESCE(s.credit_rating, 'Unrated')",
+  account: "a.name",
+  symbol: "s.symbol",
+};
+
+/**
+ * Return the SQL expression the allocation breakdown uses to bucket a
+ * classification dimension, aliased to `alias` (default `s`, the securities
+ * table alias both the breakdown and drill-down queries use). Falls back to
+ * `<alias>.<dimension>` for "sector" and any dimension with no explicit
+ * COALESCE rule (factor columns, which drill-down resolves separately via
+ * `security_factors`).
+ */
+export function classificationBucketSql(
+  dimension: AllocationDimension,
+  alias = "s"
+): string {
+  const expr = CLASSIFICATION_BUCKET_COLUMNS[dimension];
+  if (!expr) return `${alias}.${dimension}`;
+  // The map above is written against alias "s" (the breakdown's own alias).
+  // Re-alias only when the caller asked for something else.
+  return alias === "s" ? expr : expr.replace(/\bs\./g, `${alias}.`);
+}
+
 export function getAllocationByDimension(
   db: Database.Database,
   dimension: AllocationDimension,
@@ -122,29 +176,6 @@ export function getAllocationByDimension(
   if (dimension === "sector") {
     return getSectorAllocationWithLookThrough(db, accountIds);
   }
-  // Standard classification columns on the securities table
-  const standardColumns: Partial<Record<AllocationDimension, string>> = {
-    fund_category: "COALESCE(s.fund_category, 'Unclassified')",
-    // NULLIF(...,'null') guards rows where an AI classify pass stored the
-    // literal string "null" (prompt enums include a `null` token) — without
-    // it the breakdown renders a category row literally labeled "null".
-    geography: "COALESCE(NULLIF(s.geography, 'null'), 'Unknown')",
-    market_cap_category: "COALESCE(NULLIF(s.market_cap_category, 'null'), 'Unknown')",
-    style: "COALESCE(NULLIF(s.style, 'null'), 'Unknown')",
-    sector: "COALESCE(s.sector, s.fund_category, 'Unknown')",
-    // security_type FIRST: it is the canonical vocabulary (Stock/ETF/Bond/
-    // Option/Mutual Fund). The raw-vendor asset_class column carries junk
-    // synonyms ('equity', 'STK', 'OPT') that split one asset class across
-    // parallel buckets — and 'equity'/'STK' even sit on ETF rows, so they
-    // cannot be alias-mapped. asset_class survives only as a fallback for
-    // rows with no security_type at all.
-    asset_class: "COALESCE(NULLIF(s.security_type, ''), s.asset_class, 'Unknown')",
-    security_type: "COALESCE(s.security_type, 'Unknown')",
-    credit_rating: "COALESCE(s.credit_rating, 'Unrated')",
-    account: "a.name",
-    symbol: "s.symbol",
-  };
-
   // Classification dimensions where an option's exposure belongs to its
   // UNDERLYING (an INTC LEAP is semiconductor / US / large-cap exposure, not
   // "Options") — same inheritance the factor dimensions apply below. The
@@ -169,9 +200,9 @@ export function getAllocationByDimension(
     ? `COALESCE(sf.${dimension}, sf_u.${dimension}, 'Unknown')`
     : inheritsFromUnderlying
       ? `CASE WHEN LOWER(s.security_type) = 'option'
-           THEN COALESCE(NULLIF(s_u.${dimension}, 'null'), ${standardColumns[dimension]!})
-           ELSE ${standardColumns[dimension]!} END`
-      : standardColumns[dimension]!;
+           THEN COALESCE(NULLIF(s_u.${dimension}, 'null'), ${classificationBucketSql(dimension)})
+           ELSE ${classificationBucketSql(dimension)} END`
+      : classificationBucketSql(dimension);
 
   const underlyingJoin =
     needsFactorJoin || inheritsFromUnderlying
