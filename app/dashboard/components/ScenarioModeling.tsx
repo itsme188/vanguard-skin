@@ -3,12 +3,24 @@
 import { useState, useEffect, useCallback } from "react";
 import type { ScenarioResult } from "@/lib/compute/scenarios";
 import { findRecipe } from "@/lib/compute/scenario-recipes";
+import { isOptionSecurityType } from "@/lib/compute/option-elasticity";
 import { PrivateText } from "@/lib/privacy/components";
 import { formatCompactOptionSymbol } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
 
 function findRecipeMethodology(id: string): string | null {
   return findRecipe(id)?.methodology ?? null;
+}
+
+// The β column is no longer one number's worth of meaning: for an OPTION the
+// custom engine reports the LEVERED SIGNED exposure (underlying beta × option
+// elasticity Ω = Δ·S/V), which is why a long put shows a negative figure and
+// gains in a crash. Explain it in place rather than leaving a "β-3.2" to be
+// read as a market beta.
+function betaTooltip(securityType: string): string {
+  return isOptionSecurityType(securityType)
+    ? "Levered signed exposure: underlying beta × option elasticity (Ω = Δ·S/V). Negative = moves opposite the underlying, so a long put gains when it falls."
+    : "Beta vs the market: 1.0 moves with the index.";
 }
 
 // ─── Formatters ──────────────────────────────────────────────────
@@ -251,7 +263,10 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                                   is a hardcoded 1.0 for type compat, so showing
                                   it would be misleading. */}
                               {!findRecipe(result.scenario.id) && (
-                                <span className="text-ink-faint text-[10px] shrink-0">
+                                <span
+                                  className="text-ink-faint text-[10px] shrink-0"
+                                  title={betaTooltip(pos.securityType)}
+                                >
                                   {"\u03B2"}{pos.beta.toFixed(1)}
                                 </span>
                               )}
@@ -287,7 +302,10 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                                 {formatCompactOptionSymbol(pos.symbol)}
                               </span>
                               {!findRecipe(result.scenario.id) && (
-                                <span className="text-ink-faint text-[10px] shrink-0">
+                                <span
+                                  className="text-ink-faint text-[10px] shrink-0"
+                                  title={betaTooltip(pos.securityType)}
+                                >
                                   {"\u03B2"}{pos.beta.toFixed(1)}
                                 </span>
                               )}

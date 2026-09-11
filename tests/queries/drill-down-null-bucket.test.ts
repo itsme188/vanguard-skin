@@ -8,6 +8,14 @@
 // drill-down panel opened empty even though the breakdown row reported real
 // positions. Both queries must now agree via the shared
 // `classificationBucketSql` helper exported from lib/queries/analysis.ts.
+//
+// Second half of the same mismatch (2026-09-11): the breakdown ALSO routes an
+// option through its UNDERLYING's classification for fund_category /
+// geography / market_cap_category / style. Sharing only the bucket column left
+// the drill-down without that CASE (and without the `s_u` join it reads), so
+// options vanished from the bucket they were counted in and surfaced under
+// 'Unknown'. Both queries now compose `classificationGroupSql` +
+// `underlyingInheritJoinSql`.
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
@@ -26,21 +34,28 @@ function seedSecurity(
     geography?: string | null;
     market_cap_category?: string | null;
     style?: string | null;
+    security_type?: string;
+    underlying_symbol?: string | null;
+    multiplier?: number;
   } = {}
 ): number {
   return db
     .prepare(
       `INSERT INTO securities
-         (symbol, name, security_type, fund_category, geography, market_cap_category, style, multiplier)
-       VALUES (?, ?, 'Stock', ?, ?, ?, ?, 1)`
+         (symbol, name, security_type, fund_category, geography, market_cap_category, style,
+          underlying_symbol, multiplier)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       symbol,
       `${symbol} Inc`,
+      opts.security_type ?? "Stock",
       opts.fund_category ?? null,
       opts.geography ?? null,
       opts.market_cap_category ?? null,
-      opts.style ?? null
+      opts.style ?? null,
+      opts.underlying_symbol ?? null,
+      opts.multiplier ?? 1
     ).lastInsertRowid as number;
 }
 
@@ -159,6 +174,108 @@ describe("getHoldingsInBucket agrees with getAllocationByDimension's NULL/'null'
       kind: "classification",
       dimension: "fund_category",
       bucket: "Unclassified",
+    });
+    expect(rows.length).toBe(bucket!.position_count);
+  });
+});
+
+describe("getHoldingsInBucket inherits an option's bucket from its underlying", () => {
+  // getAllocationByDimension routes fund_category | geography |
+  // market_cap_category | style for OPTIONS through the underlying's value
+  // (classificationGroupSql's CASE + the s_u join). The drill-down composed
+  // only the bucket half and had no s_u join, so an option the breakdown
+  // counted under geography 'United States' came back neither there (missing
+  // from the drilled list, count mismatch) nor correctly — it showed up under
+  // 'Unknown' instead.
+  const OPTION_SYMBOL = "INTC  270115C00030000";
+
+  it("geography: the option drills under the UNDERLYING's bucket, not under 'Unknown'", () => {
+    const intc = seedSecurity("INTC", { geography: "United States" });
+    const leap = seedSecurity(OPTION_SYMBOL, {
+      security_type: "Option",
+      geography: null,
+      underlying_symbol: "INTC",
+      multiplier: 100,
+    });
+    const trulyUnknown = seedSecurity("ZZKKK", { geography: null });
+    for (const id of [intc, leap, trulyUnknown]) {
+      seedHolding(id, 10);
+      seedPrice(id, 100);
+    }
+
+    const breakdown = getAllocationByDimension(db, "geography");
+    const us = breakdown.find((b) => b.group_name === "United States");
+    expect(us).toBeDefined();
+    // Stock + option: the breakdown attributes the option to INTC's geography.
+    expect(us!.position_count).toBe(2);
+
+    const usRows = getHoldingsInBucket(db, "all", {
+      kind: "classification",
+      dimension: "geography",
+      bucket: "United States",
+    });
+    expect(usRows.map((r) => r.symbol).sort()).toEqual([OPTION_SYMBOL, "INTC"].sort());
+    expect(usRows.length).toBe(us!.position_count);
+
+    const unknownRows = getHoldingsInBucket(db, "all", {
+      kind: "classification",
+      dimension: "geography",
+      bucket: "Unknown",
+    });
+    expect(unknownRows.map((r) => r.symbol)).toEqual(["ZZKKK"]);
+    const unknownBucket = breakdown.find((b) => b.group_name === "Unknown");
+    expect(unknownRows.length).toBe(unknownBucket!.position_count);
+  });
+
+  it("fund_category: an option whose underlying is unclassified falls back to 'Unclassified' on BOTH surfaces", () => {
+    const intc = seedSecurity("INTC", { fund_category: null });
+    const leap = seedSecurity(OPTION_SYMBOL, {
+      security_type: "Option",
+      fund_category: null,
+      underlying_symbol: "INTC",
+      multiplier: 100,
+    });
+    seedHolding(intc, 10);
+    seedHolding(leap, 1);
+    seedPrice(intc, 100);
+    seedPrice(leap, 5);
+
+    const breakdown = getAllocationByDimension(db, "fund_category");
+    const bucket = breakdown.find((b) => b.group_name === "Unclassified");
+    expect(bucket!.position_count).toBe(2);
+
+    const rows = getHoldingsInBucket(db, "all", {
+      kind: "classification",
+      dimension: "fund_category",
+      bucket: "Unclassified",
+    });
+    expect(rows.map((r) => r.symbol).sort()).toEqual([OPTION_SYMBOL, "INTC"].sort());
+    expect(rows.length).toBe(bucket!.position_count);
+  });
+
+  it("market_cap_category: the option inherits a literal-'null' underlying's fallback bucket", () => {
+    // The underlying carries the AI classifier's literal string "null" — the
+    // breakdown NULLIFs it and falls back to the option's own (NULL → 'Unknown').
+    const intc = seedSecurity("INTC", { market_cap_category: "null" });
+    const leap = seedSecurity(OPTION_SYMBOL, {
+      security_type: "Option",
+      market_cap_category: null,
+      underlying_symbol: "INTC",
+      multiplier: 100,
+    });
+    seedHolding(intc, 10);
+    seedHolding(leap, 1);
+    seedPrice(intc, 100);
+    seedPrice(leap, 5);
+
+    const breakdown = getAllocationByDimension(db, "market_cap_category");
+    const bucket = breakdown.find((b) => b.group_name === "Unknown");
+    expect(bucket!.position_count).toBe(2);
+
+    const rows = getHoldingsInBucket(db, "all", {
+      kind: "classification",
+      dimension: "market_cap_category",
+      bucket: "Unknown",
     });
     expect(rows.length).toBe(bucket!.position_count);
   });

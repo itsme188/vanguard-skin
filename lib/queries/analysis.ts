@@ -161,7 +161,72 @@ export function classificationBucketSql(
   if (!expr) return `${alias}.${dimension}`;
   // The map above is written against alias "s" (the breakdown's own alias).
   // Re-alias only when the caller asked for something else.
+  //
+  // CAUTION: this blanket `s.` → `<alias>.` rewrite is safe only because the
+  // expressions the DRILL-DOWN can reach read the securities row alone. The map
+  // also holds dimensions OUTSIDE drill-down.ts's
+  // ALLOWED_CLASSIFICATION_DIMENSIONS — `account` (reads `a.name`, needing the
+  // accounts join), `credit_rating` and `symbol`. Before widening that allow
+  // list, or adding a dimension here whose expression touches another table,
+  // give getHoldingsInBucket the matching join first: it composes this
+  // expression into its own WHERE clause, where a missing join is a SQL error
+  // at best and a silently-wrong bucket at worst.
   return alias === "s" ? expr : expr.replace(/\bs\./g, `${alias}.`);
+}
+
+/**
+ * Classification dimensions where an OPTION's exposure belongs to its
+ * UNDERLYING (an INTC LEAP is semiconductor / US / large-cap exposure, not
+ * "Options") — the same inheritance the factor dimensions apply. The option's
+ * own value stays the fallback when the underlying is missing or unclassified,
+ * so unresolvable options still bucket as 'Options'. asset_class /
+ * security_type intentionally keep the Options grouping.
+ */
+export const UNDERLYING_INHERIT_DIMENSIONS: ReadonlyArray<AllocationDimension> = [
+  "fund_category",
+  "geography",
+  "market_cap_category",
+  "style",
+];
+
+/** Does this dimension's group expression need the `s_u` (underlying) join? */
+export function dimensionInheritsFromUnderlying(dimension: AllocationDimension): boolean {
+  return UNDERLYING_INHERIT_DIMENSIONS.includes(dimension);
+}
+
+/**
+ * The FULL bucket expression the allocation breakdown GROUPs by: the plain
+ * `classificationBucketSql` column PLUS the option→underlying inheritance CASE
+ * for the dimensions in `UNDERLYING_INHERIT_DIMENSIONS`.
+ *
+ * Exported — together with `underlyingInheritJoinSql`, which supplies the
+ * `s_u` alias it references — because the drill-down filters classification
+ * buckets through this SAME expression. Sharing only the bucket half left the
+ * two queries disagreeing on OPTIONS: the breakdown counted an INTC LEAP under
+ * geography "US" (inherited from INTC) while the drill-down, having no `s_u`
+ * join, bucketed it "Unknown" — so drilling "US" came back short by exactly
+ * the option rows and "Unknown" listed options the breakdown never put there.
+ *
+ * NULLIF on the underlying's value mirrors the standardColumns guard: an AI
+ * classify pass can store the literal string "null" on the UNDERLYING (e.g.
+ * IBIT style), and without it a held option inherits that string as a
+ * user-facing bucket label.
+ */
+export function classificationGroupSql(
+  dimension: AllocationDimension,
+  alias = "s",
+  underlyingAlias = "s_u"
+): string {
+  const own = classificationBucketSql(dimension, alias);
+  if (!dimensionInheritsFromUnderlying(dimension)) return own;
+  return `CASE WHEN LOWER(${alias}.security_type) = 'option'
+           THEN COALESCE(NULLIF(${underlyingAlias}.${dimension}, 'null'), ${own})
+           ELSE ${own} END`;
+}
+
+/** The join `classificationGroupSql`'s inheritance CASE needs in scope. */
+export function underlyingInheritJoinSql(alias = "s", underlyingAlias = "s_u"): string {
+  return `LEFT JOIN securities ${underlyingAlias} ON ${underlyingAlias}.symbol = ${alias}.underlying_symbol`;
 }
 
 export function getAllocationByDimension(
@@ -176,38 +241,19 @@ export function getAllocationByDimension(
   if (dimension === "sector") {
     return getSectorAllocationWithLookThrough(db, accountIds);
   }
-  // Classification dimensions where an option's exposure belongs to its
-  // UNDERLYING (an INTC LEAP is semiconductor / US / large-cap exposure, not
-  // "Options") — same inheritance the factor dimensions apply below. The
-  // option's own value remains the fallback when the underlying is missing
-  // or unclassified, so unresolvable options still bucket as 'Options'.
-  // asset_class / security_type intentionally keep the Options grouping.
-  const underlyingInheritDims: AllocationDimension[] = [
-    "fund_category",
-    "geography",
-    "market_cap_category",
-    "style",
-  ];
-  const inheritsFromUnderlying = underlyingInheritDims.includes(dimension);
+  // Option→underlying classification inheritance (and the `s_u` join it
+  // needs) lives in classificationGroupSql / underlyingInheritJoinSql above,
+  // so the drill-down can compose the IDENTICAL expression.
+  const inheritsFromUnderlying = dimensionInheritsFromUnderlying(dimension);
 
   // For factor dimensions, use COALESCE(direct factor, underlying's factor, 'Unknown')
   const needsFactorJoin = isFactorDimension(dimension);
-  // NULLIF on the underlying's value mirrors the standardColumns guard: an
-  // AI classify pass can store the literal string "null" on the UNDERLYING
-  // (e.g. IBIT style), and without it a held option inherits that string as
-  // a user-facing bucket label.
   const groupExpr = needsFactorJoin
     ? `COALESCE(sf.${dimension}, sf_u.${dimension}, 'Unknown')`
-    : inheritsFromUnderlying
-      ? `CASE WHEN LOWER(s.security_type) = 'option'
-           THEN COALESCE(NULLIF(s_u.${dimension}, 'null'), ${classificationBucketSql(dimension)})
-           ELSE ${classificationBucketSql(dimension)} END`
-      : classificationBucketSql(dimension);
+    : classificationGroupSql(dimension);
 
   const underlyingJoin =
-    needsFactorJoin || inheritsFromUnderlying
-      ? `LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol`
-      : "";
+    needsFactorJoin || inheritsFromUnderlying ? underlyingInheritJoinSql() : "";
   const factorJoins = `${underlyingJoin}
     ${
       needsFactorJoin
