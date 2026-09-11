@@ -66,7 +66,16 @@ function createTestDb(): Database.Database {
       duration_years REAL,
       credit_rating TEXT,
       expiration_date TEXT,
+      underlying_symbol TEXT,
+      strike_price REAL,
+      option_type TEXT,
+      fund_category TEXT,
       currency TEXT NOT NULL DEFAULT 'USD'
+    );
+    CREATE TABLE security_quotes (
+      security_id INTEGER PRIMARY KEY,
+      as_of_date TEXT NOT NULL,
+      iv_underlying REAL
     );
     CREATE TABLE fx_rates (
       currency TEXT PRIMARY KEY,
