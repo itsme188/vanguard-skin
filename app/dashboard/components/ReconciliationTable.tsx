@@ -6,6 +6,7 @@ import type { ReconciliationCheckpoint } from "@/lib/queries/reconciliation";
 import { useToast } from "./Toast";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
+import { ScrollFade } from "./ScrollFade";
 import { Money } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -194,7 +195,8 @@ export function ReconciliationTable({
       )}
 
       {checkpoints.length > 0 ? (
-        <div className="rounded-xl border border-edge overflow-hidden overflow-x-auto">
+        <div className="rounded-xl border border-edge overflow-hidden">
+          <ScrollFade>
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-edge bg-panel">
@@ -250,7 +252,7 @@ export function ReconciliationTable({
                     <td className="px-4 py-3 text-right">
                       <button
                         onClick={() => setDeleteTarget(cp.id)}
-                        className="text-xs text-ink-faint hover:text-down transition-colors focus-ring"
+                        className="relative text-xs text-ink-faint hover:text-down transition-colors focus-ring pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
                         aria-label={`Remove checkpoint for ${cp.account_name} on ${cp.checkpoint_date}`}
                       >
                         Remove
@@ -261,6 +263,7 @@ export function ReconciliationTable({
               })}
             </tbody>
           </table>
+          </ScrollFade>
         </div>
       ) : (
         !showForm && (
