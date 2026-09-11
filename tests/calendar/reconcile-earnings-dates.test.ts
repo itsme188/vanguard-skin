@@ -19,14 +19,17 @@ interface SeedRow {
   epsActual?: number | null;
   actualValue?: string | null;
   dateStatus?: string | null;
+  /** The desk's own acceptance stamp (lib/earnings/actuals.ts::saveManualActuals). */
+  manualActualsAt?: string | null;
 }
 
 function seed(r: SeedRow): number {
   return db
     .prepare(
       `INSERT INTO calendar_events
-         (source, event_type, event_date, title, symbol, source_key, actual_value, date_status, raw_json)
-       VALUES (?, 'earnings', ?, ?, ?, ?, ?, ?, ?)`,
+         (source, event_type, event_date, title, symbol, source_key, actual_value, date_status, raw_json,
+          manual_actuals_at)
+       VALUES (?, 'earnings', ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       r.source,
@@ -37,6 +40,7 @@ function seed(r: SeedRow): number {
       r.actualValue ?? null,
       r.dateStatus ?? null,
       JSON.stringify({ entry: { epsActual: r.epsActual ?? null } }),
+      r.manualActualsAt ?? null,
     ).lastInsertRowid as number;
 }
 
@@ -368,6 +372,163 @@ describe("reconcileEarningsDates — manual future row vs reported quarter (qa:t
     expect(row(reported).superseded).toBe(0);
     expect(row(reported).date_status).toBe("confirmed");
     expect(row(ghost).superseded).toBe(1);
+  });
+
+  // ── Regression 1 (qa:…-regression-1, found 2026-09-11) ────────────
+  //
+  // The 1f134e3 split asked "is the MANUAL row itself reported?" with the same
+  // predicate it uses for vendor rows — `event_date < today && hasActual(row)`.
+  // hasActual reads actual_value OR raw_json.entry.epsActual, and BOTH can be
+  // vendor-inherited on a manual row: the reconciler's own carryEnrichment
+  // copies a superseded donor's actual_value across any date gap, and the
+  // date-strict Finnhub enrichment road writes an actual whenever Finnhub
+  // carries a (stale) calendar entry on the manual row's own date. A
+  // "+ Add ticker" row dated ONE DAY before today, nine days from the real
+  // print, therefore read as "I am the print", the split was skipped, rung 1
+  // took the whole cluster, and the print's recap email + the desk's bogeys
+  // were dragged onto the phantom (live MDB: 09-10 manual row vs the 09-01
+  // print, recap sent 09-01 20:32).
+  //
+  // The rule now: a manual row is the print ITSELF only on its OWN evidence —
+  // the desk's acceptance stamp (manual_actuals_at), or a date within a day of
+  // the reported print (a post-print date correction).
+  const SEP_TODAY = "2026-09-11";
+
+  /** The reported print: vendor row + the recap it sent + the desk's bogeys. */
+  function seedReportedPrint(): number {
+    const vendor = seed({
+      source: "finnhub",
+      symbol: "ZZMD",
+      date: "2026-09-01",
+      actualValue: "EPS 2.00 · Rev 800,000,000",
+      epsActual: 2.0,
+      manualActualsAt: "2026-09-01 20:20:00",
+    });
+    seedRecapEmail(db, vendor, "2026-09-01 20:32:00");
+    const bogey = db.prepare(
+      "INSERT INTO earnings_bogeys (event_id, source, source_label, eps_consensus) VALUES (?, 'manual', ?, ?)",
+    );
+    bogey.run(vendor, "desk", 1.5);
+    bogey.run(vendor, "street", 1.6);
+    return vendor;
+  }
+
+  function bogeyEventIds(): number[] {
+    return (
+      db.prepare("SELECT event_id FROM earnings_bogeys ORDER BY id").all() as {
+        event_id: number;
+      }[]
+    ).map((r) => r.event_id);
+  }
+
+  /** Every assertion the three add-ticker shapes share. */
+  function expectPrintKeptEverything(vendor: number, manual: number) {
+    expect(row(vendor).superseded).toBe(0);
+    expect(row(vendor).date_status).toBe("confirmed");
+    const kept = db
+      .prepare("SELECT actual_value, manual_actuals_at FROM calendar_events WHERE id = ?")
+      .get(vendor) as { actual_value: string | null; manual_actuals_at: string | null };
+    expect(kept.actual_value).toContain("2.00");
+    expect(kept.manual_actuals_at).toBe("2026-09-01 20:20:00");
+    expect(recapEmailEventId(db)).toBe(vendor);
+    expect(bogeyEventIds()).toEqual([vendor, vendor]);
+
+    // The typed row survives as its own user-confirmed event and never
+    // inherits the desk's acceptance stamp for a print it isn't.
+    expect(row(manual).superseded).toBe(0);
+    expect(row(manual).date_status).toBe("user_confirmed");
+    expect(
+      (
+        db.prepare("SELECT manual_actuals_at FROM calendar_events WHERE id = ?").get(manual) as {
+          manual_actuals_at: string | null;
+        }
+      ).manual_actuals_at,
+    ).toBeNull();
+  }
+
+  it("shape A: a bare '+ Add ticker' row one day back never takes the reported print's cluster", () => {
+    const vendor = seedReportedPrint();
+    const manual = seed({ source: "manual", symbol: "ZZMD", date: "2026-09-10" });
+
+    reconcileEarningsDates(db, { today: SEP_TODAY });
+
+    expectPrintKeptEverything(vendor, manual);
+  });
+
+  it("shape B: a manual row carrying the print's epsActual in raw_json is NOT the print (vendor-inherited evidence)", () => {
+    const vendor = seedReportedPrint();
+    // raw_json.entry.epsActual set, actual_value + manual_actuals_at NULL —
+    // the shape a date-strict Finnhub entry / a prior carry leaves behind.
+    const manual = seed({
+      source: "manual",
+      symbol: "ZZMD",
+      date: "2026-09-10",
+      epsActual: 2.0,
+    });
+
+    reconcileEarningsDates(db, { today: SEP_TODAY });
+
+    expectPrintKeptEverything(vendor, manual);
+    expect(
+      (
+        db.prepare("SELECT actual_value FROM calendar_events WHERE id = ?").get(manual) as {
+          actual_value: string | null;
+        }
+      ).actual_value,
+    ).toBeNull();
+
+    // Idempotent: the next sync must not re-open the steal.
+    reconcileEarningsDates(db, { today: SEP_TODAY });
+    expectPrintKeptEverything(vendor, manual);
+  });
+
+  it("shape C: a manual row carrying a vendor-inherited actual_value is NOT the print (no desk acceptance)", () => {
+    const vendor = seedReportedPrint();
+    const manual = seed({
+      source: "manual",
+      symbol: "ZZMD",
+      date: "2026-09-10",
+      actualValue: "EPS 2.00 · Rev 800,000,000",
+    });
+
+    reconcileEarningsDates(db, { today: SEP_TODAY });
+
+    expectPrintKeptEverything(vendor, manual);
+
+    reconcileEarningsDates(db, { today: SEP_TODAY });
+    expectPrintKeptEverything(vendor, manual);
+  });
+
+  it("the desk's OWN acceptance (manual_actuals_at) still makes a manual row the print, cluster and audit included", () => {
+    const vendor = seedReportedPrint();
+    const accepted = seed({
+      source: "manual",
+      symbol: "ZZMD",
+      date: "2026-09-10",
+      actualValue: "EPS 2.00 · Rev 800,000,000",
+      manualActualsAt: "2026-09-10 21:00:00",
+    });
+
+    reconcileEarningsDates(db, { today: SEP_TODAY });
+
+    expect(row(accepted).superseded).toBe(0);
+    expect(row(accepted).date_status).toBe("user_confirmed");
+    expect(row(vendor).superseded).toBe(1);
+    expect(recapEmailEventId(db)).toBe(accepted);
+  });
+
+  it("a post-print date correction (manual row one day off the print) still wins the whole cluster", () => {
+    const vendor = seedReportedPrint();
+    const correction = seed({ source: "manual", symbol: "ZZMD", date: "2026-09-02" });
+
+    reconcileEarningsDates(db, { today: SEP_TODAY });
+
+    expect(row(correction).superseded).toBe(0);
+    expect(row(correction).date_status).toBe("user_confirmed");
+    expect(row(vendor).superseded).toBe(1);
+    // Audit follows the print onto the corrected row.
+    expect(recapEmailEventId(db)).toBe(correction);
+    expect(bogeyEventIds()).toEqual([correction, correction]);
   });
 });
 

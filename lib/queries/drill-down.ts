@@ -18,6 +18,7 @@ import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
+import { classificationBucketSql } from "@/lib/queries/analysis";
 
 export type ClassificationDimension =
   | "sector"
@@ -101,8 +102,13 @@ export function getHoldingsInBucket(
     if (!ALLOWED_CLASSIFICATION_DIMENSIONS.includes(filter.dimension)) {
       throw new Error(`unknown classification dimension: ${filter.dimension}`);
     }
-    // Whitelisted column name → safe to interpolate.
-    extraWhere = `AND s.${filter.dimension} = ?`;
+    // Same bucket expression the breakdown (getAllocationByDimension) used to
+    // produce this label — so a NULL/'null' row that rolled up into
+    // 'Unclassified'/'Unknown' filters back in here too. "sector" falls
+    // through to the plain `s.sector` column (see classificationBucketSql —
+    // the ETF look-through bucketing is a separate path this query doesn't
+    // replicate).
+    extraWhere = `AND ${classificationBucketSql(filter.dimension)} = ?`;
     filterParams.push(filter.bucket);
   } else if (filter.kind === "sector") {
     extraWhere = `AND s.sector = ?`;

@@ -5,6 +5,15 @@ import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { explodeHoldingBySector } from "./explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
+import {
+  optionElasticity,
+  isOptionSecurityType,
+  leverUnderlyingMoveByElasticity,
+  OPTION_PRICING_COLUMNS_SQL,
+  OPTION_PRICING_JOINS_SQL,
+} from "./option-elasticity";
 import {
   SCENARIO_RECIPES,
   findRecipe,
@@ -117,16 +126,23 @@ export function computeScenario(
          s.symbol,
          s.name AS security_name,
          s.security_type,
-         s.sector,
-         s.style,
-         s.market_cap_category,
+         -- Options inherit the UNDERLYING's classification (same COALESCE
+         -- rule the recipe engine applies) so beta comes from the underlying
+         -- instead of an option row's empty sector / style / size columns.
+         COALESCE(s.sector, s_u.sector) AS sector,
+         COALESCE(s.style, s_u.style) AS style,
+         COALESCE(s.market_cap_category, s_u.market_cap_category) AS market_cap_category,
+         s.fund_category,
          s.duration_years,
          s.credit_rating,
+         s_u.security_type AS underlying_security_type,
+${OPTION_PRICING_COLUMNS_SQL},
          ${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "fx.usd_per_unit")} AS market_value
        FROM latest_holdings lh
        JOIN securities s ON s.id = lh.security_id
        LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
+${OPTION_PRICING_JOINS_SQL}
        WHERE COALESCE(lp.close_price, 0) > 0
          AND ${liveOptionExpirationSql("s")}
        ORDER BY market_value DESC`
@@ -139,8 +155,18 @@ export function computeScenario(
     sector: string | null;
     style: string | null;
     market_cap_category: string | null;
+    fund_category: string | null;
     duration_years: number | null;
     credit_rating: string | null;
+    /** Security type of the option's underlying; null for non-options. */
+    underlying_security_type: string | null;
+    // Option pricing inputs (null for non-options) — see OPTION_PRICING_COLUMNS_SQL.
+    strike_price: number | null;
+    expiration_date: string | null;
+    option_type: string | null;
+    own_price: number | null;
+    underlying_price: number | null;
+    underlying_iv: number | null;
     market_value: number;
   }[];
 
@@ -150,9 +176,27 @@ export function computeScenario(
   // cash-deploy and the allocation breakdown use).
   const etfWeights = scenario.sectorMoves ? getEtfSectorWeights(db) : new Map<string, Array<{ sector: string; weight_pct: number }>>();
 
+  const riskFreeRate = getRiskFreeRate(db);
+
   // 2. Estimate beta for each position
   const positionImpacts: PositionImpact[] = positions.map((pos) => {
-    const beta = estimateBeta(pos.security_type, pos.sector, pos.style, pos.market_cap_category);
+    const isOption = isOptionSecurityType(pos.security_type);
+    // Cash-equivalent identity is single-sourced (fund_category-driven): the
+    // live sweep funds are typed 'Mutual Fund', so a type-string test alone
+    // handed them the full market shock.
+    const isCashEquivalent = isCashEquivalentSecurity({
+      security_type: pos.security_type,
+      fund_category: pos.fund_category,
+    });
+    // An option is a claim on its underlying, so its beta is the UNDERLYING's
+    // beta (leverage is applied separately, below, by signed elasticity).
+    const beta = estimateBeta(
+      isOption ? pos.underlying_security_type ?? "stock" : pos.security_type,
+      pos.sector,
+      pos.style,
+      pos.market_cap_category,
+      isCashEquivalent
+    );
 
     // QA fix (2026-08-18): legs compose ADDITIVELY — changePercent =
     // marketLeg + rateLeg — instead of `category` switching the whole model.
@@ -185,17 +229,40 @@ export function computeScenario(
 
     const rateLeg =
       typeof scenario.rateMove === "number" && Number.isFinite(scenario.rateMove) && scenario.rateMove !== 0
-        ? estimateRateLeg(pos.security_type, scenario.rateMove, pos.duration_years)
+        ? estimateRateLeg(pos.security_type, scenario.rateMove, pos.duration_years, isCashEquivalent)
         : 0;
 
-    let changePercent = marketLeg + rateLeg;
-    // The UNDERLYING can't fall below zero, i.e. changePercent can't go
-    // below -100% — for longs AND shorts. A short's direction is already
-    // carried by its negative market_value; estimatedChange = market_value *
-    // changePercent still flips sign correctly. Leaving shorts unclamped let
-    // changePercent < -1 flip the sign of estimatedNewValue, implying a
-    // short could earn more than its full notional proceeds.
-    changePercent = Math.max(changePercent, -1);
+    // Both legs describe the move of the thing the position tracks — for an
+    // option, that is its UNDERLYING.
+    const underlyingMove = marketLeg + rateLeg;
+
+    let changePercent: number;
+    let reportedBeta = beta;
+    if (isOption) {
+      // QA fix (2026-09-11): options used to take a flat beta of 2.0 with no
+      // put/call sign, so a -20% shock showed EVERY option at -40% — a held
+      // put lost money in a crash. Lever the underlying's whole move by
+      // signed elasticity Ω = Δ·S/V instead, exactly as the recipe engine
+      // does (it applies Ω to the entire factor-derived underlying move,
+      // rate component included; here the rate leg is 0 for an option, since
+      // estimateRateLeg only prices bonds and cash off the position's own
+      // type). Ω is negative for puts, so protection GAINS on a down shock.
+      const omega = optionElasticity(pos, riskFreeRate);
+      changePercent = leverUnderlyingMoveByElasticity(underlyingMove, omega);
+      // Report the effective LEVERED exposure (signed): the UI prints this as
+      // "β-9.2" next to the position, and a long put is genuinely short the
+      // market at several times its notional sensitivity.
+      reportedBeta = beta * omega;
+    } else {
+      // The UNDERLYING can't fall below zero, i.e. changePercent can't go
+      // below -100% — for longs AND shorts. A short's direction is already
+      // carried by its negative market_value; estimatedChange = market_value *
+      // changePercent still flips sign correctly. Leaving shorts unclamped let
+      // changePercent < -1 flip the sign of estimatedNewValue, implying a
+      // short could earn more than its full notional proceeds. (The option
+      // branch applies the same clamp inside leverUnderlyingMoveByElasticity.)
+      changePercent = Math.max(underlyingMove, -1);
+    }
 
     const estimatedChange = pos.market_value * changePercent;
 
@@ -209,7 +276,7 @@ export function computeScenario(
       estimatedChange,
       estimatedNewValue: pos.market_value + estimatedChange,
       changePercent,
-      beta,
+      beta: reportedBeta,
     };
   });
 
@@ -252,18 +319,31 @@ export function computeAllScenarios(
 
 // ─── Beta estimation heuristics ──────────────────────────────────
 
+/**
+ * Equity beta for the thing a position tracks.
+ *
+ * Options never arrive here with their OWN type — the caller passes the
+ * underlying's classification and then levers the result by signed
+ * elasticity (lib/compute/option-elasticity.ts). The old `option → 2.0`
+ * branch is what made a long put lose 40% in a -20% shock.
+ */
 function estimateBeta(
   securityType: string,
   sector: string | null,
   style: string | null,
-  marketCap: string | null
+  marketCap: string | null,
+  isCashEquivalent = false
 ): number {
   const type = securityType.toLowerCase();
-  // Bonds have near-zero equity beta
-  if (type === "bond" || type === "money market" || type === "money_market") return 0.1;
+  // Cash equivalents don't move with the equity market at all. Identity is
+  // decided by isCashEquivalentSecurity at the call site — never a
+  // hand-rolled money_market string list, which missed the live sweep funds
+  // (typed 'Mutual Fund' with fund_category 'Cash Equivalent') and modelled
+  // them as taking the full shock.
+  if (isCashEquivalent) return 0;
 
-  // Options are higher beta (leverage)
-  if (type === "option" || type === "call" || type === "put") return 2.0;
+  // Bonds have near-zero equity beta
+  if (type === "bond") return 0.1;
 
   let beta = 1.0;
 
@@ -294,9 +374,15 @@ function estimateBeta(
 function estimateRateLeg(
   securityType: string,
   rateBps: number,
-  durationYears?: number | null
+  durationYears?: number | null,
+  isCashEquivalent = false
 ): number {
   const type = securityType.toLowerCase();
+
+  // Cash equivalents benefit slightly from higher rates — same magnitude as
+  // the old literal 'money market' type branch, now keyed on the shared
+  // fund_category-driven predicate so the live sweep funds qualify too.
+  if (isCashEquivalent) return (rateBps / 100) * 0.002;
 
   // Bonds: convexity-aware exponential duration estimate (use actual
   // duration if available, else assume 5yr). exp(-D*dy) - 1 is smooth and
@@ -306,11 +392,6 @@ function estimateRateLeg(
     const duration = durationYears ?? 5;
     const dy = rateBps / 10000; // basis points -> decimal rate change
     return Math.exp(-duration * dy) - 1;
-  }
-
-  // Money market benefits slightly from higher rates (unchanged magnitude).
-  if (type === "money market" || type === "money_market") {
-    return (rateBps / 100) * 0.002; // tiny positive
   }
 
   // Everything else: no independent rate leg.
