@@ -28,9 +28,13 @@ export interface ReactionSnapshot {
   t0_utc: string;
   window_min: 120;
   source: "tws" | "polygon" | "yahoo";
-  spy: BenchmarkReaction;
-  qqq: BenchmarkReaction;
-  tlt: BenchmarkReaction;
+  // Optional (2026-09-10 qa fix, mirrors lib/calendar/reaction-snapshot-core.ts):
+  // a benchmark whose bars produced no usable leg (see
+  // reaction-leg.ts::isUsableReactionLeg) is OMITTED, never zero-filled —
+  // every reader already treats these defensively (`snap.spy?.delta_pct`).
+  spy?: BenchmarkReaction;
+  qqq?: BenchmarkReaction;
+  tlt?: BenchmarkReaction;
   sector?: BenchmarkReaction & { symbol: string };
   // Mirror of the Mac-side type — `lib/calendar/reaction-snapshot.ts`. The
   // event symbol's own bars; lets the recap email contrast the stock with

@@ -83,12 +83,33 @@ describe("scoreboard intel rows", () => {
     const recapEvent: ScoreboardEvent = {
       ...EVENT, actual_value: "EPS 1.42 · Rev 775M",
       reaction_snapshot: JSON.stringify({
-        symbol: { delta_pct: -7.2 }, spy: { delta_pct: 0.2 }, qqq: { delta_pct: 0.3 },
+        symbol: { t_pre: 100, t_post: 92.8, delta_pct: -7.2 },
+        spy: { t_pre: 600, t_post: 601.2, delta_pct: 0.2 },
+        qqq: { t_pre: 500, t_post: 501.5, delta_pct: 0.3 },
       }),
     };
     const md = renderHeadlineTable(recapEvent, "TER", "recap", INTEL);
     expect(md).toContain("**Expected move**");
     expect(md).toMatch(/±4\.8% \(straddle.*\|.*7\.2%.*\|.*outside/);
+  });
+
+  /**
+   * Regression for the finding: a stored symbol leg of
+   * {t_pre:0,t_post:0,delta_pct:0} (or any unusable/missing leg) must never
+   * publish an inside/outside verdict — the realized-move cell stays "—"
+   * and the verdict names the reason instead of guessing.
+   */
+  it("unusable (0/0) symbol leg blanks the realized cell and names the reason, never a fabricated verdict", () => {
+    const recapEvent: ScoreboardEvent = {
+      ...EVENT, actual_value: "EPS 1.42 · Rev 775M",
+      reaction_snapshot: JSON.stringify({
+        symbol: { t_pre: 0, t_post: 0, delta_pct: 0 },
+        spy: { t_pre: 600, t_post: 601.2, delta_pct: 0.2 },
+      }),
+    };
+    const md = renderHeadlineTable(recapEvent, "TER", "recap", INTEL);
+    const row = md.split("\n").find((l) => l.includes("**Expected move**"))!;
+    expect(row).toBe("| **Expected move** | ±4.8% (straddle, Jul 18 exp) | — | — no reaction quote |");
   });
 });
 

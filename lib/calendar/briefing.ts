@@ -23,6 +23,7 @@ import {
   findSelfAdmissions,
   buildSelfAdmissionAddendum,
 } from "@/lib/calendar/briefing-self-admission";
+import { isUsableReactionLeg, type BenchmarkReaction } from "@/lib/calendar/reaction-snapshot-core";
 
 // Preferred weekend-reading sources — full raw_text is sent to the model.
 // ids correspond to research_sources.id. Keep aligned with DB; wrong ids
@@ -1069,7 +1070,7 @@ function formatEventForPrompt(
  * Example:
  *   - **CPI** (Apr 16): actual 3.2% vs est 3.1% · SPY -0.41% / QQQ -0.57% / XLF -0.68%
  */
-function formatReleasedEventForPrompt(event: CalendarEvent, index: number): string {
+export function formatReleasedEventForPrompt(event: CalendarEvent, index: number): string {
   const parts: string[] = [];
   parts.push(`${index}. **${event.title}**`);
   parts.push(`(${event.event_date})`);
@@ -1084,16 +1085,20 @@ function formatReleasedEventForPrompt(event: CalendarEvent, index: number): stri
   if (event.reaction_snapshot) {
     try {
       const snap = JSON.parse(event.reaction_snapshot) as {
-        spy?: { delta_pct: number };
-        qqq?: { delta_pct: number };
-        tlt?: { delta_pct: number };
-        sector?: { symbol: string; delta_pct: number };
+        spy?: BenchmarkReaction;
+        qqq?: BenchmarkReaction;
+        tlt?: BenchmarkReaction;
+        sector?: BenchmarkReaction & { symbol: string };
       };
+      // isUsableReactionLeg guards against a 0/0 sentinel leg printing as a
+      // confident-looking flat move in the weekly briefing (2026-09-10 qa
+      // fix) — a bare truthy check (`if (snap.spy)`) does NOT catch this,
+      // since a {t_pre:0,t_post:0,delta_pct:0} object is still truthy.
       const reacts: string[] = [];
-      if (snap.spy) reacts.push(`SPY ${fmtSignedPct(snap.spy.delta_pct)}`);
-      if (snap.qqq) reacts.push(`QQQ ${fmtSignedPct(snap.qqq.delta_pct)}`);
-      if (snap.tlt) reacts.push(`TLT ${fmtSignedPct(snap.tlt.delta_pct)}`);
-      if (snap.sector) {
+      if (isUsableReactionLeg(snap.spy)) reacts.push(`SPY ${fmtSignedPct(snap.spy.delta_pct)}`);
+      if (isUsableReactionLeg(snap.qqq)) reacts.push(`QQQ ${fmtSignedPct(snap.qqq.delta_pct)}`);
+      if (isUsableReactionLeg(snap.tlt)) reacts.push(`TLT ${fmtSignedPct(snap.tlt.delta_pct)}`);
+      if (isUsableReactionLeg(snap.sector)) {
         reacts.push(
           `${snap.sector.symbol} ${fmtSignedPct(snap.sector.delta_pct)}`,
         );

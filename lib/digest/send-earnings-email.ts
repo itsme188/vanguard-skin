@@ -30,7 +30,8 @@ import {
   type EarningsCallNote,
 } from "@/lib/queries/earnings-call-notes";
 import { addDays } from "@/lib/calendar/date-utils";
-import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
+import { isUsableReactionLeg } from "@/lib/calendar/reaction-snapshot-core";
+import type { BenchmarkReaction, ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
 import type { CalendarEvent, EarningsTranscript } from "@/lib/types";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import {
@@ -1092,9 +1093,12 @@ export function buildReadThroughEntries(
     let qqqPct: number | null = null;
     try {
       const rs = JSON.parse(ev.reaction_snapshot!) as ReactionSnapshot;
-      stockPct = rs.symbol?.delta_pct ?? null;
-      spyPct = rs.spy?.delta_pct ?? null;
-      qqqPct = rs.qqq?.delta_pct ?? null;
+      // isUsableReactionLeg guards against a 0/0 sentinel leg rendering as a
+      // confident-looking delta (2026-09-10 qa fix) — never trust delta_pct
+      // alone without checking the underlying prices were real.
+      stockPct = isUsableReactionLeg(rs.symbol) ? rs.symbol.delta_pct : null;
+      spyPct = isUsableReactionLeg(rs.spy) ? rs.spy.delta_pct : null;
+      qqqPct = isUsableReactionLeg(rs.qqq) ? rs.qqq.delta_pct : null;
     } catch {
       // Malformed reaction_snapshot JSON — skip gracefully.
     }
@@ -1562,11 +1566,11 @@ export function formatReactionSnapshot(json: string | null): string | null {
       t0_utc?: string;
       window_min?: number;
       source?: string;
-      spy?: { delta_pct?: number };
-      qqq?: { delta_pct?: number };
-      tlt?: { delta_pct?: number };
-      sector?: { symbol?: string; delta_pct?: number };
-      symbol?: { symbol?: string; delta_pct?: number };
+      spy?: BenchmarkReaction;
+      qqq?: BenchmarkReaction;
+      tlt?: BenchmarkReaction;
+      sector?: BenchmarkReaction & { symbol?: string };
+      symbol?: BenchmarkReaction & { symbol?: string };
       pre_anchor?: string;
     };
     const lines: string[] = [];
@@ -1579,13 +1583,16 @@ export function formatReactionSnapshot(json: string | null): string | null {
         ? `moves vs prior close, measured at T+${win} minutes`
         : `T+${win} minutes from release`;
     lines.push(`- Window: ${basis} (source: ${snap.source ?? "?"})`);
-    if (snap.symbol && snap.symbol.delta_pct != null) {
+    // isUsableReactionLeg guards every leg against the 0/0 sentinel class
+    // (2026-09-10 qa fix) — a leg with dead/zero prices is omitted rather
+    // than rendered as a confident-looking "+0.00%".
+    if (isUsableReactionLeg(snap.symbol)) {
       lines.push(`- ${snap.symbol.symbol ?? "stock"}: ${pctSign(snap.symbol.delta_pct)}`);
     }
-    if (snap.spy?.delta_pct != null) lines.push(`- SPY: ${pctSign(snap.spy.delta_pct)}`);
-    if (snap.qqq?.delta_pct != null) lines.push(`- QQQ: ${pctSign(snap.qqq.delta_pct)}`);
-    if (snap.tlt?.delta_pct != null) lines.push(`- TLT: ${pctSign(snap.tlt.delta_pct)}`);
-    if (snap.sector && snap.sector.delta_pct != null) {
+    if (isUsableReactionLeg(snap.spy)) lines.push(`- SPY: ${pctSign(snap.spy.delta_pct)}`);
+    if (isUsableReactionLeg(snap.qqq)) lines.push(`- QQQ: ${pctSign(snap.qqq.delta_pct)}`);
+    if (isUsableReactionLeg(snap.tlt)) lines.push(`- TLT: ${pctSign(snap.tlt.delta_pct)}`);
+    if (isUsableReactionLeg(snap.sector)) {
       lines.push(`- ${snap.sector.symbol ?? "sector ETF"}: ${pctSign(snap.sector.delta_pct)}`);
     }
     return lines.join("\n");
@@ -1633,10 +1640,11 @@ function readReactionPct(json: string | null, key: "spy" | "qqq" | "tlt" | "symb
   if (!json) return null;
   try {
     const snap = JSON.parse(json) as Record<string, unknown>;
-    const node = snap[key] as { delta_pct?: number } | undefined;
-    if (!node || node.delta_pct == null) return null;
-    const v = Number(node.delta_pct);
-    return Number.isFinite(v) ? v : null;
+    const node = snap[key] as BenchmarkReaction | undefined;
+    // isUsableReactionLeg rejects the 0/0 sentinel class (2026-09-10 qa fix)
+    // — a leg with dead/zero prices must never read back as a real delta.
+    if (!isUsableReactionLeg(node)) return null;
+    return node.delta_pct;
   } catch {
     return null;
   }
@@ -1788,6 +1796,11 @@ export function renderHeadlineTable(
     if (realized != null) {
       impliedActual = `${realized >= 0 ? "+" : ""}${realized.toFixed(1)}%`;
       impliedVerdict = Math.abs(realized) <= intel.impliedMovePct ? "inside" : "outside";
+    } else {
+      // A stored-but-unusable (or missing) symbol leg — never publish an
+      // inside/outside verdict from a leg that couldn't be measured
+      // (2026-09-10 qa fix: better a blank than a fabricated comparison).
+      impliedVerdict = "— no reaction quote";
     }
   }
 

@@ -33,6 +33,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseReactionSnapshot,
   snapshotCoversEventDate,
+  isUsableReactionLeg,
   type ReactionSnapshot,
 } from "@/lib/calendar/reaction-snapshot-core";
 
@@ -49,13 +50,40 @@ describe("parseReactionSnapshot", () => {
     });
     const parsed = parseReactionSnapshot(raw);
     expect(parsed?.source).toBe("tws");
-    expect(parsed?.spy.delta_pct).toBe(0.11);
+    expect(parsed?.spy?.delta_pct).toBe(0.11);
     expect(parsed?.symbol?.symbol).toBe("AMZN");
   });
 
   it("survives malformed JSON", () => {
     expect(parseReactionSnapshot("{not json")).toBeNull();
     expect(parseReactionSnapshot(null)).toBeNull();
+  });
+});
+
+describe("isUsableReactionLeg", () => {
+  it("accepts a leg with finite, positive pre/post prices", () => {
+    expect(isUsableReactionLeg({ t_pre: 500, t_post: 499.9, delta_pct: -0.02 })).toBe(true);
+  });
+
+  it("rejects a 0/0 sentinel leg (the reported bug: qqq rendered '+0.00%')", () => {
+    // Synthetic reproduction of the finding's stored shape.
+    expect(isUsableReactionLeg({ t_pre: 0, t_post: 0, delta_pct: 0 })).toBe(false);
+  });
+
+  it("rejects a negative or non-finite price on either side", () => {
+    expect(isUsableReactionLeg({ t_pre: -1, t_post: 100, delta_pct: 1 })).toBe(false);
+    expect(isUsableReactionLeg({ t_pre: 100, t_post: -1, delta_pct: 1 })).toBe(false);
+    expect(isUsableReactionLeg({ t_pre: NaN, t_post: 100, delta_pct: 1 })).toBe(false);
+    expect(isUsableReactionLeg({ t_pre: 100, t_post: Infinity, delta_pct: 1 })).toBe(false);
+  });
+
+  it("rejects a non-finite delta_pct even with real prices", () => {
+    expect(isUsableReactionLeg({ t_pre: 100, t_post: 101, delta_pct: NaN })).toBe(false);
+  });
+
+  it("rejects a missing leg", () => {
+    expect(isUsableReactionLeg(undefined)).toBe(false);
+    expect(isUsableReactionLeg(null)).toBe(false);
   });
 });
 

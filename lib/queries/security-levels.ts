@@ -263,6 +263,63 @@ export function findCrossedLevels(
 }
 
 /**
+ * Coverage counts over the SAME armed universe findCrossedLevels scans
+ * (is_active=1, auto_approved, unexpired) and the SAME price join + freshness
+ * fragment — used by detectAndFireAlerts to disclose how many armed levels a
+ * "Scan now" run actually evaluated, instead of silently dropping a
+ * stale/missing-price level out of the response with no visible trace (the
+ * Armed tab already discloses this per-row via getArmedLevels' price_is_stale;
+ * this is the aggregate for the scan-result banner). `armed` is the total
+ * armed-universe count; `unpriced` and `skippedStale` are disjoint subsets of
+ * it (a level can't be both — unpriced means no price row at all). The
+ * "evaluated" count a caller wants is `armed - skippedStale - unpriced`.
+ */
+export interface ScanCoverage {
+  armed: number;
+  skippedStale: number;
+  unpriced: number;
+}
+
+export function countScanCoverage(db: Database.Database): ScanCoverage {
+  const row = db
+    .prepare(
+      `WITH latest_primary AS (
+         SELECT p1.security_id, p1.close_price, p1.date
+         FROM prices p1
+         WHERE p1.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = p1.security_id)
+       ),
+       latest_benchmark AS (
+         SELECT s.id AS security_id, bp.close_price, bp.date
+         FROM securities s
+         JOIN benchmark_prices bp ON bp.symbol = s.symbol
+         WHERE bp.date = (SELECT MAX(bp2.date) FROM benchmark_prices bp2 WHERE bp2.symbol = bp.symbol)
+       )
+       SELECT
+         COUNT(*) AS armed,
+         SUM(CASE WHEN COALESCE(lp.close_price, lb.close_price) IS NULL THEN 1 ELSE 0 END) AS unpriced,
+         SUM(CASE
+               WHEN COALESCE(lp.close_price, lb.close_price) IS NOT NULL
+                AND NOT (${SCAN_PRICE_IS_FRESH_SQL})
+               THEN 1 ELSE 0
+             END) AS skipped_stale
+       FROM security_levels sl
+       JOIN securities s ON s.id = sl.security_id
+       LEFT JOIN latest_primary lp ON lp.security_id = sl.security_id
+       LEFT JOIN latest_benchmark lb ON lb.security_id = sl.security_id
+       WHERE sl.is_active = 1
+         AND sl.review_status = 'auto_approved'
+         AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))`
+    )
+    .get() as { armed: number; unpriced: number | null; skipped_stale: number | null };
+
+  return {
+    armed: row.armed,
+    skippedStale: row.skipped_stale ?? 0,
+    unpriced: row.unpriced ?? 0,
+  };
+}
+
+/**
  * Resolve the latest close price for a security the same way findCrossedLevels
  * does — primary `prices` table, falling back to `benchmark_prices` via
  * symbol — plus the same staleness check (SCAN_PRICE_IS_FRESH_SQL), in a

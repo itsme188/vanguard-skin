@@ -33,13 +33,50 @@ export interface BenchmarkReaction {
   delta_pct: number;
 }
 
+/**
+ * A leg is only usable when both prices are real (finite AND positive) —
+ * a 0/0 division (dead quote on both sides) still produces a finite
+ * `delta_pct` of 0, which is indistinguishable from a genuine flat move
+ * unless the underlying prices are checked too. Guards BOTH the write side
+ * (captureReactionFromTws / captureReactionFromYahoo omit an unusable leg
+ * rather than storing a zero-filled sentinel) and the read side (every
+ * renderer must treat an unusable leg as absent, never as "+0.00%").
+ *
+ * Real incident (2026-09, synthetic reproduction): a stored snapshot's qqq
+ * leg was `{t_pre:0,t_post:0,delta_pct:0}` — the recap email rendered
+ * "QQQ @ T+2h | +0.00%" as if the market had actually been flat. This
+ * predicate cannot catch every bad leg — a leg whose prices are both real
+ * but merely IDENTICAL (a stale/echoed quote, e.g. t_pre 100 → t_post
+ * 100.002) still passes as "usable" because both sides are finite and
+ * positive. It only rules out the zero/negative/non-finite sentinel class.
+ *
+ * Worker mirror: workers/cron/src/fallback-earnings.ts keeps a local copy
+ * (the Worker can't import from lib/) — change both sides together.
+ */
+export function isUsableReactionLeg(
+  leg: BenchmarkReaction | null | undefined,
+): leg is BenchmarkReaction {
+  return (
+    leg != null &&
+    Number.isFinite(leg.t_pre) &&
+    leg.t_pre > 0 &&
+    Number.isFinite(leg.t_post) &&
+    leg.t_post > 0 &&
+    Number.isFinite(leg.delta_pct)
+  );
+}
+
 export interface ReactionSnapshot {
   t0_utc: string;
   window_min: 120;
   source: "tws" | "polygon" | "yahoo";
-  spy: BenchmarkReaction;
-  qqq: BenchmarkReaction;
-  tlt: BenchmarkReaction;
+  // Optional (2026-09-10 qa fix): a benchmark whose bars produced no usable
+  // leg (see isUsableReactionLeg) is OMITTED from the snapshot, never
+  // zero-filled — every reader already treats these defensively
+  // (`rs.spy?.delta_pct`), so omission is the safe direction.
+  spy?: BenchmarkReaction;
+  qqq?: BenchmarkReaction;
+  tlt?: BenchmarkReaction;
   sector?: BenchmarkReaction & { symbol: string };
   // The event's own stock — populated for earnings (and any future event type
   // that passes `eventSymbol`). Lets the recap email say "GLW closed +4.2% vs
