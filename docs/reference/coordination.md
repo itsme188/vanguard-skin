@@ -6,7 +6,7 @@ Authoritative shared workflow for two agents working on one Mac. Agent-specific 
 
 | When | Command | Why |
 |---|---|---|
-| Session start | `npm run coord -- status` | who owns what, which port, which lock; STALE / OWNER-GONE rows are your first read |
+| Session start | `npm run inbox` then `npm run coord -- status` | inbox = who is waiting on whom (your decisions, open PRs, stale ownership) in one screen; status = every task, port and lock |
 | Start a task | `git worktree add ../vanguard-skin-<topic> -b <agent>/<topic>-<date> main` then `npm run coord -- task register --id <id> --owner <claude\|codex> --branch <b> --worktree <path> --paths <a,b> --port <n> --browser-session smoke-<id>` | declare ownership before the first edit |
 | Every milestone | `npm run coord -- task checkpoint <id> --note "…" [--tested-commit <sha>] [--evidence <path>] [--next "…"]` | the other agent can resume without the user relaying history |
 | Verify | `bash scripts/verify.sh changed --base main`; `bash scripts/verify.sh full --base main` at completion; `typecheck` separately | evidence, not confidence |
@@ -20,6 +20,15 @@ Integration base: local `main` in `/Users/Yitzi/code/vanguard-skin` (the only ch
 ## Shared location
 
 `PD_COORD_DIR` defaults to `$(git rev-parse --git-common-dir)/portfolio-desk-coord` — one directory shared by every worktree of the repo (main, `../vanguard-skin-*`, `/private/tmp/portfolio-desk-*`), never tracked, never bundled (the bundle gate excludes `.git/**`), mode 0700. Override only in tests. Layout: `tasks/` (one JSON per task), `tasks/archive/`, `locks/<name>/owner.json`, `history.log`, `deploys.log`, `sandboxes/<task>/`, `evidence/<task>/<stamp>/`, `logs/`.
+
+## Who acts next (`npm run inbox`)
+
+The register answers "who owns what"; the inbox answers "who is being waited on". Rules that keep it exact:
+
+- Every `next_action` starts with a label: `USER:` (a decision or landing only the user can make), `CODEX:` or `CLAUDE:` (the agent that must act). `task checkpoint --next` prints a hint when the label is missing; unlabeled tasks are routed by status (review/blocked wait on the user, active/planned on the owner) and counted in the inbox's hint line.
+- Every handoff (`docs/HANDOFF.md`, `docs/HANDOFF-CODEX-<date>.md`) opens with a **Waiting on:** line using the same labels, or `nobody`.
+- Both session-start checklists print "Waiting on you" from `npm run inbox` before proposing any work.
+- The inbox lists, per actor: labeled tasks, open PRs (from `gh pr list`; PRs always wait on the user), and an attention line for any live task flagged STALE / OWNER-GONE / WORKTREE-MISSING, because a stale ownership needs a human decision whoever it was routed to. `--for user|codex|claude` filters; `--json` for scripts; `--no-prs` skips GitHub.
 
 ## Task register (`scripts/coord/coord.sh task …`)
 

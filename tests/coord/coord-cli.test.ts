@@ -399,6 +399,92 @@ describe("locks: --wait", () => {
   }, 10_000);
 });
 
+// ─── inbox: who is waiting on whom ────────────────────────────────
+
+describe("inbox", () => {
+  function seed() {
+    run(["task", "register", "--id", "ib-user", "--owner", "claude", "--branch", "b", "--worktree", "/tmp"]);
+    run(["task", "checkpoint", "ib-user", "--note", "PR open", "--status", "review", "--next", "USER: land PR #76"]);
+    run(["task", "register", "--id", "ib-codex", "--owner", "codex", "--branch", "b", "--worktree", "/tmp"]);
+    run(["task", "checkpoint", "ib-codex", "--note", "runner", "--next", "codex: finish the runner tests"]);
+    run(["task", "register", "--id", "ib-claude", "--owner", "claude", "--branch", "b", "--worktree", "/tmp"]);
+    run(["task", "checkpoint", "ib-claude", "--note", "coding", "--next", "CLAUDE: write the tests"]);
+    run(["task", "register", "--id", "ib-unlabeled", "--owner", "claude", "--branch", "b", "--worktree", "/tmp"]);
+    run(["task", "checkpoint", "ib-unlabeled", "--note", "waiting", "--status", "blocked", "--next", "decide the port"]);
+    run(["task", "register", "--id", "ib-landed", "--owner", "claude", "--branch", "b", "--worktree", "/tmp"]);
+    run(["task", "checkpoint", "ib-landed", "--note", "done", "--status", "landed", "--next", "USER: nothing"]);
+    run(["task", "register", "--id", "ib-dead", "--owner", "codex", "--branch", "b", "--worktree", "/nonexistent-ib", "--pid", "999999"]);
+  }
+
+  it("routes tasks by their USER:/CODEX:/CLAUDE: label, falls back to status, excludes landed tasks, flags stale ownership", () => {
+    seed();
+    const res = run(["inbox", "--no-prs", "--json"]);
+    expect(res.status).toBe(0);
+    const d = JSON.parse(res.stdout);
+    const ids = (arr: Array<{ id: string }>) => arr.map((x) => x.id).sort();
+    expect(ids(d.user)).toEqual(["ib-unlabeled", "ib-user"]);
+    expect(ids(d.codex)).toEqual(["ib-codex", "ib-dead"]);
+    expect(ids(d.claude)).toEqual(["ib-claude"]);
+    expect(ids(d.attention)).toEqual(["ib-dead"]);
+    expect(d.attention[0].flags).toEqual(expect.arrayContaining(["WORKTREE-MISSING", "OWNER-GONE"]));
+    expect(d.user.find((x: { id: string }) => x.id === "ib-user").explicit).toBe(true);
+    expect(d.user.find((x: { id: string }) => x.id === "ib-unlabeled").explicit).toBe(false);
+    expect(d.unlabeled).toBe(2);
+    expect(JSON.stringify(d)).not.toContain("ib-landed");
+  });
+
+  it("human output has the three sections in order, an attention line, and the labelling hint", () => {
+    seed();
+    const res = run(["inbox", "--no-prs"]);
+    expect(res.status).toBe(0);
+    const you = res.stdout.indexOf("WAITING ON YOU");
+    const codex = res.stdout.indexOf("WAITING ON CODEX");
+    const claude = res.stdout.indexOf("WAITING ON CLAUDE");
+    expect(you).toBeGreaterThanOrEqual(0);
+    expect(codex).toBeGreaterThan(you);
+    expect(claude).toBeGreaterThan(codex);
+    expect(res.stdout).toContain("USER: land PR #76");
+    expect(res.stdout).toContain("attention: task ib-dead");
+    expect(res.stdout).toContain("hint: 2 task(s)");
+  });
+
+  it("--for codex prints only that section", () => {
+    seed();
+    const res = run(["inbox", "--no-prs", "--for", "codex"]);
+    expect(res.stdout).toContain("WAITING ON CODEX");
+    expect(res.stdout).not.toContain("WAITING ON YOU");
+    expect(res.stdout).not.toContain("WAITING ON CLAUDE");
+  });
+
+  it("open PRs come from the PR command seam and land under WAITING ON YOU; a failing command is reported, not fatal", () => {
+    seed();
+    const prJson = JSON.stringify([
+      { number: 76, title: "QA auto-fixes 2026-09-11", headRefName: "qa-auto-fixes-2026-09-11", createdAt: "2026-09-11T14:50:17Z" },
+    ]);
+    const ok = run(["inbox", "--for", "user"], { PD_COORD_PR_CMD: `printf '%s' '${prJson}'` });
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toContain("PR #76 QA auto-fixes 2026-09-11 (qa-auto-fixes-2026-09-11, opened 2026-09-11)");
+    const okJson = JSON.parse(run(["inbox", "--json"], { PD_COORD_PR_CMD: `printf '%s' '${prJson}'` }).stdout);
+    expect(okJson.prs).toHaveLength(1);
+    expect(okJson.pr_error).toBeNull();
+
+    const bad = run(["inbox", "--for", "user"], { PD_COORD_PR_CMD: "echo boom >&2; exit 1" });
+    expect(bad.status).toBe(0);
+    expect(bad.stdout).toContain("PRs: unavailable (gh pr list failed: boom)");
+  });
+
+  it("checkpoint --next without a label prints a hint on stderr but still records it", () => {
+    run(["task", "register", "--id", "ib-hint", "--owner", "claude", "--branch", "b", "--worktree", "/tmp"]);
+    const res = run(["task", "checkpoint", "ib-hint", "--note", "n", "--next", "finish it"]);
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain("USER:, CODEX: or CLAUDE:");
+    const labelled = run(["task", "checkpoint", "ib-hint", "--note", "n", "--next", "CLAUDE: finish it"]);
+    expect(labelled.stderr).toBe("");
+    const shown = JSON.parse(run(["task", "show", "ib-hint", "--json"]).stdout);
+    expect(shown.next_action).toBe("CLAUDE: finish it");
+  });
+});
+
 // ─── review fold: --exclusive disables same-task re-entrancy ─────
 
 describe("locks: --exclusive", () => {
