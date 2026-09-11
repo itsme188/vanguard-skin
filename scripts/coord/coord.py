@@ -45,7 +45,10 @@ EXIT_REFUSED = 1
 EXIT_ENV_ERROR = 2
 EXIT_LOCK_CONTENTION = 75
 
-TASK_STATUSES = ["planned", "active", "blocked", "review", "landed", "abandoned"]
+TASK_STATUSES = ["planned", "active", "blocked", "review", "decision", "landed", "abandoned"]
+# "decision": the record is a question only the user can answer (it can outlive
+# the task that raised it). It is never STALE, never auto-routed elsewhere, and
+# sits at the top of `coord inbox` until `task decide` resolves it.
 TASK_TERMINAL_STATUSES = ("landed", "abandoned")
 TASK_LIVE_STATUSES = ("active", "blocked")
 # Who acts next on a task. A task's next_action should START with one of these
@@ -388,17 +391,23 @@ def cmd_task_register(coord_dir: str, args: argparse.Namespace) -> int:
     owned_paths = parse_csv_list(args.paths) if args.paths is not None else None
 
     if existing is None:
-        missing = [
-            name
-            for name, value in (("owner", args.owner), ("branch", args.branch), ("worktree", args.worktree))
-            if not value
-        ]
+        is_decision = args.status == "decision"
+        if is_decision:
+            # A decision record is a question for the user; it has no branch or
+            # worktree of its own and defaults to the user as owner.
+            if not getattr(args, "next", None):
+                sys.stderr.write("coord: --next (the question) is required to register a decision\n")
+                return EXIT_REFUSED
+            required = (("owner", args.owner or "user"),)
+        else:
+            required = (("owner", args.owner), ("branch", args.branch), ("worktree", args.worktree))
+        missing = [name for name, value in required if not value]
         if missing:
             sys.stderr.write("coord: --%s is required to register a new task\n" % missing[0])
             return EXIT_REFUSED
         record = {
             "id": args.id,
-            "owner": args.owner,
+            "owner": args.owner or ("user" if is_decision else None),
             "branch": args.branch,
             "worktree": args.worktree,
             "owned_paths": owned_paths if owned_paths is not None else [],
@@ -408,7 +417,7 @@ def cmd_task_register(coord_dir: str, args: argparse.Namespace) -> int:
             "last_checkpoint": None,
             "tested_commit": None,
             "evidence": None,
-            "next_action": None,
+            "next_action": getattr(args, "next", None),
             "handoff": args.handoff,
             "pid": args.pid,
             "created_at": ts,
@@ -442,6 +451,8 @@ def cmd_task_register(coord_dir: str, args: argparse.Namespace) -> int:
             record["pid"] = args.pid
         if args.status is not None:
             record["status"] = args.status
+        if getattr(args, "next", None) is not None:
+            record["next_action"] = args.next
         record["updated_at"] = ts
         save_task(coord_dir, record)
         append_history(coord_dir, "task register --update", args.id, "merged given fields")
@@ -462,7 +473,7 @@ def cmd_task_checkpoint(coord_dir: str, args: argparse.Namespace) -> int:
         record["evidence"] = args.evidence
     if args.next is not None:
         record["next_action"] = args.next
-        if not NEXT_ACTOR_RE.match(args.next):
+        if not NEXT_ACTOR_RE.match(args.next) and (args.status or record.get("status")) != "decision":
             sys.stderr.write(
                 "coord: hint: start --next with USER:, CODEX: or CLAUDE: so `coord inbox` "
                 "knows who acts next (classifying by status for now)\n"
@@ -473,6 +484,28 @@ def cmd_task_checkpoint(coord_dir: str, args: argparse.Namespace) -> int:
     record["heartbeat_at"] = ts
     save_task(coord_dir, record)
     append_history(coord_dir, "task checkpoint", args.id, args.note)
+    print_task(record, args.json)
+    return EXIT_OK
+
+
+def cmd_task_decide(coord_dir: str, args: argparse.Namespace) -> int:
+    """Resolve a `decision` record: status -> landed, the resolution kept as the
+    last checkpoint, next_action -> nobody. The file stays (history), archive is
+    then allowed."""
+    record = load_task(coord_dir, args.id)
+    if record is None:
+        return report_task_missing(args, coord_dir)
+    if record.get("status") != "decision":
+        sys.stderr.write("coord: task '%s' is not a decision (status=%s)\n" % (args.id, record.get("status")))
+        return EXIT_REFUSED
+    ts = now_iso()
+    record["last_checkpoint"] = {"at": ts, "note": "decided: %s" % args.resolution}
+    record["status"] = "landed"
+    record["next_action"] = "nobody"
+    record["updated_at"] = ts
+    record["heartbeat_at"] = ts
+    save_task(coord_dir, record)
+    append_history(coord_dir, "task decide", args.id, "by=%s resolution=%s" % (args.by or "user", args.resolution))
     print_task(record, args.json)
     return EXIT_OK
 
@@ -551,9 +584,9 @@ def cmd_task_archive(coord_dir: str, args: argparse.Namespace) -> int:
         sys.stderr.write("coord: task '%s' not found\n" % args.id)
         return EXIT_REFUSED
     status = record.get("status")
-    if status in TASK_LIVE_STATUSES:
+    if status in TASK_LIVE_STATUSES or status == "decision":
         sys.stderr.write(
-            "coord: refusing to archive task '%s' while status is '%s' (release it first)\n" % (args.id, status)
+            "coord: refusing to archive task '%s' while status is '%s' (release or decide it first)\n" % (args.id, status)
         )
         return EXIT_REFUSED
     ensure_dirs(coord_dir)
@@ -1051,6 +1084,9 @@ def load_task_records(coord_dir: str) -> List[Dict[str, Any]]:
 def next_actor(record: Dict[str, Any]) -> Tuple[str, bool]:
     """(actor, explicit). Explicit = the next_action carries a USER:/CODEX:/CLAUDE:
     label; otherwise the status decides (review/blocked -> user, else the owner)."""
+    if record.get("status") == "decision":
+        # A decision is the user's by definition, label or not.
+        return "user", True
     text = record.get("next_action") or ""
     match = NEXT_ACTOR_RE.match(text)
     if match:
@@ -1098,9 +1134,30 @@ def cmd_inbox(coord_dir: str, args: argparse.Namespace) -> int:
 
     buckets: Dict[str, List[Dict[str, Any]]] = {"user": [], "codex": [], "claude": []}
     attention: List[Dict[str, Any]] = []
+    decisions: List[Dict[str, Any]] = []
     unlabeled = 0
     for record in load_task_records(coord_dir):
         if record.get("status") in TASK_TERMINAL_STATUSES:
+            continue
+        if record.get("status") == "decision":
+            checkpoint = record.get("last_checkpoint") or {}
+            opened = record.get("created_at") or record.get("updated_at") or ""
+            age_days = None
+            try:
+                age_days = int((datetime.now(timezone.utc) - parse_iso(opened)).total_seconds() // 86400)
+            except (ValueError, TypeError):
+                pass
+            decisions.append(
+                {
+                    "id": record.get("id"),
+                    "owner": record.get("owner"),
+                    "question": record.get("next_action"),
+                    "context": checkpoint.get("note"),
+                    "opened_at": opened,
+                    "open_days": age_days,
+                    "handoff": record.get("handoff"),
+                }
+            )
             continue
         flags = compute_flags(record, stale_after)
         actor, explicit = next_actor(record)
@@ -1145,6 +1202,7 @@ def cmd_inbox(coord_dir: str, args: argparse.Namespace) -> int:
                     "codex": buckets["codex"],
                     "claude": buckets["claude"],
                     "attention": attention,
+                    "decisions": decisions,
                     "prs": prs,
                     "pr_error": pr_error,
                     "locks": locks,
@@ -1168,6 +1226,11 @@ def cmd_inbox(coord_dir: str, args: argparse.Namespace) -> int:
         print(title)
         rows = buckets[key]
         if key == "user":
+            for item in decisions:
+                age = "  (open %sd)" % item["open_days"] if item.get("open_days") is not None else ""
+                print("  decision %s — %s%s" % (item["id"], item.get("question") or "(no question recorded)", age))
+                if item.get("context"):
+                    print("      context: %s" % item["context"])
             for pr in prs:
                 print(
                     "  PR #%s %s (%s, opened %s)"
@@ -1180,7 +1243,7 @@ def cmd_inbox(coord_dir: str, args: argparse.Namespace) -> int:
         if key == "user" and attention:
             for item in attention:
                 print("  attention: task %s %s — last: %s" % (item["id"], ",".join(item["flags"]), item.get("last_checkpoint") or "-"))
-        if not rows and not (key == "user" and (prs or pr_error or attention)):
+        if not rows and not (key == "user" and (prs or pr_error or attention or decisions)):
             print("  (nothing)")
         print()
 
@@ -1230,7 +1293,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--browser-session")
     p.add_argument("--handoff")
     p.add_argument("--pid", type=int)
-    p.add_argument("--status", choices=["planned", "active"])
+    p.add_argument("--status", choices=["planned", "active", "decision"])
+    p.add_argument("--next", help="next_action; for --status decision this is the question (USER: is implied)")
     p.add_argument("--update", action="store_true")
     p.add_argument("--json", action="store_true")
 
@@ -1241,6 +1305,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--evidence")
     p.add_argument("--next")
     p.add_argument("--status", choices=TASK_STATUSES)
+    p.add_argument("--json", action="store_true")
+
+    p = task_sub.add_parser("decide", help="resolve a decision record")
+    p.add_argument("id")
+    p.add_argument("--resolution", required=True)
+    p.add_argument("--by")
     p.add_argument("--json", action="store_true")
 
     p = task_sub.add_parser("heartbeat")
@@ -1348,6 +1418,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_task_register(coord_dir, args)
         if args.task_command == "checkpoint":
             return cmd_task_checkpoint(coord_dir, args)
+        if args.task_command == "decide":
+            return cmd_task_decide(coord_dir, args)
         if args.task_command == "heartbeat":
             return cmd_task_heartbeat(coord_dir, args)
         if args.task_command == "show":

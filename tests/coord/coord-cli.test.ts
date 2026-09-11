@@ -485,6 +485,53 @@ describe("inbox", () => {
   });
 });
 
+// ─── decision records: questions only the user can answer ─────────
+
+describe("decision records", () => {
+  it("a decision is registered with its question, tops the inbox for the user, refuses archive until decided, and closes with task decide", () => {
+    const reg = run(["task", "register", "--id", "d-fx", "--owner", "user", "--status", "decision", "--next", "Fix or delete the placeholder FX row?"]);
+    expect(reg.status).toBe(0);
+    run(["task", "checkpoint", "d-fx", "--note", "Data Health flags a rate of exactly 1.0"]);
+    run(["task", "register", "--id", "d-t1", "--owner", "claude", "--branch", "b", "--worktree", "/tmp"]);
+    run(["task", "checkpoint", "d-t1", "--note", "n", "--next", "CLAUDE: keep coding"]);
+
+    const json = JSON.parse(run(["inbox", "--no-prs", "--json"]).stdout);
+    expect(json.decisions.map((d: { id: string }) => d.id)).toEqual(["d-fx"]);
+    expect(json.decisions[0].question).toBe("Fix or delete the placeholder FX row?");
+    expect(json.decisions[0].context).toBe("Data Health flags a rate of exactly 1.0");
+    expect(typeof json.decisions[0].open_days).toBe("number");
+    expect(json.user.map((d: { id: string }) => d.id)).not.toContain("d-fx"); // not double-listed
+    expect(json.unlabeled).toBe(0); // a decision needs no USER: label
+
+    const human = run(["inbox", "--no-prs", "--for", "user"]).stdout;
+    expect(human).toContain("decision d-fx — Fix or delete the placeholder FX row?");
+    expect(human).toContain("context: Data Health flags a rate of exactly 1.0");
+
+    const listed = run(["task", "list", "--json"]).stdout;
+    expect(listed).toContain("d-fx"); // decision is a live record, not hidden
+    expect(JSON.parse(listed).find((r: { id: string }) => r.id === "d-fx").flags).toEqual([]); // never STALE
+
+    const archive = run(["task", "archive", "d-fx"]);
+    expect(archive.status).toBe(1);
+    expect(archive.stderr).toContain("decide");
+
+    const notDecision = run(["task", "decide", "d-t1", "--resolution", "x"]);
+    expect(notDecision.status).toBe(1);
+
+    const decided = run(["task", "decide", "d-fx", "--resolution", "delete the row", "--by", "user", "--json"]);
+    expect(decided.status).toBe(0);
+    const rec = JSON.parse(decided.stdout);
+    expect(rec.status).toBe("landed");
+    expect(rec.next_action).toBe("nobody");
+    expect(rec.last_checkpoint.note).toBe("decided: delete the row");
+    expect(historyLog()).toContain("task decide d-fx by=user resolution=delete the row");
+
+    const after = JSON.parse(run(["inbox", "--no-prs", "--json"]).stdout);
+    expect(after.decisions).toEqual([]);
+    expect(run(["task", "archive", "d-fx"]).status).toBe(0);
+  });
+});
+
 // ─── review fold: --exclusive disables same-task re-entrancy ─────
 
 describe("locks: --exclusive", () => {
