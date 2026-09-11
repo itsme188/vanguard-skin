@@ -3,9 +3,9 @@
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Waiting on:** USER: decide the GitHub Support purge for the three leaked commits (TODO Reminders); USER: fix or delete the JPY placeholder FX row the new Data Health panel flags (the Charts default lands on a bars-less name until then). Otherwise nobody.
+**Waiting on:** USER: the `jpy-placeholder-fx-row` decision in the register (`npm run inbox` shows it) — fix or delete the fx_rates row at exactly 1.0; the Charts default lands on a bars-less foreign name until then. The GitHub purge question was DECIDED (no request). Otherwise nobody.
 
-**Session date:** 2026-09-11 (Thursday) ~12:00 ET → ~18:15 ET. Focus (user pick): (1) `npm run inbox` + next-actor labels (`23aa0276`, landed and pushed at 14:00 ET); (2) the nightly-QA PR backlog #69–#76, landed via an integration branch behind four read-only Opus reviews and a six-fixer wave, then deployed.
+**Session date:** 2026-09-11 (Thursday) ~12:00 ET → ~18:45 ET. Focus (user pick): (1) `npm run inbox` + next-actor labels (`23aa0276`, landed and pushed at 14:00 ET); (2) the nightly-QA PR backlog #69–#76, landed via an integration branch behind four read-only Opus reviews and a six-fixer wave, then deployed; (3) `decision` records for the register/inbox (`ab44fd4f`, landed and pushed at 18:35 ET; tooling + docs only, no rebuild).
 
 ## 1. Goal + exact files changed
 
@@ -28,16 +28,17 @@
 
 ## 3. Open concerns / rejected approaches / decisions for the user
 
+- Explicit session-end invoked by the user at ~18:30 ET after the decision-status landing; this handoff is the closing commit. No rebuild: nothing after build `UFjPMDxm5K6p5cqrvgS8c` (`e2e977f5`) touches production code.
 - User rulings recorded in `docs/DECISIONS.md` (2026-09-11): Charts precedence last-viewed → largest held → alphabetical; reconciler post-print corrections only + phantom stripped of inherited actuals; close #69/#71/#72 unmerged + delete branches; deploy after landing.
-- The three leaked commits (`05575c06`, `0ba68f9c`, `da53b255`) remain reachable via GitHub PR refs — purge decision is yours (TODO Reminders).
+- The three leaked commits (`05575c06`, `0ba68f9c`, `da53b255`) remain reachable via GitHub PR refs — the user decided NOT to request a purge (recorded in the register and TODO Reminders).
 - Charts default landed on a bars-less foreign name because `fx_rates` carries a placeholder JPY rate of exactly 1.0 (the new FX Flags card reports it). Data fix is user-run; a bar-coverage condition on `getDefaultChartSecurityId` is filed.
 - Follow-ups filed in TODO (qa-landing 2026-09-11, items a–j): covered-call max-loss sibling, `resolveScopeToSingleId` in the greeks route, ScrollFade siblings, `getTrackedSecurities` holdings predicate, SPY-benchmark raw bars, unaliased armed predicate, write-side NULL `security_id` root cause, what-if disclosure, fixer `next_action` label, the one-frame Charts swap.
 - Rejected: merging #69/#71/#72 as-is (leaks); reworking the NarrativeBlock/Macro 429 helpers separately (unified instead); a cookie mirror of localStorage to remove the Charts flash.
 
 ## 4. Uncommitted changes / live-process state
 
-- Main checkout clean at `e2e977f5` (+ this handoff commit), pushed. Worktree `/Users/Yitzi/code/vanguard-skin-coord` on `claude/qa-landing-2026-09-11` (fully landed; the v1 backup branch `claude/qa-landing-2026-09-11-v1` can be deleted). Codex's two 09-08 worktrees and the prunable trade-lots registration still listed; the nightly `../vanguard-skin-qa-fix` worktree untouched.
-- Sandbox :3090 torn down; no locks held; register: `coord-inbox-2026-09-11` and `qa-landing-2026-09-11` landed. Ledger: 34 rows flipped to `merged` (backup `qa/findings/ledger.json.bak-2026-09-11-landed`).
+- Main checkout clean at `ab44fd4f` (+ this closing docs/handoff commit), pushed. Worktree `/Users/Yitzi/code/vanguard-skin-coord` on `claude/qa-landing-2026-09-11` (fully landed; the v1 backup branch `claude/qa-landing-2026-09-11-v1` can be deleted). Codex's two 09-08 worktrees and the prunable trade-lots registration still listed; the nightly `../vanguard-skin-qa-fix` worktree untouched.
+- Sandbox :3090 torn down; no locks held; register: `coord-inbox-2026-09-11`, `qa-landing-2026-09-11`, `coord-decision-status-2026-09-11` and the nightly `qa-fix-20260911` landed; one open decision (`jpy-placeholder-fx-row`); `github-purge-leaked-qa-commits` decided. Ledger: 34 rows flipped to `merged` (backup `qa/findings/ledger.json.bak-2026-09-11-landed`).
 - Remote: `qa-deep-fixes-2026-09-07/-09/qa-auto-fixes-2026-09-08` deleted; the five merged PR branches (#70, #73–#76) left on origin for you to delete; local `qa-fix-work-*` duplicates left.
 
 ## 5. Claude session link
