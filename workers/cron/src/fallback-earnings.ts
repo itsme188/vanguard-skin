@@ -1027,18 +1027,36 @@ function fmtImplied(intel: ResolvedIntelView | null | undefined): string {
     : `~±${pct}% (IV approx${asOf})`;
 }
 
+// Denominator is the number of prints observed (quarterCount), not
+// beatCount+missCount — that sum silently drops flat (zero-surprise)
+// quarters, understating the denominator vs the on-screen chip
+// (histBeatCount/histQuarterCount). Fall back to the old sum only for
+// older cached summaries that predate quarterCount. Mirrors the Mac's
+// histQuarterDenom (lib/digest/send-earnings-email.ts) exactly — shared by
+// fmtHistSummary (the "beat X/N" value cell) and histPrintsLabel (the row
+// label) so the two can never disagree.
+function histQuarterDenom(s: EarningsHistorySnapshotEntry["summary"]): number {
+  return s.quarterCount > 0 ? s.quarterCount : s.beatCount + s.missCount;
+}
+
 function fmtHistSummary(history: EarningsHistorySnapshotEntry | null | undefined): string {
   const s = history?.summary;
   if (!s || s.avgAbsMovePct == null) return "—";
-  // Denominator is the number of prints observed (quarterCount), not
-  // beatCount+missCount — that sum silently drops flat (zero-surprise)
-  // quarters, understating the denominator vs the on-screen chip
-  // (histBeatCount/histQuarterCount). Fall back to the old sum only for
-  // older cached summaries that predate quarterCount. Mirrors the Mac's
-  // fmtHistSummary (lib/digest/send-earnings-email.ts) exactly.
-  const denom = s.quarterCount > 0 ? s.quarterCount : s.beatCount + s.missCount;
+  const denom = histQuarterDenom(s);
   const beat = denom > 0 ? ` · beat ${s.beatCount}/${denom}` : "";
   return `±${s.avgAbsMovePct.toFixed(1)}%${beat}`;
+}
+
+// Row label for the history-summary row — mirrors the actual denominator
+// fmtHistSummary renders in the "beat X/N" value cell instead of a hardcoded
+// "last 8 prints" (which drifted once PR #74 changed the beat-count
+// denominator to fall back below 8 for older/thinner history). No usable
+// summary yet falls back to the design window size (8 prints). Mirrors the
+// Mac's histPrintsLabel (lib/digest/send-earnings-email.ts) exactly.
+function histPrintsLabel(history: EarningsHistorySnapshotEntry | null | undefined): string {
+  const s = history?.summary;
+  if (!s || s.avgAbsMovePct == null) return "Avg move last 8 prints";
+  return `Avg move last ${histQuarterDenom(s)} prints`;
 }
 
 // Numeric sibling of readReactionDelta (below) — needed to compare the
@@ -1160,7 +1178,7 @@ export function renderScoreboard(
     }
     intelRows =
       `\n| **Expected move** | ${impliedCell} | ${impliedActual} | ${impliedVerdict} |` +
-      `\n| **Avg move last 8 prints** | ${fmtHistSummary(intelCtx?.history)} | — | — |`;
+      `\n| **${histPrintsLabel(intelCtx?.history)}** | ${fmtHistSummary(intelCtx?.history)} | — | — |`;
   }
 
   return `## ${sym} scoreboard — ${phaseLabel}

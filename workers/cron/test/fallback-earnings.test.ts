@@ -1117,8 +1117,24 @@ describe("intel rows in cloud scoreboard (Task 9: snapshot v9)", () => {
         summary: { avgAbsMovePct: 4.6, beatCount: 4, missCount: 3, quarterCount: 0 },
       },
     });
-    const histRow = md.split("\n").find((l) => l.includes("Avg move last 8 prints"))!;
+    // The row label tracks the same fallback denominator as the value cell
+    // (PR #74 changed the beat-count denominator; the label used to stay a
+    // hardcoded "last 8 prints" even when the real denominator was 7 —
+    // parity with the Mac's send-earnings-email.ts).
+    const histRow = md.split("\n").find((l) => l.includes("Avg move last 7 prints"))!;
     expect(histRow).toContain("±4.6% · beat 4/7");
+  });
+
+  it("a thinner history (fewer than 8 prints on file) labels the row with the real count", () => {
+    const md = renderScoreboard(baseEvent(), "preview", null, false, {
+      intel: null,
+      history: {
+        rows: [],
+        summary: { avgAbsMovePct: 2.9, beatCount: 3, missCount: 2, quarterCount: 5 },
+      },
+    });
+    const histRow = md.split("\n").find((l) => l.includes("Avg move last 5 prints"))!;
+    expect(histRow).toContain("±2.9% · beat 3/5");
   });
 
   it("a sheet expected move renders with its source label and no staleness suffix (feedback #5)", () => {

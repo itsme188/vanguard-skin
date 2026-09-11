@@ -44,7 +44,17 @@ describe("scoreboard intel rows", () => {
       ...INTEL,
       summary: { avgAbsMovePct: 4.6, beatCount: 4, missCount: 3, quarterCount: 0 },
     });
-    expect(md).toContain("| **Avg move last 8 prints** | ±4.6% · beat 4/7 | — | — |");
+    // The row label tracks the same fallback denominator as the value cell
+    // (PR #74 changed the beat-count denominator; the label used to stay a
+    // hardcoded "last 8 prints" even when the real denominator was 7).
+    expect(md).toContain("| **Avg move last 7 prints** | ±4.6% · beat 4/7 | — | — |");
+  });
+  it("a thinner history (fewer than 8 prints on file) labels the row with the real count", () => {
+    const md = renderHeadlineTable(EVENT, "TER", "preview", {
+      ...INTEL,
+      summary: { avgAbsMovePct: 2.9, beatCount: 3, missCount: 2, quarterCount: 5 },
+    });
+    expect(md).toContain("| **Avg move last 5 prints** | ±2.9% · beat 3/5 | — | — |");
   });
   it("IV-approx renders the ~ label", () => {
     const md = renderHeadlineTable(EVENT, "TER", "preview",

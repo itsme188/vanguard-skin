@@ -1682,17 +1682,36 @@ function fmtImplied(intel: EarningsIntelView | null | undefined): string {
     : `~±${pct}% (IV approx)`;
 }
 
+// Denominator is the number of prints observed (quarterCount), not
+// beatCount+missCount — that sum silently drops flat (zero-surprise)
+// quarters, understating the denominator vs the on-screen chip
+// (histBeatCount/histQuarterCount). Fall back to the old sum only for
+// older cached summaries that predate quarterCount. Shared by fmtHistSummary
+// (the "beat X/N" value cell) and histPrintsLabel (the row label) so the two
+// can never disagree (PR #74 fixed the value's denominator but left the row
+// label a hardcoded "last 8 prints" — worker mirror in fallback-earnings.ts).
+function histQuarterDenom(s: HistorySummary): number {
+  return s.quarterCount > 0 ? s.quarterCount : s.beatCount + s.missCount;
+}
+
 function fmtHistSummary(intel: EarningsIntelView | null | undefined): string {
   const s = intel?.summary;
   if (!s || s.avgAbsMovePct == null) return "—";
-  // Denominator is the number of prints observed (quarterCount), not
-  // beatCount+missCount — that sum silently drops flat (zero-surprise)
-  // quarters, understating the denominator vs the on-screen chip
-  // (histBeatCount/histQuarterCount). Fall back to the old sum only for
-  // older cached summaries that predate quarterCount.
-  const denom = s.quarterCount > 0 ? s.quarterCount : s.beatCount + s.missCount;
+  const denom = histQuarterDenom(s);
   const beat = denom > 0 ? ` · beat ${s.beatCount}/${denom}` : "";
   return `±${s.avgAbsMovePct.toFixed(1)}%${beat}`;
+}
+
+// Row label for the history-summary row — mirrors the actual denominator
+// fmtHistSummary renders in the "beat X/N" value cell instead of a hardcoded
+// "last 8 prints" (which drifted once PR #74 changed the beat-count
+// denominator to fall back below 8 for older/thinner history). No usable
+// summary yet (no cache, or a summary with no computed average) falls back
+// to the design window size (8 prints) since there is no real count to cite.
+function histPrintsLabel(intel: EarningsIntelView | null | undefined): string {
+  const s = intel?.summary;
+  if (!s || s.avgAbsMovePct == null) return "Avg move last 8 prints";
+  return `Avg move last ${histQuarterDenom(s)} prints`;
 }
 
 // Deterministic, code-rendered — no AI involvement, same discipline as the
@@ -1808,7 +1827,7 @@ export function renderHeadlineTable(
     `| **EPS** | ${epsConsensus} | ${epsActual} | ${epsDelta} |`,
     `| **Revenue** | ${revConsensus} | ${revActual} | ${revDelta} |`,
     `| **Expected move** | ${impliedCell} | ${impliedActual} | ${impliedVerdict} |`,
-    `| **Avg move last 8 prints** | ${fmtHistSummary(intel)} | — | — |`,
+    `| **${histPrintsLabel(intel)}** | ${fmtHistSummary(intel)} | — | — |`,
     `| **Guidance (next quarter)** | — | — | — |`,
     `| **${symbol} @ T+2h** | — | ${stockReaction} | — |`,
     `| **SPY @ T+2h** | — | ${spyReaction} | — |`,
