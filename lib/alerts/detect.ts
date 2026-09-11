@@ -32,6 +32,10 @@ export function detectAndFireAlerts(db: Database.Database): {
   armed?: number;
   skippedStale?: number;
   unpriced?: number;
+  /** Added 2026-09-11 alongside the other two skip buckets — see
+   *  ScanCoverage. The banner's "evaluated" figure is wrong without them. */
+  skippedOutOfBand?: number;
+  unresolvedMa?: number;
 } {
   const crossed = findCrossedLevels(db);
   // Coverage must be read BEFORE firing: triggerLevel flips a fired level's
@@ -98,8 +102,10 @@ export function detectAndFireAlerts(db: Database.Database): {
     scanned: crossed.length,
     fired,
     deduped,
-    armed: coverage.armed,
-    skippedStale: coverage.skippedStale,
-    unpriced: coverage.unpriced,
+    // Spread, not a hand-listed subset: countScanCoverage owning the bucket
+    // list is the whole point of ScanCoverage, and the previous explicit
+    // three-field copy is how the two new buckets would have been dropped
+    // here silently.
+    ...coverage,
   };
 }

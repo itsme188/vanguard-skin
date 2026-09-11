@@ -46,11 +46,17 @@ export function ChartsView({
     }
   };
 
-  // Charts-landing default-security ruling, step 2: apply the last-viewed
-  // symbol preference client-side (localStorage isn't readable on the
-  // server), but ONLY when the URL carried no explicit ?id= — an explicit
-  // id always wins. Runs once on mount, never during render, to avoid a
-  // hydration mismatch against the server-rendered `initialSecurity`.
+  // Charts-landing precedence (user ruling, 2026-09-11), RULE 1 — the
+  // highest-priority default: restore the last-viewed symbol whenever one
+  // is stored, overriding the largest-held pick the server rendered. Done
+  // client-side because localStorage isn't readable on the server, which is
+  // also why a bare visit briefly shows the server's held-position chart
+  // before this swap (see last-symbol.ts on why that flash is kept).
+  //
+  // ONLY when the URL carried no explicit ?id= — an explicit id is not a
+  // default and always wins. Runs once on mount, never during render, to
+  // avoid a hydration mismatch against the server-rendered
+  // `initialSecurity`.
   useEffect(() => {
     if (hasExplicitId) return;
     const lastId = readLastChartSymbolId();

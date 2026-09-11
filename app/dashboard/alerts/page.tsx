@@ -1,10 +1,18 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState, useCallback } from "react";
+import {
+  Fragment,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import type { LevelAlert, AlertResponse, LevelReviewStatus } from "@/lib/types";
-import { PrivateText, Shares } from "@/lib/privacy/components";
+import { Count, PrivateText, Shares } from "@/lib/privacy/components";
 // Level prices, trigger prices, and current market prices are PUBLIC market
 // data — they reveal nothing about what the user owns/earns, so they render
 // via pure formatters, never privacy-masked (held quantities still mask).
@@ -258,7 +266,12 @@ function AlertsPageInner() {
     wouldFireCount: number;
     beyondRangeCount: number;
   } | null>(null);
-  const [actionStatus, setActionStatus] = useState<string | null>(null);
+  // ReactNode, not string (2026-09-11): the "Scan now" banner names armed /
+  // evaluated / skipped LEVEL COUNTS, which are portfolio-derived and so must
+  // render through <Count> per the privacy convention — that needs JSX. Every
+  // other setActionStatus caller still passes a plain string, which is a
+  // valid ReactNode.
+  const [actionStatus, setActionStatus] = useState<ReactNode>(null);
   const { sort, setSort } = useSortParam<StreamSortField>("alerts", "recency", "desc");
 
   // When the user toggles a filter pill we drop ?view=review from the URL
@@ -565,9 +578,11 @@ function AlertsPageInner() {
       const res = await apiFetch("/api/alerts/detect", { method: "POST" });
       const json = await res.json();
       if (json.success) {
-        // armed/skippedStale/unpriced are additive on the response (older
-        // server = undefined); treat a missing field as 0 rather than assume
-        // full coverage.
+        // Every coverage field is additive on the response (older server =
+        // undefined); treat a missing one as 0 rather than assume full
+        // coverage. The four skip buckets mirror ScanCoverage in
+        // lib/queries/security-levels.ts and are mutually exclusive, so they
+        // sum without double-counting.
         const {
           scanned,
           fired,
@@ -575,6 +590,14 @@ function AlertsPageInner() {
           armed = 0,
           skippedStale = 0,
           unpriced = 0,
+          skippedOutOfBand = 0,
+          unresolvedMa = 0,
+          // Derived server-side by countScanCoverage, never re-summed here:
+          // this banner once added only two of the four buckets and reported
+          // "evaluated 40 of 40" while the Armed tab, on the same page,
+          // flagged rows "outside scan range".
+          totalSkipped = 0,
+          evaluated = 0,
         } = json as {
           scanned: number;
           fired: number;
@@ -582,23 +605,82 @@ function AlertsPageInner() {
           armed?: number;
           skippedStale?: number;
           unpriced?: number;
+          skippedOutOfBand?: number;
+          unresolvedMa?: number;
+          totalSkipped?: number;
+          evaluated?: number;
         };
-        const totalSkipped = skippedStale + unpriced;
-        const evaluated = armed - totalSkipped;
+        // One clause per skip reason, so the banner NAMES what was skipped
+        // instead of lumping every skip under "stale price" the way it used
+        // to. Counts render through <Count> (portfolio-derived), the labels
+        // come from lib/levels/scan-range.ts so this copy can never word a
+        // skip differently from the chip on the Armed row.
+        const skipReasons: ReactNode[] = [];
+        if (skippedStale > 0)
+          skipReasons.push(
+            <>
+              <Count value={skippedStale} /> on a price older than{" "}
+              {LEVEL_PRICE_MAX_AGE_DAYS} days ({STALE_PRICE_LABEL})
+            </>,
+          );
+        if (unpriced > 0)
+          skipReasons.push(
+            <>
+              <Count value={unpriced} /> with no price at all
+            </>,
+          );
+        if (skippedOutOfBand > 0)
+          skipReasons.push(
+            <>
+              <Count value={skippedOutOfBand} /> {BEYOND_SCAN_RANGE_LABEL}
+            </>,
+          );
+        if (unresolvedMa > 0)
+          skipReasons.push(
+            <>
+              <Count value={unresolvedMa} /> moving-average levels with too
+              little bar history to compute the MA
+            </>,
+          );
         setActionStatus(
-          fired > 0
-            ? `Scan complete — ${fired} new alert${fired === 1 ? "" : "s"} fired${
-                deduped > 0 ? ` (${deduped} already alerted today)` : ""
-              }.`
-            : scanned === 0
-              ? totalSkipped > 0
-                ? `Scan complete — evaluated ${evaluated} of ${armed} armed level${
-                    armed === 1 ? "" : "s"
-                  }. ${totalSkipped} skipped: their price is older than ${LEVEL_PRICE_MAX_AGE_DAYS} days (${STALE_PRICE_LABEL})${
-                    unpriced > 0 ? `, ${unpriced} have no price yet` : ""
-                  }. Nothing crossed among the evaluated ones — refresh prices to cover the rest.`
-                : "Scan complete. No levels have been crossed by the current price. This is normal — a level only fires an alert when the price actually reaches it (e.g., a $150 support fires when the price drops to $150). Your levels are still active and being monitored."
-              : `Scan complete — ${scanned} level${scanned === 1 ? "" : "s"} already alerted today; nothing new to report.`
+          fired > 0 ? (
+            <>
+              Scan complete — <Count value={fired} /> new alert
+              {fired === 1 ? "" : "s"} fired
+              {deduped > 0 ? (
+                <>
+                  {" ("}
+                  <Count value={deduped} /> already alerted today)
+                </>
+              ) : null}
+              .
+            </>
+          ) : scanned === 0 ? (
+            totalSkipped > 0 ? (
+              <>
+                Scan complete — evaluated <Count value={evaluated} /> of{" "}
+                <Count value={armed} /> armed level{armed === 1 ? "" : "s"}.{" "}
+                <Count value={totalSkipped} /> skipped:{" "}
+                {skipReasons.map((reason, i) => (
+                  <Fragment key={i}>
+                    {i > 0 ? "; " : ""}
+                    {reason}
+                  </Fragment>
+                ))}
+                . Nothing crossed among the evaluated ones — the skipped
+                levels were never looked at, so they are not evidence either
+                way.
+              </>
+            ) : (
+              "Scan complete. No levels have been crossed by the current price. This is normal — a level only fires an alert when the price actually reaches it (e.g., a $150 support fires when the price drops to $150). Your levels are still active and being monitored."
+            )
+          ) : (
+            <>
+              Scan complete — <Count value={scanned} /> level
+              {scanned === 1 ? "" : "s"} already alerted today; nothing new to
+              report.
+            </>
+          ),
         );
       } else {
         setActionStatus("Scan failed — see console for details.");

@@ -91,6 +91,8 @@ describe("detectAndFireAlerts — scan coverage disclosure", () => {
 
   it("reports zero coverage fields when there are no armed levels at all", () => {
     const result = detectAndFireAlerts(db);
+    // Every ScanCoverage bucket is spread onto the result, so a new bucket
+    // reaches the banner without another hand-listed copy here.
     expect(result).toEqual({
       scanned: 0,
       fired: 0,
@@ -98,6 +100,10 @@ describe("detectAndFireAlerts — scan coverage disclosure", () => {
       armed: 0,
       skippedStale: 0,
       unpriced: 0,
+      skippedOutOfBand: 0,
+      unresolvedMa: 0,
+      totalSkipped: 0,
+      evaluated: 0,
     });
   });
 });
