@@ -103,6 +103,25 @@ export function displaySecurityName(name: string | null | undefined): string {
   return name != null && name.trim() !== "" ? name : "—";
 }
 
+// Share count for a FILE export (Form 8949 CSV Description, TurboTax TXF
+// P-record) — deliberately NOT formatShares. Two differences that matter:
+//   1. No thousands separator. formatShares uses toLocaleString grouping, and
+//      a comma inside the CSV Description field would split the row.
+//   2. Binary-float noise is stripped. A lot quantity that has been through
+//      split/partial-sale arithmetic arrives as 99.99999999999997 or
+//      3.4829999999997354, and printing it raw made a filing document look
+//      untrustworthy (qa:tax-lots-exports--form-8949-csv-txf-print-unrounded-
+//      float-share-counts).
+// Integers print as plain digits; fractions keep up to 4 decimals with
+// trailing zeros trimmed — the same 4-digit resolution formatShares shows on
+// screen, so the export and the table agree. A non-finite value is passed
+// through as-is rather than silently becoming a number the filing would then
+// assert.
+export function formatExportShares(quantity: number): string {
+  if (!Number.isFinite(quantity)) return String(quantity);
+  return String(Number(quantity.toFixed(4)));
+}
+
 export function formatShares(value: number, digits = 0): string {
   if (!Number.isFinite(value)) return "—";
   if (digits === 0) {
