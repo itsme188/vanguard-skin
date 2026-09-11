@@ -39,10 +39,22 @@ describe("formatExportShares (pure)", () => {
     expect(formatExportShares(0.5)).toBe("0.5");
   });
 
-  it("never emits a thousands separator (a comma would break the CSV row)", () => {
+  it("never emits a thousands separator (a comma would corrupt the unescaped TXF P-record)", () => {
     expect(formatExportShares(12345)).toBe("12345");
     expect(formatExportShares(12345.678)).toBe("12345.678");
     expect(formatExportShares(12345)).not.toContain(",");
+  });
+
+  // A quantity that rounds to 0 at the standard 4-decimal resolution but is
+  // NOT actually zero must never print "0" — that reads as a fully-closed
+  // lot when a fractional remainder still exists.
+  it("falls back to 4 significant digits when toFixed(4) would round a non-zero quantity to 0", () => {
+    expect(formatExportShares(0.00004)).toBe("0.00004");
+    expect(formatExportShares(0.000012345)).not.toBe("0");
+  });
+
+  it("still prints a real zero as \"0\"", () => {
+    expect(formatExportShares(0)).toBe("0");
   });
 });
 

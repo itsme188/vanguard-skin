@@ -86,4 +86,26 @@ describe("CanonicalCsvGuide wraps its horizontal scrollers in ScrollFade", () =>
   it("no element in the file still carries a bare overflow-x-auto (ScrollFade owns the scroller)", () => {
     expect(source).not.toContain("overflow-x-auto");
   });
+
+  // 2026-09 follow-up — the column table's ScrollFade had no scrollerClassName
+  // background (unlike the two <code>/<pre> blocks, which sit on bg-raised),
+  // so it faded to the DEFAULT --color-panel while the actual surface behind
+  // it is the enclosing <details>'s bg-canvas — a visible color seam at the
+  // fade edge on a 390px phone.
+  it("the column table's ScrollFade fades to --color-canvas, matching its enclosing <details>", () => {
+    const block = sectionBetweenMarkers(
+      source,
+      "{/* Column table */}",
+      "{/* Constraints */}",
+    );
+    expect(block).toMatch(
+      /<ScrollFade className="\[--scroll-fade-color:var\(--color-canvas\)\]">/,
+    );
+  });
+
+  it("the enclosing <details> for a format section is bg-canvas — the color the fix targets", () => {
+    expect(source).toMatch(
+      /<details className="group rounded-lg border border-edge bg-canvas">/,
+    );
+  });
 });

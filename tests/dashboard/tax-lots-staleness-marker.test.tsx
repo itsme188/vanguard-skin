@@ -13,8 +13,14 @@
  * pass, since it has no hooks of its own — and the page's WIRING is pinned by
  * reading its source (importing the page would open the real database).
  *
- * `usePrivacy` is mocked off a mutable flag: the ledger-change count is a
+ * `usePrivacy` is mocked off a mutable flag: the tax-input-change count is a
  * portfolio-derived count and must mask, while the prose stays readable.
+ *
+ * Wording (2026-09 follow-up): the copy says "tax-input change(s)", not
+ * "ledger change(s)" — the counter (lib/compute/tax-convention.ts,
+ * `tax_input_generation`) "advances on every MATERIAL tax-input mutation",
+ * which includes sync-driven bookkeeping writes, not only entries a user
+ * typed into a ledger.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -48,17 +54,17 @@ describe("TaxLotStalenessNotice", () => {
     expect(render({ stale: false, inputChangesSince: null, reason: null })).toBe("");
   });
 
-  it("names the number of ledger changes the figures predate", () => {
+  it("names the number of tax-input changes the figures predate", () => {
     const html = render({ stale: true, inputChangesSince: 8, reason: "behind" });
     expect(html).toContain("These figures predate");
-    expect(html).toContain("<span>8</span> ledger changes");
+    expect(html).toContain("<span>8</span> tax-input changes");
     expect(html).toContain("press Recompute to refresh them.");
   });
 
-  it("uses the singular for a single ledger change", () => {
+  it("uses the singular for a single tax-input change", () => {
     const html = render({ stale: true, inputChangesSince: 1, reason: "behind" });
-    expect(html).toContain("<span>1</span> ledger change ");
-    expect(html).not.toContain("ledger changes");
+    expect(html).toContain("<span>1</span> tax-input change ");
+    expect(html).not.toContain("tax-input changes");
   });
 
   it("says the figures come from an earlier lot convention, and how far back", () => {
@@ -66,9 +72,9 @@ describe("TaxLotStalenessNotice", () => {
     expect(html).toContain(
       "These figures were computed under an earlier lot convention"
     );
-    // The superseded convention is the headline, but the ledger distance is
-    // the user's ruling and is named too.
-    expect(html).toContain("<span>8</span> ledger changes ago");
+    // The superseded convention is the headline, but the tax-input distance
+    // is the user's ruling and is named too.
+    expect(html).toContain("<span>8</span> tax-input changes ago");
     expect(html).toContain("press Recompute to refresh them.");
   });
 
@@ -78,7 +84,7 @@ describe("TaxLotStalenessNotice", () => {
       "These figures were computed under an earlier lot convention"
     );
     expect(html).toContain("press Recompute to refresh them.");
-    expect(html).not.toContain("ledger change");
+    expect(html).not.toContain("tax-input change");
   });
 
   it("says the figures carry no recompute stamp at all", () => {
@@ -94,10 +100,10 @@ describe("TaxLotStalenessNotice", () => {
     expect(html).not.toContain("—</span>"); // never an empty <Count> dash
   });
 
-  it("masks the ledger-change count in privacy mode, keeping the prose", () => {
+  it("masks the tax-input-change count in privacy mode, keeping the prose", () => {
     privacyState.isPrivate = true;
     const html = render({ stale: true, inputChangesSince: 8, reason: "behind" });
-    expect(html).toContain(`<span>${MASK}</span> ledger changes`);
+    expect(html).toContain(`<span>${MASK}</span> tax-input changes`);
     expect(html).not.toContain(">8<");
     expect(html).toContain("press Recompute to refresh them.");
   });

@@ -223,6 +223,9 @@ export function NotesView({
   }
 
   // ─── Update note ───────────────────────────────────────────────
+  // Same shape as handleCreate: both awaits carry their own .catch so a
+  // failure is classified where it happens, never surfaced as a raw
+  // err.message ("Failed to fetch" / an unparseable body's SyntaxError).
 
   async function handleUpdate(id: number) {
     if (!editContent.trim()) return;
@@ -232,17 +235,36 @@ export function NotesView({
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, content: editContent.trim() }),
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
+      }).catch(() => null);
+      if (!res) {
+        toast(describeNoteSaveFailure({ kind: "network", action: "update" }), "error");
+        return;
+      }
+
+      const data = (await res.json().catch(() => null)) as
+        | { success?: boolean; error?: unknown }
+        | null;
+      if (!res.ok || !data?.success) {
+        toast(
+          describeNoteSaveFailure({
+            kind: "server",
+            status: res.status,
+            error: data?.error,
+            action: "update",
+          }),
+          "error",
+        );
+        return;
+      }
 
       setEditingId(null);
       toast("Note updated", "success");
       startTransition(() => {
         router.refresh();
       });
-    } catch (err) {
-      toast(err instanceof Error ? err.message : "Failed to update note", "error");
+    } catch {
+      // Safety net only — every await above is already guarded.
+      toast(describeNoteSaveFailure({ kind: "unknown", action: "update" }), "error");
     }
   }
 
@@ -250,16 +272,37 @@ export function NotesView({
 
   async function handleDelete(id: number) {
     try {
-      const res = await apiFetch(`/api/notes?id=${id}`, { method: "DELETE" });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
+      const res = await apiFetch(`/api/notes?id=${id}`, { method: "DELETE" }).catch(
+        () => null,
+      );
+      if (!res) {
+        toast(describeNoteSaveFailure({ kind: "network", action: "delete" }), "error");
+        return;
+      }
+
+      const data = (await res.json().catch(() => null)) as
+        | { success?: boolean; error?: unknown }
+        | null;
+      if (!res.ok || !data?.success) {
+        toast(
+          describeNoteSaveFailure({
+            kind: "server",
+            status: res.status,
+            error: data?.error,
+            action: "delete",
+          }),
+          "error",
+        );
+        return;
+      }
 
       toast("Note deleted", "success");
       startTransition(() => {
         router.refresh();
       });
-    } catch (err) {
-      toast(err instanceof Error ? err.message : "Failed to delete note", "error");
+    } catch {
+      // Safety net only — every await above is already guarded.
+      toast(describeNoteSaveFailure({ kind: "unknown", action: "delete" }), "error");
     }
   }
 
@@ -486,13 +529,19 @@ export function NotesView({
 // Security page with only ?symbol= claimed a filter was active that "clear
 // it" could not clear.
 /**
- * Domain-language copy for a note save that did not succeed (QA 2026-09-07,
- * finding research-notes-composer--raw-failed-to-fetch-error-text).
+ * Domain-language copy for a note create/update/delete that did not succeed
+ * (QA 2026-09-07, finding research-notes-composer--raw-failed-to-fetch-error-text).
  *
  * The composer used to print `err.message`, so a network-level failure showed
  * the browser's raw "Failed to fetch" between the Tags input and the Save
- * Note button. Mirrors the wording the Documents tag editor already uses for
- * the same two failures (see ResearchDocumentsView.tsx::commit).
+ * Note button — and the edit/delete handlers had the same defect one layer
+ * worse (a `throw new Error(data.error)` off an UNCHECKED `res.ok`, so a
+ * non-JSON 500 threw a raw SyntaxError into the toast instead). Mirrors the
+ * wording the Documents tag editor already uses for the same two failures
+ * (see ResearchDocumentsView.tsx::commit).
+ *
+ * `action` picks the subject verb — defaults to "save" (the create-note
+ * composer's error strip); "update"/"delete" are the edit/delete toasts.
  *
  * A 4xx body is echoed — those are this route's validation messages
  * ("Missing required fields: note_type, content") and the user can act on
@@ -502,13 +551,23 @@ export function NotesView({
  * without a DOM harness.
  */
 export function describeNoteSaveFailure(
-  failure:
+  failure: (
     | { kind: "network" }
     | { kind: "server"; status: number; error?: unknown }
-    | { kind: "unknown" },
+    | { kind: "unknown" }
+  ) & { action?: "save" | "update" | "delete" },
 ): string {
+  const action = failure.action ?? "save";
+  const verb = action === "update" ? "update" : action === "delete" ? "delete" : "save";
+  const retryTail =
+    action === "delete"
+      ? "Try again."
+      : action === "update"
+        ? "Your changes are still here — try again."
+        : "Your note is still here — try again.";
+
   if (failure.kind === "network") {
-    return "Couldn't save the note: could not reach the server. Your note is still here — try again.";
+    return `Couldn't ${verb} the note: could not reach the server. ${retryTail}`;
   }
   if (failure.kind === "server") {
     const detail =
@@ -518,10 +577,10 @@ export function describeNoteSaveFailure(
         ? failure.error.trim()
         : null;
     return detail
-      ? `Couldn't save the note: ${detail}`
-      : `Couldn't save the note (server returned ${failure.status}). Your note is still here — try again.`;
+      ? `Couldn't ${verb} the note: ${detail}`
+      : `Couldn't ${verb} the note (server returned ${failure.status}). ${retryTail}`;
   }
-  return "Couldn't save the note — something went wrong. Your note is still here — try again.";
+  return `Couldn't ${verb} the note — something went wrong. ${retryTail}`;
 }
 
 export function notesListIsFiltered(params: {

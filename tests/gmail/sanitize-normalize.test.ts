@@ -4,6 +4,7 @@ import {
   normalizeNewsletterHtml,
   visibleHtmlTextLength,
   htmlHidesStoredText,
+  visibleTextLength,
 } from "@/lib/gmail/sanitize";
 
 /**
@@ -340,5 +341,46 @@ describe("visibleHtmlTextLength / htmlHidesStoredText (blank expand-panel fallba
     const styleOnly = "<html><head><style>.a{}</style></head><body></body></html>";
     expect(htmlHidesStoredText(styleOnly, null)).toBe(false);
     expect(htmlHidesStoredText(styleOnly, "")).toBe(false);
+  });
+});
+
+// QA 2026-09-07 follow-up — the Research Mentions expand panel gated its
+// plain-text fallback on `text ? <div>{text}</div> : <EmptyState/>`, a bare
+// truthiness test. A raw_text that is non-empty but ENTIRELY invisible
+// preheader padding is truthy, so it rendered a visually blank div instead
+// of "No article body was stored". visibleTextLength is the plain-text
+// sibling of visibleHtmlTextLength, letting a caller gate on rendered
+// length instead of string length.
+describe("visibleTextLength (plain-text preheader-padding gate)", () => {
+  // Written as \uNNNN escapes on purpose — a raw byte here would be
+  // invisible to the next reader of this file (same convention as the
+  // PREHEADER_PAD constant above).
+  const PREHEADER_PAD = "\u034F\u00AD\u200B\uFEFF";
+
+  it("returns 0 for null or empty input", () => {
+    expect(visibleTextLength(null)).toBe(0);
+    expect(visibleTextLength("")).toBe(0);
+  });
+
+  it("returns 0 for a string that is entirely invisible padding", () => {
+    expect(visibleTextLength(PREHEADER_PAD.repeat(500))).toBe(0);
+  });
+
+  it("returns 0 for whitespace-only input", () => {
+    expect(visibleTextLength("   \n\t  ")).toBe(0);
+  });
+
+  it("counts real text, excluding padding and surrounding whitespace", () => {
+    const text = `  Hello world  ${PREHEADER_PAD.repeat(50)}`;
+    expect(visibleTextLength(text)).toBe("Hello world".length);
+  });
+
+  it("agrees with htmlHidesStoredText's own raw_text measurement", () => {
+    // htmlHidesStoredText treats a raw_text this shape as "nothing better to
+    // show" — visibleTextLength must classify it the same way (0).
+    const html = "<html><body><p>hi</p></body></html>";
+    const paddingOnlyText = PREHEADER_PAD.repeat(500);
+    expect(visibleTextLength(paddingOnlyText)).toBe(0);
+    expect(htmlHidesStoredText(html, paddingOnlyText)).toBe(false);
   });
 });

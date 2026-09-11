@@ -106,7 +106,10 @@ export function displaySecurityName(name: string | null | undefined): string {
 // Share count for a FILE export (Form 8949 CSV Description, TurboTax TXF
 // P-record) — deliberately NOT formatShares. Two differences that matter:
 //   1. No thousands separator. formatShares uses toLocaleString grouping, and
-//      a comma inside the CSV Description field would split the row.
+//      the TXF P-record embeds this string UNESCAPED (generateTXF just does
+//      `P${row.description}` — no quoting, unlike the CSV path's escapeCSV,
+//      which already wraps a comma-bearing field in quotes) — a comma here
+//      would corrupt that line.
 //   2. Binary-float noise is stripped. A lot quantity that has been through
 //      split/partial-sale arithmetic arrives as 99.99999999999997 or
 //      3.4829999999997354, and printing it raw made a filing document look
@@ -116,10 +119,15 @@ export function displaySecurityName(name: string | null | undefined): string {
 // trailing zeros trimmed — the same 4-digit resolution formatShares shows on
 // screen, so the export and the table agree. A non-finite value is passed
 // through as-is rather than silently becoming a number the filing would then
-// assert.
+// assert. A genuinely non-zero quantity that rounds to 0 at 4 decimals (e.g.
+// a fractional-share remainder of 0.00004) falls back to 4 SIGNIFICANT
+// digits instead — toFixed(4) alone would silently print "0" for a lot that
+// is not actually closed to zero.
 export function formatExportShares(quantity: number): string {
   if (!Number.isFinite(quantity)) return String(quantity);
-  return String(Number(quantity.toFixed(4)));
+  const rounded = Number(quantity.toFixed(4));
+  if (rounded === 0 && quantity !== 0) return String(Number(quantity.toPrecision(4)));
+  return String(rounded);
 }
 
 export function formatShares(value: number, digits = 0): string {

@@ -124,7 +124,35 @@ describe("EarningsHubRefreshButton source — frame parsing and outcome lifecycl
     expect(src).not.toMatch(/<Money|<Pct|<Shares|<Count|<PrivateText/);
   });
 
-  it("hovering the outcome span exposes the joined error strings via title", () => {
-    expect(src).toMatch(/title=\{outcome\.title\}/);
+  // 2026-09 follow-up (CLAUDE.md: hover-only affordances are touch
+  // tap-traps) — the joined error strings used to live only in a `title`
+  // attribute on the outcome span, unreachable on a phone. A <details> makes
+  // the same content reachable by tap while keeping the one-line outcome as
+  // the always-visible summary.
+  it("no longer hides the joined error strings behind a hover-only title", () => {
+    expect(src).not.toMatch(/title=\{outcome\.title\}/);
+  });
+
+  it("renders the errors as a click-to-expand <details>, keyed on outcome.title", () => {
+    const block = src.slice(
+      src.indexOf("{!progress && outcome && ("),
+      src.indexOf("{error && "),
+    );
+    expect(block).toMatch(/outcome\.title\s*\?/);
+    expect(block).toContain("<details");
+    expect(block).toContain("<summary");
+    expect(block).toContain("{outcome.text}");
+    expect(block).toContain("{outcome.title}");
+  });
+
+  it("falls back to a plain one-line span when there is nothing to expand", () => {
+    const block = src.slice(
+      src.indexOf("{!progress && outcome && ("),
+      src.indexOf("{error && "),
+    );
+    // The ternary's else branch: a bare span with no <details>/<summary>.
+    const elseBranch = block.slice(block.indexOf(") : ("));
+    expect(elseBranch).not.toContain("<details");
+    expect(elseBranch).toContain("{outcome.text}");
   });
 });

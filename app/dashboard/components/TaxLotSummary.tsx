@@ -38,7 +38,7 @@ export function TaxLotStalenessNotice({
           These figures were computed under an earlier lot convention
           {n != null ? (
             <>
-              , <Count value={n} /> ledger change{n !== 1 ? "s" : ""} ago
+              , <Count value={n} /> tax-input change{n !== 1 ? "s" : ""} ago
             </>
           ) : null}
           {" — press Recompute to refresh them."}
@@ -47,7 +47,12 @@ export function TaxLotStalenessNotice({
         <>These figures have no recompute stamp — press Recompute to refresh them.</>
       ) : n != null ? (
         <>
-          These figures predate <Count value={n} /> ledger change
+          {/* "Tax-input change" (not "ledger change") to match the counter's
+              own definition (lib/compute/tax-convention.ts: "the generation
+              counter advances on every MATERIAL tax-input mutation") — it
+              also counts sync-driven bookkeeping writes, not just entries a
+              user typed into a ledger. */}
+          These figures predate <Count value={n} /> tax-input change
           {n !== 1 ? "s" : ""} — press Recompute to refresh them.
         </>
       ) : (
