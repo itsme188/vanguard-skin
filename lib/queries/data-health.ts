@@ -337,6 +337,14 @@ export function getCrossSourceDiscrepancies(
  * number with itself. Only a statement import can genuinely disagree with
  * the computed total, so live-sourced rows are excluded entirely rather
  * than merely flagged.
+ *
+ * The source is COALESCEd to 'manual' first (2026-09-11): `source` carries a
+ * `DEFAULT 'manual'`, but SQLite bypasses a column default on an explicit
+ * `INSERT NULL` (the repo-wide caveat that also forces
+ * `COALESCE(s.multiplier, 1)`), and `NULL NOT IN (...)` evaluates to NULL —
+ * never true. A hand-entered snapshot row that wrote an explicit NULL source
+ * was therefore dropped from the reconciliation panel entirely: the one class
+ * of row that CAN disagree with the computed total, silently invisible.
  */
 export function getSnapshotReconciliation(
   db: Database.Database,
@@ -365,7 +373,7 @@ export function getSnapshotReconciliation(
       LEFT JOIN daily_valuations dv
         ON dv.account_id = ms.account_id
         AND dv.valuation_date = ms.month_end_date
-      WHERE ${excludeLiveSnapshotsSql("ms.source")}
+      WHERE ${excludeLiveSnapshotsSql("COALESCE(ms.source, 'manual')")}
       ORDER BY ms.month_end_date DESC, a.name
       `,
     )

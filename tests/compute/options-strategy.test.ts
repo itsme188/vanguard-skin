@@ -259,6 +259,13 @@ describe("detectStrategies", () => {
   // the covered shares carry the (stock - strike) loss; every contract's
   // premium is spent regardless, and puts beyond the share count are outright
   // long puts capped at their own premium.
+  //
+  // 2026-09-11 landing review, round 2: the first fix then swung too far and
+  // priced ONLY the covered shares — an under-hedge's naked shares vanished
+  // from the worst case, so 250 shares behind a single put reported the loss
+  // of a 100-share position. The strategy's legs are the whole stock line, so
+  // maxLoss must carry the uncovered shares to zero as well, and breakeven
+  // must spread the premium over every share held.
   describe("protective put max loss sizing", () => {
     it("over-hedged: 5 puts cover more shares than are held", () => {
       const positions = [
@@ -278,41 +285,58 @@ describe("detectStrategies", () => {
     });
 
     it("fully covered: puts cover exactly the held shares", () => {
+      // 200 shares behind 2 puts x 100 = every share hedged, no naked stub.
+      // (The fixture used to hold 250 shares, which is a 50-share UNDER-hedge
+      // — it never exercised the uncovered === 0 boundary this test names.)
       const positions = [
-        stock("QAAA", 250, 82.67),
+        stock("QAAA", 200, 82.67),
         option("QAAA", "PUT", 72, 2, { price: 0.07 }),
       ];
       const strategies = detectStrategies(positions);
       const pp = strategies[0];
-      // (82.67 - 72) * 200 covered shares + 0.07 * 100 * 2 premium
+      // (82.67 - 72) * 200 covered shares + 0.07 * 100 * 2 premium, no
+      // uncovered shares to carry down
       expect(pp.maxLoss).toBeCloseTo(2148, 2);
+      // premium spreads over every share held: 82.67 + 14/200
+      expect(pp.breakevens[0]).toBeCloseTo(82.74, 2);
       expect(pp.description).not.toContain("cover");
+      expect(pp.description).not.toContain("unhedged");
     });
 
-    it("under-hedged: puts cover fewer shares than are held", () => {
+    it("under-hedged: the 150 naked shares carry their full cost into max loss", () => {
       const positions = [
         stock("QAAA", 250, 82.67),
         option("QAAA", "PUT", 72, 1, { price: 0.07 }),
       ];
       const strategies = detectStrategies(positions);
       const pp = strategies[0];
-      // (82.67 - 72) * 100 covered shares + 0.07 * 100 * 1 premium
-      expect(pp.maxLoss).toBeCloseTo(1074, 2);
-      expect(pp.description).not.toContain("cover");
+      // One put hedges 100 of the 250 shares. Worst case is the stock at 0:
+      // the hedged 100 are made whole at the 72 strike (100 x 10.67 = 1,067
+      // lost), the naked 150 lose their whole cost (150 x 82.67 = 12,400.50),
+      // and the 7.00 premium is spent either way -> 13,474.50. Pricing only
+      // the covered shares reported 1,074 — a twelvefold understatement of the
+      // worst case on the same position.
+      expect(pp.maxLoss).toBeCloseTo(13474.5, 2);
+      // premium spreads over every share held: 82.67 + 7/250 = 82.698
+      expect(pp.breakevens[0]).toBeCloseTo(82.698, 3);
+      // the description has to say the position is only part-hedged
+      expect(pp.description).toContain("150 sh unhedged");
     });
 
-    it("in-the-money put: only the time value is at risk on the covered shares", () => {
+    it("under-hedged in-the-money put: the hedged shares risk only time value, the naked ones risk everything", () => {
       const positions = [
         stock("QAAA", 250, 82.67),
         option("QAAA", "PUT", 90, 1, { price: 8 }),
       ];
       const strategies = detectStrategies(positions);
       const pp = strategies[0];
-      // strike (90) above spot (82.67): the put's 7.33 intrinsic nets against
-      // the 8.00 premium on the 100 covered shares -> 0.67 x 100 = 67. For any
-      // expiry price at or below 90 the stock loss and the put payoff offset
-      // exactly; above 90 the stock gain outruns the lost premium.
-      expect(pp.maxLoss).toBeCloseTo(67, 2);
+      // strike (90) above spot (82.67): on the 100 covered shares the put's
+      // 7.33 intrinsic nets against the 8.00 premium, so only 0.67 x 100 = 67
+      // of time value is at risk there. The stock loss and the put payoff
+      // offset exactly only on those 100 shares — the other 150 are naked and
+      // lose their full 82.67 cost if the stock goes to zero:
+      // 100 x (82.67 - 90) + 150 x 82.67 + 800 = 12,467.50.
+      expect(pp.maxLoss).toBeCloseTo(12467.5, 2);
     });
 
     it("over-hedged in-the-money put: extra contracts add their full premium", () => {

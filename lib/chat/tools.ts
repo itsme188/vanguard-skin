@@ -39,6 +39,11 @@ import {
 } from "@/lib/queries/analyst-estimates";
 import { syncAnalystCoverage } from "@/lib/apis/analyst-estimates";
 import { getRecentReleaseReactions } from "@/lib/queries/level-performance";
+import {
+  isUsableReactionLeg,
+  parseReactionSnapshot,
+  type ReactionSnapshot,
+} from "@/lib/calendar/reaction-snapshot-core";
 import { getMarketSnapshot, fetchYahooQuotes } from "@/lib/queries/market-snapshot";
 
 // research_articles.key_themes is stored JSON, but a mangled row (the
@@ -52,6 +57,43 @@ function parseKeyThemesField(raw: string): unknown {
   } catch {
     return raw;
   }
+}
+
+/**
+ * Strip every unusable benchmark leg out of a stored reaction snapshot before
+ * the chat model ever sees it.
+ *
+ * Legacy rows (written before the write-side guard landed) zero-fill a leg
+ * whose bars never arrived: `{t_pre:0, t_post:0, delta_pct:0}`. Handed to the
+ * model as-is, that reads as a genuine FLAT market reaction — the model can
+ * then tell the user "SPY was unchanged on the print" when the truth is that
+ * we have no measurement at all. isUsableReactionLeg is the shared predicate
+ * the recap email (lib/digest/send-earnings-email.ts) and the weekly briefing
+ * (lib/calendar/briefing.ts) already filter through; the chat tool must not
+ * fork it. A snapshot with no surviving leg carries no reaction information,
+ * so it collapses to null rather than shipping bare metadata.
+ */
+function sanitizeReactionSnapshotForChat(
+  raw: string | null,
+): Partial<ReactionSnapshot> | null {
+  const snap = parseReactionSnapshot(raw);
+  if (!snap) return null;
+
+  const clean: Partial<ReactionSnapshot> = {};
+  if (isUsableReactionLeg(snap.spy)) clean.spy = snap.spy;
+  if (isUsableReactionLeg(snap.qqq)) clean.qqq = snap.qqq;
+  if (isUsableReactionLeg(snap.tlt)) clean.tlt = snap.tlt;
+  if (isUsableReactionLeg(snap.sector)) clean.sector = snap.sector;
+  if (isUsableReactionLeg(snap.symbol)) clean.symbol = snap.symbol;
+  if (Object.keys(clean).length === 0) return null;
+
+  // Metadata rides along only when at least one real leg survived — it is
+  // context for the deltas, never a substitute for them.
+  if (snap.t0_utc) clean.t0_utc = snap.t0_utc;
+  if (snap.window_min) clean.window_min = snap.window_min;
+  if (snap.source) clean.source = snap.source;
+  if (snap.pre_anchor) clean.pre_anchor = snap.pre_anchor;
+  return clean;
 }
 
 // ─── Tool Definitions ─────────────────────────────────────────────
@@ -1370,12 +1412,34 @@ export async function executeTool(
           detectStrategies(legs)
         );
 
+        // Coverage gate, mirroring app/dashboard/components/OptionsGreeksCard.tsx:
+        // computePortfolioGreeks initializes the four totals at 0 and only adds
+        // to them for a position that actually SOLVED. When an option book
+        // exists but nothing could be priced, those zeros are the untouched
+        // initializers, not a flat exposure — handed to the model unqualified
+        // they become an affirmative "the book is delta-neutral" claim over a
+        // position whose risk is simply unknown. Report the counts always, and
+        // null the totals out (with a note) when nothing priced. With no option
+        // positions at all the zeros ARE the truth, so they stand.
+        const noGreeksCoverage =
+          greeks.totalPositions > 0 && greeks.computedPositions === 0;
+        const partialGreeksCoverage =
+          !noGreeksCoverage && greeks.computedPositions < greeks.totalPositions;
+        const greeksNote = noGreeksCoverage
+          ? "no position could be priced"
+          : partialGreeksCoverage
+            ? `greeks solved for ${greeks.computedPositions} of ${greeks.totalPositions} positions`
+            : null;
+
         rawResult = {
           portfolio: {
-            totalDelta: greeks.totalDelta,
-            totalGamma: greeks.totalGamma,
-            totalTheta: greeks.totalTheta,
-            totalVega: greeks.totalVega,
+            totalDelta: noGreeksCoverage ? null : greeks.totalDelta,
+            totalGamma: noGreeksCoverage ? null : greeks.totalGamma,
+            totalTheta: noGreeksCoverage ? null : greeks.totalTheta,
+            totalVega: noGreeksCoverage ? null : greeks.totalVega,
+            computedPositions: greeks.computedPositions,
+            totalPositions: greeks.totalPositions,
+            note: greeksNote,
           },
           positions: positions.map((p) => ({
             symbol: p.symbol,
@@ -1638,14 +1702,9 @@ export async function executeTool(
           limit: (input.limit as number) ?? 10,
         });
         const decoded = rows.map((r) => {
-          let reaction: unknown = null;
-          if (r.reaction_snapshot) {
-            try {
-              reaction = JSON.parse(r.reaction_snapshot);
-            } catch {
-              reaction = null;
-            }
-          }
+          // Never hand the model a raw snapshot: a zero-filled legacy leg is
+          // a fabricated flat move (see sanitizeReactionSnapshotForChat).
+          const reaction = sanitizeReactionSnapshotForChat(r.reaction_snapshot);
           return {
             event_id: r.event_id,
             title: r.title,

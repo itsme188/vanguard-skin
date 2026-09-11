@@ -87,6 +87,52 @@ describe("getSnapshotReconciliation — live-source exclusion", () => {
     expect(result.find((r) => r.accountName === "Test IBKR Live")).toBeUndefined();
   });
 
+  // Landing review 2026-09-11: `monthly_snapshots.source` carries a
+  // `DEFAULT 'manual'`, but SQLite bypasses a column default on an explicit
+  // `INSERT NULL` (the same caveat that forces COALESCE(s.multiplier, 1)
+  // everywhere). `NULL NOT IN ('tws','plaid')` evaluates to NULL — never
+  // true — so the raw predicate silently dropped those rows from the panel:
+  // a hand-entered snapshot is exactly the kind of row that CAN disagree
+  // with the computed total, and it was the one class made invisible.
+  it("includes a snapshot row whose source was written as an explicit NULL", () => {
+    const acct = seedAccount("Test Explicit Null Source");
+    db.prepare(
+      `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source)
+       VALUES (?, ?, ?, NULL)`,
+    ).run(acct, "2025-08-31", 40000);
+    seedValuation(acct, "2025-08-31", 35000, 2000); // computed 37000
+
+    // Pin the premise: the explicit NULL really did bypass DEFAULT 'manual'.
+    const stored = db
+      .prepare("SELECT source FROM monthly_snapshots WHERE account_id = ?")
+      .get(acct) as { source: string | null };
+    expect(stored.source).toBeNull();
+
+    const result = getSnapshotReconciliation(db);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].accountName).toBe("Test Explicit Null Source");
+    expect(result[0].snapshotTotal).toBe(40000);
+    expect(result[0].computedTotal).toBe(37000);
+    expect(result[0].difference).toBe(-3000);
+  });
+
+  it("still excludes live sources when a NULL-source row is present", () => {
+    const nullAcct = seedAccount("Test Null Source");
+    db.prepare(
+      `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source)
+       VALUES (?, ?, ?, NULL)`,
+    ).run(nullAcct, "2025-08-31", 40000);
+    seedValuation(nullAcct, "2025-08-31", 35000, 2000);
+
+    const liveAcct = seedAccount("Test Plaid Live");
+    seedSnapshot(liveAcct, "2025-08-31", 50000, "plaid");
+    seedValuation(liveAcct, "2025-08-31", 45000, 5000);
+
+    const names = getSnapshotReconciliation(db).map((r) => r.accountName);
+    expect(names).toEqual(["Test Null Source"]);
+  });
+
   it("returns an empty array when every monthly_snapshots row is live-sourced", () => {
     const acct = seedAccount("Test TWS Only");
     seedSnapshot(acct, "2025-07-31", 75000, "tws");
