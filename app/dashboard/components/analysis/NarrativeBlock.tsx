@@ -4,13 +4,16 @@ import { useCallback, useEffect, useState } from "react";
 import { PrivateText } from "@/lib/privacy/components";
 import { formatGeneratedAt, parseDbTimestamp } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
+import {
+  describeRefreshFailure,
+  NARRATIVE_SUBJECT,
+} from "./refresh-failure-message";
 
 interface Props {
   scope: string;
   surfaceKey: "factor-analysis" | "risk-metrics" | "position-risk" | "factor-heatmap" | "defense";
 }
 
-const MS_PER_HOUR = 60 * 60 * 1000;
 const MS_PER_MINUTE = 60 * 1000;
 
 /**
@@ -44,48 +47,6 @@ function driftDetail(surfaceKey: Props["surfaceKey"]): string {
   return surfaceKey === "defense"
     ? "the hedge book or coverage numbers no longer match"
     : "the numbers on this card no longer match";
-}
-
-/**
- * Domain-language status for a refresh that did NOT succeed (QA 2026-09-07,
- * finding analysis-factor-narrative--refresh-regenerate-429-silent-no-feedback).
- *
- * Every non-OK response and the network-level catch come through here, so the
- * card can never answer a click with silence, with a bare protocol token
- * ("rate-limited"), or with the browser's raw TypeError ("Failed to fetch").
- * Raw server/model text is deliberately dropped rather than echoed: a
- * generation failure carries model prose, and this card renders inside the
- * privacy-masked analysis surfaces.
- *
- * `status` is the HTTP status, or 0 for "the request never completed".
- * The POST route answers 429 with `retryAfter` in milliseconds
- * (app/api/analysis/narrative/route.ts — REGEN_WINDOW_MS is 24h), which is
- * the only wait figure the API offers; it sends no Retry-After header.
- */
-export function describeRefreshFailure(
-  status: number,
-  data: { error?: unknown; retryAfter?: unknown } | null | undefined,
-): string {
-  if (status === 429) {
-    const limit = "Can't regenerate yet — this narrative refreshes once a day.";
-    const ms =
-      typeof data?.retryAfter === "number" && Number.isFinite(data.retryAfter) && data.retryAfter > 0
-        ? data.retryAfter
-        : 0;
-    if (ms <= 0) return `${limit} Try again later.`;
-    if (ms < MS_PER_MINUTE) return `${limit} Try again in under a minute.`;
-    if (ms < MS_PER_HOUR) {
-      // Round UP so the figure is always "at most this long left".
-      const minutes = Math.ceil(ms / MS_PER_MINUTE);
-      return `${limit} Try again in about ${minutes} minute${minutes === 1 ? "" : "s"}.`;
-    }
-    const hours = Math.ceil(ms / MS_PER_HOUR);
-    return `${limit} Try again in about ${hours}h.`;
-  }
-  if (status === 0) {
-    return "Couldn't regenerate the narrative — could not reach the server. Try again.";
-  }
-  return "Couldn't regenerate the narrative — the request failed. Try again in a few minutes.";
 }
 
 export function NarrativeBlock({ scope, surfaceKey }: Props) {
@@ -134,12 +95,12 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
         // simply stays visible alongside this). One helper covers the
         // rate limit and every other non-OK status, so no response can
         // reach the card as a bare token or as nothing at all.
-        setRefreshError(describeRefreshFailure(res.status, data));
+        setRefreshError(describeRefreshFailure(NARRATIVE_SUBJECT, res.status, data));
       }
     } catch {
       // Network-level failure (offline, server restarting mid-click). The
       // browser's raw message ("Failed to fetch") is not domain language.
-      setRefreshError(describeRefreshFailure(0, null));
+      setRefreshError(describeRefreshFailure(NARRATIVE_SUBJECT, 0, null));
     } finally {
       setRefreshing(false);
     }
