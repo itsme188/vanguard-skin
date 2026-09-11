@@ -50,8 +50,21 @@ export interface BenchmarkReaction {
  * 100.002) still passes as "usable" because both sides are finite and
  * positive. It only rules out the zero/negative/non-finite sentinel class.
  *
- * Worker mirror: workers/cron/src/fallback-earnings.ts keeps a local copy
- * (the Worker can't import from lib/) — change both sides together.
+ * THIS FILE IS THE SOURCE. Three hand copies exist because the Worker
+ * can't import from lib/ (no Next path alias across the Cloudflare Workers
+ * boundary) and because two push composers are deliberately dependency-free:
+ *
+ *   - workers/cron/src/reaction-leg.ts — the Worker's shared copy, imported
+ *     by fallback-earnings.ts (scoreboard + recap gate) and yahoo.ts (the
+ *     Worker's own capture path). Parity-pinned by
+ *     workers/cron/test/reaction-leg-parity.test.ts, which runs a behavior
+ *     table against this implementation AND that one.
+ *   - lib/alerts/print-push-message.ts — inlined in the Mac push composer.
+ *   - workers/cron/src/print-push-message.ts — inlined in its Worker twin.
+ *
+ * Change all four together. (Earlier revisions of this comment named
+ * fallback-earnings.ts, which has imported the predicate from
+ * reaction-leg.ts since that module was extracted — it holds no copy.)
  */
 export function isUsableReactionLeg(
   leg: BenchmarkReaction | null | undefined,

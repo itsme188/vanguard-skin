@@ -245,7 +245,7 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
   const detail = pricedToday === totalHeld
     ? `All ${totalHeld} securities priced today`
     : pricedRecent === totalHeld
-      ? `All ${totalHeld} securities priced within 3 days`
+      ? `All ${totalHeld} securities priced within ${RECENT_PRICE_WINDOW_DAYS} days`
       : `${pricedRecent}/${totalHeld} securities have recent prices`;
 
   const guidance =

@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { GroupedTrade } from "@/lib/compute/trade-roundtrips";
+import { PRICED_BAR_SQL } from "@/lib/queries/ohlcv";
 
 interface TradeMarketContext {
   symbol: string;
@@ -266,11 +267,21 @@ function getStockPriceContext(
   // exit price, which the AI then narrates as a "gap-through.")
   const byDate = new Map<string, { high: number; low: number }>();
 
+  // PRICED_BAR_SQL (2026-09-11, PR #72 review): a legacy zero-priced bar
+  // (real open/high, low = 0 AND close = 0 — see the constant's doc) would
+  // set this date's low to 0 and make `periodLow` 0 for the whole window,
+  // which then goes into the AI's prompt as a real market low and gets
+  // narrated as a crash the security never had. A corrupt bar is dropped
+  // here rather than clamped, so the `prices` fill-in below covers that
+  // date from the other pipeline when it can — the same "prefer whichever
+  // table actually covers the date" logic, applied to a bar that carries no
+  // usable price.
   const ohlcv = db
     .prepare(
       `SELECT bar_date, high, low
        FROM ohlcv_bars
        WHERE security_id = ? AND bar_date >= ? AND bar_date <= ? AND bar_size = '1 day'
+         AND ${PRICED_BAR_SQL}
        ORDER BY bar_date`
     )
     .all(securityId, startDate, endDate) as Array<{

@@ -4,22 +4,38 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 /**
- * Shared read-side corrupt-bar guard. Mirrors `isSaneBar` in
- * `lib/mutations/ohlcv.ts::upsertOhlcvBars` exactly (finite-positive OHLC +
- * `high >= low`) — that write guard has only rejected NEW bars since
- * 2026-09-06, so bars stored before that date can still carry the defect
- * (real open/high, low = 0 AND close = 0; six such rows are known to exist
- * for one security as of 2026-09-06). It is the strictly stronger form of
- * `get52WeekRange`'s own inline predicate (`low > 0 AND high > 0`) —
- * `get52WeekRange` deliberately keeps its own shipped, tested aggregate
- * form; do not replace it with this constant.
+ * Shared read-side corrupt-bar guard — the SQL counterpart of `isSaneBar` in
+ * `lib/mutations/ohlcv.ts::upsertOhlcvBars`. That write guard has only
+ * rejected NEW bars since 2026-09-06, so bars stored before that date can
+ * still carry the defect (real open/high, low = 0 AND close = 0; six such
+ * rows are known to exist for one security as of 2026-09-06).
  *
- * Applied to the three readers that hand bars straight to a consumer
+ * NOT an exact mirror, and cannot be: `isSaneBar` also demands
+ * `Number.isFinite` on each leg, which SQL has no way to express (SQLite
+ * stores an IEEE Infinity/NaN as a REAL that compares `> 0` or as NULL
+ * respectively). This predicate covers the positive-OHLC + `high >= low`
+ * half — the only half the legacy zero-priced defect class needs. A
+ * hypothetical stored `+Infinity` high would still pass here; nothing has
+ * ever been observed to write one, and the write guard now blocks it.
+ * It is the strictly stronger form of `get52WeekRange`'s own inline
+ * predicate (`low > 0 AND high > 0`) — `get52WeekRange` deliberately keeps
+ * its own shipped, tested aggregate form; do not replace it with this
+ * constant.
+ *
+ * Applied to the three readers here that hand bars straight to a consumer
  * (candlestick series, "most recent bar" displays, recent-window slices):
  * `getOhlcvBars`, `getRecentOhlcvBars`, `getLatestDailyBar`. Deliberately
  * NOT applied to `getLatestOhlcvDate` — see the comment there.
+ *
+ * Exported (2026-09-11) because two readers OUTSIDE this module read
+ * `ohlcv_bars` and feed the result into a number the desk acts on:
+ * `lib/alerts/resolve-level-price.ts::computeMovingAverage` (a zero close
+ * drags an SMA/EMA level and changes whether an alert fires) and
+ * `lib/trade-review/market-context.ts` (a zero low becomes `periodLow: 0`
+ * in the AI's prompt). Assumes an `ohlcv_bars` row in the enclosing query's
+ * scope, unaliased or aliased so the bare column names resolve.
  */
-const PRICED_BAR_SQL =
+export const PRICED_BAR_SQL =
   "(open > 0 AND high > 0 AND low > 0 AND close > 0 AND high >= low)";
 
 /**
@@ -180,6 +196,15 @@ export function getChartableSecurities(
  * position is the position with the most money at stake and wins over a
  * smaller long one — the chart should open on it, not rank it last.
  *
+ * OPTIONS ARE EXCLUDED from the ranking (2026-09-11), and only from the
+ * ranking: `adjustedMarketValueSQL` multiplies an option row by its ×100
+ * contract multiplier, so a handful of contracts can out-notional every
+ * equity in the book and make an OCC symbol the surprise landing chart.
+ * A landing default should be a name the desk recognises, not the largest
+ * notional. Options stay fully chartable on request — the exclusion is
+ * added HERE only, never to `CHARTABLE_PREDICATE_SQL`, so
+ * `getChartableSecurities` (the picker) still lists them.
+ *
  * Returns null when nothing is held (or nothing held is chartable/priced)
  * — callers fall back to the old alphabetical-first behavior.
  */
@@ -204,6 +229,7 @@ export function getDefaultChartSecurityId(
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE ${latestHoldingsPredicate({ keyBy: "account_security" })}
          AND ${CHARTABLE_PREDICATE_SQL}
+         AND LOWER(COALESCE(s.security_type, '')) != 'option'
          AND p.close_price IS NOT NULL
        GROUP BY h.security_id
        ORDER BY value DESC

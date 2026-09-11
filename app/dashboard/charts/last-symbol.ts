@@ -1,11 +1,34 @@
 /**
  * Persists the last-viewed Charts tab symbol so a later bare
  * /dashboard/charts visit (no explicit `?id=`) reopens where the desk left
- * off, per the charts-landing default-security ruling: default order is
- * (1) largest currently-held position (lib/queries/ohlcv.ts
- * getDefaultChartSecurityId), (2) this last-viewed symbol, (3)
- * alphabetical-first as a last resort when nothing is held. See
- * app/dashboard/charts/page.tsx and app/dashboard/components/ChartsView.tsx.
+ * off.
+ *
+ * CHARTS-LANDING PRECEDENCE (user ruling, 2026-09-11) — in order:
+ *
+ *   1. the LAST VIEWED symbol (this module), whenever one is stored
+ *   2. else the largest currently-held position
+ *      (lib/queries/ohlcv.ts getDefaultChartSecurityId)
+ *   3. else alphabetical-first, when nothing is held
+ *
+ * An explicit `?id=` in the URL outranks all three — it is not a default.
+ *
+ * The comment here used to state 1 and 2 the other way round, which never
+ * matched the code: ChartsView restores this stored symbol on mount
+ * whenever one exists, so last-viewed has always won in practice. The
+ * ruling confirms that behavior and this doc now matches it.
+ *
+ * Why the rule is split across a server and a client file: localStorage is
+ * unreadable on the server, so page.tsx renders rule 2/3 and ChartsView
+ * swaps in rule 1 on mount. That leaves a brief flash of the held-position
+ * chart before the restore. Removing it is NOT cheap — it would mean
+ * mirroring this value into a cookie so the server could read it, i.e. a
+ * second store that can silently disagree with localStorage (two browsers,
+ * cleared site data, a private window), to remove one frame. Deliberately
+ * kept as server-default-then-swap; revisit only if the flash is reported
+ * as an actual annoyance.
+ *
+ * See app/dashboard/charts/page.tsx and
+ * app/dashboard/components/ChartsView.tsx.
  *
  * Mirrors the readManual/writeManual pattern in
  * app/dashboard/today/hub-live/expansion.ts: pure, DOM-free (no jsdom/RTL

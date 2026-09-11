@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getDataConfidence } from "@/lib/queries/data-confidence";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 /**
  * Covers the WS3 universe-correctness bullets for data-confidence.ts: the
@@ -273,6 +275,41 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
     // detail line's own population/threshold instead of pricedToday's.
     expect(staleAction!.message).toBe("1 securities have no price from the last 3 days");
     expect(staleAction!.message).not.toContain("have stale prices");
+  });
+
+  /**
+   * Same class of defect, one line over (2026-09-11): the all-recent detail
+   * string hardcoded "within 3 days" while the query, the score and the
+   * action message all interpolate RECENT_PRICE_WINDOW_DAYS. Widening the
+   * window to 5 would have left this one sentence claiming 3 — a number the
+   * desk would read as the freshness guarantee.
+   */
+  it("the all-priced-recently detail quotes RECENT_PRICE_WINDOW_DAYS, not a hardcoded 3", () => {
+    const a = insertSecurity(db, "QRECENTA");
+    const b = insertSecurity(db, "QRECENTB");
+    insertHolding(db, 1, a, 10, "2026-08-21", "canonical:hold:TAX:QRECENTA:2026-08-21");
+    insertHolding(db, 1, b, 10, "2026-08-21", "canonical:hold:TAX:QRECENTB:2026-08-21");
+    // Both recent, neither priced TODAY (pricedToday is a <=1-day window) —
+    // the branch that renders the "priced within N days" sentence.
+    insertPrice(db, a, "2026-08-19", 100); // 2 days
+    insertPrice(db, b, "2026-08-18", 100); // 3 days — the window edge
+
+    const { priceFreshness } = getDataConfidence(db, NOW);
+    expect(priceFreshness.pricedRecent).toBe(2);
+    expect(priceFreshness.pricedToday).toBe(0);
+    expect(priceFreshness.detail).toBe("All 2 securities priced within 3 days");
+
+    // The window is single-sourced: the same integer appears in the stale
+    // action's copy, which already interpolates it. If one is ever widened
+    // the other must move with it, and this pairing is what catches a
+    // one-sided edit.
+    const windowFromDetail = /within (\d+) days/.exec(priceFreshness.detail!)?.[1];
+    const src = readFileSync(
+      path.join(process.cwd(), "lib/queries/data-confidence.ts"),
+      "utf8",
+    );
+    expect(src).toContain("const RECENT_PRICE_WINDOW_DAYS = " + windowFromDetail);
+    expect(src).not.toMatch(/priced within 3 days/);
   });
 });
 

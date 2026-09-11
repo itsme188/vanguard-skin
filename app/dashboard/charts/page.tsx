@@ -26,13 +26,17 @@ export default async function ChartsPage({ searchParams }: PageProps) {
     securities.find((s) => s.security_type?.toLowerCase() === "stock" || s.security_type?.toLowerCase() === "etf") ??
     securities[0];
 
-  // Charts-landing default-security ruling: default to the largest
-  // CURRENTLY-HELD chartable position, never the alphabetically-first
-  // security — that could be a closed position (a quantity-0 reconciler
-  // tombstone) with no bars at all. Falls back to the alphabetical pick
-  // only when nothing is held (or nothing held is chartable/priced). The
-  // last-viewed-symbol preference (ruling step 2) is applied client-side in
-  // ChartsView, since localStorage isn't readable on the server.
+  // Charts-landing precedence (user ruling, 2026-09-11; full statement in
+  // app/dashboard/charts/last-symbol.ts): last viewed, else largest
+  // currently-held, else alphabetical-first. This file can only render the
+  // last TWO of those — localStorage is not readable on the server — so it
+  // resolves the largest CURRENTLY-HELD chartable position and leaves the
+  // last-viewed restore (rule 1) to ChartsView on mount.
+  //
+  // Never the alphabetically-first security as the primary: that could be a
+  // closed position (a quantity-0 reconciler tombstone) with no bars at
+  // all. It survives only as the last resort, when nothing is held (or
+  // nothing held is chartable/priced).
   const defaultHeldId = getDefaultChartSecurityId(db);
   const defaultSecurity =
     (defaultHeldId != null

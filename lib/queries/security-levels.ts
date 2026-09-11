@@ -21,6 +21,50 @@ import {
  *  sites is what let the Armed view imply live coverage on a stale price. */
 const SCAN_PRICE_IS_FRESH_SQL = levelPriceIsFreshSql("COALESCE(lp.date, lb.date)");
 
+/**
+ * The scanner's price join, as one reusable fragment: latest `prices` row per
+ * security (`lp`), falling back to the latest `benchmark_prices` row matched
+ * by symbol (`lb`) for index ETFs the desk tracks but doesn't hold.
+ *
+ * Extracted (2026-09-11) because findCrossedLevels and countScanCoverage had
+ * two hand-typed copies of it. Coverage counts that are computed from a
+ * DIFFERENT price join than the scan they describe are worse than no counts
+ * at all — the banner would confidently report a number about a universe the
+ * scanner never looked at. One fragment, one universe.
+ */
+const SCAN_PRICE_CTE_SQL = `WITH latest_primary AS (
+         SELECT p1.security_id, p1.close_price, p1.date
+         FROM prices p1
+         WHERE p1.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = p1.security_id)
+       ),
+       latest_benchmark AS (
+         SELECT s.id AS security_id, bp.close_price, bp.date
+         FROM securities s
+         JOIN benchmark_prices bp ON bp.symbol = s.symbol
+         WHERE bp.date = (SELECT MAX(bp2.date) FROM benchmark_prices bp2 WHERE bp2.symbol = bp.symbol)
+       )`;
+
+/** The FROM/JOIN block those CTEs are built for — `sl` (security_levels),
+ *  `s` (securities), `lp`/`lb` (the two price sources). */
+const SCAN_LEVELS_FROM_SQL = `FROM security_levels sl
+       JOIN securities s ON s.id = sl.security_id
+       LEFT JOIN latest_primary lp ON lp.security_id = sl.security_id
+       LEFT JOIN latest_benchmark lb ON lb.security_id = sl.security_id`;
+
+/**
+ * The ARMED UNIVERSE: what "armed" means, in one place. Every query that
+ * claims to describe the scanner's coverage — findCrossedLevels (which
+ * scans it), countScanCoverage (which counts it) and getArmedLevels (which
+ * lists it) — builds its WHERE from this, so a change to the whitelist can
+ * never leave one of the three counting a different set than the others.
+ *
+ * Rejecting a reviewed level flips review_status but leaves is_active=1, so
+ * the auto_approved clause is load-bearing, not redundant.
+ */
+const ARMED_UNIVERSE_WHERE_SQL = `sl.is_active = 1
+         AND sl.review_status = 'auto_approved'
+         AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))`;
+
 // ─── Filter types ──────────────────────────────────────────────────
 
 export interface LevelFilters {
@@ -223,28 +267,13 @@ export function findCrossedLevels(
 ): Array<SecurityLevel & { current_price: number; effective_price: number; price_date: string }> {
   const rows = db
     .prepare(
-      `WITH latest_primary AS (
-         SELECT p1.security_id, p1.close_price, p1.date
-         FROM prices p1
-         WHERE p1.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = p1.security_id)
-       ),
-       latest_benchmark AS (
-         SELECT s.id AS security_id, bp.close_price, bp.date
-         FROM securities s
-         JOIN benchmark_prices bp ON bp.symbol = s.symbol
-         WHERE bp.date = (SELECT MAX(bp2.date) FROM benchmark_prices bp2 WHERE bp2.symbol = bp.symbol)
-       )
+      `${SCAN_PRICE_CTE_SQL}
        SELECT sl.*,
          COALESCE(lp.close_price, lb.close_price) AS current_price,
          COALESCE(lp.date, lb.date) AS price_date,
          s.security_type AS sec_type
-       FROM security_levels sl
-       JOIN securities s ON s.id = sl.security_id
-       LEFT JOIN latest_primary lp ON lp.security_id = sl.security_id
-       LEFT JOIN latest_benchmark lb ON lb.security_id = sl.security_id
-       WHERE sl.is_active = 1
-         AND sl.review_status = 'auto_approved'
-         AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))
+       ${SCAN_LEVELS_FROM_SQL}
+       WHERE ${ARMED_UNIVERSE_WHERE_SQL}
          AND COALESCE(lp.close_price, lb.close_price) IS NOT NULL
          AND ${SCAN_PRICE_IS_FRESH_SQL}`
     )
@@ -264,59 +293,124 @@ export function findCrossedLevels(
 
 /**
  * Coverage counts over the SAME armed universe findCrossedLevels scans
- * (is_active=1, auto_approved, unexpired) and the SAME price join + freshness
- * fragment — used by detectAndFireAlerts to disclose how many armed levels a
- * "Scan now" run actually evaluated, instead of silently dropping a
- * stale/missing-price level out of the response with no visible trace (the
- * Armed tab already discloses this per-row via getArmedLevels' price_is_stale;
- * this is the aggregate for the scan-result banner). `armed` is the total
- * armed-universe count; `unpriced` and `skippedStale` are disjoint subsets of
- * it (a level can't be both — unpriced means no price row at all). The
- * "evaluated" count a caller wants is `armed - skippedStale - unpriced`.
+ * (ARMED_UNIVERSE_WHERE_SQL) and the SAME price join + freshness fragment —
+ * used by detectAndFireAlerts to disclose how many armed levels a "Scan now"
+ * run actually evaluated, instead of silently dropping a skipped level out of
+ * the response with no visible trace (the Armed tab already discloses this
+ * per-row via getArmedLevels' price_is_stale / beyond_scan_range; this is the
+ * aggregate for the scan-result banner).
+ *
+ * `armed` is the total armed-universe count. The four skip buckets below are
+ * MUTUALLY EXCLUSIVE subsets of it, evaluated in the scanner's own order, so
+ * a caller can add them without double-counting:
+ *
+ *   evaluated = armed − unpriced − skippedStale − skippedOutOfBand − unresolvedMa
+ *
+ * That arithmetic is done HERE and shipped as `totalSkipped` / `evaluated`,
+ * so no surface re-derives it (the alerts banner is a client component and
+ * must not import this server module to borrow a helper).
+ *
+ * The last two were added 2026-09-11 (ledger finding
+ * alerts-scan-now-banner--claims-monitoring-while-armed-rows-say-not-scanned,
+ * round 2): the banner reported `armed − skippedStale − unpriced` as
+ * "evaluated", which counted a level the scanner skips for the plausibility
+ * band or an unresolvable MA as evaluated. That let the banner say
+ * "evaluated 40 of 40" while the Armed tab, on the same page, flagged rows
+ * "outside scan range" — the exact contradiction the first round of this fix
+ * set out to kill, just moved to the other skip condition.
  */
 export interface ScanCoverage {
+  /** Every armed level (is_active=1, auto_approved, unexpired). */
   armed: number;
+  /** Has a price row, but it's older than the scanner's freshness window. */
   skippedStale: number;
+  /** No price row at all — neither `prices` nor `benchmark_prices`. */
   unpriced: number;
+  /**
+   * Priced and fresh, but the effective price sits outside the plausibility
+   * band (isLevelBeyondScanRange; options exempt) — checkLevelTriggerState
+   * refuses to evaluate it on every pass.
+   */
+  skippedOutOfBand: number;
+  /**
+   * Priced and fresh, but an MA-based level whose effective price can't be
+   * resolved from ohlcv_bars (insufficient history) — resolveLevelPrice
+   * returns null and the scanner skips the row before the band is judged.
+   */
+  unresolvedMa: number;
+  /** Sum of the four buckets above. Derived HERE, not by the caller: the
+   *  banner used to sum only two of them and call the remainder
+   *  "evaluated". */
+  totalSkipped: number;
+  /** armed − totalSkipped: levels the scanner actually judged this pass. */
+  evaluated: number;
 }
 
 export function countScanCoverage(db: Database.Database): ScanCoverage {
-  const row = db
+  // One pass over the armed universe with the scanner's own price join, then
+  // classify in JS: the last two buckets need resolveLevelPrice (an
+  // ohlcv_bars read per MA level) and isLevelBeyondScanRange, neither of
+  // which is expressible in this query.
+  const rows = db
     .prepare(
-      `WITH latest_primary AS (
-         SELECT p1.security_id, p1.close_price, p1.date
-         FROM prices p1
-         WHERE p1.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = p1.security_id)
-       ),
-       latest_benchmark AS (
-         SELECT s.id AS security_id, bp.close_price, bp.date
-         FROM securities s
-         JOIN benchmark_prices bp ON bp.symbol = s.symbol
-         WHERE bp.date = (SELECT MAX(bp2.date) FROM benchmark_prices bp2 WHERE bp2.symbol = bp.symbol)
-       )
-       SELECT
-         COUNT(*) AS armed,
-         SUM(CASE WHEN COALESCE(lp.close_price, lb.close_price) IS NULL THEN 1 ELSE 0 END) AS unpriced,
-         SUM(CASE
-               WHEN COALESCE(lp.close_price, lb.close_price) IS NOT NULL
-                AND NOT (${SCAN_PRICE_IS_FRESH_SQL})
-               THEN 1 ELSE 0
-             END) AS skipped_stale
-       FROM security_levels sl
-       JOIN securities s ON s.id = sl.security_id
-       LEFT JOIN latest_primary lp ON lp.security_id = sl.security_id
-       LEFT JOIN latest_benchmark lb ON lb.security_id = sl.security_id
-       WHERE sl.is_active = 1
-         AND sl.review_status = 'auto_approved'
-         AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))`
+      `${SCAN_PRICE_CTE_SQL}
+       SELECT sl.id, sl.security_id, sl.level_type, sl.price, sl.price_source,
+         s.security_type AS sec_type,
+         COALESCE(lp.close_price, lb.close_price) AS current_price,
+         CASE WHEN ${SCAN_PRICE_IS_FRESH_SQL} THEN 1 ELSE 0 END AS price_is_fresh
+       ${SCAN_LEVELS_FROM_SQL}
+       WHERE ${ARMED_UNIVERSE_WHERE_SQL}`
     )
-    .get() as { armed: number; unpriced: number | null; skipped_stale: number | null };
+    .all() as Array<
+    LevelTriggerCheckInput & {
+      current_price: number | null;
+      price_is_fresh: number;
+    }
+  >;
 
-  return {
-    armed: row.armed,
-    skippedStale: row.skipped_stale ?? 0,
-    unpriced: row.unpriced ?? 0,
+  const coverage: ScanCoverage = {
+    armed: rows.length,
+    skippedStale: 0,
+    unpriced: 0,
+    skippedOutOfBand: 0,
+    unresolvedMa: 0,
+    totalSkipped: 0,
+    evaluated: 0,
   };
+
+  for (const r of rows) {
+    if (r.current_price == null) {
+      coverage.unpriced++;
+      continue;
+    }
+    if (r.price_is_fresh !== 1) {
+      coverage.skippedStale++;
+      continue;
+    }
+    // The two JS-side skips, in checkLevelTriggerState's own order. Built
+    // from the same two primitives it uses (resolveLevelPrice, then
+    // isLevelBeyondScanRange) rather than by calling it, for the reason
+    // getArmedLevels does the same: checkLevelTriggerState console.warns on
+    // every out-of-band row, and counting must not re-emit the scan's
+    // warnings a second time on the same pass.
+    const effective = resolveLevelPrice(db, r);
+    if (effective === null) {
+      coverage.unresolvedMa++;
+      continue;
+    }
+    if (isLevelBeyondScanRange(effective, r.current_price, r.sec_type)) {
+      coverage.skippedOutOfBand++;
+    }
+  }
+
+  coverage.totalSkipped =
+    coverage.skippedStale +
+    coverage.unpriced +
+    coverage.skippedOutOfBand +
+    coverage.unresolvedMa;
+  coverage.evaluated = coverage.armed - coverage.totalSkipped;
+
+  return coverage;
 }
 
 /**
@@ -461,8 +555,9 @@ export interface ArmedLevel
 /**
  * All currently-armed levels (is_active=1, auto_approved, unexpired) across
  * every security, enriched with symbol + effective threshold + current price +
- * distance, sorted nearest-to-trigger first (null distances last). Mirrors the
- * price/benchmark CTE + auto_approved whitelist that findCrossedLevels uses, but
+ * distance, sorted nearest-to-trigger first (null distances last). Built from
+ * the SAME shared fragments findCrossedLevels and countScanCoverage use
+ * (SCAN_PRICE_CTE_SQL + SCAN_LEVELS_FROM_SQL + ARMED_UNIVERSE_WHERE_SQL), but
  * keeps levels whose price is stale or whose MA can't resolve (the view should
  * still list them) rather than filtering them out.
  *
@@ -474,29 +569,14 @@ export interface ArmedLevel
 export function getArmedLevels(db: Database.Database): ArmedLevel[] {
   const rows = db
     .prepare(
-      `WITH latest_primary AS (
-         SELECT p1.security_id, p1.close_price, p1.date
-         FROM prices p1
-         WHERE p1.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = p1.security_id)
-       ),
-       latest_benchmark AS (
-         SELECT s.id AS security_id, bp.close_price, bp.date
-         FROM securities s
-         JOIN benchmark_prices bp ON bp.symbol = s.symbol
-         WHERE bp.date = (SELECT MAX(bp2.date) FROM benchmark_prices bp2 WHERE bp2.symbol = bp.symbol)
-       )
+      `${SCAN_PRICE_CTE_SQL}
        SELECT sl.*, s.symbol AS sym, s.name AS security_name,
          s.security_type AS sec_type,
          COALESCE(lp.close_price, lb.close_price) AS current_price,
          COALESCE(lp.date, lb.date) AS price_date,
          CASE WHEN ${SCAN_PRICE_IS_FRESH_SQL} THEN 1 ELSE 0 END AS price_is_fresh
-       FROM security_levels sl
-       JOIN securities s ON s.id = sl.security_id
-       LEFT JOIN latest_primary lp ON lp.security_id = sl.security_id
-       LEFT JOIN latest_benchmark lb ON lb.security_id = sl.security_id
-       WHERE sl.is_active = 1
-         AND sl.review_status = 'auto_approved'
-         AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))`
+       ${SCAN_LEVELS_FROM_SQL}
+       WHERE ${ARMED_UNIVERSE_WHERE_SQL}`
     )
     .all() as Array<
     SecurityLevel & {

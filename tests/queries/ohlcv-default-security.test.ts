@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
-import { getDefaultChartSecurityId } from "@/lib/queries/ohlcv";
+import {
+  getChartableSecurities,
+  getDefaultChartSecurityId,
+} from "@/lib/queries/ohlcv";
 
 /**
  * Coverage for the charts-landing default-security ruling (QA findings
@@ -141,6 +144,39 @@ describe("getDefaultChartSecurityId", () => {
     seedPrice(db, chartable, TODAY, 50); // $500
 
     expect(getDefaultChartSecurityId(db)).toBe(chartable);
+  });
+
+  it("never lands on a held OPTION, however large its multiplier-inflated notional", () => {
+    // adjustedMarketValueSQL multiplies an option row by its x100 contract
+    // multiplier, so a handful of contracts can out-notional every equity in
+    // the book and become the surprise landing chart. A landing default
+    // should be a name the desk recognises, not the largest notional.
+    const option = seedSecurity(db, "QOPT  260918C00100000", {
+      securityType: "Option",
+    });
+    db.prepare("UPDATE securities SET multiplier = 100 WHERE id = ?").run(option);
+    seedHolding(db, IBKR, option, 20, TODAY);
+    seedPrice(db, option, TODAY, 40); // 20 x 40 x 100 = $80,000
+
+    const equity = seedSecurity(db, "QAAA");
+    seedHolding(db, TAXABLE, equity, 10, TODAY);
+    seedPrice(db, equity, TODAY, 50); // $500 — far smaller, but it is a stock
+
+    expect(getDefaultChartSecurityId(db)).toBe(equity);
+  });
+
+  it("the exclusion is scoped to the landing default — options stay chartable in the picker", () => {
+    const option = seedSecurity(db, "QOPT  260918P00050000", {
+      securityType: "Option",
+    });
+    seedHolding(db, IBKR, option, 5, TODAY);
+    seedPrice(db, option, TODAY, 10);
+
+    // Nothing else is held, so the landing default has no candidate at all
+    // rather than silently falling back to the option.
+    expect(getDefaultChartSecurityId(db)).toBeNull();
+    // ...but the picker still lists it (CHARTABLE_PREDICATE_SQL is untouched).
+    expect(getChartableSecurities(db).map((s) => s.id)).toContain(option);
   });
 
   it("ranks by gross exposure — a large short position outranks a smaller long one", () => {
