@@ -48,6 +48,12 @@ EXIT_LOCK_CONTENTION = 75
 TASK_STATUSES = ["planned", "active", "blocked", "review", "landed", "abandoned"]
 TASK_TERMINAL_STATUSES = ("landed", "abandoned")
 TASK_LIVE_STATUSES = ("active", "blocked")
+# Who acts next on a task. A task's next_action should START with one of these
+# labels ("USER: land PR #76", "CODEX: finish the runner tests", "CLAUDE: …")
+# so `coord inbox` can say exactly who is being waited on. Without a label the
+# status decides: review/blocked wait on the user, active/planned on the owner.
+NEXT_ACTORS = ("user", "codex", "claude")
+NEXT_ACTOR_RE = re.compile(r"^\s*(USER|CODEX|CLAUDE)\s*:", re.IGNORECASE)
 
 TASK_FIELDS = [
     "id",
@@ -456,6 +462,11 @@ def cmd_task_checkpoint(coord_dir: str, args: argparse.Namespace) -> int:
         record["evidence"] = args.evidence
     if args.next is not None:
         record["next_action"] = args.next
+        if not NEXT_ACTOR_RE.match(args.next):
+            sys.stderr.write(
+                "coord: hint: start --next with USER:, CODEX: or CLAUDE: so `coord inbox` "
+                "knows who acts next (classifying by status for now)\n"
+            )
     if args.status is not None:
         record["status"] = args.status
     record["updated_at"] = ts
@@ -494,19 +505,7 @@ def cmd_task_list(coord_dir: str, args: argparse.Namespace) -> int:
         parse_duration(args.stale_after) if getattr(args, "stale_after", None) else DEFAULT_STALE_AFTER_SECONDS
     )
 
-    records: List[Dict[str, Any]] = []
-    directory = tasks_dir(coord_dir)
-    for name in sorted(os.listdir(directory)):
-        if not name.endswith(".json"):
-            continue
-        path = os.path.join(directory, name)
-        if not os.path.isfile(path):
-            continue
-        with open(path, "r") as handle:
-            try:
-                records.append(json.load(handle))
-            except json.JSONDecodeError:
-                continue
+    records = load_task_records(coord_dir)
 
     if not getattr(args, "all", False):
         records = [r for r in records if r.get("status") not in TASK_TERMINAL_STATUSES]
@@ -1030,6 +1029,175 @@ def cmd_lock_run(coord_dir: str, args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def load_task_records(coord_dir: str) -> List[Dict[str, Any]]:
+    """Every task JSON in tasks/ (not the archive), unparsable files skipped."""
+    ensure_dirs(coord_dir)
+    records: List[Dict[str, Any]] = []
+    directory = tasks_dir(coord_dir)
+    for name in sorted(os.listdir(directory)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(directory, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r") as handle:
+                records.append(json.load(handle))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return records
+
+
+def next_actor(record: Dict[str, Any]) -> Tuple[str, bool]:
+    """(actor, explicit). Explicit = the next_action carries a USER:/CODEX:/CLAUDE:
+    label; otherwise the status decides (review/blocked -> user, else the owner)."""
+    text = record.get("next_action") or ""
+    match = NEXT_ACTOR_RE.match(text)
+    if match:
+        return match.group(1).lower(), True
+    if record.get("status") in ("review", "blocked"):
+        return "user", False
+    owner = (record.get("owner") or "").lower()
+    if owner in NEXT_ACTORS:
+        return owner, False
+    return "user", False
+
+
+def fetch_open_prs() -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Open PRs via `gh` (or PD_COORD_PR_CMD, a test seam that must print the same
+    JSON list). Never raises: returns ([], reason) when unavailable."""
+    override = os.environ.get("PD_COORD_PR_CMD")
+    if override:
+        cmd = ["bash", "-c", override]
+    else:
+        cmd = ["gh", "pr", "list", "--json", "number,title,headRefName,createdAt", "--limit", "50"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except FileNotFoundError:
+        return [], "gh is not installed"
+    except subprocess.TimeoutExpired:
+        return [], "gh timed out after 15s"
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        return [], "gh pr list failed: %s" % (detail[-1] if detail else "exit %s" % proc.returncode)
+    try:
+        data = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError:
+        return [], "gh pr list returned non-JSON output"
+    if not isinstance(data, list):
+        return [], "gh pr list returned an unexpected shape"
+    return data, None
+
+
+def cmd_inbox(coord_dir: str, args: argparse.Namespace) -> int:
+    """Who is waiting on whom, in one screen. Informational: always exit 0."""
+    stale_after = (
+        parse_duration(args.stale_after) if getattr(args, "stale_after", None) else DEFAULT_STALE_AFTER_SECONDS
+    )
+    wanted = (getattr(args, "for_actor", None) or "all").lower()
+
+    buckets: Dict[str, List[Dict[str, Any]]] = {"user": [], "codex": [], "claude": []}
+    attention: List[Dict[str, Any]] = []
+    unlabeled = 0
+    for record in load_task_records(coord_dir):
+        if record.get("status") in TASK_TERMINAL_STATUSES:
+            continue
+        flags = compute_flags(record, stale_after)
+        actor, explicit = next_actor(record)
+        if not explicit:
+            unlabeled += 1
+        checkpoint = record.get("last_checkpoint") or {}
+        item = {
+            "id": record.get("id"),
+            "owner": record.get("owner"),
+            "status": record.get("status"),
+            "branch": record.get("branch"),
+            "next_action": record.get("next_action"),
+            "last_checkpoint": checkpoint.get("note"),
+            "explicit": explicit,
+            "flags": flags,
+        }
+        buckets[actor].append(item)
+        if flags:
+            # A stale, ownerless or worktree-less task needs a human decision
+            # (take over, release, or leave alone) whoever it was routed to.
+            attention.append(item)
+
+    prs: List[Dict[str, Any]] = []
+    pr_error: Optional[str] = None
+    if not getattr(args, "no_prs", False):
+        prs, pr_error = fetch_open_prs()
+
+    locks: List[Dict[str, Any]] = []
+    root = locks_dir(coord_dir)
+    if os.path.isdir(root):
+        for name in sorted(os.listdir(root)):
+            state = evaluate_lock(coord_dir, name)
+            if state["exists"]:
+                owner = state["owner"] or {}
+                locks.append({"name": name, "task": owner.get("task"), "stale": state["stale"]})
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "user": buckets["user"],
+                    "codex": buckets["codex"],
+                    "claude": buckets["claude"],
+                    "attention": attention,
+                    "prs": prs,
+                    "pr_error": pr_error,
+                    "locks": locks,
+                    "unlabeled": unlabeled,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return EXIT_OK
+
+    def line_for(item: Dict[str, Any]) -> str:
+        nxt = item.get("next_action") or ("(no next_action; status=%s)" % item.get("status"))
+        flag_s = "  [%s]" % ",".join(item["flags"]) if item.get("flags") else ""
+        return "  task %s (%s, %s) — %s%s" % (item["id"], item["owner"], item["status"], nxt, flag_s)
+
+    sections = [("user", "WAITING ON YOU"), ("codex", "WAITING ON CODEX"), ("claude", "WAITING ON CLAUDE")]
+    for key, title in sections:
+        if wanted not in ("all", key):
+            continue
+        print(title)
+        rows = buckets[key]
+        if key == "user":
+            for pr in prs:
+                print(
+                    "  PR #%s %s (%s, opened %s)"
+                    % (pr.get("number"), pr.get("title"), pr.get("headRefName"), (pr.get("createdAt") or "")[:10])
+                )
+            if pr_error:
+                print("  PRs: unavailable (%s)" % pr_error)
+        for item in rows:
+            print(line_for(item))
+        if key == "user" and attention:
+            for item in attention:
+                print("  attention: task %s %s — last: %s" % (item["id"], ",".join(item["flags"]), item.get("last_checkpoint") or "-"))
+        if not rows and not (key == "user" and (prs or pr_error or attention)):
+            print("  (nothing)")
+        print()
+
+    if locks and wanted == "all":
+        print("LOCKS HELD")
+        for lock in locks:
+            print("  %s by task %s%s" % (lock["name"], lock["task"], "  [STALE]" if lock["stale"] else ""))
+        print()
+
+    if unlabeled:
+        print(
+            "hint: %d task(s) have no USER:/CODEX:/CLAUDE: label on next_action; they were routed by status. "
+            "Label them so this view stays exact." % unlabeled
+        )
+    return EXIT_OK
+
+
 def cmd_status(coord_dir: str, args: argparse.Namespace) -> int:
     ensure_dirs(coord_dir)
     print("TASKS")
@@ -1139,6 +1307,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     top.add_parser("status")
 
+    p = top.add_parser("inbox", help="who is waiting on whom (tasks by next actor, open PRs, stale ownership)")
+    p.add_argument("--for", dest="for_actor", choices=["user", "codex", "claude", "all"], default="all")
+    p.add_argument("--no-prs", action="store_true", help="skip the gh pr list call")
+    p.add_argument("--stale-after")
+    p.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -1201,6 +1375,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "status":
         return cmd_status(coord_dir, args)
+
+    if args.command == "inbox":
+        return cmd_inbox(coord_dir, args)
 
     parser.print_help()
     return EXIT_REFUSED

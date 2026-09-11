@@ -38,7 +38,8 @@
     "coord": "bash scripts/coord/coord.sh",
     "deploy": "bash scripts/coord/deploy.sh",
     "sandbox": "bash scripts/coord/sandbox.sh",
-    "smoke": "bash scripts/coord/smoke.sh"
+    "smoke": "bash scripts/coord/smoke.sh",
+    "inbox": "bash scripts/coord/coord.sh inbox"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.64",

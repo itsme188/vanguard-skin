@@ -79,6 +79,7 @@ Runs AFTER step 7 deliberately (Codex request 2026-08-10): the handoff must repo
 
 Write the final handoff in `docs/HANDOFF.md` when owned by this session. Preserve another agent's handoff by writing `docs/HANDOFF-<AGENT>-<DATE>.md` and linking it from the coordination note. Use the actual executing agent's attribution. Cover exactly these five items:
 
+0. **Waiting on:** the FIRST line of the file — `USER: …`, `CODEX: …`, `CLAUDE: …` or `nobody` (the same labels `npm run inbox` reads from task `next_action`). Also checkpoint the task in the register with a labeled `--next` so the inbox and the handoff agree.
 1. **Current goal + exact files changed** this session (paths, not vague areas).
 2. **Tests/E2E checks run and their results** (e.g., "`npx vitest run` — 4,571 passed" or "not run — docs-only session"), plus the step-7 deploy outcome (deployed + relaunched / skipped / failed-with-reason).
 3. **Open concerns, rejected approaches, and user decisions** — the "why" a reviewer can't get from the diff. Include anything decided but not yet implemented.
