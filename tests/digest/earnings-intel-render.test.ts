@@ -32,6 +32,20 @@ describe("scoreboard intel rows", () => {
     expect(md).toContain("| **Expected move** | ±4.8% (straddle, Jul 18 exp) | — | — |");
     expect(md).toContain("| **Avg move last 8 prints** | ±3.2% · beat 6/8 | — | — |");
   });
+  it("beat/miss counts that omit flat quarters still show the full quarterCount denominator", () => {
+    const md = renderHeadlineTable(EVENT, "TER", "preview", {
+      ...INTEL,
+      summary: { avgAbsMovePct: 4.6, beatCount: 4, missCount: 3, quarterCount: 8 },
+    });
+    expect(md).toContain("| **Avg move last 8 prints** | ±4.6% · beat 4/8 | — | — |");
+  });
+  it("falls back to beatCount+missCount when quarterCount is not a positive number (older snapshot)", () => {
+    const md = renderHeadlineTable(EVENT, "TER", "preview", {
+      ...INTEL,
+      summary: { avgAbsMovePct: 4.6, beatCount: 4, missCount: 3, quarterCount: 0 },
+    });
+    expect(md).toContain("| **Avg move last 8 prints** | ±4.6% · beat 4/7 | — | — |");
+  });
   it("IV-approx renders the ~ label", () => {
     const md = renderHeadlineTable(EVENT, "TER", "preview",
       { ...INTEL, impliedMethod: "iv_approx", impliedMovePct: 3.1 });

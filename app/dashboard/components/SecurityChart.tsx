@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { OhlcvBar } from "@/lib/tws/types";
 import { computeSMA, computeEMA } from "@/lib/chart/indicators";
 import { formatChartPrice } from "@/lib/chart/price-formatter";
+import { markerTypeLabel } from "@/lib/chart/marker-label";
 import { Money, Count } from "@/lib/privacy/components";
 import { rendersAsZero } from "@/lib/format";
 import { usePrivacy } from "@/lib/privacy/context";
@@ -1437,8 +1438,9 @@ function updateIndicators(
 }
 
 function markerText(t: TransactionMarker, privateMode: boolean): string {
-  if (privateMode) return t.type;
-  return `${t.type}${t.quantity != null ? ` ${t.quantity}` : ""}`;
+  const label = markerTypeLabel(t.type);
+  if (privateMode) return label;
+  return `${label}${t.quantity != null ? ` ${t.quantity}` : ""}`;
 }
 
 function updateMarkers(

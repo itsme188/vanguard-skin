@@ -1677,7 +1677,12 @@ function fmtImplied(intel: EarningsIntelView | null | undefined): string {
 function fmtHistSummary(intel: EarningsIntelView | null | undefined): string {
   const s = intel?.summary;
   if (!s || s.avgAbsMovePct == null) return "—";
-  const denom = s.beatCount + s.missCount;
+  // Denominator is the number of prints observed (quarterCount), not
+  // beatCount+missCount — that sum silently drops flat (zero-surprise)
+  // quarters, understating the denominator vs the on-screen chip
+  // (histBeatCount/histQuarterCount). Fall back to the old sum only for
+  // older cached summaries that predate quarterCount.
+  const denom = s.quarterCount > 0 ? s.quarterCount : s.beatCount + s.missCount;
   const beat = denom > 0 ? ` · beat ${s.beatCount}/${denom}` : "";
   return `±${s.avgAbsMovePct.toFixed(1)}%${beat}`;
 }

@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { MacroThemesSchema, type MacroThemeAi, buildMacroSignalBlob, generateMacroThemes, parseThemesJson } from "@/lib/compute/macro-themes";
+import { MacroThemesSchema, MacroThemesParseError, type MacroThemeAi, buildMacroSignalBlob, generateMacroThemes, parseThemesJson } from "@/lib/compute/macro-themes";
 import { upsertMacroThemes } from "@/lib/queries/analysis-macro-themes";
 
 describe("MacroThemesSchema", () => {
@@ -118,8 +118,92 @@ describe("parseThemesJson", () => {
     expect(parsed[0].summary).toContain("pushed risk assets");
   });
 
-  it("still throws the malformed-themes error for genuinely broken output", () => {
-    expect(() => parseThemesJson("not json at all")).toThrow(/malformed themes/);
+  it("parses an array followed by trailing prose", () => {
+    // Sonnet sometimes signs off after the JSON despite the system prompt.
+    const parsed = parseThemesJson(
+      JSON.stringify([theme]) + "\n\nLet me know if you want these broken out further.",
+    );
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].name).toBe("Tariff escalation");
+  });
+
+  it("parses an array behind a leading preamble", () => {
+    const parsed = parseThemesJson(
+      "Here are the themes I identified this week:\n" + JSON.stringify([theme]),
+    );
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].factor_label).toBe("tariff_exposure");
+  });
+
+  it("throws a typed, USER-FACING error for a truncated reply and logs the raw detail", () => {
+    // The 2026-09-10 sweep: the reply was cut mid-string and the raw
+    // "Unterminated string in JSON at position 1074" rendered inside the card.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      let caught: unknown;
+      try {
+        parseThemesJson('[{"name":"A","fa');
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(MacroThemesParseError);
+      const err = caught as MacroThemesParseError;
+      expect(err.message).toBe(
+        "The model's reply couldn't be read as themes — try again in a moment.",
+      );
+      expect(err.message).not.toMatch(/JSON|position|Unexpected|Unterminated/);
+      // The parser text survives for the server log, never for the user.
+      expect(err.detail).toMatch(/JSON|Unexpected|Unterminated/);
+      expect(err.detail).toContain('[{"name":"A","fa');
+      expect(errSpy).toHaveBeenCalled();
+      expect(String(errSpy.mock.calls[0][0])).toContain('[{"name":"A","fa');
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it("still throws for genuinely broken output, with no parser jargon in the message", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      let caught: unknown;
+      try {
+        parseThemesJson("not json at all");
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(MacroThemesParseError);
+      const err = caught as MacroThemesParseError;
+      expect(err.message).not.toMatch(/JSON|position|Unexpected/);
+      expect(err.message).toContain("try again in a moment");
+      expect(err.detail.length).toBeGreaterThan(0);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it("reports a schema failure with its own user-facing message and the zod text in .detail", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // Parses fine as JSON; fails MacroThemesSchema (unknown factor_label).
+      const bad = JSON.stringify([{
+        name: "Weather trade", factor_label: "weather_exposure",
+        direction: "risk-on", summary: "y".repeat(30),
+      }]);
+      let caught: unknown;
+      try {
+        parseThemesJson(bad);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(MacroThemesParseError);
+      const err = caught as MacroThemesParseError;
+      expect(err.message).toBe(
+        "The model's reply didn't match the themes format — try again in a moment.",
+      );
+      expect(err.detail).toContain("factor_label");
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });
 
