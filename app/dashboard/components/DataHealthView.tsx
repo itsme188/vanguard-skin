@@ -84,6 +84,14 @@ function SummaryCard({
   );
 }
 
+/**
+ * Row cap for the reconciliation table further down — only the newest N
+ * rows render, with a disclosure matching the "N stalest of M" pattern used
+ * above for the price-staleness table. Extracted into a constant so the
+ * heading copy, footer copy, and slice can't drift out of sync.
+ */
+const RECONCILIATION_ROW_LIMIT = 30;
+
 export function DataHealthView() {
   const [data, setData] = useState<DataHealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -412,6 +420,9 @@ export function DataHealthView() {
               Snapshot Reconciliation
               <span className="text-ink-faint font-normal ml-2">
                 (statement total vs computed)
+                {reconciliation.length > RECONCILIATION_ROW_LIMIT
+                  ? ` · newest ${RECONCILIATION_ROW_LIMIT} of ${reconciliation.length}`
+                  : ""}
               </span>
             </h3>
           </div>
@@ -428,7 +439,7 @@ export function DataHealthView() {
                 </tr>
               </thead>
               <tbody>
-                {reconciliation.slice(0, 30).map((r, i) => {
+                {reconciliation.slice(0, RECONCILIATION_ROW_LIMIT).map((r, i) => {
                   const flagged = r.diffPct !== null && Math.abs(r.diffPct) > 2;
                   return (
                     <tr
@@ -470,6 +481,12 @@ export function DataHealthView() {
               </tbody>
             </table>
           </ScrollFade>
+          {reconciliation.length > RECONCILIATION_ROW_LIMIT && (
+            <div className="px-5 py-2 border-t border-edge text-xs text-ink-faint">
+              Showing the {RECONCILIATION_ROW_LIMIT} newest rows —{" "}
+              {reconciliation.length - RECONCILIATION_ROW_LIMIT} older hidden.
+            </div>
+          )}
         </section>
       )}
     </div>

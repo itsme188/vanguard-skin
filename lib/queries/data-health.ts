@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
+import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -316,6 +317,15 @@ export function getCrossSourceDiscrepancies(
 /**
  * Compare monthly snapshot totals vs daily valuation computed totals.
  * Flags discrepancies >2%.
+ *
+ * Restricted to statement-authority `monthly_snapshots` rows
+ * (`excludeLiveSnapshotsSql` — never a hand-rolled source list, per
+ * convention). A live (tws/plaid) snapshot's `total_value` and the
+ * `daily_valuations` row computed FROM that same snapshot are the same
+ * figure by construction, so joining live rows in here just compares a
+ * number with itself. Only a statement import can genuinely disagree with
+ * the computed total, so live-sourced rows are excluded entirely rather
+ * than merely flagged.
  */
 export function getSnapshotReconciliation(
   db: Database.Database,
@@ -344,6 +354,7 @@ export function getSnapshotReconciliation(
       LEFT JOIN daily_valuations dv
         ON dv.account_id = ms.account_id
         AND dv.valuation_date = ms.month_end_date
+      WHERE ${excludeLiveSnapshotsSql("ms.source")}
       ORDER BY ms.month_end_date DESC, a.name
       `,
     )
