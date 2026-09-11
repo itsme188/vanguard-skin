@@ -306,6 +306,36 @@ describe("visibleHtmlTextLength / htmlHidesStoredText (blank expand-panel fallba
     expect(htmlHidesStoredText(html, body)).toBe(false);
   });
 
+  // QA 2026-09-07 — security-detail-research-mentions--blank-reader-pane-
+  // preheader-only-html-regression-1. Substack-style senders pad the
+  // preheader with INVISIBLE characters (U+034F combining grapheme joiner,
+  // U+00AD soft hyphen, zero-widths) so the inbox preview line stays short.
+  // Those are not whitespace, so they used to count as rendered text and
+  // inflate the measurement of an otherwise-empty body. Every invisible
+  // character below is written as a \uNNNN ESCAPE on purpose — a raw byte
+  // would be invisible to the next reader of this file too.
+  const PREHEADER_PAD = "\u034F\u00AD\u200B\uFEFF";
+
+  it("does not count invisible preheader padding as rendered text", () => {
+    const padding = PREHEADER_PAD.repeat(200); // 800 invisible chars
+    const html = `<html><body><p>TMTB EOD Wrap</p><p>Good afternoon.</p><span>${padding}</span></body></html>`;
+    // Only "TMTB EOD Wrap Good afternoon." is really on screen.
+    expect(visibleHtmlTextLength(html)).toBeLessThan(60);
+  });
+
+  it("preheader-only HTML falls back to the stored raw_text", () => {
+    // The live shape: raw_html whose body renders ~29 visible characters plus
+    // invisible padding, against a raw_text that holds the whole article.
+    const html = `<html><body><p>TMTB EOD Wrap</p><p>Good afternoon.</p><div>${PREHEADER_PAD.repeat(400)}</div></body></html>`;
+    const rawText = "Full wrap paragraph of readable prose. ".repeat(240);
+    expect(htmlHidesStoredText(html, rawText)).toBe(true);
+  });
+
+  it("raw_text that is ITSELF only invisible padding is not a better fallback", () => {
+    const html = "<html><body><p>hi</p></body></html>";
+    expect(htmlHidesStoredText(html, PREHEADER_PAD.repeat(500))).toBe(false);
+  });
+
   it("no raw_text to fall back to → never triggers", () => {
     const styleOnly = "<html><head><style>.a{}</style></head><body></body></html>";
     expect(htmlHidesStoredText(styleOnly, null)).toBe(false);
