@@ -8,9 +8,11 @@ import type {
   CrossSourceDiscrepancy,
   SnapshotReconciliation,
   DataHealthSummary,
+  FxRateHealthRow,
 } from "@/lib/queries/data-health";
 import { Money } from "@/lib/privacy/components";
 import { ScrollFade } from "./ScrollFade";
+import { EmptySection } from "./EmptySection";
 
 interface DataHealthResponse {
   success: boolean;
@@ -20,6 +22,13 @@ interface DataHealthResponse {
   gaps: DataGaps;
   discrepancies: CrossSourceDiscrepancy[];
   reconciliation: SnapshotReconciliation[];
+  fxRateHealth: FxRateHealthRow[];
+}
+
+/** Plain numeric rate, up to 6 decimal places, no trailing zeros. Public
+ * market data (an FX rate) — never wrapped in a privacy component. */
+function formatRate(usdPerUnit: number): string {
+  return Number(usdPerUnit.toFixed(6)).toString();
 }
 
 function StaleBadge({ days }: { days: number | null }) {
@@ -124,11 +133,13 @@ export function DataHealthView() {
     );
   }
 
-  const { summary, priceFreshness, accountCoverage, gaps, discrepancies, reconciliation } = data;
+  const { summary, priceFreshness, accountCoverage, gaps, discrepancies, reconciliation, fxRateHealth } = data;
 
   const reconFlags = reconciliation.filter(
     (r) => r.diffPct !== null && Math.abs(r.diffPct) > 2,
   );
+
+  const fxFlagged = fxRateHealth.filter((r) => r.flags.length > 0);
 
   return (
     <div className="space-y-6">
@@ -141,7 +152,7 @@ export function DataHealthView() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         <SummaryCard
           label="Price Coverage"
           value={`${summary.overallCoveragePct}%`}
@@ -172,6 +183,12 @@ export function DataHealthView() {
           value={summary.totalReconciliationFlags}
           sub={reconFlags.length > 0 ? `${reconFlags.length} snapshots >2% off` : undefined}
           color={summary.totalReconciliationFlags === 0 ? "up" : "down"}
+        />
+        <SummaryCard
+          label="FX Flags"
+          value={summary.totalFxFlags}
+          sub={fxFlagged.length > 0 ? `${fxFlagged.length} ${fxFlagged.length === 1 ? "currency" : "currencies"} flagged` : undefined}
+          color={summary.totalFxFlags === 0 ? "up" : "down"}
         />
       </div>
 
@@ -487,6 +504,71 @@ export function DataHealthView() {
               {reconciliation.length - RECONCILIATION_ROW_LIMIT} older hidden.
             </div>
           )}
+        </section>
+      )}
+
+      {/* FX Rates */}
+      {fxRateHealth.length === 0 ? (
+        <EmptySection
+          title="FX Rates"
+          reason="All held securities are priced in USD."
+        />
+      ) : (
+        <section className="rounded-xl border border-edge bg-panel">
+          <div className="px-5 py-3 border-b border-edge">
+            <h3 className="text-sm font-medium text-ink">
+              FX Rates
+              <span className="text-ink-faint font-normal ml-2">
+                (non-USD currencies carried by held securities)
+              </span>
+            </h3>
+          </div>
+          <ScrollFade>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-ink-faint border-b border-edge">
+                  <th className="text-left px-5 py-2 font-medium">Currency</th>
+                  <th className="text-right px-3 py-2 font-medium">Rate (USD)</th>
+                  <th className="text-left px-3 py-2 font-medium">As Of</th>
+                  <th className="text-left px-3 py-2 font-medium">Source</th>
+                  <th className="text-left px-3 py-2 font-medium">Held Symbols</th>
+                  <th className="text-left px-5 py-2 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {fxRateHealth.map((r) => {
+                  const flagged = r.flags.length > 0;
+                  return (
+                    <tr
+                      key={r.currency}
+                      className={`border-b border-edge/50 ${flagged ? "bg-down/5" : ""}`}
+                    >
+                      <td className="px-5 py-2 font-mono text-ink">{r.currency}</td>
+                      <td className="px-3 py-2 text-right text-ink-dim font-mono tabular-nums">
+                        {r.usdPerUnit !== null ? formatRate(r.usdPerUnit) : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-ink-dim font-mono tabular-nums">
+                        {r.asOf ?? "—"}
+                      </td>
+                      <td className="px-3 py-2 text-ink-faint text-xs font-mono">
+                        {r.source ?? "—"}
+                      </td>
+                      <td className="px-3 py-2 text-ink-dim font-mono text-xs">
+                        {r.heldSymbols.join(", ")}
+                      </td>
+                      <td className="px-5 py-2">
+                        <span
+                          className={`text-xs ${flagged ? "text-down font-medium" : "text-ink-faint"}`}
+                        >
+                          {r.reason}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </ScrollFade>
         </section>
       )}
     </div>

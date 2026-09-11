@@ -7,6 +7,7 @@ import {
   getCrossSourceDiscrepancies,
   getSnapshotReconciliation,
   getDataHealthSummary,
+  getFxRateHealth,
 } from "@/lib/queries/data-health";
 
 export async function GET() {
@@ -18,6 +19,7 @@ export async function GET() {
       gaps,
       discrepancies,
       reconciliation,
+      fxRateHealth,
     ] = [
       getDataHealthSummary(db),
       getPriceFreshness(db),
@@ -25,6 +27,7 @@ export async function GET() {
       getDataGaps(db),
       getCrossSourceDiscrepancies(db),
       getSnapshotReconciliation(db),
+      getFxRateHealth(db),
     ];
 
     return NextResponse.json({
@@ -35,6 +38,7 @@ export async function GET() {
       gaps,
       discrepancies,
       reconciliation,
+      fxRateHealth,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

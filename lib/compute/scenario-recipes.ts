@@ -31,7 +31,13 @@ import type { ScenarioDefinition, ScenarioResult, PositionImpact } from "./scena
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { explodeHoldingBySector } from "./explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
-import { delta } from "./options-greeks";
+import {
+  optionElasticity,
+  isOptionSecurityType,
+  leverUnderlyingMoveByElasticity,
+  OPTION_PRICING_COLUMNS_SQL,
+  OPTION_PRICING_JOINS_SQL,
+} from "./option-elasticity";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
@@ -493,41 +499,14 @@ function sectorFloorFor(
   return undefined;
 }
 
-/** Fallback when elasticity inputs are missing (no underlying price / IV /
- *  option price). Sign carries the option's direction. Exported so the
- *  delta-exposure column (lib/compute/exposure.ts) shares the convention. */
-export const DEFAULT_OPTION_ELASTICITY = 2.5;
-
-/** |Ω| clamp — deep-OTM short-dated options have huge theoretical elasticity
- *  but gamma/vol effects dominate there; a linear-delta model shouldn't
- *  extrapolate past this. */
-const MAX_OPTION_ELASTICITY = 8;
-
 /**
- * Option elasticity Ω = Δ·S/V: the % move in the option per 1% move in the
- * underlying (linear-delta approximation). Signed — puts carry negative Ω so
- * a down-shock on the underlying produces a positive option move. Falls back
- * to ±2.5 when pricing inputs are unavailable.
+ * Elasticity moved to lib/compute/option-elasticity.ts (2026-09-11) so the
+ * custom what-if engine in scenarios.ts uses the SAME option treatment —
+ * before that it gave every option a flat beta of 2.0 and long puts LOST in
+ * a crash scenario. Re-exported here because lib/compute/exposure.ts imports
+ * DEFAULT_OPTION_ELASTICITY from this module.
  */
-function optionElasticity(pos: RecipePositionRow, riskFreeRate: number): number {
-  const isPut = (pos.option_type ?? "").toUpperCase().startsWith("P");
-  const fallback = (isPut ? -1 : 1) * DEFAULT_OPTION_ELASTICITY;
-
-  const S = pos.underlying_price;
-  const V = pos.own_price;
-  const K = pos.strike_price;
-  if (S == null || S <= 0 || V == null || V <= 0 || K == null || K <= 0 || !pos.expiration_date) {
-    return fallback;
-  }
-  const T = (new Date(pos.expiration_date).getTime() - Date.now()) / (365 * 24 * 3600 * 1000);
-  if (!Number.isFinite(T) || T <= 0) return fallback;
-
-  const sigma = pos.underlying_iv ?? 0.30;
-  const d = delta(S, K, T, riskFreeRate, sigma, isPut ? "PUT" : "CALL");
-  const omega = (d * S) / V;
-  if (!Number.isFinite(omega) || omega === 0) return fallback;
-  return Math.max(-MAX_OPTION_ELASTICITY, Math.min(MAX_OPTION_ELASTICITY, omega));
-}
+export { DEFAULT_OPTION_ELASTICITY } from "./option-elasticity";
 
 /**
  * Compute the per-position P&L impact for a factor-anchored recipe.
@@ -575,12 +554,7 @@ export function computeRecipeScenario(
         COALESCE(s.geography, s_u.geography) AS geography,
         COALESCE(s.currency, s_u.currency) AS currency,
         s.duration_years,
-        s.strike_price,
-        s.expiration_date,
-        s.option_type,
-        lp.close_price AS own_price,
-        lp_u.close_price AS underlying_price,
-        q_u.iv_underlying AS underlying_iv,
+${OPTION_PRICING_COLUMNS_SQL},
         COALESCE(sf.interest_rate_sensitive, sf_u.interest_rate_sensitive) AS interest_rate_sensitive,
         COALESCE(sf.growth_vs_value, sf_u.growth_vs_value) AS growth_vs_value,
         COALESCE(sf.cyclical, sf_u.cyclical) AS cyclical,
@@ -599,10 +573,9 @@ export function computeRecipeScenario(
       -- Option → underlying inheritance (the same COALESCE rule every
       -- factor-coverage surface applies — options have no factor rows of
       -- their own by design and contributed exactly $0 to scenarios before).
-      LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
+      -- Shared with the custom what-if query in scenarios.ts.
+${OPTION_PRICING_JOINS_SQL}
       LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id
-      LEFT JOIN latest_prices lp_u ON lp_u.security_id = s_u.id
-      LEFT JOIN security_quotes q_u ON q_u.security_id = s_u.id
       WHERE COALESCE(lp.close_price, 0) > 0
         AND ${liveOptionExpirationSql("s")}
       ORDER BY market_value DESC
@@ -681,9 +654,9 @@ export function computeRecipeScenario(
     // (factors are inherited via the COALESCE join). Lever it by elasticity
     // Ω = Δ·S/V — signed, so a held put GAINS on a down-shock — and clamp at
     // -100% (an option's price can't go below zero).
-    if (pos.security_type.toLowerCase() === "option") {
+    if (isOptionSecurityType(pos.security_type)) {
       const omega = optionElasticity(pos, riskFreeRate);
-      changePercent = Math.max(-1, changePercent * omega);
+      changePercent = leverUnderlyingMoveByElasticity(changePercent, omega);
     }
 
     const estimatedChange = pos.market_value * changePercent;

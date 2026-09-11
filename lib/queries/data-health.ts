@@ -76,6 +76,17 @@ export interface DataHealthSummary {
   totalGaps: number;
   totalDiscrepancies: number;
   totalReconciliationFlags: number;
+  totalFxFlags: number;
+}
+
+export interface FxRateHealthRow {
+  currency: string;
+  usdPerUnit: number | null;
+  asOf: string | null;
+  source: string | null;
+  heldSymbols: string[];
+  flags: string[];
+  reason: string;
 }
 
 // ── Queries ──────────────────────────────────────────────────────────
@@ -361,6 +372,121 @@ export function getSnapshotReconciliation(
     .all() as SnapshotReconciliation[];
 }
 
+// A derived FX source (the broker's mktValue÷notional math — see
+// lib/mutations/fx-rates.ts) landing near 1.0 means the field it derived
+// from was actually NATIVE currency, not USD: lib/tws/positions.ts predicts
+// exactly this failure mode.
+const DERIVED_FX_SOURCES = new Set(["tws_derived", "ibkr_derived"]);
+const FX_PARITY_EPSILON = 0.02;
+const FX_STALE_DAYS_THRESHOLD = 7;
+
+/** Whole days from `earlier` to `later` (both YYYY-MM-DD), UTC-anchored so DST never skews the count. */
+function daysBetweenDates(earlier: string, later: string): number {
+  const [ey, em, ed] = earlier.split("-").map(Number);
+  const [ly, lm, ld] = later.split("-").map(Number);
+  const earlierMs = Date.UTC(ey, em - 1, ed);
+  const laterMs = Date.UTC(ly, lm - 1, ld);
+  return Math.round((laterMs - earlierMs) / 86_400_000);
+}
+
+/**
+ * FX-rate sanity check for every non-USD currency carried by a CURRENTLY
+ * held security (latest per-(account,security) row, shorts included — same
+ * universe as getDataHealthSummary). A non-USD currency sitting at exact USD
+ * parity, or derived from a broker field that was actually native currency,
+ * is the fx_rates version of the JPY=1.0 defect: every dollar surface reads
+ * `COALESCE(fx.usd_per_unit, 1)`, so a bad rate silently overstates (or
+ * understates) that position's value on every $-rendering surface.
+ *
+ * `today` defaults to todayET() but is accepted as a parameter for
+ * deterministic tests.
+ */
+export function getFxRateHealth(
+  db: Database.Database,
+  today: string = todayET(),
+): FxRateHealthRow[] {
+  const heldCurrencyRows = db
+    .prepare(
+      `
+      SELECT DISTINCT s.symbol, s.currency AS currency
+      FROM securities s
+      JOIN holdings h ON h.security_id = s.id AND ${latestHoldingsPredicate()}
+      WHERE s.currency IS NOT NULL
+        AND TRIM(s.currency) != ''
+        AND UPPER(s.currency) != 'USD'
+      `,
+    )
+    .all() as { symbol: string; currency: string }[];
+
+  const symbolsByCurrency = new Map<string, string[]>();
+  for (const row of heldCurrencyRows) {
+    const currency = row.currency.trim().toUpperCase();
+    const existing = symbolsByCurrency.get(currency);
+    if (existing) existing.push(row.symbol);
+    else symbolsByCurrency.set(currency, [row.symbol]);
+  }
+
+  const fxRateStmt = db.prepare(
+    `SELECT usd_per_unit AS usdPerUnit, as_of AS asOf, source
+     FROM fx_rates WHERE UPPER(currency) = ?`,
+  );
+
+  const rows: FxRateHealthRow[] = [];
+  for (const [currency, symbols] of symbolsByCurrency) {
+    const fx = fxRateStmt.get(currency) as
+      | { usdPerUnit: number; asOf: string; source: string | null }
+      | undefined;
+
+    const flags: string[] = [];
+    let reason = "ok";
+
+    if (!fx) {
+      flags.push("missing");
+      reason = "no rate on file — prices are being treated as dollars";
+    } else {
+      const isPlaceholder = fx.usdPerUnit === 1;
+      const isDerivedNearParity =
+        fx.source !== null &&
+        DERIVED_FX_SOURCES.has(fx.source) &&
+        Math.abs(fx.usdPerUnit - 1) < FX_PARITY_EPSILON;
+      const daysStale = daysBetweenDates(fx.asOf, today);
+      const isStale = daysStale > FX_STALE_DAYS_THRESHOLD;
+
+      if (isPlaceholder) flags.push("placeholder_parity");
+      if (isDerivedNearParity) flags.push("derived_near_parity");
+      if (isStale) flags.push("stale");
+
+      if (isPlaceholder) {
+        reason =
+          "rate is exactly 1.0 — a placeholder; a non-USD currency never sits at parity with the dollar";
+      } else if (isDerivedNearParity) {
+        reason = "derived rate near 1.0 — the broker field was native currency";
+      } else if (isStale) {
+        reason = `rate is ${daysStale} days old`;
+      }
+    }
+
+    rows.push({
+      currency,
+      usdPerUnit: fx ? fx.usdPerUnit : null,
+      asOf: fx ? fx.asOf : null,
+      source: fx ? fx.source : null,
+      heldSymbols: [...symbols].sort(),
+      flags,
+      reason,
+    });
+  }
+
+  rows.sort((a, b) => {
+    const aFlagged = a.flags.length > 0 ? 0 : 1;
+    const bFlagged = b.flags.length > 0 ? 0 : 1;
+    if (aFlagged !== bFlagged) return aFlagged - bFlagged;
+    return a.currency.localeCompare(b.currency);
+  });
+
+  return rows;
+}
+
 const SECTOR_SHAPE = /^US Sector Equity \((.+)\)$/;
 
 /**
@@ -495,6 +621,9 @@ export function getDataHealthSummary(
     (r) => r.diffPct !== null && Math.abs(r.diffPct) > 2,
   ).length;
 
+  const fxRateHealth = getFxRateHealth(db, today);
+  const fxFlags = fxRateHealth.filter((r) => r.flags.length > 0).length;
+
   return {
     totalSecurities: secCounts.total,
     securitiesWithPrices: secCounts.withPrices,
@@ -509,5 +638,6 @@ export function getDataHealthSummary(
     totalGaps,
     totalDiscrepancies: discrepancies.length,
     totalReconciliationFlags: reconFlags,
+    totalFxFlags: fxFlags,
   };
 }
