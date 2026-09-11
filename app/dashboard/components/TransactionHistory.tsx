@@ -5,6 +5,7 @@ import type { TransactionWithSecurity } from "@/lib/queries/transactions";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { Money, Shares } from "@/lib/privacy/components";
 import { displayCashEffect } from "@/lib/format/cash-effect";
+import { transactionTypeLabel } from "@/lib/chart/marker-label";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
@@ -107,7 +108,7 @@ export function TransactionHistory({
                       TYPE_STYLES[txn.type] ?? "bg-raised text-ink-dim"
                     }`}
                   >
-                    {txn.type}
+                    {transactionTypeLabel(txn.type)}
                   </span>
                 </td>
                 <td className="px-4 py-3 font-mono text-ink">
@@ -123,7 +124,7 @@ export function TransactionHistory({
                       TYPE_STYLES[txn.type] ?? "bg-raised text-ink-dim"
                     }`}
                   >
-                    {txn.type}
+                    {transactionTypeLabel(txn.type)}
                   </span>
                 </td>
                 <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink-dim">

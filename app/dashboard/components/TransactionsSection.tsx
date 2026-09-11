@@ -9,6 +9,7 @@ import { SortableHeader } from "./SortableHeader";
 import { compareValues, useSortParam, type SortDir } from "@/lib/hooks/useSortParam";
 import { Section } from "./Section";
 import { Chip, type ChipTone } from "./Chip";
+import { transactionTypeLabel } from "@/lib/chart/marker-label";
 
 type SortField = "trade_date" | "type" | "account_name" | "quantity" | "price_per_share" | "amount";
 
@@ -219,7 +220,7 @@ export function TransactionsSection({
                     <td className={`${TD_MONO} text-ink-dim`}>{t.trade_date}</td>
                     <td className={TD_CLASS}>
                       <Chip tone={typeTone(t.type)} size="xs" uppercase>
-                        {t.type}
+                        {transactionTypeLabel(t.type)}
                       </Chip>
                     </td>
                     <td className={`${TD_CLASS} hidden md:table-cell text-ink-dim`}>
