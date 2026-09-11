@@ -100,8 +100,8 @@ describe("getSnapshotReconciliation query — excludes live snapshot sources", (
     return source.slice(startIdx, endIdx);
   }
 
-  it("getSnapshotReconciliation's SQL applies excludeLiveSnapshotsSql to ms.source", () => {
+  it("getSnapshotReconciliation's SQL applies excludeLiveSnapshotsSql to COALESCE(ms.source, 'manual') so an explicit-NULL source is not dropped", () => {
     const body = functionBody("getSnapshotReconciliation");
-    expect(body).toMatch(/excludeLiveSnapshotsSql\(["']ms\.source["']\)/);
+    expect(body).toMatch(/excludeLiveSnapshotsSql\(["']COALESCE\(ms\.source,\s*'manual'\)["']\)/);
   });
 });
