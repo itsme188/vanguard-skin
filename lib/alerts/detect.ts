@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { findCrossedLevels } from "@/lib/queries/security-levels";
+import { findCrossedLevels, countScanCoverage } from "@/lib/queries/security-levels";
 import { triggerLevel } from "@/lib/mutations/security-levels";
 import { getHoldingsBySecurity } from "@/lib/queries/security-detail";
 import { isOnWatchlist, getWatchlistItem } from "@/lib/queries/watchlist";
@@ -22,8 +22,23 @@ export function detectAndFireAlerts(db: Database.Database): {
   scanned: number;
   fired: number;
   deduped: number;
+  /**
+   * Coverage disclosure (additive — scanned/fired/deduped keep their exact
+   * prior meaning; auto-refresh Step 6 and runLevelScanCycle read only those
+   * three and are unaffected). Optional so existing callers/mocks that only
+   * return the original three fields keep type-checking. See
+   * countScanCoverage for what each count means.
+   */
+  armed?: number;
+  skippedStale?: number;
+  unpriced?: number;
 } {
   const crossed = findCrossedLevels(db);
+  // Coverage must be read BEFORE firing: triggerLevel flips a fired level's
+  // is_active to 0, which would otherwise make a level that WAS scanned this
+  // pass (and hit) disappear from `armed` right along with it — undercounting
+  // the very thing this disclosure exists to report.
+  const coverage = countScanCoverage(db);
   let fired = 0;
   let deduped = 0;
 
@@ -79,5 +94,12 @@ export function detectAndFireAlerts(db: Database.Database): {
     }
   }
 
-  return { scanned: crossed.length, fired, deduped };
+  return {
+    scanned: crossed.length,
+    fired,
+    deduped,
+    armed: coverage.armed,
+    skippedStale: coverage.skippedStale,
+    unpriced: coverage.unpriced,
+  };
 }

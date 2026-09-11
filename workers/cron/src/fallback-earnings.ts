@@ -55,6 +55,7 @@ import {
 import { briefingToHtml } from "./html";
 import { sendEmail } from "./resend";
 import { composeReleaseInstant } from "./reaction-matcher";
+import { isUsableReactionLeg } from "./reaction-leg";
 import { captureReactionFromYahoo } from "./yahoo";
 import {
   formatPositionPresence,
@@ -1049,10 +1050,9 @@ function readReactionPct(
   if (!json) return null;
   try {
     const snap = JSON.parse(json) as Record<string, unknown>;
-    const node = snap[key] as { delta_pct?: number } | undefined;
-    if (!node || node.delta_pct == null) return null;
-    const v = Number(node.delta_pct);
-    return Number.isFinite(v) ? v : null;
+    const node = snap[key] as { t_pre?: number; t_post?: number; delta_pct?: number } | undefined;
+    if (!isUsableReactionLeg(node)) return null;
+    return node.delta_pct;
   } catch {
     return null;
   }
@@ -1151,6 +1151,11 @@ export function renderScoreboard(
       if (realized != null) {
         impliedActual = `${realized >= 0 ? "+" : ""}${realized.toFixed(1)}%`;
         impliedVerdict = Math.abs(realized) <= intelCtx.intel.impliedMovePct ? "inside" : "outside";
+      } else {
+        // A stored-but-unusable (or missing) symbol leg — never publish an
+        // inside/outside verdict from a leg that couldn't be measured
+        // (parity with the Mac's renderHeadlineTable).
+        impliedVerdict = "— no reaction quote";
       }
     }
     intelRows =
@@ -1432,10 +1437,9 @@ function readReactionDelta(
   if (!json) return "—";
   try {
     const snap = JSON.parse(json) as Record<string, unknown>;
-    const node = snap[key] as { delta_pct?: number } | undefined;
-    if (!node || node.delta_pct == null) return "—";
-    const v = Number(node.delta_pct);
-    if (!Number.isFinite(v)) return "—";
+    const node = snap[key] as { t_pre?: number; t_post?: number; delta_pct?: number } | undefined;
+    if (!isUsableReactionLeg(node)) return "—";
+    const v = node.delta_pct;
     return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
   } catch {
     return "—";

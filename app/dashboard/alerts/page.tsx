@@ -17,6 +17,7 @@ import { suggestOutcomeMessage } from "@/lib/alerts/suggest-message";
 import {
   BEYOND_SCAN_RANGE_EXPLANATION,
   BEYOND_SCAN_RANGE_LABEL,
+  LEVEL_PRICE_MAX_AGE_DAYS,
   STALE_PRICE_EXPLANATION,
   STALE_PRICE_LABEL,
   isLevelBeyondScanRange,
@@ -564,18 +565,39 @@ function AlertsPageInner() {
       const res = await apiFetch("/api/alerts/detect", { method: "POST" });
       const json = await res.json();
       if (json.success) {
-        const { scanned, fired, deduped } = json as {
+        // armed/skippedStale/unpriced are additive on the response (older
+        // server = undefined); treat a missing field as 0 rather than assume
+        // full coverage.
+        const {
+          scanned,
+          fired,
+          deduped,
+          armed = 0,
+          skippedStale = 0,
+          unpriced = 0,
+        } = json as {
           scanned: number;
           fired: number;
           deduped: number;
+          armed?: number;
+          skippedStale?: number;
+          unpriced?: number;
         };
+        const totalSkipped = skippedStale + unpriced;
+        const evaluated = armed - totalSkipped;
         setActionStatus(
           fired > 0
             ? `Scan complete — ${fired} new alert${fired === 1 ? "" : "s"} fired${
                 deduped > 0 ? ` (${deduped} already alerted today)` : ""
               }.`
             : scanned === 0
-              ? "Scan complete. No levels have been crossed by the current price. This is normal — a level only fires an alert when the price actually reaches it (e.g., a $150 support fires when the price drops to $150). Your levels are still active and being monitored."
+              ? totalSkipped > 0
+                ? `Scan complete — evaluated ${evaluated} of ${armed} armed level${
+                    armed === 1 ? "" : "s"
+                  }. ${totalSkipped} skipped: their price is older than ${LEVEL_PRICE_MAX_AGE_DAYS} days (${STALE_PRICE_LABEL})${
+                    unpriced > 0 ? `, ${unpriced} have no price yet` : ""
+                  }. Nothing crossed among the evaluated ones — refresh prices to cover the rest.`
+                : "Scan complete. No levels have been crossed by the current price. This is normal — a level only fires an alert when the price actually reaches it (e.g., a $150 support fires when the price drops to $150). Your levels are still active and being monitored."
               : `Scan complete — ${scanned} level${scanned === 1 ? "" : "s"} already alerted today; nothing new to report.`
         );
       } else {

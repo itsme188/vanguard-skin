@@ -240,6 +240,40 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
     expect(taxable).toBeDefined();
     expect(taxable!.daysOld).toBe(0);
   });
+
+  // Regression pin (qa:header-dataconfidence--prices-detail-fresh-count-
+  // disagrees-with-actions-stale-count): the Prices dimension detail and
+  // score are both pricedRecent-based (<=3 days), but the stale-prices
+  // ACTION used to report totalHeld - pricedToday (<=1 day) — a different
+  // threshold over the SAME population, so the two numbers could disagree
+  // (e.g. detail "4/131 recent" vs action "130 stale"). The action must use
+  // the same basis as the detail/score: totalHeld - pricedRecent.
+  it("stale-prices action count uses the same pricedRecent basis as the Prices detail line, not pricedToday", () => {
+    const fresh = insertSecurity(db, "QFRESH");
+    const midStale = insertSecurity(db, "QMID");
+    const veryStale = insertSecurity(db, "QOLD");
+    insertHolding(db, 1, fresh, 10, "2026-08-21", "canonical:hold:TAX:QFRESH:2026-08-21");
+    insertHolding(db, 1, midStale, 10, "2026-08-21", "canonical:hold:TAX:QMID:2026-08-21");
+    insertHolding(db, 1, veryStale, 10, "2026-08-21", "canonical:hold:TAX:QOLD:2026-08-21");
+    insertPrice(db, fresh, "2026-08-21", 100); // 0 days old — priced today AND recent
+    insertPrice(db, midStale, "2026-08-19", 100); // 2 days old — recent (<=3d) but not "today"
+    insertPrice(db, veryStale, "2026-08-16", 100); // 5 days old — stale by both measures
+
+    const { priceFreshness, actions } = getDataConfidence(db, NOW);
+
+    // Detail/score basis: pricedRecent = 2 (fresh + midStale), totalHeld = 3.
+    expect(priceFreshness.totalHeld).toBe(3);
+    expect(priceFreshness.detail).toBe("2/3 securities have recent prices");
+
+    const staleAction = actions.find((a) =>
+      a.fix.startsWith("Run Quick Refresh to update all prices")
+    );
+    expect(staleAction).toBeDefined();
+    // (M - N) === K: totalHeld(3) - pricedRecent(2) === 1, matching the
+    // detail line's own population/threshold instead of pricedToday's.
+    expect(staleAction!.message).toBe("1 securities have no price from the last 3 days");
+    expect(staleAction!.message).not.toContain("have stale prices");
+  });
 });
 
 /**

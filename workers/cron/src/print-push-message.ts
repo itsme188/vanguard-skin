@@ -41,6 +41,35 @@ function pct(v: number): string {
   return v >= 0 ? `+${s}%` : `${s}%`;
 }
 
+interface ReactionLeg {
+  t_pre?: number;
+  t_post?: number;
+  delta_pct?: number;
+}
+
+/**
+ * A leg is only usable when both prices are real (finite AND positive) — a
+ * 0/0 division (dead quote on both sides) still produces a finite
+ * delta_pct of 0, indistinguishable from a genuine flat move unless the
+ * underlying prices are checked too. Mirror of
+ * lib/calendar/reaction-snapshot-core.ts::isUsableReactionLeg /
+ * workers/cron/src/reaction-leg.ts — this composer is PURE and
+ * dependency-free ON PURPOSE (see header), so the predicate is inlined
+ * rather than imported; keep all three copies in sync.
+ */
+function isUsableReactionLeg(
+  leg: ReactionLeg | null | undefined,
+): leg is { t_pre: number; t_post: number; delta_pct: number } {
+  return (
+    leg != null &&
+    Number.isFinite(leg.t_pre) &&
+    (leg.t_pre as number) > 0 &&
+    Number.isFinite(leg.t_post) &&
+    (leg.t_post as number) > 0 &&
+    Number.isFinite(leg.delta_pct)
+  );
+}
+
 /**
  * Renders an actual/expected revenue pair on ONE shared scale (chosen from
  * the larger magnitude) at the smallest decimal precision (1-3dp) that
@@ -145,13 +174,16 @@ export function composePrintPushMessage(input: {
   if (input.reactionJson) {
     try {
       const snap = JSON.parse(input.reactionJson) as {
-        symbol?: { delta_pct?: number };
-        spy?: { delta_pct?: number };
+        symbol?: ReactionLeg;
+        spy?: ReactionLeg;
       };
-      const symPct = snap.symbol?.delta_pct;
-      const spyPct = snap.spy?.delta_pct;
-      if (typeof symPct === "number" && typeof spyPct === "number") {
-        parts.push(`${input.symbol.toUpperCase()} ${pct(symPct)} vs SPY ${pct(spyPct)} (T+2h)`);
+      // isUsableReactionLeg guards against a 0/0 sentinel leg rendering as
+      // a confident-looking "+0.00%" push (2026-09-10 qa fix) — both legs
+      // must be usable, or the whole reaction tail is omitted.
+      if (isUsableReactionLeg(snap.symbol) && isUsableReactionLeg(snap.spy)) {
+        parts.push(
+          `${input.symbol.toUpperCase()} ${pct(snap.symbol.delta_pct)} vs SPY ${pct(snap.spy.delta_pct)} (T+2h)`,
+        );
       }
     } catch {
       // malformed snapshot → no reaction tail

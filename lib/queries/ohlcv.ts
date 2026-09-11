@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 import type { OhlcvBar } from "@/lib/tws/types";
+import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 /**
  * Shared read-side corrupt-bar guard. Mirrors `isSaneBar` in
@@ -129,6 +131,16 @@ export interface ChartableSecurity {
 }
 
 /**
+ * Shared "is this security chartable via TWS" predicate — has an IB
+ * contract id, and isn't a mutual fund (no TWS trade data). Single source
+ * for both getChartableSecurities and getDefaultChartSecurityId below so
+ * the two lists never disagree about what counts as chartable. Assumes a
+ * `securities` row aliased `s` in the enclosing query.
+ */
+const CHARTABLE_PREDICATE_SQL = `s.ib_con_id IS NOT NULL
+    AND (s.security_type IS NULL OR LOWER(s.security_type) NOT IN ('mutual_fund', 'mutual fund'))`;
+
+/**
  * Get all securities that have an IB contract ID (chartable via TWS).
  * Excludes mutual funds (no TWS trade data).
  */
@@ -138,12 +150,68 @@ export function getChartableSecurities(
   return db
     .prepare(
       `SELECT id, symbol, name, security_type, currency
-       FROM securities
-       WHERE ib_con_id IS NOT NULL
-         AND (security_type IS NULL OR LOWER(security_type) NOT IN ('mutual_fund', 'mutual fund'))
+       FROM securities s
+       WHERE ${CHARTABLE_PREDICATE_SQL}
        ORDER BY symbol`,
     )
     .all() as ChartableSecurity[];
+}
+
+/**
+ * Default security for a bare /dashboard/charts visit: the largest
+ * CURRENTLY-HELD chartable position, valued in USD.
+ *
+ * QA finding (charts-landing--defaults-to-closed-foreign-symbol...): the
+ * page used to default to `getChartableSecurities()[0]` — alphabetically
+ * first — which could land on a closed position (a quantity-0 reconciler
+ * tombstone) with no bars at all. "Currently held" is therefore gated by
+ * `latestHoldingsPredicate` (per-(account, security) latest row, never a
+ * hand-rolled MAX(as_of_date) — see tests/repo/no-handrolled-latest-holdings
+ * .test.ts), which already excludes tombstones via its quantity != 0 clause.
+ *
+ * Valuation mirrors lib/queries/holdings.ts: latest close price per
+ * security, FX-converted to USD via fx_rates (native-currency positions
+ * are compared on a like-for-like USD basis, not native magnitude), summed
+ * across every account that holds the security. A security priced but not
+ * chartable (or chartable but unpriced) never wins — only rows that clear
+ * BOTH the chartable predicate and have a resolvable price participate.
+ *
+ * "Largest" means GROSS exposure (ABS per row before summing): a big short
+ * position is the position with the most money at stake and wins over a
+ * smaller long one — the chart should open on it, not rank it last.
+ *
+ * Returns null when nothing is held (or nothing held is chartable/priced)
+ * — callers fall back to the old alphabetical-first behavior.
+ */
+export function getDefaultChartSecurityId(
+  db: Database.Database,
+): number | null {
+  const marketValueExpr = adjustedMarketValueSQL(
+    "h.quantity",
+    "p.close_price",
+    "s.security_type",
+    "COALESCE(s.multiplier, 1)",
+    "COALESCE(fx.usd_per_unit, 1)",
+  );
+
+  const row = db
+    .prepare(
+      `SELECT h.security_id AS id, SUM(ABS(${marketValueExpr})) AS value
+       FROM holdings h
+       JOIN securities s ON s.id = h.security_id
+       LEFT JOIN prices p ON p.security_id = h.security_id
+         AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = h.security_id)
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
+       WHERE ${latestHoldingsPredicate({ keyBy: "account_security" })}
+         AND ${CHARTABLE_PREDICATE_SQL}
+         AND p.close_price IS NOT NULL
+       GROUP BY h.security_id
+       ORDER BY value DESC
+       LIMIT 1`,
+    )
+    .get() as { id: number; value: number } | undefined;
+
+  return row?.id ?? null;
 }
 
 /**

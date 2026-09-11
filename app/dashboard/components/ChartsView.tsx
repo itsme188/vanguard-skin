@@ -1,10 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Money } from "@/lib/privacy/components";
 import { SecurityChart } from "./SecurityChart";
 import { MultiChart } from "./MultiChart";
+import {
+  readLastChartSymbolId,
+  writeLastChartSymbolId,
+} from "../charts/last-symbol";
 
 interface ChartableSecurity {
   id: number;
@@ -20,10 +24,12 @@ export function ChartsView({
   securities,
   initialSecurity,
   initialPrice,
+  hasExplicitId,
 }: {
   securities: ChartableSecurity[];
   initialSecurity: ChartableSecurity | null;
   initialPrice: { close_price: number; date: string } | null;
+  hasExplicitId: boolean;
 }) {
   const router = useRouter();
   const [selected, setSelected] = useState<ChartableSecurity | null>(
@@ -35,9 +41,28 @@ export function ChartsView({
     const sec = securities.find((s) => s.id === secId);
     if (sec) {
       setSelected(sec);
+      writeLastChartSymbolId(secId);
       router.replace(`/dashboard/charts?id=${secId}`, { scroll: false });
     }
   };
+
+  // Charts-landing default-security ruling, step 2: apply the last-viewed
+  // symbol preference client-side (localStorage isn't readable on the
+  // server), but ONLY when the URL carried no explicit ?id= — an explicit
+  // id always wins. Runs once on mount, never during render, to avoid a
+  // hydration mismatch against the server-rendered `initialSecurity`.
+  useEffect(() => {
+    if (hasExplicitId) return;
+    const lastId = readLastChartSymbolId();
+    if (lastId == null || lastId === selected?.id) return;
+    const sec = securities.find((s) => s.id === lastId);
+    if (!sec) return; // stale/garbage id (security deleted or unenriched since) — ignore
+    setSelected(sec);
+    router.replace(`/dashboard/charts?id=${lastId}`, { scroll: false });
+    // Deliberately mount-only: this is a one-time "restore last view"
+    // check, not a live sync with localStorage.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (securities.length === 0) {
     return (
