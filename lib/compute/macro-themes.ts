@@ -293,11 +293,15 @@ export async function generateMacroThemes(
     const result = await generateTextForFeature("analysisMacroThemes", { system: SYSTEM_PROMPT, prompt });
     rawText = result.text.trim();
   } catch (err) {
+    // No model family in the text: this message can reach a log line an
+    // operator reads, and the route treats any non-MacroThemesParseError throw
+    // as raw vendor text — naming a vendor's model here only risks it leaking
+    // onto a user surface (CLAUDE.md: never name a model id in user copy).
     if (err instanceof AIRefusalError) {
-      throw new Error(`Sonnet macro-themes generation refused`);
+      throw new Error(`macro-themes generation refused`);
     }
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Sonnet macro-themes generation failed: ${msg}`);
+    throw new Error(`macro-themes generation failed: ${msg}`);
   }
 
   const parsed = parseThemesJson(rawText);

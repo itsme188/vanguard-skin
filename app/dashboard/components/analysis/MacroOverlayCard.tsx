@@ -3,7 +3,11 @@
 import { useEffect, useState } from "react";
 import { MacroThemeReceiptDrawer } from "./MacroThemeReceiptDrawer";
 import apiFetch from "@/lib/http/apiFetch";
-import { formatRateLimitMessage } from "./rate-limit-message";
+import {
+  describeRefreshFailure,
+  isExpectedRefreshState,
+  MACRO_THEMES_SUBJECT,
+} from "./refresh-failure-message";
 
 interface MacroTheme {
   name: string;
@@ -29,6 +33,13 @@ interface ApiResponse {
   error?: string;
   /** ms left on the POST route's window — only present on a 429. */
   retryAfter?: number;
+  /** Which of the POST route's two limits fired — only present on a 429. */
+  reason?: "daily" | "last_attempt_failed";
+  /**
+   * Client-side only: this failure is an EXPECTED state (a rate limit), not a
+   * breakage, so it renders neutrally rather than in the loss colour.
+   */
+  expected?: boolean;
 }
 
 const FACTOR_LABELS: Record<string, string> = {
@@ -81,18 +92,25 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
         body: JSON.stringify({ scope }),
       });
       const json = (await res.json()) as ApiResponse;
-      if (res.status === 429) {
-        // The route answers with a bare API token; dropping res.status made
-        // that token the entire card body (2026-09-10 QA). Say it in domain
-        // language instead, with the actual wait.
-        return {
-          ...json,
-          success: false,
-          error: formatRateLimitMessage("Macro themes refresh", json.retryAfter),
-        };
-      }
-      // Every other failure now carries a user-facing message from the route.
-      return json;
+      if (res.ok && json.success) return json;
+      // The route answers a rate limit with a bare API token; dropping
+      // res.status made that token the entire card body (2026-09-10 QA). The
+      // shared translator turns every failure — the once-a-day limit, the short
+      // cooldown after a failed attempt, and any other status — into the same
+      // domain language NarrativeBlock uses.
+      const fallback = describeRefreshFailure(MACRO_THEMES_SUBJECT, res.status, json);
+      const routeMessage =
+        res.status !== 429 && typeof json.error === "string" && json.error.trim() !== ""
+          ? json.error
+          : null;
+      return {
+        ...json,
+        success: false,
+        expected: isExpectedRefreshState(res.status),
+        // A non-429 route message is written for a reader (the themes-parse
+        // failures); anything missing falls back to the shared sentence.
+        error: routeMessage ?? fallback,
+      };
     };
 
     (async () => {
@@ -104,7 +122,15 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
         const final = j.success && j.notGenerated ? await generate() : j;
         if (!cancelled) setData(final);
       } catch {
-        if (!cancelled) setData({ success: false, error: "network error" });
+        // Network-level failure (offline, server restarting mid-load). "network
+        // error" is a protocol word, not domain language — status 0 is the
+        // shared helper's "the request never completed" branch.
+        if (!cancelled) {
+          setData({
+            success: false,
+            error: describeRefreshFailure(MACRO_THEMES_SUBJECT, 0, null),
+          });
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -196,8 +222,18 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
       )}
 
       {!loading && data && !data.success && !data.underThreshold && (
-        <div className="rounded-lg border border-down/40 bg-canvas px-3 py-3 text-center">
-          <p className="text-xs text-down">{data.error ?? "Failed to load macro themes"}</p>
+        // A rate limit is the product working as designed, so it renders in the
+        // neutral empty-state treatment (same as the under-threshold box) with
+        // role="status"; only a real breakage gets the loss colour and an alert.
+        <div
+          role={data.expected ? "status" : "alert"}
+          className={`rounded-lg border bg-canvas px-3 py-3 text-center ${
+            data.expected ? "border-edge/40" : "border-down/40"
+          }`}
+        >
+          <p className={`text-xs ${data.expected ? "text-ink-faint" : "text-down"}`}>
+            {data.error ?? "Failed to load macro themes"}
+          </p>
         </div>
       )}
 

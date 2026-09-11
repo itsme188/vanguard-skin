@@ -54,11 +54,15 @@ export async function GET(req: NextRequest) {
   });
 }
 
-// The 24h window is stamped only by a SUCCESSFUL generation (see POST): a reply
-// we could not parse is not a generation, and stamping it up front locked the
-// scope out of its Macro card for a full day (2026-09-10 QA). Failures instead
-// get their own short cooldown, so a persistently broken model is still billed
-// at most once per MACRO_FAIL_COOLDOWN_MS rather than on every page load.
+// The 24h window is CLAIMED before the generation and RELEASED if it fails
+// (see POST). The claim has to happen before the await — this map is the only
+// mutex the route has, and without a pre-stamp two concurrent POSTs for one
+// scope (two tabs, a StrictMode double-effect, an A→B→A scope toggle) both
+// reach the paid generator. The release is what keeps a reply we could not
+// parse from locking the scope out of its Macro card for a full day
+// (2026-09-10 QA): a failure is not a generation. Failures instead get their
+// own short cooldown, so a persistently broken model is still billed at most
+// once per MACRO_FAIL_COOLDOWN_MS rather than on every page load.
 const lastMacroRegenAt = new Map<string, number>();
 const lastMacroFailAt = new Map<string, number>();
 const MACRO_REGEN_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -76,28 +80,55 @@ export async function POST(req: NextRequest) {
   const last = lastMacroRegenAt.get(scope) ?? 0;
   if (now - last < MACRO_REGEN_WINDOW_MS) {
     return NextResponse.json(
-      { success: false, error: "rate-limited", retryAfter: MACRO_REGEN_WINDOW_MS - (now - last) },
+      {
+        success: false,
+        error: "rate-limited",
+        // `reason` tells the card WHICH limit fired: the two windows are a day
+        // apart, and answering the failure cooldown with "refreshes once a day"
+        // named the wrong cause and the wrong wait.
+        reason: "daily",
+        retryAfter: MACRO_REGEN_WINDOW_MS - (now - last),
+      },
       { status: 429 }
     );
   }
   const lastFail = lastMacroFailAt.get(scope) ?? 0;
   if (now - lastFail < MACRO_FAIL_COOLDOWN_MS) {
     return NextResponse.json(
-      { success: false, error: "rate-limited", retryAfter: MACRO_FAIL_COOLDOWN_MS - (now - lastFail) },
+      {
+        success: false,
+        error: "rate-limited",
+        reason: "last_attempt_failed",
+        retryAfter: MACRO_FAIL_COOLDOWN_MS - (now - lastFail),
+      },
       { status: 429 }
     );
   }
+  // Claim the window BEFORE the await — see the note on lastMacroRegenAt. A
+  // second POST that arrives while this one is still in flight now sees the
+  // claim and 429s instead of starting a second paid generation.
+  lastMacroRegenAt.set(scope, now);
   const week = mondayOf(new Date().toISOString().slice(0, 10));
   try {
     const r = await generateMacroThemes(db, { scope, weekOf: week, forceRegen: true });
-    lastMacroRegenAt.set(scope, now);
+    // A success supersedes any earlier failure for this scope.
+    lastMacroFailAt.delete(scope);
     return NextResponse.json({ success: true, ...r });
   } catch (e) {
+    // Release the 24h claim (a failure is not a generation) and fall back to
+    // the short failure cooldown.
+    lastMacroRegenAt.delete(scope);
     lastMacroFailAt.set(scope, now);
-    // The client renders `error` verbatim, so it must stay user-facing; the
-    // parser text / reply snippet goes to the server log only.
-    const message = e instanceof Error ? e.message : "Failed to generate macro themes";
-    const detail = e instanceof MacroThemesParseError ? e.detail : message;
+    // The client renders `error` verbatim, so it must stay user-facing. Only
+    // MacroThemesParseError carries a message written for a reader; every other
+    // throw (a provider error string, a refusal) is raw vendor text and goes to
+    // the server log only.
+    const raw = e instanceof Error ? e.message : String(e);
+    const message =
+      e instanceof MacroThemesParseError
+        ? e.message
+        : "Couldn't refresh macro themes — try again in a few minutes.";
+    const detail = e instanceof MacroThemesParseError ? e.detail : raw;
     console.error(`[macro-themes] generation failed for scope=${scope}: ${detail}`);
     return NextResponse.json({ success: false, error: message }, { status: 500 });
   }

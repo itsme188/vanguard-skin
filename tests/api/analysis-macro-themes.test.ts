@@ -43,7 +43,7 @@ describe("/api/analysis/macro-themes", () => {
       sourceSummary: null, modelUsed: "v1",
     });
     const req = new Request("http://localhost/api/analysis/macro-themes?scope=all&week=2026-05-04");
-    const res = await GET(req as any);
+    const res = await GET(req as unknown as NextRequest);
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.themes).toHaveLength(1);
@@ -57,7 +57,7 @@ describe("/api/analysis/macro-themes", () => {
       const req = new Request(
         "http://localhost/api/analysis/macro-themes?scope=all&week=2026-05-04",
       );
-      const res = await GET(req as any);
+      const res = await GET(req as unknown as NextRequest);
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
@@ -80,7 +80,7 @@ describe("/api/analysis/macro-themes", () => {
     const req = new Request(
       "http://localhost/api/analysis/macro-themes?scope=all&week=2026-05-04",
     );
-    const res = await GET(req as any);
+    const res = await GET(req as unknown as NextRequest);
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.underThreshold).toBe(true);
@@ -90,7 +90,7 @@ describe("/api/analysis/macro-themes", () => {
   it("GET returns 400 when scope missing", async () => {
     const { GET } = await import("@/app/api/analysis/macro-themes/route");
     const req = new Request("http://localhost/api/analysis/macro-themes");
-    const res = await GET(req as any);
+    const res = await GET(req as unknown as NextRequest);
     expect(res.status).toBe(400);
   });
 
@@ -116,9 +116,12 @@ describe("/api/analysis/macro-themes", () => {
         body: JSON.stringify({ scope: "all" }),
         headers: { "Content-Type": "application/json" },
       });
-      await POST(make() as any);
-      const res2 = await POST(make() as any);
+      await POST(make() as unknown as NextRequest);
+      const res2 = await POST(make() as unknown as NextRequest);
       expect(res2.status).toBe(429);
+      // `reason` is what lets the card tell this limit from the short
+      // post-failure cooldown, which needs different copy entirely.
+      expect((await res2.json()).reason).toBe("daily");
     } finally {
       spy.mockRestore();
     }
@@ -236,10 +239,114 @@ describe("/api/analysis/macro-themes", () => {
       expect(res2.status).toBe(429);
       const body = await res2.json();
       expect(body.error).toBe("rate-limited");
+      expect(body.reason).toBe("last_attempt_failed");
       expect(body.retryAfter).toBeGreaterThan(0);
       expect(body.retryAfter).toBeLessThanOrEqual(10 * 60 * 1000);
       // A persistently failing model is re-billed at most once per cooldown.
       expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+
+  // ── The in-flight claim ───────────────────────────────────────────────────
+  // The 24h map is the only mutex this route has. Stamping it only AFTER the
+  // await left a window in which a second POST for the same scope (two tabs, a
+  // StrictMode double-effect, an A→B→A scope toggle) sailed past the limit
+  // check and started a SECOND paid generation.
+
+  it("POST 429s a concurrent second request for the same scope instead of billing twice", async () => {
+    const macroThemes = await import("@/lib/compute/macro-themes");
+    let releaseGeneration!: (r: typeof OK_RESULT) => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const gate = new Promise<typeof OK_RESULT>((resolve) => {
+      releaseGeneration = resolve;
+    });
+    const spy = vi.spyOn(macroThemes, "generateMacroThemes").mockImplementation(() => {
+      markStarted();
+      return gate;
+    });
+    try {
+      const { POST, __resetMacroRegenLimitForTests } =
+        await import("@/app/api/analysis/macro-themes/route");
+      __resetMacroRegenLimitForTests();
+      const makeReq = makePost("all");
+
+      const first = POST(makeReq());
+      await started; // the first generation is now genuinely in flight
+
+      const res2 = await POST(makeReq());
+      expect(res2.status).toBe(429);
+      const body = await res2.json();
+      expect(body.reason).toBe("daily");
+
+      releaseGeneration(OK_RESULT);
+      expect((await first).status).toBe(200);
+      // One request in flight, one paid generation.
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("POST releases the 24h claim when the generation fails, so the scope is not locked out", async () => {
+    const macroThemes = await import("@/lib/compute/macro-themes");
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const spy = vi
+      .spyOn(macroThemes, "generateMacroThemes")
+      .mockRejectedValueOnce(new Error("provider exploded"))
+      .mockResolvedValue(OK_RESULT);
+    try {
+      const { POST, __resetMacroRegenLimitForTests, __clearMacroFailCooldownForTests } =
+        await import("@/app/api/analysis/macro-themes/route");
+      __resetMacroRegenLimitForTests();
+      const makeReq = makePost("vanguard");
+
+      expect((await POST(makeReq())).status).toBe(500);
+
+      // Inside the failure cooldown the answer is the FAILURE 429, never the
+      // daily one — the claim was released, not left standing.
+      const cooled = await POST(makeReq());
+      expect(cooled.status).toBe(429);
+      expect((await cooled.json()).reason).toBe("last_attempt_failed");
+
+      __clearMacroFailCooldownForTests();
+      expect((await POST(makeReq())).status).toBe(200);
+    } finally {
+      spy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+
+  // ── Raw provider text never reaches the card ──────────────────────────────
+  // generateMacroThemes also throws plain Errors carrying provider text (and a
+  // refusal). Only MacroThemesParseError writes a message for a reader; the
+  // rest used to render verbatim, in red, in the Macro card.
+
+  it("POST replaces a non-parse failure message with user-facing copy, logging the raw text", async () => {
+    const macroThemes = await import("@/lib/compute/macro-themes");
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const raw = "macro-themes generation failed: 529 overloaded_error from the provider";
+    const spy = vi
+      .spyOn(macroThemes, "generateMacroThemes")
+      .mockRejectedValue(new Error(raw));
+    try {
+      const { POST, __resetMacroRegenLimitForTests } =
+        await import("@/app/api/analysis/macro-themes/route");
+      __resetMacroRegenLimitForTests();
+      const res = await POST(makePost("roth")());
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.success).toBe(false);
+      expect(body.error).toBe("Couldn't refresh macro themes — try again in a few minutes.");
+      expect(body.error).not.toContain("overloaded_error");
+      expect(body.error).not.toContain("provider");
+      // ...but the operator still gets the raw text in the server log.
+      expect(errSpy.mock.calls.some((c) => String(c[0]).includes("overloaded_error"))).toBe(true);
     } finally {
       spy.mockRestore();
       errSpy.mockRestore();

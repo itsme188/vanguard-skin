@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { MacroThemesSchema, MacroThemesParseError, type MacroThemeAi, buildMacroSignalBlob, generateMacroThemes, parseThemesJson } from "@/lib/compute/macro-themes";
 import { upsertMacroThemes } from "@/lib/queries/analysis-macro-themes";
+import { readFileSync } from "node:fs";
 
 describe("MacroThemesSchema", () => {
   it("accepts a well-formed 3-theme array", () => {
@@ -256,5 +257,34 @@ describe("generateMacroThemes", () => {
     });
     const result = await generateMacroThemes(db, { scope: "all", weekOf: "2026-05-04" });
     expect(result.themes[0].top_contributors).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Landing 2026-09-11. generateMacroThemes wrapped a provider failure as
+// "Sonnet macro-themes generation failed: <raw provider text>" and a refusal
+// as "Sonnet macro-themes generation refused". The route passed `e.message`
+// straight into its JSON body and the Macro card rendered it verbatim, in red
+// — so a model family name AND raw vendor text reached a user surface. The
+// route now sanitises non-MacroThemesParseError throws, and the thrown text
+// itself no longer names a model family (CLAUDE.md: never name a model id in
+// user-facing copy; model ids come from resolveFeatureModel, not string
+// literals).
+//
+// No jsdom/RTL harness here and the throw sites sit behind a paid AI call, so
+// this is a source pin (the repo's established pattern for that shape).
+describe("macro-themes generation errors carry no model family name", () => {
+  const src = readFileSync("lib/compute/macro-themes.ts", "utf8");
+
+  it("throws generic generation-failed / refused messages", () => {
+    expect(src).toContain("throw new Error(`macro-themes generation refused`)");
+    expect(src).toContain("throw new Error(`macro-themes generation failed: ${msg}`)");
+  });
+
+  it("names no model family in any thrown or returned string", () => {
+    for (const line of src.split("\n")) {
+      if (!/throw new Error\(|throw new MacroThemesParseError\(/.test(line)) continue;
+      expect(line).not.toMatch(/Sonnet|Haiku|Opus|Claude|claude-|Anthropic/i);
+    }
   });
 });
