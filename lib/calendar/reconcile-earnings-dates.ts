@@ -108,6 +108,9 @@ interface Resolution {
   conflictWith: string | null;
 }
 
+/** How far off a reported print a manual date can sit and still describe it. */
+const POST_PRINT_CORRECTION_DAYS = 1;
+
 /**
  * A manual FUTURE row must never compete with a print that already happened
  * (qa:today-earningshub-add-ticker--manual-future-event-supersedes-reported-quarter):
@@ -121,20 +124,51 @@ interface Resolution {
  * remaining future rows as its own event. Mirrors correctEarningsEventDate's
  * refusal to touch rows with captured actuals. A manual row that IS the
  * reported print (verifier/user correction post-print) keeps the whole cluster.
+ *
+ * REGRESSION 1 (qa:today-earningshub-add-ticker--manual-future-event-
+ * supersedes-reported-quarter-regression-1, 2026-09-11): "is the manual row
+ * itself the print" was decided with the same `hasActual` predicate used for
+ * vendor rows — and on a manual row BOTH of its inputs can be vendor-inherited
+ * rather than the user's own. `carryEnrichment` below copies a superseded
+ * donor's actual_value onto the canonical across any date gap, and the
+ * enrichment road (lib/calendar/enrich-actuals.ts, manual source-key → Finnhub
+ * symbol+date) writes an actual whenever Finnhub carries an entry on the manual
+ * row's own date. So a "+ Add ticker" row dated one day back and nine days from
+ * the real print read as "I am the print", the split was skipped, and rung 1
+ * dragged the print's recap email and the desk's bogeys onto the phantom (live
+ * MDB: manual 09-10 vs the 09-01 print).
+ *
+ * A manual / user_confirmed row is the print ITSELF only on its OWN evidence:
+ *   - `manual_actuals_at` — the desk accepted actuals ON THIS ROW
+ *     (lib/earnings/actuals.ts::saveManualActuals); or
+ *   - its date sits within POST_PRINT_CORRECTION_DAYS of a reported vendor row
+ *     — a one-day-off date correction describes that same print.
+ * Vendor figures sitting in actual_value / raw_json.entry.epsActual are NOT
+ * evidence. Everything else splits, and the manual row always lands on the
+ * NON-reported side so a past date of its own can't carry it back into the
+ * print's group.
  */
 function splitReportedFromManualCluster(
   cluster: EarningsRow[],
   today: string,
 ): EarningsRow[][] {
-  const manual = cluster.find(
-    (r) => r.source === "manual" || r.date_status === "user_confirmed",
-  );
+  const isManual = (r: EarningsRow) =>
+    r.source === "manual" || r.date_status === "user_confirmed";
+  const manual = cluster.find(isManual);
   if (!manual) return [cluster];
   const isReported = (r: EarningsRow) => r.event_date < today && hasActual(r);
-  if (isReported(manual)) return [cluster];
-  const reported = cluster.filter(isReported);
+  // Only a print on some OTHER row needs protecting from rung 1; when the
+  // manual row is the cluster's only reported row there is nothing to split.
+  const reported = cluster.filter((r) => !isManual(r) && isReported(r));
   if (reported.length === 0) return [cluster];
-  return [reported, cluster.filter((r) => !isReported(r))];
+  const manualIsThePrint =
+    manual.manual_actuals_at != null ||
+    reported.some(
+      (r) => daysBetween(r.event_date, manual.event_date) <= POST_PRINT_CORRECTION_DAYS,
+    );
+  if (manualIsThePrint) return [cluster];
+  const reportedIds = new Set(reported.map((r) => r.id));
+  return [reported, cluster.filter((r) => !reportedIds.has(r.id))];
 }
 
 /** Resolve one cluster of rows (all referring to the same reporting event). */
