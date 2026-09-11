@@ -63,6 +63,91 @@ describe("describeNoteSaveFailure", () => {
     expect(msg).toMatch(/couldn't save the note/i);
     expect(msg).toMatch(/try again/i);
   });
+
+  it("words an update failure with the update verb and 'changes' subject", () => {
+    const msg = describeNoteSaveFailure({ kind: "network", action: "update" });
+    expect(msg).toMatch(/couldn't update the note/i);
+    expect(msg).toMatch(/could not reach the server/i);
+    expect(msg).toMatch(/your changes are still here/i);
+    expect(msg).not.toMatch(/Failed to fetch|TypeError|NetworkError|Load failed/);
+  });
+
+  it("words a delete failure with the delete verb and no 'still here' claim", () => {
+    const msg = describeNoteSaveFailure({ kind: "network", action: "delete" });
+    expect(msg).toMatch(/couldn't delete the note/i);
+    expect(msg).toMatch(/could not reach the server/i);
+    expect(msg).toMatch(/try again/i);
+    // Nothing is "still here" to preserve on a delete — only save/update
+    // promise that.
+    expect(msg).not.toMatch(/still here/i);
+  });
+
+  it("passes a 4xx body through for update/delete server failures too", () => {
+    const updateMsg = describeNoteSaveFailure({
+      kind: "server",
+      status: 404,
+      error: "Note not found",
+      action: "update",
+    });
+    expect(updateMsg).toMatch(/couldn't update the note/i);
+    expect(updateMsg).toContain("Note not found");
+
+    const deleteMsg = describeNoteSaveFailure({
+      kind: "server",
+      status: 404,
+      error: "Note not found",
+      action: "delete",
+    });
+    expect(deleteMsg).toMatch(/couldn't delete the note/i);
+    expect(deleteMsg).toContain("Note not found");
+  });
+
+  it("never echoes a 5xx body for update/delete either", () => {
+    const msg = describeNoteSaveFailure({
+      kind: "server",
+      status: 500,
+      error: "SQLITE_CONSTRAINT: FOREIGN KEY constraint failed",
+      action: "delete",
+    });
+    expect(msg).not.toContain("SQLITE_CONSTRAINT");
+    expect(msg).toContain("500");
+  });
+});
+
+describe("NotesView update/delete handlers route every failure through the helper", () => {
+  function extractFn(name: string): string {
+    const start = src.indexOf(`async function ${name}`);
+    expect(start).toBeGreaterThan(-1);
+    // Both handlers are followed by a "// ─── ... ───" section comment.
+    const next = src.indexOf("\n  // ─── ", start + 1);
+    expect(next).toBeGreaterThan(start);
+    return src.slice(start, next);
+  }
+
+  it("handleUpdate no longer throws/reads err.message into the toast", () => {
+    const fn = extractFn("handleUpdate");
+    expect(fn).not.toMatch(/err instanceof Error/);
+    expect(fn).not.toContain("Failed to update note");
+    expect(fn).not.toMatch(/throw new Error/);
+    expect(fn).toMatch(/!res\.ok \|\| !data\?\.success/);
+    expect(fn).toMatch(/describeNoteSaveFailure\(\{ kind: "network", action: "update" \}\)/);
+    expect(fn).toMatch(/describeNoteSaveFailure\(\s*\{\s*kind: "server"/);
+    expect(fn).toContain('action: "update"');
+    // JSON parse is guarded — a non-JSON body must not throw a raw SyntaxError.
+    expect(fn).toMatch(/res\.json\(\)\.catch\(\(\) => null\)/);
+  });
+
+  it("handleDelete no longer throws/reads err.message into the toast", () => {
+    const fn = extractFn("handleDelete");
+    expect(fn).not.toMatch(/err instanceof Error/);
+    expect(fn).not.toContain("Failed to delete note");
+    expect(fn).not.toMatch(/throw new Error/);
+    expect(fn).toMatch(/!res\.ok \|\| !data\?\.success/);
+    expect(fn).toMatch(/describeNoteSaveFailure\(\{ kind: "network", action: "delete" \}\)/);
+    expect(fn).toMatch(/describeNoteSaveFailure\(\s*\{\s*kind: "server"/);
+    expect(fn).toContain('action: "delete"');
+    expect(fn).toMatch(/res\.json\(\)\.catch\(\(\) => null\)/);
+  });
 });
 
 describe("NotesView create handler routes every failure through the helper", () => {

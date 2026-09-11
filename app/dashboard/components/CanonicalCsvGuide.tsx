@@ -271,7 +271,11 @@ function FormatSection({ spec }: { spec: FormatSpec }) {
         </div>
 
         {/* Column table */}
-        <ScrollFade>
+        {/* The enclosing <details> is bg-canvas, not the fade's default
+            --color-panel target — this scroller has no background of its
+            own, so it needs the same override the two code blocks
+            above/below already carry (they fade to their own bg-raised). */}
+        <ScrollFade className="[--scroll-fade-color:var(--color-canvas)]">
           <table className="w-full text-xs">
             <thead>
               <tr className="text-ink-faint text-left">

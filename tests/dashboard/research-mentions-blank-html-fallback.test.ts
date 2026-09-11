@@ -51,4 +51,18 @@ describe("Research Mentions reader falls back to raw_text on content-less HTML",
   it("says so rather than rendering an empty pane when neither body is stored", () => {
     expect(mentions).toMatch(/No article body was stored/i);
   });
+
+  // 2026-09 follow-up — the plain-text branch had the SAME blank-pane defect
+  // one level down: `text ? <div>{text}</div> : <EmptyState/>` is also a
+  // bare truthiness test, and a raw_text that is non-empty but entirely
+  // invisible preheader padding is truthy. Gate on rendered length instead.
+  it("imports visibleTextLength and gates the text branch on it, not truthiness", () => {
+    expect(mentions).toMatch(
+      /import \{[^}]*visibleTextLength[^}]*\} from "@\/lib\/gmail\/sanitize"/,
+    );
+    expect(mentions).toMatch(/visibleTextLength\(text\)\s*>\s*0/);
+    // The plain-text render branch must not be a bare `text ?` truthiness
+    // check — it has to route through the visible-length gate above.
+    expect(mentions).not.toMatch(/:\s*text\s*\?\s*\(?\s*<div className="prose-reader/);
+  });
 });

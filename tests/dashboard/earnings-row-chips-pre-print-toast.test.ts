@@ -64,3 +64,42 @@ describe("gen recap — a pre-print click reads as information, not failure", ()
     expect(branch).toContain("prePrint: true");
   });
 });
+
+// 2026-09 follow-up — the client's fetch-level failure toasted a raw
+// err.message (the browser's own "Failed to fetch"), and the route's
+// documented `opensAt` field ("the instant the caller is waiting for")
+// was never read by this component at all — not even typed.
+describe("gen recap — network failures and the opensAt contract field", () => {
+  it("classifies a rejected fetch before the generic catch, with domain copy", () => {
+    const fn = src.slice(
+      src.indexOf("async function generateRecap"),
+      src.indexOf("\n  return (", src.indexOf("async function generateRecap")),
+    );
+    expect(fn).toMatch(/apiFetch\([^]*?\)\.catch\(\(\) => null\)/);
+    expect(fn).toMatch(/if \(!res\)\s*\{\s*\n\s*toast\("Couldn't reach the server[^"]*", "error"\);/);
+  });
+
+  it("still lets a genuine err.message through the generic catch (server-supplied text)", () => {
+    expect(src).toMatch(/toast\(err instanceof Error \? err\.message : "Generate failed", "error"\)/);
+  });
+
+  it("types and reads json.opensAt instead of ignoring it", () => {
+    const fn = src.slice(
+      src.indexOf("async function generateRecap"),
+      src.indexOf("\n  return (", src.indexOf("async function generateRecap")),
+    );
+    expect(fn).toMatch(/opensAt\?:\s*string \| null/);
+    expect(fn).toMatch(/json\.opensAt/);
+  });
+
+  it("renders opensAt through the shared ET formatter, not a hand-rolled Date call", () => {
+    expect(src).toMatch(
+      /import \{ formatEnrichedAtET \} from "@\/lib\/format"/,
+    );
+    const fn = src.slice(
+      src.indexOf("async function generateRecap"),
+      src.indexOf("\n  return (", src.indexOf("async function generateRecap")),
+    );
+    expect(fn).toMatch(/formatEnrichedAtET\(json\.opensAt\)/);
+  });
+});

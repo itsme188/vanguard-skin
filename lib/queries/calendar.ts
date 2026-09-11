@@ -3,6 +3,7 @@ import type { CalendarEvent, CalendarBriefing } from "@/lib/types";
 import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
 import { applyClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { addDays, todayET } from "@/lib/calendar/date-utils";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
 
 // ─── Filter types ─────────────────────────────────────────────────
 
@@ -40,9 +41,32 @@ export function getUpcomingEvents(
     conditions.push("event_type = ?");
     params.push(filters.eventType);
   }
+  // A manual row can carry security_id NULL even when the security (or a
+  // sibling share class) exists in our table — POST /api/calendar/events
+  // resolves through the stock-only getSecurityIdForSymbol, which refuses a
+  // securities row with a NULL security_type. Security Detail is the ONE
+  // caller that filters by securityId (lib/queries/security-detail.ts), and
+  // an unfilled NULL row there was simply invisible on that security's hub
+  // — a plain `security_id = ?` never matches NULL. Resolve the security's
+  // OWN symbol, then widen the match to its issuer family (never a
+  // symbol-string-equal check — issuerSiblings() is the single source for
+  // dual-class tickers, e.g. a manual GOOGL row must surface on the GOOG
+  // security page too).
   if (filters.securityId) {
-    conditions.push("security_id = ?");
-    params.push(filters.securityId);
+    const security = db
+      .prepare(`SELECT symbol FROM securities WHERE id = ?`)
+      .get(filters.securityId) as { symbol: string } | undefined;
+    const siblings = security?.symbol ? issuerSiblings(security.symbol) : [];
+    if (siblings.length > 0) {
+      const placeholders = siblings.map(() => "?").join(", ");
+      conditions.push(
+        `(security_id = ? OR (security_id IS NULL AND UPPER(symbol) IN (${placeholders})))`,
+      );
+      params.push(filters.securityId, ...siblings.map((s) => s.toUpperCase()));
+    } else {
+      conditions.push("security_id = ?");
+      params.push(filters.securityId);
+    }
   }
 
   // Superseded rows never surface: one print can carry several source rows
@@ -57,13 +81,40 @@ export function getUpcomingEvents(
     conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
   const limit = filters.limit ?? 50;
 
-  return db
+  const events = db
     .prepare(
       `SELECT * FROM calendar_events ${where}
        ORDER BY event_date ASC, event_time ASC NULLS LAST, title ASC
        LIMIT ?`
     )
     .all(...params, limit) as CalendarEvent[];
+
+  if (filters.securityId) {
+    // The SQL widen above surfaces a sibling row whose security_id is still
+    // NULL in the table — fill it to the caller's OWN security id (not a
+    // fresh generic sibling lookup) so SymbolLink renders into the security
+    // page the caller actually asked for. Pure post-process — doesn't
+    // mutate the calendar_events row.
+    for (const e of events) {
+      if (e.security_id == null) {
+        e.security_id = filters.securityId;
+      }
+    }
+  } else {
+    // Dual-class fallback, same post-process as getEventsByWeek /
+    // getTodayReleases / getEarningsForWeekDeduped: a sync or manual row can
+    // carry security_id NULL even when the security (or a sibling share
+    // class) exists, which left this reader's rows linkless — the one of
+    // the four that skipped it. Pure post-process — doesn't mutate the
+    // calendar_events row.
+    for (const e of events) {
+      if (e.security_id == null && e.symbol) {
+        e.security_id = getSecurityIdForSymbolWithSiblings(db, e.symbol);
+      }
+    }
+  }
+
+  return events;
 }
 
 export function getEventsByWeek(

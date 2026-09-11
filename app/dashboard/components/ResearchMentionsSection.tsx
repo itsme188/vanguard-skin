@@ -6,7 +6,7 @@ import type { ResearchMention } from "@/lib/queries/research";
 import { Section } from "./Section";
 import { Chip, type ChipTone } from "./Chip";
 import { NewsletterArticleFrame } from "./NewsletterArticleFrame";
-import { trimEmailFooter, htmlHidesStoredText } from "@/lib/gmail/sanitize";
+import { trimEmailFooter, htmlHidesStoredText, visibleTextLength } from "@/lib/gmail/sanitize";
 
 interface ArticleDetail {
   id: number;
@@ -192,6 +192,11 @@ function ArticleBody({ article }: { article: ArticleDetail }) {
   const text = article.raw_text ? trimEmailFooter(article.raw_text) : null;
   const trimmedHtml = article.raw_html ? trimEmailFooter(article.raw_html) : null;
   const html = trimmedHtml && htmlHidesStoredText(trimmedHtml, text) ? null : trimmedHtml;
+  // A raw_text that survives trimEmailFooter as a non-empty string can still
+  // be pure preheader padding (invisible Unicode chars) — truthiness alone
+  // rendered a blank div instead of falling through to the empty-state copy
+  // below. Gate on rendered length, not string length.
+  const hasVisibleText = text != null && visibleTextLength(text) > 0;
 
   return (
     <div>
@@ -210,7 +215,7 @@ function ArticleBody({ article }: { article: ArticleDetail }) {
         // email's document-global <style> block restyles the whole app when
         // injected via dangerouslySetInnerHTML (deep-QA style-leak finding).
         <NewsletterArticleFrame html={html} />
-      ) : text ? (
+      ) : hasVisibleText ? (
         <div className="prose-reader whitespace-pre-wrap">{text}</div>
       ) : (
         // Say it, rather than leaving an empty pane behind the "read" chip.

@@ -138,9 +138,21 @@ export function EarningsHubRefreshButton({ weekOf }: Props) {
     <div className="flex items-center gap-2 text-[14px]">
       {progress && <span className="text-[11px] text-ink-faint italic">{progress}</span>}
       {!progress && outcome && (
-        <span className="text-[11px] text-ink-faint" title={outcome.title}>
-          {outcome.text}
-        </span>
+        outcome.title ? (
+          // The joined per-phase errors used to live ONLY in the `title`
+          // attribute — a hover-only affordance a touch user can never
+          // trigger (CLAUDE.md: hover-only = touch tap-trap). A <details>
+          // keeps the one-line outcome always visible as the summary and
+          // makes the detail a tap target, not just a hover target.
+          <details className="text-[11px] text-ink-faint">
+            <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+              {outcome.text} <span aria-hidden="true">▾</span>
+            </summary>
+            <div className="mt-1 text-down whitespace-pre-wrap">{outcome.title}</div>
+          </details>
+        ) : (
+          <span className="text-[11px] text-ink-faint">{outcome.text}</span>
+        )
       )}
       {error && <span className="text-[11px] text-down">{error}</span>}
       <button

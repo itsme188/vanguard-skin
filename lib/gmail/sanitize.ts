@@ -444,6 +444,21 @@ export function visibleHtmlTextLength(html: string): number {
 }
 
 /**
+ * Visible length of a PLAIN-TEXT string (no HTML to strip, unlike
+ * visibleHtmlTextLength) — invisible padding code points removed, then
+ * trimmed. A raw_text that is entirely preheader padding measures 0 here
+ * even though the string itself is non-empty, so a caller that gates on
+ * truthiness alone renders a blank pane instead of falling through to an
+ * empty-state message (QA 2026-09-07 follow-up: ResearchMentionsSection's
+ * `text ? <div>{text}</div> : <EmptyState/>` did exactly that for an
+ * all-padding raw_text — see ArticleBody in ResearchMentionsSection.tsx).
+ */
+export function visibleTextLength(text: string | null): number {
+  if (!text) return 0;
+  return text.replace(INVISIBLE_CHARS, "").trim().length;
+}
+
+/**
  * True when the stored HTML renders so little of the article that showing it
  * would blank the expand panel while substantial raw_text exists — some
  * senders' templates survive sanitize/normalize as style-only shells (live
@@ -457,7 +472,7 @@ export function htmlHidesStoredText(
   if (!html) return false;
   // Measure the raw_text the SAME way: a raw_text that is itself only
   // preheader padding is not a better thing to show.
-  const rawLen = rawText ? rawText.replace(INVISIBLE_CHARS, "").trim().length : 0;
+  const rawLen = visibleTextLength(rawText);
   if (rawLen === 0) return false; // nothing better to show
   const textLen = visibleHtmlTextLength(html);
   if (textLen < 200) return true;

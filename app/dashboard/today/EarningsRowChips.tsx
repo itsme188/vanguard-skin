@@ -11,6 +11,7 @@ import { BogeysEditModal } from "./BogeysEditModal";
 import { StageChipStrip, RowIntelLine, fmtCountdown } from "./hub-live/send-state-chips";
 import { useHubLive } from "./EarningsHubLive";
 import apiFetch from "@/lib/http/apiFetch";
+import { formatEnrichedAtET } from "@/lib/format";
 
 interface EarningsRowChipsProps {
   eventId: number;
@@ -155,11 +156,20 @@ export function EarningsRowChips({
     if (generating) return;
     setGenerating(true);
     try {
+      // A rejected fetch (network down, DNS failure, …) is classified here,
+      // before any response exists to inspect — otherwise it fell into the
+      // generic catch below and toasted the browser's own vocabulary
+      // ("Failed to fetch") instead of English (mirrors the composer's
+      // NotesView.tsx::handleCreate pattern).
       const res = await apiFetch("/api/earnings/recap-modal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ eventId, runEnrichmentFirst: true }),
-      });
+      }).catch(() => null);
+      if (!res) {
+        toast("Couldn't reach the server — try again.", "error");
+        return;
+      }
       const json = (await res.json().catch(() => ({}))) as {
         success?: boolean;
         notReady?: boolean;
@@ -168,6 +178,12 @@ export function EarningsRowChips({
         title?: string;
         symbol?: string;
         eventDate?: string | null;
+        // The instant the print window opens (ISO string) — set whenever
+        // `prePrint` is true (see route contract comment). `json.error`
+        // already narrates this in prose for every reachable case; opensAt
+        // is the structured fallback for when that text is absent, so the
+        // wait is never described with no window at all.
+        opensAt?: string | null;
         error?: string;
       };
       if (json.prePrint || json.notReady) {
@@ -180,7 +196,9 @@ export function EarningsRowChips({
         toast(
           json.error ??
             (json.prePrint
-              ? "The print window hasn't opened yet — the recap stays locked until then."
+              ? json.opensAt
+                ? `The print window opens at ${formatEnrichedAtET(json.opensAt)} — the recap stays locked until then.`
+                : "The print window hasn't opened yet — the recap stays locked until then."
               : "Not reported yet."),
           "info",
         );
