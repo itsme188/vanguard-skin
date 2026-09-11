@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { getSectorEtfGaps } from "@/lib/queries/level-performance";
 import { getSectorDisagreements } from "@/lib/queries/data-health";
 import { DataHealthView } from "../components/DataHealthView";
+import { ScrollFade } from "../components/ScrollFade";
 
 export default function DataHealthPage() {
   const sectorGaps = getSectorEtfGaps(db);
@@ -34,41 +35,45 @@ export default function DataHealthPage() {
             list as it encounters earnings symbols it can&rsquo;t map.
           </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-edge text-[11px] uppercase tracking-wider text-ink-faint">
-                <th className="text-left px-5 py-2 font-medium">Symbol</th>
-                <th className="text-left px-5 py-2 font-medium">Sector</th>
-                <th className="text-right px-5 py-2 font-medium">Count</th>
-                <th className="text-right px-5 py-2 font-medium">
-                  First seen
-                </th>
-                <th className="text-right px-5 py-2 font-medium">Last seen</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sectorGaps.map((g) => (
-                <tr
-                  key={`${g.symbol}:${g.sector ?? "null"}`}
-                  className="border-b border-edge/50 last:border-0"
-                >
-                  <td className="px-5 py-2 text-ink font-mono">{g.symbol}</td>
-                  <td className="px-5 py-2 text-ink-dim">
-                    {g.sector ?? "—"}
-                  </td>
-                  <td className="px-5 py-2 text-right text-ink font-mono">
-                    {g.count}
-                  </td>
-                  <td className="px-5 py-2 text-right text-[11px] text-ink-faint font-mono">
-                    {g.first_seen_at.slice(0, 10)}
-                  </td>
-                  <td className="px-5 py-2 text-right text-[11px] text-ink-faint font-mono">
-                    {g.last_seen_at.slice(0, 10)}
-                  </td>
+          <ScrollFade>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-edge text-[11px] uppercase tracking-wider text-ink-faint">
+                  <th className="text-left px-5 py-2 font-medium">Symbol</th>
+                  <th className="text-left px-5 py-2 font-medium">Sector</th>
+                  <th className="text-right px-5 py-2 font-medium">Count</th>
+                  <th className="text-right px-5 py-2 font-medium">
+                    First seen
+                  </th>
+                  <th className="text-right px-5 py-2 font-medium">
+                    Last seen
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {sectorGaps.map((g) => (
+                  <tr
+                    key={`${g.symbol}:${g.sector ?? "null"}`}
+                    className="border-b border-edge/50 last:border-0"
+                  >
+                    <td className="px-5 py-2 text-ink font-mono">{g.symbol}</td>
+                    <td className="px-5 py-2 text-ink-dim">
+                      {g.sector ?? "—"}
+                    </td>
+                    <td className="px-5 py-2 text-right text-ink font-mono">
+                      {g.count}
+                    </td>
+                    <td className="px-5 py-2 text-right text-[11px] text-ink-faint font-mono">
+                      {g.first_seen_at.slice(0, 10)}
+                    </td>
+                    <td className="px-5 py-2 text-right text-[11px] text-ink-faint font-mono">
+                      {g.last_seen_at.slice(0, 10)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </ScrollFade>
         )}
       </section>
 
@@ -92,37 +97,39 @@ export default function DataHealthPage() {
             No unverified sector disagreements.
           </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-edge text-[11px] uppercase tracking-wider text-ink-faint">
-                <th className="text-left px-5 py-2 font-medium">Symbol</th>
-                <th className="text-left px-5 py-2 font-medium">Sector</th>
-                <th className="text-left px-5 py-2 font-medium">
-                  Implied (fund category)
-                </th>
-                <th className="text-left px-5 py-2 font-medium">Industry</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sectorDisagreements.map((d) => (
-                <tr
-                  key={d.symbol}
-                  className="border-b border-edge/50 last:border-0"
-                >
-                  <td className="px-5 py-2 text-ink font-mono">{d.symbol}</td>
-                  <td className="px-5 py-2 text-ink-dim">
-                    {d.sector ?? "—"}
-                  </td>
-                  <td className="px-5 py-2 text-ink-dim">
-                    {d.impliedSector}
-                  </td>
-                  <td className="px-5 py-2 text-ink-dim">
-                    {d.industry ?? "—"}
-                  </td>
+          <ScrollFade>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-edge text-[11px] uppercase tracking-wider text-ink-faint">
+                  <th className="text-left px-5 py-2 font-medium">Symbol</th>
+                  <th className="text-left px-5 py-2 font-medium">Sector</th>
+                  <th className="text-left px-5 py-2 font-medium">
+                    Implied (fund category)
+                  </th>
+                  <th className="text-left px-5 py-2 font-medium">Industry</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {sectorDisagreements.map((d) => (
+                  <tr
+                    key={d.symbol}
+                    className="border-b border-edge/50 last:border-0"
+                  >
+                    <td className="px-5 py-2 text-ink font-mono">{d.symbol}</td>
+                    <td className="px-5 py-2 text-ink-dim">
+                      {d.sector ?? "—"}
+                    </td>
+                    <td className="px-5 py-2 text-ink-dim">
+                      {d.impliedSector}
+                    </td>
+                    <td className="px-5 py-2 text-ink-dim">
+                      {d.industry ?? "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </ScrollFade>
         )}
       </section>
     </div>

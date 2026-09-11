@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import type { CalendarEvent, CalendarBriefing } from "@/lib/types";
 import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
 import { applyClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
-import { addDays } from "@/lib/calendar/date-utils";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
 
 // ─── Filter types ─────────────────────────────────────────────────
 
@@ -92,6 +92,69 @@ export function getEventsByWeek(
   // acceptance must be read cluster-wide — the stamp often sits on a
   // superseded twin (lib/queries/manual-actuals-cluster.ts).
   return applyClusterManualActuals(db, events);
+}
+
+/**
+ * The Today page's "Today's releases" block: every event landing on `today`
+ * that carries a release_time, or — when today has none — the next few
+ * scheduled ones so the block is never empty.
+ *
+ * ET-anchored: calendar event_date is an ET market date, so "today" must be
+ * the ET day regardless of the Mac's local timezone (traveling) or UTC.
+ *
+ * Lived inline in app/dashboard/today/page.tsx until qa:today-releases--held-
+ * ticker-unlinked-no-sibling-fill: being the one releases reader outside this
+ * file, it was also the one that skipped the dual-class fallback below, so a
+ * manually added event whose security_id is NULL (POST /api/calendar/events
+ * resolves through the stock-only getSecurityIdForSymbol, which refuses a
+ * securities row with a NULL security_type) rendered as dead plain text while
+ * the EarningsHub linked the same symbol on the same page.
+ */
+export function getTodayReleases(
+  db: Database.Database,
+  today: string = todayET(),
+): { releases: CalendarEvent[]; mode: "today" | "upcoming" } {
+  const todayReleases = db
+    .prepare(
+      `SELECT * FROM calendar_events
+       WHERE event_date = ?
+         AND release_time IS NOT NULL
+         AND COALESCE(superseded, 0) = 0
+       ORDER BY release_time ASC`,
+    )
+    .all(today) as CalendarEvent[];
+
+  // Fallback: when today has no releases, surface the next few upcoming ones so
+  // the left half of the Today header row is never empty (there's always a
+  // macro event or held-name earnings coming up within the week).
+  const releases =
+    todayReleases.length > 0
+      ? todayReleases
+      : (db
+          .prepare(
+            `SELECT * FROM calendar_events
+             WHERE event_date > ?
+               AND release_time IS NOT NULL
+               AND COALESCE(superseded, 0) = 0
+             ORDER BY event_date ASC, release_time ASC
+             LIMIT 4`,
+          )
+          .all(today) as CalendarEvent[]);
+
+  // Dual-class fallback, same post-process as getEventsByWeek: a sync or
+  // manual row can carry security_id NULL even when the security (or a sibling
+  // share class) exists, which left the release row's symbol pill unlinked.
+  // Pure post-process — doesn't mutate the calendar_events row.
+  for (const e of releases) {
+    if (e.security_id == null && e.symbol) {
+      e.security_id = getSecurityIdForSymbolWithSiblings(db, e.symbol);
+    }
+  }
+
+  return {
+    releases,
+    mode: todayReleases.length > 0 ? "today" : "upcoming",
+  };
 }
 
 export function getEventsForSecurity(
