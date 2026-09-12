@@ -412,8 +412,14 @@ function inlineFormat(text: string): string {
   // URLs embed "($MSFT)" ticker tags, and a plain `[^)]+` truncated the href
   // at that inner ')', leaking the URL remainder as visible link text
   // (earnings recap emails, 4/169 stored rows affected, 2026-08-21).
+  //
+  // The label group allows one level of balanced square brackets the same
+  // way — a subject line like "Portfolio Update - [Sept 8 - Sept 11, 2026]"
+  // used as the link label has an inner ']', and a plain `[^\]]+` closed the
+  // label at that inner ']', leaking the rest of the label plus the "](url)"
+  // markup as visible text (digest email, 2026-09-12).
   const urls: string[] = [];
-  text = text.replace(/\[([^\]]+)\]\(((?:[^()]|\([^()]*\))+)\)/g, (_m, label: string, url: string) => {
+  text = text.replace(/\[((?:[^\[\]]|\[[^\[\]]*\])+)\]\(((?:[^()]|\([^()]*\))+)\)/g, (_m, label: string, url: string) => {
     const i = urls.push(url) - 1;
     return `<a href="\u0000${i}\u0000" style="color:${COLORS.gold}; text-decoration:underline; text-underline-offset:2px;">${label}</a>`;
   });
