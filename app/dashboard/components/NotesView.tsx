@@ -13,6 +13,7 @@ import { useToast } from "./Toast";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import apiFetch from "@/lib/http/apiFetch";
+import { PrivateText } from "@/lib/privacy/components";
 
 // ─── Props ───────────────────────────────────────────────────────
 
@@ -965,7 +966,11 @@ function NoteCard({
             </div>
           ) : (
             <p className="text-sm text-ink whitespace-pre-wrap">
-              {note.content}
+              {/* Note prose carries share counts / P&L in the clear (e.g.
+                  "sold 35 of my 50 shares at 352") — portfolio-derived, mask
+                  it like every other such surface. Edit mode below keeps the
+                  raw value: opening a note to edit is an explicit reveal. */}
+              <PrivateText>{note.content}</PrivateText>
             </p>
           )}
 
