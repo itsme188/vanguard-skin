@@ -348,6 +348,24 @@ describe("formatCompactUSD", () => {
     expect(formatCompactUSD(NaN)).toBe("—");
     expect(formatCompactUSD(Infinity)).toBe("—");
   });
+
+  // QA 2026-09-12: the unit is picked BEFORE rounding, so a value just
+  // under a 1,000-multiple of the current unit rounded UP into a bogus
+  // "1000K" / "1000.0M" instead of promoting to the next unit.
+  it("promotes K to M when the rounded K figure would reach 1000", () => {
+    expect(formatCompactUSD(999_499)).toBe("$999K");
+    expect(formatCompactUSD(999_500)).toBe("$1.0M");
+  });
+
+  it("promotes M to B when the rounded M figure would reach 1000.0", () => {
+    expect(formatCompactUSD(999_950_000)).toBe("$1.00B");
+  });
+
+  it("mirrors the K-to-M and M-to-B promotion for negative values", () => {
+    expect(formatCompactUSD(-999_499)).toBe("-$999K");
+    expect(formatCompactUSD(-999_500)).toBe("-$1.0M");
+    expect(formatCompactUSD(-999_950_000)).toBe("-$1.00B");
+  });
 });
 
 describe("formatProfitFactor", () => {

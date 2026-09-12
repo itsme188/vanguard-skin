@@ -170,10 +170,21 @@ export function formatCompactUSD(value: number): string {
   if (!Number.isFinite(value)) return "—";
   const abs = Math.abs(value);
   let body: string;
-  if (abs >= 1_000_000_000) body = `$${(abs / 1_000_000_000).toFixed(2)}B`;
-  else if (abs >= 1_000_000) body = `$${(abs / 1_000_000).toFixed(1)}M`;
-  else if (abs >= 1_000) body = `$${(abs / 1_000).toFixed(0)}K`;
-  else body = `$${abs.toFixed(0)}`;
+  if (abs >= 1_000_000_000) {
+    body = `$${(abs / 1_000_000_000).toFixed(2)}B`;
+  } else if (abs >= 1_000_000) {
+    // Unit is picked before rounding: a value just under 1B can round UP
+    // to "1000.0M" at this precision — promote to B instead (2026-09-12).
+    const mFixed = (abs / 1_000_000).toFixed(1);
+    body = mFixed === "1000.0" ? `$${(abs / 1_000_000_000).toFixed(2)}B` : `$${mFixed}M`;
+  } else if (abs >= 1_000) {
+    // Same promotion for the K/M boundary — a value just under 1M can
+    // round UP to "1000K" instead of "1.0M" (2026-09-12).
+    const kFixed = (abs / 1_000).toFixed(0);
+    body = kFixed === "1000" ? `$${(abs / 1_000_000).toFixed(1)}M` : `$${kFixed}K`;
+  } else {
+    body = `$${abs.toFixed(0)}`;
+  }
   const sign = value < 0 && !rendersAsZero(body) ? "-" : "";
   return `${sign}${body}`;
 }
