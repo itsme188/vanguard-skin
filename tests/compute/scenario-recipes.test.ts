@@ -743,6 +743,70 @@ describe("scenario subjects", () => {
       const result = computeRecipeScenario(db, findRecipe("healthcare_reg_shock")!);
       expect(result.positionImpacts.find((p) => p.symbol === "SWEEPFUND")!.changePercent).toBe(0);
     });
+
+    // QA finding `analysis-scenarios--preset-rate-shock-still-marks-money-
+    // market-sweep-down` (2026-09-12): the healthcare test above only
+    // exercises the SPILLOVER path (the fund doesn't match healthcare's
+    // subject selectors, so transmitsEquitySpillover's cash guard already
+    // zeroes it). A money-market sweep is bucketed 'High'
+    // interest_rate_sensitive, which DOES clear the rate recipe's SUBJECT
+    // factor floor (>= 0.50) — that path had no cash guard at all, so the
+    // fund was marked "Most impacted" at -2.5% on the Rate shock +25bp
+    // preset. A constant-$1.00-NAV sweep fund's price never moves on a rate
+    // shock (its YIELD does); this is the SUBJECT-path regression test.
+    it("a money-market sweep fund takes no P&L on the rate shock's SUBJECT path, even though its interest_rate_sensitive bucket clears the subject floor", () => {
+      seedName(db, {
+        id: 405,
+        symbol: "SWEEPRATE",
+        securityType: "Mutual Fund",
+        sector: null,
+        fundCategory: "Cash Equivalent",
+        factors: { ...NEUTRAL_BUCKET, interest_rate_sensitive: "High" },
+      });
+      // Contrast: a real bond and a growth equity SHOULD still move on a
+      // rate shock — this test must not accidentally silence the recipe.
+      seedName(db, {
+        id: 406,
+        symbol: "REALBOND",
+        securityType: "Bond",
+        sector: null,
+        durationYears: 5,
+        factors: NEUTRAL_BUCKET,
+      });
+      seedName(db, {
+        id: 407,
+        symbol: "GROWTHCO",
+        sector: "Technology",
+        factors: { ...NEUTRAL_BUCKET, growth_vs_value: "Growth" },
+      });
+
+      const result = computeRecipeScenario(db, findRecipe("rate_shock_up_25bp")!);
+      const cash = result.positionImpacts.find((p) => p.symbol === "SWEEPRATE")!;
+      const bond = result.positionImpacts.find((p) => p.symbol === "REALBOND")!;
+      const growth = result.positionImpacts.find((p) => p.symbol === "GROWTHCO")!;
+
+      expect(cash.changePercent).toBe(0);
+      expect(cash.estimatedChange).toBe(0);
+      expect(result.biggestLosers.find((p) => p.symbol === "SWEEPRATE")).toBeUndefined();
+
+      expect(bond.changePercent).toBeLessThan(0);
+      expect(growth.changePercent).toBeLessThan(0);
+    });
+
+    it("a money-market sweep fund also takes no P&L under an equity recipe (semi cycle), for contrast with the rate-shock subject-path fix", () => {
+      seedName(db, {
+        id: 408,
+        symbol: "SWEEPSEMI",
+        securityType: "Mutual Fund",
+        sector: null,
+        fundCategory: "Cash Equivalent",
+        factors: { ...NEUTRAL_BUCKET, tariff_exposure: "Very High", ai_exposure: "Very High" },
+      });
+      const result = computeRecipeScenario(db, findRecipe("semi_cycle_minus_15pct")!);
+      const cash = result.positionImpacts.find((p) => p.symbol === "SWEEPSEMI")!;
+      expect(cash.changePercent).toBe(0);
+      expect(cash.estimatedChange).toBe(0);
+    });
   });
 
   describe("QA regression — the three symptoms observed on the sandbox", () => {
