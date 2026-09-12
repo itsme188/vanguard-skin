@@ -11,6 +11,7 @@ import { todayET } from "@/lib/calendar/date-utils";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { classifyHoldingSourceKey } from "@/lib/db/holding-sources";
 import { runIntegrityChecks, sortWorstFirst, type IntegrityHit } from "@/lib/queries/integrity-checks";
+import { formatUSD, rendersAsZero } from "@/lib/format";
 import {
   computeCashFlowResiduals,
   isUnexplainedCashFlow,
@@ -489,6 +490,21 @@ function findWorstUnexplainedCashFlow(
   return { unexplainedFlow, timingResidual };
 }
 
+/**
+ * Formats a cash-delta dollar amount for the `detail` prose string using the
+ * SAME convention <Money> uses (lib/privacy/components.tsx) when rendered
+ * without `signed` — formatUSD's comma grouping, and the "−" (U+2212) glyph
+ * for negative values, never an explicit "+" for positive ones. The popover
+ * footer renders this same amount through <Money>; a hand-rolled
+ * `${sign}$${Math.abs(x).toFixed(0)}` here disagreed with it on BOTH the
+ * thousands separator and the sign glyph (2026-09-12).
+ */
+function formatCashDeltaLikeMoney(value: number): string {
+  const formatted = formatUSD(Math.abs(value));
+  if (rendersAsZero(formatted)) return formatted;
+  return value < 0 ? `−${formatted}` : formatted;
+}
+
 function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashAccuracyScore {
   const today = todayET(now);
 
@@ -550,8 +566,7 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
   // (see cash-flow-audit.ts's classifyCashFlowResidual doc).
   if (unexplainedFlow) {
     score = Math.min(score, 40);
-    const sign = unexplainedFlow.residual > 0 ? "+" : "-";
-    const amountStr = `${sign}$${Math.abs(unexplainedFlow.residual).toFixed(0)}`;
+    const amountStr = formatCashDeltaLikeMoney(unexplainedFlow.residual);
 
     if (unexplainedFlow.classification === "external-flow-candidate") {
       detail += `; unexplained external-flow-shaped cash delta of ${amountStr} on ${unexplainedFlow.date} in ${unexplainedFlow.accountName} — not matched to any transaction`;
@@ -570,8 +585,7 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
     // Live-snapshot (Plaid/TWS) timing residual: labeled, never capped —
     // it's ambiguous until a statement covers the window, not a confirmed
     // data-quality problem the way unexplainedFlow is.
-    const sign = timingResidual.amount > 0 ? "+" : "-";
-    const amountStr = `${sign}$${Math.abs(timingResidual.amount).toFixed(0)}`;
+    const amountStr = formatCashDeltaLikeMoney(timingResidual.amount);
     detail += `; cash delta of ${amountStr} on ${timingResidual.date} in ${timingResidual.accountName} is a live-snapshot timing residual (intraday broker total vs close-priced holdings) — not treated as an external flow`;
     guidance =
       `Live-snapshot (Plaid/TWS) days infer cash as snapshot-total minus holdings value; the residual usually moves ` +
