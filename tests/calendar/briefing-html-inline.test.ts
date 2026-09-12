@@ -84,4 +84,26 @@ describe("briefingToHtml inline links", () => {
     expect(html).toContain(`href="${url}"`);
     expect(html).not.toContain("Beats+Estimates)</a>");
   });
+
+  it("keeps a balanced bracket group inside the link label out of the href truncation (subject line with brackets)", () => {
+    const url = "https://example.test/p/update";
+    const html = briefingToHtml(
+      `[Portfolio Update - [September 8 - September 11, 2026]](${url})`,
+      "t",
+    );
+
+    expect(html).toContain(`href="${url}"`);
+    expect(html).toMatch(
+      /<a [^>]*>Portfolio Update - \[September 8 - September 11, 2026\]<\/a>/,
+    );
+    expect(html).not.toContain("2026]](");
+  });
+
+  it("still renders a plain bracket-free label as a link", () => {
+    const url = "https://example.test/p/plain";
+    const html = briefingToHtml(`[Weekly Briefing](${url})`, "t");
+
+    expect(html).toContain(`href="${url}"`);
+    expect(html).toMatch(/<a [^>]*>Weekly Briefing<\/a>/);
+  });
 });
