@@ -72,6 +72,18 @@ function seedPrice(
   ).run(securityId, date, price);
 }
 
+/**
+ * Seeds a single cached bar. Callers only need "does at least one bar
+ * exist" for this security — the OHLC values are arbitrary synthetic round
+ * numbers, not real prices.
+ */
+function seedBar(db: Database.Database, securityId: number, barDate: string): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO ohlcv_bars (security_id, bar_date, bar_size, open, high, low, close, volume)
+     VALUES (?, ?, '1 day', 10, 11, 9, 10, 1000)`,
+  ).run(securityId, barDate);
+}
+
 describe("getDefaultChartSecurityId", () => {
   let db: Database.Database;
   const TAXABLE = 1; // Vanguard Taxable (seeded by runMigrations)
@@ -187,5 +199,47 @@ describe("getDefaultChartSecurityId", () => {
     seedPrice(db, smallLong, TODAY, 100);
     seedPrice(db, bigShort, TODAY, 100);
     expect(getDefaultChartSecurityId(db)).toBe(bigShort);
+  });
+
+  // charts-landing--default-rank-ignores-bar-coverage-opens-empty-chart:
+  // ranking by FX-converted gross exposure alone can land on a held position
+  // with ZERO cached bars, opening the chart on an empty "connect TWS to
+  // load bars" screen even though a smaller held position already has bars
+  // ready to render. Bar coverage must be preferred ahead of value.
+
+  it("prefers bar coverage over gross exposure — a smaller held position with a cached bar outranks a larger one with none", () => {
+    const noBars = seedSecurity(db, "QNOBAR");
+    seedHolding(db, TAXABLE, noBars, 100, TODAY);
+    seedPrice(db, noBars, TODAY, 200); // $20,000 gross — largest by value, but no bars
+
+    const hasBars = seedSecurity(db, "QHASBAR");
+    seedHolding(db, TAXABLE, hasBars, 10, TODAY);
+    seedPrice(db, hasBars, TODAY, 50); // $500 gross — smaller, but has a cached bar
+    seedBar(db, hasBars, TODAY);
+
+    expect(getDefaultChartSecurityId(db)).toBe(hasBars);
+  });
+
+  it("falls back to largest gross exposure when NO held position has any cached bars — the bar-coverage gate is a preference, not an exclusion", () => {
+    const small = seedSecurity(db, "QSMALL");
+    seedHolding(db, TAXABLE, small, 10, TODAY);
+    seedPrice(db, small, TODAY, 50); // $500
+
+    const large = seedSecurity(db, "QLARGE");
+    seedHolding(db, TAXABLE, large, 100, TODAY);
+    seedPrice(db, large, TODAY, 200); // $20,000 — neither has bars, so value still decides
+
+    expect(getDefaultChartSecurityId(db)).toBe(large);
+  });
+
+  it("bars on an UNHELD security do not make it win", () => {
+    const ghost = seedSecurity(db, "QGHOST");
+    seedBar(db, ghost, TODAY); // never held — no holdings row at all
+
+    const held = seedSecurity(db, "QHELD");
+    seedHolding(db, TAXABLE, held, 10, TODAY);
+    seedPrice(db, held, TODAY, 50);
+
+    expect(getDefaultChartSecurityId(db)).toBe(held);
   });
 });
