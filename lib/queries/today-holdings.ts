@@ -111,6 +111,13 @@ export function getIbkrTodayHoldings(
     "COALESCE(fx.usd_per_unit, 1)",
   );
 
+  // includeShorts defaults to true (h.quantity != 0) here deliberately: the
+  // market-value expressions below are quantity-signed, so a short position
+  // already gets the right P/L sign (price drop -> positive today_gain) for
+  // free. Filtering to h.quantity > 0 dropped every short from the row set,
+  // so the Today snapshot's name count silently undercounted the Accounts
+  // page by exactly the short-position count. See
+  // qa:today-ibkr-snapshot--name-count-and-day-pl-drop-short-positions.
   const rows = db
     .prepare(
       `WITH ranked_prices AS (
@@ -149,7 +156,7 @@ export function getIbkrTodayHoldings(
        LEFT JOIN prices pu_prior ON pu_prior.security_id = s_u.id AND pu_prior.date = ?
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE h.account_id = ?
-         AND ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
+         AND ${latestHoldingsPredicate({ accountFilter: "" })}
          AND (s.maturity_date IS NULL OR s.maturity_date >= date('now')
               OR LOWER(s.security_type) = 'bond')
        ORDER BY ABS(COALESCE(today_gain, 0)) DESC`,
