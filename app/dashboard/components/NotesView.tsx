@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { NoteWithContext, EarningsTimelineEntry } from "@/lib/queries/notes";
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
 import type { NoteType, NoteSentiment } from "@/lib/types";
+import { todayET } from "@/lib/calendar/date-utils";
 import { TranscriptCard, FetchTranscriptButton } from "./TranscriptCard";
 // Group headers count calls and filings separately — an edgar_8k row on this
 // wall is an SEC 8-K press release, and the cards beside it already say so.
@@ -95,9 +96,7 @@ export function NotesView({
   const [formSymbol, setFormSymbol] = useState(
     () => searchParams.get("symbol")?.toUpperCase() ?? ""
   );
-  const [formDate, setFormDate] = useState(
-    new Date().toISOString().slice(0, 10)
-  );
+  const [formDate, setFormDate] = useState(() => todayET());
   const [formSentiment, setFormSentiment] = useState<NoteSentiment | "">("");
   const [formTags, setFormTags] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -204,10 +203,14 @@ export function NotesView({
       // they didn't — but the value was still in state). Belt + suspenders
       // with the gate above in case a future refactor accidentally drops
       // the build-time guard.
+      // `formDate` was missed for the same reason: a back-dated note left
+      // the date field stuck, so the NEXT note (a same-day journal entry
+      // written right after) silently filed under the old date too.
       setFormContent("");
       setFormTags("");
       setFormSentiment("");
       setFormSymbol("");
+      setFormDate(todayET());
 
       // Refresh page data
       startTransition(() => {
