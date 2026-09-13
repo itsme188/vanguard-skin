@@ -28,26 +28,11 @@ import { usePrivacy } from "@/lib/privacy/context";
 import { FactorModeCard } from "./analysis/FactorModeCard";
 import { ClassificationCard } from "./analysis/ClassificationCard";
 import { DrillDownPanel } from "./analysis/DrillDownPanel";
-import type {
-  DrillDownFilter,
-  ClassificationDimension,
-} from "@/lib/queries/drill-down";
+import type { DrillDownFilter } from "@/lib/queries/drill-down";
+import { isDrillableDimension } from "@/lib/analysis/drillable-dimensions";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
 } from "recharts";
-
-// Dimensions supported by the drill-down query. AllocationDimension is a
-// superset (includes `account`, `symbol`, `credit_rating`) — clicks on
-// unsupported buckets are silently no-op'd.
-const DRILL_SUPPORTED_DIMENSIONS: ReadonlySet<string> = new Set([
-  "sector",
-  "fund_category",
-  "geography",
-  "market_cap_category",
-  "style",
-  "asset_class",
-  "security_type",
-]);
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -159,7 +144,10 @@ export function AnalysisView({
   // Classification trigger — pie slice or breakdown table row.
   // "Other (N)" buckets don't map to a single classification value, skip them.
   // Factor mode dimensions are factor columns; route to the factor filter.
-  // Unsupported dimensions (account, symbol, credit_rating) → no-op.
+  // Unsupported dimensions (account, symbol, credit_rating) → no-op — see
+  // currentDimensionIsDrillable below, which also gates the row's
+  // cursor-pointer/hover/title affordance so the UI never advertises a click
+  // that would land here as a no-op.
   function handleClassificationDrill(bucket: string) {
     if (!bucket || bucket.startsWith("Other (")) return;
     if (isFactorMode) {
@@ -171,13 +159,24 @@ export function AnalysisView({
       });
       return;
     }
-    if (!DRILL_SUPPORTED_DIMENSIONS.has(currentDimension)) return;
+    if (!isDrillableDimension(currentDimension)) return;
     setDrillFilter({
       kind: "classification",
-      dimension: currentDimension as ClassificationDimension,
+      dimension: currentDimension,
       bucket,
     });
   }
+
+  // Whether the CURRENT dimension's breakdown row is actually drillable —
+  // single-sourced from lib/analysis/drillable-dimensions.ts (classification
+  // mode) / FACTOR_COLUMNS (factor mode), the same predicates
+  // handleClassificationDrill above gates on. Drives the row's
+  // cursor-pointer / hover / "Click to drill down" title affordance so it's
+  // never shown for a dimension that would silently no-op on click
+  // [qa:analysis-classification--account-and-credit-rating-rows-advertise-drill-down-but-no-op].
+  const currentDimensionIsDrillable: boolean = isFactorMode
+    ? FACTOR_COLUMNS.includes(currentDimension as FactorColumn)
+    : isDrillableDimension(currentDimension);
 
   function navigate(updates: Record<string, string>) {
     const params = new URLSearchParams(searchParams.toString());
@@ -396,9 +395,15 @@ export function AnalysisView({
                 {allocation.map((row, i) => (
                   <tr
                     key={row.group_name}
-                    className="border-b border-edge/50 hover:bg-raised/50 cursor-pointer"
-                    onClick={() => handleClassificationDrill(row.group_name)}
-                    title="Click to drill down"
+                    className={`border-b border-edge/50 ${
+                      currentDimensionIsDrillable ? "hover:bg-raised/50 cursor-pointer" : ""
+                    }`}
+                    onClick={
+                      currentDimensionIsDrillable
+                        ? () => handleClassificationDrill(row.group_name)
+                        : undefined
+                    }
+                    title={currentDimensionIsDrillable ? "Click to drill down" : undefined}
                   >
                     <td className="py-2 pr-4 flex items-center gap-2">
                       <span
