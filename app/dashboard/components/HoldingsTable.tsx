@@ -1,5 +1,6 @@
 import type { HoldingWithSecurity } from "@/lib/queries/holdings";
 import { displaySecurityName } from "@/lib/format";
+import { quantityUnitLabel } from "@/lib/format/quantity-unit";
 import { ScrollFade } from "./ScrollFade";
 import { SymbolLink } from "./SymbolLink";
 import { Money, Shares } from "@/lib/privacy/components";
@@ -16,12 +17,6 @@ function formatOptionDescription(holding: HoldingWithSecurity): string {
       })()
     : "";
   return [underlying, strike, type, expiry].filter(Boolean).join(" ");
-}
-
-function quantityLabel(holding: HoldingWithSecurity): string {
-  if (holding.security_type?.toLowerCase() === "option") return "contracts";
-  if (holding.security_type?.toLowerCase() === "bond") return "face value";
-  return "shares";
 }
 
 export function HoldingsTable({
@@ -93,7 +88,7 @@ export function HoldingsTable({
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
                     <Shares value={holding.quantity} digits={qtyDigits} />
                     <span className="ml-1 text-xs text-ink-faint font-normal">
-                      {quantityLabel(holding)}
+                      {quantityUnitLabel(holding.security_type, holding.quantity)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
