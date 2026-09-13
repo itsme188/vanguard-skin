@@ -42,6 +42,11 @@ import type { EarningsDateConflict } from "@/lib/queries/calendar";
 import type { SentEarningsEmail } from "@/lib/queries/earnings-emails";
 import { EarningsEmailViewer } from "../components/EarningsEmailViewer";
 import apiFetch from "@/lib/http/apiFetch";
+import {
+  FILTER_OPTIONS,
+  parseAlertsViewParam,
+  type StreamFilter,
+} from "@/lib/alerts/view-param";
 
 // One armed level as returned by GET /api/levels/armed (mirrors ArmedLevel in
 // lib/queries/security-levels.ts). Prices here are PUBLIC market data.
@@ -159,29 +164,6 @@ type ForceConfirmMap = Record<
   { currentPrice: number; effectivePrice: number; reason: ArmRefusalReason }
 >;
 
-type StreamFilter =
-  | "pending"
-  | "review"
-  | "armed"
-  | "conflicts"
-  | "emails"
-  | "acted"
-  | "ignored"
-  | "dismissed"
-  | "all";
-
-const FILTER_OPTIONS: Array<{ label: string; value: StreamFilter }> = [
-  { label: "Pending", value: "pending" },
-  { label: "Review", value: "review" },
-  { label: "Armed", value: "armed" },
-  { label: "Conflicts", value: "conflicts" },
-  { label: "Emails", value: "emails" },
-  { label: "Acted", value: "acted" },
-  { label: "Ignored", value: "ignored" },
-  { label: "Dismissed", value: "dismissed" },
-  { label: "All", value: "all" },
-];
-
 function isToday(iso: string): boolean {
   const t = new Date(iso);
   if (isNaN(t.getTime())) return false;
@@ -223,18 +205,13 @@ function AlertsPageInner() {
 
   // Filter is reflected in the URL so other surfaces can deep-link:
   // /dashboard/levels/review → ?view=review; the Today "armed levels" link →
-  // ?view=armed. Treat those as the matching filter on first render.
+  // ?view=armed. Treat those as the matching filter on first render. Parsing
+  // is single-sourced in lib/alerts/view-param.ts so every FILTER_OPTIONS
+  // value round-trips (qa: alerts--view-param-ignored-acted-dismissed-all-
+  // fall-through-to-pending — a hand-rolled ternary here recognized only
+  // four of the nine tabs and silently fell back to Pending for the rest).
   const viewParam = searchParams.get("view");
-  const initialFilter: StreamFilter =
-    viewParam === "review"
-      ? "review"
-      : viewParam === "armed"
-        ? "armed"
-        : viewParam === "conflicts"
-          ? "conflicts"
-          : viewParam === "emails"
-            ? "emails"
-            : "pending";
+  const initialFilter: StreamFilter = parseAlertsViewParam(viewParam);
 
   const [filter, setFilter] = useState<StreamFilter>(initialFilter);
   const [alerts, setAlerts] = useState<EnrichedAlert[]>([]);
