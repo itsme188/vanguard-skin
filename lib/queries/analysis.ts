@@ -453,29 +453,46 @@ export function getConcentrationMetrics(
     params.push(...accountIds);
   }
 
-  // Get all positions with market value
+  // Get all positions with market value, one row per (account, security),
+  // then aggregate to one row per WHOLE position (security) before any of
+  // the HHI / warnings / top_positions math runs. A security held across
+  // multiple accounts must never enter that math as separate partial-weight
+  // slices under the same bare ticker (qa:
+  // analysis-diagnostics--four-different-spy-weights-one-page-regression-2).
   const positions = db
     .prepare(
-      `WITH ${LATEST_HOLDINGS_CTE}
+      `WITH ${LATEST_HOLDINGS_CTE},
+      per_account_positions AS (
+        SELECT
+          s.id AS security_id,
+          s.symbol,
+          s.name AS security_name,
+          s.fund_category,
+          CASE
+            WHEN lp.close_price IS NOT NULL
+              THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+            WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
+              THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
+            ELSE 0
+          END AS market_value
+        FROM latest_holdings h
+        JOIN securities s ON s.id = h.security_id
+        LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+        LEFT JOIN fx_rates fx ON fx.currency = s.currency
+        WHERE ${conditions.join(" AND ")}
+      )
       SELECT
-        s.symbol,
-        s.name AS security_name,
-        s.fund_category,
-        CASE
-          WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
-            THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
-          ELSE 0
-        END AS market_value
-      FROM latest_holdings h
-      JOIN securities s ON s.id = h.security_id
-      LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
-      LEFT JOIN fx_rates fx ON fx.currency = s.currency
-      WHERE ${conditions.join(" AND ")}
+        security_id,
+        symbol,
+        security_name,
+        fund_category,
+        SUM(market_value) AS market_value
+      FROM per_account_positions
+      GROUP BY security_id, symbol, security_name, fund_category
       ORDER BY market_value DESC`
     )
     .all(...params) as Array<{
+      security_id: number;
       symbol: string;
       security_name: string | null;
       fund_category: string | null;
