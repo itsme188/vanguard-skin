@@ -33,10 +33,45 @@ export interface SyncOutcome {
   title?: string;
 }
 
+/** Longest error summary we will put on the always-visible outcome line. */
+const INLINE_ERROR_MAX = 120;
+
+/**
+ * Makes one `errors` entry safe to show inline. The entries are composed by
+ * lib/calendar/sync.ts in domain language, but a phase that blows up outright
+ * pushes the upstream message verbatim — which can be a JSON body. Cut at the
+ * first JSON delimiter, collapse whitespace, and cap the length; the untouched
+ * original stays in `title` (rendered as the expandable detail).
+ */
+function summarizeError(message: string): string {
+  const jsonAt = message.search(/[{[]/);
+  const head = (jsonAt >= 0 ? message.slice(0, jsonAt) : message)
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[:\-–—,;]+$/, "")
+    .trim();
+  const cleaned = head || "unknown error";
+  return cleaned.length > INLINE_ERROR_MAX
+    ? `${cleaned.slice(0, INLINE_ERROR_MAX - 1).trimEnd()}…`
+    : cleaned;
+}
+
 /**
  * Turns the sync route's `complete` payload into the line the button shows
  * and keeps visible once the run ends. Pure so it's unit-testable without a
  * DOM (this repo has no jsdom/RTL — see reference_no_dom_test_harness_source_pin).
+ *
+ * A degraded run has to be distinguishable AT A GLANCE. The line used to say
+ * "· 2 steps had problems" and hide what they were in an expandable detail,
+ * so a sync that silently skipped N of M symbols (Finnhub 429 storm) read
+ * as a clean "Refreshed — k new". The first problem now shows inline; the
+ * rest are counted, and the full list stays in `title`.
+ *
+ * When a "not scanned" entry is present it is shown inline even if it isn't
+ * `errors[0]` — `errors` is pushed in phase order (wsh, macro, then the
+ * finnhub partial-scan summary last), so a WSH or macro failure would
+ * otherwise bump the symbol-count warning behind "(+1 more)", hiding the
+ * exact failure this function exists to surface.
  */
 export function buildSyncOutcome(data: SyncCompleteData): SyncOutcome {
   const newEvents = data.newEvents ?? 0;
@@ -49,7 +84,13 @@ export function buildSyncOutcome(data: SyncCompleteData): SyncOutcome {
   let text = parts.length > 0 ? `Refreshed — ${parts.join(", ")}` : "Refreshed — no changes";
 
   if (errors.length > 0) {
-    text += ` · ${errors.length} step${errors.length === 1 ? "" : "s"} had problems`;
+    // Prefer a "not scanned" entry when one is present — it's the most
+    // actionable failure (an exact count of what to re-run) and must not
+    // hide behind "(+N more)" just because it wasn't the first phase to fail.
+    const notScannedIndex = errors.findIndex((e) => /not scanned/i.test(e));
+    const inlineIndex = notScannedIndex >= 0 ? notScannedIndex : 0;
+    const more = errors.length > 1 ? ` (+${errors.length - 1} more)` : "";
+    text += ` · ${summarizeError(errors[inlineIndex])}${more}`;
     return { text, title: errors.join("; ") };
   }
   return { text };

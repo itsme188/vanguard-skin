@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { fetchWshEvents } from "@/lib/tws/wsh";
 import { parseWshEvents } from "@/lib/calendar/parse-wsh";
 import { fetchMacroEvents } from "@/lib/calendar/macro-events";
-import { fetchFinnhubEarningsForSymbols } from "@/lib/calendar/finnhub";
+import { fetchFinnhubEarningsForSymbols, type FinnhubSymbolFailure } from "@/lib/calendar/finnhub";
 import { fetchNasdaqEarningsForSymbols } from "@/lib/calendar/nasdaq";
 import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
 import { getHeldStockSymbols, getHeldOptionUnderlyingSymbols } from "@/lib/queries/briefing-symbols";
@@ -67,6 +67,53 @@ export class SyncCalendarValidationError extends Error {
     super(message);
     this.name = "SyncCalendarValidationError";
   }
+}
+
+/**
+ * Turns the Finnhub phase's swallowed per-symbol failures into the three
+ * strings the desk sees (ledger finding
+ * `today-earningshub-refresh--silent-partial-failure-no-outcome-report-regression-3`).
+ *
+ * A 429 storm used to be completely invisible: N of M calendar fetches
+ * failed, the loop kept ticking progress, and the run reported
+ * "Finnhub M/M scanned" → "Refreshed — k new". A slice of the universe was
+ * never looked at. Returns null for a clean scan so every message stays
+ * byte-identical to the pre-fix wording when nothing failed.
+ */
+function describeFinnhubFailures(
+  failures: FinnhubSymbolFailure[],
+  total: number,
+): { progressTail: string; notScanned: string; error: string } | null {
+  if (failures.length === 0) return null;
+
+  const rateLimited = failures.filter((f) => f.rateLimited).length;
+  const other = failures.length - rateLimited;
+
+  const progressTail =
+    other === 0
+      ? ` · ${failures.length} rate-limited`
+      : rateLimited === 0
+        ? ` · ${failures.length} failed`
+        : ` · ${failures.length} failed (${rateLimited} rate-limited)`;
+
+  const notScanned =
+    ` · ${failures.length} of ${total} symbols not scanned` +
+    (rateLimited > 0 ? " (rate-limited)" : "");
+
+  // Domain language, no upstream body text: the desk needs to know how much
+  // of the universe went unscanned and whether waiting fixes it.
+  const cause =
+    other === 0
+      ? "rate-limited by Finnhub (429); retry in a few minutes"
+      : rateLimited === 0
+        ? "failed to fetch"
+        : `${rateLimited} rate-limited by Finnhub (429), ${other} failed to fetch; retry in a few minutes`;
+
+  return {
+    progressTail,
+    notScanned,
+    error: `finnhub: ${failures.length} of ${total} symbols not scanned — ${cause}`,
+  };
 }
 
 export async function syncCalendarForWeek(
@@ -199,6 +246,10 @@ export async function syncCalendarForWeek(
         phase: "finnhub_fetch",
         message: `Scanning ${scanSymbols.length} symbol${scanSymbols.length === 1 ? "" : "s"} via Finnhub${extrasSuffix}...`,
       });
+      // Per-symbol calendar fetches that failed (429s, mostly) — swallowed
+      // inside the fetcher so one bad symbol can't abort the sweep, reported
+      // here so the run can't claim it scanned them.
+      const finnhubFailures: FinnhubSymbolFailure[] = [];
       try {
         const finnhubInputs = await fetchFinnhubEarningsForSymbols(
           db,
@@ -207,7 +258,17 @@ export async function syncCalendarForWeek(
           endDate,
           weekOf,
           (done, total) => {
-            send({ phase: "finnhub_progress", message: `Finnhub ${done}/${total} scanned` });
+            // `done` counts ATTEMPTS; the desk needs SUCCESSFUL scans. The
+            // fetcher reports a failure before ticking progress for that
+            // symbol, so the subtraction is always in step.
+            const partial = describeFinnhubFailures(finnhubFailures, total);
+            send({
+              phase: "finnhub_progress",
+              message: `Finnhub ${done - finnhubFailures.length}/${total} scanned${partial ? partial.progressTail : ""}`,
+            });
+          },
+          (failure) => {
+            finnhubFailures.push(failure);
           },
         );
         if (finnhubInputs.length > 0) {
@@ -220,13 +281,19 @@ export async function syncCalendarForWeek(
         finnhubEvents = finnhubInputs.length;
         send({
           phase: "finnhub_done",
-          message: `Found ${finnhubEvents} portfolio earning${finnhubEvents !== 1 ? "s" : ""}${finnhubNew < finnhubEvents ? ` (${finnhubNew} new)` : ""}`,
+          message:
+            `Found ${finnhubEvents} portfolio earning${finnhubEvents !== 1 ? "s" : ""}${finnhubNew < finnhubEvents ? ` (${finnhubNew} new)` : ""}` +
+            (describeFinnhubFailures(finnhubFailures, scanSymbols.length)?.notScanned ?? ""),
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Unknown error";
         errors.push(`finnhub: ${msg}`);
         send({ phase: "finnhub_error", message: `Finnhub scan failed: ${msg}` });
       }
+      // Outside the try: a partial scan is worth reporting even when the
+      // upsert (or a later throw) took the phase down with it.
+      const partialScan = describeFinnhubFailures(finnhubFailures, scanSymbols.length);
+      if (partialScan) errors.push(partialScan.error);
     } else {
       send({
         phase: "finnhub_skip",
