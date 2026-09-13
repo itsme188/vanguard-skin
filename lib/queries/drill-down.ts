@@ -23,15 +23,17 @@ import {
   dimensionInheritsFromUnderlying,
   underlyingInheritJoinSql,
 } from "@/lib/queries/analysis";
+import {
+  isDrillableDimension,
+  type DrillableClassificationDimension,
+} from "@/lib/analysis/drillable-dimensions";
 
-export type ClassificationDimension =
-  | "sector"
-  | "fund_category"
-  | "geography"
-  | "market_cap_category"
-  | "style"
-  | "asset_class"
-  | "security_type";
+// Re-exported for back-compat — every existing consumer (AnalysisView.tsx,
+// the drill-down API route, DrillDownPanel.tsx) imports this name from here.
+// The allowlist itself now lives in lib/analysis/drillable-dimensions.ts (a
+// pure module) so the client side can read it without importing this
+// DB-touching module.
+export type ClassificationDimension = DrillableClassificationDimension;
 
 export type DrillDownFilter =
   | { kind: "classification"; dimension: ClassificationDimension; bucket: string }
@@ -52,16 +54,6 @@ export interface DrillDownRow {
   factors: Partial<Record<FactorColumn, string>>;
   sector: string | null;
 }
-
-const ALLOWED_CLASSIFICATION_DIMENSIONS: ReadonlyArray<ClassificationDimension> = [
-  "sector",
-  "fund_category",
-  "geography",
-  "market_cap_category",
-  "style",
-  "asset_class",
-  "security_type",
-];
 
 // Tag prefix so SQLite column-aliases never collide with reserved tokens.
 type FactorAliasKey = `f_${FactorColumn}`;
@@ -104,7 +96,7 @@ export function getHoldingsInBucket(
   const filterParams: (string | number)[] = [];
 
   if (filter.kind === "classification") {
-    if (!ALLOWED_CLASSIFICATION_DIMENSIONS.includes(filter.dimension)) {
+    if (!isDrillableDimension(filter.dimension)) {
       throw new Error(`unknown classification dimension: ${filter.dimension}`);
     }
     // Same GROUP expression the breakdown (getAllocationByDimension) used to

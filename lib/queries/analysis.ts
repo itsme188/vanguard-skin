@@ -164,13 +164,15 @@ export function classificationBucketSql(
   //
   // CAUTION: this blanket `s.` → `<alias>.` rewrite is safe only because the
   // expressions the DRILL-DOWN can reach read the securities row alone. The map
-  // also holds dimensions OUTSIDE drill-down.ts's
-  // ALLOWED_CLASSIFICATION_DIMENSIONS — `account` (reads `a.name`, needing the
-  // accounts join), `credit_rating` and `symbol`. Before widening that allow
-  // list, or adding a dimension here whose expression touches another table,
-  // give getHoldingsInBucket the matching join first: it composes this
-  // expression into its own WHERE clause, where a missing join is a SQL error
-  // at best and a silently-wrong bucket at worst.
+  // also holds dimensions OUTSIDE lib/analysis/drillable-dimensions.ts's
+  // DRILLABLE_CLASSIFICATION_DIMENSIONS (the single source drill-down.ts's
+  // getHoldingsInBucket AND AnalysisView.tsx's row affordance both read) —
+  // `account` (reads `a.name`, needing the accounts join), `credit_rating`
+  // and `symbol`. Before widening that allow list, or adding a dimension
+  // here whose expression touches another table, give getHoldingsInBucket
+  // the matching join first: it composes this expression into its own WHERE
+  // clause, where a missing join is a SQL error at best and a
+  // silently-wrong bucket at worst.
   return alias === "s" ? expr : expr.replace(/\bs\./g, `${alias}.`);
 }
 
