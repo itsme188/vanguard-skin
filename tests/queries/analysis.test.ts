@@ -208,6 +208,86 @@ describe("getConcentrationMetrics", () => {
     expect(metrics.effective_positions).toBe(0);
     expect(metrics.top_positions.length).toBe(0);
   });
+
+  // qa: analysis-diagnostics--four-different-spy-weights-one-page-regression-2
+  // A security held in two accounts must enter the HHI/warnings/top_positions
+  // math as ONE whole position (combined market value), not as two partial
+  // per-account rows under the bare ticker.
+  it("aggregates a security held across two accounts into one whole position", () => {
+    const acctA = seedAccount(db, "Account A");
+    const acctB = seedAccount(db, "Account B");
+
+    // DUAL: 100 sh in acctA + 25 sh in acctB @ $40 = $4,000 + $1,000 = $5,000 combined.
+    const dualId = seedSecurity(db, "DUAL");
+    seedHolding(db, acctA, dualId, 100, 4000);
+    seedHolding(db, acctB, dualId, 25, 1000);
+    seedPrice(db, dualId, 40);
+
+    // OTHER: single account, 50 sh @ $40 = $2,000.
+    const otherId = seedSecurity(db, "OTHER");
+    seedHolding(db, acctA, otherId, 50, 2000);
+    seedPrice(db, otherId, 40);
+
+    const metrics = getConcentrationMetrics(db);
+
+    // The shared symbol appears exactly once, valued at the combined MV.
+    const dualPositions = metrics.top_positions.filter((p) => p.symbol === "DUAL");
+    expect(dualPositions.length).toBe(1);
+    expect(dualPositions[0].market_value).toBe(5000);
+    // weight_pct on the combined value: 5000 / 7000 = 71.4286%.
+    expect(dualPositions[0].weight_pct).toBeCloseTo((5000 / 7000) * 100, 4);
+
+    // Exactly one >5% warning naming DUAL (not one per account slice).
+    const dualWarnings = metrics.warnings.filter((w) => w.includes("DUAL"));
+    expect(dualWarnings.length).toBe(1);
+
+    // HHI must match the value produced when the SAME combined quantity
+    // sits in a single account (i.e., position-level, not partial-slice).
+    const singleAccountDb = new Database(":memory:");
+    singleAccountDb.pragma("journal_mode = WAL");
+    singleAccountDb.pragma("foreign_keys = ON");
+    runMigrations(singleAccountDb);
+    const acctC = seedAccount(singleAccountDb, "Account C");
+    const dualIdC = seedSecurity(singleAccountDb, "DUAL");
+    seedHolding(singleAccountDb, acctC, dualIdC, 125, 5000);
+    seedPrice(singleAccountDb, dualIdC, 40);
+    const otherIdC = seedSecurity(singleAccountDb, "OTHER");
+    seedHolding(singleAccountDb, acctC, otherIdC, 50, 2000);
+    seedPrice(singleAccountDb, otherIdC, 40);
+
+    const singleAccountMetrics = getConcentrationMetrics(singleAccountDb);
+    expect(metrics.hhi).toBeCloseTo(singleAccountMetrics.hhi, 4);
+    singleAccountDb.close();
+  });
+
+  it("accountIds filter still scopes to that account's slice before aggregation", () => {
+    const acctA = seedAccount(db, "Account A");
+    const acctB = seedAccount(db, "Account B");
+
+    const dualId = seedSecurity(db, "DUAL");
+    seedHolding(db, acctA, dualId, 100, 4000);
+    seedHolding(db, acctB, dualId, 25, 1000);
+    seedPrice(db, dualId, 40);
+
+    const otherId = seedSecurity(db, "OTHER");
+    seedHolding(db, acctA, otherId, 50, 2000);
+    seedPrice(db, otherId, 40);
+
+    const metrics = getConcentrationMetrics(db, [acctA]);
+
+    // Only acctA's slice of DUAL ($4,000), not the cross-account combined value.
+    const dualPosition = metrics.top_positions.find((p) => p.symbol === "DUAL");
+    expect(dualPosition).toBeTruthy();
+    expect(dualPosition!.market_value).toBe(4000);
+
+    const otherPosition = metrics.top_positions.find((p) => p.symbol === "OTHER");
+    expect(otherPosition).toBeTruthy();
+    expect(otherPosition!.market_value).toBe(2000);
+
+    // acctA-only total is 6000, not the 7000 full-universe total.
+    const total = metrics.top_positions.reduce((sum, p) => sum + p.market_value, 0);
+    expect(total).toBe(6000);
+  });
 });
 
 // ─── Coverage tests ──────────────────────────────────────────────
