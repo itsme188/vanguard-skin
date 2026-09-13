@@ -196,3 +196,146 @@ describe("syncCalendarForWeek", () => {
     expect(events.some((e) => e.phase === "macro_done" && e.message.includes("1"))).toBe(true);
   });
 });
+
+/**
+ * Partial-failure reporting for the Finnhub phase (nightly QA ledger finding
+ * `today-earningshub-refresh--silent-partial-failure-no-outcome-report-regression-3`).
+ *
+ * N of M per-symbol calendar fetches came back 429 and the run still
+ * reported "Finnhub M/M scanned" → "Refreshed — k new". The per-symbol
+ * failures now flow out of fetchFinnhubEarningsForSymbols through its
+ * optional `onSymbolFailure` callback, and this phase turns them into a
+ * progress line that counts SUCCESSFUL scans, a done line that names the
+ * not-scanned count, and exactly ONE domain-language `errors` entry.
+ */
+describe("syncCalendarForWeek — Finnhub partial failures are reported, not swallowed", () => {
+  const finnhubEvent = (symbol: string): CalendarEventInput => ({
+    source: "finnhub",
+    event_type: "earnings",
+    event_date: "2026-04-30",
+    event_time: null,
+    title: `${symbol} earnings`,
+    description: null,
+    expected_impact: "medium",
+    consensus_estimate: null,
+    previous_value: null,
+    source_key: `finnhub:${symbol}:2026-04-30`,
+    week_of: "2026-04-27",
+  });
+
+  /** Drives the mocked fetcher: which of the 3 scanned symbols failed, and how. */
+  function mockFinnhubRun(failures: { index: number; message: string }[]) {
+    process.env.FINNHUB_API_KEY = "test-key";
+    vi.mocked(fetchMacroEvents).mockResolvedValueOnce([]);
+    vi.mocked(getHeldStockSymbols).mockReturnValueOnce(["AAPL", "MSFT", "TER"]);
+    vi.mocked(fetchFinnhubEarningsForSymbols).mockImplementationOnce(
+      async (_db, symbols, _start, _end, _weekOf, onProgress, onSymbolFailure) => {
+        for (let i = 0; i < symbols.length; i++) {
+          const failure = failures.find((f) => f.index === i);
+          if (failure) {
+            onSymbolFailure?.({
+              symbol: symbols[i],
+              message: failure.message,
+              rateLimited: /\b429\b/.test(failure.message),
+            });
+          }
+          onProgress?.(i + 1, symbols.length);
+        }
+        return failures.length === symbols.length ? [] : [finnhubEvent("MSFT")];
+      },
+    );
+  }
+
+  async function runSync() {
+    const events: { phase: string; message: string }[] = [];
+    const result = await syncCalendarForWeek(db, "2026-04-27", {
+      onProgress: (e) => events.push(e),
+      includeNasdaq: false,
+    });
+    return { result, events };
+  }
+
+  it("counts SUCCESSFUL scans in the progress line and shows the rate-limited count separately", async () => {
+    mockFinnhubRun([
+      { index: 0, message: "Finnhub 429: Too many requests" },
+      { index: 2, message: "Finnhub 429: Too many requests" },
+    ]);
+
+    const { events } = await runSync();
+    const progress = events.filter((e) => e.phase === "finnhub_progress").map((e) => e.message);
+
+    expect(progress).toEqual([
+      "Finnhub 0/3 scanned · 1 rate-limited",
+      "Finnhub 1/3 scanned · 1 rate-limited",
+      "Finnhub 1/3 scanned · 2 rate-limited",
+    ]);
+  });
+
+  it("pushes exactly one domain-language errors entry naming the not-scanned count", async () => {
+    mockFinnhubRun([
+      { index: 0, message: "Finnhub 429: Too many requests" },
+      { index: 2, message: "Finnhub 429: Too many requests" },
+    ]);
+
+    const { result } = await runSync();
+
+    expect(result.errors).toEqual([
+      "finnhub: 2 of 3 symbols not scanned — rate-limited by Finnhub (429); retry in a few minutes",
+    ]);
+  });
+
+  it("names the not-scanned count on the done line too", async () => {
+    mockFinnhubRun([{ index: 0, message: "Finnhub 429: Too many requests" }]);
+
+    const { events } = await runSync();
+    const done = events.find((e) => e.phase === "finnhub_done");
+
+    expect(done?.message).toContain("1 of 3 symbols not scanned");
+    expect(done?.message).toContain("Found 1 portfolio earning");
+  });
+
+  it("says 'failed to fetch' when no failure was a 429", async () => {
+    mockFinnhubRun([{ index: 1, message: "Finnhub 503: Service unavailable" }]);
+
+    const { result, events } = await runSync();
+
+    expect(result.errors).toEqual([
+      "finnhub: 1 of 3 symbols not scanned — failed to fetch",
+    ]);
+    expect(
+      events.filter((e) => e.phase === "finnhub_progress").map((e) => e.message),
+    ).toEqual([
+      // The failure lands on the SECOND symbol, so the first tick is clean.
+      "Finnhub 1/3 scanned",
+      "Finnhub 1/3 scanned · 1 failed",
+      "Finnhub 2/3 scanned · 1 failed",
+    ]);
+  });
+
+  it("breaks out both causes when the failures are mixed", async () => {
+    mockFinnhubRun([
+      { index: 0, message: "Finnhub 429: Too many requests" },
+      { index: 1, message: "Finnhub 503: Service unavailable" },
+    ]);
+
+    const { result } = await runSync();
+
+    expect(result.errors).toEqual([
+      "finnhub: 2 of 3 symbols not scanned — 1 rate-limited by Finnhub (429), 1 failed to fetch; retry in a few minutes",
+    ]);
+  });
+
+  it("leaves a clean run byte-identical — no suffix, no errors entry", async () => {
+    mockFinnhubRun([]);
+
+    const { result, events } = await runSync();
+
+    expect(result.errors).toEqual([]);
+    expect(
+      events.filter((e) => e.phase === "finnhub_progress").map((e) => e.message),
+    ).toEqual(["Finnhub 1/3 scanned", "Finnhub 2/3 scanned", "Finnhub 3/3 scanned"]);
+    expect(events.find((e) => e.phase === "finnhub_done")?.message).toBe(
+      "Found 1 portfolio earning",
+    );
+  });
+});

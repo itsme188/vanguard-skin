@@ -25,6 +25,23 @@ interface EarningsCalendarResponse {
   earningsCalendar?: EarningsCalendarEntry[];
 }
 
+/**
+ * One per-symbol calendar fetch that failed and was swallowed so the rest of
+ * the scan could continue. Reported to the caller through the optional
+ * `onSymbolFailure` callback (ledger finding
+ * `today-earningshub-refresh--silent-partial-failure-no-outcome-report-regression-3`):
+ * pre-fix, a 429 storm left N of M symbols unscanned while the UI still
+ * said "Finnhub M/M scanned".
+ */
+export interface FinnhubSymbolFailure {
+  /** The symbol we QUERIED — canonical, never the Finnhub echo. */
+  symbol: string;
+  /** Error text as fetchJson formatted it, e.g. "Finnhub 429: Too many requests". */
+  message: string;
+  /** True when the message carries an HTTP 429 — the free-tier rate limit. */
+  rateLimited: boolean;
+}
+
 export interface EarningsSurpriseEntry {
   symbol: string;
   period: string;     // report period YYYY-MM-DD
@@ -54,6 +71,16 @@ async function fetchJson<T>(url: string): Promise<T> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * fetchJson throws `Finnhub ${status}: ${body}`, so the status is the only
+ * reliable signal of a rate limit — Finnhub's body text varies ("Too many
+ * requests", "API limit reached"). Matching the bare token keeps the
+ * classification honest without parsing the body.
+ */
+function isRateLimitMessage(message: string): boolean {
+  return /\b429\b/.test(message);
 }
 
 function formatHour(h: EarningsCalendarEntry["hour"]): string | null {
@@ -86,7 +113,14 @@ export async function fetchFinnhubEarningsForSymbols(
   startDate: string,
   endDate: string,
   weekOf: string,
-  onProgress?: (done: number, total: number) => void
+  onProgress?: (done: number, total: number) => void,
+  /**
+   * Optional. Called once per symbol whose CALENDAR fetch failed (phase A),
+   * before that symbol's onProgress tick — sync.ts subtracts the failures
+   * from `done` to show successful scans. Omitting it preserves the old
+   * behaviour exactly: the failure is logged and the scan continues.
+   */
+  onSymbolFailure?: (failure: FinnhubSymbolFailure) => void
 ): Promise<CalendarEventInput[]> {
   const apiKey = process.env.FINNHUB_API_KEY;
   if (!apiKey) {
@@ -123,10 +157,16 @@ export async function fetchFinnhubEarningsForSymbols(
         }
       }
     } catch (err) {
-      // One symbol's failure shouldn't abort the whole scan.
-      console.warn(
-        `[finnhub] calendar fetch failed for ${symbol}: ${err instanceof Error ? err.message : err}`
-      );
+      // One symbol's failure shouldn't abort the whole scan — but it must not
+      // vanish either. The log line stays (server-side forensics); the
+      // callback is what lets the UI say "N of M not scanned".
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[finnhub] calendar fetch failed for ${symbol}: ${message}`);
+      onSymbolFailure?.({
+        symbol,
+        message,
+        rateLimited: isRateLimitMessage(message),
+      });
     }
     onProgress?.(i + 1, symbols.length);
     await sleep(PACING_MS);

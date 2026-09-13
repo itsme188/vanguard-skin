@@ -46,7 +46,38 @@ describe("buildSyncOutcome — the outcome line the button keeps visible after a
     });
   });
 
-  it("appends a pluralized problem count and puts the joined errors in title, for a partial failure", () => {
+  // Regression 3 (2026-09-13): "· 2 steps had problems" was true but
+  // useless — it never said WHAT went wrong, and the only place that said so
+  // was the expandable detail. A run that silently skipped 3 of 12 symbols
+  // (synthetic counts) has to say that on the visible line.
+  it("carries the error summary INLINE, keeping the full joined list in title", () => {
+    const partial =
+      "finnhub: 3 of 12 symbols not scanned — rate-limited by Finnhub (429); retry in a few minutes";
+    expect(buildSyncOutcome({ newEvents: 2, refreshedEvents: 0, errors: [partial] })).toEqual({
+      text: `Refreshed — 2 new · ${partial}`,
+      title: partial,
+    });
+  });
+
+  // Regression 4 (2026-09-13): `errors` is pushed in phase order (wsh, macro,
+  // then the finnhub "not scanned" summary last), so a WSH/macro failure used
+  // to bump the not-scanned warning behind "(+1 more)" — exactly the failure
+  // this line exists to surface. The not-scanned entry must show inline
+  // regardless of its position in the array; the count and the full joined
+  // list in `title` are unaffected.
+  it("prefers a not-scanned entry inline even when it isn't errors[0]", () => {
+    const wshError = "wsh: timeout after 10s";
+    const notScanned =
+      "finnhub: 3 of 12 symbols not scanned — rate-limited by Finnhub (429); retry in a few minutes";
+    expect(
+      buildSyncOutcome({ newEvents: 0, refreshedEvents: 0, errors: [wshError, notScanned] }),
+    ).toEqual({
+      text: `Refreshed — no changes · ${notScanned} (+1 more)`,
+      title: `${wshError}; ${notScanned}`,
+    });
+  });
+
+  it("shows the first problem inline and counts the rest, for several failed phases", () => {
     expect(
       buildSyncOutcome({
         newEvents: 1,
@@ -54,18 +85,35 @@ describe("buildSyncOutcome — the outcome line the button keeps visible after a
         errors: ["finnhub: 429 Too Many Requests", "wsh: timeout after 10s"],
       }),
     ).toEqual({
-      text: "Refreshed — 1 new · 2 steps had problems",
+      text: "Refreshed — 1 new · finnhub: 429 Too Many Requests (+1 more)",
       title: "finnhub: 429 Too Many Requests; wsh: timeout after 10s",
     });
   });
 
-  it("singularizes 'step' for exactly one problem, even with no changes otherwise", () => {
+  it("shows a single problem inline, even with no changes otherwise", () => {
     expect(
       buildSyncOutcome({ newEvents: 0, refreshedEvents: 0, errors: ["macro: Claude request failed"] }),
     ).toEqual({
-      text: "Refreshed — no changes · 1 step had problems",
+      text: "Refreshed — no changes · macro: Claude request failed",
       title: "macro: Claude request failed",
     });
+  });
+
+  it("never lets a raw JSON body into the visible line (the detail keeps the original)", () => {
+    const raw =
+      'finnhub: Finnhub 429: {"error":"API limit reached. Please try again later.","code":429}';
+    const outcome = buildSyncOutcome({ newEvents: 0, refreshedEvents: 0, errors: [raw] });
+    expect(outcome.text).not.toContain("{");
+    expect(outcome.text).toBe("Refreshed — no changes · finnhub: Finnhub 429");
+    expect(outcome.title).toBe(raw);
+  });
+
+  it("truncates a very long upstream string rather than flooding the line", () => {
+    const long = `finnhub: ${"x".repeat(400)}`;
+    const outcome = buildSyncOutcome({ newEvents: 0, refreshedEvents: 0, errors: [long] });
+    expect(outcome.text.length).toBeLessThanOrEqual(160);
+    expect(outcome.text.endsWith("…")).toBe(true);
+    expect(outcome.title).toBe(long);
   });
 
   it("defaults missing counts/errors to zero/empty rather than throwing (defensive against a stale server)", () => {
