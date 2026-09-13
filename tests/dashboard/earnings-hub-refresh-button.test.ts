@@ -46,7 +46,20 @@ describe("buildSyncOutcome — the outcome line the button keeps visible after a
     });
   });
 
-  it("appends a pluralized problem count and puts the joined errors in title, for a partial failure", () => {
+  // Regression 3 (2026-09-13): "· 2 steps had problems" was true but
+  // useless — it never said WHAT went wrong, and the only place that said so
+  // was the expandable detail. A run that silently skipped 17 of 77 symbols
+  // has to say that on the visible line.
+  it("carries the error summary INLINE, keeping the full joined list in title", () => {
+    const partial =
+      "finnhub: 17 of 77 symbols not scanned — rate-limited by Finnhub (429); retry in a few minutes";
+    expect(buildSyncOutcome({ newEvents: 5, refreshedEvents: 0, errors: [partial] })).toEqual({
+      text: `Refreshed — 5 new · ${partial}`,
+      title: partial,
+    });
+  });
+
+  it("shows the first problem inline and counts the rest, for several failed phases", () => {
     expect(
       buildSyncOutcome({
         newEvents: 1,
@@ -54,18 +67,35 @@ describe("buildSyncOutcome — the outcome line the button keeps visible after a
         errors: ["finnhub: 429 Too Many Requests", "wsh: timeout after 10s"],
       }),
     ).toEqual({
-      text: "Refreshed — 1 new · 2 steps had problems",
+      text: "Refreshed — 1 new · finnhub: 429 Too Many Requests (+1 more)",
       title: "finnhub: 429 Too Many Requests; wsh: timeout after 10s",
     });
   });
 
-  it("singularizes 'step' for exactly one problem, even with no changes otherwise", () => {
+  it("shows a single problem inline, even with no changes otherwise", () => {
     expect(
       buildSyncOutcome({ newEvents: 0, refreshedEvents: 0, errors: ["macro: Claude request failed"] }),
     ).toEqual({
-      text: "Refreshed — no changes · 1 step had problems",
+      text: "Refreshed — no changes · macro: Claude request failed",
       title: "macro: Claude request failed",
     });
+  });
+
+  it("never lets a raw JSON body into the visible line (the detail keeps the original)", () => {
+    const raw =
+      'finnhub: Finnhub 429: {"error":"API limit reached. Please try again later.","code":429}';
+    const outcome = buildSyncOutcome({ newEvents: 0, refreshedEvents: 0, errors: [raw] });
+    expect(outcome.text).not.toContain("{");
+    expect(outcome.text).toBe("Refreshed — no changes · finnhub: Finnhub 429");
+    expect(outcome.title).toBe(raw);
+  });
+
+  it("truncates a very long upstream string rather than flooding the line", () => {
+    const long = `finnhub: ${"x".repeat(400)}`;
+    const outcome = buildSyncOutcome({ newEvents: 0, refreshedEvents: 0, errors: [long] });
+    expect(outcome.text.length).toBeLessThanOrEqual(160);
+    expect(outcome.text.endsWith("…")).toBe(true);
+    expect(outcome.title).toBe(long);
   });
 
   it("defaults missing counts/errors to zero/empty rather than throwing (defensive against a stale server)", () => {
