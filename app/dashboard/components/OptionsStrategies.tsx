@@ -71,7 +71,9 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
               )}
             </div>
 
-            <p className="text-xs text-ink-dim mt-2">{s.description}</p>
+            <p className="text-xs text-ink-dim mt-2">
+              <PrivateText>{s.description}</PrivateText>
+            </p>
 
             <div className="grid grid-cols-3 gap-2 mt-3">
               <div>
