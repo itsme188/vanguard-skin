@@ -299,13 +299,26 @@ export function AnalysisView({
                   innerRadius={80}
                   outerRadius={140}
                   paddingAngle={1}
-                  onClick={(data: { group_name?: string } | undefined) => {
-                    if (data?.group_name) handleClassificationDrill(data.group_name);
-                  }}
-                  style={{ cursor: "pointer" }}
+                  onClick={
+                    currentDimensionIsDrillable
+                      ? (data: { group_name?: string } | undefined) => {
+                          if (data?.group_name) handleClassificationDrill(data.group_name);
+                        }
+                      : undefined
+                  }
+                  style={{ cursor: currentDimensionIsDrillable ? "pointer" : "default" }}
                 >
                   {chartData.map((entry, i) => (
-                    <Cell key={entry.group_name || `cell-${i}`} fill={getSliceColor(i, entry.group_name)} />
+                    <Cell
+                      key={entry.group_name || `cell-${i}`}
+                      fill={getSliceColor(i, entry.group_name)}
+                      style={{
+                        cursor:
+                          currentDimensionIsDrillable && !entry.group_name.startsWith("Other (")
+                            ? "pointer"
+                            : "default",
+                      }}
+                    />
                   ))}
                 </Pie>
                 <Tooltip
@@ -392,18 +405,27 @@ export function AnalysisView({
                 </tr>
               </thead>
               <tbody>
-                {allocation.map((row, i) => (
+                {allocation.map((row, i) => {
+                  // "Other (N)" is only ever minted by bucketAllocation() for
+                  // the pie's chartData, never present in the raw allocation
+                  // rows the table iterates — this guard is kept anyway so
+                  // the table can never silently regain the advertise-but-no-op
+                  // bug if that ever changes, and so the predicate matches the
+                  // pie's per-slice gate exactly.
+                  const rowIsDrillable =
+                    currentDimensionIsDrillable && !row.group_name.startsWith("Other (");
+                  return (
                   <tr
                     key={row.group_name}
                     className={`border-b border-edge/50 ${
-                      currentDimensionIsDrillable ? "hover:bg-raised/50 cursor-pointer" : ""
+                      rowIsDrillable ? "hover:bg-raised/50 cursor-pointer" : ""
                     }`}
                     onClick={
-                      currentDimensionIsDrillable
+                      rowIsDrillable
                         ? () => handleClassificationDrill(row.group_name)
                         : undefined
                     }
-                    title={currentDimensionIsDrillable ? "Click to drill down" : undefined}
+                    title={rowIsDrillable ? "Click to drill down" : undefined}
                   >
                     <td className="py-2 pr-4 flex items-center gap-2">
                       <span
@@ -432,7 +454,8 @@ export function AnalysisView({
                       {row.position_count}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
             </ScrollFade>

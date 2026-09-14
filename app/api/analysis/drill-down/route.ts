@@ -19,18 +19,9 @@ import {
   type DrillDownFilter,
 } from "@/lib/queries/drill-down";
 import { FACTOR_COLUMNS } from "@/lib/factors";
+import { isDrillableDimension } from "@/lib/analysis/drillable-dimensions";
 
 export const dynamic = "force-dynamic";
-
-const ALLOWED_DIMS = [
-  "sector",
-  "fund_category",
-  "geography",
-  "market_cap_category",
-  "style",
-  "asset_class",
-  "security_type",
-] as const;
 
 const ALLOWED_KINDS = ["classification", "factor", "sector", "risk"] as const;
 
@@ -56,10 +47,7 @@ export async function GET(req: NextRequest) {
   if (kind === "classification") {
     const dimension = url.searchParams.get("dimension");
     const bucket = url.searchParams.get("bucket");
-    if (
-      !dimension ||
-      !(ALLOWED_DIMS as readonly string[]).includes(dimension)
-    ) {
+    if (!dimension || !isDrillableDimension(dimension)) {
       return NextResponse.json(
         { success: false, error: "unknown dimension" },
         { status: 400 }
@@ -73,7 +61,7 @@ export async function GET(req: NextRequest) {
     }
     filter = {
       kind: "classification",
-      dimension: dimension as (typeof ALLOWED_DIMS)[number],
+      dimension,
       bucket,
     };
   } else if (kind === "factor") {

@@ -31,6 +31,16 @@ function read(relPath: string): string {
   return fs.readFileSync(path.join(REPO, relPath), "utf-8");
 }
 
+// Strip // line comments and /* ... */ block comments (JSX {/* ... */}
+// included, since the braces are just JS expression syntax around the same
+// block-comment token) before scanning for affordance tokens — several of
+// this file's narrative comments mention "cursor-pointer" and "Click to
+// drill down" by name, which would otherwise pollute a naive text scan with
+// matches that were never real (i.e. code) occurrences.
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+}
+
 describe("drill-down affordance honesty (single-sourced drillable-dimension list)", () => {
   it("lib/analysis/drillable-dimensions.ts exists and is a pure module (no DB import)", () => {
     const src = read("lib/analysis/drillable-dimensions.ts");
@@ -95,9 +105,67 @@ describe("drill-down affordance honesty (single-sourced drillable-dimension list
   it("the breakdown row's cursor-pointer/hover affordance is gated on drillability, not applied unconditionally", () => {
     const src = read("app/dashboard/components/AnalysisView.tsx");
     // Pre-fix: a single static className string baked cursor-pointer and
-    // the hover highlight into every row regardless of dimension.
-    expect(src).not.toMatch(
-      /className="border-b border-edge\/50 hover:bg-raised\/50 cursor-pointer"/
-    );
+    // the hover highlight into every row regardless of dimension. This is a
+    // positive structural pin, not a byte-exact one: it fails on ANY
+    // unconditional cursor-pointer/"Click to drill down" affordance,
+    // including a reordered or reformatted variant of the original literal.
+    expect(src).not.toMatch(/className="border-b border-edge\/50 hover:bg-raised\/50 cursor-pointer"/);
+
+    // No bare, unconditional cursor:"pointer" style object survives anywhere
+    // in the file (pie + per-slice Cell + table row all gate this behind a
+    // ternary referencing a drillability flag instead).
+    expect(src).not.toMatch(/style=\{\{\s*cursor:\s*"pointer"\s*\}\}/);
+
+    // Every occurrence of the three affordance tokens (cursor-pointer class,
+    // "Click to drill down" title, and the cursor:"pointer" style value used
+    // by the pie/Cell) must sit inside a conditional expression that
+    // references one of the two drillability flags — currentDimensionIsDrillable
+    // (dimension-level: table header row + pie-level onClick/style) or
+    // rowIsDrillable (per-row: table body rows, which additionally exclude
+    // the pie-only "Other (" synthetic bucket). A bare occurrence with
+    // neither flag nearby means the affordance is unconditional again.
+    const code = stripComments(src);
+    const affordanceTokens = ['cursor-pointer', 'Click to drill down', 'cursor:'];
+    const gateFlags = /rowIsDrillable|currentDimensionIsDrillable/;
+    for (const token of affordanceTokens) {
+      let idx = code.indexOf(token);
+      expect(idx, `expected to find at least one CODE occurrence of "${token}"`).toBeGreaterThanOrEqual(0);
+      while (idx !== -1) {
+        const windowStart = Math.max(0, idx - 400);
+        const windowEnd = Math.min(code.length, idx + token.length + 100);
+        const window = code.slice(windowStart, windowEnd);
+        expect(
+          gateFlags.test(window),
+          `occurrence of "${token}" at index ${idx} is not gated by rowIsDrillable/currentDimensionIsDrillable:\n${window}`
+        ).toBe(true);
+        idx = code.indexOf(token, idx + token.length);
+      }
+    }
+  });
+
+  it("app/api/analysis/drill-down/route.ts imports the shared allowlist instead of hand-rolling a third copy", () => {
+    const src = read("app/api/analysis/drill-down/route.ts");
+    expect(src).toContain(PURE_MODULE_IMPORT_PATH);
+    expect(src).toMatch(/isDrillableDimension/);
+    // The old private copy (ALLOWED_DIMS) must be gone, not just supplemented.
+    expect(src).not.toMatch(/const ALLOWED_DIMS/);
+    // No hand-copied inline array of the dimension name literals — that was
+    // the third independent copy of this list (drill-down.ts and
+    // AnalysisView.tsx were the other two, fixed above). "sector" is
+    // excluded from this check because it's also a legitimate `kind` value
+    // (ALLOWED_KINDS, the `{ kind: "sector", sector }` filter branch) — the
+    // other six are unambiguous: they never appear in this file except as
+    // hand-copied dimension names, so if even one shows up as a literal
+    // again, someone re-hand-rolled the list instead of importing it.
+    for (const dim of [
+      "fund_category",
+      "geography",
+      "market_cap_category",
+      "style",
+      "asset_class",
+      "security_type",
+    ]) {
+      expect(src).not.toMatch(new RegExp(`"${dim}"`));
+    }
   });
 });
