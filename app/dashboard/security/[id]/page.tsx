@@ -25,7 +25,7 @@ import { tradeGradeGroupCaption } from "./trade-grade-group";
 import { computeSecurityFactorShare } from "@/lib/compute/factors";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { QuoteStats } from "../../components/QuoteStats";
-import { Money, Pct, Shares } from "@/lib/privacy/components";
+import { Money, Pct, Shares, PrivateText } from "@/lib/privacy/components";
 import { computeLotCoverageGaps } from "@/lib/compute/lot-coverage";
 import type { EarningsTranscript } from "@/lib/types";
 import { hasDeskNote, isFilingRow, kindLabel } from "@/lib/transcripts/presentation";
@@ -747,7 +747,11 @@ export default async function SecurityDetailPage(props: {
                     </span>
                   )}
                 </div>
-                <p className="line-clamp-2 text-sm leading-snug text-ink-dim">{note.content}</p>
+                <p className="line-clamp-2 text-sm leading-snug text-ink-dim">
+                  {/* Note prose can carry portfolio-derived detail (share
+                      counts, P&L) — mask it like every other such surface. */}
+                  <PrivateText>{note.content}</PrivateText>
+                </p>
               </div>
             ))}
           </div>
