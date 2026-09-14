@@ -30,6 +30,17 @@ export interface WashSaleWarning {
   purchaseDate: string;
   lossAmount: number;
   description: string;
+  /**
+   * Which side of the loss sale the replacement purchase fell on — the IRS
+   * wash-sale window runs both directions (30 days before OR after), and
+   * most flagged purchases in practice precede the sale. `description` and
+   * every renderer must phrase around this instead of always saying
+   * "repurchased" (which implies "after"). A same-date purchase counts as
+   * "after" (same-day replacement).
+   */
+  direction: "before" | "after";
+  /** Absolute day count between the sale and the replacement purchase. */
+  daysFromSale: number;
 }
 
 export interface TaxReportResult {
@@ -90,6 +101,11 @@ export const washSaleAdvisory =
 function toMMDDYYYY(isoDate: string): string {
   const [y, m, d] = isoDate.split("-");
   return `${m}/${d}/${y}`;
+}
+
+/** "1 day" / "N days" — the wash-sale wording reads as prose, so it pluralises. */
+function dayWord(n: number): string {
+  return `${n} day${n === 1 ? "" : "s"}`;
 }
 
 function daysBetween(dateA: string, dateB: string): number {
@@ -160,14 +176,23 @@ function detectWashSales(
 
       const daysFromSale = daysBetween(sale.sale_date, purchase.acquisition_date);
       if (daysFromSale <= 30) {
-        // Purchase is within 30-day wash sale window
+        // Purchase is within 30-day wash sale window. A same-date purchase
+        // counts as "after" (same-day replacement) — it is never earlier
+        // than the sale it accompanies.
+        const direction: "before" | "after" = purchase.acquisition_date < sale.sale_date ? "before" : "after";
+        const description =
+          direction === "before"
+            ? `Sold ${sale.symbol} at loss on ${sale.sale_date}; replacement shares bought ${purchase.acquisition_date} (${dayWord(daysFromSale)} before the sale)`
+            : `Sold ${sale.symbol} at loss on ${sale.sale_date}, repurchased on ${purchase.acquisition_date} (${dayWord(daysFromSale)} after)`;
         warnings.push({
           saleId: sale.id,
           symbol: sale.symbol,
           saleDate: sale.sale_date,
           purchaseDate: purchase.acquisition_date,
           lossAmount: sale.realized_gain_loss,
-          description: `Sold ${sale.symbol} at loss on ${sale.sale_date}, repurchased on ${purchase.acquisition_date} (${daysFromSale} days)`,
+          description,
+          direction,
+          daysFromSale,
         });
         break; // One warning per sale is enough
       }
