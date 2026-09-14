@@ -70,12 +70,12 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
   });
 
   it("caps the score and uses the internal-shift wording when total_value moved smoothly", () => {
-    insertFreshAnchor(db, 1, 2, 1_548_600.40);
-    // Mirrors the live 2026-07-30->07-31 finding: cash drops ~$231k but
-    // total_value only drops ~$13.8k — a cash/holdings misattribution, not
-    // a missing flow.
-    insertValuation(db, 1, "2026-07-30", 205_000.40, 1_560_000.40);
-    insertValuation(db, 1, "2026-07-31", 9_800.40, 1_548_600.40);
+    // Synthetic fixture (round numbers, not tied to any real account or
+    // date): a large cash drop against a small total-value drop — the
+    // shape of a cash/holdings misattribution rather than a missing flow.
+    insertFreshAnchor(db, 1, 2, 1_600_000);
+    insertValuation(db, 1, "2026-02-01", 300_000, 1_610_000);
+    insertValuation(db, 1, "2026-02-02", 100_000, 1_600_000);
 
     const { cashAccuracy } = getDataConfidence(db);
 
@@ -89,12 +89,12 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
 
     // QA 2026-09-12 (qa:header-dataconfidence--cash-detail-line-prints-
     // unformatted-dollar-delta): the residual here is a large negative
-    // number (cash dropped ~$195,200 with no matching transaction) — the
+    // number (cash dropped sharply with no matching transaction) — the
     // detail line must format it through the same convention <Money>
     // uses (thousands separator, "−" not a bare ASCII hyphen), never a
     // raw unformatted `${sign}$${Math.abs(x).toFixed(0)}` run.
-    expect(cashAccuracy.unexplainedFlow!.residual).toBeCloseTo(-195_200, 0);
-    expect(cashAccuracy.detail).toContain("−$195,200");
+    expect(cashAccuracy.unexplainedFlow!.residual).toBeCloseTo(-200_000, 0);
+    expect(cashAccuracy.detail).toContain("−$200,000");
     expect(cashAccuracy.detail).not.toMatch(/-\$\d/); // no bare ASCII-hyphen sign
     expect(cashAccuracy.detail).not.toMatch(/\$\d{4,}/); // no un-grouped 4+ digit run
   });

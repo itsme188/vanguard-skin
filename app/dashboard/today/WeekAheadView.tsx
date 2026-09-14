@@ -243,10 +243,13 @@ function DayCard({ day, todayIso }: DayCardProps) {
 // formatFinnhubFigureCompact), but formatLargeUSD only abbreviates from $1M
 // up — a small-cap print like $190,000 rendered as "$190,000", visually
 // inconsistent on this narrow card. formatCompactUSD renders >=$1M values
-// IDENTICALLY to formatLargeUSD and only differs below $1M, where it
-// abbreviates to K — use it here (this card only; other surfaces keep
-// formatLargeUSD's comma band by design, see lib/format.ts formatCompactUSD
-// doc comment). Reuses formatFinnhubFigure for the "is revenue present" and
+// IDENTICALLY to formatLargeUSD, EXCEPT in the $999.95M-$1B band, where
+// formatCompactUSD promotes to B ("$1.00B") while formatLargeUSD keeps
+// "$1000.0M" (see tests/lib/format.test.ts), and below $1M, where
+// formatCompactUSD abbreviates to K instead of comma-grouping — use it here
+// (this card only; other surfaces keep formatLargeUSD's comma band by
+// design, see lib/format.ts formatCompactUSD doc comment). Reuses
+// formatFinnhubFigure for the "is revenue present" and
 // EPS-string logic (including its zero-revenue-is-absent rule) and only
 // re-bands the revenue number itself.
 

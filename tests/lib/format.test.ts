@@ -199,6 +199,19 @@ describe("formatLargeNumber", () => {
     expect(formatLargeNumber(45_678)).toBe("45,678");
     expect(formatLargeNumber(0.91)).toBe("0.91");
   });
+
+  // 2026-09-13 landing-review follow-up: same premature-unit-pick defect as
+  // formatCompactUSD's M/B boundary — a value just under 1B rounds UP to
+  // "1000.0M" instead of promoting to B.
+  it("promotes M to B when the rounded M figure would reach 1000.0", () => {
+    expect(formatLargeNumber(999_999_999)).toBe("1.00B");
+    expect(formatLargeNumber(999_950_000)).toBe("1.00B");
+  });
+
+  it("mirrors the M-to-B promotion for negative values", () => {
+    expect(formatLargeNumber(-999_999_999)).toBe("-1.00B");
+    expect(formatLargeNumber(-999_950_000)).toBe("-1.00B");
+  });
 });
 
 describe("parseLargeUSD", () => {
@@ -365,6 +378,15 @@ describe("formatCompactUSD", () => {
     expect(formatCompactUSD(-999_499)).toBe("-$999K");
     expect(formatCompactUSD(-999_500)).toBe("-$1.0M");
     expect(formatCompactUSD(-999_950_000)).toBe("-$1.00B");
+  });
+
+  // 2026-09-13 landing-review follow-up: the sub-$1k branch had the same
+  // premature-unit-pick defect as the K/M and M/B boundaries above — a value
+  // just under 1,000 rounds UP to "$1000" instead of promoting to "$1K".
+  it("promotes units to K when the rounded whole-dollar figure would reach 1000", () => {
+    expect(formatCompactUSD(999.5)).toBe("$1K");
+    expect(formatCompactUSD(999.99)).toBe("$1K");
+    expect(formatCompactUSD(-999.5)).toBe("-$1K");
   });
 });
 

@@ -183,7 +183,10 @@ export function formatCompactUSD(value: number): string {
     const kFixed = (abs / 1_000).toFixed(0);
     body = kFixed === "1000" ? `$${(abs / 1_000_000).toFixed(1)}M` : `$${kFixed}K`;
   } else {
-    body = `$${abs.toFixed(0)}`;
+    // Same promotion at the units/K boundary — a value just under 1,000 can
+    // round UP to "$1000" instead of "$1K" (2026-09-13).
+    const unitsFixed = abs.toFixed(0);
+    body = unitsFixed === "1000" ? "$1K" : `$${unitsFixed}`;
   }
   const sign = value < 0 && !rendersAsZero(body) ? "-" : "";
   return `${sign}${body}`;
@@ -195,10 +198,19 @@ export function formatLargeNumber(value: number): string {
   if (!Number.isFinite(value)) return "—";
   const abs = Math.abs(value);
   let body: string;
-  if (abs >= 1_000_000_000) body = `${(abs / 1_000_000_000).toFixed(2)}B`;
-  else if (abs >= 1_000_000) body = `${(abs / 1_000_000).toFixed(1)}M`;
-  else if (abs >= 1_000) body = numberFormatter.format(Math.round(abs));
-  else body = abs.toFixed(2);
+  if (abs >= 1_000_000_000) {
+    body = `${(abs / 1_000_000_000).toFixed(2)}B`;
+  } else if (abs >= 1_000_000) {
+    // Unit is picked before rounding: a value just under 1B can round UP
+    // to "1000.0M" at this precision — promote to B instead, mirroring
+    // formatCompactUSD's M/B boundary (2026-09-13).
+    const mFixed = (abs / 1_000_000).toFixed(1);
+    body = mFixed === "1000.0" ? `${(abs / 1_000_000_000).toFixed(2)}B` : `${mFixed}M`;
+  } else if (abs >= 1_000) {
+    body = numberFormatter.format(Math.round(abs));
+  } else {
+    body = abs.toFixed(2);
+  }
   const sign = value < 0 && !rendersAsZero(body) ? "-" : "";
   return `${sign}${body}`;
 }
