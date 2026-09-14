@@ -206,20 +206,26 @@ export function getChartableSecurities(
  * `getChartableSecurities` (the picker) still lists them.
  *
  * BAR COVERAGE OUTRANKS VALUE (2026-09-12, QA finding
- * charts-landing--default-rank-ignores-bar-coverage-opens-empty-chart):
- * ranking by value alone can land on a held position with ZERO cached bars
- * in `ohlcv_bars`, opening the chart on an empty "No cached price history —
- * connect TWS to load bars" screen even when a smaller held position
- * already has bars ready to render. `has_bars` (any `ohlcv_bars` row for
- * the security, regardless of `bar_size`) is therefore the PRIMARY sort key
- * and value the tiebreaker: `ORDER BY has_bars DESC, value DESC`. This is a
- * preference, not an exclusion — when no held candidate has bars, ranking
- * degrades to the old value-only order rather than returning null, so the
- * landing still shows something the picker can display. Deliberately not
- * gated by `PRICED_BAR_SQL`/`isSaneBar`: a stored legacy zero-priced ("zero
- * close") bar still counts as coverage here, since the read-side guard that
- * hides those bars lives in the display readers (`getOhlcvBars` etc.), not
- * in the choice of which security to open.
+ * charts-landing--default-rank-ignores-bar-coverage-opens-empty-chart;
+ * tightened 2026-09-13 by the landing review of PR #78): ranking by value alone can land on a held position
+ * with ZERO cached bars in `ohlcv_bars`, opening the chart on an empty "No
+ * cached price history — connect TWS to load bars" screen even when a
+ * smaller held position already has bars ready to render. `has_bars` is
+ * therefore the PRIMARY sort key and value the tiebreaker: `ORDER BY
+ * has_bars DESC, value DESC`. This is a preference, not an exclusion — when
+ * no held candidate has bars, ranking degrades to the old value-only order
+ * rather than returning null, so the landing still shows something the
+ * picker can display.
+ *
+ * `has_bars` applies the SAME two filters as the chart reader
+ * (`getOhlcvBars`, always called with `bar_size = '1 day'` for the landing
+ * request — see app/api/tws/chart/route.ts): `bar_size = '1 day'` AND
+ * `PRICED_BAR_SQL`. A row that fails either filter is exactly a row
+ * `getOhlcvBars` would omit, so counting it as "coverage" here would land
+ * the chart on a security that then renders "No cached price history" —
+ * the opposite of what this gate exists to prevent. A security whose only
+ * bars are intraday (`'1 hour'`, etc.) or legacy zero-priced rows is
+ * therefore treated the same as a security with no bars at all.
  *
  * Returns null when nothing is held (or nothing held is chartable/priced)
  * — callers fall back to the old alphabetical-first behavior.
@@ -240,7 +246,10 @@ export function getDefaultChartSecurityId(
       `SELECT h.security_id AS id,
               SUM(ABS(${marketValueExpr})) AS value,
               MAX(CASE WHEN EXISTS (
-                SELECT 1 FROM ohlcv_bars b WHERE b.security_id = h.security_id
+                SELECT 1 FROM ohlcv_bars b
+                WHERE b.security_id = h.security_id
+                  AND b.bar_size = '1 day'
+                  AND ${PRICED_BAR_SQL}
               ) THEN 1 ELSE 0 END) AS has_bars
        FROM holdings h
        JOIN securities s ON s.id = h.security_id

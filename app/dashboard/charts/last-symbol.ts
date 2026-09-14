@@ -6,8 +6,8 @@
  * CHARTS-LANDING PRECEDENCE (user ruling, 2026-09-11) — in order:
  *
  *   1. the LAST VIEWED symbol (this module), whenever one is stored
- *   2. else the largest currently-held position
- *      (lib/queries/ohlcv.ts getDefaultChartSecurityId)
+ *   2. else the largest currently-held position that has cached daily
+ *      priced bars (lib/queries/ohlcv.ts getDefaultChartSecurityId)
  *   3. else alphabetical-first, when nothing is held
  *
  * An explicit `?id=` in the URL outranks all three — it is not a default.
