@@ -188,7 +188,7 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
                   />
                 </>
               }
-              hint={interpretAlpha(reg.alpha).text}
+              hint={interpretAlpha(reg.alpha, reg.rSquared).text}
               color={reg.alpha >= 0 ? "up" : "down"}
             />
             <MetricCell
