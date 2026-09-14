@@ -63,24 +63,6 @@ export function extractLedgerFxRates(
   return rates;
 }
 
-/** USD per 1 unit of the position's local currency, from the broker's own USD
- *  market value. Returns null when inputs are missing/≤0 (caller skips fx write).
- *  CAUTION: only valid on paths where `marketValue` is USD-base — the IBKR Web
- *  API's `mktValue` is NOT (native currency, live-verified 2026-07-03); the TWS
- *  `Position.marketValue` base is still unverified (see lib/tws/positions.ts). */
-export function deriveUsdPerUnit(
-  mktValueUsd: number | null,
-  mktPriceLocal: number | null,
-  quantity: number,
-  multiplier: number = 1,
-): number | null {
-  if (!mktValueUsd || !mktPriceLocal || !quantity) return null;
-  const localNotional = mktPriceLocal * quantity * (multiplier || 1);
-  if (localNotional <= 0) return null;
-  const rate = mktValueUsd / localNotional;
-  return Number.isFinite(rate) && rate > 0 ? rate : null;
-}
-
 const ASSET_CLASS_TO_TYPE: Record<string, string> = {
   STK: "Stock",
   OPT: "Option",

@@ -8,8 +8,6 @@ import { upsertSecurity } from "../mutations/securities";
 import { removeStaleSameDayTwsHoldings } from "../mutations/same-day-tws-holdings";
 import { zeroLatestSecurityIds, countReconRowsOnDate } from "../mutations/closed-equity";
 import { computeDailyValuations } from "../compute/daily-valuation";
-import { upsertFxRate } from "../mutations/fx-rates";
-import { deriveUsdPerUnit } from "../ibkr/map-positions";
 import { bumpTaxGenerationIfPresent, bumpIfPricesAffectSyntheticCloses } from "../compute/tax-convention";
 import type { PositionSyncProgress, PositionSyncResult } from "./types";
 
@@ -343,30 +341,15 @@ export async function syncPortfolio(
         priceMap.set(securityId, pos.marketPrice);
       }
 
-      // Foreign-currency positions: capture the broker's own FX rate, derived
-      // from marketValue vs (marketPrice × qty × multiplier).
-      //
-      // ASSUMPTION (still unverified for TWS): this assumes
-      // getAccountUpdates()'s `Position.marketValue` is base-currency (USD)
-      // denominated while `marketPrice` stays local-currency. NOTE: the
-      // sibling assumption for the IBKR Web API was DISPROVEN live on
-      // 2026-07-03 — its `mktValue` is NATIVE currency, and the first
-      // go-live sync derived a bogus KRW=1.0 from it. That path now sources
-      // rates from the ledger's per-currency `exchangerate`
+      // FX: TWS `Position.marketValue` is NATIVE currency, not USD-base —
+      // VERIFIED live 2026-09-14 (a JPY position derived exactly 1.0, and
+      // upsertFxRate's precedence guard didn't stop it because no
+      // `ibkr_ledger` rate existed yet for JPY, corrupting the yen position
+      // to 1 yen = 1 dollar). So the TWS sync never derives or writes
+      // fx_rates. Rates come from the IBKR Web API ledger
       // (lib/ibkr/map-positions.ts::extractLedgerFxRates, source
-      // 'ibkr_ledger'). This TWS derive is kept as a secondary signal, but
-      // upsertFxRate's precedence guard prevents a derived write from
-      // clobbering a ledger rate fresher than 7 days — so if TWS's
-      // marketValue also turns out native (derived rate ≈ 1), the guard logs
-      // and skips instead of corrupting. When a live TWS sync happens with a
-      // foreign position, check the log: a skipped ~1.0 write confirms
-      // native; a clean ~ledger-rate write confirms USD-base.
-      if (currency !== "USD") {
-        const rate = deriveUsdPerUnit(pos.marketValue ?? null, pos.marketPrice ?? null, pos.pos, multiplier ?? 1);
-        if (rate != null) {
-          upsertFxRate(db, { currency, usdPerUnit: rate, asOf: today, source: "tws_derived" });
-        }
-      }
+      // 'ibkr_ledger', written by lib/ibkr/refresh.ts) or a manual repair via
+      // scripts/repair-fx-rate.ts.
 
       positionsSynced++;
 
