@@ -93,7 +93,7 @@ export async function POST(req: NextRequest) {
   const isValidClockTime = match !== null && hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59;
   if (!isValidClockTime) {
     return NextResponse.json(
-      { success: false, error: "releaseTime must be a valid 24-hour HH:MM time (e.g. 07:30)" },
+      { success: false, error: "Release time must be a 24-hour HH:MM time, e.g. 07:30" },
       { status: 400 },
     );
   }
@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: `releaseTime must be HH:MM ET between ${EARLIEST_PLAUSIBLE_ET} and ${LATEST_PLAUSIBLE_ET}`,
+        error: `Release time must fall between ${EARLIEST_PLAUSIBLE_ET} and ${LATEST_PLAUSIBLE_ET} ET — earnings do not print outside those hours`,
       },
       { status: 400 },
     );
