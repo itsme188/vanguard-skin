@@ -9,6 +9,7 @@ import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
 import { Money, Pct, Shares, PrivateText } from "@/lib/privacy/components";
 import { isNarrativeStale } from "@/lib/trade-review/stale-narrative";
 import { formatProfitFactor } from "@/lib/format";
+import { quantityUnitLabel } from "@/lib/format/quantity-unit";
 import apiFetch from "@/lib/http/apiFetch";
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -983,11 +984,7 @@ function GroupedTradeCards({
                         value={trade.totalQuantity}
                         digits={trade.totalQuantity >= 1 ? 0 : 3}
                       />{" "}
-                      {trade.securityType?.toLowerCase() === "option"
-                        ? trade.totalQuantity === 1
-                          ? "contract"
-                          : "contracts"
-                        : "shares"}
+                      {quantityUnitLabel(trade.securityType, trade.totalQuantity)}
                     </span>
                     {trade.lots.length > 1 && (
                       <span>{trade.lots.length} lots</span>
@@ -1062,11 +1059,7 @@ function GroupedTradeCards({
                             </span>
                             <span className="text-ink-faint">
                               <Shares value={lot.exitQuantity} />{" "}
-                              {trade.securityType?.toLowerCase() === "option"
-                                ? lot.exitQuantity === 1
-                                  ? "contract"
-                                  : "contracts"
-                                : "shares"}
+                              {quantityUnitLabel(trade.securityType, lot.exitQuantity)}
                             </span>
                             <span className="text-ink-faint">
                               <HoldingPeriodBadge days={lot.holdingDays} />
