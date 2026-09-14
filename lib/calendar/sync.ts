@@ -60,6 +60,17 @@ export interface SyncCalendarResult {
   newEvents: number;
   refreshedEvents: number;
   errors: string[];
+  /**
+   * Domain-language entries for legs that never ran at all — TWS not
+   * connected, no Finnhub key configured, etc. Distinct from `errors`: a
+   * skip is an expected, non-failing outcome (nothing was attempted), so it
+   * must never count toward an "N failed" total. Ledger finding
+   * `today-earningshub-refresh--skip-not-visible`: the wsh_skip/finnhub_skip
+   * progress phases explained why nothing happened, but the complete
+   * payload's `errors` came back `[]`, so a run with two unrun legs still
+   * rendered "Refreshed — 1 new" with no hint anything was skipped.
+   */
+  skipped: string[];
 }
 
 export class SyncCalendarValidationError extends Error {
@@ -137,6 +148,7 @@ export async function syncCalendarForWeek(
   const includeNasdaq = opts.includeNasdaq ?? true;
   const send = opts.onProgress ?? (() => {});
   const errors: string[] = [];
+  const skipped: string[] = [];
 
   let wshEvents = 0;
   let wshNew = 0;
@@ -185,6 +197,7 @@ export async function syncCalendarForWeek(
         }
       }
     } else {
+      skipped.push("Company events skipped — TWS not connected");
       send({
         phase: "wsh_skip",
         message:
@@ -295,6 +308,7 @@ export async function syncCalendarForWeek(
       const partialScan = describeFinnhubFailures(finnhubFailures, scanSymbols.length);
       if (partialScan) errors.push(partialScan.error);
     } else {
+      skipped.push("Finnhub scan skipped — no API key configured");
       send({
         phase: "finnhub_skip",
         message: "FINNHUB_API_KEY not set — skipping portfolio earnings scan.",
@@ -369,5 +383,6 @@ export async function syncCalendarForWeek(
     newEvents,
     refreshedEvents: totalSaved - newEvents,
     errors,
+    skipped,
   };
 }

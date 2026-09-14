@@ -179,6 +179,37 @@ describe("syncCalendarForWeek", () => {
     expect(vi.mocked(fetchFinnhubEarningsForSymbols)).not.toHaveBeenCalled();
   });
 
+  // Ledger finding today-earningshub-refresh--skip-not-visible: a run with no
+  // Finnhub key and no TWS emitted wsh_skip/finnhub_skip progress phases but
+  // the complete payload's `errors` came back `[]`, so the button rendered
+  // "Refreshed — 1 new" for a run whose two legs never ran at all.
+  it("reports both unrun legs in `skipped` (not `errors`) when TWS is down and no Finnhub key is set", async () => {
+    vi.mocked(getIbApi).mockReturnValueOnce(null);
+    vi.mocked(fetchMacroEvents).mockResolvedValueOnce([]);
+
+    const result = await syncCalendarForWeek(db, "2026-04-27");
+
+    expect(result.skipped).toEqual([
+      "Company events skipped — TWS not connected",
+      "Finnhub scan skipped — no API key configured",
+    ]);
+    expect(result.errors).toEqual([]);
+  });
+
+  it("returns skipped: [] on a fully-configured run (TWS connected, Finnhub key set)", async () => {
+    process.env.FINNHUB_API_KEY = "test-key";
+    vi.mocked(getIbApi).mockReturnValueOnce({} as never);
+    vi.mocked(fetchWshEvents).mockResolvedValueOnce({} as never);
+    vi.mocked(parseWshEvents).mockReturnValueOnce([]);
+    vi.mocked(fetchMacroEvents).mockResolvedValueOnce([]);
+    vi.mocked(getHeldStockSymbols).mockReturnValueOnce([]);
+    vi.mocked(fetchFinnhubEarningsForSymbols).mockResolvedValueOnce([]);
+
+    const result = await syncCalendarForWeek(db, "2026-04-27");
+
+    expect(result.skipped).toEqual([]);
+  });
+
   it("respects opts.includeMacro=false to skip Claude entirely", async () => {
     await syncCalendarForWeek(db, "2026-04-27", { includeMacro: false });
     expect(vi.mocked(fetchMacroEvents)).not.toHaveBeenCalled();

@@ -26,6 +26,9 @@ interface SyncCompleteData {
   newEvents: number;
   refreshedEvents: number;
   errors?: string[];
+  /** Domain-language entries for legs that never ran (e.g. no TWS, no Finnhub
+   * key) — distinct from `errors`, which is failures during an attempt. */
+  skipped?: string[];
 }
 
 export interface SyncOutcome {
@@ -72,16 +75,27 @@ function summarizeError(message: string): string {
  * finnhub partial-scan summary last), so a WSH or macro failure would
  * otherwise bump the symbol-count warning behind "(+1 more)", hiding the
  * exact failure this function exists to surface.
+ *
+ * A leg that never ran at all (no TWS, no Finnhub key) is a SKIP, not a
+ * failure — lib/calendar/sync.ts reports it in `data.skipped`, never
+ * `errors`. Each skipped entry is appended inline after the count, same as
+ * an error, but never counted into the errors "(+N more)" tally — a skip
+ * isn't one of the N failed attempts.
  */
 export function buildSyncOutcome(data: SyncCompleteData): SyncOutcome {
   const newEvents = data.newEvents ?? 0;
   const refreshedEvents = data.refreshedEvents ?? 0;
   const errors = data.errors ?? [];
+  const skipped = data.skipped ?? [];
 
   const parts: string[] = [];
   if (newEvents > 0) parts.push(`${newEvents} new`);
   if (refreshedEvents > 0) parts.push(`${refreshedEvents} updated`);
   let text = parts.length > 0 ? `Refreshed — ${parts.join(", ")}` : "Refreshed — no changes";
+
+  for (const entry of skipped) {
+    text += ` · ${entry}`;
+  }
 
   if (errors.length > 0) {
     // Prefer a "not scanned" entry when one is present — it's the most
