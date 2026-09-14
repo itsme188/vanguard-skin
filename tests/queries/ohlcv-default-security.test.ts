@@ -232,6 +232,48 @@ describe("getDefaultChartSecurityId", () => {
     expect(getDefaultChartSecurityId(db)).toBe(large);
   });
 
+  // charts-landing--bar-coverage-gate-weaker-than-chart-reader: the has_bars
+  // gate must apply the SAME filters as the chart reader (getOhlcvBars:
+  // bar_size = '1 day' AND PRICED_BAR_SQL) — otherwise it can count a bar
+  // that the chart itself would never render as "coverage", landing on a
+  // security that then shows "No cached price history".
+
+  it("does not count a legacy zero-priced bar as coverage — a smaller position with a real priced bar wins", () => {
+    const zeroBarOnly = seedSecurity(db, "QZEROBAR");
+    seedHolding(db, TAXABLE, zeroBarOnly, 100, TODAY);
+    seedPrice(db, zeroBarOnly, TODAY, 200); // $20,000 gross — largest by value
+    // Insert directly (bypassing upsertOhlcvBars' write guard, which would
+    // reject this) to simulate a pre-2026-09-06 legacy zero-priced bar.
+    db.prepare(
+      `INSERT INTO ohlcv_bars (security_id, bar_date, bar_size, open, high, low, close, volume)
+       VALUES (?, ?, '1 day', 0, 0, 0, 0, 0)`,
+    ).run(zeroBarOnly, TODAY);
+
+    const hasBars = seedSecurity(db, "QHASBAR2");
+    seedHolding(db, TAXABLE, hasBars, 10, TODAY);
+    seedPrice(db, hasBars, TODAY, 50); // $500 gross — smaller, but has a real priced bar
+    seedBar(db, hasBars, TODAY);
+
+    expect(getDefaultChartSecurityId(db)).toBe(hasBars);
+  });
+
+  it("does not count an intraday ('1 hour') bar as coverage — a smaller position with a daily bar wins", () => {
+    const hourlyOnly = seedSecurity(db, "QHOURLY");
+    seedHolding(db, TAXABLE, hourlyOnly, 100, TODAY);
+    seedPrice(db, hourlyOnly, TODAY, 200); // $20,000 gross — largest by value
+    db.prepare(
+      `INSERT INTO ohlcv_bars (security_id, bar_date, bar_size, open, high, low, close, volume)
+       VALUES (?, ?, '1 hour', 10, 11, 9, 10, 1000)`,
+    ).run(hourlyOnly, TODAY);
+
+    const hasBars = seedSecurity(db, "QHASBAR3");
+    seedHolding(db, TAXABLE, hasBars, 10, TODAY);
+    seedPrice(db, hasBars, TODAY, 50); // $500 gross — smaller, but has a daily bar
+    seedBar(db, hasBars, TODAY);
+
+    expect(getDefaultChartSecurityId(db)).toBe(hasBars);
+  });
+
   it("bars on an UNHELD security do not make it win", () => {
     const ghost = seedSecurity(db, "QGHOST");
     seedBar(db, ghost, TODAY); // never held — no holdings row at all
