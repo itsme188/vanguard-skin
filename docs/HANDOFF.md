@@ -35,9 +35,9 @@
 
 ## 4. Uncommitted changes / live-process state
 
-- Main checkout clean at `fce2ddde + this closing docs commit` (= this closing commit), pushed. Worktree `/Users/Yitzi/code/vanguard-skin-coord` on `claude/qa-landing-2026-09-13` (fully landed; branch can be deleted). Nightly `../vanguard-skin-qa-fix` worktree untouched (detached at the old main).
+- Main checkout clean at the closing handoff commit on top of `fce2ddde`, pushed. Worktree `/Users/Yitzi/code/vanguard-skin-coord` on `claude/qa-landing-2026-09-13` (fully landed; branch can be deleted). Nightly `../vanguard-skin-qa-fix` worktree untouched (detached at the old main).
 - Sandbox `:3090` torn down; no locks held; register: `qa-landing-2026-09-13` landed; `qa-fix-20260912` / `qa-fix-20260913` review tasks closed as landed. Ledger: 15 rows flipped to `merged` with landed SHAs (backup `qa/findings/ledger.json.bak-2026-09-13-landed`).
-- Remote: `qa-deep-fixes-2026-09-13` and `qa-auto-fixes-2026-09-13` deleted (closed unmerged); `qa-deep-fixes-2026-09-12` and `qa-auto-fixes-2026-09-12` left for you to delete after GitHub shows #77/#78 merged.
+- Remote: all four PR branches deleted — `qa-deep-fixes-2026-09-13` / `qa-auto-fixes-2026-09-13` (closed unmerged) and `qa-deep-fixes-2026-09-12` / `qa-auto-fixes-2026-09-12` (GitHub showed #77/#78 merged). No `qa-*` refs remain on origin or locally.
 
 ## 5. Claude session link
 
