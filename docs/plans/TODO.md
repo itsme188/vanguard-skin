@@ -273,6 +273,13 @@
 
 ---
 
+## Closed this session (2026-09-13/14 — PRs #77–#80 landed + deployed, sixteen decisions ruled, TWS FX derive deleted)
+
+- ✅ **Nightly-QA PRs #77–#80 landed** via `claude/qa-landing-2026-09-13` (main `4a2c5e83` → `fce2ddde`, 25 commits, 51 files): #77/#78 merged, #79/#80 landed as sanitized cherry-picks (live counts in messages, then in the Finnhub commit's comments/fixtures → re-amended `14926bc8`); seven review-fix commits (`7dda6827` Charts gate mirrors the chart reader, `4df41ca1` security-hub note prose masked, `1471616f` Today gross-exposure denominator, `f7a9e526` drill-down affordance + single-sourced allowlist in the route, `a88928ed` rounding siblings + synthetic cash-flow fixture, `69731c52` Refresh outcome names skipped legs). Deployed build `vVbXXDPZSvNGb0LL1APdR`. Rulings in DECISIONS 2026-09-13. Follow-ups a–m filed above under "[qa-landing 2026-09-13 follow-ups]".
+- ✅ **Sixteen open decisions ruled 2026-09-14** (`4bb352f5`): the JPY FX row + the 09-12 and 09-13 QA decision records, all as recommended; 17 ledger rows → auto; user-run data halves registered as `user-run-data-steps-2026-09-14`.
+- ✅ **TWS FX derive DELETED** (`0075c14a`, deployed build `eEKR4YpxMpJWel3ruFhrt`): `Position.marketValue` verified native (a yen position derived exactly 1.0), `deriveUsdPerUnit` removed, `upsertFxRate` refuses near-parity `*_derived` writes, new `scripts/repair-fx-rate.ts` (`--from-ibkr` / `--usd-per-unit`, dry-run default). User ran the JPY repair + one Sync the same evening; the row is `ibkr_ledger` and the IBKR cash plug is gone. Closes the "TWS-derive FX base verification" watch and the JPY placeholder issue.
+- ✅ **Housekeeping:** seven stale local `qa-*` refs, the 09-11 v1 backup branch, nine merged/closed origin `qa-*` branches deleted; three prunable Codex worktree registrations pruned; origin holds no `qa-*` branch older than the 09-14 nightly PRs.
+
 ## Closed this session (2026-09-11 — eight nightly-QA PRs landed behind four read-only Opus reviews + a six-fixer wave)
 
 - ✅ **PRs #69–#76 landed on main via the integration branch `claude/qa-landing-2026-09-11`** (31 fixer commits: #70/#73/#74/#75/#76 as merges; #69, #71 and #72 as sanitized cherry-picks because their originals carried real figures — a newsletter-corpus count, real tickers with exact share counts and a sale-row count, and a real held option with strike/premium/exit level — those PRs are closed unmerged and their remote branches deleted; the leaked SHAs stay reachable via GitHub PR refs until a Support purge, see Reminders). One merge conflict (NarrativeBlock: #69's `describeRefreshFailure` vs #74's extracted formatter) resolved in favour of the richer helper, then unified by the fix wave.
