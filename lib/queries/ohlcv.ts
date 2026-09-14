@@ -205,6 +205,22 @@ export function getChartableSecurities(
  * added HERE only, never to `CHARTABLE_PREDICATE_SQL`, so
  * `getChartableSecurities` (the picker) still lists them.
  *
+ * BAR COVERAGE OUTRANKS VALUE (2026-09-12, QA finding
+ * charts-landing--default-rank-ignores-bar-coverage-opens-empty-chart):
+ * ranking by value alone can land on a held position with ZERO cached bars
+ * in `ohlcv_bars`, opening the chart on an empty "No cached price history —
+ * connect TWS to load bars" screen even when a smaller held position
+ * already has bars ready to render. `has_bars` (any `ohlcv_bars` row for
+ * the security, regardless of `bar_size`) is therefore the PRIMARY sort key
+ * and value the tiebreaker: `ORDER BY has_bars DESC, value DESC`. This is a
+ * preference, not an exclusion — when no held candidate has bars, ranking
+ * degrades to the old value-only order rather than returning null, so the
+ * landing still shows something the picker can display. Deliberately not
+ * gated by `PRICED_BAR_SQL`/`isSaneBar`: a stored legacy zero-priced ("zero
+ * close") bar still counts as coverage here, since the read-side guard that
+ * hides those bars lives in the display readers (`getOhlcvBars` etc.), not
+ * in the choice of which security to open.
+ *
  * Returns null when nothing is held (or nothing held is chartable/priced)
  * — callers fall back to the old alphabetical-first behavior.
  */
@@ -221,7 +237,11 @@ export function getDefaultChartSecurityId(
 
   const row = db
     .prepare(
-      `SELECT h.security_id AS id, SUM(ABS(${marketValueExpr})) AS value
+      `SELECT h.security_id AS id,
+              SUM(ABS(${marketValueExpr})) AS value,
+              MAX(CASE WHEN EXISTS (
+                SELECT 1 FROM ohlcv_bars b WHERE b.security_id = h.security_id
+              ) THEN 1 ELSE 0 END) AS has_bars
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        LEFT JOIN prices p ON p.security_id = h.security_id
@@ -232,10 +252,10 @@ export function getDefaultChartSecurityId(
          AND LOWER(COALESCE(s.security_type, '')) != 'option'
          AND p.close_price IS NOT NULL
        GROUP BY h.security_id
-       ORDER BY value DESC
+       ORDER BY has_bars DESC, value DESC
        LIMIT 1`,
     )
-    .get() as { id: number; value: number } | undefined;
+    .get() as { id: number; value: number; has_bars: number } | undefined;
 
   return row?.id ?? null;
 }

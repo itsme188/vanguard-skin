@@ -602,7 +602,19 @@ ${OPTION_PRICING_JOINS_SQL}
     let changePercent: number;
     let subjectShare: number;
 
-    if (recipe.category === "rate" && pos.security_type.toLowerCase() === "bond") {
+    // FINANCE RULE (QA finding `analysis-scenarios--preset-rate-shock-still-
+    // marks-money-market-sweep-down`): a cash-equivalent sweep fund has a
+    // constant $1.00 NAV — a rate shock changes its YIELD, not its PRICE,
+    // and no other recipe's subject cohort is cash either. This guard must
+    // come before the SUBJECT/bond branching below: a sweep fund's
+    // interest_rate_sensitive bucket ('High') clears the rate recipe's
+    // subject factor floor (>= 0.50), which previously routed it through
+    // the SUBJECT path with no cash check (only the SPILLOVER leg, via
+    // transmitsEquitySpillover, was guarded).
+    if (isCashEquivalentSecurity(pos)) {
+      changePercent = 0;
+      subjectShare = 0;
+    } else if (recipe.category === "rate" && pos.security_type.toLowerCase() === "bond") {
       // Bonds ARE the subject of a rate shock, and duration prices them
       // better than any factor bucket could.
       const duration = pos.duration_years ?? 5;
