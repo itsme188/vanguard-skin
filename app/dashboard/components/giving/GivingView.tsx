@@ -48,9 +48,8 @@ export async function GivingView() {
             <span className="text-gold-ink font-medium">
               Cost-basis figures are pending a recompute.
             </span>{" "}
-            Cost-basis figures are pending a recompute under the corrected
-            dollar convention and may be unit-inconsistent until the next
-            recompute completes.
+            They were computed under an earlier dollar convention and may be
+            unit-inconsistent until the next recompute completes.
           </p>
         </div>
       )}

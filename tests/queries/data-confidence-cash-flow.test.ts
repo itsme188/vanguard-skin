@@ -86,6 +86,17 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
     expect(cashAccuracy.detail).not.toContain("unexplained external-flow-shaped");
     expect(cashAccuracy.guidance).toContain("valuation source");
     expect(cashAccuracy.guidance).not.toContain("repair-missing-external-flows.ts");
+
+    // QA 2026-09-12 (qa:header-dataconfidence--cash-detail-line-prints-
+    // unformatted-dollar-delta): the residual here is a large negative
+    // number (cash dropped ~$195,200 with no matching transaction) — the
+    // detail line must format it through the same convention <Money>
+    // uses (thousands separator, "−" not a bare ASCII hyphen), never a
+    // raw unformatted `${sign}$${Math.abs(x).toFixed(0)}` run.
+    expect(cashAccuracy.unexplainedFlow!.residual).toBeCloseTo(-195_200, 0);
+    expect(cashAccuracy.detail).toContain("−$195,200");
+    expect(cashAccuracy.detail).not.toMatch(/-\$\d/); // no bare ASCII-hyphen sign
+    expect(cashAccuracy.detail).not.toMatch(/\$\d{4,}/); // no un-grouped 4+ digit run
   });
 
   it("leaves the score untouched and unexplainedFlow null when cash is clean", () => {
@@ -158,6 +169,16 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
     expect(cashAccuracy.timingResidual!.amount).toBeCloseTo(150_000.0, 1);
     expect(cashAccuracy.detail).toContain("live-snapshot timing residual");
     expect(cashAccuracy.guidance).toContain("Live-snapshot (Plaid/TWS) days infer cash");
+
+    // QA 2026-09-12 (qa:header-dataconfidence--cash-detail-line-prints-
+    // unformatted-dollar-delta): the popover footer renders this SAME
+    // amount through <Money value={timingResidual.amount} /> — unsigned
+    // (no explicit "+" for a positive value, formatUSD's comma grouping).
+    // The detail line must agree glyph-for-glyph rather than printing its
+    // own hand-rolled `${sign}$${Math.abs(x).toFixed(0)}` ("+$150000").
+    expect(cashAccuracy.detail).toContain("$150,000");
+    expect(cashAccuracy.detail).not.toContain("+$150000");
+    expect(cashAccuracy.detail).not.toMatch(/\$\d{4,}/); // no un-grouped 4+ digit run
   });
 
   it("keeps the legacy cap + warning copy for the same jump on a canonical (non-live) anchored day", () => {
