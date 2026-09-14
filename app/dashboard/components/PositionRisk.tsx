@@ -6,7 +6,8 @@ import type {
   CorrelationEntry,
   PositionRiskResult,
 } from "@/lib/compute/risk";
-import { Pct } from "@/lib/privacy/components";
+import { Pct, PrivateText } from "@/lib/privacy/components";
+import { usePrivacy } from "@/lib/privacy/context";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
 import { ScrollFade } from "./ScrollFade";
 import { DrillDownPanel } from "./analysis/DrillDownPanel";
@@ -66,6 +67,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [drillFilter, setDrillFilter] = useState<DrillDownFilter | null>(null);
+  const { isPrivate } = usePrivacy();
 
   useEffect(() => {
     setLoading(true);
@@ -184,11 +186,23 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
                 </td>
                 <td className="text-right py-2 px-3">
                   {pos.correlationWithPortfolio != null ? (
-                    <span
-                      className={`font-mono tabular-nums text-xs px-1.5 py-0.5 rounded ${corrColor(pos.correlationWithPortfolio)}`}
-                    >
-                      {formatCorr(pos.correlationWithPortfolio)}
-                    </span>
+                    isPrivate ? (
+                      // Correlation with the portfolio is derived from this
+                      // holder's own position weights, so it masks the same
+                      // as Weight/Volatility/Risk Contrib. The color-coded
+                      // pill also encodes magnitude (corrColor buckets by
+                      // |corr|), so it's neutralized to a flat style here
+                      // rather than kept live.
+                      <PrivateText className="font-mono tabular-nums text-xs px-1.5 py-0.5 rounded bg-ink-faint/15 text-ink-dim">
+                        {null}
+                      </PrivateText>
+                    ) : (
+                      <span
+                        className={`font-mono tabular-nums text-xs px-1.5 py-0.5 rounded ${corrColor(pos.correlationWithPortfolio)}`}
+                      >
+                        {formatCorr(pos.correlationWithPortfolio)}
+                      </span>
+                    )
                   ) : (
                     <span className="text-ink-faint">{"\u2014"}</span>
                   )}
@@ -197,10 +211,17 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
                   {pos.riskContribution != null ? (
                     <div className="flex items-center justify-end gap-2">
                       <div className="w-16 h-1.5 bg-edge rounded-full overflow-hidden">
+                        {/* Bar width itself encodes the risk-contribution
+                            ranking — under privacy it collapses to a
+                            constant, dimmed fill (matching CoverageBar's
+                            pattern) so row order can't be read off the
+                            chart even though the numeric value is masked. */}
                         <div
-                          className="h-full bg-gold rounded-full"
+                          className={`h-full bg-gold rounded-full${isPrivate ? " opacity-30" : ""}`}
                           style={{
-                            width: `${Math.min(Math.abs(pos.riskContribution) * 100, 100)}%`,
+                            width: isPrivate
+                              ? "100%"
+                              : `${Math.min(Math.abs(pos.riskContribution) * 100, 100)}%`,
                           }}
                         />
                       </div>
@@ -209,12 +230,23 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
                         digits={1}
                         className="font-mono tabular-nums text-ink text-xs w-12 text-right"
                       />
-                      <WeekOverWeekBadge
-                        value={computeWeekOverWeekDelta(pos, weekAgoPosns)}
-                        kind="neutral"
-                        asPercent={true}
-                        digits={1}
-                      />
+                      {isPrivate ? (
+                        // The 7-day delta is itself a portfolio-derived
+                        // number (change in risk contribution) — mask it
+                        // through the same shared component/token <Pct>
+                        // uses, rather than leaving it printed in the clear
+                        // beside a masked value.
+                        <PrivateText className="text-[10px] align-middle ml-1.5">
+                          {null}
+                        </PrivateText>
+                      ) : (
+                        <WeekOverWeekBadge
+                          value={computeWeekOverWeekDelta(pos, weekAgoPosns)}
+                          kind="neutral"
+                          asPercent={true}
+                          digits={1}
+                        />
+                      )}
                     </div>
                   ) : (
                     <span className="text-ink-faint">{"\u2014"}</span>
