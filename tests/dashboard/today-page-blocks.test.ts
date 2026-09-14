@@ -57,9 +57,12 @@ describe("Today keeps only the blocks the spec keeps (§2 ruling, §4.6)", () =>
   // A null today_gain is UNKNOWN, never zero — a morning before any prior
   // close has landed must never render "$0.00 today" in the up colour.
   it("treats a missing today's-move as unknown, never zero, and wraps every number in a privacy component", () => {
-    expect(today).toMatch(/todayGain === null \? null : moved\.reduce/);
+    // The aggregation lives in summarizeIbkrDayMove (lib/queries/today-holdings.ts),
+    // whose null-means-unknown contract is unit-tested there; the page must
+    // delegate to it rather than re-inline the math.
+    expect(today).toMatch(/const \{ count: movedCount, todayGain, todayPct \} = summarizeIbkrDayMove\(holdings\)/);
     expect(today).toContain("no prior-close prices yet — today's move is unavailable");
-    expect(today).toMatch(/<Count value=\{holdings\.length - moved\.length\} \/>/);
+    expect(today).toMatch(/<Count value=\{holdings\.length - movedCount\} \/>/);
     // Every $, % and count on the line sits inside a privacy wrapper: the
     // only braces in that block that reach a number are the wrappers' own
     // `value=` props — a bare `{todayGain}`/`{todayPct}`/`{holdings.length}`

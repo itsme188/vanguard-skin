@@ -6,7 +6,11 @@ import { getAccountByName } from "@/lib/queries/accounts";
 import { getPortfolioTotals } from "@/lib/queries/dashboard";
 import { getEventsByWeek, getTodayReleases } from "@/lib/queries/calendar";
 import { getCurrentMonday, resolveWeekOfParam } from "@/lib/calendar/date-utils";
-import { getIbkrTodayHoldings, type TodayHolding } from "@/lib/queries/today-holdings";
+import {
+  getIbkrTodayHoldings,
+  summarizeIbkrDayMove,
+  type TodayHolding,
+} from "@/lib/queries/today-holdings";
 import { OpenChatButton } from "../components/OpenChatButton";
 import { Count, Money, Pct } from "@/lib/privacy/components";
 import { TodayReleases } from "../components/TodayReleases";
@@ -80,12 +84,11 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
   // per-name list lives on Accounts now. A null today_gain is UNKNOWN, never
   // zero: names with no prior close contribute to neither sum, and when NO name
   // has one there is no move to report at all — `null`, not `0`.
-  const moved = holdings.filter((h) => h.today_gain !== null);
-  const todayGain = moved.length === 0 ? null : moved.reduce((sum, h) => sum + (h.today_gain ?? 0), 0);
-  const priorClose =
-    todayGain === null ? null : moved.reduce((sum, h) => sum + (h.current_value ?? 0), 0) - todayGain;
-  const todayPct =
-    todayGain !== null && priorClose !== null && priorClose > 0 ? (todayGain / priorClose) * 100 : null;
+  //
+  // Percent denominator is GROSS prior-close exposure, not net (ratified
+  // 2026-09-13) — with shorts in the row set, a hedged book's net exposure can
+  // be tiny or negative. See summarizeIbkrDayMove for the full rationale.
+  const { count: movedCount, todayGain, todayPct } = summarizeIbkrDayMove(holdings);
 
   // ── Today's calendar releases (with release_time set) ─────────────
   // ET-anchored inside the query (calendar event_date is an ET market date, so
@@ -221,16 +224,16 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
               <span className={`font-mono tabular-nums ${todayGain >= 0 ? "text-up" : "text-down"}`}>
                 <Money value={todayGain} signed />
                 {todayPct !== null && (
-                  <> (<Pct value={todayPct} digits={2} signed />)</>
+                  <> (<Pct value={todayPct * 100} digits={2} signed />)</>
                 )}
               </span>
             )}
-            {moved.length < holdings.length && (
+            {movedCount < holdings.length && (
               <span
                 className="text-[11px] text-ink-faint"
                 title="Names with no prior close are excluded from today's move"
               >
-                <Count value={holdings.length - moved.length} /> without a prior close
+                <Count value={holdings.length - movedCount} /> without a prior close
               </span>
             )}
             <IbkrRefreshButton latestPriceDate={latestPriceDate} />

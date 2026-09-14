@@ -194,3 +194,37 @@ export function getIbkrTodayHoldings(
     (a, b) => Math.abs(b.today_gain ?? 0) - Math.abs(a.today_gain ?? 0),
   );
 }
+
+export interface IbkrDayMoveSummary {
+  count: number;
+  todayGain: number | null;
+  priorGross: number;
+  todayPct: number | null;
+}
+
+/**
+ * Aggregates the one-line Today IBKR snapshot's day move across a set of
+ * holdings rows. Ratified 2026-09-13: with shorts included in the row set
+ * (see includeShorts note above getIbkrTodayHoldings), a hedged book can make
+ * NET prior-close exposure (Σcurrent_value − ΣtodayGain) tiny or negative —
+ * the denominator either renders "—" beside a real dollar figure or blows up
+ * the percent. The percent denominator is GROSS prior-close exposure instead:
+ * Σ|current_value_i − today_gain_i| per row, which is always ≥ each row's
+ * true prior-close magnitude and only hits 0 when there is truly no priced
+ * exposure.
+ */
+export function summarizeIbkrDayMove(
+  rows: TodayHolding[],
+): IbkrDayMoveSummary {
+  const moved = rows.filter((h) => h.today_gain !== null);
+  if (moved.length === 0) {
+    return { count: 0, todayGain: null, priorGross: 0, todayPct: null };
+  }
+  const todayGain = moved.reduce((sum, h) => sum + (h.today_gain ?? 0), 0);
+  const priorGross = moved.reduce(
+    (sum, h) => sum + Math.abs((h.current_value ?? 0) - (h.today_gain ?? 0)),
+    0,
+  );
+  const todayPct = priorGross === 0 ? null : todayGain / priorGross;
+  return { count: moved.length, todayGain, priorGross, todayPct };
+}
