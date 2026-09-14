@@ -94,7 +94,8 @@ describe("POST /api/earnings/release-time", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.success).toBe(false);
-    expect(body.error).toMatch(/valid 24-hour/i);
+    expect(body.error).toMatch(/24-hour/i);
+    expect(body.error).not.toMatch(/releaseTime/);
     // Never wrote a durable row.
     const row = hoisted.db
       .prepare("SELECT * FROM symbol_release_times WHERE symbol = 'XMTR'")
@@ -112,6 +113,7 @@ describe("POST /api/earnings/release-time", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/between 04:00 and 20:00/);
+    expect(body.error).not.toMatch(/releaseTime/);
   });
 
   it("400s on an out-of-range but validly-shaped time (after LATEST_PLAUSIBLE_ET)", async () => {
