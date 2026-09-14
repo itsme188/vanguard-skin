@@ -25,6 +25,14 @@
  * is an explicit reveal (the textarea's `value={editContent}` is meant to
  * show the real text so the user can edit it), matching how the alerts page
  * and every other privacy-gated editor in this repo works.
+ *
+ * A landing review of the same fix (commit 99c1aeb7) found one more bare
+ * render of the same shape: `app/dashboard/security/[id]/page.tsx`'s notes
+ * block rendered `{note.content}` raw in a `line-clamp-2` paragraph. That
+ * page is a server component, but `PrivateText` is a client component and
+ * is fine to render from one, so the fix is the identical
+ * `<PrivateText>{note.content}</PrivateText>` wrap. The second describe
+ * block below pins that file the same way.
  */
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
@@ -38,8 +46,21 @@ const SOURCE_PATH = path.join(
   "NotesView.tsx",
 );
 
+const SECURITY_PAGE_SOURCE_PATH = path.join(
+  process.cwd(),
+  "app",
+  "dashboard",
+  "security",
+  "[id]",
+  "page.tsx",
+);
+
 function readSource(): string {
   return fs.readFileSync(SOURCE_PATH, "utf8");
+}
+
+function readSecurityPageSource(): string {
+  return fs.readFileSync(SECURITY_PAGE_SOURCE_PATH, "utf8");
 }
 
 describe("NotesView masks note prose under the privacy toggle", () => {
@@ -94,6 +115,43 @@ describe("NotesView masks note prose under the privacy toggle", () => {
     expect(
       offenders.map((m) => m[0]),
       "found a {note.content} reference that is neither wrapped in <PrivateText> nor the edit-textarea seed call",
+    ).toEqual([]);
+  });
+});
+
+describe("security detail hub masks note prose under the privacy toggle", () => {
+  it("imports PrivateText from @/lib/privacy/components", () => {
+    const source = readSecurityPageSource();
+    const importRe =
+      /import\s*\{[^}]*\bPrivateText\b[^}]*\}\s*from\s*["']@\/lib\/privacy\/components["']/;
+    expect(
+      importRe.test(source),
+      "app/dashboard/security/[id]/page.tsx must import PrivateText from @/lib/privacy/components",
+    ).toBe(true);
+  });
+
+  it("never renders a bare {note.content} JSX child outside a <PrivateText> wrapper", () => {
+    const source = readSecurityPageSource();
+    // Every occurrence of the literal token sequence `{note.content}` in the
+    // file must be immediately wrapped by <PrivateText>...</PrivateText> —
+    // this page has no edit-textarea seed call to exempt (notes here are
+    // read-only), so a bare occurrence anywhere is a regression.
+    const allMatches = [...source.matchAll(/\{note\.content\}/g)];
+    expect(
+      allMatches.length,
+      "expected exactly one {note.content} reference in app/dashboard/security/[id]/page.tsx",
+    ).toBe(1);
+
+    const offenders = allMatches.filter((m) => {
+      const start = m.index ?? 0;
+      const before = source.slice(Math.max(0, start - 20), start);
+      const after = source.slice(start + m[0].length, start + m[0].length + 15);
+      const isWrapped = /<PrivateText>\s*$/.test(before) && /^\s*<\/PrivateText>/.test(after);
+      return !isWrapped;
+    });
+    expect(
+      offenders.map((m) => m[0]),
+      "found a {note.content} reference in the security detail hub that is not wrapped in <PrivateText> — if the wrap is ever removed, this assertion must fail",
     ).toEqual([]);
   });
 });
