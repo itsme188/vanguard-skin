@@ -119,6 +119,67 @@ describe("buildSyncOutcome — the outcome line the button keeps visible after a
   it("defaults missing counts/errors to zero/empty rather than throwing (defensive against a stale server)", () => {
     expect(buildSyncOutcome({} as never)).toEqual({ text: "Refreshed — no changes" });
   });
+
+  // Ledger finding today-earningshub-refresh--skip-not-visible: a run whose
+  // wsh_skip/finnhub_skip legs never ran at all came back with `errors: []`,
+  // so it rendered indistinguishably from a fully-configured run.
+  describe("skipped legs (distinct from errors — a skip is not a failed attempt)", () => {
+    it("a clean run with no skips and no errors renders byte-identical to today (pinned)", () => {
+      expect(buildSyncOutcome({ newEvents: 1, refreshedEvents: 0, errors: [], skipped: [] })).toEqual({
+        text: "Refreshed — 1 new",
+      });
+      // Also true when `skipped` is entirely absent (older/stale server frame).
+      expect(buildSyncOutcome({ newEvents: 1, refreshedEvents: 0, errors: [] })).toEqual({
+        text: "Refreshed — 1 new",
+      });
+    });
+
+    it("appends a single skipped entry inline after the count", () => {
+      expect(
+        buildSyncOutcome({
+          newEvents: 1,
+          refreshedEvents: 0,
+          errors: [],
+          skipped: ["Finnhub scan skipped — no API key configured"],
+        }),
+      ).toEqual({
+        text: "Refreshed — 1 new · Finnhub scan skipped — no API key configured",
+      });
+    });
+
+    it("appends multiple skipped entries in order, each joined with the same separator", () => {
+      expect(
+        buildSyncOutcome({
+          newEvents: 0,
+          refreshedEvents: 0,
+          errors: [],
+          skipped: [
+            "Company events skipped — TWS not connected",
+            "Finnhub scan skipped — no API key configured",
+          ],
+        }),
+      ).toEqual({
+        text:
+          "Refreshed — no changes · Company events skipped — TWS not connected" +
+          " · Finnhub scan skipped — no API key configured",
+      });
+    });
+
+    it("combines skipped entries with an error summary — skips never fold into the errors (+N more) count", () => {
+      const outcome = buildSyncOutcome({
+        newEvents: 0,
+        refreshedEvents: 0,
+        errors: ["macro: Claude request failed", "wsh: timeout after 10s"],
+        skipped: ["Finnhub scan skipped — no API key configured"],
+      });
+      expect(outcome.text).toBe(
+        "Refreshed — no changes · Finnhub scan skipped — no API key configured" +
+          " · macro: Claude request failed (+1 more)",
+      );
+      // The (+1 more) counts only the second error, never the skip.
+      expect(outcome.title).toBe("macro: Claude request failed; wsh: timeout after 10s");
+    });
+  });
 });
 
 describe("EarningsHubRefreshButton source — frame parsing and outcome lifecycle", () => {
