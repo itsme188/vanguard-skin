@@ -147,10 +147,12 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
                     {p.underlyingPrice > 0 ? `$${p.underlyingPrice.toFixed(2)}` : "—"}
                   </td>
                   <td className={`text-right py-2 px-2 font-mono ${dte <= 7 ? "text-down" : dte <= 30 ? "text-gold-ink" : "text-ink-dim"}`}>
-                    {/* An expired contract can linger for a day before the
-                        purge sweep clears it — label it rather than showing
-                        a negative day count. */}
-                    {dte < 0 ? "expired" : `${dte}d`}
+                    {/* p.expired is the compute's own call (lib/compute/options-greeks.ts
+                        isExpiredAsOf): a same-day contract (dte===0) is still LIVE until
+                        the 16:00 ET close, so dte alone can't tell "expired" from "today".
+                        A stale contract that lingers a day before the purge sweep clears
+                        it also lands here via dte < 0 as a belt-and-suspenders check. */}
+                    {p.expired || dte < 0 ? "expired" : `${dte}d`}
                   </td>
                   <td className="hidden md:table-cell text-right py-2 px-2 font-mono text-ink-dim">
                     {iv != null ? `${(iv * 100).toFixed(0)}%` : "—"}

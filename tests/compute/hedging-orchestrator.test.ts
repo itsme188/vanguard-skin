@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { runMigrations } from "@/lib/db/migrate";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
@@ -322,13 +322,14 @@ describe("computeDefenseAnalysis — expired option exclusion", () => {
     seedPrice(msft, 500);
   });
 
-  function seedMsftPut(expirationDate: string) {
+  function seedMsftPut(expirationDate: string, strike = 400) {
     const tag = expirationDate.replace(/-/g, "").slice(2);
-    const putId = seedSecurity(`MSFT  ${tag}P00400000`, {
+    const occStrike = String(strike * 1000).padStart(8, "0");
+    const putId = seedSecurity(`MSFT  ${tag}P${occStrike}`, {
       type: "Option",
       underlyingSymbol: "MSFT",
       optionType: "PUT",
-      strikePrice: 400,
+      strikePrice: strike,
       expirationDate,
       multiplier: 100,
     });
@@ -338,18 +339,30 @@ describe("computeDefenseAnalysis — expired option exclusion", () => {
   }
 
   it("keeps an option expiring TODAY live: hedged pair, positive protection ratio, no negative runway", () => {
-    const putId = seedMsftPut(todayET());
+    // Two things pin this case to the finance rule rather than the wall clock:
+    //  - the Greeks engine treats a same-day contract as live only until the
+    //    16:00 ET close (options-greeks.ts::isExpiredAsOf), so freeze "now" at
+    //    midday ET; without that the test flips after the close.
+    //  - with hours to expiry a 20%-OTM put has delta ≈ 0 and, correctly,
+    //    hedges nothing — seed an ITM strike so the pair is a real hedge.
+    const today = todayET();
+    vi.useFakeTimers({ now: new Date(`${today}T12:00:00-05:00`), toFake: ["Date"] });
+    try {
+      const putId = seedMsftPut(today, 520);
 
-    const result = computeDefenseAnalysis(db, [acct]);
+      const result = computeDefenseAnalysis(db, [acct]);
 
-    const pair = result.pairs.find((p) => p.underlying === "MSFT");
-    expect(pair?.classification).toBe("hedged_long");
-    expect(result.summary.protectionRatio).toBeGreaterThan(0);
+      const pair = result.pairs.find((p) => p.underlying === "MSFT");
+      expect(pair?.classification).toBe("hedged_long");
+      expect(result.summary.protectionRatio).toBeGreaterThan(0);
 
-    const score = result.hedgeScores.find((h) => h.securityId === putId);
-    expect(score).toBeDefined();
-    expect(score!.runwayDays).not.toBeNull();
-    expect(score!.runwayDays!).toBeGreaterThanOrEqual(0);
+      const score = result.hedgeScores.find((h) => h.securityId === putId);
+      expect(score).toBeDefined();
+      expect(score!.runwayDays).not.toBeNull();
+      expect(score!.runwayDays!).toBeGreaterThanOrEqual(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("excludes an option that expired YESTERDAY from pairs, hedgeScores, and protection ratio", () => {
