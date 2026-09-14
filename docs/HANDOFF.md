@@ -3,44 +3,42 @@
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Waiting on:** USER: the `jpy-placeholder-fx-row` decision in the register (`npm run inbox` shows it) — fix or delete the fx_rates row at exactly 1.0; the Charts default lands on a bars-less foreign name until then. The GitHub purge question was DECIDED (no request). Otherwise nobody.
+**Waiting on:** USER: the `jpy-placeholder-fx-row` decision and the two QA decision records (`qa-decisions-2026-09-12`, `qa-decisions-2026-09-13`) in the register — `npm run inbox` shows all three. Otherwise nobody.
 
-**Session date:** 2026-09-11 (Thursday) ~12:00 ET → ~18:45 ET. Focus (user pick): (1) `npm run inbox` + next-actor labels (`23aa0276`, landed and pushed at 14:00 ET); (2) the nightly-QA PR backlog #69–#76, landed via an integration branch behind four read-only Opus reviews and a six-fixer wave, then deployed; (3) `decision` records for the register/inbox (`ab44fd4f`, landed and pushed at 18:35 ET; tooling + docs only, no rebuild).
+**Session date:** 2026-09-13 (Saturday evening) ~20:45 ET → ~21:50 ET. Focus (user pick at session start): land the four stranded nightly-QA PRs #77–#80 and rebuild. Housekeeping first: seven stale local `qa-*` refs whose content had landed as sanitized cherry-picks, the `claude/qa-landing-2026-09-11-v1` backup, and five merged origin branches deleted; three prunable Codex worktree registrations pruned.
 
 ## 1. Goal + exact files changed
 
-- **Inbox** (`23aa0276`): `scripts/coord/coord.py` (`inbox` command, `USER:/CODEX:/CLAUDE:` label parsing, `task checkpoint --next` hint), `tests/coord/coord-cli.test.ts` (+5), `docs/reference/coordination.md` (§ Who acts next), `.claude/session-start.md`, `.claude/session-end.md`, `docs/CODEX-CLAUDE-COORDINATION.md`, `CLAUDE.md`, `package.json` (`inbox` script).
-- **QA landing** (45 commits, main `23aa0276` → `e2e977f5`, 124 files, +12,006/−598): merges of #70/#73/#74/#75/#76; sanitized cherry-picks of #69 (`1769d771` + 4), #71 (`c33c577c` + 2, fixture completed in `823a0b64`) and #72 (`c8bf104b` + 3); one conflict resolution (`615a9933`, NarrativeBlock); six review-fix commits `b9ec14f6` `817ce41d` `b163aa43` `6731bdd3` `5f0e6042` `99a9c0fd`; a test pin `f76887dc`; docs `e2e977f5` (TODO reconciled, DECISIONS entry, board). Full file list: `git diff --stat 23aa0276..e2e977f5`.
+- **Integration branch `claude/qa-landing-2026-09-13`** (main `4a2c5e83` → `fce2ddde`, 25 commits, 51 files): merges of #77 (`f5dd7aae`) and #78 (`e8e2da33`); cherry-picks of #79's three and #80's four commits — two re-messaged (the holdings-unit and Finnhub commits named live portfolio counts), the Finnhub one re-amended again when review found the same counts in its comments and fixtures (`14926bc8`); seven review-fix commits `7dda6827` `4df41ca1` `1471616f` `f7a9e526` `a88928ed` `69731c52` + the Today-pin update inside `1471616f`; docs `85c79d8f` + `fce2ddde`. Full list: `git diff --stat 4a2c5e83..fce2ddde`.
+- PRs #77 and #78 close as merged (their heads are ancestors of main). PRs #79 and #80 were closed unmerged and their remote branches deleted; the leaked originals (`c087560d`, `3dfc9595`) remain reachable through the PR refs — same class as the 2026-09-11 purge question the user decided NOT to pursue.
 
 ## 2. Tests / E2E / deploy result
 
 | Check | Result |
 |---|---|
-| Four read-only Opus landing reviews (2 PRs each), before any merge | every PR LAND-WITH-FIX; 1 Critical (protective-put max loss 12–186× understated, enshrined by two tests), 2 real-position/real-figure leaks in commit messages + fixtures, a duplicate-email path in the reconciler, a coverage banner that repeated the bug it fixed, a Charts default that could pick an option contract, ~30 Important/Minor — all Critical/Important fixed in the wave, the rest filed in TODO |
-| Privacy scan (test diffs + all 31 commit messages) | 3 originals rewritten as cherry-picks; landed history clean |
-| Focused + overlap tests after each merge; Worker suite | green (Worker 37 files / 570) |
+| Four read-only Opus landing reviews, one per PR, run against the built integration branch | #77 LAND; #78/#79/#80 LAND-WITH-FIX. 1 Critical (live universe counts inside the Finnhub commit's source comments + fixtures), ~12 Important (weaker-than-reader Charts gate, unmasked note prose on the security hub, three drill-down affordance leftovers + a third allowlist copy, units→K rounding sibling, a false formatter contract comment, a not-scanned line hideable behind "+N more", a fix that answered an open product call), ~20 Minor → TODO |
+| Privacy scan (test diffs + all 15 commit messages + the amended patch) | two messages sanitized, one commit re-amended, one pre-existing cash-flow fixture rebuilt synthetic; landed history clean |
+| Fix wave | seven Sonnet fixers, one owner per file, no agent git writes, orchestrator committed by pathspec; one orphaned source pin updated by the orchestrator |
 | `tsc --noEmit` | 20-error baseline only, none in changed files |
-| `npm run build` on the integration tip | clean, 160 routes |
-| Shared runner full suite on the final tree (`verify.sh full --base main`) | 793 files, 9,584 passed, 3 skipped, 9 todo, exit 0 |
-| Browser: `npm run sandbox` + `npm run smoke` on :3090 (VACUUM copy, minted session, secret-free) | 4/4 |
-| Browser: targeted agent pass, 8 checks on the landed surfaces (Charts default + last-viewed, Scan-now banner vs Armed chips, Analysis AI cards copy, Data Health FX panel + row cap + 390px scroll, tax-lots staleness copy, transaction labels, Finnhub refresh outcome, mobile CSV guide) | 8/8 PASS; console errors only the sandbox's invalid-AI-key 500s on auto-regenerate POSTs |
-| Electron deploy through the checked-in wrapper (`--commit e2e977f5`) | **DEPLOYED 17:55–18:02 ET**: locks taken first, preflight all-ok (HEAD == origin/main == --commit, clean tree, no .wrangler, TODO reconciled, notarization creds present), old listener quit and port freed, pack + bundle gate + install ok, notarization successful, installed BUILD_ID `UFjPMDxm5K6p5cqrvgS8c` == built, codesign verified, new listener answered `/login`; log `.git/portfolio-desk-coord/logs/deploy-20260911T215516Z.log` |
+| Sandbox `:3090` (VACUUM copy, minted session, secret-free) + `npm run smoke` | 4/4 |
+| Browser pass, 10 checks on the landed surfaces (Charts default, Today IBKR line incl. privacy, Diagnostics drill affordance both dimensions, Holdings singular unit, Alerts deep links ×3, security-hub note masking, notes composer date reset, Detected Strategies privacy, Finnhub refresh outcome, console) | 9/10 first pass; the Finnhub outcome failed on a pre-existing hole (skipped legs never reached the payload) → fixed in-wave (`69731c52`) → re-check PASS, 10/10 |
+| Full suite on the integration tip (worktree) | 804 files, 9,688 passed, 3 skipped, 9 todo, 3 failed (3 failures in `tests/ai/generate.test.ts` are worktree-environment only — no `.env.local` there; the file passes 3/3 in the main checkout) |
+| Full suite on main after landing (`verify.sh full --base main`) | 804 files, 9,692 passed, 9 todo, 0 failed, exit 0 (evidence 1789350107857-11b6c4e6) |
+| `next build` on the tip | clean, 103 static pages, BUILD_ID cyx1-RqjEKje6c9iuhVAR (worktree build needed a migrated DB copy seated first — two build workers race to migrate a fresh worktree DB; not reproducible in the main checkout, recorded in memory) |
+| Electron deploy through `npm run deploy` (`--commit fce2ddde`) | **DEPLOYED 21:44–21:50 ET** (second run — the first was stopped during its build step because the notarization exports had not been sourced; locks released by hand): locks taken, preflight all-ok incl. notarization creds, pack + `verify-bundle` OK (no leaks, runtime pieces present), notarization successful, installed BUILD_ID `vVbXXDPZSvNGb0LL1APdR` == built, codesign verified, new listener answered `/login`; log `.git/portfolio-desk-coord/logs/deploy-20260914T014441Z.log` |
 
 ## 3. Open concerns / rejected approaches / decisions for the user
 
-- Explicit session-end invoked by the user at ~18:30 ET after the decision-status landing; this handoff is the closing commit. No rebuild: nothing after build `UFjPMDxm5K6p5cqrvgS8c` (`e2e977f5`) touches production code.
-- User rulings recorded in `docs/DECISIONS.md` (2026-09-11): Charts precedence last-viewed → largest held → alphabetical; reconciler post-print corrections only + phantom stripped of inherited actuals; close #69/#71/#72 unmerged + delete branches; deploy after landing.
-- The three leaked commits (`05575c06`, `0ba68f9c`, `da53b255`) remain reachable via GitHub PR refs — the user decided NOT to request a purge (recorded in the register and TODO Reminders).
-- Charts default landed on a bars-less foreign name because `fx_rates` carries a placeholder JPY rate of exactly 1.0 (the new FX Flags card reports it). Data fix is user-run; a bar-coverage condition on `getDefaultChartSecurityId` is filed.
-- Follow-ups filed in TODO (qa-landing 2026-09-11, items a–j): covered-call max-loss sibling, `resolveScopeToSingleId` in the greeks route, ScrollFade siblings, `getTrackedSecurities` holdings predicate, SPY-benchmark raw bars, unaliased armed predicate, write-side NULL `security_id` root cause, what-if disclosure, fixer `next_action` label, the one-frame Charts swap.
-- Rejected: merging #69/#71/#72 as-is (leaks); reworking the NarrativeBlock/Macro 429 helpers separately (unified instead); a cookie mirror of localStorage to remove the Charts flash.
+- User rulings recorded in `docs/DECISIONS.md` (2026-09-13): shorts belong on the Today IBKR line with a gross-exposure day-percent denominator (closes the 2026-08-30 product call); Charts precedence refined to "largest held WITH cached daily priced bars"; portfolio-derived counts are leaks in messages, comments and fixtures alike; a fix answering an open product call is surfaced before landing; the concentration fix is landed as a partial (row universe still three-way split) — its ledger row stays for the sweep to re-verify.
+- Follow-ups filed in TODO (qa-landing 2026-09-13, items a–m): concentration row-universe single-sourcing, four UTC-"today" components, TradeReviewView quantity nouns, short-row `today_pct` sign, Worker compact-rounding band, two weak pins, hand-rolled `formatDollar`/raw `fetch` in OptionsStrategies, Charts gate ignores bar age, bare-token 429 match, Cmd+K subtitle note prose, non-idempotent sync `newEvents`, sandbox AI-key 500 noise.
+- Rejected: merging #79/#80 as-is (counts in messages); a fix commit on top of the leaky Finnhub commit (would leave the counts in history — re-amended at the tip instead); reclassifying skipped sync legs as errors (surfaced as a separate `skipped` list instead).
 
 ## 4. Uncommitted changes / live-process state
 
-- Main checkout clean at `ab44fd4f` (+ this closing docs/handoff commit), pushed. Worktree `/Users/Yitzi/code/vanguard-skin-coord` on `claude/qa-landing-2026-09-11` (fully landed; the v1 backup branch `claude/qa-landing-2026-09-11-v1` can be deleted). Codex's two 09-08 worktrees and the prunable trade-lots registration still listed; the nightly `../vanguard-skin-qa-fix` worktree untouched.
-- Sandbox :3090 torn down; no locks held; register: `coord-inbox-2026-09-11`, `qa-landing-2026-09-11`, `coord-decision-status-2026-09-11` and the nightly `qa-fix-20260911` landed; one open decision (`jpy-placeholder-fx-row`); `github-purge-leaked-qa-commits` decided. Ledger: 34 rows flipped to `merged` (backup `qa/findings/ledger.json.bak-2026-09-11-landed`).
-- Remote: `qa-deep-fixes-2026-09-07/-09/qa-auto-fixes-2026-09-08` deleted; the five merged PR branches (#70, #73–#76) left on origin for you to delete; local `qa-fix-work-*` duplicates left.
+- Main checkout clean at `fce2ddde + this closing docs commit` (= this closing commit), pushed. Worktree `/Users/Yitzi/code/vanguard-skin-coord` on `claude/qa-landing-2026-09-13` (fully landed; branch can be deleted). Nightly `../vanguard-skin-qa-fix` worktree untouched (detached at the old main).
+- Sandbox `:3090` torn down; no locks held; register: `qa-landing-2026-09-13` landed; `qa-fix-20260912` / `qa-fix-20260913` review tasks closed as landed. Ledger: 15 rows flipped to `merged` with landed SHAs (backup `qa/findings/ledger.json.bak-2026-09-13-landed`).
+- Remote: `qa-deep-fixes-2026-09-13` and `qa-auto-fixes-2026-09-13` deleted (closed unmerged); `qa-deep-fixes-2026-09-12` and `qa-auto-fixes-2026-09-12` left for you to delete after GitHub shows #77/#78 merged.
 
 ## 5. Claude session link
 
-https://claude.ai/code/session_01KyxCGVdtETtp71BFyZk5k1
+https://claude.ai/code/session_0116wA27Yp24hsxNA9TzMo7D
