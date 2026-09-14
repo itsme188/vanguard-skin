@@ -301,3 +301,18 @@ Deployment identity correction (`cb00feea`): Next changes its process title, so 
 - **A fix that answers an open `[USER DECISION]` / "product call" TODO item is surfaced for ratification before it lands**, even when the code is right (this landing: shorts on Today). The landing review brief now lists that class explicitly.
 - **The concentration-metrics fix is landed as a partial:** it sums whole positions per security (correct), but Concentration Metrics, Risk Decomposition and Position Risk still draw three different row universes (shorts, unpriced-row fallback, matured bonds). The ledger row stays open and the residual is filed in TODO rather than closed on this commit.
 - **Deploy after landing** through the checked-in deploy wrapper, as on 2026-09-11.
+
+## 2026-09-14 — Sixteen open decisions ruled (JPY FX row + the 09-12 and 09-13 QA decision records)
+
+All recommendations accepted as filed in `qa/findings/DECISIONS-PENDING.md`; code halves become nightly-fixer auto rows, data halves are user-run (register task `user-run-data-steps-2026-09-14`).
+
+- **FX placeholder rates are refused at write time, never deleted.** The TWS derive path must not write a near-1.0 rate for a non-USD currency; the JPY row is then repaired from the authoritative exchange-rate source and valuations recomputed. Deleting the row was rejected because every reader falls back to 1.0.
+- **Never press tax-lots Recompute on the live book until the engine gap is diagnosed on a copy** (held option positions with fills but zero lots; 33 minted engine closes). The button gains a dry-run before/after summary as the durable UI.
+- **Retirement accounts leave the tax report by a real `accounts.tax_treatment` column** (migration shown first, Roth stamped once), not a settings key or a name heuristic.
+- **Performance risk tiles use the scope's own daily history**; the cross-scope common floor from 2026-08-19 applies only to the diagnostics comparison surface. `risk-scope-window.test.ts` re-pins to that split.
+- **Moving-average alerts store the resolved threshold at fire time** (migration + alert-insert mutation); old rows render `effective_price`; stale AI sentences age out, no repair script.
+- **Reaction snapshots carry a capture timestamp and are omitted when not after the print**; the read side treats an echoed pre-print leg as unusable; scoreboard and prose share one "snapshot captured" predicate across the four parity-pinned copies. Sep-10 rows get a user-run repair.
+- **A sync never asserts a human confirmation**: manual earnings rows stay rung-1 locked by source, but only the confirm-date route writes `user_confirmed`.
+- **Display honesty:** the Accounts snapshot chip shows a date range when sleeves are mixed; the sector drill-down panel adopts the row's ETF look-through basis; the security hub links pending levels to the inbox rather than growing a second review surface.
+- **Small product calls:** the composer is reused as the note editor; import "Try Again" truly retries; lowercase tickers warn in preview and upper-case on commit (lookup change rehearsed on a copy); Google OAuth fields move into Settings with the discover route's envelope fixed; the legacy GOOGL option-attached level is repaired by the shipped script (user-run).
+

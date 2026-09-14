@@ -3,7 +3,7 @@
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Waiting on:** USER: the `jpy-placeholder-fx-row` decision and the two QA decision records (`qa-decisions-2026-09-12`, `qa-decisions-2026-09-13`) in the register — `npm run inbox` shows all three. Otherwise nobody.
+**Waiting on:** USER: the four user-run data steps in the register (`user-run-data-steps-2026-09-14`, shown by `npm run inbox`) — each becomes actionable once its code half lands via the nightly fixer. All sixteen open decisions were ruled on 2026-09-14 (docs/DECISIONS.md). Otherwise nobody.
 
 **Session date:** 2026-09-13 (Saturday evening) ~20:45 ET → ~21:50 ET. Focus (user pick at session start): land the four stranded nightly-QA PRs #77–#80 and rebuild. Housekeeping first: seven stale local `qa-*` refs whose content had landed as sanitized cherry-picks, the `claude/qa-landing-2026-09-11-v1` backup, and five merged origin branches deleted; three prunable Codex worktree registrations pruned.
 
