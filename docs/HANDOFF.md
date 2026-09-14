@@ -3,7 +3,7 @@
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Waiting on:** USER: run the one-line JPY repair (`npx tsx scripts/repair-fx-rate.ts --currency JPY --from-ibkr --apply` from the repo root, node@24 PATH) then click Sync once; the other three user-run data steps in `user-run-data-steps-2026-09-14` wait on their code halves. Otherwise nobody.
+**Waiting on:** USER: (a) review/land the 2026-09-14 nightly PRs #81 and #82 (eight commits, nothing auto-merged — the same landing recipe applies); (b) the three remaining user-run data steps in `user-run-data-steps-2026-09-14` once their code halves land. Otherwise nobody. The JPY repair is DONE (user ran `--from-ibkr --apply` and synced; the row is `ibkr_ledger`).
 
 **Session date:** 2026-09-13 (Saturday evening) ~20:45 ET → ~21:50 ET. Focus (user pick at session start): land the four stranded nightly-QA PRs #77–#80 and rebuild. Housekeeping first: seven stale local `qa-*` refs whose content had landed as sanitized cherry-picks, the `claude/qa-landing-2026-09-11-v1` backup, and five merged origin branches deleted; three prunable Codex worktree registrations pruned.
 
@@ -31,13 +31,15 @@
 
 ## 3. Open concerns / rejected approaches / decisions for the user
 
+- **Today IBKR line ≠ TWS daily P&L, accepted by the user (2026-09-14 evening):** after the JPY repair the line read a gain while TWS showed a flat day. Three definitional gaps, all by design: positions opened today get the whole prior-price-to-mark move (TWS counts from the fill); the prior price is the last sync mark, not the official close; the percent divides by prior-close gross exposure (this morning's ruling), TWS by net liquidation. The user's purpose for the line is intraday position watching on mobile without breaking the TWS API session, so no change is requested. If it should ever match TWS: measure today-opened positions from executions, anchor on the historical daily close, and show a net-liquidation percent.
+
 - User rulings recorded in `docs/DECISIONS.md` (2026-09-13): shorts belong on the Today IBKR line with a gross-exposure day-percent denominator (closes the 2026-08-30 product call); Charts precedence refined to "largest held WITH cached daily priced bars"; portfolio-derived counts are leaks in messages, comments and fixtures alike; a fix answering an open product call is surfaced before landing; the concentration fix is landed as a partial (row universe still three-way split) — its ledger row stays for the sweep to re-verify.
 - Follow-ups filed in TODO (qa-landing 2026-09-13, items a–m): concentration row-universe single-sourcing, four UTC-"today" components, TradeReviewView quantity nouns, short-row `today_pct` sign, Worker compact-rounding band, two weak pins, hand-rolled `formatDollar`/raw `fetch` in OptionsStrategies, Charts gate ignores bar age, bare-token 429 match, Cmd+K subtitle note prose, non-idempotent sync `newEvents`, sandbox AI-key 500 noise.
 - Rejected: merging #79/#80 as-is (counts in messages); a fix commit on top of the leaky Finnhub commit (would leave the counts in history — re-amended at the tip instead); reclassifying skipped sync legs as errors (surfaced as a separate `skipped` list instead).
 
 ## 4. Uncommitted changes / live-process state
 
-- Main checkout clean at the closing handoff commit on top of `fce2ddde`, pushed. Worktree `/Users/Yitzi/code/vanguard-skin-coord` on `claude/qa-landing-2026-09-13` (fully landed; branch can be deleted). Nightly `../vanguard-skin-qa-fix` worktree untouched (detached at the old main).
+- Main checkout clean at the closing handoff commit on top of `0075c14a`, pushed; installed app build `eEKR4YpxMpJWel3ruFhrt`. Worktree `/Users/Yitzi/code/vanguard-skin-coord` on `claude/fx-derive-removal-2026-09-14` (fully landed; both session branches can be deleted). Nightly `../vanguard-skin-qa-fix` worktree untouched (detached at the old main).
 - Sandbox `:3090` torn down; no locks held; register: `qa-landing-2026-09-13` landed; `qa-fix-20260912` / `qa-fix-20260913` review tasks closed as landed. Ledger: 15 rows flipped to `merged` with landed SHAs (backup `qa/findings/ledger.json.bak-2026-09-13-landed`).
 - Remote: all four PR branches deleted — `qa-deep-fixes-2026-09-13` / `qa-auto-fixes-2026-09-13` (closed unmerged) and `qa-deep-fixes-2026-09-12` / `qa-auto-fixes-2026-09-12` (GitHub showed #77/#78 merged). No `qa-*` refs remain on origin or locally.
 
