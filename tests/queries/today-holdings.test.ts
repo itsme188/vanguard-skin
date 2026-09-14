@@ -252,4 +252,47 @@ describe("getIbkrTodayHoldings", () => {
     const rows = getIbkrTodayHoldings(db, acct);
     expect(rows.find((r) => r.symbol === "GONE")).toBeUndefined();
   });
+
+  // Regression pin for qa:today-ibkr-snapshot--name-count-and-day-pl-drop-short-positions.
+  // getIbkrTodayHoldings called latestHoldingsPredicate with includeShorts:
+  // false, so the row set's quantity clause was `h.quantity > 0` and every
+  // short position vanished — the Today snapshot's name count undercounted
+  // the Accounts page by exactly its short-position count. A short must
+  // appear in the rows, and because the market-value expressions are
+  // quantity-signed, a price DROP must show a POSITIVE today_gain (a short
+  // profits when the price falls) — never suppressed, never sign-flipped.
+  it("includes short positions so the row/name count matches Accounts, with day P/L sign correct", () => {
+    const acct = ibkrAccountId();
+    const spy = seedSecurity("SPY", "ETF");
+    const short = seedSecurity("SHRT");
+    const long = seedSecurity("LONG");
+    hold(acct, spy, 1, "2026-07-30");
+    hold(acct, short, -100, "2026-07-30");
+    hold(acct, long, 20, "2026-07-30");
+
+    price(spy, "2026-07-29", 628);
+    price(spy, "2026-07-30", 630);
+    // Short: price DROPS 50 -> 45. A short gains when price falls.
+    price(short, "2026-07-29", 50);
+    price(short, "2026-07-30", 45);
+    // Long control in the same fixture: price rises, unaffected by the fix.
+    price(long, "2026-07-29", 100);
+    price(long, "2026-07-30", 105);
+
+    const rows = getIbkrTodayHoldings(db, acct);
+
+    const s = rows.find((r) => r.symbol === "SHRT");
+    expect(s).toBeDefined();
+    // Sign check: the position gained even though the underlying price fell.
+    expect(s!.today_gain).toBeGreaterThan(0);
+    expect(s!.today_gain).toBeCloseTo((45 - 50) * -100, 4);
+    // today_pct is the raw price return (not quantity-signed) — negative is
+    // the correct value of the existing SQL expression for a price drop.
+    expect(s!.today_pct).toBeCloseTo((45 - 50) / 50, 6);
+
+    const l = rows.find((r) => r.symbol === "LONG")!;
+    expect(l).toBeDefined();
+    expect(l.today_gain).toBeCloseTo((105 - 100) * 20, 4);
+    expect(l.today_pct).toBeCloseTo((105 - 100) / 100, 6);
+  });
 });
