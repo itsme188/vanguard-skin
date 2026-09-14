@@ -22,6 +22,14 @@ type Field =
   | "gain_pct"
   | "alloc_pct";
 
+// A stored cost basis of exactly 0 means "unknown," not "free" — mirrors
+// lib/queries/holdings.ts's NULLIF(costBasisExpr, 0) IS NOT NULL convention,
+// which already nulls unrealized_gain for a zero basis. Every place that
+// decides "do we know this row's cost" must agree with that, or a row can
+// print an exact "$0.00" Cost Basis beside an unknown Gain cell.
+const hasKnownBasis = (h: { cost_basis: number | null }): boolean =>
+  h.cost_basis !== null && h.cost_basis !== 0;
+
 function GainCell({ value }: { value: number | null }) {
   if (value === null) return <span className="text-ink-faint">&mdash;</span>;
   const isPositive = value >= 0;
@@ -91,10 +99,18 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
     );
   }, [filtered, sort, unfilteredTotal]);
 
-  const holdingsWithCost = filtered.filter((h) => h.cost_basis !== null);
+  const holdingsWithCost = filtered.filter(hasKnownBasis);
   const totalCostBasis = holdingsWithCost.reduce((sum, h) => sum + h.cost_basis!, 0);
   const missingCostCount = filtered.length - holdingsWithCost.length;
-  const totalGain = filtered.reduce((sum, h) => sum + (h.unrealized_gain ?? 0), 0);
+
+  // Gain follows the same "unknown, not zero" rule: a row whose own cell
+  // shows an em-dash must never be folded into the footer sum as if its
+  // gain were $0. When some (but not all) rows are unknown, the "~" prefix
+  // + tooltip disclose the partial sum the same way the Cost Basis cell
+  // already does, so Value − Cost and the disclosed Gain visibly agree.
+  const knownGainRows = filtered.filter((h) => h.unrealized_gain !== null);
+  const totalGain = knownGainRows.reduce((sum, h) => sum + h.unrealized_gain!, 0);
+  const missingGainCount = filtered.length - knownGainRows.length;
   const isFiltered = filter.trim().length > 0;
 
   return (
@@ -184,7 +200,11 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                     <Shares value={h.quantity} digits={qtyDigits} />
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                    <Money value={h.cost_basis} precise />
+                    {hasKnownBasis(h) ? (
+                      <Money value={h.cost_basis} precise />
+                    ) : (
+                      <span className="text-ink-faint">&mdash;</span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
                     <Money value={h.current_value} precise />
@@ -214,7 +234,11 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                   : `Total (${holdings.length} positions)`}
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums font-medium text-ink-dim">
-                {missingCostCount > 0 ? (
+                {holdingsWithCost.length === 0 ? (
+                  // No filtered row knows its basis: the footer restates the
+                  // rows, so it is unknown too — never a "~$0.00" over nothing.
+                  <span className="text-ink-faint">&mdash;</span>
+                ) : missingCostCount > 0 ? (
                   <span
                     title={`${missingCostCount} position${missingCostCount > 1 ? "s" : ""} missing cost basis data`}
                     className="cursor-help"
@@ -229,7 +253,18 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                 <Money value={totalValue} precise />
               </td>
               <td className="px-4 py-3 text-right">
-                <GainCell value={totalGain} />
+                {knownGainRows.length === 0 ? (
+                  <GainCell value={null} />
+                ) : knownGainRows.length < filtered.length ? (
+                  <span
+                    title={`${missingGainCount} position${missingGainCount > 1 ? "s" : ""} excluded — cost basis unknown`}
+                    className="cursor-help"
+                  >
+                    ~<GainCell value={totalGain} />
+                  </span>
+                ) : (
+                  <GainCell value={totalGain} />
+                )}
               </td>
               <td className="px-4 py-3 text-right">
                 <GainPercentCell
