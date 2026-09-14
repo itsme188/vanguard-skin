@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { getIbkrTodayHoldings } from "@/lib/queries/today-holdings";
+import {
+  getIbkrTodayHoldings,
+  summarizeIbkrDayMove,
+  type TodayHolding,
+} from "@/lib/queries/today-holdings";
 
 // Regression pin for qa:today-ibkr-holdings--todays-move-all-zero-nontrading-price-pair.
 // The Today IBKR block paired rn=1 vs rn=2 price rows with no trading-day
@@ -251,6 +255,75 @@ describe("getIbkrTodayHoldings", () => {
 
     const rows = getIbkrTodayHoldings(db, acct);
     expect(rows.find((r) => r.symbol === "GONE")).toBeUndefined();
+  });
+
+  // Regression pin for qa:today-ibkr-snapshot--percent-denominator-must-be-gross-not-net.
+  // The day-percent denominator on Today used NET prior-close exposure
+  // (Σcurrent_value − ΣtodayGain). With shorts included in the row set, a
+  // hedged book (long + offsetting short) drives net exposure to ~0, which
+  // either renders "—" beside a real dollar gain or blows the percent up.
+  // Ratified fix: the denominator is GROSS prior-close exposure, i.e. the sum
+  // of each row's |prior-close value|, never net.
+  describe("summarizeIbkrDayMove", () => {
+    // Synthetic (round, invented) dollar figures — not real portfolio data.
+    function row(overrides: Partial<TodayHolding>): TodayHolding {
+      return {
+        security_id: 1,
+        symbol: "SYN",
+        security_name: null,
+        quantity: 1,
+        current_price: null,
+        current_value: null,
+        prior_close: null,
+        today_gain: null,
+        today_pct: null,
+        price_date: null,
+        price_source: null,
+        ...overrides,
+      };
+    }
+
+    it("uses gross (not net) prior-close exposure across a long + short book", () => {
+      // Long: $2,000 prior -> +$100 gain -> $2,100 current value.
+      const long = row({ symbol: "LONG", current_value: 2100, today_gain: 100 });
+      // Short: -$5,000 prior (price fell) -> +$500 gain -> -$4,500 current value.
+      const short = row({ symbol: "SHORT", current_value: -4500, today_gain: 500 });
+
+      const summary = summarizeIbkrDayMove([long, short]);
+
+      expect(summary.count).toBe(2);
+      expect(summary.todayGain).toBeCloseTo(600, 6);
+      expect(summary.priorGross).toBeCloseTo(7000, 6);
+      expect(summary.todayPct).toBeCloseTo(600 / 7000, 6);
+    });
+
+    it("returns a finite percent for a near-neutral (net ~0) hedged book", () => {
+      // Long: $5,000 prior -> +$50 gain -> $5,050 current value.
+      const long = row({ symbol: "LONG", current_value: 5050, today_gain: 50 });
+      // Short: -$5,000 prior -> -$50 gain (price rose) -> -$5,050 current value.
+      const short = row({ symbol: "SHORT", current_value: -5050, today_gain: -50 });
+
+      // Net prior-close exposure would be (5050 - 4950) - (50 + -50) = 0,
+      // which is why the old net-denominator formula produced null/blowup
+      // here. Gross exposure is 5000 + 5000 = 10000, always well-defined.
+      const summary = summarizeIbkrDayMove([long, short]);
+
+      expect(summary.priorGross).toBeCloseTo(10000, 6);
+      expect(summary.todayGain).toBeCloseTo(0, 6);
+      expect(summary.todayPct).not.toBeNull();
+      expect(summary.todayPct).toBeCloseTo(0, 6);
+    });
+
+    it("returns null todayGain/todayPct and count 0 when nothing has a prior close", () => {
+      const noMove = row({ symbol: "NEWPOS", today_gain: null });
+
+      const summary = summarizeIbkrDayMove([noMove]);
+
+      expect(summary.count).toBe(0);
+      expect(summary.todayGain).toBeNull();
+      expect(summary.priorGross).toBe(0);
+      expect(summary.todayPct).toBeNull();
+    });
   });
 
   // Regression pin for qa:today-ibkr-snapshot--name-count-and-day-pl-drop-short-positions.
