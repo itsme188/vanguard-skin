@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { PrivateText } from "@/lib/privacy/components";
-import { buildTaxReportFilename } from "@/lib/compute/tax-report";
+import { buildTaxReportFilename, washSaleReplacementPhrase } from "@/lib/compute/tax-report";
 
 interface TaxReportSummary {
   year: number;
@@ -452,11 +452,10 @@ export function TaxReportCard({
                 <div key={i} className="text-xs text-ink-dim">
                   <span className="font-mono font-medium text-ink">{w.symbol}</span>
                   {" \u2014 "}Sold {w.saleDate} (loss <PrivateText>{formatMoney(w.lossAmount)}</PrivateText>)
-                  {w.direction === "before" ? (
-                    <>; replacement shares bought {w.purchaseDate}, {w.daysFromSale} {w.daysFromSale === 1 ? "day" : "days"} before the sale</>
-                  ) : (
-                    <>, repurchased {w.purchaseDate}, {w.daysFromSale} {w.daysFromSale === 1 ? "day" : "days"} after</>
-                  )}
+                  {"; "}
+                  {/* One phrase builder, shared with WashSaleWarning.description
+                      in lib/compute/tax-report.ts - never re-compose it here. */}
+                  {washSaleReplacementPhrase(w)}
                 </div>
               ))}
             </div>

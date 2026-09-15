@@ -108,6 +108,26 @@ function dayWord(n: number): string {
   return `${n} day${n === 1 ? "" : "s"}`;
 }
 
+/**
+ * The ONE user-visible phrase describing where a flagged replacement purchase
+ * sits relative to the loss sale. `description` below and TaxReportCard both
+ * render this — the card used to hand-build its own copy, so the two could
+ * (and did) drift in wording and punctuation.
+ *
+ * A zero-day gap says "the same day" rather than "0 days after": a same-day
+ * replacement is reachable, because the "skip the lot being sold" guard
+ * compares the purchase against the sold lot's ACQUISITION date, not the sale
+ * date.
+ */
+export function washSaleReplacementPhrase(
+  w: Pick<WashSaleWarning, "purchaseDate" | "direction" | "daysFromSale">
+): string {
+  const gap = w.daysFromSale === 0 ? "the same day" : `${dayWord(w.daysFromSale)} ${w.direction} the sale`;
+  return w.direction === "before"
+    ? `replacement shares bought ${w.purchaseDate}, ${gap}`
+    : `repurchased ${w.purchaseDate}, ${gap}`;
+}
+
 function daysBetween(dateA: string, dateB: string): number {
   const a = new Date(dateA + "T00:00:00");
   const b = new Date(dateB + "T00:00:00");
@@ -170,32 +190,55 @@ function detectWashSales(
     const secPurchases = purchasesBySecId.get(sale.security_id);
     if (!secPurchases) continue;
 
+    // One warning per sale, naming the replacement purchase NEAREST the sale
+    // (ties to the after-side). `secPurchases` is ordered by acquisition_date
+    // ascending, so stopping at the first in-window hit — what this loop used
+    // to do — always named the earliest, i.e. the before-side whenever one
+    // existed. That is why "most entries" read as though the repurchase
+    // preceded the sale. The window itself (30 days either side, IRC §1091)
+    // and the W-code decision are unchanged: the code keys on ANY in-window
+    // replacement existing, never on which one is named.
+    let best: { purchaseDate: string; direction: "before" | "after"; daysFromSale: number } | null =
+      null;
+
     for (const purchase of secPurchases) {
       // Skip if the purchase IS the same lot being sold
       if (purchase.acquisition_date === sale.acquisition_date) continue;
 
       const daysFromSale = daysBetween(sale.sale_date, purchase.acquisition_date);
-      if (daysFromSale <= 30) {
-        // Purchase is within 30-day wash sale window. A same-date purchase
-        // counts as "after" (same-day replacement) — it is never earlier
-        // than the sale it accompanies.
-        const direction: "before" | "after" = purchase.acquisition_date < sale.sale_date ? "before" : "after";
-        const description =
-          direction === "before"
-            ? `Sold ${sale.symbol} at loss on ${sale.sale_date}; replacement shares bought ${purchase.acquisition_date} (${dayWord(daysFromSale)} before the sale)`
-            : `Sold ${sale.symbol} at loss on ${sale.sale_date}, repurchased on ${purchase.acquisition_date} (${dayWord(daysFromSale)} after)`;
-        warnings.push({
-          saleId: sale.id,
-          symbol: sale.symbol,
-          saleDate: sale.sale_date,
-          purchaseDate: purchase.acquisition_date,
-          lossAmount: sale.realized_gain_loss,
-          description,
-          direction,
-          daysFromSale,
-        });
-        break; // One warning per sale is enough
+      if (daysFromSale > 30) {
+        // Ascending order: once we are past the window on the AFTER side,
+        // every remaining purchase is further away still.
+        if (purchase.acquisition_date > sale.sale_date) break;
+        continue;
       }
+
+      // A same-date purchase counts as "after" (same-day replacement) — it is
+      // never earlier than the sale it accompanies.
+      const direction: "before" | "after" =
+        purchase.acquisition_date < sale.sale_date ? "before" : "after";
+      const nearer = best === null || daysFromSale < best.daysFromSale;
+      const tieToAfter =
+        best !== null &&
+        daysFromSale === best.daysFromSale &&
+        direction === "after" &&
+        best.direction === "before";
+      if (nearer || tieToAfter) {
+        best = { purchaseDate: purchase.acquisition_date, direction, daysFromSale };
+      }
+    }
+
+    if (best) {
+      warnings.push({
+        saleId: sale.id,
+        symbol: sale.symbol,
+        saleDate: sale.sale_date,
+        purchaseDate: best.purchaseDate,
+        lossAmount: sale.realized_gain_loss,
+        description: `Sold ${sale.symbol} at loss on ${sale.sale_date}; ${washSaleReplacementPhrase(best)}`,
+        direction: best.direction,
+        daysFromSale: best.daysFromSale,
+      });
     }
   }
 
