@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { usePrivacy } from "@/lib/privacy/context";
 
 interface Props {
   /** Numeric delta (positive or negative). null means "no week-ago data". */
@@ -41,7 +42,16 @@ export function formatWeekOverWeekMagnitude(
  * Tiny W-o-W delta pill (~10-11px) that renders next to a numeric metric:
  *   ↑ 0.12 / 7d   ↓ 1.50% / 7d   ↔ 0.00 / 7d   —
  *
- * - `value === null`     → em-dash placeholder ("no week-ago data")
+ * - `value === null`     → em-dash placeholder ("no week-ago data") — this
+ *                          check runs BEFORE the privacy check below, so a
+ *                          missing week-ago comparison never gets rendered
+ *                          as a fabricated masked delta.
+ * - privacy mode is on    → "•••" with no color/sign/arrow hint (the delta
+ *                          itself is portfolio-derived, same as the value
+ *                          it sits beside) — this is the ONLY masking
+ *                          decision point; every call site gets it for
+ *                          free instead of wrapping the badge in its own
+ *                          isPrivate ternary.
  * - |value| < eps, OR the value rounds to "0.00" at `digits` → "↔ 0.00 / 7d"
  *                          rendered in gray (unchanged) — never a directional
  *                          arrow paired with a zero/"-0.00" magnitude
@@ -57,6 +67,7 @@ export const WeekOverWeekBadge = memo(function WeekOverWeekBadge({
   digits = 2,
   asPercent = false,
 }: Props) {
+  const { isPrivate } = usePrivacy();
   if (value === null) {
     return (
       <span
@@ -64,6 +75,16 @@ export const WeekOverWeekBadge = memo(function WeekOverWeekBadge({
         title="no week-ago data"
       >
         —
+      </span>
+    );
+  }
+  if (isPrivate) {
+    return (
+      <span
+        className="text-[10px] text-ink-faint align-middle ml-1.5"
+        title="hidden — privacy mode on"
+      >
+        •••
       </span>
     );
   }
