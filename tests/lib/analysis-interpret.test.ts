@@ -198,6 +198,68 @@ describe("interpretBeta", () => {
   it("uses the benchmark name when given", () => {
     expect(interpretBeta(1.2, "QQQ").text).toContain("QQQ");
   });
+
+  // ── R²-aware tiers (mirrors interpretAlpha; landing-review follow-up:
+  // beta was still narrated as fact under a "treat beta as noise" banner) ──
+
+  it("high R² (>= MODERATE_R2_THRESHOLD): unchanged from the unhedged reading", () => {
+    const withR2 = interpretBeta(1.15, "the market", 0.9);
+    const unhedged = interpretBeta(1.15);
+    expect(withR2).toEqual(unhedged);
+    expect(withR2.text).toContain("~15% more");
+  });
+
+  it("R² exactly at MODERATE_R2_THRESHOLD is treated as the reliable tier (unhedged)", () => {
+    const r = interpretBeta(1.15, "the market", MODERATE_R2_THRESHOLD);
+    expect(r.text).not.toMatch(/^Indicative only —/);
+    expect(r.text).toContain("~15% more");
+  });
+
+  it("loose fit (between LOW_R2_THRESHOLD and MODERATE_R2_THRESHOLD): hedged, direction kept, beta > 1", () => {
+    const r = interpretBeta(1.15, "the market", 0.25);
+    expect(r.text).toMatch(/^Indicative only —/);
+    expect(r.text).toContain("~15% more");
+    expect(r.tone).toBe("neutral");
+  });
+
+  it("loose fit: hedged, direction kept, beta < 1", () => {
+    const r = interpretBeta(0.8, "the market", 0.2);
+    expect(r.text).toMatch(/^Indicative only —/);
+    expect(r.text).toContain("~20% less");
+  });
+
+  it("loose fit: hedged, direction kept, near-1.0 beta", () => {
+    const r = interpretBeta(1.02, "the market", 0.3);
+    expect(r.text).toMatch(/^Indicative only —/);
+    expect(r.text.toLowerCase()).toContain("one-for-one");
+  });
+
+  it("loose fit: hedged, direction kept, negative/inverse beta", () => {
+    const r = interpretBeta(-0.4, "the market", 0.2);
+    expect(r.text).toMatch(/^Indicative only —/);
+    expect(r.text.toLowerCase()).toMatch(/against|inverse|hedge/);
+  });
+
+  it("R² exactly at LOW_R2_THRESHOLD is treated as the loose-fit tier (hedged, not noise)", () => {
+    const r = interpretBeta(1.15, "the market", LOW_R2_THRESHOLD);
+    expect(r.text).toMatch(/^Indicative only —/);
+  });
+
+  it("noise tier (< LOW_R2_THRESHOLD): not interpretable, neutral tone, regardless of beta value", () => {
+    const amplified = interpretBeta(1.5, "the market", 0.05);
+    const dampened = interpretBeta(0.3, "the market", 0.05);
+    const inverse = interpretBeta(-0.6, "the market", 0.05);
+    expect(amplified.tone).toBe("neutral");
+    expect(amplified.text).toBe(dampened.text);
+    expect(amplified.text).toBe(inverse.text);
+    expect(amplified.text.toLowerCase()).toContain("not interpretable");
+  });
+
+  it("omitting r2 entirely keeps the original unhedged behavior (back-compat)", () => {
+    expect(interpretBeta(1.15).text).toContain("~15% more");
+    expect(interpretBeta(0.8).text).toContain("~20% less");
+    expect(interpretBeta(1.15).text).not.toMatch(/^Indicative only —/);
+  });
 });
 
 // ─── Alpha ───────────────────────────────────────────────────────
@@ -269,6 +331,37 @@ describe("interpretAlpha", () => {
   it("omitting r2 entirely keeps the original unhedged behavior (back-compat)", () => {
     expect(interpretAlpha(0.04).text.toLowerCase()).toContain("selection is adding value");
     expect(interpretAlpha(-0.05).text.toLowerCase()).toContain("selection is detracting");
+  });
+
+  // ── "Within noise of zero" middle branch was left unhedged by the first
+  // R²-tiering pass — it still asserted "beta alone would have delivered
+  // this" even at a loose fit, when beta itself isn't reliable either. ──
+
+  it("within-noise branch, omitted r2: unchanged (back-compat)", () => {
+    const r = interpretAlpha(0.01);
+    expect(r.tone).toBe("neutral");
+    expect(r.text).toBe(
+      "Within noise of zero — returns are roughly what your beta alone would have delivered.",
+    );
+  });
+
+  it("within-noise branch, r2 >= MODERATE_R2_THRESHOLD: byte-identical to the unhedged reading", () => {
+    const withR2 = interpretAlpha(0.01, 0.6);
+    const unhedged = interpretAlpha(0.01);
+    expect(withR2).toEqual(unhedged);
+  });
+
+  it("within-noise branch, loose fit (LOW <= r2 < MODERATE): hedged, no longer claims beta explains it", () => {
+    const r = interpretAlpha(0.01, 0.3);
+    expect(r.tone).toBe("neutral");
+    expect(r.text).toMatch(/^Indicative only —/);
+    expect(r.text.toLowerCase()).not.toContain("beta alone would have delivered");
+  });
+
+  it("within-noise branch, negative side of the band, loose fit: same hedge applies", () => {
+    const r = interpretAlpha(-0.01, 0.2);
+    expect(r.text).toMatch(/^Indicative only —/);
+    expect(r.tone).toBe("neutral");
   });
 });
 
