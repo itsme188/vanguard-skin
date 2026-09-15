@@ -12,7 +12,7 @@
  */
 
 import type Database from "better-sqlite3";
-import { todayET } from "@/lib/calendar/date-utils";
+import { todayET, nowET } from "@/lib/calendar/date-utils";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
@@ -43,6 +43,10 @@ export interface PositionGreeks {
   underlyingPrice: number;
   optionPrice: number | null;
   daysToExpiry: number;
+  // A regular-hours listed option is live through the 16:00 ET close on its
+  // expiry date, so daysToExpiry===0 alone does NOT mean expired — this flag
+  // is the single source of truth the UI reads (see isExpiredAsOf below).
+  expired: boolean;
   greeks: OptionGreeks | null; // null if can't compute (expired, no price, etc.)
 }
 
@@ -339,12 +343,15 @@ interface OptionHoldingRow {
  */
 export function computePortfolioGreeks(
   db: Database.Database,
-  options?: { accountId?: number; riskFreeRate?: number; today?: string }
+  options?: { accountId?: number; riskFreeRate?: number; today?: string; now?: Date }
 ): PortfolioGreeks {
   // Risk-free rate flows from FRED's DGS3MO via the settings cache; falls
   // back to 0.045 if never fetched. See lib/queries/risk-free-rate.ts.
   const r = options?.riskFreeRate ?? getRiskFreeRate(db);
   const today = options?.today ?? todayET();
+  // Injectable for tests; defaults to the real instant so production callers
+  // don't need to pass anything. Used only to decide expiry-day liveness.
+  const now = options?.now ?? new Date();
 
   const accountFilter = options?.accountId
     ? "AND h.account_id = ?"
@@ -399,9 +406,15 @@ export function computePortfolioGreeks(
 
   for (const row of rows) {
     const daysToExpiry = daysBetween(today, row.expiration_date);
-    const T = Math.max(daysToExpiry / 365, 0);
     const optType = row.option_type.toUpperCase() as "CALL" | "PUT";
     const S = row.underlying_price;
+
+    // A listed equity/ETF option is live until the 16:00 ET close on its
+    // expiry date — that's the day gamma/theta matter most. daysToExpiry===0
+    // must NOT mean expired while the market is still open; only the close
+    // does. See isExpiredAsOf/yearsToExpiry below for the single-source rule.
+    const expired = isExpiredAsOf(row.expiration_date, today, now);
+    const T = expired ? 0 : yearsToExpiry(row.expiration_date, today, now);
 
     const position: PositionGreeks = {
       securityId: row.security_id,
@@ -415,6 +428,7 @@ export function computePortfolioGreeks(
       underlyingPrice: S ?? 0,
       optionPrice: row.option_price,
       daysToExpiry,
+      expired,
       greeks: null,
     };
 
@@ -429,7 +443,7 @@ export function computePortfolioGreeks(
       continue;
     }
 
-    if (daysToExpiry <= 0) {
+    if (expired) {
       diagnostics.push({
         symbol: row.symbol,
         underlying: row.underlying_symbol,
@@ -515,4 +529,61 @@ function daysBetween(dateA: string, dateB: string): number {
   const a = new Date(dateA + "T00:00:00Z");
   const b = new Date(dateB + "T00:00:00Z");
   return Math.round((b.getTime() - a.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+// Regular-hours close for US-listed equity/ETF options. Lexical comparison
+// against nowET()'s zero-padded 24-hour "HH:MM" is safe and avoids hand-
+// rolling a UTC offset (see lib/calendar/date-utils.ts).
+const MARKET_CLOSE_ET = "16:00";
+
+// Floor for same-day time-to-expiry, in years (fifteen minutes' worth).
+// Keeps the Black-Scholes d1/d2 terms — which divide by sqrt(T) — finite in
+// the last moments before the close instead of blowing up toward T=0.
+const MIN_YEARS_TO_EXPIRY = 1 / (365 * 24 * 4);
+
+/**
+ * Whether an option contract has stopped trading as of `now`: any calendar
+ * day after expiration, OR expiration day itself at/after the 16:00 ET
+ * close. Single source of truth for "expired" everywhere in this module —
+ * daysToExpiry alone is not enough, because a same-day contract
+ * (daysToExpiry === 0) is still live until the close, which is the day its
+ * gamma/theta matter most.
+ */
+export function isExpiredAsOf(
+  expirationDate: string,
+  today: string,
+  now: Date = new Date()
+): boolean {
+  if (expirationDate < today) return true;
+  if (expirationDate > today) return false;
+  // Same calendar day as expiry — decide against the ET wall-clock close.
+  return nowET(now) >= MARKET_CLOSE_ET;
+}
+
+/** Hours remaining until the 16:00 ET close, floored at 0 (never negative). */
+function hoursUntilCloseET(now: Date): number {
+  const [hour, minute] = nowET(now).split(":").map(Number);
+  const minutesSinceMidnight = hour * 60 + minute;
+  const minutesRemaining = Math.max(16 * 60 - minutesSinceMidnight, 0);
+  return minutesRemaining / 60;
+}
+
+/**
+ * Black-Scholes time-to-expiry in years, for a contract that is still live
+ * (see isExpiredAsOf). Any day but expiry day: the usual daysToExpiry/365.
+ * On expiry day itself, price on the ACTUAL hours left until the 16:00 ET
+ * close rather than a full day — that's what makes intraday gamma/theta
+ * behave correctly as the close approaches — floored at
+ * MIN_YEARS_TO_EXPIRY so d1/d2 stay finite in the final minutes.
+ */
+export function yearsToExpiry(
+  expirationDate: string,
+  today: string,
+  now: Date = new Date()
+): number {
+  const daysToExpiry = daysBetween(today, expirationDate);
+  if (daysToExpiry !== 0) {
+    return Math.max(daysToExpiry / 365, 0);
+  }
+  return Math.max(hoursUntilCloseET(now) / (365 * 24), MIN_YEARS_TO_EXPIRY);
 }

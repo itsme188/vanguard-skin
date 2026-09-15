@@ -20,6 +20,8 @@ interface TaxReportSummary {
     purchaseDate: string;
     lossAmount: number;
     description: string;
+    direction: "before" | "after";
+    daysFromSale: number;
   }[];
   excludedNonUsdSales?: number;
 }
@@ -449,7 +451,12 @@ export function TaxReportCard({
               {report.washSaleWarnings.map((w, i) => (
                 <div key={i} className="text-xs text-ink-dim">
                   <span className="font-mono font-medium text-ink">{w.symbol}</span>
-                  {" \u2014 "}Sold {w.saleDate} (loss <PrivateText>{formatMoney(w.lossAmount)}</PrivateText>), repurchased {w.purchaseDate}
+                  {" \u2014 "}Sold {w.saleDate} (loss <PrivateText>{formatMoney(w.lossAmount)}</PrivateText>)
+                  {w.direction === "before" ? (
+                    <>; replacement shares bought {w.purchaseDate}, {w.daysFromSale} {w.daysFromSale === 1 ? "day" : "days"} before the sale</>
+                  ) : (
+                    <>, repurchased {w.purchaseDate}, {w.daysFromSale} {w.daysFromSale === 1 ? "day" : "days"} after</>
+                  )}
                 </div>
               ))}
             </div>
