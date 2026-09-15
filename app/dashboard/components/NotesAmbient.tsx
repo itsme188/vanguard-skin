@@ -19,23 +19,30 @@ type SaveState = "idle" | "saving" | "saved" | "error";
  */
 export function NotesAmbient() {
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState("");
+  // Lazy initializer, not a mount effect (2026-09-15 landing review — the
+  // prior mount-effect form was already flagged by this repo's
+  // react-hooks/set-state-in-effect lint rule as a cascading-render risk
+  // before this session touched the file; fixed here as a prerequisite for
+  // the edits below). Safe from an SSR/hydration mismatch because the panel
+  // always renders `null` while `open` is false (see the closed-state
+  // return below), and `open` only flips to `true` from a client-side
+  // keydown effect after mount — so this value never reaches the DOM until
+  // well past hydration.
+  const [draft, setDraft] = useState<string>(() => {
+    if (typeof window === "undefined") return "";
+    try {
+      return localStorage.getItem(STORAGE_KEY) ?? "";
+    } catch {
+      // localStorage unavailable (private browsing) — ambient mode degrades
+      // gracefully to in-memory state for this session.
+      return "";
+    }
+  });
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const router = useRouter();
-
-  // Hydrate from localStorage on mount.
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) setDraft(stored);
-    } catch {
-      // localStorage unavailable (private browsing) — ambient mode degrades
-      // gracefully to in-memory state for this session.
-    }
-  }, []);
 
   // Debounced persist. Each keystroke resets the timer; we write once the
   // user pauses for SAVE_DEBOUNCE_MS. Avoids hammering localStorage on every
@@ -78,6 +85,20 @@ export function NotesAmbient() {
   useEffect(() => {
     if (open) textareaRef.current?.focus();
   }, [open]);
+
+  // Clear a sticky save error once the user changes the draft (typing or
+  // Clear). saveState otherwise only resets on a successful save
+  // (2026-09-15 landing review, finding
+  // notes-ambient--error-message-sticky-until-next-save) — a failed save
+  // left the footer message (and lost the ⌘; toggle · Esc close hint under
+  // it) in place forever, even after the user retyped and would reasonably
+  // expect a clean retry. Done inline in the handlers that touch `draft`,
+  // not a useEffect keyed on it — a setState-in-effect body is flagged as a
+  // cascading-render risk by this repo's lint config.
+  const clearStickyError = useCallback(() => {
+    setSaveState((prev) => (prev === "error" ? "idle" : prev));
+    setErrorMsg(null);
+  }, []);
 
   const handleSaveToNotes = useCallback(async () => {
     const content = draft.trim();
@@ -138,12 +159,13 @@ export function NotesAmbient() {
   const handleClear = useCallback(() => {
     if (draft && !confirm("Clear this draft? This can't be undone.")) return;
     setDraft("");
+    clearStickyError();
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch {
       // ignore
     }
-  }, [draft]);
+  }, [draft, clearStickyError]);
 
   // Closed: render nothing. QA ruling (2026-09-04, closes an 8-entry finding
   // family): a fixed floating action button here sat over row controls on
@@ -191,42 +213,57 @@ export function NotesAmbient() {
       <textarea
         ref={textareaRef}
         value={draft}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          clearStickyError();
+        }}
         placeholder="Drop a thought… auto-saved as you type. Click Save to Notes to keep it."
         rows={6}
         className="w-full resize-none bg-transparent px-4 py-3 text-sm leading-[1.6] text-ink placeholder:text-ink-faint focus:outline-none"
       />
 
-      <div className="flex items-center justify-between gap-2 px-3 py-2 border-t border-edge">
-        <span className="text-[11px] text-ink-faint">
-          {saveState === "saving" && "Saving…"}
-          {saveState === "saved" && "Saved to Notes"}
-          {saveState === "error" && (errorMsg || "Save failed")}
-          {saveState === "idle" && (
-            /* Keyboard hints — meaningless on touch, hidden there */
-            <span className="text-ink-faint pointer-coarse:hidden">
-              <kbd className="px-1.5 py-0.5 rounded bg-raised border border-edge text-[10px] font-mono">⌘;</kbd>
-              {" toggle · "}
-              <kbd className="px-1.5 py-0.5 rounded bg-raised border border-edge text-[10px] font-mono">Esc</kbd>
-              {" close"}
-            </span>
-          )}
-        </span>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={handleClear}
-            disabled={!draft || saveState === "saving"}
-            className="px-2.5 py-1 rounded-md text-xs text-ink-dim hover:text-ink hover:bg-raised transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Clear
-          </button>
-          <button
-            onClick={handleSaveToNotes}
-            disabled={!draft.trim() || saveState === "saving"}
-            className="px-3 py-1 rounded-md text-xs font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Save to Notes
-          </button>
+      <div className="px-3 py-2 border-t border-edge">
+        {/* Error gets its own full-width row above the controls (2026-09-15
+            landing review, finding notes-ambient--error-squeezes-buttons) —
+            the session-expiry / unreadable-reply copy runs 80+ characters,
+            and the previous single-row layout (status span + Clear/Save-to-
+            Notes) squeezed the buttons instead of wrapping in the
+            w-[min(380px,calc(100vw-2rem))] panel. */}
+        {saveState === "error" && (
+          <p className="mb-1.5 text-[11px] leading-snug text-down break-words">
+            {errorMsg || "Save failed"}
+          </p>
+        )}
+        <div className="flex items-center justify-between gap-2">
+          <span className="min-w-0 text-[11px] text-ink-faint">
+            {saveState === "saving" && "Saving…"}
+            {saveState === "saved" && "Saved to Notes"}
+            {saveState === "idle" && (
+              /* Keyboard hints — meaningless on touch, hidden there */
+              <span className="text-ink-faint pointer-coarse:hidden">
+                <kbd className="px-1.5 py-0.5 rounded bg-raised border border-edge text-[10px] font-mono">⌘;</kbd>
+                {" toggle · "}
+                <kbd className="px-1.5 py-0.5 rounded bg-raised border border-edge text-[10px] font-mono">Esc</kbd>
+                {" close"}
+              </span>
+            )}
+          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={handleClear}
+              disabled={!draft || saveState === "saving"}
+              className="px-2.5 py-1 rounded-md text-xs text-ink-dim hover:text-ink hover:bg-raised transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Clear
+            </button>
+            <button
+              onClick={handleSaveToNotes}
+              disabled={!draft.trim() || saveState === "saving"}
+              className="px-3 py-1 rounded-md text-xs font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Save to Notes
+            </button>
+          </div>
         </div>
       </div>
     </div>

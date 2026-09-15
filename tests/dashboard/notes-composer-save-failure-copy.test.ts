@@ -12,11 +12,18 @@
  *
  * The copy is a pure exported helper so it can be tested here; this repo has
  * no jsdom/RTL harness (see tests/dashboard/narrative-block-refresh.test.ts).
+ *
+ * Imports straight from the shared `lib/notes/save-failure-copy` module
+ * (2026-09-15 landing review) rather than through the NotesView re-export
+ * shim — that shim exists only so NotesView.tsx's own call sites keep their
+ * existing import spelling; a test of the pure helper should not depend on
+ * NotesView.tsx being importable at all (it drags TranscriptCard,
+ * ConfirmDialog, EmptyState, Toast, PrivateText, … into the module graph).
  */
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { describeNoteSaveFailure } from "@/app/dashboard/components/NotesView";
+import { describeNoteSaveFailure } from "@/lib/notes/save-failure-copy";
 
 const src = readFileSync("app/dashboard/components/NotesView.tsx", "utf8");
 
@@ -56,6 +63,55 @@ describe("describeNoteSaveFailure", () => {
     expect(msg).toMatch(/couldn't save the note/i);
     expect(msg).toContain("502");
     expect(msg).not.toMatch(/undefined|null|NaN/);
+  });
+
+  it("words a 401 as a session expiry, not a raw 'unauthorized' echo (QA 2026-09-15)", () => {
+    // proxy.ts answers an expired/missing session with
+    // {success:false,error:"unauthorized"} — the most likely real failure
+    // for an always-open desktop overlay. That body must never reach the
+    // user verbatim.
+    const msg = describeNoteSaveFailure({ kind: "server", status: 401, error: "unauthorized" });
+    expect(msg).toMatch(/couldn't save the note/i);
+    expect(msg).toMatch(/session has expired/i);
+    expect(msg).toMatch(/sign in again/i);
+    expect(msg).toMatch(/your note is still here/i);
+    expect(msg).not.toContain("unauthorized");
+    expect(msg).not.toContain("401");
+  });
+
+  it("words a 403 the same way as a 401", () => {
+    const msg = describeNoteSaveFailure({ kind: "server", status: 403, error: "unauthorized" });
+    expect(msg).toMatch(/couldn't save the note/i);
+    expect(msg).toMatch(/session has expired/i);
+    expect(msg).toMatch(/sign in again/i);
+    expect(msg).not.toContain("unauthorized");
+    expect(msg).not.toContain("403");
+  });
+
+  it("session-expiry copy never claims a delete left something 'still here'", () => {
+    const msg = describeNoteSaveFailure({ kind: "server", status: 401, action: "delete" });
+    expect(msg).toMatch(/couldn't delete the note/i);
+    expect(msg).toMatch(/session has expired/i);
+    expect(msg).toMatch(/sign in again/i);
+    expect(msg).not.toMatch(/still here/i);
+  });
+
+  it("session-expiry copy uses the 'changes' subject for an update", () => {
+    const msg = describeNoteSaveFailure({ kind: "server", status: 401, action: "update" });
+    expect(msg).toMatch(/couldn't update the note/i);
+    expect(msg).toMatch(/your changes are still here/i);
+  });
+
+  it("guards a 2xx status with an unreadable/unsuccessful body instead of printing 'server returned 200' (QA 2026-09-15)", () => {
+    // Mirrors NotesAmbient's `!res.ok || !data?.success` gate: a 200 whose
+    // body failed to parse (res.json().catch(() => null)) carries no error
+    // string at all, but the old generic branch still fired off `status`.
+    const msg = describeNoteSaveFailure({ kind: "server", status: 200 });
+    expect(msg).toMatch(/couldn't save the note/i);
+    expect(msg).toMatch(/reply was unreadable/i);
+    expect(msg).toMatch(/try again/i);
+    expect(msg).not.toContain("200");
+    expect(msg).not.toMatch(/server returned/i);
   });
 
   it("has a catch-all that is still English", () => {
