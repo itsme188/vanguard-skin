@@ -92,7 +92,7 @@ export function HoldingsTable({
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                    {holding.cost_basis != null ? (
+                    {holding.cost_basis != null && holding.cost_basis !== 0 ? (
                       <Money value={holding.cost_basis} precise />
                     ) : (
                       <span title="Import a Vanguard cost basis CSV to populate" className="cursor-help">—</span>

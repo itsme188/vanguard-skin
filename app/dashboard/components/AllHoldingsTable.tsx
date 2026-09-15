@@ -30,6 +30,11 @@ type Field =
 const hasKnownBasis = (h: { cost_basis: number | null }): boolean =>
   h.cost_basis !== null && h.cost_basis !== 0;
 
+// Same wording as HoldingsTable.tsx's per-account Cost Basis unknown-basis
+// cell — this table's stored-zero-is-unknown em-dash needs the same
+// guidance, not a silent dash with no explanation.
+const NO_COST_BASIS_TOOLTIP = "Import a Vanguard cost basis CSV to populate";
+
 function GainCell({ value }: { value: number | null }) {
   if (value === null) return <span className="text-ink-faint">&mdash;</span>;
   const isPositive = value >= 0;
@@ -94,9 +99,21 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
 
     if (!sort.field) return enriched;
     const field = sort.field;
-    return [...enriched].sort((a, b) =>
-      compareValues(a[field as keyof typeof a], b[field as keyof typeof b], sort.dir),
-    );
+    // A stored 0 means "unknown" for cost_basis and unrealized_gain (see
+    // hasKnownBasis above), but compareValues treats 0 as a real, sortable
+    // number and puts nulls last — so an unknown-because-zero row sorted
+    // first ascending while an unknown-because-null row sorted last, even
+    // though both cells render the same "—". Map 0 to null for these two
+    // fields before comparing so every unknown row groups together the same
+    // way regardless of which flavor of "unknown" it is.
+    const sortValue = (row: (typeof enriched)[number]) => {
+      const v = row[field as keyof typeof row];
+      if ((field === "cost_basis" || field === "unrealized_gain") && v === 0) {
+        return null;
+      }
+      return v;
+    };
+    return [...enriched].sort((a, b) => compareValues(sortValue(a), sortValue(b), sort.dir));
   }, [filtered, sort, unfilteredTotal]);
 
   const holdingsWithCost = filtered.filter(hasKnownBasis);
@@ -110,7 +127,25 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
   // already does, so Value − Cost and the disclosed Gain visibly agree.
   const knownGainRows = filtered.filter((h) => h.unrealized_gain !== null);
   const totalGain = knownGainRows.reduce((sum, h) => sum + h.unrealized_gain!, 0);
-  const missingGainCount = filtered.length - knownGainRows.length;
+
+  // A missing gain has two distinct causes, both rendering the same "—":
+  // the cost basis is unknown (null or the stored-zero-means-unknown
+  // convention, hasKnownBasis above), or the basis IS known but there's no
+  // current price to net against it (holdings.ts nulls unrealized_gain
+  // whenever p.close_price IS NULL, even with a known nonzero basis — see
+  // lib/queries/holdings.ts ~lines 70-75). The old single "cost basis
+  // unknown" tooltip text was wrong for the second case, so split the count
+  // and name whichever reason(s) actually apply.
+  const missingGainRows = filtered.filter((h) => h.unrealized_gain === null);
+  const missingGainCount = missingGainRows.length;
+  const noBasisCount = missingGainRows.filter((h) => !hasKnownBasis(h)).length;
+  const noPriceCount = missingGainCount - noBasisCount;
+  const missingGainReasons = [
+    noBasisCount > 0 ? `${noBasisCount} with unknown cost basis` : null,
+    noPriceCount > 0 ? `${noPriceCount} with no current price` : null,
+  ].filter((s): s is string => s !== null);
+  const missingGainTooltip = `${missingGainCount} position${missingGainCount > 1 ? "s" : ""} excluded — ${missingGainReasons.join(" and ")}`;
+
   const isFiltered = filter.trim().length > 0;
 
   return (
@@ -203,7 +238,12 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                     {hasKnownBasis(h) ? (
                       <Money value={h.cost_basis} precise />
                     ) : (
-                      <span className="text-ink-faint">&mdash;</span>
+                      <span
+                        title={NO_COST_BASIS_TOOLTIP}
+                        className="text-ink-faint cursor-help"
+                      >
+                        &mdash;
+                      </span>
                     )}
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
@@ -256,10 +296,7 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                 {knownGainRows.length === 0 ? (
                   <GainCell value={null} />
                 ) : knownGainRows.length < filtered.length ? (
-                  <span
-                    title={`${missingGainCount} position${missingGainCount > 1 ? "s" : ""} excluded — cost basis unknown`}
-                    className="cursor-help"
-                  >
+                  <span title={missingGainTooltip} className="cursor-help">
                     ~<GainCell value={totalGain} />
                   </span>
                 ) : (
@@ -267,9 +304,15 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                 )}
               </td>
               <td className="px-4 py-3 text-right">
-                <GainPercentCell
-                  value={totalCostBasis !== 0 ? totalGain / totalCostBasis : null}
-                />
+                {knownGainRows.length === 0 ? (
+                  <GainPercentCell value={null} />
+                ) : knownGainRows.length < filtered.length ? (
+                  <span title={missingGainTooltip} className="cursor-help">
+                    ~<GainPercentCell value={unrealizedGainRatio(totalGain, totalCostBasis)} />
+                  </span>
+                ) : (
+                  <GainPercentCell value={unrealizedGainRatio(totalGain, totalCostBasis)} />
+                )}
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                 {unfilteredTotal > 0 ? (
