@@ -27,6 +27,7 @@ import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { QuoteStats } from "../../components/QuoteStats";
 import { Money, Pct, Shares, PrivateText } from "@/lib/privacy/components";
 import { computeLotCoverageGaps } from "@/lib/compute/lot-coverage";
+import { daysToExpiry } from "@/lib/compute/option-expiry";
 import type { EarningsTranscript } from "@/lib/types";
 import { hasDeskNote, isFilingRow, kindLabel } from "@/lib/transcripts/presentation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
@@ -341,10 +342,8 @@ export default async function SecurityDetailPage(props: {
                   {security.expiration_date}
                   <span className="text-xs text-ink-faint ml-1.5">
                     {(() => {
-                      const daysToExpiry = Math.floor(
-                        (new Date(security.expiration_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
-                      );
-                      return daysToExpiry < 0 ? "(expired)" : `(${daysToExpiry}d)`;
+                      const dte = daysToExpiry(security.expiration_date);
+                      return dte < 0 ? "(expired)" : `(${dte}d)`;
                     })()}
                   </span>
                 </span>
