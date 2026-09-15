@@ -215,11 +215,54 @@ export function interpretBeta(
   };
 }
 
-/** Annualized alpha as a fraction (0.02 = +2pp/yr). */
-export function interpretAlpha(alphaAnnual: number): Interpretation {
+// ─── Market regression R² tiers ───────────────────────────────────
+// Single-sourced here so the alpha/beta narration and the R² caption can
+// never disagree about which tier a given fit falls into (qa:
+// analysis-regression--low-r2-warning-contradicted-by-interpretation-regression-1
+// — a card that warns "treat beta/alpha as noise" must not also narrate
+// "selection is adding value" underneath it).
+
+/**
+ * Below this R², the regression explains so little variance that beta/alpha
+ * are noise — the UI shows an explicit low-confidence caption instead of
+ * narrating them as fact (honest-labeling sibling of dataWindowNotice).
+ */
+export const LOW_R2_THRESHOLD = 0.1;
+
+/**
+ * Below this R² (and at/above LOW_R2_THRESHOLD), the fit is "loose" —
+ * idiosyncratic positions dominate the regression. Beta/alpha are usable
+ * only as a hedged, directional read, never as a literal, reliable figure.
+ */
+export const MODERATE_R2_THRESHOLD = 0.5;
+
+/**
+ * Annualized alpha as a fraction (0.02 = +2pp/yr).
+ *
+ * `r2` is optional so existing callers keep compiling unhedged, but any
+ * caller that has the regression's R² on hand should pass it: below
+ * LOW_R2_THRESHOLD the reading is not attributable to selection at all
+ * (both signs of alpha collapse to one neutral "not interpretable" line);
+ * below MODERATE_R2_THRESHOLD the direction is kept but hedged as
+ * "Indicative only" and the "selection is adding/detracting value" claim
+ * is dropped, since a loose fit can't support that claim.
+ */
+export function interpretAlpha(
+  alphaAnnual: number,
+  r2?: number,
+): Interpretation {
+  if (r2 != null && r2 < LOW_R2_THRESHOLD) {
+    return {
+      text: "Alpha is not interpretable at this R² — the regression explains too little of the return to attribute selection skill.",
+      tone: "neutral",
+    };
+  }
+  const indicativeOnly = r2 != null && r2 < MODERATE_R2_THRESHOLD;
   if (alphaAnnual >= 0.02) {
     return {
-      text: "Earning meaningfully more than your market exposure alone explains — selection is adding value.",
+      text: indicativeOnly
+        ? "Indicative only — earning more than your market exposure alone explains, but the loose regression fit means this isn't a reliable read on selection."
+        : "Earning meaningfully more than your market exposure alone explains — selection is adding value.",
       tone: "good",
     };
   }
@@ -230,19 +273,14 @@ export function interpretAlpha(alphaAnnual: number): Interpretation {
     };
   }
   return {
-    text: "Lagging what your market exposure alone would have delivered — selection is detracting.",
+    text: indicativeOnly
+      ? "Indicative only — lagging what your market exposure alone would have delivered, but the loose regression fit means this isn't a reliable read on selection."
+      : "Lagging what your market exposure alone would have delivered — selection is detracting.",
     tone: "bad",
   };
 }
 
 /** Regression R² (0-1). */
-/**
- * Below this R², the regression explains so little variance that beta/alpha
- * are noise — the UI shows an explicit low-confidence caption instead of
- * narrating them as fact (honest-labeling sibling of dataWindowNotice).
- */
-export const LOW_R2_THRESHOLD = 0.1;
-
 export function interpretR2(r2: number): Interpretation {
   if (r2 > 0.8) {
     return {
@@ -250,7 +288,7 @@ export function interpretR2(r2: number): Interpretation {
       tone: "neutral",
     };
   }
-  if (r2 >= 0.5) {
+  if (r2 >= MODERATE_R2_THRESHOLD) {
     return {
       text: "Moderate fit — benchmark explains roughly half the variance; beta and alpha are usable but imprecise.",
       tone: "neutral",
