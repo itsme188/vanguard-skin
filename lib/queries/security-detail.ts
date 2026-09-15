@@ -47,6 +47,17 @@ export interface SecurityPosition {
   multiplier: number;
 }
 
+/**
+ * A position's cost basis is KNOWN only when it is neither NULL nor exactly 0.
+ * Single predicate for this file so the row cells and the TOTAL row can never
+ * disagree; the convention itself lives in lib/queries/holdings.ts
+ * (NULLIF(costBasisExpr, 0) IS NOT NULL) and is mirrored in
+ * AllHoldingsTable.tsx's hasKnownBasis.
+ */
+function hasKnownPositionBasis(p: { cost_basis: number | null }): boolean {
+  return p.cost_basis !== null && p.cost_basis !== 0;
+}
+
 export interface SecurityPriceInfo {
   close_price: number;
   date: string;
@@ -193,6 +204,12 @@ export function getHoldingsBySecurity(
   // Cost basis fallback — see getAllHoldings (lib/queries/holdings.ts) for the
   // Plaid-NULL rationale. Scaled per-share to the current quantity and signed
   // like the position (scaledCostBasisFallbackSQL header has the short case).
+  // The helper already treats a stored 0 as unknown (it falls through to the
+  // rescue and, failing that, resolves NULL); the extra NULLIF on the gain
+  // gate below is the same belt-and-braces guard lib/queries/holdings.ts
+  // carries — the convention that a cost_basis of exactly 0 means "unknown,"
+  // not "free," lives there and is mirrored by AllHoldingsTable's
+  // hasKnownBasis at the render layer.
   const costBasisExpr = scaledCostBasisFallbackSQL("h", "h3");
 
   return db
@@ -205,7 +222,7 @@ export function getHoldingsBySecurity(
         CASE WHEN p.close_price IS NOT NULL
           THEN ${adjustedMarketValueSQL("h.quantity", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
           ELSE NULL END AS current_value,
-        CASE WHEN p.close_price IS NOT NULL AND ${costBasisExpr} IS NOT NULL
+        CASE WHEN p.close_price IS NOT NULL AND NULLIF(${costBasisExpr}, 0) IS NOT NULL
           THEN ${adjustedMarketValueSQL("h.quantity", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
           ELSE NULL END AS unrealized_gain
       FROM holdings h
@@ -619,10 +636,16 @@ export function getSecurityDetail(
 
   // Aggregate position totals. Cost basis / gain stay null when EVERY
   // constituent is unknown — summing unknowns as $0 fabricated a "$0 cost,
-  // green $0 gain" TOTAL row on all-Plaid-sourced positions.
+  // green $0 gain" TOTAL row on all-Plaid-sourced positions. "Unknown"
+  // includes a basis of exactly 0 (hasKnownPositionBasis below): the
+  // convention lives in lib/queries/holdings.ts, whose unrealized_gain gate
+  // is NULLIF(costBasisExpr, 0) IS NOT NULL, and AllHoldingsTable's
+  // hasKnownBasis mirrors it at the render layer. Without the 0 case a
+  // position whose only stored basis is zero claimed a KNOWN $0 total cost
+  // beside an em-dash in its own row.
   const totalValue = positions.reduce((sum, p) => sum + (p.current_value ?? 0), 0);
-  const totalCostBasis = positions.some((p) => p.cost_basis != null)
-    ? positions.reduce((sum, p) => sum + (p.cost_basis ?? 0), 0)
+  const totalCostBasis = positions.some(hasKnownPositionBasis)
+    ? positions.reduce((sum, p) => sum + (hasKnownPositionBasis(p) ? p.cost_basis! : 0), 0)
     : null;
   const totalUnrealizedGain = positions.some((p) => p.unrealized_gain != null)
     ? positions.reduce((sum, p) => sum + (p.unrealized_gain ?? 0), 0)
