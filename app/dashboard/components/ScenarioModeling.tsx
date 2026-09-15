@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { ScenarioResult } from "@/lib/compute/scenarios";
 import { findRecipe } from "@/lib/compute/scenario-recipes";
 import { isOptionSecurityType } from "@/lib/compute/option-elasticity";
@@ -65,6 +65,12 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
   const [customError, setCustomError] = useState<string | null>(null);
   const [showBuilder, setShowBuilder] = useState(false);
 
+  // Bumped every time the [scope] effect below fires, so an in-flight
+  // custom-scenario request can recognize its own response as stale (the
+  // user switched scope while it was in the air) and drop it instead of
+  // re-seating a result computed for a scope that's no longer selected.
+  const requestTokenRef = useRef(0);
+
   // Custom scenario form state
   const [customMarketMove, setCustomMarketMove] = useState(-10);
   const [customRateMove, setCustomRateMove] = useState(0);
@@ -75,6 +81,10 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
   // useCallback must be declared before any early returns (React hooks rules)
   const handleComputeCustom = useCallback(async () => {
     setCustomLoading(true);
+    // Snapshot the token up front — if the [scope] effect bumps it before
+    // this request resolves, the response below belongs to a scope the
+    // user has since left and must be dropped.
+    const requestToken = requestTokenRef.current;
     try {
       const sectorMoves: Record<string, number> = {};
       for (const o of customSectorOverrides) {
@@ -92,6 +102,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
         }),
       });
       const json = await res.json();
+      if (requestTokenRef.current !== requestToken) return;
       if (json.success) {
         setCustomError(null);
         setCustomResult(json.data);
@@ -100,6 +111,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
         setCustomError(`Couldn't compute the scenario: ${json.error ?? "unknown error"}.`);
       }
     } catch {
+      if (requestTokenRef.current !== requestToken) return;
       setCustomError("Couldn't compute the scenario: could not reach the server.");
     } finally {
       setCustomLoading(false);
@@ -111,8 +123,19 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
     // A custom result was computed for the OLD scope. Dropping it here keeps
     // the card list from mixing a stale scope's number with the new presets;
     // the builder inputs stay put so the user can just hit Compute again.
+    // Bump the token FIRST so an in-flight custom-scenario request from the
+    // old scope (see handleComputeCustom) recognizes its own response as
+    // stale when it lands.
+    requestTokenRef.current += 1;
     setCustomResult(null);
     setCustomError(null);
+    // The preset-fetch error is scope-specific: without resetting it here,
+    // a scope whose fetch once failed pins the render guard's `error ?? …`
+    // message forever, even after a later scope's fetch succeeds.
+    setError(null);
+    // Nothing should stay expanded across a scope switch — most obviously
+    // "custom", which no longer has a result to show.
+    setExpanded(null);
     const params = scope && scope !== "all" ? `?scope=${scope}` : "";
     fetch(`/api/compute/scenarios${params}`)
       .then((r) => r.json())
@@ -345,6 +368,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
             if (showBuilder) {
               setCustomResult(null);
               setCustomError(null);
+              setExpanded(null);
             }
             setShowBuilder(!showBuilder);
           }}
