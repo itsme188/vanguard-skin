@@ -8,6 +8,8 @@ import {
   interpretBeta,
   interpretAlpha,
   interpretR2,
+  LOW_R2_THRESHOLD,
+  MODERATE_R2_THRESHOLD,
   interpretTrackingError,
   interpretDuration,
   interpretPortfolioRateSensitivity,
@@ -217,6 +219,56 @@ describe("interpretAlpha", () => {
     const r = interpretAlpha(-0.05);
     expect(r.tone).toBe("bad");
     expect(r.text.toLowerCase()).toMatch(/lag|below|trail/);
+  });
+
+  // ── R²-aware tiers (qa: analysis-regression--low-r2-warning-contradicted-by-interpretation-regression-1) ──
+
+  it("high R² (>= MODERATE_R2_THRESHOLD): unchanged from the unhedged reading", () => {
+    const withR2 = interpretAlpha(0.04, 0.9);
+    const unhedged = interpretAlpha(0.04);
+    expect(withR2).toEqual(unhedged);
+    expect(withR2.tone).toBe("good");
+    expect(withR2.text.toLowerCase()).toContain("selection is adding value");
+  });
+
+  it("R² exactly at MODERATE_R2_THRESHOLD is treated as the reliable tier (unhedged)", () => {
+    const r = interpretAlpha(0.04, MODERATE_R2_THRESHOLD);
+    expect(r.text.toLowerCase()).toContain("selection is adding value");
+  });
+
+  it("loose fit (between LOW_R2_THRESHOLD and MODERATE_R2_THRESHOLD): hedged, direction kept, positive alpha", () => {
+    const r = interpretAlpha(0.30, 0.25);
+    expect(r.tone).toBe("good");
+    expect(r.text).toMatch(/^Indicative only —/);
+    expect(r.text.toLowerCase()).not.toContain("selection is adding value");
+  });
+
+  it("loose fit: hedged, direction kept, negative alpha", () => {
+    const r = interpretAlpha(-0.05, 0.2);
+    expect(r.tone).toBe("bad");
+    expect(r.text).toMatch(/^Indicative only —/);
+    expect(r.text.toLowerCase()).not.toContain("selection is detracting");
+  });
+
+  it("R² exactly at LOW_R2_THRESHOLD is treated as the loose-fit tier (hedged, not noise)", () => {
+    const r = interpretAlpha(0.04, LOW_R2_THRESHOLD);
+    expect(r.text).toMatch(/^Indicative only —/);
+  });
+
+  it("noise tier (< LOW_R2_THRESHOLD): not interpretable, neutral tone, regardless of alpha sign", () => {
+    const positive = interpretAlpha(0.30, 0.05);
+    const negative = interpretAlpha(-0.30, 0.05);
+    expect(positive.tone).toBe("neutral");
+    expect(negative.tone).toBe("neutral");
+    expect(positive.text).toBe(negative.text);
+    expect(positive.text.toLowerCase()).toContain("not interpretable");
+    expect(positive.text.toLowerCase()).not.toContain("selection is adding value");
+    expect(negative.text.toLowerCase()).not.toContain("selection is detracting");
+  });
+
+  it("omitting r2 entirely keeps the original unhedged behavior (back-compat)", () => {
+    expect(interpretAlpha(0.04).text.toLowerCase()).toContain("selection is adding value");
+    expect(interpretAlpha(-0.05).text.toLowerCase()).toContain("selection is detracting");
   });
 });
 
