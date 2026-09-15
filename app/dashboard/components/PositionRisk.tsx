@@ -211,11 +211,14 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
                   {pos.riskContribution != null ? (
                     <div className="flex items-center justify-end gap-2">
                       <div className="w-16 h-1.5 bg-edge rounded-full overflow-hidden">
-                        {/* Bar width itself encodes the risk-contribution
-                            ranking — under privacy it collapses to a
+                        {/* Bar width encodes this row's risk-contribution
+                            magnitude — under privacy it collapses to a
                             constant, dimmed fill (matching CoverageBar's
-                            pattern) so row order can't be read off the
-                            chart even though the numeric value is masked. */}
+                            pattern) so the bar itself can't be read as a
+                            value. NOTE: the table is still sorted by risk
+                            contribution, so row order remains a ranking
+                            signal on its own regardless of this collapse —
+                            a separate product call, not addressed here. */}
                         <div
                           className={`h-full bg-gold rounded-full${isPrivate ? " opacity-30" : ""}`}
                           style={{
@@ -230,23 +233,20 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
                         digits={1}
                         className="font-mono tabular-nums text-ink text-xs w-12 text-right"
                       />
-                      {isPrivate ? (
-                        // The 7-day delta is itself a portfolio-derived
-                        // number (change in risk contribution) — mask it
-                        // through the same shared component/token <Pct>
-                        // uses, rather than leaving it printed in the clear
-                        // beside a masked value.
-                        <PrivateText className="text-[10px] align-middle ml-1.5">
-                          {null}
-                        </PrivateText>
-                      ) : (
-                        <WeekOverWeekBadge
-                          value={computeWeekOverWeekDelta(pos, weekAgoPosns)}
-                          kind="neutral"
-                          asPercent={true}
-                          digits={1}
-                        />
-                      )}
+                      {/* The 7-day delta is itself a portfolio-derived
+                          number (change in risk contribution). Masking
+                          lives INSIDE <WeekOverWeekBadge> (it reads
+                          usePrivacy() directly) rather than a call-site
+                          isPrivate ternary here — a call-site wrapper would
+                          fabricate a masked delta even when there's no
+                          week-ago data at all (the badge's own null branch
+                          never runs). */}
+                      <WeekOverWeekBadge
+                        value={computeWeekOverWeekDelta(pos, weekAgoPosns)}
+                        kind="neutral"
+                        asPercent={true}
+                        digits={1}
+                      />
                     </div>
                   ) : (
                     <span className="text-ink-faint">{"\u2014"}</span>
