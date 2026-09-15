@@ -341,8 +341,10 @@ describe("computeDefenseAnalysis — expired option exclusion", () => {
   it("keeps an option expiring TODAY live: hedged pair, positive protection ratio, no negative runway", () => {
     // Two things pin this case to the finance rule rather than the wall clock:
     //  - the Greeks engine treats a same-day contract as live only until the
-    //    16:00 ET close (options-greeks.ts::isExpiredAsOf), so freeze "now" at
-    //    midday ET; without that the test flips after the close.
+    //    16:00 ET close (options-greeks.ts::isExpiredAsOf), so freeze "now"
+    //    well before it; 12:00 at -05:00 is 13:00 ET in EDT and 12:00 ET in
+    //    EST — early afternoon either way. Without freezing, the test flips
+    //    after the close.
     //  - with hours to expiry a 20%-OTM put has delta ≈ 0 and, correctly,
     //    hedges nothing — seed an ITM strike so the pair is a real hedge.
     const today = todayET();
