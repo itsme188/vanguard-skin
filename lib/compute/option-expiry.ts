@@ -76,3 +76,36 @@ export function isOptionLive(
   if (!expirationDate) return true;
   return expirationDate >= today;
 }
+
+/**
+ * Whole calendar days from `today` (ET) to `expirationDate`: 0 on the
+ * expiration day itself, positive before it, negative after it — agreeing
+ * with {@link isOptionLive}'s cutoff (`expirationDate >= today` is live,
+ * i.e. `daysToExpiry(...) >= 0`).
+ *
+ * Both arguments are date-only `YYYY-MM-DD` strings. `new Date(dateOnly)`
+ * parses a date-only ISO string as UTC MIDNIGHT per the ECMAScript Date
+ * Time String Format spec — so this is pure calendar-date subtraction, not
+ * an elapsed-time calculation. That is what keeps a DST-crossing span (or a
+ * leap day) exact: there is no local time zone or wall-clock offset in the
+ * arithmetic, only two UTC-midnight instants a whole number of days apart.
+ *
+ * The bug this replaces:
+ * `Math.floor((new Date(expirationDate).getTime() - Date.now()) / 86400000)`
+ * subtracted a UTC-midnight instant from the current INSTANT (`Date.now()`,
+ * i.e. "right now" in the machine's clock, effectively UTC) instead of from
+ * an ET calendar day — on the expiry day itself, any time after UTC
+ * midnight but before the ET day rolls over, this floors to -1 and prints
+ * "(expired)" for a contract the Greeks card (16:00-ET-close rule,
+ * `isOptionLive`) still shows as live.
+ */
+export function daysToExpiry(expirationDate: string, today: string = todayET()): number {
+  if (!DATE_PATTERN.test(expirationDate)) {
+    throw new Error(`daysToExpiry: expirationDate must match YYYY-MM-DD, got ${JSON.stringify(expirationDate)}`);
+  }
+  if (!DATE_PATTERN.test(today)) {
+    throw new Error(`daysToExpiry: today must match YYYY-MM-DD, got ${JSON.stringify(today)}`);
+  }
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  return Math.round((new Date(expirationDate).getTime() - new Date(today).getTime()) / MS_PER_DAY);
+}
