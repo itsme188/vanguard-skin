@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
+import { describeNoteSaveFailure } from "@/lib/notes/save-failure-copy";
 
 const STORAGE_KEY = "vgs:notes-ambient";
 const SAVE_DEBOUNCE_MS = 400;
@@ -83,16 +84,37 @@ export function NotesAmbient() {
     if (!content) return;
     setSaveState("saving");
     setErrorMsg(null);
+
     try {
+      // Both awaits carry their own .catch so a failure is classified where
+      // it happens: a rejected fetch is "could not reach the server", a
+      // non-OK / unparseable response is "the server refused it". Neither
+      // may reach the footer status line as a raw JS message (QA 2026-09-15,
+      // finding notes-ambient--save-failure-prints-raw-failed-to-fetch — this
+      // mirrors NotesView.tsx::handleCreate, which fixed the same defect in
+      // the Notes composer 2026-09-07).
       const res = await apiFetch("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ note_type: "journal", content }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || `Save failed (${res.status})`);
+      }).catch(() => null);
+      if (!res) {
+        setSaveState("error");
+        setErrorMsg(describeNoteSaveFailure({ kind: "network" }));
+        return;
       }
+
+      const data = (await res.json().catch(() => null)) as
+        | { success?: boolean; error?: unknown }
+        | null;
+      if (!res.ok || !data?.success) {
+        setSaveState("error");
+        setErrorMsg(
+          describeNoteSaveFailure({ kind: "server", status: res.status, error: data?.error }),
+        );
+        return;
+      }
+
       // Clear the draft locally + in storage on a successful materialization.
       setDraft("");
       try {
@@ -105,9 +127,11 @@ export function NotesAmbient() {
       // Server components on the current route (e.g. the Notes list on
       // /dashboard/research?view=notes) show the note without a manual reload.
       router.refresh();
-    } catch (err) {
+    } catch {
+      // Safety net only — every await above is already guarded. Whatever
+      // lands here is still reported in English, never as err.message.
       setSaveState("error");
-      setErrorMsg(err instanceof Error ? err.message : "Save failed");
+      setErrorMsg(describeNoteSaveFailure({ kind: "unknown" }));
     }
   }, [draft, router]);
 
