@@ -219,6 +219,49 @@ export function theta(
 }
 
 /**
+ * Theta for a contract that expires TODAY (0DTE), per share per calendar day.
+ *
+ * Off expiry day, "daily theta" is the instantaneous decay rate scaled to one
+ * calendar day, and that is honest: another whole day really is ahead. On
+ * expiry day it is not. The raw Black-Scholes rate diverges like 1/√T, so as
+ * the close approaches it prints a decay far larger than the entire contract —
+ * on a synthetic ATM contract (S = K = 100, σ = 0.3) it reads about −$3.07 per
+ * share per day at 15:59 ET against a mark of $0.064, i.e. roughly 48× the
+ * money that is actually still there to lose. Aggregated into totalTheta that
+ * single position swamps the whole book's decay figure and the prose built on
+ * it (lib/analysis/interpret.ts::interpretTheta).
+ *
+ * So cap it at what can actually decay between now and the 16:00 ET close.
+ * Holding the underlying still, the contract is worth its payoff at the close,
+ * so the money at risk to time is exactly the time value it still carries
+ * (value − intrinsic) — floored at zero, because a deep-ITM European put
+ * models BELOW intrinsic (the strike's discount unwinding) and that is carry,
+ * not decay. The cap only ever pulls the rate toward zero: a position whose
+ * raw rate is already inside the bound is returned untouched.
+ *
+ * Delta, gamma and vega are deliberately NOT capped — a full-delta ITM 0DTE is
+ * a correct reading, not an artifact.
+ */
+export function sameDayTheta(
+  S: number,
+  K: number,
+  T: number,
+  r: number,
+  sigma: number,
+  optionType: "CALL" | "PUT"
+): number {
+  const raw = theta(S, K, T, r, sigma, optionType);
+  const value =
+    optionType === "CALL"
+      ? callPrice(S, K, T, r, sigma)
+      : putPrice(S, K, T, r, sigma);
+  const intrinsic =
+    optionType === "CALL" ? Math.max(S - K, 0) : Math.max(K - S, 0);
+  const decayableValue = Math.max(value - intrinsic, 0);
+  return Math.max(raw, -decayableValue);
+}
+
+/**
  * Vega: ∂V/∂σ (per 1% move in IV, same for calls and puts)
  * Returns the dollar change per contract for a 1 percentage point IV increase.
  */
@@ -349,9 +392,17 @@ export function computePortfolioGreeks(
   // back to 0.045 if never fetched. See lib/queries/risk-free-rate.ts.
   const r = options?.riskFreeRate ?? getRiskFreeRate(db);
   const today = options?.today ?? todayET();
-  // Injectable for tests; defaults to the real instant so production callers
-  // don't need to pass anything. Used only to decide expiry-day liveness.
-  const now = options?.now ?? new Date();
+  // `now` decides expiry-day liveness and how many hours are left until the
+  // 16:00 ET close, so it must belong to the same day as `today`. A caller
+  // passing an as-of `today` without a `now` would otherwise price a historical
+  // expiry day off this afternoon's live minutes. Derive a neutral midday-ET
+  // instant from `today` instead: 16:00 UTC is 12:00 ET under EDT and 11:00 ET
+  // under EST — midday on that calendar date either way, no hand-rolled offset
+  // and no DST trap. With neither option passed (production, and the Electron
+  // app's own callers) both default to the real clock, exactly as before.
+  const now =
+    options?.now ??
+    (options?.today ? new Date(`${options.today}T16:00:00Z`) : new Date());
 
   const accountFilter = options?.accountId
     ? "AND h.account_id = ?"
@@ -494,7 +545,12 @@ export function computePortfolioGreeks(
 
     const d = delta(S, row.strike_price, T, r, sigmaForGreeks, optType);
     const g = gamma(S, row.strike_price, T, r, sigmaForGreeks);
-    const th = theta(S, row.strike_price, T, r, sigmaForGreeks, optType);
+    // Expiry day gets the bounded rate (see sameDayTheta): the same
+    // daysToExpiry === 0 test yearsToExpiry uses to switch to hours-left.
+    const th =
+      daysToExpiry === 0
+        ? sameDayTheta(S, row.strike_price, T, r, sigmaForGreeks, optType)
+        : theta(S, row.strike_price, T, r, sigmaForGreeks, optType);
     const v = vega(S, row.strike_price, T, r, sigmaForGreeks);
 
     position.greeks = { delta: d, gamma: g, theta: th, vega: v, iv, ivSource };
