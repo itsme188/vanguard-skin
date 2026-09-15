@@ -17,6 +17,7 @@ import {
   interpretR2,
   LOW_R2_THRESHOLD,
   interpretTrackingError,
+  type InterpretTone,
 } from "@/lib/analysis/interpret";
 import type { DrillDownFilter } from "@/lib/queries/drill-down";
 
@@ -39,6 +40,17 @@ function formatPct(value: number, decimals = 1): string {
 
 function formatBeta(value: number): string {
   return value.toFixed(2);
+}
+
+/**
+ * Maps an Interpretation tone to a MetricCell color so a tile's paint can
+ * never disagree with its own hedged reading (e.g. a "not interpretable at
+ * this R²" alpha tile must not still paint up/down off the raw sign).
+ */
+function toneToMetricColor(tone: InterpretTone): "up" | "down" | "neutral" {
+  if (tone === "good") return "up";
+  if (tone === "bad") return "down";
+  return "neutral";
 }
 
 // ─── Tilt bar colors ─────────────────────────────────────────────
@@ -147,7 +159,7 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
           </h4>
           {/* Honest-labeling sibling of dataWindowNotice: at very low R² the
               regression explains almost nothing, so narrating its beta/alpha
-              as fact is misleading (the QA finding's +63% "alpha" at R² 0.1%
+              as fact is misleading (a large positive alpha at a near-zero R²
               was flow/stale-price noise, not selection skill). */}
           {reg.rSquared < LOW_R2_THRESHOLD && (
             <p className="text-xs bg-warn/15 text-warn rounded-md px-3 py-2 mb-3">
@@ -159,67 +171,76 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
               flows not yet imported.
             </p>
           )}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <MetricCell
-              label="Beta"
-              value={
-                <>
-                  {formatBeta(reg.beta)}
-                  <WeekOverWeekBadge
-                    value={delta?.marketRegression.beta ?? null}
-                    kind="neutral"
-                    digits={2}
-                  />
-                </>
-              }
-              hint={interpretBeta(reg.beta, benchmark).text}
-              color={reg.beta > 1 ? "amber" : reg.beta > 0.7 ? "neutral" : "blue"}
-            />
-            <MetricCell
-              label="Alpha"
-              value={
-                <>
-                  <Pct value={reg.alpha * 100} digits={2} signed />
-                  <WeekOverWeekBadge
-                    value={delta?.marketRegression.alpha ?? null}
-                    kind="signed"
-                    digits={2}
-                    asPercent
-                  />
-                </>
-              }
-              hint={interpretAlpha(reg.alpha, reg.rSquared).text}
-              color={reg.alpha >= 0 ? "up" : "down"}
-            />
-            <MetricCell
-              label="R²"
-              value={
-                <>
-                  <Pct value={reg.rSquared * 100} digits={1} />
-                  <WeekOverWeekBadge
-                    value={delta?.marketRegression.rSquared ?? null}
-                    kind="neutral"
-                    digits={1}
-                    asPercent
-                  />
-                </>
-              }
-              hint={interpretR2(reg.rSquared).text}
-              color="neutral"
-            />
-            <MetricCell
-              label="Tracking Error"
-              value={<Pct value={reg.trackingError * 100} digits={2} signed />}
-              hint={interpretTrackingError(reg.trackingError).text}
-              color="neutral"
-            />
-            <MetricCell
-              label="Correlation"
-              value={reg.correlation.toFixed(2)}
-              hint={`${reg.dataPoints} daily observations`}
-              color="neutral"
-            />
-          </div>
+          {(() => {
+            // Computed once so each tile's hint text and paint color read
+            // off the SAME R²-aware interpretation — a tile can never say
+            // "not interpretable" while still painting off the raw sign.
+            const betaInterp = interpretBeta(reg.beta, benchmark, reg.rSquared);
+            const alphaInterp = interpretAlpha(reg.alpha, reg.rSquared);
+            return (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <MetricCell
+                  label="Beta"
+                  value={
+                    <>
+                      {formatBeta(reg.beta)}
+                      <WeekOverWeekBadge
+                        value={delta?.marketRegression.beta ?? null}
+                        kind="neutral"
+                        digits={2}
+                      />
+                    </>
+                  }
+                  hint={betaInterp.text}
+                  color={reg.beta > 1 ? "amber" : reg.beta > 0.7 ? "neutral" : "blue"}
+                />
+                <MetricCell
+                  label="Alpha"
+                  value={
+                    <>
+                      <Pct value={reg.alpha * 100} digits={2} signed />
+                      <WeekOverWeekBadge
+                        value={delta?.marketRegression.alpha ?? null}
+                        kind="signed"
+                        digits={2}
+                        asPercent
+                      />
+                    </>
+                  }
+                  hint={alphaInterp.text}
+                  color={toneToMetricColor(alphaInterp.tone)}
+                />
+                <MetricCell
+                  label="R²"
+                  value={
+                    <>
+                      <Pct value={reg.rSquared * 100} digits={1} />
+                      <WeekOverWeekBadge
+                        value={delta?.marketRegression.rSquared ?? null}
+                        kind="neutral"
+                        digits={1}
+                        asPercent
+                      />
+                    </>
+                  }
+                  hint={interpretR2(reg.rSquared).text}
+                  color="neutral"
+                />
+                <MetricCell
+                  label="Tracking Error"
+                  value={<Pct value={reg.trackingError * 100} digits={2} signed />}
+                  hint={interpretTrackingError(reg.trackingError).text}
+                  color="neutral"
+                />
+                <MetricCell
+                  label="Correlation"
+                  value={reg.correlation.toFixed(2)}
+                  hint={`${reg.dataPoints} daily observations`}
+                  color="neutral"
+                />
+              </div>
+            );
+          })()}
         </div>
       )}
 

@@ -183,38 +183,6 @@ export function interpretHHI(
   };
 }
 
-// ─── Market regression ───────────────────────────────────────────
-
-/** Regression beta vs a benchmark (default phrasing: "the market"). */
-export function interpretBeta(
-  beta: number,
-  benchmark = "the market",
-): Interpretation {
-  if (beta <= 0) {
-    return {
-      text: `Moves against ${benchmark} — net inverse/hedge exposure on a typical day.`,
-      tone: "neutral",
-    };
-  }
-  if (Math.abs(beta - 1) <= 0.05) {
-    return {
-      text: `Moves with ${benchmark} essentially one-for-one.`,
-      tone: "neutral",
-    };
-  }
-  const pct = Math.round(Math.abs(beta - 1) * 100);
-  if (beta > 1) {
-    return {
-      text: `Moves ~${pct}% more than ${benchmark} on a typical day — amplified in both directions.`,
-      tone: "neutral",
-    };
-  }
-  return {
-    text: `Moves ~${pct}% less than ${benchmark} on a typical day — dampened market exposure.`,
-    tone: "neutral",
-  };
-}
-
 // ─── Market regression R² tiers ───────────────────────────────────
 // Single-sourced here so the alpha/beta narration and the R² caption can
 // never disagree about which tier a given fit falls into (qa:
@@ -236,6 +204,58 @@ export const LOW_R2_THRESHOLD = 0.1;
  */
 export const MODERATE_R2_THRESHOLD = 0.5;
 
+// ─── Market regression ───────────────────────────────────────────
+
+/**
+ * Regression beta vs a benchmark (default phrasing: "the market").
+ *
+ * `r2` is optional so existing callers keep compiling unhedged, but any
+ * caller that has the regression's R² on hand should pass it, mirroring
+ * interpretAlpha's tiers: below LOW_R2_THRESHOLD beta isn't attributable to
+ * market exposure at all (collapses to one neutral "not interpretable" line
+ * regardless of beta's sign/magnitude); below MODERATE_R2_THRESHOLD the
+ * direction/magnitude is kept but hedged as "Indicative only"; at or above
+ * MODERATE_R2_THRESHOLD (or when r2 is omitted) the reading is unhedged and
+ * byte-identical to the pre-R²-awareness text.
+ */
+export function interpretBeta(
+  beta: number,
+  benchmark = "the market",
+  r2?: number,
+): Interpretation {
+  if (r2 != null && r2 < LOW_R2_THRESHOLD) {
+    return {
+      text: "Beta is not interpretable at this R² — the regression explains too little of the return to read direction or magnitude from it.",
+      tone: "neutral",
+    };
+  }
+  const indicativeOnly = r2 != null && r2 < MODERATE_R2_THRESHOLD;
+  const prefix = indicativeOnly ? "Indicative only — " : "";
+  if (beta <= 0) {
+    return {
+      text: `${prefix}Moves against ${benchmark} — net inverse/hedge exposure on a typical day.`,
+      tone: "neutral",
+    };
+  }
+  if (Math.abs(beta - 1) <= 0.05) {
+    return {
+      text: `${prefix}Moves with ${benchmark} essentially one-for-one.`,
+      tone: "neutral",
+    };
+  }
+  const pct = Math.round(Math.abs(beta - 1) * 100);
+  if (beta > 1) {
+    return {
+      text: `${prefix}Moves ~${pct}% more than ${benchmark} on a typical day — amplified in both directions.`,
+      tone: "neutral",
+    };
+  }
+  return {
+    text: `${prefix}Moves ~${pct}% less than ${benchmark} on a typical day — dampened market exposure.`,
+    tone: "neutral",
+  };
+}
+
 /**
  * Annualized alpha as a fraction (0.02 = +2pp/yr).
  *
@@ -245,7 +265,8 @@ export const MODERATE_R2_THRESHOLD = 0.5;
  * (both signs of alpha collapse to one neutral "not interpretable" line);
  * below MODERATE_R2_THRESHOLD the direction is kept but hedged as
  * "Indicative only" and the "selection is adding/detracting value" claim
- * is dropped, since a loose fit can't support that claim.
+ * (or, for a near-zero reading, the "beta alone would have delivered this"
+ * claim) is dropped, since a loose fit can't support that claim.
  */
 export function interpretAlpha(
   alphaAnnual: number,
@@ -268,7 +289,9 @@ export function interpretAlpha(
   }
   if (alphaAnnual > -0.02) {
     return {
-      text: "Within noise of zero — returns are roughly what your beta alone would have delivered.",
+      text: indicativeOnly
+        ? "Indicative only — within noise of zero, but the loose regression fit means beta isn't a reliable explanation either."
+        : "Within noise of zero — returns are roughly what your beta alone would have delivered.",
       tone: "neutral",
     };
   }
