@@ -6,9 +6,11 @@ import { todayET } from "@/lib/calendar/date-utils";
  * that reads option holdings agrees on the same cutoff.
  *
  * The rule: an option counts as live through the END of its expiration day
- * (ET) and is excluded starting the next ET calendar day. This matches the
- * Options Greeks engine's `daysToExpiry <= 0` → "expired" diagnostic
- * (lib/compute/options-greeks.ts) and the strategy detector's cutoff
+ * (ET) and is excluded starting the next ET calendar day. The Options Greeks
+ * engine applies a finer cut on expiry day itself — live until the 16:00 ET
+ * close, then `expired` (lib/compute/options-greeks.ts::isExpiredAsOf) — so
+ * between the close and ET midnight a same-day contract still LISTS here but
+ * carries no Greeks. This also matches the strategy detector's cutoff
  * (lib/compute/options-strategy.ts::detectStrategies, QA
  * analysis-detected-strategies--expired-option-rendered-live-protective-put).
  *

@@ -108,6 +108,11 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
 
   useEffect(() => {
     setLoading(true);
+    // A custom result was computed for the OLD scope. Dropping it here keeps
+    // the card list from mixing a stale scope's number with the new presets;
+    // the builder inputs stay put so the user can just hit Compute again.
+    setCustomResult(null);
+    setCustomError(null);
     const params = scope && scope !== "all" ? `?scope=${scope}` : "";
     fetch(`/api/compute/scenarios${params}`)
       .then((r) => r.json())
@@ -333,7 +338,16 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
       {/* ── Custom Scenario Builder ── */}
       <div className="border-t border-edge pt-4">
         <button
-          onClick={() => setShowBuilder(!showBuilder)}
+          onClick={() => {
+            // Collapsing the builder must also drop the custom result — the
+            // card had no other way to leave the screen once dismissed.
+            // Opening it back up should just re-show the (empty) form.
+            if (showBuilder) {
+              setCustomResult(null);
+              setCustomError(null);
+            }
+            setShowBuilder(!showBuilder);
+          }}
           className="text-xs text-gold-ink hover:brightness-125 transition-colors"
         >
           {showBuilder ? "Hide" : "Build"} Custom Scenario{" "}
