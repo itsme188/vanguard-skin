@@ -39,11 +39,21 @@ describe("TradeReviewView — quantity unit label uses the shared singularising 
     );
   });
 
-  it("no longer hardcodes a bare 'contracts' string literal in a ternary", () => {
-    expect(src).not.toMatch(/"contracts"/);
+  // The literal `/"contracts"/` / `/"shares"/` checks these two replaced
+  // banned the string file-wide (comments included) but missed a partial
+  // reversion written as bare JSX text next to the quantity, e.g.
+  // `{" "}shares` or ` contracts` with no ternary at all. Two shapes now:
+  // an inline ternary picking the plural, and a bare unit word sitting
+  // right after the <Shares> element or a {…Quantity} expression.
+  it("no longer picks the plural via an inline ternary (e.g. `? \"contracts\" : \"shares\"`)", () => {
+    expect(src).not.toMatch(
+      /\?\s*["'](?:contracts?|shares?)["']\s*:\s*["'](?:contracts?|shares?)["']/,
+    );
   });
 
-  it("no longer hardcodes a bare 'shares' string literal in a ternary", () => {
-    expect(src).not.toMatch(/"shares"/);
+  it("no longer leaves a bare shares/contracts JSX text token next to the quantity", () => {
+    expect(src).not.toMatch(
+      /(?:<Shares\b[^<]*\/>|\{[^{}]*Quantity[^{}]*\})(?:\s|\{["']\s*["']\})*\b(?:contracts?|shares?)\b/i,
+    );
   });
 });

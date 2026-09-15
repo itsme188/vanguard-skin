@@ -95,7 +95,9 @@ describe("POST /api/earnings/release-time", () => {
     const body = await res.json();
     expect(body.success).toBe(false);
     expect(body.error).toMatch(/24-hour/i);
-    expect(body.error).not.toMatch(/releaseTime/);
+    // No API parameter name leaks into the user-facing message — catch both
+    // camelCase and a future snake_case rename, case-insensitively.
+    expect(body.error).not.toMatch(/release_?time/i);
     // Never wrote a durable row.
     const row = hoisted.db
       .prepare("SELECT * FROM symbol_release_times WHERE symbol = 'XMTR'")
@@ -113,7 +115,11 @@ describe("POST /api/earnings/release-time", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/between 04:00 and 20:00/);
-    expect(body.error).not.toMatch(/releaseTime/);
+    // The refusal must not assert a claim about the world (late prints do
+    // happen) — it should read as a plausibility judgment about THIS input.
+    expect(body.error).toMatch(/almost certainly a call time, not the print/);
+    expect(body.error).not.toMatch(/do not print/i);
+    expect(body.error).not.toMatch(/release_?time/i);
   });
 
   it("400s on an out-of-range but validly-shaped time (after LATEST_PLAUSIBLE_ET)", async () => {
