@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: `Release time must fall between ${EARLIEST_PLAUSIBLE_ET} and ${LATEST_PLAUSIBLE_ET} ET — earnings do not print outside those hours`,
+        error: `Release time must fall between ${EARLIEST_PLAUSIBLE_ET} and ${LATEST_PLAUSIBLE_ET} ET — outside that window it is almost certainly a call time, not the print.`,
       },
       { status: 400 },
     );
