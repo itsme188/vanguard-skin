@@ -4,16 +4,31 @@ import { computeRiskMetrics } from "@/lib/compute/risk";
 import { commonCoverageStart } from "@/lib/queries/daily-valuations";
 
 /**
- * Scope-invariant risk window.
+ * Risk window: two modes, one per surface.
  *
  * Deep-QA finding (2026-08-19): on /dashboard/analysis?view=diagnostics the
  * All-Accounts volatility rendered LOWER than every single constituent
  * account's, which reads as mathematically impossible. Root cause: the
- * full-coverage predicate self-calibrates its start date PER SCOPE, so
- * scope=all measured 2026-04-06→today while scope=ibkr measured
- * 2024-12-31→today — three different windows behind one card. The fix floors
- * every scope's window at commonCoverageStart(db): the earliest date from
- * which ALL accounts have coverage (= the latest per-account coverage start).
+ * full-coverage predicate self-calibrates its start date PER SCOPE, so each
+ * scope started at its own coverage onset — three different windows behind
+ * one card. The fix floored every scope's window at commonCoverageStart(db):
+ * the earliest date from which ALL accounts have coverage (= the latest
+ * per-account coverage start).
+ *
+ * Deep-QA finding + user ruling (2026-09-14, docs/DECISIONS.md): that floor
+ * is right for the CROSS-SCOPE COMPARISON surface only. On Performance
+ * (/dashboard/analysis?view=performance) nothing is compared across scopes —
+ * one scope's tiles are read on their own — so flooring there silently threw
+ * away a long-history account's real drawdown/Sharpe/volatility and made the
+ * risk caption name a DIFFERENT account's start than the equity curve beside
+ * it. Ruling: "Performance risk tiles use the scope's own daily history; the
+ * cross-scope common floor from 2026-08-19 applies only to the diagnostics
+ * comparison surface."
+ *
+ * So `RiskOptions.coverageFloor` splits the two: `"common"` (the DEFAULT —
+ * diagnostics, the narratives) keeps the floor; `"scope"` (Performance) lets
+ * the scope's own full-coverage history stand. An explicit startDate applies
+ * in both modes. All synthetic dates/values below.
  */
 
 function createTestDb(): Database.Database {
@@ -170,6 +185,109 @@ describe("scope-invariant risk window", () => {
     const result = computeRiskMetrics(db, { accountIds: [1], startDate: DATES[0] });
 
     expect(result.seriesStart).toBe(DATES[ROTH_START]);
+  });
+
+  it('coverageFloor: "common" is the explicit spelling of the default', () => {
+    const db = seedStaggeredDb();
+    const floor = DATES[ROTH_START];
+
+    for (const scope of [undefined, { accountIds: [1] }, { accountIds: [2] }, { accountId: 3 }]) {
+      const explicit = computeRiskMetrics(db, { ...scope, coverageFloor: "common" });
+      expect(explicit.seriesStart).toBe(floor);
+      expect(explicit.dataPoints).toBe(DATES.length - ROTH_START);
+    }
+  });
+});
+
+// ── The 2026-09-14 split: coverageFloor: "scope" ──────────────────────
+
+describe('coverageFloor: "scope" measures the scope\'s own daily history', () => {
+  it("a single-account scope keeps its own (longer) coverage start", () => {
+    const db = seedStaggeredDb();
+
+    const long = computeRiskMetrics(db, { accountIds: [1], coverageFloor: "scope" });
+    const mid = computeRiskMetrics(db, { accountIds: [2], coverageFloor: "scope" });
+    const short = computeRiskMetrics(db, { accountId: 3, coverageFloor: "scope" });
+
+    // Each scope now opens at its OWN first covered date, not the latest
+    // per-account start across the whole book.
+    expect(long.seriesStart).toBe(DATES[0]);
+    expect(mid.seriesStart).toBe(DATES[VANGUARD_START]);
+    expect(short.seriesStart).toBe(DATES[ROTH_START]);
+
+    expect(long.dataPoints).toBe(DATES.length);
+    expect(mid.dataPoints).toBe(DATES.length - VANGUARD_START);
+    expect(short.dataPoints).toBe(DATES.length - ROTH_START);
+
+    const lastDate = DATES[DATES.length - 1];
+    for (const m of [long, mid, short]) expect(m.seriesEnd).toBe(lastDate);
+  });
+
+  it("the longer-history scope's risk metrics are computed from its whole series", () => {
+    // Local seed: account 1 carries a deep trough BEFORE the common floor and
+    // a merely choppy tail after it, so the floored window demonstrably
+    // understates the account's own max drawdown.
+    const db = createTestDb();
+    const deepThenChoppy = (i: number) =>
+      i < 40 ? 100_000 - i * 1_000 : 60_000 + (i - 40) * 200 + Math.sin(i * 0.7) * 3_000;
+    seedValuations(db, 1, DATES, deepThenChoppy);
+    seedValuations(db, 2, DATES.slice(VANGUARD_START), (i) => 200_000 + i * 400);
+    seedValuations(db, 3, DATES.slice(ROTH_START), (i) => 50_000 + i * 120);
+
+    const floored = computeRiskMetrics(db, { accountIds: [1], coverageFloor: "common" });
+    const own = computeRiskMetrics(db, { accountIds: [1], coverageFloor: "scope" });
+
+    // Same account, strictly more observations behind the vol/Sharpe estimate.
+    expect(own.dataPoints).toBeGreaterThan(floored.dataPoints);
+    expect(own.volatility).not.toBeNull();
+    expect(own.maxDrawdown).not.toBeNull();
+    expect(floored.maxDrawdown).not.toBeNull();
+    // The floored window starts after the trough, so it misses the real fall.
+    expect(own.maxDrawdown!.percent).toBeGreaterThan(floored.maxDrawdown!.percent);
+    expect(own.maxDrawdown!.peakDate < DATES[ROTH_START]).toBe(true);
+  });
+
+  it("scope=all is identical in both modes (its own coverage start IS the common floor)", () => {
+    const db = seedStaggeredDb();
+
+    const common = computeRiskMetrics(db, { coverageFloor: "common" });
+    const own = computeRiskMetrics(db, { coverageFloor: "scope" });
+
+    expect(own.seriesStart).toBe(common.seriesStart);
+    expect(own.seriesStart).toBe(DATES[ROTH_START]);
+    expect(own.seriesEnd).toBe(common.seriesEnd);
+    expect(own.dataPoints).toBe(common.dataPoints);
+    expect(own.volatility).toBe(common.volatility);
+    expect(own.sharpeRatio).toBe(common.sharpeRatio);
+  });
+
+  it("an explicit startDate still applies in scope mode", () => {
+    const db = seedStaggeredDb();
+    const requested = DATES[30];
+
+    const result = computeRiskMetrics(db, {
+      accountIds: [1],
+      startDate: requested,
+      coverageFloor: "scope",
+    });
+
+    // Later than the scope's own coverage start, earlier than the common
+    // floor: scope mode honours it verbatim instead of raising it.
+    expect(result.seriesStart).toBe(requested);
+    expect(result.dataPoints).toBe(DATES.length - 30);
+  });
+
+  it("a startDate before the scope's own coverage cannot invent history", () => {
+    const db = seedStaggeredDb();
+
+    const result = computeRiskMetrics(db, {
+      accountId: 3,
+      startDate: DATES[0],
+      coverageFloor: "scope",
+    });
+
+    expect(result.seriesStart).toBe(DATES[ROTH_START]);
+    expect(result.dataPoints).toBe(DATES.length - ROTH_START);
   });
 });
 
