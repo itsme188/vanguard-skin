@@ -1,6 +1,14 @@
 export interface Account {
   id: number;
   name: string;
+  /**
+   * Is this account's realized activity a taxable event? (migration 094,
+   * default 'taxable'). Read it through `isTaxableAccount`
+   * (lib/compute/tax-treatment.ts) — never compare the token directly.
+   * Optional because rows read from a pre-094 database (or a hand-built test
+   * fixture) simply have no column; absent reads as taxable.
+   */
+  tax_treatment?: string;
 }
 
 export interface Security {
