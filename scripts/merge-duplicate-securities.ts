@@ -39,14 +39,21 @@ const PAIRS: MergePair[] = [
   { oldId: 1892, newId: 1996, label: "BRK B -> BRK/B" },
   { oldId: 1927, newId: 2079, label: "U S TREASURY BOND 3 2/15/48 -> 912810SA7" },
   { oldId: 1851, newId: 2080, label: "U S TREASURY BOND 4.75 5/15/55 -> 912810UK2" },
+  // 2026-09-15: the pre-rename FB row (mistyped ETF) carries one 2019 BUY
+  // and its open lot; every later row for the same share class lives on
+  // META. Same instrument, two symbols — the 2022 ticker change.
+  { oldId: 5159, newId: 1742, label: "FB -> META (2022 ticker change)" },
 ];
 
 // Every table that has a security_id column (verified against live schema
-// 2026-05-11 via sqlite_master). UPDATE OR IGNORE handles UNIQUE collisions
+// 2026-05-11 via sqlite_master; re-verified 2026-09-15 — donations,
+// earnings_call_notes and security_quotes added). UPDATE OR IGNORE handles UNIQUE collisions
 // gracefully; the subsequent DELETE clears leftover old-id rows.
 const FK_TABLES = [
   "calendar_events",
   "corporate_actions",
+  "donations",
+  "earnings_call_notes",
   "earnings_transcripts",
   "holdings",
   "level_alerts",
@@ -57,6 +64,7 @@ const FK_TABLES = [
   "security_betas",
   "security_factors",
   "security_levels",
+  "security_quotes",
   "security_regressions",
   "suggested_level_narratives",
   "tax_lots",
