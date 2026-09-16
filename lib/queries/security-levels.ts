@@ -675,6 +675,99 @@ export function getAlerts(
 }
 
 /**
+ * One fired alert as the inbox needs it: the alert row, its security's symbol
+ * and name, and the level it fired from — including that level's LIVE
+ * `effective_price`.
+ *
+ * The level block is deliberately the same small projection the inbox has
+ * always rendered, plus `effective_price`. That field is what makes the card's
+ * fallback chain honest:
+ *
+ *     alert.threshold_price ?? level.effective_price ?? level.price
+ *
+ * `threshold_price` (migration 093) is the threshold recorded at the cross and
+ * is always right. `effective_price` is today's resolved value from the SAME
+ * resolver the scanner and the Armed view use (resolveLevelPrice — never a
+ * second copy of the MA math), which is what an alert fired before 093 has to
+ * fall back to; the card must caption it as the live figure. `level.price` is
+ * the creation snapshot and is the last resort only — for a static level it IS
+ * the threshold, and for an MA level with no usable history it is all that
+ * exists.
+ */
+export interface EnrichedLevelAlert extends LevelAlert {
+  symbol: string | null;
+  security_name: string | null;
+  level: {
+    level_type: string;
+    price: number;
+    price_source: LevelPriceSource;
+    direction: string | null;
+    source: string;
+    source_author: string | null;
+    thesis: string | null;
+    /** Live resolved threshold: the stored price for a static level, the
+     *  current MA for an MA level, null when the MA can't be computed. */
+    effective_price: number | null;
+  } | null;
+}
+
+/**
+ * getAlerts + the display enrichment the alerts inbox and the per-security
+ * recent-alerts panel both need. Lives here rather than inline in the route so
+ * the two surfaces (and any future in-process caller) can never disagree about
+ * what a level's effective price is — the API-pattern "thin wrapper" rule.
+ */
+export function getEnrichedAlerts(
+  db: Database.Database,
+  filters: AlertFilters = {}
+): EnrichedLevelAlert[] {
+  const securityStmt = db.prepare(
+    "SELECT symbol, name FROM securities WHERE id = ?"
+  );
+  const levelStmt = db.prepare(
+    `SELECT security_id, level_type, price, price_source, direction, source,
+            source_author, thesis
+       FROM security_levels WHERE id = ?`
+  );
+
+  return getAlerts(db, filters).map((alert) => {
+    const sec = securityStmt.get(alert.security_id) as
+      | { symbol: string; name: string | null }
+      | undefined;
+    const level = levelStmt.get(alert.level_id) as
+      | {
+          security_id: number;
+          level_type: string;
+          price: number;
+          price_source: LevelPriceSource;
+          direction: string | null;
+          source: string;
+          source_author: string | null;
+          thesis: string | null;
+        }
+      | undefined;
+
+    return {
+      ...alert,
+      symbol: sec?.symbol ?? null,
+      security_name: sec?.name ?? null,
+      level: level
+        ? {
+            level_type: level.level_type,
+            price: level.price,
+            price_source: level.price_source,
+            direction: level.direction,
+            source: level.source,
+            source_author: level.source_author,
+            thesis: level.thesis,
+            effective_price: resolveLevelPrice(db, level),
+          }
+        : null,
+    };
+  });
+}
+
+/**
  * Count active, non-expired levels per security_id. Used by the calendar
  * cross-reference to show "N levels" chips on events with an associated
  * security — surfaces the earnings-vs-level combo that matters most for

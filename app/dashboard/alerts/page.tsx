@@ -117,7 +117,49 @@ interface EnrichedAlert extends LevelAlert {
     source: string;
     source_author: string | null;
     thesis: string | null;
+    /** The level's live resolved threshold — the stored price for a static
+     *  level, today's MA for an MA level, null when the MA can't be computed.
+     *  Supplied by getEnrichedAlerts; see alertThresholdView. */
+    effective_price: number | null;
   } | null;
+}
+
+/**
+ * The threshold to show next to a fired alert, and whether that number is the
+ * one it actually fired against.
+ *
+ * Ledger finding alerts-inbox--ma-alert-card-shows-stale-creation-price-and-
+ * ai-repeats-it-regression-1: the card used to render `level.price`, the
+ * snapshot taken when the level was drawn. For a moving-average level the
+ * scanner never compares against that number, so the card claimed the alert
+ * fired at a level that was never the live MA.
+ *
+ * Fallback chain, per the 2026-09-14 ruling:
+ *   1. `threshold_price` — recorded at the cross (migration 093). Exact.
+ *   2. `level.effective_price` — the level's value TODAY. Honest for an old
+ *      row, but it is not the fire-time figure, so it gets a caption.
+ *   3. `level.price` — the creation snapshot. The real threshold for a static
+ *      level; for an MA level with no usable history it is the only number
+ *      left, and it too is captioned.
+ */
+function alertThresholdView(alert: EnrichedAlert): {
+  value: number;
+  caption: string | null;
+} | null {
+  const level = alert.level;
+  if (!level) return null;
+  const value = alert.threshold_price ?? level.effective_price ?? level.price;
+  const recorded = alert.threshold_price != null;
+  const movesWithTheMarket = level.price_source !== "static";
+  return {
+    value,
+    caption:
+      recorded || !movesWithTheMarket
+        ? null
+        : level.effective_price != null
+          ? "current MA; fire-time threshold not recorded"
+          : "level price at creation; fire-time threshold not recorded",
+  };
 }
 
 interface PendingLevel {
@@ -743,7 +785,12 @@ function AlertsPageInner() {
         return it.kind === "alert" ? it.alert.symbol : it.level.symbol;
       }
       if (field === "level_price") {
-        return it.kind === "alert" ? it.alert.level?.price ?? null : it.level.price;
+        // Sort on the SAME number the card prints (alertThresholdView), not on
+        // the raw creation snapshot — an order derived from a figure the user
+        // cannot see reads as a broken sort.
+        return it.kind === "alert"
+          ? alertThresholdView(it.alert)?.value ?? null
+          : it.level.price;
       }
       if (field === "source_author") {
         return it.kind === "alert"
@@ -1536,6 +1583,8 @@ function AlertRow({
     // ignore malformed JSON
   }
 
+  const threshold = alertThresholdView(alert);
+
   const isPending = alert.user_response === "pending";
   const responseLabel: Record<AlertResponse, { label: string; color: string }> = {
     pending: { label: "Pending", color: "text-gold-ink" },
@@ -1563,16 +1612,24 @@ function AlertRow({
                 {alert.symbol}
               </Link>
             )}
-            {alert.level && (
+            {alert.level && threshold && (
               <span className="text-[11px] text-ink-dim">
                 {alert.level.level_type.replace("_", " ")} @{" "}
-                {formatUSDPrecise(alert.level.price)}
+                {formatUSDPrecise(threshold.value)}
                 {alert.level.price_source && alert.level.price_source !== "static" && (
                   <span
                     className="ml-1.5 inline-block px-1 py-0.5 rounded text-[9px] bg-raised text-ink-faint uppercase tracking-wider"
                     title="This level references a moving average — the trigger price is the MA value at the moment of the cross, not a fixed number."
                   >
                     {formatPriceSourceLabel(alert.level.price_source)}
+                  </span>
+                )}
+                {threshold.caption && (
+                  <span
+                    className="ml-1.5 text-[10px] text-ink-faint italic"
+                    title="This alert fired before the threshold was recorded, so the figure shown is the level's value now — not the value it crossed."
+                  >
+                    ({threshold.caption})
                   </span>
                 )}
               </span>

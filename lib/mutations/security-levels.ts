@@ -145,6 +145,17 @@ export function triggerLevel(
     levelId: number;
     securityId: number;
     triggeredPrice: number;
+    /**
+     * The RESOLVED threshold this cross was judged against — the scanner's
+     * `effective_price` (a static level's own price, or the live MA value for
+     * an MA-sourced level). Omit or pass null only when the caller genuinely
+     * has no threshold to record (a cloud-fired alert reconciled after the
+     * fact, say); the column then stays NULL, which every reader treats as
+     * "not recorded" and discloses. Never pass `security_levels.price` for an
+     * MA level — that creation snapshot is the bug this column exists to fix
+     * (ruling 2026-09-14).
+     */
+    thresholdPrice?: number | null;
     triggeredAt?: string; // ISO timestamp; defaults to now
     positionContext?: string | null;
     suggestedAction?: string | null;
@@ -167,15 +178,16 @@ export function triggerLevel(
     const result = db
       .prepare(
         `INSERT INTO level_alerts
-          (level_id, security_id, triggered_at, triggered_price,
+          (level_id, security_id, triggered_at, triggered_price, threshold_price,
            suggested_action, position_context)
-         VALUES (?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         opts.levelId,
         opts.securityId,
         triggeredAt,
         opts.triggeredPrice,
+        opts.thresholdPrice ?? null,
         opts.suggestedAction ?? null,
         opts.positionContext ?? null
       );
