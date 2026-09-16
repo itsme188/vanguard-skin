@@ -24,6 +24,12 @@ interface TaxReportSummary {
     daysFromSale: number;
   }[];
   excludedNonUsdSales?: number;
+  /** Scope is a tax-advantaged account — nothing here belongs on a Form 8949. */
+  retirementAccount?: boolean;
+  /** accounts.name of every retirement account whose sales this report dropped. */
+  excludedRetirementAccounts?: string[];
+  /** False = no account is stamped non-taxable yet, so IRA sales are still included. */
+  hasTaxAdvantagedAccounts?: boolean;
 }
 
 function formatMoney(value: number): string {
@@ -53,6 +59,31 @@ export const FILING_WARNING_COPY =
   "stored at 100× economic value and short-sale rows with reversed proceeds/basis " +
   "columns in these exports. Stock gain/loss figures are unaffected, but reconcile " +
   "against broker records before using the CSV/TXF for any filing.";
+
+// Retirement accounts (QA:
+// tax-lots--form-8949-export-and-taxable-totals-include-roth-ira-sales,
+// ruling 2026-09-14). A sale inside a Roth/traditional IRA is not a taxable
+// event and is never reported on Form 8949, so a retirement-scoped card shows
+// this one sentence and NO export buttons — the API refuses those files (409)
+// for the same scope.
+export const RETIREMENT_ACCOUNT_COPY =
+  "Retirement account — sales here are not taxable events and are not reported on Form 8949.";
+
+// Interim disclosure the ruling asks for: until an account is actually
+// stamped, IRA sales are still in these totals and the banner must say so.
+export const NO_RETIREMENT_STAMP_COPY =
+  "No account is marked as a retirement account yet — sales in an IRA are included until it is stamped.";
+
+/**
+ * One line naming the retirement accounts whose sales were dropped from an
+ * all-accounts report, or null when none were. Without it, "no IRA sales
+ * happened this year" and "IRA sales were removed" look identical.
+ */
+export function excludedRetirementAccountsNote(names: string[] | undefined): string | null {
+  if (!names || names.length === 0) return null;
+  const list = names.join(", ");
+  return `Totals and exports exclude sales in ${list} — retirement account${names.length === 1 ? "" : "s"}, not reported on Form 8949.`;
+}
 
 export function shouldShowWashSaleAddBack(adjustments: number): boolean {
   return adjustments !== 0;
@@ -300,6 +331,30 @@ export function TaxReportCard({
   // narrowing (report's type is TaxReportSummary | null).
   if (!report) return null;
 
+  // Retirement scope: render the explanation, never a "TAX REPORT" card with
+  // taxable totals and export buttons. This must come BEFORE the
+  // no-sales bail below — a retirement report is empty by construction, so
+  // that bail would otherwise blank the card and leave the user with no idea
+  // why the Roth pill shows nothing.
+  if (report.retirementAccount) {
+    const retirementTitle = taxReportCardTitle(report.year, report.accountName);
+    return (
+      <div className="rounded-xl border border-edge bg-panel overflow-hidden">
+        <div className="px-5 py-3 border-b border-edge">
+          <h3
+            className="text-xs font-medium text-ink-faint uppercase tracking-wider truncate"
+            title={retirementTitle}
+          >
+            {retirementTitle}
+          </h3>
+        </div>
+        <div className="p-5">
+          <p className="text-xs text-ink-dim">{RETIREMENT_ACCOUNT_COPY}</p>
+        </div>
+      </div>
+    );
+  }
+
   const totalSales =
     (report.shortTermRows?.length ?? 0) + (report.longTermRows?.length ?? 0);
   if (totalSales === 0) return null;
@@ -315,6 +370,9 @@ export function TaxReportCard({
   // `accountName` prop would build a heading naming the NEW scope over the
   // OLD totals ("Tax Report — 2023 · Roth" over 2022 all-accounts figures).
   const scopeAccountName = report.accountName;
+  // One line naming any retirement account whose sales were dropped from this
+  // (all-accounts) report — derived once, rendered once.
+  const retirementNote = excludedRetirementAccountsNote(report.excludedRetirementAccounts);
 
   return (
     <div className="rounded-xl border border-edge bg-panel overflow-hidden">
@@ -373,6 +431,9 @@ export function TaxReportCard({
               &#x26A0; {filingBannerHeading(scopeAccountName)}
             </h4>
             <p className="text-[10px] text-ink-faint mt-1">{FILING_WARNING_COPY}</p>
+            {report.hasTaxAdvantagedAccounts === false && (
+              <p className="text-[10px] text-ink-faint mt-1">{NO_RETIREMENT_STAMP_COPY}</p>
+            )}
           </div>
         </div>
       )}
@@ -432,6 +493,10 @@ export function TaxReportCard({
             </div>
           </div>
         </div>
+
+        {retirementNote && (
+          <p className="text-[10px] text-ink-faint italic">{retirementNote}</p>
+        )}
 
         {(report.excludedNonUsdSales ?? 0) > 0 && (
           <p className="text-[10px] text-ink-faint italic">
