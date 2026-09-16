@@ -121,6 +121,23 @@ export interface RiskOptions {
    * (asOfDate caps, never extends, an explicit endDate).
    */
   asOfDate?: string;
+  /**
+   * Which start-date floor the window uses — see the SCOPE WINDOW block in
+   * computeRiskMetrics for the full reasoning.
+   *
+   * - `"common"` (DEFAULT): floor at commonCoverageStart(db) so EVERY scope
+   *   measures the same period. Required wherever scopes are compared against
+   *   each other on one surface (the diagnostics comparison card and the
+   *   narratives that describe it).
+   * - `"scope"`: no cross-account floor — the window is the scope's own
+   *   full-coverage history. For single-scope surfaces (the Performance
+   *   page's risk tiles), where flooring would throw away a long-history
+   *   account's real drawdown/Sharpe and caption it with a different
+   *   account's start date.
+   *
+   * An explicit `startDate` applies in BOTH modes.
+   */
+  coverageFloor?: "common" | "scope";
 }
 
 export interface PositionRisk {
@@ -184,15 +201,37 @@ export function computeRiskMetrics(
   // not an external flow either, so the flow-adjustment below can't
   // neutralize it (see fullCoverageHaving in lib/queries/daily-valuations).
   //
-  // SCOPE-INVARIANT WINDOW: fullCoverageOnly calibrates against the REQUESTED
-  // account set, so each scope would otherwise start at its own coverage
-  // onset (live DB: ibkr 2024-12-31, vanguard 2026-03-27, all 2026-04-06) —
-  // and the All-Accounts vol card compared against per-account vols measured
-  // over different periods (it read LOWER than every constituent, which looks
-  // impossible). Flooring at commonCoverageStart makes every scope measure the
-  // same period. The floor only ever moves the start LATER: an explicitly
-  // requested startDate inside the common window still wins.
-  const startDate = laterDate(options?.startDate, commonCoverageStart(db));
+  // SCOPE WINDOW — two modes, one per surface (`coverageFloor`, default
+  // "common"). fullCoverageOnly calibrates against the REQUESTED account set,
+  // so each scope naturally starts at its own coverage onset.
+  //
+  // "common" (2026-08-19): floor at commonCoverageStart so every scope
+  // measures the SAME period. On a cross-scope COMPARISON surface the
+  // per-scope onsets put three different windows behind one card, and the
+  // All-Accounts vol read LOWER than every constituent — which looks
+  // impossible (a portfolio can sit below its constituents by
+  // diversification, but not while each was measured over a different
+  // period). This is the default, and it is what the diagnostics comparison
+  // (app/api/compute/risk/route.ts) and the narratives that describe it use.
+  //
+  // "scope" (2026-09-14 user ruling, docs/DECISIONS.md): skip the
+  // cross-account floor entirely — the window is the scope's own
+  // full-coverage history. On a SINGLE-SCOPE surface nothing is compared
+  // across scopes, so the floor bought nothing and cost plenty: a scope with
+  // a long daily history had its drawdown/Sharpe/volatility computed over
+  // whatever short stretch a DIFFERENT account's history happened to allow,
+  // and the risk caption named that other account's start date beside an
+  // equity curve drawn from the scope's own. The Performance page's risk
+  // tiles pass this.
+  //
+  // In BOTH modes an explicit startDate applies, and the "common" floor only
+  // ever moves the start LATER — a requested startDate inside the common
+  // window still wins.
+  const coverageFloor = options?.coverageFloor ?? "common";
+  const startDate =
+    coverageFloor === "scope"
+      ? options?.startDate
+      : laterDate(options?.startDate, commonCoverageStart(db));
   const valuations =
     accountIds && accountIds.length > 0
       ? getDailyValuationsForAccounts(db, accountIds, {
