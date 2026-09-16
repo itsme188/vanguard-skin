@@ -65,11 +65,16 @@ export function detectAndFireAlerts(db: Database.Database): {
       levelId: level.id,
       securityId: level.security_id,
       triggeredPrice: level.current_price,
+      // The two halves of the event, both recorded (2026-09-14 ruling):
+      // triggeredPrice is what the security traded at, thresholdPrice is what
+      // it was judged against. findCrossedLevels already resolved the latter —
+      // for an MA level it is the LIVE moving average, which is why the alert
+      // must not later be re-derived from security_levels.price (the snapshot
+      // taken when the level was drawn, and the figure the card and the AI
+      // sentence used to quote).
+      thresholdPrice: level.effective_price,
       positionContext: context,
     });
-    // Note: triggeredPrice is the current price, not the level's effective price.
-    // For MA-based levels the level itself may have moved; we store what the price
-    // was when the cross occurred (useful in the alert display).
 
     if (wasDeduped) {
       deduped++;

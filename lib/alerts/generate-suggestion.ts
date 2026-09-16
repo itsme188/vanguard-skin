@@ -2,10 +2,13 @@ import type Database from "better-sqlite3";
 import { generateText } from "ai";
 import { getModelForFeature } from "@/lib/ai/provider";
 import { setAlertSuggestion } from "@/lib/mutations/security-levels";
+import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
+import type { LevelPriceSource } from "@/lib/types";
 
 interface LevelRow {
   level_type: string;
   price: number;
+  price_source: LevelPriceSource;
   direction: string | null;
   source: string;
   source_author: string | null;
@@ -18,6 +21,7 @@ interface AlertRow {
   id: number;
   security_id: number;
   triggered_price: number;
+  threshold_price: number | null;
   triggered_at: string;
   position_context: string | null;
   suggested_action: string | null;
@@ -34,7 +38,18 @@ export interface SuggestionContext {
   securityName: string | null;
   securityType: string | null;
   levelType: string;
+  /**
+   * The threshold the alert fired AGAINST — the recorded `threshold_price`,
+   * else the level's live resolved price. NOT `security_levels.price` for an
+   * MA level: the sentence Claude writes outlives the card, so quoting the
+   * creation snapshot there is the part of the 2026-09-14 finding that
+   * actually misleads.
+   */
   levelPrice: number;
+  /** `static`, or the MA the level tracks — lets the prompt name the average
+   *  instead of presenting a moving threshold as a fixed number. Optional so
+   *  existing callers/tests that don't set it keep working. */
+  levelPriceSource?: LevelPriceSource | null;
   triggeredPrice: number;
   direction: string | null;
   sourceAuthor: string | null;
@@ -86,11 +101,21 @@ export function buildSuggestionPrompt(ctx: SuggestionContext): string {
     ? `Originally flagged as: ${ctx.actionHint.replace(/_/g, " ")}`
     : "";
 
+  // An MA level's threshold MOVES. Naming the average tells the model the
+  // figure is a moving line it crossed, not a number the user typed — and
+  // stops the sentence from being read back later as a fixed level.
+  const maMatch = ctx.levelPriceSource
+    ? /^(sma|ema)_(\d+)$/.exec(ctx.levelPriceSource)
+    : null;
+  const levelSourceNote = maMatch
+    ? ` (the ${maMatch[2]}-day ${maMatch[1].toUpperCase()} at the time of the cross)`
+    : "";
+
   return [
     `A price level you set was just crossed. Write a ONE-SENTENCE recommendation for what to consider doing (or why to wait). Be analytical like a colleague, not a coach. No hype language. No preamble. Just the recommendation.`,
     ``,
     `Security: ${ctx.symbol}${ctx.securityName ? ` (${ctx.securityName})` : ""}`,
-    `Level: ${ctx.levelType.replace(/_/g, " ")} at $${ctx.levelPrice.toFixed(2)}`,
+    `Level: ${ctx.levelType.replace(/_/g, " ")} at $${ctx.levelPrice.toFixed(2)}${levelSourceNote}`,
     `Current price: $${ctx.triggeredPrice.toFixed(2)}`,
     directionLine,
     timeframeLine,
@@ -139,20 +164,35 @@ export function normalizePositionContext(
 }
 
 /**
- * Generate a suggestion for a single alert and persist it.
- * Returns the generated suggestion text, or null on any failure (Claude error, missing data).
- * Non-throwing — callers can run this against many alerts and ignore individual failures.
+ * Assemble everything the prompt needs for one alert, or null when the alert
+ * (or its level/security) is gone. Split out of generateSuggestionForAlert so
+ * the composition — especially WHICH price becomes `levelPrice` — is testable
+ * against a real database without going anywhere near the model.
+ *
+ * The threshold is chosen in the same order the alerts inbox renders it:
+ *
+ *   1. `threshold_price` — the value recorded at the cross (migration 093).
+ *   2. the level's live resolved price — for an alert fired before 093, the
+ *      current MA is closer to the truth than the creation snapshot, and it is
+ *      the same figure the card shows next to the sentence.
+ *   3. `security_levels.price` — the last resort: correct for a static level,
+ *      and all that exists for an MA with too little history.
+ *
+ * Step 2 is why this reaches for resolveLevelPrice rather than just reading
+ * the row: a sentence generated today about a moving-average level must not
+ * quote a number that has not been the threshold for weeks.
  */
-export async function generateSuggestionForAlert(
+export function buildSuggestionContext(
   db: Database.Database,
   alertId: number
-): Promise<string | null> {
+): SuggestionContext | null {
   const row = db
     .prepare(
       `SELECT
-         a.id, a.security_id, a.triggered_price, a.triggered_at,
+         a.id, a.security_id, a.triggered_price, a.threshold_price, a.triggered_at,
          a.position_context, a.suggested_action,
-         sl.level_type, sl.price AS level_price, sl.direction,
+         sl.security_id AS level_security_id,
+         sl.level_type, sl.price AS level_price, sl.price_source, sl.direction,
          sl.source, sl.source_author, sl.thesis, sl.timeframe, sl.action_hint,
          s.symbol, s.name AS security_name, s.security_type
        FROM level_alerts a
@@ -161,19 +201,31 @@ export async function generateSuggestionForAlert(
        WHERE a.id = ?`
     )
     .get(alertId) as
-    | (AlertRow & LevelRow & SecurityRow & { level_price: number })
+    | (AlertRow &
+        LevelRow &
+        SecurityRow & { level_price: number; level_security_id: number })
     | undefined;
 
   if (!row) return null;
 
   const positionContext = normalizePositionContext(row.position_context);
 
-  const ctx: SuggestionContext = {
+  const thresholdPrice =
+    row.threshold_price ??
+    resolveLevelPrice(db, {
+      security_id: row.level_security_id,
+      price: row.level_price,
+      price_source: row.price_source,
+    }) ??
+    row.level_price;
+
+  return {
     symbol: row.symbol,
     securityName: row.security_name,
     securityType: row.security_type,
     levelType: row.level_type,
-    levelPrice: row.level_price,
+    levelPrice: thresholdPrice,
+    levelPriceSource: row.price_source,
     triggeredPrice: row.triggered_price,
     direction: row.direction,
     sourceAuthor: row.source_author,
@@ -182,6 +234,19 @@ export async function generateSuggestionForAlert(
     actionHint: row.action_hint,
     ...positionContext,
   };
+}
+
+/**
+ * Generate a suggestion for a single alert and persist it.
+ * Returns the generated suggestion text, or null on any failure (Claude error, missing data).
+ * Non-throwing — callers can run this against many alerts and ignore individual failures.
+ */
+export async function generateSuggestionForAlert(
+  db: Database.Database,
+  alertId: number
+): Promise<string | null> {
+  const ctx = buildSuggestionContext(db, alertId);
+  if (!ctx) return null;
 
   try {
     const { text } = await generateText({

@@ -382,6 +382,18 @@ export interface LevelAlert {
   security_id: number;
   triggered_at: string;
   triggered_price: number;
+  /**
+   * The resolved threshold the alert fired AGAINST, recorded at the moment of
+   * the cross (migration 093). For a static level that is the level's own
+   * price; for an MA level it is the live MA the scanner computed on that
+   * pass — which `security_levels.price`, a snapshot from when the level was
+   * drawn, is not.
+   *
+   * NULL for every alert fired before 093: "not recorded", never zero. Readers
+   * fall back to the level's live `effective_price` and must disclose that the
+   * figure shown is today's value rather than the fire-time one.
+   */
+  threshold_price: number | null;
   suggested_action: string | null;
   position_context: string | null;
   user_response: AlertResponse;

@@ -1,0 +1,32 @@
+-- 093: record the threshold a level alert actually fired against.
+--
+-- Ledger finding alerts-inbox--ma-alert-card-shows-stale-creation-price-and-
+-- ai-repeats-it-regression-1 (user ruling 2026-09-14): "Moving-average alerts
+-- store the resolved threshold at fire time (migration + alert-insert
+-- mutation); old rows render effective_price; stale AI sentences age out, no
+-- repair script."
+--
+-- A level whose `price_source` is an MA (sma_50, ema_21, …) carries a
+-- `security_levels.price` that is only the SNAPSHOT taken when the level was
+-- drawn. The scanner never compares against it: checkLevelTriggerState
+-- resolves the live MA from ohlcv_bars (lib/alerts/resolve-level-price.ts) and
+-- compares the current price against THAT. The fired alert then recorded only
+-- `triggered_price` — what the security traded at — so the other half of the
+-- event, the threshold it crossed, was thrown away and every downstream
+-- surface fell back to the stale snapshot. The card said "support @ <snapshot>"
+-- and the one-sentence Claude suggestion repeated the same wrong figure.
+--
+--   threshold_price -- the effective/resolved level price at the MOMENT of the
+--                      cross, in the security's native currency, on the same
+--                      basis as triggered_price. For a static level this is
+--                      simply the level's own price; for an MA level it is the
+--                      MA value the scanner computed on that pass.
+--
+-- NULLABLE ON PURPOSE, with no DEFAULT. Every alert that fired before this
+-- migration has no recorded threshold, and a default would forge one. NULL
+-- means "not recorded", which the read side must be able to see: the inbox
+-- renders `threshold_price ?? level.effective_price ?? level.price` and
+-- captions the number when it is the live fallback rather than the value the
+-- alert fired against. No backfill and no repair script — per the ruling, the
+-- old rows and their stale AI sentences age out.
+ALTER TABLE level_alerts ADD COLUMN threshold_price REAL;
