@@ -204,6 +204,32 @@ export const OPTION_RESYMBOL_TARGETS = [
     preQty: 4,
     ratio: 1,
   },
+  // CRWD 4:1 (2026-07-01): the broker re-struck the March-2027 call
+  // (270319C00470000 → 270319C00117500, contracts ×4). The July statement
+  // transcribed the split as a quantity-only "SPLIT 6" row on the new symbol
+  // (not a replay event), so the two February opening legs stayed on the
+  // pre-split symbol while every close and the live position sit on the
+  // re-struck one. Pure re-symbol + product-preserving normalization
+  // (1 → 4 contracts, price ÷4, amount + source_key untouched). Verified
+  // 2026-09-15 against the July/August statements: 8 post-split contracts,
+  // sold 1 (07-06) + 2 (08-27) + 1 (08-31, unsettled section) → 4 held at
+  // 08-31 with the second February lot's basis remaining, i.e. FIFO.
+  {
+    fromSymbol: "CRWD  270319C00470000",
+    toSymbol: "CRWD  270319C00117500",
+    tradeDate: "2026-02-05",
+    type: "BUY_TO_OPEN",
+    preQty: 1,
+    ratio: 4,
+  },
+  {
+    fromSymbol: "CRWD  270319C00470000",
+    toSymbol: "CRWD  270319C00117500",
+    tradeDate: "2026-02-06",
+    type: "BUY_TO_OPEN",
+    preQty: 1,
+    ratio: 4,
+  },
 ] as const;
 
 export function planOptionResymbols(db: Database.Database): OptionSplitPlan[] {
@@ -271,6 +297,29 @@ export function planOptionSplits(db: Database.Database, excludeIds: number[] = [
       // the legacy-keyed duplicate of this same trade may still exist at
       // planning time — it is deleted in the same apply transaction
       .filter((r) => !excludeIds.includes(r.id));
+    if (rows.length === 0) {
+      // A leg that a later OPTION_RESYMBOL_TARGETS entry moved onto the
+      // re-struck symbol no longer lives on the pre-split symbol at all: the
+      // normalized row sits on the target symbol instead. That is the
+      // finished state, not a refusal — otherwise every later run of this
+      // script is blocked by its own earlier repair.
+      const resymbol = OPTION_RESYMBOL_TARGETS.find(
+        (r) => r.fromSymbol === t.occSymbol && r.tradeDate === t.tradeDate && r.type === t.type
+      );
+      const movedRows = resymbol
+        ? (db
+            .prepare(
+              `SELECT t.id FROM transactions t JOIN securities s ON s.id = t.security_id
+                WHERE t.account_id = 1 AND s.symbol = ? AND t.trade_date = ? AND t.type = ?
+                  AND ABS(t.quantity - ?) < 1e-9`
+            )
+            .all(resymbol.toSymbol, t.tradeDate, t.type, t.preQty * t.ratio) as { id: number }[])
+        : [];
+      if (movedRows.length === 1) {
+        plans.push({ id: movedRows[0].id, label, ok: true, action: "already repaired (normalized on the re-struck symbol)" });
+        continue;
+      }
+    }
     if (rows.length !== 1) {
       plans.push({ id: -1, label, ok: false, action: `expected 1 row, found ${rows.length} (run after dedup)` });
       continue;
