@@ -293,6 +293,32 @@ describe("planOptionSplits", () => {
     expect(plans[1].action).toBe("already normalized");
   });
 
+  it("reports already repaired when the leg was moved onto the re-struck symbol by a resymbol target", () => {
+    // After OPTION_RESYMBOL_TARGETS moved IBKR 250620P00140000 → 250620P00035000
+    // the pre-split symbol carries no row at all; the normalized row (qty 4)
+    // lives on the target. That is the finished state, not a refusal — a
+    // later run of the script (e.g. the CRWD re-symbol) must not be blocked
+    // by its own earlier repair.
+    const db = fresh();
+    const target = OPTION_SPLIT_TARGETS[0]; // IBKR  250620P00140000
+    seedSecurity(db, target.occSymbol, "Option"); // old symbol, no rows
+    const toId = seedSecurity(db, "IBKR  250620P00035000", "Option");
+    const movedId = seedTxn(db, {
+      securityId: toId,
+      tradeDate: target.tradeDate,
+      type: target.type,
+      quantity: 4,
+      price: 2.5,
+    });
+
+    const plans = planOptionSplits(db);
+    expect(plans[0].id).toBe(movedId);
+    expect(plans[0].ok).toBe(true);
+    expect(plans[0].action).toBe("already repaired (normalized on the re-struck symbol)");
+    // the sibling target has neither row: still a refusal
+    expect(plans[1].ok).toBe(false);
+  });
+
   it("refuses an unexpected quantity", () => {
     const db = fresh();
     const target = OPTION_SPLIT_TARGETS[0];
@@ -463,6 +489,24 @@ describe("planOptionResymbols (XLU 2:1 split re-symbol)", () => {
     expect(plans[0].action).toBe("resymbol + normalize");
     expect(plans[0].newQty).toBe(20);
     expect(plans[0].newPrice).toBeCloseTo(0.8, 9);
+  });
+
+  it("plans the two CRWD 4:1 re-symbols (each pre-split contract becomes 4 at a quarter of the price)", async () => {
+    const planOptionResymbols = await load();
+    const db = fresh();
+    const fromId = seedSecurity(db, "CRWD  270319C00470000");
+    seedSecurity(db, "CRWD  270319C00117500");
+    seedTxn(db, { securityId: fromId, tradeDate: "2026-02-05", type: "BUY_TO_OPEN", quantity: 1, price: 60, amount: -6001 });
+    seedTxn(db, { securityId: fromId, tradeDate: "2026-02-06", type: "BUY_TO_OPEN", quantity: 1, price: 58, amount: -5801 });
+    const plans = planOptionResymbols(db).filter((p) => p.label.startsWith("CRWD"));
+    expect(plans).toHaveLength(2);
+    for (const p of plans) {
+      expect(p.ok).toBe(true);
+      expect(p.action).toBe("resymbol + normalize");
+      expect(p.newQty).toBe(4);
+    }
+    expect(plans[0].newPrice).toBeCloseTo(15, 9);
+    expect(plans[1].newPrice).toBeCloseTo(14.5, 9);
   });
 
   it("reports already repaired when the row lives on the target symbol at post-split qty", async () => {
