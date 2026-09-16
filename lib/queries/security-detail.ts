@@ -247,6 +247,14 @@ export function getOpenTaxLotsBySecurity(db: Database.Database, securityId: numb
 
 /**
  * Get closed tax lot sales for a specific security.
+ *
+ * sale_price / proceeds / cost_basis_allocated / realized_gain_loss /
+ * acquisition_price are stored in the security's NATIVE currency (FX
+ * convention) — the fx_rates join converts them to USD for this page's
+ * "Recent Sales" card, matching the sibling getTransactionsBySecurity /
+ * getHoldingsBySecurity queries on the same page. Unlike this function,
+ * getClosedTaxLotSales (lib/queries/tax-lots.ts, backs the Tax Lots page)
+ * deliberately stays native with a currency label — do not convert there.
  */
 export function getClosedSalesBySecurity(
   db: Database.Database,
@@ -259,15 +267,19 @@ export function getClosedSalesBySecurity(
         tls.id, a.name AS account_name, tl.account_id,
         s.symbol, s.name AS security_name,
         tl.acquisition_date, tls.sale_date,
-        tls.quantity_sold, tl.acquisition_price,
-        tls.sale_price, tls.proceeds,
-        tls.cost_basis_allocated, tls.realized_gain_loss,
+        tls.quantity_sold,
+        tl.acquisition_price * COALESCE(fx.usd_per_unit, 1) AS acquisition_price,
+        tls.sale_price * COALESCE(fx.usd_per_unit, 1) AS sale_price,
+        tls.proceeds * COALESCE(fx.usd_per_unit, 1) AS proceeds,
+        tls.cost_basis_allocated * COALESCE(fx.usd_per_unit, 1) AS cost_basis_allocated,
+        tls.realized_gain_loss * COALESCE(fx.usd_per_unit, 1) AS realized_gain_loss,
         tls.is_long_term, tls.holding_period_days,
         (t.type = 'RECONCILE_CLOSE') AS is_synthetic_close
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN accounts a ON a.id = tl.account_id
       JOIN securities s ON s.id = tl.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       JOIN transactions t ON t.id = tls.sale_transaction_id
       WHERE tl.security_id = ?
       ORDER BY tls.sale_date DESC
