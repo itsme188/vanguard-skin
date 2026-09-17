@@ -1,8 +1,8 @@
 # Confidence and coverage cleanup — 2026-09-17
 
-**Waiting on:** CODEX: integrate, push, deploy, and record the final verification.
+**Waiting on:** nobody.
 
-**State:** Implemented and committed as `e6cc4100` on `codex/confidence-cleanup-20260917`. Integration base `0e0fa344c5a365cc9dd5c43b1779b4632b1f18b0`. User authorized all three fixes and committing/deploying in this session.
+**State:** Implemented in `e6cc4100`, integrated and pushed through `24085115`, and deployed. Installed build `Egac-HggTIL9J0XxHm4qh`; signed/notarized, bundle gate passed, installed build ID matched, signature verified, new standalone listener and login health check passed. Integration base `0e0fa344c5a365cc9dd5c43b1779b4632b1f18b0`. User authorized all three fixes and committing/deploying in this session.
 
 ## Changes
 
@@ -20,6 +20,6 @@
 
 ## Retrospective
 
-Goal: remove three misleading confidence/coverage verification outcomes. All three corrected; implementation passed on its first production-code attempt. The synthetic-close regression fixture needed a security type before it exercised the intended path. Browser automation needed the actual link reference rather than a text selector; screenshots confirmed navigation and stale warning. Next time, include the minimum security metadata in synthetic reconciliation fixtures from the start.
+Goal: remove three misleading confidence/coverage verification outcomes. All three corrected; implementation passed on its first production-code attempt. The synthetic-close regression fixture needed a security type before it exercised the intended path. Browser automation needed the actual link reference rather than a text selector; screenshots confirmed navigation and stale warning. Next time, include the minimum security metadata in synthetic reconciliation fixtures from the start. Notarization was the longest waiting step; deployment completed successfully.
 
-**Next action:** CODEX: ship this reviewed result and preserve final main-checkout verification evidence.
+**Next action:** none for these three fixes. Any remaining historical-data repair or acceptance stamping is a separate task. Final main-checkout suite evidence is recorded by `scripts/verify.sh` in `.git/verification/`; ignored evidence is preserved before removing the temporary worktree.
