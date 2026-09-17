@@ -138,3 +138,109 @@ describe("NarrativeBlock renders the refresh status under the button that was pr
     expect(status).toBeGreaterThan(button);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// QA 2026-09-17 —
+// analysis-defense-narrative--auto-generation-500-card-vanishes-no-error-no-retry.
+//
+// On a cold cache, the GET returns {notGenerated:true} and the effect
+// auto-fires handleRefresh() (the generate POST) to fill it. When that POST
+// fails, handleRefresh sets refreshError to a domain-language message — but
+// the OLD render guard `if (error || !text) return null` ran first. `text`
+// is still null on a cold cache, so the whole card vanished: no message, no
+// Refresh/Try-again button, nothing to say a paid AI generation was
+// attempted. A reload just auto-fires (and pays for) another attempt.
+//
+// The fix extracts a pure `narrativeRenderState` helper (exported from
+// NarrativeBlock.tsx) so this can be pinned without a DOM harness — this
+// repo has no jsdom/RTL (see file header above).
+import { narrativeRenderState } from "@/app/dashboard/components/analysis/NarrativeBlock";
+
+describe("narrativeRenderState (cold-cache auto-generation failure must not vanish the card)", () => {
+  it("is 'loading' while the initial GET is in flight", () => {
+    expect(
+      narrativeRenderState({ text: null, error: null, refreshError: null, loading: true, refreshing: false }),
+    ).toBe("loading");
+  });
+
+  it("is 'loading' while the cold-cache auto-fill POST is in flight (no text yet)", () => {
+    expect(
+      narrativeRenderState({ text: null, error: null, refreshError: null, loading: false, refreshing: true }),
+    ).toBe("loading");
+  });
+
+  it("is 'narrative' once text is present, even if a stale refreshError lingers from a prior click", () => {
+    expect(
+      narrativeRenderState({
+        text: "Some cached prose.",
+        error: null,
+        refreshError: "stale failure text",
+        loading: false,
+        refreshing: false,
+      }),
+    ).toBe("narrative");
+  });
+
+  it("is 'hidden' for the genuine no-narrative case — no text, no error, nothing attempted", () => {
+    expect(
+      narrativeRenderState({ text: null, error: null, refreshError: null, loading: false, refreshing: false }),
+    ).toBe("hidden");
+  });
+
+  it("is 'hidden' when the initial GET failed outright — unchanged existing behavior", () => {
+    expect(
+      narrativeRenderState({
+        text: null,
+        error: "Failed to load narrative",
+        refreshError: null,
+        loading: false,
+        refreshing: false,
+      }),
+    ).toBe("hidden");
+  });
+
+  it("is 'cold-failure' when the cold-cache auto-generation POST failed — the bug this pins", () => {
+    // text stays null (nothing ever generated), error (GET-failure) stays null
+    // (the GET itself succeeded with {notGenerated:true}), but refreshError is
+    // now set by handleRefresh's failure branch. The old guard hid this case;
+    // it must now render a status instead of nothing.
+    expect(
+      narrativeRenderState({
+        text: null,
+        error: null,
+        refreshError: "Couldn't regenerate — the request failed. Try again in a few minutes.",
+        loading: false,
+        refreshing: false,
+      }),
+    ).toBe("cold-failure");
+  });
+});
+
+describe("NarrativeBlock wires the cold-failure state to a visible retry, never a silent null", () => {
+  const src = readFileSync("app/dashboard/components/analysis/NarrativeBlock.tsx", "utf8");
+
+  it("no longer has the old unconditional guard that hid a cold-cache generation failure", () => {
+    // The old bug line: `if (error || !text) return null` ran before refreshError
+    // was ever consulted, so `!text` alone (with error still null) hid the card.
+    expect(src).not.toMatch(/if\s*\(\s*error\s*\|\|\s*!text\s*\)\s*return null/);
+  });
+
+  it("computes what to render through the pure narrativeRenderState helper", () => {
+    expect(src).toMatch(/const renderState = narrativeRenderState\(/);
+  });
+
+  it("renders a role=alert status with a Try again button, wired to the footer refresh, on cold-failure", () => {
+    const branchStart = src.indexOf('renderState === "cold-failure"');
+    expect(branchStart).toBeGreaterThan(-1);
+    const branch = src.slice(branchStart, branchStart + 1200);
+    expect(branch).toMatch(/role="alert"/);
+    expect(branch).toContain("{refreshError}");
+    expect(branch).toMatch(/Try again/);
+    expect(branch).toMatch(/handleRefresh\("footer"\)/);
+    expect(branch).toMatch(/disabled=\{refreshing\}/);
+  });
+
+  it("still returns null for the genuine no-narrative case (hidden state)", () => {
+    expect(src).toMatch(/renderState === "hidden"[^)]*\)\s*return null/);
+  });
+});
