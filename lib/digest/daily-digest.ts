@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { getRecentArticles, countRecentArticles } from "@/lib/queries/research";
 import { bucketByCompany } from "@/lib/digest/group-by-company";
+import { splitDigestOpening } from "./synthesis-editorial";
 import { synthesize, SynthesisEmptyError } from "@/lib/digest/synthesize";
 import { computeAnomalies, formatVanguardAnomaliesBlock } from "@/lib/digest/anomalies";
 import { splitLateArrivals, renderLateArrivalsBlock } from "@/lib/digest/late-arrivals";
@@ -479,6 +480,7 @@ export async function generateDigestSinceAdaptive(
 
   const title = edition === "evening" ? "# Evening Recap" : "# Morning Research Digest";
   const lines: string[] = [title, `### ${dateStr}`, "", countLine, "", "---", ""];
+  let hasMarketOpening = false;
 
   // ── 1. Late arrivals — articles that just missed the PREVIOUS email ──────
   // Only meaningful when sinceDate is a full ISO send timestamp (the marker);
@@ -571,6 +573,12 @@ export async function generateDigestSinceAdaptive(
         anomalies,
         sessionHeading: edition === "evening" ? "The Session" : "Overnight & Setup",
       });
+      const lead = splitDigestOpening(synth);
+      if (lead) {
+        lines.splice(0, 7, lead.opening, "", `*${dateStr}*`, "");
+        synth = lead.body;
+        hasMarketOpening = true;
+      }
       const crossFiled = insertCrossFilePointers(synth, essays, [...heldSymbols, ...watchlist]);
       synth = crossFiled.markdown;
       const thinLines = renderThinCoverageLines([], crossFiled.unfiled);
@@ -601,5 +609,6 @@ export async function generateDigestSinceAdaptive(
     lines.push(desk);
   }
 
+  if (hasMarketOpening) lines.push("", countLine);
   return lines.join("\n").trim();
 }

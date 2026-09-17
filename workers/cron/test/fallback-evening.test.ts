@@ -787,3 +787,16 @@ describe("bounded evening synthesis delivery", () => {
    expect(prompt).toContain("Group companies sharing a supported sector");
    expect(prompt).toContain("Copy citation URLs EXACTLY");
  });
+
+it("puts the market opening first in the delivered Worker HTML", async () => {
+ vi.mocked(loadLatestSnapshot).mockResolvedValue(makeV3Snapshot({articleCount:7}));
+ vi.mocked(global.fetch).mockResolvedValue({ok:false} as Response);
+ vi.mocked(generateText).mockResolvedValue({text:"# Hardware leads a mixed market\n\nStronger orders supported chips while software lagged.\n\n## The Session\n\n"+"Source-backed commentary. ".repeat(15),finishReason:"stop"} as Awaited<ReturnType<typeof generateText>>);
+ vi.mocked(sendEmail).mockClear();
+ const result=await runFallbackEvening(makeEnv());
+ expect(result.kind).toBe("success");
+ const sent=JSON.stringify(vi.mocked(sendEmail).mock.calls);
+ expect(sent).toContain("Hardware leads a mixed market");
+ expect(sent.indexOf("Hardware leads a mixed market")).toBeLessThan(sent.indexOf("Stronger orders supported chips"));
+ expect(sent.indexOf("Stronger orders supported chips")).toBeLessThan(sent.indexOf("The Session"));
+});

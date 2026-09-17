@@ -1,5 +1,7 @@
 /** Mirrored in the Mac and Worker builds; parity tested. */
 export const DIGEST_EDITORIAL_RULES = `EDITORIAL PRIORITIES (HARD):
+- Open with one # headline that captures the market's defining development, followed by a short plain-text subhead explaining the day's direction, driver, or important contrast. Ground both in the supplied research. For a morning edition, summarize the overnight market/setup rather than inventing a closing result.
+- The headline and subhead must tell the reader what happened, not describe this document. Never use generic titles such as "The day in research", "Daily Briefing", or "Research Digest", and never introduce workflow notes about previews, source preparation, model calls, or how the text was produced. Do not restate the headline and subhead verbatim in the first body section.
 - Write a briefing of the news and arguments, not an inventory of newsletters. Lead with the substantive takeaway; place short [Source](url) citations at the end of the sentence or paragraph they support.
 - Never open with "XYZ appeared in", "was mentioned in", "was covered in", or "Only Source X covered". The publication is evidence, not the story.
 - Give a company its own section only for concrete company-specific news, a differentiated thesis, a changed estimate, a catalyst, or a risk supported by the supplied text.
@@ -19,4 +21,12 @@ export function retainSuppliedSourceLinks(
   return markdown.replace(/\[([^\]\n]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/g, (link, label: string, url: string) =>
     allowed.has(url) ? link : `${label} (source link unavailable)`,
   );
+}
+
+/** Separate a model-written market opening so delivery chrome cannot precede it.
+ * Missing/malformed openings retain the existing fallback layout. */
+export function splitDigestOpening(markdown: string): { opening: string; body: string } | null {
+  const match = markdown.trimStart().match(/^(# [^\n]+)\n+([^#\n][^\n]*(?:\n(?!\n|#)[^\n]+)*)\n+(?=## )/);
+  if (!match) return null;
+  return { opening: `${match[1]}\n\n${match[2].trim()}`, body: markdown.trimStart().slice(match[0].length) };
 }
