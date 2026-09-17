@@ -7,15 +7,14 @@
  *
  * Output rules:
  *   - Must start with a `#` or `##` header.
- *   - 60–150 words per section.
+ *   - Concise takeaway-first paragraphs; shared sector stories grouped.
  *   - Citations inline as [SourceName](url).
  *   - `## Also covered` closing section for thin coverage.
  */
 
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
-import { issuerSiblings } from "@/lib/securities/issuer-family";
-import { insertBeforeAlsoCovered } from "@/lib/digest/thin-coverage";
+import { DIGEST_EDITORIAL_RULES, retainSuppliedSourceLinks } from "./synthesis-editorial";
 import type { CompanyBucket } from "@/lib/digest/group-by-company";
 
 // ─── Error class ─────────────────────────────────────────────────────────────
@@ -50,30 +49,19 @@ export interface SynthesisInput {
 
 // ─── System prompt ────────────────────────────────────────────────────────────
 
-const SYNTHESIS_SYSTEM_PROMPT_BASE = `You are synthesizing newsletter coverage for a portfolio investor's day-end recap. Write one section per company/topic that surfaces what mattered TODAY across sources, with citations.
+const SYNTHESIS_SYSTEM_PROMPT_BASE = `You are synthesizing newsletter coverage for a portfolio investor's day-end recap. Surface what mattered TODAY across sources, with citations.
+
+${DIGEST_EDITORIAL_RULES}
 
 CRITICAL OUTPUT RULES:
 - First character must be \`#\`. No preamble, no narration ("I'll now...", "Good, here is..."), no closing commentary.
-- Use ## CompanyName as section headers (or ## Macro for the no-symbol bucket).
-- Cite sources inline as [SourceName](url) — the SourceName link is mandatory whenever you reference any claim.
-- Connect threads ACROSS sources where they exist. If only one source mentions something, say so ("Only Vital Knowledge flagged X today").
-- Skip companies/topics with thin coverage (1 article, no portfolio relevance) — weave them into a closing "## Also covered" line at the end.
-- 60-150 words per section. Skip if no meaningful synthesis is possible.
+- Use descriptive ## headings for shared sector/topic stories and ## TICKER (CompanyName) for substantive company-specific sections.
 - DO NOT include P&L numbers, position sizes, or anything that would reveal what the user owns. Write as if for an analyst peer.
-
-COVERAGE-CHARACTERIZATION RULES (HARD):
-- Do NOT label any source as having mentioned a symbol "indirectly", "only briefly", "in passing", "tangentially", "without focus", or any synonym. You cannot reliably tell from the bucket's article summaries whether a symbol was the lead topic or one of many tickers in a long list. If a symbol appears in a source's bucket entry, that source covered it — narrate WHAT the source said about it (drawn from the summary you were given), not HOW PROMINENTLY it said it.
-- If you have nothing concrete to say beyond "Source X mentioned this", either (a) write a substantive section anchored on the summary text you were given, or (b) move the symbol to "## Also covered" with the citation but no characterization of coverage-depth.
-- Specifically forbidden phrasings: "only mentioned indirectly", "mentioned in passing", "no real focus on", "appeared only as a footnote", "briefly noted", "not the focus of any source".
-
-HELD-TICKER PRIORITIZATION:
-- Every held ticker (in the "Held tickers" list above the buckets) that has a RENDERED bucket below MUST get its own \`##\` section, however brief. Do NOT relegate held tickers to "## Also covered" — even single-article coverage of a held name warrants a focused section with the citation and what was said. The user's portfolio context makes held-name coverage load-bearing.
-- Symbols that appear ONLY on the "Also mentioned today" line carry no bucket content in this prompt. Never invent a \`##\` section for one — you have nothing to write it from. Name them on the "## Also covered" line if they are worth a mention at all.
 
 TIMEFRAME & THREAD COHERENCE (HARD):
 - A single company section may draw on articles from DIFFERENT trading days and with OPPOSING sentiment. When it does, attribute each price move or claim to its specific day ("rose Thursday as money rotated into financials; fell ~5% Friday in the broad selloff") instead of fusing them into one cause-and-effect sentence. A name being up one day and down the next is NOT a contradiction — name the days so the reader sees two sessions, not one muddled one.
 - Keep a structural / longer-horizon thread (e.g. an IPO-underwriting fee catalyst, a pending deal, a product cycle) SEPARATE from a same-day tactical move (e.g. today's selloff). Put them in separate sentences and do not imply one caused the other unless a source explicitly says so.
-- Do not invent a sector or market driver a source did not state. If a held name fell but no source attributes the move to its sector, say it fell with the broad market — do not assert an unsourced reason (e.g. "as the selloff hit brokers/banks") that no article supports.
+- Do not invent a sector or market driver a source did not state. If no source states the cause of a move, leave the cause unstated — do not assert an unsourced reason (e.g. "as the selloff hit brokers/banks") that no article supports.
 
 ATTRIBUTION & PROVENANCE (HARD):
 - A source's summary sometimes RELAYS a third party's views rather than voicing the source's own opinion — a podcast guest, an interview subject, or a quoted analyst (the summary will say so, e.g. "TMT Breakout summarizes Gavin Baker's podcast remarks"). When it does, attribute the view to the ORIGINATOR, not the newsletter: write "Gavin Baker (via TMT Breakout) argued ..." — never "TMT Breakout argued ..." as if it were the newsletter's own call.
@@ -89,13 +77,12 @@ EDITION COLLAPSING (HARD):
 
 OUTPUT SECTION ORDER (HARD):
 - First section: \`## ${sessionHeading}\` — the macro / market-wide narrative drawn from the Macro bucket and the session-arc commentary.
-- Then one section per company with meaningful coverage. The header MUST begin with the ticker symbol exactly as given in the bucket heading — \`## NVDA (NVIDIA Corp)\` — because deterministic post-processing matches on the leading ticker.
-- Last section: \`## Also covered\`.`;
+- Then substantive company developments and grouped sector/theme stories, ordered by importance. Company-specific headers begin with the ticker; sector/topic headers are descriptive.
+- An optional \`## Also covered\` may contain additional substantive takeaways, never a ticker roster.`;
 }
 
 // ─── Prompt builders ──────────────────────────────────────────────────────────
 
-const NO_SYMBOL_BUCKET = "(no symbol)";
 export { boundSynthesisBuckets, DEFAULT_SYNTHESIS_LIMITS } from "./synthesis-budget";
 import { boundSynthesisBuckets, renderBucket, synthesisCoverageNotice, type BoundedSynthesisBuckets } from "./synthesis-budget";
 
@@ -142,83 +129,6 @@ export function buildSynthesisPrompt(
 
   lines.push("Render the synthesis now.");
   return lines.join("\n");
-}
-
-// ─── Held-ticker enforcement ─────────────────────────────────────────────────
-
-const STUB_SUMMARY_CHAR_CAP = 240;
-
-function truncateAtWord(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  const slice = text.slice(0, maxChars);
-  const lastSpace = slice.lastIndexOf(" ");
-  return `${(lastSpace > maxChars * 0.6 ? slice.slice(0, lastSpace) : slice).trimEnd()}…`;
-}
-
-function renderHeldStub(bucket: CompanyBucket): string {
-  const heading = bucket.companyName
-    ? `## ${bucket.symbol} (${bucket.companyName})`
-    : `## ${bucket.symbol}`;
-  const lines = [heading, ""];
-  for (const article of bucket.articles) {
-    const url = article.source_url || article.website_url;
-    const cite = url ? `[${article.source_name}](${url})` : article.source_name;
-    const summary = truncateAtWord(
-      (article.summary ?? article.subject ?? "").replace(/\s+/g, " ").trim(),
-      STUB_SUMMARY_CHAR_CAP,
-    );
-    lines.push(`- ${cite}: ${summary}`);
-  }
-  lines.push("", "*Held-name coverage auto-surfaced from today's sources.*");
-  return lines.join("\n");
-}
-
-/**
- * Deterministic backstop for the HELD-TICKER PRIORITIZATION prompt rule: the
- * prompt REQUESTS a `##` section for every held name with bucket coverage,
- * but the model intermittently relegates one to "## Also covered" anyway
- * (7/20 digest: held CSX with two-article VK coverage). Prompts request;
- * post-processing enforces — same philosophy as insertCrossFilePointers.
- *
- * Any held bucket (issuerSiblings-aware, so a GOOGL bucket is satisfied by a
- * GOOG heading) with no matching `##` section gets a citation stub — the
- * bucket's own source links + summary excerpts — inserted before
- * "## Also covered" (or appended at the end when that close is absent).
- * Pure; exported for tests.
- */
-export function enforceHeldSections(markdown: string, input: SynthesisInput): string {
-  const heldSet = new Set(input.heldSymbols.map((s) => s.toUpperCase()));
-
-  // Every ticker-ish token appearing in a `##` heading before any "(".
-  const headingTokens = new Set<string>();
-  for (const line of markdown.split("\n")) {
-    const m = line.match(/^##\s+(.+)$/);
-    if (!m) continue;
-    for (const tok of m[1].split("(")[0].split(/[\s/,]+/)) {
-      const t = tok.trim().toUpperCase();
-      if (t.length > 0 && /^[A-Z0-9.\-]+$/.test(t)) headingTokens.add(t);
-    }
-  }
-
-  const stubs: string[] = [];
-  const missing: string[] = [];
-  for (const bucket of input.buckets) {
-    if (bucket.symbol === NO_SYMBOL_BUCKET) continue;
-    const family = issuerSiblings(bucket.symbol).map((s) => s.toUpperCase());
-    if (!family.some((s) => heldSet.has(s))) continue;
-    if (family.some((s) => headingTokens.has(s))) continue;
-    if (bucket.articles.length === 0) continue;
-    missing.push(bucket.symbol);
-    stubs.push(renderHeldStub(bucket));
-  }
-  if (stubs.length === 0) return markdown;
-
-  console.warn(
-    `[synthesize] held-ticker section missing for ${missing.join(", ")} — auto-surfaced citation stub(s)`,
-  );
-
-  const stubBlock = stubs.join("\n\n");
-  return insertBeforeAlsoCovered(markdown, stubBlock);
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────
@@ -298,8 +208,8 @@ export async function synthesize(input: SynthesisInput): Promise<string> {
     );
   }
 
-  // Prompt limits must not remove the source-based held-company backstop.
-  const complete = enforceHeldSections(stripped, input);
+  // Editorial grouping/omission must survive post-processing.
+  const complete = retainSuppliedSourceLinks(stripped, input.buckets.flatMap(b => b.articles));
   const notice = synthesisCoverageNotice(bounded);
   return notice ? `${complete}\n\n${notice}` : complete;
 }

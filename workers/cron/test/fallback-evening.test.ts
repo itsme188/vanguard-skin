@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import type { FallbackEnv } from "../src/fallback-digest";
 import type { Snapshot } from "../src/state";
-import { evaluateAnomalies, fetchLast2ClosesBatch, buildSynthesisPrompt, enforceHeldSections } from "../src/fallback-evening";
+import { evaluateAnomalies, fetchLast2ClosesBatch, buildSynthesisPrompt } from "../src/fallback-evening";
 
 // ── Dependency mocks ─────────────────────────────────────────────────────────
 
@@ -638,57 +638,8 @@ describe("evaluateAnomalies (Worker two-gate parity)", () => {
   });
 });
 
-describe("enforceHeldSections (Worker mirror of the Mac backstop)", () => {
-  const art = (over: Partial<Record<string, unknown>> = {}) => ({
-    id: 1,
-    source_id: 1,
-    source_name: "Vital Knowledge",
-    gmail_message_id: null,
-    received_at: "2026-07-20 12:00:00",
-    subject: "CSX quarter preview",
-    sender: "vk@example.com",
-    summary: "CSX volumes inflected; two sources see margin upside into the print.",
-    key_themes: null,
-    sentiment: null,
-    sentiment_score: null,
-    mentioned_symbols: JSON.stringify(["CSX"]),
-    portfolio_relevance: null,
-    source_url: "https://example.com/csx",
-    website_url: null,
-    ...over,
-  });
-
-  const md =
-    "## The Session\n\nMarkets chopped.\n\n## Also covered\n\nThin mentions everywhere.";
-
-  it("inserts a citation stub before ## Also covered for a held bucket with no section", () => {
-    const out = enforceHeldSections(md, { CSX: [art()] }, ["CSX"]);
-    const stubIdx = out.indexOf("## CSX");
-    const alsoIdx = out.indexOf("## Also covered");
-    expect(stubIdx).toBeGreaterThan(-1);
-    expect(stubIdx).toBeLessThan(alsoIdx);
-    expect(out).toContain("[Vital Knowledge](https://example.com/csx)");
-    expect(out).toContain("auto-surfaced");
-  });
-
-  it("is issuer-family aware — a GOOG heading satisfies a GOOGL bucket", () => {
-    const googl = art({ mentioned_symbols: JSON.stringify(["GOOGL"]), subject: "Alphabet" });
-    const withGoog = "## The Session\n\nX.\n\n## GOOG (Alphabet)\n\nCovered.\n\n## Also covered\n\nY.";
-    expect(enforceHeldSections(withGoog, { GOOGL: [googl] }, ["GOOGL"])).toBe(withGoog);
-  });
-
-  it("ignores non-held buckets and the (macro/other) bucket", () => {
-    const out = enforceHeldSections(md, { XYZ: [art()], "(macro/other)": [art()] }, ["CSX"]);
-    expect(out).toBe(md);
-  });
-
-  it("appends at the end when ## Also covered is absent", () => {
-    const noAlso = "## The Session\n\nMarkets chopped.";
-    const out = enforceHeldSections(noAlso, { CSX: [art()] }, ["CSX"]);
-    expect(out.indexOf("## CSX")).toBeGreaterThan(out.indexOf("## The Session"));
-  });
-
-  it("wired into the synthesis path: a buried held name reaches the sent email as a stub", async () => {
+describe("editorial synthesis delivery", () => {
+  it("does not expand an omitted held name into a generic excerpt", async () => {
     const env = makeEnv();
     const snapshot = makeV3Snapshot({ articleCount: 7 });
     const arts = snapshot.recentArticlesMeta as Array<Record<string, unknown>>;
@@ -711,11 +662,11 @@ describe("enforceHeldSections (Worker mirror of the Mac backstop)", () => {
     expect(result.kind).toBe("success");
     const sendCall = (sendEmail as ReturnType<typeof vi.fn>).mock.calls[0];
     const html = JSON.stringify(sendCall);
-    expect(html).toContain("auto-surfaced");
-    expect(html).toContain("example.com/aapl");
+    expect(html).not.toContain("auto-surfaced");
+    expect(html).not.toContain("example.com/aapl");
   });
 
-  it("listing-only held bucket is waived into the roster line, not stubbed", async () => {
+  it("broad coverage does not append a ticker roster", async () => {
     const env = makeEnv();
     const snapshot = makeV3Snapshot({ articleCount: 7 });
     const arts = snapshot.recentArticlesMeta as Array<Record<string, unknown>>;
@@ -743,7 +694,7 @@ describe("enforceHeldSections (Worker mirror of the Mac backstop)", () => {
     const result = await runFallbackEvening(env, {});
     expect(result.kind).toBe("success");
     const sent = JSON.stringify((sendEmail as ReturnType<typeof vi.fn>).mock.calls[0]);
-    expect(sent).toContain("On this week's calendar: AAPL");
+    expect(sent).not.toContain("On this week's calendar:");
     expect(sent).not.toContain("auto-surfaced"); // no enforcement stub for AAPL
   });
 });
@@ -807,7 +758,7 @@ describe("buildSynthesisPrompt — timeframe/thread coherence", () => {
 
 
 describe("bounded evening synthesis delivery", () => {
-  it("keeps all held sections and the coverage notice in the rendered email", async () => {
+  it("keeps concise synthesis and an input-limit notice without ticker stubs", async () => {
     const snap = makeV2Snapshot(40);
     snap.heldSymbols = snap.recentArticlesMeta!.map((a, i) => `H${String(i).padStart(2, "0")}`);
     snap.recentArticlesMeta!.forEach((article, i) => {
@@ -823,9 +774,16 @@ describe("bounded evening synthesis delivery", () => {
     expect(call.maxOutputTokens).toBe(16384);
     expect(call.prompt!.length).toBeLessThan(80000);
     const delivered = JSON.stringify(vi.mocked(sendEmail).mock.calls);
-    for (const symbol of snap.heldSymbols) expect(delivered).toContain(symbol);
+    expect(delivered).not.toContain("auto-surfaced");
     expect(delivered).toContain("Coverage note:");
-    expect(delivered).toContain("Companies and topics outside the AI synthesis:");
-    expect(delivered).toContain("https://example.test/source/39");
+    expect(delivered).toContain("additional company/topic buckets were outside the AI input.");
+    expect(delivered).not.toContain("https://example.test/source/39");
   });
 });
+
+ it("Worker prompt uses takeaway-first grouping and exact source URLs", () => {
+   const prompt = buildSynthesisPrompt({}, makeV3Snapshot({articleCount: 0}), []);
+   expect(prompt).toContain("Lead with the substantive takeaway");
+   expect(prompt).toContain("Group companies sharing a supported sector");
+   expect(prompt).toContain("Copy citation URLs EXACTLY");
+ });

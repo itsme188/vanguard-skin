@@ -1,3 +1,4 @@
+import { DIGEST_EDITORIAL_RULES, retainSuppliedSourceLinks } from "./synthesis-editorial";
 /**
  * Cloud-fallback evening email — runs when the Mac primary path fails.
  *
@@ -367,83 +368,7 @@ export function partitionListingOnlyHeldBuckets(
   return { active, rosterSymbols };
 }
 
-function insertBeforeAlsoCoveredWorker(markdown: string, block: string): string {
-  const alsoMatch = markdown.match(/^## Also covered\s*$/m);
-  if (alsoMatch && alsoMatch.index !== undefined) {
-    return markdown.slice(0, alsoMatch.index) + block + "\n\n" + markdown.slice(alsoMatch.index);
-  }
-  return `${markdown.trimEnd()}\n\n${block}`;
-}
-
-// ── Held-ticker enforcement backstop ─────────────────────────────────────────
-// Worker adaptation of lib/digest/synthesize.ts::enforceHeldSections (2026-07-20):
-// the prompt REQUESTS a ## section per held name with coverage, but the model
-// intermittently buries one in "## Also covered" (7/20 Mac digest: held CSX).
-// Prompts request; post-processing enforces. Not byte-parity — the Worker's
-// bucket shape (Record<symbol, RecentArticleMeta[]>) differs from the Mac's
-// CompanyBucket[], but the semantics mirror: any held bucket
-// (issuerSiblings-aware) with no matching ## heading gets a deterministic
-// citation stub inserted before "## Also covered".
-
-const STUB_SUMMARY_CHAR_CAP = 240;
 const NO_SYMBOL_BUCKET = "(macro/other)";
-
-function truncateStubText(text: string, cap: number): string {
-  if (text.length <= cap) return text;
-  const cut = text.slice(0, cap);
-  const lastSpace = cut.lastIndexOf(" ");
-  return `${(lastSpace > cap * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
-}
-
-export function enforceHeldSections(
-  markdown: string,
-  buckets: Record<string, RecentArticleMeta[]>,
-  heldSymbols: string[],
-): string {
-  const heldSet = new Set(heldSymbols.map((s) => s.toUpperCase()));
-
-  // Every ticker-ish token appearing in a `##` heading before any "(".
-  const headingTokens = new Set<string>();
-  for (const line of markdown.split("\n")) {
-    const m = line.match(/^##\s+(.+)$/);
-    if (!m) continue;
-    for (const tok of m[1].split("(")[0].split(/[\s/,]+/)) {
-      const t = tok.trim().toUpperCase();
-      if (t.length > 0 && /^[A-Z0-9.\-]+$/.test(t)) headingTokens.add(t);
-    }
-  }
-
-  const stubs: string[] = [];
-  const missing: string[] = [];
-  for (const [symbol, articles] of Object.entries(buckets)) {
-    if (symbol === NO_SYMBOL_BUCKET) continue;
-    const family = issuerSiblings(symbol).map((s) => s.toUpperCase());
-    if (!family.some((s) => heldSet.has(s))) continue;
-    if (family.some((s) => headingTokens.has(s))) continue;
-    if (articles.length === 0) continue;
-    missing.push(symbol);
-    const lines = [`## ${symbol}`, ""];
-    for (const a of articles) {
-      const url = a.source_url || a.website_url;
-      const cite = url ? `[${a.source_name}](${url})` : a.source_name;
-      const summary = truncateStubText(
-        (a.summary ?? a.subject ?? "").replace(/\s+/g, " ").trim(),
-        STUB_SUMMARY_CHAR_CAP,
-      );
-      lines.push(`- ${cite}: ${summary}`);
-    }
-    lines.push("", "*Held-name coverage auto-surfaced from today's sources.*");
-    stubs.push(lines.join("\n"));
-  }
-  if (stubs.length === 0) return markdown;
-
-  console.warn(
-    `[fallback-evening] held-ticker section missing for ${missing.join(", ")} — auto-surfaced citation stub(s)`,
-  );
-
-  const stubBlock = stubs.join("\n\n");
-  return insertBeforeAlsoCoveredWorker(markdown, stubBlock);
-}
 
 function boundEveningBuckets(buckets: Record<string, RecentArticleMeta[]>, snap: Snapshot, anomalySymbols: string[]) {
   return boundSynthesisBuckets(
@@ -479,8 +404,10 @@ ${bucketLines.join("\n")}
 
 Write a concise markdown evening recap with EXACTLY this section order:
 1. \`## The Session\` — the macro / market-wide narrative of the day (2-4 sentences).
-2. One \`## SYM\` section per relevant holding with significant coverage — the header MUST begin with the ticker symbol. One tight paragraph each: what was said, what it means for the position.
-3. \`## Also covered\` — one closing line for everything thin.
+2. Substantive company developments (\`## SYM\`) and shared sector/theme stories (descriptive headings), ordered by importance.
+3. Optional \`## Also covered\` for additional substantive takeaways, never a ticker roster.
+
+${DIGEST_EDITORIAL_RULES}
 
 EDITION COLLAPSING (follow strictly):
 - Some source names carry an edition tag like [dawn], [midday], [recap], [morning_wrap], [eod_wrap]. Tagged articles are installments of ONE publication's daily cycle; later editions supersede earlier ones. Tell each session's story ONCE — never present two editions of the same publication as independent sources agreeing with each other.
@@ -488,7 +415,7 @@ EDITION COLLAPSING (follow strictly):
 TIMEFRAME & THREAD COHERENCE (HARD):
 - A single company section may draw on articles from DIFFERENT trading days and with OPPOSING sentiment. When it does, attribute each price move or claim to its specific day ("rose Thursday as money rotated into financials; fell ~5% Friday in the broad selloff") instead of fusing them into one cause-and-effect sentence. A name being up one day and down the next is NOT a contradiction — name the days so the reader sees two sessions, not one muddled one.
 - Keep a structural / longer-horizon thread (e.g. an IPO-underwriting fee catalyst, a pending deal, a product cycle) SEPARATE from a same-day tactical move (e.g. today's selloff). Put them in separate sentences and do not imply one caused the other unless a source explicitly says so.
-- Do not invent a sector or market driver a source did not state. If a held name fell but no source attributes the move to its sector, say it fell with the broad market — do not assert an unsourced reason (e.g. "as the selloff hit brokers/banks") that no article supports.
+- Do not invent a sector or market driver a source did not state. If no source states the cause of a move, leave the cause unstated — do not assert an unsourced reason (e.g. "as the selloff hit brokers/banks") that no article supports.
 
 ATTRIBUTION & PROVENANCE (HARD):
 - A source's summary sometimes RELAYS a third party's views rather than voicing the source's own opinion — a podcast guest, an interview subject, or a quoted analyst (the summary will say so, e.g. "TMT Breakout summarizes Gavin Baker's podcast remarks"). When it does, attribute the view to the ORIGINATOR, not the newsletter: write "Gavin Baker (via TMT Breakout) argued ..." — never "TMT Breakout argued ..." as if it were the newsletter's own call.
@@ -523,11 +450,7 @@ async function synthesizeViaAI(
   snap: Snapshot,
   anomalySymbols: string[],
 ): Promise<string | null> {
-  const allBuckets = bucketByCompany(articles);
-  const { active: buckets, rosterSymbols } = partitionListingOnlyHeldBuckets(
-    allBuckets,
-    snap.heldSymbols ?? [],
-  );
+  const buckets = bucketByCompany(articles);
   const prompt = buildSynthesisPrompt(buckets, snap, anomalySymbols);
   const bounded = boundEveningBuckets(buckets, snap, anomalySymbols);
   const catalog = snap.modelCatalog ?? [];
@@ -563,13 +486,7 @@ async function synthesizeViaAI(
       return null;
     }
 
-    let out = enforceHeldSections(stripped, buckets, snap.heldSymbols ?? []);
-    if (rosterSymbols.length > 0) {
-      out = insertBeforeAlsoCoveredWorker(
-        out,
-        `On this week's calendar: ${rosterSymbols.join(" · ")}`,
-      );
-    }
+    const out = retainSuppliedSourceLinks(stripped, articles);
     const notice = synthesisCoverageNotice(bounded);
     return notice ? `${out}\n\n${notice}` : out;
   } catch (err) {

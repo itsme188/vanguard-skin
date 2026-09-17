@@ -226,8 +226,9 @@ describe("Evening email end-to-end", () => {
     // 1c. Synthesis text from our mock should appear
     expect(html).toContain("Nvidia had a strong day");
 
-    // 1d. Sources section (per-source tail after synthesis)
-    expect(html).toContain("Sources");
+    // 1d. Inline source links remain without an appended newsletter inventory.
+    expect(html).toContain('href="https://x/1"');
+    expect(html).not.toContain("<strong>Sources</strong>");
   });
 
   it("subject contains 'Evening Recap'", async () => {

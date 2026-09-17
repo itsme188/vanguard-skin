@@ -197,7 +197,7 @@ function truncateAtWord(text: string, maxChars: number): string {
 export function synthesisCoverageNotice(bounded: BoundedSynthesisBuckets): string {
   if (!bounded.limited) return "";
   const overflow = bounded.overflowSymbols.length
-    ? ` Companies and topics outside the AI synthesis: ${bounded.overflowSymbols.join(", ")}.`
+    ? ` ${bounded.overflowSymbols.length} additional company/topic buckets were outside the AI input.`
     : "";
-  return `*Coverage note: AI synthesis uses a limited selection of sources and shortened summaries. Source excerpts supplement company sections where needed.${overflow}*`;
+  return `*Coverage note: AI synthesis uses a limited selection of sources and shortened summaries. Related stories may be grouped; ticker mentions without substantive commentary are omitted.${overflow}*`;
 }
