@@ -126,3 +126,59 @@ describe("daily-digest — generateDigestSince", () => {
     expect(digest).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Count-line disclosure
+// (QA: research-digest--silently-caps-at-30-newest-articles-no-disclosure)
+//
+// generateDigestSince fetches the 30 NEWEST articles in the window, then
+// printed "30 articles from 13 sources" as if 30 were the window total — so
+// a 107-article window rendered byte-identical output with no disclosure
+// anywhere in the email or the Feeds preview modal.
+// ---------------------------------------------------------------------------
+
+function seedBulkArticles(count: number, sourceName = "Vital Knowledge"): void {
+  const source = db
+    .prepare("INSERT INTO research_sources (name, sender_email, is_active) VALUES (?, ?, 1)")
+    .run(sourceName, `${sourceName.toLowerCase().replace(/ /g, "")}@example.com`);
+  const now = new Date().toISOString().replace("T", " ").slice(0, 19);
+  for (let i = 0; i < count; i++) {
+    db.prepare(
+      `INSERT INTO research_articles
+         (source_id, subject, sender, received_at, raw_text, summary, sentiment, processed_at,
+          mentioned_symbols)
+       VALUES (?, ?, 'x@example.com', ?, 'body', ?, 'neutral', datetime('now'), ?)`,
+    ).run(
+      source.lastInsertRowid as number,
+      `Bulk note ${i + 1}`,
+      now,
+      `Summary ${i + 1}`,
+      JSON.stringify(["AAPL"]),
+    );
+  }
+}
+
+describe("daily-digest — count line discloses the fetch cap", () => {
+  const yesterday = () =>
+    new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  it("says 'newest of' when the window exceeds the 30-article cap", () => {
+    seedBulkArticles(47);
+    const digest = generateDigestSince(db, yesterday());
+    expect(digest).toContain("30 newest of 47 articles from 1 source");
+  });
+
+  it("keeps the plain wording when nothing was dropped", () => {
+    seedBulkArticles(4);
+    const digest = generateDigestSince(db, yesterday());
+    expect(digest).toContain("4 articles from 1 source");
+    expect(digest).not.toContain("newest of");
+  });
+
+  it("keeps the plain wording at exactly the cap", () => {
+    seedBulkArticles(30);
+    const digest = generateDigestSince(db, yesterday());
+    expect(digest).toContain("30 articles from 1 source");
+    expect(digest).not.toContain("newest of");
+  });
+});

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import {
-  getAlerts,
+  getEnrichedAlerts,
   getPendingAlertCount,
 } from "@/lib/queries/security-levels";
 import {
@@ -22,31 +22,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: true, pendingCount: getPendingAlertCount(db) });
     }
 
-    const alerts = getAlerts(db, {
+    // Enrichment (symbol/name + the level block, including its LIVE
+    // effective_price) lives in the query layer so this route and any
+    // in-process caller can't disagree about a level's effective price — the
+    // card's `threshold_price ?? effective_price ?? price` fallback depends on
+    // it. See getEnrichedAlerts.
+    const enriched = getEnrichedAlerts(db, {
       response: response ?? undefined,
       securityId: securityId ? Number(securityId) : undefined,
       limit: limit ? Number(limit) : undefined,
-    });
-
-    // Enrich with security info for display
-    const enriched = alerts.map((a) => {
-      const sec = db
-        .prepare("SELECT symbol, name FROM securities WHERE id = ?")
-        .get(a.security_id) as { symbol: string; name: string | null } | undefined;
-      const level = db
-        .prepare("SELECT level_type, price, price_source, direction, source, source_author, thesis FROM security_levels WHERE id = ?")
-        .get(a.level_id) as
-        | {
-            level_type: string;
-            price: number;
-            price_source: string;
-            direction: string | null;
-            source: string;
-            source_author: string | null;
-            thesis: string | null;
-          }
-        | undefined;
-      return { ...a, symbol: sec?.symbol ?? null, security_name: sec?.name ?? null, level };
     });
 
     return NextResponse.json({

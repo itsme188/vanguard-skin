@@ -286,18 +286,36 @@ export function getDataGaps(db: Database.Database): DataGaps {
 }
 
 /**
+ * Shared FROM/JOIN/WHERE predicate for cross-source price discrepancies —
+ * used by BOTH getCrossSourceDiscrepancies (the LIMIT-50 list) and
+ * countCrossSourceDiscrepancies (the true total), so the list and the count
+ * can never disagree about which rows qualify (the `?countOnly=true` /
+ * badge-vs-surface convention, applied here to a headline number instead of
+ * an API param).
+ *
+ * Since prices has UNIQUE(security_id, date), there's at most one price per
+ * security per date. Cross-source discrepancies happen when we compare the
+ * current price source against what a different source would have provided.
+ * For now, compare the prices table against the most recent ohlcv_bars close
+ * price for the same security on the same date (TWS chart data vs import data).
+ */
+const CROSS_SOURCE_DISCREPANCY_PREDICATE = `
+      FROM prices p
+      JOIN securities s ON s.id = p.security_id
+      JOIN ohlcv_bars ob ON ob.security_id = p.security_id AND ob.bar_date = p.date
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
+      WHERE ABS(p.close_price - ob.close) / NULLIF(p.close_price, 0) > 0.02
+`;
+
+/**
  * Find prices that differ >2% between sources on the same security+date.
  * Compares all pairs of source records where the same security has multiple
- * prices from different sources on the same date.
+ * prices from different sources on the same date. Capped at the 50 largest
+ * discrepancies — see countCrossSourceDiscrepancies for the true total.
  */
 export function getCrossSourceDiscrepancies(
   db: Database.Database,
 ): CrossSourceDiscrepancy[] {
-  // Since prices has UNIQUE(security_id, date), there's at most one price per
-  // security per date. Cross-source discrepancies happen when we compare the
-  // current price source against what a different source would have provided.
-  // For now, compare the prices table against the most recent ohlcv_bars close
-  // price for the same security on the same date (TWS chart data vs import data).
   // Both stored prices are in the security's NATIVE currency; the UI renders
   // these through <Money> with a $ prefix, so convert here (a KRW row rendered
   // "$919,000.00" for a ~$611 stock — ~1,500x overstated). diffPct is
@@ -313,16 +331,29 @@ export function getCrossSourceDiscrepancies(
         'ohlcv' AS sourceB,
         ob.close * COALESCE(fx.usd_per_unit, 1) AS priceB,
         ROUND(ABS(p.close_price - ob.close) / NULLIF(p.close_price, 0) * 100, 2) AS diffPct
-      FROM prices p
-      JOIN securities s ON s.id = p.security_id
-      JOIN ohlcv_bars ob ON ob.security_id = p.security_id AND ob.bar_date = p.date
-      LEFT JOIN fx_rates fx ON fx.currency = s.currency
-      WHERE ABS(p.close_price - ob.close) / NULLIF(p.close_price, 0) > 0.02
+      ${CROSS_SOURCE_DISCREPANCY_PREDICATE}
       ORDER BY diffPct DESC
       LIMIT 50
       `,
     )
     .all() as CrossSourceDiscrepancy[];
+}
+
+/**
+ * True count of cross-source discrepancies, using the IDENTICAL predicate as
+ * getCrossSourceDiscrepancies — never derived from that list's .length,
+ * which is truncated to 50.
+ */
+export function countCrossSourceDiscrepancies(db: Database.Database): number {
+  const row = db
+    .prepare(
+      `
+      SELECT COUNT(*) AS cnt
+      ${CROSS_SOURCE_DISCREPANCY_PREDICATE}
+      `,
+    )
+    .get() as { cnt: number };
+  return row.cnt;
 }
 
 /**
@@ -622,7 +653,7 @@ export function getDataHealthSummary(
     gaps.accountsNoSnapshots.length +
     gaps.staleHoldings.length;
 
-  const discrepancies = getCrossSourceDiscrepancies(db);
+  const totalDiscrepancies = countCrossSourceDiscrepancies(db);
 
   const reconciliation = getSnapshotReconciliation(db);
   const reconFlags = reconciliation.filter(
@@ -644,7 +675,7 @@ export function getDataHealthSummary(
         ? Math.round((secCounts.withPrices / secCounts.total) * 100)
         : 100,
     totalGaps,
-    totalDiscrepancies: discrepancies.length,
+    totalDiscrepancies,
     totalReconciliationFlags: reconFlags,
     totalFxFlags: fxFlags,
   };

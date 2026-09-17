@@ -3,7 +3,7 @@
  *
  * One `it` per row of the spec's merge matrix. Every symbol is synthetic.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
@@ -14,6 +14,13 @@ import {
   listEventMergeHandlers,
   __resetEventMergeHandlersForTests,
 } from "@/lib/earnings/event-merge";
+
+// Keep the calendar fixture inside the live projection window on every run.
+// Mock only the ET day: timeout and cross-process tests still use real clocks.
+vi.mock("@/lib/calendar/date-utils", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/calendar/date-utils")>(),
+  todayET: () => "2026-09-02",
+}));
 
 let db: Database.Database;
 

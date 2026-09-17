@@ -28,6 +28,23 @@ export async function GET(request: NextRequest) {
 
     const report = generateTaxReport(db, year, { accountName });
 
+    // A retirement account has no Form 8949 at all — its sales are not
+    // taxable events (QA:
+    // tax-lots--form-8949-export-and-taxable-totals-include-roth-ira-sales).
+    // The JSON body is still served (the card renders the explanatory
+    // notice from it); only the FILE formats are refused, so nothing can
+    // sit on disk named like an 8949 for a sheltered account. The rule
+    // itself lives in generateTaxReport — this route only reads the flag.
+    if (report.retirementAccount && (format === "csv" || format === "txf")) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `${report.accountName ?? "This account"} is a retirement account — no Form 8949 export: sales in a tax-advantaged account are not taxable events.`,
+        },
+        { status: 409 }
+      );
+    }
+
     if (format === "csv") {
       const csv = generateForm8949CSV(report);
       // Filename: buildTaxReportFilename appends "-NOT-FOR-FILING" unless

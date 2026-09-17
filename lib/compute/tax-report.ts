@@ -1,7 +1,22 @@
 import type Database from "better-sqlite3";
 import { getClosedTaxLotSales, type TaxLotSaleWithDetails } from "@/lib/queries/tax-lots";
 import { getTaxConventionState, isYearAccepted } from "@/lib/compute/tax-convention";
+import { getAllAccounts } from "@/lib/queries/accounts";
+import { isTaxableAccount } from "@/lib/compute/tax-treatment";
 import { formatExportShares } from "@/lib/format";
+
+// Re-exported so a consumer that already imports the report never has to
+// reach for a second module to read the vocabulary. The definitions live in
+// lib/compute/tax-treatment.ts.
+export {
+  TAX_TREATMENTS,
+  TAX_TREATMENT_LABELS,
+  DEFAULT_TAX_TREATMENT,
+  isTaxableAccount,
+  isTaxTreatment,
+  normalizeTaxTreatment,
+  type TaxTreatment,
+} from "@/lib/compute/tax-treatment";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -75,6 +90,30 @@ export interface TaxReportResult {
    * under. A partial export must never be able to pass for the full report.
    */
   accountName: string | null;
+  /**
+   * This report is scoped (`accountName`) to a tax-advantaged account — a
+   * Roth/traditional IRA or any other sheltered wrapper per
+   * `accounts.tax_treatment`. Sales there are not taxable events and are
+   * never reported on Form 8949, so the rows and totals above are empty by
+   * construction and the CSV/TXF exports are refused (409) rather than
+   * handing over a file that promises taxable figures.
+   */
+  retirementAccount: boolean;
+  /**
+   * `accounts.name` of every tax-advantaged account whose sales this report
+   * DROPPED, sorted. Non-empty on the all-accounts report whenever a stamped
+   * retirement account had activity this year — the card names them so a
+   * reader can tell "no IRA sales happened" from "IRA sales were removed".
+   * Under a retirement-scoped report it is that account itself.
+   */
+  excludedRetirementAccounts: string[];
+  /**
+   * Does ANY account in the book carry a non-taxable treatment? False means
+   * nothing has been stamped yet (migration 094 defaults every account to
+   * 'taxable'), so IRA sales are still included and the NOT-FOR-FILING
+   * banner has to say so — the accepted ruling's interim disclosure.
+   */
+  hasTaxAdvantagedAccounts: boolean;
 }
 
 export interface TaxReportOptions {
@@ -258,11 +297,43 @@ export function generateTaxReport(
   // card, the tables and the CSV/TXF downloads describing one population.
   const accountName = opts?.accountName ? opts.accountName : null;
 
+  // Which accounts are reportable at all (QA:
+  // tax-lots--form-8949-export-and-taxable-totals-include-roth-ira-sales,
+  // ruling 2026-09-14). A sale inside a Roth/traditional IRA is not a taxable
+  // event and never appears on Form 8949 — it must leave the rows, the
+  // totals, the wash-sale scan and both exports. The test is the stamped
+  // `accounts.tax_treatment` column ONLY: never the account's name (an
+  // "Admiral" account contains "ira"; a Roth can be called anything).
+  const accounts = getAllAccounts(db);
+  const treatmentByAccountId = new Map(accounts.map((a) => [a.id, a.tax_treatment]));
+  const hasTaxAdvantagedAccounts = accounts.some((a) => !isTaxableAccount(a.tax_treatment));
+  const isTaxableAccountId = (accountId: number): boolean =>
+    isTaxableAccount(treatmentByAccountId.get(accountId));
+
+  // Scoped AT a retirement account: there is no partial answer to give — the
+  // whole account is outside Form 8949. Return an empty, zeroed report rather
+  // than throwing, so the page can render one honest sentence in place of a
+  // card that promises taxable gains (and so /api/tax-report can 409 an
+  // export off this same flag instead of re-deriving the rule).
+  const scopedAccount = accountName == null ? null : accounts.find((a) => a.name === accountName);
+  if (scopedAccount != null && !isTaxableAccount(scopedAccount.tax_treatment)) {
+    return emptyRetirementReport(year, scopedAccount.name);
+  }
+
   // filingOnly: exclude premium-rollover option closes and engine-synthesized
   // RECONCILE_CLOSE rows from anything destined for a filing surface (Task 5).
   const allSales = getClosedTaxLotSales(db, year, { filingOnly: true });
-  const sales =
+  const scopedSales =
     accountName == null ? allSales : allSales.filter((s) => s.account_name === accountName);
+  const sales = scopedSales.filter((s) => isTaxableAccountId(s.account_id));
+  const excludedRetirementAccounts = [
+    ...new Set(scopedSales.filter((s) => !isTaxableAccountId(s.account_id)).map((s) => s.account_name)),
+  ].sort();
+
+  // The PURCHASE side of the wash-sale scan stays global on purpose (see
+  // detectWashSales): under Rev. Rul. 2008-5 a replacement bought inside an
+  // IRA still triggers the wash-sale rule on a taxable loss sale. Only the
+  // SALES being reported are narrowed.
   const washWarnings = detectWashSales(db, sales, year);
 
   // Build wash sale lookup: saleId → warning
@@ -358,7 +429,11 @@ export function generateTaxReport(
           ? [`${year}-01-01`, `${year}-12-31`]
           : [`${year}-01-01`, `${year}-12-31`, accountName])
       ) as { account_id: number }[]
-  ).map((r) => r.account_id);
+  )
+    .map((r) => r.account_id)
+    // A retirement account's rows are not in this report, so its
+    // broker-acceptance stamp can neither gate nor unlock the year.
+    .filter((id) => isTaxableAccountId(id));
   const filingReady =
     accountIds.length > 0 &&
     state.recomputeCurrent &&
@@ -375,6 +450,31 @@ export function generateTaxReport(
     filingReady,
     washSaleAdvisory,
     accountName,
+    retirementAccount: false,
+    excludedRetirementAccounts,
+    hasTaxAdvantagedAccounts,
+  };
+}
+
+/** Zeroed report for an account whose sales are outside Form 8949 entirely. */
+function emptyRetirementReport(year: number, accountName: string): TaxReportResult {
+  const zero = { proceeds: 0, costBasis: 0, adjustments: 0, gainLoss: 0 };
+  return {
+    year,
+    shortTermRows: [],
+    longTermRows: [],
+    shortTermTotal: { ...zero },
+    longTermTotal: { ...zero },
+    washSaleWarnings: [],
+    excludedNonUsdSales: 0,
+    // Nothing here is ever filed, so the gate never opens for this scope.
+    filingReady: false,
+    washSaleAdvisory,
+    accountName,
+    retirementAccount: true,
+    excludedRetirementAccounts: [accountName],
+    // Reaching this branch means at least one account is stamped.
+    hasTaxAdvantagedAccounts: true,
   };
 }
 

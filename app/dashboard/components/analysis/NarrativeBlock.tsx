@@ -82,8 +82,9 @@ export function narrativeRenderState({
   refreshing: boolean;
 }): NarrativeRenderState {
   if (loading || (refreshing && !text)) return "loading";
-  if (text) return "narrative";
+  // A failed scope load must not reveal text retained from the previous scope.
   if (error) return "hidden";
+  if (text) return "narrative";
   return refreshError ? "cold-failure" : "hidden";
 }
 

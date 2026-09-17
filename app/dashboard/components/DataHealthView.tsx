@@ -100,6 +100,7 @@ function SummaryCard({
  * heading copy, footer copy, and slice can't drift out of sync.
  */
 const RECONCILIATION_ROW_LIMIT = 30;
+const DISCREPANCY_ROW_LIMIT = 20;
 
 export function DataHealthView() {
   const [data, setData] = useState<DataHealthResponse | null>(null);
@@ -391,6 +392,9 @@ export function DataHealthView() {
               Cross-Source Discrepancies
               <span className="text-ink-faint font-normal ml-2">
                 (prices vs OHLCV bars &gt;2% diff)
+                {summary.totalDiscrepancies > DISCREPANCY_ROW_LIMIT
+                  ? ` · showing ${DISCREPANCY_ROW_LIMIT} of ${summary.totalDiscrepancies}`
+                  : ` · ${summary.totalDiscrepancies}`}
               </span>
             </h3>
           </div>
@@ -406,7 +410,7 @@ export function DataHealthView() {
                 </tr>
               </thead>
               <tbody>
-                {discrepancies.slice(0, 20).map((d, i) => (
+                {discrepancies.slice(0, DISCREPANCY_ROW_LIMIT).map((d, i) => (
                   <tr key={i} className="border-b border-edge/50">
                     <td className="px-5 py-2 font-mono text-ink">{d.symbol}</td>
                     <td className="px-3 py-2 text-ink-dim font-mono tabular-nums">{d.date}</td>
@@ -426,6 +430,12 @@ export function DataHealthView() {
               </tbody>
             </table>
           </ScrollFade>
+          {summary.totalDiscrepancies > DISCREPANCY_ROW_LIMIT && (
+            <div className="px-5 py-2 border-t border-edge text-xs text-ink-faint">
+              Showing the {DISCREPANCY_ROW_LIMIT} largest discrepancies —{" "}
+              {summary.totalDiscrepancies - DISCREPANCY_ROW_LIMIT} hidden.
+            </div>
+          )}
         </section>
       )}
 

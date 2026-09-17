@@ -139,3 +139,54 @@ describe("renderDigestByCompany", () => {
     expect(md).not.toContain("<parameter");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Count-line disclosure — by-company view
+// (QA: research-digest--silently-caps-at-30-newest-articles-no-disclosure)
+// ---------------------------------------------------------------------------
+
+import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
+import { generateDigestByCompanySince } from "@/lib/digest/group-by-company";
+
+describe("generateDigestByCompanySince — count line discloses the fetch cap", () => {
+  function makeDb(articleCount: number): Database.Database {
+    const db = new Database(":memory:");
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    const source = db
+      .prepare("INSERT INTO research_sources (name, sender_email, is_active) VALUES (?, ?, 1)")
+      .run("Vital Knowledge", "vk@example.com");
+    const now = new Date().toISOString().replace("T", " ").slice(0, 19);
+    for (let i = 0; i < articleCount; i++) {
+      db.prepare(
+        `INSERT INTO research_articles
+           (source_id, subject, sender, received_at, raw_text, summary, sentiment,
+            processed_at, mentioned_symbols)
+         VALUES (?, ?, 'vk@example.com', ?, 'body', ?, 'neutral', datetime('now'), ?)`,
+      ).run(
+        source.lastInsertRowid as number,
+        `Bulk note ${i + 1}`,
+        now,
+        `Summary ${i + 1}`,
+        JSON.stringify(["AAPL"]),
+      );
+    }
+    return db;
+  }
+
+  const yesterday = () =>
+    new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  it("says 'newest of' when the window exceeds the 30-article cap", () => {
+    const md = generateDigestByCompanySince(makeDb(52), yesterday());
+    expect(md).toContain("30 newest of 52 articles from 1 source · grouped by company");
+  });
+
+  it("keeps the plain wording when nothing was dropped", () => {
+    const md = generateDigestByCompanySince(makeDb(6), yesterday());
+    expect(md).toContain("6 articles from 1 source · grouped by company");
+    expect(md).not.toContain("newest of");
+  });
+});

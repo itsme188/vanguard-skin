@@ -267,3 +267,30 @@ describe("generateDigestSinceAdaptive — anomaly block", () => {
     expect(formatVanguardAnomaliesBlock).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Count-line disclosure — adaptive layout (cap 40)
+// (QA: research-digest--silently-caps-at-30-newest-articles-no-disclosure)
+// ---------------------------------------------------------------------------
+
+describe("generateDigestSinceAdaptive — count line discloses the fetch cap", () => {
+  const yesterday = () =>
+    new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  beforeEach(() => {
+    vi.mocked(synthesize).mockResolvedValue(SYNTHESIS_RESULT);
+  });
+
+  it("says 'newest of' when the window exceeds the 40-article cap", async () => {
+    seedArticles(63);
+    const result = await generateDigestSinceAdaptive(db, yesterday());
+    expect(result).toContain("40 newest of 63 articles from 1 source");
+  });
+
+  it("keeps the plain wording when nothing was dropped", async () => {
+    seedArticles(12);
+    const result = await generateDigestSinceAdaptive(db, yesterday());
+    expect(result).toContain("12 articles from 1 source");
+    expect(result).not.toContain("newest of");
+  });
+});

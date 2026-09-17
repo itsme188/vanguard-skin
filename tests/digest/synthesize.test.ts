@@ -97,7 +97,7 @@ describe("synthesize", () => {
     // Wrapper is called with the feature key as first arg + options containing maxOutputTokens
     expect(generateTextForFeature).toHaveBeenCalledWith(
       "dailyDigestSynthesis",
-      expect.objectContaining({ maxOutputTokens: 8192 }),
+      expect.objectContaining({ maxOutputTokens: 16384 }),
     );
 
     // Returned text is the valid synthesis (trimmed)
@@ -563,5 +563,92 @@ describe("enforceHeldSections", () => {
     const result = await synthesize(inputWith([csxBucket], ["CSX"]));
 
     expect(result).toContain("## CSX (CSX Corp)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A normalized length finish does not identify which model limit was reached.
+describe("synthesize — truncation guard diagnostics", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const oneBucket = () => inputWith([makeBucket("NVDA", "NVIDIA Corp", [makeArticle(1, "VK")])], ["NVDA"]);
+
+  it("does not infer the cause of a length finish from near-zero output", async () => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: "",
+      finishReason: "length",
+      usage: { inputTokens: 250_000, outputTokens: 1, totalTokens: 250_001 },
+    });
+
+    await expect(synthesize(oneBucket())).rejects.toThrow(
+      /output truncated at a model length limit \(1 output tokens; prompt \d+ chars\)/,
+    );
+  });
+
+  it("reports the output-token limit when real prose came back truncated", async () => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: pad("## NVDA\nA long synthesis that ran out of output budget", 4000),
+      finishReason: "length",
+      usage: { inputTokens: 40_000, outputTokens: 16_384, totalTokens: 56_384 },
+    });
+
+    await expect(synthesize(oneBucket())).rejects.toThrow(
+      /output truncated at a model length limit \(16384 output tokens; prompt \d+ chars\)/,
+    );
+  });
+
+  it("logs prompt size and kept/overflow bucket counts on every call", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: VALID_SYNTHESIS,
+      finishReason: "stop",
+      usage: { inputTokens: 1000, outputTokens: 200, totalTokens: 1200 },
+    });
+
+    await synthesize(oneBucket());
+
+    const logged = warn.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).toMatch(/\[synthesize\] prompt \d+ chars/);
+    expect(logged).toMatch(/buckets kept 1/);
+    expect(logged).toMatch(/overflow 0/);
+    warn.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Prompt limits never remove the full-input held-name coverage backstop.
+describe("synthesize — held coverage survives the prompt bound", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("preserves every held section and discloses overflow without model cooperation", async () => {
+    const buckets: CompanyBucket[] = [];
+    for (let i = 0; i < 35; i++) {
+      buckets.push(
+        makeBucket(`H${String(i).padStart(2, "0")}`, `Company ${i}`, [
+          makeArticle(i + 1, "Vital Knowledge", "neutral", "Coverage text.", "https://ex.test/a"),
+        ]),
+      );
+    }
+    const held = buckets.map((b) => b.symbol);
+
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: pad("## The Session\nMacro narrative with enough body text to clear the minimum-length guard.", 400),
+      finishReason: "stop",
+      usage: { inputTokens: 1000, outputTokens: 400, totalTokens: 1400 },
+    });
+
+    const result = await synthesize(inputWith(buckets, held));
+
+    const stubbed = [...result.matchAll(/^## (H\d\d) /gm)].map((m) => m[1]);
+    expect(stubbed).toHaveLength(35);
+    // The first 30 buckets are the ones the model saw; the tail overflowed.
+    expect(stubbed).toContain("H00");
+    expect(stubbed).toContain("H34");
+    expect(result).toContain("Coverage note:");
+    expect(result).toContain("Companies and topics outside the AI synthesis: H30, H31, H32, H33, H34.");
   });
 });

@@ -14,7 +14,6 @@
 
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
-import { editionLabel } from "@/lib/digest/editions";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { insertBeforeAlsoCovered } from "@/lib/digest/thin-coverage";
 import type { CompanyBucket } from "@/lib/digest/group-by-company";
@@ -68,7 +67,8 @@ COVERAGE-CHARACTERIZATION RULES (HARD):
 - Specifically forbidden phrasings: "only mentioned indirectly", "mentioned in passing", "no real focus on", "appeared only as a footnote", "briefly noted", "not the focus of any source".
 
 HELD-TICKER PRIORITIZATION:
-- Every held ticker (in the "Held tickers" list above the buckets) that has ANY coverage in today's buckets MUST get its own \`##\` section, however brief. Do NOT relegate held tickers to "## Also covered" — even single-article coverage of a held name warrants a focused section with the citation and what was said. The user's portfolio context makes held-name coverage load-bearing.
+- Every held ticker (in the "Held tickers" list above the buckets) that has a RENDERED bucket below MUST get its own \`##\` section, however brief. Do NOT relegate held tickers to "## Also covered" — even single-article coverage of a held name warrants a focused section with the citation and what was said. The user's portfolio context makes held-name coverage load-bearing.
+- Symbols that appear ONLY on the "Also mentioned today" line carry no bucket content in this prompt. Never invent a \`##\` section for one — you have nothing to write it from. Name them on the "## Also covered" line if they are worth a mention at all.
 
 TIMEFRAME & THREAD COHERENCE (HARD):
 - A single company section may draw on articles from DIFFERENT trading days and with OPPOSING sentiment. When it does, attribute each price move or claim to its specific day ("rose Thursday as money rotated into financials; fell ~5% Friday in the broad selloff") instead of fusing them into one cause-and-effect sentence. A name being up one day and down the next is NOT a contradiction — name the days so the reader sees two sessions, not one muddled one.
@@ -96,42 +96,19 @@ OUTPUT SECTION ORDER (HARD):
 // ─── Prompt builders ──────────────────────────────────────────────────────────
 
 const NO_SYMBOL_BUCKET = "(no symbol)";
+export { boundSynthesisBuckets, DEFAULT_SYNTHESIS_LIMITS } from "./synthesis-budget";
+import { boundSynthesisBuckets, renderBucket, synthesisCoverageNotice, type BoundedSynthesisBuckets } from "./synthesis-budget";
 
 /**
- * Render one bucket to a compact markdown block for the user prompt.
- *
- *   ## NVDA (NVIDIA Corp)
- *   - Vital Knowledge (bullish) [https://...]: <summary>
+ * Build the full user prompt for the synthesis call from an ALREADY-BOUNDED
+ * bucket set (see boundSynthesisBuckets). Overflow symbols get one compact
+ * line so the model knows they exist without being handed content it would
+ * be tempted to write a section from. Exported so tests can pin the size.
  */
-function renderBucket(bucket: CompanyBucket): string {
-  const isNoSymbol = bucket.symbol === NO_SYMBOL_BUCKET;
-  let heading: string;
-  if (isNoSymbol) {
-    heading = "## Macro";
-  } else if (bucket.companyName) {
-    heading = `## ${bucket.symbol} (${bucket.companyName})`;
-  } else {
-    heading = `## ${bucket.symbol}`;
-  }
-
-  const lines: string[] = [heading];
-  for (const article of bucket.articles) {
-    const sentiment = article.sentiment ?? "neutral";
-    const url = article.source_url || article.website_url;
-    const urlPart = url ? ` [${url}]` : "";
-    const summaryText = article.summary ?? article.subject ?? "(no summary)";
-    lines.push(
-      `- ${article.source_name}${editionLabel(article.source_name, article.subject)} (${sentiment})${urlPart}: ${summaryText}`,
-    );
-  }
-
-  return lines.join("\n");
-}
-
-/**
- * Build the full user prompt for the synthesis call.
- */
-function buildSynthesisPrompt(input: SynthesisInput): string {
+export function buildSynthesisPrompt(
+  input: SynthesisInput,
+  bounded: BoundedSynthesisBuckets,
+): string {
   const held =
     input.heldSymbols.length > 0 ? input.heldSymbols.join(", ") : "(none)";
   const watchlist =
@@ -141,11 +118,11 @@ function buildSynthesisPrompt(input: SynthesisInput): string {
       ? input.anomalies.map((a) => a.symbol).join(", ")
       : "(none)";
 
-  const renderedBuckets = input.buckets
+  const renderedBuckets = bounded.priority
     .map(renderBucket)
     .join("\n\n");
 
-  return [
+  const lines = [
     `Held tickers: ${held}`,
     `Watchlist: ${watchlist}`,
     `Today's anomaly flags: ${anomalyList}`,
@@ -154,8 +131,17 @@ function buildSynthesisPrompt(input: SynthesisInput): string {
     "",
     renderedBuckets,
     "",
-    "Render the synthesis now.",
-  ].join("\n");
+  ];
+
+  if (bounded.overflowSymbols.length > 0) {
+    lines.push(
+      `Also mentioned today (no section needed; list under "## Also covered" if relevant): ${bounded.overflowSymbols.join(", ")}`,
+      "",
+    );
+  }
+
+  lines.push("Render the synthesis now.");
+  return lines.join("\n");
 }
 
 // ─── Held-ticker enforcement ─────────────────────────────────────────────────
@@ -248,20 +234,20 @@ export function enforceHeldSections(markdown: string, input: SynthesisInput): st
  * @throws SynthesisEmptyError
  */
 export async function synthesize(input: SynthesisInput): Promise<string> {
-  const prompt = buildSynthesisPrompt(input);
+  const bounded = boundSynthesisBuckets(input.buckets, {
+    heldSymbols: input.heldSymbols,
+    watchlist: input.watchlist,
+    anomalySymbols: input.anomalies.map((a) => a.symbol),
+  });
+  const prompt = buildSynthesisPrompt(input, bounded);
   const sessionHeading = input.sessionHeading ?? "The Session";
-
   let result: Awaited<ReturnType<typeof generateTextForFeature>>;
   try {
     result = await generateTextForFeature("dailyDigestSynthesis", {
       system: buildSystemPrompt(sessionHeading),
       prompt,
-      // 8192, not 4096: the structured contract (## Session + one ## section per
-      // covered name + ## Also covered) over a 25-40 article window regularly
-      // exceeds 4096 output tokens — observed live 2026-06-09, where truncation
-      // tripped the finishReason guard and silently degraded every heavy day to
-      // the per-source fallback layout.
-      maxOutputTokens: 8192,
+      // Allow the bounded company sections room to complete; mirror in Worker.
+      maxOutputTokens: 16384,
     });
   } catch (e) {
     if (e instanceof AIRefusalError) {
@@ -273,9 +259,22 @@ export async function synthesize(input: SynthesisInput): Promise<string> {
 
   // ── Validation ────────────────────────────────────────────────────────────
 
-  // 1. Truncation guard — if the model ran out of tokens the output is incomplete.
+  // Always log the call's shape: a "length" finish is ambiguous at the SDK
+  // level (see below), so the next production run has to be diagnosable from
+  // the log line alone.
+  const outputTokens = result.usage?.outputTokens ?? null;
+  const textLength = result.text?.length ?? 0;
+  console.warn(
+    `[synthesize] prompt ${prompt.length} chars · buckets kept ${bounded.priority.length}, ` +
+      `overflow ${bounded.overflowSymbols.length} · finish ${result.finishReason} · ` +
+      `usage in=${result.usage?.inputTokens ?? "?"} out=${outputTokens ?? "?"} · text ${textLength} chars`,
+  );
+
+  // The SDK's length finish does not identify which model limit was reached.
   if (result.finishReason === "length") {
-    throw new SynthesisEmptyError("output truncated by max tokens");
+    throw new SynthesisEmptyError(
+      `output truncated at a model length limit (${outputTokens ?? "unknown"} output tokens; prompt ${prompt.length} chars)`,
+    );
   }
 
   // 2. Strip any model preamble before structural validation.
@@ -299,6 +298,8 @@ export async function synthesize(input: SynthesisInput): Promise<string> {
     );
   }
 
-  // 5. Deterministic held-ticker backstop (prompt rule → enforced).
-  return enforceHeldSections(stripped, input);
+  // Prompt limits must not remove the source-based held-company backstop.
+  const complete = enforceHeldSections(stripped, input);
+  const notice = synthesisCoverageNotice(bounded);
+  return notice ? `${complete}\n\n${notice}` : complete;
 }

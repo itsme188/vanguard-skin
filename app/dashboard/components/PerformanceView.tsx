@@ -129,7 +129,20 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   try {
     twrResult = computeTwr(db, { startDate, accountId: twrAccountId, accountIds: twrAccountIds });
     xirrResult = computeXirr(db, { startDate, accountId });
-    riskResult = computeRiskMetrics(db, { startDate, endDate: today, accountId });
+    // coverageFloor "scope", not the default "common" (2026-09-14 ruling,
+    // docs/DECISIONS.md): this page shows ONE scope's tiles at a time and
+    // never compares scopes against each other, so the cross-account floor
+    // from 2026-08-19 — which belongs to the diagnostics comparison surface —
+    // only threw away this scope's own earlier daily history and made the
+    // risk caption below name a different account's start date than the
+    // equity curve rendered beside it. Both captions read their own series'
+    // first row, and those two series now share one coverage start.
+    riskResult = computeRiskMetrics(db, {
+      startDate,
+      endDate: today,
+      accountId,
+      coverageFloor: "scope",
+    });
   } catch (err) {
     computeError = err instanceof Error ? err.message : "Unable to compute performance";
   }
@@ -403,12 +416,14 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                 TWR reflects partial coverage — some months were excluded from the chain.
               </p>
             )}
-            {/* Honest labeling: drawdown/Sharpe come from daily_valuations
-                (history starts 2026-03; risk further clamped to the
-                all-accounts-covered floor), so under 3Y/All they compute
-                over a much shorter window than the selected period — say so
-                instead of letting the label imply otherwise. TWR/XIRR read
-                multi-year monthly_snapshots and are unaffected. */}
+            {/* Honest labeling: drawdown/Sharpe come from daily_valuations,
+                whose history is shorter than the longest selectable period,
+                so under 3Y/All they compute over a shorter window than the
+                label implies — say so instead of letting the label imply
+                otherwise. The window is this SCOPE's own coverage
+                (coverageFloor "scope" above), which is the same coverage the
+                equity curve below plots, so the two captions agree. TWR/XIRR
+                read multi-year monthly_snapshots and are unaffected. */}
             {(() => {
               const notice = dataWindowNotice(
                 startDate,
@@ -520,9 +535,10 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
               <PerformanceCurveChart data={equityCurveData} benchmarkSymbol={BENCHMARK_SYMBOL} />
               {(() => {
                 // Same honesty caption as the KPI strip: the curve plots
-                // daily_valuations, which start 2026-03 regardless of the
-                // selected period (its floor differs slightly from risk's
-                // full-coverage floor, so compute from the curve's own rows).
+                // daily_valuations, whose coverage starts well after the
+                // longest selectable period regardless of the selection.
+                // Computed from the curve's own rows — the same scope
+                // coverage the risk caption above now reports.
                 const notice = dataWindowNotice(
                   startDate,
                   equityCurveData[0]?.date ?? null,

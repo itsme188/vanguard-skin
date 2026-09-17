@@ -199,6 +199,16 @@ describe("narrativeRenderState (cold-cache auto-generation failure must not vani
     ).toBe("hidden");
   });
 
+  it("hides prior-scope text when loading the new scope fails", () => {
+    expect(narrativeRenderState({
+      text: "Narrative for the previous account scope.",
+      error: "The newly selected scope failed to load",
+      refreshError: null,
+      loading: false,
+      refreshing: false,
+    })).toBe("hidden");
+  });
+
   it("is 'cold-failure' when the cold-cache auto-generation POST failed — the bug this pins", () => {
     // text stays null (nothing ever generated), error (GET-failure) stays null
     // (the GET itself succeeded with {notGenerated:true}), but refreshError is

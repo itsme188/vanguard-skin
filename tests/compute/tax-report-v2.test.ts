@@ -24,7 +24,10 @@ function createTestDb(): Database.Database {
 
     CREATE TABLE accounts (
       id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL
+      name TEXT NOT NULL,
+      -- migration 094: generateTaxReport reads this to decide which accounts
+      -- are reportable on a Form 8949 (default 'taxable' = today's behaviour).
+      tax_treatment TEXT NOT NULL DEFAULT 'taxable'
     );
 
     CREATE TABLE securities (

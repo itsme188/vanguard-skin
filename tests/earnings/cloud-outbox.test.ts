@@ -9,6 +9,13 @@ import {
 } from "@/lib/earnings/cloud-outbox";
 import { readArmedGeneration } from "@/lib/earnings/armed-events-projection";
 
+// Keep the calendar fixture inside the live projection window on every run.
+// Mock only the ET day: timeout and cross-process tests still use real clocks.
+vi.mock("@/lib/calendar/date-utils", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/calendar/date-utils")>(),
+  todayET: () => "2026-09-02",
+}));
+
 let db: Database.Database;
 beforeEach(() => {
   db = new Database(":memory:");

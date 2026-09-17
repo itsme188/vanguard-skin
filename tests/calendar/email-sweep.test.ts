@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import * as calendarDates from "@/lib/calendar/date-utils";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 
@@ -1346,6 +1347,8 @@ describe("armed-events outbox reconcile (R8)", () => {
   let db: Database.Database;
 
   beforeEach(() => {
+    // The outbox writer reads the ET day independently of the sweep's injected now.
+    vi.spyOn(calendarDates, "todayET").mockReturnValue("2026-09-02");
     db = new Database(":memory:");
     db.pragma("foreign_keys = ON");
     runMigrations(db);
@@ -1357,6 +1360,11 @@ describe("armed-events outbox reconcile (R8)", () => {
     fetchSameDayTranscripts.mockClear();
     fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
     drainCloudOutbox.mockClear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    db.close();
   });
 
   /** An event armed with NO outbox row — the pre-outbox production state. */
@@ -1427,6 +1435,8 @@ describe("prepare pass for armed events (v2 slice A)", () => {
   let db: Database.Database;
 
   beforeEach(() => {
+    // The outbox writer reads the ET day independently of the sweep's injected now.
+    vi.spyOn(calendarDates, "todayET").mockReturnValue("2026-09-02");
     db = new Database(":memory:");
     db.pragma("foreign_keys = ON");
     runMigrations(db);
@@ -1443,6 +1453,7 @@ describe("prepare pass for armed events (v2 slice A)", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     __resetPrepareStepsForTests();
     db.close();
   });

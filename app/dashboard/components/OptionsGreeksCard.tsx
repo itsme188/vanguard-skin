@@ -4,6 +4,7 @@ import { useState, useEffect, type ReactNode } from "react";
 import type { PortfolioGreeks, PositionGreeks, GreeksDiagnostic } from "@/lib/compute/options-greeks";
 import { PrivateText, Count } from "@/lib/privacy/components";
 import { formatUSDPrecise, rendersAsZero } from "@/lib/format";
+import { formatOptionExpiry } from "@/lib/format/option-expiry";
 import { EmptySection } from "./EmptySection";
 import {
   interpretDelta,
@@ -134,7 +135,7 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
                   <td className="py-2 pr-3">
                     <span className="font-mono text-ink">{p.underlying}</span>
                     <span className="text-ink-faint ml-1">
-                      {formatStrike(p.strike)} {p.optionType[0]} {formatExpiry(p.expiration)}
+                      {formatStrike(p.strike)} {p.optionType[0]} {formatOptionExpiry(p.expiration)}
                     </span>
                   </td>
                   <td className={`hidden md:table-cell text-right py-2 px-2 font-mono ${p.quantity < 0 ? "text-down" : "text-ink"}`}>
@@ -261,10 +262,4 @@ function formatDollar(n: number | null | undefined): string {
 
 function formatStrike(strike: number): string {
   return strike % 1 === 0 ? `$${strike}` : `$${strike.toFixed(2)}`;
-}
-
-function formatExpiry(expiry: string): string {
-  const d = new Date(expiry + "T12:00:00Z");
-  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  return `${months[d.getUTCMonth()]} ${d.getUTCDate()}`;
 }
