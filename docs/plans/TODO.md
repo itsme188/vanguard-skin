@@ -769,3 +769,7 @@ New open items filed above: 7/17 digest-blocks debut soak, EOD-wrap debut watch,
 - ✅ **Recompute idempotency false alarm** (`e6cc4100`, 2026-09-17; September-15 follow-up l): synthetic reconciliation sales use stable source identity; reminted IDs no longer report false differences. Regression coverage still detects changed proceeds. Copy-only full recompute rehearsal returned IDENTICAL; no production recompute or acceptance stamping performed.
 
 Deployment: the three confidence/coverage fixes above are integrated and pushed through `24085115`, installed as signed/notarized desktop build `Egac-HggTIL9J0XxHm4qh`; wrapper post-verification passed.
+
+## Closed this session — 2026-09-17 digest editorial direction
+
+- ✅ **Takeaway-first research digest** (`dc465f8a`, 2026-09-17): user-approved shift from per-ticker newsletter inventory to substantive company commentary and grouped sector stories, with concise inline citations. Removed mandatory held-name excerpt sections, appended source inventory and ticker roster; preserved held-input priority, meaningful attribution, AI-failure fallback and concise source-limit disclosure. Mac/Worker parity and citation-fidelity regression tests pass. This supersedes the prior mandatory per-held-name section policy.
