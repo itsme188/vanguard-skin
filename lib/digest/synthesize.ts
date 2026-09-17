@@ -76,7 +76,8 @@ EDITION COLLAPSING (HARD):
 - An intraday reversal (up at midday, down by the close) is one narrative beat ("reversed in the afternoon as …"), not two contradictory reports.
 
 OUTPUT SECTION ORDER (HARD):
-- First section: \`## ${sessionHeading}\` — the macro / market-wide narrative drawn from the Macro bucket and the session-arc commentary.
+- Opening: a market-specific # headline and short subhead, as required above.
+- First body section: \`## ${sessionHeading}\` — the macro / market-wide narrative drawn from the Macro bucket and the session-arc commentary.
 - Then substantive company developments and grouped sector/theme stories, ordered by importance. Company-specific headers begin with the ticker; sector/topic headers are descriptive.
 - An optional \`## Also covered\` may contain additional substantive takeaways, never a ticker roster.`;
 }

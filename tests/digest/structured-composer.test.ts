@@ -77,6 +77,16 @@ describe("generateDigestSinceAdaptive — structured composer", () => {
     vi.mocked(synthesize).mockClear();
   });
 
+  it("leads with the market headline/subhead and moves source counts below the body", async () => {
+    const db = setupDb();
+    insertFiveCommentary(db);
+    vi.mocked(synthesize).mockResolvedValueOnce("# Hardware leads a mixed market\n\nStronger orders supported chips while software lagged.\n\n## The Session\n\nSource-backed market commentary.");
+    const md = await generateDigestSinceAdaptive(db, SINCE, {edition:"evening"});
+    expect(md).toMatch(/^# Hardware leads a mixed market\n\nStronger orders/);
+    expect(md).not.toContain("# Evening Recap");
+    expect(md!.indexOf("articles")).toBeGreaterThan(md!.indexOf("Source-backed market commentary"));
+  });
+
   it("evening edition: title, section order, Research Desk after AI body", async () => {
     const db = setupDb();
     insertFiveCommentary(db);

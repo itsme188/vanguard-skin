@@ -1,4 +1,4 @@
-import { DIGEST_EDITORIAL_RULES, retainSuppliedSourceLinks } from "./synthesis-editorial";
+import { DIGEST_EDITORIAL_RULES, retainSuppliedSourceLinks, splitDigestOpening } from "./synthesis-editorial";
 /**
  * Cloud-fallback evening email — runs when the Mac primary path fails.
  *
@@ -403,6 +403,7 @@ Today's research feed — grouped by company/topic:
 ${bucketLines.join("\n")}
 
 Write a concise markdown evening recap with EXACTLY this section order:
+Opening: a market-specific # headline followed by a short subhead.
 1. \`## The Session\` — the macro / market-wide narrative of the day (2-4 sentences).
 2. Substantive company developments (\`## SYM\`) and shared sector/theme stories (descriptive headings), ordered by importance.
 3. Optional \`## Also covered\` for additional substantive takeaways, never a ticker roster.
@@ -636,7 +637,8 @@ export async function runFallbackEvening(
   }
 
   // ── Assemble full markdown ────────────────────────────────────────────────
-  const sections = [anomalyBlock, body].filter((s) => s && s.trim().length > 0);
+  const lead = splitDigestOpening(body);
+  const sections = [lead?.opening, anomalyBlock, lead?.body ?? body].filter((s) => s && s.trim().length > 0);
   const fullMd = sections.join("\n\n---\n\n").trim();
 
   if (!fullMd) {
