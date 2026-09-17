@@ -779,3 +779,5 @@ Deployment: digest editorial changes are pushed through `02ede3be`, installed in
 ## Closed this session — 2026-09-17 digest opening
 
 - ✅ **Market headline and subhead** (`3c6fe57e`, 2026-09-17): user rejected generic document labels and production notes above the approved digest body. Both AI prompts now request the market story first; composers promote it ahead of delivery metadata and move source counts below the body. Malformed/missing openings retain the fallback layout. Updated local preview reopened for review; full suite, types, synthetic generation and rendered-output checks pass.
+
+Deployment: headline correction pushed through `08e89a63`, desktop build `EzPYsKSUuJpLbp88_QJJX` installed/verified, and Worker `60e94373-bba6-4ed6-8f77-bd56c58aff0e` live/healthy.
