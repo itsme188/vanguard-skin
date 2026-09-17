@@ -211,6 +211,42 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
     expect(holdingsRecency.guidance).toContain("Vanguard Taxable");
   });
 
+  // Regression pin (qa:header-dataconfidence--one-day-old-stalest-position-
+  // labelled-today): the stalest-position label collapsed BOTH 0-day-old
+  // and 1-day-old positions to "today" (`daysOld <= 1`), so a position
+  // dated yesterday read as "today" in the drawer — directly contradicting
+  // the adjacent "1d ago" chip for the same position. Only a same-day
+  // (daysOld === 0) position may read "today"; a 1-day-old position must
+  // read "yesterday"; anything older keeps printing the literal date.
+  it("stalest-position label: 0 days old reads 'today', 1 day old reads 'yesterday', older prints the date", () => {
+    const today = insertSecurity(db, "TODAY");
+    const yest = insertSecurity(db, "YEST");
+    const old = insertSecurity(db, "OLDSYM");
+    insertHolding(db, 1, today, 10, "2026-09-17", "canonical:hold:TAX:TODAY:2026-09-17");
+    insertHolding(db, 2, yest, 5, "2026-09-16", "canonical:hold:ROTH:YEST:2026-09-16");
+    insertHolding(db, 3, old, 3, "2026-09-10", "canonical:hold:IBKR:OLDSYM:2026-09-10");
+
+    const now = new Date("2026-09-17T16:00:00Z");
+    const { holdingsRecency } = getDataConfidence(db, now);
+
+    const taxable = holdingsRecency.perAccount.find((a) => a.name === "Vanguard Taxable");
+    const roth = holdingsRecency.perAccount.find((a) => a.name === "Vanguard Roth IRA");
+    const ibkr = holdingsRecency.perAccount.find((a) => a.name === "IBKR");
+    expect(taxable!.daysOld).toBe(0);
+    expect(roth!.daysOld).toBe(1);
+    expect(ibkr!.daysOld).toBe(7);
+
+    expect(holdingsRecency.detail).toContain(
+      "Vanguard Taxable: latest: 2026-09-17 · stalest position: TODAY today"
+    );
+    expect(holdingsRecency.detail).toContain(
+      "Vanguard Roth IRA: latest: 2026-09-16 · stalest position: YEST yesterday"
+    );
+    expect(holdingsRecency.detail).toContain(
+      "IBKR: latest: 2026-09-10 · stalest position: OLDSYM 2026-09-10"
+    );
+  });
+
   it("valuation coverage sums per-account latest rows; an account with holdings but no valuation row counts as unpriced", () => {
     const aapl = insertSecurity(db, "AAPL");
     const msft = insertSecurity(db, "MSFT");
