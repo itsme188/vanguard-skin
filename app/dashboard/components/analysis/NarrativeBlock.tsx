@@ -49,6 +49,44 @@ function driftDetail(surfaceKey: Props["surfaceKey"]): string {
     : "the numbers on this card no longer match";
 }
 
+export type NarrativeRenderState = "loading" | "hidden" | "cold-failure" | "narrative";
+
+/**
+ * Pure render-state decision, extracted so the QA finding
+ * (analysis-defense-narrative--auto-generation-500-card-vanishes-no-error-no-retry)
+ * can be pinned by a unit test — this repo has no jsdom/RTL harness to render
+ * the component itself.
+ *
+ * The bug: a cold cache (GET returns {notGenerated:true}) auto-fires the
+ * generate POST. When that POST fails, `refreshError` gets set but `text`
+ * stays null — the old render guard combined "error is set" OR "no text yet"
+ * into one bare no-render, so the missing-text arm fired and removed the
+ * whole card even though no GET-level `error` existed. A paid AI generation
+ * attempt left no message, no retry button, and a reload paid for another.
+ *
+ * `error` (the initial GET failing outright) still hides the card — that
+ * failure mode is unchanged here; this only adds a state for the case GET
+ * succeeded (possibly with notGenerated) but the follow-up POST did not.
+ */
+export function narrativeRenderState({
+  text,
+  error,
+  refreshError,
+  loading,
+  refreshing,
+}: {
+  text: string | null;
+  error: string | null;
+  refreshError: string | null;
+  loading: boolean;
+  refreshing: boolean;
+}): NarrativeRenderState {
+  if (loading || (refreshing && !text)) return "loading";
+  if (text) return "narrative";
+  if (error) return "hidden";
+  return refreshError ? "cold-failure" : "hidden";
+}
+
 export function NarrativeBlock({ scope, surfaceKey }: Props) {
   const [text, setText] = useState<string | null>(null);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
@@ -134,9 +172,34 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
     };
   }, [scope, surfaceKey, handleRefresh]);
 
-  if (loading || (refreshing && !text))
+  const renderState = narrativeRenderState({ text, error, refreshError, loading, refreshing });
+
+  if (renderState === "loading")
     return <div className="text-xs text-ink-faint italic mt-2">Loading narrative…</div>;
-  if (error || !text) return null; // graceful no-render on error
+  if (renderState === "cold-failure") {
+    // Cold cache (GET returned notGenerated) auto-fired the generate POST and
+    // that POST failed — say so plainly instead of vanishing the card, since
+    // the auto-fire already spent a paid AI call and a silent reload would
+    // spend another one chasing a message that never arrives.
+    return (
+      <div
+        role="alert"
+        className="not-italic text-xs text-warn mt-2 flex flex-wrap items-center gap-x-2 gap-y-1"
+      >
+        <span>{refreshError}</span>
+        <button
+          type="button"
+          onClick={() => handleRefresh("footer")}
+          disabled={refreshing}
+          aria-label="Try generating the narrative again"
+          className="font-medium underline decoration-dotted underline-offset-2 hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {refreshing ? "Refreshing…" : "Try again"}
+        </button>
+      </div>
+    );
+  }
+  if (renderState === "hidden" || !text) return null; // graceful no-render: nothing generated, no attempt to explain
 
   // formatGeneratedAt returns null for an unparseable timestamp — hide the
   // caption rather than render "Invalid Date".
