@@ -10,7 +10,6 @@ import { composeCallTranscriptsBlock } from "@/lib/digest/call-transcripts";
 import { splitEssays, renderResearchDesk, insertCrossFilePointers } from "@/lib/digest/research-desk";
 import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 import {
-  partitionListingOnlyHeldBuckets,
   renderThinCoverageLines,
   insertBeforeAlsoCovered,
 } from "@/lib/digest/thin-coverage";
@@ -562,10 +561,7 @@ export async function generateDigestSinceAdaptive(
 
     const rawBuckets = bucketByCompany(commentary);
     const enriched = enrichBucketCompanyNames(db, rawBuckets);
-    const { active: buckets, rosterSymbols } = partitionListingOnlyHeldBuckets(
-      enriched,
-      heldSymbols,
-    );
+    const buckets = enriched;
 
     try {
       let synth = await synthesize({
@@ -577,25 +573,13 @@ export async function generateDigestSinceAdaptive(
       });
       const crossFiled = insertCrossFilePointers(synth, essays, [...heldSymbols, ...watchlist]);
       synth = crossFiled.markdown;
-      const thinLines = renderThinCoverageLines(rosterSymbols, crossFiled.unfiled);
+      const thinLines = renderThinCoverageLines([], crossFiled.unfiled);
       if (thinLines) synth = insertBeforeAlsoCovered(synth, thinLines);
       lines.push(synth);
       lines.push("");
       lines.push("---");
       lines.push("");
 
-      // Concise per-source tail: commentary only — essays are linked in Research Desk
-      lines.push("**Sources**");
-      lines.push("");
-      for (const article of commentary) {
-        const url = article.source_url || article.website_url;
-        if (url) {
-          lines.push(`- **${article.source_name}**: [${article.subject}](${url})`);
-        } else {
-          lines.push(`- **${article.source_name}**: ${article.subject}`);
-        }
-      }
-      lines.push("");
     } catch (err) {
       if (err instanceof SynthesisEmptyError) {
         console.warn(`[digest] synthesis fell back to per-source: ${(err as Error).message}`);

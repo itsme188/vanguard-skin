@@ -268,18 +268,12 @@ describe("synthesize", () => {
       anomalies: [],
     });
 
-    // The new HARD rule block must appear in the system prompt, with the
-    // specific forbidden phrasings called out so future contributors can't
-    // silently drop the guardrail.
-    expect(capturedSystem).toContain("COVERAGE-CHARACTERIZATION RULES");
-    expect(capturedSystem).toContain("only mentioned indirectly");
-    expect(capturedSystem).toContain("mentioned in passing");
-    expect(capturedSystem).toContain(
-      "Do NOT label any source as having mentioned a symbol",
-    );
+    expect(capturedSystem).toContain("Lead with the substantive takeaway");
+    expect(capturedSystem).toContain('Never open with "XYZ appeared in"');
+    expect(capturedSystem).toContain("bucket membership alone is not evidence");
   });
 
-  it("instructs Sonnet to give held tickers their own section, not 'Also covered'", async () => {
+  it("prioritizes substantive held-name developments without forcing sections", async () => {
     let capturedSystem = "";
     (generateTextForFeature as ReturnType<typeof vi.fn>).mockImplementation(
       async (_feature: string, args: { prompt?: string; system?: string; messages?: unknown }) => {
@@ -295,11 +289,9 @@ describe("synthesize", () => {
       anomalies: [],
     });
 
-    expect(capturedSystem).toContain("HELD-TICKER PRIORITIZATION");
-    expect(capturedSystem).toContain(
-      "Every held ticker",
-    );
-    expect(capturedSystem).toContain("MUST get its own");
+    expect(capturedSystem).toContain("Prioritize substantive developments");
+    expect(capturedSystem).toContain("Group companies sharing a supported sector");
+    expect(capturedSystem).not.toContain("MUST get its own");
   });
 
   // -------------------------------------------------------------------------
@@ -436,7 +428,7 @@ describe("edition-aware prompt (digest redesign)", () => {
     expect(system).toContain("Tell each session's story ONCE");
     expect(system).toContain("OUTPUT SECTION ORDER (HARD):");
     expect(system).toContain("## Also covered");
-    expect(system).toContain("header MUST begin with the ticker symbol");
+    expect(system).toContain("Company-specific headers begin with the ticker; sector/topic headers are descriptive");
   });
 
   it("session heading flows into the system prompt", async () => {
@@ -457,112 +449,22 @@ describe("edition-aware prompt (digest redesign)", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// enforceHeldSections — deterministic held-ticker section enforcement
-// (the 7/20 digest relegated held CSX with two-article coverage to
-// "## Also covered" despite the HELD-TICKER prompt rule; prompts request,
-// post-processing enforces)
-// ---------------------------------------------------------------------------
-
-import { enforceHeldSections } from "@/lib/digest/synthesize";
-
 function inputWith(buckets: CompanyBucket[], heldSymbols: string[]): SynthesisInput {
   return { buckets, heldSymbols, watchlist: [], anomalies: [] };
 }
 
-describe("enforceHeldSections", () => {
-  const csxBucket = makeBucket("CSX", "CSX Corp", [
-    makeArticle(1, "Vital Knowledge", "neutral", "CSX named among this week's earnings reporters.", "https://vk.example/weekend"),
-    makeArticle(2, "Vital Knowledge", "neutral", "Rails in focus into Wednesday's print.", "https://vk.example/dawn"),
-  ]);
-
-  const baseMarkdown = [
-    "## The Session",
-    "",
-    "Macro narrative here.",
-    "",
-    "## INTC (Intel Corp)",
-    "",
-    "Intel coverage. [Vital Knowledge](https://vk.example/weekend)",
-    "",
-    "## Also covered",
-    "",
-    "CSX and others were named in the weekend calendar.",
-  ].join("\n");
-
-  it("appends a citation stub before ## Also covered for a held bucket with no section", () => {
-    const out = enforceHeldSections(baseMarkdown, inputWith(
-      [csxBucket, makeBucket("INTC", "Intel Corp", [makeArticle(3, "Vital Knowledge")])],
-      ["CSX", "INTC"],
-    ));
-
-    expect(out).toContain("## CSX (CSX Corp)");
-    // Stub cites the bucket's articles with links + summary text.
-    expect(out).toContain("[Vital Knowledge](https://vk.example/weekend)");
-    expect(out).toContain("CSX named among this week's earnings reporters.");
-    // Inserted BEFORE the Also covered close.
-    expect(out.indexOf("## CSX")).toBeLessThan(out.indexOf("## Also covered"));
-    // Existing sections untouched.
-    expect(out).toContain("## INTC (Intel Corp)");
-  });
-
-  it("leaves output unchanged when every held bucket already has a section", () => {
-    const out = enforceHeldSections(baseMarkdown, inputWith(
-      [makeBucket("INTC", "Intel Corp", [makeArticle(3, "Vital Knowledge")])],
-      ["INTC"],
-    ));
-
-    expect(out).toBe(baseMarkdown);
-  });
-
-  it("does not add sections for non-held buckets", () => {
-    const out = enforceHeldSections(baseMarkdown, inputWith([csxBucket], ["INTC"]));
-
-    expect(out).toBe(baseMarkdown);
-  });
-
-  it("recognizes a dual-class heading via issuerSiblings (held GOOG, section GOOGL)", () => {
-    const md = baseMarkdown.replace(
-      "## INTC (Intel Corp)",
-      "## GOOGL (Alphabet)",
-    );
-    const out = enforceHeldSections(md, inputWith(
-      [makeBucket("GOOGL", "Alphabet", [makeArticle(4, "Vital Knowledge")])],
-      ["GOOG"],
-    ));
-
-    expect(out).toBe(md);
-  });
-
-  it("appends at the end when there is no ## Also covered section", () => {
-    const md = "## The Session\n\nMacro only.";
-    const out = enforceHeldSections(md, inputWith([csxBucket], ["CSX"]));
-
-    expect(out).toContain("## CSX (CSX Corp)");
-    expect(out.trimEnd().endsWith("*Held-name coverage auto-surfaced from today's sources.*")).toBe(true);
-  });
-
-  it("skips the macro (no symbol) bucket", () => {
-    const macro = makeBucket("(no symbol)", null, [makeArticle(9, "Vital Knowledge")]);
-    const out = enforceHeldSections(baseMarkdown, inputWith([macro], ["CSX"]));
-
-    expect(out).toBe(baseMarkdown);
-  });
-
-  it("synthesize() applies enforcement to the model output", async () => {
-    const mocked = vi.mocked(generateTextForFeature);
-    mocked.mockResolvedValue({
-      // Padded past the 200-char minimum-length guard in synthesize().
-      text: baseMarkdown.replace(
-        "Macro narrative here.",
-        "Macro narrative here with enough supporting detail about the session to satisfy the composer's minimum-length validation guard.",
-      ),
-      finishReason: "stop",
-    } as Awaited<ReturnType<typeof generateTextForFeature>>);
-
-    const result = await synthesize(inputWith([csxBucket], ["CSX"]));
-
-    expect(result).toContain("## CSX (CSX Corp)");
+describe("editorial grouping survives synthesis", () => {
+  it("preserves a shared sector story without adding per-ticker excerpts", async () => {
+    const story = "## Semiconductors: hardware leads\n\n" +
+      "AAA and BBB gained on a shared hardware spending outlook; the source offered no separate company catalyst. ".repeat(3) +
+      "[Research](https://example.test/sector)";
+    vi.mocked(generateTextForFeature).mockResolvedValue({text: story, finishReason: "stop"} as Awaited<ReturnType<typeof generateTextForFeature>>);
+    const buckets = ["AAA", "BBB", "EMPTY"].map((sym, i) => makeBucket(sym, null, [makeArticle(i, "Research", "neutral", "Hardware demand improved.", "https://example.test/sector")]));
+    const result = await synthesize(inputWith(buckets, ["AAA", "BBB", "EMPTY"]));
+    expect(result).toBe(story);
+    expect(result).not.toContain("## AAA");
+    expect(result).not.toContain("EMPTY");
+    expect(result).not.toContain("auto-surfaced");
   });
 });
 
@@ -618,13 +520,13 @@ describe("synthesize — truncation guard diagnostics", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Prompt limits never remove the full-input held-name coverage backstop.
-describe("synthesize — held coverage survives the prompt bound", () => {
+// Prompt limits disclose omitted input without rebuilding a ticker inventory.
+describe("synthesize — concise output survives the prompt bound", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("preserves every held section and discloses overflow without model cooperation", async () => {
+  it("does not expand omitted tickers into sections but discloses input limits", async () => {
     const buckets: CompanyBucket[] = [];
     for (let i = 0; i < 35; i++) {
       buckets.push(
@@ -643,12 +545,9 @@ describe("synthesize — held coverage survives the prompt bound", () => {
 
     const result = await synthesize(inputWith(buckets, held));
 
-    const stubbed = [...result.matchAll(/^## (H\d\d) /gm)].map((m) => m[1]);
-    expect(stubbed).toHaveLength(35);
-    // The first 30 buckets are the ones the model saw; the tail overflowed.
-    expect(stubbed).toContain("H00");
-    expect(stubbed).toContain("H34");
+    expect(result).not.toMatch(/^## H\d/m);
+    expect(result).not.toContain("auto-surfaced");
     expect(result).toContain("Coverage note:");
-    expect(result).toContain("Companies and topics outside the AI synthesis: H30, H31, H32, H33, H34.");
+    expect(result).toContain("5 additional company/topic buckets were outside the AI input.");
   });
 });

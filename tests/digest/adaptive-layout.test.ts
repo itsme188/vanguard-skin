@@ -136,7 +136,7 @@ describe("generateDigestSinceAdaptive — synthesis path (>=5 articles)", () => 
     expect(result).toContain("## AAPL");
   });
 
-  it("includes per-source tail (source links) after synthesis text", async () => {
+  it("keeps inline citations without appending a newsletter inventory", async () => {
     vi.mocked(synthesize).mockResolvedValue(SYNTHESIS_RESULT);
     seedArticles(5);
 
@@ -145,10 +145,11 @@ describe("generateDigestSinceAdaptive — synthesis path (>=5 articles)", () => 
       .slice(0, 10);
     const result = await generateDigestSinceAdaptive(db, yesterday);
 
-    // Per-source tail is concise link lines
+    // The narrative retains its inline citation.
     expect(result).toContain("Vital Knowledge");
-    // Should contain article links from source tail
-    expect(result).toContain("https://example.com/article-");
+    // It must not append the source inventory.
+    expect(result).not.toContain("https://example.com/article-");
+    expect(result).not.toContain("**Sources**");
   });
 });
 
@@ -193,7 +194,7 @@ describe("generateDigestSinceAdaptive — synthesis fallback", () => {
 });
 
 describe("generateDigestSinceAdaptive — thin coverage wiring", () => {
-  it("listing-only held bucket → roster line, no synthesis bucket, no stub", async () => {
+  it("broad articles reach the editorial pass without generating a ticker roster", async () => {
     // Hold GS: seed account + security + holding (getHeldSymbols reads holdings⋈securities).
     const acctId = (() => {
       db.prepare("INSERT OR IGNORE INTO accounts (name) VALUES (?)").run("Vanguard Taxable");
@@ -221,14 +222,13 @@ describe("generateDigestSinceAdaptive — thin coverage wiring", () => {
 
     const out = await generateDigestSinceAdaptive(db, "2020-01-01");
 
-    // Roster line present, placed before ## Also covered.
-    expect(out).toContain("On this week's calendar: GS");
-    expect(out!.indexOf("On this week's calendar: GS")).toBeLessThan(out!.indexOf("## Also covered"));
+    // No redundant ticker roster.
+    expect(out).not.toContain("On this week's calendar:");
     // No GS section or stub was manufactured.
     expect(out).not.toMatch(/^## GS\b/m);
-    // The listing-only GS bucket never reached the model.
+    // Broad articles can carry substantive sector commentary; let the model group it.
     const input = (synthesize as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(input.buckets.map((b: { symbol: string }) => b.symbol)).not.toContain("GS");
+    expect(input.buckets.map((b: { symbol: string }) => b.symbol)).toContain("GS");
   });
 });
 

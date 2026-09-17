@@ -16,7 +16,7 @@ describe("Mac / Worker synthesis budget", () => {
     const result = boundSynthesisBuckets(buckets, context, { maxBuckets: 4 });
     expect(result).toEqual(workerBound(buckets, context, { maxBuckets: 4 }));
     expect(result.priority.map(b => b.symbol)).toEqual(["(no symbol)", "ANOM", "GOOGL", "WATCH"]);
-    expect(synthesisCoverageNotice(result)).toContain("NOISE");
+    expect(synthesisCoverageNotice(result)).toContain("1 additional company/topic buckets");
   });
   it("discloses shortened summaries even without bucket overflow", () => {
     const result = boundSynthesisBuckets([{ symbol: "GOOG", companyName: null, articles: [article] }], context);
@@ -31,6 +31,6 @@ describe("Mac / Worker synthesis budget", () => {
     expect(subjectOnly.summary).toBeNull();
     const oversized = boundSynthesisBuckets([{ ...bucket, articles: [{ ...subjectOnly, source_url: "x".repeat(100000) }] }], context);
     expect(oversized.priority).toEqual([]);
-    expect(synthesisCoverageNotice(oversized)).toContain("Macro");
+    expect(synthesisCoverageNotice(oversized)).toContain("1 additional company/topic buckets");
   });
 });
