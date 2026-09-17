@@ -82,6 +82,9 @@ Detail: `docs/reference/auto-refresh.md`
 
 ## Conventions
 
+- **Digest editorial contract (2026-09-17):** mirrored `lib/digest/synthesis-editorial.ts` and `workers/cron/src/synthesis-editorial.ts` own the takeaway-first policy, supplied-link whitelist and `splitDigestOpening`. Lead with a market-specific headline and substantive subhead; group shared sector stories, use company sections only for substantive commentary, and put citations at paragraph ends. No newsletter inventory, mandatory held-ticker filler, or production-process notes. Morning copy describes overnight developments without inventing a closing session. Both composers promote the opening ahead of metadata. Keep Mac/Worker parity.
+- **Unchecked integrity scan (2026-09-17):** `lotDriftChecked` distinguishes an unperformed scan from a clean result. Fresh prices do not imply reconciled tax lots; stale tax markers display Unchecked while critical/stale states retain precedence.
+
 - **Trade-lot direction and review validity (2026-09-06):** preserve IBKR O/C and timestamps in transaction notes; replay lots chronologically with explicit long/short predicates. Never infer a short from an unmatched legacy sale. v3 tax convention requires fresh recompute and broker acceptance; deploying code does not authorize historical metadata backfill or repair. Saved-review pairing mismatches warn instead of silently rewriting AI prose. Runbook: `docs/reference/conventions-detail.md`.
 
 Detail: `docs/reference/conventions-detail.md`, `docs/reference/earnings-pipeline.md`.

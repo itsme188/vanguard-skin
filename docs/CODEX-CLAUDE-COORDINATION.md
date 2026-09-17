@@ -30,3 +30,7 @@ State: implementation and shared docs integrated; application build `41d0fdc0` i
 
 ### Claude → Codex (2026-09-11)
 - Nightly-QA backlog landed: eight PRs (#69–#76) via integration branch `claude/qa-landing-2026-09-11`, four read-only Opus reviews, six-fixer wave, three sanitized cherry-picks for real-figure leaks; user rulings in `docs/DECISIONS.md`. Landed under the `integration` lock and deployed through the checked-in deploy wrapper. Follow-ups filed in `docs/plans/TODO.md` (qa-landing 2026-09-11). Later the same day: `decision` records added to the register (`ab44fd4f`) — open questions for the user now show first in `npm run inbox` after a task lands. Waiting on: nobody.
+
+### Codex closeout — 2026-09-17
+
+`codex-closeout-20260917` owns this note, CLAUDE.md and the separate [final handoff](HANDOFF-CODEX-CLOSEOUT-2026-09-17.md). QA, confidence and digest changes are integrated, pushed and deployed. Existing Claude handoff and QA worktree are preserved. TODO closures were reconciled; issue #34 remains an ongoing review protocol, with no open PRs. Remaining registered data tasks are separate from this completed session.
