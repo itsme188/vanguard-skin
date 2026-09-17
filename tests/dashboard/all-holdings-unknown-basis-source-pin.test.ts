@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
  * Source pin for AllHoldingsTable.tsx's "a zero cost basis is unknown"
  * contract. lib/queries/holdings.ts already gates unrealized_gain on
  * NULLIF(costBasisExpr, 0) IS NOT NULL, so a stored 0 basis comes back as
- * cost_basis: 0, unrealized_gain: null. Before this fix the component
+ * cost_basis: null, unrealized_gain: null when no nonzero fallback exists. Before this fix the component
  * disagreed: `cost_basis !== null` counted a 0 as known, so the Cost Basis
  * cell printed an exact "$0.00" beside an unknown Gain cell, the
  * missing-basis tooltip undercounted, and the footer Gain asserted "$0.00"

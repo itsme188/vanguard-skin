@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
+import { stampTaxLotsConvention, bumpTaxInputGeneration } from "@/lib/compute/tax-convention";
 import { getDataConfidence } from "@/lib/queries/data-confidence";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -464,5 +465,34 @@ describe("data-confidence — integrity gate cap", () => {
 
     expect(result.integrity.critical.length).toBeGreaterThanOrEqual(2);
     expect(result.capReason).toBe("ZZZ: Bond type contradicts 12 equity fills");
+  });
+});
+
+
+describe("data-confidence — incomplete lot verification", () => {
+  it("never calls high freshness high confidence while lot verification is skipped", () => {
+    const db = createTestDb();
+    const security = insertSecurity(db, "CHECK", { securityType: "Stock", ibConId: 123 });
+    insertPrice(db, security, "2026-08-21", 20);
+    for (const accountId of [1, 2, 3]) {
+      insertHolding(db, accountId, security, 10, "2026-08-21", `test:${accountId}`);
+      insertDailyValuation(db, accountId, "2026-08-21", 1, 1);
+      db.prepare(`INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis) VALUES (?, ?, '2026-08-01', 20, 10, 10, 200)`).run(accountId, security);
+    }
+    const unstamped = getDataConfidence(db, NOW);
+    expect(unstamped.overallScore).toBeGreaterThanOrEqual(80);
+    expect(unstamped.integrity.lotDriftChecked).toBe(false);
+    expect(unstamped.overallLevel).toBe("unverified");
+    expect(unstamped.capReason).toBeNull();
+    stampTaxLotsConvention(db);
+    const current = getDataConfidence(db, NOW);
+    expect(current.integrity.lotDriftChecked).toBe(true);
+    expect(current.overallLevel).toBe("high");
+    bumpTaxInputGeneration(db);
+    const stale = getDataConfidence(db, NOW);
+    expect(stale.integrity.lotDriftChecked).toBe(false);
+    expect(stale.overallLevel).toBe("unverified");
+    expect(stale.overallScore).toBe(current.overallScore);
+    db.close();
   });
 });

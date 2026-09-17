@@ -228,3 +228,25 @@ describe("idempotence (snapshotBusinessColumns / diffBusinessSnapshots)", () => 
     expect(diff.differences.length).toBeGreaterThan(0);
   });
 });
+
+
+describe("synthetic reconciliation sale identity", () => {
+  it("ignores regenerated close transaction IDs but detects changed sale amounts", () => {
+    const db = createTestDb();
+    const security = seedBuyAndPartialSell(db);
+    db.prepare("UPDATE securities SET security_type = 'Stock' WHERE id = ?").run(security);
+    seedHolding(db, ACCOUNT_ID, security, 0, "2025-06-02");
+    computeTaxLots(db);
+    const closeBefore = db.prepare("SELECT id, source_key FROM transactions WHERE type='RECONCILE_CLOSE'").get() as { id: number; source_key: string };
+    expect(closeBefore).toBeDefined();
+    const before = snapshotBusinessColumns(db);
+    computeTaxLots(db);
+    const closeAfter = db.prepare("SELECT id, source_key FROM transactions WHERE type='RECONCILE_CLOSE'").get() as { id: number; source_key: string };
+    expect(closeAfter.id).not.toBe(closeBefore.id);
+    expect(closeAfter.source_key).toBe(closeBefore.source_key);
+    expect(diffBusinessSnapshots(before, snapshotBusinessColumns(db))).toEqual({ identical: true, differences: [] });
+    db.prepare("UPDATE tax_lot_sales SET proceeds = proceeds + 1 WHERE sale_transaction_id = ?").run(closeAfter.id);
+    expect(diffBusinessSnapshots(before, snapshotBusinessColumns(db)).identical).toBe(false);
+    db.close();
+  });
+});
