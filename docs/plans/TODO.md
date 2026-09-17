@@ -775,3 +775,7 @@ Deployment: the three confidence/coverage fixes above are integrated and pushed 
 - ✅ **Takeaway-first research digest** (`dc465f8a`, 2026-09-17): user-approved shift from per-ticker newsletter inventory to substantive company commentary and grouped sector stories, with concise inline citations. Removed mandatory held-name excerpt sections, appended source inventory and ticker roster; preserved held-input priority, meaningful attribution, AI-failure fallback and concise source-limit disclosure. Mac/Worker parity and citation-fidelity regression tests pass. This supersedes the prior mandatory per-held-name section policy.
 
 Deployment: digest editorial changes are pushed through `02ede3be`, installed in signed/notarized desktop build `d2FwKp5JKDisHQzBF4qw-`, and live on Worker `4eaf6579-f422-433f-bb42-26a384aef9a5`; post-deployment checks passed.
+
+## Closed this session — 2026-09-17 digest opening
+
+- ✅ **Market headline and subhead** (`3c6fe57e`, 2026-09-17): user rejected generic document labels and production notes above the approved digest body. Both AI prompts now request the market story first; composers promote it ahead of delivery metadata and move source counts below the body. Malformed/missing openings retain the fallback layout. Updated local preview reopened for review; full suite, types, synthetic generation and rendered-output checks pass.
