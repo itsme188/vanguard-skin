@@ -53,32 +53,47 @@ export interface ResearchMention {
   mention_sentiment: string | null;
 }
 
-export function getRecentArticles(
-  db: Database.Database,
-  options?: {
-    sourceId?: number;
-    securityId?: number;
-    startDate?: string;
-    endDate?: string;
-    search?: string;
-    processedOnly?: boolean;
-    /**
-     * D4: when true, only return articles with is_relevant=1 (D2 short-circuit
-     * + D3 portfolio-relevance gate both flip this to 0). Default false so
-     * the Research → Feeds main listing and the chat tool still see filtered
-     * content — digest/briefing/trade-review callers opt in.
-     */
-    relevantOnly?: boolean;
-    /**
-     * Full-timestamp upper bound (ISO or SQLite format), datetime()-wrapped on
-     * both sides like startDate. Distinct from `endDate`, which is date-only
-     * and gets a " 23:59:59" suffix. Used by the digest composer's
-     * late-arrival cap-saturation guard to fetch a time-bounded tranche.
-     */
-    endDateTime?: string;
-    limit?: number;
-  }
-): ResearchArticle[] {
+/**
+ * Window filters shared by `getRecentArticles` and `countRecentArticles`.
+ * Deliberately free of `limit`: a count answers "how big is the window",
+ * a list answers "which N did we fetch".
+ */
+export interface RecentArticlesFilter {
+  sourceId?: number;
+  securityId?: number;
+  startDate?: string;
+  endDate?: string;
+  search?: string;
+  processedOnly?: boolean;
+  /**
+   * D4: when true, only return articles with is_relevant=1 (D2 short-circuit
+   * + D3 portfolio-relevance gate both flip this to 0). Default false so
+   * the Research → Feeds main listing and the chat tool still see filtered
+   * content — digest/briefing/trade-review callers opt in.
+   */
+  relevantOnly?: boolean;
+  /**
+   * Full-timestamp upper bound (ISO or SQLite format), datetime()-wrapped on
+   * both sides like startDate. Distinct from `endDate`, which is date-only
+   * and gets a " 23:59:59" suffix. Used by the digest composer's
+   * late-arrival cap-saturation guard to fetch a time-bounded tranche.
+   */
+  endDateTime?: string;
+}
+
+export interface RecentArticlesOptions extends RecentArticlesFilter {
+  limit?: number;
+}
+
+/**
+ * Single predicate builder for the recent-articles window — the list and the
+ * count MUST stay on it (CLAUDE.md: a count must use the identical predicate
+ * as its list, or the disclosure line and the rendered set silently diverge).
+ * Same pattern as buildFilteredArticlesWhere below.
+ */
+function buildRecentArticlesWhere(
+  options?: RecentArticlesFilter,
+): { where: string; params: (string | number)[] } {
   const conditions: string[] = [];
   const params: (string | number)[] = [];
 
@@ -125,7 +140,17 @@ export function getRecentArticles(
     conditions.push("a.processed_at IS NOT NULL");
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  return {
+    where: conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "",
+    params,
+  };
+}
+
+export function getRecentArticles(
+  db: Database.Database,
+  options?: RecentArticlesOptions,
+): ResearchArticle[] {
+  const { where, params } = buildRecentArticlesWhere(options);
   const limit = options?.limit || 50;
 
   return db
@@ -142,6 +167,28 @@ export function getRecentArticles(
        LIMIT ?`
     )
     .all(...params, limit) as ResearchArticle[];
+}
+
+/**
+ * How many articles the window actually holds, on the IDENTICAL predicate
+ * `getRecentArticles` uses and with no limit. The digest generators fetch
+ * only the newest 30/40 and need this to say "30 newest of 107 articles"
+ * instead of passing the fetch cap off as the window total.
+ */
+export function countRecentArticles(
+  db: Database.Database,
+  options?: RecentArticlesFilter,
+): number {
+  const { where, params } = buildRecentArticlesWhere(options);
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as n
+         FROM research_articles a
+         JOIN research_sources s ON a.source_id = s.id
+       ${where}`
+    )
+    .get(...params) as { n: number };
+  return row.n;
 }
 
 /**

@@ -798,9 +798,34 @@ describe("buildSynthesisPrompt — timeframe/thread coherence", () => {
     };
     const buckets = { NVDA: [meta] };
     const prompt = buildSynthesisPrompt(buckets, snap);
-    expect(prompt).toContain("**Vital Knowledge [recap]**");
+    expect(prompt).toContain("Vital Knowledge [recap]");
     expect(prompt).toContain("EDITION COLLAPSING");
     expect(prompt).toContain("## The Session");
     expect(prompt).toContain("## Also covered");
+  });
+});
+
+
+describe("bounded evening synthesis delivery", () => {
+  it("keeps all held sections and the coverage notice in the rendered email", async () => {
+    const snap = makeV2Snapshot(40);
+    snap.heldSymbols = snap.recentArticlesMeta!.map((a, i) => `H${String(i).padStart(2, "0")}`);
+    snap.recentArticlesMeta!.forEach((article, i) => {
+      article.mentioned_symbols = JSON.stringify([snap.heldSymbols[i]]);
+      article.source_url = `https://example.test/source/${i}`;
+    });
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(snap);
+    vi.mocked(generateText).mockResolvedValue({ text: "## The Session\n" + "Market context. ".repeat(30), finishReason: "stop" } as Awaited<ReturnType<typeof generateText>>);
+    vi.mocked(sendEmail).mockClear();
+    const result = await runFallbackEvening(makeEnv());
+    expect(result.kind).toBe("success");
+    const call = vi.mocked(generateText).mock.calls.at(-1)![0];
+    expect(call.maxOutputTokens).toBe(16384);
+    expect(call.prompt!.length).toBeLessThan(80000);
+    const delivered = JSON.stringify(vi.mocked(sendEmail).mock.calls);
+    for (const symbol of snap.heldSymbols) expect(delivered).toContain(symbol);
+    expect(delivered).toContain("Coverage note:");
+    expect(delivered).toContain("Companies and topics outside the AI synthesis:");
+    expect(delivered).toContain("https://example.test/source/39");
   });
 });

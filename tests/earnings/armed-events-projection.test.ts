@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import os from "node:os";
@@ -13,6 +13,13 @@ import {
   readArmedGeneration,
 } from "@/lib/earnings/armed-events-projection";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
+
+// Keep the calendar fixture inside the live projection window on every run.
+// Mock only the ET day: timeout and cross-process tests still use real clocks.
+vi.mock("@/lib/calendar/date-utils", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/calendar/date-utils")>(),
+  todayET: () => "2026-09-02",
+}));
 
 let db: Database.Database;
 beforeEach(() => {

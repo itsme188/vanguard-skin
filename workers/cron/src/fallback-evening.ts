@@ -32,7 +32,7 @@ import {
   type FallbackResult,
   type ProcessedArticle,
 } from "./fallback-digest";
-import { editionLabel } from "./editions";
+import { boundSynthesisBuckets, renderBucket, synthesisCoverageNotice } from "./synthesis-budget";
 import { issuerSiblings } from "./fallback-earnings";
 
 // Evening live-fetch cap, sized against the 50-subrequest Workers free-tier
@@ -445,23 +445,28 @@ export function enforceHeldSections(
   return insertBeforeAlsoCoveredWorker(markdown, stubBlock);
 }
 
+function boundEveningBuckets(buckets: Record<string, RecentArticleMeta[]>, snap: Snapshot, anomalySymbols: string[]) {
+  return boundSynthesisBuckets(
+    Object.entries(buckets).map(([symbol, articles]) => ({
+      symbol: symbol === NO_SYMBOL_BUCKET ? "(no symbol)" : symbol, companyName: null, articles,
+    })),
+    { heldSymbols: snap.heldSymbols, watchlist: snap.watchlistSymbols ?? [], anomalySymbols },
+  );
+}
+
 // Exported for testability (pins the synthesis prompt's coherence rules).
 export function buildSynthesisPrompt(
   buckets: Record<string, RecentArticleMeta[]>,
   snap: Snapshot,
+  anomalySymbols: string[] = [],
 ): string {
   const holdingsList = snap.heldSymbols.join(", ") || "(none)";
   const dateStr = todayET();
 
-  const bucketLines: string[] = [];
-  for (const [sym, arts] of Object.entries(buckets)) {
-    bucketLines.push(`### ${sym}`);
-    for (const a of arts) {
-      bucketLines.push(`**${a.source_name}${editionLabel(a.source_name, a.subject)}**: ${a.subject}`);
-      if (a.summary) bucketLines.push(a.summary);
-      if (a.portfolio_relevance) bucketLines.push(`> ${a.portfolio_relevance}`);
-      bucketLines.push("");
-    }
+  const bounded = boundEveningBuckets(buckets, snap, anomalySymbols);
+  const bucketLines = bounded.priority.map(renderBucket);
+  if (bounded.overflowSymbols.length) {
+    bucketLines.push(`Also mentioned today (no bucket content supplied; do not invent sections): ${bounded.overflowSymbols.join(", ")}`);
   }
 
   return `You are a financial analyst writing an evening recap email (${dateStr}) for a portfolio manager.
@@ -516,22 +521,22 @@ async function synthesizeViaAI(
   env: FallbackEnv,
   articles: RecentArticleMeta[],
   snap: Snapshot,
+  anomalySymbols: string[],
 ): Promise<string | null> {
   const allBuckets = bucketByCompany(articles);
   const { active: buckets, rosterSymbols } = partitionListingOnlyHeldBuckets(
     allBuckets,
     snap.heldSymbols ?? [],
   );
-  const prompt = buildSynthesisPrompt(buckets, snap);
+  const prompt = buildSynthesisPrompt(buckets, snap, anomalySymbols);
+  const bounded = boundEveningBuckets(buckets, snap, anomalySymbols);
   const catalog = snap.modelCatalog ?? [];
   try {
     const result = await generateWithFailover(env, "fallbackEvening", catalog, (model) =>
       generateText({
         model,
-        // 8192 mirrors lib/digest/synthesize.ts — the structured section
-        // contract regularly exceeds 4096 output tokens on heavy days, and the
-        // truncation guard would otherwise degrade the cloud email every time.
-        maxOutputTokens: 8192,
+        // Keep the model output budget aligned with the Mac synthesis.
+        maxOutputTokens: 16384,
         prompt,
       }),
     );
@@ -540,7 +545,7 @@ async function synthesizeViaAI(
     //   1. Truncation guard, 2. preamble strip, 3. header check, 4. min length.
     // On any failure return null so the caller falls back to per-source layout.
     if (result.finishReason === "length") {
-      console.warn("[fallback-evening] synthesis truncated by max tokens");
+      console.warn("[fallback-evening] synthesis truncated at a model length limit");
       return null;
     }
 
@@ -565,7 +570,8 @@ async function synthesizeViaAI(
         `On this week's calendar: ${rosterSymbols.join(" · ")}`,
       );
     }
-    return out;
+    const notice = synthesisCoverageNotice(bounded);
+    return notice ? `${out}\n\n${notice}` : out;
   } catch (err) {
     console.warn("[fallback-evening] synthesis failed:", err);
     return null;
@@ -680,6 +686,7 @@ export async function runFallbackEvening(
 
   // ── Anomaly block (schemaVersion 3 only) ─────────────────────────────────
   let anomalyBlock = "";
+  let anomalySymbols: string[] = [];
   if (
     snap.schemaVersion >= 3 &&
     snap.vanguardHoldings &&
@@ -694,6 +701,7 @@ export async function runFallbackEvening(
       );
       if (flags && flags.length > 0) {
         anomalyBlock = formatAnomalyBlock(flags);
+        anomalySymbols = flags.map((flag) => flag.symbol);
       }
     } catch (err) {
       console.warn("[fallback-evening] anomaly computation failed:", err);
@@ -704,7 +712,7 @@ export async function runFallbackEvening(
   // ── Body: synthesis or per-source ────────────────────────────────────────
   let body = "";
   if (articlesInWindow.length >= 5) {
-    const synthesized = await synthesizeViaAI(env, articlesInWindow, snap);
+    const synthesized = await synthesizeViaAI(env, articlesInWindow, snap, anomalySymbols);
     body = synthesized ?? renderPerSource(articlesInWindow);
   } else {
     body = renderPerSource(articlesInWindow);

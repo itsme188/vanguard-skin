@@ -320,17 +320,17 @@ describe("processUnprocessedArticles — enrich_attempts retry cap", () => {
     );
 
     await processUnprocessedArticles(db);
-    let row = db
+    const firstAttempt = db
       .prepare(`SELECT enrich_attempts, excluded_category, processed_at FROM research_articles WHERE id = ?`)
       .get(id) as { enrich_attempts: number; excluded_category: string | null; processed_at: string | null };
-    expect(row.enrich_attempts).toBe(1);
-    expect(row.excluded_category).toBeNull();
-    expect(row.processed_at).toBeNull();
+    expect(firstAttempt.enrich_attempts).toBe(1);
+    expect(firstAttempt.excluded_category).toBeNull();
+    expect(firstAttempt.processed_at).toBeNull();
 
     await processUnprocessedArticles(db);
     const result = await processUnprocessedArticles(db);
 
-    row = db
+    const row = db
       .prepare(
         `SELECT enrich_attempts, is_relevant, excluded_category, excluded_reason, processed_at
          FROM research_articles WHERE id = ?`,

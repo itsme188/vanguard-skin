@@ -18,7 +18,7 @@
  * DIFFERENT surviving row stays superseded, and other symbols are untouched.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { confirmEarningsDate } from "@/lib/mutations/confirm-earnings-date";
@@ -33,6 +33,13 @@ import { getUpcomingEvents } from "@/lib/queries/calendar";
 const TODAY = "2026-08-31";
 const VENDOR_DATE = "2026-09-07";
 const MANUAL_DATE = "2026-09-02";
+
+// Keep the calendar fixture inside the live projection window on every run.
+// Mock only the ET day: timeout and cross-process tests still use real clocks.
+vi.mock("@/lib/calendar/date-utils", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/calendar/date-utils")>(),
+  todayET: () => "2026-08-31",
+}));
 
 let db: Database.Database;
 

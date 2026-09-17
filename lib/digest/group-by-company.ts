@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
-import { getRecentArticles } from "@/lib/queries/research";
-import { formatTriggeredAlertsSection } from "./daily-digest";
+import { getRecentArticles, countRecentArticles } from "@/lib/queries/research";
+import { formatTriggeredAlertsSection, formatArticleCountLine } from "./daily-digest";
 import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 
 export interface ArticleLike {
@@ -112,14 +112,23 @@ export function renderDigestByCompany(
   articles: ArticleLike[],
   alertsBlock: string,
   dateStr: string,
+  /**
+   * Total articles in the window, from countRecentArticles on the identical
+   * predicate. When it exceeds `articles.length` the count line says so
+   * instead of passing the fetch cap off as the window total.
+   */
+  windowTotal?: number | null,
 ): string {
   const buckets = bucketByCompany(articles);
   const articleSourceNames = new Set(articles.map((a) => a.source_name));
 
+  const baseCountLine = formatArticleCountLine(
+    articles.length,
+    articleSourceNames.size,
+    windowTotal,
+  );
   const countLine =
-    articles.length === 0
-      ? "No new research articles, but price levels fired — see below."
-      : `${articles.length} article${articles.length === 1 ? "" : "s"} from ${articleSourceNames.size} source${articleSourceNames.size === 1 ? "" : "s"} · grouped by company`;
+    articles.length === 0 ? baseCountLine : `${baseCountLine} · grouped by company`;
 
   const lines: string[] = [
     `# Morning Research Digest`,
@@ -182,16 +191,24 @@ export function renderDigestByCompany(
  * returns the by-company rendering. Returns null when no articles AND no
  * alerts (matches the existing behavior).
  */
+const BY_COMPANY_ARTICLE_CAP = 30;
+
 export function generateDigestByCompanySince(
   db: Database.Database,
   sinceDate: string,
 ): string | null {
-  const articles = getRecentArticles(db, {
+  const windowFilter = {
     startDate: sinceDate,
     processedOnly: true,
     relevantOnly: true,
-    limit: 30,
+  } as const;
+  const articles = getRecentArticles(db, {
+    ...windowFilter,
+    limit: BY_COMPANY_ARTICLE_CAP,
   });
+  // Only worth a COUNT when the fetch saturated the cap.
+  const windowTotal =
+    articles.length >= BY_COMPANY_ARTICLE_CAP ? countRecentArticles(db, windowFilter) : null;
   const alertsBlock = formatTriggeredAlertsSection(db, sinceDate);
   if (articles.length === 0 && !alertsBlock) return null;
 
@@ -203,5 +220,5 @@ export function generateDigestByCompanySince(
     year: "numeric",
   });
 
-  return renderDigestByCompany(articles, alertsBlock, dateStr);
+  return renderDigestByCompany(articles, alertsBlock, dateStr, windowTotal);
 }

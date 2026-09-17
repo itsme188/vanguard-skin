@@ -7,6 +7,7 @@ import {
   getAccountCoverage,
   getDataGaps,
   getCrossSourceDiscrepancies,
+  countCrossSourceDiscrepancies,
   getSnapshotReconciliation,
   getDataHealthSummary,
 } from "@/lib/queries/data-health";
@@ -493,6 +494,41 @@ describe("getCrossSourceDiscrepancies", () => {
     expect(result[0].priceB).toBeCloseTo(799000 * 0.0006648, 2);
     // diffPct is currency-invariant
     expect(result[0].diffPct).toBeCloseTo(13.06, 1);
+  });
+
+  it("counts the full discrepancy universe with the same predicate as the LIMIT-50 list (20-row silent truncation regression)", () => {
+    // QA finding data-health-discrepancies--20-row-silent-truncation: the
+    // panel rendered exactly 20 rows with no count anywhere, while the list
+    // query itself already truncated to LIMIT 50 and getDataHealthSummary
+    // capped totalDiscrepancies at that same 50 by reusing the list's
+    // .length. Seed 60 securities past the 2% threshold (must all count,
+    // only 50 listed) plus a few under it (must appear in neither).
+    for (let i = 0; i < 60; i++) {
+      const sec = seedSecurity(`DISC${i}`);
+      seedPrice(sec, "2025-03-15", 100, "vanguard-holdings");
+      db.prepare(
+        `INSERT INTO ohlcv_bars (security_id, bar_date, bar_size, open, high, low, close, volume)
+         VALUES (?, '2025-03-15', '1 day', 105, 112, 98, 105, 1000)`,
+      ).run(sec); // 5% diff — over the 2% threshold
+    }
+    for (let i = 0; i < 3; i++) {
+      const sec = seedSecurity(`MATCH${i}`);
+      seedPrice(sec, "2025-03-15", 100, "tws");
+      db.prepare(
+        `INSERT INTO ohlcv_bars (security_id, bar_date, bar_size, open, high, low, close, volume)
+         VALUES (?, '2025-03-15', '1 day', 99, 101, 99, 100.5, 1000)`,
+      ).run(sec); // 0.5% diff — under the 2% threshold
+    }
+
+    const list = getCrossSourceDiscrepancies(db);
+    expect(list.length).toBe(50);
+    expect(list.some((d) => d.symbol.startsWith("MATCH"))).toBe(false);
+
+    const count = countCrossSourceDiscrepancies(db);
+    expect(count).toBe(60);
+
+    const summary = getDataHealthSummary(db);
+    expect(summary.totalDiscrepancies).toBe(60);
   });
 });
 

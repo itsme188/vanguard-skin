@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { getRecentArticles } from "@/lib/queries/research";
+import { getRecentArticles, countRecentArticles } from "@/lib/queries/research";
 import { bucketByCompany } from "@/lib/digest/group-by-company";
 import { synthesize, SynthesisEmptyError } from "@/lib/digest/synthesize";
 import { computeAnomalies, formatVanguardAnomaliesBlock } from "@/lib/digest/anomalies";
@@ -119,13 +119,19 @@ export function setLastBriefingSentAt(db: Database.Database, isoDate: string): v
  * Generate a markdown digest from research articles received since a given date.
  * Returns null if no processed articles are available.
  */
+const DIGEST_ARTICLE_CAP = 30;
+
 export function generateDigestSince(db: Database.Database, sinceDate: string): string | null {
-  const articles = getRecentArticles(db, {
+  const windowFilter = {
     startDate: sinceDate,
     processedOnly: true,
     relevantOnly: true,
-    limit: 30,
-  });
+  } as const;
+  const articles = getRecentArticles(db, { ...windowFilter, limit: DIGEST_ARTICLE_CAP });
+  // Only worth a COUNT when the fetch saturated the cap — below it the
+  // fetched set IS the window.
+  const windowTotal =
+    articles.length >= DIGEST_ARTICLE_CAP ? countRecentArticles(db, windowFilter) : null;
 
   const alertsBlock = formatTriggeredAlertsSection(db, sinceDate);
 
@@ -145,10 +151,11 @@ export function generateDigestSince(db: Database.Database, sinceDate: string): s
     year: "numeric",
   });
 
-  const countLine =
-    articles.length === 0
-      ? "No new research articles, but price levels fired — see below."
-      : `${articles.length} article${articles.length === 1 ? "" : "s"} from ${countSources(articles)} source${countSources(articles) === 1 ? "" : "s"}`;
+  const countLine = formatArticleCountLine(
+    articles.length,
+    countSources(articles),
+    windowTotal,
+  );
 
   const lines: string[] = [
     `# Morning Research Digest`,
@@ -218,6 +225,34 @@ function countSources(articles: { source_name: string }[]): number {
   return new Set(articles.map((a) => a.source_name)).size;
 }
 
+/**
+ * The digest count line. Every generator fetches only the N NEWEST articles
+ * in the window (30 here and in the by-company view, 40 in the adaptive
+ * composer), and the old line printed that N as if it were the window total
+ * — so a 107-article window rendered byte-identical output to a 30-article
+ * one, in the email AND the Research → Feeds preview modal, with no hint
+ * anything had been dropped (QA:
+ * research-digest--silently-caps-at-30-newest-articles-no-disclosure).
+ *
+ * `windowTotal` comes from countRecentArticles on the identical predicate.
+ * Pass it only when it is known; the wording is unchanged when nothing was
+ * dropped. `sources` is counted over the FETCHED set, as before.
+ */
+export function formatArticleCountLine(
+  fetched: number,
+  sources: number,
+  windowTotal?: number | null,
+): string {
+  if (fetched === 0) {
+    return "No new research articles, but price levels fired — see below.";
+  }
+  const sourcePart = `${sources} source${sources === 1 ? "" : "s"}`;
+  if (windowTotal != null && windowTotal > fetched) {
+    return `${fetched} newest of ${windowTotal} articles from ${sourcePart}`;
+  }
+  return `${fetched} article${fetched === 1 ? "" : "s"} from ${sourcePart}`;
+}
+
 function parseJsonArray(json: string | null): string[] {
   if (!json) return [];
   try {
@@ -232,6 +267,9 @@ function parseJsonArray(json: string | null): string[] {
 
 /** Minimum article count to attempt cross-source synthesis. */
 const SYNTHESIS_MIN_ARTICLES = 5;
+
+/** Newest-N fetch cap for the adaptive composer (disclosed in the count line). */
+const ADAPTIVE_ARTICLE_CAP = 40;
 
 /**
  * Persist a fallback event to a 30-entry ring buffer in the `settings` table.
@@ -389,18 +427,22 @@ export async function generateDigestSinceAdaptive(
 ): Promise<string | null> {
   const edition = opts.edition ?? "morning";
 
-  let articles = getRecentArticles(db, {
+  const windowFilter = {
     startDate: sinceDate,
     processedOnly: true,
     relevantOnly: true,
-    limit: 40, // raised from 30 — edition collapsing keeps synthesis input flat; covers heavy Mondays
+  } as const;
+  let articles = getRecentArticles(db, {
+    ...windowFilter,
+    limit: ADAPTIVE_ARTICLE_CAP, // raised from 30 — edition collapsing keeps synthesis input flat; covers heavy Mondays
   });
+  const capSaturated = articles.length >= ADAPTIVE_ARTICLE_CAP;
 
   // Cap-saturation guard: late arrivals sit at the OLDEST end of the window,
   // which is exactly what the DESC limit drops first on a >40-article window
   // (heavy Monday after a missed Friday send). Re-fetch the late tranche
   // explicitly so the rescue block can never be truncated away by the cap.
-  if (sinceDate.includes("T") && articles.length === 40) {
+  if (sinceDate.includes("T") && articles.length === ADAPTIVE_ARTICLE_CAP) {
     const lateWindowEnd = new Date(Date.parse(sinceDate) + 60 * 60 * 1000).toISOString();
     const lateTranche = getRecentArticles(db, {
       startDate: sinceDate,
@@ -427,10 +469,14 @@ export async function generateDigestSinceAdaptive(
     year: "numeric",
   });
 
-  const countLine =
-    articles.length === 0
-      ? "No new research articles, but price levels fired — see below."
-      : `${articles.length} article${articles.length === 1 ? "" : "s"} from ${countSources(articles)} source${countSources(articles) === 1 ? "" : "s"}`;
+  // Counted AFTER the late-arrival rescue merge, so the line describes what
+  // actually got rendered rather than the bare cap.
+  const windowTotal = capSaturated ? countRecentArticles(db, windowFilter) : null;
+  const countLine = formatArticleCountLine(
+    articles.length,
+    countSources(articles),
+    windowTotal,
+  );
 
   const title = edition === "evening" ? "# Evening Recap" : "# Morning Research Digest";
   const lines: string[] = [title, `### ${dateStr}`, "", countLine, "", "---", ""];

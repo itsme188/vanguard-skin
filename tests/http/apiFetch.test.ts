@@ -14,8 +14,8 @@ function headerValue(init: RequestInit | undefined, name: string): string | null
 
 describe("makeApiFetch", () => {
   it("sets X-CSRF-Token from the reader on POST", async () => {
-    const fetchMock = vi.fn(async () => new Response("{}"));
-    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock as unknown as typeof fetch);
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}"));
+    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock);
 
     await apiFetch("/api/import", { method: "POST" });
 
@@ -25,9 +25,9 @@ describe("makeApiFetch", () => {
   });
 
   it("does not set X-CSRF-Token on GET", async () => {
-    const fetchMock = vi.fn(async () => new Response("{}"));
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}"));
     const readCsrf = vi.fn(() => "TOKEN123");
-    const apiFetch = makeApiFetch(readCsrf, fetchMock as unknown as typeof fetch);
+    const apiFetch = makeApiFetch(readCsrf, fetchMock);
 
     await apiFetch("/api/summary");
 
@@ -38,8 +38,8 @@ describe("makeApiFetch", () => {
   });
 
   it.each(["PUT", "PATCH", "DELETE"])("sets X-CSRF-Token on %s", async (method) => {
-    const fetchMock = vi.fn(async () => new Response("{}"));
-    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock as unknown as typeof fetch);
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}"));
+    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock);
 
     await apiFetch("/api/levels/1", { method });
 
@@ -48,8 +48,8 @@ describe("makeApiFetch", () => {
   });
 
   it("preserves caller-provided headers alongside the CSRF header", async () => {
-    const fetchMock = vi.fn(async () => new Response("{}"));
-    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock as unknown as typeof fetch);
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}"));
+    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock);
 
     await apiFetch("/api/import", {
       method: "POST",
@@ -63,8 +63,8 @@ describe("makeApiFetch", () => {
   });
 
   it("preserves other caller init fields (body, cache) untouched", async () => {
-    const fetchMock = vi.fn(async () => new Response("{}"));
-    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock as unknown as typeof fetch);
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}"));
+    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock);
 
     await apiFetch("/api/import", { method: "POST", body: JSON.stringify({ a: 1 }), cache: "no-store" });
 
@@ -74,8 +74,8 @@ describe("makeApiFetch", () => {
   });
 
   it("defaults credentials to same-origin when the caller doesn't specify", async () => {
-    const fetchMock = vi.fn(async () => new Response("{}"));
-    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock as unknown as typeof fetch);
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}"));
+    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock);
 
     await apiFetch("/api/summary");
 
@@ -84,8 +84,8 @@ describe("makeApiFetch", () => {
   });
 
   it("lets the caller override credentials", async () => {
-    const fetchMock = vi.fn(async () => new Response("{}"));
-    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock as unknown as typeof fetch);
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}"));
+    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock);
 
     await apiFetch("/api/summary", { credentials: "include" });
 
@@ -94,8 +94,8 @@ describe("makeApiFetch", () => {
   });
 
   it("passes the input (URL) through unchanged", async () => {
-    const fetchMock = vi.fn(async () => new Response("{}"));
-    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock as unknown as typeof fetch);
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}"));
+    const apiFetch = makeApiFetch(() => "TOKEN123", fetchMock);
 
     await apiFetch("/api/import");
 

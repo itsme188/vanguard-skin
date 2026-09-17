@@ -270,7 +270,7 @@ describe("upsertSecurity", () => {
           .prepare("SELECT security_type FROM securities WHERE id = ?")
           .get(id) as any;
 
-        upsertSecurity(db, "SPY", null, "stock");
+        upsertSecurity(db, "SPY", undefined, "stock");
 
         const after = db
           .prepare("SELECT security_type FROM securities WHERE id = ?")
@@ -280,7 +280,7 @@ describe("upsertSecurity", () => {
     );
 
     it("still upgrades 'Stock' -> 'ETF' when the specific type arrives", () => {
-      const id = upsertSecurity(db, "SOXX", null, "stock");
+      const id = upsertSecurity(db, "SOXX", undefined, "stock");
       upsertSecurity(db, "SOXX", "iShares Semiconductor ETF", "etf");
       const row = db
         .prepare("SELECT security_type FROM securities WHERE id = ?")
@@ -289,7 +289,7 @@ describe("upsertSecurity", () => {
     });
 
     it("'Stock' over 'Stock' stays 'Stock' (no behavior change)", () => {
-      const id = upsertSecurity(db, "ZS", null, "stock");
+      const id = upsertSecurity(db, "ZS", undefined, "stock");
       upsertSecurity(db, "ZS", "Zscaler Inc", "stock");
       const row = db
         .prepare("SELECT security_type FROM securities WHERE id = ?")

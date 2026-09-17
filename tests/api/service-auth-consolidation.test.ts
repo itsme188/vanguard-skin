@@ -39,13 +39,13 @@ const hoisted = vi.hoisted(() => ({
     skipped_tws_wins: 0,
     skipped_deferred: 0,
   })),
-  reconcileCloudFiredLevels: vi.fn(async () => ({
+  reconcileCloudFiredLevels: vi.fn<typeof import("@/lib/alerts/reconcile-cloud-fired").reconcileCloudFiredLevels>(async () => ({
     ok: true,
     reconciled: 3,
     skipped_already_alerted: 0,
     skipped_level_missing: 0,
   })),
-  reconcileCloudFetchedNewsletters: vi.fn(async () => ({
+  reconcileCloudFetchedNewsletters: vi.fn<typeof import("@/lib/research/reconcile-cloud-fetched").reconcileCloudFetchedNewsletters>(async () => ({
     ok: true,
     reconciled: 4,
     skipped_already_in_db: 0,
