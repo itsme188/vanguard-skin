@@ -1,8 +1,8 @@
 # QA stabilization and acceptance review — 2026-09-17
 
-**State:** code committed at `0052ec8d`, with PR #83 merged into the reviewed candidate at `a68c7751`; PR #84 is already an ancestor. Integration/push and desktop/Worker deployment authorized by the user on 2026-09-17 and in progress. Original QA worktrees preserved. Historical production-data repairs are separate.
-**Waiting on:** CODEX: complete integration, push and deployment verification. No further shipping permission needed.
-**Next action:** fast-forward clean main under the integration lock, push, use the coordinated desktop deploy wrapper, deploy the matching Worker and verify both. Optional private-data AI validation was not run and does not block deployment.
+**State:** committed, integrated and pushed to main. Code `0052ec8d`; PR #83 integration `a68c7751`; deployed commit `bb19852f` (contains PR #84). Desktop build `3aeMqD-N2TJLKXbG0ynop` is installed and running. Worker version `f92edd6d-2ef8-4a36-854f-95f11fb59d50` serves 100% of traffic. Both QA PRs are merged.
+**Waiting on:** nobody for this deployment. Retirement-account stamping is a separate pending data operation in the task register.
+**Next action:** resume the remaining QA/backlog items from `docs/plans/TODO.md`. Do not replay these fixes or the September 15 tax recompute.
 
 ## Review disposition
 
@@ -48,3 +48,14 @@ Goal: stabilize verification and review pending QA work. Accomplished: test/type
 ## Shipping authorization and integration
 
 User explicitly authorized committing and deploying. PR #83 merge conflicted only in the alert-provenance correction and its regression test; retained the already-reviewed versions. The merge index was byte-identical to the verified code commit before committing the merge. No dependency manifests changed. Original QA worktree remains intact; no historical data repairs are included.
+
+
+## Final deployment verification — 2026-09-17
+
+- Final integration commit suite: 10,005 passed, 3 skipped, 9 TODO, 837 files. Verification evidence copied to `docs/private/qa-review-2026-09-17/verification/` before review-worktree cleanup. Application and Worker typechecks passed on identical production code.
+- Coordinated desktop deployment succeeded on its first attempt: compiled, signed, notarized, bundle gate clean, installed, relaunched; installed BUILD_ID matches the built one, strict code-signature verification passes, and the verified installed listener answers `/login` on :3099. Log: `.git/portfolio-desk-coord/logs/deploy-20260917T161357Z.log`.
+- Native UI inspection and screenshot confirmed the installed app renders Today with navigation and its TWS connection. Native app selection unexpectedly took about 28 minutes to return; no application failure occurred. Use a bounded UI timeout from the first call next time.
+- Worker deployed from the same pushed main; deployment listing confirms 100% on `f92edd6d-2ef8-4a36-854f-95f11fb59d50`; `/health` returns `ok: true`. Cron schedule unchanged. No manual cron/email job triggered.
+- Private review evidence and recovery patches preserved in the main checkout's ignored `docs/private/qa-review-2026-09-17/`. Review sandbox stopped; UI locks released. The clean review worktree/branch is ready for removal after this documentation push; the original `qa-fix-work-20260917` worktree remains preserved.
+- No historical production-data repair or retirement-account stamp was run. Additive migrations ship normally with the app. The real-data AI test was not run; synthetic-only live-model acceptance passed.
+- This final handoff update is documentation-only and does not require another build. Retrospective: QA and deployment complete; production corrections passed in one implementation round, with the earlier optional-name test correction taking two. Most extra time came from packaging/notarization and native UI automation, not failing code.
