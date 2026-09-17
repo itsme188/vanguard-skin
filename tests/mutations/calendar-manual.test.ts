@@ -8,6 +8,16 @@ import {
 } from "@/lib/mutations/calendar";
 import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 import { readArmedGeneration } from "@/lib/earnings/armed-events-projection";
+import { todayET, addDays, getCurrentMonday } from "@/lib/calendar/date-utils";
+
+// The armed-events projection (lib/earnings/armed-events-projection.ts,
+// LIVE_LOOKBACK_DAYS = 14) drops any armed entry whose event_date is older
+// than today - 14 ET days. Fixture dates must therefore track the real
+// clock, not a hardcoded date — see docs/reference/data-integrity.md on
+// wall-clock-stale fixtures.
+const TODAY = todayET();
+const TOMORROW = addDays(TODAY, 1);
+const WEEK_OF = getCurrentMonday();
 
 let db: Database.Database;
 beforeEach(() => {
@@ -22,7 +32,7 @@ const addManual = (symbol: string, date: string) =>
     event_date: date,
     event_time: "AMC",
     release_time: "16:15",
-    week_of: "2026-08-31",
+    week_of: WEEK_OF,
   }).id;
 
 const latestEntries = () => {
@@ -34,12 +44,12 @@ const latestEntries = () => {
 
 describe("manual calendar event mutations → armed-events outbox", () => {
   it("inserting a manual event writes no outbox row (a fresh row is never armed)", () => {
-    addManual("ACME", "2026-09-02");
+    addManual("ACME", TODAY);
     expect(readArmedGeneration(db)).toBe(0);
   });
 
   it("editing an ARMED manual event's release_time adds one outbox row carrying the new time", () => {
-    const id = addManual("ACME", "2026-09-02");
+    const id = addManual("ACME", TODAY);
     armWorksheet(db, id); // gen 1
     expect(updateCalendarEvent(db, { id, release_time: "16:45" })).toBe(true);
     expect(readArmedGeneration(db)).toBe(2);
@@ -49,13 +59,13 @@ describe("manual calendar event mutations → armed-events outbox", () => {
   });
 
   it("editing an UNARMED manual event adds no outbox row", () => {
-    const id = addManual("BETA", "2026-09-03");
+    const id = addManual("BETA", TOMORROW);
     expect(updateCalendarEvent(db, { id, release_time: "16:45" })).toBe(true);
     expect(readArmedGeneration(db)).toBe(0);
   });
 
   it("a no-op edit of an armed event adds no outbox row (D10)", () => {
-    const id = addManual("ACME", "2026-09-02");
+    const id = addManual("ACME", TODAY);
     armWorksheet(db, id); // gen 1
     expect(updateCalendarEvent(db, { id })).toBe(true); // no fields → early return
     expect(updateCalendarEvent(db, { id, release_time: "16:15" })).toBe(true); // same value
@@ -78,9 +88,9 @@ describe("deleteAndSuppressCalendarEvent → armed-events outbox", () => {
   // calendar-events DELETE route sends those down the suppress branch — so
   // this, not deleteCalendarEvent, is the common way an armed event goes away.
   it("[C-7] deleting an ARMED sync-sourced event writes a tombstone generation", () => {
-    const id = seedSync("ACME", "2026-09-02");
+    const id = seedSync("ACME", TODAY);
     armWorksheet(db, id); // gen 1
-    const res = deleteAndSuppressCalendarEvent(db, id, { today: "2026-09-02" });
+    const res = deleteAndSuppressCalendarEvent(db, id, { today: TODAY });
     expect(res.deleted).toBe(true);
     expect(readArmedGeneration(db)).toBe(2);
     expect(latestEntries()).toEqual([
@@ -89,8 +99,8 @@ describe("deleteAndSuppressCalendarEvent → armed-events outbox", () => {
   });
 
   it("deleting an UNARMED sync-sourced event writes no outbox row", () => {
-    const id = seedSync("BETA", "2026-09-03");
-    expect(deleteAndSuppressCalendarEvent(db, id, { today: "2026-09-02" }).deleted).toBe(true);
+    const id = seedSync("BETA", TOMORROW);
+    expect(deleteAndSuppressCalendarEvent(db, id, { today: TODAY }).deleted).toBe(true);
     expect(readArmedGeneration(db)).toBe(0);
   });
 });
