@@ -652,3 +652,21 @@ describe("getDataHealthSummary", () => {
     expect(summary.securitiesWithPrices).toBe(1);
   });
 });
+
+
+describe("cost basis coverage matches Accounts", () => {
+  it("excludes unrescued zero basis and rescues zero/NULL from older nonzero rows", () => {
+    const account = seedAccount("Basis Test");
+    const unknown = seedSecurity("UNKNOWN");
+    const rescued = seedSecurity("RESCUED");
+    const negative = seedSecurity("SHORT");
+    seedHolding(account, unknown, 10, "2026-09-01", 0);
+    seedHolding(account, unknown, 10, "2026-09-02", null);
+    seedHolding(account, rescued, 10, "2026-09-01", 100);
+    seedHolding(account, rescued, 5, "2026-09-02", 0);
+    seedHolding(account, negative, -5, "2026-09-02", -50);
+    const coverage = getAccountCoverage(db).find(a => a.accountId === account)!;
+    expect(coverage.totalHoldings).toBe(3);
+    expect(coverage.holdingsWithCostBasis).toBe(2);
+  });
+});

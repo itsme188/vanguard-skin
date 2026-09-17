@@ -14,6 +14,7 @@ import { popoverAnchorFor } from "./data-confidence-popover-anchor";
 const DEFAULT_POPOVER_WIDTH = 384;
 
 const LEVEL_CONFIG = {
+  unverified: { color: "bg-gold", label: "Verification incomplete" },
   high: { color: "bg-up", label: "Data reliable" },
   medium: { color: "bg-gold", label: "Some data stale" },
   low: { color: "bg-orange-400", label: "Data unreliable" },
@@ -169,6 +170,7 @@ export function DataConfidenceIndicator() {
     );
   }
 
+  const verificationIncomplete = !confidence.integrity.lotDriftChecked;
   const config = LEVEL_CONFIG[confidence.overallLevel];
 
   return (
@@ -181,11 +183,14 @@ export function DataConfidenceIndicator() {
         title={
           confidence.capReason
             ? `Data freshness: ${confidence.overallScore}% — capped by an integrity check — click for details`
-            : `Data freshness: ${confidence.overallScore}% — an operational hint, not a certification — click for details`
+            : verificationIncomplete
+              ? `Data freshness: ${confidence.overallScore}% — position-to-tax-lot verification unavailable — click for details`
+              : `Data freshness: ${confidence.overallScore}% — an operational hint, not a certification — click for details`
         }
       >
         <span className={`w-2 h-2 rounded-full ${config.color} ${confidence.capReason ? "ring-2 ring-down/60" : ""}`} />
         <span>{confidence.overallScore}%</span>
+        {verificationIncomplete && <span>Unchecked</span>}
       </button>
 
       {showPopover && (
@@ -226,6 +231,16 @@ export function DataConfidenceIndicator() {
               <p className="text-[11px] font-medium text-down leading-snug">
                 <PrivateText>{confidence.capReason}</PrivateText>
               </p>
+            </div>
+          )}
+
+          {verificationIncomplete && (
+            <div className="rounded-lg border border-gold/40 bg-gold/10 px-2.5 py-2 text-[11px] leading-snug text-ink-dim">
+              <p className="font-medium">Verification incomplete</p>
+              <p>Positions have not been checked against current tax lots. Tax inputs changed or the lots have not been recomputed; a skipped check does not mean they agree.</p>
+              <Link href="/dashboard/tax-lots" className="text-blue hover:underline" onClick={() => setShowPopover(false)}>
+                Review Tax Lots
+              </Link>
             </div>
           )}
 

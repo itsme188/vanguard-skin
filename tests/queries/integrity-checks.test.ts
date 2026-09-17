@@ -388,6 +388,6 @@ describe("runIntegrityChecks — check 4: corporate-action reconcile delta", () 
 describe("runIntegrityChecks — empty database", () => {
   it("returns no hits at all on a freshly migrated, empty database", () => {
     const db = createTestDb();
-    expect(runIntegrityChecks(db)).toEqual({ critical: [], warnings: [] });
+    expect(runIntegrityChecks(db)).toEqual({ critical: [], warnings: [], lotDriftChecked: false });
   });
 });

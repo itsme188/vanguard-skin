@@ -289,6 +289,8 @@ function scanReconcileDeltaHits(db: Database.Database): IntegrityHit[] {
 export function runIntegrityChecks(db: Database.Database): {
   critical: IntegrityHit[];
   warnings: IntegrityHit[];
+  /** False means the position/lot comparison was skipped, not that it passed. */
+  lotDriftChecked: boolean;
 } {
   const critical: IntegrityHit[] = [];
   const warnings: IntegrityHit[] = [];
@@ -301,7 +303,8 @@ export function runIntegrityChecks(db: Database.Database): {
     critical.push(hit);
   }
 
-  if (getTaxConventionState(db).recomputeCurrent) {
+  const lotDriftChecked = getTaxConventionState(db).recomputeCurrent;
+  if (lotDriftChecked) {
     for (const hit of scanLotDriftHits(db)) {
       (hit.severity === "critical" ? critical : warnings).push(hit);
     }
@@ -311,5 +314,5 @@ export function runIntegrityChecks(db: Database.Database): {
     warnings.push(hit);
   }
 
-  return { critical, warnings };
+  return { critical, warnings, lotDriftChecked };
 }

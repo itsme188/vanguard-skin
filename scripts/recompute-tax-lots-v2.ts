@@ -116,7 +116,9 @@ export function runRecompute(db: Database.Database): RecomputeResult {
  * timestamps. tax_lot_sales.tax_lot_id is likewise a surrogate (it points
  * at the same ever-incrementing tax_lots.id), so it is replaced below with
  * the origin lot's acquisition_transaction_id, which IS stable — it points
- * at a transactions row, and computeTaxLots never touches transactions.
+ * at an imported acquisition transaction. Engine-owned RECONCILE_CLOSE
+ * transactions are recreated on every run, so their sale identity uses
+ * source_key instead of their changing transaction id.
  */
 export function snapshotBusinessColumns(
   db: Database.Database,
@@ -141,24 +143,24 @@ export function snapshotBusinessColumns(
 
   const sales = db
     .prepare(
-      `SELECT s.sale_transaction_id, s.quantity_sold, s.sale_price, s.proceeds,
+      `SELECT CASE WHEN t.type = 'RECONCILE_CLOSE' AND t.source_key IS NOT NULL
+                   THEN 'source:' || t.source_key ELSE 'id:' || t.id END AS sale_transaction_key,
+              s.quantity_sold, s.sale_price, s.proceeds,
               s.cost_basis_allocated, s.realized_gain_loss, s.is_long_term,
               s.holding_period_days, s.sale_date, s.premium_rollover,
               l.acquisition_transaction_id AS lot_acquisition_transaction_id
          FROM tax_lot_sales s
          JOIN tax_lots l ON l.id = s.tax_lot_id
+         JOIN transactions t ON t.id = s.sale_transaction_id
         ORDER BY s.sale_transaction_id, l.acquisition_transaction_id`,
     )
     .all() as Array<{
-    sale_transaction_id: number;
+    sale_transaction_key: string;
     lot_acquisition_transaction_id: number | null;
     [key: string]: unknown;
   }>;
-  for (const { sale_transaction_id, lot_acquisition_transaction_id, ...data } of sales) {
-    snapshot.set(`sale:${sale_transaction_id}:${lot_acquisition_transaction_id}`, {
-      sale_transaction_id,
-      ...data,
-    });
+  for (const { sale_transaction_key, lot_acquisition_transaction_id, ...data } of sales) {
+    snapshot.set(`sale:${sale_transaction_key}:${lot_acquisition_transaction_id}`, data);
   }
 
   return snapshot;

@@ -10,7 +10,7 @@ import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
 import { todayET } from "@/lib/calendar/date-utils";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { classifyHoldingSourceKey } from "@/lib/db/holding-sources";
-import { runIntegrityChecks, sortWorstFirst, type IntegrityHit } from "@/lib/queries/integrity-checks";
+import { runIntegrityChecks, sortWorstFirst } from "@/lib/queries/integrity-checks";
 import { formatUSD, rendersAsZero } from "@/lib/format";
 import {
   computeCashFlowResiduals,
@@ -131,7 +131,7 @@ export interface DataAction {
 
 export interface DataConfidence {
   overallScore: number; // 0-100
-  overallLevel: "high" | "medium" | "low" | "stale";
+  overallLevel: "high" | "medium" | "low" | "stale" | "unverified";
   priceFreshness: PriceFreshnessScore;
   holdingsRecency: HoldingsRecencyScore;
   cashAccuracy: CashAccuracyScore;
@@ -141,7 +141,7 @@ export interface DataConfidence {
   /** Cross-cutting number-trust scan (runIntegrityChecks) — independent of
    *  the 5 weighted dimensions above. A critical hit caps overallScore/Level
    *  (see capReason); warnings never cap, they're informational only. */
-  integrity: { critical: IntegrityHit[]; warnings: IntegrityHit[] };
+  integrity: ReturnType<typeof runIntegrityChecks>;
   /** Set to the first (module-order) critical integrity hit's reason when
    *  the cap applied; null when no critical hit exists. Never set from a
    *  warning. */
@@ -856,6 +856,12 @@ export function getDataConfidence(db: Database.Database, now: Date = new Date())
     capReason = integrity.critical[0].reason;
     overallScore = Math.min(overallScore, 45);
     if (overallLevel === "high" || overallLevel === "medium") overallLevel = "low";
+  }
+
+  // Keep freshness arithmetic intact, but do not call a partially checked
+  // portfolio high confidence. Existing critical/stale states still win.
+  if (!integrity.lotDriftChecked && overallLevel === "high") {
+    overallLevel = "unverified";
   }
 
   const actions = deriveActions(
