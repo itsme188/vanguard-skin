@@ -1,8 +1,8 @@
 # Takeaway-first digest — 2026-09-17
 
-**State:** Implemented and committed as `dc465f8a`, based on `0cf3afde425f847917edc2d3be2a734c20de4317`. Ready for authorized integration and deployment.
-**Waiting on:** CODEX: ship and verify both Mac and Worker.
-**Next action:** integrate, push, deploy both builds, and preserve final verification evidence.
+**State:** Implemented as `dc465f8a`, integrated/pushed through `02ede3be`, and deployed to both Mac and Worker. Integration base `0cf3afde425f847917edc2d3be2a734c20de4317`.
+**Waiting on:** nobody.
+**Next action:** none for this delivery. A future real-data generation test needs separate authorization.
 
 ## User decision
 
@@ -27,3 +27,10 @@ The digest should summarize the substance of research, not narrate which newslet
 ## Retrospective
 
 Goal: replace newsletter inventory prose with useful synthesis. Main implementation passed focused behavior tests; old prompt/source-tail expectations needed updating. A citation edge case found during review was corrected once and passed its new regression. The first full run overlapped that refinement, so it was stale; final full run was clean. Initial smoke missed the login heading while compilation was busy; retry after compilation passed. Next time, finish source refinements before full verification and avoid overlapping browser compilation with the suite. AI wording remains probabilistic; the live synthetic output was structurally correct but repeated some sector context between the lead and sector paragraph. Future real-data model tests require their own authorization.
+
+## Deployment and final evidence
+
+- Desktop build `d2FwKp5JKDisHQzBF4qw-` installed from `02ede3be`; signed/notarized, bundle gate passed, build IDs match, signature verified, new standalone listener and login health check passed.
+- Worker `4eaf6579-f422-433f-bb42-26a384aef9a5` serves 100% of traffic; health endpoint reports OK. Cron schedule unchanged; no manual email/job invocation.
+- First desktop build failed because this session's ignored real-data QA script imported the now-removed excerpt helper. Preserved the one-off scripts as `.ts.txt`, reran main typecheck successfully, and deployed successfully on the second attempt. Next time, store archived test scripts outside compiler globs from the outset.
+- Final main suite evidence lives in `.git/verification/`; exact outcome is recorded in the task register and private `main-full.log`. Worktree evidence and private previews are preserved before cleanup. Final handoff commit is documentation-only.
