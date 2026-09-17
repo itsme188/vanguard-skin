@@ -368,7 +368,8 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   const parts = perAccount
     .filter(a => a.date)
     .map(a => {
-      const stalestDateLabel = a.daysOld != null && a.daysOld <= 1 ? "today" : a.date;
+      const stalestDateLabel =
+        a.daysOld === 0 ? "today" : a.daysOld === 1 ? "yesterday" : a.date;
       const stalestLabel = a.stalestSymbol ? `${a.stalestSymbol} ${stalestDateLabel}` : stalestDateLabel;
       return `${a.name}: latest: ${a.latestDate ?? "—"} · stalest position: ${stalestLabel}`;
     });
