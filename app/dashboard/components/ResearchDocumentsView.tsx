@@ -715,6 +715,17 @@ function DocumentRow({
 function InboxForwardCard({ onIngested }: { onIngested: () => void }) {
   const { toast } = useToast();
   const [checking, setChecking] = useState(false);
+  // QA finding research-documents-check-inbox--silent-400-no-feedback: the
+  // toast() calls below fire, but ToastProvider is mounted ABOVE <main> in
+  // app/dashboard/layout.tsx (its toast container div is a sibling of the
+  // <main> subtree, never a descendant of it) — so a check scoped to <main>
+  // (or a viewport where the corner toast goes unnoticed) never sees a
+  // failure that already happened. Same silent-400 class as the two fixed
+  // siblings (Sync Feeds → syncFeedback in ResearchFeedsView.tsx /
+  // lib/research/sync-feedback.ts; Discover from Gmail → discoverError in
+  // ManageSourcesModal.tsx), same remedy: a local status line rendered
+  // directly under the control, inside this component's own tree.
+  const [checkError, setCheckError] = useState<string | null>(null);
   const address = "read@myportfoliodesk.com";
 
   const check = useCallback(async () => {
@@ -723,6 +734,8 @@ function InboxForwardCard({ onIngested }: { onIngested: () => void }) {
       const res = await apiFetch("/api/research/ingest-inbox", { method: "POST" });
       const data = await res.json();
       if (res.ok && data.success) {
+        // A successful check clears any standing error from a prior attempt.
+        setCheckError(null);
         const n: number = data.ingested ?? 0;
         if (n > 0) {
           toast(`Filed ${n} forwarded item${n === 1 ? "" : "s"} into Documents.`, "info");
@@ -734,33 +747,47 @@ function InboxForwardCard({ onIngested }: { onIngested: () => void }) {
           toast(`${data.failed} forwarded message(s) couldn't be processed.`, "error");
         }
       } else {
-        toast(`Couldn't check the inbox: ${data.error ?? res.status}`, "error");
+        const message = `Couldn't check the inbox: ${data.error ?? res.status}`;
+        setCheckError(message);
+        toast(message, "error");
       }
     } catch {
-      toast("Couldn't reach the inbox checker.", "error");
+      const message = "Couldn't reach the inbox checker.";
+      setCheckError(message);
+      toast(message, "error");
     } finally {
       setChecking(false);
     }
   }, [toast, onIngested]);
 
   return (
-    <div className="rounded-xl border border-edge bg-panel p-4 flex items-center justify-between gap-3">
-      <div className="min-w-0">
-        <div className="text-sm font-medium text-ink">Forward articles to file them here</div>
-        <div className="text-xs text-ink-faint mt-0.5">
-          Send any email — a link, a PDF, or a screenshot — to{" "}
-          <span className="font-mono text-ink-dim">{address}</span> and it lands in
-          Documents automatically (also checked on each research sync).
+    <div className="rounded-xl border border-edge bg-panel p-4 space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-ink">Forward articles to file them here</div>
+          <div className="text-xs text-ink-faint mt-0.5">
+            Send any email — a link, a PDF, or a screenshot — to{" "}
+            <span className="font-mono text-ink-dim">{address}</span> and it lands in
+            Documents automatically (also checked on each research sync).
+          </div>
         </div>
+        <button
+          onClick={check}
+          disabled={checking}
+          className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink disabled:opacity-50"
+          title="Pull anything forwarded to the research address right now"
+        >
+          {checking ? "Checking…" : "Check inbox"}
+        </button>
       </div>
-      <button
-        onClick={check}
-        disabled={checking}
-        className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink disabled:opacity-50"
-        title="Pull anything forwarded to the research address right now"
-      >
-        {checking ? "Checking…" : "Check inbox"}
-      </button>
+      {checkError && (
+        <div
+          role="alert"
+          className="px-3 py-2 rounded-lg bg-down/10 border border-down/30 text-xs text-down"
+        >
+          {checkError}
+        </div>
+      )}
     </div>
   );
 }
