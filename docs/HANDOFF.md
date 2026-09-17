@@ -3,7 +3,9 @@
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Waiting on:** USER: (a) the option-attached-levels repair `--apply` after a look at its seven `review` rows; (b) the broker-realized transcription then `reconcile-tax-report-vs-broker.ts --stamp`; (c) whether to build the opening-lots importer for the pre-ledger Vanguard positions. Otherwise nobody: no open PRs, no unlanded qa branches.
+**Waiting on:** USER: (a) authorize a landing session for `qa-fix-work-20260917` — four fixer commits from 2026-09-17 10:52 ET (digest cap disclosure, bounded synthesis prompt + named truncation guard, Cross-Source Discrepancies 20-of-N disclosure, Greeks expiry with year) sit only in `../vanguard-skin-qa-fix`, no PR, not on origin (register: `qa-landing-2026-09-17`); (b) the option-attached-levels repair `--apply` after a look at its seven `review` rows; (c) the broker-realized transcription then `reconcile-tax-report-vs-broker.ts --stamp`; (d) whether to build the opening-lots importer for the pre-ledger Vanguard positions; (e) the retirement-account `tax_treatment` stamp script (Codex's 09-16 fixer, rehearsed on a copy, never applied live — register `qa-fix-findings-2026-09-16`). Otherwise nobody: no open PRs.
+
+**Closeout (2026-09-17 ~17:50 ET, `/session-end`):** between my last push (`589ae1e3`) and this closeout, Codex landed PR #83 (09-16 fixer), PR #84 (09-17 sweep), the digest editorial + market-headline work and the confidence cleanup, and deployed three times (last: commit `08e89a63`, build `EzPYsKSUuJpLbp88_QJJX`). Nothing runtime changed after that deploy (only docs and CLAUDE.md), so no rebuild this closeout. Reconciled: TODO closed block for 09-15→17 + the stranded-branch item (`44fb8d9c`), CLAUDE.md runbook-order convention, memory, register (`recompute-diagnosis-2026-09-15` landed; `qa-landing-2026-09-17` planned, USER-labeled).
 
 **Evening addendum (2026-09-15, ~19:40–20:50 ET, user at the keyboard):** the runbook's steps 1–2 ran live (direction backfill on copy then live; v2 recompute on copy then live; the script's idempotence check false-alarms on synthetic-close ids — TODO (l)). Then, on the user's delegation, four ledger repairs applied live with backups in `data/backups/`: CRWD re-symbol (`scripts/repair-mistyped-option-legs.ts`, new targets + a stale-refusal fix) plus the August-31 unsettled sale imported (batch 216); FB→META merged (`scripts/merge-duplicate-securities.ts`, table list completed); the Twitter cash merger imported as a SELL (batch 217); UBER rewritten to the fund's three carryover lots (new `scripts/repair-inkind-transfer-lots.ts`, config gitignored), two December-2023 transfer legs (batch 218) + DAF contribution records (batch 219) with FMV = close on the transfer date, lots assigned FIFO and the January-2025 gift re-assigned under MinTax. Final v2 recompute: identity ok, marker `v3:103`; integrity criticals 24→19 (all statement lag, pre-ledger opening lots, or the cash-equivalent false positive). Details: `docs/DECISIONS.md` 2026-09-15 evening entry.
 
@@ -57,10 +59,10 @@
 
 ## 4. Uncommitted changes / live-process state
 
-- Main checkout clean at the handoff commit on top of `a943e7b9`, pushed. No integration worktree (built in the main checkout). Nightly `../vanguard-skin-qa-fix` worktree still checked out on `qa-deep-fixes-2026-09-15` (landed; the branch cannot be deleted while checked out there — the fixer detaches it on its next run).
-- Sandbox `:3090` down; no locks held; register: `qa-landing-2026-09-15` landed, `recompute-diagnosis-2026-09-15` in review, `user-run-data-steps-2026-09-14` planned (USER).
-- Remote: no `qa-*` refs; PR #81 closed, PR #82 merged. Local: only long-lived branches remain (`analysis-classification-backbone`, `ibkr-ledger-rebuild`, `pair-2026-08-28-landing`, three `codex/*`) plus the checked-out `qa-deep-fixes-2026-09-15`.
-- Scratch evidence (session scratchpad, not persisted): the three DB copies, `diag-*.log`, `direction-manifest-all12.json`, screenshots.
+- Main checkout clean at the handoff commit on top of `44fb8d9c`, pushed; installed app build `EzPYsKSUuJpLbp88_QJJX` (Codex, commit `08e89a63`); no runtime change since.
+- Worktree `../vanguard-skin-qa-fix` on `qa-fix-work-20260917` (4 unlanded commits — see Waiting on (a)). No sandbox up; no locks held; no minted live session (revoked).
+- Remote: no `qa-*` branch with unlanded commits (`origin/qa-deep-fixes-2026-09-17` merged as PR #84). Open PRs: none. Open issues: #34 only (process, unchanged).
+- Live DB: backups from every repair in `data/backups/` and `data/vanguard.db.before-direction-*.bak`; the direction manifest and the in-kind lot config live in gitignored `docs/private/` and `data/repair-configs/`.
 
 ## 5. Claude session link
 
