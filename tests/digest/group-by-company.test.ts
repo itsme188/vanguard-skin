@@ -272,6 +272,26 @@ describe("renderDigestByCompany — one copy per article", () => {
     expect(md).toContain("Mentions: AAA · BBB · CCC");
   });
 
+  it("puts the chips line under the headline, above the summary", () => {
+    const articles = [
+      article(1, "Vital", "Three-name note", ["AAA", "BBB", "CCC"], {
+        summary: "A single unmistakable sentence about three fictional tickers.",
+        source_url: "https://example.test/note",
+      }),
+    ];
+    const md = renderDigestByCompany(articles, "", "Friday");
+
+    const sourceLine = md.indexOf("**Vital** · *neutral*");
+    const headline = md.indexOf("### [Three-name note](https://example.test/note)");
+    const chips = md.indexOf("Mentions: AAA · BBB · CCC");
+    const summary = md.indexOf("A single unmistakable sentence");
+
+    expect(sourceLine).toBeGreaterThan(-1);
+    expect(headline).toBeGreaterThan(sourceLine);
+    expect(chips).toBeGreaterThan(headline);
+    expect(summary).toBeGreaterThan(chips);
+  });
+
   it("headings count homed articles and disclose mentions filed elsewhere", () => {
     const articles = [
       article(1, "Vital", "Shared", ["AAA", "BBB"], { summary: "Shared note." }),
