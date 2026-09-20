@@ -249,11 +249,16 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
       ? `All ${totalHeld} securities priced within ${RECENT_PRICE_WINDOW_DAYS} days`
       : `${pricedRecent}/${totalHeld} securities have recent prices`;
 
+  // Guidance is derived from pricedRecent/totalHeld — the SAME counts the
+  // detail line above uses — never from the score alone
+  // (qa:header-dataconfidence--guidance-contradicts-detail-and-actions). A
+  // score like 98 can still mean "1 of 40 stale"; the reassurance sentence
+  // may only appear when the count says nothing is missing.
   const guidance =
-    score >= 90
+    pricedRecent === totalHeld
       ? "Prices are fresh — nothing to do."
       : score >= 50
-        ? "Run Quick Refresh to update prices, or connect TWS for live quotes."
+        ? `${totalHeld - pricedRecent} of ${totalHeld} held securities have no recent price — run Quick Refresh, or connect TWS for live quotes.`
         : "Open TWS and run Quick Refresh — many holdings have stale prices.";
 
   return {
@@ -385,8 +390,15 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
     ? `${worstAccount.stalestSymbol} in ${worstAccount.name}`
     : (worstAccount?.name ?? "the affected account");
 
+  // Guidance is derived from worstDays — the SAME weakest-link figure the
+  // score buckets on — never from the score bucket alone
+  // (qa:header-dataconfidence--guidance-contradicts-detail-and-actions). The
+  // old `score >= 80` threshold covered the whole <=7-day bucket, so a
+  // 7-day-stale worst position could still read "current across accounts."
+  // "Current" now requires the same <=1-day bar the detail line's
+  // "today"/"yesterday" labels use.
   const guidance =
-    score >= 80
+    worstDays <= 1
       ? "Holdings are current across accounts."
       : score >= 50
         ? `Refresh ${worstPositionLabel} — import the latest monthly statement (Vanguard) or sync TWS (IBKR).`
@@ -644,10 +656,15 @@ function scoreEnrichment(db: Database.Database): EnrichmentScore {
     ? `All ${total} securities enriched`
     : `${count}/${total} enriched — ${missing.length} missing conId`;
 
+  // Guidance is derived from missing.length — the SAME count the detail line
+  // uses — never from the score alone
+  // (qa:header-dataconfidence--guidance-contradicts-detail-and-actions). The
+  // old `score >= 95` threshold let a single missing conId out of 20+ still
+  // read as "all enrichable securities have contract IDs."
   const guidance =
-    score >= 95
+    missing.length === 0
       ? "All enrichable securities have contract IDs."
-      : "Click Enrich (requires TWS running) to fetch the missing contract IDs.";
+      : `${missing.length} securities are missing TWS contract IDs — click Enrich (requires TWS running).`;
 
   return { score, detail, whyMatters, guidance, enriched: count, total, missing };
 }
@@ -726,12 +743,16 @@ function scoreValuationCoverage(db: Database.Database): ValuationCoverageScore {
     ? `All ${total} holdings in latest valuation`
     : `${priced}/${total} holdings priced in latest valuation`;
 
+  // Guidance is derived from priced/total — the SAME counts the detail line
+  // uses — never from the score alone
+  // (qa:header-dataconfidence--guidance-contradicts-detail-and-actions).
+  const unpriced = total - priced;
   const guidance =
-    score >= 95
+    priced === total
       ? "Full coverage in the latest valuation."
       : score >= 50
-        ? "Run Quick Refresh to price the remaining holdings."
-        : "Many holdings unpriced — Quick Refresh, then enrich any still missing.";
+        ? `Run Quick Refresh to price the remaining ${unpriced} holding${unpriced === 1 ? "" : "s"}.`
+        : `${unpriced} holdings unpriced — Quick Refresh, then enrich any still missing.`;
 
   return { score, detail, whyMatters, guidance, pricedCount: priced, totalCount: total, perAccountAsOf };
 }
