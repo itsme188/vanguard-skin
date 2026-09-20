@@ -171,8 +171,9 @@ function parseThemes(json: string | null): string[] {
  * two views share their non-article chrome.
  *
  * Each article is printed ONCE, under the company that leads its coverage;
- * the rest of its mentioned symbols follow as a chips line. A heading whose
- * symbol is also mentioned by articles filed elsewhere says so in one line.
+ * the rest of its mentioned symbols follow as a chips line directly beneath
+ * the article's headline. A heading whose symbol is also mentioned by
+ * articles filed elsewhere says so in one line.
  */
 export function renderDigestByCompany(
   articles: ArticleLike[],
@@ -233,15 +234,18 @@ export function renderDigestByCompany(
       const mentions = [...new Set(parseSymbolList(article.mentioned_symbols))];
 
       lines.push(`**${article.source_name}** · *${sentiment}*`);
-      if (mentions.length > 0) {
-        lines.push(`Mentions: ${mentions.join(" · ")}`);
-      }
       if (articleUrl) {
         lines.push(`### [${article.subject}](${articleUrl})`);
       } else {
         lines.push(`### ${article.subject}`);
       }
       lines.push("");
+
+      // Chips sit UNDER the headline — the subject leads the block.
+      if (mentions.length > 0) {
+        lines.push(`Mentions: ${mentions.join(" · ")}`);
+        lines.push("");
+      }
 
       if (article.summary) {
         lines.push(article.summary);
