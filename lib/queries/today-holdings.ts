@@ -2,6 +2,8 @@ import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "../valuation";
 import { resolveTradingDayPair } from "../digest/anomalies";
 import { latestHoldingsPredicate } from "./latest-holdings";
+import { liveOptionExpirationSql } from "../compute/option-expiry";
+import { todayET } from "../calendar/date-utils";
 
 export interface TodayHolding {
   security_id: number;
@@ -46,6 +48,23 @@ export interface TodayHolding {
  */
 const INTRINSIC_VIOLATION_FRACTION = 0.9;
 
+/**
+ * Regression pin for
+ * qa:today-ibkr-snapshot--expired-option-counted-in-names-and-day-move.
+ * Options never carry `maturity_date` (that column is bond-only; an option's
+ * expiry lives in `securities.expiration_date`, migration 004), so the
+ * maturity_date guard above silently let an expired option contract sail
+ * through: it stayed in the name count, the day-move sum, and the exposure
+ * denominator even after real expiration. The TWS-connect purge
+ * (`purgeExpiredOptionHoldings`) usually cleans this up, but the app also
+ * supports a no-TWS import path where nothing purges, so the READ side must
+ * independently guard — same rule `lib/compute/hedging.ts` and
+ * `lib/compute/scenarios.ts` already apply via the shared, ET-anchored
+ * `liveOptionExpirationSql` helper (`lib/compute/option-expiry.ts`). Reused
+ * here rather than re-implemented, so there is exactly one definition of
+ * "is this option still live" for every held-universe query to adopt.
+ */
+
 function violatesIntrinsic(
   optionClose: number | null,
   optionType: string | null,
@@ -88,6 +107,7 @@ export function getIbkrTodayHoldings(
   // Sentinel dates match no rows → move columns fall through to null.
   const pairLatest = pair?.latest ?? "";
   const pairPrior = pair?.prior ?? "";
+  const today = todayET();
 
   const marketValueCurrent = adjustedMarketValueSQL(
     "h.quantity",
@@ -159,6 +179,7 @@ export function getIbkrTodayHoldings(
          AND ${latestHoldingsPredicate({ accountFilter: "" })}
          AND (s.maturity_date IS NULL OR s.maturity_date >= date('now')
               OR LOWER(s.security_type) = 'bond')
+         AND ${liveOptionExpirationSql("s", today)}
        ORDER BY ABS(COALESCE(today_gain, 0)) DESC`,
     )
     .all(

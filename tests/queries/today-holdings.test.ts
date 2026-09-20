@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 import {
   getIbkrTodayHoldings,
   summarizeIbkrDayMove,
@@ -126,13 +127,15 @@ describe("getIbkrTodayHoldings", () => {
     underlying: string,
     optionType: "PUT" | "CALL",
     strike: number,
+    expirationDate: string | null = null,
   ): number {
     return db
       .prepare(
-        `INSERT INTO securities (symbol, name, security_type, asset_class, underlying_symbol, option_type, strike_price, multiplier, currency)
-         VALUES (?, ?, 'Option', 'option', ?, ?, ?, 100, 'USD')`,
+        `INSERT INTO securities (symbol, name, security_type, asset_class, underlying_symbol, option_type, strike_price, multiplier, currency, expiration_date)
+         VALUES (?, ?, 'Option', 'option', ?, ?, ?, 100, 'USD', ?)`,
       )
-      .run(symbol, `${symbol} opt`, underlying, optionType, strike).lastInsertRowid as number;
+      .run(symbol, `${symbol} opt`, underlying, optionType, strike, expirationDate)
+      .lastInsertRowid as number;
   }
 
   it("suppresses an option's move when its prior stored close violates intrinsic vs the underlying's same-date close", () => {
@@ -367,5 +370,44 @@ describe("getIbkrTodayHoldings", () => {
     expect(l).toBeDefined();
     expect(l.today_gain).toBeCloseTo((105 - 100) * 20, 4);
     expect(l.today_pct).toBeCloseTo((105 - 100) / 100, 6);
+  });
+
+  // Regression pin for
+  // qa:today-ibkr-snapshot--expired-option-counted-in-names-and-day-move.
+  // Options never carry `maturity_date` (bond-only column) — their expiry
+  // lives in `securities.expiration_date` — so the maturity_date guard let a
+  // contract that expired YESTERDAY (ET) sail through: it stayed in the name
+  // count, the day-move sum, and the exposure denominator. Dates are derived
+  // from todayET() (never a hardcoded calendar date) so this pin never goes
+  // wall-clock stale. A contract expiring TODAY must still count as live.
+  it("excludes an option past its ET expiration date from rows/count/day-move, keeps one expiring today", () => {
+    const acct = ibkrAccountId();
+    const today = todayET();
+    const yesterday = addDays(today, -1);
+
+    const spy = seedSecurity("SPY", "ETF");
+    const expired = seedOption("EXP   270101P00100000", "EXP", "PUT", 100, yesterday);
+    const liveToday = seedOption("LIV   270101P00100000", "LIV", "PUT", 100, today);
+    hold(acct, spy, 1, "2026-07-30");
+    hold(acct, expired, 2, "2026-07-30");
+    hold(acct, liveToday, 3, "2026-07-30");
+
+    price(spy, "2026-07-29", 628);
+    price(spy, "2026-07-30", 630);
+    price(expired, "2026-07-29", 5);
+    price(expired, "2026-07-30", 6);
+    price(liveToday, "2026-07-29", 7);
+    price(liveToday, "2026-07-30", 8);
+
+    const rows = getIbkrTodayHoldings(db, acct);
+
+    expect(rows.find((r) => r.symbol.startsWith("EXP"))).toBeUndefined();
+    const live = rows.find((r) => r.symbol.startsWith("LIV"));
+    expect(live).toBeDefined();
+    expect(live!.today_gain).toBeCloseTo((8 - 7) * 100 * 3, 4);
+
+    // Summary must reflect only the surviving rows: SPY + LIV, never EXP.
+    const summary = summarizeIbkrDayMove(rows);
+    expect(summary.count).toBe(2);
   });
 });
