@@ -9,6 +9,7 @@ import {
   fetchNetFlowsByDate,
   fetchAnchorSourceSeamDates,
 } from "@/lib/compute/flow-adjusted";
+import { normalizeMarketCapCategory } from "@/lib/securities/normalize-market-cap";
 
 // ─── Types ─────────────��────────────────────────────────────────
 
@@ -333,7 +334,12 @@ function computeTilts(
   }
 
   return {
-    sizeTilt: buildTilt("Size", (r) => r.market_cap_category),
+    // Legacy rows can still carry the bare "Large"/"Mid"/"Small" the Claude
+    // classification fallback wrote before normalizeMarketCapCategory
+    // existed — without this, the Size tilt repeats the same "Large Cap"
+    // beside "Large" split the Allocation breakdown had
+    // [qa:analysis-market-cap--duplicate-size-buckets-and-tilts].
+    sizeTilt: buildTilt("Size", (r) => normalizeMarketCapCategory(r.market_cap_category)),
     styleTilt: buildTilt("Style", (r) => r.style),
     sectorTilt: buildTilt("Sector", (r) => r.sector),
     geographyTilt: buildTilt("Geography", (r) => r.geography),
