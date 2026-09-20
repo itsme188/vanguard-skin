@@ -254,11 +254,12 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
   // (qa:header-dataconfidence--guidance-contradicts-detail-and-actions). A
   // score like 98 can still mean "1 of 40 stale"; the reassurance sentence
   // may only appear when the count says nothing is missing.
+  const staleCount = totalHeld - pricedRecent;
   const guidance =
     pricedRecent === totalHeld
       ? "Prices are fresh — nothing to do."
       : score >= 50
-        ? `${totalHeld - pricedRecent} of ${totalHeld} held securities have no recent price — run Quick Refresh, or connect TWS for live quotes.`
+        ? `${staleCount} of ${totalHeld} held securities ${staleCount === 1 ? "has" : "have"} no recent price — run Quick Refresh, or connect TWS for live quotes.`
         : "Open TWS and run Quick Refresh — many holdings have stale prices.";
 
   return {
@@ -664,7 +665,9 @@ function scoreEnrichment(db: Database.Database): EnrichmentScore {
   const guidance =
     missing.length === 0
       ? "All enrichable securities have contract IDs."
-      : `${missing.length} securities are missing TWS contract IDs — click Enrich (requires TWS running).`;
+      : missing.length === 1
+        ? "1 security is missing a TWS contract ID — click Enrich (requires TWS running)."
+        : `${missing.length} securities are missing TWS contract IDs — click Enrich (requires TWS running).`;
 
   return { score, detail, whyMatters, guidance, enriched: count, total, missing };
 }

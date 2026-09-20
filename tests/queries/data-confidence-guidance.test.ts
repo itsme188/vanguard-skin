@@ -81,7 +81,7 @@ describe("data-confidence guidance — derived from counts, not score thresholds
   });
 
   describe("prices", () => {
-    it("39/40 fresh (score 98) still names the 1 stale security — no false 'nothing to do'", () => {
+    it("39/40 fresh (score 98) still names the 1 stale security — no false 'nothing to do', singular 'has'", () => {
       for (let i = 0; i < 40; i++) {
         const sym = `PQ${i}`;
         const sec = insertSecurity(db, sym);
@@ -95,7 +95,24 @@ describe("data-confidence guidance — derived from counts, not score thresholds
       expect(priceFreshness.score).toBe(98);
       expect(priceFreshness.guidance).not.toContain("nothing to do");
       expect(priceFreshness.guidance).toBe(
-        "1 of 40 held securities have no recent price — run Quick Refresh, or connect TWS for live quotes."
+        "1 of 40 held securities has no recent price — run Quick Refresh, or connect TWS for live quotes."
+      );
+    });
+
+    it("38/40 fresh (score 95) names the 2 stale securities with plural 'have'", () => {
+      for (let i = 0; i < 40; i++) {
+        const sym = `PP${i}`;
+        const sec = insertSecurity(db, sym);
+        insertHolding(db, 1, sec, TODAY, `canonical:hold:TAX:${sym}:${TODAY}`);
+        if (i < 38) insertPrice(db, sec, TODAY, 100); // last two get no price row at all
+      }
+
+      const { priceFreshness } = getDataConfidence(db, NOW);
+      expect(priceFreshness.totalHeld).toBe(40);
+      expect(priceFreshness.pricedRecent).toBe(38);
+      expect(priceFreshness.score).toBe(95);
+      expect(priceFreshness.guidance).toBe(
+        "2 of 40 held securities have no recent price — run Quick Refresh, or connect TWS for live quotes."
       );
     });
 
@@ -144,7 +161,7 @@ describe("data-confidence guidance — derived from counts, not score thresholds
   });
 
   describe("enrichment", () => {
-    it("39/40 enriched (score 98) still names the 1 missing conId — no false 'all enrichable'", () => {
+    it("39/40 enriched (score 98) still names the 1 missing conId — no false 'all enrichable', singular 'security is'", () => {
       for (let i = 0; i < 40; i++) {
         const sym = `EQ${i}`;
         const sec = insertSecurity(db, sym, { ibConId: i < 39 ? 1000 + i : null });
@@ -157,7 +174,22 @@ describe("data-confidence guidance — derived from counts, not score thresholds
       expect(enrichmentCompleteness.score).toBe(98);
       expect(enrichmentCompleteness.guidance).not.toContain("All enrichable securities have contract IDs.");
       expect(enrichmentCompleteness.guidance).toBe(
-        "1 securities are missing TWS contract IDs — click Enrich (requires TWS running)."
+        "1 security is missing a TWS contract ID — click Enrich (requires TWS running)."
+      );
+    });
+
+    it("38/40 enriched (score 95) names the 2 missing conIds with plural 'securities are'", () => {
+      for (let i = 0; i < 40; i++) {
+        const sym = `EP${i}`;
+        const sec = insertSecurity(db, sym, { ibConId: i < 38 ? 3000 + i : null });
+        insertHolding(db, 1, sec, TODAY, `canonical:hold:TAX:${sym}:${TODAY}`);
+      }
+
+      const { enrichmentCompleteness } = getDataConfidence(db, NOW);
+      expect(enrichmentCompleteness.missing.length).toBe(2);
+      expect(enrichmentCompleteness.score).toBe(95);
+      expect(enrichmentCompleteness.guidance).toBe(
+        "2 securities are missing TWS contract IDs — click Enrich (requires TWS running)."
       );
     });
 
