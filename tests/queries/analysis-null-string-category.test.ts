@@ -75,7 +75,10 @@ describe("literal 'null' string in classification columns", () => {
     const groups = result.map((r) => r.group_name);
     expect(groups).not.toContain("null");
     expect(groups).toContain("Unknown");
-    expect(groups).toContain("Large");
+    // Bare "Large" now normalizes to the canonical "Large Cap" bucket
+    // [qa:analysis-market-cap--duplicate-size-buckets-and-tilts].
+    expect(groups).toContain("Large Cap");
+    expect(groups).not.toContain("Large");
     const unknown = result.find((r) => r.group_name === "Unknown")!;
     expect(unknown.total_market_value).toBeCloseTo(595, 0);
   });
