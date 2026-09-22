@@ -30,6 +30,14 @@ export interface DimensionScore {
   detail: string; // human-readable summary
   whyMatters: string; // static per-dimension explanation
   guidance: string; // conditional on score — reassurance when high, action when low
+  /** Whether `guidance` names something to do (true) vs pure reassurance
+   *  (false) — the SAME predicate that chose the guidance text above, never
+   *  a re-derivation from `score`. Drives the popover's guidance text color
+   *  (DataConfidenceIndicator) so a high score with a real named gap (e.g.
+   *  39/40 = 98%, "1 of 40 ... has no recent price") can't render in the
+   *  muted "nothing to do" color
+   *  (qa:header-dataconfidence--guidance-contradicts-detail-and-actions). */
+  guidanceActionable: boolean;
 }
 
 export interface PriceFreshnessScore extends DimensionScore {
@@ -231,6 +239,7 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
       detail: "No holdings to price",
       whyMatters,
       guidance: "Import holdings to get started.",
+      guidanceActionable: false,
       pricedToday: 0,
       pricedRecent: 0,
       totalHeld: 0,
@@ -267,6 +276,9 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
     detail,
     whyMatters,
     guidance,
+    // Same predicate the guidance ternary above branches on: actionable
+    // whenever pricedRecent < totalHeld, regardless of the score bucket.
+    guidanceActionable: pricedRecent !== totalHeld,
     pricedToday,
     pricedRecent,
     totalHeld,
@@ -354,6 +366,7 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
       detail: "No accounts",
       whyMatters,
       guidance: "Add an account to get started.",
+      guidanceActionable: false,
       perAccount: [],
     };
   }
@@ -405,7 +418,11 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
         ? `Refresh ${worstPositionLabel} — import the latest monthly statement (Vanguard) or sync TWS (IBKR).`
         : `Holdings are weeks+ old — refresh ${worstPositionLabel} now (import latest statements or reconnect TWS).`;
 
-  return { score, detail, whyMatters, guidance, perAccount };
+  // Same predicate the guidance ternary above branches on: actionable
+  // whenever the weakest-link account is more than 1 day stale.
+  const guidanceActionable = worstDays > 1;
+
+  return { score, detail, whyMatters, guidance, guidanceActionable, perAccount };
 }
 
 // sortWorstFirst is imported from lib/queries/integrity-checks.ts (single
@@ -543,6 +560,7 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
       detail: "No statement snapshots for cash inference",
       whyMatters,
       guidance: "Import a monthly statement to establish a cash anchor.",
+      guidanceActionable: true,
       latestAnchorDate: null,
       daysSinceAnchor: null,
       unexplainedFlow,
@@ -568,6 +586,10 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
       : score >= 50
         ? "Consider importing this month's statement to refresh the cash anchor."
         : "Cash may be significantly wrong — import the latest monthly statement.";
+  // Same predicate the ternary above branches on: actionable whenever the
+  // reassurance ("Cash anchor is recent.") branch isn't the one chosen.
+  // Overridden below to true whenever a cash-flow problem replaces this text.
+  let guidanceActionable = score < 85;
 
   // An unexplained cash residual means SOMETHING is off with this account's
   // numbers — cap the score regardless of how fresh the statement anchor
@@ -580,6 +602,7 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
   // (see cash-flow-audit.ts's classifyCashFlowResidual doc).
   if (unexplainedFlow) {
     score = Math.min(score, 40);
+    guidanceActionable = true;
     const amountStr = formatCashDeltaLikeMoney(unexplainedFlow.residual);
 
     if (unexplainedFlow.classification === "external-flow-candidate") {
@@ -598,7 +621,9 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
   } else if (timingResidual) {
     // Live-snapshot (Plaid/TWS) timing residual: labeled, never capped —
     // it's ambiguous until a statement covers the window, not a confirmed
-    // data-quality problem the way unexplainedFlow is.
+    // data-quality problem the way unexplainedFlow is. Still flagged as
+    // "actionable" text — it names something worth checking, not reassurance.
+    guidanceActionable = true;
     const amountStr = formatCashDeltaLikeMoney(timingResidual.amount);
     detail += `; cash delta of ${amountStr} on ${timingResidual.date} in ${timingResidual.accountName} is a live-snapshot timing residual (intraday broker total vs close-priced holdings) — not treated as an external flow`;
     guidance =
@@ -612,6 +637,7 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
     detail,
     whyMatters,
     guidance,
+    guidanceActionable,
     latestAnchorDate: row.latest_date,
     daysSinceAnchor: days,
     unexplainedFlow,
@@ -646,6 +672,7 @@ function scoreEnrichment(db: Database.Database): EnrichmentScore {
       detail: "No securities need enrichment",
       whyMatters,
       guidance: "Nothing to enrich.",
+      guidanceActionable: false,
       enriched: 0,
       total: 0,
       missing: [],
@@ -669,7 +696,11 @@ function scoreEnrichment(db: Database.Database): EnrichmentScore {
         ? "1 security is missing a TWS contract ID — click Enrich (requires TWS running)."
         : `${missing.length} securities are missing TWS contract IDs — click Enrich (requires TWS running).`;
 
-  return { score, detail, whyMatters, guidance, enriched: count, total, missing };
+  // Same predicate the guidance ternary above branches on: actionable
+  // whenever anything is still missing a conId.
+  const guidanceActionable = missing.length > 0;
+
+  return { score, detail, whyMatters, guidance, guidanceActionable, enriched: count, total, missing };
 }
 
 function scoreValuationCoverage(db: Database.Database): ValuationCoverageScore {
@@ -735,6 +766,7 @@ function scoreValuationCoverage(db: Database.Database): ValuationCoverageScore {
       detail: "No daily valuations computed",
       whyMatters,
       guidance: "Run Quick Refresh to compute today's valuation.",
+      guidanceActionable: true,
       pricedCount: 0,
       totalCount: 0,
       perAccountAsOf,
@@ -755,9 +787,13 @@ function scoreValuationCoverage(db: Database.Database): ValuationCoverageScore {
       ? "Full coverage in the latest valuation."
       : score >= 50
         ? `Run Quick Refresh to price the remaining ${unpriced} holding${unpriced === 1 ? "" : "s"}.`
-        : `${unpriced} holdings unpriced — Quick Refresh, then enrich any still missing.`;
+        : `${unpriced} holding${unpriced === 1 ? "" : "s"} unpriced — Quick Refresh, then enrich any still missing.`;
 
-  return { score, detail, whyMatters, guidance, pricedCount: priced, totalCount: total, perAccountAsOf };
+  // Same predicate the guidance ternary above branches on: actionable
+  // whenever anything is still unpriced in the latest valuation.
+  const guidanceActionable = priced !== total;
+
+  return { score, detail, whyMatters, guidance, guidanceActionable, pricedCount: priced, totalCount: total, perAccountAsOf };
 }
 
 // ── Actions ──────────────────────────────────────────────────────────
@@ -771,8 +807,13 @@ function deriveActions(
 ): DataAction[] {
   const actions: DataAction[] = [];
 
-  // Price freshness
-  if (price.score < 80 && price.totalHeld > 0) {
+  // Price freshness — fires exactly when the Prices guidance above names a
+  // gap (pricedRecent < totalHeld), the SAME count basis, never the score
+  // alone (qa:header-dataconfidence--guidance-contradicts-detail-and-
+  // actions): a score of 98 (39/40 fresh) used to clear the old `score < 80`
+  // gate, so the guidance named "1 of 40 ... has no recent price" while the
+  // Actions list stayed empty.
+  if (price.totalHeld > 0 && price.pricedRecent < price.totalHeld) {
     actions.push({
       severity: price.score < 30 ? "critical" : "warning",
       // Same basis as the Prices dimension detail/score: totalHeld -
@@ -789,7 +830,7 @@ function deriveActions(
   if (enrichment.missing.length > 0) {
     actions.push({
       severity: enrichment.missing.length > 5 ? "warning" : "info",
-      message: `${enrichment.missing.length} securities missing TWS contract data`,
+      message: `${enrichment.missing.length} ${enrichment.missing.length === 1 ? "security" : "securities"} missing TWS contract data`,
       fix: `Enrich to enable price fetching: ${enrichment.missing.slice(0, 3).join(", ")}${enrichment.missing.length > 3 ? "..." : ""}`,
       autoFixable: true,
       apiEndpoint: "/api/tws/enrich",
@@ -817,8 +858,10 @@ function deriveActions(
     });
   }
 
-  // Valuation coverage
-  if (valuation.score < 80 && valuation.totalCount > 0) {
+  // Valuation coverage — same count basis as the guidance branches above
+  // (pricedCount < totalCount), not the score alone (see Price freshness
+  // note above for the class of bug this closes).
+  if (valuation.totalCount > 0 && valuation.pricedCount < valuation.totalCount) {
     actions.push({
       severity: "warning",
       message: `Only ${valuation.pricedCount}/${valuation.totalCount} holdings in latest valuation`,

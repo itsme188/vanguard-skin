@@ -328,13 +328,18 @@ export function DataConfidenceIndicator() {
 
 function DimensionBar({ label, dim }: { label: string; dim: DimensionScore }) {
   const [expanded, setExpanded] = useState(false);
-  const { score, detail, whyMatters, guidance } = dim;
+  const { score, detail, whyMatters, guidance, guidanceActionable } = dim;
   const barColor =
     score >= 80 ? "bg-up" :
     score >= 50 ? "bg-gold" :
     score >= 20 ? "bg-orange-400" :
     "bg-down";
-  const guidanceColor = score >= 80 ? "text-ink-faint" : "text-gold-ink";
+  // Tied to guidanceActionable — the SAME predicate that chose the guidance
+  // TEXT above — never to score directly. A high score (e.g. 98%, 39/40
+  // fresh) can still carry actionable guidance naming the 1 real gap; that
+  // text must not render in the muted "nothing to do" color
+  // (qa:header-dataconfidence--guidance-contradicts-detail-and-actions).
+  const guidanceColor = guidanceActionable ? "text-gold-ink" : "text-ink-faint";
 
   return (
     <div className="space-y-0.5">
