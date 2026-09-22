@@ -27,7 +27,7 @@ import path from "node:path";
 import { runMigrations } from "@/lib/db/migrate";
 import {
   getConcentrationUniverse,
-  concentrationTotalValue,
+  concentrationGrossValue,
 } from "@/lib/queries/concentration-universe";
 import { computeConcentration } from "@/lib/compute/risk";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -239,6 +239,6 @@ describe("concentration universe: a netted-out position is not a position", () =
 
     const universe = getConcentrationUniverse(db);
     expect(universe.map((p) => p.symbol).sort()).toEqual(["DELT", "ZETA"]);
-    expect(concentrationTotalValue(universe)).toBeCloseTo(1000.01, 9);
+    expect(concentrationGrossValue(universe)).toBeCloseTo(1000.01, 9);
   });
 });

@@ -288,9 +288,11 @@ describe("risk drill-down respects account scope", () => {
  *   2. The caption claimed the drawer drew "the same positions as the
  *      Concentration chart's top holdings". It does not, and cannot: the
  *      drawer projects `computePositionRisk`, whose universe differs from
- *      `getConcentrationUniverse` on three axes. The tests below pin those
- *      three divergences so the two universes can never be quietly assumed
- *      equal again (the caption pin itself lives in
+ *      `getConcentrationUniverse` on two axes — long-only and priced-only.
+ *      (The third, a missing maturity cutoff, was a defect rather than a
+ *      divergence and was closed by user ruling, decision 2026-09-22.) The
+ *      tests below pin the remaining divergences so the two universes can
+ *      never be quietly assumed equal again (the caption pin itself lives in
  *      tests/repo/drill-down-risk-metric-column.test.ts).
  */
 
@@ -366,7 +368,7 @@ describe("risk drill-down excludes sweeps by identity, not by a volatility floor
     // It renders at its own (tiny) contribution rather than being hidden.
     expect(typeof bill!.riskContribution).toBe("number");
     expect(bill!.riskContribution!).toBeGreaterThan(0);
-    // And it sorts where its risk puts it: last, behind the 30% and 5% names.
+    // And it sorts where its risk puts it: last, behind the 30%-vol anchor.
     expect(rows[rows.length - 1].symbol).toBe("BILL");
   });
 
@@ -399,14 +401,18 @@ describe("risk drill-down universe is computePositionRisk's, NOT the concentrati
     expect(nopx?.marketValue).toBe(50000);
   });
 
-  it("KEEPS a matured bond that the concentration universe drops (no maturity filter)", () => {
-    // Documenting today's behaviour, not endorsing it: computePositionRisk
-    // applies no maturity cutoff, so the drawer still ranks a bond that has
-    // already redeemed. Changing that belongs in lib/compute/risk.ts.
+  it("EXCLUDES a matured bond, exactly as the concentration universe does", () => {
+    // User ruling, decision 2026-09-22: computePositionRisk applies the same
+    // ET-anchored maturity cutoff the concentration universe applies, so a
+    // bond that has already redeemed can no longer occupy a slot in a list
+    // titled "top 10 by risk" — nor inflate the weight denominator every
+    // other position is measured against. This is the one axis on which the
+    // two universes were reconciled; long-only and priced-only remain
+    // deliberate divergences (the two tests above).
     const drawer = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
     const universe = getConcentrationUniverse(db);
 
-    expect(drawer.map((r) => r.symbol)).toContain("MATB");
+    expect(drawer.map((r) => r.symbol)).not.toContain("MATB");
     expect(universe.map((p) => p.symbol)).not.toContain("MATB");
   });
 

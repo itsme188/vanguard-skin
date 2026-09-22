@@ -8,7 +8,7 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import {
-  concentrationTotalValue,
+  concentrationGrossValue,
   getConcentrationUniverse,
 } from "@/lib/queries/concentration-universe";
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
@@ -45,12 +45,19 @@ export interface AllocationEntry {
 }
 
 export interface ConcentrationMetrics {
+  /**
+   * Herfindahl over GROSS weights (decision 2026-09-22): each position's
+   * |market value| over the book's Σ |market value|, so the index stays in
+   * (0, 1] even when the book carries shorts.
+   */
   hhi: number;
   effective_positions: number;
   top_positions: Array<{
     symbol: string;
     security_name: string | null;
+    /** SIGNED — a short is worth negative dollars and renders that way. */
     market_value: number;
+    /** GROSS share of the book, always >= 0 (decision 2026-09-22). */
     weight_pct: number;
   }>;
   warnings: string[];
@@ -488,13 +495,20 @@ export function getConcentrationMetrics(
   // analysis-diagnostics--four-different-spy-weights-one-page-regression-2).
   const positions = getConcentrationUniverse(db, accountIds);
 
-  const totalValue = concentrationTotalValue(positions);
+  // GROSS denominator — Σ |market value| — per user ruling, decision
+  // 2026-09-22. A signed denominator let a short shrink the book it was
+  // measured against while also adding its own w², which pushed the index
+  // above 1 (long 100 / short −60 read 8.5, i.e. "~0 equal positions", and a
+  // ">5% of portfolio" warning printed 250%). Gross weights keep the index in
+  // (0, 1]. See concentrationGrossValue for the full derivation.
+  const grossValue = concentrationGrossValue(positions);
 
-  // <= 0, not === 0: a book whose positions net to zero or below has no
-  // meaningful weight denominator. computeConcentration draws the same line
-  // (it returns herfindahl: null there) so neither card ever prints an
-  // effective-position count the other one doesn't.
-  if (totalValue <= 0) {
+  // <= 0, not === 0: the gross book is zero only when there is nothing to
+  // measure, and then there is no weight denominator at all.
+  // computeConcentration draws the same line (it returns herfindahl: null
+  // there) so neither card ever prints an effective-position count the other
+  // one doesn't.
+  if (grossValue <= 0) {
     return {
       hhi: 0,
       effective_positions: 0,
@@ -508,7 +522,11 @@ export function getConcentrationMetrics(
   const warnings: string[] = [];
 
   for (const pos of positions) {
-    const weight = pos.marketValue / totalValue;
+    // |mv| / gross: a short's weight is its SIZE in the book, not a negative
+    // share of it (decision 2026-09-22). The warning therefore compares and
+    // prints the same gross figure — a 20%-of-book short is a 20% warning,
+    // where the signed form skipped it entirely (−0.33 is not > 0.05).
+    const weight = Math.abs(pos.marketValue) / grossValue;
     hhi += weight * weight;
 
     // Single position > 5% warning
@@ -528,12 +546,14 @@ export function getConcentrationMetrics(
     warnings.unshift("Portfolio is moderately concentrated (HHI > 0.15)");
   }
 
-  // Top 10 positions
+  // Top 10 positions. The market value keeps its SIGN (a short is worth
+  // negative dollars and the chart says so); only the weight is gross
+  // (decision 2026-09-22).
   const top_positions = positions.slice(0, 10).map((p) => ({
     symbol: p.symbol,
     security_name: p.securityName,
     market_value: p.marketValue,
-    weight_pct: (p.marketValue / totalValue) * 100,
+    weight_pct: (Math.abs(p.marketValue) / grossValue) * 100,
   }));
 
   return {

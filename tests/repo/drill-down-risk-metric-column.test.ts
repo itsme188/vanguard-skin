@@ -98,8 +98,10 @@ describe("DrillDownPanel presents the metric it ranks by", () => {
     // Review finding on PR #86: the caption read "Drawn from the same
     // positions as the Concentration chart's top holdings". False — the
     // chart reads getConcentrationUniverse (shorts in, unpriced carried at
-    // cost basis, matured excluded) and the drawer projects
-    // computePositionRisk (longs only, priced only, no maturity cutoff).
+    // cost basis) and the drawer projects computePositionRisk (longs only,
+    // priced only). Both now exclude matured securities — user ruling,
+    // decision 2026-09-22 — but the first two divergences remain, so the
+    // caption still may not claim parity.
     // The behavioural proof that the two lists differ lives in
     // tests/queries/drill-down-risk-ranking.test.ts.
     const flat = code.replace(/\s+/g, " ");
