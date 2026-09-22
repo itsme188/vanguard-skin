@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getDataConfidence } from "@/lib/queries/data-confidence";
@@ -235,5 +237,166 @@ describe("data-confidence guidance — derived from counts, not score thresholds
       expect(valuationCoverage.score).toBe(100);
       expect(valuationCoverage.guidance).toBe("Full coverage in the latest valuation.");
     });
+
+    it("low-coverage case (score < 50, 1 unpriced) uses the singular 'holding'", () => {
+      const sec = insertSecurity(db, "VLOW");
+      insertHolding(db, 1, sec, TODAY, `canonical:hold:TAX:VLOW:${TODAY}`);
+      insertDailyValuation(db, 1, TODAY, 1, 0); // 0/1 priced — score 0, unpriced 1
+
+      const { valuationCoverage } = getDataConfidence(db, NOW);
+      expect(valuationCoverage.totalCount).toBe(1);
+      expect(valuationCoverage.pricedCount).toBe(0);
+      expect(valuationCoverage.score).toBeLessThan(50);
+      expect(valuationCoverage.guidance).toBe(
+        "1 holding unpriced — Quick Refresh, then enrich any still missing."
+      );
+    });
+
+    it("low-coverage case (score < 50, 2 unpriced) keeps the plural 'holdings'", () => {
+      for (let i = 0; i < 2; i++) {
+        const sym = `VLW${i}`;
+        const sec = insertSecurity(db, sym);
+        insertHolding(db, 1, sec, TODAY, `canonical:hold:TAX:${sym}:${TODAY}`);
+      }
+      insertDailyValuation(db, 1, TODAY, 2, 0); // 0/2 priced — score 0, unpriced 2
+
+      const { valuationCoverage } = getDataConfidence(db, NOW);
+      expect(valuationCoverage.score).toBeLessThan(50);
+      expect(valuationCoverage.guidance).toBe(
+        "2 holdings unpriced — Quick Refresh, then enrich any still missing."
+      );
+    });
+  });
+
+  /**
+   * Regression coverage for qa:header-dataconfidence--guidance-contradicts-
+   * detail-and-actions (deriveActions half): the Actions list used to gate
+   * on `price.score < 80` / `valuation.score < 80`, a DIFFERENT basis than
+   * the guidance text above (which is count-based since dcfe99be). At 39/40
+   * priced (score 98, still >= 80) the guidance named the 1 real gap while
+   * the Actions list emitted nothing for it. An action row must now appear
+   * exactly when the matching guidance branch names something to do, and
+   * must NOT appear when the guidance is pure reassurance — even though the
+   * old `< 80` gate would already agree at 40/40 (score 100).
+   */
+  describe("actions — same count basis as the guidance branches, not score < 80", () => {
+    it("39/40 priced securities (score 98) still emits a stale-prices action", () => {
+      for (let i = 0; i < 40; i++) {
+        const sym = `AQ${i}`;
+        const sec = insertSecurity(db, sym);
+        insertHolding(db, 1, sec, TODAY, `canonical:hold:TAX:${sym}:${TODAY}`);
+        if (i < 39) insertPrice(db, sec, TODAY, 100);
+      }
+
+      const { priceFreshness, actions } = getDataConfidence(db, NOW);
+      expect(priceFreshness.score).toBe(98);
+
+      const staleAction = actions.find(a =>
+        a.fix.startsWith("Run Quick Refresh to update all prices")
+      );
+      expect(staleAction, "expected a stale-prices action at score 98 with 1 real gap").toBeDefined();
+    });
+
+    it("40/40 priced securities (score 100) emits NO stale-prices action", () => {
+      for (let i = 0; i < 40; i++) {
+        const sym = `AC${i}`;
+        const sec = insertSecurity(db, sym);
+        insertHolding(db, 1, sec, TODAY, `canonical:hold:TAX:${sym}:${TODAY}`);
+        insertPrice(db, sec, TODAY, 100);
+      }
+
+      const { priceFreshness, actions } = getDataConfidence(db, NOW);
+      expect(priceFreshness.score).toBe(100);
+      const staleAction = actions.find(a =>
+        a.fix.startsWith("Run Quick Refresh to update all prices")
+      );
+      expect(staleAction).toBeUndefined();
+    });
+
+    it("39/40 holdings priced in latest valuation (score 98) still emits a valuation-coverage action", () => {
+      for (let i = 0; i < 40; i++) {
+        const sym = `AVQ${i}`;
+        const sec = insertSecurity(db, sym);
+        insertHolding(db, 1, sec, TODAY, `canonical:hold:TAX:${sym}:${TODAY}`);
+      }
+      insertDailyValuation(db, 1, TODAY, 40, 39);
+
+      const { valuationCoverage, actions } = getDataConfidence(db, NOW);
+      expect(valuationCoverage.score).toBe(98);
+
+      const coverageAction = actions.find(a => a.message.includes("holdings in latest valuation"));
+      expect(coverageAction, "expected a valuation-coverage action at score 98 with 1 real gap").toBeDefined();
+      expect(coverageAction!.message).toBe("Only 39/40 holdings in latest valuation");
+    });
+
+    it("40/40 holdings priced in latest valuation (score 100) emits NO valuation-coverage action", () => {
+      for (let i = 0; i < 40; i++) {
+        const sym = `AVC${i}`;
+        const sec = insertSecurity(db, sym);
+        insertHolding(db, 1, sec, TODAY, `canonical:hold:TAX:${sym}:${TODAY}`);
+      }
+      insertDailyValuation(db, 1, TODAY, 40, 40);
+
+      const { valuationCoverage, actions } = getDataConfidence(db, NOW);
+      expect(valuationCoverage.score).toBe(100);
+      const coverageAction = actions.find(a => a.message.includes("holdings in latest valuation"));
+      expect(coverageAction).toBeUndefined();
+    });
+
+    it("enrichment action message uses singular 'security' for exactly 1 missing conId", () => {
+      for (let i = 0; i < 40; i++) {
+        const sym = `AEQ${i}`;
+        const sec = insertSecurity(db, sym, { ibConId: i < 39 ? 1000 + i : null });
+        insertHolding(db, 1, sec, TODAY, `canonical:hold:TAX:${sym}:${TODAY}`);
+      }
+
+      const { actions } = getDataConfidence(db, NOW);
+      const enrichAction = actions.find(a => a.message.includes("missing TWS contract data"));
+      expect(enrichAction).toBeDefined();
+      expect(enrichAction!.message).toBe("1 security missing TWS contract data");
+    });
+
+    it("enrichment action message uses plural 'securities' for 2 missing conIds", () => {
+      for (let i = 0; i < 40; i++) {
+        const sym = `AEP${i}`;
+        const sec = insertSecurity(db, sym, { ibConId: i < 38 ? 3000 + i : null });
+        insertHolding(db, 1, sec, TODAY, `canonical:hold:TAX:${sym}:${TODAY}`);
+      }
+
+      const { actions } = getDataConfidence(db, NOW);
+      const enrichAction = actions.find(a => a.message.includes("missing TWS contract data"));
+      expect(enrichAction).toBeDefined();
+      expect(enrichAction!.message).toBe("2 securities missing TWS contract data");
+    });
+  });
+});
+
+/**
+ * Regression coverage for qa:header-dataconfidence--guidance-contradicts-
+ * detail-and-actions (component color half): the popover's guidance TEXT
+ * derives from counts (see above), but the color used to derive from
+ * `score` directly (`score >= 80 ? "text-ink-faint" : "text-gold-ink"`), so
+ * a high-score dimension with a real named gap (39/40, score 98) rendered
+ * its actionable guidance sentence in the muted "nothing to do" color. This
+ * repo has no React render harness (see the precedent in
+ * tests/dashboard/data-confidence-indicator-privacy.test.ts), so this scans
+ * the component source instead of rendering it — source-pin style.
+ */
+describe("DataConfidenceIndicator guidance color keys on guidanceActionable, not score", () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "app/dashboard/components/DataConfidenceIndicator.tsx"),
+    "utf8"
+  );
+
+  it("does not re-derive the guidance color from score directly", () => {
+    expect(source).not.toMatch(/score >= 80 \? "text-ink-faint" : "text-gold-ink"/);
+  });
+
+  it("derives guidanceColor from guidanceActionable (the same predicate the guidance text uses)", () => {
+    expect(source).toMatch(/guidanceActionable\s*\?\s*"text-gold-ink"\s*:\s*"text-ink-faint"/);
+  });
+
+  it("destructures guidanceActionable out of the dimension prop", () => {
+    expect(source).toMatch(/const\s*\{[^}]*guidanceActionable[^}]*\}\s*=\s*dim;/);
   });
 });
