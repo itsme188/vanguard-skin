@@ -15,10 +15,12 @@
  * `kind: "risk"` is the exception to all of the above: it is a projection of
  * `computePositionRisk` — the same computation behind the Position-Level Risk
  * card and GET /api/compute/position-risk. That call owns the universe (top N
- * by market value, one row per security — the same names the Concentration
- * "Top 10 Positions" chart lists), the weight, and the ranking metric. This
- * module only hydrates the display columns and applies the no-measurable-
- * volatility exclusion. See `rankByRiskContribution` below.
+ * by market value, one row per security), the weight, and the ranking
+ * metric. That universe is NOT the Concentration chart's — it counts long
+ * positions only, requires a stored price, and applies no maturity cutoff —
+ * so the two lists legitimately differ and neither surface may claim to be
+ * the other. This module only hydrates the display columns and drops
+ * cash-equivalent sweeps. See `rankByRiskContribution` below.
  */
 
 import type Database from "better-sqlite3";
@@ -73,17 +75,6 @@ export interface DrillDownRow {
    */
   riskContribution?: number | null;
 }
-
-/**
- * Annualized-volatility floor for the risk ranking. A money-market sweep
- * prices at a pinned 1.00, so its measured volatility is 0 — ranking it by
- * balance put the sweep at the top of a list titled "by risk"
- * [qa:analysis-risk-drawer--top10-by-risk-ranked-by-value-vmfxx-first].
- * 0.5% annualized separates a pinned-price sweep from the tamest real bond
- * fund (which still prints a couple of percent), so nothing that actually
- * marks to market is caught by it.
- */
-const MIN_RANKED_ANNUALIZED_VOL = 0.005;
 
 // Tag prefix so SQLite column-aliases never collide with reserved tokens.
 type FactorAliasKey = `f_${FactorColumn}`;
@@ -307,18 +298,21 @@ function factorsOf(r: Row): Partial<Record<FactorColumn, string>> {
  *     counts long positions only), which is enough to render the same ticker
  *     at two different weights on one page
  *     [qa:analysis-diagnostics--four-different-spy-weights-one-page-regression-4].
- *   • Positions with no measurable volatility drop out entirely — a
- *     money-market sweep is a balance, not a risk contributor, and ranking
- *     by size put it first in a list titled "by risk"
+ *   • Cash-equivalent sweeps drop out entirely — a money-market balance is
+ *     not a risk contributor, and ranking by size put it first in a list
+ *     titled "by risk"
  *     [qa:analysis-risk-drawer--top10-by-risk-ranked-by-value-vmfxx-first].
- *     Two signals answer that: a published volatility under the floor, and
- *     the shared cash-equivalent identity (which covers the common case
- *     where the sweep has too few stored closes for a volatility to be
- *     published at all — its price is pinned at 1.00 either way).
+ *     The test is IDENTITY (the shared `isCashEquivalentSecurity`), never a
+ *     volatility threshold. An earlier version also dropped any position
+ *     whose published annualized volatility fell under 0.5%, which silently
+ *     deleted a Treasury bill priced near par — a position the
+ *     cash-equivalent module explicitly says is NOT cash — while the
+ *     caption disclosed only sweeps. A tiny contribution is a fact about
+ *     the position, so it renders; only the pinned-price sweep is withheld.
  *   • A position whose volatility is unpublishable for an ordinary reason
- *     (short price history) is KEPT, sorts last on a null contribution, and
- *     renders an em dash. Hiding a real position because we lack data would
- *     be the same silent-omission bug in a new place.
+ *     (short price history) is likewise KEPT, sorts last on a null
+ *     contribution, and renders an em dash. Hiding a real position because
+ *     we lack data would be the same silent-omission bug in a new place.
  */
 function rankByRiskContribution(
   mapped: DrillDownRow[],
@@ -331,16 +325,13 @@ function rankByRiskContribution(
   const ranked: DrillDownRow[] = [];
   for (const position of positions) {
     const identity = identityById.get(position.securityId);
-    const volBelowFloor =
-      position.annualizedVol != null &&
-      position.annualizedVol < MIN_RANKED_ANNUALIZED_VOL;
     const isPinnedCash = identity
       ? isCashEquivalentSecurity({
           security_type: identity.security_type,
           fund_category: identity.fund_category,
         })
       : false;
-    if (volBelowFloor || isPinnedCash) continue;
+    if (isPinnedCash) continue;
 
     const display = displayById.get(position.securityId);
     ranked.push({

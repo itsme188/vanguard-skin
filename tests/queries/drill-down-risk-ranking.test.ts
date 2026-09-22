@@ -27,6 +27,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import { getHoldingsInBucket } from "@/lib/queries/drill-down";
 import { getConcentrationMetrics } from "@/lib/queries/analysis";
 import { computePositionRisk } from "@/lib/compute/risk";
+import { getConcentrationUniverse } from "@/lib/queries/concentration-universe";
 
 // Migration 002 seeds: 1=Vanguard Taxable, 2=Vanguard Roth IRA, 3=IBKR.
 const ACCOUNT = 1;
@@ -270,5 +271,150 @@ describe("risk drill-down respects account scope", () => {
     const scoped = getHoldingsInBucket(db, "vanguard", { kind: "risk", topN: 10 }, [ACCOUNT]);
     const all = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
     expect(scoped.map((r) => r.symbol)).toEqual(all.map((r) => r.symbol));
+  });
+});
+
+/**
+ * Review findings on the ranking change (PR #86):
+ *
+ *   1. The drawer ALSO dropped every position whose published annualized
+ *      volatility sat under a 0.5% floor. A Treasury bill priced near par
+ *      prints well under that and is explicitly NOT a cash equivalent
+ *      (lib/compute/cash-equivalents.ts says so in as many words), so it
+ *      vanished from a list whose caption only disclosed sweeps. Silent
+ *      omission of a real position — the exact bug class the "unpublishable
+ *      volatility is KEPT" rule already guards. The floor is gone; identity
+ *      (isCashEquivalentSecurity) is the only exclusion.
+ *   2. The caption claimed the drawer drew "the same positions as the
+ *      Concentration chart's top holdings". It does not, and cannot: the
+ *      drawer projects `computePositionRisk`, whose universe differs from
+ *      `getConcentrationUniverse` on three axes. The tests below pin those
+ *      three divergences so the two universes can never be quietly assumed
+ *      equal again (the caption pin itself lives in
+ *      tests/repo/drill-down-risk-metric-column.test.ts).
+ */
+
+/**
+ * A second, small book built for the universe edge cases. Kept separate from
+ * `seedBook` so the exact-ordering assertions above stay readable.
+ *
+ *   ANCH  $100,000  ordinary equity, 30% vol — the anchor position
+ *   BILL   $20,000  Treasury bill at par, 0.1% vol, NOT a cash equivalent
+ *   SWEP  $150,000  money-market sweep, pinned closes (fund_category set)
+ *   MATB   $30,000  bond whose maturity_date is years past
+ *   SHRT  -$50,000  a short
+ *   NOPX        --  held, but no price row at all (cost basis $50,000)
+ */
+function seedEdgeBook(db: Database.Database) {
+  const insSec = db.prepare(
+    `INSERT INTO securities (id, symbol, name, security_type, sector, fund_category, maturity_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+  const insHold = db.prepare(
+    `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, cost_basis, source_key)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  );
+
+  insSec.run(31, "ANCH", "ANCH Inc.", "Stock", "Technology", null, null);
+  seedPriceSeries(db, 31, 0.30, 100);
+  insHold.run(ACCOUNT, 31, AS_OF, 1000, 90000, "h-ANCH");
+
+  // A bill trading at par. Its measured volatility is a tenth of a percent —
+  // real, publishable, and far under the removed 0.5% floor.
+  insSec.run(32, "BILL", "BILL Treasury Bill", "Bond", null, "Government Bond", null);
+  seedPriceSeries(db, 32, 0.001, 100);
+  insHold.run(ACCOUNT, 32, AS_OF, 20000, 19800, "h-BILL");
+
+  insSec.run(33, "SWEP", "SWEP Sweep Fund", "Mutual Fund", null, "Cash Equivalent", null);
+  const insPinned = db.prepare(
+    `INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, 1.0, 'test')`
+  );
+  for (const d of DATES) insPinned.run(33, d);
+  insHold.run(ACCOUNT, 33, AS_OF, 150000, 150000, "h-SWEP");
+
+  insSec.run(34, "MATB", "MATB Matured Bond", "Bond", null, "Government Bond", "2020-06-30");
+  seedPriceSeries(db, 34, 0.05, 100);
+  insHold.run(ACCOUNT, 34, AS_OF, 30000, 29500, "h-MATB");
+
+  insSec.run(35, "SHRT", "SHRT Inc.", "Stock", "Technology", null, null);
+  seedPriceSeries(db, 35, 0.40, 100);
+  insHold.run(ACCOUNT, 35, AS_OF, -500, -45000, "h-SHRT");
+
+  insSec.run(36, "NOPX", "NOPX Inc.", "Stock", "Technology", null, null);
+  insHold.run(ACCOUNT, 36, AS_OF, 1000, 50000, "h-NOPX");
+}
+
+function edgeDb(): Database.Database {
+  const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  runMigrations(db);
+  seedEdgeBook(db);
+  return db;
+}
+
+describe("risk drill-down excludes sweeps by identity, not by a volatility floor", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = edgeDb();
+  });
+
+  it("keeps a near-par bill whose volatility is a tenth of a percent", () => {
+    const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
+    const bill = rows.find((r) => r.symbol === "BILL");
+
+    expect(bill, "a real, priced, non-cash-equivalent position must not vanish").toBeDefined();
+    // It renders at its own (tiny) contribution rather than being hidden.
+    expect(typeof bill!.riskContribution).toBe("number");
+    expect(bill!.riskContribution!).toBeGreaterThan(0);
+    // And it sorts where its risk puts it: last, behind the 30% and 5% names.
+    expect(rows[rows.length - 1].symbol).toBe("BILL");
+  });
+
+  it("still excludes the money-market sweep through the shared cash-equivalent identity", () => {
+    const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
+    expect(rows.map((r) => r.symbol)).not.toContain("SWEP");
+  });
+});
+
+describe("risk drill-down universe is computePositionRisk's, NOT the concentration universe's", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = edgeDb();
+  });
+
+  it("drops a SHORT that the concentration universe carries (includeShorts: false)", () => {
+    const drawer = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
+    const universe = getConcentrationUniverse(db);
+
+    expect(drawer.map((r) => r.symbol)).not.toContain("SHRT");
+    expect(universe.map((p) => p.symbol)).toContain("SHRT");
+  });
+
+  it("drops an UNPRICED position that the concentration universe carries at cost basis", () => {
+    const drawer = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
+    const universe = getConcentrationUniverse(db);
+
+    expect(drawer.map((r) => r.symbol)).not.toContain("NOPX");
+    const nopx = universe.find((p) => p.symbol === "NOPX");
+    expect(nopx?.marketValue).toBe(50000);
+  });
+
+  it("KEEPS a matured bond that the concentration universe drops (no maturity filter)", () => {
+    // Documenting today's behaviour, not endorsing it: computePositionRisk
+    // applies no maturity cutoff, so the drawer still ranks a bond that has
+    // already redeemed. Changing that belongs in lib/compute/risk.ts.
+    const drawer = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
+    const universe = getConcentrationUniverse(db);
+
+    expect(drawer.map((r) => r.symbol)).toContain("MATB");
+    expect(universe.map((p) => p.symbol)).not.toContain("MATB");
+  });
+
+  it("so the two lists differ — the drawer must never claim to be the chart's top holdings", () => {
+    const drawer = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 }).map((r) => r.symbol);
+    const chartTop = getConcentrationUniverse(db)
+      .slice(0, 10)
+      .map((p) => p.symbol);
+    expect(new Set(drawer)).not.toEqual(new Set(chartTop));
   });
 });

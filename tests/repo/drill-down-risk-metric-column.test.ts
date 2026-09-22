@@ -42,10 +42,16 @@ describe("risk drill-down ranking is single-sourced on computePositionRisk", () 
     expect(code).not.toMatch(/market_value\s*\*\s*COALESCE\(\s*beta/i);
   });
 
-  it("it excludes sub-epsilon-volatility rows through the shared cash-equivalent identity", () => {
+  it("excludes sweeps by IDENTITY alone — no volatility floor", () => {
+    // Review finding on PR #86: a 0.5% annualized-volatility floor also
+    // deleted a Treasury bill priced near par, which lib/compute/cash-
+    // equivalents.ts explicitly says is NOT a cash equivalent — a silent
+    // omission the drawer's caption did not disclose. Identity is the only
+    // exclusion now; a tiny contribution renders as a tiny contribution.
     const code = stripComments(read("lib/queries/drill-down.ts"));
-    expect(code).toMatch(/MIN_RANKED_ANNUALIZED_VOL/);
     expect(code).toMatch(/isCashEquivalentSecurity/);
+    expect(code).not.toMatch(/MIN_RANKED_ANNUALIZED_VOL/);
+    expect(code).not.toMatch(/annualizedVol/);
     // Never a hand-rolled money-market ticker/type list (project rule:
     // identity is owned by lib/compute/cash-equivalents.ts).
     expect(code).not.toMatch(/["']money_market["']/);
@@ -86,6 +92,23 @@ describe("DrillDownPanel presents the metric it ranks by", () => {
     expect(code).toMatch(
       /Top \$\{filter\.topN \?\? 10\} by risk contribution \$\{suffix\}/
     );
+  });
+
+  it("the caption describes the drawer's OWN universe, claiming no parity with the Concentration chart", () => {
+    // Review finding on PR #86: the caption read "Drawn from the same
+    // positions as the Concentration chart's top holdings". False — the
+    // chart reads getConcentrationUniverse (shorts in, unpriced carried at
+    // cost basis, matured excluded) and the drawer projects
+    // computePositionRisk (longs only, priced only, no maturity cutoff).
+    // The behavioural proof that the two lists differ lives in
+    // tests/queries/drill-down-risk-ranking.test.ts.
+    const flat = code.replace(/\s+/g, " ");
+    expect(flat).not.toMatch(/same positions as the Concentration/i);
+    expect(flat).not.toMatch(/Drawn from the same/i);
+    // It still names the universe it IS, and still discloses the one
+    // exclusion this module applies.
+    expect(flat).toMatch(/Position-Level Risk card/);
+    expect(flat).toMatch(/[Cc]ash-equivalent sweeps are left out/);
   });
 
   it("places the Risk header right after Ticker, ahead of Weight, so it is visible without horizontal scroll", () => {

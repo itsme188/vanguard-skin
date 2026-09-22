@@ -164,15 +164,22 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
           </button>
         </header>
 
-        {/* Name the ranking metric, and say plainly why the list can be
-            shorter than the N in the title — a sweep fund is a balance, not
-            a risk contributor, so it is dropped rather than backfilled. */}
+        {/* Name the ranking metric, name the universe it is measured over,
+            and say plainly why the list can be shorter than the N in the
+            title. This caption used to claim the drawer drew "the same
+            positions as the Concentration chart's top holdings" — it does
+            not: the drawer projects computePositionRisk, which counts long
+            positions only, requires a stored price, and applies no maturity
+            cutoff. Pinned in tests/repo/drill-down-risk-metric-column. */}
         {isRisk && !loading && !error && rows.length > 0 && (
           <p className="px-4 pt-3 text-[11px] leading-snug text-ink-faint">
-            Ranked by risk contribution — {RISK_METRIC_DESCRIPTION}. Drawn from
-            the same positions as the Concentration chart&apos;s top holdings;
-            cash-equivalent sweeps are left out because their price is pinned,
-            so they carry no measurable volatility.
+            Ranked by risk contribution — {RISK_METRIC_DESCRIPTION}. Measured
+            over the Position-Level Risk card&apos;s universe: the largest
+            priced long positions, so shorts and positions with no stored
+            price are not measured here. Cash-equivalent sweeps are left out
+            because their price is pinned, so they carry no measurable
+            volatility. This is not the Concentration chart&apos;s
+            top-holdings list.
           </p>
         )}
 
