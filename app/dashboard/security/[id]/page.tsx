@@ -31,6 +31,7 @@ import { daysToExpiry } from "@/lib/compute/option-expiry";
 import type { EarningsTranscript } from "@/lib/types";
 import { hasDeskNote, isFilingRow, kindLabel } from "@/lib/transcripts/presentation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { EarningsConflictMarker } from "../../components/calendar/EarningsConflictMarker";
 
 function gainClass(value: number | null): string {
   if (value == null) return "text-ink-dim";
@@ -786,6 +787,11 @@ export default async function SecurityDetailPage(props: {
                 <Chip tone={impactTone(event.expected_impact)} size="xs" uppercase>
                   {event.event_type.replace(/_/g, " ")}
                 </Chip>
+                <EarningsConflictMarker
+                  dateStatus={event.date_status}
+                  dateConflictWith={event.date_conflict_with}
+                  className="flex-shrink-0"
+                />
                 <span className="truncate text-sm text-ink">{event.title}</span>
               </div>
             ))}

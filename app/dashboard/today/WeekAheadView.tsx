@@ -7,6 +7,7 @@ import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { epsDelta } from "@/lib/earnings/eps-delta";
 import { EnrichmentRowSummary } from "../components/calendar/EnrichmentChips";
+import { EarningsConflictMarker } from "../components/calendar/EarningsConflictMarker";
 // This is a Server Component (no "use client"): parseReactionSnapshot /
 // snapshotCoversEventDate must come from the dependency-free
 // reaction-snapshot-core module — never call a value export of
@@ -379,6 +380,16 @@ function EventRow({ event, todayIso }: { event: CalendarEvent; todayIso: string 
             Macro
           </span>
         )}
+        {/* Date-conflicted earnings row (calendar_events date_status ===
+            'conflict', migration 057): without this the row is
+            indistinguishable from a settled one, and the competing vendor
+            date can be EARLIER than the one shown here — a real risk of
+            missing a print. Read-only; the confirm flow lives in
+            EarningsDateChip on the Earnings Hub. */}
+        <EarningsConflictMarker
+          dateStatus={event.date_status}
+          dateConflictWith={event.date_conflict_with}
+        />
         {/* The row flex-wraps, so a long actual value drops to its own
             line — never clipped to "actual…". Day columns can be as
             narrow as ~130px (5-up grid with the chat rail open), so the
