@@ -280,6 +280,41 @@ describe("data-confidence guidance — derived from counts, not score thresholds
    * old `< 80` gate would already agree at 40/40 (score 100).
    */
   describe("actions — same count basis as the guidance branches, not score < 80", () => {
+    it("a 7-day-stale account (guidance names it) emits a holdings action, not only at 30+ days", () => {
+      const a = insertSecurity(db, "HAA");
+      const b = insertSecurity(db, "HAB");
+      const c = insertSecurity(db, "HAC");
+      insertHolding(db, 1, a, "2026-08-21", "canonical:hold:TAX:HAA:2026-08-21"); // 0 days
+      insertHolding(db, 2, b, "2026-08-21", "canonical:hold:ROTH:HAB:2026-08-21"); // 0 days
+      insertHolding(db, 3, c, "2026-08-14", "tws-3-hac-2026-08-14"); // 7 days — worst
+
+      const { holdingsRecency, actions } = getDataConfidence(db, NOW);
+      expect(holdingsRecency.guidanceActionable).toBe(true);
+      const holdingsAction = actions.find(a => a.message.includes("holdings are"));
+      expect(holdingsAction, "guidance names a stale account, so an action row must exist").toBeDefined();
+      expect(holdingsAction!.message).toContain("7 days old");
+    });
+
+    it("every account <=1 day old emits NO holdings action", () => {
+      const a = insertSecurity(db, "HBA");
+      const b = insertSecurity(db, "HBB");
+      const c = insertSecurity(db, "HBC");
+      insertHolding(db, 1, a, "2026-08-21", "canonical:hold:TAX:HBA:2026-08-21"); // 0 days
+      insertHolding(db, 2, b, "2026-08-21", "canonical:hold:ROTH:HBB:2026-08-21"); // 0 days
+      insertHolding(db, 3, c, "2026-08-20", "tws-3-hbc-2026-08-20"); // 1 day
+
+      const { holdingsRecency, actions } = getDataConfidence(db, NOW);
+      expect(holdingsRecency.guidanceActionable).toBe(false);
+      expect(actions.find(a => a.message.includes("holdings are"))).toBeUndefined();
+    });
+
+    it("the cash action gate reads the cash guidance predicate (source pin)", () => {
+      const src = fs.readFileSync(path.join(process.cwd(), "lib/queries/data-confidence.ts"), "utf8");
+      const fn = src.slice(src.indexOf("function deriveActions("));
+      expect(fn).toContain("if (cash.guidanceActionable)");
+      expect(fn).not.toContain("if (cash.score < 50)");
+    });
+
     it("39/40 priced securities (score 98) still emits a stale-prices action", () => {
       for (let i = 0; i < 40; i++) {
         const sym = `AQ${i}`;

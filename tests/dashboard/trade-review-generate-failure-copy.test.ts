@@ -64,6 +64,13 @@ describe("tradeReviewFailureMessage", () => {
     expect(msg).toMatch(/try again, or pick a different month/i);
   });
 
+  it("terminates a domain sentence that carries no period, so the save-state sentence stands alone", () => {
+    const msg = tradeReviewFailureMessage("No closed trades found for this account in 2023-06-01 to 2023-06-30");
+    expect(msg).toContain("2023-06-30. Nothing was saved");
+    // An already-terminated sentence is not double-punctuated.
+    expect(tradeReviewFailureMessage("The AI service is temporarily overloaded.")).not.toContain("..");
+  });
+
   it("never renders the vendor's tool_choice sentence", () => {
     // The route classifies before sending; this is the belt-and-braces check
     // that the copy itself introduces no vendor vocabulary.
