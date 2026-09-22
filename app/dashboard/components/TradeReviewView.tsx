@@ -85,6 +85,22 @@ const GRADE_COLORS: Record<string, string> = {
   F: "bg-down",
 };
 
+/**
+ * Honest-button copy for a failed "Generate Review": say what didn't happen,
+ * say the period is untouched, say what to do next — in domain language.
+ * `reason` is whatever the server classified (never raw vendor prose); the
+ * lead-in isn't repeated when the server already sent the generic fallback.
+ */
+export function tradeReviewFailureMessage(reason?: string | null): string {
+  const lead = "Couldn't generate the review";
+  const detail = (reason ?? "").trim();
+  const head =
+    detail && !detail.toLowerCase().startsWith("couldn't generate the review")
+      ? `${lead} — ${detail}`
+      : `${lead}.`;
+  return `${head} Nothing was saved and the period is unchanged. Try again, or pick a different month.`;
+}
+
 function GradeBadge({ grade }: { grade: string | null }) {
   if (!grade) return <span className="text-ink-faint">—</span>;
   return (
@@ -153,6 +169,9 @@ export function TradeReviewView({
   // Generate state
   const [generating, setGenerating] = useState(false);
   const [generateMsg, setGenerateMsg] = useState<string | null>(null);
+  // Explicit failure flag — the banner's styling must not depend on the copy
+  // starting with the word "Error", which pinned the wording to the CSS.
+  const [generateFailed, setGenerateFailed] = useState(false);
   const [selectedPeriod, setSelectedPeriod] = useState<string>(
     periods[0]?.periodStart ?? ""
   );
@@ -229,6 +248,7 @@ export function TradeReviewView({
   ) => {
     setGenerating(true);
     setGenerateMsg("Starting...");
+    setGenerateFailed(false);
     setQuestions([]);
     setQuestionAnswers({});
 
@@ -251,7 +271,8 @@ export function TradeReviewView({
         const errorBody = (await res
           .json()
           .catch(() => null)) as { error?: string } | null;
-        setGenerateMsg(`Error: ${errorBody?.error ?? res.statusText}`);
+        setGenerateMsg(tradeReviewFailureMessage(errorBody?.error));
+        setGenerateFailed(true);
         setGenerating(false);
         return;
       }
@@ -279,7 +300,10 @@ export function TradeReviewView({
             `Review complete — ${data.data.tradeCount} trade(s), ${(data.data.winRate * 100).toFixed(0)}% win rate`
           );
         }
-        if (data.error) setGenerateMsg(`Error: ${data.error}`);
+        if (data.error) {
+          setGenerateMsg(tradeReviewFailureMessage(data.error));
+          setGenerateFailed(true);
+        }
       });
 
       // Refresh only if we ran a complete generation (not a Phase-1 stop).
@@ -287,9 +311,13 @@ export function TradeReviewView({
         await refreshReviews();
       }
     } catch (err) {
+      // Network/stream failure on our side — the exception text is a transport
+      // detail, not something a user can act on, so it stays in the console.
+      console.error("[trade-review] generate request failed:", err);
       setGenerateMsg(
-        `Error: ${err instanceof Error ? err.message : "Unknown"}`
+        tradeReviewFailureMessage("the request to the server didn't complete.")
       );
+      setGenerateFailed(true);
     } finally {
       // setGenerating(false) was already called inside the SSE callback when
       // questions arrived (Phase 1). Always force-clear here so the spinner
@@ -351,6 +379,10 @@ export function TradeReviewView({
     setSelectedAccountId(accountId);
     setExpandedReviewId(null);
     setQuestions([]);
+    // A stale failure/completion banner describes the PREVIOUS account's
+    // period — drop it rather than let it read as this account's result.
+    setGenerateMsg(null);
+    setGenerateFailed(false);
 
     const [listRes, periodsRes] = await Promise.all([
       fetch(`/api/trade-review?accountId=${accountId}`),
@@ -366,6 +398,14 @@ export function TradeReviewView({
       setPeriods(json.periods);
       setSelectedPeriod(json.periods[0]?.periodStart ?? "");
     }
+  };
+
+  // ── Month change ────────────────────────────────
+  const handlePeriodChange = (periodStart: string) => {
+    setSelectedPeriod(periodStart);
+    // Same reason as handleAccountChange: the banner names one period only.
+    setGenerateMsg(null);
+    setGenerateFailed(false);
   };
 
   // ── Find unreviewed periods ─────────────────────────────────
@@ -405,7 +445,7 @@ export function TradeReviewView({
           </label>
           <select
             value={selectedPeriod}
-            onChange={(e) => setSelectedPeriod(e.target.value)}
+            onChange={(e) => handlePeriodChange(e.target.value)}
             disabled={generating || periods.length === 0}
             className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus-ring min-w-[160px]"
           >
@@ -450,7 +490,7 @@ export function TradeReviewView({
       {generateMsg && (
         <div
           className={`rounded-lg border px-4 py-3 text-sm ${
-            generateMsg.startsWith("Error")
+            generateFailed
               ? "border-down/30 bg-down/20 text-down"
               : "border-edge bg-raised text-ink-dim"
           }`}

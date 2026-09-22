@@ -50,8 +50,16 @@ interface TradeReviewStructured {
   cumulative_patterns?: string[];
 }
 
-/** Schema for structured output — forces Claude to return both markdown and structured data */
-const REVIEW_SCHEMA = jsonSchema<TradeReviewStructured>({
+/**
+ * Schema for structured output — forces Claude to return both markdown and
+ * structured data. EVERY object node carries `additionalProperties: false`:
+ * Anthropic's native structured output (`output_config.format.json_schema`,
+ * which lib/ai/generate.ts now asks for) rejects a schema without it with a
+ * 400. Pinned by tests/ai/structured-output-schemas.test.ts.
+ *
+ * Exported for that test only — the live caller is `callModel` below.
+ */
+export const REVIEW_SCHEMA = jsonSchema<TradeReviewStructured>({
   type: "object",
   additionalProperties: false,
   properties: {
