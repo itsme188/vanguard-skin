@@ -161,10 +161,19 @@ describe("FIRST_PASS_OUTPUT_SCHEMA", () => {
     };
     walk(FIRST_PASS_OUTPUT_SCHEMA);
     const props = (FIRST_PASS_OUTPUT_SCHEMA as { properties: Record<string, { minItems?: number; maxItems?: number; items?: { required?: string[] } }> }).properties;
-    // R-D33: 8, not 6 — the runner keeps a read only with >= 6 SURVIVING lines,
-    // so the schema has to leave room for two legitimate drops.
-    expect(props.read).toMatchObject({ minItems: 8, maxItems: 10, items: { required: ["text", "cites"] } });
-    expect(props.call_watch).toMatchObject({ minItems: 3, maxItems: 3, items: { required: ["text", "cites"] } });
+    // R-D33 asked for 8-10 read lines (the runner keeps a read only with >= 6
+    // SURVIVING lines, leaving room for two drops). Since 2026-09-22 the call
+    // goes through native Anthropic structured output, which rejects array
+    // count constraints (minItems other than 0/1, maxItems at all) — so the
+    // counts live in the prompt text and in lib/print-watch/read.ts
+    // (READ_LINES_MIN/MAX, CALL_WATCH_LINES), never in the schema.
+    // Decision record: print-watch-first-pass-schema-minitems (A).
+    expect(props.read).toMatchObject({ type: "array", items: { required: ["text", "cites"] } });
+    expect(props.call_watch).toMatchObject({ type: "array", items: { required: ["text", "cites"] } });
+    for (const key of ["read", "call_watch", "caveats", "callouts"]) {
+      expect(props[key].minItems, `${key}.minItems`).toBeUndefined();
+      expect(props[key].maxItems, `${key}.maxItems`).toBeUndefined();
+    }
   });
 });
 
