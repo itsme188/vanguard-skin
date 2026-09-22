@@ -339,7 +339,19 @@ function computeTilts(
     // existed — without this, the Size tilt repeats the same "Large Cap"
     // beside "Large" split the Allocation breakdown had
     // [qa:analysis-market-cap--duplicate-size-buckets-and-tilts].
-    sizeTilt: buildTilt("Size", (r) => normalizeMarketCapCategory(r.market_cap_category)),
+    //
+    // normalizeMarketCapCategory passes the literal string "null" through
+    // unchanged (it's not a recognized bare-synonym alias — see its own
+    // NULLIF/COALESCE-guard-stays-with-the-caller contract), so without this
+    // extra check a row an AI classify pass stored as the string "null"
+    // (prompt enums include a `null` token, same class of bug documented in
+    // classify-securities.ts's cleanEnumValue) would render a Size tilt
+    // bucket literally labeled "null" instead of folding into
+    // "Unclassified" the way buildTilt already treats a blank/missing value.
+    sizeTilt: buildTilt("Size", (r) => {
+      const normalized = normalizeMarketCapCategory(r.market_cap_category);
+      return normalized && normalized.trim().toLowerCase() === "null" ? null : normalized;
+    }),
     styleTilt: buildTilt("Style", (r) => r.style),
     sectorTilt: buildTilt("Sector", (r) => r.sector),
     geographyTilt: buildTilt("Geography", (r) => r.geography),

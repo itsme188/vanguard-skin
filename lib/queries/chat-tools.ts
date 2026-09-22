@@ -3,6 +3,7 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 
 /**
  * Chat sector-FILTER-only alias, on top of normalizeSector. normalizeSector
@@ -372,7 +373,13 @@ export function getAllocationBreakdown(
     symbol: "s.symbol",
     fund_category: "COALESCE(s.fund_category, 'Unclassified')",
     geography: "COALESCE(s.geography, 'Unknown')",
-    market_cap_category: "COALESCE(s.market_cap_category, 'Unknown')",
+    // NULLIF(...,'null') guards rows where an AI classify pass stored the
+    // literal string "null"; marketCapCategoryBucketSql is the SQL twin of
+    // normalizeMarketCapCategory, folding legacy bare "Large"/"Mid"/"Small"
+    // labels into the canonical "X Cap" scheme so this tool doesn't answer
+    // with "Large" as a bucket separate from "Large Cap" — same idiom as
+    // CLASSIFICATION_BUCKET_COLUMNS in lib/queries/analysis.ts.
+    market_cap_category: `COALESCE(NULLIF(${marketCapCategoryBucketSql("s.market_cap_category")}, 'null'), 'Unknown')`,
     style: "COALESCE(s.style, 'Unknown')",
   };
 

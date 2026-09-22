@@ -161,12 +161,12 @@ describe("market_cap_category read-side vocabulary normalization", () => {
 
   it("an OPTION inheriting a bare label from its underlying also lands in the canonical bucket on BOTH surfaces", () => {
     const account = seedAccount("Test");
-    const OPTION_SYMBOL = "INTC  270115C00030000";
-    const underlying = seedSecurity("INTC", { market_cap_category: "Large" });
+    const OPTION_SYMBOL = "ZZTP  270115C00030000";
+    const underlying = seedSecurity("ZZTP", { market_cap_category: "Large" });
     const option = seedSecurity(OPTION_SYMBOL, {
       security_type: "Option",
       market_cap_category: null,
-      underlying_symbol: "INTC",
+      underlying_symbol: "ZZTP",
       multiplier: 100,
     });
     seedHolding(account, underlying, 10);
@@ -178,7 +178,7 @@ describe("market_cap_category read-side vocabulary normalization", () => {
     expect(result.find((r) => r.group_name === "Large")).toBeUndefined();
     const largeCap = result.find((r) => r.group_name === "Large Cap");
     expect(largeCap).toBeDefined();
-    // Both the underlying AND the option (inheriting INTC's bare "Large",
+    // Both the underlying AND the option (inheriting ZZTP's bare "Large",
     // normalized to "Large Cap") land in the same bucket.
     expect(largeCap!.position_count).toBe(2);
 
@@ -187,7 +187,7 @@ describe("market_cap_category read-side vocabulary normalization", () => {
       dimension: "market_cap_category",
       bucket: "Large Cap",
     });
-    expect(rows.map((r) => r.symbol).sort()).toEqual([OPTION_SYMBOL, "INTC"].sort());
+    expect(rows.map((r) => r.symbol).sort()).toEqual([OPTION_SYMBOL, "ZZTP"].sort());
     expect(rows.length).toBe(largeCap!.position_count);
   });
 
@@ -214,5 +214,24 @@ describe("market_cap_category read-side vocabulary normalization", () => {
     expect(largeCap!.weight).toBeCloseTo(1500 / 6000, 2); // LGA + LGB
     expect(midCap!.weight).toBeCloseTo(1000 / 6000, 2);
     expect(smallCap!.weight).toBeCloseTo(1500 / 6000, 2); // SMA + SMB
+  });
+
+  it("the Factor Exposure Size tilt folds the literal string 'null' into 'Unclassified', not its own 'null' bucket", () => {
+    seedVocabularyFixture();
+
+    const result = computeFactorAnalysis(db);
+    const labels = result.sizeTilt!.buckets.map((b) => b.label);
+
+    // Pre-fix, normalizeMarketCapCategory("null") passes the literal string
+    // through unchanged (it's not a recognized bare-synonym alias), and the
+    // Size tilt getter had no 'null'-literal guard — so the NUL security
+    // rendered a bucket literally labeled "null" instead of folding into
+    // "Unclassified" alongside the true-NULL row.
+    expect(labels).not.toContain("null");
+
+    const unclassified = result.sizeTilt!.buckets.find((b) => b.label === "Unclassified");
+    expect(unclassified).toBeDefined();
+    // literalNull (NUL, $1000) + trueNull (UNK, $1000) fold together.
+    expect(unclassified!.weight).toBeCloseTo(2000 / 6000, 2);
   });
 });

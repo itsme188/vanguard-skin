@@ -7,6 +7,7 @@ import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
+import { normalizeMarketCapCategory } from "@/lib/securities/normalize-market-cap";
 import {
   optionElasticity,
   isOptionSecurityType,
@@ -357,9 +358,13 @@ function estimateBeta(
   if (style === "Growth") beta *= 1.1;
   if (style === "Value") beta *= 0.9;
 
-  // Size adjustments
-  if (marketCap === "Small Cap") beta *= 1.15;
-  if (marketCap === "Mid Cap") beta *= 1.05;
+  // Size adjustments — normalize first: the Claude classification fallback
+  // still writes bare "Large"/"Mid"/"Small" labels (see
+  // normalizeMarketCapCategory), and an un-normalized exact-string compare
+  // silently skipped the size-beta uplift for those legacy rows.
+  const normalizedMarketCap = normalizeMarketCapCategory(marketCap);
+  if (normalizedMarketCap === "Small Cap") beta *= 1.15;
+  if (normalizedMarketCap === "Mid Cap") beta *= 1.05;
 
   return beta;
 }
