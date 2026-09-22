@@ -70,6 +70,17 @@ export interface ReadSeams {
   clearTimeout: typeof clearTimeout;
 }
 
+/**
+ * Explicit output cap for the first-pass read. The Anthropic provider package
+ * does not know 5-generation model ids and defaults them to 4,096 output
+ * tokens, and on the frontier tier the model's own thinking counts against
+ * that cap — so an unset cap can truncate the JSON mid-object with no signal
+ * beyond an unparseable result. The read is ~10 cited lines + 3 call-watch
+ * lines + caveats + callouts; this is a ceiling, not a spend (landing review
+ * of PR #85, 2026-09-22).
+ */
+export const FIRST_PASS_MAX_OUTPUT_TOKENS = 16_000;
+
 const DEFAULT_SEAMS: ReadSeams = {
   // The app's existing AI transport is the ONLY path to a model. The wrapper
   // resolves the model itself (with one reactive failover), so the id that
@@ -81,6 +92,7 @@ const DEFAULT_SEAMS: ReadSeams = {
       prompt: args.prompt,
       schema: args.schema,
       abortSignal: args.abortSignal,
+      maxOutputTokens: FIRST_PASS_MAX_OUTPUT_TOKENS,
     } as never);
     const r = res as { object: unknown; response?: { modelId?: string } };
     return { object: r.object, modelId: r.response?.modelId ?? null };
