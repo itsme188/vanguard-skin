@@ -3,9 +3,9 @@
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Waiting on:** USER: (a) rule the Herfindahl weighting when a short is held — signed weights (current, unbounded above 1) vs gross |MV| (conventional): TODO `[qa-landing 2026-09-22 follow-ups]` (a), decision entry 2026-09-22; (b) whether to fold `computePositionRisk` onto the shared concentration universe (adds a maturity filter → changes published risk figures) — follow-ups (b); (c) the standing items unchanged from the last handoff: option-attached-levels review rows, broker-realized transcription then `reconcile-tax-report-vs-broker --stamp`, the opening-lots importer, the retirement-account `tax_treatment` stamp (register `qa-fix-findings-2026-09-16`, `user-run-data-steps-2026-09-14`); (d) purge decision now covers PR #86's originals too (TODO privacy item). Otherwise nobody: no open PRs, no stranded `qa-*` branch.
+**Waiting on:** USER: the queued data steps, in order — (1) the Roth `tax_treatment` stamp `--apply` (rehearsed on a VACUUM copy this evening: applies, second run is a no-op; live DB write needs your go); (2) the option-attached-levels repair: dry run shows 0 move / 3 leave / 6 review / 2 duplicate, the six review rows need your judgment; (3) the broker-realized transcription then `reconcile-tax-report-vs-broker --stamp`; (4) the opening-lots importer decision. (Evening addendum: the Herfindahl ruling (gross weights) and the position-risk maturity filter were implemented and deployed — see below; the four cherry-picked local branches were force-deleted on the user's instruction.) Earlier-handoff standing items, restated: option-attached-levels review rows, broker-realized transcription then `reconcile-tax-report-vs-broker --stamp`, the opening-lots importer, the retirement-account `tax_treatment` stamp (register `qa-fix-findings-2026-09-16`, `user-run-data-steps-2026-09-14`); (d) purge decision now covers PR #86's originals too (TODO privacy item). Otherwise nobody: no open PRs, no stranded `qa-*` branch.
 
-**Session date:** 2026-09-22 (Tuesday) ~11:05 ET → ~12:30 ET. Focus (user pick at session start): land PR #85 + PR #86 + the stranded fixer branches and deploy; print-watch schema decision A.
+**Session date:** 2026-09-22 (Tuesday) ~11:05 ET → ~12:30 ET, then an evening block ~16:35 → ~18:15 ET. Focus (user pick at session start): land PR #85 + PR #86 + the stranded fixer branches and deploy; print-watch schema decision A.
 
 ## 1. Goal + exact files changed
 
@@ -46,10 +46,19 @@
 
 ## 4. Uncommitted changes / live-process state
 
-- Main checkout clean at the handoff commit on top of `617e41c1`, pushed; installed app build `SAlZvgr0PvDfILrDRIqw7` (commit `617e41c1`). No sandbox up (the :3090 landing sandbox and the sweep's leftover :3097 server are down); no locks held; the landing worktree `../vanguard-skin-landing` was removed after the fast-forward.
-- Worktree `../vanguard-skin-qa-fix` (the nightly fixer's) sits detached at `93be54b1`, clean. Four local branches remain that `git branch -d` refuses because their content landed as cherry-picks or edited cherry-picks, not by ancestry — `qa-auto-fixes-2026-09-22` and `qa-fix-work-20260922` (PR #86 originals, sanitized on main), `qa-fix-work-20260917` (Codex `0052ec8d`), `qa-fix-work-20260916` (PR #83) — safe to `-D` when the user wants; the PR #86 originals remain reachable via `refs/pull/86/head` regardless (purge item).
+- Main checkout clean at the handoff commit on top of `384749ac`, pushed; installed app build `XGu6CTFrX6DGlANPeefX2` (commit `384749ac`). No sandbox up (the :3090 landing sandbox and the sweep's leftover :3097 server are down); no locks held; the landing worktree `../vanguard-skin-landing` was removed after the fast-forward.
+- Worktree `../vanguard-skin-qa-fix` (the nightly fixer's) sits detached at `93be54b1`, clean. The four cherry-picked local branches were force-deleted on the user's instruction (evening); the PR #86 originals remain reachable via `refs/pull/86/head` regardless (purge item).
 - Remote: no `qa-*` branch with unlanded commits; open PRs: none; open issues: #34 only (process, unchanged).
 - Ledger: 12 rows flipped to `merged` (backup `qa/findings/ledger.json.bak-2026-09-22-landed`). Register: `qa-landing-2026-09-22` landed with deploy evidence; decision records open: `herfindahl-signed-vs-gross-weights` (new), plus the standing user-run data steps.
+
+## Evening addendum — Herfindahl ruling implemented + deployed
+
+- **Rulings:** user → gross |MV| weights; Claude (delegated) → `computePositionRisk` excludes matured securities only (shorts/unpriced stay out: risk contribution needs a price and a return series). Decision entry "2026-09-22 (pm)" in `docs/DECISIONS.md`.
+- **Commits:** `47073d45` (lib/queries/concentration-universe.ts — gross total helper, `ORDER BY ABS(SUM(market_value))`; lib/queries/analysis.ts getConcentrationMetrics; lib/compute/risk.ts computeConcentration + computePositionRisk maturity guard; drill-down.ts + DrillDownPanel.tsx comments; tests incl. new tests/queries/concentration-gross-weights.test.ts) and `384749ac` (docs). Latent bug fixed on the way: the universe's ORDER BY bound `market_value` to one unaggregated account leg (SQLite resolves a bare name in an ORDER BY expression against FROM before the SELECT alias), so a cross-account position ranked on whichever leg SQLite picked.
+- **Effect on the live book:** the two shorts are ~1.2% of gross value (the TODO's 0.1% checkpoint was stale), so effective positions read ~62 instead of ~59 at the all-accounts scope; both Diagnostics cards agree (sandbox :3091).
+- **Evidence:** tsc 0; `verify.sh changed` passed; `npm run build` clean; smoke 4/4; full suite 857 files — 10,206 passed, 1 failed = the documented `tests/print-watch/watcher.test.ts` timing flake (passes twice in isolation); an earlier run's 10 `tests/ai/generate.test.ts` failures were the worktree's missing `.env.local`, not the diff.
+- **Deploy:** DEPLOYED 18:05–18:12 ET, commit `384749ac`, BUILD_ID `XGu6CTFrX6DGlANPeefX2`, notarized, installed, post-verify ok (`deploy-20260922T220540Z.log`). Worktree `../vanguard-skin-hhi` removed; branch deleted.
+- **Not done (still on the follow-ups item):** one weight denominator for the whole Analysis page (the risk drawer still ranks priced longs only, by design).
 
 ## 5. Claude session link
 
