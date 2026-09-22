@@ -11,6 +11,10 @@ import {
 } from "@/lib/queries/trade-reviews";
 import { getAvailableReviewPeriods } from "@/lib/compute/trade-roundtrips";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
+import {
+  classifyAnthropicError,
+  classifyAnthropicErrorMessage,
+} from "@/lib/ai/classify-anthropic-error";
 
 interface GroupedTradeResponse {
   saleTransactionId: number | null;
@@ -322,7 +326,14 @@ export async function POST(request: Request) {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Unknown error";
-        send({ error: message });
+        // Raw vendor prose never reaches the client — the model layer can throw
+        // things like `tool_choice: type "tool" and "any" are not supported for
+        // this model.`, which says nothing to a user about their trade review.
+        // Classify into plain domain language; keep the real text server-side.
+        console.error("[trade-review] generation failed:", message);
+        const classification =
+          classifyAnthropicError(error) ?? classifyAnthropicErrorMessage(message);
+        send({ error: classification?.userMessage ?? "Couldn't generate the review." });
       } finally {
         clearInterval(heartbeat);
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));

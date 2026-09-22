@@ -219,3 +219,65 @@ describe("classifyAnthropicErrorMessage", () => {
     expect(result!.userMessage).not.toContain("req_msgAuthTEST");
   });
 });
+
+// QA: analysis-trade-reviews--generate-review-dies-raw-anthropic-tool-choice-error
+//
+// A 400 can also mean "the MODEL we picked can't do this", which is neither the
+// user's data nor the account's billing. Anthropic's Fable/Mythos 5 family
+// rejects forced tool use with this exact prose; the AI SDK's json-tool
+// fallback is what sends it. Before the fix this fell through every pattern
+// into "unknown" and the raw sentence was rendered verbatim on the Analysis tab.
+const TOOL_CHOICE_MESSAGE =
+  'tool_choice: type "tool" and "any" are not supported for this model.';
+
+function toolChoicePayload() {
+  return {
+    type: "error",
+    error: { type: "invalid_request_error", message: TOOL_CHOICE_MESSAGE },
+    request_id: "req_toolchoiceTEST",
+  };
+}
+
+describe("model-capability 400s", () => {
+  it("classifies the forced-tool 400 as 'model_capability' from an error OBJECT", () => {
+    const payload = toolChoicePayload();
+    const err = new APIError(400, payload, `400 ${JSON.stringify(payload)}`, new Headers());
+    const result = classifyAnthropicError(err);
+    expect(result?.kind).toBe("model_capability");
+    expect(result?.status).toBe(400);
+    // Never the raw vendor sentence, never the request id.
+    expect(result?.userMessage).not.toContain("tool_choice");
+    expect(result?.userMessage).not.toContain("req_toolchoiceTEST");
+    expect(result?.userMessage).toMatch(/AI model/i);
+  });
+
+  it("classifies the same failure from the '<status> {json}' MESSAGE form", () => {
+    const result = classifyAnthropicErrorMessage(
+      `400 ${JSON.stringify(toolChoicePayload())}`,
+    );
+    expect(result?.kind).toBe("model_capability");
+    expect(result?.status).toBe(400);
+    expect(result?.userMessage).not.toContain("tool_choice");
+  });
+
+  it("classifies the BARE nested message the AI SDK leaves on APICallError", () => {
+    // @ai-sdk/anthropic unwraps the envelope: err.message is just this prose.
+    const result = classifyAnthropicErrorMessage(TOOL_CHOICE_MESSAGE);
+    expect(result?.kind).toBe("model_capability");
+    expect(result?.userMessage).not.toContain("tool_choice");
+  });
+
+  it("does not hijack a billing 400 or a content 400", () => {
+    expect(classifyAnthropicErrorMessage(`400 ${JSON.stringify(billingPayload())}`)?.kind).toBe(
+      "billing",
+    );
+    expect(classifyAnthropicErrorMessage(`400 ${JSON.stringify(contentPayload())}`)?.kind).toBe(
+      "content",
+    );
+  });
+
+  it("still returns null for an unrelated bare message", () => {
+    expect(classifyAnthropicErrorMessage("database is locked")).toBeNull();
+    expect(classifyAnthropicErrorMessage("Failed to parse JSON: {")).toBeNull();
+  });
+});
