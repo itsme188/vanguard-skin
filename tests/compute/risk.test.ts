@@ -1032,3 +1032,127 @@ describe("computePositionRisk aggregate observation floor (qa:analysis-risk--vol
     expect(withThin.portfolioVol).toBeCloseTo(goodOnly.portfolioVol!, 10);
   });
 });
+
+/**
+ * User ruling, decision 2026-09-22: computePositionRisk excludes MATURED
+ * securities.
+ *
+ * A bond past its maturity date has redeemed — it is not a position any more,
+ * whatever row is still sitting in `holdings`. The concentration universe has
+ * dropped matured securities since it was unified; the position-risk lane
+ * still ranked them, so a redeemed bond could occupy a slot in the "Top 10 by
+ * risk" drawer and in the Position-Level Risk card, and its value inflated
+ * the weight denominator every other position was measured against.
+ *
+ * The two DIVERGENCES from the concentration universe stay as documented:
+ * long-only (`includeShorts: false`) and priced-only, because a risk
+ * contribution needs both a direction-bearing price and a return series.
+ */
+describe("computePositionRisk excludes matured securities", () => {
+  let db: Database.Database;
+  const today = new Date().toISOString().slice(0, 10);
+
+  function seedBond(
+    id: number,
+    symbol: string,
+    quantity: number,
+    price: number,
+    maturityDate: string | null,
+    asOfDate: string = today
+  ) {
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, maturity_date) VALUES (?, ?, ?, 'bond', ?)"
+    ).run(id, symbol, symbol, maturityDate);
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, ?, ?, ?)"
+    ).run(id, asOfDate, quantity);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, ?)").run(
+      id,
+      asOfDate,
+      price
+    );
+  }
+
+  beforeEach(() => {
+    db = createTestDb();
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test Account')");
+    // ALFA — a plain equity worth $6,000 on the bond basis-free path.
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type) VALUES (1, 'ALFA', 'ALFA', 'stock')"
+    ).run();
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 60)"
+    ).run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 100)").run(today);
+  });
+
+  it("drops a bond whose maturity date has already passed", () => {
+    // 4,000 face @ 100 on the per-100 bond basis = $4,000.
+    seedBond(2, "MATB", 4_000, 100, "2020-06-30");
+
+    const result = computePositionRisk(db);
+    expect(result.positions.map((p) => p.symbol)).not.toContain("MATB");
+    expect(result.positions.map((p) => p.symbol)).toEqual(["ALFA"]);
+  });
+
+  it("keeps a bond that has not matured yet, and one with no maturity date", () => {
+    seedBond(2, "LIVB", 4_000, 100, "2099-12-31");
+    seedBond(3, "NOMT", 2_000, 100, null);
+
+    const symbols = computePositionRisk(db).positions.map((p) => p.symbol);
+    expect(symbols).toContain("LIVB");
+    expect(symbols).toContain("NOMT");
+  });
+
+  it("removes the matured bond from the WEIGHT DENOMINATOR too, not just the list", () => {
+    // Without the guard the $4,000 redeemed bond sat in the total query
+    // (`WHERE COALESCE(lp.close_price, 0) > 0`), so ALFA's $6,000 rendered as
+    // 60% of a $10,000 book instead of 100% of the $6,000 that is actually
+    // still held.
+    seedBond(2, "MATB", 4_000, 100, "2020-06-30");
+
+    const alfa = computePositionRisk(db).positions.find((p) => p.symbol === "ALFA")!;
+    expect(alfa.weight).toBeCloseTo(1, 12);
+    expect(alfa.weight).not.toBeCloseTo(0.6, 6);
+  });
+
+  it("an asOfDate moves the maturity cutoff back with it", () => {
+    // The bond matured on 2026-06-30. As of 2026-01-31 it was still a live
+    // position, so an "as of" snapshot before maturity must still carry it —
+    // the same way getConcentrationUniverse threads asOfDate.
+    seedBond(2, "MATB", 4_000, 100, "2026-06-30", "2026-01-31");
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, '2026-01-31', 60)"
+    ).run();
+    db.prepare(
+      "INSERT INTO prices (security_id, date, close_price) VALUES (1, '2026-01-31', 100)"
+    ).run();
+
+    const asOf = computePositionRisk(db, { asOfDate: "2026-01-31" });
+    expect(asOf.positions.map((p) => p.symbol)).toContain("MATB");
+
+    // And today it is gone again.
+    expect(computePositionRisk(db).positions.map((p) => p.symbol)).not.toContain("MATB");
+  });
+
+  it("still excludes shorts and unpriced positions — those divergences stand", () => {
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type) VALUES (4, 'SHRT', 'SHRT', 'stock')"
+    ).run();
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 4, ?, -50)"
+    ).run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (4, ?, 100)").run(today);
+
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type) VALUES (5, 'NOPX', 'NOPX', 'stock')"
+    ).run();
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 5, ?, 100)"
+    ).run(today);
+
+    const symbols = computePositionRisk(db).positions.map((p) => p.symbol);
+    expect(symbols).not.toContain("SHRT");
+    expect(symbols).not.toContain("NOPX");
+  });
+});

@@ -17,9 +17,10 @@
  * card and GET /api/compute/position-risk. That call owns the universe (top N
  * by market value, one row per security), the weight, and the ranking
  * metric. That universe is NOT the Concentration chart's — it counts long
- * positions only, requires a stored price, and applies no maturity cutoff —
- * so the two lists legitimately differ and neither surface may claim to be
- * the other. This module only hydrates the display columns and drops
+ * positions only and requires a stored price (risk contribution needs a
+ * return series); matured securities are excluded on BOTH sides since the
+ * 2026-09-22 decision — so the two lists legitimately differ and neither
+ * surface may claim to be the other. This module only hydrates the display columns and drops
  * cash-equivalent sweeps. See `rankByRiskContribution` below.
  */
 

@@ -169,8 +169,11 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
             title. This caption used to claim the drawer drew "the same
             positions as the Concentration chart's top holdings" — it does
             not: the drawer projects computePositionRisk, which counts long
-            positions only, requires a stored price, and applies no maturity
-            cutoff. Pinned in tests/repo/drill-down-risk-metric-column. */}
+            positions only and requires a stored price. (It DOES now apply
+            the concentration universe's maturity cutoff — user ruling,
+            decision 2026-09-22 — so the caption's two disclosed exclusions
+            are still the complete set, and a redeemed bond no longer
+            appears.) Pinned in tests/repo/drill-down-risk-metric-column. */}
         {isRisk && !loading && !error && rows.length > 0 && (
           <p className="px-4 pt-3 text-[11px] leading-snug text-ink-faint">
             Ranked by risk contribution — {RISK_METRIC_DESCRIPTION}. Measured

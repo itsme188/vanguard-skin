@@ -8,12 +8,12 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import {
-  concentrationTotalValue,
+  concentrationGrossValue,
   getConcentrationUniverse,
 } from "@/lib/queries/concentration-universe";
 import { normalizeAccountIds } from "@/lib/compute/factors";
 import { buildFlowAdjustedIndex, fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
-import { calendarDaysBetween } from "@/lib/calendar/date-utils";
+import { calendarDaysBetween, todayET } from "@/lib/calendar/date-utils";
 
 // Drop per-position return pairs whose dates straddle a multi-week hole. The
 // prices table mixes sparse month-end statement anchors with dense daily TWS
@@ -75,8 +75,13 @@ type CurrentDrawdownCore = Omit<CurrentDrawdownInfo, "netFlowsInWindow">;
 export interface PositionWeight {
   symbol: string;
   securityName: string | null;
+  /** SIGNED — a short is worth negative dollars and renders that way. */
   marketValue: number;
-  weight: number; // 0-1
+  /**
+   * GROSS share of the book: |marketValue| / Σ |marketValue| (user ruling,
+   * decision 2026-09-22). Always 0-1, shorts included.
+   */
+  weight: number;
 }
 
 export interface PortfolioRiskMetrics {
@@ -473,6 +478,10 @@ function computeVolatility(
  * Herfindahl / top-5 concentration for the Risk Decomposition "Position
  * Concentration" block.
  *
+ * Weights are GROSS — |market value| over the book's Σ |market value| (user
+ * ruling, decision 2026-09-22) — so the index is bounded in (0, 1] on a book
+ * that carries shorts.
+ *
  * The position universe is NOT built here — it comes from
  * `getConcentrationUniverse`, the same helper the Analysis · Diagnostics
  * "Concentration Metrics" card reads. The two cards sit on one page and each
@@ -503,16 +512,25 @@ export function computeConcentration(
     return { herfindahl: null, top5Concentration: 0, top5Positions: [], positionCount: 0 };
   }
 
-  const totalValue = concentrationTotalValue(rows);
-  if (totalValue <= 0) {
+  // GROSS denominator — Σ |market value| — per user ruling, decision
+  // 2026-09-22. A signed denominator let a short both add w² and shrink the
+  // book it was measured against, so the index ran above 1 (long 100 /
+  // short −60 read 8.5). Gross weights keep it in (0, 1]; see
+  // concentrationGrossValue for the derivation. Zero only on an empty
+  // universe, which is the same "nothing to measure" line
+  // getConcentrationMetrics draws.
+  const grossValue = concentrationGrossValue(rows);
+  if (grossValue <= 0) {
     return { herfindahl: null, top5Concentration: 0, top5Positions: [], positionCount: 0 };
   }
 
+  // Only the WEIGHT is gross — marketValue keeps its sign so a short still
+  // renders as negative dollars on the card.
   const positions: PositionWeight[] = rows.map(r => ({
     symbol: r.symbol,
     securityName: r.securityName,
     marketValue: r.marketValue,
-    weight: r.marketValue / totalValue,
+    weight: Math.abs(r.marketValue) / grossValue,
   }));
 
   // Herfindahl index: sum of squared weights
@@ -540,6 +558,22 @@ export function computeConcentration(
  * Note: asOfDate is supported but only affects the current-position snapshot
  * (e.g., top-N rank). The volatility, correlation, and risk contribution
  * metrics are computed from price time-series (last 1 year), not point-in-time.
+ *
+ * UNIVERSE — what counts as a position here, and why:
+ *
+ *  - MATURED securities are excluded (user ruling, decision 2026-09-22),
+ *    on the same ET-anchored cutoff getConcentrationUniverse applies. A bond
+ *    past its maturity date has redeemed; it is not a position any more, so
+ *    it may neither occupy a slot in the "top N by risk" drawer / the
+ *    Position-Level Risk card nor sit in the weight denominator every other
+ *    position is measured against.
+ *  - SHORTS are excluded (`includeShorts: false`) and so are UNPRICED
+ *    positions (`COALESCE(lp.close_price, 0) > 0`). These stay as DELIBERATE
+ *    divergences from the concentration universe, not defects: a risk
+ *    contribution needs a return series, which needs stored prices, and the
+ *    weight x vol x correlation decomposition is not defined for a negative
+ *    weight here. The drawer's caption discloses both, and
+ *    tests/queries/drill-down-risk-ranking.test.ts pins them.
  */
 export function computePositionRisk(
   db: Database.Database,
@@ -559,6 +593,13 @@ export function computePositionRisk(
     asOfDate: options?.asOfDate,
     accountFilter, // accountFilter already includes "AND " prefix if set
   });
+
+  // Maturity cutoff, resolved HERE in JS and ET-anchored — never SQL
+  // `date('now')`, which is UTC and would drop a bond maturing today four
+  // hours early (project rule; the same resolution getConcentrationUniverse
+  // uses). An asOfDate moves the cutoff with the snapshot, so an "as of last
+  // week" view still carries a bond that had not redeemed yet.
+  const maturityCutoff = options?.asOfDate ?? todayET();
 
   // 1. Get current positions with weights
   const positions = db
@@ -587,10 +628,11 @@ export function computePositionRisk(
        LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE COALESCE(lp.close_price, 0) > 0
+         AND (s.maturity_date IS NULL OR s.maturity_date >= ?)
        ORDER BY market_value DESC
        LIMIT ?`
     )
-    .all(...accountParams, topN) as {
+    .all(...accountParams, maturityCutoff, topN) as {
     security_id: number;
     symbol: string;
     security_name: string | null;
@@ -627,9 +669,10 @@ export function computePositionRisk(
        JOIN securities s ON s.id = lh.security_id
        LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
-       WHERE COALESCE(lp.close_price, 0) > 0`
+       WHERE COALESCE(lp.close_price, 0) > 0
+         AND (s.maturity_date IS NULL OR s.maturity_date >= ?)`
     )
-    .get(...accountParams) as { total: number | null };
+    .get(...accountParams, maturityCutoff) as { total: number | null };
   const subsetValue = positions.reduce((s, p) => s + p.market_value, 0);
   const totalValue = totalRow?.total && totalRow.total > 0 ? totalRow.total : subsetValue;
   const securityIds = positions.map((p) => p.security_id);
