@@ -33,3 +33,35 @@ export function normalizeMarketCapCategory(
   if (trimmed === "") return null;
   return ALIASES[trimmed.toLowerCase()] ?? trimmed;
 }
+
+function escapeSqlLiteral(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+/**
+ * SQL twin of `normalizeMarketCapCategory`, generated FROM the same ALIASES
+ * table above (single source — never hand-copy the synonyms into a second
+ * SQL literal list). Returns a `CASE` expression that case-insensitively
+ * (LOWER + TRIM, matching the JS function) maps a bare cap-size synonym to
+ * the canonical "X Cap" label; any other value (including NULL and the
+ * literal string "null") passes through `<column>` unchanged — callers keep
+ * composing their own NULLIF/COALESCE guards around this expression, exactly
+ * as they did around the raw column.
+ */
+export function marketCapCategoryBucketSql(column: string): string {
+  const synonymsByCanonical = new Map<string, string[]>();
+  for (const [synonym, canonical] of Object.entries(ALIASES)) {
+    const list = synonymsByCanonical.get(canonical) ?? [];
+    list.push(synonym);
+    synonymsByCanonical.set(canonical, list);
+  }
+
+  const whenClauses = [...synonymsByCanonical.entries()]
+    .map(([canonical, synonyms]) => {
+      const inList = synonyms.map((s) => `'${escapeSqlLiteral(s)}'`).join(", ");
+      return `WHEN LOWER(TRIM(${column})) IN (${inList}) THEN '${escapeSqlLiteral(canonical)}'`;
+    })
+    .join("\n    ");
+
+  return `CASE\n    ${whenClauses}\n    ELSE ${column}\n  END`;
+}

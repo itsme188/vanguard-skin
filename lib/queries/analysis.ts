@@ -14,6 +14,7 @@ import {
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { getOptionExposureMap, exposureForHolding } from "@/lib/compute/exposure";
+import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -134,7 +135,17 @@ const CLASSIFICATION_BUCKET_COLUMNS: Partial<Record<AllocationDimension, string>
   // literal string "null" (prompt enums include a `null` token) — without
   // it the breakdown renders a category row literally labeled "null".
   geography: "COALESCE(NULLIF(s.geography, 'null'), 'Unknown')",
-  market_cap_category: "COALESCE(NULLIF(s.market_cap_category, 'null'), 'Unknown')",
+  // The legacy Claude classification fallback wrote bare cap-size labels
+  // ("Large"/"Mid"/"Small") while every other source writes the "X Cap"
+  // scheme — normalizeMarketCapCategory (lib/securities/normalize-market-cap.ts)
+  // fixed the WRITE side, but rows classified before that fix keep their bare
+  // label forever (Auto-Classify does not touch already-classified rows).
+  // marketCapCategoryBucketSql is the SQL twin of that same normalizer
+  // (single-sourced from its ALIASES table) so a legacy "Large" row collapses
+  // into the same "Large Cap" bucket a freshly classified row lands in,
+  // instead of fragmenting the Allocation donut and the drill-down into two
+  // rows for one exposure [qa:analysis-market-cap--duplicate-size-buckets-and-tilts].
+  market_cap_category: `COALESCE(NULLIF(${marketCapCategoryBucketSql("s.market_cap_category")}, 'null'), 'Unknown')`,
   style: "COALESCE(NULLIF(s.style, 'null'), 'Unknown')",
   // security_type FIRST: it is the canonical vocabulary (Stock/ETF/Bond/
   // Option/Mutual Fund). The raw-vendor asset_class column carries junk
@@ -201,6 +212,23 @@ export function dimensionInheritsFromUnderlying(dimension: AllocationDimension):
 }
 
 /**
+ * The underlying's raw value as read by the inheritance CASE, vocabulary-
+ * normalized where a dimension has a SQL twin normalizer. Only
+ * market_cap_category has synonym fragmentation today ("Large" vs "Large
+ * Cap") — without this, an option inheriting a bare label straight off the
+ * underlying's raw column would land in a bucket the breakdown's OWN column
+ * (which does normalize) never produces, splitting the option back out into
+ * a "Large" row while the stock it tracks sits in "Large Cap".
+ */
+function normalizedUnderlyingValueSql(
+  dimension: AllocationDimension,
+  underlyingAlias: string
+): string {
+  const raw = `${underlyingAlias}.${dimension}`;
+  return dimension === "market_cap_category" ? marketCapCategoryBucketSql(raw) : raw;
+}
+
+/**
  * The FULL bucket expression the allocation breakdown GROUPs by: the plain
  * `classificationBucketSql` column PLUS the option→underlying inheritance CASE
  * for the dimensions in `UNDERLYING_INHERIT_DIMENSIONS`.
@@ -216,7 +244,10 @@ export function dimensionInheritsFromUnderlying(dimension: AllocationDimension):
  * NULLIF on the underlying's value mirrors the standardColumns guard: an AI
  * classify pass can store the literal string "null" on the UNDERLYING (e.g.
  * IBIT style), and without it a held option inherits that string as a
- * user-facing bucket label.
+ * user-facing bucket label. `normalizedUnderlyingValueSql` additionally
+ * vocabulary-normalizes market_cap_category so a bare "Large" underlying
+ * still lands in the same "Large Cap" bucket the breakdown's own column
+ * produces.
  */
 export function classificationGroupSql(
   dimension: AllocationDimension,
@@ -226,7 +257,7 @@ export function classificationGroupSql(
   const own = classificationBucketSql(dimension, alias);
   if (!dimensionInheritsFromUnderlying(dimension)) return own;
   return `CASE WHEN LOWER(${alias}.security_type) = 'option'
-           THEN COALESCE(NULLIF(${underlyingAlias}.${dimension}, 'null'), ${own})
+           THEN COALESCE(NULLIF(${normalizedUnderlyingValueSql(dimension, underlyingAlias)}, 'null'), ${own})
            ELSE ${own} END`;
 }
 
