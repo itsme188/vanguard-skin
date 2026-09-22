@@ -2,6 +2,8 @@ import type Database from "better-sqlite3";
 import type { Holding } from "@/lib/types";
 import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { todayET } from "@/lib/calendar/date-utils";
 
 export interface HoldingWithSecurity extends Holding {
   symbol: string;
@@ -32,6 +34,7 @@ export interface AllHoldingsRow {
 }
 
 export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
+  const today = todayET();
   const marketValueExpr = adjustedMarketValueSQL(
     "h.quantity",
     "p.close_price",
@@ -81,6 +84,13 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
     LEFT JOIN fx_rates fx ON fx.currency = s.currency
     WHERE ${latestHoldingsPredicate()}
       AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+      -- An expired option contract that escaped purgeExpiredOptionHoldings
+      -- (no-TWS import path, or the 1-day purge grace period) must not
+      -- surface here as a live position — same ET-anchored cutoff
+      -- today-holdings.ts applies via the shared liveOptionExpirationSql
+      -- helper, so this table and the Today IBKR snapshot never disagree
+      -- by exactly the expired contract.
+      AND ${liveOptionExpirationSql("s", today)}
     ORDER BY current_value DESC NULLS LAST
   `;
   // "Latest" is keyed per-(account, security) via latestHoldingsPredicate,
@@ -114,6 +124,7 @@ export function getHoldingsByAccount(
   // stays distinct from the h2 that latestHoldingsPredicate uses inside its
   // own subquery.
   const costBasisExpr = scaledCostBasisFallbackSQL("h", "h3");
+  const today = todayET();
 
   let sql = `
     SELECT h.*, s.symbol, s.name as security_name, s.security_type, a.name as account_name,
@@ -160,6 +171,15 @@ export function getHoldingsByAccount(
     // asOfDate branch above deliberately keeps it — a point-in-time snapshot
     // legitimately shows a bond that had not matured on that date.
     sql += " AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))";
+    // Same parity for options: an expired contract that escaped
+    // purgeExpiredOptionHoldings (no-TWS import path, or the 1-day purge
+    // grace period) must not surface as a live position under per-pair
+    // "latest" keying — same ET-anchored cutoff getAllHoldings and
+    // today-holdings.ts already apply via the shared liveOptionExpirationSql
+    // helper. Only in this default branch: the explicit asOfDate branch
+    // above is a point-in-time snapshot and legitimately shows a contract
+    // that had not yet expired as of that date.
+    sql += ` AND ${liveOptionExpirationSql("s", today)}`;
   }
 
   sql += " ORDER BY s.symbol";
