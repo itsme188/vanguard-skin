@@ -137,11 +137,28 @@ describe("interpretVolatility", () => {
 // ─── HHI ─────────────────────────────────────────────────────────
 
 describe("interpretHHI", () => {
-  it("0.08 with 12 effective positions reads diversified", () => {
+  it("derives effective positions from 1/HHI even when a second arg is supplied", () => {
+    // The second argument is accepted for source compat but always ignored —
+    // 1/0.08 = 12.5, which rounds to 13, regardless of what's passed here.
     const r = interpretHHI(0.08, 12.0);
     expect(r.tone).toBe("neutral");
-    expect(r.text).toContain("~12 equal positions");
+    expect(r.text).toContain("~13 equal positions");
     expect(r.text.toLowerCase()).toContain("diversified");
+  });
+
+  it("a pre-rounded effectivePositions arg does not double-round (qa:analysis-diagnostics--two-herfindahl-values-same-page-regression-3)", () => {
+    // Synthetic book whose effective-position count sits right at a
+    // rounding boundary: 12.48.
+    const hhi = 1 / 12.48;
+    const withoutArg = interpretHHI(hhi);
+    // Mirrors the API shape: effective_positions pre-rounded to one decimal
+    // (12.48 -> 12.5) before being handed back to interpretHHI as the
+    // second argument — this used to double-round to 13.
+    const preRounded = Number((1 / hhi).toFixed(1));
+    expect(preRounded).toBe(12.5);
+    const withArg = interpretHHI(hhi, preRounded);
+    expect(withoutArg.text).toBe(withArg.text);
+    expect(withoutArg.text).toContain("~12 equal positions");
   });
 
   it("derives effective positions from 1/HHI when not provided", () => {
