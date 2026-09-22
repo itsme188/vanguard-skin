@@ -9,7 +9,11 @@
 // exposure). Synonyms merge to the canonical scheme; everything else passes
 // through unchanged.
 import { describe, it, expect } from "vitest";
-import { normalizeMarketCapCategory } from "@/lib/securities/normalize-market-cap";
+import Database from "better-sqlite3";
+import {
+  normalizeMarketCapCategory,
+  marketCapCategoryBucketSql,
+} from "@/lib/securities/normalize-market-cap";
 
 describe("normalizeMarketCapCategory", () => {
   it("maps bare cap-size labels to the canonical 'X Cap' scheme", () => {
@@ -36,5 +40,52 @@ describe("normalizeMarketCapCategory", () => {
     expect(normalizeMarketCapCategory(undefined)).toBeNull();
     expect(normalizeMarketCapCategory("")).toBeNull();
     expect(normalizeMarketCapCategory("   ")).toBeNull();
+  });
+});
+
+// The read side (lib/queries/analysis.ts's classificationBucketSql /
+// classificationGroupSql) cannot call the JS function — it composes a SQL
+// GROUP BY expression. marketCapCategoryBucketSql is the SQL twin, generated
+// from the SAME ALIASES table, so a legacy bare-label row ("Large") already
+// sitting in the database collapses into the same bucket as a freshly
+// classified "Large Cap" row without a backfill. This suite proves the two
+// implementations agree, by running the SQL twin for real against an
+// in-memory better-sqlite3 connection (a one-row CTE standing in for a
+// securities row) and comparing its output to the JS function for the same
+// input.
+describe("marketCapCategoryBucketSql", () => {
+  function evalSql(rawValue: string | null): string | null {
+    const db = new Database(":memory:");
+    try {
+      const row = db
+        .prepare(
+          `WITH one_row(cap_value) AS (SELECT ?)
+           SELECT ${marketCapCategoryBucketSql("cap_value")} AS bucket FROM one_row`
+        )
+        .get(rawValue) as { bucket: string | null };
+      return row.bucket;
+    } finally {
+      db.close();
+    }
+  }
+
+  const alias_inputs = ["Large", "Mid", "Medium", "Small", "  large ", "MID", "small"];
+  const passthrough_inputs = ["Large Cap", "Mid Cap", "Small Cap", "Multi-Cap", "null"];
+
+  it.each(alias_inputs)("agrees with the JS function for alias input %j", (raw) => {
+    expect(evalSql(raw)).toBe(normalizeMarketCapCategory(raw));
+  });
+
+  it.each(passthrough_inputs)("agrees with the JS function for passthrough input %j", (raw) => {
+    // normalizeMarketCapCategory("null") passes the literal string through
+    // unchanged too (never returns null for a non-empty string) — callers
+    // apply their own NULLIF('null') guard around both implementations,
+    // which this SQL twin deliberately does not replicate (see the
+    // file-level doc comment).
+    expect(evalSql(raw)).toBe(normalizeMarketCapCategory(raw));
+  });
+
+  it("passes a NULL column value through unchanged (matching the JS null passthrough shape)", () => {
+    expect(evalSql(null)).toBeNull();
   });
 });

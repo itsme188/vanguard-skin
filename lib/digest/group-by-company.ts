@@ -31,13 +31,20 @@ export interface CompanyBucket {
 
 /**
  * Group articles by mentioned symbol. An article that mentions multiple
- * symbols appears once per symbol (deliberately — this lets each company's
- * section be self-contained when reading by-company). Articles with no
- * mentioned_symbols are collected into a single "(no symbol)" bucket so
- * macro / journal / non-ticker content still renders.
+ * symbols appears once per symbol — this is the MENTION view, used to rank
+ * companies and to build the AI synthesis buckets (each company's prompt
+ * section is self-contained). Articles with no mentioned_symbols are
+ * collected into a single "(no symbol)" bucket so macro / journal /
+ * non-ticker content still participates.
  *
  * Buckets are sorted by article count desc (most-discussed companies first),
  * with the no-symbol bucket pinned to the end.
+ *
+ * NOT the rendering view: fanning an article out into every mentioned symbol
+ * and re-printing its full block under each one made a 30-article window
+ * render ~845 KB of HTML (8x Gmail's clip threshold). `renderDigestByCompany`
+ * uses `homeArticlesByCompany` instead, which keeps this ranking but prints
+ * each article once.
  */
 export function bucketByCompany(articles: ArticleLike[]): CompanyBucket[] {
   const buckets = new Map<string, ArticleLike[]>();
@@ -65,6 +72,61 @@ export function bucketByCompany(articles: ArticleLike[]): CompanyBucket[] {
     result.push({ symbol: NO_SYMBOL_BUCKET, companyName: null, articles: noSym });
   }
 
+  return result;
+}
+
+export interface HomedCompanyBucket extends CompanyBucket {
+  /**
+   * How many articles in the window MENTION this symbol, including the ones
+   * homed under a different (higher-ranked) company. Always >= articles.length.
+   */
+  mentionCount: number;
+}
+
+/**
+ * Assign every article to exactly ONE company bucket: its highest-ranked
+ * mentioned symbol, ranking being the `bucketByCompany` order (mention count
+ * desc, ties alphabetical, macro last). Articles with no mentioned symbols go
+ * to the macro / no-ticker bucket.
+ *
+ * Buckets come back in that same ranking order, minus any bucket that ends up
+ * with zero homed articles (every article mentioning it is filed under a
+ * bigger story). Each surviving bucket also carries the symbol's total mention
+ * count so the renderer can say how much of the coverage sits elsewhere.
+ *
+ * Output size is therefore bounded by the number of ARTICLES, not by
+ * articles x symbols.
+ */
+export function homeArticlesByCompany(articles: ArticleLike[]): HomedCompanyBucket[] {
+  const ranked = bucketByCompany(articles);
+  const rankOf = new Map<string, number>();
+  ranked.forEach((bucket, index) => rankOf.set(bucket.symbol, index));
+
+  const homed = new Map<string, ArticleLike[]>();
+  for (const article of articles) {
+    let home = NO_SYMBOL_BUCKET;
+    let bestRank = Number.POSITIVE_INFINITY;
+    for (const symbol of parseSymbolList(article.mentioned_symbols)) {
+      const rank = rankOf.get(symbol);
+      if (rank != null && rank < bestRank) {
+        bestRank = rank;
+        home = symbol;
+      }
+    }
+    pushBucket(homed, home, article);
+  }
+
+  const result: HomedCompanyBucket[] = [];
+  for (const bucket of ranked) {
+    const homedArticles = homed.get(bucket.symbol);
+    if (!homedArticles || homedArticles.length === 0) continue;
+    result.push({
+      symbol: bucket.symbol,
+      companyName: bucket.companyName,
+      articles: homedArticles,
+      mentionCount: bucket.articles.length,
+    });
+  }
   return result;
 }
 
@@ -104,9 +166,14 @@ function parseThemes(json: string | null): string[] {
 
 /**
  * Render the by-company markdown view of articles. Mirrors the structure of
- * generateDigestSince() but groups by mentioned symbol instead of iterating
- * the flat per-source list. Header + alerts block are rendered once at the
- * top so the two views share their non-article chrome.
+ * generateDigestSince() but groups by company instead of iterating the flat
+ * per-source list. Header + alerts block are rendered once at the top so the
+ * two views share their non-article chrome.
+ *
+ * Each article is printed ONCE, under the company that leads its coverage;
+ * the rest of its mentioned symbols follow as a chips line directly beneath
+ * the article's headline. A heading whose symbol is also mentioned by
+ * articles filed elsewhere says so in one line.
  */
 export function renderDigestByCompany(
   articles: ArticleLike[],
@@ -119,7 +186,7 @@ export function renderDigestByCompany(
    */
   windowTotal?: number | null,
 ): string {
-  const buckets = bucketByCompany(articles);
+  const buckets = homeArticlesByCompany(articles);
   const articleSourceNames = new Set(articles.map((a) => a.source_name));
 
   const baseCountLine = formatArticleCountLine(
@@ -146,15 +213,25 @@ export function renderDigestByCompany(
 
   for (const bucket of buckets) {
     const isNoSymbol = bucket.symbol === NO_SYMBOL_BUCKET;
+    const homedCount = bucket.articles.length;
     const heading = isNoSymbol
-      ? `## Macro / no-ticker (${bucket.articles.length})`
-      : `## ${bucket.symbol} · ${bucket.articles.length} mention${bucket.articles.length === 1 ? "" : "s"}`;
+      ? `## Macro / no-ticker (${homedCount})`
+      : `## ${bucket.symbol} · ${homedCount} article${homedCount === 1 ? "" : "s"}`;
     lines.push(heading);
     lines.push("");
+
+    const elsewhere = bucket.mentionCount - homedCount;
+    if (!isNoSymbol && elsewhere > 0) {
+      lines.push(
+        `*(also mentioned in ${elsewhere} article${elsewhere === 1 ? "" : "s"} filed under other companies)*`,
+      );
+      lines.push("");
+    }
 
     for (const article of bucket.articles) {
       const sentiment = article.sentiment ?? "neutral";
       const articleUrl = article.source_url || article.website_url;
+      const mentions = [...new Set(parseSymbolList(article.mentioned_symbols))];
 
       lines.push(`**${article.source_name}** · *${sentiment}*`);
       if (articleUrl) {
@@ -163,6 +240,12 @@ export function renderDigestByCompany(
         lines.push(`### ${article.subject}`);
       }
       lines.push("");
+
+      // Chips sit UNDER the headline — the subject leads the block.
+      if (mentions.length > 0) {
+        lines.push(`Mentions: ${mentions.join(" · ")}`);
+        lines.push("");
+      }
 
       if (article.summary) {
         lines.push(article.summary);
