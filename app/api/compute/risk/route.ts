@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { computeRiskMetrics, type PortfolioRiskMetrics } from "@/lib/compute/risk";
-import { resolveScopeToSingleId } from "@/lib/queries/accounts";
+import { resolveScope } from "@/lib/queries/accounts";
 import { weekAgo } from "@/lib/calendar/date-utils";
 
 /**
@@ -57,13 +57,19 @@ export async function GET(request: NextRequest) {
     const endDate = searchParams.get("endDate") ?? undefined;
     const accountIdParam = searchParams.get("accountId");
     const scope = searchParams.get("scope");
-    const accountId = accountIdParam ? Number(accountIdParam) : resolveScopeToSingleId(db, scope);
+    // resolveScope, never resolveScopeToSingleId: a scope is a SET of
+    // accounts and collapsing it to the first id measures a different book
+    // than every other card on the page (the Concentration Metrics card next
+    // to this one passes the whole set). Undefined = whole portfolio.
+    const accountIds = accountIdParam
+      ? [Number(accountIdParam)]
+      : resolveScope(db, scope);
 
     const today = new Date().toISOString().slice(0, 10);
     const wkAgo = weekAgo(today);
 
-    const now = computeRiskMetrics(db, { startDate, endDate, accountId });
-    const past = computeRiskMetrics(db, { startDate, endDate, accountId, asOfDate: wkAgo });
+    const now = computeRiskMetrics(db, { startDate, endDate, accountIds });
+    const past = computeRiskMetrics(db, { startDate, endDate, accountIds, asOfDate: wkAgo });
 
     const delta = computeRiskDelta(now, past);
 

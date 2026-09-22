@@ -7,6 +7,10 @@ import {
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import {
+  concentrationTotalValue,
+  getConcentrationUniverse,
+} from "@/lib/queries/concentration-universe";
 import { normalizeAccountIds } from "@/lib/compute/factors";
 import { buildFlowAdjustedIndex, fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
 import { calendarDaysBetween } from "@/lib/calendar/date-utils";
@@ -465,7 +469,25 @@ function computeVolatility(
 
 // ─── Concentration (Herfindahl & Top-5) ─────────────────────────
 
-function computeConcentration(
+/**
+ * Herfindahl / top-5 concentration for the Risk Decomposition "Position
+ * Concentration" block.
+ *
+ * The position universe is NOT built here — it comes from
+ * `getConcentrationUniverse`, the same helper the Analysis · Diagnostics
+ * "Concentration Metrics" card reads. The two cards sit on one page and each
+ * print a Herfindahl plus a "Behaves like ~N equal positions" sentence; while
+ * each ran its own SQL they measured over different universes (this side
+ * dropped unpriced positions and shorts and kept matured bonds) and the two
+ * sentences disagreed — qa:
+ * analysis-diagnostics--two-herfindahl-values-same-page-regression-3. Any
+ * change to what counts as a position belongs in that helper, never here.
+ *
+ * Exported so the parity test can compare this against getConcentrationMetrics
+ * directly (tests/queries/concentration-parity.test.ts); computeRiskMetrics is
+ * its only production caller.
+ */
+export function computeConcentration(
   db: Database.Database,
   accountIds?: number[],
   asOfDate?: string
@@ -475,71 +497,22 @@ function computeConcentration(
   top5Positions: PositionWeight[];
   positionCount: number;
 } {
-  const accountFilter =
-    accountIds && accountIds.length > 0
-      ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
-      : "";
-  const accountParams: number[] = accountIds ?? [];
-
-  const predicate = latestHoldingsPredicate({
-    keyBy: "account_security",
-    includeShorts: false,
-    asOfDate,
-    accountFilter, // accountFilter already includes "AND " prefix if set
-  });
-
-  // Get latest holdings with current prices, compute market value.
-  //
-  // The predicate resolves the latest row per (account, security) — one row
-  // PER ACCOUNT for a name held in several. Those legs are SUMMED into a
-  // single position before any weight is taken (GROUP BY, exactly as
-  // computePositionRisk does): a name split across accounts is one position
-  // with one weight, not two smaller ones. Leaving them split understated
-  // every concentration figure on the page (QA analysis-risk-scope-all--
-  // position-values-single-account-leg-dropped: SPY 21.16sh + 100sh rendered
-  // as the 100sh leg alone).
-  const rows = db
-    .prepare(
-      `WITH latest_holdings AS (
-         SELECT h.security_id, SUM(h.quantity) AS total_qty
-         FROM holdings h
-         WHERE ${predicate}
-         GROUP BY h.security_id
-       ),
-       latest_prices AS (
-         SELECT security_id, close_price
-         FROM prices p
-         WHERE (security_id, date) IN (
-           SELECT security_id, MAX(date) FROM prices GROUP BY security_id
-         )
-       )
-       SELECT
-         s.symbol,
-         s.name AS security_name,
-         ${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "COALESCE(s.multiplier, 1)", "COALESCE(fx.usd_per_unit, 1)")} AS market_value
-       FROM latest_holdings lh
-       JOIN securities s ON s.id = lh.security_id
-       LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
-       LEFT JOIN fx_rates fx ON fx.currency = s.currency
-       WHERE COALESCE(lp.close_price, 0) > 0
-       ORDER BY market_value DESC`
-    )
-    .all(...accountParams) as { symbol: string; security_name: string | null; market_value: number }[];
+  const rows = getConcentrationUniverse(db, accountIds, { asOfDate });
 
   if (rows.length === 0) {
     return { herfindahl: null, top5Concentration: 0, top5Positions: [], positionCount: 0 };
   }
 
-  const totalValue = rows.reduce((s, r) => s + r.market_value, 0);
+  const totalValue = concentrationTotalValue(rows);
   if (totalValue <= 0) {
     return { herfindahl: null, top5Concentration: 0, top5Positions: [], positionCount: 0 };
   }
 
   const positions: PositionWeight[] = rows.map(r => ({
     symbol: r.symbol,
-    securityName: r.security_name,
-    marketValue: r.market_value,
-    weight: r.market_value / totalValue,
+    securityName: r.securityName,
+    marketValue: r.marketValue,
+    weight: r.marketValue / totalValue,
   }));
 
   // Herfindahl index: sum of squared weights

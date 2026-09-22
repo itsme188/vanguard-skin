@@ -42,6 +42,7 @@ function createTestDb(): Database.Database {
       name TEXT,
       security_type TEXT DEFAULT 'stock',
       multiplier REAL DEFAULT 1,
+      maturity_date TEXT,
       currency TEXT NOT NULL DEFAULT 'USD'
     );
 
