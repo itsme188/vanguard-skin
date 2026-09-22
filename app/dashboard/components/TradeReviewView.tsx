@@ -86,19 +86,39 @@ const GRADE_COLORS: Record<string, string> = {
 };
 
 /**
+ * What the app knows about the DATA after a failed "Generate Review":
+ *  - "nothing-saved": the server reported the failure before its DB-write
+ *    step (`savedUnknown: false` on the SSE `error` event), or the request
+ *    never got past validation — the period is provably untouched.
+ *  - "unknown": the request broke off without a verdict (fetch threw, the
+ *    stream died, or the server failed at/after the save step). The review
+ *    may already be on disk — `saveTradeReview`/`saveTradeRoundtrips` run
+ *    before the `complete` event — so claiming "nothing was saved" would be
+ *    a guess dressed as a fact.
+ */
+export type TradeReviewSaveState = "nothing-saved" | "unknown";
+
+/**
  * Honest-button copy for a failed "Generate Review": say what didn't happen,
- * say the period is untouched, say what to do next — in domain language.
+ * say what state the data is in, say what to do next — in domain language.
  * `reason` is whatever the server classified (never raw vendor prose); the
  * lead-in isn't repeated when the server already sent the generic fallback.
  */
-export function tradeReviewFailureMessage(reason?: string | null): string {
+export function tradeReviewFailureMessage(
+  reason?: string | null,
+  saveState: TradeReviewSaveState = "nothing-saved"
+): string {
   const lead = "Couldn't generate the review";
   const detail = (reason ?? "").trim();
   const head =
     detail && !detail.toLowerCase().startsWith("couldn't generate the review")
       ? `${lead} — ${detail}`
       : `${lead}.`;
-  return `${head} Nothing was saved and the period is unchanged. Try again, or pick a different month.`;
+  const tail =
+    saveState === "unknown"
+      ? "Whether a review was saved is unknown — the list below is refreshed automatically; check whether this period now shows one before generating again."
+      : "Nothing was saved and the period is unchanged. Try again, or pick a different month.";
+  return `${head} ${tail}`;
 }
 
 function GradeBadge({ grade }: { grade: string | null }) {
@@ -283,6 +303,8 @@ export function TradeReviewView({
       // into this function's scope.
       let questionsReceived = false;
       let completed = false;
+      // The server says whether its failure came before its DB-write step.
+      let saveStateUnknown = false;
 
       await readSseStream(res, (data) => {
         if (data.progress) setGenerateMsg(data.progress.message);
@@ -301,23 +323,40 @@ export function TradeReviewView({
           );
         }
         if (data.error) {
-          setGenerateMsg(tradeReviewFailureMessage(data.error));
+          saveStateUnknown = data.savedUnknown === true;
+          setGenerateMsg(
+            tradeReviewFailureMessage(
+              data.error,
+              saveStateUnknown ? "unknown" : "nothing-saved"
+            )
+          );
           setGenerateFailed(true);
         }
       });
 
-      // Refresh only if we ran a complete generation (not a Phase-1 stop).
-      if (completed && !questionsReceived) {
+      // Refresh after a complete generation (not a Phase-1 stop) — and also
+      // after a failure the server couldn't call clean, so a row it did write
+      // shows up instead of the list quietly disagreeing with the banner.
+      if ((completed && !questionsReceived) || saveStateUnknown) {
         await refreshReviews();
       }
     } catch (err) {
       // Network/stream failure on our side — the exception text is a transport
       // detail, not something a user can act on, so it stays in the console.
+      // The server may have finished and saved before the stream broke, so the
+      // copy says the save state is unknown rather than guessing, and the list
+      // is refreshed so a saved review is visible either way.
       console.error("[trade-review] generate request failed:", err);
       setGenerateMsg(
-        tradeReviewFailureMessage("the request to the server didn't complete.")
+        tradeReviewFailureMessage(
+          "the request to the server didn't complete.",
+          "unknown"
+        )
       );
       setGenerateFailed(true);
+      await refreshReviews().catch(() => {
+        // Refresh is best-effort here; the banner already says to check.
+      });
     } finally {
       // setGenerating(false) was already called inside the SSE callback when
       // questions arrived (Phase 1). Always force-clear here so the spinner

@@ -15,6 +15,8 @@ import {
   classifyAnthropicError,
   classifyAnthropicErrorMessage,
 } from "@/lib/ai/classify-anthropic-error";
+import { AISDKError } from "ai";
+import { AIRefusalError } from "@/lib/ai/generate";
 
 interface GroupedTradeResponse {
   saleTransactionId: number | null;
@@ -179,6 +181,45 @@ export async function GET(request: Request) {
 }
 
 /**
+ * A failure inside the review pipeline is one of two very different things,
+ * and they need opposite handling (QA 2026-09-22 review of 49ce6ffb):
+ *
+ *  - an UPSTREAM/vendor failure — an Anthropic `APIError`, or the AI SDK's
+ *    `APICallError`/`AIRefusalError` wrapper around one. Its text is vendor
+ *    prose (`tool_choice: type "tool" and "any" are not supported for this
+ *    model.`, a request_id, a model id) and says nothing a user can act on,
+ *    so it is classified into plain language and the raw text stays in the
+ *    server log.
+ *  - a DOMAIN error this pipeline raised on purpose: "No closed trades found
+ *    for this account in …", "No fully-tracked trades found for this period…",
+ *    the 3-attempt empty-review guard with its remediation steps. Those
+ *    sentences were WRITTEN for this user and already say what to do.
+ *    Classifying them turns every one into "Couldn't generate the review.
+ *    Try again." — wrong advice for a month that has no closed trades, which
+ *    will never generate however many times it is retried.
+ */
+function vendorFailureMessage(error: unknown, message: string): string | null {
+  // Original Anthropic SDK error (status + parsed body available).
+  const classified = classifyAnthropicError(error);
+  if (classified) return classified.userMessage;
+
+  // AI SDK wrapper (`APICallError`, `NoObjectGeneratedError`, …) or our own
+  // refusal wrapper: vendor-side, and `message` is upstream prose or carries
+  // a model id — classify what is recognizable, never echo the remainder.
+  if (AISDKError.isInstance(error) || error instanceof AIRefusalError) {
+    return (
+      classifyAnthropicErrorMessage(message)?.userMessage ??
+      "The AI service failed on this request. Try again in a minute."
+    );
+  }
+
+  // Not vendor-shaped by class, but the message may still BE an Anthropic
+  // envelope that some layer preserved as a plain Error — a leak guard.
+  // Returns null for ordinary prose, which is what our domain errors are.
+  return classifyAnthropicErrorMessage(message)?.userMessage ?? null;
+}
+
+/**
  * POST /api/trade-review — Two-phase generation (SSE stream).
  *
  * Phase 1 (no answers): Prepare data + generate questions → streams questions
@@ -227,6 +268,29 @@ export async function POST(request: Request) {
         send({ heartbeat: true });
       }, 15000);
 
+      // `generateTradeReview` writes to the DB only in its LAST step
+      // ("Saving review to database…", step 5 of 5 — lib/trade-review/
+      // generate.ts). So a failure reported before that step definitively
+      // left nothing saved, and one reported after it may have saved a row.
+      // The client words the banner off this flag instead of claiming
+      // "nothing was saved" in both cases. `prepareTradeReview` never writes,
+      // so only the generating phase feeds it.
+      let saveStepStarted = false;
+      const onGenerateProgress = (
+        message: string,
+        current?: number,
+        total?: number
+      ) => {
+        if (
+          typeof current === "number" &&
+          typeof total === "number" &&
+          current >= total
+        ) {
+          saveStepStarted = true;
+        }
+        send({ progress: { phase: "generating", message, current, total } });
+      };
+
       try {
         if (!answers) {
           // Phase 1: Prepare data and generate questions
@@ -256,18 +320,7 @@ export async function POST(request: Request) {
               { accountId, periodStart, periodEnd },
               prepared,
               undefined,
-              {
-                onProgress: (message, current, total) => {
-                  send({
-                    progress: {
-                      phase: "generating",
-                      message,
-                      current,
-                      total,
-                    },
-                  });
-                },
-              }
+              { onProgress: onGenerateProgress }
             );
 
             send({
@@ -299,18 +352,7 @@ export async function POST(request: Request) {
             { accountId, periodStart, periodEnd },
             prepared,
             answers,
-            {
-              onProgress: (message, current, total) => {
-                send({
-                  progress: {
-                    phase: "generating",
-                    message,
-                    current,
-                    total,
-                  },
-                });
-              },
-            }
+            { onProgress: onGenerateProgress }
           );
 
           send({
@@ -329,11 +371,14 @@ export async function POST(request: Request) {
         // Raw vendor prose never reaches the client — the model layer can throw
         // things like `tool_choice: type "tool" and "any" are not supported for
         // this model.`, which says nothing to a user about their trade review.
-        // Classify into plain domain language; keep the real text server-side.
+        // Classify those into plain domain language and keep the real text
+        // server-side; our OWN domain errors are already plain language and go
+        // through untouched (see vendorFailureMessage).
         console.error("[trade-review] generation failed:", message);
-        const classification =
-          classifyAnthropicError(error) ?? classifyAnthropicErrorMessage(message);
-        send({ error: classification?.userMessage ?? "Couldn't generate the review." });
+        send({
+          error: vendorFailureMessage(error, message) ?? message,
+          savedUnknown: saveStepStarted,
+        });
       } finally {
         clearInterval(heartbeat);
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
