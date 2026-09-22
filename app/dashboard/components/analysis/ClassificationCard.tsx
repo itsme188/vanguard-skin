@@ -14,7 +14,7 @@ import {
   Tooltip,
 } from "recharts";
 import type { ConcentrationMetrics, ClassificationCoverage } from "@/lib/queries/analysis";
-import { interpretHHI } from "@/lib/analysis/interpret";
+import { interpretHHI, effectivePositionsFromHHI } from "@/lib/analysis/interpret";
 import { displaySecurityName } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -76,7 +76,7 @@ export function ClassificationCard({ concentration, coverage }: Props) {
           <MetricCard
             label="Herfindahl Index (HHI)"
             value={concentration.hhi.toFixed(4)}
-            description={interpretHHI(concentration.hhi, concentration.effective_positions).text}
+            description={interpretHHI(concentration.hhi).text}
             color={
               concentration.hhi > 0.25
                 ? "text-down"
@@ -87,8 +87,8 @@ export function ClassificationCard({ concentration, coverage }: Props) {
           />
           <MetricCard
             label="Effective Positions"
-            value={concentration.effective_positions.toFixed(1)}
-            description="1/HHI — equivalent equal-weighted positions"
+            value={String(Math.round(effectivePositionsFromHHI(concentration.hhi)))}
+            description="1/HHI — equivalent equal-weighted positions (same count as the sentence below)"
             color="text-blue"
           />
           <MetricCard
