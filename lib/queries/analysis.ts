@@ -7,6 +7,10 @@ import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import {
+  concentrationTotalValue,
+  getConcentrationUniverse,
+} from "@/lib/queries/concentration-universe";
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { getOptionExposureMap, exposureForHolding } from "@/lib/compute/exposure";
@@ -443,65 +447,23 @@ export function getConcentrationMetrics(
   db: Database.Database,
   accountIds?: number[]
 ): ConcentrationMetrics {
-  const conditions = [
-    "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
-  ];
-  const params: (string | number)[] = [];
-
-  if (accountIds && accountIds.length > 0) {
-    conditions.push(`h.account_id IN (${accountIds.map(() => "?").join(",")})`);
-    params.push(...accountIds);
-  }
-
-  // Get all positions with market value, one row per (account, security),
-  // then aggregate to one row per WHOLE position (security) before any of
-  // the HHI / warnings / top_positions math runs. A security held across
-  // multiple accounts must never enter that math as separate partial-weight
-  // slices under the same bare ticker (qa:
+  // ONE position universe, shared with the Risk Decomposition card
+  // (lib/compute/risk.ts::computeConcentration). Both surfaces print a
+  // Herfindahl and a "Behaves like ~N equal positions" sentence on the SAME
+  // page, so they cannot be allowed to measure over two universes (qa:
+  // analysis-diagnostics--two-herfindahl-values-same-page-regression-3).
+  // Cross-account legs of one security are already summed into one whole
+  // position in there (qa:
   // analysis-diagnostics--four-different-spy-weights-one-page-regression-2).
-  const positions = db
-    .prepare(
-      `WITH ${LATEST_HOLDINGS_CTE},
-      per_account_positions AS (
-        SELECT
-          s.id AS security_id,
-          s.symbol,
-          s.name AS security_name,
-          s.fund_category,
-          CASE
-            WHEN lp.close_price IS NOT NULL
-              THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-            WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
-              THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
-            ELSE 0
-          END AS market_value
-        FROM latest_holdings h
-        JOIN securities s ON s.id = h.security_id
-        LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
-        LEFT JOIN fx_rates fx ON fx.currency = s.currency
-        WHERE ${conditions.join(" AND ")}
-      )
-      SELECT
-        security_id,
-        symbol,
-        security_name,
-        fund_category,
-        SUM(market_value) AS market_value
-      FROM per_account_positions
-      GROUP BY security_id, symbol, security_name, fund_category
-      ORDER BY market_value DESC`
-    )
-    .all(...params) as Array<{
-      security_id: number;
-      symbol: string;
-      security_name: string | null;
-      fund_category: string | null;
-      market_value: number;
-    }>;
+  const positions = getConcentrationUniverse(db, accountIds);
 
-  const totalValue = positions.reduce((sum, p) => sum + p.market_value, 0);
+  const totalValue = concentrationTotalValue(positions);
 
-  if (totalValue === 0) {
+  // <= 0, not === 0: a book whose positions net to zero or below has no
+  // meaningful weight denominator. computeConcentration draws the same line
+  // (it returns herfindahl: null there) so neither card ever prints an
+  // effective-position count the other one doesn't.
+  if (totalValue <= 0) {
     return {
       hhi: 0,
       effective_positions: 0,
@@ -515,7 +477,7 @@ export function getConcentrationMetrics(
   const warnings: string[] = [];
 
   for (const pos of positions) {
-    const weight = pos.market_value / totalValue;
+    const weight = pos.marketValue / totalValue;
     hhi += weight * weight;
 
     // Single position > 5% warning
@@ -538,13 +500,19 @@ export function getConcentrationMetrics(
   // Top 10 positions
   const top_positions = positions.slice(0, 10).map((p) => ({
     symbol: p.symbol,
-    security_name: p.security_name,
-    market_value: p.market_value,
-    weight_pct: (p.market_value / totalValue) * 100,
+    security_name: p.securityName,
+    market_value: p.marketValue,
+    weight_pct: (p.marketValue / totalValue) * 100,
   }));
 
   return {
-    hhi: Math.round(hhi * 10000) / 10000, // 4 decimal places
+    // Published UNROUNDED. The card renders it with .toFixed(4) and the
+    // effective-position sentence divides into it; the Risk Decomposition
+    // card renders the same figure with .toFixed(3). Storing a 4-decimal
+    // rounding here would make the two cards' 1/HHI disagree at a rounding
+    // boundary on a diversified book (an HHI below 0.1 carries only three
+    // significant digits at 4dp).
+    hhi,
     effective_positions: Math.round(effective_positions * 10) / 10,
     top_positions,
     warnings,

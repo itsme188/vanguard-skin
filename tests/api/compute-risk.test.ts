@@ -6,7 +6,7 @@ vi.mock("@/lib/compute/risk", () => ({
 }));
 
 vi.mock("@/lib/queries/accounts", () => ({
-  resolveScopeToSingleId: vi.fn(() => undefined),
+  resolveScope: vi.fn(() => undefined),
 }));
 
 vi.mock("@/lib/db", () => ({
