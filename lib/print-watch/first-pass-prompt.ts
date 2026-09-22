@@ -205,14 +205,23 @@ export function renderPrompt(dto: FirstPassPromptDto, nonce: string): { system: 
   return { system, user: parts.join("\n") };
 }
 
-const CITED_LINE = { type: "object", additionalProperties: false, required: ["text", "cites"], properties: { text: { type: "string" }, cites: { type: "array", maxItems: 6, items: { type: "string" } } } };
+const CITED_LINE = { type: "object", additionalProperties: false, required: ["text", "cites"], properties: { text: { type: "string" }, cites: { type: "array", items: { type: "string" } } } };
 export const FIRST_PASS_OUTPUT_SCHEMA: Record<string, unknown> = {
   type: "object", additionalProperties: false, required: ["read", "call_watch", "caveats", "callouts"],
   properties: {
-    read: { type: "array", minItems: 8, maxItems: 10, items: CITED_LINE },
-    call_watch: { type: "array", minItems: 3, maxItems: 3, items: CITED_LINE },
-    caveats: { type: "array", minItems: 0, maxItems: 6, items: { type: "string" } },
-    callouts: { type: "array", minItems: 0, maxItems: 8, items: { type: "object", additionalProperties: false, required: ["label", "value_text", "snippet", "doc_id"], properties: { label: { type: "string" }, value_text: { type: "string" }, snippet: { type: "string" }, doc_id: { type: "integer" } } } },
+    // Native Anthropic structured output (lib/ai/generate.ts, 2026-09-22) rejects
+    // array count constraints: `minItems` other than 0/1 and `maxItems` at all
+    // (live-probed 2026-09-22: "For 'array' type, property 'maxItems' is not
+    // supported"). So the 8-10 / exactly-3 / 0-6 / 0-8 counts the prompt asks
+    // for are NOT encoded here. They are enforced after the call in
+    // lib/print-watch/read.ts (READ_LINES_MIN/MAX, CALL_WATCH_LINES, CAVEATS_MAX,
+    // the callout verifier); a thin or bloated answer is trimmed or fails
+    // validation there instead of failing schema compilation at the API.
+    // Decision record: print-watch-first-pass-schema-minitems (option A).
+    read: { type: "array", items: CITED_LINE },
+    call_watch: { type: "array", items: CITED_LINE },
+    caveats: { type: "array", items: { type: "string" } },
+    callouts: { type: "array", items: { type: "object", additionalProperties: false, required: ["label", "value_text", "snippet", "doc_id"], properties: { label: { type: "string" }, value_text: { type: "string" }, snippet: { type: "string" }, doc_id: { type: "integer" } } } },
   },
 };
 
