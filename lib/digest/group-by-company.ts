@@ -50,7 +50,7 @@ export function bucketByCompany(articles: ArticleLike[]): CompanyBucket[] {
   const buckets = new Map<string, ArticleLike[]>();
 
   for (const article of articles) {
-    const symbols = parseSymbolList(article.mentioned_symbols);
+    const symbols = dedupedSymbolList(article.mentioned_symbols);
     if (symbols.length === 0) {
       pushBucket(buckets, NO_SYMBOL_BUCKET, article);
       continue;
@@ -106,7 +106,7 @@ export function homeArticlesByCompany(articles: ArticleLike[]): HomedCompanyBuck
   for (const article of articles) {
     let home = NO_SYMBOL_BUCKET;
     let bestRank = Number.POSITIVE_INFINITY;
-    for (const symbol of parseSymbolList(article.mentioned_symbols)) {
+    for (const symbol of dedupedSymbolList(article.mentioned_symbols)) {
       const rank = rankOf.get(symbol);
       if (rank != null && rank < bestRank) {
         bestRank = rank;
@@ -147,6 +147,21 @@ export function parseSymbolList(json: string | null): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * `parseSymbolList` does not dedupe — an article whose mentioned_symbols
+ * carries the same ticker twice with different case (["nvda","NVDA"]) or
+ * padding ([" AAPL","AAPL"]) both uppercase/trim to the same string. Bucket
+ * membership, home selection, and the mention chips all need the DEDUPED
+ * list — otherwise a single mention gets counted (and, in bucketByCompany,
+ * pushed) twice, inflating mentionCount and the "(also mentioned in N
+ * articles filed under other companies)" disclosure with a false elsewhere
+ * count. `parseSymbolList` itself stays non-deduping because
+ * `lib/digest/thin-coverage.ts` uses its raw length for a breadth check.
+ */
+function dedupedSymbolList(json: string | null): string[] {
+  return [...new Set(parseSymbolList(json))];
 }
 
 function parseThemes(json: string | null): string[] {
@@ -231,7 +246,7 @@ export function renderDigestByCompany(
     for (const article of bucket.articles) {
       const sentiment = article.sentiment ?? "neutral";
       const articleUrl = article.source_url || article.website_url;
-      const mentions = [...new Set(parseSymbolList(article.mentioned_symbols))];
+      const mentions = dedupedSymbolList(article.mentioned_symbols);
 
       lines.push(`**${article.source_name}** · *${sentiment}*`);
       if (articleUrl) {
