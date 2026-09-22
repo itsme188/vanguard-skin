@@ -78,6 +78,12 @@ describe("bucketByCompany", () => {
     expect(buckets.map((b) => b.symbol).sort()).toEqual(["AMD", "NVDA"]);
   });
 
+  it("dedupes a symbol that appears twice case-insensitively — one bucket entry, not two", () => {
+    const articles = [article(1, "Vital", "AAA twice", ["aaa", "AAA"])];
+    const buckets = bucketByCompany(articles);
+    expect(buckets).toEqual([{ symbol: "AAA", companyName: null, articles: [articles[0]] }]);
+  });
+
   it("survives malformed JSON in mentioned_symbols", () => {
     const a: ArticleLike = {
       id: 99,
@@ -340,5 +346,53 @@ describe("renderDigestByCompany — one copy per article", () => {
 
     expect(occurrences(wideMd, longSummary)).toBe(3);
     expect(wideMd.length).toBeLessThan(narrowMd.length * 3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mentioned_symbols case-duplicate dedupe — a symbol listed twice with
+// different case (["nvda","NVDA"]) must not inflate mentionCount or double
+// the article inside its own bucket.
+// (QA: research-digest-by-company--article-reprinted-per-symbol-522kb)
+// ---------------------------------------------------------------------------
+
+describe("case-duplicate symbols do not inflate mention counts", () => {
+  it("homeArticlesByCompany: a duplicate-case symbol on one article yields mentionCount 1", () => {
+    const solo = article(1, "Vital", "AAA twice", ["aaa", "AAA"]);
+    const homed = homeArticlesByCompany([solo]);
+    expect(homed).toEqual([{ symbol: "AAA", companyName: null, articles: [solo], mentionCount: 1 }]);
+  });
+
+  it("renderDigestByCompany: prints no 'also mentioned' line and no duplicate article for a case-duplicate symbol", () => {
+    const solo = article(1, "Vital", "AAA twice", ["aaa", "AAA"], { summary: "Only note." });
+    const md = renderDigestByCompany([solo], "", "Friday");
+
+    expect(md).toContain("## AAA · 1 article");
+    expect(md).not.toContain("also mentioned in");
+    expect(occurrences(md, "AAA twice")).toBe(1);
+    expect(occurrences(md, "Only note.")).toBe(1);
+  });
+
+  it("a genuinely distinct second mention still produces the correct elsewhere count", () => {
+    // article1 carries a case-duplicate ("aaa"/"AAA") PLUS a genuine second
+    // symbol (BBB) — the dedupe must collapse the duplicate without
+    // swallowing the real cross-mention.
+    const shared = article(1, "Vital", "AAA + BBB", ["aaa", "AAA", "BBB"], {
+      summary: "Shared note.",
+    });
+    const aOnly = article(2, "Eliant", "AAA solo", ["AAA"], { summary: "AAA note." });
+    const bOnly = article(3, "Helene", "BBB solo", ["BBB"], { summary: "BBB note." });
+    const md = renderDigestByCompany([shared, aOnly, bOnly], "", "Friday");
+
+    // AAA: 2 real mentions (shared + aOnly); the case-duplicate must not
+    // inflate this to 3, so AAA homes both and shows no "also mentioned" line.
+    expect(md).toContain("## AAA · 2 articles");
+    const aaaSection = md.slice(md.indexOf("## AAA"), md.indexOf("## BBB"));
+    expect(aaaSection).not.toContain("also mentioned in");
+
+    // BBB: mentioned by both shared and bOnly, but shared is homed under AAA
+    // (higher-ranked), so BBB homes only its own article and discloses 1 elsewhere.
+    expect(md).toContain("## BBB · 1 article");
+    expect(md).toContain("also mentioned in 1 article filed under other companies");
   });
 });
