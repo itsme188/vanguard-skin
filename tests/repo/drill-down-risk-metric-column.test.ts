@@ -87,4 +87,29 @@ describe("DrillDownPanel presents the metric it ranks by", () => {
       /Top \$\{filter\.topN \?\? 10\} by risk contribution \$\{suffix\}/
     );
   });
+
+  it("places the Risk header right after Ticker, ahead of Weight, so it is visible without horizontal scroll", () => {
+    // The table (641px) is wider than the panel's scroller (479px). The risk
+    // drawer's ranking metric — the reason the drawer exists — sat last in
+    // the column order (after Beta), off-screen until the user scrolled.
+    const tickerHeaderIdx = code.indexOf('field="symbol"');
+    const riskHeaderIdx = code.indexOf('field="risk"');
+    const weightHeaderIdx = code.indexOf('field="weight"');
+    expect(tickerHeaderIdx).toBeGreaterThanOrEqual(0);
+    expect(riskHeaderIdx).toBeGreaterThanOrEqual(0);
+    expect(weightHeaderIdx).toBeGreaterThanOrEqual(0);
+    expect(riskHeaderIdx).toBeGreaterThan(tickerHeaderIdx);
+    expect(riskHeaderIdx).toBeLessThan(weightHeaderIdx);
+  });
+
+  it("places the Risk cell right after the Ticker cell, ahead of the Weight cell", () => {
+    const tickerCellIdx = code.indexOf("r.symbol");
+    const riskCellIdx = code.indexOf("riskContribution != null");
+    const weightCellIdx = code.indexOf("r.weight * 100");
+    expect(tickerCellIdx).toBeGreaterThanOrEqual(0);
+    expect(riskCellIdx).toBeGreaterThanOrEqual(0);
+    expect(weightCellIdx).toBeGreaterThanOrEqual(0);
+    expect(riskCellIdx).toBeGreaterThan(tickerCellIdx);
+    expect(riskCellIdx).toBeLessThan(weightCellIdx);
+  });
 });

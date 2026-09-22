@@ -200,6 +200,21 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
                 >
                   Ticker
                 </SortableHeader>
+                {/* The ranking metric itself, shown only where it exists.
+                    Placed right after Ticker (rather than last) so the risk
+                    drawer's own namesake column is visible without a
+                    horizontal scroll — the table (641px) is wider than the
+                    panel's scroller (479px). */}
+                {isRisk && (
+                  <SortableHeader
+                    field="risk"
+                    sort={sort}
+                    onSort={setSort}
+                    align="right"
+                  >
+                    <span title={RISK_METRIC_DESCRIPTION}>Risk</span>
+                  </SortableHeader>
+                )}
                 <SortableHeader
                   field="weight"
                   sort={sort}
@@ -241,17 +256,6 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
                 >
                   Beta
                 </SortableHeader>
-                {/* The ranking metric itself, shown only where it exists. */}
-                {isRisk && (
-                  <SortableHeader
-                    field="risk"
-                    sort={sort}
-                    onSort={setSort}
-                    align="right"
-                  >
-                    <span title={RISK_METRIC_DESCRIPTION}>Risk</span>
-                  </SortableHeader>
-                )}
               </tr>
             </thead>
             <tbody>
@@ -269,6 +273,15 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
                       {r.symbol}
                     </Link>
                   </td>
+                  {isRisk && (
+                    <td className="px-4 py-2 text-right font-mono">
+                      {r.riskContribution != null ? (
+                        <Pct value={r.riskContribution * 100} digits={1} />
+                      ) : (
+                        <span title="Not enough price history to measure">—</span>
+                      )}
+                    </td>
+                  )}
                   <td className="px-4 py-2 text-right font-mono">
                     <Pct value={r.weight * 100} digits={1} />
                   </td>
@@ -287,15 +300,6 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
                   <td className="px-4 py-2 text-right font-mono">
                     {r.beta != null ? r.beta.toFixed(2) : "—"}
                   </td>
-                  {isRisk && (
-                    <td className="px-4 py-2 text-right font-mono">
-                      {r.riskContribution != null ? (
-                        <Pct value={r.riskContribution * 100} digits={1} />
-                      ) : (
-                        <span title="Not enough price history to measure">—</span>
-                      )}
-                    </td>
-                  )}
                 </tr>
               ))}
             </tbody>
