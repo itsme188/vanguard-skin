@@ -148,17 +148,27 @@ export function interpretVolatility(annualized: number): Interpretation {
 }
 
 /**
- * Herfindahl index. `effectivePositions` defaults to 1/HHI when omitted.
- * Embeds the effective-position count (rendered plain elsewhere in the app).
+ * Herfindahl index. Effective-position count is always derived fresh from
+ * the unrounded `1 / hhi` — never from a caller-supplied, already-rounded
+ * value. `effectivePositions` is accepted (and ignored) only so older call
+ * sites that still pass the card's one-decimal `effective_positions` figure
+ * keep compiling; passing it in no longer changes the result. Rounding it
+ * ONCE here, from the same `hhi` every caller displays, is what keeps the
+ * Concentration Metrics card and the Risk Decomposition card agreeing on
+ * "Behaves like ~N equal positions" (qa:
+ * analysis-diagnostics--two-herfindahl-values-same-page-regression-3 — with
+ * a synthetic 1/hhi of 12.48, the card's one-decimal 12.5 fed back through
+ * Math.round became 13, while the raw 12.48 correctly rounds to 12).
  */
 export function interpretHHI(
   hhi: number,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for source compat; see comment above
   effectivePositions?: number,
 ): Interpretation {
   if (!(hhi > 0)) {
     return { text: "No position weights to measure concentration on.", tone: "neutral" };
   }
-  const eff = Math.round(effectivePositions ?? 1 / hhi);
+  const eff = Math.round(1 / hhi);
   if (hhi > 0.25) {
     return {
       text: `Behaves like ~${eff} equal positions — highly concentrated; single-name risk dominates outcomes.`,
