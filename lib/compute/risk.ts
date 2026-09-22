@@ -144,6 +144,16 @@ export interface PositionRisk {
   securityId: number;
   symbol: string;
   securityName: string | null;
+  /**
+   * Adjusted market value (bonds /100, options x multiplier, FX applied) of
+   * the whole position, summed across the accounts in scope — the same
+   * figure `weight` is derived from. Published so a surface that re-lists
+   * these positions (the Analysis "top N by risk" drawer) renders value AND
+   * weight from this one computation, instead of re-deriving either from a
+   * second query whose universe differs by a hair. Purely additive: nothing
+   * about the computation itself changed.
+   */
+  marketValue: number;
   weight: number;
   annualizedVol: number | null;
   riskContribution: number | null; // marginal contribution to portfolio vol
@@ -783,6 +793,7 @@ export function computePositionRisk(
         securityId: p.security_id,
         symbol: p.symbol,
         securityName: p.security_name,
+        marketValue: p.market_value,
         weight,
         annualizedVol: null,
         riskContribution: null,
@@ -816,6 +827,7 @@ export function computePositionRisk(
       securityId: p.security_id,
       symbol: p.symbol,
       securityName: p.security_name,
+      marketValue: p.market_value,
       weight,
       annualizedVol: vol,
       riskContribution,

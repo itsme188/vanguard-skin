@@ -11,8 +11,12 @@
  * caller controls visibility via `open` + `onClose`; transitioning closed →
  * open re-fetches the data fresh.
  *
- * Privacy-aware: weights via `<Pct>`, market values via `<Money>`. Tickers
- * link to /dashboard/security/[id].
+ * Privacy-aware: weights via `<Pct>`, market values via `<Money>`, risk
+ * contributions via `<Pct>`. Tickers link to /dashboard/security/[id].
+ *
+ * The `kind: "risk"` drawer is a projection of the Position-Level Risk card:
+ * the server ranks it by risk contribution (computePositionRisk) and this
+ * component defaults its sort to that column rather than re-sorting by size.
  *
  * TODO (future enhancement): filter chips above the table for client-side
  * refinement (e.g., toggle "AI=High" or "Beta>1" to narrow the result set
@@ -45,15 +49,26 @@ type SortField =
   | "sector"
   | "ai"
   | "reg"
-  | "beta";
+  | "beta"
+  | "risk";
+
+/** One wording for the metric, reused by the caption and the column tooltip. */
+const RISK_METRIC_DESCRIPTION =
+  "the share of portfolio volatility this position accounts for";
 
 export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
   const [rows, setRows] = useState<DrillDownRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isRisk = filter?.kind === "risk";
+  // The risk drawer arrives already ranked by risk contribution (the server
+  // owns that ordering, see lib/queries/drill-down.ts). Defaulting it to
+  // "marketValue" re-sorted the list by size in the browser, so a panel
+  // titled "by risk" displayed the largest balance first — the money-market
+  // sweep [qa:analysis-risk-drawer--top10-by-risk-ranked-by-value-vmfxx-first].
   const { sort, setSort } = useSortParam<SortField>(
     "drill",
-    "marketValue",
+    isRisk ? "risk" : "marketValue",
     "desc"
   );
 
@@ -149,6 +164,18 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
           </button>
         </header>
 
+        {/* Name the ranking metric, and say plainly why the list can be
+            shorter than the N in the title — a sweep fund is a balance, not
+            a risk contributor, so it is dropped rather than backfilled. */}
+        {isRisk && !loading && !error && rows.length > 0 && (
+          <p className="px-4 pt-3 text-[11px] leading-snug text-ink-faint">
+            Ranked by risk contribution — {RISK_METRIC_DESCRIPTION}. Drawn from
+            the same positions as the Concentration chart&apos;s top holdings;
+            cash-equivalent sweeps are left out because their price is pinned,
+            so they carry no measurable volatility.
+          </p>
+        )}
+
         {loading && (
           <div className="p-4 text-xs text-ink-faint font-mono">
             Loading…
@@ -214,6 +241,17 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
                 >
                   Beta
                 </SortableHeader>
+                {/* The ranking metric itself, shown only where it exists. */}
+                {isRisk && (
+                  <SortableHeader
+                    field="risk"
+                    sort={sort}
+                    onSort={setSort}
+                    align="right"
+                  >
+                    <span title={RISK_METRIC_DESCRIPTION}>Risk</span>
+                  </SortableHeader>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -249,6 +287,15 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
                   <td className="px-4 py-2 text-right font-mono">
                     {r.beta != null ? r.beta.toFixed(2) : "—"}
                   </td>
+                  {isRisk && (
+                    <td className="px-4 py-2 text-right font-mono">
+                      {r.riskContribution != null ? (
+                        <Pct value={r.riskContribution * 100} digits={1} />
+                      ) : (
+                        <span title="Not enough price history to measure">—</span>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -277,7 +324,10 @@ function titleFor(filter: DrillDownFilter | null, count: number): string {
   if (filter.kind === "sector") {
     return `Sector: ${filter.sector} ${suffix}`;
   }
-  return `Top ${filter.topN ?? 10} by Risk`;
+  // "by risk contribution", not "by Risk" — the old title implied a ranking
+  // the list did not have, and it hid its own count, so a shorter list (the
+  // sweep excluded) looked like a missing row instead of a stated rule.
+  return `Top ${filter.topN ?? 10} by risk contribution ${suffix}`;
 }
 
 function prettifyDimension(dim: string): string {
@@ -331,5 +381,7 @@ function sortValue(row: DrillDownRow, field: SortField): unknown {
       return row.factors.regulatory_risk ?? null;
     case "beta":
       return row.beta;
+    case "risk":
+      return row.riskContribution ?? null;
   }
 }
