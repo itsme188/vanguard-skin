@@ -130,6 +130,7 @@ Detail: `docs/reference/conventions-detail.md`, `docs/reference/earnings-pipelin
 **AI / LLM**
 - Never inline a model id — `lib/claude-models.ts` / `resolveFeatureModel(key)`.
 - Guard `generateObject` array fields with `Array.isArray` before `.slice/.map/.join`; sanitize model prose + array fields at storage AND render.
+- **Frontier structured output rejects array count keywords (2026-09-22):** `generateObjectForFeature` requests native Anthropic structured output (the frontier family 400s on forced `tool_choice`). Native mode rejects `minItems` other than 0/1 and `maxItems` entirely (also numeric/string constraints, recursion). Schemas describe SHAPE; enforce counts in code after the call. `tests/ai/structured-output-schemas.test.ts` pins the two frontier schemas. The provider defaults an unknown (5-generation) id to 4,096 output tokens and thinking counts against it — every `generateObjectForFeature` caller passes an explicit `maxOutputTokens`.
 - Parse LLM JSON via `extractJsonArray` + the C0-control-char retry. Join `web_search` text blocks with `""`, never `"\n"`.
 - Cached AI narratives (`analysis_narratives`) carry an `input_fingerprint`; GET is read-only and reports drift (NULL = drifted) — regeneration only via explicit POST, never on a cache read.
 
