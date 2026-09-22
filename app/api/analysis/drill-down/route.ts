@@ -9,6 +9,14 @@
  *   - factor:         factor + bucket
  *   - sector:         sector
  *   - risk:           optional topN (clamped to [1, 100] inside the query)
+ *
+ * `kind=risk` returns the top-N positions by market value — the same universe
+ * the Concentration "Top 10 Positions" chart draws — ranked by each one's
+ * contribution to portfolio volatility, with cash-equivalent sweeps left out.
+ * The ranking comes from computePositionRisk, the same computation behind
+ * GET /api/compute/position-risk, so the card and this drawer cannot
+ * disagree. Scope resolution stays `resolveScope` (the full account set),
+ * never a single id.
  */
 
 import { NextRequest, NextResponse } from "next/server";

@@ -125,22 +125,27 @@ describe("getHoldingsInBucket", () => {
     expect(rows[0].weight).toBeCloseTo(3000 / 12000, 4);
   });
 
-  it("risk kind with topN=5 returns at most 5 rows, sorted by risk proxy DESC", () => {
+  it("risk kind with topN=5 returns at most 5 rows, ranked by risk contribution", () => {
     const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 5 });
     expect(rows.length).toBeLessThanOrEqual(5);
     expect(rows.length).toBe(4); // only 4 holdings in seed
-    // Risk proxy = marketValue * COALESCE(beta, 1).
-    // AAPL  2000 * 1.2 = 2400
-    // MSFT  2000 * 1.1 = 2200
-    // JNJ   3000 * 0.6 = 1800
-    // XOM   5000 * 1.0 = 5000  ← no cached beta, default 1
-    // DESC order: XOM, AAPL, MSFT, JNJ
+
+    // This seed carries ONE close per security, so computePositionRisk cannot
+    // publish a volatility for anything and every risk contribution is null.
+    // The list then falls back to the universe's own order — market value
+    // desc — which is the honest answer when there is no return history:
+    //   XOM $5,000 · JNJ $3,000 · AAPL $2,000 · MSFT $2,000
+    expect(rows.every((r) => r.riskContribution === null)).toBe(true);
     expect(rows[0].symbol).toBe("XOM");
-    expect(rows[1].symbol).toBe("AAPL");
-    expect(rows[2].symbol).toBe("MSFT");
-    expect(rows[3].symbol).toBe("JNJ");
+    expect(rows[1].symbol).toBe("JNJ");
+    expect(rows.slice(2).map((r) => r.symbol).sort()).toEqual(["AAPL", "MSFT"]);
     // XOM has no cached beta — null surfaces.
     expect(rows[0].beta).toBeNull();
+    // The cached beta must no longer decide order or membership: the old
+    // `market_value * COALESCE(beta, 1)` proxy ranked AAPL (beta 1.2) above
+    // JNJ, a position 50% larger.
+    // [qa:analysis-risk-drawer--top10-by-risk-ranked-by-value-vmfxx-first]
+    expect(rows.map((r) => r.symbol)).not.toEqual(["XOM", "AAPL", "MSFT", "JNJ"]);
   });
 
   it("accountIds filter limits results to that account", () => {

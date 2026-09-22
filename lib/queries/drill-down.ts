@@ -11,6 +11,14 @@
  * Weights are computed against the SCOPE total (not the filtered subset) so a
  * single 8%-of-portfolio Tech position renders as 8% inside the Technology
  * drill-down, not as 100% of "Technology among Tech".
+ *
+ * `kind: "risk"` is the exception to all of the above: it is a projection of
+ * `computePositionRisk` — the same computation behind the Position-Level Risk
+ * card and GET /api/compute/position-risk. That call owns the universe (top N
+ * by market value, one row per security — the same names the Concentration
+ * "Top 10 Positions" chart lists), the weight, and the ranking metric. This
+ * module only hydrates the display columns and applies the no-measurable-
+ * volatility exclusion. See `rankByRiskContribution` below.
  */
 
 import type Database from "better-sqlite3";
@@ -18,6 +26,8 @@ import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
+import { computePositionRisk, type PositionRisk } from "@/lib/compute/risk";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import {
   classificationGroupSql,
   dimensionInheritsFromUnderlying,
@@ -53,7 +63,27 @@ export interface DrillDownRow {
   /** Up to 9 factor columns; missing keys mean no `security_factors` row OR null cell. */
   factors: Partial<Record<FactorColumn, string>>;
   sector: string | null;
+  /**
+   * Share of portfolio volatility this position accounts for
+   * (weight x vol x correlation / portfolio vol), straight from
+   * `computePositionRisk`. Populated for `kind: "risk"` only — the other
+   * three kinds answer "what is inside this bucket", not "what drives the
+   * risk", and leave it undefined. `null` means the position has price
+   * history but not enough of it to publish a figure.
+   */
+  riskContribution?: number | null;
 }
+
+/**
+ * Annualized-volatility floor for the risk ranking. A money-market sweep
+ * prices at a pinned 1.00, so its measured volatility is 0 — ranking it by
+ * balance put the sweep at the top of a list titled "by risk"
+ * [qa:analysis-risk-drawer--top10-by-risk-ranked-by-value-vmfxx-first].
+ * 0.5% annualized separates a pinned-price sweep from the tamest real bond
+ * fund (which still prints a couple of percent), so nothing that actually
+ * marks to market is caught by it.
+ */
+const MIN_RANKED_ANNUALIZED_VOL = 0.005;
 
 // Tag prefix so SQLite column-aliases never collide with reserved tokens.
 type FactorAliasKey = `f_${FactorColumn}`;
@@ -62,6 +92,8 @@ type Row = {
   security_id: number;
   symbol: string;
   security_name: string | null;
+  security_type: string | null;
+  fund_category: string | null;
   sector: string | null;
   market_value: number;
   beta: number | null;
@@ -92,8 +124,11 @@ export function getHoldingsInBucket(
 
   let extraWhere = "";
   let underlyingJoin = "";
-  let orderBy = "market_value DESC";
+  const orderBy = "market_value DESC";
   const filterParams: (string | number)[] = [];
+  // kind:"risk" only — the ranked positions this call is a projection of.
+  // Left null by every other kind.
+  let rankedPositions: PositionRisk[] | null = null;
 
   if (filter.kind === "classification") {
     if (!isDrillableDimension(filter.dimension)) {
@@ -127,15 +162,35 @@ export function getHoldingsInBucket(
     extraWhere = `AND sf.${filter.factor} = ?`;
     filterParams.push(filter.bucket);
   } else if (filter.kind === "risk") {
-    // No filter; sort by approximate risk contribution. Caller-tunable topN
-    // is clamped to [1, 100] so a malicious caller can't pull the whole table.
-    orderBy = "(market_value * COALESCE(beta, 1)) DESC";
+    // The universe is decided by computePositionRisk — the SAME call the
+    // Position-Level Risk card makes — not by SQL here, so the card, its
+    // drawer and the Concentration "Top 10 Positions" chart on the same page
+    // can never list different names
+    // [qa:analysis-diagnostics--four-different-spy-weights-one-page-regression-4].
+    //
+    // This replaced an `ORDER BY market_value * COALESCE(beta, 1)` proxy that
+    // was neither ranking: an uncached beta silently counted as 1.0, so on the
+    // live book two small high-beta names displaced the 7th and 8th largest
+    // positions. topN is still clamped to [1, 100] so a caller can't pull the
+    // whole table.
+    //
+    // NOTE on topN semantics (inherited from computePositionRisk, which the
+    // card shares): it takes the top N positions BY MARKET VALUE and then
+    // ranks those by risk contribution. "Top 10 by risk" is therefore "the 10
+    // largest positions, ordered by how much of portfolio volatility each
+    // one accounts for" — which is exactly the parity the finding asks for,
+    // since the chart's top 10 is value-ranked too. It is NOT "the 10 names
+    // with the highest risk contribution portfolio-wide"; a small, wildly
+    // volatile position outside the top 10 by value never enters either list.
+    const topN = Math.max(1, Math.min(filter.topN ?? 10, 100));
+    rankedPositions = computePositionRisk(db, { accountIds, topN }).positions;
+    if (rankedPositions.length === 0) return [];
+    // Hydrate exactly those securities with the panel's display columns
+    // (sector, factors, cached beta). Ordering and the row set come from
+    // `rankedPositions` below, not from this SQL.
+    extraWhere = `AND s.id IN (${rankedPositions.map(() => "?").join(",")})`;
+    filterParams.push(...rankedPositions.map((p) => p.securityId));
   }
-
-  const limitClause =
-    filter.kind === "risk"
-      ? `LIMIT ${Math.max(1, Math.min(filter.topN ?? 10, 100))}`
-      : "";
 
   const factorSelect = FACTOR_COLUMNS.map((f) => `sf.${f} AS f_${f}`).join(",\n           ");
 
@@ -145,6 +200,8 @@ export function getHoldingsInBucket(
         s.id AS security_id,
         s.symbol,
         s.name AS security_name,
+        s.security_type,
+        s.fund_category,
         s.sector,
         SUM(${adjustedMarketValueSQL("h.quantity", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) AS market_value,
         sb.beta AS beta,
@@ -169,9 +226,9 @@ export function getHoldingsInBucket(
         ${extraWhere}
       -- Aggregate per SECURITY, not per (account, security) row: a name held
       -- in several accounts must appear once with its value summed, or it
-      -- both duplicates in the list AND eats two ranking slots in the
-      -- kind:"risk" LIMIT (pushing a real single-account contributor out of
-      -- the top N). symbol/name/sector/beta/factor columns are functionally
+      -- both duplicates in the list AND eats two slots in the kind:"risk"
+      -- top N (pushing a real single-account contributor out of it).
+      -- symbol/name/type/category/sector/beta/factor columns are functionally
       -- dependent on s.id (constant across the grouped rows), so bare-column
       -- selection is safe here.
       --
@@ -188,7 +245,6 @@ export function getHoldingsInBucket(
     )
     SELECT * FROM holdings_cte
     ORDER BY ${orderBy}
-    ${limitClause}
   `;
 
   const rows = db.prepare(sql).all(...accountParams, ...filterParams) as Row[];
@@ -215,21 +271,101 @@ export function getHoldingsInBucket(
 
   const total = totalRow.total ?? 0;
 
-  return rows.map((r) => {
-    const factors: Partial<Record<FactorColumn, string>> = {};
-    for (const f of FACTOR_COLUMNS) {
-      const v = r[`f_${f}` as FactorAliasKey];
-      if (typeof v === "string" && v) factors[f] = v;
-    }
-    return {
-      symbol: r.symbol,
-      securityName: r.security_name,
-      securityId: r.security_id,
-      marketValue: r.market_value,
-      weight: total > 0 ? r.market_value / total : 0,
-      beta: r.beta,
-      factors,
-      sector: r.sector,
-    };
+  const mapped = rows.map((r) => ({
+    symbol: r.symbol,
+    securityName: r.security_name,
+    securityId: r.security_id,
+    marketValue: r.market_value,
+    weight: total > 0 ? r.market_value / total : 0,
+    beta: r.beta,
+    factors: factorsOf(r),
+    sector: r.sector,
+  }));
+
+  if (!rankedPositions) return mapped;
+  return rankByRiskContribution(mapped, rows, rankedPositions);
+}
+
+function factorsOf(r: Row): Partial<Record<FactorColumn, string>> {
+  const factors: Partial<Record<FactorColumn, string>> = {};
+  for (const f of FACTOR_COLUMNS) {
+    const v = r[`f_${f}` as FactorAliasKey];
+    if (typeof v === "string" && v) factors[f] = v;
+  }
+  return factors;
+}
+
+/**
+ * Turn the hydrated display rows into the "top N by risk" list.
+ *
+ * Membership and order are owned by `positions` (computePositionRisk's own
+ * output), so the drawer is a strict projection of the Position-Level Risk
+ * card — never a second, slightly different book:
+ *
+ *   • `marketValue` and `weight` are taken from the position, not from this
+ *     module's SQL. The two universes differ by short legs (the risk engine
+ *     counts long positions only), which is enough to render the same ticker
+ *     at two different weights on one page
+ *     [qa:analysis-diagnostics--four-different-spy-weights-one-page-regression-4].
+ *   • Positions with no measurable volatility drop out entirely — a
+ *     money-market sweep is a balance, not a risk contributor, and ranking
+ *     by size put it first in a list titled "by risk"
+ *     [qa:analysis-risk-drawer--top10-by-risk-ranked-by-value-vmfxx-first].
+ *     Two signals answer that: a published volatility under the floor, and
+ *     the shared cash-equivalent identity (which covers the common case
+ *     where the sweep has too few stored closes for a volatility to be
+ *     published at all — its price is pinned at 1.00 either way).
+ *   • A position whose volatility is unpublishable for an ordinary reason
+ *     (short price history) is KEPT, sorts last on a null contribution, and
+ *     renders an em dash. Hiding a real position because we lack data would
+ *     be the same silent-omission bug in a new place.
+ */
+function rankByRiskContribution(
+  mapped: DrillDownRow[],
+  rows: Row[],
+  positions: PositionRisk[]
+): DrillDownRow[] {
+  const displayById = new Map(mapped.map((m) => [m.securityId, m]));
+  const identityById = new Map(rows.map((r) => [r.security_id, r]));
+
+  const ranked: DrillDownRow[] = [];
+  for (const position of positions) {
+    const identity = identityById.get(position.securityId);
+    const volBelowFloor =
+      position.annualizedVol != null &&
+      position.annualizedVol < MIN_RANKED_ANNUALIZED_VOL;
+    const isPinnedCash = identity
+      ? isCashEquivalentSecurity({
+          security_type: identity.security_type,
+          fund_category: identity.fund_category,
+        })
+      : false;
+    if (volBelowFloor || isPinnedCash) continue;
+
+    const display = displayById.get(position.securityId);
+    ranked.push({
+      symbol: position.symbol,
+      securityName: position.securityName,
+      securityId: position.securityId,
+      marketValue: position.marketValue,
+      weight: position.weight,
+      beta: display?.beta ?? null,
+      factors: display?.factors ?? {},
+      sector: display?.sector ?? null,
+      riskContribution: position.riskContribution,
+    });
+  }
+
+  // Highest share of portfolio volatility first; an unpublishable
+  // contribution sorts last. `positions` already arrives in market-value
+  // order, and Array.prototype.sort is stable, so ties (and the all-null
+  // case of a book with no price history) keep that order as the tiebreak.
+  return ranked.sort((a, b) => {
+    const av = a.riskContribution;
+    const bv = b.riskContribution;
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return bv - av;
   });
 }
