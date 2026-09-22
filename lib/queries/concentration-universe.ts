@@ -28,14 +28,24 @@
  *  - Legs of one security held in several accounts are SUMMED into one whole
  *    position before any weight is taken (qa:
  *    analysis-diagnostics--four-different-spy-weights-one-page-regression-2).
- *  - Positions that value to exactly zero (no price AND no cost basis, or a
- *    long and short leg that net out) are dropped: a zero-value row carries
- *    no weight, so it can only inflate a position COUNT.
+ *  - Positions that value to zero (no price AND no cost basis, or a long and
+ *    short leg that net out) are dropped: a zero-value row carries no
+ *    weight, so it can only inflate a position COUNT. "Zero" is a
+ *    sub-half-cent band, not a float equality — cancelling legs land on a
+ *    sub-nanodollar residual, never on a bit-exact 0, so `<> 0` let a
+ *    netted-out pair through as a live position.
  */
 
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { todayET } from "@/lib/calendar/date-utils";
+
+/**
+ * Half a cent. Below this a position is worth nothing a dollar figure could
+ * show, so it is a rounding residual rather than a holding.
+ */
+const ZERO_VALUE_EPSILON = 0.005;
 
 export interface ConcentrationPosition {
   securityId: number;
@@ -85,10 +95,15 @@ export function getConcentrationUniverse(
   });
 
   // Params in SQL text order: the account filter lives inside the first CTE,
-  // the maturity cutoff in the outer WHERE.
+  // the maturity cutoff in the outer WHERE. The cutoff is resolved HERE, in
+  // JS, and ET-anchored: SQLite's `date('now')` is UTC, so between 20:00 ET
+  // and midnight UTC it reports tomorrow and drops a bond maturing today out
+  // of the book four hours early (project rule: never resolve a user-facing
+  // "today" in SQL).
+  const maturityCutoff = options?.asOfDate ?? todayET();
   const params: (string | number | null)[] = [
     ...(accountIds ?? []),
-    options?.asOfDate ?? null,
+    maturityCutoff,
   ];
 
   const rows = db
@@ -122,7 +137,7 @@ export function getConcentrationUniverse(
          JOIN securities s ON s.id = h.security_id
          LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
          LEFT JOIN fx_rates fx ON fx.currency = s.currency
-         WHERE (s.maturity_date IS NULL OR s.maturity_date >= COALESCE(?, date('now')))
+         WHERE (s.maturity_date IS NULL OR s.maturity_date >= ?)
        )
        SELECT
          security_id,
@@ -132,7 +147,7 @@ export function getConcentrationUniverse(
          MIN(priced) AS priced
        FROM per_account_positions
        GROUP BY security_id, symbol, security_name
-       HAVING SUM(market_value) <> 0
+       HAVING ABS(SUM(market_value)) > ${ZERO_VALUE_EPSILON}
        ORDER BY market_value DESC`
     )
     .all(...params) as Array<{
