@@ -19,6 +19,9 @@
  *     `error.message` (a string shaped like `"400 {...}"`, which is what
  *     `APIError.message` itself looks like) — e.g. lib/import/error-classify.ts,
  *     which classifies by string because that's all its caller preserved.
+ *     It also accepts the BARE nested message (no "<status> {json}" prefix) —
+ *     the shape the AI SDK's `APICallError` leaves behind — but only for the
+ *     high-confidence families that quote nothing back.
  */
 
 import { APIError } from "@anthropic-ai/sdk";
@@ -29,6 +32,7 @@ export type AnthropicFailureKind =
   | "rate_limit"
   | "overloaded"
   | "content"
+  | "model_capability"
   | "unknown";
 
 export interface AnthropicErrorClassification {
@@ -43,6 +47,17 @@ const BILLING_PATTERNS: RegExp[] = [
   /plans\s*&\s*billing/i,
   /purchase credits/i,
   /\bbilling\b/i,
+];
+
+// The request itself is well-formed; the MODEL the app picked can't do part of
+// it. Anthropic's Fable/Mythos 5 family is the live case — it rejects forced
+// tool use (`tool_choice` "any"/"tool") with a 400:
+//   tool_choice: type "tool" and "any" are not supported for this model.
+// Checked BEFORE the content patterns, which would otherwise never match this
+// text and drop it into the generic "unknown" bucket with an upstream code.
+const MODEL_CAPABILITY_PATTERNS: RegExp[] = [
+  /tool_choice[\s\S]{0,200}?not supported for this model/i,
+  /\bnot supported for this model\b/i,
 ];
 
 const AUTH_PATTERNS: RegExp[] = [
@@ -79,6 +94,8 @@ const AUTH_MESSAGE =
 const RATE_LIMIT_MESSAGE =
   "The AI service is rate-limiting requests right now. Try again in a minute.";
 const OVERLOADED_MESSAGE = "The AI service is temporarily overloaded. Try again in a minute.";
+const MODEL_CAPABILITY_MESSAGE =
+  "The AI model this feature is set to use can't handle this kind of request. That's a setup problem on our side, not a problem with your data.";
 
 // Error `type` discriminators Anthropic's own error body carries — checked
 // BEFORE the prose-substring patterns below, which exist only for shapes
@@ -117,6 +134,9 @@ function classify(
     return { kind: "overloaded", status, userMessage: OVERLOADED_MESSAGE };
   }
 
+  if (MODEL_CAPABILITY_PATTERNS.some((p) => p.test(text))) {
+    return { kind: "model_capability", status, userMessage: MODEL_CAPABILITY_MESSAGE };
+  }
   if (BILLING_PATTERNS.some((p) => p.test(text))) {
     return {
       kind: "billing",
@@ -192,7 +212,7 @@ export function classifyAnthropicError(err: unknown): AnthropicErrorClassificati
  */
 export function classifyAnthropicErrorMessage(message: string): AnthropicErrorClassification | null {
   const match = message.match(/^(\d{3})\s([\s\S]+)$/);
-  if (!match) return null;
+  if (!match) return classifyBareMessage(message);
 
   const status = parseInt(match[1], 10);
   const rest = match[2];
@@ -201,9 +221,9 @@ export function classifyAnthropicErrorMessage(message: string): AnthropicErrorCl
   try {
     parsed = JSON.parse(rest);
   } catch {
-    return null;
+    return classifyBareMessage(message);
   }
-  if (parsed?.type !== "error") return null;
+  if (parsed?.type !== "error") return classifyBareMessage(message);
 
   const nestedMessage = parsed.error?.message;
   const nestedType = parsed.error?.type;
@@ -213,4 +233,22 @@ export function classifyAnthropicErrorMessage(message: string): AnthropicErrorCl
   const text = hasWellFormedMessage ? (nestedMessage as string) : "";
   const errorType = typeof nestedType === "string" ? nestedType : null;
   return classify(status, text, { errorType, assumeContentFallback: !hasWellFormedMessage });
+}
+
+/**
+ * Some transports strip Anthropic's envelope and keep ONLY the nested
+ * `error.message` — notably the AI SDK's `APICallError`, which is what
+ * `generateObject`/`generateText` throw (`err.message` is the bare upstream
+ * prose, with no "<status> {json}" prefix to parse). Only the high-confidence,
+ * non-quoting pattern families are recognized in that shape; anything else
+ * stays null so the caller keeps its own wording and no untrusted upstream
+ * text is ever echoed back to the UI.
+ *
+ * `status` is 0 here: a bare message carries no status we can trust.
+ */
+function classifyBareMessage(message: string): AnthropicErrorClassification | null {
+  if (MODEL_CAPABILITY_PATTERNS.some((p) => p.test(message))) {
+    return { kind: "model_capability", status: 0, userMessage: MODEL_CAPABILITY_MESSAGE };
+  }
+  return null;
 }
