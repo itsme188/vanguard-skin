@@ -253,6 +253,15 @@ export function DataConfidenceIndicator() {
             <DimensionBar label="Valuations" dim={confidence.valuationCoverage} />
           </div>
 
+          {/* Integrity criticals — the full set of hits that capped the
+              score (qa:header-dataconfidence--capped-popover-lists-warnings-
+              only-critical-lot-drift-hits-never-enumerated). The cap line
+              above names only the single worst hit; this block enumerates
+              every one so the owner can see the full extent of what capped
+              the score, not just the headline example. Listed above the
+              warnings row since criticals are the higher-severity set. */}
+          <IntegrityCriticalRow critical={confidence.integrity.critical} />
+
           {/* Integrity warnings — uncapped, informational only (Codex plan
               review #15: warnings must stay visible even when nothing caps
               the score). */}
@@ -364,6 +373,36 @@ function DimensionBar({ label, dim }: { label: string; dim: DimensionScore }) {
             <PrivateText>{guidance}</PrivateText>
           </p>
         </div>
+      )}
+    </div>
+  );
+}
+
+function IntegrityCriticalRow({ critical }: { critical: IntegrityHit[] }) {
+  const [expanded, setExpanded] = useState(false);
+  if (critical.length === 0) return null;
+
+  return (
+    <div className="space-y-1 pt-1">
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        className="w-full flex items-center justify-between hover:opacity-80 transition-opacity"
+        aria-expanded={expanded}
+      >
+        <span className={`text-[10px] font-medium flex items-center gap-1 ${SEVERITY_STYLES.critical}`}>
+          <span className="text-ink-faint text-[8px] w-2 inline-block">{expanded ? "▾" : "▸"}</span>
+          <Count value={critical.length} /> critical integrity hit{critical.length === 1 ? "" : "s"}
+        </span>
+      </button>
+      {expanded && (
+        <ul className="pt-1 pl-3 space-y-1 border-l border-down/40 ml-0.5">
+          {critical.map(c => (
+            <li key={c.key} className={`text-[9px] leading-snug list-none ${SEVERITY_STYLES.critical}`}>
+              <PrivateText>{c.reason}</PrivateText>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
