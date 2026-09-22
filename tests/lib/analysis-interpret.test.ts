@@ -5,6 +5,7 @@ import {
   interpretCurrentDrawdown,
   interpretVolatility,
   interpretHHI,
+  effectivePositionsFromHHI,
   interpretBeta,
   interpretAlpha,
   interpretR2,
@@ -136,32 +137,47 @@ describe("interpretVolatility", () => {
 
 // ─── HHI ─────────────────────────────────────────────────────────
 
+describe("effectivePositionsFromHHI", () => {
+  it("returns the unrounded 1/HHI", () => {
+    expect(effectivePositionsFromHHI(0.08)).toBeCloseTo(12.5, 10);
+    expect(effectivePositionsFromHHI(1 / 12.48)).toBeCloseTo(12.48, 6);
+  });
+
+  it("returns 0 for non-positive HHI — no position weights to measure", () => {
+    expect(effectivePositionsFromHHI(0)).toBe(0);
+    expect(effectivePositionsFromHHI(-0.1)).toBe(0);
+  });
+});
+
 describe("interpretHHI", () => {
-  it("derives effective positions from 1/HHI even when a second arg is supplied", () => {
-    // The second argument is accepted for source compat but always ignored —
-    // 1/0.08 = 12.5, which rounds to 13, regardless of what's passed here.
-    const r = interpretHHI(0.08, 12.0);
+  it("derives effective positions from 1/HHI", () => {
+    const r = interpretHHI(0.08);
     expect(r.tone).toBe("neutral");
     expect(r.text).toContain("~13 equal positions");
     expect(r.text.toLowerCase()).toContain("diversified");
   });
 
-  it("a pre-rounded effectivePositions arg does not double-round (qa:analysis-diagnostics--two-herfindahl-values-same-page-regression-3)", () => {
+  it("rounds the SAME raw effectivePositionsFromHHI(hhi) the Effective Positions tile derives — no double-rounding at a boundary (qa:analysis-diagnostics--two-herfindahl-values-same-page-regression-3)", () => {
     // Synthetic book whose effective-position count sits right at a
     // rounding boundary: 12.48.
     const hhi = 1 / 12.48;
-    const withoutArg = interpretHHI(hhi);
-    // Mirrors the API shape: effective_positions pre-rounded to one decimal
-    // (12.48 -> 12.5) before being handed back to interpretHHI as the
-    // second argument — this used to double-round to 13.
-    const preRounded = Number((1 / hhi).toFixed(1));
-    expect(preRounded).toBe(12.5);
-    const withArg = interpretHHI(hhi, preRounded);
-    expect(withoutArg.text).toBe(withArg.text);
-    expect(withoutArg.text).toContain("~12 equal positions");
+    const eff = effectivePositionsFromHHI(hhi);
+    expect(eff).toBeCloseTo(12.48, 6);
+
+    // This is exactly what the ClassificationCard tile computes.
+    const tileCount = Math.round(eff);
+    expect(tileCount).toBe(12);
+    expect(interpretHHI(hhi).text).toContain(`~${tileCount} equal positions`);
+
+    // Proof this used to break: an API figure pre-rounded to one decimal
+    // (12.48 -> 12.5) fed back through Math.round on its own double-rounds
+    // to 13 — a different integer than the sentence's 12.
+    const preRoundedApiFigure = Number(eff.toFixed(1));
+    expect(preRoundedApiFigure).toBe(12.5);
+    expect(Math.round(preRoundedApiFigure)).not.toBe(tileCount);
   });
 
-  it("derives effective positions from 1/HHI when not provided", () => {
+  it("derives effective positions from 1/HHI (well-diversified case)", () => {
     const r = interpretHHI(0.05);
     expect(r.text).toContain("~20 equal positions");
     expect(r.tone).toBe("good");

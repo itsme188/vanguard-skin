@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getConcentrationMetrics } from "@/lib/queries/analysis";
 import { computeConcentration } from "@/lib/compute/risk";
-import { interpretHHI } from "@/lib/analysis/interpret";
+import { interpretHHI, effectivePositionsFromHHI } from "@/lib/analysis/interpret";
 import { getConcentrationUniverse } from "@/lib/queries/concentration-universe";
 
 /**
@@ -116,13 +116,21 @@ describe("Herfindahl parity: Concentration Metrics vs Risk Decomposition", () =>
     const metrics = getConcentrationMetrics(db);
     const risk = computeConcentration(db);
 
-    // The Concentration card passes its one-decimal effective_positions
-    // alongside the HHI (ClassificationCard.tsx); Risk Decomposition passes
-    // the HHI alone (RiskMetrics.tsx). Both must land on the same integer.
-    const cardText = interpretHHI(metrics.hhi, metrics.effective_positions).text;
+    // Concentration Metrics (ClassificationCard.tsx) and Risk Decomposition
+    // (RiskMetrics.tsx) both call interpretHHI with the HHI alone now — no
+    // separate effective_positions argument to drift out of sync.
+    const cardText = interpretHHI(metrics.hhi).text;
     const riskText = interpretHHI(risk.herfindahl!).text;
     expect(cardText).toBe(riskText);
     expect(cardText).toContain("equal positions");
+
+    // The Effective Positions tile (ClassificationCard.tsx) renders
+    // Math.round(effectivePositionsFromHHI(hhi)) — the SAME integer the
+    // sentence quotes, not the API's independently-rounded
+    // effective_positions field (qa:
+    // analysis-diagnostics--two-herfindahl-values-same-page-regression-3).
+    const tileCount = Math.round(effectivePositionsFromHHI(metrics.hhi));
+    expect(cardText).toContain(`~${tileCount} equal positions`);
   });
 
   it("the shared universe carries the unpriced position and drops the matured one", () => {
@@ -171,9 +179,7 @@ describe("Herfindahl parity: Concentration Metrics vs Risk Decomposition", () =>
       const metrics = getConcentrationMetrics(db, scope);
       const risk = computeConcentration(db, scope);
       expect(metrics.hhi).toBe(risk.herfindahl);
-      expect(interpretHHI(metrics.hhi, metrics.effective_positions).text).toBe(
-        interpretHHI(risk.herfindahl!).text
-      );
+      expect(interpretHHI(metrics.hhi).text).toBe(interpretHHI(risk.herfindahl!).text);
     }
   });
 
