@@ -110,9 +110,13 @@ export function tradeReviewFailureMessage(
 ): string {
   const lead = "Couldn't generate the review";
   const detail = (reason ?? "").trim();
+  // A domain sentence rarely ends in a period ("No closed trades found for
+  // this account in … to …"); terminate it so the save-state sentence that
+  // follows reads as its own sentence.
+  const terminated = /[.!?…]$/.test(detail) ? detail : `${detail}.`;
   const head =
     detail && !detail.toLowerCase().startsWith("couldn't generate the review")
-      ? `${lead} — ${detail}`
+      ? `${lead} — ${terminated}`
       : `${lead}.`;
   const tail =
     saveState === "unknown"

@@ -837,8 +837,9 @@ function deriveActions(
     });
   }
 
-  // Cash accuracy
-  if (cash.score < 50) {
+  // Cash accuracy — same predicate as the cash guidance text (the popover
+  // must not name something to do without an action row for it).
+  if (cash.guidanceActionable) {
     actions.push({
       severity: "warning",
       message: `Cash inferred from ${cash.daysSinceAnchor ?? "?"}d-old snapshot`,
@@ -847,12 +848,16 @@ function deriveActions(
     });
   }
 
-  // Holdings recency
-  const staleAccounts = holdings.perAccount.filter(a => (a.daysOld ?? 999) > 30);
+  // Holdings recency — same predicate as the holdings guidance text (worst
+  // account more than a day old), not the old 30-day threshold that let the
+  // guidance name a stale account with no matching action row.
+  const staleAccounts = holdings.guidanceActionable
+    ? holdings.perAccount.filter(a => (a.daysOld ?? 999) > 1)
+    : [];
   if (staleAccounts.length > 0) {
     actions.push({
       severity: "warning",
-      message: `${staleAccounts.map(a => a.name).join(", ")} holdings are ${Math.max(...staleAccounts.map(a => a.daysOld ?? 0))}+ days old`,
+      message: `${staleAccounts.map(a => a.name).join(", ")} holdings are ${Math.max(...staleAccounts.map(a => a.daysOld ?? 0))} days old`,
       fix: "Import latest statement or sync IBKR positions",
       autoFixable: false,
     });
