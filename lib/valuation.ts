@@ -78,14 +78,27 @@ export function adjustedMarketValueSQL(
  * Cost-basis expression with a per-share-scaled stale-row fallback.
  *
  * Plaid/TWS sync rows carry cost_basis = NULL; the rescue is the latest
- * KNOWN-basis statement row for the same (account, security). That row can
- * belong to a DIFFERENT share count (and stores short bases with varying
- * sign conventions), so serving its basis verbatim renders impossible
- * gains — a -50-share short inheriting a -80-share row's whole basis showed
- * a loss 2.4x its notional. The fallback therefore serves per-share basis
- * magnitude x current quantity, signed like the current position (long
- * basis positive, short proceeds negative). When either quantity is zero
- * the raw stale value passes through (nothing to scale by).
+ * KNOWN-basis statement row for the same (account, security) THAT SHARES THE
+ * CURRENT ROW'S SIGN (long rescues only from long, short only from short).
+ * That row can belong to a DIFFERENT share count (and stores short bases
+ * with varying sign conventions), so serving its basis verbatim renders
+ * impossible gains — a -50-share short inheriting a -80-share row's whole
+ * basis showed a loss 2.4x its notional. The fallback therefore serves
+ * per-share basis magnitude x current quantity, signed like the current
+ * position (long basis positive, short proceeds negative). When either
+ * quantity is zero the raw stale value passes through (nothing to scale by).
+ *
+ * The sign-match requirement (2026-09-23) exists because a live row can flip
+ * sign relative to its own history with no short-sale anywhere in the
+ * ledger — e.g. a reconciler/import artifact turns a +250-share statement
+ * position into a -250-share live row. Rescaling that long row's purchase
+ * cost and negating it fabricates short "proceeds" and an impossible loss
+ * (QA security-detail-positions--short-stale-cost-basis-fallback-impossible-
+ * loss-regression-1). The subquery now only considers reference rows whose
+ * quantity has the SAME sign as the displayed row (both negative or both
+ * positive); among those it still picks the latest by as_of_date. A sign
+ * flip with no matching-sign reference anywhere resolves to NULL — unknown
+ * basis, not a negated one.
  *
  * "Known basis" excludes a stored 0 on BOTH sides of the COALESCE. The
  * convention lives in lib/queries/holdings.ts, whose unrealized_gain gate is
@@ -121,6 +134,11 @@ export function scaledCostBasisFallbackSQL(outer: string, inner: string): string
           WHERE ${i}.account_id = ${o}.account_id
             AND ${i}.security_id = ${o}.security_id
             AND NULLIF(${i}.cost_basis, 0) IS NOT NULL
+            AND (
+              ${o}.quantity = 0
+              OR (${o}.quantity < 0 AND ${i}.quantity < 0)
+              OR (${o}.quantity > 0 AND ${i}.quantity > 0)
+            )
           ORDER BY ${i}.as_of_date DESC LIMIT 1)
       )`;
 }
