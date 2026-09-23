@@ -142,6 +142,19 @@ export interface ValidationReport {
 
 // ── Main validator ──────────────────────────────────────────────────
 
+export interface ValidateParsedResultOptions {
+  /**
+   * Every account name that can currently be resolved by the commit path's
+   * `getAccountId` (lib/import/engine.ts) — i.e. `SELECT name FROM accounts`.
+   * When provided, every row carrying an `accountName` not in this set is
+   * excluded here in preview, with a warning naming the unknown value(s) and
+   * the valid set, so a typo'd account name can no longer preview green and
+   * then 500 on commit (`getAccountId` throws `Unknown account: …`). Omit
+   * (existing callers/tests) to leave account-name checking off entirely.
+   */
+  knownAccountNames?: string[];
+}
+
 /**
  * Validate a parsed import result before committing to the database.
  * Removes rows with critical errors (bad dates, NaN quantities) and
@@ -149,9 +162,26 @@ export interface ValidationReport {
  */
 export function validateParsedResult(
   parsed: ParsedImportResult,
+  opts?: ValidateParsedResultOptions,
 ): ValidationReport {
   const skippedRows: SkippedRow[] = [];
   const warnings: string[] = [];
+
+  // ── Account-name resolution (preview-mode opt-in) ──────────────────
+  const knownAccountNamesSet = opts?.knownAccountNames
+    ? new Set(opts.knownAccountNames)
+    : null;
+  const sortedKnownAccountNames = knownAccountNamesSet
+    ? [...knownAccountNamesSet].sort()
+    : [];
+  const unknownAccountNamesSeen = new Set<string>();
+
+  /** Returns a skip reason when `accountName` isn't in the known set, else null. */
+  function unknownAccountReason(accountName: string): string | null {
+    if (!knownAccountNamesSet || knownAccountNamesSet.has(accountName)) return null;
+    unknownAccountNamesSeen.add(accountName);
+    return `Unknown account "${accountName}" — valid accounts: ${sortedKnownAccountNames.join(", ")}`;
+  }
 
   // ── Transactions ────────────────────────────────────────────────
   const validTransactions: ParsedTransaction[] = [];
@@ -214,6 +244,17 @@ export function validateParsedResult(
       );
     }
 
+    const txnAccountReason = unknownAccountReason(txn.accountName);
+    if (txnAccountReason) {
+      skippedRows.push({
+        category: "transaction",
+        index: i,
+        reason: txnAccountReason,
+        symbol: txn.symbol,
+      });
+      skip = true;
+    }
+
     if (!skip) {
       validTransactions.push(txn);
     }
@@ -260,6 +301,17 @@ export function validateParsedResult(
       warnings.push(
         `Holding #${i + 1} (${h.symbol}): zero quantity — may be a closed position`,
       );
+    }
+
+    const hAccountReason = unknownAccountReason(h.accountName);
+    if (hAccountReason) {
+      skippedRows.push({
+        category: "holding",
+        index: i,
+        reason: hAccountReason,
+        symbol: h.symbol,
+      });
+      skip = true;
     }
 
     if (!skip) {
@@ -358,6 +410,16 @@ export function validateParsedResult(
       skip = true;
     }
 
+    const sAccountReason = unknownAccountReason(s.accountName);
+    if (sAccountReason) {
+      skippedRows.push({
+        category: "snapshot",
+        index: i,
+        reason: sAccountReason,
+      });
+      skip = true;
+    }
+
     if (!skip) {
       validSnapshots.push(s);
     }
@@ -409,6 +471,18 @@ export function validateParsedResult(
   const validCorporateActions: ParsedImportResult["corporateActions"] = [];
   for (let i = 0; i < parsed.corporateActions.length; i++) {
     const ca = parsed.corporateActions[i];
+
+    const caAccountReason = unknownAccountReason(ca.accountName);
+    if (caAccountReason) {
+      skippedRows.push({
+        category: "corporateAction",
+        index: i,
+        reason: caAccountReason,
+        symbol: ca.symbol,
+      });
+      continue;
+    }
+
     const err = validateCorporateActionInput({
       actionType: ca.actionType,
       effectiveDate: ca.effectiveDate,
@@ -431,6 +505,14 @@ export function validateParsedResult(
   if (skippedRows.length > 0) {
     warnings.unshift(
       `Validation: ${skippedRows.length} row(s) excluded due to invalid data`,
+    );
+  }
+
+  // Unshifted LAST so it lands first — the single most actionable line when
+  // a typo'd account name is why a preview came back with skipped rows.
+  if (unknownAccountNamesSeen.size > 0) {
+    warnings.unshift(
+      `Unknown account(s): ${[...unknownAccountNamesSeen].sort().join(", ")} — valid accounts: ${sortedKnownAccountNames.join(", ")}`,
     );
   }
 
