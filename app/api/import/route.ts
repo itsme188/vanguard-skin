@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { parseImport, commitImport } from "@/lib/import/engine";
 import type { CommitResult } from "@/lib/import/engine";
 import { validateParsedResult } from "@/lib/import/validate";
+import { getAllAccounts } from "@/lib/queries/accounts";
 import { classifyImportError } from "@/lib/import/error-classify";
 import {
   commitDonations,
@@ -123,6 +124,11 @@ export async function POST(request: NextRequest) {
     // after the loop to decide whether the request carried any corporate
     // action activity, and if so, what the tax-lot replay found.
     const commitResultsRaw: CommitResult[] = [];
+    // Resolved once per request — preview validation checks every row's
+    // accountName against this set so a typo'd account can't preview green
+    // and then 500 on commit (commitImport's getAccountId throws on a miss).
+    const knownAccountNames =
+      mode === "preview" ? getAllAccounts(db).map((a) => a.name) : undefined;
 
     for (const file of files) {
       const isPdf = file.type === "application/pdf" || file.name.endsWith(".pdf");
@@ -149,7 +155,9 @@ export async function POST(request: NextRequest) {
 
       // Preview mode — run validation and return summary with any issues
       if (mode === "preview") {
-        const { skippedRows, validatedResult } = validateParsedResult(parsed);
+        const { skippedRows, validatedResult } = validateParsedResult(parsed, {
+          knownAccountNames,
+        });
         results.push({
           filename: file.name,
           success: true,

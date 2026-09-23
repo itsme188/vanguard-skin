@@ -507,3 +507,204 @@ describe("validateParsedResult", () => {
     }
   });
 });
+
+// ── Account-name resolution (opts.knownAccountNames) ────────────────
+// QA finding import-preview--no-account-validation-500-on-commit: a typo'd
+// accountName previewed green (validateParsedResult never checked it) and
+// then 500'd at commit, because commitImport's getAccountId only SELECTs —
+// it never creates an account. These pin the preview-time guard.
+
+describe("validateParsedResult: knownAccountNames option", () => {
+  const KNOWN = ["IBKR", "Vanguard Roth IRA", "Vanguard Taxable"];
+
+  it("excludes a transaction naming an unknown account and lists the valid set in the reason", () => {
+    const parsed = makeParsedResult({
+      transactions: [
+        {
+          accountName: "Vangaurd Taxable", // typo
+          tradeDate: "2025-06-15",
+          type: "BUY",
+          symbol: "AAPL",
+          quantity: 10,
+          amount: -1500,
+          sourceKey: "test:1",
+        },
+      ],
+    });
+
+    const { skippedRows, validatedResult } = validateParsedResult(parsed, {
+      knownAccountNames: KNOWN,
+    });
+
+    expect(validatedResult.transactions).toHaveLength(0);
+    expect(skippedRows).toHaveLength(1);
+    expect(skippedRows[0].category).toBe("transaction");
+    expect(skippedRows[0].reason).toContain('Unknown account "Vangaurd Taxable"');
+    expect(skippedRows[0].reason).toContain("IBKR");
+    expect(skippedRows[0].reason).toContain("Vanguard Roth IRA");
+    expect(skippedRows[0].reason).toContain("Vanguard Taxable");
+  });
+
+  it("unshifts a single summary warning naming every unknown account and the valid set", () => {
+    const parsed = makeParsedResult({
+      transactions: [
+        {
+          accountName: "Vangaurd Taxable",
+          tradeDate: "2025-06-15",
+          type: "BUY",
+          symbol: "AAPL",
+          quantity: 10,
+          amount: -1500,
+          sourceKey: "test:1",
+        },
+      ],
+      holdings: [
+        {
+          accountName: "Robinhood", // a second, distinct unknown name
+          symbol: "MSFT",
+          quantity: 5,
+          asOfDate: "2025-06-30",
+          sourceKey: "test:h1",
+        },
+      ],
+    });
+
+    const { validatedResult } = validateParsedResult(parsed, {
+      knownAccountNames: KNOWN,
+    });
+
+    const summary = validatedResult.warnings[0];
+    expect(summary).toContain("Unknown account(s):");
+    expect(summary).toContain("Vangaurd Taxable");
+    expect(summary).toContain("Robinhood");
+    expect(summary).toContain("IBKR");
+    expect(summary).toContain("Vanguard Roth IRA");
+    expect(summary).toContain("Vanguard Taxable");
+  });
+
+  it("passes rows through unchanged when accountName matches the known set", () => {
+    const parsed = makeParsedResult({
+      transactions: [
+        {
+          accountName: "Vanguard Taxable",
+          tradeDate: "2025-06-15",
+          type: "BUY",
+          symbol: "AAPL",
+          quantity: 10,
+          amount: -1500,
+          sourceKey: "test:1",
+        },
+      ],
+      holdings: [
+        {
+          accountName: "IBKR",
+          symbol: "MSFT",
+          quantity: 5,
+          asOfDate: "2025-06-30",
+          sourceKey: "test:h1",
+        },
+      ],
+      snapshots: [
+        {
+          accountName: "Vanguard Roth IRA",
+          monthEndDate: "2025-06-30",
+          totalValue: 50000,
+          source: "test",
+        },
+      ],
+      corporateActions: [
+        {
+          accountName: "IBKR",
+          symbol: "AAAA",
+          actionType: "SPLIT",
+          effectiveDate: "2025-06-01",
+          ratioNumerator: 4,
+          ratioDenominator: 1,
+          quantityDelta: 300,
+          sourceKey: "test:ca1",
+        },
+      ],
+    });
+
+    const { skippedRows, validatedResult } = validateParsedResult(parsed, {
+      knownAccountNames: KNOWN,
+    });
+
+    expect(skippedRows).toHaveLength(0);
+    expect(validatedResult.transactions).toHaveLength(1);
+    expect(validatedResult.holdings).toHaveLength(1);
+    expect(validatedResult.snapshots).toHaveLength(1);
+    expect(validatedResult.corporateActions).toHaveLength(1);
+    expect(validatedResult.warnings.some((w) => w.includes("Unknown account"))).toBe(false);
+  });
+
+  it("excludes holdings, snapshots, and corporate actions naming an unknown account", () => {
+    const parsed = makeParsedResult({
+      holdings: [
+        {
+          accountName: "Robinhood",
+          symbol: "MSFT",
+          quantity: 5,
+          asOfDate: "2025-06-30",
+          sourceKey: "test:h1",
+        },
+      ],
+      snapshots: [
+        {
+          accountName: "Robinhood",
+          monthEndDate: "2025-06-30",
+          totalValue: 50000,
+          source: "test",
+        },
+      ],
+      corporateActions: [
+        {
+          accountName: "Robinhood",
+          symbol: "AAAA",
+          actionType: "SPLIT",
+          effectiveDate: "2025-06-01",
+          ratioNumerator: 4,
+          ratioDenominator: 1,
+          quantityDelta: 300,
+          sourceKey: "test:ca1",
+        },
+      ],
+    });
+
+    const { skippedRows, validatedResult } = validateParsedResult(parsed, {
+      knownAccountNames: KNOWN,
+    });
+
+    expect(validatedResult.holdings).toHaveLength(0);
+    expect(validatedResult.snapshots).toHaveLength(0);
+    expect(validatedResult.corporateActions).toHaveLength(0);
+    expect(skippedRows.map((r) => r.category).sort()).toEqual(
+      ["corporateAction", "holding", "snapshot"].sort(),
+    );
+    for (const row of skippedRows) {
+      expect(row.reason).toContain('Unknown account "Robinhood"');
+    }
+  });
+
+  it("does not check account names at all when opts is omitted (existing callers unchanged)", () => {
+    const parsed = makeParsedResult({
+      transactions: [
+        {
+          accountName: "Totally Made Up Brokerage",
+          tradeDate: "2025-06-15",
+          type: "BUY",
+          symbol: "AAPL",
+          quantity: 10,
+          amount: -1500,
+          sourceKey: "test:1",
+        },
+      ],
+    });
+
+    const { skippedRows, validatedResult } = validateParsedResult(parsed);
+
+    expect(skippedRows).toHaveLength(0);
+    expect(validatedResult.transactions).toHaveLength(1);
+    expect(validatedResult.warnings.some((w) => w.includes("Unknown account"))).toBe(false);
+  });
+});
