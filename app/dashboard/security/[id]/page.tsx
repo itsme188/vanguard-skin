@@ -6,6 +6,7 @@ import { getSecurityDetail } from "@/lib/queries/security-detail";
 import { isOnWatchlist, getWatchlistItem } from "@/lib/queries/watchlist";
 import { getResearchDocumentsForSymbol } from "@/lib/queries/research-documents";
 import { ResearchDocumentsPanel } from "../../components/ResearchDocumentsPanel";
+import { ScrollFade } from "../../components/ScrollFade";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { CorporateActionsSection } from "../../components/CorporateActionsSection";
@@ -369,7 +370,7 @@ export default async function SecurityDetailPage(props: {
       {/* Positions */}
       {positions.length > 0 && (
         <Section title="Positions">
-          <div className="overflow-x-auto">
+          <ScrollFade>
             <table className="w-full">
               <thead>
                 <tr>
@@ -440,7 +441,7 @@ export default async function SecurityDetailPage(props: {
                 </tfoot>
               )}
             </table>
-          </div>
+          </ScrollFade>
         </Section>
       )}
 
@@ -475,7 +476,7 @@ export default async function SecurityDetailPage(props: {
               ))}
             </div>
           )}
-          <div className="overflow-x-auto">
+          <ScrollFade>
             <table className="w-full">
               <thead>
                 <tr>
@@ -513,14 +514,14 @@ export default async function SecurityDetailPage(props: {
                 })}
               </tbody>
             </table>
-          </div>
+          </ScrollFade>
         </Section>
       )}
 
       {/* Closed Sales */}
       {closedSales.length > 0 && (
         <Section title={`Recent Sales · ${closedSales.length}`}>
-          <div className="overflow-x-auto">
+          <ScrollFade>
             <table className="w-full">
               <thead>
                 <tr>
@@ -566,7 +567,7 @@ export default async function SecurityDetailPage(props: {
                 ))}
               </tbody>
             </table>
-          </div>
+          </ScrollFade>
         </Section>
       )}
 
@@ -586,7 +587,7 @@ export default async function SecurityDetailPage(props: {
               assessments may be wrong; resolve the lot history and regenerate those reviews.
             </p>
           )}
-          <div className="overflow-x-auto">
+          <ScrollFade>
             <table className="w-full">
               <thead>
                 <tr>
@@ -623,7 +624,7 @@ export default async function SecurityDetailPage(props: {
                 ))}
               </tbody>
             </table>
-          </div>
+          </ScrollFade>
           {(() => {
             const visible = tradeGrades.filter(
               (tg) => tg.assessment || tg.what_went_well || tg.what_went_wrong
@@ -847,7 +848,7 @@ export default async function SecurityDetailPage(props: {
         if (relatedOptions.length === 0) return null;
         return (
           <Section title={`Related Options · ${relatedOptions.length}`}>
-            <div className="overflow-x-auto">
+            <ScrollFade>
               <table className="w-full">
                 <thead>
                   <tr>
@@ -879,7 +880,7 @@ export default async function SecurityDetailPage(props: {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollFade>
           </Section>
         );
       })()}
