@@ -99,6 +99,65 @@ describe("getHoldingsBySecurity includes shorts", () => {
     expect(rows[0].unrealized_gain).toBeCloseTo(-50 * 144 - -(perShare * 50), 2); // ~ -773.66
   });
 
+  it("resolves to NULL when a short's only known-basis sibling is a LONG row (sign flip)", () => {
+    // qa:security-detail-positions--short-stale-cost-basis-fallback-impossible-loss-regression-1
+    // A live -10 share row with no basis of its own must never borrow a
+    // +10-share LONG row's basis — negating a long's purchase cost and
+    // presenting it as the short's proceeds fabricates a loss with no
+    // short-sale anywhere in the ledger. Unknown basis, not a fabricated one.
+    const symbol = "SFLIP";
+    const security = seedSecurity(db, symbol);
+    seedHolding(db, VANGUARD, security, 10, "2026-06-30", 1000, "canonical:hold:SFLIP:2026-06-30");
+    seedHolding(db, VANGUARD, security, -10, "2026-08-03", null, "plaid:1:SFLIP:2026-08-03");
+    seedPrice(db, security, "2026-08-03", 50);
+
+    const rows = getHoldingsBySecurity(db, security);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].quantity).toBe(-10);
+    expect(rows[0].cost_basis).toBeNull();
+    expect(rows[0].unrealized_gain).toBeNull();
+    expect(rows[0].current_value).toBe(-500);
+  });
+
+  it("skips a newer opposite-sign row and rescues from the latest SAME-SIGN row instead", () => {
+    // A short-sale statement row further back in time is still the right
+    // rescue source even when a newer (but opposite-sign) row sits between
+    // it and the live row — ranking is by as_of_date WITHIN the matching
+    // sign, not by as_of_date overall.
+    // Deliberately chosen so the buggy (sign-blind, latest-by-date) answer
+    // and the fixed (sign-matched) answer are numerically DIFFERENT — a
+    // coincidental match would let this test pass without the fix.
+    const symbol = "SSIGN";
+    const security = seedSecurity(db, symbol);
+    seedHolding(db, VANGUARD, security, -20, "2026-05-31", -3000, "canonical:hold:SSIGN:2026-05-31");
+    seedHolding(db, VANGUARD, security, 5, "2026-06-15", 500, "canonical:hold:SSIGN:2026-06-15");
+    seedHolding(db, VANGUARD, security, -10, "2026-08-03", null, "plaid:1:SSIGN:2026-08-03");
+    seedPrice(db, security, "2026-08-03", 50);
+
+    const rows = getHoldingsBySecurity(db, security);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].quantity).toBe(-10);
+    // Sign-matched scale off the -20/-3000 row: -1 * 3000 * 10/20 = -1500.
+    // (The buggy sign-blind fallback would instead pick the newer +5/500 row
+    // and yield -1000 — a different number, so this test actually pins the
+    // fix rather than passing by coincidence.)
+    expect(rows[0].cost_basis).toBeCloseTo(-1500, 6);
+    expect(rows[0].unrealized_gain).toBeCloseTo(-10 * 50 - -1500, 6);
+  });
+
+  it("long->long rescale is unaffected by the sign-match filter", () => {
+    const symbol = "SLONG";
+    const security = seedSecurity(db, symbol);
+    seedHolding(db, VANGUARD, security, 100, "2026-06-30", 1000, "canonical:hold:SLONG:2026-06-30");
+    seedHolding(db, VANGUARD, security, 105, "2026-08-03", null, "plaid:1:SLONG:2026-08-03");
+    seedPrice(db, security, "2026-08-03", 20);
+
+    const rows = getHoldingsBySecurity(db, security);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].cost_basis).toBeCloseTo(1050, 6);
+    expect(rows[0].unrealized_gain).toBeCloseTo(105 * 20 - 1050, 6);
+  });
+
   it("still excludes closed (quantity 0) tombstone rows", () => {
     const gme = seedSecurity(db, "GME");
     seedHolding(db, VANGUARD, gme, 0, "2026-07-10", null, "canonical:hold:GME:2026-07-10");
