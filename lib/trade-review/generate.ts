@@ -8,6 +8,7 @@ import {
   computeGroupedTrades,
   computeGroupedSummary,
   filterFullyCoveredTrades,
+  partitionSyntheticCloses,
   type GroupedTrade,
 } from "@/lib/compute/trade-roundtrips";
 import { getPriorReviewSummaries } from "@/lib/queries/trade-reviews";
@@ -187,7 +188,23 @@ export async function prepareTradeReview(
     );
   }
 
-  const allGrouped = computeGroupedTrades(roundTrips);
+  // Engine-owned RECONCILE_CLOSE rows are not the user's exits — drop them
+  // before coverage filtering, the summary, questions and the prompt.
+  const { userTrades: allGrouped, syntheticCount } = partitionSyntheticCloses(
+    computeGroupedTrades(roundTrips)
+  );
+  if (syntheticCount > 0) {
+    if (allGrouped.length === 0) {
+      throw new Error(
+        `No user trades in this period — the ${syntheticCount} closes recorded are engine reconciliations, not your exits`
+      );
+    }
+    options?.onProgress?.(
+      `Note: ${syntheticCount} engine-reconciled close(s) excluded — not user trades`,
+      1,
+      totalSteps
+    );
+  }
   // Filter out trades with incomplete lot coverage (e.g., positions held before import history)
   const groupedTrades = filterFullyCoveredTrades(allGrouped);
 
