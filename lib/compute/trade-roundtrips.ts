@@ -320,18 +320,24 @@ export function getAvailableReviewPeriods(db: Database.Database, accountId: numb
   return reviewPeriods(db, accountId, false);
 }
 
-/** Use the same broker-aware close quantity as getRoundTrips / grouped coverage. */
+/**
+ * Use the same broker-aware close quantity as getRoundTrips / grouped coverage.
+ * Engine-owned RECONCILE_CLOSE sales are not user trades and are never counted;
+ * a month whose only sales are synthetic closes is not offered for review.
+ * A sale with no sale transaction (legacy row) still counts as a real sale.
+ */
 function reviewPeriods(db: Database.Database, accountId: number | undefined, onlyNew: boolean): ReviewPeriod[] {
   const rows = db.prepare(`SELECT tls.sale_transaction_id,
       strftime('%Y-%m-01', tls.sale_date) AS period_start,
       date(tls.sale_date, 'start of month', '+1 month', '-1 day') AS period_end,
       SUM(tls.quantity_sold) AS matched_qty, MAX(ABS(t.quantity)) AS actual_qty, t.notes
     FROM tax_lot_sales tls JOIN tax_lots tl ON tl.id=tls.tax_lot_id
-    JOIN transactions t ON t.id=tls.sale_transaction_id
+    LEFT JOIN transactions t ON t.id=tls.sale_transaction_id
     WHERE (? IS NULL OR tl.account_id=?) AND tl.acquisition_date<=tls.sale_date
+      AND (t.type IS NULL OR t.type != 'RECONCILE_CLOSE')
       AND (?=0 OR NOT EXISTS (SELECT 1 FROM trade_reviews tr
         WHERE tr.account_id=tl.account_id AND tr.period_start=strftime('%Y-%m-01',tls.sale_date)))
-    GROUP BY tls.sale_transaction_id
+    GROUP BY COALESCE(tls.sale_transaction_id, 'sale:' || tls.id)
     ORDER BY period_start DESC`).all(accountId ?? null, accountId ?? null, Number(onlyNew)) as Array<{
       period_start: string; period_end: string; matched_qty: number; actual_qty: number | null; notes: string | null;
     }>;
@@ -433,6 +439,19 @@ export const MIN_LOT_COVERAGE = 0.9;
  * Trades where matched lots cover <80% of the actual sell quantity are excluded
  * (they represent incomplete data — e.g., positions held before import history starts).
  */
+/**
+ * Split grouped trades into the user's own trades and engine-reconciled
+ * closes (RECONCILE_CLOSE — engine-owned, never user activity).
+ * Pure function — no DB access.
+ */
+export function partitionSyntheticCloses(grouped: GroupedTrade[]): {
+  userTrades: GroupedTrade[];
+  syntheticCount: number;
+} {
+  const userTrades = grouped.filter((g) => !g.isSyntheticClose);
+  return { userTrades, syntheticCount: grouped.length - userTrades.length };
+}
+
 export function filterFullyCoveredTrades(
   grouped: GroupedTrade[]
 ): GroupedTrade[] {
