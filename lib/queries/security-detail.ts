@@ -107,6 +107,8 @@ export interface SecurityDetailData {
   totalUnrealizedGain: number | null;
   openTaxLots: TaxLotWithSecurity[];
   closedSales: TaxLotSaleWithDetails[];
+  /** Every closed sale for the security; closedSales is capped at 20. */
+  closedSalesTotal: number;
   recentTransactions: SecurityDetailTransaction[];
   relatedOptionTransactions: SecurityDetailTransaction[];
   notes: NoteWithContext[];
@@ -252,6 +254,20 @@ export function getOpenTaxLotsBySecurity(db: Database.Database, securityId: numb
 }
 
 /**
+ * FROM..WHERE shared by getClosedSalesBySecurity (the capped list) and
+ * countClosedSalesBySecurity (the header total) so the "Recent Sales" count
+ * and its rows can never disagree on which sales exist. One bound param:
+ * the security id.
+ */
+const CLOSED_SALES_FROM_WHERE = `FROM tax_lot_sales tls
+      JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+      JOIN accounts a ON a.id = tl.account_id
+      JOIN securities s ON s.id = tl.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
+      JOIN transactions t ON t.id = tls.sale_transaction_id
+      WHERE tl.security_id = ?`;
+
+/**
  * Get closed tax lot sales for a specific security.
  *
  * sale_price / proceeds / cost_basis_allocated / realized_gain_loss /
@@ -281,13 +297,7 @@ export function getClosedSalesBySecurity(
         tls.realized_gain_loss * COALESCE(fx.usd_per_unit, 1) AS realized_gain_loss,
         tls.is_long_term, tls.holding_period_days,
         (t.type = 'RECONCILE_CLOSE') AS is_synthetic_close
-      FROM tax_lot_sales tls
-      JOIN tax_lots tl ON tl.id = tls.tax_lot_id
-      JOIN accounts a ON a.id = tl.account_id
-      JOIN securities s ON s.id = tl.security_id
-      LEFT JOIN fx_rates fx ON fx.currency = s.currency
-      JOIN transactions t ON t.id = tls.sale_transaction_id
-      WHERE tl.security_id = ?
+      ${CLOSED_SALES_FROM_WHERE}
       ORDER BY tls.sale_date DESC
       LIMIT ?`
     )
@@ -295,6 +305,18 @@ export function getClosedSalesBySecurity(
     Omit<TaxLotSaleWithDetails, "is_synthetic_close"> & { is_synthetic_close: number }
   >;
   return rows.map((r) => ({ ...r, is_synthetic_close: Boolean(r.is_synthetic_close) }));
+}
+
+/**
+ * Total closed sales for a security — same predicate as
+ * getClosedSalesBySecurity, uncapped. Feeds the hub's "Recent Sales · N of M"
+ * header so a capped list never reads as the full history.
+ */
+export function countClosedSalesBySecurity(db: Database.Database, securityId: number): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) AS n ${CLOSED_SALES_FROM_WHERE}`)
+    .get(securityId) as { n: number };
+  return row.n;
 }
 
 /**
@@ -623,6 +645,7 @@ export function getSecurityDetail(
   const positions = getHoldingsBySecurity(db, securityId);
   const openTaxLots = getOpenTaxLotsBySecurity(db, securityId);
   const closedSales = getClosedSalesBySecurity(db, securityId);
+  const closedSalesTotal = countClosedSalesBySecurity(db, securityId);
   const recentTransactions = getTransactionsBySecurity(db, securityId);
   // Related options: only when the current security is a stock (or unknown) —
   // option pages don't cross-link to sibling strikes.
@@ -679,6 +702,7 @@ export function getSecurityDetail(
     totalUnrealizedGain,
     openTaxLots,
     closedSales,
+    closedSalesTotal,
     recentTransactions,
     relatedOptionTransactions,
     notes,
