@@ -8,6 +8,7 @@ import { displayCashEffect } from "@/lib/format/cash-effect";
 import { SortableHeader } from "./SortableHeader";
 import { compareValues, useSortParam, type SortDir } from "@/lib/hooks/useSortParam";
 import { Section } from "./Section";
+import { ScrollFade } from "./ScrollFade";
 import { Chip, type ChipTone } from "./Chip";
 import { transactionTypeLabel } from "@/lib/chart/marker-label";
 
@@ -164,7 +165,7 @@ export function TransactionsSection({
         </div>
       )}
 
-      <div className="overflow-x-auto">
+      <ScrollFade>
         <table className="w-full">
           <thead className="bg-raised">
             <tr>
@@ -248,7 +249,7 @@ export function TransactionsSection({
             )}
           </tbody>
         </table>
-      </div>
+      </ScrollFade>
     </Section>
   );
 }
