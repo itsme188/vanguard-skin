@@ -126,7 +126,8 @@ export async function POST(request: NextRequest) {
     const commitResultsRaw: CommitResult[] = [];
     // Resolved once per request — preview validation checks every row's
     // accountName against this set so a typo'd account can't preview green
-    // and then 500 on commit (commitImport's getAccountId throws on a miss).
+    // and then 500 on commit. commitImport resolves the same set itself, so
+    // the two modes exclude identical rows.
     const knownAccountNames =
       mode === "preview" ? getAllAccounts(db).map((a) => a.name) : undefined;
 
@@ -234,6 +235,10 @@ export async function POST(request: NextRequest) {
         // commit-time corporate-action warnings (unresolved symbol, ratio
         // collision) — both are meaningful post-commit, neither should be lost.
         warnings: [...parsed.warnings, ...commitResult.warnings],
+        // Rows validation excluded at commit (same predicate as preview, e.g.
+        // an unknown account name) — reported, never silently dropped.
+        skippedRows:
+          commitResult.skippedRows.length > 0 ? commitResult.skippedRows : undefined,
       });
     }
 

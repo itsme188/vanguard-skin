@@ -147,10 +147,11 @@ export interface ValidateParsedResultOptions {
    * Every account name that can currently be resolved by the commit path's
    * `getAccountId` (lib/import/engine.ts) — i.e. `SELECT name FROM accounts`.
    * When provided, every row carrying an `accountName` not in this set is
-   * excluded here in preview, with a warning naming the unknown value(s) and
-   * the valid set, so a typo'd account name can no longer preview green and
-   * then 500 on commit (`getAccountId` throws `Unknown account: …`). Omit
-   * (existing callers/tests) to leave account-name checking off entirely.
+   * excluded with a warning naming the unknown value(s) and the valid set.
+   * BOTH the route's preview and `commitImport` pass it (commit resolves the
+   * set itself), so a typo'd account name can neither preview green nor 500
+   * the commit (`getAccountId` throws `Unknown account: …`). Omit (existing
+   * callers/tests) to leave account-name checking off entirely.
    */
   knownAccountNames?: string[];
 }
@@ -167,7 +168,7 @@ export function validateParsedResult(
   const skippedRows: SkippedRow[] = [];
   const warnings: string[] = [];
 
-  // ── Account-name resolution (preview-mode opt-in) ──────────────────
+  // ── Account-name resolution (opt-in; preview + commit) ──────────────────
   const knownAccountNamesSet = opts?.knownAccountNames
     ? new Set(opts.knownAccountNames)
     : null;
