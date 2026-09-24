@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import type { ParsedImportResult, SourceType } from "./types";
 import type { ImportBatch } from "@/lib/types";
 import { detectSourceType } from "./detect";
-import { validateParsedResult } from "./validate";
+import { validateParsedResult, type SkippedRow } from "./validate";
 import { parseIbkrActivity } from "./parsers/ibkr-activity";
 import { parseIbkrHoldings } from "./parsers/ibkr-holdings";
 import { parseMonthlyValues } from "./parsers/monthly-values";
@@ -235,6 +235,12 @@ export interface CommitResult {
    * push warnings, and those are not CA evidence (spec §5).
    */
   corporateActionWarningCount: number;
+  /**
+   * Rows validation excluded before any write (bad dates, garbage symbols,
+   * unknown account names, …) — the same list preview reports, so the commit
+   * response can show what was left out instead of failing on it.
+   */
+  skippedRows: SkippedRow[];
 }
 
 // Map the parser's sourceType to the price.source value used by step 5's
@@ -256,8 +262,18 @@ export function commitImport(
   db: Database.Database,
   parsed: ParsedImportResult
 ): CommitResult {
-  // Validate before writing — removes rows with invalid dates/quantities/prices
-  const { validatedResult, skippedRows } = validateParsedResult(parsed);
+  // Validate before writing — removes rows with invalid dates/quantities/prices.
+  // The account list is passed so commit excludes exactly the rows preview
+  // promised to exclude (route preview validates with the same set): a row
+  // naming an unknown account is skipped here instead of reaching
+  // `getAccountId`, which throws and would 500 the whole commit — rolling
+  // back the file's valid rows with it (QA 2026-09-24, regression of 19341671).
+  const knownAccountNames = (
+    db.prepare("SELECT name FROM accounts").all() as { name: string }[]
+  ).map((r) => r.name);
+  const { validatedResult, skippedRows } = validateParsedResult(parsed, {
+    knownAccountNames,
+  });
   if (skippedRows.length > 0) {
     console.warn(
       `Import validation: ${skippedRows.length} row(s) excluded:`,
@@ -876,6 +892,7 @@ export function commitImport(
       unmatchedFactors: unmatchedFactors.length > 0 ? unmatchedFactors : undefined,
       warnings,
       corporateActionWarningCount,
+      skippedRows,
     };
   })();
 

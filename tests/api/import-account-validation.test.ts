@@ -107,3 +107,60 @@ Vanguard Taxable,2025-06-15,,BUY,AAPL,Apple Inc,Stock,10,150.25,-1502.50,4.95,`;
     expect((fileResult.warnings ?? []).some((w) => w.includes("Unknown account"))).toBe(false);
   });
 });
+
+/**
+ * QA regression import-preview--no-account-validation-500-on-commit-regression-1
+ * (2026-09-24 sweep): the preview half above shipped in 19341671, but
+ * `commitImport` re-validated WITHOUT the account list, so the rows preview
+ * had promised to exclude reached `getAccountId` and the commit still 500'd
+ * ("Unknown account: …"), rolling back the valid rows in the same file.
+ * Commit must exclude exactly what preview excluded, report those rows, and
+ * write the rest.
+ */
+describe("POST /api/import?mode=commit — account-name validation matches preview", () => {
+  it("commits a mixed file: the valid row lands, the unknown-account row is reported as skipped, no 500", async () => {
+    const csv = `${CANONICAL_TXN_HEADER}
+Vanguard Taxable,2025-06-15,,BUY,AAPL,Apple Inc,Stock,10,150.25,-1502.50,4.95,
+Fidelity Brokerage XYZ,2025-06-16,,BUY,MSFT,Microsoft Corp,Stock,5,400.00,-2000.00,0,`;
+
+    const mod = await import("@/app/api/import/route");
+    const res = await mod.POST(importReq("commit", [{ name: "mixed.csv", content: csv }]));
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ImportRouteResponse & {
+      results: Array<{ committed?: { newTransactions: number } }>;
+    };
+    expect(body.success).toBe(true);
+    const fileResult = body.results[0];
+    expect(fileResult.success).toBe(true);
+    expect(fileResult.committed!.newTransactions).toBe(1);
+
+    expect(fileResult.skippedRows).toBeDefined();
+    expect(fileResult.skippedRows!).toHaveLength(1);
+    expect(fileResult.skippedRows![0].category).toBe("transaction");
+    expect(fileResult.skippedRows![0].reason).toContain('Unknown account "Fidelity Brokerage XYZ"');
+
+    const rows = hoisted.db
+      .prepare("SELECT t.type, s.symbol FROM transactions t JOIN securities s ON s.id = t.security_id")
+      .all() as Array<{ type: string; symbol: string }>;
+    expect(rows).toEqual([{ type: "BUY", symbol: "AAPL" }]);
+  });
+
+  it("commits a file whose every row names an unknown account as a clean no-op (0 transactions), never a 500", async () => {
+    const csv = `${CANONICAL_TXN_HEADER}
+Fidelity Brokerage XYZ,2025-06-16,,BUY,MSFT,Microsoft Corp,Stock,5,400.00,-2000.00,0,`;
+
+    const mod = await import("@/app/api/import/route");
+    const res = await mod.POST(importReq("commit", [{ name: "unknown.csv", content: csv }]));
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ImportRouteResponse & {
+      results: Array<{ committed?: { newTransactions: number } }>;
+    };
+    expect(body.success).toBe(true);
+    expect(body.results[0].committed!.newTransactions).toBe(0);
+    expect(body.results[0].skippedRows!).toHaveLength(1);
+    const count = (hoisted.db.prepare("SELECT COUNT(*) AS c FROM transactions").get() as { c: number }).c;
+    expect(count).toBe(0);
+  });
+});
