@@ -31,6 +31,7 @@ import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { computeATR, type OhlcBar } from "@/lib/chart/indicators";
 import { todayET } from "@/lib/calendar/date-utils";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 
 // ─── Result types ──────────────────────────────────────────────
 
@@ -233,6 +234,11 @@ export function getHoldingsBySecurity(
         AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = h.security_id)
       WHERE h.security_id = ?
         AND ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
+        -- Drop options past expiration on the ET calendar — the same cutoff
+        -- lib/queries/holdings.ts and today-holdings.ts apply via the shared
+        -- liveOptionExpirationSql (the purge's 1-day grace can leave
+        -- yesterday's contract in the table).
+        AND ${liveOptionExpirationSql("s")}
       ORDER BY a.name`
     )
     .all(securityId) as SecurityPosition[];
