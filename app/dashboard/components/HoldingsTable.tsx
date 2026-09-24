@@ -70,7 +70,10 @@ export function HoldingsTable({
                   <td className="px-4 py-3 font-mono font-medium text-ink">
                     {holding.security_type?.toLowerCase() === "option" ? (
                       <>
-                        <span>{holding.underlying_symbol ?? holding.symbol}</span>
+                        <SymbolLink
+                          securityId={holding.security_id}
+                          symbol={holding.underlying_symbol ?? holding.symbol}
+                        />
                         <span className="ml-1.5 text-xs text-ink-faint font-normal">
                           {formatOptionDescription(holding)}
                         </span>
