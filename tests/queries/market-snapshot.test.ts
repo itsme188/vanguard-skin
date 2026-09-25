@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { getMarketSnapshot, type QuoteFetcher } from "@/lib/queries/market-snapshot";
+import { getMarketSnapshot, parseYahooChart, type QuoteFetcher } from "@/lib/queries/market-snapshot";
 
 let db: Database.Database;
 
@@ -144,5 +144,113 @@ describe("getMarketSnapshot", () => {
     expect(snap.source).toBe("none");
     expect(snap.moves).toEqual([]);
     expect(snap.note.toLowerCase()).toContain("unavailable");
+  });
+
+  it("dates a Yahoo fallback by the quote's own session, not today (pre-open)", async () => {
+    seedFreshPair(); // latest local = 2026-06-05 (Fri)
+    // Tuesday 2026-06-16 pre-open: the latest Yahoo session is Monday 06-15.
+    const fetchQuotes: QuoteFetcher = async () => ({
+      SPY: { price: 590, prior: 600, asOf: "2026-06-15" },
+      GS: { price: 1050, prior: 1092, asOf: "2026-06-15" },
+    });
+
+    const snap = await getMarketSnapshot(db, { today: "2026-06-16", fetchQuotes });
+
+    expect(snap.source).toBe("yahoo");
+    expect(snap.asOf).toBe("2026-06-15");
+    expect(snap.staleDays).toBe(1);
+    expect(snap.stale).toBe(false);
+    expect(snap.note).toContain("2026-06-15");
+    expect(snap.note.toLowerCase()).toContain("not today");
+  });
+
+  it("flags a Yahoo fallback whose quotes are several days old as stale", async () => {
+    seedFreshPair();
+    const fetchQuotes: QuoteFetcher = async () => ({
+      SPY: { price: 590, prior: 600, asOf: "2026-06-08" },
+    });
+
+    const snap = await getMarketSnapshot(db, { today: "2026-06-16", fetchQuotes });
+
+    expect(snap.source).toBe("yahoo");
+    expect(snap.asOf).toBe("2026-06-08");
+    expect(snap.staleDays).toBe(8);
+    expect(snap.stale).toBe(true);
+  });
+});
+
+// ─── Yahoo chart parsing (pure) ─────────────────────────────────────────────────
+
+/** 2026-09-24 20:00:00Z = 16:00 ET, the regular-session close. */
+const SEP24_CLOSE = Date.UTC(2026, 8, 24, 20, 0, 0) / 1000;
+const DAY = 86400;
+
+function chartFixture(
+  closes: (number | null)[],
+  meta: Record<string, unknown>,
+): unknown {
+  const n = closes.length;
+  const timestamp = closes.map((_, i) => SEP24_CLOSE - (n - 1 - i) * DAY - 6.5 * 3600);
+  return {
+    chart: {
+      result: [
+        {
+          meta,
+          timestamp,
+          indicators: { quote: [{ close: closes }] },
+        },
+      ],
+    },
+  };
+}
+
+describe("parseYahooChart", () => {
+  const meta = {
+    regularMarketPrice: 127.39,
+    chartPreviousClose: 108.8, // close BEFORE the 5-day window — never the prior session
+    previousClose: 122.6,
+    regularMarketTime: SEP24_CLOSE,
+  };
+
+  it("uses the previous session's bar close, never chartPreviousClose", () => {
+    const q = parseYahooChart(chartFixture([110.1, 115.2, 119.9, 122.6, 127.39], meta));
+    expect(q).not.toBeNull();
+    expect(q!.price).toBe(127.39);
+    expect(q!.prior).toBe(122.6);
+    expect(q!.prior).not.toBe(108.8);
+    expect(q!.asOf).toBe("2026-09-24");
+  });
+
+  it("ignores a trailing null close when picking the latest and prior bars", () => {
+    const q = parseYahooChart(
+      chartFixture([110.1, 115.2, 119.9, 122.6, 127.39, null], meta),
+    );
+    expect(q!.price).toBe(127.39);
+    expect(q!.prior).toBe(122.6);
+  });
+
+  it("falls back to meta.previousClose when only one priced bar exists", () => {
+    const q = parseYahooChart(chartFixture([127.39], meta));
+    expect(q!.price).toBe(127.39);
+    expect(q!.prior).toBe(122.6);
+  });
+
+  it("uses the latest bar close when regularMarketPrice is missing", () => {
+    const { regularMarketPrice: _omit, ...noPrice } = meta;
+    const q = parseYahooChart(chartFixture([119.9, 122.6, 127.39], noPrice));
+    expect(q!.price).toBe(127.39);
+    expect(q!.prior).toBe(122.6);
+  });
+
+  it("returns asOf null when regularMarketTime is missing", () => {
+    const { regularMarketTime: _omit, ...noTime } = meta;
+    const q = parseYahooChart(chartFixture([122.6, 127.39], noTime));
+    expect(q!.asOf).toBeNull();
+  });
+
+  it("returns null for an empty or malformed response", () => {
+    expect(parseYahooChart({})).toBeNull();
+    expect(parseYahooChart(null)).toBeNull();
+    expect(parseYahooChart(chartFixture([], {}))).toBeNull();
   });
 });

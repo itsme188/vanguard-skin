@@ -1465,6 +1465,8 @@ export async function executeTool(
             maxLoss: s.maxLoss,
             breakevens: s.breakevens,
             description: s.description,
+            // null maxProfit/maxLoss means "unlimited" ONLY when this is false.
+            pricingIncomplete: s.pricingIncomplete,
           })),
           positionCount: positions.length,
           strategyCount: strategies.length,
