@@ -47,6 +47,43 @@ export interface DetectedStrategy {
   maxLoss: number | null; // null if unlimited
   breakevens: number[];
   description: string;
+  /**
+   * True when any leg feeding the payoff (option OR stock) has no finite
+   * price. The structure is still reported, but maxProfit / maxLoss are null
+   * and breakevens empty — a missing price must never be modelled as a $0
+   * premium. Consumers MUST check this before reading a null maxProfit /
+   * maxLoss as "unlimited".
+   */
+  pricingIncomplete: boolean;
+}
+
+/** A strategy as the builders produce it, before the pricing gate runs. */
+type StrategyDraft = Omit<DetectedStrategy, "pricingIncomplete">;
+
+/** Every leg carries a finite price (null / undefined / NaN / Infinity fail). */
+function legsPriced(legs: PositionLeg[]): boolean {
+  return legs.every(
+    (l) => typeof l.currentPrice === "number" && Number.isFinite(l.currentPrice)
+  );
+}
+
+/**
+ * The single pricing gate for every builder. The builders price a missing
+ * leg at `?? 0`, which turns "no price row" into a $0 premium and a
+ * confident-looking max loss / breakeven (QA
+ * analysis-detected-strategies--protective-put-missing-put-price-treated-as-zero-premium).
+ * When any leg is unpriced the figures are withheld; fully priced strategies
+ * pass through with their math untouched.
+ */
+function withPricing(draft: StrategyDraft): DetectedStrategy {
+  if (legsPriced(draft.legs)) return { ...draft, pricingIncomplete: false };
+  return {
+    ...draft,
+    maxProfit: null,
+    maxLoss: null,
+    breakevens: [],
+    pricingIncomplete: true,
+  };
 }
 
 // ─── Strategy Detection ─────────────────────────────────────────
@@ -87,7 +124,7 @@ export function detectStrategies(
   positions: PositionLeg[],
   opts: DetectStrategiesOptions = {}
 ): DetectedStrategy[] {
-  const strategies: DetectedStrategy[] = [];
+  const strategies: StrategyDraft[] = [];
   const today = opts.today ?? todayET();
 
   // Separate stocks and options
@@ -132,7 +169,7 @@ export function detectStrategies(
     }
   }
 
-  return strategies;
+  return strategies.map(withPricing);
 }
 
 // ─── Covered Strategies (stock + option) ────────────────────────
@@ -140,8 +177,8 @@ export function detectStrategies(
 function detectCoveredStrategies(
   stock: PositionLeg,
   options: PositionLeg[]
-): DetectedStrategy[] {
-  const strategies: DetectedStrategy[] = [];
+): StrategyDraft[] {
+  const strategies: StrategyDraft[] = [];
   const shares = stock.quantity;
 
   // Covered Call: long stock + short call
@@ -250,8 +287,8 @@ function detectCoveredStrategies(
 function detectSpreadStrategies(
   underlying: string,
   options: PositionLeg[]
-): DetectedStrategy[] {
-  const strategies: DetectedStrategy[] = [];
+): StrategyDraft[] {
+  const strategies: StrategyDraft[] = [];
 
   // Group by expiration
   const byExpiry = new Map<string, PositionLeg[]>();
@@ -290,8 +327,8 @@ function detectVerticalSpreads(
   expiry: string,
   options: PositionLeg[],
   type: "CALL" | "PUT"
-): DetectedStrategy[] {
-  const strategies: DetectedStrategy[] = [];
+): StrategyDraft[] {
+  const strategies: StrategyDraft[] = [];
 
   const longs = options.filter((o) => o.quantity > 0);
   const shorts = options.filter((o) => o.quantity < 0);
@@ -378,8 +415,8 @@ function detectStraddles(
   expiry: string,
   calls: PositionLeg[],
   puts: PositionLeg[]
-): DetectedStrategy[] {
-  const strategies: DetectedStrategy[] = [];
+): StrategyDraft[] {
+  const strategies: StrategyDraft[] = [];
 
   for (const call of calls) {
     for (const put of puts) {
@@ -419,8 +456,8 @@ function detectStrangles(
   expiry: string,
   calls: PositionLeg[],
   puts: PositionLeg[]
-): DetectedStrategy[] {
-  const strategies: DetectedStrategy[] = [];
+): StrategyDraft[] {
+  const strategies: StrategyDraft[] = [];
 
   for (const call of calls) {
     for (const put of puts) {
@@ -459,8 +496,8 @@ function detectIronCondors(
   expiry: string,
   calls: PositionLeg[],
   puts: PositionLeg[]
-): DetectedStrategy[] {
-  const strategies: DetectedStrategy[] = [];
+): StrategyDraft[] {
+  const strategies: StrategyDraft[] = [];
 
   // Iron condor = bear call spread (short lower call, long higher call)
   //             + bull put spread (short higher put, long lower put)
@@ -514,7 +551,7 @@ function detectIronCondors(
 function createNakedOption(
   underlying: string,
   opt: PositionLeg
-): DetectedStrategy {
+): StrategyDraft {
   const isCall = opt.optionType === "CALL";
   const premium = (opt.currentPrice ?? 0) * opt.multiplier * Math.abs(opt.quantity);
 
