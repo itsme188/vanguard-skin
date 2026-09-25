@@ -207,7 +207,13 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
         AND quantity IS NOT NULL AND quantity <> 0`
   );
 
-  const hits: IntegrityHit[] = [];
+  // Each hit carries the drift magnitude it was measured at so the list can
+  // be returned worst-first: the header's cap line names critical[0], and a
+  // key-order list named whichever pair sorted first, not the largest drift
+  // (qa:header-dataconfidence--cap-line-names-first-critical-hit-not-the-worst).
+  // A position with fills but zero lots is a full (1.0) drift; warnings carry
+  // 0 so they trail the criticals. Ties keep key order (stable sort).
+  const hits: Array<{ hit: IntegrityHit; magnitude: number }> = [];
 
   for (const key of allKeys) {
     const [accountIdStr, securityIdStr] = key.split(":");
@@ -227,15 +233,21 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
       const fills = fillsStmt.get(accountId, securityId, ...EQUITY_FILL_TYPES) as { n: number };
       if (fills.n > 0) {
         hits.push({
-          key: `lot-drift:${accountId}:${securityId}`,
-          severity: "critical",
-          reason: `${symbol} (${accountName}): position has ${fills.n} fill${fills.n === 1 ? "" : "s"} but zero tax lots`,
+          magnitude: 1,
+          hit: {
+            key: `lot-drift:${accountId}:${securityId}`,
+            severity: "critical",
+            reason: `${symbol} (${accountName}): position has ${fills.n} fill${fills.n === 1 ? "" : "s"} but zero tax lots`,
+          },
         });
       } else {
         hits.push({
-          key: `lot-drift:${accountId}:${securityId}`,
-          severity: "warning",
-          reason: `${symbol} (${accountName}): position has zero lots and zero transactions`,
+          magnitude: 0,
+          hit: {
+            key: `lot-drift:${accountId}:${securityId}`,
+            severity: "warning",
+            reason: `${symbol} (${accountName}): position has zero lots and zero transactions`,
+          },
         });
       }
       continue;
@@ -243,9 +255,12 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
 
     if (lot && !pos) {
       hits.push({
-        key: `lot-drift:${accountId}:${securityId}`,
-        severity: "warning",
-        reason: `${symbol} (${accountName}): open tax lots with no matching position`,
+        magnitude: 0,
+        hit: {
+          key: `lot-drift:${accountId}:${securityId}`,
+          severity: "warning",
+          reason: `${symbol} (${accountName}): open tax lots with no matching position`,
+        },
       });
       continue;
     }
@@ -253,14 +268,17 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
     const ratio = Math.abs(diff) / Math.max(Math.abs(posQty), Math.abs(signedLotQty));
     if (ratio > LOT_DRIFT_RATIO_THRESHOLD) {
       hits.push({
-        key: `lot-drift:${accountId}:${securityId}`,
-        severity: "critical",
-        reason: `${symbol} (${accountName}): position/lot drift ${(ratio * 100).toFixed(1)}%`,
+        magnitude: ratio,
+        hit: {
+          key: `lot-drift:${accountId}:${securityId}`,
+          severity: "critical",
+          reason: `${symbol} (${accountName}): position/lot drift ${(ratio * 100).toFixed(1)}%`,
+        },
       });
     }
   }
 
-  return hits;
+  return hits.sort((a, b) => b.magnitude - a.magnitude).map((h) => h.hit);
 }
 
 // ── Check 4: corporate-action reconcile delta ───────────────────────────
