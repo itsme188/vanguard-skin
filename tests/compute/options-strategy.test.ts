@@ -377,3 +377,104 @@ describe("detectStrategies", () => {
     expect(underlyings).toContain("MSFT");
   });
 });
+
+// QA analysis-detected-strategies--protective-put-missing-put-price-treated-as-zero-premium:
+// a leg with no price row used to be priced at $0 premium and the card showed
+// the resulting max loss / breakeven as fact. The strategy must still be
+// detected (the leg structure is known) but the money figures are withheld.
+describe("unpriced legs withhold payoff figures", () => {
+  function unpriced(leg: PositionLeg): PositionLeg {
+    return { ...leg, currentPrice: null };
+  }
+
+  it("protective put with an unpriced put: detected, pricingIncomplete, no figures", () => {
+    const strategies = detectStrategies([
+      stock("MSFT", 200, 400),
+      unpriced(option("MSFT", "PUT", 380, 2)),
+    ]);
+    expect(strategies.length).toBe(1);
+    const s = strategies[0];
+    expect(s.type).toBe("protective_put");
+    expect(s.pricingIncomplete).toBe(true);
+    expect(s.maxLoss).toBeNull();
+    expect(s.maxProfit).toBeNull();
+    expect(s.breakevens).toEqual([]);
+  });
+
+  it("fully priced protective put keeps its figures and pricingIncomplete false", () => {
+    const strategies = detectStrategies([
+      stock("MSFT", 200, 400),
+      option("MSFT", "PUT", 380, 2, { price: 8 }),
+    ]);
+    const s = strategies[0];
+    expect(s.pricingIncomplete).toBe(false);
+    // 200 * (400 - 380) + 8 * 100 * 2 = 5600
+    expect(s.maxLoss).toBe(5600);
+    // 400 + 1600 / 200 = 408
+    expect(s.breakevens).toEqual([408]);
+  });
+
+  it("an unpriced stock leg also makes the package incomplete", () => {
+    const strategies = detectStrategies([
+      unpriced(stock("MSFT", 200, 400)),
+      option("MSFT", "PUT", 380, 2, { price: 8 }),
+    ]);
+    expect(strategies[0].pricingIncomplete).toBe(true);
+    expect(strategies[0].maxLoss).toBeNull();
+  });
+
+  it("covered call with an unpriced call: pricingIncomplete", () => {
+    const strategies = detectStrategies([
+      stock("AAPL", 100, 180),
+      unpriced(option("AAPL", "CALL", 190, -1)),
+    ]);
+    expect(strategies.length).toBe(1);
+    expect(strategies[0].type).toBe("covered_call");
+    expect(strategies[0].pricingIncomplete).toBe(true);
+    expect(strategies[0].maxProfit).toBeNull();
+    expect(strategies[0].maxLoss).toBeNull();
+    expect(strategies[0].breakevens).toEqual([]);
+  });
+
+  it("vertical spread with one unpriced leg: pricingIncomplete", () => {
+    const strategies = detectStrategies([
+      option("AAPL", "CALL", 180, 1, { price: 10 }),
+      unpriced(option("AAPL", "CALL", 200, -1)),
+    ]);
+    expect(strategies.length).toBe(1);
+    expect(strategies[0].type).toBe("bull_call_spread");
+    expect(strategies[0].pricingIncomplete).toBe(true);
+    expect(strategies[0].maxProfit).toBeNull();
+    expect(strategies[0].maxLoss).toBeNull();
+    expect(strategies[0].breakevens).toEqual([]);
+  });
+
+  it("a NaN price counts as unpriced", () => {
+    const strategies = detectStrategies([
+      option("AAPL", "PUT", 180, -1, { price: Number.NaN }),
+    ]);
+    expect(strategies[0].type).toBe("naked_put");
+    expect(strategies[0].pricingIncomplete).toBe(true);
+  });
+
+  it("naked call with no price: pricingIncomplete", () => {
+    const strategies = detectStrategies([
+      unpriced(option("AAPL", "CALL", 180, -1)),
+    ]);
+    expect(strategies[0].type).toBe("naked_call");
+    expect(strategies[0].pricingIncomplete).toBe(true);
+    expect(strategies[0].maxProfit).toBeNull();
+    expect(strategies[0].breakevens).toEqual([]);
+  });
+
+  it("fully priced strategies all report pricingIncomplete false", () => {
+    const strategies = detectStrategies([
+      option("SPY", "PUT", 400, 1, { price: 2 }),
+      option("SPY", "PUT", 420, -1, { price: 4 }),
+      option("SPY", "CALL", 460, -1, { price: 4 }),
+      option("SPY", "CALL", 480, 1, { price: 2 }),
+    ]);
+    expect(strategies.length).toBeGreaterThan(0);
+    for (const s of strategies) expect(s.pricingIncomplete).toBe(false);
+  });
+});
