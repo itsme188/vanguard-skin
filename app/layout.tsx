@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -17,6 +17,16 @@ const plexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "Portfolio Desk",
   description: "Local-first portfolio dashboard",
+};
+
+// The single viewport declaration. Exporting it (rather than hand-writing a
+// <meta> in <head>) stops Next from emitting its own default tag as a second
+// viewport meta — WebKit applies the LAST one parsed, which would drop the
+// viewport-fit=cover opt-in that pb-safe / env(safe-area-inset-*) rely on.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 // Anti-FOUC: read theme preference from localStorage and set <html data-theme>
@@ -56,7 +66,6 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body
