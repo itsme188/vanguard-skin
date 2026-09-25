@@ -255,6 +255,22 @@ describe("runIntegrityChecks — check 3: position ↔ tax-lot drift", () => {
     ]);
   });
 
+  it("drift hits are ordered worst-first: fills-with-zero-lots (100%) and the largest ratio lead, regardless of key order", () => {
+    // qa:header-dataconfidence--cap-line-names-first-critical-hit-not-the-worst
+    insertSecurity(db, 100, "AAA");
+    insertHolding(db, 1, 100, 100);
+    insertLot(db, 1, 100, 90); // 10% drift — lowest key, smallest drift
+    insertSecurity(db, 101, "BBB");
+    insertHolding(db, 1, 101, 100);
+    insertLot(db, 1, 101, 40); // 60% drift
+    insertSecurity(db, 102, "CCC");
+    insertHolding(db, 1, 102, 100);
+    insertBuys(db, 1, 102, 3); // fills but zero lots — treated as a full (100%) drift
+
+    const { critical } = runIntegrityChecks(db);
+    expect(critical.map((h) => h.key)).toEqual(["lot-drift:1:102", "lot-drift:1:101", "lot-drift:1:100"]);
+  });
+
   it("critical: signed drift correctly negates short lots (is_short=1)", () => {
     insertSecurity(db, 101, "BBB");
     insertHolding(db, 1, 101, -100); // short position

@@ -466,6 +466,28 @@ describe("data-confidence — integrity gate cap", () => {
     expect(result.integrity.critical.length).toBeGreaterThanOrEqual(2);
     expect(result.capReason).toBe("ZZZ: Bond type contradicts 12 equity fills");
   });
+
+  it("lot-drift criticals: capReason names the WORST drift, not the first (account, security) key", () => {
+    // qa:header-dataconfidence--cap-line-names-first-critical-hit-not-the-worst
+    // Drift hits iterate in "account:security" key order, so the lower
+    // security id (the 10% drift) comes first; the cap line must still name
+    // the 60% drift.
+    stampTaxLotsConvention(db);
+    const small = insertSecurity(db, "AAA", { securityType: "Stock" });
+    const big = insertSecurity(db, "BBB", { securityType: "Stock" });
+    expect(small).toBeLessThan(big);
+    insertHolding(db, 1, small, 100, "2026-08-21", "canonical:hold:TAX:AAA:2026-08-21");
+    insertHolding(db, 1, big, 100, "2026-08-21", "canonical:hold:TAX:BBB:2026-08-21");
+    db.prepare(`INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis) VALUES (1, ?, '2026-08-01', 10, 90, 90, 900)`).run(small); // 10% drift
+    db.prepare(`INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis) VALUES (1, ?, '2026-08-01', 10, 40, 40, 400)`).run(big); // 60% drift
+
+    const result = getDataConfidence(db, NOW);
+
+    const reasons = result.integrity.critical.map((h) => h.reason);
+    expect(reasons).toContain("AAA (Vanguard Taxable): position/lot drift 10.0%");
+    expect(reasons).toContain("BBB (Vanguard Taxable): position/lot drift 60.0%");
+    expect(result.capReason).toBe("BBB (Vanguard Taxable): position/lot drift 60.0%");
+  });
 });
 
 

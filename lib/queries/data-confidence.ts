@@ -150,9 +150,12 @@ export interface DataConfidence {
    *  the 5 weighted dimensions above. A critical hit caps overallScore/Level
    *  (see capReason); warnings never cap, they're informational only. */
   integrity: ReturnType<typeof runIntegrityChecks>;
-  /** Set to the first (module-order) critical integrity hit's reason when
-   *  the cap applied; null when no critical hit exists. Never set from a
-   *  warning. */
+  /** Set to the first critical integrity hit's reason when the cap applied;
+   *  null when no critical hit exists. Never set from a warning. Order is
+   *  module order across checks (type-identity, cash-residual, lot-drift)
+   *  and worst-first WITHIN the lot-drift check, so among drift hits the
+   *  cap line names the largest drift, not the lowest (account, security)
+   *  key. */
   capReason: string | null;
 }
 
