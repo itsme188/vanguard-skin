@@ -19,9 +19,15 @@ export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
+  // Which (trimmed) query the current `results` answer. Enter must never act
+  // on a list that answers an OLDER query (QA: type NVDA + Enter right after
+  // an MSFT search opened MSFT's hub), and an early Enter must not be lost.
+  const [resultsQuery, setResultsQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const latestQuery = useRef("");
+  const pendingSubmit = useRef(false);
   const router = useRouter();
 
   // Cmd+K to toggle
@@ -44,36 +50,14 @@ export function CommandPalette() {
     if (open) {
       setQuery("");
       setResults([]);
+      setResultsQuery("");
+      latestQuery.current = "";
+      pendingSubmit.current = false;
       setSelectedIndex(0);
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   }, [open]);
 
-  // Debounced search
-  useEffect(() => {
-    if (!query.trim()) {
-      setResults([]);
-      return;
-    }
-
-    const timer = setTimeout(async () => {
-      setLoading(true);
-      try {
-        const res = await fetch(
-          `/api/search?q=${encodeURIComponent(query.trim())}&type=security`
-        );
-        const data = await res.json();
-        setResults(data.results ?? []);
-        setSelectedIndex(0);
-      } catch {
-        setResults([]);
-      } finally {
-        setLoading(false);
-      }
-    }, 150);
-
-    return () => clearTimeout(timer);
-  }, [query]);
 
   const navigate = useCallback(
     (href: string) => {
@@ -83,6 +67,49 @@ export function CommandPalette() {
     [router]
   );
 
+  // Debounced search
+  useEffect(() => {
+    const q = query.trim();
+    latestQuery.current = q;
+    // Any keystroke cancels an Enter queued against the previous query.
+    pendingSubmit.current = false;
+    if (!q) {
+      setResults([]);
+      setResultsQuery("");
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(
+          `/api/search?q=${encodeURIComponent(q)}&type=security`
+        );
+        const data = await res.json();
+        // A response for a query the user has already moved past is stale —
+        // drop it rather than let it overwrite the newer list.
+        if (latestQuery.current !== q) return;
+        const list: SearchResult[] = data.results ?? [];
+        setResults(list);
+        setResultsQuery(q);
+        setSelectedIndex(0);
+        if (pendingSubmit.current) {
+          pendingSubmit.current = false;
+          if (list[0]) navigate(list[0].href);
+        }
+      } catch {
+        if (latestQuery.current === q) {
+          setResults([]);
+          setResultsQuery(q);
+        }
+      } finally {
+        if (latestQuery.current === q) setLoading(false);
+      }
+    }, 150);
+
+    return () => clearTimeout(timer);
+  }, [query, navigate]);
+
   const handleKeyNav = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === "ArrowDown") {
@@ -91,12 +118,22 @@ export function CommandPalette() {
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         setSelectedIndex((i) => Math.max(i - 1, 0));
-      } else if (e.key === "Enter" && results[selectedIndex]) {
+      } else if (e.key === "Enter") {
         e.preventDefault();
-        navigate(results[selectedIndex].href);
+        const q = query.trim();
+        if (!q) return;
+        if (resultsQuery === q) {
+          // The list answers the typed query — act on it (a no-match list is
+          // a deliberate no-op; the empty state below explains it).
+          if (results[selectedIndex]) navigate(results[selectedIndex].href);
+          return;
+        }
+        // Results for this query have not arrived yet: queue the submit and
+        // let the debounced fetch fire it (never act on a stale list).
+        pendingSubmit.current = true;
       }
     },
-    [results, selectedIndex, navigate]
+    [results, resultsQuery, query, selectedIndex, navigate]
   );
 
   if (!open) return null;
