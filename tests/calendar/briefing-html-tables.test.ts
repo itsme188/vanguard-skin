@@ -137,3 +137,46 @@ describe("briefingToHtml — escaped pipes in cell text (issue #43)", () => {
     expect(html).toContain("4.30");
   });
 });
+
+describe("briefingToHtml — trailing-pipe short rows (qa:email-html--multiline-table-row-spills-raw-markdown-pipes-regression-1)", () => {
+  // Regression shape (recap "Line-by-line metrics"): the model closes the
+  // consensus cell with a trailing pipe, puts the ACTUAL on its own bare
+  // line, and opens the delta cell on a line that starts with a pipe. The
+  // trailing pipe made the first physical line parse as a COMPLETE (short)
+  // row, the bare actual glued onto the consensus cell, and the delta line
+  // opened a phantom one-cell row whose metric read as the delta.
+  const md = `| Metric | Consensus / Prior | Actual | Δ |
+|---|---|---|---|
+| Organic growth | Street ~3-4% (model) | 
+6%
+ | +2pp beat |
+| Unit volume | — (no bogey) | 
+Up 5%, every segment grew
+ | Beat vs. softness concern |
+| Concentrate | — | 
+4-point contribution
+ | — |`;
+
+  it("absorbs a trailing-pipe short row + bare actual + pipe-led delta into ONE logical row", () => {
+    const html = briefingToHtml(md, "Test");
+    expect(html.match(/<thead>/g)?.length).toBe(1);
+    expect(html).not.toMatch(/<p[^>]*>\s*\|/);
+    const body = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
+    expect(body.match(/<tr/g)?.length).toBe(3); // three metrics, no phantom rows
+    expect(body).toMatch(/<td[^>]*>\s*6%\s*<\/td>/); // the actual is its own cell
+    expect(body).toMatch(/<td[^>]*>\s*\+2pp beat\s*<\/td>/); // the delta is its own cell
+    expect(body).not.toMatch(/model\)\s*6%/); // the actual is NOT glued onto consensus
+  });
+
+  it("keeps a genuinely short row as its own row when a complete row follows", () => {
+    const short = `| Metric | Consensus | Actual | Δ |
+|---|---|---|---|
+| EPS | 0.70 |
+| Revenue | $12.5B | $13.0B | +4% |`;
+    const html = briefingToHtml(short, "Test");
+    const body = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
+    expect(body.match(/<tr/g)?.length).toBe(2);
+    expect(body).toMatch(/<td[^>]*>\s*EPS\s*<\/td>/);
+    expect(body).toMatch(/<td[^>]*>\s*Revenue\s*<\/td>/);
+  });
+});
