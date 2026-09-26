@@ -88,7 +88,10 @@ export function confirmEarningsDate(
   );
 
   // Reconcile so the cluster's sync rows are superseded around the locked date.
-  reconcileEarningsDates(db, { today: input.today });
+  // Scoped to the confirmed issuer's family: a whole-book pass here folded
+  // OTHER symbols' manual sibling rows whenever they carried a user_confirmed
+  // row (QA 2026-09-26 — confirming NKE hid two MU rows with no message).
+  reconcileEarningsDates(db, { today: input.today, symbols: [symbol] });
 
   return { ok: true };
 }
