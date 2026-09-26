@@ -7,6 +7,7 @@ import type {
   ResearchDocumentSentiment,
   ResearchDocumentProcessingState,
 } from "@/lib/queries/research-documents";
+import { documentMatchesSearch } from "./research-documents-search";
 import { Chip } from "./Chip";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { useToast } from "./Toast";
@@ -816,14 +817,8 @@ export function ResearchDocumentsView() {
         const data: DocumentListResponse = await res.json();
         let filtered = data.documents;
         if (search.trim()) {
-          const needle = search.trim().toLowerCase();
-          filtered = filtered.filter(
-            (d) =>
-              d.title.toLowerCase().includes(needle) ||
-              d.source?.toLowerCase().includes(needle) ||
-              d.author?.toLowerCase().includes(needle) ||
-              d.summary?.toLowerCase().includes(needle),
-          );
+          // Matches tags too (QA: a visibly rendered tag returned no documents).
+          filtered = filtered.filter((d) => documentMatchesSearch(d, search));
         }
         setDocuments(filtered);
         setTotal(data.total);
