@@ -146,3 +146,45 @@ describe("confirmEarningsDate past-date guard", () => {
     expect(result.ok).toBe(true);
   });
 });
+
+describe("confirmEarningsDate scope", () => {
+  // QA 2026-09-26 (today-earningshub-confirm-date--folds-other-symbols-manual-rows-whole-book-reconcile):
+  // confirming NKE re-ran the reconciler over the WHOLE book, so every other
+  // symbol that carried a user_confirmed row had its manual siblings folded
+  // (MU 10/2 and 10/3 vanished from the hub). The confirm must only touch the
+  // confirmed issuer's family.
+  it("only reconciles the confirmed symbol's family — other symbols' manual rows are untouched", () => {
+    db.prepare(
+      "INSERT INTO securities (symbol, name, security_type, asset_class, multiplier) VALUES ('MU','Micron','stock','equity',1)",
+    ).run();
+    const manual = (symbol: string, date: string, status: string | null) =>
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, title, symbol, source_key, raw_json, date_status, superseded)
+           VALUES ('manual', 'earnings', ?, ?, ?, ?, NULL, ?, 0)`,
+        )
+        .run(date, `${symbol} earnings`, symbol, `manual:${symbol}:${date}:earnings`, status).lastInsertRowid as number;
+    const muLocked = manual("MU", "2026-09-30", "user_confirmed");
+    const muA = manual("MU", "2026-10-02", null);
+    const muB = manual("MU", "2026-10-03", null);
+    seedSync("nasdaq", "2026-10-01");
+
+    const res = confirmEarningsDate(db, {
+      symbol: "NVDA",
+      confirmedDate: "2026-10-01",
+      confirmedTime: "amc",
+      today: "2026-09-26",
+    });
+    expect(res.ok).toBe(true);
+
+    const sup = (id: number) =>
+      (db.prepare("SELECT superseded FROM calendar_events WHERE id=?").get(id) as { superseded: number }).superseded;
+    expect(sup(muLocked)).toBe(0);
+    expect(sup(muA)).toBe(0);
+    expect(sup(muB)).toBe(0);
+    const visibleMu = db
+      .prepare("SELECT COUNT(*) AS n FROM calendar_events WHERE symbol='MU' AND superseded=0")
+      .get() as { n: number };
+    expect(visibleMu.n).toBe(3);
+  });
+});
