@@ -225,6 +225,17 @@ const CLASSIFICATION_FIELDS = [
   "style",
 ] as const;
 
+type UnresolvedSecurity = { id: number; symbol: string; security_type: string | null };
+
+/**
+ * Distinguishes the two "the model answered but the answer is useless"
+ * failure modes (unparseable reply / parsed-but-nothing-usable) from a hard
+ * failure (network error, AIRefusalError, DB error). Only THESE get the
+ * automatic retry below — a hard failure retried immediately would just fail
+ * again for the same reason and burn an extra API call for nothing.
+ */
+class UnusableBatchReplyError extends Error {}
+
 export async function classifyUnresolvedWithClaude(
   db: Database.Database,
   unresolved: Array<{ id: number; symbol: string; security_type: string | null }>
@@ -236,76 +247,137 @@ export async function classifyUnresolvedWithClaude(
   let classified = 0;
   const errors: string[] = [];
   const BATCH = 25;
-  for (let i = 0; i < unresolved.length; i += BATCH) {
-    const batch = unresolved.slice(i, i + BATCH);
-    const prompt = `Classify:\n${batch.map((s) => `- ${s.symbol} (type: ${s.security_type ?? "stock"})`).join("\n")}`;
+
+  /**
+   * One AI call + parse + write for a single (sub-)batch. Shared by the first
+   * attempt and the retry below so they can't drift. Returns the count of
+   * rows this call classified; throws AIRefusalError, UnusableBatchReplyError,
+   * or whatever else the AI call itself raised.
+   */
+  async function runBatch(batchItems: UnresolvedSecurity[]): Promise<number> {
+    const prompt = `Classify:\n${batchItems.map((s) => `- ${s.symbol} (type: ${s.security_type ?? "stock"})`).join("\n")}`;
+    // No `temperature` — tier-resolved models can reject it as deprecated (QA 2026-07-07).
+    // maxOutputTokens raised 4000→8000 (2026-08-13, qa:analysis-classification--
+    // auto-classify-swallows-ai-json-error): a full BATCH=25 response was
+    // getting cut off mid-object every run — "Unterminated string in JSON"
+    // is the truncation signature (reproduced locally: a genuinely truncated
+    // JSON string throws "Unterminated string"; an in-string raw control
+    // char throws "Bad control character" instead, a different failure the
+    // C0-retry below handles). 8000 matches classify-factors.ts's budget for
+    // the same BATCH=25 size — that schema has more fields per item, so
+    // this has ample headroom for the longer "US Sector Equity (<Sector>)"
+    // values that were pushing 4000 past the edge.
+    const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 8000, system: AI_CLASSIFY_SYSTEM, prompt });
+    // Lenient parse (lib/ai/extract-json.ts): fence-strip, whole-text parse,
+    // then the first-`[` … last-`]` fallback — each with the C0-control-char
+    // retry the model needs (it intermittently emits raw newlines INSIDE string
+    // literals: "Bad control character in string literal"; a genuinely
+    // truncated response — "Unterminated string" — is unrecoverable and
+    // surfaces as a clean per-batch domain error with the SyntaxError as
+    // `cause`). Also tolerates a single bare object / {results:[...]} wrapper
+    // instead of throwing "results is not iterable".
+    let results: unknown[];
     try {
-      // No `temperature` — tier-resolved models can reject it as deprecated (QA 2026-07-07).
-      // maxOutputTokens raised 4000→8000 (2026-08-13, qa:analysis-classification--
-      // auto-classify-swallows-ai-json-error): a full BATCH=25 response was
-      // getting cut off mid-object every run — "Unterminated string in JSON"
-      // is the truncation signature (reproduced locally: a genuinely truncated
-      // JSON string throws "Unterminated string"; an in-string raw control
-      // char throws "Bad control character" instead, a different failure the
-      // C0-retry below handles). 8000 matches classify-factors.ts's budget for
-      // the same BATCH=25 size — that schema has more fields per item, so
-      // this has ample headroom for the longer "US Sector Equity (<Sector>)"
-      // values that were pushing 4000 past the edge.
-      const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 8000, system: AI_CLASSIFY_SYSTEM, prompt });
-      // Lenient parse (lib/ai/extract-json.ts): fence-strip, whole-text parse,
-      // then the first-`[` … last-`]` fallback — each with the C0-control-char
-      // retry the model needs (it intermittently emits raw newlines INSIDE string
-      // literals: "Bad control character in string literal"; a genuinely
-      // truncated response — "Unterminated string" — is unrecoverable and
-      // surfaces as a clean per-batch domain error with the SyntaxError as
-      // `cause`). Also tolerates a single bare object / {results:[...]} wrapper
-      // instead of throwing "results is not iterable".
-      const results = parseJsonArrayLenient(text, "security classifications");
-      const idMap = new Map(batch.map((s) => [s.symbol, s.id]));
-      let usableInBatch = 0;
-      for (const raw of results) {
-        if (typeof raw !== "object" || raw === null) continue;
-        const r = raw as Record<string, unknown>;
-        const id = typeof r.symbol === "string" ? idMap.get(r.symbol) : undefined;
-        if (!id) continue;
-
-        // An element carrying a symbol but no usable classification field at
-        // all ({"symbol":"XLE"}, or a symbol plus an "error" note) used to
-        // write four NULL classification columns with
-        // classification_source='auto_ai'. That's a silent permanent hole:
-        // the candidate query only re-offers securities with no
-        // classification_source, so a security written this way was never
-        // retried. Mirrors the same fix in classify-factors.ts.
-        if (
-          !CLASSIFICATION_FIELDS.some((field) => typeof r[field] === "string")
-        ) {
-          continue;
-        }
-
-        update.run(
-          normalizeFundCategory(str(r.fund_category)),
-          cleanEnumValue(str(r.geography)),
-          normalizeMarketCapCategory(cleanEnumValue(str(r.market_cap_category))),
-          cleanEnumValue(str(r.style)),
-          id
-        );
-        classified++;
-        usableInBatch++;
-      }
-
-      // A reply that PARSED but yielded nothing usable ([null], symbol-only
-      // objects, {"errors":[...]}, ...) is an error, not a zero-classification
-      // success: reporting success leaves the batch un-retried and hides the
-      // failure. A legitimately empty `[]` reply stays a no-op, no error.
-      if (results.length > 0 && usableInBatch === 0) {
-        throw new Error("AI reply contained no usable security classifications for this batch");
-      }
+      results = parseJsonArrayLenient(text, "security classifications");
     } catch (err) {
-      if (err instanceof AIRefusalError) {
-        errors.push(`Batch ${i / BATCH + 1}: AI refusal`);
+      throw new UnusableBatchReplyError(
+        err instanceof Error ? err.message : "AI reply was not a JSON list of security classifications",
+        { cause: err }
+      );
+    }
+    const idMap = new Map(batchItems.map((s) => [s.symbol, s.id]));
+    let classifiedInBatch = 0;
+    for (const raw of results) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const r = raw as Record<string, unknown>;
+      const id = typeof r.symbol === "string" ? idMap.get(r.symbol) : undefined;
+      if (!id) continue;
+
+      // An element carrying a symbol but no usable classification field at
+      // all ({"symbol":"XLE"}, or a symbol plus an "error" note) used to
+      // write four NULL classification columns with
+      // classification_source='auto_ai'. That's a silent permanent hole:
+      // the candidate query only re-offers securities with no
+      // classification_source, so a security written this way was never
+      // retried. Mirrors the same fix in classify-factors.ts.
+      if (
+        !CLASSIFICATION_FIELDS.some((field) => typeof r[field] === "string")
+      ) {
         continue;
       }
-      errors.push(`Batch ${i / BATCH + 1}: ${err instanceof Error ? err.message : "unknown"}`);
+
+      update.run(
+        normalizeFundCategory(str(r.fund_category)),
+        cleanEnumValue(str(r.geography)),
+        normalizeMarketCapCategory(cleanEnumValue(str(r.market_cap_category))),
+        cleanEnumValue(str(r.style)),
+        id
+      );
+      classifiedInBatch++;
+    }
+
+    // A reply that PARSED but yielded nothing usable ([null], symbol-only
+    // objects, {"errors":[...]}, ...) is an error, not a zero-classification
+    // success: reporting success leaves the batch un-retried and hides the
+    // failure. A legitimately empty `[]` reply stays a no-op, no error.
+    if (results.length > 0 && classifiedInBatch === 0) {
+      throw new UnusableBatchReplyError("AI reply contained no usable security classifications for this batch");
+    }
+    return classifiedInBatch;
+  }
+
+  for (let i = 0; i < unresolved.length; i += BATCH) {
+    const batch = unresolved.slice(i, i + BATCH);
+    const batchNumber = i / BATCH + 1;
+    try {
+      classified += await runBatch(batch);
+    } catch (err) {
+      if (err instanceof AIRefusalError) {
+        errors.push(`Batch ${batchNumber}: AI refusal`);
+        continue;
+      }
+      if (!(err instanceof UnusableBatchReplyError)) {
+        errors.push(`Batch ${batchNumber}: ${err instanceof Error ? err.message : "unknown"}`);
+        continue;
+      }
+
+      // Retry ONCE (qa:analysis-classification--auto-classify-ai-batch-parse-
+      // failure-no-retry-leaves-held-names-unclassified): an unparseable or
+      // nothing-usable reply is often a transient model quirk (truncation, a
+      // non-array shape) rather than a real, durable failure — one more roll
+      // of the dice recovers most of them. Split into two half-size batches
+      // (smaller prompts are less likely to get truncated); a batch already
+      // down to one security just retries itself. No retry of a retry — each
+      // half below records its own failure straight to `errors` rather than
+      // splitting further.
+      if (batch.length === 1) {
+        try {
+          classified += await runBatch(batch);
+        } catch (retryErr) {
+          if (retryErr instanceof AIRefusalError) {
+            errors.push(`Batch ${batchNumber}: AI refusal`);
+          } else {
+            errors.push(`Batch ${batchNumber}: ${retryErr instanceof Error ? retryErr.message : "unknown"}`);
+          }
+        }
+        continue;
+      }
+
+      const mid = Math.ceil(batch.length / 2);
+      const halves = [batch.slice(0, mid), batch.slice(mid)];
+      for (let h = 0; h < halves.length; h++) {
+        try {
+          classified += await runBatch(halves[h]);
+        } catch (halfErr) {
+          if (halfErr instanceof AIRefusalError) {
+            errors.push(`Batch ${batchNumber}: AI refusal`);
+          } else {
+            errors.push(
+              `Batch ${batchNumber}: ${halfErr instanceof Error ? halfErr.message : "unknown"} (retry, part ${h + 1} of 2)`
+            );
+          }
+        }
+      }
     }
   }
   return { classified, errors };
