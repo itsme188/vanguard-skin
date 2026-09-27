@@ -535,6 +535,109 @@ function SuggestedLevels({
   );
 }
 
+// [qa:security-detail-levels-panel--failed-fetch-renders-no-active-levels-empty-state]
+// Shared failed-load notice for LevelsPanel below. `inline` renders the
+// compact one-liner placed above an already-loaded (possibly stale) list;
+// the default renders the full block that replaces the ordinary empty-state
+// copy when there are zero rows to show. Markup/classes/tone copied from
+// DataConfidenceIndicator's "Data unavailable" + Retry precedent.
+function LevelsLoadError({
+  message,
+  onRetry,
+  embedded,
+  inline = false,
+}: {
+  message: string;
+  onRetry: () => void;
+  embedded: boolean;
+  inline?: boolean;
+}) {
+  if (embedded) {
+    return (
+      <div
+        style={
+          inline
+            ? {
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                padding: "8px 0",
+                borderBottom: "1px solid #1f1f1f",
+                marginBottom: "8px",
+              }
+            : {
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "8px",
+                padding: "20px 0",
+                borderTop: "1px solid #1f1f1f",
+                marginTop: "1rem",
+              }
+        }
+      >
+        <span
+          style={{
+            width: "8px",
+            height: "8px",
+            borderRadius: "9999px",
+            background: "#f87171",
+            flexShrink: 0,
+          }}
+        />
+        <span
+          style={{
+            fontFamily: "var(--font-mono), monospace",
+            fontSize: "12px",
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            color: "#f87171",
+          }}
+        >
+          {message}
+        </span>
+        <button
+          type="button"
+          onClick={onRetry}
+          style={{
+            background: "transparent",
+            border: "none",
+            padding: 0,
+            color: "#60a5fa",
+            textDecoration: "underline",
+            cursor: "pointer",
+            fontFamily: "var(--font-mono), monospace",
+            fontSize: "12px",
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+          }}
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div
+      className={
+        inline
+          ? "flex items-center gap-2 text-[11px] text-ink-faint font-mono mb-2"
+          : "flex items-center justify-center gap-2 text-[11px] text-ink-faint font-mono py-4"
+      }
+    >
+      <span className="w-2 h-2 rounded-full bg-orange-400 shrink-0" />
+      <span>{message}</span>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="text-blue hover:text-blue/80 underline"
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
 export function LevelsPanel({
   securityId,
   symbol,
@@ -561,6 +664,13 @@ export function LevelsPanel({
   const { toast } = useToast();
   const [levels, setLevels] = useState<EnrichedLevel[]>([]);
   const [loading, setLoading] = useState(false);
+  // [qa:security-detail-levels-panel--failed-fetch-renders-no-active-levels-empty-state]
+  // A rejected fetch or a non-2xx/{success:false} response used to leave
+  // `levels` at its initial [] with no signal that anything went wrong — the
+  // panel then rendered the ordinary "No active levels" empty state, making a
+  // failed load indistinguishable from a genuinely empty one. This tracks the
+  // failure explicitly so the render can tell the two apart.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
@@ -596,8 +706,23 @@ export function LevelsPanel({
       const res = await fetch(
         `/api/levels?securityId=${securityId}&activeOnly=${!showInactive}`
       );
-      const json = await res.json();
-      if (json.success) setLevels(json.levels);
+      // [qa:security-detail-levels-panel--failed-fetch-renders-no-active-levels-empty-state]
+      // Tolerate a non-JSON body (e.g. an HTML error page from a proxy/500)
+      // instead of letting res.json() throw past the check below.
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        // Keep whatever rows are already on screen — a failed refetch must
+        // never clear a previously-loaded list, only flag it as possibly
+        // stale (see the render-side notice below).
+        setLoadError("Levels could not be loaded");
+        return;
+      }
+      setLevels(json.levels);
+      setLoadError(null);
+    } catch {
+      // Network error / timeout / thrown fetch — same treatment as an
+      // explicit !success response: report it, don't wipe existing rows.
+      setLoadError("Levels could not be loaded");
     } finally {
       setLoading(false);
     }
@@ -1087,33 +1212,52 @@ export function LevelsPanel({
           : filtered;
 
         if (visibleLevels.length === 0) {
+          // [qa:security-detail-levels-panel--failed-fetch-renders-no-active-levels-empty-state]
+          // The ordinary empty-state copy ("No active levels…") is only
+          // accurate when the load actually succeeded — gate it on
+          // `!loadError` so a failed refresh renders the error notice
+          // instead of silently claiming there are zero levels.
           if (embedded) {
             return (
-              <p
-                style={{
-                  fontFamily: "var(--font-mono), monospace",
-                  fontSize: "12px",
-                  letterSpacing: "0.18em",
-                  textTransform: "uppercase",
-                  color: "#555",
-                  padding: "20px 0",
-                  textAlign: "center",
-                  borderTop: "1px solid #1f1f1f",
-                  marginTop: "1rem",
-                }}
-              >
-                {levels.length === 0
-                  ? "No active levels · accept a suggestion or add your own"
-                  : `No levels from ${authorFilter}`}
-              </p>
+              <>
+                {loadError && (
+                  <LevelsLoadError message={loadError} onRetry={refresh} embedded />
+                )}
+                {!loadError && (
+                  <p
+                    style={{
+                      fontFamily: "var(--font-mono), monospace",
+                      fontSize: "12px",
+                      letterSpacing: "0.18em",
+                      textTransform: "uppercase",
+                      color: "#555",
+                      padding: "20px 0",
+                      textAlign: "center",
+                      borderTop: "1px solid #1f1f1f",
+                      marginTop: "1rem",
+                    }}
+                  >
+                    {levels.length === 0
+                      ? "No active levels · accept a suggestion or add your own"
+                      : `No levels from ${authorFilter}`}
+                  </p>
+                )}
+              </>
             );
           }
           return (
-            <p className="text-[11px] text-ink-faint italic py-4 text-center">
-              {levels.length === 0
-                ? "No levels set. Add one above."
-                : `No levels from ${authorFilter}.`}
-            </p>
+            <>
+              {loadError && (
+                <LevelsLoadError message={loadError} onRetry={refresh} embedded={false} />
+              )}
+              {!loadError && (
+                <p className="text-[11px] text-ink-faint italic py-4 text-center">
+                  {levels.length === 0
+                    ? "No levels set. Add one above."
+                    : `No levels from ${authorFilter}.`}
+                </p>
+              )}
+            </>
           );
         }
 
@@ -1138,6 +1282,13 @@ export function LevelsPanel({
           };
           return (
             <div>
+              {/* [qa:security-detail-levels-panel--failed-fetch-renders-no-active-levels-empty-state]
+                  Rows already on screen survive a failed refetch (see
+                  refresh() above) — this notice keeps that possibly-stale
+                  list from reading as confirmed-fresh. */}
+              {loadError && (
+                <LevelsLoadError message={loadError} onRetry={refresh} embedded inline />
+              )}
               {visibleLevels.map((l) => {
                 const color = typeColor(l.level_type);
                 const triggered = l.is_active === 0 && l.triggered_at != null;
@@ -1475,7 +1626,13 @@ export function LevelsPanel({
         }
 
         return (
-          <ul className="divide-y divide-edge">
+          <>
+            {/* [qa:security-detail-levels-panel--failed-fetch-renders-no-active-levels-empty-state]
+                Same stale-list guard as the embedded variant above. */}
+            {loadError && (
+              <LevelsLoadError message={loadError} onRetry={refresh} embedded={false} inline />
+            )}
+            <ul className="divide-y divide-edge">
             {visibleLevels.map((l) => {
               const { showPause, showReactivate, showRequeue } = levelActionVisibility(l);
               return (
@@ -1612,7 +1769,8 @@ export function LevelsPanel({
             </li>
               );
             })}
-        </ul>
+            </ul>
+          </>
         );
       })()}
     </section>
