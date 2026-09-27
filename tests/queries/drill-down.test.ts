@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getHoldingsInBucket } from "@/lib/queries/drill-down";
-import { getAllocationByDimension } from "@/lib/queries/analysis";
+import { getAllocationByDimension, SECTOR_OWN_BUCKET_SQL } from "@/lib/queries/analysis";
+import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 
 // Migration 002 seeds: 1=Vanguard Taxable, 2=Vanguard Roth IRA, 3=IBKR.
 
@@ -335,5 +336,181 @@ describe("panel lists every holding the breakdown row counted", () => {
     expect(bucket).toBeDefined();
     expect(bucket!.position_count).toBe(3);
     expect(rows.length).toBe(bucket!.position_count);
+  });
+});
+
+// [qa:analysis-sector-drilldown--us-treasury-row-8-positions-opens-empty-panel]
+//
+// Root cause: the sector breakdown (getSectorAllocationWithLookThrough) buckets
+// a holding with no ETF look-through weights via `r.sector ?? r.fund_category`
+// (lib/compute/explode-sector.ts's explodeHoldingBySector), so a bond whose
+// `sector` is NULL and `fund_category` is 'US Treasury' lands in a bucket
+// literally named "US Treasury". getHoldingsInBucket filtered sector
+// drill-downs with a plain `s.sector = ?`, which a NULL sector can never
+// match — the panel opened on 0 holdings for a row the breakdown said held
+// several positions.
+//
+// The UI's classification-mode breakdown row click (AnalysisView.tsx's
+// handleClassificationDrill) constructs
+// `{ kind: "classification", dimension: "sector", bucket }` — that is the
+// path under test here. The separate `kind: "sector"` filter is fed only by
+// FactorAnalysis.tsx's sector-TILT bucket click, whose labels come from
+// computeTilts's raw `s.sector` column and never derive from fund_category
+// (see lib/compute/factors.ts's buildTilt), so it cannot receive a
+// "US Treasury"-style derived label and is intentionally left unchanged.
+describe("getHoldingsInBucket sector fallback matches the breakdown's fund_category fallback", () => {
+  let db: Database.Database;
+
+  function seedSecurity(
+    id: number,
+    symbol: string,
+    opts: { sector?: string | null; fund_category?: string | null; security_type?: string } = {}
+  ) {
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, sector, fund_category)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      symbol,
+      `${symbol} Inc`,
+      opts.security_type ?? "Stock",
+      opts.sector ?? null,
+      opts.fund_category ?? null
+    );
+  }
+
+  function seedHoldingAndPrice(securityId: number, quantity: number, price: number) {
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
+       VALUES (1, ?, '2026-09-01', ?, ?)`
+    ).run(securityId, quantity, `test:${securityId}`);
+    db.prepare(
+      `INSERT INTO prices (security_id, date, close_price, source) VALUES (?, '2026-09-01', ?, 'test')`
+    ).run(securityId, price);
+  }
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("a bond with NULL sector and fund_category 'US Treasury' drills under 'US Treasury' via the classification path the UI uses", () => {
+    const treasuryId = 101;
+    seedSecurity(treasuryId, "TSY-A", {
+      sector: null,
+      fund_category: "US Treasury",
+      security_type: "Bond",
+    });
+    seedHoldingAndPrice(treasuryId, 100, 98);
+
+    const rows = getHoldingsInBucket(db, "all", {
+      kind: "classification",
+      dimension: "sector",
+      bucket: "US Treasury",
+    });
+    expect(rows.map((r) => r.symbol)).toEqual(["TSY-A"]);
+
+    // The breakdown must actually count this row there too — otherwise this
+    // test would only prove the two sides are consistently wrong.
+    const breakdown = getAllocationByDimension(db, "sector");
+    const bucket = breakdown.find((b) => b.group_name === "US Treasury");
+    expect(bucket).toBeDefined();
+    expect(bucket!.position_count).toBe(1);
+  });
+
+  it("a stock with sector 'Technology' still drills under 'Technology' and NOT under 'US Treasury'", () => {
+    const techId = 102;
+    seedSecurity(techId, "TCH-A", { sector: "Technology", fund_category: null, security_type: "Stock" });
+    seedHoldingAndPrice(techId, 10, 500);
+
+    const techRows = getHoldingsInBucket(db, "all", {
+      kind: "classification",
+      dimension: "sector",
+      bucket: "Technology",
+    });
+    expect(techRows.map((r) => r.symbol)).toEqual(["TCH-A"]);
+
+    const treasuryRows = getHoldingsInBucket(db, "all", {
+      kind: "classification",
+      dimension: "sector",
+      bucket: "US Treasury",
+    });
+    expect(treasuryRows).toEqual([]);
+  });
+
+  it("a security with sector 'Utilities' AND a non-null fund_category matches on sector, not on fund_category", () => {
+    const utilId = 103;
+    seedSecurity(utilId, "UTL-A", {
+      sector: "Utilities",
+      fund_category: "Some Other Category",
+      security_type: "Stock",
+    });
+    seedHoldingAndPrice(utilId, 20, 60);
+
+    const utilRows = getHoldingsInBucket(db, "all", {
+      kind: "classification",
+      dimension: "sector",
+      bucket: "Utilities",
+    });
+    expect(utilRows.map((r) => r.symbol)).toEqual(["UTL-A"]);
+
+    const categoryRows = getHoldingsInBucket(db, "all", {
+      kind: "classification",
+      dimension: "sector",
+      bucket: "Some Other Category",
+    });
+    expect(categoryRows).toEqual([]);
+  });
+
+  // Pins the SQL twin (SECTOR_OWN_BUCKET_SQL, lib/queries/analysis.ts) to its
+  // JS original (explodeHoldingBySector's non-look-through branch,
+  // lib/compute/explode-sector.ts) so the two formulas cannot silently drift
+  // apart again. Exercised against a matrix including the edge cases the JS
+  // side treats specially: an empty-string sector does NOT fall through to
+  // fund_category (nullish coalesce only triggers on null/undefined), a
+  // whitespace-only sector is treated as blank, and the literal string "null"
+  // is NOT guarded against on either side.
+  it("SECTOR_OWN_BUCKET_SQL agrees with explodeHoldingBySector's own-sector fallback for every case", () => {
+    const cases: Array<{
+      sector: string | null;
+      fund_category: string | null;
+      security_type: string;
+    }> = [
+      { sector: null, fund_category: "US Treasury", security_type: "Bond" },
+      { sector: "Technology", fund_category: null, security_type: "Stock" },
+      { sector: "Utilities", fund_category: "Some Other Category", security_type: "Stock" },
+      { sector: null, fund_category: null, security_type: "Bond" },
+      { sector: null, fund_category: null, security_type: "Stock" },
+      { sector: "", fund_category: "US Treasury", security_type: "Bond" },
+      { sector: "   ", fund_category: "US Treasury", security_type: "Bond" },
+      { sector: "null", fund_category: null, security_type: "Stock" },
+    ];
+
+    let nextId = 900;
+    for (const c of cases) {
+      const id = nextId++;
+      const symbol = `PIN-${id}`;
+      seedSecurity(id, symbol, c);
+
+      const sqlRow = db
+        .prepare(`SELECT ${SECTOR_OWN_BUCKET_SQL} AS bucket FROM securities s WHERE s.id = ?`)
+        .get(id) as { bucket: string };
+
+      // explodeHoldingBySector's look-through branch never engages for a
+      // Stock/Bond security_type (no weights map entry exists), so this call
+      // exercises exactly the own-sector fallback the SQL above mirrors. The
+      // caller-side coalesce (`r.sector ?? r.fund_category`, done in
+      // getSectorAllocationWithLookThrough) is replicated inline here.
+      const jsParts = explodeHoldingBySector(
+        symbol,
+        c.security_type,
+        100,
+        new Map(),
+        c.sector ?? c.fund_category
+      );
+      expect(jsParts).toHaveLength(1);
+      expect(sqlRow.bucket).toBe(jsParts[0].sector);
+    }
   });
 });

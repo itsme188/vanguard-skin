@@ -136,15 +136,33 @@ export function getHoldingsInBucket(
     //     instead of hiding under 'Unknown'.
     // The inheritance CASE reads `s_u`, so the matching join is added below
     // for exactly the dimensions that need it.
-    // "sector" falls through to the plain `s.sector` column (see
-    // classificationBucketSql — the ETF look-through bucketing is a separate
-    // path this query doesn't replicate).
+    // "sector" resolves through classificationBucketSql's SECTOR_OWN_BUCKET_SQL
+    // — the sector→fund_category fallback, SQL-twin of explodeHoldingBySector
+    // (lib/compute/explode-sector.ts) — NOT the ETF look-through split
+    // (getSectorAllocationWithLookThrough / getEtfSectorWeights), which is a
+    // separate path this query still doesn't replicate: a fund with cached
+    // look-through weights can appear in the breakdown under a real GICS
+    // sector it has no OWN sector/fund_category value for at all, and drilling
+    // into that sector will not surface the fund row here. What this DOES fix
+    // is a bond/fund's OWN NULL-sector fallback to fund_category — e.g. a
+    // Treasury (sector NULL, fund_category 'US Treasury') bucketed by the
+    // breakdown as "US Treasury" via that fallback, but the previous plain
+    // `s.sector = ?` filter (a NULL sector matches nothing) opened the
+    // drill-down panel on 0 holdings for a row the breakdown said held several
+    // [qa:analysis-sector-drilldown--us-treasury-row-8-positions-opens-empty-panel].
     extraWhere = `AND ${classificationGroupSql(filter.dimension)} = ?`;
     underlyingJoin = dimensionInheritsFromUnderlying(filter.dimension)
       ? underlyingInheritJoinSql()
       : "";
     filterParams.push(filter.bucket);
   } else if (filter.kind === "sector") {
+    // Distinct from the classification path above: this kind is fed only by
+    // FactorAnalysis.tsx's sector-TILT bucket click, whose labels come from
+    // computeTilts's raw `s.sector` column (falling back to its OWN
+    // "Unclassified" label, never to fund_category — see
+    // lib/compute/factors.ts's buildTilt). It therefore cannot receive a
+    // fund_category-derived label like "US Treasury", so it does not need
+    // SECTOR_OWN_BUCKET_SQL's fallback and is left matching the plain column.
     extraWhere = `AND s.sector = ?`;
     filterParams.push(filter.sector);
   } else if (filter.kind === "factor") {
