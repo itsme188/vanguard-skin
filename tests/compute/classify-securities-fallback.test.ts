@@ -21,7 +21,7 @@ vi.mock("@/lib/ai/models", () => ({
   resolveFeatureModel: vi.fn(() => ({ provider: "anthropic", modelId: "claude-sonnet-4-6-20250219" })),
 }));
 
-import { generateTextForFeature } from "@/lib/ai/generate";
+import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { classifyUnresolvedWithClaude } from "@/lib/compute/classify-securities";
 
 function makeDb() {
@@ -34,6 +34,38 @@ function makeDb() {
   db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('XLE','Energy Select SPDR','ETF')").run();
   return db;
 }
+
+/** A DB seeded with several synthetic securities, for batch-retry tests that
+ * need more than one row per half-batch. */
+function makeMultiDb(symbols: string[]) {
+  const db = new Database(":memory:");
+  db.exec(`CREATE TABLE securities (
+    id INTEGER PRIMARY KEY, symbol TEXT, name TEXT, security_type TEXT,
+    asset_class TEXT, fund_category TEXT, geography TEXT,
+    market_cap_category TEXT, style TEXT, classification_source TEXT
+  );`);
+  const insert = db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES (?, ?, 'ETF')");
+  for (const symbol of symbols) insert.run(symbol, `${symbol} Test Fund`);
+  const rows = db.prepare("SELECT id, symbol FROM securities ORDER BY id").all() as Array<{
+    id: number;
+    symbol: string;
+  }>;
+  const unresolved = rows.map((r) => ({ id: r.id, symbol: r.symbol, security_type: "ETF" as const }));
+  return { db, unresolved };
+}
+
+function replyFor(symbols: string[]) {
+  return JSON.stringify(
+    symbols.map((symbol) => ({
+      symbol,
+      fund_category: "US Large Cap Equity",
+      geography: "US",
+      market_cap_category: "Large",
+      style: "Blend",
+    }))
+  );
+}
+
 beforeEach(() => vi.clearAllMocks());
 
 describe("classifyUnresolvedWithClaude", () => {
@@ -276,5 +308,82 @@ describe("classifyUnresolvedWithClaude — no-usable-field guard", () => {
 
     expect(res.classified).toBe(0);
     expect(res.errors).toEqual([]);
+  });
+});
+
+// Regression (2026-09-27, qa:analysis-classification--auto-classify-ai-batch-
+// parse-failure-no-retry-leaves-held-names-unclassified): a batch whose reply
+// fails to parse (or parses with nothing usable) used to be recorded as a
+// permanent error with no retry, leaving its securities unclassified forever
+// even though the failure is an intermittent model quirk (truncated or
+// non-array reply). Such a batch now gets ONE retry as two half-size batches
+// (a size-1 batch retries as itself).
+describe("classifyUnresolvedWithClaude — retries a parse/no-usable failure once", () => {
+  const SYMBOLS = ["ZQTA", "ZQTB", "ZQTC", "ZQTD"];
+
+  it("splits an unparseable batch into two halves and classifies everything when both halves succeed (3 AI calls)", async () => {
+    const { db, unresolved } = makeMultiDb(SYMBOLS);
+    const mocked = generateTextForFeature as ReturnType<typeof vi.fn>;
+    mocked
+      .mockResolvedValueOnce({ text: "This is not JSON at all." })
+      .mockResolvedValueOnce({ text: replyFor(SYMBOLS.slice(0, 2)) })
+      .mockResolvedValueOnce({ text: replyFor(SYMBOLS.slice(2, 4)) });
+
+    const res = await classifyUnresolvedWithClaude(db, unresolved);
+
+    expect(res.errors).toEqual([]);
+    expect(res.classified).toBe(4);
+    expect(mocked).toHaveBeenCalledTimes(3);
+    for (const symbol of SYMBOLS) {
+      const row = db.prepare("SELECT * FROM securities WHERE symbol=?").get(symbol) as any;
+      expect(row.classification_source).toBe("auto_ai");
+    }
+  });
+
+  it("writes the valid half and records exactly one error naming the original batch when the other half also fails", async () => {
+    const { db, unresolved } = makeMultiDb(SYMBOLS);
+    const mocked = generateTextForFeature as ReturnType<typeof vi.fn>;
+    mocked
+      .mockResolvedValueOnce({ text: "This is not JSON at all." })
+      .mockResolvedValueOnce({ text: replyFor(SYMBOLS.slice(0, 2)) })
+      .mockResolvedValueOnce({ text: "Still not JSON." });
+
+    const res = await classifyUnresolvedWithClaude(db, unresolved);
+
+    expect(res.classified).toBe(2);
+    expect(res.errors.length).toBe(1);
+    expect(res.errors[0]).toMatch(/^Batch 1:/);
+    for (const symbol of SYMBOLS.slice(0, 2)) {
+      const row = db.prepare("SELECT * FROM securities WHERE symbol=?").get(symbol) as any;
+      expect(row.classification_source).toBe("auto_ai");
+    }
+    for (const symbol of SYMBOLS.slice(2, 4)) {
+      const row = db.prepare("SELECT * FROM securities WHERE symbol=?").get(symbol) as any;
+      expect(row.classification_source).toBeNull();
+    }
+  });
+
+  it("does not retry an AI refusal", async () => {
+    const db = makeDb();
+    const mocked = generateTextForFeature as ReturnType<typeof vi.fn>;
+    mocked.mockRejectedValueOnce(new AIRefusalError("securityClassification", "claude-test-model"));
+
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+
+    expect(res.classified).toBe(0);
+    expect(res.errors).toEqual(["Batch 1: AI refusal"]);
+    expect(mocked).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes exactly one AI call for a healthy reply (no retry regression)", async () => {
+    const { db, unresolved } = makeMultiDb(SYMBOLS);
+    const mocked = generateTextForFeature as ReturnType<typeof vi.fn>;
+    mocked.mockResolvedValueOnce({ text: replyFor(SYMBOLS) });
+
+    const res = await classifyUnresolvedWithClaude(db, unresolved);
+
+    expect(res.classified).toBe(4);
+    expect(res.errors).toEqual([]);
+    expect(mocked).toHaveBeenCalledTimes(1);
   });
 });
