@@ -7,6 +7,7 @@ import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 
 /**
  * Defense/Hedging engine — classifies the book into hedged pairs (Tier 1),
@@ -506,6 +507,7 @@ interface DefenseHoldingRow {
   security_id: number;
   symbol: string;
   security_type: string | null;
+  fund_category: string | null;
   option_type: string | null;
   underlying_symbol: string | null;
   sector: string | null;
@@ -631,7 +633,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       ON p.security_id = lp.security_id AND p.date = lp.max_date
     )
     SELECT
-      s.id AS security_id, s.symbol, s.security_type, s.option_type, s.underlying_symbol,
+      s.id AS security_id, s.symbol, s.security_type, s.fund_category, s.option_type, s.underlying_symbol,
       s.sector, s.geography, s.currency, h.quantity,
       CASE
         WHEN lp.close_price IS NOT NULL
@@ -648,7 +650,13 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       AND ${liveOptionExpirationSql("s")}
       AND LOWER(s.security_type) IN ('stock', 'etf', 'common stock', 'option', 'mutual fund')
   `;
-  const rawRows = db.prepare(sql).all(...(scopedAccountIds ?? [])) as DefenseHoldingRow[];
+  const allRawRows = db.prepare(sql).all(...(scopedAccountIds ?? [])) as DefenseHoldingRow[];
+
+  // Cash-equivalent sweep funds (stable $1.00 NAV) are cash, not market
+  // exposure — exclude them here, before any aggregation, so they never
+  // reach ranked exposures, the protection-ratio denominator, or any other
+  // downstream computation in this function.
+  const rawRows = allRawRows.filter((r) => !isCashEquivalentSecurity(r));
 
   // Sum quantity/mv across accounts per security_id.
   const aggregated = new Map<number, DefenseHoldingRow>();
