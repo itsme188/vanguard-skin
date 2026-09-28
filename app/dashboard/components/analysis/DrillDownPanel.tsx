@@ -26,6 +26,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Money, Pct } from "@/lib/privacy/components";
+import { ScrollFade } from "../ScrollFade";
 import { SortableHeader } from "../SortableHeader";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 import {
@@ -157,7 +158,7 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
           <button
             type="button"
             onClick={onClose}
-            className="text-ink-faint hover:text-ink p-1 text-lg leading-none"
+            className="relative text-ink-faint hover:text-ink p-1 text-lg leading-none pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2"
             aria-label="Close drill-down"
           >
             ×
@@ -200,120 +201,122 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
           </div>
         )}
         {!loading && !error && rows.length > 0 && (
-          <table className="w-full text-xs">
-            <thead className="bg-panel border-b border-edge text-ink-faint">
-              <tr>
-                <SortableHeader
-                  field="symbol"
-                  sort={sort}
-                  onSort={setSort}
-                >
-                  Ticker
-                </SortableHeader>
-                {/* The ranking metric itself, shown only where it exists.
-                    Placed right after Ticker (rather than last) so the risk
-                    drawer's own namesake column is visible without a
-                    horizontal scroll — the table (641px) is wider than the
-                    panel's scroller (479px). */}
-                {isRisk && (
+          <ScrollFade>
+            <table className="w-full text-xs">
+              <thead className="bg-panel border-b border-edge text-ink-faint">
+                <tr>
                   <SortableHeader
-                    field="risk"
+                    field="symbol"
+                    sort={sort}
+                    onSort={setSort}
+                  >
+                    Ticker
+                  </SortableHeader>
+                  {/* The ranking metric itself, shown only where it exists.
+                      Placed right after Ticker (rather than last) so the risk
+                      drawer's own namesake column is visible without a
+                      horizontal scroll — the table (641px) is wider than the
+                      panel's scroller (479px). */}
+                  {isRisk && (
+                    <SortableHeader
+                      field="risk"
+                      sort={sort}
+                      onSort={setSort}
+                      align="right"
+                    >
+                      <span title={RISK_METRIC_DESCRIPTION}>Risk</span>
+                    </SortableHeader>
+                  )}
+                  <SortableHeader
+                    field="weight"
                     sort={sort}
                     onSort={setSort}
                     align="right"
                   >
-                    <span title={RISK_METRIC_DESCRIPTION}>Risk</span>
+                    Weight
                   </SortableHeader>
-                )}
-                <SortableHeader
-                  field="weight"
-                  sort={sort}
-                  onSort={setSort}
-                  align="right"
-                >
-                  Weight
-                </SortableHeader>
-                <SortableHeader
-                  field="marketValue"
-                  sort={sort}
-                  onSort={setSort}
-                  align="right"
-                >
-                  Value
-                </SortableHeader>
-                <SortableHeader
-                  field="sector"
-                  sort={sort}
-                  onSort={setSort}
-                >
-                  Sector
-                </SortableHeader>
-                <SortableHeader field="ai" sort={sort} onSort={setSort}>
-                  <span title={FACTOR_LABELS.ai_exposure}>
-                    {FACTOR_LABELS_SHORT.ai_exposure}
-                  </span>
-                </SortableHeader>
-                <SortableHeader field="reg" sort={sort} onSort={setSort}>
-                  <span title={FACTOR_LABELS.regulatory_risk}>
-                    {FACTOR_LABELS_SHORT.regulatory_risk}
-                  </span>
-                </SortableHeader>
-                <SortableHeader
-                  field="beta"
-                  sort={sort}
-                  onSort={setSort}
-                  align="right"
-                >
-                  Beta
-                </SortableHeader>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((r) => (
-                <tr
-                  key={r.securityId}
-                  className="border-b border-edge/40 hover:bg-panel/30"
-                >
-                  <td className="px-4 py-2 font-mono">
-                    <Link
-                      href={`/dashboard/security/${r.securityId}`}
-                      className="text-gold-ink hover:underline"
-                      onClick={onClose}
-                    >
-                      {r.symbol}
-                    </Link>
-                  </td>
-                  {isRisk && (
-                    <td className="px-4 py-2 text-right font-mono">
-                      {r.riskContribution != null ? (
-                        <Pct value={r.riskContribution * 100} digits={1} />
-                      ) : (
-                        <span title="Not enough price history to measure">—</span>
-                      )}
-                    </td>
-                  )}
-                  <td className="px-4 py-2 text-right font-mono">
-                    <Pct value={r.weight * 100} digits={1} />
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono">
-                    <Money value={r.marketValue} />
-                  </td>
-                  <td className="px-4 py-2 text-ink-dim">
-                    {r.sector ?? "—"}
-                  </td>
-                  <td className="px-4 py-2 text-ink-dim">
-                    {factorOrDash(r.factors.ai_exposure)}
-                  </td>
-                  <td className="px-4 py-2 text-ink-dim">
-                    {factorOrDash(r.factors.regulatory_risk)}
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono">
-                    {r.beta != null ? r.beta.toFixed(2) : "—"}
-                  </td>
+                  <SortableHeader
+                    field="marketValue"
+                    sort={sort}
+                    onSort={setSort}
+                    align="right"
+                  >
+                    Value
+                  </SortableHeader>
+                  <SortableHeader
+                    field="sector"
+                    sort={sort}
+                    onSort={setSort}
+                  >
+                    Sector
+                  </SortableHeader>
+                  <SortableHeader field="ai" sort={sort} onSort={setSort}>
+                    <span title={FACTOR_LABELS.ai_exposure}>
+                      {FACTOR_LABELS_SHORT.ai_exposure}
+                    </span>
+                  </SortableHeader>
+                  <SortableHeader field="reg" sort={sort} onSort={setSort}>
+                    <span title={FACTOR_LABELS.regulatory_risk}>
+                      {FACTOR_LABELS_SHORT.regulatory_risk}
+                    </span>
+                  </SortableHeader>
+                  <SortableHeader
+                    field="beta"
+                    sort={sort}
+                    onSort={setSort}
+                    align="right"
+                  >
+                    Beta
+                  </SortableHeader>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {sorted.map((r) => (
+                  <tr
+                    key={r.securityId}
+                    className="border-b border-edge/40 hover:bg-panel/30"
+                  >
+                    <td className="px-4 py-2 font-mono">
+                      <Link
+                        href={`/dashboard/security/${r.securityId}`}
+                        className="text-gold-ink hover:underline"
+                        onClick={onClose}
+                      >
+                        {r.symbol}
+                      </Link>
+                    </td>
+                    {isRisk && (
+                      <td className="px-4 py-2 text-right font-mono">
+                        {r.riskContribution != null ? (
+                          <Pct value={r.riskContribution * 100} digits={1} />
+                        ) : (
+                          <span title="Not enough price history to measure">—</span>
+                        )}
+                      </td>
+                    )}
+                    <td className="px-4 py-2 text-right font-mono">
+                      <Pct value={r.weight * 100} digits={1} />
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono">
+                      <Money value={r.marketValue} />
+                    </td>
+                    <td className="px-4 py-2 text-ink-dim">
+                      {r.sector ?? "—"}
+                    </td>
+                    <td className="px-4 py-2 text-ink-dim">
+                      {factorOrDash(r.factors.ai_exposure)}
+                    </td>
+                    <td className="px-4 py-2 text-ink-dim">
+                      {factorOrDash(r.factors.regulatory_risk)}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono">
+                      {r.beta != null ? r.beta.toFixed(2) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </ScrollFade>
         )}
       </aside>
     </>
