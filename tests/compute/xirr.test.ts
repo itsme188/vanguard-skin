@@ -451,4 +451,61 @@ describe("XIRR computation", () => {
       expect(combined!.currentValue).toBe(162000);
     });
   });
+  // ─── Window predates the first snapshot (qa:analysis-performance-mwr--
+  // 5y-all-xirr-drops-opening-balance-before-first-snapshot) ─────────────
+  //
+  // Bug: the opening balance was only looked up STRICTLY BEFORE the window
+  // start. A 5Y / All window that starts before the first snapshot found no
+  // row, dropped the opening balance, and let the opening month's mid-month
+  // deposit become the first cash flow — wildly overstating the MWR. Fix:
+  // fall back to the earliest snapshot inside the window as the opening
+  // balance and count only flows dated after it.
+  describe("window that predates the first snapshot", () => {
+    function seedFromFirstSnapshot(): void {
+      // First snapshot month carries the funding deposit.
+      seedSnapshot(db, ACCT_1, "2022-01-31", 10000, { depositsWithdrawals: 10000 });
+      seedSnapshot(db, ACCT_1, "2022-06-30", 12000, { depositsWithdrawals: 1000 });
+      seedSnapshot(db, ACCT_1, "2022-12-31", 12500);
+    }
+
+    it("per-account: an early window start equals a start the day after the first snapshot", () => {
+      seedFromFirstSnapshot();
+      const early = computeXirr(db, { startDate: "2021-06-30", accountId: ACCT_1 });
+      const noStart = computeXirr(db, { accountId: ACCT_1 });
+      const anchored = computeXirr(db, { startDate: "2022-02-01", accountId: ACCT_1 });
+      expect(early).not.toBeNull();
+      expect(noStart).not.toBeNull();
+      expect(anchored).not.toBeNull();
+      expect(Math.abs(early!.xirr - anchored!.xirr)).toBeLessThan(1e-6);
+      expect(Math.abs(noStart!.xirr - anchored!.xirr)).toBeLessThan(1e-6);
+    });
+
+    it("portfolio-wide: an early window start equals a start the day after the first snapshot", () => {
+      seedFromFirstSnapshot();
+      const early = computeXirr(db, { startDate: "2021-06-30" });
+      const anchored = computeXirr(db, { startDate: "2022-02-01" });
+      expect(early).not.toBeNull();
+      expect(anchored).not.toBeNull();
+      expect(Math.abs(early!.xirr - anchored!.xirr)).toBeLessThan(1e-6);
+      expect(early!.startDate).toBe("2022-01-31");
+      expect(early!.totalInvested).toBe(1000);
+    });
+
+    it("reports the first snapshot date as startDate", () => {
+      seedFromFirstSnapshot();
+      const early = computeXirr(db, { startDate: "2021-06-30", accountId: ACCT_1 });
+      expect(early!.startDate).toBe("2022-01-31");
+      expect(early!.perAccount[0].startDate).toBe("2022-01-31");
+    });
+
+    it("does not double-count the opening month's mid-month deposit", () => {
+      seedFromFirstSnapshot();
+      const early = computeXirr(db, { startDate: "2021-06-30", accountId: ACCT_1 });
+      // Opening value (10000) already contains January's deposit; only the
+      // June deposit is a flow after the opening date.
+      expect(early!.totalInvested).toBe(1000);
+      // opening + June deposit + terminal
+      expect(early!.cashFlowCount).toBe(3);
+    });
+  });
 });

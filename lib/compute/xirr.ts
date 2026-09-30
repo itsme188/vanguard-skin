@@ -211,6 +211,23 @@ function pickMostRecent<T extends Record<string, unknown>>(
   return dateA >= dateB ? a : b;
 }
 
+/** Pick whichever row has the EARLIER date (opening-balance fallback). */
+function pickEarliest<T extends { month_end_date: string }>(
+  a: T | undefined,
+  b: T | undefined
+): T | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return a.month_end_date <= b.month_end_date ? a : b;
+}
+
+/** YYYY-MM-DD of the day after `date` (UTC calendar arithmetic). */
+function nextDay(date: string): string {
+  const d = new Date(date + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 function daysBetween(dateA: string, dateB: string): number {
   const a = new Date(dateA + "T00:00:00Z");
   const b = new Date(dateB + "T00:00:00Z");
@@ -324,6 +341,30 @@ export function computeXirr(
      LIMIT 1`
   );
 
+  // Opening-balance fallback when the window predates the first snapshot:
+  // the EARLIEST row inside the window stands in as the opening balance.
+  // (qa:analysis-performance-mwr--5y-all-xirr-drops-opening-balance-before-
+  // first-snapshot — without it the opening balance was silently dropped and
+  // the opening month's mid-month deposit became the first cash flow.)
+  const firstValueInWindowStmt = db.prepare(
+    `SELECT total_value, month_end_date
+     FROM monthly_snapshots
+     WHERE account_id = ?
+       AND month_end_date >= ? AND month_end_date < ?
+       AND ${excludeLiveSnapshotsSql("source")}
+     ORDER BY month_end_date ASC
+     LIMIT 1`
+  );
+
+  const firstDailyValueInWindowStmt = db.prepare(
+    `SELECT total_value, valuation_date AS month_end_date
+     FROM daily_valuations
+     WHERE account_id = ?
+       AND valuation_date >= ? AND valuation_date < ?
+     ORDER BY valuation_date ASC
+     LIMIT 1`
+  );
+
   // ─── Per-account XIRR ────────────────────────────────────────
 
   const perAccount: XirrResult[] = [];
@@ -337,7 +378,26 @@ export function computeXirr(
       | { total_value: number; month_end_date: string } | undefined;
     const dailyStart = startDailyValueStmt.get(account.id, effectiveStart) as
       | { total_value: number; month_end_date: string } | undefined;
-    const startRow = pickMostRecent(monthlyStart, dailyStart);
+    let startRow = pickMostRecent(monthlyStart, dailyStart);
+
+    // Lower bound (inclusive) for flows. Normally the window start; when the
+    // opening balance comes from a row INSIDE the window, flows on or before
+    // that row are already contained in its value — count only later ones.
+    let flowStart = effectiveStart;
+
+    if (!startRow) {
+      const monthlyFirst = firstValueInWindowStmt.get(
+        account.id, effectiveStart, effectiveEnd
+      ) as { total_value: number; month_end_date: string } | undefined;
+      const dailyFirst = firstDailyValueInWindowStmt.get(
+        account.id, effectiveStart, effectiveEnd
+      ) as { total_value: number; month_end_date: string } | undefined;
+      const openRow = pickEarliest(monthlyFirst, dailyFirst);
+      if (openRow && openRow.total_value > 0) {
+        startRow = openRow;
+        flowStart = nextDay(openRow.month_end_date);
+      }
+    }
 
     if (startRow && startRow.total_value > 0) {
       // Existing portfolio value at start = negative (as if we bought in)
@@ -373,7 +433,7 @@ export function computeXirr(
            AND ms.deposits_withdrawals IS NOT NULL AND ms.deposits_withdrawals != 0
          ORDER BY ms.month_end_date ASC`
       )
-      .all(account.id, effectiveStart, effectiveEnd) as {
+      .all(account.id, flowStart, effectiveEnd) as {
         month_end_date: string;
         deposits_withdrawals: number;
         starting_value: number | null;
@@ -428,7 +488,7 @@ export function computeXirr(
       // totalInvested/totalWithdrawn accumulation as that fallback loop.
       const inKindFlows = inKindFlowStmt.all(
         account.id,
-        effectiveStart,
+        flowStart,
         effectiveEnd
       ) as TransactionRow[];
 
@@ -449,7 +509,7 @@ export function computeXirr(
       // Fallback to transaction-level flows
       const flows = externalFlowStmt.all(
         account.id,
-        effectiveStart,
+        flowStart,
         effectiveEnd
       ) as TransactionRow[];
 
@@ -585,6 +645,67 @@ export function computeXirr(
     }
   }
 
+  // Opening-balance fallback (same defect class as the per-account path):
+  // when NO row exists before the window start, the earliest coverage-
+  // complete month (or daily date, whichever is earlier) inside the window
+  // is the opening balance, and only flows dated after it are counted.
+  let aggFlowStart = effectiveStart;
+  const hasPriorAggRow =
+    monthlyAggStart !== undefined ||
+    (db
+      .prepare("SELECT 1 FROM daily_valuations WHERE valuation_date < ? LIMIT 1")
+      .get(effectiveStart) !== undefined);
+
+  if (!hasPriorAggRow) {
+    const monthlyAggFirst = db
+      .prepare(
+        `WITH ${SNAPSHOT_FIRSTS_CTE},
+         agg AS (
+           SELECT ms.month_end_date AS d,
+                  SUM(ms.total_value) AS total_value,
+                  COUNT(*) AS present_accounts,
+                  ${EXPECTED_ACCOUNTS_SQL} AS expected_accounts
+           FROM monthly_snapshots ms
+           WHERE ms.month_end_date >= ? AND ms.month_end_date < ?
+             AND ${excludeLiveSnapshotsSql("ms.source")}
+           GROUP BY ms.month_end_date
+         )
+         SELECT d AS month_end_date, total_value FROM agg
+         WHERE present_accounts >= expected_accounts
+         ORDER BY d ASC
+         LIMIT 1`
+      )
+      .get(effectiveStart, effectiveEnd) as
+      | { month_end_date: string; total_value: number | null }
+      | undefined;
+
+    const dailyAggFirst = db
+      .prepare(
+        `SELECT SUM(total_value) AS total_value, valuation_date AS month_end_date
+         FROM daily_valuations
+         WHERE valuation_date = (
+           SELECT MIN(valuation_date)
+           FROM daily_valuations
+           WHERE valuation_date >= ? AND valuation_date < ?
+         )`
+      )
+      .get(effectiveStart, effectiveEnd) as
+      | { month_end_date: string | null; total_value: number | null }
+      | undefined;
+
+    const openAgg = pickEarliest(
+      monthlyAggFirst,
+      dailyAggFirst?.month_end_date
+        ? { month_end_date: dailyAggFirst.month_end_date, total_value: dailyAggFirst.total_value }
+        : undefined
+    );
+    if (openAgg?.total_value && openAgg.total_value > 0) {
+      aggStartValue = openAgg.total_value;
+      aggStartDateStr = openAgg.month_end_date;
+      aggFlowStart = nextDay(openAgg.month_end_date);
+    }
+  }
+
   if (aggStartValue && aggStartValue > 0 && aggStartDateStr) {
     portfolioCashFlows.push({
       date: aggStartDateStr,
@@ -604,7 +725,7 @@ export function computeXirr(
        GROUP BY month_end_date
        ORDER BY month_end_date ASC`
     )
-    .all(effectiveStart, effectiveEnd) as {
+    .all(aggFlowStart, effectiveEnd) as {
       month_end_date: string;
       total_deps: number;
     }[];
@@ -625,7 +746,7 @@ export function computeXirr(
        GROUP BY trade_date
        ORDER BY trade_date ASC`
     )
-    .all(effectiveStart, effectiveEnd) as {
+    .all(aggFlowStart, effectiveEnd) as {
       trade_date: string;
       amount: number;
     }[];
@@ -652,7 +773,7 @@ export function computeXirr(
          AND SUBSTR(ms.month_end_date, 6, 2) = '12'
          AND ms.starting_value IS NOT NULL`
     )
-    .all(effectiveStart, effectiveEnd) as {
+    .all(aggFlowStart, effectiveEnd) as {
     account_id: number;
     month_end_date: string;
     starting_value: number;
