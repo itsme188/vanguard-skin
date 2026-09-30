@@ -206,6 +206,8 @@ export function SecurityChart({
   const priceLinesRef = useRef<any[]>([]);
 
   const [loading, setLoading] = useState(true);
+  // True once the candle series exists, so overlay effects (levels) can fetch and draw.
+  const [seriesReady, setSeriesReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [activeDuration, setActiveDuration] = useState("1Y");
@@ -451,6 +453,7 @@ export function SecurityChart({
 
       chartRef.current = chart;
       candleSeriesRef.current = candleSeries;
+      setSeriesReady(true);
       volumeSeriesRef.current = volumeSeries;
 
       resizeObserver = new ResizeObserver((entries) => {
@@ -491,6 +494,7 @@ export function SecurityChart({
       chart?.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
+      setSeriesReady(false);
       volumeSeriesRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -716,7 +720,7 @@ export function SecurityChart({
       }
       priceLinesRef.current = [];
     };
-  }, [securityId]);
+  }, [securityId, seriesReady]);
 
   // Suggested support/resistance overlay (Theme G). Toggleable — off by
   // default to avoid visual clutter. Dashed muted lines, distinct from the
@@ -792,7 +796,7 @@ export function SecurityChart({
       clearInterval(interval);
       clear();
     };
-  }, [securityId, showSuggested]);
+  }, [securityId, showSuggested, seriesReady]);
 
   const handleDurationChange = useCallback(
     async (label: string) => {
