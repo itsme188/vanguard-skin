@@ -315,6 +315,11 @@ export function DataConfidenceIndicator() {
                   }}
                 />
               ))}
+              {confidence.actions.length > 4 && (
+                <p className="text-[10px] text-ink-faint">
+                  +{confidence.actions.length - 4} more
+                </p>
+              )}
               {actionStatus && (
                 <p className="text-[10px] text-ink-faint pt-1">{actionStatus}</p>
               )}
