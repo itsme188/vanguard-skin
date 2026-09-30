@@ -19,6 +19,9 @@ describe("displayableMentionContext", () => {
     expect(displayableMentionContext(MENTION_CONTEXT_PLACEHOLDER)).toBeNull();
     expect(displayableMentionContext(`  ${MENTION_CONTEXT_PLACEHOLDER} `)).toBeNull();
   });
+  it("returns null for the subject-line backstop diagnostic string", () => {
+    expect(displayableMentionContext('Subject-line backstop match: "Weekly wrap: NVDA, AMD"')).toBeNull();
+  });
   it("returns the trimmed sentence otherwise", () => {
     expect(displayableMentionContext("  Nvidia raised guidance.  ")).toBe("Nvidia raised guidance.");
   });
