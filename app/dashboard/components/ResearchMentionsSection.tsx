@@ -6,6 +6,7 @@ import type { ResearchMention } from "@/lib/queries/research";
 import { Section } from "./Section";
 import { Chip, type ChipTone } from "./Chip";
 import { NewsletterArticleFrame } from "./NewsletterArticleFrame";
+import { displayableMentionContext } from "@/lib/research/mention-context";
 import { trimEmailFooter, htmlHidesStoredText, visibleTextLength } from "@/lib/gmail/sanitize";
 
 interface ArticleDetail {
@@ -128,9 +129,8 @@ function MentionRow({ mention }: { mention: ResearchMention }) {
 
   // Context lines under 15 chars are rarely useful (often single words like
   // a proper-noun match). Hide them from the row.
-  const showContext =
-    mention.mention_context != null &&
-    mention.mention_context.trim().length >= 15;
+  const excerpt = displayableMentionContext(mention.mention_context);
+  const showContext = excerpt != null && excerpt.length >= 15;
 
   return (
     <div className="px-5 py-3">
@@ -162,7 +162,7 @@ function MentionRow({ mention }: { mention: ResearchMention }) {
         <p className="text-sm text-ink font-medium">{mention.subject}</p>
         {showContext && (
           <p className="text-xs text-ink-dim italic mt-1 line-clamp-3">
-            &quot;…{mention.mention_context}…&quot;
+            &quot;…{excerpt}…&quot;
           </p>
         )}
       </button>

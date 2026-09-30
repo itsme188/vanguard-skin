@@ -241,7 +241,8 @@ export async function reconcileCloudFetchedNewsletters(
       for (const symbol of payload.mentioned_symbols) {
         const sec = findSecurity.get(symbol) as { id: number } | undefined;
         if (sec) {
-          linkSecurity.run(articleId, sec.id, "cloud-fetched mention", payload.sentiment);
+          // NULL, not a placeholder: no real excerpt exists for cloud-fetched rows.
+          linkSecurity.run(articleId, sec.id, null, payload.sentiment);
         }
       }
       for (const symbol of backstopHits) {
