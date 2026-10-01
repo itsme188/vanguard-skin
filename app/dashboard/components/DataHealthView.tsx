@@ -11,6 +11,7 @@ import type {
   FxRateHealthRow,
 } from "@/lib/queries/data-health";
 import { Money } from "@/lib/privacy/components";
+import { formatUSDPrecise } from "@/lib/format";
 import { ScrollFade } from "./ScrollFade";
 import { EmptySection } from "./EmptySection";
 
@@ -415,10 +416,10 @@ export function DataHealthView() {
                     <td className="px-5 py-2 font-mono text-ink">{d.symbol}</td>
                     <td className="px-3 py-2 text-ink-dim font-mono tabular-nums">{d.date}</td>
                     <td className="px-3 py-2 text-right text-ink-dim font-mono tabular-nums">
-                      <Money value={d.priceA} precise />
+                      {formatUSDPrecise(d.priceA)}
                     </td>
                     <td className="px-3 py-2 text-right text-ink-dim font-mono tabular-nums">
-                      <Money value={d.priceB} precise />
+                      {formatUSDPrecise(d.priceB)}
                     </td>
                     <td className="px-5 py-2 text-right">
                       <span className={`font-mono tabular-nums ${d.diffPct > 5 ? "text-down" : "text-gold-ink"}`}>
