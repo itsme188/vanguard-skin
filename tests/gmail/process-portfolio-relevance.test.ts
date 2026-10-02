@@ -122,6 +122,52 @@ const RELEVANT_RESPONSE = {
   is_portfolio_relevant: true,
 };
 
+describe("D3 held-symbol guard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function setup(mentioned: string[], watchlistOnly = false) {
+    const db = makeDb(0);
+    db.exec(`
+      INSERT INTO securities (id, symbol, name, security_type) VALUES
+        (1,'HELD','Held Co','Stock'),(2,'WATCH','Watch Co','Stock'),(3,'OTHER','Other Co','Stock');
+      INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (1,1,10,'2026-09-01');
+      INSERT INTO watchlist (security_id, is_active) VALUES (2,1);
+    `);
+    insertUnprocessed(db, "Quarterly takeaways");
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      object: { ...OFF_TOPIC_RESPONSE, mentioned_symbols: mentioned },
+    });
+    void watchlistOnly;
+    return db;
+  }
+
+  function read(db: Database.Database) {
+    return db
+      .prepare(`SELECT is_relevant, excluded_category FROM research_articles WHERE id = 1`)
+      .get() as { is_relevant: number; excluded_category: string | null };
+  }
+
+  it("keeps the article relevant when the vote is false but a held symbol is mentioned", async () => {
+    const db = setup(["HELD"]);
+    await processUnprocessedArticles(db);
+    expect(read(db)).toEqual({ is_relevant: 1, excluded_category: null });
+  });
+
+  it("still marks off_topic when no held symbol is mentioned", async () => {
+    const db = setup([]);
+    await processUnprocessedArticles(db);
+    expect(read(db)).toEqual({ is_relevant: 0, excluded_category: "off_topic" });
+  });
+
+  it("still marks off_topic when the mentioned symbol is only on the watchlist or not held", async () => {
+    const db = setup(["WATCH", "OTHER"]);
+    await processUnprocessedArticles(db);
+    expect(read(db)).toEqual({ is_relevant: 0, excluded_category: "off_topic" });
+  });
+});
+
 describe("D3 portfolio-relevance gate", () => {
   beforeEach(() => {
     vi.clearAllMocks();

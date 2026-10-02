@@ -213,6 +213,43 @@ describe("reconcileCloudFetchedNewsletters", () => {
     expect(row.excluded_reason).toBe("No portfolio link");
   });
 
+  it("held-symbol guard: vote false + held symbol mentioned keeps the article relevant", async () => {
+    const db = makeDb();
+    mockWorker({
+      list: {
+        m1: { ...BASE_PAYLOAD, mentioned_symbols: ["U"], is_portfolio_relevant: false, portfolio_relevance: "Not held" },
+      },
+    });
+    await reconcileCloudFetchedNewsletters(db, "secret");
+    const row = db.prepare(`SELECT is_relevant, excluded_category FROM research_articles WHERE gmail_message_id = 'm1'`).get();
+    expect(row).toEqual({ is_relevant: 1, excluded_category: null });
+  });
+
+  it("held-symbol guard: vote false + only a non-held symbol (AAPL) still off_topic", async () => {
+    const db = makeDb();
+    mockWorker({
+      list: {
+        m1: { ...BASE_PAYLOAD, mentioned_symbols: ["AAPL"], is_portfolio_relevant: false },
+      },
+    });
+    await reconcileCloudFetchedNewsletters(db, "secret");
+    const row = db.prepare(`SELECT is_relevant, excluded_category FROM research_articles WHERE gmail_message_id = 'm1'`).get();
+    expect(row).toEqual({ is_relevant: 0, excluded_category: "off_topic" });
+  });
+
+  it("held-symbol guard: vote false + watchlist-only symbol still off_topic", async () => {
+    const db = makeDb();
+    db.prepare(`INSERT INTO watchlist (security_id, is_active) VALUES (1, 1)`).run();
+    mockWorker({
+      list: {
+        m1: { ...BASE_PAYLOAD, mentioned_symbols: ["AAPL"], is_portfolio_relevant: false },
+      },
+    });
+    await reconcileCloudFetchedNewsletters(db, "secret");
+    const row = db.prepare(`SELECT is_relevant, excluded_category FROM research_articles WHERE gmail_message_id = 'm1'`).get();
+    expect(row).toEqual({ is_relevant: 0, excluded_category: "off_topic" });
+  });
+
   it("respects allow_off_topic=1 on the source (no flip even if Claude voted false)", async () => {
     const db = makeDb();
     mockWorker({
