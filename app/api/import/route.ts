@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { parseImport, commitImport } from "@/lib/import/engine";
-import type { CommitResult } from "@/lib/import/engine";
+import type { CommitResult, NothingImportedResult } from "@/lib/import/engine";
 import { validateParsedResult } from "@/lib/import/validate";
 import { getAllAccounts } from "@/lib/queries/accounts";
 import { classifyImportError } from "@/lib/import/error-classify";
@@ -123,7 +123,7 @@ export async function POST(request: NextRequest) {
     // Raw CommitResult objects (not the transformed `results` entries) — used
     // after the loop to decide whether the request carried any corporate
     // action activity, and if so, what the tax-lot replay found.
-    const commitResultsRaw: CommitResult[] = [];
+    const commitResultsRaw: (CommitResult | NothingImportedResult)[] = [];
     // Resolved once per request — preview validation checks every row's
     // accountName against this set so a typo'd account can't preview green
     // and then 500 on commit. commitImport (called with
@@ -197,18 +197,21 @@ export async function POST(request: NextRequest) {
       // Phase 3: archive source PDFs to R2 (fire-and-forget; never blocks).
       // Only PDFs are archived — CSVs are usually user-managed/version-tracked
       // and less likely to be lost.
-      if (isPdf && Buffer.isBuffer(content) && isR2Configured()) {
+      // An all-excluded file (null batchId) wrote nothing, so there is no
+      // batch to attach the archive to.
+      const batchId = commitResult.batchId;
+      if (batchId !== null && isPdf && Buffer.isBuffer(content) && isR2Configured()) {
         const key = buildStatementKey({
           sourceType: parsed.sourceType,
           filename: file.name,
         });
         uploadStatementPdf(key, content)
           .then((returnedKey) => {
-            if (returnedKey) setImportBatchR2Key(db, commitResult.batchId, returnedKey);
+            if (returnedKey) setImportBatchR2Key(db, batchId, returnedKey);
           })
           .catch((err) => {
             console.warn(
-              `[import] R2 archive failed for batch ${commitResult.batchId} (${file.name}):`,
+              `[import] R2 archive failed for batch ${batchId} (${file.name}):`,
               err instanceof Error ? err.message : err
             );
           });
@@ -248,8 +251,16 @@ export async function POST(request: NextRequest) {
     // Auto-classify and compute tax lots after commit. The route loops over
     // files calling commitImport per file, then runs these ONCE for the
     // whole request — so the replay status aggregates across every file.
+    //
+    // Skipped entirely when every committed file was an all-excluded no-op
+    // (null batchId): nothing was written, so a full tax-lot recompute would
+    // only re-mint the engine-owned RECONCILE_CLOSE rows under new ids and
+    // surface unrelated replay/reconciliation warnings (QA 2026-10-02).
+    const nothingWritten =
+      commitResultsRaw.length > 0 && commitResultsRaw.every((r) => r.batchId === null);
+    const runPostCommit = mode === "commit" && !nothingWritten;
     let replay: { status: "clean" | "mismatch" | "failed"; warnings: string[] } | null = null;
-    if (mode === "commit") {
+    if (runPostCommit) {
       try {
         classifySecurities(db);
       } catch {
@@ -293,7 +304,7 @@ export async function POST(request: NextRequest) {
 
     // Detect months with new trades that don't have reviews yet
     let newTradePeriods: { periodStart: string; periodEnd: string; tradeCount: number }[] = [];
-    if (mode === "commit") {
+    if (runPostCommit) {
       try {
         newTradePeriods = detectNewTradeReviewPeriods(db);
       } catch {
@@ -303,7 +314,7 @@ export async function POST(request: NextRequest) {
 
     // Check for reconciliation flags after commit
     let reconciliationFlags: { accountName: string; snapshotDate: string; diffPct: number }[] = [];
-    if (mode === "commit") {
+    if (runPostCommit) {
       try {
         const recon = getSnapshotReconciliation(db);
         reconciliationFlags = recon
