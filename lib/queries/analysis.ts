@@ -131,13 +131,44 @@ function isFactorDimension(dim: AllocationDimension): dim is FactorColumn {
 // literal-'null' row, which opened the drill-down panel empty
 // [qa:analysis-drilldown--unclassified-category-row-opens-empty-panel-count-mismatch].
 //
-// NOTE: "sector" is intentionally NOT resolved through this map — the
-// breakdown's sector bucket goes through ETF look-through
-// (getSectorAllocationWithLookThrough), a separate product-ruled path this
-// helper does not attempt to replicate. Callers asking for "sector" get the
-// plain `s.sector` column, matching drill-down.ts's pre-existing behavior.
+// NOTE on "sector": the breakdown's sector bucket (getSectorAllocationWithLookThrough)
+// ALSO does ETF look-through — a fund with cached weights splits across real
+// GICS sectors it has no OWN sector/fund_category value for at all. This map
+// does not attempt to replicate that split (a fund row will not surface under
+// one of its look-through sectors here) — see SECTOR_OWN_BUCKET_SQL below for
+// the part this map DOES cover: a non-fund holding's (or an unweighted fund's)
+// own bucket, including the sector→fund_category fallback.
+export const SECTOR_OWN_BUCKET_SQL = `CASE
+    WHEN TRIM(COALESCE(s.sector, s.fund_category, '')) != ''
+      THEN COALESCE(s.sector, s.fund_category)
+    WHEN LOWER(COALESCE(s.security_type, '')) = 'bond' THEN 'Fixed Income'
+    ELSE 'Unknown'
+  END`;
 const CLASSIFICATION_BUCKET_COLUMNS: Partial<Record<AllocationDimension, string>> = {
   fund_category: "COALESCE(s.fund_category, 'Unclassified')",
+  // SQL twin of explodeHoldingBySector's non-look-through branch
+  // (lib/compute/explode-sector.ts), specifically the `ownSector` decision
+  // getSectorAllocationWithLookThrough feeds it via `r.sector ?? r.fund_category`:
+  //   JS:  candidate = sector ?? fundCategory   (nullish coalesce — only NULL/
+  //                                               undefined fall through; an
+  //                                               empty-string sector does NOT
+  //                                               fall through to fund_category)
+  //        bucket = candidate && candidate.trim() !== "" ? candidate
+  //                 : (type === "bond" ? "Fixed Income" : "Unknown")
+  //   SQL: COALESCE(sector, fund_category)      (SQLite COALESCE is likewise
+  //                                               NULL-only, matching `??`)
+  //        TRIM(...) != '' ? that value : bond ? 'Fixed Income' : 'Unknown'
+  // No 'null'-literal guard on either side — explode-sector.ts has none, so a
+  // security whose sector/fund_category literally reads the string "null"
+  // renders (and must drill) as bucket "null", not silently normalized away.
+  //
+  // Before this, a Treasury (sector NULL, fund_category 'US Treasury') bucketed
+  // in the breakdown as "US Treasury" via the fund_category fallback, but
+  // getHoldingsInBucket filtered with plain `s.sector = ?` — which a NULL
+  // sector can never match — so the drill-down panel opened with 0 holdings
+  // for a row the breakdown itself said held several positions
+  // [qa:analysis-sector-drilldown--us-treasury-row-8-positions-opens-empty-panel].
+  sector: SECTOR_OWN_BUCKET_SQL,
   // NULLIF(...,'null') guards rows where an AI classify pass stored the
   // literal string "null" (prompt enums include a `null` token) — without
   // it the breakdown renders a category row literally labeled "null".

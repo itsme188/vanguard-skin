@@ -8,7 +8,11 @@ import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates"
 import { getHeldStockSymbols, getHeldOptionUnderlyingSymbols } from "@/lib/queries/briefing-symbols";
 import { getReadThroughReporterSymbols } from "@/lib/queries/read-through-pairs";
 import { getActiveWatchlistStockSymbols } from "@/lib/queries/watchlist";
-import { upsertCalendarEvents, deleteUnenrichedEventsForWeek } from "@/lib/mutations/calendar";
+import {
+  upsertCalendarEvents,
+  deleteUnenrichedEventsForWeek,
+  type CalendarEventInput,
+} from "@/lib/mutations/calendar";
 import { getIbApi, disconnectTws } from "@/lib/tws/client";
 import { addDays, validateWeekOf, todayET } from "@/lib/calendar/date-utils";
 
@@ -127,6 +131,42 @@ function describeFinnhubFailures(
   };
 }
 
+/**
+ * Run one source's write step and return how many of its source_keys are
+ * genuinely new — present after the step, absent before it.
+ *
+ * [qa:today-earningshub-refresh--outcome-line-counts-reminted-macro-rows-as-new]
+ * The macro / Finnhub / Nasdaq steps delete their own un-enriched rows for the
+ * week and re-insert them with the SAME source_key, so the upsert's
+ * `inserted` count called every re-minted row "new" and the outcome line said
+ * "N new" for an unchanged release list. The snapshot is taken before the
+ * delete, so a re-mint counts as a refresh. Reporting only — the write step
+ * itself is unchanged. Suppressed inputs never land, so they never count.
+ */
+function writeAndCountNewKeys(
+  db: Database.Database,
+  inputs: CalendarEventInput[],
+  write: () => void,
+): number {
+  const keys = Array.from(new Set(inputs.map((e) => e.source_key)));
+  if (keys.length === 0) {
+    write();
+    return 0;
+  }
+  const placeholders = keys.map(() => "?").join(",");
+  const existing = db.prepare(
+    `SELECT source_key FROM calendar_events WHERE source_key IN (${placeholders})`,
+  );
+  const readKeys = () =>
+    new Set((existing.all(...keys) as { source_key: string }[]).map((r) => r.source_key));
+  const before = readKeys();
+  write();
+  const after = readKeys();
+  let fresh = 0;
+  for (const key of after) if (!before.has(key)) fresh++;
+  return fresh;
+}
+
 export async function syncCalendarForWeek(
   db: Database.Database,
   weekOf: string,
@@ -172,8 +212,11 @@ export async function syncCalendarForWeek(
         send({ phase: "wsh_parse", message: "Parsing WSH event data..." });
         const parsed = parseWshEvents(wshJson, weekOf, db);
         if (parsed.length > 0) {
-          const result = upsertCalendarEvents(db, parsed);
-          wshNew = result.inserted;
+          // WSH never deletes before upserting, but shares the one "new"
+          // definition so the four counts can't drift apart.
+          wshNew = writeAndCountNewKeys(db, parsed, () => {
+            upsertCalendarEvents(db, parsed);
+          });
         }
         wshEvents = parsed.length;
         send({
@@ -214,9 +257,10 @@ export async function syncCalendarForWeek(
         // Reschedule-orphan cleanup — un-enriched rows only. Enriched rows are
         // historical records of releases that happened; the upsert below
         // refreshes their sync-owned metadata without touching enrichment.
-        deleteUnenrichedEventsForWeek(db, weekOf, "claude_macro");
-        const result = upsertCalendarEvents(db, macroInputs);
-        macroNew = result.inserted;
+        macroNew = writeAndCountNewKeys(db, macroInputs, () => {
+          deleteUnenrichedEventsForWeek(db, weekOf, "claude_macro");
+          upsertCalendarEvents(db, macroInputs);
+        });
       }
       macroEvents = macroInputs.length;
       send({
@@ -287,9 +331,10 @@ export async function syncCalendarForWeek(
         if (finnhubInputs.length > 0) {
           // Same enrichment-preserving cleanup as the macro phase — an enriched
           // earnings row also anchors earnings_emails dedup rows (CASCADE).
-          deleteUnenrichedEventsForWeek(db, weekOf, "finnhub");
-          const result = upsertCalendarEvents(db, finnhubInputs);
-          finnhubNew = result.inserted;
+          finnhubNew = writeAndCountNewKeys(db, finnhubInputs, () => {
+            deleteUnenrichedEventsForWeek(db, weekOf, "finnhub");
+            upsertCalendarEvents(db, finnhubInputs);
+          });
         }
         finnhubEvents = finnhubInputs.length;
         send({
@@ -334,9 +379,10 @@ export async function syncCalendarForWeek(
         weekOf,
       );
       if (nasdaqInputs.length > 0) {
-        deleteUnenrichedEventsForWeek(db, weekOf, "nasdaq");
-        const result = upsertCalendarEvents(db, nasdaqInputs);
-        nasdaqNew = result.inserted;
+        nasdaqNew = writeAndCountNewKeys(db, nasdaqInputs, () => {
+          deleteUnenrichedEventsForWeek(db, weekOf, "nasdaq");
+          upsertCalendarEvents(db, nasdaqInputs);
+        });
       }
       nasdaqEvents = nasdaqInputs.length;
       send({
