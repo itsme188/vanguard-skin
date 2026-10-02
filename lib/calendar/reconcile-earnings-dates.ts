@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { mergeEarningsEventState } from "@/lib/earnings/event-merge";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
-import { notLiveClaimSql } from "@/lib/earnings/email-states";
+import { deliveredSql, notLiveClaimSql } from "@/lib/earnings/email-states";
 import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 
 // ── Earnings date cross-check reconciliation ────────────────────────
@@ -53,6 +53,12 @@ interface EarningsRow {
    * creation time counts as NO evidence (see `createdOnOrAfter`).
    */
   created_at: string | null;
+  /**
+   * 1 when the row carries its OWN evidence of being a print that happened —
+   * see PRINT_EVIDENCE_SQL. 0 (or absent, for the dry run's hypothetical row)
+   * otherwise.
+   */
+  print_evidence?: number | null;
 }
 
 function addDaysUTC(date: string, days: number): string {
@@ -67,10 +73,49 @@ function daysBetween(a: string, b: string): number {
   return Math.abs(Math.round((da - db_) / 86_400_000));
 }
 
+/**
+ * Evidence belt (USER RULING 2026-10-02, QA HIGH earnings-reconcile--printed-
+ * user-row-loses-actuals-vendor-twin-resurfaces-sent-emails-read-pending): a
+ * `calendar_events` row that owns
+ *   - a DELIVERED earnings email (any phase; `deliveredSql` — sent locally or
+ *     by the cloud, or delivery_unknown; a live claim is not a delivery), or
+ *   - an accepted print sheet (a print_watch line or first-pass callout the
+ *     desk accepted)
+ * has already been treated as the print by the desk's own outputs, so the
+ * reconciler must never call it a phantom nor strip its actuals — doing so
+ * leaves the sent emails stranded on it and the vendor twin reads as
+ * un-recapped (a duplicate recap went out in production).
+ *
+ * Both legs require the evidence to date from the row's own print window
+ * (`>= event_date - 1 day`, the same plausibility rule the preview repoint
+ * uses): a recap that an older bug DRAGGED onto a far-future phantom (the
+ * 2026-09-11 MDB shape — recap sent days before the phantom's date) documents
+ * a different print and is not this row's evidence.
+ *
+ * Correlated on the bare `calendar_events` table name — every gather selects
+ * `FROM calendar_events` with no alias, and the phantom-strip UPDATE targets it.
+ */
+const PRINT_EVIDENCE_SQL = `(
+  EXISTS (SELECT 1 FROM earnings_emails pe_ee
+           WHERE pe_ee.event_id = calendar_events.id
+             AND ${deliveredSql("pe_ee.error")}
+             AND date(pe_ee.sent_at) >= date(calendar_events.event_date, '-1 day'))
+  OR EXISTS (SELECT 1 FROM print_watch_prints pe_pp
+               JOIN print_watch_lines pe_pl ON pe_pl.print_id = pe_pp.id
+              WHERE pe_pp.event_id = calendar_events.id
+                AND pe_pl.state = 'accepted'
+                AND date(pe_pl.updated_at) >= date(calendar_events.event_date, '-1 day'))
+  OR EXISTS (SELECT 1 FROM print_watch_prints pe_pp2
+               JOIN print_watch_callouts pe_pc ON pe_pc.print_id = pe_pp2.id
+              WHERE pe_pp2.event_id = calendar_events.id
+                AND pe_pc.state = 'accepted'
+                AND date(COALESCE(pe_pc.accepted_at, pe_pc.updated_at)) >= date(calendar_events.event_date, '-1 day'))
+)`;
+
 /** The columns every resolution step reads. Shared by both gather queries. */
 const EARNINGS_ROW_COLUMNS = `id, source, symbol, event_date, raw_json, actual_value, date_status,
         consensus_estimate, consensus_value, reaction_snapshot, enriched_at,
-        manual_actuals_at, created_at`;
+        manual_actuals_at, created_at, ${PRINT_EVIDENCE_SQL} AS print_evidence`;
 
 /**
  * Greedy proximity clustering of ONE issuer family's rows (already sorted by
@@ -195,13 +240,26 @@ function createdOnOrAfter(row: EarningsRow, date: string): boolean {
   return created >= date;
 }
 
-/** Is this manual row a post-print correction of one of `reported`? */
+/**
+ * Is this manual row the print itself (a post-print correction of, or the
+ * same date as, one of `reported`)?
+ *
+ * USER RULING (2026-10-02) adds two legs to the 2026-09-11 rule:
+ *  - SAME-DATE AGREEMENT: a manual row whose event_date EQUALS a reported
+ *    vendor row's date IS the print, whatever its creation time — a user who
+ *    typed the right date before the print was confirmed, not contradicted.
+ *    Rows one or more days off still need `createdOnOrAfter` (09-11 ruling).
+ *  - EVIDENCE BELT: a row that owns a delivered earnings email or an accepted
+ *    print sheet for its own date (`print_evidence`, PRINT_EVIDENCE_SQL).
+ */
 function manualIsPostPrintCorrection(manual: EarningsRow, reported: EarningsRow[]): boolean {
   if (manual.manual_actuals_at != null) return true;
+  if (manual.print_evidence) return true;
   return reported.some(
     (r) =>
-      daysBetween(r.event_date, manual.event_date) <= POST_PRINT_CORRECTION_DAYS &&
-      createdOnOrAfter(manual, r.event_date),
+      r.event_date === manual.event_date ||
+      (daysBetween(r.event_date, manual.event_date) <= POST_PRINT_CORRECTION_DAYS &&
+        createdOnOrAfter(manual, r.event_date)),
   );
 }
 
@@ -674,6 +732,7 @@ export function checkManualAddWouldSupersedeVendor(
     reaction_snapshot: null,
     enriched_at: null,
     manual_actuals_at: null,
+    print_evidence: 0,
     // Typed right now: `created_at` would be datetime('now'), so against any
     // print at or before `today` this hypothetical row reads as a post-print
     // correction — exactly what the user is doing when they type a date a day
@@ -730,6 +789,91 @@ export function checkManualAddWouldSupersedeVendor(
   };
 }
 
+/** The donor-row fields a fold reads (a gathered row satisfies it). */
+export type TwinDonor = Pick<
+  EarningsRow,
+  | "id"
+  | "consensus_estimate"
+  | "consensus_value"
+  | "actual_value"
+  | "manual_actuals_at"
+  | "reaction_snapshot"
+  | "enriched_at"
+>;
+
+/**
+ * Build the ONE implementation of "this row loses its cluster to
+ * `canonicalId`": mark it superseded, carry its enrichment forward onto the
+ * canonical, repoint its audit children, and merge its registry state.
+ * `reconcileEarningsDates` calls it per superseded row; the stripped-actuals
+ * repair (scripts/repair-reconcile-stripped-actuals.ts) reuses it so a
+ * repaired cluster ends exactly where a reconcile pass would put it.
+ *
+ * Returns whether `mergeEarningsEventState` moved anything — the reconciler's
+ * cue to write one armed-events outbox row.
+ */
+export function createTwinFolder(db: Database.Database) {
+  const setSuperseded = db.prepare(
+    "UPDATE calendar_events SET superseded = 1, date_status = NULL, date_conflict_with = NULL WHERE id = ?",
+  );
+  // Supersession is data-preserving (QA 2026-07-02: confirming a conflicted
+  // date orphaned consensus, user-entered actuals, sent-email audit rows,
+  // bogeys, and skips on the superseded event — the row regressed to
+  // "Consensus not yet published" and the sweep cron could re-send a
+  // duplicate preview). Enrichment COALESCEs forward onto the canonical
+  // (never overwriting its own non-NULL values — same "sync may only ADD
+  // data" invariant as the enrichment-runner), and child audit rows re-point
+  // via createDependentRepointer — bogeys and recap-phase rows
+  // unconditionally, preview-phase rows gated by send-date plausibility (the
+  // rules live in that helper's comment, shared with the pre-delete hand-back).
+  // manual_actuals_at rides along ONLY with the figure it describes: the
+  // desk's acceptance is a statement about one number, so it may land on the
+  // canonical when the canonical is about to adopt (or already shows) exactly
+  // that actual_value — never when the canonical keeps a different vendor
+  // figure the user never saw. SQLite evaluates every RHS against the
+  // pre-UPDATE row, so `actual_value IS NULL` here means "about to inherit
+  // the donor's". Read-side twin healing (lib/queries/manual-actuals-cluster.ts)
+  // is the guarantee; this is defense in depth at the exact write that
+  // stranded RBRK's acceptance (QA finding
+  // today-week-ahead--accepted-actuals-vanish-after-superseded-twin-flip).
+  const carryEnrichment = db.prepare(
+    `UPDATE calendar_events SET
+       consensus_estimate = COALESCE(consensus_estimate, ?),
+       consensus_value = COALESCE(consensus_value, ?),
+       manual_actuals_at = CASE
+         WHEN actual_value IS NULL OR actual_value = ?
+           THEN COALESCE(manual_actuals_at, ?)
+         ELSE manual_actuals_at
+       END,
+       actual_value = COALESCE(actual_value, ?),
+       reaction_snapshot = COALESCE(reaction_snapshot, ?),
+       enriched_at = COALESCE(enriched_at, ?)
+     WHERE id = ?`,
+  );
+  const repointDependents = createDependentRepointer(db);
+
+  return function fold(r: TwinDonor, canonicalId: number, canonicalEventDate: string): boolean {
+    setSuperseded.run(r.id);
+    // Positional (better-sqlite3 binds `?` only positionally, so the
+    // donor's actual_value is passed TWICE — once for the
+    // manual_actuals_at CASE test, once for its own COALESCE).
+    carryEnrichment.run(
+      r.consensus_estimate,
+      r.consensus_value,
+      r.actual_value,
+      r.manual_actuals_at,
+      r.actual_value,
+      r.reaction_snapshot,
+      r.enriched_at,
+      canonicalId,
+    );
+    repointDependents(r.id, canonicalId, canonicalEventDate);
+    // v2 slice A: the repointer moved what it could; the registry merge handles the
+    // (source, source_label) collisions it skipped, flags, steps, scans, and B's tables.
+    return mergeEarningsEventState(db, r.id, canonicalId).changed;
+  };
+}
+
 /**
  * Reconcile all held/watchlist earnings rows in a window around `today`.
  * Pure given `today`; idempotent (re-running yields the same marks); never
@@ -777,44 +921,7 @@ export function reconcileEarningsDates(
   const setCanonical = db.prepare(
     "UPDATE calendar_events SET date_status = ?, date_conflict_with = ?, superseded = 0 WHERE id = ?",
   );
-  const setSuperseded = db.prepare(
-    "UPDATE calendar_events SET superseded = 1, date_status = NULL, date_conflict_with = NULL WHERE id = ?",
-  );
 
-  // Supersession is data-preserving (QA 2026-07-02: confirming a conflicted
-  // date orphaned consensus, user-entered actuals, sent-email audit rows,
-  // bogeys, and skips on the superseded event — the row regressed to
-  // "Consensus not yet published" and the sweep cron could re-send a
-  // duplicate preview). Enrichment COALESCEs forward onto the canonical
-  // (never overwriting its own non-NULL values — same "sync may only ADD
-  // data" invariant as the enrichment-runner), and child audit rows re-point
-  // via createDependentRepointer — bogeys and recap-phase rows
-  // unconditionally, preview-phase rows gated by send-date plausibility (the
-  // rules live in that helper's comment, shared with the pre-delete hand-back).
-  // manual_actuals_at rides along ONLY with the figure it describes: the
-  // desk's acceptance is a statement about one number, so it may land on the
-  // canonical when the canonical is about to adopt (or already shows) exactly
-  // that actual_value — never when the canonical keeps a different vendor
-  // figure the user never saw. SQLite evaluates every RHS against the
-  // pre-UPDATE row, so `actual_value IS NULL` here means "about to inherit
-  // the donor's". Read-side twin healing (lib/queries/manual-actuals-cluster.ts)
-  // is the guarantee; this is defense in depth at the exact write that
-  // stranded RBRK's acceptance (QA finding
-  // today-week-ahead--accepted-actuals-vanish-after-superseded-twin-flip).
-  const carryEnrichment = db.prepare(
-    `UPDATE calendar_events SET
-       consensus_estimate = COALESCE(consensus_estimate, ?),
-       consensus_value = COALESCE(consensus_value, ?),
-       manual_actuals_at = CASE
-         WHEN actual_value IS NULL OR actual_value = ?
-           THEN COALESCE(manual_actuals_at, ?)
-         ELSE manual_actuals_at
-       END,
-       actual_value = COALESCE(actual_value, ?),
-       reaction_snapshot = COALESCE(reaction_snapshot, ?),
-       enriched_at = COALESCE(enriched_at, ?)
-     WHERE id = ?`,
-  );
   // A phantom manual row (split off the print, no desk acceptance of its own)
   // keeps whatever actuals it had INHERITED — `carryEnrichment` copied them
   // from the print on an earlier pass, or the enrichment road wrote a Finnhub
@@ -828,7 +935,10 @@ export function reconcileEarningsDates(
   // as the user's own (future) event, just without figures it never earned.
   //
   // `manual_actuals_at IS NULL` is the safety rail — a desk-accepted figure is
-  // never wiped (and such a row is never a phantom in the first place). Only
+  // never wiped (and such a row is never a phantom in the first place). The
+  // PRINT_EVIDENCE_SQL guard is the same rail for a row that owns a delivered
+  // email or an accepted print sheet (ruling 2026-10-02) — also never a
+  // phantom, refused here as defense in depth. Only
   // the actuals fields go; consensus stays, since a forward-looking consensus
   // on a future date is not a claim that the quarter printed.
   const clearInheritedActuals = db.prepare(
@@ -841,17 +951,18 @@ export function reconcileEarningsDates(
            THEN json_remove(raw_json, '$.entry.epsActual', '$.entry.revenueActual')
          ELSE raw_json
        END
-     WHERE id = ? AND manual_actuals_at IS NULL`,
+     WHERE id = ? AND manual_actuals_at IS NULL AND NOT ${PRINT_EVIDENCE_SQL}`,
   );
   /** Does this phantom carry anything the clear above would remove? */
   const carriesInheritedActuals = (r: EarningsRow): boolean =>
     r.manual_actuals_at == null &&
+    !r.print_evidence &&
     (r.actual_value != null ||
       r.enriched_at != null ||
       r.reaction_snapshot != null ||
       hasActual(r));
 
-  const repointDependents = createDependentRepointer(db);
+  const foldIntoCanonical = createTwinFolder(db);
 
   const result: ReconcileResult = { confirmed: 0, conflict: 0, single: 0, userConfirmed: 0 };
   // [C-13] One outbox row per reconcile transaction, only when the merge
@@ -874,24 +985,12 @@ export function reconcileEarningsDates(
           .filter((r) => r.id !== res.canonicalId)
           .sort((a, b) => (b.enriched_at ?? "").localeCompare(a.enriched_at ?? ""));
         for (const r of superseded) {
-          setSuperseded.run(r.id);
-          // Positional (better-sqlite3 binds `?` only positionally, so the
-          // donor's actual_value is passed TWICE — once for the
-          // manual_actuals_at CASE test, once for its own COALESCE).
-          carryEnrichment.run(
-            r.consensus_estimate,
-            r.consensus_value,
-            r.actual_value,
-            r.manual_actuals_at,
-            r.actual_value,
-            r.reaction_snapshot,
-            r.enriched_at,
-            res.canonicalId,
-          );
-          repointDependents(r.id, res.canonicalId, canonicalEventDate);
-          // v2 slice A: the repointer moved what it could; the registry merge handles the
-          // (source, source_label) collisions it skipped, flags, steps, scans, and B's tables.
-          anyChanged ||= mergeEarningsEventState(db, r.id, res.canonicalId).changed;
+          // Fold FIRST, then accumulate: `anyChanged ||= fold(...)` would
+          // short-circuit and skip the fold (pre-refactor the same shape
+          // skipped mergeEarningsEventState for every donor after the first
+          // change in a pass).
+          const changed = foldIntoCanonical(r, res.canonicalId, canonicalEventDate);
+          anyChanged ||= changed;
         }
         if (res.status === "confirmed") result.confirmed++;
         else if (res.status === "conflict") result.conflict++;
