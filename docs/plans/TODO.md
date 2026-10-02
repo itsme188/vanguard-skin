@@ -66,6 +66,18 @@
 
 ## Bugs / Quality
 
+- [ ] **Follow-ups from the 2026-10-01 landing reviews (PRs #87–#95)** — siblings and minors the five read-only reviews found that were not fixed in the landing:
+  - (a) `lib/compute/classify-factors.ts` batch loop has the same one-shot AI parse failure as e5f002ef fixed in auto-classify (also runs from auto-refresh) — extract the retry into a shared helper.
+  - (b) `LevelsPanel.tsx` pause / reactivate / delete handlers check only `res.ok` — add `data.success` + visible failure per the mutating-handler rule.
+  - (c) `lib/queries/chat-tools.ts` sector bucket lacks the Fixed Income fallback — reuse `SECTOR_OWN_BUCKET_SQL` so chat agrees with the Analysis breakdown.
+  - (d) Research Documents search does not match the visible `mentioned_symbols` chips (same class as c3567c11).
+  - (e) Allocation (`lib/queries/analysis.ts:103`) and Data Health readers still carry no option-expiry guard; Greeks intentionally labels expired rows.
+  - (f) XIRR `totalInvested` now means "deposits after the opening balance" on All/5Y windows; `PerformanceView` `cumulativeGain` is dead code and the chat tool passes `totalInvested` raw — document or delete.
+  - (g) Import: the Import button stays enabled when only securities remain after exclusions; the failure panel's "Supported formats" line is unchanged.
+  - (h) Trade review legacy-sale test/comment describe a state the schema forbids (`sale_transaction_id` NOT NULL) — trim.
+  - (i) USER: regenerate saved trade review 17 (it still grades engine reconcile closes as trades).
+- [ ] **[USER DECISION] earnings-reconcile--printed-user-row-loses-actuals (HIGH) is only partly fixed** — c7808f73 (PR #91) stops confirm-date from reconciling other symbols, but the whole-book reconcile in `lib/calendar/sync.ts:403` (every calendar sync / Refresh) and same-family confirms/deletes still clear a pre-print user-confirmed row's actuals when its vendor twin carries a print (`manualIsPostPrintCorrection` → `clearInheritedActuals`). Options already in the ledger: zero-gap leg / evidence-based / guard-only.
+
 - [x] **Nightly QA fixer 2026-09-30** — auto-merged: `header-dataconfidence--actions-slice-4-drops-fifth-action-no-more-indicator` @ f3ca9d10 (popover actions list shows a +N more line past the 4-row cap), `security-detail-research-mentions--cloud-fetched-mention-placeholder-quoted-as-excerpt` @ 1d535acd + 9601387c (cloud-fetched mentions store no excerpt; the placeholder and the subject-line backstop diagnostic never render as a quote), `security-detail-chart--active-levels-absent-first-30s-after-every-load` @ e17b21b2 (active levels draw as soon as the candle series exists). PR #94 (awaiting review): `analysis-performance-mwr--5y-all-xirr-drops-opening-balance-before-first-snapshot` (a window predating the first snapshot uses that snapshot as the XIRR opening balance). 16 new findings dispositioned (10 auto / 6 needs-decision — see qa/findings/DECISIONS-PENDING.md, 108 awaiting a call). Stranded per anti-strand guard: PRs #87–#93.
 - [x] **Nightly QA fixer 2026-09-25** — auto-merged: `header-dataconfidence--cap-line-names-first-critical-hit-not-the-worst` @ ecaad0b1 (lot-drift integrity hits are returned worst-first, so the cap line names the largest drift), `global-head--duplicate-viewport-meta-second-tag-drops-viewport-fit-cover` @ c3dbd52f (root layout exports the Next viewport object; one viewport meta carrying viewport-fit=cover). PR #90 (awaiting review): `chat-biggest-movers--yahoo-fallback-reports-5-day-move-as-todays-move-vs-prior-close` (Yahoo fallback reports the prior-session move and the quote's own session date), `analysis-detected-strategies--protective-put-missing-put-price-treated-as-zero-premium` (strategies withhold payoff figures when a leg has no price). 11 new findings dispositioned (7 auto / 4 needs-decision — see qa/findings/DECISIONS-PENDING.md, 97 awaiting a call). Stranded per anti-strand guard: PR #87, PR #88, PR #89.
 
@@ -284,6 +296,12 @@
 - **E2E browser tests** (Theme J2, ~15 hr) — dedicated session.
 
 ---
+
+## Closed this session (2026-10-01 — nine nightly-QA PRs #87–#95 landed behind five read-only Opus reviews + a four-fixer wave)
+
+- [x] Local main pushed (11 fixer commits that had never reached origin).
+- [x] PRs #88–#95 merged; PR #87 landed as sanitized cherry-picks (a source comment carried a live share count) and closed unmerged.
+- [x] Review fixes: unknown-account import exclusion made opt-in for the API route (CLI imports fail loudly again); two consecutive short email-table rows no longer merge (Mac + Worker); expired options dropped from Related Options, getOptionPositions and exposure (ET calendar, not UTC); XIRR test now reproduces the defect; Cmd+K queued-Enter-after-Esc and stuck spinner.
 
 ## Closed this session (2026-09-22 — frontier-tier structured-output regression fixed, PRs #85/#86 + the 09-20 fixer branch landed behind three read-only Opus reviews + a seven-fixer wave, print-watch decision A)
 
