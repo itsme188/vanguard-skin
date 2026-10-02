@@ -301,7 +301,7 @@
 
 - [x] Local main pushed (11 fixer commits that had never reached origin).
 - [x] PRs #88–#95 merged; PR #87 landed as sanitized cherry-picks (a source comment carried a live share count) and closed unmerged.
-- [x] Review fixes: unknown-account import exclusion made opt-in for the API route (CLI imports fail loudly again); two consecutive short email-table rows no longer merge (Mac + Worker); expired options dropped from Related Options, getOptionPositions and exposure (ET calendar, not UTC); XIRR test now reproduces the defect; Cmd+K queued-Enter-after-Esc and stuck spinner.
+- [x] Landed as main 845a1678 (review fixes f8dbee40, 225b1cc2, 41b83e96, f03a3e8d; pin update 845a1678). Review fixes: unknown-account import exclusion made opt-in for the API route (CLI imports fail loudly again); two consecutive short email-table rows no longer merge (Mac + Worker); expired options dropped from Related Options, getOptionPositions and exposure (ET calendar, not UTC); XIRR test now reproduces the defect; Cmd+K queued-Enter-after-Esc and stuck spinner.
 
 ## Closed this session (2026-09-22 — frontier-tier structured-output regression fixed, PRs #85/#86 + the 09-20 fixer branch landed behind three read-only Opus reviews + a seven-fixer wave, print-watch decision A)
 
