@@ -126,8 +126,9 @@ export async function POST(request: NextRequest) {
     const commitResultsRaw: CommitResult[] = [];
     // Resolved once per request — preview validation checks every row's
     // accountName against this set so a typo'd account can't preview green
-    // and then 500 on commit. commitImport resolves the same set itself, so
-    // the two modes exclude identical rows.
+    // and then 500 on commit. commitImport (called with
+    // excludeUnknownAccounts) resolves the same set itself, so the two modes
+    // exclude identical rows.
     const knownAccountNames =
       mode === "preview" ? getAllAccounts(db).map((a) => a.name) : undefined;
 
@@ -188,7 +189,9 @@ export async function POST(request: NextRequest) {
       }
 
       // Commit mode — write to DB
-      const commitResult = commitImport(db, parsed);
+      // Opt-in: exclude unknown-account rows exactly as preview reported them
+      // (CLI scripts omit this and fail loudly on an unknown account instead).
+      const commitResult = commitImport(db, parsed, { excludeUnknownAccounts: true });
       commitResultsRaw.push(commitResult);
 
       // Phase 3: archive source PDFs to R2 (fire-and-forget; never blocks).

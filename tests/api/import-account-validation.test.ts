@@ -144,6 +144,12 @@ Fidelity Brokerage XYZ,2025-06-16,,BUY,MSFT,Microsoft Corp,Stock,5,400.00,-2000.
       .prepare("SELECT t.type, s.symbol FROM transactions t JOIN securities s ON s.id = t.security_id")
       .all() as Array<{ type: string; symbol: string }>;
     expect(rows).toEqual([{ type: "BUY", symbol: "AAPL" }]);
+
+    // The excluded row's security (referenced by no kept row) is not upserted.
+    const msft = hoisted.db
+      .prepare("SELECT COUNT(*) AS c FROM securities WHERE symbol = 'MSFT'")
+      .get() as { c: number };
+    expect(msft.c).toBe(0);
   });
 
   it("commits a file whose every row names an unknown account as a clean no-op (0 transactions), never a 500", async () => {
