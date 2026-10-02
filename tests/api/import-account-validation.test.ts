@@ -18,6 +18,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { NextRequest } from "next/server";
 import { runMigrations } from "@/lib/db/migrate";
+import { computeTaxLots } from "@/lib/compute/tax-lots";
 
 const hoisted = vi.hoisted(() => ({
   db: null as unknown as Database.Database,
@@ -170,3 +171,119 @@ Fidelity Brokerage XYZ,2025-06-16,,BUY,MSFT,Microsoft Corp,Stock,5,400.00,-2000.
     expect(count).toBe(0);
   });
 });
+
+/**
+ * QA 2026-10-02: an all-unknown-account commit returned 200 with 0 records but
+ * still wrote an empty import_batches row (Undo-able ghost in Import History)
+ * and ran the whole post-commit pipeline — the tax-lot recompute deleted and
+ * re-minted every engine-owned RECONCILE_CLOSE under new ids. Nothing to write
+ * now means no batch and no pipeline; a file with a valid row is unchanged.
+ */
+describe("POST /api/import?mode=commit — nothing left to write after exclusion", () => {
+  const UNKNOWN_ONLY = `${CANONICAL_TXN_HEADER}
+Typo Account Q,2025-06-16,,BUY,ZZQB,Synthetic Beta Co,Stock,5,40.00,-200.00,0,
+Typo Account Q,2025-06-17,,BUY,ZZQC,Synthetic Gamma Co,Stock,2,50.00,-100.00,0,`;
+  const VALID_ONE = `${CANONICAL_TXN_HEADER}
+Vanguard Taxable,2025-06-15,,BUY,ZZQD,Synthetic Delta Co,Stock,10,20.00,-200.00,0,`;
+
+  /**
+   * Seed a position the broker says is closed (latest holdings row qty 0) with
+   * an open lot, then recompute so the engine mints a RECONCILE_CLOSE. Its id
+   * changes on every recompute (delete + re-insert), which makes it a probe
+   * for "did the post-commit pipeline run".
+   */
+  function seedReconcileClose(): void {
+    const db = hoisted.db;
+    const acct = (db.prepare("SELECT id FROM accounts WHERE name = 'Vanguard Taxable'").get() as { id: number }).id;
+    const sec = Number(
+      db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('ZZQA', 'Synthetic Alpha Co', 'Stock')").run()
+        .lastInsertRowid,
+    );
+    db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount, fees, is_external_flow, source_key)
+       VALUES (?, ?, '2025-01-10', 'BUY', 10, 10, -100, 0, 0, 'seed:zzqa:buy')`,
+    ).run(acct, sec);
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (?, ?, 0, '2025-03-31')",
+    ).run(acct, sec);
+    computeTaxLots(db);
+  }
+  const reconcileCloseIds = () =>
+    (hoisted.db.prepare("SELECT id FROM transactions WHERE type = 'RECONCILE_CLOSE' ORDER BY id").all() as { id: number }[]).map(
+      (r) => r.id,
+    );
+  const batchCount = () =>
+    (hoisted.db.prepare("SELECT COUNT(*) AS c FROM import_batches").get() as { c: number }).c;
+
+  type CommitBody = ImportRouteResponse & {
+    results: Array<{ batchId?: number | null; committed?: { newTransactions: number; totalRecords: number } }>;
+    replay: unknown;
+  };
+
+  it("all rows unknown: 200, zero counts, skippedRows reported, NO import_batches row, pipeline not run", async () => {
+    seedReconcileClose();
+    const idsBefore = reconcileCloseIds();
+    expect(idsBefore).toHaveLength(1);
+    const batchesBefore = batchCount();
+    const txnsBefore = (hoisted.db.prepare("SELECT COUNT(*) AS c FROM transactions").get() as { c: number }).c;
+
+    const mod = await import("@/app/api/import/route");
+    const res = await mod.POST(importReq("commit", [{ name: "unknown.csv", content: UNKNOWN_ONLY }]));
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as CommitBody;
+    expect(body.success).toBe(true);
+    const fr = body.results[0];
+    expect(fr.success).toBe(true);
+    expect(fr.batchId).toBeNull();
+    expect(fr.committed!.totalRecords).toBe(0);
+    expect(fr.skippedRows!).toHaveLength(2);
+    expect(body.replay).toBeNull();
+
+    expect(batchCount()).toBe(batchesBefore);
+    expect(reconcileCloseIds()).toEqual(idsBefore);
+    expect((hoisted.db.prepare("SELECT COUNT(*) AS c FROM transactions").get() as { c: number }).c).toBe(txnsBefore);
+  });
+
+  it("mixed file (one valid row): unchanged — batch created, pipeline runs", async () => {
+    seedReconcileClose();
+    const idsBefore = reconcileCloseIds();
+    const batchesBefore = batchCount();
+    const csv = `${VALID_ONE}
+Typo Account Q,2025-06-16,,BUY,ZZQB,Synthetic Beta Co,Stock,5,40.00,-200.00,0,`;
+
+    const mod = await import("@/app/api/import/route");
+    const res = await mod.POST(importReq("commit", [{ name: "mixed.csv", content: csv }]));
+    const body = (await res.json()) as CommitBody;
+    expect(typeof body.results[0].batchId).toBe("number");
+    expect(body.results[0].skippedRows!).toHaveLength(1);
+    expect(batchCount()).toBe(batchesBefore + 1);
+    // The tax-lot recompute ran: the synthetic close was re-minted under a new id.
+    expect(reconcileCloseIds()).toHaveLength(1);
+    expect(reconcileCloseIds()).not.toEqual(idsBefore);
+  });
+
+  it("two files, one all-excluded: the other still commits and the pipeline runs once", async () => {
+    seedReconcileClose();
+    const idsBefore = reconcileCloseIds();
+    const batchesBefore = batchCount();
+
+    const mod = await import("@/app/api/import/route");
+    const res = await mod.POST(
+      importReq("commit", [
+        { name: "unknown.csv", content: UNKNOWN_ONLY },
+        { name: "valid.csv", content: VALID_ONE },
+      ]),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as CommitBody;
+    expect(body.results).toHaveLength(2);
+    expect(body.results[0].batchId).toBeNull();
+    expect(body.results[0].skippedRows!).toHaveLength(2);
+    expect(typeof body.results[1].batchId).toBe("number");
+    expect(body.results[1].committed!.newTransactions).toBe(1);
+    expect(batchCount()).toBe(batchesBefore + 1);
+    expect(reconcileCloseIds()).not.toEqual(idsBefore);
+  });
+});
+

@@ -593,6 +593,10 @@ export interface DefenseSummary {
   netExposure: number;
   grossExposure: number;
   hedgeCount: number;
+  /** Loaded option instruments (any side) — lets the view tell "no options" from "no hedges". */
+  optionPositionCount: number;
+  /** Loaded instruments held short (negative quantity), options included. */
+  shortPositionCount: number;
 }
 
 export interface DefenseAnalysis {
@@ -1021,6 +1025,8 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     netExposure,
     grossExposure,
     hedgeCount: hedgeScores.length,
+    optionPositionCount: instruments.filter((i) => i.isOption).length,
+    shortPositionCount: instruments.filter((i) => i.quantity < 0).length,
   };
 
   // ─── Note 8: ranked exposures ────────────────────────────────────────

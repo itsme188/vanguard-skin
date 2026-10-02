@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { jsonSchema } from "ai";
 import { generateObjectForFeature } from "@/lib/ai/generate";
 import { resolveFeatureModel } from "@/lib/ai/models";
+import { getHeldSymbolSet, heldSymbolsMentioned } from "@/lib/research/held-symbol-relevance";
 import { verifyMentions } from "@/lib/research/verify-mentions";
 import { truncateForPrompt } from "./prompt-caps";
 import { sanitizeModelSummary, sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
@@ -100,6 +101,9 @@ export async function processUnprocessedArticles(
   const holdingsContext = holdings
     .map((h) => `${h.symbol}${h.name ? ` (${h.name})` : ""}`)
     .join(", ");
+
+  // Held-symbol set for the off-topic guard, once per batch.
+  const heldSymbols = getHeldSymbolSet(db);
 
   // Held + watchlist symbol universe for the deterministic subject-line
   // backstop (subjectSymbolBackstop) — same held/watchlist shape as
@@ -235,7 +239,17 @@ export async function processUnprocessedArticles(
         article.id
       );
 
-      if (!result.is_portfolio_relevant && article.allow_off_topic !== 1) {
+      const heldHits =
+        !result.is_portfolio_relevant && article.allow_off_topic !== 1
+          ? heldSymbolsMentioned(verifiedSymbols, heldSymbols)
+          : [];
+      if (heldHits.length > 0) {
+        // Deterministic guard: the model has voted takeaways on HELD stocks
+        // off-topic. A held mention is never off-topic, whatever the vote.
+        console.warn(
+          `[research] Article ${article.id}: off-topic vote overridden, mentions held symbol(s) ${heldHits.join(", ")}`
+        );
+      } else if (!result.is_portfolio_relevant && article.allow_off_topic !== 1) {
         const reason =
           result.portfolio_relevance && result.portfolio_relevance.trim().length > 0
             ? result.portfolio_relevance.slice(0, 280)

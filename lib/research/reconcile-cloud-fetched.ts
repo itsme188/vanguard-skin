@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { sanitizeModelSummary, sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 import { subjectSymbolBackstop } from "@/lib/gmail/subject-symbol-backstop";
 import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
+import { getHeldSymbolSet, heldSymbolsMentioned } from "@/lib/research/held-symbol-relevance";
 import { getActiveWatchlistStockSymbols } from "@/lib/queries/watchlist";
 
 /**
@@ -152,6 +153,8 @@ export async function reconcileCloudFetchedNewsletters(
     ),
   );
 
+  const heldSymbols = getHeldSymbolSet(db);
+
   let reconciled = 0;
   let skippedAlreadyInDb = 0;
   let skippedSourceMissing = 0;
@@ -170,21 +173,6 @@ export async function reconcileCloudFetchedNewsletters(
         continue;
       }
 
-      // D3 gate: if Worker's Claude voted off-topic AND the source isn't
-      // opted out via allow_off_topic, mark the row is_relevant=0 with the
-      // same shape as Mac-side processUnprocessedArticles.
-      let isRelevant: 0 | 1 = 1;
-      let excludedCategory: string | null = null;
-      let excludedReason: string | null = null;
-      if (!payload.is_portfolio_relevant && source.allow_off_topic !== 1) {
-        isRelevant = 0;
-        excludedCategory = "off_topic";
-        excludedReason =
-          payload.portfolio_relevance && payload.portfolio_relevance.trim().length > 0
-            ? payload.portfolio_relevance.slice(0, 280)
-            : "Claude judged article off-topic";
-      }
-
       // Deterministic subject-line backstop (see lib/gmail/subject-symbol-
       // backstop.ts) — union'd in before storage, same as the direct-fetch
       // path. Bypasses AI verification entirely; only exact-case matches
@@ -193,6 +181,30 @@ export async function reconcileCloudFetchedNewsletters(
         (s) => !payload.mentioned_symbols.includes(s),
       );
       const mentionedSymbols = [...payload.mentioned_symbols, ...backstopHits];
+
+      // D3 gate: if Worker's Claude voted off-topic AND the source isn't
+      // opted out via allow_off_topic, mark the row is_relevant=0 with the
+      // same shape as Mac-side processUnprocessedArticles.
+      let isRelevant: 0 | 1 = 1;
+      let excludedCategory: string | null = null;
+      let excludedReason: string | null = null;
+      const heldHits =
+        !payload.is_portfolio_relevant && source.allow_off_topic !== 1
+          ? heldSymbolsMentioned(mentionedSymbols, heldSymbols)
+          : [];
+      if (heldHits.length > 0) {
+        // Deterministic guard: a held mention is never off-topic.
+        console.warn(
+          `[reconcile-cloud] message ${messageId}: off-topic vote overridden, mentions held symbol(s) ${heldHits.join(", ")}`,
+        );
+      } else if (!payload.is_portfolio_relevant && source.allow_off_topic !== 1) {
+        isRelevant = 0;
+        excludedCategory = "off_topic";
+        excludedReason =
+          payload.portfolio_relevance && payload.portfolio_relevance.trim().length > 0
+            ? payload.portfolio_relevance.slice(0, 280)
+            : "Claude judged article off-topic";
+      }
 
       // Re-sanitize at this storage boundary too (defense-in-depth, same
       // treatment as sanitizeThemeList below): this is the ONLY DB insert

@@ -24,7 +24,13 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
   const analysis = computeDefenseAnalysis(db, resolveScope(db, scope));
   const { summary } = analysis;
 
-  if (summary.hedgeCount === 0 && summary.shortExposure === 0 && analysis.standaloneBets.length === 0) {
+  if (
+    summary.hedgeCount === 0 &&
+    summary.shortExposure === 0 &&
+    analysis.standaloneBets.length === 0 &&
+    summary.optionPositionCount === 0 &&
+    summary.shortPositionCount === 0
+  ) {
     return (
       <EmptySection
         title="Defense"
