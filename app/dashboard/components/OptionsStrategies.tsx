@@ -13,6 +13,8 @@ interface Strategy {
   maxLoss: number | null;
   breakevens: number[];
   description: string;
+  /** A leg has no price: payoff figures are withheld (null here is NOT "unlimited"). */
+  pricingIncomplete?: boolean;
 }
 
 /**
@@ -74,12 +76,19 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
             <p className="text-xs text-ink-dim mt-2">
               <PrivateText>{s.description}</PrivateText>
             </p>
+            {s.pricingIncomplete && (
+              <p className="text-xs text-ink-faint mt-1">
+                One or more legs have no price yet — refresh prices to compute the payoff.
+              </p>
+            )}
 
             <div className="grid grid-cols-3 gap-2 mt-3">
               <div>
                 <p className="text-[10px] text-ink-faint uppercase">Max Profit</p>
                 <p className="text-xs font-mono text-up">
-                  {s.maxProfit != null ? (
+                  {s.pricingIncomplete ? (
+                    <span className="text-ink-faint">Premium unknown</span>
+                  ) : s.maxProfit != null ? (
                     <PrivateText>{formatDollar(s.maxProfit)}</PrivateText>
                   ) : (
                     "Unlimited"
@@ -89,7 +98,9 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
               <div>
                 <p className="text-[10px] text-ink-faint uppercase">Max Loss</p>
                 <p className="text-xs font-mono text-down">
-                  {s.maxLoss != null ? (
+                  {s.pricingIncomplete ? (
+                    <span className="text-ink-faint">Premium unknown</span>
+                  ) : s.maxLoss != null ? (
                     <PrivateText>{formatDollar(s.maxLoss)}</PrivateText>
                   ) : (
                     "Unlimited"
@@ -99,6 +110,9 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
               <div>
                 <p className="text-[10px] text-ink-faint uppercase">Breakeven{s.breakevens.length > 1 ? "s" : ""}</p>
                 <p className="text-xs font-mono text-ink-dim">
+                  {s.pricingIncomplete && (
+                    <span className="text-ink-faint">Premium unknown</span>
+                  )}
                   {s.breakevens.map((b) => `$${b.toFixed(0)}`).join(" / ")}
                 </p>
               </div>

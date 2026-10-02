@@ -57,3 +57,23 @@ describe("OptionsStrategies privacy masking", () => {
     expect(src).not.toMatch(/<PrivateText>\s*\{s\.breakevens/);
   });
 });
+
+// QA analysis-detected-strategies--protective-put-missing-put-price-treated-as-zero-premium
+describe("OptionsStrategies withholds figures when a leg is unpriced", () => {
+  it("declares pricingIncomplete on the local Strategy type", () => {
+    expect(src).toMatch(/pricingIncomplete\?:\s*boolean/);
+  });
+
+  it("checks pricingIncomplete BEFORE the null-means-Unlimited branch in every cell", () => {
+    const cells = src.match(/\{s\.pricingIncomplete (?:\?|&&) \(\s*<span className="text-ink-faint">Premium unknown<\/span>/g) ?? [];
+    expect(cells.length).toBe(3);
+    expect(src).toMatch(/Premium unknown<\/span>\s*\)\s*:\s*s\.maxProfit != null/);
+    expect(src).toMatch(/Premium unknown<\/span>\s*\)\s*:\s*s\.maxLoss != null/);
+    // Breakevens are [] when pricing is incomplete, so the map renders nothing.
+    expect(src).toMatch(/Premium unknown<\/span>\s*\)\}\s*\{s\.breakevens\.map/);
+  });
+
+  it("explains the missing price under the description", () => {
+    expect(src).toMatch(/One or more legs have no price yet/);
+  });
+});
