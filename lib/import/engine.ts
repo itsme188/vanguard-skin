@@ -258,22 +258,113 @@ function holdingDerivedPriceSource(sourceType: SourceType): string {
   }
 }
 
+export interface CommitImportOptions {
+  /**
+   * Opt-in (the import route only): rows naming an account that is not in
+   * the `accounts` table are EXCLUDED and reported on `skippedRows`, exactly
+   * as preview promised the user, and the file's valid rows commit. Without
+   * it (every CLI script) an unknown account name is a hard error: commit
+   * throws before writing anything, naming every unknown account — a typo'd
+   * account in a scripted import must never partially commit.
+   */
+  excludeUnknownAccounts?: boolean;
+}
+
+/** Distinct account names referenced by any account-bearing row. */
+function referencedAccountNames(parsed: ParsedImportResult): Set<string> {
+  const names = new Set<string>();
+  for (const t of parsed.transactions) names.add(t.accountName);
+  for (const h of parsed.holdings) names.add(h.accountName);
+  for (const s of parsed.snapshots) names.add(s.accountName);
+  for (const ca of parsed.corporateActions) names.add(ca.accountName);
+  return names;
+}
+
+/**
+ * Drop parsed securities that only rows excluded for an unknown account
+ * referenced, so an excluded row leaves no orphan `securities` row behind.
+ * Conservative: a security referenced by ANY kept row (transactions,
+ * holdings, prices, corporate actions, factors, donations) or that is the
+ * underlying of a kept security stays; a security no row referenced at all
+ * stays too (it was never tied to an excluded row).
+ */
+function pruneSecuritiesOfExcludedAccounts(
+  original: ParsedImportResult,
+  kept: ParsedImportResult,
+  known: Set<string>,
+): ParsedImportResult {
+  const excludedSymbols = new Set<string>();
+  const add = (set: Set<string>, sym: string | null | undefined) => {
+    if (sym) set.add(sym);
+  };
+  for (const t of original.transactions)
+    if (!known.has(t.accountName)) add(excludedSymbols, t.symbol);
+  for (const h of original.holdings)
+    if (!known.has(h.accountName)) add(excludedSymbols, h.symbol);
+  for (const ca of original.corporateActions)
+    if (!known.has(ca.accountName)) add(excludedSymbols, ca.symbol);
+  if (excludedSymbols.size === 0) return kept;
+
+  const keptSymbols = new Set<string>();
+  for (const t of kept.transactions) add(keptSymbols, t.symbol);
+  for (const h of kept.holdings) add(keptSymbols, h.symbol);
+  for (const p of kept.prices) add(keptSymbols, p.symbol);
+  for (const ca of kept.corporateActions) add(keptSymbols, ca.symbol);
+  for (const f of kept.factors ?? []) add(keptSymbols, f.symbol);
+  for (const d of kept.donations ?? []) add(keptSymbols, d.symbolRaw);
+  for (const sec of kept.securities)
+    if (keptSymbols.has(sec.symbol)) add(keptSymbols, sec.underlyingSymbol);
+
+  return {
+    ...kept,
+    securities: kept.securities.filter(
+      (sec) => keptSymbols.has(sec.symbol) || !excludedSymbols.has(sec.symbol),
+    ),
+  };
+}
+
 export function commitImport(
   db: Database.Database,
-  parsed: ParsedImportResult
+  parsed: ParsedImportResult,
+  options: CommitImportOptions = {},
 ): CommitResult {
   // Validate before writing — removes rows with invalid dates/quantities/prices.
-  // The account list is passed so commit excludes exactly the rows preview
-  // promised to exclude (route preview validates with the same set): a row
-  // naming an unknown account is skipped here instead of reaching
-  // `getAccountId`, which throws and would 500 the whole commit — rolling
-  // back the file's valid rows with it (QA 2026-09-24, regression of 19341671).
   const knownAccountNames = (
     db.prepare("SELECT name FROM accounts").all() as { name: string }[]
   ).map((r) => r.name);
-  const { validatedResult, skippedRows } = validateParsedResult(parsed, {
-    knownAccountNames,
-  });
+  const knownAccountSet = new Set(knownAccountNames);
+  let validatedResult: ParsedImportResult;
+  let skippedRows: SkippedRow[];
+  if (options.excludeUnknownAccounts) {
+    // Route path: the account list is passed so commit excludes exactly the
+    // rows preview promised to exclude (route preview validates with the same
+    // set): a row naming an unknown account is skipped here instead of
+    // reaching `getAccountId`, which throws and would 500 the whole commit —
+    // rolling back the file's valid rows with it (QA 2026-09-24, regression
+    // of 19341671).
+    const report = validateParsedResult(parsed, { knownAccountNames });
+    validatedResult = pruneSecuritiesOfExcludedAccounts(
+      parsed,
+      report.validatedResult,
+      knownAccountSet,
+    );
+    skippedRows = report.skippedRows;
+  } else {
+    // Script path: an unknown account is a hard error, raised BEFORE any
+    // write (no import_batches row, no securities) and naming every unknown
+    // account — never a silent partial commit.
+    const report = validateParsedResult(parsed);
+    const unknown = [...referencedAccountNames(report.validatedResult)]
+      .filter((n) => !knownAccountSet.has(n))
+      .sort();
+    if (unknown.length > 0) {
+      throw new Error(
+        `Unknown account(s): ${unknown.join(", ")} — valid accounts: ${[...knownAccountSet].sort().join(", ")}. Nothing was imported.`,
+      );
+    }
+    validatedResult = report.validatedResult;
+    skippedRows = report.skippedRows;
+  }
   if (skippedRows.length > 0) {
     console.warn(
       `Import validation: ${skippedRows.length} row(s) excluded:`,
