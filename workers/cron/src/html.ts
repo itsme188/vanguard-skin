@@ -172,9 +172,26 @@ function renderTable(headers: string[], rows: string[][]): string {
  * non-pipe line closed the parser and every later |-line spilled as a literal
  * pipe paragraph in the delivered email.
  */
+/**
+ * Is physical line `k` the CONTINUATION of a logical row that is still open
+ * (qa:email-html--multiline-table-row-spills-raw-markdown-pipes-regression-1)?
+ * Either a bare fragment (no leading pipe) or a pipe-terminated line that
+ * carries FEWER cells than the header — the recap shape `| a | b | ` /
+ * `actual` / ` | delta |`. A complete row, an unterminated `| new row`
+ * start, or a blank line is not a continuation.
+ */
+function isRowContinuation(lines: string[], k: number, headerCount: number): boolean {
+  if (k >= lines.length) return false;
+  const u = lines[k].trim();
+  if (u === "") return false;
+  if (tableRowRe.test(u)) return headerCount > 0 && parseTableRow(u).length < headerCount;
+  return !u.startsWith("|");
+}
+
 function consumeTableBody(
   lines: string[],
   startIdx: number,
+  headerCount = 0,
 ): { dataRows: string[][]; nextIndex: number } {
   const dataRows: string[][] = [];
   let pending = "";
@@ -185,14 +202,34 @@ function consumeTableBody(
     if (pending !== "") {
       pending = `${pending} ${t}`;
       if (tableRowRe.test(pending)) {
-        if (!tableSeparatorRe.test(pending)) dataRows.push(parseTableRow(pending));
-        pending = "";
+        const cells = parseTableRow(pending);
+        // A pipe-terminated join that is still SHORT of the header stays open
+        // while its next line continues it (the model closed the consensus
+        // cell with a pipe, then put the actual and the delta on later lines).
+        const stillOpen =
+          headerCount > 0 && cells.length < headerCount && isRowContinuation(lines, j + 1, headerCount);
+        if (!stillOpen) {
+          if (!tableSeparatorRe.test(pending)) dataRows.push(cells);
+          pending = "";
+        }
       }
       j++;
       continue;
     }
     if (tableRowRe.test(t)) {
-      if (!tableSeparatorRe.test(t)) dataRows.push(parseTableRow(t));
+      if (tableSeparatorRe.test(t)) {
+        j++;
+        continue;
+      }
+      const cells = parseTableRow(t);
+      // Trailing-pipe SHORT row whose next line continues it: one logical row
+      // broken across physical lines, not a complete row + a phantom row.
+      if (headerCount > 0 && cells.length < headerCount && isRowContinuation(lines, j + 1, headerCount)) {
+        pending = t;
+        j++;
+        continue;
+      }
+      dataRows.push(cells);
       j++;
       continue;
     }
@@ -240,7 +277,7 @@ function convertMarkdown(md: string): string {
     ) {
       if (inList) { output.push("</ul>"); inList = false; }
       const headerCells = parseTableRow(line);
-      const { dataRows, nextIndex } = consumeTableBody(lines, i + 2);
+      const { dataRows, nextIndex } = consumeTableBody(lines, i + 2, headerCells.length);
       output.push(renderTable(headerCells, dataRows));
       i = nextIndex - 1;
       continue;
