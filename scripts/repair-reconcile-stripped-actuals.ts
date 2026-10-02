@@ -81,6 +81,15 @@ export interface StrippedActualsCluster {
   manualId: number;
   /** Live same-date twins the repair folds into the manual row. */
   twinIds: number[];
+  /**
+   * Same-date vendor rows that carry a print and sit in the manual row's own
+   * release slot (same release_time), superseded or not. They are folded
+   * FIRST: `carryEnrichment` only fills empty columns, so the first donor's
+   * actuals and reaction window win — a twin parked in the wrong slot (an AMC
+   * time for a pre-open print) would otherwise donate a reaction snapshot
+   * measured around the wrong timestamp.
+   */
+  slotDonorIds: number[];
   /** Emails on the manual row (kept). */
   manualEmails: ClusterEmail[];
   /** Emails on the twins — e.g. a duplicate recap. Reported, never deleted. */
@@ -173,13 +182,25 @@ export function findStrippedActualsClusters(
       ORDER BY COALESCE(enriched_at, '') DESC, id`,
   );
 
+  const slotDonorsOf = db.prepare(
+    `SELECT t.id FROM calendar_events t
+       JOIN calendar_events m ON m.id = ?
+      WHERE t.event_type = 'earnings' AND t.source != 'manual'
+        AND UPPER(t.symbol) = UPPER(m.symbol) AND t.event_date = m.event_date
+        AND t.actual_value IS NOT NULL
+        AND m.release_time IS NOT NULL AND t.release_time = m.release_time
+      ORDER BY COALESCE(t.enriched_at, '') DESC, t.id`,
+  );
+
   return manuals.map((m) => {
     const twinIds = (twinsOf.all(m.symbol, m.event_date) as { id: number }[]).map((t) => t.id);
+    const slotDonorIds = (slotDonorsOf.all(m.id) as { id: number }[]).map((t) => t.id);
     return {
       symbol: m.symbol,
       eventDate: m.event_date,
       manualId: m.id,
       twinIds,
+      slotDonorIds,
       manualEmails: emailsFor(db, m.id),
       twinEmails: twinIds.flatMap((id) => emailsFor(db, id)),
     };
@@ -223,7 +244,9 @@ export function repairReconcileStrippedActuals(
     report.clusters = findStrippedActualsClusters(db, opts);
     if (report.clusters.length === 0) return;
 
-    const touched = report.clusters.flatMap((c) => [c.manualId, ...c.twinIds]);
+    const touched = [
+      ...new Set(report.clusters.flatMap((c) => [c.manualId, ...c.slotDonorIds, ...c.twinIds])),
+    ];
     const before = readRows(db, touched);
     const emailsBefore = readEmailHomes(db, touched);
 
@@ -243,7 +266,10 @@ export function repairReconcileStrippedActuals(
     let anyMerged = false;
     for (const c of report.clusters) {
       setCanonical.run(c.manualId);
-      for (const twinId of c.twinIds) {
+      // Slot-matched donors first (see StrippedActualsCluster.slotDonorIds), then every
+      // remaining live twin; a row in both lists is folded once.
+      const order = [...c.slotDonorIds, ...c.twinIds.filter((id) => !c.slotDonorIds.includes(id))];
+      for (const twinId of order) {
         const twin = twinStmt.get(twinId) as TwinRow;
         const merged = fold(twin, c.manualId, c.eventDate);
         anyMerged ||= merged;
@@ -288,7 +314,8 @@ function printReport(r: RepairReport): void {
   console.log(`\nDamaged clusters: ${r.clusters.length}`);
   for (const c of r.clusters) {
     console.log(
-      `\n  ${c.symbol} ${c.eventDate}: manual row ${c.manualId} ← twin row(s) ${c.twinIds.join(", ")}`,
+      `\n  ${c.symbol} ${c.eventDate}: manual row ${c.manualId} ← twin row(s) ${c.twinIds.join(", ")}` +
+        (c.slotDonorIds.length ? ` (slot-matched donor(s) first: ${c.slotDonorIds.join(", ")})` : ""),
     );
     for (const e of c.manualEmails) {
       console.log(`    manual email ${e.id}: ${e.phase} sent ${e.sentAt} (${e.state}) — kept`);

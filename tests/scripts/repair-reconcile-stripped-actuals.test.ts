@@ -214,3 +214,54 @@ describe("repairReconcileStrippedActuals", () => {
     expect(report.clusters).toHaveLength(0);
   });
 });
+
+describe("repair prefers a donor in the manual row's own release slot", () => {
+  it("copies the actuals and reaction window from the slot-matched (superseded) vendor row, not the wrong-slot live twin", () => {
+    const manual = insertEvent({
+      source: "manual",
+      symbol: "ZZSL",
+      date: PRINT,
+      dateStatus: "user_confirmed",
+      createdAt: "2026-09-10 09:00:00",
+    });
+    email(manual, "recap", "2026-09-23 13:00:00");
+    const wrongSlot = insertEvent({
+      source: "finnhub",
+      symbol: "ZZSL",
+      date: PRINT,
+      dateStatus: "confirmed",
+      actualValue: FIGURE,
+      enrichedAt: "2026-09-23 22:00:00",
+      reaction: '{"t0_utc":"2026-09-23T20:15:00.000Z"}',
+    });
+    const rightSlot = insertEvent({
+      source: "nasdaq",
+      symbol: "ZZSL",
+      date: PRINT,
+      superseded: 1,
+      actualValue: FIGURE,
+      enrichedAt: "2026-09-23 13:00:00",
+      reaction: '{"t0_utc":"2026-09-23T11:00:00.000Z"}',
+    });
+    db.prepare("UPDATE calendar_events SET release_time = '07:00' WHERE id IN (?, ?)").run(manual, rightSlot);
+    db.prepare("UPDATE calendar_events SET release_time = '16:15' WHERE id = ?").run(wrongSlot);
+
+    const report = repairReconcileStrippedActuals(db, { apply: true, today: TODAY });
+    expect(report.clusters).toHaveLength(1);
+    expect(report.clusters[0].slotDonorIds).toEqual([rightSlot]);
+
+    const row = db
+      .prepare("SELECT actual_value, reaction_snapshot, enriched_at, superseded FROM calendar_events WHERE id = ?")
+      .get(manual) as { actual_value: string; reaction_snapshot: string; enriched_at: string; superseded: number };
+    expect(row.actual_value).toBe(FIGURE);
+    expect(row.reaction_snapshot).toContain("T11:00:00");
+    expect(row.enriched_at).toBe("2026-09-23 13:00:00");
+    expect(row.superseded).toBe(0);
+    const sup = db.prepare("SELECT superseded FROM calendar_events WHERE id = ?");
+    expect((sup.get(wrongSlot) as { superseded: number }).superseded).toBe(1);
+    expect((sup.get(rightSlot) as { superseded: number }).superseded).toBe(1);
+
+    // Rerun is a no-op.
+    expect(repairReconcileStrippedActuals(db, { apply: true, today: TODAY }).clusters).toHaveLength(0);
+  });
+});
