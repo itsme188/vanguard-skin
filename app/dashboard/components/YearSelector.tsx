@@ -27,7 +27,7 @@ function FilterPills({
   }
 
   return (
-    <div className="flex items-center gap-1.5" role="group" aria-label={ariaLabel ?? paramName}>
+    <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={ariaLabel ?? paramName}>
       {options.map((opt) => (
         <button
           key={opt.value}
