@@ -25,6 +25,8 @@ import { DEFAULT_OPTION_ELASTICITY } from "@/lib/compute/scenario-recipes";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { todayET } from "@/lib/calendar/date-utils";
 
 /**
  * Signed delta-notional per option security_id, summed across the scoped
@@ -97,12 +99,17 @@ export interface PortfolioExposureSummary {
  */
 export function getPortfolioExposureSummary(
   db: Database.Database,
-  accountIds?: number[]
+  accountIds?: number[],
+  today: string = todayET()
 ): PortfolioExposureSummary {
+  // ET-anchored cutoffs, never SQLite's UTC date('now') (which reads as
+  // tomorrow between UTC and ET midnight): a matured bond or an option past
+  // its expiration day drops out; one maturing/expiring today still counts.
   const conditions = [
-    "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+    "(s.maturity_date IS NULL OR s.maturity_date >= ?)",
+    liveOptionExpirationSql("s", today),
   ];
-  const params: (string | number)[] = [];
+  const params: (string | number)[] = [today];
   if (accountIds && accountIds.length > 0) {
     conditions.push(`h.account_id IN (${accountIds.map(() => "?").join(",")})`);
     params.push(...accountIds);
@@ -178,7 +185,8 @@ export function getPortfolioExposureSummary(
  */
 export function getNetExposureForSymbolFamilies(
   db: Database.Database,
-  symbols: string[]
+  symbols: string[],
+  today: string = todayET()
 ): Record<string, number> {
   const result: Record<string, number> = {};
   if (symbols.length === 0) return result;
@@ -223,11 +231,14 @@ export function getNetExposureForSymbolFamilies(
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
-      WHERE (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
-        AND (s.expiration_date IS NULL OR s.expiration_date >= date('now'))
+      -- ET-anchored cutoffs (never UTC date('now')): an option counts through
+      -- its ET expiration day via the shared liveOptionExpirationSql; a bond
+      -- counts through its maturity day on the same ET calendar.
+      WHERE (s.maturity_date IS NULL OR s.maturity_date >= ?)
+        AND ${liveOptionExpirationSql("s", today)}
         AND UPPER(COALESCE(s.underlying_symbol, s.symbol)) IN (${placeholders})`
     )
-    .all(...members) as Array<{
+    .all(today, ...members) as Array<{
       security_id: number;
       security_type: string | null;
       option_type: string | null;

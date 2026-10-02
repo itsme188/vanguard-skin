@@ -28,7 +28,7 @@ import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { QuoteStats } from "../../components/QuoteStats";
 import { Money, Pct, Shares, PrivateText } from "@/lib/privacy/components";
 import { computeLotCoverageGaps } from "@/lib/compute/lot-coverage";
-import { daysToExpiry } from "@/lib/compute/option-expiry";
+import { daysToExpiry, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import type { EarningsTranscript } from "@/lib/types";
 import { hasDeskNote, isFilingRow, kindLabel } from "@/lib/transcripts/presentation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
@@ -823,7 +823,10 @@ export default async function SecurityDetailPage(props: {
         // adds the default quantity != 0 clause (a deliberate behavior fix —
         // this query previously had no quantity filter at all, so a closed
         // option position's quantity=0 tombstone row could render as a related
-        // option with 0 qty).
+        // option with 0 qty). Expired contracts drop out on the ET calendar
+        // via the shared liveOptionExpirationSql (same cutoff as the hub's
+        // Positions read) — the purge's 1-day grace can leave yesterday's
+        // contract in holdings.
         const relatedOptions = db
           .prepare(
             `SELECT s.id, s.symbol, s.option_type, s.strike_price, s.expiration_date,
@@ -833,6 +836,7 @@ export default async function SecurityDetailPage(props: {
              WHERE s.underlying_symbol = ?
                AND LOWER(s.security_type) = 'option'
                AND ${latestHoldingsPredicate()}
+               AND ${liveOptionExpirationSql("s")}
              ORDER BY s.expiration_date, s.strike_price`
           )
           .all(security.symbol) as Array<{

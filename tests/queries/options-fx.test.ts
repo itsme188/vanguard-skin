@@ -10,16 +10,25 @@
  * conversion so a future foreign-currency option (or a misclassified
  * currency) doesn't silently leak a native-currency notional as USD.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
 import {
   getOptionPositions,
   getOptionsPnL,
+  getOptionsByUnderlying,
   getStockLegsForStrategyDetection,
 } from "@/lib/queries/options";
 import { stampTaxLotsConvention } from "@/lib/compute/tax-convention";
+
+/**
+ * getOptionPositions / getOptionsPnL drop options past their ET expiration
+ * (liveOptionExpirationSql). These fixtures carry 2026 expirations, so every
+ * read pins an "as of" day before all of them — never the wall clock, which
+ * would silently expire the fixtures as real time passes.
+ */
+const AS_OF = "2025-12-31";
 
 describe("getOptionPositions FX conversion", () => {
   let db: Database.Database;
@@ -49,7 +58,7 @@ describe("getOptionPositions FX conversion", () => {
        VALUES (1, 100, 1, 500, ?, 'opt-usd')`
     ).run(TODAY);
 
-    const positions = getOptionPositions(db);
+    const positions = getOptionPositions(db, undefined, AS_OF);
     expect(positions).toHaveLength(1);
     const p = positions[0];
 
@@ -78,7 +87,7 @@ describe("getOptionPositions FX conversion", () => {
 
     upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.000734, asOf: TODAY, source: "test" });
 
-    const positions = getOptionPositions(db);
+    const positions = getOptionPositions(db, undefined, AS_OF);
     expect(positions).toHaveLength(1);
     const p = positions[0];
 
@@ -113,7 +122,7 @@ describe("getOptionPositions FX conversion", () => {
     ).run(TODAY);
     upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.000734, asOf: TODAY, source: "test" });
 
-    const pnl = getOptionsPnL(db);
+    const pnl = getOptionsPnL(db, undefined, AS_OF);
     const expectedMv = 2 * 3000 * 100 * 0.000734;
     const expectedCostBasis = 500_000 * 0.000734;
     expect(pnl.totalUnrealizedPnl).toBeCloseTo(expectedMv - expectedCostBasis, 5);
@@ -164,7 +173,7 @@ describe("getOptionsPnL closed trades — v2 dollar convention + conventionPendi
   it("closed-options P&L renders true dollars exactly once (Task 3 fixture: $251 cost, $399 proceeds, $148 gain) — no re-applied multiplier", () => {
     seedClosedOption();
 
-    const pnl = getOptionsPnL(db);
+    const pnl = getOptionsPnL(db, undefined, AS_OF);
     expect(pnl.closedTrades).toHaveLength(1);
     const trade = pnl.closedTrades[0];
     // tax_lot_sales already stores true dollars (multiplier baked in at
@@ -179,7 +188,7 @@ describe("getOptionsPnL closed trades — v2 dollar convention + conventionPendi
   it("isSyntheticClose is false for a real sale, true for an engine-owned RECONCILE_CLOSE (finding 1, number-trust durable fixes)", () => {
     seedClosedOption();
 
-    const real = getOptionsPnL(db);
+    const real = getOptionsPnL(db, undefined, AS_OF);
     expect(real.closedTrades).toHaveLength(1);
     expect(real.closedTrades[0].isSyntheticClose).toBe(false);
 
@@ -187,7 +196,7 @@ describe("getOptionsPnL closed trades — v2 dollar convention + conventionPendi
       `UPDATE transactions SET type = 'RECONCILE_CLOSE' WHERE source_key = 'sell-to-close-1'`
     ).run();
 
-    const synthetic = getOptionsPnL(db);
+    const synthetic = getOptionsPnL(db, undefined, AS_OF);
     expect(synthetic.closedTrades).toHaveLength(1);
     expect(synthetic.closedTrades[0].isSyntheticClose).toBe(true);
   });
@@ -195,12 +204,12 @@ describe("getOptionsPnL closed trades — v2 dollar convention + conventionPendi
   it("conventionPending is true before a v2 recompute stamp, false after", () => {
     seedClosedOption();
 
-    const before = getOptionsPnL(db);
+    const before = getOptionsPnL(db, undefined, AS_OF);
     expect(before.conventionPending).toBe(true);
 
     stampTaxLotsConvention(db);
 
-    const after = getOptionsPnL(db);
+    const after = getOptionsPnL(db, undefined, AS_OF);
     expect(after.conventionPending).toBe(false);
   });
 });
@@ -249,7 +258,7 @@ describe("getOptionPositions — per-pair latest holdings (holdings-latest-sweep
        VALUES (1, 301, 1, 100, '2025-02-28', 'b-1')`
     ).run();
 
-    const positions = getOptionPositions(db);
+    const positions = getOptionPositions(db, undefined, AS_OF);
     const underlyings = positions.map((p) => p.underlying).sort();
     expect(underlyings).toEqual(["AAA", "BBB"]);
   });
@@ -265,11 +274,11 @@ describe("getOptionPositions — per-pair latest holdings (holdings-latest-sweep
        VALUES (1, 302, 0, 0, '2025-02-28', 'c-2')`
     ).run();
 
-    const positions = getOptionPositions(db);
+    const positions = getOptionPositions(db, undefined, AS_OF);
     expect(positions.find((p) => p.underlying === "CCC")).toBeUndefined();
     expect(positions).toHaveLength(0);
 
-    const pnl = getOptionsPnL(db);
+    const pnl = getOptionsPnL(db, undefined, AS_OF);
     expect(pnl.openPositions).toHaveLength(0);
     expect(pnl.totalUnrealizedPnl).toBe(0);
   });
@@ -286,7 +295,7 @@ describe("getOptionPositions — per-pair latest holdings (holdings-latest-sweep
        VALUES (2, 304, 1, 100, '2025-01-31', 'y-1')`
     ).run();
 
-    const positions = getOptionPositions(db);
+    const positions = getOptionPositions(db, undefined, AS_OF);
     const underlyings = positions.map((p) => p.underlying).sort();
     expect(underlyings).toEqual(["XXX", "YYY"]);
   });
@@ -373,5 +382,62 @@ describe("getStockLegsForStrategyDetection — per-pair latest holdings (holding
 
     const legs = getStockLegsForStrategyDetection(db, 1);
     expect(legs.map((l) => l.symbol)).toEqual(["ZZZ"]);
+  });
+});
+
+/**
+ * getOptionPositions expiry guard — an option past its expiration on the ET
+ * calendar is not an open position (the purge's 1-day grace can leave
+ * yesterday's contract in holdings). Feeds the strategies route, the chat
+ * strategies tool, getOptionsByUnderlying and the options P&L open side.
+ */
+describe("getOptionPositions — drops options past ET expiration", () => {
+  let db: Database.Database;
+  const EXPIRY = "2031-06-20";
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    db.prepare(
+      `INSERT INTO securities
+         (id, symbol, security_type, option_type, strike_price, expiration_date, underlying_symbol, multiplier, currency)
+       VALUES (500, 'ZZZ   310620C00050000', 'option', 'CALL', 50, ?, 'ZZZ', 100, 'USD')`
+    ).run(EXPIRY);
+    db.prepare(`INSERT INTO prices (security_id, date, close_price) VALUES (500, '2026-07-07', 2)`).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (1, 500, 1, 150, '2026-07-01', 'zzz-1')`
+    ).run();
+  });
+
+  it("a contract expiring on ET today is still an open position", () => {
+    expect(getOptionPositions(db, undefined, EXPIRY)).toHaveLength(1);
+    expect(getOptionsByUnderlying(db, undefined, EXPIRY)).toHaveLength(1);
+    const pnl = getOptionsPnL(db, undefined, EXPIRY);
+    expect(pnl.openPositions).toHaveLength(1);
+    expect(pnl.totalUnrealizedPnl).toBeCloseTo(50, 6); // 1 × 2 × 100 − 150
+  });
+
+  it("the next ET day it is gone from positions, by-underlying groups and the P&L open side", () => {
+    const dayAfter = "2031-06-21";
+    expect(getOptionPositions(db, undefined, dayAfter)).toEqual([]);
+    expect(getOptionsByUnderlying(db, undefined, dayAfter)).toEqual([]);
+    const pnl = getOptionsPnL(db, undefined, dayAfter);
+    expect(pnl.openPositions).toEqual([]);
+    expect(pnl.totalUnrealizedPnl).toBe(0);
+  });
+
+  it("defaults to the ET calendar: after UTC midnight but before ET midnight the contract is still live", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // 02:30 UTC on the day after expiry = 22:30 EDT on the expiry day.
+      vi.setSystemTime(new Date("2031-06-21T02:30:00Z"));
+      expect(getOptionPositions(db)).toHaveLength(1);
+      vi.setSystemTime(new Date("2031-06-21T16:00:00Z"));
+      expect(getOptionPositions(db)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
