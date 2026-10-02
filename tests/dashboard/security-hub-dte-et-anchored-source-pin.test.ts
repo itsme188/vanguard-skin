@@ -58,7 +58,7 @@ function assertNoBannedInstantArithmetic(cell: string): void {
 describe("security detail page DTE is ET-anchored via the shared helper, never Date.now()", () => {
   it("imports daysToExpiry from the shared option-expiry module", () => {
     expect(src).toMatch(
-      /import\s*\{\s*daysToExpiry\s*\}\s*from\s*["']@\/lib\/compute\/option-expiry["']/
+      /import\s*\{[^}]*\bdaysToExpiry\b[^}]*\}\s*from\s*["']@\/lib\/compute\/option-expiry["']/
     );
   });
 
