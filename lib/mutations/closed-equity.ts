@@ -5,6 +5,7 @@ import {
   RECON_LIVE_SUFFIX,
   statementSourcedHoldingSql,
   statementGradeHoldingSql,
+  liveOriginHoldingSql,
 } from "@/lib/db/holding-sources";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
@@ -246,8 +247,9 @@ export function reconcileClosedEquityHoldings(
    * still record the statement-grade flat — otherwise a live-retired
    * position could never be confirmed by a statement. A latest row that is
    * already a statement-grade zero is never re-tombstoned (idempotent), and
-   * a live row on or after the statement date still blocks the pass
-   * (unchanged: `lps.d < ?`).
+   * a live row AFTER the statement date still blocks the pass. A live-origin
+   * zero dated ON the statement date is handled by `sameDateLiveFlatsStmt`
+   * (relabelled in place — the slot is taken).
    */
   const anyPhantomsStmt = db.prepare(`
      WITH latest_per_sec AS (
@@ -263,7 +265,29 @@ export function reconcileClosedEquityHoldings(
          ON h.account_id = ? AND h.security_id = lps.security_id AND h.as_of_date = lps.d
        JOIN securities s ON s.id = lps.security_id
       WHERE lps.d < ?
-        AND (h.quantity != 0 OR NOT ${statementGradeHoldingSql("COALESCE(h.source_key, '')")})`);
+        AND (h.quantity != 0 OR NOT ${statementGradeHoldingSql("h")})`);
+  /**
+   * Pass-1 SAME-DATE live flats (landing review I1): a pair whose newest row
+   * is a live-origin zero dated ON the statement date (a month-end live sync
+   * tombstoned it, then the month-end statement omitted it). The statement
+   * confirms that flat, but an INSERT at the statement date would hit
+   * UNIQUE(account, security, as_of_date) — so that row is relabelled IN
+   * PLACE as the statement-pass tombstone instead. Only zeros: a non-zero
+   * live row on the statement date still blocks the pass (unchanged).
+   */
+  const sameDateLiveFlatsStmt = db.prepare(`
+     SELECT h.id AS holding_id, h.security_id AS security_id,
+            s.security_type AS security_type, s.fund_category AS fund_category
+       FROM holdings h
+       JOIN securities s ON s.id = h.security_id
+      WHERE h.account_id = ? AND h.as_of_date = ? AND h.quantity = 0
+        AND ${liveOriginHoldingSql("h")}
+        AND h.as_of_date = (
+          SELECT MAX(h2.as_of_date) FROM holdings h2
+           WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id)`);
+  const relabelStmt = db.prepare(
+    `UPDATE holdings SET source_key = ?, import_batch_id = ? WHERE id = ?`,
+  );
   const classStmts = LIVE_PASS_CLASSES.map((cls) => ({
     ...cls,
     phantoms: db.prepare(phantomsSql(cls.typeSql)),
@@ -320,6 +344,17 @@ export function reconcileClosedEquityHoldings(
     marked++;
     if (origin === RECON_STMT_SUFFIX) markedStatementGrade++;
   };
+  /** Pass-1 in-place confirmation of a same-date live flat (see sameDateLiveFlatsStmt). */
+  const confirmInPlace = (accountId: number, securityId: number, holdingId: number, date: string): void => {
+    const owned = importBatchId != null && ownedAccounts.has(accountId);
+    relabelStmt.run(
+      `${RECON_HOLDING_SOURCE_PREFIX}${accountId}:${securityId}:${date}${RECON_STMT_SUFFIX}`,
+      owned ? importBatchId : null,
+      holdingId,
+    );
+    marked++;
+    markedStatementGrade++;
+  };
 
   /** True when `count` is a plausible successor to `priorCount`. */
   const passesShrinkGuard = (count: number, priorCount: number): boolean =>
@@ -347,6 +382,10 @@ export function reconcileClosedEquityHoldings(
             anyPhantomsStmt.all(accountId, accountId, stmtDate) as PhantomRow[],
           );
           for (const p of phantoms) tombstone(accountId, p.security_id, stmtDate, RECON_STMT_SUFFIX);
+          const sameDate = excludingCashEquivalents(
+            sameDateLiveFlatsStmt.all(accountId, stmtDate) as (PhantomRow & { holding_id: number })[],
+          ) as (PhantomRow & { holding_id: number })[];
+          for (const r of sameDate) confirmInPlace(accountId, r.security_id, r.holding_id, stmtDate);
         }
       }
 
@@ -402,8 +441,9 @@ export function reconcileClosedEquityHoldings(
  * NOT statement evidence), any non-recon row for `:live`. History-preserving
  * by design: never a wholesale rebuild, which would re-land tombstones on
  * current reference dates and silently move historical close dates.
- * Bumps the tax generation only when it deletes a STATEMENT-GRADE tombstone
- * (`:stmt` or legacy) — a `:live` tombstone is not a tax input (spec
+ * Bumps the tax generation only when it deletes a `:stmt` tombstone — a
+ * `:live` tombstone, or a legacy one with no same-date statement row (both
+ * live-origin), is not a tax input (spec
  * 2026-10-02 statement-only synthetic closes §2.3). Returns rows deleted
  * (both origins).
  */
@@ -426,22 +466,30 @@ export function removeOrphanedReconTombstones(
                  AND h2.source_key NOT LIKE '${RECON_HOLDING_SOURCE_PREFIX}%')`,
       )
       .run(...ids);
-    // Every remaining recon row is statement-grade (`:stmt` or legacy).
-    const stmtGrade = db
-      .prepare(
-        `DELETE FROM holdings
+    // `:stmt` and legacy rows need same-date STATEMENT evidence. A legacy
+    // row with none is, by definition, live-origin (statementGradeHoldingSql:
+    // a legacy tombstone is statement-grade only when a same-date statement
+    // row justifies it), so deleting it is not a tax input; deleting a
+    // `:stmt` row is.
+    const orphanOfStatementSql = (suffixSql: string) => `DELETE FROM holdings
           WHERE source_key LIKE '${RECON_HOLDING_SOURCE_PREFIX}%'
-            AND source_key NOT LIKE '%${RECON_LIVE_SUFFIX}'
+            AND ${suffixSql}
             ${acctFilter}
             AND NOT EXISTS (
               SELECT 1 FROM holdings h2
                WHERE h2.account_id = holdings.account_id
                  AND h2.as_of_date = holdings.as_of_date
-                 AND ${statementSourcedHoldingSql("h2.source_key")})`,
+                 AND ${statementSourcedHoldingSql("h2.source_key")})`;
+    const legacy = db
+      .prepare(
+        orphanOfStatementSql(
+          `source_key NOT LIKE '%${RECON_LIVE_SUFFIX}' AND source_key NOT LIKE '%${RECON_STMT_SUFFIX}'`,
+        ),
       )
       .run(...ids);
-    if (stmtGrade.changes > 0) bumpTaxGenerationIfPresent(db);
-    return live.changes + stmtGrade.changes;
+    const stmt = db.prepare(orphanOfStatementSql(`source_key LIKE '%${RECON_STMT_SUFFIX}'`)).run(...ids);
+    if (stmt.changes > 0) bumpTaxGenerationIfPresent(db);
+    return live.changes + legacy.changes + stmt.changes;
   })();
 }
 
@@ -465,7 +513,7 @@ export function countStatementGradeRowsOnDate(
       .prepare(
         `SELECT COUNT(*) AS c FROM holdings h
           WHERE h.account_id = ? AND h.as_of_date = ?
-            AND ${statementGradeHoldingSql("h.source_key")}`,
+            AND ${statementGradeHoldingSql("h")}`,
       )
       .get(accountId, date) as { c: number }
   ).c;

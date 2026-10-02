@@ -136,33 +136,68 @@ export function liveOverwritableHoldingSql(col = "holdings.source_key"): string 
 }
 
 /**
- * SQL fragment: STATEMENT-GRADE evidence for a pair — a statement-prefix row
- * (`statementSourcedHoldingSql`), a statement-pass tombstone (`:stmt`), or a
- * legacy unsuffixed tombstone (pre-suffix rows are treated as statement-grade
- * everywhere, see closed-equity.ts' orphan rule). Anything else — live rows,
- * `:live` tombstones, demo seeds, unknown prefixes — is NOT statement-grade.
- *
- * Deliberately DISTINCT from `statementSourcedHoldingSql`, which stays
- * statement-prefix-only: recon tombstones remain outside the statement/live
- * taxonomy for every existing caller of that helper. This predicate exists
- * for the synthetic-close anchor (computeTaxLots' broker-close pass, spec
- * 2026-10-02 statement-only synthetic closes) and the generation-bump
- * triggers that must agree with it. A recon tombstone carries exactly one of
- * the two suffixes or none, so "recon AND NOT :live" is ":stmt OR legacy".
- * Parenthesized; constants carry no wildcards/quotes (pinned by tests).
+ * SQL fragment for a recon tombstone with NO origin suffix (minted before the
+ * suffixes existed — by EITHER the statement pass or the old live pass).
+ * NULL-safe: `key` is expected to be COALESCE'd by the caller.
  */
-export function statementGradeHoldingSql(col = "h.source_key"): string {
-  return `(${statementSourcedHoldingSql(col)} OR (${col} LIKE '${RECON_HOLDING_SOURCE_PREFIX}%' AND ${col} NOT LIKE '%${RECON_LIVE_SUFFIX}'))`;
+function legacyReconSql(key: string): string {
+  return `(${key} LIKE '${RECON_HOLDING_SOURCE_PREFIX}%' AND ${key} NOT LIKE '%${RECON_STMT_SUFFIX}' AND ${key} NOT LIKE '%${RECON_LIVE_SUFFIX}')`;
 }
 
 /**
- * SQL fragment: LIVE-ORIGIN evidence — a live-sync row (tws-, plaid:) or a
- * tombstone minted by the reconciler's live passes (`:live`). Disjoint from
- * `statementGradeHoldingSql`. Same membership as `liveOverwritableHoldingSql`
- * today, but a different question (provenance, not overwrite permission), so
- * the two are kept as separate definitions. Parenthesized.
+ * EXISTS: the row's account carries a statement-prefix holdings row on the
+ * row's own date — the evidence that a legacy unsuffixed tombstone there was
+ * minted by the statement pass (a statement pass only ever tombstones AT the
+ * statement date). Subquery alias is derived from the row alias so the
+ * fragment nests safely.
  */
-export function liveOriginHoldingSql(col = "h.source_key"): string {
-  const live = LIVE_HOLDING_SOURCE_PREFIXES.map((p) => `${col} LIKE '${p}%'`);
-  return `(${[...live, `${col} LIKE '${RECON_HOLDING_SOURCE_PREFIX}%${RECON_LIVE_SUFFIX}'`].join(" OR ")})`;
+function sameDateStatementRowSql(alias: string): string {
+  const j = `_sgj_${alias}`;
+  return `EXISTS (SELECT 1 FROM holdings ${j}
+      WHERE ${j}.account_id = ${alias}.account_id AND ${j}.as_of_date = ${alias}.as_of_date
+        AND ${statementSourcedHoldingSql(`${j}.source_key`)})`;
+}
+
+/**
+ * SQL fragment: STATEMENT-GRADE evidence for the holdings row aliased
+ * `alias` — a statement-prefix row (`statementSourcedHoldingSql`), a
+ * statement-pass tombstone (`:stmt`), or a LEGACY unsuffixed tombstone that is
+ * JUSTIFIED by a statement-prefix row of the same account on the same date.
+ * A legacy tombstone on a date with no statement row was minted by the old
+ * live pass and is live-origin (`liveOriginHoldingSql`) — user ruling
+ * 2026-10-02 "only statement evidence" (landing review I2). No data is
+ * relabelled; the classification is derived on read.
+ *
+ * Takes a ROW ALIAS (not a column) because the legacy rule reads
+ * `account_id` / `as_of_date` too. Deliberately DISTINCT from
+ * `statementSourcedHoldingSql`, which stays statement-prefix-only: recon
+ * tombstones remain outside the statement/live taxonomy for every existing
+ * caller of that helper. Used IDENTICALLY by the synthetic-close anchor
+ * (computeTaxLots), the generation-bump triggers (tax-convention,
+ * closed-equity), the reconciler's statement pass and the pending read
+ * model. NULL-safe (a NULL key is neither class, and `NOT (…)` is TRUE).
+ * Parenthesized; constants carry no wildcards/quotes (pinned by tests).
+ */
+export function statementGradeHoldingSql(alias = "h"): string {
+  const key = `COALESCE(${alias}.source_key, '')`;
+  return `(${statementSourcedHoldingSql(key)}
+    OR ${key} LIKE '${RECON_HOLDING_SOURCE_PREFIX}%${RECON_STMT_SUFFIX}'
+    OR (${legacyReconSql(key)} AND ${sameDateStatementRowSql(alias)}))`;
+}
+
+/**
+ * SQL fragment: LIVE-ORIGIN evidence for the holdings row aliased `alias` —
+ * a live-sync row (tws-, plaid:), a live-pass tombstone (`:live`), or a
+ * legacy unsuffixed tombstone with NO same-date statement row (old live
+ * pass; see `statementGradeHoldingSql`). Disjoint from
+ * `statementGradeHoldingSql`. NULL-safe. Parenthesized.
+ */
+export function liveOriginHoldingSql(alias = "h"): string {
+  const key = `COALESCE(${alias}.source_key, '')`;
+  const live = LIVE_HOLDING_SOURCE_PREFIXES.map((p) => `${key} LIKE '${p}%'`);
+  return `(${[
+    ...live,
+    `${key} LIKE '${RECON_HOLDING_SOURCE_PREFIX}%${RECON_LIVE_SUFFIX}'`,
+    `(${legacyReconSql(key)} AND NOT ${sameDateStatementRowSql(alias)})`,
+  ].join(" OR ")})`;
 }

@@ -48,6 +48,14 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("NEVER claim a security is currently held");
   });
 
+  it("open-lot ownership rule carves out pending_statement lots (closed per live data, awaiting statement)", () => {
+    const prompt = buildSystemPrompt(fakeContext, today, "all");
+    const line = prompt.split("\n").find((l) => l.includes("quantity_remaining > 0"));
+    expect(line).toBeDefined();
+    expect(line).toContain("pending_statement");
+    expect(line).toContain("awaiting");
+  });
+
   it("ground truth rules not present in macro mode", () => {
     const prompt = buildSystemPrompt("", today, "macro");
     expect(prompt).not.toContain("Ground Truth Rules");

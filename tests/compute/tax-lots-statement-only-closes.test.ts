@@ -17,6 +17,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { ledgerDigest } from "../setup/ledger-digest";
+import { getPendingStatementPairs } from "@/lib/queries/pending-statement";
 
 // Migrations seed the account rows; the existing tests use id 1.
 const ACCOUNT = 1;
@@ -117,6 +118,9 @@ describe("engine gate: statement evidence only", () => {
       txn(s, "2026-01-05", "BUY", 100, 10);
       hold(s, 100, "2026-01-31", "stmt-row");
       hold(s, 0, "2026-02-28", origin);
+      // The statement book on that date (another position) — what makes a
+      // legacy unsuffixed tombstone statement-grade.
+      hold(sec("ZZBOOK"), 5, "2026-02-28", "stmt-row");
       price(s, "2026-02-27", 12);
 
       computeTaxLots(db);
@@ -132,6 +136,34 @@ describe("engine gate: statement evidence only", () => {
       expect(openQty(s)).toBe(0);
     },
   );
+
+  it("a legacy unsuffixed tombstone on a LIVE-ONLY date mints nothing and the pair is pending (I2)", () => {
+    const s = sec("ZZOLDLIVE");
+    txn(s, "2026-01-05", "BUY", 100, 10);
+    hold(s, 100, "2026-01-31", "stmt-row");
+    hold(s, 0, "2026-02-10", "legacy-tomb"); // minted by the old (pre-suffix) live pass
+    hold(sec("ZZLIVEBOOK"), 5, "2026-02-10", "tws");
+    price(s, "2026-02-10", 12);
+
+    computeTaxLots(db);
+
+    expect(synthetic(s)).toEqual([]);
+    expect(openQty(s)).toBe(100);
+    expect(getPendingStatementPairs(db).map((p) => p.symbol)).toEqual(["ZZOLDLIVE"]);
+  });
+
+  it("a legacy unsuffixed tombstone on a STATEMENT date mints the close and is not pending (I2)", () => {
+    const s = sec("ZZOLDSTMT");
+    txn(s, "2026-01-05", "BUY", 100, 10);
+    hold(s, 100, "2026-01-31", "stmt-row");
+    hold(s, 0, "2026-02-28", "legacy-tomb");
+    hold(sec("ZZSTMTBOOK"), 5, "2026-02-28", "stmt-row");
+
+    computeTaxLots(db);
+
+    expect(synthetic(s).map((r) => r.trade_date)).toEqual(["2026-02-28"]);
+    expect(getPendingStatementPairs(db)).toEqual([]);
+  });
 
   it("a statement showing the position HELD after an older statement zero mints nothing", () => {
     const s = sec("ZZBACK");

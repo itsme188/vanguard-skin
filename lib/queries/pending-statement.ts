@@ -85,18 +85,18 @@ export function getPendingStatementPairs(
           AND LOWER(COALESCE(s.security_type, '')) IN ('stock', 'etf')
           -- (a) newest row of any source: a LIVE-origin zero
           AND h.quantity = 0
-          AND ${liveOriginHoldingSql("h.source_key")}
+          AND ${liveOriginHoldingSql("h")}
           -- (b) no statement-grade zero that is the newest statement-grade row
           AND NOT EXISTS (
             SELECT 1 FROM holdings z
              WHERE z.account_id = tl.account_id AND z.security_id = tl.security_id
                AND z.quantity = 0
-               AND ${statementGradeHoldingSql("z.source_key")}
+               AND ${statementGradeHoldingSql("z")}
                AND NOT EXISTS (
                  SELECT 1 FROM holdings z2
                   WHERE z2.account_id = z.account_id AND z2.security_id = z.security_id
                     AND z2.as_of_date > z.as_of_date
-                    AND ${statementGradeHoldingSql("z2.source_key")}
+                    AND ${statementGradeHoldingSql("z2")}
                )
           )
           -- (d) later-fill guard, same type list as the engine

@@ -384,7 +384,7 @@ These are the ONLY two sources of truth for current positions. Transaction histo
 Specifically:
 - A BUY transaction does NOT mean the position is still held — it may have been sold since
 - A closed tax lot with realized loss does NOT make it a harvesting candidate — it is already sold
-- An open tax lot with quantity_remaining > 0 DOES indicate current ownership
+- An open tax lot with quantity_remaining > 0 DOES indicate current ownership — EXCEPT a lot flagged pending_statement = true: that position is already closed per live broker data and is awaiting the statement (its realized result is not known yet). Never call it held, never count its gain as unrealized, and never suggest selling or harvesting it
 
 When performing tax-loss harvesting analysis:
 1. Start by identifying positions from the "Current Holdings" in the Portfolio Summary or from query_holdings
