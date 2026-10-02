@@ -148,12 +148,21 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
   }
 
   if (resolved.view === "defense") {
+    const defenseScope: AccountScope =
+      VALID_SCOPES.includes(params.scope as AccountScope)
+        ? (params.scope as AccountScope)
+        : "all";
     // md:space-y-0 — mirrors the performance branch: the pill toggle is
     // md:hidden, so on desktop the wrapper must not introduce a margin
     // above DefenseView (no layout shift).
     return (
       <div className="space-y-6 md:space-y-0">
         <AnalysisViewToggle currentView="defense" scope={params.scope} />
+        {/* DefenseView falls back to "all" for an absent or unknown scope, so
+            the active pill does too (not the "vanguard" default the other
+            branches below use). md:mb-6 stands in for the space-y gap that
+            md:space-y-0 removes on desktop. */}
+        <DefenseScopePills active={defenseScope} />
         <DefenseView scope={params.scope} />
       </div>
     );
@@ -340,6 +349,34 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
       />
 
       <IncomeYieldSection scope={scope} />
+    </div>
+  );
+}
+
+// Account scope pills for the Defense view — same control as Workspace /
+// Diagnostics / Performance, with hrefs that keep ?view=defense. Declared
+// after the page so the Workspace pill group stays the first SCOPE_PILLS map
+// in the file (tab-dropdown-preserved-params.test.ts slices from there).
+function DefenseScopePills({ active }: { active: AccountScope }) {
+  return (
+    <div
+      className="flex items-center gap-1 rounded-lg bg-raised border border-edge p-0.5 self-start w-fit md:mb-6"
+      role="group"
+      aria-label="Account scope"
+    >
+      {SCOPE_PILLS.map((s) => (
+        <Link
+          key={s.key}
+          href={`/dashboard/analysis?view=defense&scope=${s.key}`}
+          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+            active === s.key
+              ? "bg-panel text-ink shadow-sm"
+              : "text-ink-dim hover:text-ink"
+          }`}
+        >
+          {s.label}
+        </Link>
+      ))}
     </div>
   );
 }

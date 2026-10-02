@@ -196,7 +196,7 @@ export function DataConfidenceIndicator() {
       {showPopover && (
         <div
           ref={popoverContentRef}
-          className={`absolute top-full mt-2 z-50 w-96 max-w-[calc(100vw-1rem)] rounded-xl border border-edge bg-panel shadow-xl p-4 space-y-3 ${
+          className={`absolute top-full mt-2 z-50 w-96 max-w-[calc(100vw-1rem)] rounded-xl border border-edge bg-panel shadow-xl p-4 space-y-3 max-h-[calc(100dvh-7rem)] overflow-y-auto overscroll-contain ${
             anchor === "left" ? "left-0" : "right-0"
           }`}
           style={{ backgroundColor: "var(--panel)" }}
