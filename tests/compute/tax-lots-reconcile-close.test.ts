@@ -55,17 +55,30 @@ function seedTransaction(
   return result.lastInsertRowid as number;
 }
 
+/**
+ * Seeds a holdings row. Default origin is STATEMENT-GRADE (spec 2026-10-02
+ * statement-only synthetic closes): a zero row is a statement-pass tombstone,
+ * a non-zero row a statement-prefix row — "the broker statement shows this".
+ * `origin: "live"` seeds a live TWS row instead, which the engine ignores.
+ */
 function seedHolding(
   db: Database.Database,
   accountId: number,
   securityId: number,
   quantity: number,
   asOfDate: string,
+  origin: "statement" | "live" = "statement",
 ): void {
+  const sourceKey =
+    origin === "live"
+      ? `tws-${accountId}-${securityId}-${asOfDate}`
+      : quantity === 0
+        ? `recon:closed-equity:${accountId}:${securityId}:${asOfDate}:stmt`
+        : `ibkr:pos:${accountId}:${securityId}:${asOfDate}`;
   db.prepare(
     `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
      VALUES (?, ?, ?, 0, ?, ?)`,
-  ).run(accountId, securityId, quantity, asOfDate, `test-hold-${accountId}-${securityId}-${asOfDate}`);
+  ).run(accountId, securityId, quantity, asOfDate, sourceKey);
 }
 
 function seedPrice(db: Database.Database, securityId: number, date: string, price: number): void {
@@ -230,11 +243,39 @@ describe("computeTaxLots broker-close reconciliation", () => {
       type: "BUY", quantity: 10, price_per_share: 100, amount: -1000,
     });
     seedHolding(db, ACCOUNT_ID, sec, 0, "2026-06-10");
-    seedHolding(db, ACCOUNT_ID, sec, 10, "2026-06-20"); // later live row wins
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2026-06-20"); // later STATEMENT row wins
     computeTaxLots(db);
 
     expect(syntheticTxns(db)).toHaveLength(0);
     expect(openLots(db, ACCOUNT_ID, sec)).toHaveLength(1);
+  });
+
+  it("live counterpart: a LIVE zero row as the newest row mints nothing — lots stay open (2026-10-02)", () => {
+    const sec = seedSecurity(db, "ZZLIVEZ");
+    seedTransaction(db, {
+      account_id: ACCOUNT_ID, security_id: sec, trade_date: "2026-06-01",
+      type: "BUY", quantity: 10, price_per_share: 100, amount: -1000,
+    });
+    seedHolding(db, ACCOUNT_ID, sec, 0, "2026-06-10", "live");
+    seedPrice(db, sec, "2026-06-10", 110);
+    computeTaxLots(db);
+
+    expect(syntheticTxns(db)).toHaveLength(0);
+    expect(openLots(db, ACCOUNT_ID, sec)).toHaveLength(1);
+  });
+
+  it("live counterpart: a later LIVE non-zero row does not cancel a statement zero (2026-10-02)", () => {
+    const sec = seedSecurity(db, "ZZLIVEN");
+    seedTransaction(db, {
+      account_id: ACCOUNT_ID, security_id: sec, trade_date: "2026-06-01",
+      type: "BUY", quantity: 10, price_per_share: 100, amount: -1000,
+    });
+    seedHolding(db, ACCOUNT_ID, sec, 0, "2026-06-10");
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2026-06-20", "live");
+    computeTaxLots(db);
+
+    expect(syntheticTxns(db).map((t) => t.trade_date)).toEqual(["2026-06-10"]);
+    expect(openLots(db, ACCOUNT_ID, sec)).toHaveLength(0);
   });
 
   it("never synthesizes for options or bonds (their own purge paths + EXPIRED/REDEMPTION own those)", () => {

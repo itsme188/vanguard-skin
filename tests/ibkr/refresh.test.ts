@@ -169,17 +169,24 @@ describe("writeIbkrHoldings — tombstone-supersession + price bumps (reconciler
         .get(symbol) as { id: number }
     ).id;
   }
-  function seedTombstone(accountId: number, securityId: number, date: string): void {
+  function seedTombstone(
+    accountId: number,
+    securityId: number,
+    date: string,
+    origin: ":live" | ":stmt" = ":live",
+  ): void {
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
        VALUES (?, ?, 0, ?, ?)`,
-    ).run(accountId, securityId, date, `recon:closed-equity:${accountId}:${securityId}:${date}:live`);
+    ).run(accountId, securityId, date, `recon:closed-equity:${accountId}:${securityId}:${date}${origin}`);
   }
 
-  it("bumps on newer-date tombstone supersession (re-bought)", () => {
+  // Spec 2026-10-02 statement-only synthetic closes §2.3: a newer-date live
+  // re-buy over any tombstone is a live-data event the engine never reads.
+  it.each([":live", ":stmt"] as const)("does NOT bump on a newer-date re-buy over an older %s tombstone", (origin) => {
     const acctId = ibkrAccountId();
     const secId = seedSecurity("NET");
-    seedTombstone(acctId, secId, "2000-01-01"); // latest row for NET is a tombstone
+    seedTombstone(acctId, secId, "2000-01-01", origin);
     const before = getTaxInputGeneration(db);
 
     const res = writeIbkrHoldings(
@@ -189,13 +196,29 @@ describe("writeIbkrHoldings — tombstone-supersession + price bumps (reconciler
     );
 
     expect(res.positionsWritten).toBe(1);
-    expect(getTaxInputGeneration(db)).toBe(before + 1);
+    expect(getTaxInputGeneration(db)).toBe(before);
   });
 
-  it("same-date REPLACE of a tombstone bumps", () => {
+  it("same-date REPLACE of a :live tombstone does NOT bump", () => {
     const acctId = ibkrAccountId();
     const secId = seedSecurity("SPY");
-    seedTombstone(acctId, secId, "2026-06-15"); // same date the write will land on
+    seedTombstone(acctId, secId, "2026-06-15", ":live");
+    const before = getTaxInputGeneration(db);
+
+    writeIbkrHoldings(
+      db,
+      { accountCode: "U1", netLiq: 1000, cash: 500, positions: [stock("SPY", 10, 400, 420)] },
+      { asOfDate: "2026-06-15" },
+    );
+
+    expect(countReconRowsOnDate(db, acctId, "2026-06-15")).toBe(0);
+    expect(getTaxInputGeneration(db)).toBe(before);
+  });
+
+  it("same-date REPLACE of a :stmt tombstone bumps (statement-grade evidence consumed)", () => {
+    const acctId = ibkrAccountId();
+    const secId = seedSecurity("SPY");
+    seedTombstone(acctId, secId, "2026-06-15", ":stmt"); // same date the write will land on
     expect(countReconRowsOnDate(db, acctId, "2026-06-15")).toBe(1);
     const before = getTaxInputGeneration(db);
 
@@ -227,7 +250,9 @@ describe("writeIbkrHoldings — tombstone-supersession + price bumps (reconciler
   it("a throw inside the writer's transaction rolls back writes AND bump together", () => {
     const acctId = ibkrAccountId();
     const secId = seedSecurity("NET");
-    seedTombstone(acctId, secId, "2000-01-01");
+    // Same-date :stmt tombstone: NET's write REPLACES it, which alone bumps —
+    // so an unchanged generation below proves the bump rolled back.
+    seedTombstone(acctId, secId, "2026-06-15", ":stmt");
     const before = getTaxInputGeneration(db);
 
     // No outer transaction wraps this call (discriminating: proves the

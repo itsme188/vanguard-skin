@@ -457,7 +457,7 @@ describe("fetchSnapshotPrices — synthetic-close price bump (reconciler-hardeni
     // Sold since: a NEWER row makes the latest holdings row for GONE a tombstone.
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
-       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:live')`,
+       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:stmt')`,
     ).run(acctId, secId, TRADING_DAY);
     const before = getTaxInputGeneration(db);
 
@@ -475,6 +475,29 @@ describe("fetchSnapshotPrices — synthetic-close price bump (reconciler-hardeni
     expect(getTaxInputGeneration(db)).toBe(before + 1);
   });
 
+  it("does NOT bump when the zero row is a LIVE-origin tombstone (:live) — the engine mints no close from it (2026-10-02 §2.3)", async () => {
+    const secId = seedSecurity(db, "ZZLIVE", { conId: 998 });
+    const acctId = ensureAccount(db);
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:live')`,
+    ).run(acctId, secId, TRADING_DAY);
+    const before = getTaxInputGeneration(db);
+
+    const mockApi = {
+      setMarketDataType: vi.fn(),
+      getMarketDataSnapshot: vi.fn().mockResolvedValue(
+        mockMarketData([{ type: IBApiTickType.LAST, value: 10 }]),
+      ),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    const results = await fetchSnapshotPrices(db, { securityIds: [secId], asOfDate: TRADING_DAY });
+
+    expect(results[0].price).toBe(10);
+    expect(getTaxInputGeneration(db)).toBe(before);
+  });
+
   it("a DB-level abort rolls back every deferred price write in the batch together (merged write+bump transaction — fails against the old per-security immediate-write structure)", async () => {
     const secA = seedSecurity(db, "AAA", { conId: 111 });
     const secB = seedSecurity(db, "BBB", { conId: 222 });
@@ -486,7 +509,7 @@ describe("fetchSnapshotPrices — synthetic-close price bump (reconciler-hardeni
     const acctId = ensureAccount(db);
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
-       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:live')`,
+       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:stmt')`,
     ).run(acctId, secA, TRADING_DAY);
     const before = getTaxInputGeneration(db);
 

@@ -4,6 +4,7 @@ import {
   RECON_STMT_SUFFIX,
   RECON_LIVE_SUFFIX,
   statementSourcedHoldingSql,
+  statementGradeHoldingSql,
 } from "@/lib/db/holding-sources";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
@@ -235,7 +236,34 @@ export function reconcileClosedEquityHoldings(
   const excludingCashEquivalents = (rows: PhantomRow[]): PhantomRow[] =>
     rows.filter((r) => !isCashEquivalentSecurity(r));
 
-  const anyPhantomsStmt = db.prepare(phantomsSql(""));
+  /**
+   * Pass-1 (statement) phantoms: the same "latest row predates the statement
+   * date" test, plus one widening (spec 2026-10-02 statement-only synthetic
+   * closes): a latest row that is a LIVE-ORIGIN zero (a `:live` tombstone or
+   * a live/unrecognized-source zero row) also counts. The live passes
+   * already retired such a position, but synthetic closes now read
+   * statement-grade evidence only, so the next statement that omits it must
+   * still record the statement-grade flat — otherwise a live-retired
+   * position could never be confirmed by a statement. A latest row that is
+   * already a statement-grade zero is never re-tombstoned (idempotent), and
+   * a live row on or after the statement date still blocks the pass
+   * (unchanged: `lps.d < ?`).
+   */
+  const anyPhantomsStmt = db.prepare(`
+     WITH latest_per_sec AS (
+       SELECT security_id, MAX(as_of_date) AS d
+         FROM holdings WHERE account_id = ?
+        GROUP BY security_id
+     )
+     SELECT lps.security_id AS security_id,
+            s.security_type AS security_type,
+            s.fund_category AS fund_category
+       FROM latest_per_sec lps
+       JOIN holdings h
+         ON h.account_id = ? AND h.security_id = lps.security_id AND h.as_of_date = lps.d
+       JOIN securities s ON s.id = lps.security_id
+      WHERE lps.d < ?
+        AND (h.quantity != 0 OR NOT ${statementGradeHoldingSql("COALESCE(h.source_key, '')")})`);
   const classStmts = LIVE_PASS_CLASSES.map((cls) => ({
     ...cls,
     phantoms: db.prepare(phantomsSql(cls.typeSql)),
@@ -253,6 +281,14 @@ export function reconcileClosedEquityHoldings(
   );
 
   let marked = 0;
+  /**
+   * Statement-grade tombstones minted this run (`:stmt` — pass 1). Only these
+   * are a tax input (spec 2026-10-02 statement-only synthetic closes §2.3):
+   * computeTaxLots anchors synthetic closes on statement-grade evidence and
+   * never reads a `:live` tombstone, so a live-pass mint must not advance
+   * `tax_input_generation`.
+   */
+  let markedStatementGrade = 0;
   /**
    * `recon:closed-equity:` is the engine-owned tombstone prefix — historical
    * name, now covering every class this reconciler retires. It sits outside the
@@ -282,6 +318,7 @@ export function reconcileClosedEquityHoldings(
       owned ? importBatchId : null,
     );
     marked++;
+    if (origin === RECON_STMT_SUFFIX) markedStatementGrade++;
   };
 
   /** True when `count` is a plausible successor to `priorCount`. */
@@ -346,10 +383,12 @@ export function reconcileClosedEquityHoldings(
         for (const p of phantoms) tombstone(accountId, p.security_id, latestDate, RECON_LIVE_SUFFIX);
       }
     }
-    // Tombstone creation changes RECONCILE_CLOSE synthesis in computeTaxLots —
-    // a tax event regardless of caller (spec §4). Inside the transaction so a
-    // rollback takes the bump with it.
-    if (marked > 0) bumpTaxGenerationIfPresent(db);
+    // A STATEMENT-GRADE tombstone changes RECONCILE_CLOSE synthesis in
+    // computeTaxLots — a tax event regardless of caller (spec 2026-08-30 §4).
+    // A `:live` tombstone does not (spec 2026-10-02 §2.3: the engine reads
+    // statement-grade evidence only). Inside the transaction so a rollback
+    // takes the bump with it.
+    if (markedStatementGrade > 0) bumpTaxGenerationIfPresent(db);
   })();
 
   return marked;
@@ -363,7 +402,10 @@ export function reconcileClosedEquityHoldings(
  * NOT statement evidence), any non-recon row for `:live`. History-preserving
  * by design: never a wholesale rebuild, which would re-land tombstones on
  * current reference dates and silently move historical close dates.
- * Bumps the tax generation when it deletes. Returns rows deleted.
+ * Bumps the tax generation only when it deletes a STATEMENT-GRADE tombstone
+ * (`:stmt` or legacy) — a `:live` tombstone is not a tax input (spec
+ * 2026-10-02 statement-only synthetic closes §2.3). Returns rows deleted
+ * (both origins).
  */
 export function removeOrphanedReconTombstones(
   db: Database.Database,
@@ -372,64 +414,68 @@ export function removeOrphanedReconTombstones(
   const ids = opts.accountIds ?? [];
   const acctFilter = ids.length > 0 ? `AND account_id IN (${ids.map(() => "?").join(",")})` : "";
   return db.transaction(() => {
-    const res = db
+    const live = db
+      .prepare(
+        `DELETE FROM holdings
+          WHERE source_key LIKE '${RECON_HOLDING_SOURCE_PREFIX}%${RECON_LIVE_SUFFIX}'
+            ${acctFilter}
+            AND NOT EXISTS (
+              SELECT 1 FROM holdings h2
+               WHERE h2.account_id = holdings.account_id
+                 AND h2.as_of_date = holdings.as_of_date
+                 AND h2.source_key NOT LIKE '${RECON_HOLDING_SOURCE_PREFIX}%')`,
+      )
+      .run(...ids);
+    // Every remaining recon row is statement-grade (`:stmt` or legacy).
+    const stmtGrade = db
       .prepare(
         `DELETE FROM holdings
           WHERE source_key LIKE '${RECON_HOLDING_SOURCE_PREFIX}%'
+            AND source_key NOT LIKE '%${RECON_LIVE_SUFFIX}'
             ${acctFilter}
-            AND CASE WHEN source_key LIKE '%${RECON_LIVE_SUFFIX}'
-              THEN NOT EXISTS (
-                SELECT 1 FROM holdings h2
-                 WHERE h2.account_id = holdings.account_id
-                   AND h2.as_of_date = holdings.as_of_date
-                   AND h2.source_key NOT LIKE '${RECON_HOLDING_SOURCE_PREFIX}%')
-              ELSE NOT EXISTS (
-                SELECT 1 FROM holdings h2
-                 WHERE h2.account_id = holdings.account_id
-                   AND h2.as_of_date = holdings.as_of_date
-                   AND ${statementSourcedHoldingSql("h2.source_key")})
-            END`,
+            AND NOT EXISTS (
+              SELECT 1 FROM holdings h2
+               WHERE h2.account_id = holdings.account_id
+                 AND h2.as_of_date = holdings.as_of_date
+                 AND ${statementSourcedHoldingSql("h2.source_key")})`,
       )
       .run(...ids);
-    if (res.changes > 0) bumpTaxGenerationIfPresent(db);
-    return res.changes;
+    if (stmtGrade.changes > 0) bumpTaxGenerationIfPresent(db);
+    return live.changes + stmtGrade.changes;
   })();
 }
 
 /**
- * Securities whose LATEST holdings row for `accountId` is quantity 0 — the
- * tombstone state computeTaxLots' RECONCILE_CLOSE pass keys on. Live
- * writers snapshot this BEFORE writing: a non-zero write for one of these
- * is a newer-date tombstone supersession (re-bought position) and must bump
- * the tax generation (spec §4).
- *
- * Deliberately NOT filtered to stock/ETF, even though RECONCILE_CLOSE itself
- * only synthesizes for stock/ETF (`computeTaxLots`' orphan query). This is
- * an invalidation trigger, not the synthesis query — over-including a
- * bond/fund/option tombstone here just means an occasional harmless extra
- * generation bump (fail-closed doctrine, spec §4 precision note). Do not
- * "fix" the mismatch by narrowing this to stock/ETF: that would risk a
- * fail-OPEN hole if RECONCILE_CLOSE's own scope ever widens without this
- * trigger widening in lockstep.
+ * Statement-grade holdings rows for (account, date) — statement-prefix rows
+ * plus `:stmt`/legacy tombstones (`statementGradeHoldingSql`). Live writers
+ * that `INSERT OR REPLACE` into the shared (account, security, as_of_date)
+ * slot snapshot this before and after writing: a drop means the write
+ * replaced statement-grade evidence the synthetic-close anchor reads, which
+ * is a tax input and must bump the generation (spec 2026-10-02 §2.3). A
+ * live writer replacing live rows or `:live` tombstones changes nothing the
+ * engine reads and must not bump.
  */
-export function zeroLatestSecurityIds(db: Database.Database, accountId: number): Set<number> {
-  const rows = db
-    .prepare(
-      `SELECT h.security_id AS id FROM holdings h
-        WHERE h.account_id = ? AND h.quantity = 0
-          AND h.as_of_date = (
-            SELECT MAX(h2.as_of_date) FROM holdings h2
-             WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id)`,
-    )
-    .all(accountId) as { id: number }[];
-  return new Set(rows.map((r) => r.id));
+export function countStatementGradeRowsOnDate(
+  db: Database.Database,
+  accountId: number,
+  date: string,
+): number {
+  return (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM holdings h
+          WHERE h.account_id = ? AND h.as_of_date = ?
+            AND ${statementGradeHoldingSql("h.source_key")}`,
+      )
+      .get(accountId, date) as { c: number }
+  ).c;
 }
 
 /**
- * Recon tombstones for (account, date) — same-date supersession detection.
- * Prepares a fresh statement per call: fine at today's call sites (once per
- * account/date per sync, not per row); a future caller that loops this
- * per-row should hoist the prepare out of its loop.
+ * Recon tombstones (either origin) for (account, date). Origin-blind, so it is
+ * NOT a tax-input trigger — live writers use countStatementGradeRowsOnDate
+ * for that (spec 2026-10-02 §2.3). Kept as an observation helper (tests,
+ * diagnostics). Prepares a fresh statement per call.
  */
 export function countReconRowsOnDate(db: Database.Database, accountId: number, date: string): number {
   return (

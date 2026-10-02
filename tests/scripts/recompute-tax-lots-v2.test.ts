@@ -69,7 +69,17 @@ function seedHolding(
   db.prepare(
     `INSERT OR REPLACE INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
      VALUES (?, ?, ?, ?, ?)`,
-  ).run(accountId, securityId, quantity, asOfDate, `hold-${accountId}-${securityId}-${asOfDate}`);
+  ).run(
+    accountId,
+    securityId,
+    quantity,
+    asOfDate,
+    // A flat row is a statement-pass tombstone: since 2026-10-02 only
+    // statement-grade evidence anchors a synthetic close.
+    quantity === 0
+      ? `recon:closed-equity:${accountId}:${securityId}:${asOfDate}:stmt`
+      : `hold-${accountId}-${securityId}-${asOfDate}`,
+  );
 }
 
 function seedPrice(db: Database.Database, securityId: number, date: string, price: number): void {

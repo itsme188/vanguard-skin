@@ -45,7 +45,17 @@ function seedHolding(db: Database.Database, accountId: number, secId: number,
   db.prepare(
     `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
      VALUES (?, ?, ?, 0, ?, ?)`,
-  ).run(accountId, secId, quantity, asOfDate, `test-hold-${accountId}-${secId}-${asOfDate}`);
+  ).run(
+    accountId,
+    secId,
+    quantity,
+    asOfDate,
+    // Statement-grade (spec 2026-10-02): only statement evidence anchors a
+    // synthetic close, so a zero row here is a statement-pass tombstone.
+    quantity === 0
+      ? `recon:closed-equity:${accountId}:${secId}:${asOfDate}:stmt`
+      : `ibkr:pos:${accountId}:${secId}:${asOfDate}`,
+  );
 }
 
 function seedPrice(db: Database.Database, secId: number, date: string, price: number) {

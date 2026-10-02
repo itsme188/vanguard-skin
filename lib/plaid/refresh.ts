@@ -17,8 +17,7 @@ import { upsertSecurity } from "@/lib/mutations/securities";
 import { removeStaleSameDayTwsHoldings } from "@/lib/mutations/same-day-tws-holdings";
 import {
   reconcileClosedEquityHoldings,
-  zeroLatestSecurityIds,
-  countReconRowsOnDate,
+  countStatementGradeRowsOnDate,
 } from "@/lib/mutations/closed-equity";
 import { liveOverwritableHoldingSql } from "@/lib/db/holding-sources";
 import {
@@ -126,16 +125,16 @@ export function writePlaidHoldings(
     // bump, or vice versa. reconcileClosedEquityHoldings nests as a
     // savepoint — better-sqlite3 supports nested db.transaction() calls.
     db.transaction(() => {
-      // Pre-state reads INSIDE the transaction so they reflect exactly the
-      // book this account's writes are about to mutate.
-      const zeroLatest = zeroLatestSecurityIds(db, localAccountId);
-      const reconBefore = countReconRowsOnDate(db, localAccountId, today);
-      // Set only when the upsert ACTUALLY changed a row (res.changes > 0)
-      // AND the write is non-zero AND the security's latest row was a
-      // tombstone — a re-bought position superseding an OLDER-dated
-      // tombstone. A write BLOCKED by a same-date :stmt/legacy tombstone
-      // changes nothing and must never set this.
-      let newerDateSupersession = false;
+      // Pre-state read INSIDE the transaction so it reflects exactly the
+      // book this account's writes are about to mutate. computeTaxLots reads
+      // statement-grade holdings only (spec 2026-10-02 statement-only
+      // synthetic closes §2.3), so a Plaid write is a tax input only if it
+      // removed statement-grade evidence — which the liveOverwritable upsert
+      // guard already forbids. The count is kept as a fail-closed check, not
+      // an expected path. Newer-date re-buys over a tombstone, `:live`
+      // tombstone replacement and the same-day stale cleanup are live-data
+      // events and no longer bump.
+      const stmtGradeBefore = countStatementGradeRowsOnDate(db, localAccountId, today);
 
       const syncedSecurityIds: number[] = [];
       for (const p of positions) {
@@ -171,9 +170,6 @@ export function writePlaidHoldings(
           `plaid:${localAccountId}:${securityId}:${today}`,
         );
         if (res.changes > 0) holdingsWritten++;
-        if (res.changes > 0 && p.quantity !== 0 && zeroLatest.has(securityId)) {
-          newerDateSupersession = true;
-        }
       }
 
       const stale = removeStaleSameDayTwsHoldings(db, {
@@ -183,16 +179,9 @@ export function writePlaidHoldings(
         sourceKeyLike: "plaid:%",
       });
       staleRemoved += stale.deleted;
-      // A same-day cleanup delete can itself be a RECONCILE_CLOSE-input
-      // transition: if an earlier intraday sync today wrote a security
-      // non-zero over a :live tombstone (or a newer-date supersession) and a
-      // later sync's book omits it, this deletes today's plaid row and the
-      // pair's latest reverts to an earlier tombstone/held row — neither the
-      // recon-row-count check below (only plaid:% rows are deleted here, not
-      // recon:% rows) nor newerDateSupersession (writes only) observes a
-      // deletion. Conservative: bump on any deletion (routine held-only
-      // syncs delete nothing, so this never fires there).
-      if (stale.deleted > 0) bumpTaxGenerationIfPresent(db);
+      // No bump: the cleanup deletes only `plaid:` rows, which the
+      // statement-only synthetic-close anchor never reads (spec 2026-10-02
+      // §2.3).
 
       const total = mapped.totalByAccount[plaidAccountId];
       if (total != null) {
@@ -227,11 +216,9 @@ export function writePlaidHoldings(
         pricePairs.push({ securityId: sec.id, date: priceDate });
       }
 
-      const reconAfter = countReconRowsOnDate(db, localAccountId, today);
-      // Tombstone consumption is a RECONCILE_CLOSE input change (spec §4):
-      // same-date (a recon row on `today` was replaced by this write) or
-      // newer-date (a previously-zero-latest security re-bought today).
-      if (reconAfter < reconBefore || newerDateSupersession) bumpTaxGenerationIfPresent(db);
+      const stmtGradeAfter = countStatementGradeRowsOnDate(db, localAccountId, today);
+      // Consuming statement-grade evidence is a RECONCILE_CLOSE input change.
+      if (stmtGradeAfter < stmtGradeBefore) bumpTaxGenerationIfPresent(db);
       bumpIfPricesAffectSyntheticCloses(db, pricePairs);
 
       // Snapshot-diff closure sweep: equities absent from today's full book

@@ -3,7 +3,6 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
   reconcileClosedEquityHoldings,
-  zeroLatestSecurityIds,
   countReconRowsOnDate,
 } from "@/lib/mutations/closed-equity";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
@@ -534,7 +533,7 @@ describe("tombstone provenance + ownership", () => {
     expect(tomb.import_batch_id).toBeNull();
   });
 
-  it("bumps the tax generation when it marks anything, not when it marks nothing", () => {
+  it("bumps the tax generation when it marks a statement-pass tombstone, not when it marks nothing", () => {
     const a = acct("A1");
     hold(a, sec("XONE"), 5, "2026-07-31", "canonical:hold:1");
     hold(a, sec("KEEP1"), 5, "2026-08-29", "canonical:hold:2");
@@ -587,17 +586,6 @@ describe("run atomicity", () => {
 });
 
 describe("detection helpers", () => {
-  it("zeroLatestSecurityIds returns securities whose latest row is quantity 0", () => {
-    const a = acct("A1");
-    const x = sec("XONE");
-    const y = sec("YTWO");
-    hold(a, x, 5, "2026-07-01", "canonical:hold:1");
-    hold(a, x, 0, "2026-08-01", "recon:closed-equity:t1:stmt");
-    hold(a, y, 5, "2026-08-01", "canonical:hold:2");
-    const s = zeroLatestSecurityIds(db, a);
-    expect(s.has(x)).toBe(true);
-    expect(s.has(y)).toBe(false);
-  });
   it("countReconRowsOnDate counts recon rows for (account, date)", () => {
     const a = acct("A1");
     hold(a, sec("XONE"), 0, "2026-08-01", "recon:closed-equity:t1:live");

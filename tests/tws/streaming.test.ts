@@ -309,7 +309,7 @@ describe("snapshotToDb — synthetic-close price bump (reconciler-hardening, spe
     const today = new Date().toISOString().slice(0, 10);
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
-       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:live')`,
+       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:stmt')`,
     ).run(acctId, secId, today);
     cacheQuote(secId, "GONE", 12.34);
     const before = getTaxInputGeneration(db);
@@ -322,6 +322,21 @@ describe("snapshotToDb — synthetic-close price bump (reconciler-hardening, spe
     expect(getTaxInputGeneration(db)).toBe(before + 1);
   });
 
+  it("does NOT bump when the zero row is a LIVE-origin tombstone (:live) — the engine mints no close from it (2026-10-02 §2.3)", () => {
+    const acctId = seedAccount(db, "T");
+    const secId = seedSecurity(db, "ZZLIVE", { conId: 4 });
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:live')`,
+    ).run(acctId, secId, today);
+    cacheQuote(secId, "ZZLIVE", 10);
+    const before = getTaxInputGeneration(db);
+
+    expect(snapshotToDb(db)).toBe(1);
+    expect(getTaxInputGeneration(db)).toBe(before);
+  });
+
   it("a throw inside the transaction rolls back writes AND bump together", () => {
     const acctId = seedAccount(db, "T");
     const goneId = seedSecurity(db, "GONE", { conId: 2 });
@@ -329,7 +344,7 @@ describe("snapshotToDb — synthetic-close price bump (reconciler-hardening, spe
     const today = new Date().toISOString().slice(0, 10);
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
-       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:live')`,
+       VALUES (?, ?, 0, ?, 'recon:closed-equity:g:stmt')`,
     ).run(acctId, goneId, today);
     cacheQuote(goneId, "GONE", 12.34);
     cacheQuote(boomId, "BOOM", 999999);

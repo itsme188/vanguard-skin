@@ -24,6 +24,7 @@ import {
   stampBrokerAcceptance,
   getTaxConventionState,
   describeTaxLotStaleness,
+  TAX_LOTS_CONVENTION_STAMP_PREFIX,
 } from "@/lib/compute/tax-convention";
 
 let db: Database.Database;
@@ -107,7 +108,7 @@ describe("describeTaxLotStaleness", () => {
   });
 
   it("counts the ledger changes a v3 stamp is behind by", () => {
-    stampTaxLotsConvention(db); // v3:0
+    stampTaxLotsConvention(db); // <current revision>:0
     bumpTaxInputGeneration(db);
     bumpTaxInputGeneration(db);
     expect(describeTaxLotStaleness(getTaxConventionState(db))).toEqual({
@@ -152,7 +153,7 @@ describe("describeTaxLotStaleness", () => {
     // Unreachable in normal operation (the counter only rises and the stamp
     // records it), but a restored/edited settings row can produce it. Stale
     // with no quotable count, never a negative one.
-    setStamp("v3:9");
+    setStamp(`${TAX_LOTS_CONVENTION_STAMP_PREFIX}:9`); // current engine revision
     expect(describeTaxLotStaleness(getTaxConventionState(db))).toEqual({
       stale: true,
       inputChangesSince: null,
