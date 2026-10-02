@@ -31,7 +31,8 @@ function epochToEtDate(epochSec: number): string {
  * Default network adapter — Yahoo Finance daily chart bars (free, no auth).
  * Reads the `timestamp[]` + `indicators.quote[0].close[]` arrays so every close
  * is stamped with its ET trading day (sibling of `fetchYahooQuotes` in
- * `lib/queries/market-snapshot.ts`, which reads the `meta` block instead). This
+ * `lib/queries/market-snapshot.ts`, whose `parseYahooChart` reads the same bars
+ * to take the prior-session close). This
  * is the DI boundary; the upsert logic is unit-tested with an injected stub.
  * Returns null if every symbol fails.
  */
