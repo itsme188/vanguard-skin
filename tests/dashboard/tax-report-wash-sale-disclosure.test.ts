@@ -121,6 +121,9 @@ describe("Tax-lots summary strip short-term stat (render test)", () => {
     engineEstimatedLongTermGain: 0,
     engineEstimatedShortTermSales: 0,
     engineEstimatedShortTermGain: 0,
+    pendingStatementPositions: 0,
+    pendingStatementLots: 0,
+    pendingStatementBasis: 0,
   };
 
   function renderSummary(): string {

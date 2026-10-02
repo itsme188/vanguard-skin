@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { TaxLotSummary, AccountTaxSummary } from "@/lib/queries/tax-lots";
 import type { TaxLotStalenessMarker } from "@/lib/compute/tax-convention";
 import { Count, Money } from "@/lib/privacy/components";
+import { PENDING_STATEMENT_TITLE } from "./pending-statement-copy";
 
 /**
  * QA finding: tax-lots--headline-tiles-stale-until-recompute-no-marker.
@@ -42,6 +43,14 @@ export function TaxLotStalenessNotice({
             </>
           ) : null}
           {" — press Recompute to refresh them."}
+        </>
+      ) : marker.reason === "revision" ? (
+        /* An earlier revision of the current engine (v3 -> v3r2, spec
+           2026-10-02 statement-only synthetic closes §2.5). Names what the
+           CURRENT revision changed — update when the revision bumps. */
+        <>
+          These figures were computed before closes required broker-statement
+          evidence — press Recompute to refresh them.
         </>
       ) : marker.reason === "never" ? (
         <>These figures have no recompute stamp — press Recompute to refresh them.</>
@@ -139,6 +148,29 @@ function GainCard({
   );
 }
 
+/**
+ * "N positions closed per live data — awaiting statement" (spec 2026-10-02
+ * statement-only synthetic closes §2.2). Those positions are no longer held,
+ * so their paper gain is not unrealized; their realized figure is unknown
+ * until the statement. The Unrealized tile above excludes them, and this line
+ * says so. Renders nothing when no position is pending.
+ */
+export function PendingStatementLine({
+  positions,
+  basis,
+}: {
+  positions: number;
+  basis: number;
+}) {
+  if (!positions || positions <= 0) return null;
+  return (
+    <p className="text-xs text-ink-faint mt-2" title={PENDING_STATEMENT_TITLE}>
+      <Count value={positions} /> position{positions !== 1 ? "s" : ""} closed per live data —
+      awaiting statement (<Money value={basis} /> cost basis, excluded from Unrealized).
+    </p>
+  );
+}
+
 export function TaxLotSummaryCards({
   summary,
   year,
@@ -181,6 +213,10 @@ export function TaxLotSummaryCards({
           engineEstimatedGain={summary.engineEstimatedShortTermGain}
         />
       </div>
+      <PendingStatementLine
+        positions={summary.pendingStatementPositions}
+        basis={summary.pendingStatementBasis}
+      />
       {summary.excludedNonUsdSales > 0 && (
         <p className="text-xs text-ink-faint mt-2">
           USD totals exclude {summary.excludedNonUsdSales} non-USD sale

@@ -52,6 +52,9 @@ function summary(overrides: Partial<TaxLotSummary> = {}): TaxLotSummary {
     engineEstimatedLongTermGain: 0,
     engineEstimatedShortTermSales: 0,
     engineEstimatedShortTermGain: 0,
+    pendingStatementPositions: 0,
+    pendingStatementLots: 0,
+    pendingStatementBasis: 0,
     ...overrides,
   };
 }

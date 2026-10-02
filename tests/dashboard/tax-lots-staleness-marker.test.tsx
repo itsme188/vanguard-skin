@@ -87,6 +87,15 @@ describe("TaxLotStalenessNotice", () => {
     expect(html).not.toContain("tax-input change");
   });
 
+  it("names the statement-only change for an earlier engine revision (v3 -> v3r2)", () => {
+    const html = render({ stale: true, inputChangesSince: null, reason: "revision" });
+    expect(html).toContain(
+      "These figures were computed before closes required broker-statement evidence"
+    );
+    expect(html).toContain("press Recompute to refresh them.");
+    expect(html).not.toContain("earlier lot convention");
+  });
+
   it("says the figures carry no recompute stamp at all", () => {
     const html = render({ stale: true, inputChangesSince: null, reason: "never" });
     expect(html).toContain("These figures have no recompute stamp");

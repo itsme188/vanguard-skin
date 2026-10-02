@@ -1,5 +1,10 @@
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
+import {
+  isPendingStatementLot,
+  pendingStatementKey,
+  pendingStatementKeySet,
+} from "@/lib/queries/pending-statement";
 
 export interface TaxLotWithSecurity {
   is_short: number;
@@ -19,6 +24,14 @@ export interface TaxLotWithSecurity {
   current_value: number | null;
   unrealized_gain: number | null;
   is_from_opening_snapshot: number;
+  /**
+   * The lot belongs to a position closed per LIVE data whose broker
+   * statement has not arrived (lib/queries/pending-statement.ts). The
+   * position is no longer held, so `current_value` / `unrealized_gain` are
+   * null and every unrealized total excludes the lot; it stays listed (with
+   * a "pending statement" chip) because it is still open in the ledger.
+   */
+  pending_statement: boolean;
 }
 
 export interface TaxLotSaleWithDetails {
@@ -88,9 +101,25 @@ export interface EngineEstimatedDisclosure {
   engineEstimatedShortTermGain: number;
 }
 
-export interface TaxLotSummary extends EngineEstimatedDisclosure {
+/**
+ * Positions closed per live data, awaiting the broker statement
+ * (lib/queries/pending-statement.ts). Their lots are excluded from
+ * `totalUnrealizedGain` and disclosed separately with these figures.
+ */
+export interface PendingStatementDisclosure {
+  /** Distinct (account, security) pairs pending a statement. */
+  pendingStatementPositions: number;
+  /** Open lots belonging to those pairs (counted in totalOpenLots too). */
+  pendingStatementLots: number;
+  /** Still-open USD basis of those lots. */
+  pendingStatementBasis: number;
+}
+
+export interface TaxLotSummary extends EngineEstimatedDisclosure, PendingStatementDisclosure {
+  /** Every open lot, pending-statement lots included (matches the Open Lots table). */
   totalOpenLots: number;
   totalClosedSales: number;
+  /** Excludes pending-statement lots — those positions are no longer held. */
   totalUnrealizedGain: number;
   totalRealizedGain: number;
   longTermGain: number;
@@ -139,7 +168,7 @@ function remainingLotBasisSql(): string {
 }
 
 export function getOpenTaxLots(db: Database.Database, securityId?: number): TaxLotWithSecurity[] {
-  return db
+  const rows = db
     .prepare(
       `SELECT
         tl.id, tl.account_id, a.name AS account_name, tl.is_short,
@@ -165,7 +194,13 @@ export function getOpenTaxLots(db: Database.Database, securityId?: number): TaxL
       WHERE tl.quantity_remaining > 0 AND (? IS NULL OR tl.security_id = ?)
       ORDER BY a.name, s.symbol, tl.acquisition_date`
     )
-    .all(securityId ?? null, securityId ?? null) as TaxLotWithSecurity[];
+    .all(securityId ?? null, securityId ?? null) as Omit<TaxLotWithSecurity, "pending_statement">[];
+  const pendingKeys = pendingStatementKeySet(db);
+  return rows.map((lot) =>
+    isPendingStatementLot(pendingKeys, lot)
+      ? { ...lot, current_value: null, unrealized_gain: null, pending_statement: true }
+      : { ...lot, pending_statement: false }
+  );
 }
 
 export function getClosedTaxLotSales(
@@ -216,24 +251,57 @@ export function getTaxLotSummary(
   db: Database.Database,
   year?: number
 ): TaxLotSummary {
-  const openLots = db
+  // Per (account, security, side) so pending-statement pairs can be split
+  // out of the unrealized total by the shared read model — never re-derived
+  // here. Short lots are their own row: a pending pair is long-only.
+  const openGroups = db
     .prepare(
       `SELECT
-        COUNT(*) AS totalOpenLots,
+        tl.account_id, tl.security_id, tl.is_short,
+        COUNT(*) AS lots,
+        COALESCE(SUM(${remainingLotBasisSql()}), 0) AS basis,
         COALESCE(SUM(
           CASE WHEN p.close_price IS NOT NULL
             THEN (CASE WHEN tl.is_short=1 THEN -1 ELSE 1 END) * (${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
                  - ${remainingLotBasisSql()})
             ELSE 0 END
-        ), 0) AS totalUnrealizedGain
+        ), 0) AS unrealized
       FROM tax_lots tl
       JOIN securities s ON s.id = tl.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       LEFT JOIN prices p ON p.security_id = tl.security_id
         AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = tl.security_id)
-      WHERE tl.quantity_remaining > 0`
+      WHERE tl.quantity_remaining > 0
+      GROUP BY tl.account_id, tl.security_id, tl.is_short`
     )
-    .get() as { totalOpenLots: number; totalUnrealizedGain: number };
+    .all() as Array<{
+    account_id: number;
+    security_id: number;
+    is_short: number;
+    lots: number;
+    basis: number;
+    unrealized: number;
+  }>;
+  const pendingKeys = pendingStatementKeySet(db);
+  const openLots = {
+    totalOpenLots: 0,
+    totalUnrealizedGain: 0,
+    pendingStatementPositions: 0,
+    pendingStatementLots: 0,
+    pendingStatementBasis: 0,
+  };
+  const pendingPairs = new Set<string>();
+  for (const g of openGroups) {
+    openLots.totalOpenLots += g.lots;
+    if (isPendingStatementLot(pendingKeys, g)) {
+      pendingPairs.add(pendingStatementKey(g));
+      openLots.pendingStatementLots += g.lots;
+      openLots.pendingStatementBasis += g.basis;
+    } else {
+      openLots.totalUnrealizedGain += g.unrealized;
+    }
+  }
+  openLots.pendingStatementPositions = pendingPairs.size;
 
   const closedSalesSql = `SELECT
         COUNT(*) AS totalClosedSales,
@@ -262,6 +330,9 @@ export function getTaxLotSummary(
     totalOpenLots: openLots.totalOpenLots,
     totalClosedSales: closedSales.totalClosedSales,
     totalUnrealizedGain: openLots.totalUnrealizedGain,
+    pendingStatementPositions: openLots.pendingStatementPositions,
+    pendingStatementLots: openLots.pendingStatementLots,
+    pendingStatementBasis: openLots.pendingStatementBasis,
     totalRealizedGain: closedSales.totalRealizedGain,
     longTermGain: closedSales.longTermGain,
     shortTermGain: closedSales.shortTermGain,
