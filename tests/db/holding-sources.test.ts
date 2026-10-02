@@ -125,81 +125,75 @@ describe("overwritable holding SQL", () => {
 });
 
 describe("statement-grade and live-origin holding SQL (statement-only synthetic closes, 2026-10-02)", () => {
-  // Same real-SQLite round-trip as above, against an arbitrary column name.
-  function matches(sql: string, col: string, sourceKey: string): boolean {
+  // Real SQLite round-trip over a holdings-shaped table: the predicates take a
+  // ROW ALIAS because a legacy unsuffixed tombstone is statement-grade only
+  // when the same account has a statement-prefix row on the same date.
+  const DATE = "2026-08-31";
+  function classify(rows: { key: string | null; account?: number; date?: string }[], probe: string) {
     const db = new Database(":memory:");
     try {
-      const n = sql.split(col).length - 1;
-      return (
-        db.prepare(`SELECT 1 AS hit WHERE ${sql.split(col).join("?")}`).get(...Array(n).fill(sourceKey)) != null
-      );
+      db.exec(`CREATE TABLE holdings (id INTEGER PRIMARY KEY, account_id INTEGER, as_of_date TEXT, source_key TEXT)`);
+      const ins = db.prepare(`INSERT INTO holdings (account_id, as_of_date, source_key) VALUES (?, ?, ?)`);
+      for (const r of rows) ins.run(r.account ?? 1, r.date ?? DATE, r.key);
+      const sg = db.prepare(`SELECT 1 FROM holdings h WHERE h.source_key IS ? AND ${statementGradeHoldingSql("h")}`).get(probe) != null;
+      const lo = db.prepare(`SELECT 1 FROM holdings h WHERE h.source_key IS ? AND ${liveOriginHoldingSql("h")}`).get(probe) != null;
+      return { sg, lo };
     } finally {
       db.close();
     }
   }
-  const STMT_GRADE = statementGradeHoldingSql("h.source_key");
-  const LIVE_ORIGIN = liveOriginHoldingSql("h.source_key");
+  const one = (key: string) => classify([{ key }], key);
 
-  it("statement-grade = every statement prefix, :stmt tombstones and legacy unsuffixed tombstones", () => {
-    for (const p of STATEMENT_HOLDING_SOURCE_PREFIXES) {
-      expect(matches(STMT_GRADE, "h.source_key", `${p}x`)).toBe(true);
-    }
-    expect(matches(STMT_GRADE, "h.source_key", "recon:closed-equity:1:2:2026-08-01:stmt")).toBe(true);
-    expect(matches(STMT_GRADE, "h.source_key", "recon:closed-equity:1:2:2026-08-01")).toBe(true);
+  it("every statement prefix and every :stmt tombstone is statement-grade, never live-origin", () => {
+    for (const p of STATEMENT_HOLDING_SOURCE_PREFIXES) expect(one(`${p}x`)).toEqual({ sg: true, lo: false });
+    expect(one("recon:closed-equity:1:2:2026-08-31:stmt")).toEqual({ sg: true, lo: false });
   });
 
-  it("statement-grade excludes live rows, :live tombstones, demo seeds and unknown prefixes", () => {
-    for (const k of [
-      "tws-1-2-2026-08-01",
-      "plaid:1:2:2026-08-01",
-      "recon:closed-equity:1:2:2026-08-01:live",
-      "demo-hold-1",
-      "test-hold-1-2-2026-08-01",
-    ]) {
-      expect(matches(STMT_GRADE, "h.source_key", k)).toBe(false);
+  it("live rows and :live tombstones are live-origin, never statement-grade", () => {
+    for (const k of ["tws-1-2-2026-08-31", "plaid:1:2:2026-08-31", "recon:closed-equity:1:2:2026-08-31:live"]) {
+      expect(one(k)).toEqual({ sg: false, lo: true });
     }
   });
 
-  it("live-origin = live prefixes and :live tombstones only", () => {
-    for (const k of ["tws-1-2-2026-08-01", "plaid:1:2:2026-08-01", "recon:closed-equity:1:2:2026-08-01:live"]) {
-      expect(matches(LIVE_ORIGIN, "h.source_key", k)).toBe(true);
-    }
-    for (const k of [
-      "canonical:hold:x",
-      "ibkr:pos:x",
-      "recon:closed-equity:1:2:2026-08-01:stmt",
-      "recon:closed-equity:1:2:2026-08-01",
-      "demo-hold-1",
-    ]) {
-      expect(matches(LIVE_ORIGIN, "h.source_key", k)).toBe(false);
-    }
+  it("a legacy unsuffixed tombstone on a date the account has a statement row is statement-grade", () => {
+    const legacy = "recon:closed-equity:1:2:2026-08-31";
+    expect(classify([{ key: legacy }, { key: "canonical:hold:k" }], legacy)).toEqual({ sg: true, lo: false });
   });
 
-  it("statement-grade and live-origin are disjoint", () => {
-    for (const k of [
-      ...STATEMENT_HOLDING_SOURCE_PREFIXES.map((p) => `${p}x`),
-      "tws-1", "plaid:1",
-      "recon:closed-equity:1:2:2026-08-01:stmt",
-      "recon:closed-equity:1:2:2026-08-01:live",
-      "recon:closed-equity:1:2:2026-08-01",
-    ]) {
-      expect(matches(STMT_GRADE, "h.source_key", k) && matches(LIVE_ORIGIN, "h.source_key", k)).toBe(false);
-    }
+  it("a legacy unsuffixed tombstone on a live-only date is live-origin (minted by the old live pass)", () => {
+    const legacy = "recon:closed-equity:1:2:2026-08-31";
+    expect(classify([{ key: legacy }, { key: "tws-1-3-2026-08-31" }], legacy)).toEqual({ sg: false, lo: true });
+    // A statement row for ANOTHER account or ANOTHER date does not justify it.
+    expect(classify([{ key: legacy }, { key: "canonical:hold:k", account: 2 }], legacy)).toEqual({ sg: false, lo: true });
+    expect(classify([{ key: legacy }, { key: "canonical:hold:k", date: "2026-08-30" }], legacy)).toEqual({
+      sg: false,
+      lo: true,
+    });
+  });
+
+  it("demo seeds, unknown prefixes and NULL keys are neither", () => {
+    for (const k of ["demo-hold-1", "test-hold-1-2-2026-08-31"]) expect(one(k)).toEqual({ sg: false, lo: false });
+    const db = new Database(":memory:");
+    db.exec(`CREATE TABLE holdings (id INTEGER PRIMARY KEY, account_id INTEGER, as_of_date TEXT, source_key TEXT)`);
+    db.prepare(`INSERT INTO holdings (account_id, as_of_date, source_key) VALUES (1, ?, NULL)`).run(DATE);
+    // NULL-safe: NOT (predicate) must be TRUE for a NULL key, never NULL.
+    expect(db.prepare(`SELECT 1 FROM holdings h WHERE NOT ${statementGradeHoldingSql("h")}`).get()).toBeDefined();
+    expect(db.prepare(`SELECT 1 FROM holdings h WHERE NOT ${liveOriginHoldingSql("h")}`).get()).toBeDefined();
+    db.close();
   });
 
   it("stays DISTINCT from statementSourcedHoldingSql, which never matches a tombstone", () => {
     const sourced = statementSourcedHoldingSql("h.source_key");
-    expect(matches(sourced, "h.source_key", "recon:closed-equity:1:2:2026-08-01:stmt")).toBe(false);
-    expect(matches(sourced, "h.source_key", "recon:closed-equity:1:2:2026-08-01")).toBe(false);
-    expect(STMT_GRADE).not.toBe(sourced);
+    expect(sourced).not.toContain("recon:");
+    expect(statementGradeHoldingSql("h")).toContain("recon:closed-equity:");
   });
 
-  it("is parenthesized and honours the column alias", () => {
-    for (const sql of [STMT_GRADE, LIVE_ORIGIN]) {
+  it("is parenthesized and honours the alias", () => {
+    for (const sql of [statementGradeHoldingSql("x"), liveOriginHoldingSql("x")]) {
       expect(sql.startsWith("(")).toBe(true);
       expect(sql.endsWith(")")).toBe(true);
+      expect(sql).toContain("x.source_key");
+      expect(sql).not.toContain("h.source_key");
     }
-    expect(statementGradeHoldingSql("x.k")).toContain("x.k LIKE");
-    expect(liveOriginHoldingSql("x.k")).toContain("x.k LIKE");
   });
 });

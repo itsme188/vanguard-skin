@@ -113,12 +113,12 @@ describe("removeOrphanedReconTombstones — bumps only when a statement-grade to
     expect(gen()).toBe(g0 + 1);
   });
 
-  it("deleting a legacy unsuffixed orphan bumps (statement-grade)", () => {
+  it("deleting a legacy unsuffixed orphan does NOT bump — with no same-date statement row it is live-origin (I2)", () => {
     const a = acct("ZZ6");
     hold(a, sec("ZZZ"), 0, "2026-08-01", "recon:closed-equity:1:2:2026-08-01");
     const g0 = gen();
     expect(removeOrphanedReconTombstones(db)).toBe(1);
-    expect(gen()).toBe(g0 + 1);
+    expect(gen()).toBe(g0);
   });
 
   it("deleting both origins in one call bumps once", () => {
@@ -196,6 +196,93 @@ describe("statement pass confirms a live-only flat (2026-10-02)", () => {
     hold(a, keep, 5, "2026-08-31", "canonical:hold:k2");
     hold(a, gone, 5, "2026-09-02", `plaid:${a}:${gone}:2026-09-02`);
     hold(a, keep, 5, "2026-09-02", `plaid:${a}:${keep}:2026-09-02`);
+    expect(reconcileClosedEquityHoldings(db)).toBe(0);
+  });
+});
+
+describe("statement pass upgrades a same-date live flat in place (I1)", () => {
+  // A month-end live sync tombstones a position on the statement date
+  // itself; the month-end statement that omits it must confirm THAT row —
+  // an INSERT would hit UNIQUE(account, security, as_of_date).
+  function rowOf(a: number, s: number, d: string) {
+    return db
+      .prepare(`SELECT id, quantity, source_key, import_batch_id FROM holdings WHERE account_id=? AND security_id=? AND as_of_date=?`)
+      .get(a, s, d) as { id: number; quantity: number; source_key: string; import_batch_id: number | null };
+  }
+
+  it.each([
+    ["a :live tombstone", (a: number, s: number, d: string) => `recon:closed-equity:${a}:${s}:${d}:live`],
+    ["a live tws- zero row", (a: number, s: number, d: string) => `tws-${a}-${s}-${d}`],
+  ])("relabels %s dated ON the statement date as the :stmt tombstone and bumps", (_label, key) => {
+    const a = acct("ZZ12");
+    const gone = sec("ZZGONE12");
+    const keep = sec("ZZKEEP12");
+    hold(a, gone, 5, "2026-07-31", "canonical:hold:g1");
+    hold(a, keep, 5, "2026-07-31", "canonical:hold:k1");
+    hold(a, gone, 0, "2026-08-31", key(a, gone, "2026-08-31"));
+    hold(a, keep, 5, "2026-08-31", "canonical:hold:k2"); // statement omits ZZGONE12
+    const before = rowOf(a, gone, "2026-08-31");
+    const g0 = gen();
+
+    expect(reconcileClosedEquityHoldings(db)).toBe(1);
+
+    const after = rowOf(a, gone, "2026-08-31");
+    expect(after.id).toBe(before.id); // upgraded in place, not a second row
+    expect(after.quantity).toBe(0);
+    expect(after.source_key).toBe(`recon:closed-equity:${a}:${gone}:2026-08-31:stmt`);
+    expect(after.import_batch_id).toBeNull();
+    expect(gen()).toBe(g0 + 1);
+    expect(reconcileClosedEquityHoldings(db)).toBe(0); // idempotent
+    expect(gen()).toBe(g0 + 1);
+  });
+
+  it("stamps the upgraded row with the import batch only for an owned account", () => {
+    const a = acct("ZZ13");
+    const other = acct("ZZ13B");
+    const batchId = (
+      db.prepare(`INSERT INTO import_batches (source_type) VALUES ('canonical-csv') RETURNING id`).get() as { id: number }
+    ).id;
+    for (const acc of [a, other]) {
+      const gone = sec(`ZZG13-${acc}`);
+      const keep = sec(`ZZK13-${acc}`);
+      hold(acc, gone, 5, "2026-07-31", `canonical:hold:g-${acc}`);
+      hold(acc, keep, 5, "2026-07-31", `canonical:hold:k-${acc}`);
+      hold(acc, gone, 0, "2026-08-31", `recon:closed-equity:${acc}:${gone}:2026-08-31:live`);
+      hold(acc, keep, 5, "2026-08-31", `canonical:hold:k2-${acc}`);
+    }
+    expect(reconcileClosedEquityHoldings(db, { importBatchId: batchId, ownedAccountIds: [a] })).toBe(2);
+    const stamps = db
+      .prepare(`SELECT account_id, import_batch_id FROM holdings WHERE source_key LIKE '%:stmt' ORDER BY account_id`)
+      .all() as { account_id: number; import_batch_id: number | null }[];
+    expect(stamps).toEqual([
+      { account_id: a, import_batch_id: batchId },
+      { account_id: other, import_batch_id: null },
+    ]);
+  });
+
+  it("orphan cleanup deletes an upgraded row once its same-date statement evidence is gone (and bumps)", () => {
+    const a = acct("ZZ14");
+    const gone = sec("ZZGONE14");
+    const keep = sec("ZZKEEP14");
+    hold(a, gone, 5, "2026-07-31", "canonical:hold:g1");
+    hold(a, keep, 5, "2026-07-31", "canonical:hold:k1");
+    hold(a, gone, 0, "2026-08-31", `recon:closed-equity:${a}:${gone}:2026-08-31:live`);
+    hold(a, keep, 5, "2026-08-31", "canonical:hold:k2");
+    reconcileClosedEquityHoldings(db);
+    db.prepare(`DELETE FROM holdings WHERE source_key = 'canonical:hold:k2'`).run();
+    const g0 = gen();
+    expect(removeOrphanedReconTombstones(db)).toBe(1);
+    expect(gen()).toBe(g0 + 1);
+  });
+
+  it("never relabels a NON-zero live row on the statement date (a held live row is not a flat)", () => {
+    const a = acct("ZZ15");
+    const x = sec("ZZX15");
+    const keep = sec("ZZKEEP15");
+    hold(a, x, 5, "2026-07-31", "canonical:hold:x1");
+    hold(a, keep, 5, "2026-07-31", "canonical:hold:k1");
+    hold(a, x, 5, "2026-08-31", `tws-${a}-${x}-2026-08-31`);
+    hold(a, keep, 5, "2026-08-31", "canonical:hold:k2");
     expect(reconcileClosedEquityHoldings(db)).toBe(0);
   });
 });

@@ -1034,11 +1034,11 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
              JOIN securities s ON s.id = tl.security_id
              JOIN holdings h
                ON h.account_id = tl.account_id AND h.security_id = tl.security_id
-              AND ${statementGradeHoldingSql("h.source_key")}
+              AND ${statementGradeHoldingSql("h")}
               AND h.as_of_date = (
                 SELECT MAX(h2.as_of_date) FROM holdings h2
                  WHERE h2.account_id = tl.account_id AND h2.security_id = tl.security_id
-                   AND ${statementGradeHoldingSql("h2.source_key")}
+                   AND ${statementGradeHoldingSql("h2")}
               )
             WHERE tl.quantity_remaining > 0 AND tl.is_short = 0
               AND h.quantity = 0

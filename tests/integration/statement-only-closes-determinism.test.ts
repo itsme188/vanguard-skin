@@ -18,7 +18,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { getTaxInputGeneration, getTaxConventionState } from "@/lib/compute/tax-convention";
-import { commitImport } from "@/lib/import/engine";
+import { commitImport, undoImport } from "@/lib/import/engine";
 import { undoImportWithRecovery, restoreImportBatch, readRecoveryManifest } from "@/lib/import/recovery";
 import { writeIbkrHoldings } from "@/lib/ibkr/refresh";
 import { writePlaidHoldings } from "@/lib/plaid/refresh";
@@ -27,6 +27,7 @@ import type { MappedPosition } from "@/lib/ibkr/map-positions";
 import type { PlaidMapResult, MappedPlaidPosition } from "@/lib/plaid/map-holdings";
 import type { ParsedImportResult, ParsedHolding, ParsedTransaction } from "@/lib/import/types";
 import { ledgerDigest } from "../setup/ledger-digest";
+import { getPendingStatementPairs } from "@/lib/queries/pending-statement";
 
 const ACCOUNT = "IBKR"; // seeded by the migrations; the IBKR writer's default account
 let db: Database.Database;
@@ -239,5 +240,44 @@ describe("statement-only synthetic closes: live syncs are not tax inputs", () =>
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("a month-end live flat confirmed by the SAME-DATE statement closes at the statement date, not a statement late (I1)", () => {
+    seedStatementBook(); // ZZA flat at 02-28 already; ZZB + ZZC held
+    // Month-end live sync on 03-31 omits ZZC → :live tombstone ON 03-31.
+    writeIbkrHoldings(
+      db,
+      { accountCode: "U0", netLiq: 1000, cash: 100, positions: [ibkrStock("ZZB", 100, 21)] },
+      { asOfDate: "2026-03-31" },
+    );
+    reconcileClosedEquityHoldings(db, { accountId });
+    computeTaxLots(db);
+    expect(getPendingStatementPairs(db).map((p) => p.symbol)).toEqual(["ZZC"]);
+
+    // The 03-31 statement omits ZZC too → its post-commit reconcile relabels
+    // the same-date :live tombstone as the statement tombstone.
+    const gBefore = getTaxInputGeneration(db);
+    const march = commitImport(db, parsed({ holdings: [stmtHold("ZZB", "2026-03-31", 100)] }));
+    expect(getTaxInputGeneration(db)).toBeGreaterThan(gBefore);
+    const zzc = db
+      .prepare(`SELECT source_key, import_batch_id FROM holdings WHERE security_id = ? AND as_of_date = '2026-03-31'`)
+      .get(secId("ZZC")) as { source_key: string; import_batch_id: number | null };
+    expect(zzc.source_key.endsWith(":stmt")).toBe(true);
+    expect(zzc.import_batch_id).toBe(march.batchId); // batch-owned → leaves with an undo
+
+    computeTaxLots(db);
+    expect(syntheticCloses()).toEqual([
+      { symbol: "ZZA", trade_date: "2026-02-28" },
+      { symbol: "ZZC", trade_date: "2026-03-31" },
+    ]);
+    expect(getPendingStatementPairs(db)).toEqual([]);
+
+    // Undo the statement: its evidence (and the batch-owned relabelled row)
+    // goes with it, the generation bumps, and ZZC no longer closes.
+    const gUndo = getTaxInputGeneration(db);
+    undoImport(db, march.batchId);
+    expect(getTaxInputGeneration(db)).toBeGreaterThan(gUndo);
+    computeTaxLots(db);
+    expect(syntheticCloses().map((r) => r.symbol)).toEqual(["ZZA"]);
   });
 });

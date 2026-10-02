@@ -102,12 +102,22 @@ describe("getPendingStatementPairs — never pending (spec §3 item 10)", () => 
     expect(getPendingStatementPairs(db)).toEqual([]);
   });
 
-  it("a legacy unsuffixed tombstone counts as statement-grade too", () => {
+  it("a legacy unsuffixed tombstone on a statement date counts as statement-grade too", () => {
     const sec = seedSec(db, "STMB");
     seedLot(db, 3, sec);
     seedHold(db, 3, sec, "2026-06-30", "legacy-zero");
+    // The statement book on that date justifies the legacy tombstone (I2).
+    seedHold(db, 3, seedSec(db, "STMBBOOK"), "2026-06-30", "stmt", 5);
     seedHold(db, 3, sec, "2026-07-10", "tws", 0);
     expect(getPendingStatementPairs(db)).toEqual([]);
+  });
+
+  it("a legacy unsuffixed tombstone on a live-only date is live-origin: the pair is pending (I2)", () => {
+    const sec = seedSec(db, "STMBL");
+    seedLot(db, 3, sec);
+    seedHold(db, 3, sec, "2026-07-10", "legacy-zero");
+    seedHold(db, 3, seedSec(db, "STMBLIVE"), "2026-07-10", "tws", 5);
+    expect(getPendingStatementPairs(db).map((p) => p.symbol)).toEqual(["STMBL"]);
   });
 
   it("a statement-flat pair the engine closes is not pending (the close owns it)", () => {

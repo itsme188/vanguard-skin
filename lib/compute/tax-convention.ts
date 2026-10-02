@@ -279,11 +279,11 @@ export function bumpIfPricesAffectSyntheticCloses(
     `SELECT 1 AS hit FROM holdings h
       WHERE h.security_id = ? AND h.quantity = 0
         AND h.as_of_date >= ?
-        AND ${statementGradeHoldingSql("h.source_key")}
+        AND ${statementGradeHoldingSql("h")}
         AND h.as_of_date = (
           SELECT MAX(h2.as_of_date) FROM holdings h2
            WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
-             AND ${statementGradeHoldingSql("h2.source_key")})
+             AND ${statementGradeHoldingSql("h2")})
       LIMIT 1`,
   );
   for (const p of pairs) {
