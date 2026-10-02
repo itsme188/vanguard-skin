@@ -353,9 +353,6 @@ if (isMain) {
     const db = new BetterSqlite3(dbPath);
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = ON");
-    // A dry run must never write; runMigrations() writes the moment a
-    // migration is pending.
-    if (apply) runMigrations(db);
 
     const today = todayET();
     console.log(
@@ -377,8 +374,9 @@ if (isMain) {
       return;
     }
 
-    // Backup beside the target DB (so a --db rehearsal copy never writes into
-    // the live data directory).
+    // Backup FIRST — before runMigrations, which writes the moment a migration
+    // is pending — and beside the target DB (so a --db rehearsal copy never
+    // writes into the live data directory).
     const backupPath = path.default.join(
       path.default.dirname(dbPath),
       "backups",
@@ -389,6 +387,8 @@ if (isMain) {
       `\nBackup ${backup.created ? "created" : "already present"} at ${backup.path} ` +
         `(${backup.sizeBytes.toLocaleString()} bytes).`,
     );
+    // A dry run never reaches this line, so it never migrates.
+    runMigrations(db);
 
     const applied = repairReconcileStrippedActuals(db, { apply: true, today, symbol });
     console.log(

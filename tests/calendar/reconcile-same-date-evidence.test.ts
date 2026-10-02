@@ -237,6 +237,43 @@ describe("evidence belt (ruling leg 2)", () => {
     expect(state(phantom).actual_value).toBeNull();
   });
 
+  it("a phantom at D+2 holding a recap sent D+1 for print D is NOT evidence — it still splits", () => {
+    const vendor = seed({
+      source: "finnhub",
+      symbol: "ZZNK",
+      date: "2026-09-01",
+      actualValue: FIGURE,
+      epsActual: 1.25,
+    });
+    const phantom = seed({
+      source: "manual",
+      symbol: "ZZNK",
+      date: "2026-09-03",
+      dateStatus: "user_confirmed",
+      createdAt: "2026-08-25 12:00:00",
+      actualValue: FIGURE,
+    });
+    // The print's recap, dragged onto the phantom by an earlier pass: sent the
+    // day BEFORE the phantom's own date, so it cannot be about that date.
+    seedEmail(phantom, "recap", "2026-09-02 13:00:00");
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(state(vendor).superseded).toBe(0);
+    expect(state(vendor).date_status).toBe("confirmed");
+    expect(state(phantom).actual_value).toBeNull();
+  });
+
+  it("a preview sent more than a day AFTER the row's date is not evidence (previews precede the print)", () => {
+    const { vendor, manual } = seedOffByOne();
+    seedEmail(manual, "preview", "2026-09-05 09:00:00");
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(state(vendor).superseded).toBe(0);
+    expect(state(manual).actual_value).toBeNull();
+  });
+
   it("an accepted print sheet on the manual row keeps it the print", () => {
     const { vendor, manual } = seedOffByOne();
     seedPrintSheet(manual, "ZZNK", "2026-09-02", "accepted", "2026-09-02 13:00:00");

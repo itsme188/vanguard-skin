@@ -86,11 +86,19 @@ function daysBetween(a: string, b: string): number {
  * leaves the sent emails stranded on it and the vendor twin reads as
  * un-recapped (a duplicate recap went out in production).
  *
- * Both legs require the evidence to date from the row's own print window
- * (`>= event_date - 1 day`, the same plausibility rule the preview repoint
- * uses): a recap that an older bug DRAGGED onto a far-future phantom (the
- * 2026-09-11 MDB shape — recap sent days before the phantom's date) documents
- * a different print and is not this row's evidence.
+ * Every leg requires the evidence to date from the row's OWN print, so an
+ * email an older bug DRAGGED onto a phantom (the 2026-09-11 MDB shape) never
+ * counts:
+ *   - a RECAP only when sent on or after the row's event_date. Recaps go out
+ *     up to a few days after a print, so a looser `-1 day` floor would let a
+ *     phantom at D+1/D+2 holding the recap of print D pass as evidence and
+ *     undo the 09-11 split.
+ *   - a PREVIEW only when sent within a day either side of the row's date (a
+ *     preview goes out ~2h before the release; ±1 covers UTC sent_at vs ET
+ *     event_date).
+ *   - an accepted print-sheet line / callout only when accepted on or after
+ *     event_date − 1 day (acceptance happens at or after the print; −1 covers
+ *     the UTC/ET offset).
  *
  * Correlated on the bare `calendar_events` table name — every gather selects
  * `FROM calendar_events` with no alias, and the phantom-strip UPDATE targets it.
@@ -99,7 +107,13 @@ const PRINT_EVIDENCE_SQL = `(
   EXISTS (SELECT 1 FROM earnings_emails pe_ee
            WHERE pe_ee.event_id = calendar_events.id
              AND ${deliveredSql("pe_ee.error")}
-             AND date(pe_ee.sent_at) >= date(calendar_events.event_date, '-1 day'))
+             AND (
+               (pe_ee.phase = 'recap'
+                 AND date(pe_ee.sent_at) >= date(calendar_events.event_date))
+               OR (pe_ee.phase = 'preview'
+                 AND date(pe_ee.sent_at) BETWEEN date(calendar_events.event_date, '-1 day')
+                                             AND date(calendar_events.event_date, '+1 day'))
+             ))
   OR EXISTS (SELECT 1 FROM print_watch_prints pe_pp
                JOIN print_watch_lines pe_pl ON pe_pl.print_id = pe_pp.id
               WHERE pe_pp.event_id = calendar_events.id
@@ -1004,8 +1018,9 @@ export function reconcileEarningsDates(
       // NULL by then) and the outbox stays idempotent.
       for (const phantom of split.phantomManuals) {
         if (!carriesInheritedActuals(phantom)) continue;
-        clearInheritedActuals.run(phantom.id);
-        anyChanged = true;
+        // Only a real write earns the outbox row: the evidence guard in the
+        // UPDATE can refuse it (0 changes), and then nothing moved.
+        if (clearInheritedActuals.run(phantom.id).changes > 0) anyChanged = true;
       }
       }
     }
