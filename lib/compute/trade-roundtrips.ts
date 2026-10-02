@@ -435,11 +435,6 @@ export function computeGroupedTrades(roundTrips: RoundTrip[]): GroupedTrade[] {
 export const MIN_LOT_COVERAGE = 0.9;
 
 /**
- * Filter grouped trades to only those with sufficient FIFO lot coverage.
- * Trades where matched lots cover <80% of the actual sell quantity are excluded
- * (they represent incomplete data — e.g., positions held before import history starts).
- */
-/**
  * Split grouped trades into the user's own trades and engine-reconciled
  * closes (RECONCILE_CLOSE — engine-owned, never user activity).
  * Pure function — no DB access.
@@ -452,6 +447,11 @@ export function partitionSyntheticCloses(grouped: GroupedTrade[]): {
   return { userTrades, syntheticCount: grouped.length - userTrades.length };
 }
 
+/**
+ * Filter grouped trades to only those with sufficient FIFO lot coverage.
+ * Trades where matched lots cover <80% of the actual sell quantity are excluded
+ * (they represent incomplete data — e.g., positions held before import history starts).
+ */
 export function filterFullyCoveredTrades(
   grouped: GroupedTrade[]
 ): GroupedTrade[] {

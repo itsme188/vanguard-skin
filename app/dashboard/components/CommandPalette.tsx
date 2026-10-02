@@ -55,6 +55,12 @@ export function CommandPalette() {
       pendingSubmit.current = false;
       setSelectedIndex(0);
       setTimeout(() => inputRef.current?.focus(), 50);
+    } else {
+      // A queued Enter must not survive the palette closing (Esc, backdrop
+      // click, …). Without this, Enter on a not-yet-arrived query followed
+      // by Esc still navigated once the in-flight fetch resolved, even
+      // though the palette was already closed.
+      pendingSubmit.current = false;
     }
   }, [open]);
 
@@ -76,6 +82,11 @@ export function CommandPalette() {
     if (!q) {
       setResults([]);
       setResultsQuery("");
+      // Clearing the input while a fetch for the previous query is still in
+      // flight leaves that fetch's `finally` unable to clear the spinner
+      // (its `latestQuery.current === q` guard no longer matches) — clear
+      // it here instead so an empty box never shows a stuck spinner.
+      setLoading(false);
       return;
     }
 
