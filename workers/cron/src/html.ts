@@ -162,6 +162,32 @@ function renderTable(headers: string[], rows: string[][]): string {
 }
 
 /**
+ * Is physical line `k` the CONTINUATION of a logical row that is still open
+ * (qa:email-html--multiline-table-row-spills-raw-markdown-pipes-regression-1)?
+ * A bare fragment (no leading pipe) always is — the recap shape `| a | b | ` /
+ * `actual` / ` | delta |`. A pipe-terminated line carrying FEWER cells than
+ * the header counts only when `allowPipeLed` is set, i.e. the open row has
+ * already absorbed a bare fragment; otherwise two consecutive genuinely short
+ * rows (`| EPS | 0.70 |` then `| Revenue | 12.5B |`) would merge into one.
+ * A complete row, an unterminated `| new row` start, or a blank line is
+ * never a continuation.
+ */
+function isRowContinuation(
+  lines: string[],
+  k: number,
+  headerCount: number,
+  allowPipeLed: boolean,
+): boolean {
+  if (k >= lines.length) return false;
+  const u = lines[k].trim();
+  if (u === "") return false;
+  if (tableRowRe.test(u)) {
+    return allowPipeLed && headerCount > 0 && parseTableRow(u).length < headerCount;
+  }
+  return !u.startsWith("|");
+}
+
+/**
  * Consume a table body starting at `j` (first line after the separator),
  * absorbing model-emitted MULTI-LINE logical rows
  * (qa:email-html--multiline-table-row-spills-raw-markdown-pipes): an
@@ -172,22 +198,6 @@ function renderTable(headers: string[], rows: string[][]): string {
  * non-pipe line closed the parser and every later |-line spilled as a literal
  * pipe paragraph in the delivered email.
  */
-/**
- * Is physical line `k` the CONTINUATION of a logical row that is still open
- * (qa:email-html--multiline-table-row-spills-raw-markdown-pipes-regression-1)?
- * Either a bare fragment (no leading pipe) or a pipe-terminated line that
- * carries FEWER cells than the header — the recap shape `| a | b | ` /
- * `actual` / ` | delta |`. A complete row, an unterminated `| new row`
- * start, or a blank line is not a continuation.
- */
-function isRowContinuation(lines: string[], k: number, headerCount: number): boolean {
-  if (k >= lines.length) return false;
-  const u = lines[k].trim();
-  if (u === "") return false;
-  if (tableRowRe.test(u)) return headerCount > 0 && parseTableRow(u).length < headerCount;
-  return !u.startsWith("|");
-}
-
 function consumeTableBody(
   lines: string[],
   startIdx: number,
@@ -195,19 +205,24 @@ function consumeTableBody(
 ): { dataRows: string[][]; nextIndex: number } {
   const dataRows: string[][] = [];
   let pending = "";
+  // Has the open row absorbed a bare (non-pipe-led) fragment line yet?
+  let pendingAbsorbedFragment = false;
   let j = startIdx;
   while (j < lines.length) {
     const t = lines[j].trim();
     if (t === "") break;
     if (pending !== "") {
       pending = `${pending} ${t}`;
+      if (!t.startsWith("|")) pendingAbsorbedFragment = true;
       if (tableRowRe.test(pending)) {
         const cells = parseTableRow(pending);
         // A pipe-terminated join that is still SHORT of the header stays open
         // while its next line continues it (the model closed the consensus
         // cell with a pipe, then put the actual and the delta on later lines).
         const stillOpen =
-          headerCount > 0 && cells.length < headerCount && isRowContinuation(lines, j + 1, headerCount);
+          headerCount > 0 &&
+          cells.length < headerCount &&
+          isRowContinuation(lines, j + 1, headerCount, pendingAbsorbedFragment);
         if (!stillOpen) {
           if (!tableSeparatorRe.test(pending)) dataRows.push(cells);
           pending = "";
@@ -222,10 +237,12 @@ function consumeTableBody(
         continue;
       }
       const cells = parseTableRow(t);
-      // Trailing-pipe SHORT row whose next line continues it: one logical row
-      // broken across physical lines, not a complete row + a phantom row.
-      if (headerCount > 0 && cells.length < headerCount && isRowContinuation(lines, j + 1, headerCount)) {
+      // Trailing-pipe SHORT row whose next line is a bare fragment: one logical
+      // row broken across physical lines, not a complete row + a phantom row.
+      // A short row followed by another pipe row stays its own row.
+      if (headerCount > 0 && cells.length < headerCount && isRowContinuation(lines, j + 1, headerCount, false)) {
         pending = t;
+        pendingAbsorbedFragment = false;
         j++;
         continue;
       }
@@ -235,6 +252,7 @@ function consumeTableBody(
     }
     if (t.startsWith("|")) {
       pending = t;
+      pendingAbsorbedFragment = false;
       j++;
       continue;
     }

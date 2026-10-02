@@ -179,4 +179,31 @@ Up 5%, every segment grew
     expect(body).toMatch(/<td[^>]*>\s*EPS\s*<\/td>/);
     expect(body).toMatch(/<td[^>]*>\s*Revenue\s*<\/td>/);
   });
+
+  it("keeps two CONSECUTIVE genuinely short rows as two rows (pipe-led short line is not a continuation)", () => {
+    const short = `| Metric | Consensus | Actual | Δ |
+|---|---|---|---|
+| EPS | 0.70 |
+| Revenue | 12.5B |`;
+    const html = briefingToHtml(short, "Test");
+    const body = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
+    expect(body.match(/<tr/g)?.length).toBe(2);
+    expect(body).toMatch(/<td[^>]*>\s*EPS\s*<\/td>/);
+    expect(body).toMatch(/<td[^>]*>\s*Revenue\s*<\/td>/);
+  });
+
+  it("still merges a short row + bare fragment + pipe-led delta into one row", () => {
+    const md = `| Metric | Consensus | Actual | Δ |
+|---|---|---|---|
+| EPS | 0.70 |
+0.72
+| +3% |
+| Revenue | 12.5B |`;
+    const html = briefingToHtml(md, "Test");
+    const body = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
+    expect(body.match(/<tr/g)?.length).toBe(2);
+    expect(body).toMatch(/<td[^>]*>\s*0\.72\s*<\/td>/);
+    expect(body).toMatch(/<td[^>]*>\s*\+3%\s*<\/td>/);
+    expect(body).toMatch(/<td[^>]*>\s*Revenue\s*<\/td>/);
+  });
 });
