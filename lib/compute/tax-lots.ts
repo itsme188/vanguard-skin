@@ -2,6 +2,7 @@ import { readIbkrTradeDirection } from "@/lib/import/ibkr-trade-direction";
 import type Database from "better-sqlite3";
 import { marketValue, unitPriceFromMarketValue } from "@/lib/valuation";
 import { stampTaxLotsConventionIfPresent } from "@/lib/compute/tax-convention";
+import { statementGradeHoldingSql } from "@/lib/db/holding-sources";
 
 interface TaxLotComputeResult {
   lotsCreated: number;
@@ -999,6 +1000,19 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     // REDEMPTION — their purge paths own those lifecycles). Skipped when the
     // ledger is fresher than the snapshot (any position-changing transaction
     // after the zero row means the snapshot is stale, not the ledger).
+    //
+    // STATEMENT EVIDENCE ONLY (user ruling 2026-10-02, spec
+    // docs/superpowers/specs/2026-10-02-statement-only-synthetic-closes-design.md):
+    // the anchor is the pair's NEWEST STATEMENT-GRADE row
+    // (`statementGradeHoldingSql` — statement prefix, `:stmt` or legacy
+    // tombstone), never the newest row of any source. A position flat only in
+    // a live snapshot (TWS / IBKR Web API / Plaid, or a `:live` tombstone)
+    // mints nothing: a snapshot is a position, not a trade, so its lots stay
+    // open (stage 2 surfaces them as "pending statement"). A live row newer
+    // than a statement zero does not cancel the close either — only imported
+    // fills do (the NOT EXISTS guard). One row per (account, security,
+    // as_of_date) is guaranteed by the holdings UNIQUE slot, so the join
+    // cannot fan out.
     const hasHoldings = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'holdings'")
       .get();
@@ -1019,9 +1033,11 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
              JOIN securities s ON s.id = tl.security_id
              JOIN holdings h
                ON h.account_id = tl.account_id AND h.security_id = tl.security_id
+              AND ${statementGradeHoldingSql("h.source_key")}
               AND h.as_of_date = (
                 SELECT MAX(h2.as_of_date) FROM holdings h2
                  WHERE h2.account_id = tl.account_id AND h2.security_id = tl.security_id
+                   AND ${statementGradeHoldingSql("h2.source_key")}
               )
             WHERE tl.quantity_remaining > 0 AND tl.is_short = 0
               AND h.quantity = 0
@@ -1100,7 +1116,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
           salePrice,
           syntheticAmount,
           `reconcile:close:${orphan.account_id}:${orphan.security_id}:${orphan.zero_date}`,
-          "Synthesized close — broker snapshot shows this position flat with no matching SELL imported yet; superseded automatically when the real statement lands."
+          "Synthesized close — a broker statement shows this position flat with no matching SELL imported yet; estimated price, superseded automatically when the real SELL is imported."
         );
         processSell({
           id: txnResult.lastInsertRowid as number,
@@ -1119,7 +1135,8 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     }
 
     // Final act, still inside the transaction: mark this rebuild as having run
-    // under the v2 true-dollar convention, bound to the current tax-input
+    // under the current engine revision of the v3 true-dollar convention
+    // (TAX_LOTS_CONVENTION_STAMP_PREFIX), bound to the current tax-input
     // generation. The shared guard no-ops on minimal DBs without `settings`.
     stampTaxLotsConventionIfPresent(db);
 

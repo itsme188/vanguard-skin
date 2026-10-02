@@ -959,9 +959,9 @@ export function commitImport(
     // run".
     //
     // Holdings count too (spec 2026-08-30 §4): computeTaxLots synthesizes a
-    // RECONCILE_CLOSE sale from a security whose LATEST holdings row is
-    // quantity 0, so writing a holdings row can create or destroy a realized
-    // tax event. The monthly-statement over-bump this implies is moot — such
+    // RECONCILE_CLOSE sale from a security whose newest STATEMENT-GRADE
+    // holdings row is quantity 0 (spec 2026-10-02), so writing a statement
+    // holdings row can create or destroy a realized tax event. The monthly-statement over-bump this implies is moot — such
     // an import carries transactions, which already bump.
     if (newTransactions > 0 || newCorporateActions > 0 || newHoldings > 0) {
       bumpTaxGenerationIfPresent(db);

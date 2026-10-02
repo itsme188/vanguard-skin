@@ -105,38 +105,50 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
         .get(symbol) as { id: number }
     ).id;
   }
-  function seedTombstone(accountId: number, securityId: number, date: string): void {
+  function seedTombstone(
+    accountId: number,
+    securityId: number,
+    date: string,
+    origin: ":live" | ":stmt" = ":live",
+  ): void {
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
        VALUES (?, ?, 0, ?, ?)`,
-    ).run(accountId, securityId, date, `recon:closed-equity:${accountId}:${securityId}:${date}:live`);
+    ).run(accountId, securityId, date, `recon:closed-equity:${accountId}:${securityId}:${date}${origin}`);
   }
+  const today = () => new Date().toISOString().slice(0, 10); // matches syncPortfolio's own `today`
 
-  it("bumps on newer-date tombstone supersession (re-bought)", async () => {
-    const acctId = ibkrAccountId();
-    const secId = seedSecurity("NET");
-    seedTombstone(acctId, secId, "2000-01-01"); // latest row for NET is a tombstone
-    const before = getTaxInputGeneration(db);
+  // Spec 2026-10-02 statement-only synthetic closes §2.3: the engine reads
+  // statement-grade holdings only, so a newer-date live re-buy over ANY
+  // tombstone is a live-data event — it neither cancels a statement close
+  // nor creates one — and must not bump.
+  it.each([":live", ":stmt"] as const)(
+    "does NOT bump on a newer-date re-buy over an older %s tombstone",
+    async (origin) => {
+      const acctId = ibkrAccountId();
+      const secId = seedSecurity("NET");
+      seedTombstone(acctId, secId, "2000-01-01", origin);
+      const before = getTaxInputGeneration(db);
 
-    mockApi!.getAccountUpdates.mockReturnValue(
-      mockObservable(
-        makeAccountUpdate([{ symbol: "NET", pos: 60, avgCost: 200, marketPrice: 269.42, conId: 111 }], 1000, 500),
-      ),
-    );
+      mockApi!.getAccountUpdates.mockReturnValue(
+        mockObservable(
+          makeAccountUpdate([{ symbol: "NET", pos: 60, avgCost: 200, marketPrice: 269.42, conId: 111 }], 1000, 500),
+        ),
+      );
 
-    const syncPortfolio = await getSyncPortfolio();
-    const result = await syncPortfolio(db);
+      const syncPortfolio = await getSyncPortfolio();
+      const result = await syncPortfolio(db);
 
-    expect(result.positionsSynced).toBe(1);
-    expect(getTaxInputGeneration(db)).toBe(before + 1);
-  });
+      expect(result.positionsSynced).toBe(1);
+      expect(getTaxInputGeneration(db)).toBe(before);
+    },
+  );
 
-  it("same-date REPLACE of a tombstone bumps", async () => {
+  it("same-date REPLACE of a :live tombstone does NOT bump", async () => {
     const acctId = ibkrAccountId();
     const secId = seedSecurity("SPY");
-    const today = new Date().toISOString().slice(0, 10); // matches syncPortfolio's own `today`
-    seedTombstone(acctId, secId, today);
-    expect(countReconRowsOnDate(db, acctId, today)).toBe(1);
+    seedTombstone(acctId, secId, today(), ":live");
+    expect(countReconRowsOnDate(db, acctId, today())).toBe(1);
     const before = getTaxInputGeneration(db);
 
     mockApi!.getAccountUpdates.mockReturnValue(
@@ -148,7 +160,26 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
     const syncPortfolio = await getSyncPortfolio();
     await syncPortfolio(db);
 
-    expect(countReconRowsOnDate(db, acctId, today)).toBe(0);
+    expect(countReconRowsOnDate(db, acctId, today())).toBe(0);
+    expect(getTaxInputGeneration(db)).toBe(before);
+  });
+
+  it("same-date REPLACE of a :stmt tombstone bumps (statement-grade evidence consumed)", async () => {
+    const acctId = ibkrAccountId();
+    const secId = seedSecurity("SPY");
+    seedTombstone(acctId, secId, today(), ":stmt");
+    const before = getTaxInputGeneration(db);
+
+    mockApi!.getAccountUpdates.mockReturnValue(
+      mockObservable(
+        makeAccountUpdate([{ symbol: "SPY", pos: 10, avgCost: 400, marketPrice: 420, conId: 222 }], 1000, 500),
+      ),
+    );
+
+    const syncPortfolio = await getSyncPortfolio();
+    await syncPortfolio(db);
+
+    expect(countReconRowsOnDate(db, acctId, today())).toBe(0);
     expect(getTaxInputGeneration(db)).toBe(before + 1);
   });
 
@@ -170,7 +201,9 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
   it("a throw inside the writer's transaction rolls back writes AND bump together", async () => {
     const acctId = ibkrAccountId();
     const secId = seedSecurity("NET");
-    seedTombstone(acctId, secId, "2000-01-01");
+    // Same-date :stmt tombstone: NET's write REPLACES it, which alone bumps —
+    // so an unchanged generation below proves the bump rolled back.
+    seedTombstone(acctId, secId, today(), ":stmt");
     const before = getTaxInputGeneration(db);
 
     // No outer transaction wraps this call (discriminating: proves the
@@ -207,7 +240,7 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
   it("a price-write failure rolls back the holdings writes it now shares a transaction with (proves the merged commit — this test fails against the pre-fix two-transaction split)", async () => {
     const acctId = ibkrAccountId();
     const secId = seedSecurity("NET");
-    seedTombstone(acctId, secId, "2000-01-01");
+    seedTombstone(acctId, secId, today(), ":stmt"); // a REPLACE here alone would bump
     const before = getTaxInputGeneration(db);
 
     db.exec(
@@ -239,13 +272,13 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
     expect(getTaxInputGeneration(db)).toBe(before);
   });
 
-  it("ghost-row cleanup that reverts a pair to an underlying tombstone bumps — neither the recon count nor newerDateSupersession sees this (review fix)", async () => {
+  it("ghost-row cleanup that reverts a pair to an underlying tombstone does NOT bump — it deletes only live rows the engine never reads (2026-10-02 §2.3)", async () => {
     const acctId = ibkrAccountId();
     const secId = seedSecurity("X");
     seedTombstone(acctId, secId, "2000-01-01"); // pre-existing tombstone, older date
 
-    // Sync 1 (intraday): X reported non-zero today — a re-buy over the
-    // tombstone. This itself is a newerDateSupersession bump.
+    // Sync 1 (intraday): X reported non-zero today — a live re-buy over the
+    // tombstone (no bump: a live-data event).
     mockApi!.getAccountUpdates.mockReturnValue(
       mockObservable(
         makeAccountUpdate([{ symbol: "X", pos: 10, avgCost: 5, marketPrice: 6, conId: 555 }], 1000, 500),
@@ -270,7 +303,7 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
     const result2 = await syncPortfolio(db);
 
     expect(result2.staleRowsRemoved).toBe(1); // X's ghost row was deleted
-    expect(getTaxInputGeneration(db)).toBe(afterSync1 + 1);
+    expect(getTaxInputGeneration(db)).toBe(afterSync1);
 
     const xRows = db
       .prepare(`SELECT quantity FROM holdings WHERE security_id = ? ORDER BY as_of_date`)

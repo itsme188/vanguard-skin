@@ -243,13 +243,14 @@ describe("RECONCILE_CLOSE lifecycle", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// Scenario B — newer-date re-buy removes the synthetic close, and the live
-// writer's own bump covers the tax-generation invalidation (no accompanying
-// same-date supersession to piggyback on).
+// Scenario B — newer-date live re-buy over a STATEMENT tombstone (rewritten
+// for spec 2026-10-02 statement-only synthetic closes): the live write is a
+// live-data event. The synthetic close stays at the statement date (only an
+// imported fill can cancel it), and the live writer does not bump.
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("newer-date re-buy via a live writer", () => {
-  it("writePlaidHoldings' non-zero write over an OLDER tombstone removes the synthetic close and bumps the generation itself", () => {
+  it("writePlaidHoldings' non-zero write over an OLDER statement tombstone leaves the synthetic close in place and does not bump", () => {
     const B = "Recon Newer-Date B";
     const accountId = acct(B);
 
@@ -261,8 +262,8 @@ describe("newer-date re-buy via a live writer", () => {
         holdings: [statementHolding(B, "ZBUYB", "2026-01-05", 50)],
       }),
     );
-    // Later statement omits ZBUYB (an older tombstone — the live write below
-    // lands on a NEWER date, not the same slot).
+    // Later statement omits ZBUYB (an older :stmt tombstone — the live write
+    // below lands on a NEWER date, not the same slot).
     commitImport(
       db,
       parsedResult({
@@ -271,6 +272,7 @@ describe("newer-date re-buy via a live writer", () => {
       }),
     );
     expect(latestRow(accountId, "ZBUYB")!.quantity).toBe(0);
+    expect(latestRow(accountId, "ZBUYB")!.source_key.endsWith(":stmt")).toBe(true);
 
     computeTaxLots(db);
     expect(reconCloseTrades(accountId, "ZBUYB")).toEqual([{ trade_date: "2026-02-05" }]);
@@ -278,12 +280,8 @@ describe("newer-date re-buy via a live writer", () => {
     const genBefore = getTaxInputGeneration(db);
 
     // Live writer re-buys ZBUYB on a NEWER date, reporting its FULL book
-    // (ZKEEPB included, unchanged) — otherwise the live-snapshot-diff pass
-    // would read ZKEEPB's absence from this sync as a second, unrelated
-    // closure and confound the assertion below. No same-date tombstone is
-    // consumed here — the newer-date-supersession detector is the only
-    // thing that can see the ZBUYB transition, so if it didn't fire the
-    // generation would stay stale.
+    // (ZKEEPB included, unchanged) so the live-snapshot-diff pass has no
+    // unrelated closure to mint.
     const mapped: PlaidMapResult = {
       positions: [
         { plaidAccountId: "pB", symbol: "ZBUYB", name: null, securityType: "Stock", quantity: 30 } as MappedPlaidPosition,
@@ -297,10 +295,12 @@ describe("newer-date re-buy via a live writer", () => {
     writePlaidHoldings(db, mapped, { pB: accountId }, "2026-03-01");
 
     expect(latestRow(accountId, "ZBUYB")).toMatchObject({ quantity: 30, as_of_date: "2026-03-01" });
-    expect(getTaxInputGeneration(db)).toBe(genBefore + 1); // the live writer's own bump
+    expect(getTaxInputGeneration(db)).toBe(genBefore); // a live-data event is not a tax input
+    expect(getTaxConventionState(db).recomputeCurrent).toBe(true);
 
     computeTaxLots(db);
-    expect(reconCloseTrades(accountId, "ZBUYB")).toEqual([]); // synthetic close gone
+    // The re-buy's fills are not imported, so the statement close stands.
+    expect(reconCloseTrades(accountId, "ZBUYB")).toEqual([{ trade_date: "2026-02-05" }]);
   });
 });
 

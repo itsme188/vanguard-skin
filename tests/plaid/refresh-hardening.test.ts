@@ -100,7 +100,7 @@ function pos(symbol: string, quantity: number): MappedPlaidPosition {
 }
 
 describe("writePlaidHoldings — directional supersession + transaction bumps", () => {
-  it("plaid supersedes a same-date :live tombstone", () => {
+  it("plaid supersedes a same-date :live tombstone without bumping (live-origin, not a tax input — 2026-10-02 §2.3)", () => {
     const xId = upsertSecurity(db, { symbol: "X", securityType: "Stock" });
     hold(taxableId, xId, 5, D_MINUS_10);
     holdTombstone(taxableId, xId, TODAY, RECON_LIVE_SUFFIX);
@@ -112,7 +112,7 @@ describe("writePlaidHoldings — directional supersession + transaction bumps", 
     const row = rowAt(taxableId, xId, TODAY);
     expect(row?.quantity).toBe(4);
     expect(row?.source_key.startsWith("plaid:")).toBe(true);
-    expect(genAfter).toBe(genBefore + 1);
+    expect(genAfter).toBe(genBefore);
   });
 
   it("plaid does NOT supersede a same-date :stmt tombstone", () => {
@@ -130,10 +130,15 @@ describe("writePlaidHoldings — directional supersession + transaction bumps", 
     expect(genAfter).toBe(genBefore);
   });
 
-  it("plaid bumps on newer-date supersession (re-bought position)", () => {
+  // Spec 2026-10-02 statement-only synthetic closes §2.3: a newer-date live
+  // re-buy over ANY tombstone is a live-data event the engine never reads.
+  it.each([
+    ["live", RECON_LIVE_SUFFIX],
+    ["stmt", RECON_STMT_SUFFIX],
+  ])("plaid does NOT bump on a newer-date re-buy over an older :%s tombstone", (_label, suffix) => {
     const xId = upsertSecurity(db, { symbol: "X", securityType: "Stock" });
     // X's latest row is a tombstone dated D-5 (closed a while ago).
-    holdTombstone(taxableId, xId, D_MINUS_5, RECON_LIVE_SUFFIX);
+    holdTombstone(taxableId, xId, D_MINUS_5, suffix);
 
     const genBefore = getTaxInputGeneration(db);
     writePlaidHoldings(db, mappedResult([pos("X", 7)]), { pTax: taxableId }, TODAY);
@@ -142,7 +147,7 @@ describe("writePlaidHoldings — directional supersession + transaction bumps", 
     const row = rowAt(taxableId, xId, TODAY);
     expect(row?.quantity).toBe(7);
     expect(row?.source_key.startsWith("plaid:")).toBe(true);
-    expect(genAfter).toBe(genBefore + 1);
+    expect(genAfter).toBe(genBefore);
   });
 
   it("routine plaid sync (no tombstoned securities touched) does not bump", () => {
@@ -158,7 +163,7 @@ describe("writePlaidHoldings — directional supersession + transaction bumps", 
     expect(genAfter).toBe(genBefore);
   });
 
-  it("a same-day stale-row cleanup that reverts a superseded tombstone bumps the generation", () => {
+  it("a same-day stale-row cleanup that reverts a superseded tombstone does NOT bump (deletes only plaid rows — 2026-10-02 §2.3)", () => {
     // X's only prior row is a :live tombstone at D-5 (closed a while ago).
     // Y is present in both intraday syncs below purely to keep the account
     // non-empty and to give removeStaleSameDayTwsHoldings's shrink guard a
@@ -180,7 +185,7 @@ describe("writePlaidHoldings — directional supersession + transaction bumps", 
     );
     const genAfterFirst = getTaxInputGeneration(db);
     expect(rowAt(taxableId, xId, TODAY)?.quantity).toBe(4); // sanity: supersession landed
-    expect(genAfterFirst).toBe(genBefore + 1);
+    expect(genAfterFirst).toBe(genBefore);
 
     // Intraday sync #2, SAME day: X drops out of the book entirely (sold
     // intraday, or a transient omission). removeStaleSameDayTwsHoldings
@@ -201,7 +206,7 @@ describe("writePlaidHoldings — directional supersession + transaction bumps", 
     const reverted = latestHoldingRow(taxableId, xId);
     expect(reverted.as_of_date).toBe(D_MINUS_5);
     expect(reverted.quantity).toBe(0);
-    expect(genAfterSecond).toBe(genAfterFirst + 1);
+    expect(genAfterSecond).toBe(genAfterFirst);
   });
 
   it("plaid does NOT supersede a legacy unsuffixed tombstone (statement-grade), and does not bump", () => {
@@ -240,6 +245,14 @@ describe("writePlaidHoldings — directional supersession + transaction bumps", 
     hold(taxableId, xId, 5, D_MINUS_10);
     holdTombstone(taxableId, xId, TODAY, RECON_LIVE_SUFFIX);
 
+    // W is statement-flat today (:stmt tombstone) and gets a mutual-fund
+    // price at TODAY in this same call — a price at/before a statement-grade
+    // zero is a tax input, so a generation bump is genuinely in flight when
+    // the throw hits (2026-10-02: X's :live supersession alone no longer
+    // bumps).
+    const wId = upsertSecurity(db, { symbol: "W", securityType: "Stock" });
+    holdTombstone(taxableId, wId, TODAY, RECON_STMT_SUFFIX);
+
     vi.mocked(reconcileClosedEquityHoldings).mockImplementationOnce(() => {
       throw new Error("boom — injected reconcile failure");
     });
@@ -248,7 +261,10 @@ describe("writePlaidHoldings — directional supersession + transaction bumps", 
     expect(() =>
       writePlaidHoldings(
         db,
-        mappedResult([pos("Z", 10), pos("X", 4)]),
+        {
+          ...mappedResult([pos("Z", 10), pos("X", 4)]),
+          mutualFundPrices: [{ plaidAccountId: "pTax", symbol: "W", price: 10, asOf: TODAY }],
+        },
         { pTax: taxableId },
         TODAY,
       ),

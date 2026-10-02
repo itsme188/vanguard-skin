@@ -58,6 +58,14 @@ const PLAID_PREFIX = "plaid:";
 /**
  * SQL fragment: the holdings row came from an imported statement.
  *
+ * Statement PREFIXES ONLY — never matches a recon tombstone. Distinct from
+ * `statementGradeHoldingSql` below, which additionally admits `:stmt` and
+ * legacy unsuffixed tombstones (closure evidence DERIVED from a statement).
+ * Use this one for "what did the statement itself say" (bond carry-forward,
+ * the reconciler's own statement-date/shrink math, tombstone-orphan checks);
+ * use the statement-grade one for "what is the newest statement evidence
+ * for this pair" (the synthetic-close anchor).
+ *
  * Returns a parenthesized OR-chain so it can be AND-ed into a larger WHERE
  * without the OR swallowing sibling conditions. The prefixes are compile-time
  * constants containing no LIKE wildcards (`%`/`_`) or quotes — pinned by
@@ -123,6 +131,38 @@ export function statementOverwritableHoldingSql(col = "holdings.source_key"): st
  * cannot re-derive a tombstone masked by a same-date live row.
  */
 export function liveOverwritableHoldingSql(col = "holdings.source_key"): string {
+  const live = LIVE_HOLDING_SOURCE_PREFIXES.map((p) => `${col} LIKE '${p}%'`);
+  return `(${[...live, `${col} LIKE '${RECON_HOLDING_SOURCE_PREFIX}%${RECON_LIVE_SUFFIX}'`].join(" OR ")})`;
+}
+
+/**
+ * SQL fragment: STATEMENT-GRADE evidence for a pair — a statement-prefix row
+ * (`statementSourcedHoldingSql`), a statement-pass tombstone (`:stmt`), or a
+ * legacy unsuffixed tombstone (pre-suffix rows are treated as statement-grade
+ * everywhere, see closed-equity.ts' orphan rule). Anything else — live rows,
+ * `:live` tombstones, demo seeds, unknown prefixes — is NOT statement-grade.
+ *
+ * Deliberately DISTINCT from `statementSourcedHoldingSql`, which stays
+ * statement-prefix-only: recon tombstones remain outside the statement/live
+ * taxonomy for every existing caller of that helper. This predicate exists
+ * for the synthetic-close anchor (computeTaxLots' broker-close pass, spec
+ * 2026-10-02 statement-only synthetic closes) and the generation-bump
+ * triggers that must agree with it. A recon tombstone carries exactly one of
+ * the two suffixes or none, so "recon AND NOT :live" is ":stmt OR legacy".
+ * Parenthesized; constants carry no wildcards/quotes (pinned by tests).
+ */
+export function statementGradeHoldingSql(col = "h.source_key"): string {
+  return `(${statementSourcedHoldingSql(col)} OR (${col} LIKE '${RECON_HOLDING_SOURCE_PREFIX}%' AND ${col} NOT LIKE '%${RECON_LIVE_SUFFIX}'))`;
+}
+
+/**
+ * SQL fragment: LIVE-ORIGIN evidence — a live-sync row (tws-, plaid:) or a
+ * tombstone minted by the reconciler's live passes (`:live`). Disjoint from
+ * `statementGradeHoldingSql`. Same membership as `liveOverwritableHoldingSql`
+ * today, but a different question (provenance, not overwrite permission), so
+ * the two are kept as separate definitions. Parenthesized.
+ */
+export function liveOriginHoldingSql(col = "h.source_key"): string {
   const live = LIVE_HOLDING_SOURCE_PREFIXES.map((p) => `${col} LIKE '${p}%'`);
   return `(${[...live, `${col} LIKE '${RECON_HOLDING_SOURCE_PREFIX}%${RECON_LIVE_SUFFIX}'`].join(" OR ")})`;
 }

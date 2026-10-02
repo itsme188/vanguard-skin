@@ -442,7 +442,7 @@ describe("fetchHistoricalPrices — synthetic-close price bump (reconciler-harde
     const acctId = seedAccount("T");
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
-       VALUES (?, ?, 0, '2026-02-01', 'recon:closed-equity:g:live')`,
+       VALUES (?, ?, 0, '2026-02-01', 'recon:closed-equity:g:stmt')`,
     ).run(acctId, secId);
     const before = getTaxInputGeneration(db);
 
@@ -459,6 +459,28 @@ describe("fetchHistoricalPrices — synthetic-close price bump (reconciler-harde
     expect(getTaxInputGeneration(db)).toBe(before + 1);
   });
 
+  it("does NOT bump when the zero row is a LIVE-origin tombstone (:live) — the engine mints no close from it (2026-10-02 §2.3)", async () => {
+    const secId = seedSecurity(db, "ZZLIVE", "stock");
+    const acctId = seedAccount("T");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 0, '2026-02-01', 'recon:closed-equity:g:live')`,
+    ).run(acctId, secId);
+    const before = getTaxInputGeneration(db);
+
+    const mockApi = {
+      getHistoricalData: vi.fn().mockResolvedValue([
+        { time: "20260201", open: 10, high: 11, low: 9, close: 10, volume: 500 },
+      ]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    const results = await fetchHistoricalPrices(db, { securityIds: [secId] });
+
+    expect(results[0].barsInserted).toBe(1);
+    expect(getTaxInputGeneration(db)).toBe(before);
+  });
+
   it("a throw inside a security's write transaction rolls back that security's bars AND its bump together", async () => {
     const secId = seedSecurity(db, "BOOM", "stock");
     // Seed a tombstone dated AFTER the first bar's date so that, had the
@@ -469,7 +491,7 @@ describe("fetchHistoricalPrices — synthetic-close price bump (reconciler-harde
     const acctId = seedAccount("T");
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
-       VALUES (?, ?, 0, '2026-02-15', 'recon:closed-equity:g:live')`,
+       VALUES (?, ?, 0, '2026-02-15', 'recon:closed-equity:g:stmt')`,
     ).run(acctId, secId);
 
     const mockApi = {

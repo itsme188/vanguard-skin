@@ -58,3 +58,48 @@ describe("bumpIfPricesAffectSyntheticCloses", () => {
     expect(gen()).toBe(before);
   });
 });
+
+describe("bumpIfPricesAffectSyntheticCloses — statement-grade zeros only (2026-10-02 §2.3)", () => {
+  const ins = () =>
+    db.prepare(`INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key) VALUES (?,?,?,?,?)`);
+  function newSec(symbol: string): number {
+    return (db.prepare(`INSERT INTO securities (symbol, security_type) VALUES (?, 'stock') RETURNING id`).get(symbol) as {
+      id: number;
+    }).id;
+  }
+
+  it("does NOT bump for a price before a LIVE-only flat (:live tombstone newest)", () => {
+    const s = newSec("ZZLIVE");
+    ins().run(acctId, s, 5, "2026-07-01", "canonical:hold:zl1");
+    ins().run(acctId, s, 0, "2026-08-01", "recon:closed-equity:zl:live");
+    const before = gen();
+    expect(bumpIfPricesAffectSyntheticCloses(db, [{ securityId: s, date: "2026-07-15" }])).toBe(false);
+    expect(gen()).toBe(before);
+  });
+
+  it("does NOT bump for a price before a live-source zero row (tws-/plaid:)", () => {
+    const s = newSec("ZZTWS");
+    ins().run(acctId, s, 5, "2026-07-01", "canonical:hold:zt1");
+    ins().run(acctId, s, 0, "2026-08-01", `tws-${acctId}-${s}-2026-08-01`);
+    const before = gen();
+    expect(bumpIfPricesAffectSyntheticCloses(db, [{ securityId: s, date: "2026-07-15" }])).toBe(false);
+    expect(gen()).toBe(before);
+  });
+
+  it("STILL bumps when a newer live row sits above a statement zero (the engine still prices that close)", () => {
+    const s = newSec("ZZREBUY");
+    ins().run(acctId, s, 0, "2026-08-01", "recon:closed-equity:zr:stmt");
+    ins().run(acctId, s, 7, "2026-08-20", `plaid:${acctId}:${s}:2026-08-20`);
+    const before = gen();
+    expect(bumpIfPricesAffectSyntheticCloses(db, [{ securityId: s, date: "2026-07-31" }])).toBe(true);
+    expect(gen()).toBe(before + 1);
+  });
+
+  it("bumps for a legacy unsuffixed tombstone (statement-grade)", () => {
+    const s = newSec("ZZLEG");
+    ins().run(acctId, s, 0, "2026-08-01", `recon:closed-equity:${acctId}:${s}:2026-08-01`);
+    const before = gen();
+    expect(bumpIfPricesAffectSyntheticCloses(db, [{ securityId: s, date: "2026-08-01" }])).toBe(true);
+    expect(gen()).toBe(before + 1);
+  });
+});

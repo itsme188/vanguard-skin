@@ -6,7 +6,7 @@ import type { AccountUpdate } from "@stoqey/ib/dist/api-next/account/account-upd
 import { getIbApi } from "./client";
 import { upsertSecurity } from "../mutations/securities";
 import { removeStaleSameDayTwsHoldings } from "../mutations/same-day-tws-holdings";
-import { zeroLatestSecurityIds, countReconRowsOnDate } from "../mutations/closed-equity";
+import { countStatementGradeRowsOnDate } from "../mutations/closed-equity";
 import { computeDailyValuations } from "../compute/daily-valuation";
 import { bumpTaxGenerationIfPresent, bumpIfPricesAffectSyntheticCloses } from "../compute/tax-convention";
 import type { PositionSyncProgress, PositionSyncResult } from "./types";
@@ -268,13 +268,16 @@ export async function syncPortfolio(
   let staleRowsRemoved = 0;
 
   db.transaction(() => {
-    // Pre-state reads (spec §4, T3): captured at the TOP of the transaction,
-    // before any write, so a same-run REPLACE or re-buy is measured against
-    // the state that existed before this sync started. This account only
-    // syncs the single IBKR `accountId` looked up above.
-    const zeroLatest = zeroLatestSecurityIds(db, accountId);
-    const reconBefore = countReconRowsOnDate(db, accountId, today);
-    let newerDateSupersession = false;
+    // Pre-state read (spec 2026-08-31 §4, T3; narrowed by spec 2026-10-02
+    // statement-only synthetic closes §2.3): captured at the TOP of the
+    // transaction, before any write. computeTaxLots reads statement-grade
+    // holdings only, so the only holdings change this live writer can make
+    // to a tax input is an `INSERT OR REPLACE` that consumes a same-date
+    // statement-grade row (a `:stmt`/legacy tombstone or a statement row
+    // dated today). Live-row supersession, newer-date re-buys over a
+    // tombstone and `:live` tombstone replacement change nothing the engine
+    // reads and no longer bump.
+    const stmtGradeBefore = countStatementGradeRowsOnDate(db, accountId, today);
     const pricePairs: { securityId: number; date: string }[] = [];
 
     for (let i = 0; i < positions.length; i++) {
@@ -334,7 +337,6 @@ export async function syncPortfolio(
       const sourceKey = `tws-${accountId}-${securityId}-${today}`;
       upsertHolding.run(accountId, securityId, pos.pos, costBasis, today, sourceKey);
       syncedSecurityIds.push(securityId);
-      if (zeroLatest.has(securityId)) newerDateSupersession = true;
 
       // Collect market prices from getAccountUpdates() (not available from getPositions)
       if (pos.marketPrice != null && pos.marketPrice > 0) {
@@ -368,17 +370,9 @@ export async function syncPortfolio(
       syncedSecurityIds,
     });
     staleRowsRemoved = cleanup.deleted;
-    // A ghost-row delete can revert a pair's latest row back to an OLDER
-    // tombstone underneath it (an earlier intraday sync today wrote a
-    // non-zero row over a tombstone, then a later same-day sync no longer
-    // reports that security — the delete removes today's non-zero row and
-    // the tombstone becomes latest again): a held→closed transition neither
-    // detector above sees (the delete only touches tws-% rows, so recon
-    // counts are unchanged; newerDateSupersession only fires on writes).
-    // Conservative by design — bump on ANY deletion, not just this exact
-    // case. Routine held-only syncs delete nothing, so the daily-no-bump
-    // property is preserved.
-    if (cleanup.deleted > 0) bumpTaxGenerationIfPresent(db);
+    // No bump: the ghost cleanup deletes only live `tws-` rows, which the
+    // statement-only synthetic-close anchor never reads (spec 2026-10-02
+    // §2.3). Reverting a pair to an older tombstone is a live-data event.
     if (cleanup.skipped) {
       console.warn(
         `[syncPortfolio] Same-day ghost cleanup skipped — sync returned ${syncedSecurityIds.length} positions vs existing tws rows (partial sync suspected)`
@@ -404,12 +398,11 @@ export async function syncPortfolio(
 
     // Transition detection + bump — inside the same transaction as the
     // writes: a mid-transaction throw rolls both back together. `INSERT OR
-    // REPLACE` consumes a same-date tombstone by replacing it, so
-    // reconAfter < reconBefore catches that case; newerDateSupersession
-    // catches a non-zero write landing on a security whose prior latest row
-    // was a tombstone (re-buy on a newer date).
-    const reconAfter = countReconRowsOnDate(db, accountId, today);
-    if (reconAfter < reconBefore || newerDateSupersession) bumpTaxGenerationIfPresent(db);
+    // REPLACE` consumes a same-date statement-grade row by replacing it, so
+    // a drop in the statement-grade count is the one holdings change here
+    // that moves the synthetic-close anchor.
+    const stmtGradeAfter = countStatementGradeRowsOnDate(db, accountId, today);
+    if (stmtGradeAfter < stmtGradeBefore) bumpTaxGenerationIfPresent(db);
     bumpIfPricesAffectSyntheticCloses(db, pricePairs);
   })();
 

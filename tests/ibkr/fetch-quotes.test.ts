@@ -29,10 +29,10 @@ function seedSecurity(symbol: string, conid: number | null, type = "Stock"): num
     .run(symbol, `${symbol} Corp`, type, conid).lastInsertRowid as number;
 }
 
-function hold(accountId: number, securityId: number, qty: number): void {
+function hold(accountId: number, securityId: number, qty: number, sourceKey: string | null = null): void {
   db.prepare(
-    "INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (?, ?, ?, '2026-06-08')",
-  ).run(accountId, securityId, qty);
+    "INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key) VALUES (?, ?, ?, '2026-06-08', ?)",
+  ).run(accountId, securityId, qty, sourceKey);
 }
 
 function watch(securityId: number): void {
@@ -278,7 +278,9 @@ describe("fetchAndStoreQuotes — synthetic-close price bump (reconciler-hardeni
     // GONE: sold (latest — and only — holdings row is quantity 0), but still
     // on the active watchlist, so it remains a quote candidate.
     const gone = seedSecurity("GONE", 999111);
-    hold(acct, gone, 0);
+    // Statement-grade tombstone (spec 2026-10-02): only statement evidence
+    // anchors a synthetic close, so only it makes a price a tax input.
+    hold(acct, gone, 0, "recon:closed-equity:g:stmt");
     watch(gone);
 
     const before = getTaxInputGeneration(db);
@@ -298,5 +300,23 @@ describe("fetchAndStoreQuotes — synthetic-close price bump (reconciler-hardeni
     const holdingsCount = db.prepare("SELECT COUNT(*) c FROM holdings").get() as { c: number };
     expect(holdingsCount.c).toBe(2); // exactly the two seeded rows, unchanged
     expect(getTaxInputGeneration(db)).toBe(before + 1);
+  });
+
+  it("does NOT bump when the tombstone is LIVE-origin (:live) — the engine mints no close from it (2026-10-02 §2.3)", async () => {
+    const acct = getIbkrAccount();
+    const gone = seedSecurity("ZZGONE", 999222);
+    hold(acct, gone, 0, "recon:closed-equity:g:live");
+    watch(gone);
+    const before = getTaxInputGeneration(db);
+    const stub = async (): Promise<ParsedQuote[]> => [
+      { conid: 999222, last: 10, bid: null, ask: null, ivUnderlying: null, hv30d: null, week52High: null, week52Low: null },
+    ];
+    const res = await fetchAndStoreQuotes(db, CFG, "lst", {
+      asOfDate: "2026-06-08",
+      fetchSnapshot: stub,
+      fetchYields: async () => ({}),
+    });
+    expect(res.pricesWritten).toBe(1);
+    expect(getTaxInputGeneration(db)).toBe(before);
   });
 });

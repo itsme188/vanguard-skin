@@ -13,7 +13,7 @@ import { computeDailyValuations } from "../compute/daily-valuation";
 import { todayET } from "../calendar/date-utils";
 import { isMarketClosed } from "../calendar/market-holidays";
 import { upsertFxRate } from "../mutations/fx-rates";
-import { zeroLatestSecurityIds, countReconRowsOnDate } from "../mutations/closed-equity";
+import { countStatementGradeRowsOnDate } from "../mutations/closed-equity";
 import { bumpTaxGenerationIfPresent, bumpIfPricesAffectSyntheticCloses } from "../compute/tax-convention";
 import { loadIbkrConfig } from "./config";
 import {
@@ -131,12 +131,13 @@ export function writeIbkrHoldings(
   let pricesWritten = 0;
 
   db.transaction(() => {
-    // Pre-state reads (spec §4, T3): captured at the TOP of the transaction,
-    // before any write, so a same-run REPLACE or re-buy is measured against
-    // the state that existed before this sync started.
-    const zeroLatest = zeroLatestSecurityIds(db, accountId);
-    const reconBefore = countReconRowsOnDate(db, accountId, today);
-    let newerDateSupersession = false;
+    // Pre-state read (spec 2026-08-31 §4, T3; narrowed by spec 2026-10-02
+    // statement-only synthetic closes §2.3), captured before any write: the
+    // only holdings change this live writer can make to a tax input is an
+    // `INSERT OR REPLACE` consuming a same-date statement-grade row. Live-row
+    // supersession and newer-date re-buys over a tombstone are live-data
+    // events the synthetic-close anchor never reads — no bump.
+    const stmtGradeBefore = countStatementGradeRowsOnDate(db, accountId, today);
     const pricePairs: { securityId: number; date: string }[] = [];
 
     for (const m of snapshot.positions) {
@@ -155,7 +156,6 @@ export function writeIbkrHoldings(
       if (m.conid != null) updateConId.run(m.conid, securityId);
       upsertHolding.run(accountId, securityId, m.quantity, m.costBasis, today, `tws-${accountId}-${securityId}-${today}`);
       positionsWritten++;
-      if (zeroLatest.has(securityId)) newerDateSupersession = true;
       if (m.mktPrice != null && m.mktPrice > 0) {
         upsertPrice.run(securityId, today, m.mktPrice);
         pricesWritten++;
@@ -180,12 +180,10 @@ export function writeIbkrHoldings(
 
     // Transition detection + bump — inside the same transaction as the
     // writes (spec §4, atomicity rule): a mid-loop throw rolls both back
-    // together. `INSERT OR REPLACE` consumes a same-date tombstone by
-    // replacing it, so reconAfter < reconBefore catches that case; a
-    // non-zero write hitting a security whose prior latest row was a
-    // tombstone (newerDateSupersession) catches the newer-date re-buy case.
-    const reconAfter = countReconRowsOnDate(db, accountId, today);
-    if (reconAfter < reconBefore || newerDateSupersession) bumpTaxGenerationIfPresent(db);
+    // together. A drop in the same-date statement-grade count means a write
+    // replaced statement-grade evidence the synthetic-close anchor reads.
+    const stmtGradeAfter = countStatementGradeRowsOnDate(db, accountId, today);
+    if (stmtGradeAfter < stmtGradeBefore) bumpTaxGenerationIfPresent(db);
     bumpIfPricesAffectSyntheticCloses(db, pricePairs);
   })();
 

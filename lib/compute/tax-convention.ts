@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { statementGradeHoldingSql } from "@/lib/db/holding-sources";
 
 /**
  * Generation-bound convention markers for the tax-lots dollar convention
@@ -14,8 +15,10 @@ export interface TaxConventionState {
   recomputeCurrent: boolean;
   /**
    * Which engine convention wrote the stored lots: "v3" for the current
-   * stamp shape, "legacy" for ANY other non-empty stamp (`v2:42`, or an
-   * unrecognized value after a rollback), null when nothing ever stamped.
+   * stamp shape (`TAX_LOTS_CONVENTION_STAMP_PREFIX`, i.e. the current engine
+   * revision), "legacy" for ANY other non-empty stamp (`v2:42`, an earlier
+   * v3 revision such as `v3:42`, or an unrecognized value after a rollback),
+   * null when nothing ever stamped.
    * Read-only introspection for the UI — `recomputeCurrent` remains the only
    * gate any engine/export decision may use.
    */
@@ -42,6 +45,26 @@ export interface TaxLotStalenessMarker {
   inputChangesSince: number | null;
   reason: "behind" | "legacy" | "never" | null;
 }
+
+/**
+ * The stamp written by the CURRENT engine: `<prefix>:<generation>`. The
+ * prefix carries an engine REVISION inside the v3 dollar convention so an
+ * engine change that alters stored output without a tax-input change can
+ * fail closed at deploy (spec 2026-10-02 statement-only synthetic closes
+ * §2.5): an earlier-revision stamp reads stale until a recompute.
+ *
+ *   v3    — true-dollar convention (number-trust durable fixes)
+ *   v3r2  — synthetic closes minted from statement evidence only (2026-10-02)
+ *
+ * Bump the revision (v3r3, …) only for an engine change whose stored output
+ * must be recomputed. Broker acceptance survives a revision change inside
+ * the v3 family (see stampTaxLotsConvention); a new CONVENTION (v4) is what
+ * resets it.
+ */
+export const TAX_LOTS_CONVENTION_STAMP_PREFIX = "v3r2";
+/** Any stamp in the v3 dollar-convention family, at any engine revision. */
+const V3_FAMILY_STAMP_RE = /^v3(?:r\d+)?:\d+$/;
+const CURRENT_STAMP_RE = new RegExp(`^${TAX_LOTS_CONVENTION_STAMP_PREFIX}:(\\d+)$`);
 
 const GEN_KEY = "tax_input_generation";
 const CONVENTION_KEY = "tax_lots_convention";
@@ -73,11 +96,17 @@ export function bumpTaxInputGeneration(db: Database.Database): number {
 }
 
 export function stampTaxLotsConvention(db: Database.Database): void {
-  // A new engine convention cannot revive acceptance of the old engine's output.
-  if (!readSetting(db, CONVENTION_KEY)?.startsWith("v3:")) {
+  // A new engine convention cannot revive acceptance of the old engine's
+  // output. An engine REVISION inside the v3 family (v3 -> v3r2) keeps the
+  // acceptance record: it changes only engine-estimated synthetic closes,
+  // which every filing surface already excludes, so the accepted filing
+  // figures are unchanged. Acceptance still requires a current recompute at
+  // the accepted generation to read current (getTaxConventionState).
+  const previous = readSetting(db, CONVENTION_KEY);
+  if (previous == null || !V3_FAMILY_STAMP_RE.test(previous)) {
     writeSetting(db, ACCEPTANCE_KEY, JSON.stringify({ generation: -1, coverage: [] }));
   }
-  writeSetting(db, CONVENTION_KEY, `v3:${getTaxInputGeneration(db)}`);
+  writeSetting(db, CONVENTION_KEY, `${TAX_LOTS_CONVENTION_STAMP_PREFIX}:${getTaxInputGeneration(db)}`);
 }
 
 export function stampBrokerAcceptance(
@@ -94,7 +123,9 @@ export function stampBrokerAcceptance(
 export function getTaxConventionState(db: Database.Database): TaxConventionState {
   const generation = getTaxInputGeneration(db);
   const conv = readSetting(db, CONVENTION_KEY);
-  const m = conv == null ? null : /^v3:(\d+)$/.exec(conv);
+  // Only the CURRENT engine revision is "v3"; an earlier revision of the v3
+  // family (bare `v3:42`) reads "legacy" — stale until a recompute (§2.5).
+  const m = conv == null ? null : CURRENT_STAMP_RE.exec(conv);
   const recomputeCurrent = m != null && Number.parseInt(m[1], 10) === generation;
 
   const stampedConvention: TaxConventionState["stampedConvention"] =
@@ -197,15 +228,22 @@ export function stampTaxLotsConventionIfPresent(db: Database.Database): void {
 
 /**
  * Fail-closed price invalidation for synthetic closes (spec 2026-08-30
- * reconciler-hardening §4). computeTaxLots' RECONCILE_CLOSE pass prices a
- * broker-closed position off the latest `prices` row at-or-before the
- * position's zero-quantity date — so a price write/delete in that window
+ * reconciler-hardening §4; narrowed to statement-grade evidence by spec
+ * 2026-10-02 statement-only synthetic closes §2.3). computeTaxLots'
+ * RECONCILE_CLOSE pass prices a statement-flat position off the latest
+ * `prices` row at-or-before the pair's NEWEST STATEMENT-GRADE row's date
+ * (when that row is quantity 0) — so a price write/delete in that window
  * changes realized tax output. Callers pass the (securityId, date) pairs
  * they mutated (capture BEFORE a delete); this bumps the generation once
- * when any pair can affect a synthetic close. Held securities (latest
- * holdings row non-zero) never match, so routine daily price syncs never
- * bump. Deliberately over-approximate: an older-than-selected price for a
- * tombstoned security still bumps — over-bump is fail-closed and cheap.
+ * when any pair can affect a synthetic close.
+ *
+ * Live-origin rows (tws-/plaid: rows, `:live` tombstones) are ignored on
+ * BOTH sides, exactly as the engine ignores them: a live-only flat mints no
+ * close, so a price before it is not a tax input; a live re-buy row above a
+ * statement zero does not cancel that close, so a price before the
+ * statement zero still is. Held securities (newest statement-grade row
+ * non-zero) never match, so routine daily price syncs never bump.
+ * Deliberately over-approximate: an older-than-selected price still bumps.
  *
  * The zero-quantity check below is deliberately NOT filtered to stock/ETF,
  * even though RECONCILE_CLOSE itself only synthesizes for stock/ETF
@@ -225,9 +263,11 @@ export function bumpIfPricesAffectSyntheticCloses(
     `SELECT 1 AS hit FROM holdings h
       WHERE h.security_id = ? AND h.quantity = 0
         AND h.as_of_date >= ?
+        AND ${statementGradeHoldingSql("h.source_key")}
         AND h.as_of_date = (
           SELECT MAX(h2.as_of_date) FROM holdings h2
-           WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id)
+           WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
+             AND ${statementGradeHoldingSql("h2.source_key")})
       LIMIT 1`,
   );
   for (const p of pairs) {
