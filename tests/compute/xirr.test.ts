@@ -462,11 +462,30 @@ describe("XIRR computation", () => {
   // balance and count only flows dated after it.
   describe("window that predates the first snapshot", () => {
     function seedFromFirstSnapshot(): void {
-      // First snapshot month carries the funding deposit.
-      seedSnapshot(db, ACCT_1, "2022-01-31", 10000, { depositsWithdrawals: 10000 });
-      seedSnapshot(db, ACCT_1, "2022-06-30", 12000, { depositsWithdrawals: 1000 });
-      seedSnapshot(db, ACCT_1, "2022-12-31", 12500);
+      // The first snapshot's value (50000) is far larger than its month's
+      // recorded deposit (1000): most of the opening balance arrived with no
+      // deposit row (a transfer-in / pre-history balance). The old code
+      // dropped that balance whenever the window started before this
+      // snapshot, leaving a 1000 deposit to "grow" into 53500 — an absurd
+      // MWR. The fix opens on the 50000 snapshot, so early-window and
+      // anchored-window XIRR agree at a plausible single-digit rate.
+      seedSnapshot(db, ACCT_1, "2022-01-31", 50000, { depositsWithdrawals: 1000 });
+      seedSnapshot(db, ACCT_1, "2022-06-30", 52000, { depositsWithdrawals: 1000 });
+      seedSnapshot(db, ACCT_1, "2022-12-31", 53500);
     }
+
+    it("opening balance carries capital that arrived with no deposit row: early window ≈ anchored, plausible rate", () => {
+      seedFromFirstSnapshot();
+      const early = computeXirr(db, { startDate: "2021-06-30", accountId: ACCT_1 });
+      const anchored = computeXirr(db, { startDate: "2022-02-01", accountId: ACCT_1 });
+      expect(early).not.toBeNull();
+      expect(anchored).not.toBeNull();
+      expect(Math.abs(early!.xirr - anchored!.xirr)).toBeLessThan(1e-6);
+      // 50000 + 1000 mid-year → 53500 over 11 months ≈ +5% a year — a
+      // plausible single-digit annual rate, not a runaway 1000 → 53500 root.
+      expect(early!.xirr).toBeGreaterThan(0);
+      expect(early!.xirr).toBeLessThan(0.1);
+    });
 
     it("per-account: an early window start equals a start the day after the first snapshot", () => {
       seedFromFirstSnapshot();

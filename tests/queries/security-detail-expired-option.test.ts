@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getHoldingsBySecurity } from "@/lib/queries/security-detail";
@@ -55,10 +57,57 @@ describe("getHoldingsBySecurity drops expired options", () => {
     expect(rows[0].quantity).toBe(2);
   });
 
+  describe("ET-calendar boundary", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("an option expiring on ET today stays live, even after UTC midnight", () => {
+      const sameDay = seedOption(db, "XYZ   310620C00050000", "2031-06-20");
+      seedHolding(db, sameDay, 3, "tws-same-day");
+      vi.useFakeTimers({ toFake: ["Date"] });
+      // 02:30 UTC on 06-21 = 22:30 EDT on 06-20 — UTC date('now') would
+      // already say 06-21 and wrongly expire the contract.
+      vi.setSystemTime(new Date("2031-06-21T02:30:00Z"));
+      const rows = getHoldingsBySecurity(db, sameDay);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].quantity).toBe(3);
+    });
+
+    it("the same option drops out once the ET calendar rolls past expiration", () => {
+      const sameDay = seedOption(db, "XYZ   310620C00050000", "2031-06-20");
+      seedHolding(db, sameDay, 3, "tws-same-day");
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2031-06-21T16:00:00Z")); // 12:00 EDT on 06-21
+      expect(getHoldingsBySecurity(db, sameDay)).toEqual([]);
+    });
+  });
+
   it("still returns a position for a security with no expiration date", () => {
     const stock = seedOption(db, "XYZ", null);
     db.prepare("UPDATE securities SET security_type = 'Stock', multiplier = 1 WHERE id = ?").run(stock);
     seedHolding(db, stock, 10, "tws-stock");
     expect(getHoldingsBySecurity(db, stock)).toHaveLength(1);
+  });
+});
+
+/**
+ * The hub's "Related Options" section (a stock's page listing option
+ * positions on it) is an inline query in the page server component, so this
+ * pins its source: it must apply the same liveOptionExpirationSql guard, or
+ * an option that expired yesterday lists beside the live ones.
+ * (No DOM test harness here — source-pin, then browser proof.)
+ */
+describe("Security hub Related Options query applies the expiry guard", () => {
+  it("the related-options SQL includes liveOptionExpirationSql", () => {
+    const src = readFileSync(
+      path.join(process.cwd(), "app/dashboard/security/[id]/page.tsx"),
+      "utf8"
+    );
+    const start = src.indexOf("const relatedOptions = db");
+    expect(start).toBeGreaterThan(-1);
+    const end = src.indexOf(".all(security.symbol)", start);
+    expect(end).toBeGreaterThan(start);
+    expect(src.slice(start, end)).toMatch(/\$\{liveOptionExpirationSql\("s"\)\}/);
   });
 });

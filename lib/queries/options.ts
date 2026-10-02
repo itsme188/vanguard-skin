@@ -11,6 +11,7 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 
 /**
  * Whether the current tax-lot convention state is pending a recompute (WS1
@@ -123,10 +124,21 @@ export interface OptionsPnL {
 
 /**
  * Get all current option positions with underlying prices.
+ *
+ * Only LIVE contracts: an option past its expiration on the ET calendar is
+ * excluded via the shared `liveOptionExpirationSql` cutoff (a contract
+ * expiring `today` still counts). `purgeExpiredOptionHoldings` keeps a
+ * 1-day grace before deleting the holdings row, so without this guard a
+ * contract that expired yesterday surfaced as an open position in the
+ * strategies route, the chat strategies tool, getOptionsByUnderlying and
+ * the options P&L open-position total. Realized/expired P&L comes from
+ * tax_lot_sales (getOptionsPnL's closed side), never from this read, so no
+ * caller needs expired rows here. `today` is injectable for tests.
  */
 export function getOptionPositions(
   db: Database.Database,
-  accountId?: number
+  accountId?: number,
+  today: string = todayET()
 ): OptionPosition[] {
   const accountFilter = accountId ? "AND h.account_id = ?" : "";
   const params: (string | number)[] = [];
@@ -163,6 +175,7 @@ export function getOptionPositions(
          AND s.expiration_date IS NOT NULL
          AND s.option_type IS NOT NULL
          AND s.underlying_symbol IS NOT NULL
+         AND ${liveOptionExpirationSql("s", today)}
          AND ${latestHoldingsPredicate({ accountFilter: "" })}
          ${accountFilter}
        ORDER BY s.underlying_symbol, s.expiration_date, s.strike_price`
@@ -221,9 +234,10 @@ export function getOptionPositions(
  */
 export function getOptionsByUnderlying(
   db: Database.Database,
-  accountId?: number
+  accountId?: number,
+  today: string = todayET()
 ): OptionsByUnderlying[] {
-  const positions = getOptionPositions(db, accountId);
+  const positions = getOptionPositions(db, accountId, today);
   const groups = new Map<string, OptionsByUnderlying>();
 
   for (const pos of positions) {
@@ -317,9 +331,10 @@ export function getExpiringOptions(
  */
 export function getOptionsPnL(
   db: Database.Database,
-  accountId?: number
+  accountId?: number,
+  today: string = todayET()
 ): OptionsPnL {
-  const openPositions = getOptionPositions(db, accountId);
+  const openPositions = getOptionPositions(db, accountId, today);
 
   const accountFilter = accountId ? "AND tl.account_id = ?" : "";
   const params: number[] = [];
