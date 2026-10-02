@@ -5,6 +5,7 @@ import type { TaxLotWithSecurity, TaxLotSaleWithDetails } from "@/lib/queries/ta
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { Money, PrivateText, Shares } from "@/lib/privacy/components";
 import { Chip } from "./Chip";
+import { PENDING_STATEMENT_CHIP_LABEL, PENDING_STATEMENT_TITLE } from "./pending-statement-copy";
 import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
@@ -177,6 +178,14 @@ export function OpenLotsTable({
                     <td className="px-4 py-3 font-mono font-medium text-ink">
                       <SymbolLink securityId={lot.security_id} symbol={lot.symbol} />
                       {lot.is_short === 1 && <> <Chip tone="gold" size="xs">Short sale</Chip></>}
+                      {lot.pending_statement && (
+                        <>
+                          {" "}
+                          <Chip tone="neutral" size="xs" title={PENDING_STATEMENT_TITLE}>
+                            {PENDING_STATEMENT_CHIP_LABEL}
+                          </Chip>
+                        </>
+                      )}
                     </td>
                     <td className="hidden md:table-cell px-4 py-3 text-ink-faint font-mono text-xs">{lot.acquisition_date}</td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">

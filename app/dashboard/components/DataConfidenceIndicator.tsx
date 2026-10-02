@@ -8,6 +8,7 @@ import { PrivateText, Money, Count } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
 import { Chip } from "./Chip";
 import { popoverAnchorFor } from "./data-confidence-popover-anchor";
+import { PENDING_STATEMENT_TITLE, STATEMENT_LAG_LABEL } from "./pending-statement-copy";
 
 // Fallback popover width (Tailwind `w-96` = 384px) used when the popover
 // element hasn't rendered yet at measurement time.
@@ -439,6 +440,17 @@ function IntegrityWarningsRow({ warnings }: { warnings: IntegrityHit[] }) {
         <ul className="pt-1 pl-3 space-y-1 border-l border-edge ml-0.5">
           {warnings.map(w => (
             <li key={w.key} className="text-[9px] text-ink-dim leading-snug list-none">
+              {/* statement-lag: a position closed per live data whose broker
+                  statement has not arrived — expected and self-resolving,
+                  so it reads as informational, not as a defect. The chip
+                  text carries the meaning on its own (no hover needed). */}
+              {w.kind === "statement-lag" && (
+                <>
+                  <Chip tone="neutral" size="xs" title={PENDING_STATEMENT_TITLE}>
+                    {STATEMENT_LAG_LABEL}
+                  </Chip>{" "}
+                </>
+              )}
               <PrivateText>{w.reason}</PrivateText>
             </li>
           ))}

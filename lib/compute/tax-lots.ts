@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { marketValue, unitPriceFromMarketValue } from "@/lib/valuation";
 import { stampTaxLotsConventionIfPresent } from "@/lib/compute/tax-convention";
 import { statementGradeHoldingSql } from "@/lib/db/holding-sources";
+import { findLaterImportSplit, positionChangingTxnTypesSql } from "@/lib/compute/synthetic-close-guards";
 
 interface TaxLotComputeResult {
   lotsCreated: number;
@@ -1047,9 +1048,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
                  WHERE t2.account_id = tl.account_id
                    AND t2.security_id = tl.security_id
                    AND t2.trade_date > h.as_of_date
-                   AND LOWER(t2.type) IN ('buy', 'reinvestment', 'buy_to_open', 'sell_to_open',
-                                          'sell', 'sell_to_close', 'redemption', 'buy_to_cover',
-                                          'expired', 'exercised', 'assigned', 'buy_to_close')
+                   AND LOWER(t2.type) IN (${positionChangingTxnTypesSql()})
               )
             GROUP BY tl.account_id, tl.security_id`
         )
@@ -1084,9 +1083,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         // quantity off a basis the split cross-check can't vouch for,
         // mixing bases (the "never mix bases" rule). Skip and let the real
         // statement SELL (which arrives in its own correct basis) close it.
-        const laterSplit = splitEvents.find(
-          (ev) => ev.security_id === orphan.security_id && ev.effective_date > orphan.zero_date
-        );
+        const laterSplit = findLaterImportSplit(splitEvents, orphan.security_id, orphan.zero_date);
         if (laterSplit) {
           replayWarnings.push(
             `${orphan.symbol}: zero-holdings row on ${orphan.zero_date} predates the ${laterSplit.effective_date} split — skipping the synthetic RECONCILE_CLOSE to avoid mixing pre/post-split bases. Import the missing SELL to close this position.`

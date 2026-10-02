@@ -19,6 +19,7 @@ import { Section } from "../../components/Section";
 import { SecurityEarningsEmails } from "../../components/SecurityEarningsEmails";
 import { getSentEarningsEmails } from "@/lib/queries/earnings-emails";
 import { Chip, type ChipTone } from "../../components/Chip";
+import { PENDING_STATEMENT_CHIP_LABEL, PENDING_STATEMENT_TITLE } from "../../components/pending-statement-copy";
 import { HoldingPeriodBadge } from "../../components/HoldingPeriodBadge";
 import { TranscriptsRefreshButton } from "./TranscriptsRefreshButton";
 import { FactorProfileSection } from "./FactorProfileSection";
@@ -502,7 +503,17 @@ export default async function SecurityDetailPage(props: {
                         <Money value={lot.adjusted_cost_basis} />
                       </td>
                       <td className={`${TD_MONO} text-right ${gainClass(lot.unrealized_gain)}`}>
-                        <Money value={lot.unrealized_gain} fallback="–" />
+                        {/* Pending statement: closed per live data, the
+                            closing trade not imported yet. The shared read
+                            model nulls its unrealized (not held), so the chip
+                            stands in for the figure rather than a bare dash. */}
+                        {lot.pending_statement ? (
+                          <Chip tone="neutral" size="xs" title={PENDING_STATEMENT_TITLE}>
+                            {PENDING_STATEMENT_CHIP_LABEL}
+                          </Chip>
+                        ) : (
+                          <Money value={lot.unrealized_gain} fallback="–" />
+                        )}
                       </td>
                       <td className={`${TD_CLASS} text-center`}>
                         <Chip tone={isLT ? "up" : "gold"} size="xs" uppercase>

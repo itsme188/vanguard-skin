@@ -16,13 +16,15 @@ export interface TaxConventionState {
   /**
    * Which engine convention wrote the stored lots: "v3" for the current
    * stamp shape (`TAX_LOTS_CONVENTION_STAMP_PREFIX`, i.e. the current engine
-   * revision), "legacy" for ANY other non-empty stamp (`v2:42`, an earlier
-   * v3 revision such as `v3:42`, or an unrecognized value after a rollback),
-   * null when nothing ever stamped.
+   * revision), "v3-revision" for another revision of the same v3 dollar
+   * convention (today only the bare `v3:42` that predates v3r2's
+   * statement-only synthetic closes), "legacy" for ANY other non-empty stamp
+   * (`v2:42`, or an unrecognized value after a rollback), null when nothing
+   * ever stamped.
    * Read-only introspection for the UI — `recomputeCurrent` remains the only
    * gate any engine/export decision may use.
    */
-  stampedConvention: "v3" | "legacy" | null;
+  stampedConvention: "v3" | "v3-revision" | "legacy" | null;
   /**
    * The generation embedded in the stamp (`v3:42` -> 42), for either
    * convention, so the UI can say how many tax-input changes the stored lots
@@ -43,7 +45,13 @@ export interface TaxLotStalenessMarker {
   stale: boolean;
   /** Tax-input changes recorded since the stored lots were computed. */
   inputChangesSince: number | null;
-  reason: "behind" | "legacy" | "never" | null;
+  /**
+   * "revision": stored by an earlier engine revision of the current dollar
+   * convention (`stampedConvention === "v3-revision"`). The Tax Lots notice
+   * names what changed in the CURRENT revision — update its copy
+   * (TaxLotStalenessNotice) whenever TAX_LOTS_CONVENTION_STAMP_PREFIX bumps.
+   */
+  reason: "behind" | "revision" | "legacy" | "never" | null;
 }
 
 /**
@@ -129,7 +137,13 @@ export function getTaxConventionState(db: Database.Database): TaxConventionState
   const recomputeCurrent = m != null && Number.parseInt(m[1], 10) === generation;
 
   const stampedConvention: TaxConventionState["stampedConvention"] =
-    conv == null || conv === "" ? null : m != null ? "v3" : "legacy";
+    conv == null || conv === ""
+      ? null
+      : m != null
+        ? "v3"
+        : V3_FAMILY_STAMP_RE.test(conv)
+          ? "v3-revision"
+          : "legacy";
   // Any `<convention>:<generation>` stamp carries its generation, including
   // the superseded `v2:` shape — the distance is what the UI quotes, and it
   // is just as meaningful across a convention change.
@@ -177,7 +191,9 @@ export function describeTaxLotStaleness(state: TaxConventionState): TaxLotStalen
       ? "never"
       : state.stampedConvention === "legacy"
         ? "legacy"
-        : "behind";
+        : state.stampedConvention === "v3-revision"
+          ? "revision"
+          : "behind";
   return { stale: true, inputChangesSince, reason };
 }
 

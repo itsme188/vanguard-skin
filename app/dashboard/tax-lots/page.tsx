@@ -105,6 +105,13 @@ export default async function TaxLotsPage(props: {
   // tiles' "(incl. M engine-estimated closes, +$Y)" disclosure when the
   // account-wide activeSummary can't be used.
   const engineEstimatedRows = closedSales.filter((s) => s.is_synthetic_close);
+
+  // Pending-statement lots inside the narrowed view: positions closed per
+  // live data, awaiting the broker statement. The flag comes from the shared
+  // read model (lib/queries/pending-statement.ts via getOpenTaxLots) — never
+  // re-derived here. They leave the Unrealized tile and get their own line.
+  const pendingStatementRows = openLots.filter((l) => l.pending_statement);
+  const heldOpenLots = openLots.filter((l) => !l.pending_statement);
   const sumUsd = (rows: typeof closedSales) =>
     rows.reduce((sum, s) => sum + (s.currency === "USD" ? s.realized_gain_loss : 0), 0);
 
@@ -181,7 +188,12 @@ export default async function TaxLotsPage(props: {
               summary={{
                 totalOpenLots: openLots.length,
                 totalClosedSales: activeSummary?.totalClosedSales ?? closedSales.length,
-                totalUnrealizedGain: openLots.reduce((sum, l) => sum + (l.unrealized_gain ?? 0), 0),
+                totalUnrealizedGain: heldOpenLots.reduce((sum, l) => sum + (l.unrealized_gain ?? 0), 0),
+                pendingStatementPositions: new Set(
+                  pendingStatementRows.map((l) => `${l.account_id}:${l.security_id}`)
+                ).size,
+                pendingStatementLots: pendingStatementRows.length,
+                pendingStatementBasis: pendingStatementRows.reduce((sum, l) => sum + l.adjusted_cost_basis, 0),
                 // USD totals only — non-USD sales are native figures (excluded + disclosed)
                 totalRealizedGain: activeSummary?.totalRealizedGain ?? closedSales.reduce((sum, s) => sum + (s.currency === "USD" ? s.realized_gain_loss : 0), 0),
                 longTermGain: activeSummary?.longTermGain ?? closedSales.filter(s => s.is_long_term && s.currency === "USD").reduce((sum, s) => sum + s.realized_gain_loss, 0),

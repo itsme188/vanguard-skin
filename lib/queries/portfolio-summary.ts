@@ -3,6 +3,11 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { formatUSD, formatNumber } from "@/lib/format";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import {
+  isPendingStatementLot,
+  pendingStatementKey,
+  pendingStatementKeySet,
+} from "@/lib/queries/pending-statement";
 
 const CONVENTION_PENDING_NOTE =
   "Note: cost-basis figures are pending a recompute under the corrected dollar convention and may be unit-inconsistent.";
@@ -59,6 +64,13 @@ interface ApproachingLongTerm {
   long_term_date: string;
   days_remaining: number;
   unrealized_gain: number | null;
+}
+
+/** Join keys selected only to consult the pending-statement read model. */
+interface PairKeyed {
+  account_id: number;
+  security_id: number;
+  is_short: number;
 }
 
 export function getPortfolioSummaryForChat(db: Database.Database, accountName?: string): string {
@@ -277,17 +289,43 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   // tax_lots.cost_basis is the v2 TRUE-DOLLAR total for the lot's original
   // quantity_acquired (bond ÷100, option ×multiplier, fees included); the
   // still-open share is dollar-proportional (see cost-basis-reconciliation.ts).
-  const taxSummary = db
+  //
+  // Pending-statement lots (positions closed per live data, awaiting the
+  // broker statement — lib/queries/pending-statement.ts) are NOT open
+  // holdings: grouped per pair so the shared read model can split them out
+  // into their own disclosed line, never re-derived here.
+  const pendingKeys = pendingStatementKeySet(db, accountId != null ? [accountId] : undefined);
+  const taxLotGroups = db
     .prepare(
       `SELECT
+        tax_lots.account_id, tax_lots.security_id, tax_lots.is_short,
         COUNT(*) AS open_lots,
         COALESCE(SUM(tax_lots.cost_basis * tax_lots.quantity_remaining / tax_lots.quantity_acquired * COALESCE(fx.usd_per_unit, 1)), 0) AS total_cost_basis
        FROM tax_lots
        JOIN securities s ON s.id = tax_lots.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
-       WHERE quantity_remaining > 0 AND quantity_acquired != 0 ${taxLotsAccountFilter}`
+       WHERE quantity_remaining > 0 AND quantity_acquired != 0 ${taxLotsAccountFilter}
+       GROUP BY tax_lots.account_id, tax_lots.security_id, tax_lots.is_short`
     )
-    .get(...taxLotsAccountParams) as { open_lots: number; total_cost_basis: number };
+    .all(...taxLotsAccountParams) as Array<{
+    account_id: number;
+    security_id: number;
+    is_short: number;
+    open_lots: number;
+    total_cost_basis: number;
+  }>;
+  const taxSummary = { open_lots: 0, total_cost_basis: 0 };
+  const pendingSummary = { positions: new Set<string>(), lots: 0, cost_basis: 0 };
+  for (const g of taxLotGroups) {
+    if (isPendingStatementLot(pendingKeys, g)) {
+      pendingSummary.positions.add(pendingStatementKey(g));
+      pendingSummary.lots += g.open_lots;
+      pendingSummary.cost_basis += g.total_cost_basis;
+    } else {
+      taxSummary.open_lots += g.open_lots;
+      taxSummary.total_cost_basis += g.total_cost_basis;
+    }
+  }
 
   const realizedGainsJoin = accountId != null
     ? `JOIN tax_lots ON tax_lots.id = tax_lot_sales.tax_lot_id WHERE tax_lots.account_id = ?`
@@ -303,9 +341,14 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     )
     .get(...realizedGainsParams) as { total: number; long_term: number; short_term: number };
 
-  if (taxSummary.open_lots > 0 || realizedGains.total !== 0) {
+  if (taxSummary.open_lots > 0 || realizedGains.total !== 0 || pendingSummary.lots > 0) {
     lines.push("\n### Tax Summary");
     lines.push(`- Open lots: ${taxSummary.open_lots} (cost basis: ${formatUSD(taxSummary.total_cost_basis)})`);
+    if (pendingSummary.lots > 0) {
+      lines.push(
+        `- Positions closed per live data, awaiting broker statement: ${pendingSummary.positions.size} (${pendingSummary.lots} lot${pendingSummary.lots === 1 ? "" : "s"}, cost basis: ${formatUSD(pendingSummary.cost_basis)}) — not counted as open holdings or unrealized; realized gain unknown until the statement is imported`
+      );
+    }
     lines.push(`- Realized gains: ${formatUSD(realizedGains.total)} (LT: ${formatUSD(realizedGains.long_term)}, ST: ${formatUSD(realizedGains.short_term)})`);
     if (conventionPending) {
       lines.push(CONVENTION_PENDING_NOTE);
@@ -313,7 +356,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   }
 
   // Tax-loss harvesting candidates (positions with unrealized losses)
-  const harvestCandidates = db
+  const harvestCandidates = (db
     .prepare(
       `WITH latest_prices AS (
         SELECT p.security_id, p.close_price
@@ -322,6 +365,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         ON p.security_id = lp.security_id AND p.date = lp.max_date
       )
       SELECT
+        tl.account_id, tl.security_id, tl.is_short,
         s.symbol,
         a.name AS account_name,
         (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
@@ -338,10 +382,13 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         AND (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
              - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) < -100
         ${taxLotsFilter}
-      ORDER BY unrealized_loss ASC
-      LIMIT 5`
+      ORDER BY unrealized_loss ASC`
     )
-    .all(today, ...taxLotsParams) as HarvestCandidate[];
+    .all(today, ...taxLotsParams) as Array<HarvestCandidate & PairKeyed>)
+    // A pending-statement lot is not held — nothing to harvest. LIMIT after
+    // the exclusion so a pending lot never crowds out a real candidate.
+    .filter((c) => !isPendingStatementLot(pendingKeys, c))
+    .slice(0, 5);
 
   if (harvestCandidates.length > 0) {
     lines.push("\n### Tax-Loss Harvesting Candidates (from CURRENT open tax lots only)");
@@ -353,7 +400,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   }
 
   // Lots approaching long-term threshold (within 60 days)
-  const approachingLT = db
+  const approachingLT = (db
     .prepare(
       `WITH latest_prices AS (
         SELECT p.security_id, p.close_price
@@ -362,6 +409,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         ON p.security_id = lp.security_id AND p.date = lp.max_date
       )
       SELECT
+        tl.account_id, tl.security_id, tl.is_short,
         s.symbol,
         a.name AS account_name,
         tl.acquisition_date,
@@ -380,10 +428,11 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         AND julianday(date(tl.acquisition_date, '+366 days')) > julianday(?)
         AND julianday(date(tl.acquisition_date, '+366 days')) - julianday(?) <= 60
         ${taxLotsFilter}
-      ORDER BY days_remaining ASC
-      LIMIT 10`
+      ORDER BY days_remaining ASC`
     )
-    .all(today, today, today, ...taxLotsParams) as ApproachingLongTerm[];
+    .all(today, today, today, ...taxLotsParams) as Array<ApproachingLongTerm & PairKeyed>)
+    .filter((lot) => !isPendingStatementLot(pendingKeys, lot))
+    .slice(0, 10);
 
   if (approachingLT.length > 0) {
     lines.push("\n### Lots Approaching Long-Term Status (within 60 days)");

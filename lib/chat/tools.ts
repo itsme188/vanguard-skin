@@ -190,7 +190,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_tax_lots",
     description:
-      "Query tax lot details for open or closed positions. Returns acquisition date, cost basis, current value, unrealized/realized gain/loss, holding period, long-term/short-term status, and projected long-term date. Uses FIFO (First-In, First-Out) lot matching — the user's broker may use a different method. Use for tax-loss harvesting analysis, capital gains questions, wash sale evaluation, lot-level drill-down, or identifying lots approaching the 1-year long-term threshold.",
+      "Query tax lot details for open or closed positions. Returns acquisition date, cost basis, current value, unrealized/realized gain/loss, holding period, long-term/short-term status, and projected long-term date. Uses FIFO (First-In, First-Out) lot matching — the user's broker may use a different method. Use for tax-loss harvesting analysis, capital gains questions, wash sale evaluation, lot-level drill-down, or identifying lots approaching the 1-year long-term threshold. An open lot with pending_statement=true belongs to a position closed per live broker data whose closing trade awaits the broker statement: describe it as pending (see its status_note), never as an unrealized holding or a harvesting candidate.",
     input_schema: {
       type: "object" as const,
       properties: {

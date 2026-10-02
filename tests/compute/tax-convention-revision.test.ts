@@ -62,10 +62,13 @@ describe("engine revision in the convention stamp", () => {
     const state = getTaxConventionState(db);
     expect(state.recomputeCurrent).toBe(false);
     expect(state.stampedGeneration).toBe(2);
+    expect(state.stampedConvention).toBe("v3-revision");
+    // Its own reason (not "legacy"): the Tax Lots notice names the
+    // statement-only change rather than "an earlier lot convention".
     expect(describeTaxLotStaleness(state)).toEqual({
       stale: true,
       inputChangesSince: null,
-      reason: "legacy",
+      reason: "revision",
     });
   });
 

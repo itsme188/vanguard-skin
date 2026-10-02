@@ -11,6 +11,7 @@ import {
 } from "@/lib/compute/cash-flow-audit";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { pendingStatementKeySet } from "@/lib/queries/pending-statement";
 
 /**
  * Cross-cutting number-trust integrity scan (spec: number-trust durable
@@ -25,6 +26,15 @@ export interface IntegrityHit {
   key: string;
   severity: "critical" | "warning";
   reason: string;
+  /**
+   * Optional typed sub-kind. "statement-lag": open lots of a position closed
+   * per LIVE data, awaiting the broker statement (the pending-statement read
+   * model, lib/queries/pending-statement.ts). Expected, self-resolving on the
+   * next statement import: severity stays "warning" (never caps the score)
+   * and the popover renders it as informational "awaiting statement".
+   * Absent on every other hit.
+   */
+  kind?: "statement-lag";
 }
 
 // ── Check 1: type-identity contradictions ──────────────────────────────
@@ -188,6 +198,9 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
   const allKeys = Array.from(new Set<string>([...posByKey.keys(), ...lotsByKey.keys()])).sort();
   if (allKeys.length === 0) return [];
 
+  // Same `${account}:${security}` key as posByKey/lotsByKey above.
+  const pendingKeys = pendingStatementKeySet(db);
+
   const accountNameById = new Map(
     (db.prepare(`SELECT id, name FROM accounts`).all() as { id: number; name: string }[]).map((a) => [
       a.id,
@@ -256,11 +269,18 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
     if (lot && !pos) {
       hits.push({
         magnitude: 0,
-        hit: {
-          key: `lot-drift:${accountId}:${securityId}`,
-          severity: "warning",
-          reason: `${symbol} (${accountName}): open tax lots with no matching position`,
-        },
+        hit: pendingKeys.has(key)
+          ? {
+              key: `lot-drift:${accountId}:${securityId}`,
+              severity: "warning",
+              kind: "statement-lag",
+              reason: `${symbol} (${accountName}): closed per live data — awaiting statement`,
+            }
+          : {
+              key: `lot-drift:${accountId}:${securityId}`,
+              severity: "warning",
+              reason: `${symbol} (${accountName}): open tax lots with no matching position`,
+            },
       });
       continue;
     }

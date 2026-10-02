@@ -18,6 +18,8 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { runMigrations } from "@/lib/db/migrate";
 import { getDataConfidence } from "@/lib/queries/data-confidence";
+import { computeTaxLots } from "@/lib/compute/tax-lots";
+import { seedSec, seedFill, seedHold } from "../setup/pending-statement-fixtures";
 import {
   stampTaxLotsConvention,
   stampBrokerAcceptance,
@@ -232,6 +234,26 @@ describe("GET /api/data-confidence", () => {
 
     expect(body.data.overallScore).toBeLessThanOrEqual(45);
     expect(body.data.overallLevel).toBe("low");
+  });
+
+  it("a pending-statement pair arrives as a kind:'statement-lag' WARNING and never caps (spec 2026-10-02 §2.2)", async () => {
+    const sec = seedSec(db, "LAGC");
+    seedFill(db, 3, sec, "2026-06-01", "BUY", 10, 100);
+    seedHold(db, 3, sec, "2026-07-10", "live-zero");
+    computeTaxLots(db);
+
+    const res = await dataConfidenceGET();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.integrity.warnings).toContainEqual({
+      key: `lot-drift:3:${sec}`,
+      severity: "warning",
+      kind: "statement-lag",
+      reason: "LAGC (IBKR): closed per live data — awaiting statement",
+    });
+    expect(body.data.integrity.critical).toEqual([]);
+    expect(body.data.capReason).toBeNull();
   });
 });
 

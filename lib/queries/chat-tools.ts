@@ -4,6 +4,7 @@ import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
+import { isPendingStatementLot, pendingStatementKeySet } from "@/lib/queries/pending-statement";
 
 /**
  * Chat sector-FILTER-only alias, on top of normalizeSector. normalizeSector
@@ -132,6 +133,14 @@ export interface TaxLotResult {
   days_held: number;
   is_long_term: boolean;
   long_term_date: string | null;
+  /**
+   * Open lots only: the lot belongs to a position closed per LIVE broker data
+   * whose closing trade awaits the broker statement
+   * (lib/queries/pending-statement.ts). Not a current holding: no
+   * unrealized gain / market value, and `status_note` says so in words.
+   */
+  pending_statement?: boolean;
+  status_note?: string;
   // Only for closed lots:
   sale_date?: string;
   sale_price?: number;
@@ -540,6 +549,7 @@ export function getTaxLotsForChat(
       ON p.security_id = lp.security_id AND p.date = lp.max_date
     )
     SELECT
+      tl.account_id, tl.security_id, tl.is_short,
       a.name AS account_name,
       s.symbol,
       s.name AS security_name,
@@ -574,13 +584,32 @@ export function getTaxLotsForChat(
 
   // today params go first (julianday(?) in SELECT), then WHERE params, then LIMIT
   const allParams = [today, today, ...params, limit];
-  const rows = db.prepare(openSql).all(...allParams) as Array<Record<string, unknown>>;
+  const rows = db.prepare(openSql).all(...allParams) as Array<
+    Record<string, unknown> & { account_id: number; security_id: number; is_short: number }
+  >;
 
-  return rows.map((r) => ({
-    ...r,
-    is_long_term: Boolean(r.is_long_term),
-  })) as TaxLotResult[];
+  // Pending statement (shared read model, never re-derived here): the
+  // position is closed per live data, so the lot is described as pending —
+  // not as an unrealized holding.
+  const pendingKeys = pendingStatementKeySet(db);
+  return rows.map(({ account_id, security_id, is_short, ...r }) => {
+    const pending = isPendingStatementLot(pendingKeys, { account_id, security_id, is_short });
+    return pending
+      ? {
+          ...r,
+          current_value: null,
+          unrealized_gain: null,
+          is_long_term: Boolean(r.is_long_term),
+          pending_statement: true,
+          status_note: PENDING_STATEMENT_CHAT_NOTE,
+        }
+      : { ...r, is_long_term: Boolean(r.is_long_term), pending_statement: false };
+  }) as TaxLotResult[];
 }
+
+/** How chat describes a pending-statement lot (pinned by tests). */
+export const PENDING_STATEMENT_CHAT_NOTE =
+  "Pending statement: this position was closed per live broker data, awaiting the broker statement for the closing trade. It is not an unrealized holding, and its realized gain is unknown until the statement is imported.";
 
 /**
  * Search transaction history with filters.
