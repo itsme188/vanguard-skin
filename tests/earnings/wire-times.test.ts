@@ -473,11 +473,35 @@ describe("checkUserReleaseTimeAgainstUpcomingSlot", () => {
     ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id });
   });
 
-  it("skips an already-enriched/actualed event, same predicate as applyResolvedReleaseTimeToUpcomingEvents", () => {
+  it("refuses a wrong-side time on an AMC row that already carries actuals", () => {
     const id = seedEventWithTime("XMTR", "2099-01-01", "AMC");
     db.prepare("UPDATE calendar_events SET actual_value = 'EPS 1.00' WHERE id = ?").run(id);
     expect(
       checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "07:30", { today }),
+    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id });
+  });
+
+  it("refuses a wrong-side time on an enriched row too", () => {
+    const id = seedEventWithTime("XMTR", "2099-01-01", "AMC");
+    db.prepare("UPDATE calendar_events SET enriched_at = datetime('now') WHERE id = ?").run(id);
+    expect(
+      checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "07:30", { today }),
+    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id });
+  });
+
+  it("still accepts a same-side time on a row that carries actuals", () => {
+    const id = seedEventWithTime("XMTR", "2099-01-01", "AMC");
+    db.prepare("UPDATE calendar_events SET actual_value = 'EPS 1.00' WHERE id = ?").run(id);
+    expect(
+      checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "16:20", { today }),
+    ).toEqual({ ok: true });
+  });
+
+  it("an actuals row with no derivable slot is still not guarded (no slot evidence)", () => {
+    const id = seedEvent("EARL", "2099-01-01");
+    db.prepare("UPDATE calendar_events SET actual_value = 'EPS 1.00' WHERE id = ?").run(id);
+    expect(
+      checkUserReleaseTimeAgainstUpcomingSlot(db, "EARL", "07:30", { today }),
     ).toEqual({ ok: true });
   });
 

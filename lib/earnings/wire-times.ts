@@ -389,9 +389,13 @@ export function resolveEarningsReleaseTime(
  * slot default instead. Call this BEFORE the write so the route can reject
  * the mismatch instead of accepting a value the cascade will never honor.
  *
- * Uses the SAME predicate as applyResolvedReleaseTimeToUpcomingEvents
- * (issuer family, event_date >= today, actual_value IS NULL, enriched_at IS
- * NULL, not superseded), narrowed to the single nearest row. Skips the
+ * Uses the apply predicate's issuer family / event_date >= today / not
+ * superseded, narrowed to the nearest date, but deliberately does NOT
+ * exclude rows that already carry actuals or were enriched: those are the
+ * rows the user is editing, and the standing override is discarded by the
+ * resolver against them just the same (QA finding
+ * today-earningshub-release-time--wrong-side-time-saves-200-then-ignored-
+ * when-row-has-actuals). Skips the
  * check (ok: true) when there's no upcoming event, the row is TAS, or the
  * row's slot can't be derived — mirroring resolveEarningsReleaseTime's own
  * TAS/null-slot handling, where slot=null means "no side of noon to check".
@@ -422,7 +426,7 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
         `SELECT id, event_type, event_time, raw_json, symbol, event_date
          FROM calendar_events
          WHERE event_type = 'earnings' AND UPPER(symbol) IN (${ph})
-           AND event_date >= ? AND actual_value IS NULL AND enriched_at IS NULL
+           AND event_date >= ?
            AND COALESCE(superseded, 0) = 0
          ORDER BY event_date ASC, id ASC`,
       )
