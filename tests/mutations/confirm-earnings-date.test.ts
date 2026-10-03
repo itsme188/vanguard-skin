@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { confirmEarningsDate } from "@/lib/mutations/confirm-earnings-date";
+import { addDays } from "@/lib/calendar/date-utils";
 import { upsertSymbolReleaseTime } from "@/lib/earnings/wire-times";
 
 let db: Database.Database;
@@ -186,5 +187,31 @@ describe("confirmEarningsDate scope", () => {
       .prepare("SELECT COUNT(*) AS n FROM calendar_events WHERE symbol='MU' AND superseded=0")
       .get() as { n: number };
     expect(visibleMu.n).toBe(3);
+  });
+});
+
+describe("confirmEarningsDate far-future guard", () => {
+  const today = "2026-06-08";
+  const manualCount = () =>
+    (db.prepare("SELECT COUNT(*) AS c FROM calendar_events WHERE source='manual'").get() as { c: number }).c;
+  const run = (confirmedDate: string) =>
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate, confirmedTime: "amc", today });
+
+  it("refuses a far-future date and writes nothing", () => {
+    const result = run("2099-01-15");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusedReason).toMatch(/more than a year out/i);
+    expect(manualCount()).toBe(0);
+  });
+
+  it("accepts today + 30 days", () => {
+    expect(run(addDays(today, 30)).ok).toBe(true);
+  });
+
+  it("accepts today + 400 and refuses today + 401", () => {
+    expect(run(addDays(today, 400)).ok).toBe(true);
+    expect(manualCount()).toBe(1);
+    expect(run(addDays(today, 401)).ok).toBe(false);
+    expect(manualCount()).toBe(1);
   });
 });

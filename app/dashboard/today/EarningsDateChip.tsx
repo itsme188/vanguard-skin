@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { todayET } from "@/lib/calendar/date-utils";
+import { addDays, MAX_EARNINGS_DAYS_AHEAD, todayET } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
@@ -521,6 +521,8 @@ export function EarningsDateChip({
                 value={customDate}
                 onChange={(e) => setCustomDate(e.target.value)}
                 className="text-[10px] bg-raised rounded px-1 py-0.5 flex-1 min-w-0 text-ink"
+                min={todayIso}
+                max={addDays(todayIso, MAX_EARNINGS_DAYS_AHEAD)}
                 aria-label="Custom earnings date"
               />
               <select
