@@ -114,6 +114,38 @@ describe("POST /api/earnings/release-time — slot-mismatch guard (409)", () => 
     expect(row.release_time).toBe("16:15");
   });
 
+  it("refuses a wrong-side time with 409 on an AMC row that already carries actuals, storing nothing", async () => {
+    seedAmcEventWithWebVerified("XMTR", "2099-01-01");
+    hoisted.db
+      .prepare("UPDATE calendar_events SET actual_value = 'EPS 1.00' WHERE symbol = 'XMTR'")
+      .run();
+
+    const res = await POST(postReq({ symbol: "XMTR", releaseTime: "07:30" }));
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("slot_mismatch");
+    const row = hoisted.db
+      .prepare("SELECT release_time, source FROM symbol_release_times WHERE symbol = 'XMTR'")
+      .get();
+    expect(row).toEqual({ release_time: "16:05", source: "web_verified" });
+  });
+
+  it("a same-side time on an actuals-bearing row still saves (200)", async () => {
+    seedAmcEventWithWebVerified("XMTR", "2099-01-01");
+    hoisted.db
+      .prepare("UPDATE calendar_events SET actual_value = 'EPS 1.00' WHERE symbol = 'XMTR'")
+      .run();
+
+    const res = await POST(postReq({ symbol: "XMTR", releaseTime: "16:20" }));
+
+    expect(res.status).toBe(200);
+    const row = hoisted.db
+      .prepare("SELECT release_time, source FROM symbol_release_times WHERE symbol = 'XMTR'")
+      .get();
+    expect(row).toEqual({ release_time: "16:20", source: "user" });
+  });
+
   it("still allows a same-side (after-close) time: 200, writes the user row, updates the event", async () => {
     seedAmcEventWithWebVerified("XMTR", "2099-01-01");
 
