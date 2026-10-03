@@ -81,6 +81,13 @@ export function getCurrentMonday(now = new Date()): string {
 }
 
 /**
+ * An upcoming earnings print is never further out than this many days; a
+ * confirmed date beyond it is a typo'd year. Shared by the confirm-date
+ * mutation (hard refusal) and the date picker (client hint).
+ */
+export const MAX_EARNINGS_DAYS_AHEAD = 400;
+
+/**
  * Add days to a YYYY-MM-DD string, returning YYYY-MM-DD.
  */
 export function addDays(dateStr: string, days: number): string {
