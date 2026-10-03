@@ -31,7 +31,9 @@ export const dynamic = "force-dynamic";
  * Before writing a non-null releaseTime, checkUserReleaseTimeAgainstUpcomingSlot
  * rejects it with 409 { code: "slot_mismatch" } when its side of noon
  * disagrees with the symbol's nearest upcoming untouched event's derived
- * BMO/AMC slot. Without this, resolveSymbolReleaseTime's sameSideOfNoon
+ * BMO/AMC slot. When the symbol has no upcoming event at all, the check
+ * falls back to its latest reported print and the message says "latest"
+ * instead of "next". Without this, resolveSymbolReleaseTime's sameSideOfNoon
  * guard would silently ignore the wrong-side write and the resolver would
  * fall through to the slot default — the write happens, the value is never
  * used, and any prior web_verified row is already gone (overwritten by the
@@ -116,7 +118,7 @@ export async function POST(req: NextRequest) {
       {
         success: false,
         error:
-          `${t} is ${enteredLabel} time, but the next ${symbol} print on ` +
+          `${t} is ${enteredLabel} time, but the ${slotCheck.upcoming ? "next" : "latest"} ${symbol} print on ` +
           `${slotCheck.eventDate} is slotted ${slotLabel}. Enter ${fixLabel} time, ` +
           `or correct the event's slot first.`,
         code: "slot_mismatch",

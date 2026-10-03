@@ -434,14 +434,14 @@ describe("checkUserReleaseTimeAgainstUpcomingSlot", () => {
     const id = seedEventWithTime("XMTR", "2099-01-01", "AMC");
     expect(
       checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "07:30", { today }),
-    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id });
+    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id, upcoming: true });
   });
 
   it("not-ok: an after-close time entered against a BMO-slotted upcoming event", () => {
     const id = seedEventWithTime("WIX", "2099-01-01", "BMO");
     expect(
       checkUserReleaseTimeAgainstUpcomingSlot(db, "WIX", "16:15", { today }),
-    ).toEqual({ ok: false, slot: "bmo", eventDate: "2099-01-01", eventId: id });
+    ).toEqual({ ok: false, slot: "bmo", eventDate: "2099-01-01", eventId: id, upcoming: true });
   });
 
   it("ok when the upcoming event is TAS (no slot to violate, mirrors resolveEarningsReleaseTime)", () => {
@@ -462,7 +462,7 @@ describe("checkUserReleaseTimeAgainstUpcomingSlot", () => {
     const id = seedEventWithTime("GOOG", "2099-01-01", "AMC");
     expect(
       checkUserReleaseTimeAgainstUpcomingSlot(db, "GOOGL", "07:30", { today }),
-    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id });
+    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id, upcoming: true });
   });
 
   it("picks the NEAREST upcoming event when multiple future events exist", () => {
@@ -470,7 +470,7 @@ describe("checkUserReleaseTimeAgainstUpcomingSlot", () => {
     const id = seedEventWithTime("XMTR", "2099-01-01", "AMC"); // nearer — not-ok
     expect(
       checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "07:30", { today }),
-    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id });
+    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id, upcoming: true });
   });
 
   it("refuses a wrong-side time on an AMC row that already carries actuals", () => {
@@ -478,7 +478,7 @@ describe("checkUserReleaseTimeAgainstUpcomingSlot", () => {
     db.prepare("UPDATE calendar_events SET actual_value = 'EPS 1.00' WHERE id = ?").run(id);
     expect(
       checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "07:30", { today }),
-    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id });
+    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id, upcoming: true });
   });
 
   it("refuses a wrong-side time on an enriched row too", () => {
@@ -486,7 +486,7 @@ describe("checkUserReleaseTimeAgainstUpcomingSlot", () => {
     db.prepare("UPDATE calendar_events SET enriched_at = datetime('now') WHERE id = ?").run(id);
     expect(
       checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "07:30", { today }),
-    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id });
+    ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: id, upcoming: true });
   });
 
   it("still accepts a same-side time on a row that carries actuals", () => {
@@ -503,6 +503,52 @@ describe("checkUserReleaseTimeAgainstUpcomingSlot", () => {
     expect(
       checkUserReleaseTimeAgainstUpcomingSlot(db, "EARL", "07:30", { today }),
     ).toEqual({ ok: true });
+  });
+
+  describe("no upcoming print: fall back to the latest reported print", () => {
+    const reported = (symbol: string, date: string, slot: string) => {
+      const id = seedEventWithTime(symbol, date, slot);
+      db.prepare("UPDATE calendar_events SET actual_value = 'EPS 1.00' WHERE id = ?").run(id);
+      return id;
+    };
+
+    it("refuses a pre-open time against a past AMC row with actuals", () => {
+      const id = reported("TESTA", "2026-09-01", "AMC");
+      expect(
+        checkUserReleaseTimeAgainstUpcomingSlot(db, "TESTA", "07:30", { today }),
+      ).toEqual({ ok: false, slot: "amc", eventDate: "2026-09-01", eventId: id, upcoming: false });
+    });
+
+    it("accepts an after-close time against that same past AMC row", () => {
+      reported("TESTA", "2026-09-01", "AMC");
+      expect(
+        checkUserReleaseTimeAgainstUpcomingSlot(db, "TESTA", "16:20", { today }),
+      ).toEqual({ ok: true });
+    });
+
+    it("an upcoming event wins: the past row is never consulted", () => {
+      reported("TESTA", "2026-09-01", "AMC");
+      seedEventWithTime("TESTA", "2099-01-01", "BMO");
+      expect(
+        checkUserReleaseTimeAgainstUpcomingSlot(db, "TESTA", "07:30", { today }),
+      ).toEqual({ ok: true });
+    });
+
+    it("uses the most recent past date, not an older one", () => {
+      reported("TESTA", "2026-06-01", "BMO");
+      const id = reported("TESTA", "2026-09-01", "AMC");
+      expect(
+        checkUserReleaseTimeAgainstUpcomingSlot(db, "TESTA", "07:30", { today }),
+      ).toEqual({ ok: false, slot: "amc", eventDate: "2026-09-01", eventId: id, upcoming: false });
+    });
+
+    it("a past row with no derivable slot stays unguarded", () => {
+      const id = seedEvent("TESTA", "2026-09-01");
+      db.prepare("UPDATE calendar_events SET actual_value = 'EPS 1.00' WHERE id = ?").run(id);
+      expect(
+        checkUserReleaseTimeAgainstUpcomingSlot(db, "TESTA", "07:30", { today }),
+      ).toEqual({ ok: true });
+    });
   });
 
   it("survives a DB without calendar_events (minimal test DB) → ok:true", () => {
@@ -544,7 +590,7 @@ describe("checkUserReleaseTimeAgainstUpcomingSlot", () => {
 
       expect(
         checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "07:30", { today }),
-      ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: amcId });
+      ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: amcId, upcoming: true });
     });
 
     it("refuses a BMO-side time when the no-slot twin is inserted FIRST and the AMC-deriving twin second", () => {
@@ -553,7 +599,7 @@ describe("checkUserReleaseTimeAgainstUpcomingSlot", () => {
 
       expect(
         checkUserReleaseTimeAgainstUpcomingSlot(db, "XMTR", "07:30", { today }),
-      ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: amcId });
+      ).toEqual({ ok: false, slot: "amc", eventDate: "2099-01-01", eventId: amcId, upcoming: true });
     });
   });
 });

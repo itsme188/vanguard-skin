@@ -407,7 +407,14 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
   opts: { today?: string } = {},
 ):
   | { ok: true }
-  | { ok: false; slot: "bmo" | "amc"; eventDate: string; eventId: number } {
+  | {
+      ok: false;
+      slot: "bmo" | "amc";
+      eventDate: string;
+      eventId: number;
+      /** false = no upcoming event existed; checked against the latest past print. */
+      upcoming: boolean;
+    } {
   const today = opts.today ?? todayET();
   type Row = {
     id: number;
@@ -418,6 +425,7 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
     event_date: string;
   };
   let rows: Row[];
+  let upcoming = true;
   try {
     const family = issuerSiblings(symbol).map((s) => s.toUpperCase());
     const ph = family.map(() => "?").join(",");
@@ -431,6 +439,22 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
          ORDER BY event_date ASC, id ASC`,
       )
       .all(...family, today) as Row[];
+    if (rows.length === 0) {
+      // No upcoming print: the editor is on a reported row. Check the most
+      // recent past date (all its twins) so a wrong-side write is refused
+      // instead of stored and ignored.
+      upcoming = false;
+      rows = db
+        .prepare(
+          `SELECT id, event_type, event_time, raw_json, symbol, event_date
+           FROM calendar_events
+           WHERE event_type = 'earnings' AND UPPER(symbol) IN (${ph})
+             AND event_date < ?
+             AND COALESCE(superseded, 0) = 0
+           ORDER BY event_date DESC, id ASC`,
+        )
+        .all(...family, today) as Row[];
+    }
   } catch {
     return { ok: true };
   }
@@ -449,7 +473,7 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
     const slot = deriveEarningsSlot(row);
     if (slot === null) continue;
     if (!sameSideOfNoon(releaseTime, slot)) {
-      return { ok: false, slot, eventDate: row.event_date, eventId: row.id };
+      return { ok: false, slot, eventDate: row.event_date, eventId: row.id, upcoming };
     }
   }
   return { ok: true };
