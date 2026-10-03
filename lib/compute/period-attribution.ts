@@ -49,6 +49,14 @@ export interface PeriodAttribution {
   topDetractors: AttributionRow[];
   sectorContribution: SectorAttribution[];
   betaVsAlpha: { betaContribution: number; alphaContribution: number };
+  /**
+   * The daily window the beta regression actually spanned (first and last
+   * valuation date of its aligned return pairs), or null when no regression
+   * ran. At a multi-account scope fullCoverageOnly clamps the series to the
+   * dates every account co-exists, so this can start well after the
+   * requested period start; the card captions it via dataWindowNotice.
+   */
+  betaWindow: { start: string; end: string } | null;
 }
 
 // ─── Local beta regression ────────────────────────────────────────────────────
@@ -59,7 +67,13 @@ function computeBetaForPeriod(
   benchmarkSymbol: string,
   startDate: string,
   endDate: string,
-): { beta: number; benchmarkReturn: number; portfolioReturn: number } | null {
+): {
+  beta: number;
+  benchmarkReturn: number;
+  portfolioReturn: number;
+  windowStart: string;
+  windowEnd: string;
+} | null {
   // SUM across the scoped accounts per date BEFORE any return math — the
   // regression must see one portfolio series, never a single account's.
   // fullCoverageOnly is the coverage-jump guard (an appearing account's
@@ -98,6 +112,8 @@ function computeBetaForPeriod(
 
   const benchByDate = new Map(benchmarks.map((b) => [b.date, b.close_price]));
   const aligned: { portReturn: number; benchReturn: number }[] = [];
+  let windowStart: string | null = null;
+  let windowEnd: string | null = null;
 
   for (let i = 1; i < valuations.length; i++) {
     const prev = valuations[i - 1];
@@ -119,10 +135,12 @@ function computeBetaForPeriod(
         portReturn: (curr.total_value - prev.total_value - flow) / prev.total_value,
         benchReturn: (benchCurr - benchPrev) / benchPrev,
       });
+      windowStart ??= prev.valuation_date;
+      windowEnd = curr.valuation_date;
     }
   }
 
-  if (aligned.length < 5) return null;
+  if (aligned.length < 5 || windowStart === null || windowEnd === null) return null;
 
   const meanP = aligned.reduce((s, r) => s + r.portReturn, 0) / aligned.length;
   const meanB = aligned.reduce((s, r) => s + r.benchReturn, 0) / aligned.length;
@@ -141,7 +159,7 @@ function computeBetaForPeriod(
   const portfolioReturn = aligned.reduce((p, r) => p * (1 + r.portReturn), 1) - 1;
   const benchmarkReturn = aligned.reduce((p, r) => p * (1 + r.benchReturn), 1) - 1;
 
-  return { beta, benchmarkReturn, portfolioReturn };
+  return { beta, benchmarkReturn, portfolioReturn, windowStart, windowEnd };
 }
 
 // ─── Per-position contributions ───────────────────────────────────────────────
@@ -249,10 +267,12 @@ export function computePeriodAttribution(
   // routinely empty, which made alpha ≡ −betaContribution (the 2026-06-10 bug).
   let betaContribution = 0;
   let alphaContribution = 0;
+  let betaWindow: PeriodAttribution["betaWindow"] = null;
   const reg = computeBetaForPeriod(db, accountIds, benchmarkSymbol, startDate, endDate);
   if (reg) {
     betaContribution = reg.beta * reg.benchmarkReturn;
     alphaContribution = reg.portfolioReturn - betaContribution;
+    betaWindow = { start: reg.windowStart, end: reg.windowEnd };
   }
 
   return {
@@ -260,5 +280,6 @@ export function computePeriodAttribution(
     topDetractors,
     sectorContribution,
     betaVsAlpha: { betaContribution, alphaContribution },
+    betaWindow,
   };
 }
