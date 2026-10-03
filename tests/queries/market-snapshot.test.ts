@@ -204,6 +204,35 @@ function chartFixture(
   };
 }
 
+describe("getMarketSnapshot local note is session-aware", () => {
+  // 2026-06-05 is a Friday (EDT, UTC-4).
+  it("pre-open on the price date: intraday wording, not a close", async () => {
+    seedFreshPair();
+    const snap = await getMarketSnapshot(db, { now: new Date("2026-06-05T07:30:00Z") }); // 03:30 ET
+    expect(snap.source).toBe("local");
+    expect(snap.note).toMatch(/pre-market \/ intraday/);
+    expect(snap.note).not.toMatch(/^Closing prices/);
+  });
+
+  it("midday on the price date: still intraday wording", async () => {
+    seedFreshPair();
+    const snap = await getMarketSnapshot(db, { now: new Date("2026-06-05T16:00:00Z") }); // 12:00 ET
+    expect(snap.note).toMatch(/pre-market \/ intraday/);
+  });
+
+  it("after 16:00 ET on the price date: closing wording", async () => {
+    seedFreshPair();
+    const snap = await getMarketSnapshot(db, { now: new Date("2026-06-05T20:30:00Z") }); // 16:30 ET
+    expect(snap.note).toMatch(/^Closing prices as of 2026-06-05/);
+  });
+
+  it("price date before today: closing wording", async () => {
+    seedFreshPair();
+    const snap = await getMarketSnapshot(db, { now: new Date("2026-06-06T14:00:00Z") }); // Sat 10:00 ET
+    expect(snap.note).toMatch(/^Closing prices as of 2026-06-05/);
+  });
+});
+
 describe("parseYahooChart", () => {
   const meta = {
     regularMarketPrice: 127.39,

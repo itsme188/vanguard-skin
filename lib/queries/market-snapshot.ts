@@ -18,7 +18,7 @@
 import type Database from "better-sqlite3";
 import { resolveTradingDayPair } from "@/lib/digest/anomalies";
 import { getHoldingsForChat } from "@/lib/queries/chat-tools";
-import { todayET, calendarDaysBetween } from "@/lib/calendar/date-utils";
+import { todayET, nowET, calendarDaysBetween } from "@/lib/calendar/date-utils";
 
 /** Calendar-day tolerance before the local book counts as stale. Matches the
  *  levels stale-price guard: tolerates Fri→Mon + a long-weekend Monday. */
@@ -67,6 +67,8 @@ export type QuoteFetcher = (
 
 interface SnapshotOptions {
   today?: string;
+  /** Injected clock for the session-aware note (tests). Defaults to the real clock. */
+  now?: Date;
   fetchQuotes?: QuoteFetcher;
   benchmarks?: string[];
 }
@@ -220,7 +222,8 @@ export async function getMarketSnapshot(
   db: Database.Database,
   opts: SnapshotOptions = {},
 ): Promise<MarketSnapshot> {
-  const today = opts.today ?? todayET();
+  const now = opts.now ?? new Date();
+  const today = opts.today ?? todayET(now);
   const benchmarks = opts.benchmarks ?? DEFAULT_BENCHMARKS;
   const universe = buildUniverse(db, benchmarks);
 
@@ -245,13 +248,20 @@ export async function getMarketSnapshot(
 
   // Fresh local data wins outright (local-first) — no live call.
   if (pair && localMoves.length > 0 && !localStale) {
+    // A price dated today (ET) before the 16:00 ET close is a pre-market /
+    // intraday quote, not a close — never call it one.
+    const sessionOpen =
+      pair.latest === today && todayET(now) === today && nowET(now) < "16:00";
+    const note = sessionOpen
+      ? `Latest pre-market / intraday quotes as of ${pair.latest} (local book) versus the prior close. The ${pair.latest} session has not closed yet, so these are NOT closing prices — do not call them a close or an end-of-day move.`
+      : `Closing prices as of ${pair.latest} (local book). Intraday moves during the current session are not reflected.`;
     return {
       source: "local",
       asOf: pair.latest,
       stale: false,
       staleDays,
       moves: localMoves,
-      note: `Closing prices as of ${pair.latest} (local book). Intraday moves during the current session are not reflected.`,
+      note,
     };
   }
 
