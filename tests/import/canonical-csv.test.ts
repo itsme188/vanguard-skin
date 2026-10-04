@@ -627,3 +627,42 @@ IBKR,2025-03-10,,SELL,AAPL,Apple Inc,Stock,3,160,480,0,`;
     expect(result.securities[0].symbol).toBe("AAPL");
   });
 });
+
+describe("canonical CSV strict numeric cells (typo'd digits are not read as a prefix)", () => {
+  const hdr =
+    "account,trade_date,settlement_date,type,symbol,security_name,security_type,quantity,price,amount,fees,notes";
+
+  it.each(["5O", "1.2.3", "-12.3x"])("quantity %s parses to NaN", (bad) => {
+    const csv = `${hdr}\nIBKR,2025-04-15,,BUY,ZQQ1,Zed Corp,Stock,${bad},10,500,0,typo`;
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions[0].quantity).toBeNaN();
+  });
+
+  it.each(["5O", "1.2.3", "-12.3x"])("price %s parses to NaN", (bad) => {
+    const csv = `${hdr}\nIBKR,2025-04-15,,BUY,ZQQ1,Zed Corp,Stock,50,${bad},500,0,typo`;
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions[0].pricePerShare).toBeNaN();
+  });
+
+  it.each(["5O", "1.2.3", "-12.3x"])("amount %s parses to NaN", (bad) => {
+    const csv = `${hdr}\nIBKR,2025-04-15,,BUY,ZQQ1,Zed Corp,Stock,50,10,${bad},0,typo`;
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions[0].amount).toBeNaN();
+  });
+
+  it.each([
+    ["50", 50],
+    [".5", 0.5],
+    ["1e3", 1000],
+  ])("quantity %s still parses", (cell, expected) => {
+    const csv = `${hdr}\nIBKR,2025-04-15,,BUY,ZQQ1,Zed Corp,Stock,${cell},10,500,0,ok`;
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions[0].quantity).toBe(expected);
+  });
+
+  it("price -12.30 still parses", () => {
+    const csv = `${hdr}\nIBKR,2025-04-15,,BUY,ZQQ1,Zed Corp,Stock,50,-12.30,500,0,ok`;
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions[0].pricePerShare).toBe(-12.3);
+  });
+});

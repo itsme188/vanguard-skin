@@ -178,3 +178,17 @@ describe("getSecurityBySymbolCI", () => {
     expect(getSecurityBySymbolCI(db, "nope")).toBeNull();
   });
 });
+
+describe("DAF strict numeric cells", () => {
+  it("a typo'd USD amount is not read as its leading digits", () => {
+    const csv = [
+      "type,frequency,amount,currency,USD amount,currency valuation,created at,received at,completed at",
+      "",
+      "  Stock,One time,10.0,FAKE,12O0.5,,2026-03-01 20:00:00 +0000,2026-03-02 13:00:00 +0000,2026-03-03 17:00:00 +0000",
+    ].join("\n");
+    const result = parseDafContributions(csv, "typo.csv");
+    for (const d of result.donations ?? []) {
+      expect(d.fmvUsd).not.toBe(12);
+    }
+  });
+});
