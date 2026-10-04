@@ -708,3 +708,42 @@ describe("validateParsedResult: knownAccountNames option", () => {
     expect(validatedResult.warnings.some((w) => w.includes("Unknown account"))).toBe(false);
   });
 });
+
+describe("validateParsedResult: present-but-unparseable price and fees", () => {
+  const base = {
+    accountName: "IBKR",
+    tradeDate: "2025-03-15",
+    type: "BUY",
+    symbol: "ZQQ1",
+    quantity: 50,
+    amount: 500,
+    sourceKey: "test:strict",
+  };
+
+  it("excludes a transaction with NaN price, naming the price", () => {
+    const { skippedRows, validatedResult } = validateParsedResult(
+      makeParsedResult({ transactions: [{ ...base, pricePerShare: NaN }] }),
+    );
+    expect(skippedRows).toHaveLength(1);
+    expect(skippedRows[0].reason).toContain("Invalid price");
+    expect(skippedRows[0].reason).toContain("not a number");
+    expect(validatedResult.transactions).toHaveLength(0);
+  });
+
+  it("excludes a transaction with NaN fees, naming the fees", () => {
+    const { skippedRows, validatedResult } = validateParsedResult(
+      makeParsedResult({ transactions: [{ ...base, fees: NaN }] }),
+    );
+    expect(skippedRows).toHaveLength(1);
+    expect(skippedRows[0].reason).toContain("Invalid fees");
+    expect(validatedResult.transactions).toHaveLength(0);
+  });
+
+  it("keeps a transaction whose price and fees are blank (undefined)", () => {
+    const { skippedRows, validatedResult } = validateParsedResult(
+      makeParsedResult({ transactions: [{ ...base }] }),
+    );
+    expect(skippedRows).toHaveLength(0);
+    expect(validatedResult.transactions).toHaveLength(1);
+  });
+});
