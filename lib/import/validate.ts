@@ -239,6 +239,26 @@ export function validateParsedResult(
       skip = true;
     }
 
+    if (txn.pricePerShare != null && !Number.isFinite(txn.pricePerShare)) {
+      skippedRows.push({
+        category: "transaction",
+        index: i,
+        reason: `Invalid price: ${describeNumber(txn.pricePerShare)}`,
+        symbol: txn.symbol,
+      });
+      skip = true;
+    }
+
+    if (txn.fees != null && !Number.isFinite(txn.fees)) {
+      skippedRows.push({
+        category: "transaction",
+        index: i,
+        reason: `Invalid fees: ${describeNumber(txn.fees)}`,
+        symbol: txn.symbol,
+      });
+      skip = true;
+    }
+
     if (!isValidTransactionType(txn.type)) {
       warnings.push(
         `Transaction #${i + 1} (${txn.symbol ?? "no symbol"}): unknown type "${txn.type}" — importing as-is`,
