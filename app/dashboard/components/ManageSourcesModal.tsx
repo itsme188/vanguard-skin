@@ -394,6 +394,7 @@ export function ManageSourcesModal({
 
   const handleAddDiscovered = useCallback(
     async (sender: DiscoveredSender) => {
+      setMutationError(null);
       setAdding(true);
       try {
         const res = await apiFetch("/api/research/sources", {
@@ -426,6 +427,7 @@ export function ManageSourcesModal({
 
   const handleAddManual = useCallback(async () => {
     if (!manualName.trim() || !manualEmail.trim()) return;
+    setMutationError(null);
     setAdding(true);
     try {
       const res = await apiFetch("/api/research/sources", {
