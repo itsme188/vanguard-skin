@@ -31,6 +31,7 @@ import { epsDelta, deltaToneClass } from "@/lib/earnings/eps-delta";
 import type { CalendarEvent } from "@/lib/types";
 import { SymbolLink } from "../components/SymbolLink";
 import { EarningsHubAddForm } from "./EarningsHubAddForm";
+import { EarningsHubDateCorrectionNote } from "./EarningsHubDateCorrectionNote";
 import { RecapFigureButton } from "./RecapFigureButton";
 import { EarningsHubRefreshButton } from "./EarningsHubRefreshButton";
 import { EarningsRowChips } from "./EarningsRowChips";
@@ -297,6 +298,7 @@ export function EarningsHub() {
           <EarningsHubAddForm weekOf={weekOf} />
           <EarningsHubRefreshButton weekOf={weekOf} />
         </div>
+        <EarningsHubDateCorrectionNote weekOf={weekOf} />
         <div className="flex items-center justify-start gap-2 pt-1">
           <BogeysUploadButton weekOf={weekOf} />
         </div>
