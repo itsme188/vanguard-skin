@@ -24,6 +24,7 @@ import {
   shouldAutoDismiss,
   type SyncFeedback,
 } from "@/lib/research/sync-feedback";
+import { PrivateText } from "@/lib/privacy/components";
 import { useToast } from "./Toast";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -844,7 +845,7 @@ function ArticleCard({
         {/* Portfolio relevance */}
         {article.portfolio_relevance && (
           <p className={`text-[17px] leading-[1.7] text-gold/80 mb-3 pl-3 border-l-2 ${border}`}>
-            {article.portfolio_relevance}
+            <PrivateText>{article.portfolio_relevance}</PrivateText>
           </p>
         )}
 
@@ -1084,7 +1085,7 @@ function FilteredArticleRow({
         <p className="text-xs text-ink-faint mt-1">{senderShort}</p>
         {article.excluded_reason && (
           <p className="mt-2 text-xs text-ink-dim italic">
-            {article.excluded_reason}
+            <PrivateText>{article.excluded_reason}</PrivateText>
           </p>
         )}
       </div>
