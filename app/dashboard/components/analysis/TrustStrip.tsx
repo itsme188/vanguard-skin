@@ -10,7 +10,7 @@ type Tone = "good" | "warn" | "bad" | "neutral";
 function toneClass(tone: Tone): string {
   switch (tone) {
     case "good": return "text-up";
-    case "warn": return "text-amber-400";
+    case "warn": return "text-warn";
     case "bad": return "text-down";
     default: return "text-ink";
   }

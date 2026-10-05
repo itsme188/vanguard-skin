@@ -1316,7 +1316,7 @@ function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
                   ≈ {formatUSDPrecise(l.effective_price)}
                 </span>
               ) : (
-                <span className="text-[10px] text-amber-400">insufficient history</span>
+                <span className="text-[10px] text-warn">insufficient history</span>
               )}
             </>
           )}
