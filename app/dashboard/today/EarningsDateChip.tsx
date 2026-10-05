@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useTransition } from "rea
 import { useRouter } from "next/navigation";
 import { todayET } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
+import { EARNINGS_DATE_CORRECTED_EVENT } from "./EarningsHubDateCorrectionNote";
 
 interface Props {
   symbol: string;
@@ -327,6 +328,11 @@ export function EarningsDateChip({
         return;
       }
       setOpen(false);
+      // This row may vanish from the shown week after the refresh; the hub's
+      // note component (which survives) tells the user where it went.
+      window.dispatchEvent(
+        new CustomEvent(EARNINGS_DATE_CORRECTED_EVENT, { detail: { date: fixDate } }),
+      );
       onConfirmed?.();
       startTransition(() => router.refresh());
     } catch {
