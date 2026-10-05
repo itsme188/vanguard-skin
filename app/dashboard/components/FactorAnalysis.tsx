@@ -298,7 +298,7 @@ function MetricCell({
       : color === "down"
         ? "text-down"
         : color === "amber"
-          ? "text-amber-400"
+          ? "text-warn"
           : color === "blue"
             ? "text-blue-400"
             : "text-ink";

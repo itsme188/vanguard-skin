@@ -17,21 +17,21 @@ const EVENT_TYPE_CONFIG: Record<
   cpi: { icon: "📈", color: "text-down", bgColor: "bg-down/20" },
   jobs: { icon: "👷", color: "text-down", bgColor: "bg-down/20" },
   gdp: { icon: "🌐", color: "text-down", bgColor: "bg-down/20" },
-  pmi: { icon: "🏭", color: "text-amber-400", bgColor: "bg-amber-400/20" },
+  pmi: { icon: "🏭", color: "text-warn", bgColor: "bg-warn/20" },
   retail_sales: {
     icon: "🛒",
-    color: "text-amber-400",
-    bgColor: "bg-amber-400/20",
+    color: "text-warn",
+    bgColor: "bg-warn/20",
   },
   housing: {
     icon: "🏠",
-    color: "text-amber-400",
-    bgColor: "bg-amber-400/20",
+    color: "text-warn",
+    bgColor: "bg-warn/20",
   },
   other_macro: {
     icon: "📅",
-    color: "text-amber-400",
-    bgColor: "bg-amber-400/20",
+    color: "text-warn",
+    bgColor: "bg-warn/20",
   },
   other: { icon: "📌", color: "text-ink-dim", bgColor: "bg-muted" },
 };

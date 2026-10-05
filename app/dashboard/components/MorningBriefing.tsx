@@ -49,13 +49,13 @@ function getMarketSession(): { session: MarketSession; label: string; color: str
     return { session: "closed", label: "Markets Closed", color: "text-ink-faint" };
   }
   if (time < 9 * 60 + 30) {
-    return { session: "pre-market", label: "Pre-Market", color: "text-amber-400" };
+    return { session: "pre-market", label: "Pre-Market", color: "text-warn" };
   }
   if (time < 16 * 60) {
     return { session: "open", label: "Market Open", color: "text-up" };
   }
   if (time < 20 * 60) {
-    return { session: "after-hours", label: "After Hours", color: "text-amber-400" };
+    return { session: "after-hours", label: "After Hours", color: "text-warn" };
   }
   return { session: "closed", label: "Markets Closed", color: "text-ink-faint" };
 }
