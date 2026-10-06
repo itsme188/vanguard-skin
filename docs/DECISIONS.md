@@ -431,3 +431,13 @@ Read-only, on VACUUM copies; real figures stay in the gitignored private report.
 - **Monthly snapshot import: a whole-account monthly return above 100 percent is excluded.** The preview skips the row and says the field is a decimal, so a typed percent cannot import as a huge month; a genuine case is imported by editing the file. Considered and set aside: confirm-to-proceed, since a real one is possible for a small options-heavy account. A date that is not a month-end gets a warning only. The change is confined to import validation.
 - **Recap sent on a row later superseded: the archive marks it.** The email shows a superseded chip with a link to the real print's email, and the send path is checked to confirm it refuses a superseded row. Nothing is deleted.
 - **Broker account page: a cash line in the holdings footer.** A single-account page shows a market-value total and a cash line with its date, so positions plus cash equals the chart total. On live-data days the line says cash is a timing estimate. Rejected: a synthetic cash holding.
+
+## 2026-10-06 — Scenario option repricing: the four design rulings
+
+Spec: `docs/superpowers/specs/2026-10-06-scenario-option-repricing-design.md`.
+
+- **Volatility source:** solved from the contract's own last price; the broker's figure for the underlying second; otherwise the option is unmodelled. The source is shown per option.
+- **Volatility under a shock:** the user sets it with a slider on custom scenarios (points, default 0). Presets hold volatility at today's level and say so. No coefficient ties volatility to the market move, because the app stores no volatility history to derive one from.
+- **Scope:** presets and custom scenarios together, through one shared function.
+- **Options that cannot be repriced:** excluded from the total, shown as not modelled with the reason, and counted. The fixed-elasticity and 30 percent fallbacks leave the scenario path.
+
