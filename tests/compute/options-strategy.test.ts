@@ -72,6 +72,26 @@ describe("detectStrategies", () => {
     expect(strategies[0].maxProfit).toBeNull(); // unlimited upside
   });
 
+  it("covered call maxLoss: fully covered is stock cost minus premium", () => {
+    // 200 sh @ 100, 2 calls @ 5 -> 200*100 - 5*100*2 = 19,000
+    const [cc] = detectStrategies([
+      stock("ZZZ", 200, 100),
+      option("ZZZ", "CALL", 110, -2, { price: 5 }),
+    ]);
+    expect(cc.type).toBe("covered_call");
+    expect(cc.maxLoss).toBeCloseTo(19000, 6);
+  });
+
+  it("covered call maxLoss: shares beyond the covered contracts carry full value", () => {
+    // 300 sh @ 100, 2 calls @ 5 -> 300*100 - 5*100*2 = 29,000 (was 19,000)
+    const [cc] = detectStrategies([
+      stock("ZZZ", 300, 100),
+      option("ZZZ", "CALL", 110, -2, { price: 5 }),
+    ]);
+    expect(cc.type).toBe("covered_call");
+    expect(cc.maxLoss).toBeCloseTo(29000, 6);
+  });
+
   it("detects a bull call spread", () => {
     const positions = [
       option("AAPL", "CALL", 180, 1, { price: 10 }),

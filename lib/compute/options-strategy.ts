@@ -195,6 +195,18 @@ function detectCoveredStrategies(
     const strike = call.strike!;
     const premium = (call.currentPrice ?? 0) * call.multiplier;
     const stockCost = stock.currentPrice ?? 0;
+    // Worst case is the stock going to zero. Same convention as the protective
+    // put below: every share held carries its full value down, and only the
+    // covered contracts' premium is received. Shares BEYOND the covered
+    // contracts are unhedged long stock (the call gives them no cushion), so
+    // they must not be left out of the loss. Floored at 0.
+    const coveredShares = coveredContracts * call.multiplier;
+    const uncoveredShares = Math.max(0, shares - coveredShares);
+    const coveredPremium = (call.currentPrice ?? 0) * call.multiplier * coveredContracts;
+    const maxLoss = Math.max(
+      0,
+      coveredShares * stockCost + uncoveredShares * stockCost - coveredPremium
+    );
 
     strategies.push({
       type: "covered_call",
@@ -203,7 +215,7 @@ function detectCoveredStrategies(
       expiration: call.expiration,
       legs: [stock, call],
       maxProfit: (strike - stockCost + (call.currentPrice ?? 0)) * call.multiplier * coveredContracts,
-      maxLoss: (stockCost - (call.currentPrice ?? 0)) * call.multiplier * coveredContracts,
+      maxLoss,
       breakevens: [stockCost - (call.currentPrice ?? 0)],
       description: `Long ${shares} shares + short ${Math.abs(call.quantity)} ${formatExpiry(call.expiration)} ${formatStrike(strike)} call${Math.abs(call.quantity) > 1 ? "s" : ""}`,
     });

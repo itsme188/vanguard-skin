@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { PrivateText } from "@/lib/privacy/components";
+import { Money, PrivateText } from "@/lib/privacy/components";
+import apiFetch from "@/lib/http/apiFetch";
 import { EmptySection } from "./EmptySection";
 
 interface Strategy {
@@ -28,7 +29,7 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
 
   useEffect(() => {
     const qs = scope ? `?scope=${encodeURIComponent(scope)}` : "";
-    fetch(`/api/compute/options-strategies${qs}`)
+    apiFetch(`/api/compute/options-strategies${qs}`)
       .then((r) => r.json())
       .then((json) => {
         if (json.success && json.data?.length > 0) setStrategies(json.data);
@@ -89,7 +90,7 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
                   {s.pricingIncomplete ? (
                     <span className="text-ink-faint">Premium unknown</span>
                   ) : s.maxProfit != null ? (
-                    <PrivateText>{formatDollar(s.maxProfit)}</PrivateText>
+                    <Money value={s.maxProfit} />
                   ) : (
                     "Unlimited"
                   )}
@@ -101,7 +102,7 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
                   {s.pricingIncomplete ? (
                     <span className="text-ink-faint">Premium unknown</span>
                   ) : s.maxLoss != null ? (
-                    <PrivateText>{formatDollar(s.maxLoss)}</PrivateText>
+                    <Money value={s.maxLoss} />
                   ) : (
                     "Unlimited"
                   )}
@@ -126,9 +127,4 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
 
 function formatStrategyType(type: string): string {
   return type.replace(/_/g, " ");
-}
-
-function formatDollar(n: number): string {
-  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}K`;
-  return `$${n.toFixed(0)}`;
 }

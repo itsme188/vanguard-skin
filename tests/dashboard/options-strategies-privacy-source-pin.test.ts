@@ -25,7 +25,7 @@ const src = readFileSync(
 describe("OptionsStrategies privacy masking", () => {
   it("imports PrivateText", () => {
     expect(src).toMatch(
-      /import\s*\{\s*PrivateText\s*\}\s*from\s*["']@\/lib\/privacy\/components["']/
+      /import\s*\{[^}]*\bPrivateText\b[^}]*\}\s*from\s*["']@\/lib\/privacy\/components["']/
     );
   });
 
@@ -34,15 +34,15 @@ describe("OptionsStrategies privacy masking", () => {
     expect(src).toMatch(/<PrivateText>\s*\{s\.description\}\s*<\/PrivateText>/);
   });
 
-  it("still masks Max Profit through PrivateText", () => {
+  it("still masks Max Profit through Money", () => {
     expect(src).toMatch(
-      /<PrivateText>\s*\{formatDollar\(s\.maxProfit\)\}\s*<\/PrivateText>/
+      /<Money value=\{s\.maxProfit\} \/>/
     );
   });
 
-  it("still masks Max Loss through PrivateText", () => {
+  it("still masks Max Loss through Money", () => {
     expect(src).toMatch(
-      /<PrivateText>\s*\{formatDollar\(s\.maxLoss\)\}\s*<\/PrivateText>/
+      /<Money value=\{s\.maxLoss\} \/>/
     );
   });
 
@@ -75,5 +75,14 @@ describe("OptionsStrategies withholds figures when a leg is unpriced", () => {
 
   it("explains the missing price under the description", () => {
     expect(src).toMatch(/One or more legs have no price yet/);
+  });
+});
+
+describe("OptionsStrategies shared helpers", () => {
+  it("imports apiFetch and Money, uses no raw fetch and no hand-rolled formatDollar", () => {
+    expect(src).toMatch(/import apiFetch from "@\/lib\/http\/apiFetch"/);
+    expect(src).toMatch(/import\s*\{[^}]*\bMoney\b[^}]*\}\s*from\s*["']@\/lib\/privacy\/components["']/);
+    expect(src).not.toMatch(/(^|[^.\w])fetch\(/m);
+    expect(src).not.toMatch(/formatDollar/);
   });
 });
