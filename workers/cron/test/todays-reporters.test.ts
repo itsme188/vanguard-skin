@@ -210,6 +210,15 @@ describe("formatCompactConsensus — zero-revenue placeholder (parity with the M
     expect(block).toContain("| BMO 08:00 | X | — | $0.00 | — |");
   });
 
+  it("picks the revenue unit AFTER rounding — never '$1000.0M'", () => {
+    const snapshot = makeSnapshot({
+      calendarEvents: [makeEvent({ symbol: "X", consensus_estimate: "EPS 1.00 · Rev 999960000" })] as never,
+    });
+    const block = buildTodaysReportersBlock(snapshot, TODAY)!;
+    expect(block).toContain("| $1.00 · $1.00B |");
+    expect(block).not.toContain("1000.0M");
+  });
+
   // Cross-side pin: for each fixture, the Worker's rendered "Cons" cell must
   // agree with the Mac's own formatFinnhubFigureCompact (empty compact ==
   // the renderer's "—", per lib/digest/todays-reporters-render.ts).
@@ -220,6 +229,12 @@ describe("formatCompactConsensus — zero-revenue placeholder (parity with the M
       "EPS 0 · Rev 0",
       "EPS -0.14 · Rev 190000",
       "Pre-announcement only",
+      // Unit-after-rounding boundary: [$999.95M, $1B) rounds to 1000.0 at M
+      // precision and must promote to B on both sides.
+      "EPS 1.00 · Rev 999960000",
+      "Rev 999999999",
+      "Rev 999940000",
+      "Rev 1000000000",
     ];
     for (const fixture of fixtures) {
       const snapshot = makeSnapshot({

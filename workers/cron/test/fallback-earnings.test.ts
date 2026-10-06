@@ -37,6 +37,10 @@ import {
   type PositionView,
 } from "../src/fallback-earnings";
 import { loadLatestSnapshot } from "../src/state";
+// Mac-side label/format helpers, imported for cross-side parity pins only
+// (both modules are pure; neither pulls a native dependency).
+import { epsDelta as macEpsDelta } from "../../../lib/earnings/eps-delta";
+import { formatRevenueUSD as macFormatRevenueUSD } from "../../../lib/format/finnhub-figure";
 import { sendEmail } from "../src/resend";
 import { composeReleaseInstant } from "../src/reaction-matcher";
 import { fetchLiveIbkrPositionsCached } from "../src/ibkr-positions";
@@ -1042,6 +1046,49 @@ describe("recap safety gates (B8)", () => {
     const md = renderScoreboard(ev, "recap", null, false);
     const revRow = md.split("\n").find((l) => l.includes("**Revenue**"))!;
     expect(revRow).toBe("| **Revenue** | $90.00B | — | — |");
+  });
+
+  // PARITY (Mac: lib/digest/send-earnings-email.ts::formatPctDelta, pinned
+  // by tests/digest/headline-zero-consensus-delta.test.ts with the SAME
+  // fixture set and expected strings). A percent surprise against a $0.00
+  // EPS estimate is undefined; the cell states the signed absolute-dollar
+  // delta instead of "—". The Mac's own label helper is imported so the two
+  // sides cannot drift.
+  const ZERO_CONSENSUS_EPS_FIXTURES: Array<[string, string, string]> = [
+    ["EPS 0.00 · Rev 500000000", "EPS 0.45 · Rev 510000000", "+$0.45"],
+    ["EPS 0.00 · Rev 500000000", "EPS -0.01 · Rev 510000000", "-$0.01"],
+    ["EPS 0 · Rev 500000000", "EPS 0 · Rev 510000000", "in-line"],
+    ["EPS 1.00 · Rev 500000000", "EPS 1.10 · Rev 510000000", "+10.0%"],
+  ];
+  const deltaCell = (md: string, label: string) =>
+    md.split("\n").find((l) => l.startsWith(`| **${label}** |`))!.split("|")[4].trim();
+
+  for (const [consensus, actual, expected] of ZERO_CONSENSUS_EPS_FIXTURES) {
+    it(`scoreboard EPS delta, parity with the Mac: ${consensus} vs ${actual} → ${expected}`, () => {
+      const ev = baseEvent();
+      (ev as Record<string, unknown>).consensus_estimate = consensus;
+      (ev as Record<string, unknown>).actual_value = actual;
+      const md = renderScoreboard(ev, "recap", null, false);
+      expect(deltaCell(md, "EPS")).toBe(expected);
+      expect(deltaCell(md, "EPS")).toBe(macEpsDelta(consensus, actual)?.label);
+      expect(deltaCell(md, "Revenue")).toBe("+2.0%");
+    });
+  }
+
+  // PARITY (Mac: lib/format/finnhub-figure.ts::formatRevenueUSD). The unit is
+  // picked AFTER rounding — a figure that rounds to 1000.0 at M precision
+  // promotes to B.
+  it("scoreboard revenue picks its unit after rounding (parity with the Mac)", () => {
+    for (const rev of [999_960_000, 999_999_999, 999_940_000, 1_000_000_000, 245_000_000]) {
+      const ev = baseEvent();
+      (ev as Record<string, unknown>).consensus_estimate = `EPS 1.00 · Rev ${rev}`;
+      const md = renderScoreboard(ev, "recap", null, false);
+      const cell = md.split("\n").find((l) => l.includes("**Revenue**"))!.split("|")[2].trim();
+      expect(cell, `revenue ${rev}`).toBe(macFormatRevenueUSD(rev));
+    }
+    const ev = baseEvent();
+    (ev as Record<string, unknown>).consensus_estimate = "EPS 1.00 · Rev 999960000";
+    expect(renderScoreboard(ev, "recap", null, false)).toContain("| **Revenue** | $1.00B |");
   });
 
   it("end-to-end: snapshot-road recap with enriched_at but NULL actual is skipped markerless", async () => {

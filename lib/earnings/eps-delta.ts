@@ -1,6 +1,21 @@
 import { formatFinnhubFigure } from "@/lib/format/finnhub-figure";
 
 /**
+ * The ONE label for an EPS delta against a $0.00 estimate. The surprise
+ * PERCENT is undefined there (÷0) but the beat/miss is real, so the delta is
+ * stated in signed absolute dollars ("+$0.45" / "-$0.01"; "in-line" when the
+ * actual is also exactly 0). Shared by the UI chip (`epsDelta` below) and the
+ * earnings-email scoreboard (`formatPctDelta` in
+ * lib/digest/send-earnings-email.ts). PARITY: the Worker mirror is
+ * `zeroConsensusEpsDeltaLabel` in workers/cron/src/fallback-earnings.ts —
+ * change both sides together.
+ */
+export function zeroConsensusEpsDeltaLabel(actual: number): string {
+  if (actual === 0) return "in-line";
+  return `${actual > 0 ? "+" : "-"}$${Math.abs(actual).toFixed(2)}`;
+}
+
+/**
  * Compute beat/miss percent off EPS only — matches what users naturally
  * read off an earnings line. Returns formatted string + a sign hint for
  * coloring. null when either side missing.
@@ -28,8 +43,7 @@ export function epsDelta(
     // week-ahead-chips--zero-consensus-eps-miss-renders-neutral-not-red), so
     // label the delta in absolute dollars instead of a percent.
     const zSign: 1 | -1 | 0 = a === 0 ? 0 : a > 0 ? 1 : -1;
-    if (zSign === 0) return { label: "in-line", sign: zSign };
-    return { label: `${a > 0 ? "+" : "-"}$${Math.abs(a).toFixed(2)}`, sign: zSign };
+    return { label: zeroConsensusEpsDeltaLabel(a), sign: zSign };
   }
   const pct = ((a - c) / Math.abs(c)) * 100;
   const sign: 1 | -1 | 0 = Math.abs(pct) < 0.05 ? 0 : pct > 0 ? 1 : -1;

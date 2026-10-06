@@ -319,18 +319,34 @@ function parseJsonArray(s: string | null): string[] {
 
 // ── AI synthesis ──────────────────────────────────────────────────────────────
 
-/** Group articles by company using their mentioned_symbols field. */
-function bucketByCompany(
+/**
+ * Group articles by company using their mentioned_symbols field.
+ *
+ * Symbols are normalized (trimmed, uppercased) and DEDUPED before bucketing —
+ * an article whose list names one ticker twice (["nvda","NVDA"], or a padded
+ * copy) is filed once, not once per occurrence. Worker mirror of the Mac fix
+ * in lib/digest/group-by-company.ts (`dedupedSymbolList`, 23a14488); without
+ * it the synthesis prompt carried the same article twice under one company.
+ * `parseJsonArray` itself stays non-deduping: the thin-coverage breadth check
+ * below reads its raw length, exactly as the Mac's does.
+ */
+export function bucketByCompany(
   articles: RecentArticleMeta[],
 ): Record<string, RecentArticleMeta[]> {
   const buckets: Record<string, RecentArticleMeta[]> = {};
   for (const a of articles) {
-    const symbols = parseJsonArray(a.mentioned_symbols);
+    const symbols = [
+      ...new Set(
+        (parseJsonArray(a.mentioned_symbols) as unknown[])
+          .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+          .map((s) => s.trim().toUpperCase()),
+      ),
+    ];
     if (symbols.length === 0) {
       (buckets["(macro/other)"] ??= []).push(a);
     } else {
       for (const sym of symbols) {
-        (buckets[sym.toUpperCase()] ??= []).push(a);
+        (buckets[sym] ??= []).push(a);
       }
     }
   }

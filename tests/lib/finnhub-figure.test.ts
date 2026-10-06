@@ -3,6 +3,7 @@ import {
   parseFinnhubFigure,
   formatFinnhubFigure,
   formatFinnhubFigureCompact,
+  formatRevenueUSD,
   mergeFinnhubActual,
 } from "@/lib/format/finnhub-figure";
 
@@ -71,6 +72,21 @@ describe("formatFinnhubFigure", () => {
     expect(r.eps).toBe(null);
     expect(r.revenue).toBe(null);
     expect(r.fallback).toBe("Pre-announcement only");
+  });
+
+  // The unit is picked AFTER rounding: a revenue figure in the
+  // [$999.95M, $1B) band rounds to 1000.0 at M precision and must promote
+  // to B. Mirrored by the Worker (workers/cron/test/todays-reporters.test.ts
+  // carries the same fixtures against formatFinnhubFigureCompact).
+  it("promotes revenue that would round to 1000.0M into billions", () => {
+    expect(formatFinnhubFigure("Rev 999960000").revenue).toBe("$1.00B");
+    expect(formatFinnhubFigure("Rev 999999999").revenue).toBe("$1.00B");
+    expect(formatFinnhubFigure("Rev 999940000").revenue).toBe("$999.9M");
+    expect(formatFinnhubFigure("Rev 1000000000").revenue).toBe("$1.00B");
+    expect(formatFinnhubFigureCompact("EPS 1.00 · Rev 999960000")).toBe("$1.00 · $1.00B");
+    expect(formatRevenueUSD(999_960_000)).toBe("$1.00B");
+    expect(formatRevenueUSD(245_000_000)).toBe("$245.0M");
+    expect(formatRevenueUSD(190_000)).toBe("$190,000");
   });
 
   it("renders compact form joined", () => {

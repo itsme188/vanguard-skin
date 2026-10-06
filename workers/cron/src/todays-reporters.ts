@@ -79,8 +79,14 @@ function formatCompactConsensus(raw: string | null): string | null {
   if (revMatch) {
     const n = Number(revMatch[1].replace(/,/g, ""));
     if (Number.isFinite(n) && n !== 0) {
-      if (n >= 1_000_000_000) parts.push(`$${(n / 1_000_000_000).toFixed(2)}B`);
-      else if (n >= 1_000_000) parts.push(`$${(n / 1_000_000).toFixed(1)}M`);
+      // Unit is picked AFTER rounding: a figure in [$999.95M, $1B) rounds to
+      // 1000.0 at M precision and promotes to B ("$1.00B", never
+      // "$1000.0M"). PARITY (Mac: lib/format/finnhub-figure.ts::
+      // formatRevenueUSD; sibling: fallback-earnings.ts::formatRevenue).
+      const mFixed = (n / 1_000_000).toFixed(1);
+      if (n >= 1_000_000_000 || (n >= 1_000_000 && mFixed === "1000.0")) {
+        parts.push(`$${(n / 1_000_000_000).toFixed(2)}B`);
+      } else if (n >= 1_000_000) parts.push(`$${mFixed}M`);
       else parts.push(`$${n.toLocaleString("en-US")}`);
     }
   }

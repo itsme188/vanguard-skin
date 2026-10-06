@@ -7,10 +7,9 @@ import {
 } from "@/lib/digest/send-earnings-email";
 import { getEmailAudit } from "@/lib/queries/earnings-emails";
 import { sendStateFor, sentByFor } from "@/lib/earnings/email-states";
-import { withClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
+import { getEventById } from "@/lib/queries/calendar";
 import { parseDbTimestamp } from "@/lib/calendar/date-utils";
 import { repairCitationLineBreaks } from "@/lib/earnings/repair-citation-linebreaks";
-import type { CalendarEvent } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -67,12 +66,7 @@ export async function GET(request: Request) {
   // Cluster-scoped acceptance stamp: the scoreboard below runs the
   // plausibility gate, and the stamp can sit on a superseded twin of this
   // same print (lib/queries/manual-actuals-cluster.ts).
-  const event = withClusterManualActuals(
-    db,
-    db.prepare(`SELECT * FROM calendar_events WHERE id = ?`).get(eventId) as
-      | CalendarEvent
-      | undefined,
-  );
+  const event = getEventById(db, eventId);
   if (!event || !event.symbol) {
     return Response.json(
       { error: `Event ${eventId} not found or has no symbol.` },

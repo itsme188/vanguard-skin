@@ -74,6 +74,21 @@ export interface FormattedFinnhubFigure {
   fallback: string | null;
 }
 
+/**
+ * Revenue cell for Finnhub-shaped figures and the earnings-email scoreboard.
+ * `formatLargeUSD` picks its unit BEFORE rounding, so a figure in the
+ * [$999.95M, $1B) band prints "$1000.0M"; that general formatter keeps its
+ * pinned output (tests/lib/format.test.ts), so the promotion to "$1.00B"
+ * lives here, on the revenue path only. PARITY: the Worker mirrors are
+ * `formatCompactConsensus` (workers/cron/src/todays-reporters.ts) and
+ * `formatRevenue` (workers/cron/src/fallback-earnings.ts) — change all three
+ * together.
+ */
+export function formatRevenueUSD(value: number): string {
+  const s = formatLargeUSD(value);
+  return s.endsWith("$1000.0M") ? s.replace("$1000.0M", "$1.00B") : s;
+}
+
 export function formatFinnhubFigure(s: string | null | undefined): FormattedFinnhubFigure {
   const parsed = parseFinnhubFigure(s);
   if (parsed.eps == null && parsed.revenue == null) {
@@ -89,7 +104,7 @@ export function formatFinnhubFigure(s: string | null | undefined): FormattedFinn
       parsed.eps != null
         ? `${parsed.eps < 0 ? "-" : ""}$${Math.abs(parsed.eps).toFixed(2)}`
         : null,
-    revenue: parsed.revenue != null ? formatLargeUSD(parsed.revenue) : null,
+    revenue: parsed.revenue != null ? formatRevenueUSD(parsed.revenue) : null,
     fallback: null,
   };
 }

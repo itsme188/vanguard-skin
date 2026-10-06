@@ -24,7 +24,7 @@ import {
   EarningsEmailError,
 } from "@/lib/digest/send-earnings-email";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
-import { withClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
+import { getEventById } from "@/lib/queries/calendar";
 import { getLiveReadThroughsForReporter } from "@/lib/alerts/read-through-push";
 import { formatPositionPresence } from "@/lib/digest/presence-only-position";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
@@ -222,12 +222,7 @@ export async function composeReporterRecapEmail(
   // Cluster-scoped acceptance stamp — reporterActualsUsable below bypasses
   // the plausibility gate on it, and it can sit on a superseded twin of this
   // same print (lib/queries/manual-actuals-cluster.ts).
-  const event = withClusterManualActuals(
-    db,
-    db.prepare(`SELECT * FROM calendar_events WHERE id = ?`).get(eventId) as
-      | CalendarEvent
-      | undefined,
-  );
+  const event = getEventById(db, eventId);
   if (!event || !event.symbol) {
     throw new EarningsEmailError(`Event ${eventId} not found or symbol-less.`, 404);
   }

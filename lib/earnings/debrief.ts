@@ -38,12 +38,11 @@ import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { loadIntelView, renderHeadlineTable } from "@/lib/digest/send-earnings-email";
 import { getCallNoteNearDateForFamily } from "@/lib/queries/earnings-call-notes";
-import { withClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
+import { getEventById } from "@/lib/queries/calendar";
 import { wrapSlotFor } from "@/lib/earnings/wrap";
 import { deliveredSql } from "@/lib/earnings/email-states";
 import { demoteEmbeddedHeadings, truncateAtWordBoundary } from "@/lib/digest/call-transcripts";
 import { hasDeskNote, kindHeadingLabel } from "@/lib/transcripts/presentation";
-import type { CalendarEvent } from "@/lib/types";
 
 export interface DebriefCandidate {
   eventId: number;
@@ -258,12 +257,7 @@ export function renderDebriefSections(
     // Cluster-scoped acceptance stamp — the scoreboard runs the plausibility
     // gate, and the stamp can sit on a superseded twin of this same print
     // (lib/queries/manual-actuals-cluster.ts).
-    const event = withClusterManualActuals(
-      db,
-      db.prepare(`SELECT * FROM calendar_events WHERE id = ?`).get(candidate.eventId) as
-        | CalendarEvent
-        | undefined,
-    );
+    const event = getEventById(db, candidate.eventId);
 
     if (!event) {
       // Should never happen — the candidate came straight from

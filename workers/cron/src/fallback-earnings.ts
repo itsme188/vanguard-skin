@@ -1127,14 +1127,14 @@ export function renderScoreboard(
   const epsActual = actual.eps ?? "—";
   const epsDelta =
     cons.eps && actual.eps && Number.isFinite(Number(cons.eps)) && Number.isFinite(Number(actual.eps))
-      ? formatPctDelta(Number(actual.eps), Number(cons.eps))
+      ? formatPctDelta(Number(actual.eps), Number(cons.eps), "eps")
       : "—";
 
   const revConsensus = formatRevenue(cons.revenue);
   const revActual = formatRevenue(actual.revenue);
   const revDelta =
     cons.revenue && actual.revenue && Number.isFinite(Number(cons.revenue)) && Number.isFinite(Number(actual.revenue))
-      ? formatPctDelta(Number(actual.revenue), Number(cons.revenue))
+      ? formatPctDelta(Number(actual.revenue), Number(cons.revenue), "revenue")
       : "—";
 
   const isRecap = phase === "recap";
@@ -1435,13 +1435,35 @@ function formatRevenue(raw: string | null): string {
   if (!raw) return "—";
   const n = Number(raw);
   if (!Number.isFinite(n)) return raw;
-  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
-  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  // Unit is picked AFTER rounding: a figure in [$999.95M, $1B) rounds to
+  // 1000.0 at M precision and promotes to B ("$1.00B", never "$1000.0M").
+  // PARITY (Mac: lib/format/finnhub-figure.ts::formatRevenueUSD; sibling:
+  // todays-reporters.ts::formatCompactConsensus).
+  const mFixed = (n / 1_000_000).toFixed(1);
+  if (n >= 1_000_000_000 || (n >= 1_000_000 && mFixed === "1000.0")) {
+    return `$${(n / 1_000_000_000).toFixed(2)}B`;
+  }
+  if (n >= 1_000_000) return `$${mFixed}M`;
   return `$${n.toLocaleString()}`;
 }
 
-function formatPctDelta(actual: number, consensus: number): string {
-  if (consensus === 0) return "—";
+/**
+ * PARITY (Mac: lib/earnings/eps-delta.ts::zeroConsensusEpsDeltaLabel) — the
+ * one label for an EPS delta against a $0.00 estimate: signed absolute
+ * dollars, "in-line" when the actual is also exactly 0. Change both sides
+ * together.
+ */
+function zeroConsensusEpsDeltaLabel(actual: number): string {
+  if (actual === 0) return "in-line";
+  return `${actual > 0 ? "+" : "-"}$${Math.abs(actual).toFixed(2)}`;
+}
+
+// PARITY (Mac: lib/digest/send-earnings-email.ts::formatPctDelta) — must
+// produce the identical string. A percent against a zero consensus is
+// undefined: EPS states the absolute-dollar delta; revenue keeps "—" (a zero
+// revenue consensus is Finnhub's placeholder, nulled at parse).
+function formatPctDelta(actual: number, consensus: number, kind: "eps" | "revenue"): string {
+  if (consensus === 0) return kind === "eps" ? zeroConsensusEpsDeltaLabel(actual) : "—";
   const pct = ((actual - consensus) / Math.abs(consensus)) * 100;
   const abs = Math.abs(pct);
   if (abs < 0.05) return "in-line";

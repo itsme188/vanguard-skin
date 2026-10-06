@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import type { FallbackEnv } from "../src/fallback-digest";
 import type { Snapshot } from "../src/state";
-import { evaluateAnomalies, fetchLast2ClosesBatch, buildSynthesisPrompt } from "../src/fallback-evening";
+import { evaluateAnomalies, fetchLast2ClosesBatch, buildSynthesisPrompt, bucketByCompany } from "../src/fallback-evening";
 
 // ── Dependency mocks ─────────────────────────────────────────────────────────
 
@@ -799,4 +799,48 @@ it("puts the market opening first in the delivered Worker HTML", async () => {
  expect(sent).toContain("Hardware leads a mixed market");
  expect(sent.indexOf("Hardware leads a mixed market")).toBeLessThan(sent.indexOf("Stronger orders supported chips"));
  expect(sent.indexOf("Stronger orders supported chips")).toBeLessThan(sent.indexOf("The Session"));
+});
+
+/**
+ * Worker mirror of the Mac fix 23a14488 (lib/digest/group-by-company.ts): an
+ * article whose mentioned_symbols names one ticker twice (case or padding
+ * variants) is bucketed ONCE, not once per occurrence — otherwise the
+ * synthesis prompt carries the same article twice under one company.
+ */
+describe("bucketByCompany — mentioned symbols are deduped before bucketing", () => {
+  const article = (id: number, symbols: unknown) =>
+    ({ id, subject: `Article ${id}`, mentioned_symbols: symbols == null ? null : JSON.stringify(symbols) }) as never;
+
+  it("files an article once under a ticker it mentions twice", () => {
+    const buckets = bucketByCompany([article(1, ["nvda", "NVDA", " NVDA "])]);
+    expect(Object.keys(buckets)).toEqual(["NVDA"]);
+    expect(buckets.NVDA).toHaveLength(1);
+  });
+
+  it("still files an article under each DISTINCT ticker", () => {
+    const buckets = bucketByCompany([article(1, ["NVDA", "amd", "AMD"]), article(2, ["AMD"])]);
+    expect(buckets.NVDA.map((a) => a.id)).toEqual([1]);
+    expect(buckets.AMD.map((a) => a.id)).toEqual([1, 2]);
+  });
+
+  it("sends symbol-less and blank-only lists to the macro bucket", () => {
+    const buckets = bucketByCompany([article(1, null), article(2, []), article(3, ["  ", 7])]);
+    expect(buckets["(macro/other)"].map((a) => a.id)).toEqual([1, 2, 3]);
+    expect(Object.keys(buckets)).toEqual(["(macro/other)"]);
+  });
+
+  // Same membership the Mac's bucketByCompany produces for these articles
+  // (tests/digest/group-by-company.test.ts pins the Mac side; the Mac module
+  // is not imported here because it reaches the DB query layer).
+  it("matches the Mac's membership for mixed case and padding", () => {
+    const buckets = bucketByCompany([
+      article(1, ["nvda", "NVDA"]),
+      article(2, [" AAPL", "AAPL", "msft"]),
+      article(3, null),
+    ]);
+    expect(buckets.NVDA.map((a) => a.id)).toEqual([1]);
+    expect(buckets.AAPL.map((a) => a.id)).toEqual([2]);
+    expect(buckets.MSFT.map((a) => a.id)).toEqual([2]);
+    expect(buckets["(macro/other)"].map((a) => a.id)).toEqual([3]);
+  });
 });

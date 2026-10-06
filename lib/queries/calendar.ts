@@ -1,7 +1,10 @@
 import type Database from "better-sqlite3";
 import type { CalendarEvent, CalendarBriefing } from "@/lib/types";
 import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
-import { applyClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
+import {
+  applyClusterManualActuals,
+  withClusterManualActuals,
+} from "@/lib/queries/manual-actuals-cluster";
 import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 
@@ -17,6 +20,28 @@ export interface CalendarFilters {
 }
 
 // ─── Query functions ──────────────────────────────────────────────
+
+/**
+ * THE by-id reader for a calendar event whose actuals feed a decision
+ * (plausibility gate, recap gate, scoreboard). Returns the full row with the
+ * manual-acceptance stamp HEALED across the print's twin cluster — the stamp
+ * can sit on a superseded twin of the same print
+ * (lib/queries/manual-actuals-cluster.ts), and a reader that sees only the
+ * row's own NULL puts an accepted figure back behind the scrape guard.
+ * Read-only: the heal is applied to the returned object, never written back.
+ *
+ * Never hand-roll `SELECT … actual_value … FROM calendar_events WHERE id = ?`
+ * for such a reader — tests/repo/calendar-event-actuals-healed-reader.test.ts
+ * fails on a new one.
+ */
+export function getEventById(db: Database.Database, id: number): CalendarEvent | null {
+  return withClusterManualActuals(
+    db,
+    db.prepare(`SELECT * FROM calendar_events WHERE id = ?`).get(id) as
+      | CalendarEvent
+      | undefined,
+  );
+}
 
 export function getUpcomingEvents(
   db: Database.Database,

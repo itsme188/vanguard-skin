@@ -11,7 +11,7 @@ import {
 } from "@/lib/digest/presence-only-position";
 import { loadPrintWatchReadBlock } from "@/lib/digest/print-watch-read-block";
 import { formatLargeUSD } from "@/lib/format";
-import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
+import { formatRevenueUSD, parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { listPressReleases } from "@/lib/queries/press-releases";
 import {
@@ -34,10 +34,9 @@ import { isUsableReactionLeg } from "@/lib/calendar/reaction-snapshot-core";
 import type { BenchmarkReaction, ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
 import type { CalendarEvent, EarningsTranscript } from "@/lib/types";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
-import {
-  applyClusterManualActuals,
-  withClusterManualActuals,
-} from "@/lib/queries/manual-actuals-cluster";
+import { applyClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
+import { getEventById } from "@/lib/queries/calendar";
+import { zeroConsensusEpsDeltaLabel } from "@/lib/earnings/eps-delta";
 import { sendPushover, type PushoverMessage } from "@/lib/alerts/notify-pushover";
 import {
   DELIVERY_UNKNOWN,
@@ -773,13 +772,8 @@ function getEventByIdRow(
 ): CalendarEvent | null {
   // Cluster-scoped acceptance stamp: renderHeadlineTable + renderRecapPrompt
   // both gate on manual_actuals_at, which can sit on a superseded twin of
-  // this same print (lib/queries/manual-actuals-cluster.ts).
-  return withClusterManualActuals(
-    db,
-    db.prepare(`SELECT * FROM calendar_events WHERE id = ?`).get(id) as
-      | CalendarEvent
-      | undefined,
-  );
+  // this same print — getEventById is the one healed by-id reader.
+  return getEventById(db, id);
 }
 
 // ── Audit row writer ───────────────────────────────────────────────
@@ -1620,11 +1614,17 @@ function pctSign(v: number): string {
 
 function formatRevenueDisplay(n: number | null): string {
   if (n == null || !Number.isFinite(n)) return "—";
-  return formatLargeUSD(n);
+  // Unit picked AFTER rounding ($999.96M → "$1.00B", never "$1000.0M").
+  return formatRevenueUSD(n);
 }
 
-function formatPctDelta(actual: number, consensus: number): string {
-  if (consensus === 0) return "—";
+// PARITY: workers/cron/src/fallback-earnings.ts::formatPctDelta must produce
+// the identical string — change both together. A percent against a zero
+// consensus is undefined: EPS states the signed absolute-dollar delta (the
+// same label the UI chip uses, lib/earnings/eps-delta.ts); revenue keeps "—"
+// (a zero revenue consensus is Finnhub's placeholder and is nulled at parse).
+function formatPctDelta(actual: number, consensus: number, kind: "eps" | "revenue"): string {
+  if (consensus === 0) return kind === "eps" ? zeroConsensusEpsDeltaLabel(actual) : "—";
   const pct = ((actual - consensus) / Math.abs(consensus)) * 100;
   const abs = Math.abs(pct);
   if (abs < 0.05) return "in-line";
@@ -1783,13 +1783,13 @@ export function renderHeadlineTable(
   const epsConsensus = cons.eps != null ? cons.eps.toFixed(2) : "—";
   const epsActual = actual.eps != null ? actual.eps.toFixed(2) : "—";
   const epsDelta =
-    cons.eps != null && actual.eps != null ? formatPctDelta(actual.eps, cons.eps) : "—";
+    cons.eps != null && actual.eps != null ? formatPctDelta(actual.eps, cons.eps, "eps") : "—";
 
   const revConsensus = formatRevenueDisplay(cons.revenue);
   const revActual = formatRevenueDisplay(actual.revenue);
   const revDelta =
     cons.revenue != null && actual.revenue != null
-      ? formatPctDelta(actual.revenue, cons.revenue)
+      ? formatPctDelta(actual.revenue, cons.revenue, "revenue")
       : "—";
 
   // Reaction rows are recap-only; preview leaves the actual columns blank.

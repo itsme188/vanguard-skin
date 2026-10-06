@@ -66,7 +66,7 @@ import {
 } from "@/lib/digest/send-earnings-email";
 import { DELIVERY_UNKNOWN } from "@/lib/earnings/email-states";
 import { sendEmail } from "@/lib/email";
-import { withClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
+import { getEventById } from "@/lib/queries/calendar";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import {
   checkEarningsCloudMarker,
@@ -366,13 +366,8 @@ function releaseFreshClaims(db: Database.Database, claims: Claimed[]): void {
 function getEventRow(db: Database.Database, id: number): CalendarEvent | null {
   // Cluster-scoped acceptance stamp — the wrap scoreboard runs the
   // plausibility gate, and the stamp can sit on a superseded twin of this
-  // same print (lib/queries/manual-actuals-cluster.ts).
-  return withClusterManualActuals(
-    db,
-    db.prepare(`SELECT * FROM calendar_events WHERE id = ?`).get(id) as
-      | CalendarEvent
-      | undefined,
-  );
+  // same print; getEventById is the one healed by-id reader.
+  return getEventById(db, id);
 }
 
 // Same upsert shape as recordEarningsEmailAudit (module-private in

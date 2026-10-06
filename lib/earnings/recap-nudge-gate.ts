@@ -56,15 +56,14 @@
  * `reason` as-is, so these strings are the user interface.
  *
  * PURE READ. `evaluatePrintOutputs` (Task 7) calls this from a GET route body,
- * so nothing here may write — `withClusterManualActuals` heals its argument in
+ * so nothing here may write — `getEventById` heals the acceptance stamp in
  * memory only.
  */
 import type Database from "better-sqlite3";
 import { getPrintById, getSheet } from "@/lib/print-watch/store";
-import { withClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
+import { getEventById } from "@/lib/queries/calendar";
 import { mergeFinnhubActual } from "@/lib/format/finnhub-figure";
 import type { PrintWatchLine } from "@/lib/print-watch/types";
-import type { CalendarEvent } from "@/lib/types";
 
 export const GATE_NO_PRINT = "No print for this event.";
 export const GATE_NOT_ACCEPTED =
@@ -145,12 +144,7 @@ export function evaluateRecapNudge(db: Database.Database, printId: number): Reca
   // Cluster-scoped: a promote's stamp can sit on a superseded twin of this same
   // print (lib/queries/manual-actuals-cluster.ts), exactly as the recap
   // composer's own getEventByIdRow reads it.
-  const event = withClusterManualActuals(
-    db,
-    db.prepare(`SELECT * FROM calendar_events WHERE id = ?`).get(print.event_id) as
-      | CalendarEvent
-      | undefined,
-  );
+  const event = getEventById(db, print.event_id);
   if (!event) return { ok: false, reason: GATE_NO_PRINT };
   if (!event.manual_actuals_at) return { ok: false, reason: GATE_NOT_PROMOTED };
   if (!event.actual_value) return { ok: false, reason: GATE_NO_ACTUAL };
