@@ -10,6 +10,8 @@ import {
   type ScenarioRecipe,
 } from "@/lib/compute/scenario-recipes";
 import { computeScenario, PRESET_SCENARIOS } from "@/lib/compute/scenarios";
+import { repriceOptionUnderShock } from "@/lib/compute/option-reprice";
+import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
@@ -146,14 +148,14 @@ describe("computeRecipeScenario", () => {
     expect(jnj.changePercent).toBeCloseTo(-0.12, 3);
   });
 
-  it("options inherit the underlying's factor exposure with delta-based elasticity", () => {
+  it("options inherit the underlying's factor exposure and are repriced at the underlying's shocked price", () => {
     // Pre-rebuild, options had no security_factors rows (by design — they
     // inherit) and the recipe query never COALESCE-joined the underlying, so
     // 21% of the book contributed exactly $0 to every scenario.
     const today = new Date();
     const expiry = new Date(today.getTime() + 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
     const d = today.toISOString().slice(0, 10);
-    // NVDA call: S=1000, K=900, V=150/share, 1y out → Ω = Δ·S/V ≈ 4.9
+    // NVDA call: S=1000, K=900, V=150/share, 1y out
     db.prepare(
       `INSERT INTO securities (id, symbol, security_type, underlying_symbol, strike_price, expiration_date, option_type, multiplier)
        VALUES (20, 'NVDA  270609C00900000', 'Option', 'NVDA', 900, ?, 'CALL', 100)`
@@ -167,10 +169,17 @@ describe("computeRecipeScenario", () => {
 
     // NVDA itself: Very High AI (1.40×) → -0.15 × 1.40 = -21%
     expect(nvda.changePercent).toBeCloseTo(-0.21, 3);
-    // The call inherits NVDA's exposure, levered by elasticity (≈4.9×),
-    // clamped at -100% (a long option can't lose more than its value).
+    // The call inherits NVDA's exposure and is repriced at the shocked
+    // underlying; a long option can't lose more than its value.
+    expect(call.underlyingMove).toBeCloseTo(-0.21, 3);
     expect(call.changePercent).toBeLessThan(-0.5);
     expect(call.changePercent).toBeGreaterThanOrEqual(-1);
+    const expected = repriceOptionUnderShock(
+      { option_type: "CALL", strike_price: 900, expiration_date: expiry, own_price: 150, underlying_price: 1000, underlying_iv: null },
+      { underlyingMove: call.underlyingMove!, riskFreeRate: getRiskFreeRate(db) },
+    );
+    if (!expected.modelled) throw new Error("fixture must be modelled");
+    expect(call.changePercent).toBeCloseTo(expected.changePercent, 10);
   });
 
   it("a held PUT gains when the inherited shock is negative", () => {
@@ -377,13 +386,22 @@ describe("computeRecipeScenario", () => {
       expect(aiCapex.positionImpacts.find((p) => p.symbol === symbol)).toBeUndefined();
     });
 
-    it("an option expiring TODAY still receives scenario P&L (live through end of day)", () => {
+    it("an option expiring TODAY stays in the scenario (live through end of day) and is never silently dropped", () => {
       const symbol = seedOption(24, todayET());
 
       const result = computeRecipeScenario(db, findRecipe("ai_capex_pause")!);
       const opt = result.positionImpacts.find((p) => p.symbol === symbol);
       expect(opt).toBeDefined();
-      expect(opt!.changePercent).not.toBe(0);
+      // After the 16:00 ET close the shared pricing rule treats an
+      // expiry-day contract as expired, so the row is listed as unmodelled
+      // (zero P&L, counted) instead of being priced; before the close it is
+      // repriced. Either way it is never dropped and never given a guess.
+      if (opt!.unmodelledReason) {
+        expect(opt!.changePercent).toBe(0);
+        expect(result.optionsUnmodelled.count).toBeGreaterThan(0);
+      } else {
+        expect(opt!.changePercent).not.toBe(0);
+      }
     });
 
     it("legacy computeScenario also excludes an option expired yesterday", () => {

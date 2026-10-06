@@ -1,34 +1,23 @@
 /**
- * Option elasticity — the ONE option treatment both scenario engines share.
+ * Shared option plumbing: the option row predicate, the pricing inputs type,
+ * the SQL fragments both scenario position queries select, and the exposure
+ * fallback constant. Scenario pricing itself lives in option-reprice.ts.
  *
- * Why this module exists (QA finding `analysis-scenarios--custom-whatif-flat-
- * 2x-option-beta-long-puts-lose-in-crash`, 2026-09-11): the preset/recipe
- * engine levered an option by signed elasticity (a held put GAINS when the
- * underlying falls), while the custom what-if path in scenarios.ts gave every
- * option a flat beta of 2.0 with no put/call sign — so the SAME long put
- * rendered +14.6% on the preset card and -40% on the custom card of the same
- * page. Elasticity now lives here, imported by both engines, and the SQL
- * fragments that feed it are exported too so the two position queries cannot
- * drift apart on which pricing columns they select.
+ * The SQL fragments are shared so the preset and custom engines cannot drift
+ * apart on which pricing columns they select (QA finding
+ * `analysis-scenarios--custom-whatif-flat-2x-option-beta-long-puts-lose-in-crash`,
+ * 2026-09-11).
  *
  * `DEFAULT_OPTION_ELASTICITY` is re-exported from scenario-recipes.ts for its
  * existing consumer (lib/compute/exposure.ts) — that import path still works.
  */
 
-import { delta } from "./options-greeks";
-
-/** Fallback when elasticity inputs are missing (no underlying price / IV /
- *  option price). Sign carries the option's direction. Exported so the
- *  delta-exposure column (lib/compute/exposure.ts) shares the convention. */
+/** Fallback for the delta-exposure column (lib/compute/exposure.ts) when an
+ *  option's pricing inputs are missing. Scenarios do not use it. */
 export const DEFAULT_OPTION_ELASTICITY = 2.5;
 
-/** |Ω| clamp — deep-OTM short-dated options have huge theoretical elasticity
- *  but gamma/vol effects dominate there; a linear-delta model shouldn't
- *  extrapolate past this. */
-export const MAX_OPTION_ELASTICITY = 8;
-
 /**
- * The pricing inputs elasticity needs. Both engines' position rows satisfy
+ * The pricing inputs an option needs. Both engines' position rows satisfy
  * this structurally (see OPTION_PRICING_COLUMNS_SQL).
  */
 export interface OptionElasticityInputs {
@@ -70,46 +59,8 @@ export function normalizeExpirationDate(expiry: string): string | null {
 }
 
 /**
- * Option elasticity Ω = Δ·S/V: the % move in the option per 1% move in the
- * underlying (linear-delta approximation). Signed — puts carry negative Ω so
- * a down-shock on the underlying produces a positive option move. Falls back
- * to ±2.5 when pricing inputs are unavailable.
- */
-export function optionElasticity(pos: OptionElasticityInputs, riskFreeRate: number): number {
-  const isPut = (pos.option_type ?? "").toUpperCase().startsWith("P");
-  const fallback = (isPut ? -1 : 1) * DEFAULT_OPTION_ELASTICITY;
-
-  const S = pos.underlying_price;
-  const V = pos.own_price;
-  const K = pos.strike_price;
-  if (S == null || S <= 0 || V == null || V <= 0 || K == null || K <= 0 || !pos.expiration_date) {
-    return fallback;
-  }
-  const expiry = normalizeExpirationDate(pos.expiration_date);
-  if (!expiry) return fallback;
-  const T = (new Date(expiry).getTime() - Date.now()) / (365 * 24 * 3600 * 1000);
-  if (!Number.isFinite(T) || T <= 0) return fallback;
-
-  const sigma = pos.underlying_iv ?? 0.30;
-  const d = delta(S, K, T, riskFreeRate, sigma, isPut ? "PUT" : "CALL");
-  const omega = (d * S) / V;
-  if (!Number.isFinite(omega) || omega === 0) return fallback;
-  return Math.max(-MAX_OPTION_ELASTICITY, Math.min(MAX_OPTION_ELASTICITY, omega));
-}
-
-/**
- * Apply the option leg: the engine-computed move describes the UNDERLYING, so
- * lever it by signed Ω and clamp at -100% (an option price cannot go below
- * zero). Both engines call this so the clamp and the sign convention can
- * never diverge.
- */
-export function leverUnderlyingMoveByElasticity(underlyingMove: number, omega: number): number {
-  return Math.max(-1, underlyingMove * omega);
-}
-
-/**
  * The option pricing columns BOTH position queries must select, so
- * `optionElasticity` sees identical inputs on both paths.
+ * the repricing function sees identical inputs on both paths.
  *
  * Required aliases in the surrounding query:
  *   s     — securities row being valued

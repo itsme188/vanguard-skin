@@ -32,12 +32,18 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { explodeHoldingBySector } from "./explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import {
-  optionElasticity,
   isOptionSecurityType,
-  leverUnderlyingMoveByElasticity,
   OPTION_PRICING_COLUMNS_SQL,
   OPTION_PRICING_JOINS_SQL,
+  OPTION_ROW_SQL,
 } from "./option-elasticity";
+import {
+  repriceOptionUnderShock,
+  summarizeUnmodelledOptions,
+  type OptionIvSource,
+  type OptionUnmodelledReason,
+} from "./option-reprice";
+import { todayET } from "@/lib/calendar/date-utils";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
@@ -207,7 +213,7 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
       "(Value adds nothing — it falls less than growth on a hike, it doesn't rally). " +
       "Everything else takes the spillover leg: 25% of the shock scaled by its own capped blend " +
       "(≈ -0.6% at most). Bonds: duration × 25bp / 100. Options: inherit the underlying's rate " +
-      "exposure, levered by delta elasticity (Ω = Δ·S/V, |Ω| ≤ 8, fallback 2.5× when unpriceable). " +
+      "exposure, repriced with Black-Scholes at the shocked price of the underlying, volatility held at today's level; an option that cannot be priced is left out and counted. " +
       "Calibrated to typical 25bp surprise-day historical reaction.",
   },
   {
@@ -400,7 +406,7 @@ interface RecipePositionRow {
   ai_exposure: string | null;
   crypto_adjacent: string | null;
   regulatory_risk: string | null;
-  // Option fields (null for non-options) — used for elasticity
+  // Option fields (null for non-options) — used for repricing
   strike_price: number | null;
   expiration_date: string | null;
   option_type: string | null;
@@ -500,11 +506,10 @@ function sectorFloorFor(
 }
 
 /**
- * Elasticity moved to lib/compute/option-elasticity.ts (2026-09-11) so the
- * custom what-if engine in scenarios.ts uses the SAME option treatment —
- * before that it gave every option a flat beta of 2.0 and long puts LOST in
- * a crash scenario. Re-exported here because lib/compute/exposure.ts imports
- * DEFAULT_OPTION_ELASTICITY from this module.
+ * Scenario option pricing lives in lib/compute/option-reprice.ts and both
+ * engines share it. This constant now serves only the delta-exposure column;
+ * it is re-exported here because lib/compute/exposure.ts imports it from
+ * this module.
  */
 export { DEFAULT_OPTION_ELASTICITY } from "./option-elasticity";
 
@@ -514,7 +519,7 @@ export { DEFAULT_OPTION_ELASTICITY } from "./option-elasticity";
  * Subject positions take `shock × max(membership floor, factor blend)`;
  * everything else takes `shock × spillover × clamp(blend, ±1)`. Bonds use
  * duration-based pricing for rate scenarios (they ARE the subject there),
- * and options lever whatever their underlying's path produced.
+ * and options are repriced at whatever move their underlying's path produced.
  */
 export function computeRecipeScenario(
   db: Database.Database,
@@ -576,7 +581,7 @@ ${OPTION_PRICING_COLUMNS_SQL},
       -- Shared with the custom what-if query in scenarios.ts.
 ${OPTION_PRICING_JOINS_SQL}
       LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id
-      WHERE COALESCE(lp.close_price, 0) > 0
+      WHERE (COALESCE(lp.close_price, 0) > 0 OR ${OPTION_ROW_SQL})
         AND ${liveOptionExpirationSql("s")}
       ORDER BY market_value DESC
     `
@@ -594,6 +599,8 @@ ${OPTION_PRICING_JOINS_SQL}
     : new Map<string, Array<{ sector: string; weight_pct: number }>>();
 
   const riskFreeRate = getRiskFreeRate(db);
+  const runToday = todayET();
+  const runNow = new Date();
 
   const impacts: PositionImpact[] = positions.map((pos) => {
     const blend = factorBlend(recipe, pos);
@@ -663,12 +670,27 @@ ${OPTION_PRICING_JOINS_SQL}
     }
 
     // Options: the factor/sector math above describes the UNDERLYING's move
-    // (factors are inherited via the COALESCE join). Lever it by elasticity
-    // Ω = Δ·S/V — signed, so a held put GAINS on a down-shock — and clamp at
-    // -100% (an option's price can't go below zero).
+    // (factors are inherited via the COALESCE join). Reprice the contract at
+    // that shocked underlying — volatility held at today's level for a
+    // preset — through the same function the custom engine uses.
+    let ivSource: OptionIvSource | undefined;
+    let unmodelledReason: OptionUnmodelledReason | undefined;
+    let optionUnderlyingMove: number | undefined;
     if (isOptionSecurityType(pos.security_type)) {
-      const omega = optionElasticity(pos, riskFreeRate);
-      changePercent = leverUnderlyingMoveByElasticity(changePercent, omega);
+      optionUnderlyingMove = changePercent;
+      const repriced = repriceOptionUnderShock(pos, {
+        underlyingMove: changePercent,
+        riskFreeRate,
+        today: runToday,
+        now: runNow,
+      });
+      if (repriced.modelled) {
+        changePercent = repriced.changePercent;
+        ivSource = repriced.ivSource;
+      } else {
+        changePercent = 0;
+        unmodelledReason = repriced.reason;
+      }
     }
 
     const estimatedChange = pos.market_value * changePercent;
@@ -685,6 +707,9 @@ ${OPTION_PRICING_JOINS_SQL}
       changePercent,
       beta: 1.0, // factor-based math doesn't use beta; default for type compat
       subjectShare,
+      ivSource,
+      unmodelledReason,
+      underlyingMove: optionUnderlyingMove,
     };
   });
 
@@ -709,7 +734,7 @@ ${OPTION_PRICING_JOINS_SQL}
     positionImpacts: impacts,
     biggestLosers,
     biggestWinners,
-    optionsUnmodelled: { count: 0, valueShare: 0 },
+    optionsUnmodelled: summarizeUnmodelledOptions(impacts),
   };
 }
 
