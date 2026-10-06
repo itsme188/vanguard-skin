@@ -124,6 +124,11 @@ export function repriceOptionUnderShock(pos: OptionElasticityInputs, shock: Opti
     v0,
     v1,
     perShareChange,
+    // On the broker-underlying source a stale quote can sit below the model
+    // value today, so the model change can exceed the quoted price. The change
+    // is floored at -100% of the QUOTED value so a long option's estimated
+    // value never goes negative and a short's never turns positive; the cost
+    // is that such a row caps its gain or loss at the shown position value.
     changePercent: Math.max(-1, perShareChange / V),
     sigma,
     sigmaShocked,

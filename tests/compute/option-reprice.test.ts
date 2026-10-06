@@ -107,6 +107,16 @@ describe("repriceOptionUnderShock", () => {
     expect(r.changePercent).toBeGreaterThanOrEqual(-1);
   });
 
+  it("a stale quote on the broker source: the change is floored at -100% of the quoted price", () => {
+    const stale = put({ strike_price: 80, own_price: 5, underlying_price: 60, underlying_iv: 0.35 });
+    const r = repriceOptionUnderShock(stale, shock(0.4));
+    expect(r.modelled).toBe(true);
+    if (!r.modelled) return;
+    expect(r.ivSource).toBe("broker-underlying");
+    expect(r.perShareChange / 5).toBeLessThan(-1);
+    expect(r.changePercent).toBe(-1);
+  });
+
   it("a quote just under exercise value is never accepted as own-price (American floor)", () => {
     // Exercise value is 20. The European bound K*exp(-rT) - S is about 19.2,
     // so 19.6 still "solves" under the European formula; it must be rejected.
@@ -125,6 +135,7 @@ describe("repriceOptionUnderShock", () => {
   it("same-day expiry stays finite before the close and is expired after it", () => {
     const sameDay = put({ expiration_date: TODAY, own_price: 0.05 });
     const open = repriceOptionUnderShock(sameDay, shock(-0.2));
+    expect(open.modelled).toBe(true);
     if (open.modelled) expect(Number.isFinite(open.v1)).toBe(true);
     const closed = repriceOptionUnderShock(sameDay, { ...shock(-0.2), now: new Date("2026-06-01T21:00:00Z") });
     expect(closed).toEqual({ modelled: false, reason: "expired" });
