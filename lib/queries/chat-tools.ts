@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { SECTOR_OWN_BUCKET_SQL } from "@/lib/queries/analysis";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
@@ -339,7 +341,7 @@ export function getPriceHistory(
   const params: (string | number)[] = [symbol];
 
   // Default to last 90 days if no start date specified
-  const effectiveStart = startDate ?? new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+  const effectiveStart = startDate ?? addDays(todayET(), -90);
   conditions.push("p.date >= ?");
   params.push(effectiveStart);
 
@@ -377,7 +379,7 @@ export function getAllocationBreakdown(
   const standardColumns: Record<string, string> = {
     asset_class: "COALESCE(s.asset_class, 'Unknown')",
     security_type: "COALESCE(s.security_type, 'Unknown')",
-    sector: "COALESCE(s.sector, s.fund_category, 'Unknown')",
+    sector: SECTOR_OWN_BUCKET_SQL,
     account: "a.name",
     symbol: "s.symbol",
     fund_category: "COALESCE(s.fund_category, 'Unclassified')",
@@ -462,7 +464,7 @@ export function getTaxLotsForChat(
 ): TaxLotResult[] {
   const { status = "open", symbol, account_name, year, sort_by = "unrealized_gain", limit = 50 } = filters;
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayET();
 
   if (status === "closed" || (status === "all" && year)) {
     // Closed sales
@@ -730,29 +732,29 @@ export function getIncomeSummaryForChat(
   const { period = "trailing_12m", group_by = "symbol", account_name } = filters;
 
   // Compute date range from period
-  const today = new Date();
+  const today = todayET();
+  const year = Number(today.slice(0, 4));
   let startDate: string;
 
   switch (period) {
     case "ytd":
-      startDate = `${today.getFullYear()}-01-01`;
+      startDate = `${year}-01-01`;
       break;
     case "trailing_12m": {
-      const d = new Date(today);
-      d.setFullYear(d.getFullYear() - 1);
-      startDate = d.toISOString().slice(0, 10);
+      // Same month/day one year back (Feb 29 -> Feb 28), on the ET calendar.
+      const md = today.slice(5);
+      startDate = `${year - 1}-${md === "02-29" ? "02-28" : md}`;
       break;
     }
     case "last_year":
-      startDate = `${today.getFullYear() - 1}-01-01`;
+      startDate = `${year - 1}-01-01`;
       break;
     case "all_time":
       startDate = "1900-01-01";
       break;
   }
 
-  const endDate =
-    period === "last_year" ? `${today.getFullYear() - 1}-12-31` : today.toISOString().slice(0, 10);
+  const endDate = period === "last_year" ? `${year - 1}-12-31` : today;
 
   const groupExpr: Record<string, string> = {
     symbol: "COALESCE(s.symbol, 'CASH')",

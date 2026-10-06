@@ -63,5 +63,6 @@ export function marketCapCategoryBucketSql(column: string): string {
     })
     .join("\n    ");
 
-  return `CASE\n    ${whenClauses}\n    ELSE ${column}\n  END`;
+  // Blank / whitespace-only → NULL, matching the JS normalizer's `null`.
+  return `CASE\n    WHEN TRIM(${column}) = '' THEN NULL\n    ${whenClauses}\n    ELSE ${column}\n  END`;
 }

@@ -20,22 +20,6 @@ export interface TodayHolding {
 }
 
 /**
- * IBKR holdings for the Today view, with "today's move" computed on ONE
- * consecutive trading-day pair resolved from SPY (resolveTradingDayPair —
- * the anomaly-engine convention), never on a bare rn=1/rn=2 row pairing.
- *
- * Why: quote enrichment historically wrote weekend/Monday-before-open
- * `prices` rows carrying a stale last price, so the two most-recent rows per
- * security could be byte-identical non-trading-day phantoms — every position
- * then read exactly $0 / 0.00% while real ±2-3% moves were hidden. Pinning
- * the pair to trading days makes phantom rows harmless; a security missing a
- * close on either pair date gets a null move (honest), not a fake zero.
- *
- * Current price/value deliberately still use the FRESHEST price row (rn=1):
- * a weekend row carrying Friday's true close is the best value estimate even
- * though it must never form a move pair.
- */
-/**
  * An option's stored pair-date close can be a stale pre-move intraday quote
  * stamped on the same date as the underlying's true (post-move) close — the
  * pair dates are consecutive, so the trading-day pair can't catch it, and
@@ -47,23 +31,6 @@ export interface TodayHolding {
  * small legitimate below-intrinsic discount deep-ITM American options carry.
  */
 const INTRINSIC_VIOLATION_FRACTION = 0.9;
-
-/**
- * Regression pin for
- * qa:today-ibkr-snapshot--expired-option-counted-in-names-and-day-move.
- * Options never carry `maturity_date` (that column is bond-only; an option's
- * expiry lives in `securities.expiration_date`, migration 004), so the
- * maturity_date guard above silently let an expired option contract sail
- * through: it stayed in the name count, the day-move sum, and the exposure
- * denominator even after real expiration. The TWS-connect purge
- * (`purgeExpiredOptionHoldings`) usually cleans this up, but the app also
- * supports a no-TWS import path where nothing purges, so the READ side must
- * independently guard — same rule `lib/compute/hedging.ts` and
- * `lib/compute/scenarios.ts` already apply via the shared, ET-anchored
- * `liveOptionExpirationSql` helper (`lib/compute/option-expiry.ts`). Reused
- * here rather than re-implemented, so there is exactly one definition of
- * "is this option still live" for every held-universe query to adopt.
- */
 
 function violatesIntrinsic(
   optionClose: number | null,
@@ -99,6 +66,37 @@ interface TodayHoldingRow extends TodayHolding {
   underlying_prior_close: number | null;
 }
 
+/**
+ * IBKR holdings for the Today view, with "today's move" computed on ONE
+ * consecutive trading-day pair resolved from SPY (resolveTradingDayPair —
+ * the anomaly-engine convention), never on a bare rn=1/rn=2 row pairing.
+ *
+ * Why: quote enrichment historically wrote weekend/Monday-before-open
+ * `prices` rows carrying a stale last price, so the two most-recent rows per
+ * security could be byte-identical non-trading-day phantoms — every position
+ * then read exactly $0 / 0.00% while real ±2-3% moves were hidden. Pinning
+ * the pair to trading days makes phantom rows harmless; a security missing a
+ * close on either pair date gets a null move (honest), not a fake zero.
+ *
+ * Current price/value deliberately still use the FRESHEST price row (rn=1):
+ * a weekend row carrying Friday's true close is the best value estimate even
+ * though it must never form a move pair.
+ *
+ * Regression pin for
+ * qa:today-ibkr-snapshot--expired-option-counted-in-names-and-day-move.
+ * Options never carry `maturity_date` (that column is bond-only; an option's
+ * expiry lives in `securities.expiration_date`, migration 004), so the
+ * maturity_date guard above silently let an expired option contract sail
+ * through: it stayed in the name count, the day-move sum, and the exposure
+ * denominator even after real expiration. The TWS-connect purge
+ * (`purgeExpiredOptionHoldings`) usually cleans this up, but the app also
+ * supports a no-TWS import path where nothing purges, so the READ side must
+ * independently guard — same rule `lib/compute/hedging.ts` and
+ * `lib/compute/scenarios.ts` already apply via the shared, ET-anchored
+ * `liveOptionExpirationSql` helper (`lib/compute/option-expiry.ts`). Reused
+ * here rather than re-implemented, so there is exactly one definition of
+ * "is this option still live" for every held-universe query to adopt.
+ */
 export function getIbkrTodayHoldings(
   db: Database.Database,
   accountId: number,
@@ -165,7 +163,9 @@ export function getIbkrTodayHoldings(
            THEN ${marketValuePairLatest} - ${marketValuePairPrior} ELSE NULL END AS today_gain,
          CASE WHEN p_pair.close_price IS NOT NULL AND p_prior.close_price IS NOT NULL
                 AND p_prior.close_price != 0
-           THEN (p_pair.close_price - p_prior.close_price) / p_prior.close_price ELSE NULL END AS today_pct
+           THEN (p_pair.close_price - p_prior.close_price) / p_prior.close_price
+                * CASE WHEN h.quantity < 0 THEN -1.0 ELSE 1.0 END
+           ELSE NULL END AS today_pct
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        LEFT JOIN ranked_prices p_today ON p_today.security_id = h.security_id AND p_today.rn = 1

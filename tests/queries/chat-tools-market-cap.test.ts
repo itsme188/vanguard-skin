@@ -92,3 +92,34 @@ describe("getAllocationBreakdown('market_cap_category') normalizes vocabulary", 
     expect(byName.get("Unknown")?.total_market_value).toBeCloseTo(1000, 0);
   });
 });
+
+describe("whitespace-only market_cap_category (SQL twin agrees with the JS normalizer)", () => {
+  it("folds '   ' and '' into Unknown, as normalizeMarketCapCategory returns null", () => {
+    const account = seedAccount("Test");
+    const ws = seedSecurity("WSP", "   ");
+    const empty = seedSecurity("EMP", "");
+    seedHolding(account, ws, 10);
+    seedHolding(account, empty, 10);
+    seedPrice(ws, 100);
+    seedPrice(empty, 100);
+
+    const result = getAllocationBreakdown(db, "market_cap_category");
+    expect(result.map((r) => r.group_name)).toEqual(["Unknown"]);
+    expect(result[0].total_market_value).toBeCloseTo(2000, 0);
+  });
+});
+
+describe("getAllocationBreakdown('sector') agrees with the Analysis bucket SQL", () => {
+  it("buckets a sector-less bond as Fixed Income and a blank sector via fund_category/Unknown", () => {
+    const account = seedAccount("Test");
+    const bond = db
+      .prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('BND1', 'Bond', 'Bond')")
+      .run().lastInsertRowid as number;
+    seedHolding(account, bond, 10);
+    seedPrice(bond, 100);
+
+    const names = getAllocationBreakdown(db, "sector").map((r) => r.group_name);
+    expect(names).toContain("Fixed Income");
+    expect(names).not.toContain("Unknown");
+  });
+});

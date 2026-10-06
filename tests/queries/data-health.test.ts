@@ -670,3 +670,40 @@ describe("cost basis coverage matches Accounts", () => {
     expect(coverage.holdingsWithCostBasis).toBe(2);
   });
 });
+
+describe("expired options leave the held universe (YYYYMMDD tolerant)", () => {
+  async function setup() {
+    const { default: Database } = await import("better-sqlite3");
+    const { runMigrations } = await import("@/lib/db/migrate");
+    const { todayET, addDays } = await import("@/lib/calendar/date-utils");
+    const { getDataHealthSummary, getPriceFreshness } = await import("@/lib/queries/data-health");
+    const d = new Database(":memory:");
+    runMigrations(d);
+    d.prepare("INSERT OR IGNORE INTO accounts (name) VALUES ('T')").run();
+    const acct = (d.prepare("SELECT id FROM accounts WHERE name='T'").get() as { id: number }).id;
+    const add = (sym: string, exp: string) => {
+      const sid = d
+        .prepare(
+          "INSERT INTO securities (symbol, name, security_type, expiration_date, option_type, multiplier) VALUES (?, ?, 'Option', ?, 'CALL', 100)"
+        )
+        .run(sym, sym, exp).lastInsertRowid as number;
+      d.prepare(
+        "INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key) VALUES (?, ?, 1, '2026-06-01', 'k:' || ?)"
+      ).run(acct, sid, sid);
+    };
+    return { d, add, todayET, addDays, getDataHealthSummary, getPriceFreshness };
+  }
+  const compact = (s: string) => s.replace(/-/g, "");
+
+  it("excludes dashed and YYYYMMDD expired rows, keeps live ones of either format", async () => {
+    const { d, add, todayET, addDays, getDataHealthSummary, getPriceFreshness } = await setup();
+    add("DEAD1", addDays(todayET(), -3));
+    add("DEAD2", compact(addDays(todayET(), -3)));
+    add("LIVE1", addDays(todayET(), 3));
+    add("LIVE2", compact(addDays(todayET(), 3)));
+    // priced so getPriceFreshness lists them via hasHoldings
+    expect(getDataHealthSummary(d).totalSecurities).toBe(2);
+    const held = getPriceFreshness(d).filter((r) => r.hasHoldings).map((r) => r.symbol).sort();
+    expect(held).toEqual(["LIVE1", "LIVE2"]);
+  });
+});

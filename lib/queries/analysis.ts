@@ -14,6 +14,7 @@ import {
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { getOptionExposureMap, exposureForHolding } from "@/lib/compute/exposure";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -339,6 +340,8 @@ export function getAllocationByDimension(
 
   const conditions = [
     "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+    // An option past its ET expiration day is no longer a position.
+    liveOptionExpirationSql("s"),
   ];
   const params: (string | number)[] = [];
 
@@ -422,6 +425,8 @@ function getSectorAllocationWithLookThrough(
 ): AllocationEntry[] {
   const conditions = [
     "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+    // An option past its ET expiration day is no longer a position.
+    liveOptionExpirationSql("s"),
   ];
   const params: (string | number)[] = [];
   if (accountIds && accountIds.length > 0) {

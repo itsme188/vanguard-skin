@@ -362,9 +362,9 @@ describe("getIbkrTodayHoldings", () => {
     // Sign check: the position gained even though the underlying price fell.
     expect(s!.today_gain).toBeGreaterThan(0);
     expect(s!.today_gain).toBeCloseTo((45 - 50) * -100, 4);
-    // today_pct is the raw price return (not quantity-signed) — negative is
-    // the correct value of the existing SQL expression for a price drop.
-    expect(s!.today_pct).toBeCloseTo((45 - 50) / 50, 6);
+    // today_pct is signed by position direction: a short gains when price
+    // falls, so pct agrees in sign with today_gain.
+    expect(s!.today_pct).toBeCloseTo(-(45 - 50) / 50, 6);
 
     const l = rows.find((r) => r.symbol === "LONG")!;
     expect(l).toBeDefined();
@@ -411,3 +411,31 @@ describe("getIbkrTodayHoldings", () => {
     expect(summary.count).toBe(2);
   });
 });
+
+describe("short positions: today_pct is signed by position direction", () => {
+  it("a short that falls in price shows a positive gain AND a positive pct; a long that falls is negative", () => {
+    const acct = ibkrAccountId();
+    const shrt = seedSecurity("SHRT");
+    const lng = seedSecurity("LONG");
+    const spy = seedSecurity("SPY", "ETF");
+    hold(acct, shrt, -10, "2026-07-30");
+    hold(acct, lng, 10, "2026-07-30");
+    hold(acct, spy, 1, "2026-07-30");
+    for (const sid of [shrt, lng]) {
+      price(sid, "2026-07-29", 100);
+      price(sid, "2026-07-30", 90);
+    }
+    price(spy, "2026-07-29", 600);
+    price(spy, "2026-07-30", 601);
+
+    const rows = getIbkrTodayHoldings(db, acct);
+    const s = rows.find((r) => r.symbol === "SHRT")!;
+    const l = rows.find((r) => r.symbol === "LONG")!;
+    expect(s.today_gain).toBeCloseTo(100, 4);
+    expect(s.today_pct).toBeCloseTo(0.1, 6);
+    expect(Math.sign(s.today_pct!)).toBe(Math.sign(s.today_gain!));
+    expect(l.today_gain).toBeCloseTo(-100, 4);
+    expect(l.today_pct).toBeCloseTo(-0.1, 6);
+  });
+});
+
