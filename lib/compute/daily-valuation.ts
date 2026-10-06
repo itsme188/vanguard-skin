@@ -375,6 +375,82 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
       }
     }
 
+    const getFirstValuationDateInRange = db.prepare(
+      `SELECT MIN(valuation_date) AS min_date FROM daily_valuations
+       WHERE account_id = ? AND valuation_date >= ? AND valuation_date < ?`
+    );
+
+    // Same residual rule the forward stepper uses — one definition, so the
+    // back-step and the anchor day can never disagree about the anchor's cash.
+    function anchorCashResidual(anchor: CashAnchor): number {
+      return anchor.holdings_value != null
+        ? anchor.snapshot_total - anchor.holdings_value
+        : anchor.cash_value != null
+          ? anchor.cash_value
+          : 0;
+    }
+
+    // Back-step: carry an anchor's cash residual BACKWARD over the daily rows
+    // that precede it. The mirror image of the forward stepper below, under
+    // the same assumption (cash moves only on a recorded external cash flow):
+    //
+    //   cash(day) = cashResidual − Σ net external cash flows in (day, anchor]
+    //
+    // A flow dated on the anchor day, or anywhere after `day`, is inside the
+    // anchor's total but had not happened yet at `day`, so it is taken back
+    // out; a flow dated on `day` itself stays in (end-of-day convention,
+    // inclusive on the day side — identical to the forward direction). Same
+    // `excludeInKind` contract as the forward stepper: a security moving in
+    // or out never moves cash.
+    //
+    // Total value is therefore continuous into the anchor day except for the
+    // market move and the recorded flows — the two things
+    // buildFlowAdjustedIndex already expects there. This only READS the
+    // ledger: it never writes or synthesizes a flow row to "explain" the old
+    // step, and it does not change which anchor dates are source seams
+    // (fetchAnchorSourceSeamDates reads monthly_snapshots alone). When the
+    // anchor is a seam against a skipped predecessor, the anchor day is still
+    // bridged by the index as before; the pre-anchor rows simply stop adding
+    // a second, cash-sized step on top of the measurement-basis splice.
+    //
+    // Called once per account, for the first resolvable anchor only — every
+    // row at or after that date is owned by the forward stepper, untouched.
+    //
+    // Scope: rows in [floorDate, anchor) where floorDate is the account's
+    // FIRST anchor of any kind — i.e. the skipped-anchor window(s), days the
+    // statement record already covers. Rows that predate every anchor keep
+    // "no cash inference" (pinned by tests/compute/daily-valuation.test.ts
+    // "dates before first snapshot have no cash inference"); widening the
+    // floor is a separate ruling, not part of this fix.
+    function backStepCashBeforeAnchor(accountId: number, anchor: CashAnchor, floorDate: string): void {
+      if (floorDate >= anchor.month_end_date) return;
+      const firstRow = getFirstValuationDateInRange.get(accountId, floorDate, anchor.month_end_date) as {
+        min_date: string | null;
+      };
+      if (firstRow.min_date === null) return;
+
+      // (firstDate, anchorDate] — a flow on the first row's own date is
+      // already inside that row's cash, so the exclusive start is exact.
+      const priorFlows = fetchNetFlowsByDate(db, [accountId], firstRow.min_date, anchor.month_end_date, {
+        excludeInKind: true,
+      });
+
+      let cash = anchorCashResidual(anchor);
+      let segmentEndExclusive = anchor.month_end_date;
+      for (let f = priorFlows.length - 1; f >= 0; f--) {
+        const flow = priorFlows[f];
+        // Rows in [flow.date, segmentEnd) are post-flow: they carry `cash`.
+        if (flow.date < segmentEndExclusive) {
+          applyCashSegment(accountId, cash, flow.date, segmentEndExclusive);
+        }
+        cash -= flow.net;
+        segmentEndExclusive = flow.date;
+      }
+      if (firstRow.min_date < segmentEndExclusive) {
+        applyCashSegment(accountId, cash, firstRow.min_date, segmentEndExclusive);
+      }
+    }
+
     for (const account of accounts) {
       const anchors = getCashAnchors.all(account.account_id) as CashAnchor[];
       if (anchors.length === 0) continue;
@@ -419,10 +495,24 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
           })
         : [];
       let flowIdx = 0;
+      let backSteppedFromFirstAnchor = false;
 
       for (let i = 0; i < anchors.length; i++) {
         const anchor = anchors[i];
         if (anchor.holdings_value === null && anchor.cash_value === null) continue;
+
+        // The FIRST anchor that resolves also owns the daily rows between
+        // the account's first anchor and itself. Nothing steps forward into
+        // those rows — every earlier anchor was skipped above — so without
+        // this they kept Phase 1's placeholder
+        // cash of 0 while their holdings were complete, and the whole cash
+        // balance "arrived" on the anchor day (the equity-curve base-day
+        // step; a statement anchor at day N with no priced row near it and
+        // rows at N+27 / N+30 leaves exactly that shape).
+        if (!backSteppedFromFirstAnchor) {
+          backSteppedFromFirstAnchor = true;
+          backStepCashBeforeAnchor(account.account_id, anchor, anchors[0].month_end_date);
+        }
 
         // Anchor the TOTAL to the broker-reported snapshot: inferred cash
         // (snapshot_total − holdings_value) makes total ≡ NetLiq by
@@ -435,11 +525,7 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
         // therefore a residual on broker-anchored days, not literal cash.
         // Broker-reported cash_value is only used when holdings can't be
         // reconstructed at the anchor date (no priced row that day).
-        const cashResidual = anchor.holdings_value != null
-          ? anchor.snapshot_total - anchor.holdings_value
-          : anchor.cash_value != null
-            ? anchor.cash_value
-            : 0;
+        const cashResidual = anchorCashResidual(anchor);
 
         // null = open-ended (last anchor, carries forward indefinitely)
         const windowEndExclusive = i < anchors.length - 1 ? anchors[i + 1].month_end_date : null;
