@@ -81,7 +81,7 @@ export interface ScenarioResult {
   biggestLosers: PositionImpact[];
   biggestWinners: PositionImpact[];
   /** Option rows left out of the total because they could not be repriced. */
-  optionsUnmodelled: { count: number; valueShare: number };
+  optionsUnmodelled: { count: number; valueShare: number; unpricedCount: number };
   /** Set when the scenario's primaryFactor matches an active macro theme's factor_label. */
   liveNowReason?: string;
 }

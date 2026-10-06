@@ -165,8 +165,9 @@ describe("summarizeUnmodelledOptions", () => {
     ]);
     expect(out.count).toBe(2);
     expect(out.valueShare).toBeCloseTo(200 / 800, 12);
+    expect(out.unpricedCount).toBe(1);
   });
   it("no options at all gives zero and zero", () => {
-    expect(summarizeUnmodelledOptions([{ securityType: "Stock", currentValue: 1 }])).toEqual({ count: 0, valueShare: 0 });
+    expect(summarizeUnmodelledOptions([{ securityType: "Stock", currentValue: 1 }])).toEqual({ count: 0, valueShare: 0, unpricedCount: 0 });
   });
 });

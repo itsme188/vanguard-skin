@@ -385,12 +385,27 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                         Options Not Modelled
                       </h4>
                       <p className="text-xs text-ink-dim mb-1.5">
-                        <PrivateText>
-                          {result.optionsUnmodelled.count}{" "}
-                          {result.optionsUnmodelled.count === 1 ? "option" : "options"} (
-                          {(result.optionsUnmodelled.valueShare * 100).toFixed(0)}% of option value)
-                        </PrivateText>{" "}
-                        left out of this total. No figure is estimated for them.
+                        {result.optionsUnmodelled.unpricedCount === result.optionsUnmodelled.count ? (
+                          <PrivateText>
+                            {result.optionsUnmodelled.count}{" "}
+                            {result.optionsUnmodelled.count === 1 ? "option" : "options"}{" "}
+                            with no price left out of this total. Their value is unknown, so no share is shown.
+                          </PrivateText>
+                        ) : (
+                          <PrivateText>
+                            {result.optionsUnmodelled.count}{" "}
+                            {result.optionsUnmodelled.count === 1 ? "option" : "options"} (
+                            {(result.optionsUnmodelled.valueShare * 100).toFixed(0)}% of option value) left out of
+                            this total.
+                            {result.optionsUnmodelled.unpricedCount > 0 &&
+                              ` ${result.optionsUnmodelled.unpricedCount} of them ${
+                                result.optionsUnmodelled.unpricedCount === 1 ? "has" : "have"
+                              } no price, so ${
+                                result.optionsUnmodelled.unpricedCount === 1 ? "its" : "their"
+                              } value is not in that share.`}
+                          </PrivateText>
+                        )}{" "}
+                        No figure is estimated for them.
                       </p>
                       <div className="space-y-1">
                         {result.positionImpacts

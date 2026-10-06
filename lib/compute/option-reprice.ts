@@ -142,12 +142,15 @@ export function repriceOptionUnderShock(pos: OptionElasticityInputs, shock: Opti
 /**
  * How many option rows a scenario left unmodelled, and their share of the
  * absolute option value. A contract with no price of its own has zero value,
- * so it adds to the count and not to the share.
+ * so it adds to the count and not to the share; `unpricedCount` says how
+ * many of the left-out rows are of that kind, so a 0% share is not read as
+ * "immaterial" when the value is simply unknown.
  */
 export function summarizeUnmodelledOptions(
   rows: Array<{ securityType: string; currentValue: number; unmodelledReason?: OptionUnmodelledReason }>,
-): { count: number; valueShare: number } {
+): { count: number; valueShare: number; unpricedCount: number } {
   let count = 0;
+  let unpricedCount = 0;
   let unmodelledValue = 0;
   let optionValue = 0;
   for (const row of rows) {
@@ -156,8 +159,9 @@ export function summarizeUnmodelledOptions(
     optionValue += value;
     if (row.unmodelledReason) {
       count += 1;
+      if (row.unmodelledReason === "no-option-price") unpricedCount += 1;
       unmodelledValue += value;
     }
   }
-  return { count, valueShare: optionValue > 0 ? unmodelledValue / optionValue : 0 };
+  return { count, valueShare: optionValue > 0 ? unmodelledValue / optionValue : 0, unpricedCount };
 }
