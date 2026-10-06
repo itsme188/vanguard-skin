@@ -63,7 +63,7 @@ export function isOptionSecurityType(securityType: string | null | undefined): b
  * one is kept deliberately in step rather than imported (neither module then
  * owns the other's expiry-cutoff semantics).
  */
-function normalizeExpirationDate(expiry: string): string | null {
+export function normalizeExpirationDate(expiry: string): string | null {
   if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) return expiry;
   const compact = /^(\d{4})(\d{2})(\d{2})$/.exec(expiry);
   return compact ? `${compact[1]}-${compact[2]}-${compact[3]}` : null;
