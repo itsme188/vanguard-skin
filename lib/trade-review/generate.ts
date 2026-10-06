@@ -17,7 +17,11 @@ import {
   saveTradeRoundtrips,
 } from "@/lib/mutations/trade-reviews";
 import { buildTradeReviewPrompt } from "./prompt";
-import { getMarketContext, formatMarketContext } from "./market-context";
+import {
+  getMarketContext,
+  formatMarketContext,
+  countCachedPricePoints,
+} from "./market-context";
 import {
   generateQuestions,
   getAccountProfile,
@@ -641,20 +645,16 @@ async function backfillPriceData(
     seen.add(trade.securityId);
 
     // Check existing coverage for this security
-    const priceCount = db
-      .prepare(
-        `SELECT COUNT(*) as cnt FROM (
-           SELECT date as d FROM prices WHERE security_id = ? AND date >= ? AND date <= ?
-           UNION ALL
-           SELECT bar_date as d FROM ohlcv_bars WHERE security_id = ? AND bar_date >= ? AND bar_date <= ? AND bar_size = '1 day'
-         )`
-      )
-      .get(
-        trade.securityId, trade.earliestEntryDate, trade.exitDate,
-        trade.securityId, trade.earliestEntryDate, trade.exitDate
-      ) as { cnt: number };
+    // countCachedPricePoints counts PRICED bars only — a legacy zero bar is
+    // not coverage (see its doc in market-context.ts).
+    const priceCount = countCachedPricePoints(
+      db,
+      trade.securityId,
+      trade.earliestEntryDate,
+      trade.exitDate
+    );
 
-    if (priceCount.cnt < MIN_PRICE_POINTS) {
+    if (priceCount < MIN_PRICE_POINTS) {
       securitiesToFetch.push(trade.securityId);
     }
   }
@@ -676,20 +676,14 @@ async function backfillPriceData(
         .get() as { id: number } | undefined;
 
       if (spySec) {
-        const spyPriceCount = db
-          .prepare(
-            `SELECT COUNT(*) as cnt FROM (
-               SELECT date as d FROM prices WHERE security_id = ? AND date >= ? AND date <= ?
-               UNION ALL
-               SELECT bar_date as d FROM ohlcv_bars WHERE security_id = ? AND bar_date >= ? AND bar_date <= ? AND bar_size = '1 day'
-             )`
-          )
-          .get(
-            spySec.id, overallStart, overallEnd,
-            spySec.id, overallStart, overallEnd
-          ) as { cnt: number };
+        const spyPriceCount = countCachedPricePoints(
+          db,
+          spySec.id,
+          overallStart,
+          overallEnd
+        );
 
-        if (spyPriceCount.cnt < MIN_PRICE_POINTS) {
+        if (spyPriceCount < MIN_PRICE_POINTS) {
           needBenchmark = true;
         }
       } else {

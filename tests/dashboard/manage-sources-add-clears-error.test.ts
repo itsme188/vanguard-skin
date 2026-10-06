@@ -33,3 +33,24 @@ describe("ManageSourcesModal add handlers clear the stale mutation error", () =>
     });
   }
 });
+
+describe("ManageSourcesModal — no raw exception text, Escape closes", () => {
+  it("never renders err.message or a bare 'network error'", () => {
+    expect(src).not.toMatch(/err\.message\s*:/);
+    expect(src).not.toMatch(/err instanceof Error \? err\.message/);
+    expect(src).not.toContain('"network error"');
+  });
+
+  it("uses the shared mutation-result helpers", () => {
+    expect(src).toMatch(/from "@\/lib\/ui\/mutation-result"/);
+    expect(src).toContain("networkFailureMessage");
+    expect(src).toContain("readMutationResult");
+  });
+
+  it("closes on Escape via a document keydown listener, deferring to the delete confirm", () => {
+    expect(src).toMatch(/e\.key !== "Escape"/);
+    expect(src).toMatch(/document\.addEventListener\("keydown"/);
+    expect(src).toMatch(/document\.removeEventListener\("keydown"/);
+    expect(src).toMatch(/pendingDeleteId !== null\) setPendingDeleteId\(null\);\s*else onClose\(\)/);
+  });
+});

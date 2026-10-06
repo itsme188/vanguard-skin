@@ -18,6 +18,11 @@
  * Clicking "gen recap" on a row whose window has not opened is a routine,
  * expected click; it must not put a red 409 in the browser console.
  *
+ * TRANSPORT, again (2026-10-05): the route now answers as a Server-Sent
+ * Events stream (per-retry progress + cancel — see
+ * tests/api/earnings-recap-modal-sse.test.ts). The refusal envelope is
+ * unchanged; it is the `data` of the stream's terminal `complete` event.
+ *
  * No force override is plumbed here: the bogeys modal's "Save actuals" road
  * owns the human confirm, and this surface has no such affordance.
  */
@@ -97,6 +102,17 @@ function postReq(body: unknown): Request {
   });
 }
 
+/** The payload of the stream's terminal `complete` event. */
+async function completeData(res: Response): Promise<unknown> {
+  const text = await res.text();
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+    const event = JSON.parse(line.slice(6)) as { complete?: boolean; data?: unknown };
+    if (event.complete) return event.data;
+  }
+  throw new Error(`no complete event in stream: ${text}`);
+}
+
 describe("POST /api/earnings/recap-modal — pre-print floor", () => {
   it("refuses with a 200 pre_print envelope before the slot window opens — an expected click is not an HTTP error", async () => {
     vi.useFakeTimers();
@@ -108,7 +124,7 @@ describe("POST /api/earnings/recap-modal — pre-print floor", () => {
 
     // 200, not 409: the browser console must stay clean on a routine click.
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
+    const body = (await completeData(res)) as {
       success: boolean;
       prePrint: boolean;
       code: string;
@@ -168,7 +184,7 @@ describe("POST /api/earnings/recap-modal — pre-print floor", () => {
     const res = await mod.POST(postReq({ eventId }));
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
+    const body = (await completeData(res)) as {
       success: boolean;
       symbol: string;
       enriched: { actual: string | null } | null;

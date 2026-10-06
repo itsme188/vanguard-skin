@@ -21,10 +21,12 @@ import { readFileSync } from "node:fs";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const src = readFileSync("app/dashboard/today/EarningsRowChips.tsx", "utf8");
-const route = readFileSync("app/api/earnings/recap-modal/route.ts", "utf8");
+// The route is a thin SSE wrapper since 2026-10-05; the pre-print branch
+// lives in the generate flow it calls.
+const route = readFileSync("lib/earnings/recap-modal-generate.ts", "utf8");
 
 describe("gen recap — a pre-print click reads as information, not failure", () => {
-  it("reads the route's structured prePrint flag off the JSON body", () => {
+  it("reads the route's structured prePrint flag off the terminal payload", () => {
     expect(src).toMatch(/prePrint\?:\s*boolean/);
   });
 
@@ -52,7 +54,10 @@ describe("gen recap — a pre-print click reads as information, not failure", ()
     // The fix must not turn every failure into a friendly note: a genuine
     // non-OK response still reaches the error toast.
     expect(src).toMatch(/throw new Error\(json\.error \?\? `HTTP \$\{res\.status\}`\)/);
-    expect(src).toMatch(/toast\(\s*err instanceof Error[^]*?"error"/);
+    // 2026-10-05: failures land in the generate dialog (with a manual
+    // "Try again"), not a toast — still the error channel, never "info".
+    expect(src).toMatch(/failure = err instanceof Error \? err\.message : "Generate failed"/);
+    expect(src).toMatch(/setGen\(failure \? \{ status: "error", message: failure \} : null\)/);
   });
 
   it("the route no longer answers the pre-print floor with a 409", () => {
@@ -77,11 +82,11 @@ describe("gen recap — network failures and the opensAt contract field", () => 
       anchorIndex(src, "\n  return (", anchorIndex(src, "async function generateRecap")),
     );
     expect(fn).toMatch(/apiFetch\([^]*?\)\.catch\(\(\) => null\)/);
-    expect(fn).toMatch(/if \(!res\)\s*\{\s*\n\s*toast\("Couldn't reach the server[^"]*", "error"\);/);
+    expect(fn).toMatch(/if \(!res\)\s*\{\s*\n\s*failure = "Couldn't reach the server[^"]*";/);
   });
 
   it("still lets a genuine err.message through the generic catch (server-supplied text)", () => {
-    expect(src).toMatch(/toast\(err instanceof Error \? err\.message : "Generate failed", "error"\)/);
+    expect(src).toMatch(/failure = err instanceof Error \? err\.message : "Generate failed";/);
   });
 
   it("types and reads json.opensAt instead of ignoring it", () => {
@@ -89,7 +94,8 @@ describe("gen recap — network failures and the opensAt contract field", () => 
       anchorIndex(src, "async function generateRecap"),
       anchorIndex(src, "\n  return (", anchorIndex(src, "async function generateRecap")),
     );
-    expect(fn).toMatch(/opensAt\?:\s*string \| null/);
+    // The payload type moved to the module-level RecapGenResult (2026-10-05).
+    expect(src).toMatch(/opensAt\?:\s*string \| null/);
     expect(fn).toMatch(/json\.opensAt/);
   });
 

@@ -4,6 +4,16 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import type { ResearchSource } from "@/lib/queries/research";
 import { ConfirmDialog } from "./ConfirmDialog";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+
+/** A server-reported failure (carries domain-language text); anything else thrown is a network failure. */
+class MutationFailure extends Error {}
+
+function failureText(err: unknown, action: string): string {
+  return err instanceof MutationFailure
+    ? `Couldn't ${action}: ${err.message}`
+    : networkFailureMessage(action);
+}
 
 interface DiscoveredSender {
   email: string;
@@ -66,10 +76,8 @@ export function ManageSourcesModal({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: sourceId, is_active: newActive }),
         });
-        const data = await res.json().catch(() => null);
-        if (!res.ok || data?.success === false) {
-          throw new Error(data?.error ?? `server returned ${res.status}`);
-        }
+        const r = await readMutationResult(res);
+        if (!r.ok) throw new MutationFailure(r.message);
         onSourcesChanged();
       } catch (err) {
         // Revert on failure — and say so, or the flipped toggle lies
@@ -79,7 +87,7 @@ export function ManageSourcesModal({
           )
         );
         setMutationError(
-          `Couldn't update the source: ${err instanceof Error ? err.message : "network error"}. The toggle was reverted.`
+          `${failureText(err, "update the source")} The toggle was reverted.`
         );
       }
     },
@@ -99,10 +107,8 @@ export function ManageSourcesModal({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: sourceId, allow_off_topic: newValue }),
         });
-        const data = await res.json().catch(() => null);
-        if (!res.ok || data?.success === false) {
-          throw new Error(data?.error ?? `server returned ${res.status}`);
-        }
+        const r = await readMutationResult(res);
+        if (!r.ok) throw new MutationFailure(r.message);
         onSourcesChanged();
       } catch (err) {
         setSources((prev) =>
@@ -111,7 +117,7 @@ export function ManageSourcesModal({
           )
         );
         setMutationError(
-          `Couldn't update the off-topic setting: ${err instanceof Error ? err.message : "network error"}. The toggle was reverted.`
+          `${failureText(err, "update the off-topic setting")} The toggle was reverted.`
         );
       }
     },
@@ -139,10 +145,8 @@ export function ManageSourcesModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, ...fields }),
       });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || data?.success === false) {
-        throw new Error(data?.error ?? `server returned ${res.status}`);
-      }
+      const r = await readMutationResult(res);
+      if (!r.ok) throw new MutationFailure(r.message);
     },
     []
   );
@@ -176,7 +180,7 @@ export function ManageSourcesModal({
       } catch (err) {
         setSources(prevSources);
         setMutationError(
-          `Couldn't reorder the earnings hierarchy: ${err instanceof Error ? err.message : "network error"}. The order was reverted — reopen the modal to see the server state.`
+          `${failureText(err, "reorder the earnings hierarchy")} The order was reverted — reopen the modal to see the server state.`
         );
       }
     },
@@ -218,7 +222,7 @@ export function ManageSourcesModal({
           prev.map((s) => (s.id === sourceId ? { ...s, earnings_rank: null } : s))
         );
         setMutationError(
-          `Couldn't add the source to the earnings hierarchy: ${err instanceof Error ? err.message : "network error"}. The change was reverted.`
+          `${failureText(err, "add the source to the earnings hierarchy")} The change was reverted.`
         );
       } finally {
         setHierarchyBusy(false);
@@ -248,7 +252,7 @@ export function ManageSourcesModal({
       } catch (err) {
         setSources(prevSources);
         setMutationError(
-          `Couldn't remove the source from the earnings hierarchy: ${err instanceof Error ? err.message : "network error"}. The change was reverted.`
+          `${failureText(err, "remove the source from the earnings hierarchy")} The change was reverted.`
         );
       } finally {
         setHierarchyBusy(false);
@@ -325,7 +329,7 @@ export function ManageSourcesModal({
           return next;
         });
         setMutationError(
-          `Couldn't save the note: ${err instanceof Error ? err.message : "network error"}. The note was reverted.`
+          `${failureText(err, "save the note")} The note was reverted.`
         );
       } finally {
         setHierarchyBusy(false);
@@ -344,15 +348,13 @@ export function ManageSourcesModal({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: sourceId }),
         });
-        const data = await res.json().catch(() => null);
-        if (!res.ok || data?.success === false) {
-          throw new Error(data?.error ?? `server returned ${res.status}`);
-        }
+        const r = await readMutationResult(res);
+        if (!r.ok) throw new MutationFailure(r.message);
         onSourcesChanged();
       } catch (err) {
         // Refetch on failure so the row reappears — and explain why
         setMutationError(
-          `Couldn't delete the source: ${err instanceof Error ? err.message : "network error"}.`
+          `${failureText(err, "delete the source")}`
         );
         const res = await fetch("/api/research/sources").catch(() => null);
         const data = await res?.json().catch(() => null);
@@ -369,14 +371,14 @@ export function ManageSourcesModal({
     setTimeout(() => discoverResultsRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
     try {
       const res = await apiFetch("/api/research/discover", { method: "POST" });
-      const data = await res.json();
-      if (data.success) {
-        setDiscovered(data.data);
+      const r = await readMutationResult<{ data: DiscoveredSender[] }>(res);
+      if (r.ok) {
+        setDiscovered(r.data.data);
       } else {
-        setDiscoverError(data.error || "Discovery failed");
+        setDiscoverError(r.message);
       }
-    } catch (err) {
-      setDiscoverError(err instanceof Error ? err.message : "Failed to connect to Gmail");
+    } catch {
+      setDiscoverError(networkFailureMessage("scan Gmail for senders"));
     } finally {
       setDiscovering(false);
       // Re-anchor once the response has grown the section: the result/error
@@ -461,6 +463,20 @@ export function ManageSourcesModal({
       setAdding(false);
     }
   }, [manualName, manualEmail, onSourcesChanged]);
+
+  // Escape closes the modal (same document-level pattern as
+  // EarningsEmailViewer) — but while the delete confirmation is up, Escape
+  // dismisses only that.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (pendingDeleteId !== null) setPendingDeleteId(null);
+      else onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose, pendingDeleteId]);
 
   if (!open) return null;
 

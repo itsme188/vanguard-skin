@@ -460,6 +460,25 @@ describe("getCrossSourceDiscrepancies", () => {
     expect(result[0].diffPct).toBeCloseTo(10, 0);
   });
 
+  it("still REPORTS a legacy zero-close bar as a discrepancy (this reader is deliberately unfiltered)", () => {
+    // Every other ohlcv_bars reader drops a zero bar via PRICED_BAR_SQL.
+    // This one exists to surface bad data, so it must keep seeing the row
+    // and count it as bad — a 100% disagreement with the stored price.
+    const sec = seedSecurity("ZEROBAR");
+    seedPrice(sec, "2025-03-15", 100, "vanguard-holdings");
+    db.prepare(
+      `INSERT INTO ohlcv_bars (security_id, bar_date, bar_size, open, high, low, close, volume)
+       VALUES (?, '2025-03-15', '1 day', 101, 103, 0, 0, 1000)`,
+    ).run(sec);
+
+    const result = getCrossSourceDiscrepancies(db);
+    expect(result.length).toBe(1);
+    expect(result[0].symbol).toBe("ZEROBAR");
+    expect(result[0].priceB).toBe(0);
+    expect(result[0].diffPct).toBe(100);
+    expect(countCrossSourceDiscrepancies(db)).toBe(1);
+  });
+
   it("does not flag matching prices", () => {
     const sec = seedSecurity("MATCH");
     seedPrice(sec, "2025-03-15", 100, "tws");

@@ -1,9 +1,8 @@
 import type { HoldingWithSecurity } from "@/lib/queries/holdings";
 import { displaySecurityName } from "@/lib/format";
-import { quantityUnitLabel } from "@/lib/format/quantity-unit";
 import { ScrollFade } from "./ScrollFade";
 import { SymbolLink } from "./SymbolLink";
-import { Money, Shares } from "@/lib/privacy/components";
+import { Money, Shares, QuantityUnit } from "@/lib/privacy/components";
 
 function formatOptionDescription(holding: HoldingWithSecurity): string {
   if (holding.security_type?.toLowerCase() !== "option") return "";
@@ -90,9 +89,11 @@ export function HoldingsTable({
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
                     <Shares value={holding.quantity} digits={qtyDigits} />
-                    <span className="ml-1 text-xs text-ink-faint font-normal">
-                      {quantityUnitLabel(holding.security_type, holding.quantity)}
-                    </span>
+                    <QuantityUnit
+                      securityType={holding.security_type}
+                      quantity={holding.quantity}
+                      className="ml-1 text-xs text-ink-faint font-normal"
+                    />
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                     {holding.cost_basis != null && holding.cost_basis !== 0 ? (

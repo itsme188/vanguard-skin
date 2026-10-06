@@ -121,6 +121,44 @@ export function getMarketContext(
 }
 
 /**
+ * How many cached daily price points exist for a security in a window —
+ * `prices` rows plus daily `ohlcv_bars` rows. The trade-review backfill
+ * (`lib/trade-review/generate.ts::backfillPriceData`) compares this against
+ * its minimum to decide whether to ask TWS for history.
+ *
+ * Bars are counted through `PRICED_BAR_SQL` so this agrees with the reader
+ * it gates: `getStockPriceContext` above drops a legacy zero bar, so counting
+ * one here as coverage would skip the TWS fetch and then fail that reader's
+ * own quality gate on the very rows that were counted. A zero bar is not a
+ * data point.
+ *
+ * Deliberately a plain row count (`UNION ALL`): a date present in both
+ * tables counts twice, as it always has. That is the pre-existing gate
+ * shape, kept unchanged.
+ */
+export function countCachedPricePoints(
+  db: Database.Database,
+  securityId: number,
+  startDate: string,
+  endDate: string
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM (
+         SELECT date as d FROM prices WHERE security_id = ? AND date >= ? AND date <= ?
+         UNION ALL
+         SELECT bar_date as d FROM ohlcv_bars
+           WHERE security_id = ? AND bar_date >= ? AND bar_date <= ? AND bar_size = '1 day'
+             AND ${PRICED_BAR_SQL}
+       )`
+    )
+    .get(securityId, startDate, endDate, securityId, startDate, endDate) as {
+    cnt: number;
+  };
+  return row.cnt;
+}
+
+/**
  * Format market context as markdown for the prompt.
  */
 export function formatMarketContext(
@@ -402,7 +440,19 @@ function getBenchmarkReturn(
     return (benchEnd.close_price - benchStart.close_price) / benchStart.close_price;
   }
 
-  // Fallback: SPY in ohlcv_bars (if tracked as a security)
+  // Fallback: SPY in ohlcv_bars (if tracked as a security).
+  //
+  // PRICED_BAR_SQL on BOTH endpoint reads (2026-10-05): this picks the first
+  // and last bar of the window and divides one close by the other, so a
+  // legacy zero bar landing on either endpoint was read as the benchmark's
+  // real close — a zero start divides by zero, a zero end reports a -100%
+  // period for the index. A dropped bar is simply absent: the endpoint moves
+  // to the nearest priced bar inside the window, exactly as it would if the
+  // row had never been stored. That is the same thing this function already
+  // does for a weekend or holiday (`>= startDate` / `<= endDate`), and it is
+  // honest here because the result is a PERIOD return between two real
+  // closes, not a one-day change that depends on calendar adjacency. If only
+  // one priced date is left, the single-point gate below still returns null.
   const spySecurity = db
     .prepare(`SELECT id FROM securities WHERE UPPER(symbol) = 'SPY' LIMIT 1`)
     .get() as { id: number } | undefined;
@@ -412,6 +462,7 @@ function getBenchmarkReturn(
       .prepare(
         `SELECT bar_date, close FROM ohlcv_bars
          WHERE security_id = ? AND bar_date >= ? AND bar_size = '1 day'
+           AND ${PRICED_BAR_SQL}
          ORDER BY bar_date ASC LIMIT 1`
       )
       .get(spySecurity.id, startDate) as
@@ -422,6 +473,7 @@ function getBenchmarkReturn(
       .prepare(
         `SELECT bar_date, close FROM ohlcv_bars
          WHERE security_id = ? AND bar_date <= ? AND bar_size = '1 day'
+           AND ${PRICED_BAR_SQL}
          ORDER BY bar_date DESC LIMIT 1`
       )
       .get(spySecurity.id, endDate) as

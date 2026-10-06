@@ -104,6 +104,49 @@ describe("reconcile-ledger-fix-status", () => {
     expect(changedLines).toBe(2 * 2); // merged_date + landed_commit for two rows
   });
 
+  it("a Revert commit carrying the tag does not count as landing it", () => {
+    fs.writeFileSync(path.join(dir, "d.txt"), "d\n");
+    git("add", "d.txt");
+    git("commit", "-q", "-m", 'Revert "fix other [qa:reverted-id]"');
+    const rows = JSON.parse(fs.readFileSync(ledger, "utf8"));
+    rows.findings.push({ id: "reverted-id", title: "r", status: "fixed", fix_status: "pr-open", fix_commit: "0".repeat(40) });
+    fs.writeFileSync(ledger, JSON.stringify(rows, null, 2) + "\n");
+    const res = reconcile("--apply");
+    expect(res.status).toBe(0);
+    expect(res.stdout).not.toContain("reverted-id");
+    const out = JSON.parse(fs.readFileSync(ledger, "utf8")).findings;
+    expect(out.find((r: { id: string }) => r.id === "reverted-id").fix_status).toBe("pr-open");
+  });
+
+  it("a partial-only row that landed is reported as partial and not flipped", () => {
+    const rows = JSON.parse(fs.readFileSync(ledger, "utf8"));
+    rows.findings.push({ id: "partial-id", title: "p", status: "fixed", fix_status: "pr-open", fix_commit_partial: c1 });
+    fs.writeFileSync(ledger, JSON.stringify(rows, null, 2) + "\n");
+    const res = reconcile("--apply");
+    expect(res.stdout).toContain("partial-id: partial fix landed");
+    expect(res.stdout).not.toContain("partial-id: pr-open -> merged");
+    const out = JSON.parse(fs.readFileSync(ledger, "utf8")).findings;
+    const row = out.find((r: { id: string }) => r.id === "partial-id");
+    expect(row.fix_status).toBe("pr-open");
+    expect(row.landed_commit).toBeUndefined();
+  });
+
+  it("a second --apply the same day keeps the first backup (numeric suffix)", () => {
+    const original = fs.readFileSync(ledger, "utf8");
+    reconcile("--apply");
+    // re-open one row so the second run has something to change
+    const rows = JSON.parse(fs.readFileSync(ledger, "utf8"));
+    rows.findings.find((r: { id: string }) => r.id === "direct-id").fix_status = "pr-open";
+    fs.writeFileSync(ledger, JSON.stringify(rows, null, 2) + "\n");
+    const second = reconcile("--apply");
+    expect(second.status).toBe(0);
+    const backups = fs.readdirSync(dir).filter((f) => f.startsWith("ledger.json.bak-")).sort();
+    expect(backups).toHaveLength(2);
+    expect(backups.some((f) => /-reconcile-2$/.test(f))).toBe(true);
+    const first = backups.find((f) => /-reconcile$/.test(f))!;
+    expect(fs.readFileSync(path.join(dir, first), "utf8")).toBe(original);
+  });
+
   it("exits non-zero on a missing ledger", () => {
     fs.rmSync(ledger);
     expect(reconcile().status).not.toBe(0);

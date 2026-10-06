@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { createPortal } from "react-dom";
 import { useToast } from "../components/Toast";
 import {
   EarningsEmailViewer,
@@ -24,6 +25,156 @@ interface EarningsRowChipsProps {
 }
 
 type Phase = "preview" | "recap";
+
+/** The "gen recap" run as the user sees it: in flight, failed, or idle. */
+type RecapGenState =
+  | { status: "running"; message: string }
+  | { status: "error"; message: string }
+  | null;
+
+/** The route's terminal payload (see app/api/earnings/recap-modal/route.ts). */
+interface RecapGenResult {
+  success?: boolean;
+  notReady?: boolean;
+  prePrint?: boolean;
+  html?: string;
+  title?: string;
+  symbol?: string;
+  eventDate?: string | null;
+  // The instant the print window opens (ISO string) — set whenever
+  // `prePrint` is true (see route contract comment). `json.error`
+  // already narrates this in prose for every reachable case; opensAt
+  // is the structured fallback for when that text is absent, so the
+  // wait is never described with no window at all.
+  opensAt?: string | null;
+  error?: string;
+}
+
+/**
+ * Read the generate stream to its TERMINAL event and return that event's
+ * payload. The route streams `data: <json>` lines (same framing as the trade
+ * review): `{progress}` while it works, then exactly one of `{complete,data}`
+ * or `{error}`. A 200 with an open stream proves nothing on its own — only
+ * the terminal event says whether a recap exists — so a stream that ends
+ * without one is reported as a failure, never as success.
+ *
+ * A non-stream response (a validation 4xx, a proxy error page) is read as
+ * the JSON envelope it is.
+ */
+async function readRecapStream(
+  res: Response,
+  onProgress: (message: string) => void,
+): Promise<RecapGenResult> {
+  const isStream = (res.headers.get("Content-Type") ?? "").includes("text/event-stream");
+  const reader = isStream ? res.body?.getReader() : undefined;
+  if (!reader) {
+    return (await res.json().catch(() => ({}))) as RecapGenResult;
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const payload = line.slice(6);
+      if (payload === "[DONE]") continue;
+      let event: {
+        progress?: { message?: string };
+        complete?: boolean;
+        data?: RecapGenResult;
+        error?: string;
+      };
+      try {
+        event = JSON.parse(payload);
+      } catch {
+        continue; // a torn line is not an event
+      }
+      if (typeof event.progress?.message === "string") onProgress(event.progress.message);
+      if (event.complete && event.data) return event.data;
+      if (typeof event.error === "string") return { success: false, error: event.error };
+    }
+  }
+  return {
+    success: false,
+    error: "The connection dropped before the recap finished. Nothing was saved — try again.",
+  };
+}
+
+/**
+ * Progress / failure dialog for the "gen recap" run. A portal, not an inline
+ * span: anything rendered inside the row's fixed-width chip cell slides the
+ * chips over their neighbours (the 2026-07-27 "+ BOG skipped the recap" bug).
+ * Every control is a plain visible button — nothing here is hover-revealed.
+ */
+function RecapGenerateDialog({
+  state,
+  onCancel,
+  onRetry,
+  onClose,
+}: {
+  state: RecapGenState;
+  onCancel: () => void;
+  onRetry: () => void;
+  onClose: () => void;
+}) {
+  if (!state || typeof document === "undefined") return null;
+  const running = state.status === "running";
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" aria-hidden="true" />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Generate earnings recap"
+        className="relative w-full max-w-sm rounded-xl border border-edge bg-panel shadow-2xl px-5 py-4 text-left"
+      >
+        <h2 className="text-sm font-medium text-ink whitespace-nowrap!">
+          {running ? "Generating recap" : "Recap not generated"}
+        </h2>
+        <p
+          className={`mt-2 text-[14px] leading-snug ${running ? "text-ink" : "text-down"}`}
+          role={running ? "status" : "alert"}
+          aria-live="polite"
+        >
+          {state.message}
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          {running ? (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="text-[13px] px-3 py-1.5 rounded border border-edge text-ink bg-raised hover:bg-muted cursor-pointer active:scale-[0.96] transition-transform"
+            >
+              Cancel
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onClose}
+                className="text-[13px] px-3 py-1.5 rounded border border-edge text-ink bg-raised hover:bg-muted cursor-pointer active:scale-[0.96] transition-transform"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="text-[13px] px-3 py-1.5 rounded text-gold-ink bg-gold/15 hover:bg-gold/25 cursor-pointer active:scale-[0.96] transition-transform"
+              >
+                Try again
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
 
 /**
  * Right-side chip cluster on each EarningsHub row.
@@ -101,7 +252,15 @@ export function EarningsRowChips({
     }
   }
   const [inlineData, setInlineData] = useState<InlineEmailData | null>(null);
-  const [generating, setGenerating] = useState(false);
+  // One "gen recap" run: what the dialog shows, and the handle that cancels
+  // it. The ref (not state) is the in-flight guard so a second click in the
+  // same tick cannot start — and bill — a second generation.
+  const [gen, setGen] = useState<RecapGenState>(null);
+  const genAbortRef = useRef<AbortController | null>(null);
+  const generating = gen?.status === "running";
+  // Leaving the page cancels the run server-side too, rather than letting it
+  // finish for nobody.
+  useEffect(() => () => genAbortRef.current?.abort(), []);
 
   // Cockpit chips (StageChipStrip) reuse this component's existing view/modal
   // machinery: preview/recap open the same email viewer as the ✓-chips below,
@@ -153,46 +312,42 @@ export function EarningsRowChips({
   }, [eventId]);
 
   async function generateRecap() {
-    if (generating) return;
-    setGenerating(true);
+    if (genAbortRef.current) return;
+    const controller = new AbortController();
+    genAbortRef.current = controller;
+    let failure: string | null = null;
+    setGen({ status: "running", message: "Starting…" });
     try {
       // A rejected fetch (network down, DNS failure, …) is classified here,
       // before any response exists to inspect — otherwise it fell into the
-      // generic catch below and toasted the browser's own vocabulary
+      // generic catch below and showed the browser's own vocabulary
       // ("Failed to fetch") instead of English (mirrors the composer's
       // NotesView.tsx::handleCreate pattern).
       const res = await apiFetch("/api/earnings/recap-modal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ eventId, runEnrichmentFirst: true }),
+        signal: controller.signal,
       }).catch(() => null);
+      // Cancelled: cancelRecap already told the user; a cancel is never
+      // reported as a failure and never retried.
+      if (controller.signal.aborted) return;
       if (!res) {
-        toast("Couldn't reach the server — try again.", "error");
+        failure = "Couldn't reach the server — try again.";
         return;
       }
-      const json = (await res.json().catch(() => ({}))) as {
-        success?: boolean;
-        notReady?: boolean;
-        prePrint?: boolean;
-        html?: string;
-        title?: string;
-        symbol?: string;
-        eventDate?: string | null;
-        // The instant the print window opens (ISO string) — set whenever
-        // `prePrint` is true (see route contract comment). `json.error`
-        // already narrates this in prose for every reachable case; opensAt
-        // is the structured fallback for when that text is absent, so the
-        // wait is never described with no window at all.
-        opensAt?: string | null;
-        error?: string;
-      };
+      // The stream's terminal event is the answer — not the HTTP status.
+      const json = await readRecapStream(res, (message) => {
+        if (genAbortRef.current === controller) setGen({ status: "running", message });
+      });
+      if (controller.signal.aborted) return;
       if (json.prePrint || json.notReady) {
-        // Two EXPECTED states, both answered 200 with a structured flag by
+        // Two EXPECTED states, both answered with a structured flag by
         // the route so a routine click logs no console error:
         //   prePrint — the print window hasn't opened yet;
         //   notReady — the company reported but actuals haven't landed.
         // Neither is a failure, so neither may use the loss-coloured error
-        // toast. The copy the route sends already explains the wait.
+        // channel. The copy the route sends already explains the wait.
         toast(
           json.error ??
             (json.prePrint
@@ -220,10 +375,28 @@ export function EarningsRowChips({
       // of showing "no actuals" until a manual reload.
       router.refresh();
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Generate failed", "error");
+      // An aborted read rejects too — that is the cancel, not a failure.
+      if (controller.signal.aborted) return;
+      failure = err instanceof Error ? err.message : "Generate failed";
     } finally {
-      setGenerating(false);
+      // Only the run that still owns the slot may touch the dialog: a
+      // cancelled run finishing late must not close its successor's.
+      if (genAbortRef.current === controller) {
+        genAbortRef.current = null;
+        // A failure stays on screen with a manual "Try again" — the client
+        // never retries on its own (the server already capped its retries).
+        setGen(failure ? { status: "error", message: failure } : null);
+      }
     }
+  }
+
+  function cancelRecap() {
+    const controller = genAbortRef.current;
+    if (!controller) return;
+    genAbortRef.current = null;
+    controller.abort();
+    setGen(null);
+    toast("Recap generation cancelled — nothing was saved or sent.", "info");
   }
 
   return (
@@ -330,13 +503,19 @@ export function EarningsRowChips({
             onClick={generateRecap}
             disabled={generating}
             className="relative text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap text-gold-ink bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer active:scale-[0.96] transition-transform pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
-            title="Compose a fresh recap email right now (runs enrichment + AI, ~30–60s) instead of waiting for the next sweep"
+            title="Compose a fresh recap email right now (runs enrichment + AI, about a minute — you can cancel) instead of waiting for the next sweep"
           >
             {generating ? "…" : "gen recap"}
           </button>
         )}
       </span>
-      {/* Generate outcomes surface as toasts, never as an inline span: the
+      <RecapGenerateDialog
+        state={gen}
+        onCancel={cancelRecap}
+        onRetry={generateRecap}
+        onClose={() => setGen(null)}
+      />
+      {/* Generate outcomes surface as toasts or the dialog above, never as an inline span: the
           message used to render INSIDE this fixed-width right-aligned cell,
           which slid the pre/rec chip group left over the neighboring + BOG
           button — whose taps then landed on the chips' invisible skip

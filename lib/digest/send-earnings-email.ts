@@ -166,7 +166,9 @@ export async function composeEarningsEmail(
   db: Database.Database,
   eventId: number,
   phase: "preview" | "recap",
-  opts: { footerNote?: string } = {},
+  // `signal` (optional) cancels the AI request in flight — only the in-app
+  // "gen recap" run passes one; every send path composes exactly as before.
+  opts: { footerNote?: string; signal?: AbortSignal } = {},
 ): Promise<ComposeEarningsResult> {
   const event = getEventByIdRow(db, eventId);
   if (!event) {
@@ -236,7 +238,7 @@ export async function composeEarningsEmail(
       : renderRecapPrompt(ctx as RecapContext);
 
   const headlineTable = renderHeadlineTable(ctx.event, ctx.symbol, phase, intelView);
-  const aiMarkdown = await callClaude(prompt, phase);
+  const aiMarkdown = await callClaude(prompt, phase, opts.signal);
   // Headline scoreboard is rendered deterministically from structured
   // fields (consensus_estimate, actual_value, reaction_snapshot) — printable
   // + same shape across preview + recap. AI takes over after for line-by-line
@@ -2469,6 +2471,7 @@ export function joinClaudeTextBlocks(blocks: { text: string }[]): string {
 async function callClaude(
   prompt: string,
   phase: "preview" | "recap",
+  signal?: AbortSignal,
 ): Promise<string> {
   const featureKey = phase === "preview" ? "earningsPreview" : "earningsRecap";
   const { provider, modelId } = resolveFeatureModel(featureKey);
@@ -2480,14 +2483,21 @@ async function callClaude(
   }
   const client = getRawAnthropicClient(featureKey);
   const response = await createWithTokenLadder(
-    (maxTokens) =>
-      client.messages.create({
+    (maxTokens) => {
+      const body = {
         model: modelId,
         max_tokens: maxTokens,
         system: SYSTEM_PROMPT,
-        tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
-        messages: [{ role: "user", content: prompt }],
-      }),
+        tools: [{ type: "web_search_20250305" as const, name: "web_search" as const, max_uses: 5 }],
+        messages: [{ role: "user" as const, content: prompt }],
+      };
+      // With a signal the SDK tears the request down on abort (and refuses
+      // to start a ladder rung once aborted); without one the call is the
+      // same single-argument request it has always been.
+      return signal
+        ? client.messages.create(body, { signal })
+        : client.messages.create(body);
+    },
     phase,
   );
   // Guard against Fable-style refusals (stop_reason === "refusal" means the

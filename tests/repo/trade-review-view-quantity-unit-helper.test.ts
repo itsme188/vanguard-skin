@@ -21,21 +21,22 @@ import { readFileSync } from "node:fs";
 describe("TradeReviewView — quantity unit label uses the shared singularising helper", () => {
   const src = readFileSync("app/dashboard/components/TradeReviewView.tsx", "utf8");
 
-  it("imports quantityUnitLabel from the shared helper module", () => {
+  it("imports the privacy-aware QuantityUnit component (no direct quantityUnitLabel)", () => {
     expect(src).toMatch(
-      /import\s*\{\s*quantityUnitLabel\s*\}\s*from\s*["']@\/lib\/format\/quantity-unit["']/
+      /import\s*\{[^}]*\bQuantityUnit\b[^}]*\}\s*from\s*["']@\/lib\/privacy\/components["']/
     );
+    expect(src).not.toMatch(/quantityUnitLabel/);
   });
 
   it("calls the helper with securityType and totalQuantity for the trade summary row", () => {
     expect(src).toMatch(
-      /quantityUnitLabel\(trade\.securityType,\s*trade\.totalQuantity\)/
+      /<QuantityUnit\s+securityType=\{trade\.securityType\}\s+quantity=\{trade\.totalQuantity\}/
     );
   });
 
   it("calls the helper with securityType and exitQuantity for the Lot Breakdown row", () => {
     expect(src).toMatch(
-      /quantityUnitLabel\(trade\.securityType,\s*lot\.exitQuantity\)/
+      /<QuantityUnit\s+securityType=\{trade\.securityType\}\s+quantity=\{lot\.exitQuantity\}/
     );
   });
 

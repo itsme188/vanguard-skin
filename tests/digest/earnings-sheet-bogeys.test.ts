@@ -205,6 +205,28 @@ describe("composeEarningsEmail block order (real function, both phases)", () => 
     expect(iAi).toBeGreaterThan(iSheetBogeys);
   });
 
+  it("forwards an AbortSignal to the AI request, and sends none when not given one", async () => {
+    const { getRawAnthropicClient } = await import("@/lib/ai/provider");
+    const { composeEarningsEmail } = await import("@/lib/digest/send-earnings-email");
+    const mockCreate = vi.fn().mockResolvedValue({
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: `## The setup\n\n${AI_MARKER}` }],
+    });
+    vi.mocked(getRawAnthropicClient).mockReturnValue({
+      messages: { create: mockCreate },
+    } as unknown as ReturnType<typeof getRawAnthropicClient>);
+
+    // Every send path (sweep, wrap, debrief): the request is unchanged.
+    await composeEarningsEmail(db, eventId, "recap");
+    expect(mockCreate.mock.calls[0]).toHaveLength(1);
+
+    const ac = new AbortController();
+    await composeEarningsEmail(db, eventId, "recap", { signal: ac.signal });
+    expect(mockCreate.mock.calls[1][1]).toEqual({ signal: ac.signal });
+    // Same request body either way — the signal changes nothing the model sees.
+    expect(mockCreate.mock.calls[1][0]).toEqual(mockCreate.mock.calls[0][0]);
+  });
+
   it("recap: scoreboard, then sheet bogeys (no past prints), then AI output", async () => {
     const { composeEarningsEmail } = await import("@/lib/digest/send-earnings-email");
     const result = await composeEarningsEmail(db, eventId, "recap");

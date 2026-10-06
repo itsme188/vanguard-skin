@@ -1140,6 +1140,15 @@ function SentEmailsList({ emails }: { emails: SentEarningsEmail[] }) {
               {e.sent_by_cloud === 1 && (
                 <Chip tone="neutral" size="xs">cloud</Chip>
               )}
+              {e.delivery_unknown === 1 && (
+                <Chip
+                  tone="warn"
+                  size="xs"
+                  title="The email provider never confirmed delivery. It may have gone out; confirm it in your sent mail."
+                >
+                  delivery unconfirmed
+                </Chip>
+              )}
               <span className="ml-auto text-[11px] text-ink-faint font-mono">
                 sent {fmtSentAt(e.sent_at)}
               </span>

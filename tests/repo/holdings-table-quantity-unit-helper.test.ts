@@ -21,15 +21,16 @@ import { readFileSync } from "node:fs";
 describe("HoldingsTable — quantity unit label uses the shared singularising helper", () => {
   const src = readFileSync("app/dashboard/components/HoldingsTable.tsx", "utf8");
 
-  it("imports quantityUnitLabel from the shared helper module", () => {
+  it("imports the privacy-aware QuantityUnit component", () => {
     expect(src).toMatch(
-      /import\s*\{\s*quantityUnitLabel\s*\}\s*from\s*["']@\/lib\/format\/quantity-unit["']/
+      /import\s*\{[^}]*\bQuantityUnit\b[^}]*\}\s*from\s*["']@\/lib\/privacy\/components["']/
     );
+    expect(src).not.toMatch(/quantityUnitLabel/);
   });
 
-  it("calls the helper with security_type and quantity for the Quantity cell", () => {
+  it("renders <QuantityUnit> with security_type and quantity for the Quantity cell", () => {
     expect(src).toMatch(
-      /quantityUnitLabel\(holding\.security_type,\s*holding\.quantity\)/
+      /<QuantityUnit[^>]*securityType=\{holding\.security_type\}[^>]*quantity=\{holding\.quantity\}/
     );
   });
 

@@ -6,10 +6,9 @@ import { MarkdownMessage } from "./MarkdownMessage";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
-import { Money, Pct, Shares, PrivateText, Count } from "@/lib/privacy/components";
+import { Money, Pct, Shares, PrivateText, Count, QuantityUnit } from "@/lib/privacy/components";
 import { isNarrativeStale } from "@/lib/trade-review/stale-narrative";
 import { formatProfitFactor } from "@/lib/format";
-import { quantityUnitLabel } from "@/lib/format/quantity-unit";
 import apiFetch from "@/lib/http/apiFetch";
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -1072,7 +1071,7 @@ function GroupedTradeCards({
                         value={trade.totalQuantity}
                         digits={trade.totalQuantity >= 1 ? 0 : 3}
                       />{" "}
-                      {quantityUnitLabel(trade.securityType, trade.totalQuantity)}
+                      <QuantityUnit securityType={trade.securityType} quantity={trade.totalQuantity} />
                     </span>
                     {trade.lots.length > 1 && (
                       <span>{trade.lots.length} lots</span>
@@ -1147,7 +1146,7 @@ function GroupedTradeCards({
                             </span>
                             <span className="text-ink-faint">
                               <Shares value={lot.exitQuantity} />{" "}
-                              {quantityUnitLabel(trade.securityType, lot.exitQuantity)}
+                              <QuantityUnit securityType={trade.securityType} quantity={lot.exitQuantity} />
                             </span>
                             <span className="text-ink-faint">
                               <HoldingPeriodBadge days={lot.holdingDays} />

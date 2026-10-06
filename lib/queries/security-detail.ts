@@ -468,6 +468,14 @@ export function getKpisForSecurity(
 
   // ATR needs consecutive bars with prev-close. 30 is enough for a stable
   // Wilder-smoothed 14-period ATR and cheap to read.
+  //
+  // Gap rule (2026-10-05): getOhlcvBars reads through PRICED_BAR_SQL, so a
+  // legacy zero bar is ABSENT from this series — never forward-filled. The
+  // true range of the bar after it is measured against the last PRICED
+  // close, the same way a market holiday is handled. Both prices in that
+  // pair are real, so the range is a real (two-session) move, and ATR equals
+  // what it would be had the row never been stored. Pinned by
+  // tests/queries/security-kpis-zero-bar.test.ts.
   const recentBars = getOhlcvBars(db, securityId, "1 day", { limit: undefined })
     .slice(-30);
   let atr14: number | null = null;

@@ -1,11 +1,10 @@
 import { db } from "@/lib/db";
-import { runEnrichment } from "@/lib/calendar/enrichment-runner";
-import { describePrePrintFloor } from "@/lib/earnings/pre-print-floor";
 import {
-  composeEarningsEmail,
-  EarningsEmailError,
-} from "@/lib/digest/send-earnings-email";
-import type { CalendarEvent } from "@/lib/types";
+  generateRecapForModal,
+  recapFailureMessage,
+  RecapGenerateAborted,
+  type RecapProgress,
+} from "@/lib/earnings/recap-modal-generate";
 
 export const dynamic = "force-dynamic";
 
@@ -21,22 +20,35 @@ export const dynamic = "force-dynamic";
  *     web-triggered path). Use false to skip if you already know the row
  *     is enriched.
  *
- * Returns:
- *   - 200 { success, html, title, eventDate, symbol, phase: "recap",
+ * Responds as Server-Sent Events (in-app long work streams — same framing
+ * as POST /api/trade-review: `data: <json>\n\n` lines, then `data: [DONE]`):
+ *   - { progress: { phase, message, attempt?, maxAttempts? } } — phase is
+ *     "enriching" | "generating" | "retrying". The AI step runs at most 2
+ *     TOTAL attempts per click (one automatic retry), each announced.
+ *   - { heartbeat: true } every 15s so the connection survives a long call.
+ *   - terminal { complete: true, data } where `data` is exactly the JSON body
+ *     this route used to return (the three shapes below), OR
+ *   - terminal { error } with a plain-language message.
+ * A client that aborts the request cancels the run: no retry, no terminal
+ * event, and nothing was stored (this surface never writes a recap).
+ *
+ * `data` shapes:
+ *   - { success, html, title, eventDate, symbol, phase: "recap",
  *           markdown, enriched: { actual, reaction } | null }
- *   - 200 { success: false, prePrint: true, code: "pre_print", error,
+ *   - { success: false, prePrint: true, code: "pre_print", error,
  *     opensAt } when the enrichment runner refuses the row on the pre-print
  *     floor — clicking "Generate" before the print window opens must not
  *     fetch, write, or push. No force override is offered here: the row's
  *     actuals road (the bogeys modal "Save actuals", which owns the force
  *     confirm) is where a human asserts an early print, and nothing on this
- *     surface can. The refusal rides a 200 for the same reason the
+ *     surface can. The refusal rides a `complete` for the same reason the
  *     no-actuals-yet guard below does: a click on a row whose window has
  *     not opened is a ROUTINE, expected click, and answering it 409 wrote a
  *     red error into the user's browser console and a loss-coloured toast
  *     onto the screen for a state that is merely early (QA 2026-09-07).
- *   - 409 if actual_value still missing after enrichment attempt
- *   - 4xx for validation / not-found
+ *   - { success: false, notReady: true, error } when actual_value is still
+ *     missing after the enrichment attempt (same routine-click reasoning).
+ * A malformed body is still a plain JSON 400 — there is no run to stream.
  *
  * No email, no audit row — this is purely a preview surface for the
  * EarningsHub "Generate" button. Use POST /api/earnings/email when the
@@ -58,87 +70,72 @@ export async function POST(request: Request) {
     );
   }
   const eventId = body.eventId;
-  const runEnrich = body.runEnrichmentFirst !== false;
+  const runEnrichmentFirst = body.runEnrichmentFirst !== false;
 
-  let enrichmentResult: { actual: string | null; reaction: unknown } | null = null;
+  // One controller for the run: the client dropping the request and the
+  // stream being cancelled both land here, and the generate flow checks it
+  // between phases and hands it to the AI call.
+  const run = new AbortController();
+  const abortRun = () => run.abort();
+  if (request.signal.aborted) run.abort();
+  else request.signal.addEventListener("abort", abortRun, { once: true });
 
-  if (runEnrich) {
-    try {
-      const results = await runEnrichment(db, { eventId });
-      const r = results[0];
-      // Pre-print floor (2026-08-28): the runner fetched/wrote/pushed
-      // nothing. Refuse the compose too rather than narrating a print that
-      // has not happened — a recap composed off a stale or absent actual is
-      // exactly the wrong-numbers failure the floor exists to prevent.
-      if (r?.reason === "pre_print" && r.prePrint) {
-        // Structured flag on a 200, not a 409 — see the contract above.
-        // `opensAt` is the instant the caller is waiting for: the slot-window
-        // floor when the slot basis refused the row, else the recorded
-        // release instant. Null when neither could be composed.
-        const opensAt = r.prePrint.floor ?? r.prePrint.release;
-        return Response.json({
-          success: false,
-          prePrint: true,
-          code: "pre_print",
-          error:
-            describePrePrintFloor(r.prePrint.eventDate, r.prePrint) +
-            " Enrichment and the recap stay locked until then.",
-          opensAt: opensAt ? opensAt.toISOString() : null,
+  const encoder = new TextEncoder();
+
+  const readable = new ReadableStream({
+    async start(controller) {
+      let closed = false;
+      const send = (data: unknown) => {
+        // A cancelled stream rejects enqueue — a late event is just dropped.
+        if (closed || run.signal.aborted) return;
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          closed = true;
+        }
+      };
+
+      // Heartbeat to keep SSE alive during the long AI call.
+      const heartbeat = setInterval(() => {
+        send({ heartbeat: true });
+      }, 15000);
+
+      try {
+        const data = await generateRecapForModal(db, eventId, {
+          runEnrichmentFirst,
+          signal: run.signal,
+          onProgress: (progress: RecapProgress) => send({ progress }),
         });
+        send({ complete: true, data });
+      } catch (err) {
+        // A cancel has no terminal event: the client that asked for it is
+        // gone, and nothing was stored.
+        if (!(err instanceof RecapGenerateAborted)) {
+          send({ error: recapFailureMessage(err, 1) });
+        }
+      } finally {
+        clearInterval(heartbeat);
+        request.signal.removeEventListener("abort", abortRun);
+        if (!closed) {
+          try {
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+          } catch {
+            // Already cancelled by the client — nothing left to close.
+          }
+        }
       }
-      if (r) {
-        enrichmentResult = {
-          actual: r.actual,
-          reaction: r.reaction,
-        };
-      }
-    } catch (err) {
-      // Enrichment failures shouldn't block compose — the AI prompt has
-      // a fallback web_search ask for missing actuals.
-      console.warn(
-        `[recap-modal] Enrichment for event ${eventId} failed:`,
-        err,
-      );
-    }
-  }
+    },
+    cancel() {
+      run.abort();
+    },
+  });
 
-  try {
-    const composed = await composeEarningsEmail(db, eventId, "recap");
-    const event = db
-      .prepare(`SELECT event_date FROM calendar_events WHERE id = ?`)
-      .get(eventId) as Pick<CalendarEvent, "event_date"> | undefined;
-
-    return Response.json({
-      success: true,
-      html: composed.html,
-      title: composed.title,
-      eventDate: event?.event_date ?? null,
-      symbol: composed.symbol,
-      phase: "recap" as const,
-      markdown: composed.markdown,
-      enriched: enrichmentResult,
-    });
-  } catch (err) {
-    if (err instanceof EarningsEmailError) {
-      // The no-actuals-yet guard (409) is the EXPECTED outcome of clicking
-      // "gen" before a company reports — return 200 with a structured flag
-      // so a routine click doesn't log a browser console error, and keep
-      // the internals (event id, API paths) out of the user-facing copy.
-      // The cron-auth /api/earnings/email path keeps its literal 409.
-      if (err.status === 409) {
-        return Response.json({
-          success: false,
-          notReady: true,
-          error:
-            "Not reported yet — the recap unlocks once actuals land, or after you save reported actuals in the bogeys editor.",
-        });
-      }
-      return Response.json({ error: err.message }, { status: err.status });
-    }
-    console.error("[recap-modal] Compose error:", err);
-    return Response.json(
-      { error: err instanceof Error ? err.message : "Compose failed" },
-      { status: 500 },
-    );
-  }
+  return new Response(readable, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
 }

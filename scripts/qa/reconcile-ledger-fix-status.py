@@ -7,9 +7,13 @@ on --ref whose subject carries the same `[qa:<finding-id>]` tag (cherry-picks ge
 new SHAs), is reachable from --ref (default origin/main). If so set
 fix_status "merged", merged_date (US Eastern YYYY-MM-DD) and landed_commit
 (short sha on the ref). Only those three fields are ever written.
+A commit whose subject starts with "Revert" never counts as landing a tag, and a
+row that has only `fix_commit_partial` is reported as "partial fix landed" and
+left as is (a partial fix is not a merged fix).
 
 Dry run by default. --apply first copies the ledger to
-<ledger>.bak-<date>-reconcile, then rewrites it preserving indentation, trailing
+<ledger>.bak-<date>-reconcile (a numeric suffix -2, -3... is added rather than
+overwriting an earlier backup from the same day), then rewrites it preserving indentation, trailing
 newline and non-ASCII characters.
 
 Usage: scripts/qa/reconcile-ledger-fix-status.py [--ledger PATH] [--ref REF] [--apply]
@@ -56,7 +60,9 @@ def tagged_commit_on_ref(repo, ref, finding_id):
     hits = []
     for line in out.splitlines():
         sha, _, subject = line.partition("\t")
-        if tag in subject:
+        # A revert's subject quotes the original, tag included; it undoes the
+        # fix, so it must never count as landing it.
+        if tag in subject and not subject.startswith("Revert"):
             hits.append(sha)
     return hits[-1] if hits else None
 
@@ -105,12 +111,14 @@ def main(argv=None):
 
     date = today_eastern()
     changes = []
+    partials = []
     suspects = []
     for f in findings:
         if not isinstance(f, dict):
             continue
         fid = f.get("id")
-        commit = f.get("fix_commit") or f.get("fix_commit_partial")
+        full_commit = f.get("fix_commit")
+        commit = full_commit or f.get("fix_commit_partial")
         if f.get("fix_status") == "fixed" or (f.get("status") == "fixed" and not f.get("fix_status")):
             if not f.get("fix_commit") and f.get("fix_status") == "fixed":
                 suspects.append(fid)
@@ -122,17 +130,25 @@ def main(argv=None):
         except RuntimeError as exc:
             sys.stderr.write("reconcile-ledger-fix-status: %s\n" % exc)
             return 1
-        if landed:
+        if landed and not full_commit:
+            partials.append((fid, commit, landed))
+        elif landed:
             changes.append((f, fid, f["fix_status"], commit, landed))
 
     for _, fid, old, commit, landed in changes:
         print("%s: %s -> merged  (fix_commit %s, landed %s on %s)" % (fid, old, commit[:12], landed, args.ref))
+    for fid, commit, landed in partials:
+        print("%s: partial fix landed (fix_commit_partial %s, landed %s on %s); fix_status left as is" % (fid, commit[:12], landed, args.ref))
     for fid in suspects:
         print("suspect: no commit: %s (fix_status fixed, no fix_commit; left alone)" % fid)
     print("%d finding(s) %s" % (len(changes), "updated" if args.apply else "would change (dry run; pass --apply)"))
 
     if args.apply and changes:
         backup = "%s.bak-%s-reconcile" % (args.ledger, date)
+        n = 2
+        while os.path.exists(backup):
+            backup = "%s.bak-%s-reconcile-%d" % (args.ledger, date, n)
+            n += 1
         shutil.copy2(args.ledger, backup)
         for f, _, _, _, landed in changes:
             f["fix_status"] = "merged"
