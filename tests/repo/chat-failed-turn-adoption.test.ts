@@ -1,28 +1,47 @@
 /**
- * Source pin: a first-turn failure before the server creates a conversation
- * must not adopt convs[0] (an unrelated old thread). Adoption is gated on the
- * conversation being created at/after the turn's send-start.
+ * Source pin: a turn adopts a conversation only when the server said, on that
+ * turn's own response, which conversation it created. A first-turn failure
+ * before the server creates a row carries no id, so nothing is adopted and
+ * Retry posts into a fresh conversation. The id never comes from the
+ * conversation list (sorted by last update, shared across devices) or from a
+ * clock comparison between the browser and the server.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it, expect } from "vitest";
+import { anchorIndex, sliceBetween } from "../helpers/source-anchor";
 
-const src = readFileSync(
-  join(__dirname, "../../app/dashboard/components/ChatInterface.tsx"),
-  "utf8",
-);
+const root = join(__dirname, "../..");
+const src = readFileSync(join(root, "app/dashboard/components/ChatInterface.tsx"), "utf8");
+const route = readFileSync(join(root, "app/api/chat/route.ts"), "utf8");
 
 describe("chat failed-turn conversation adoption", () => {
-  it("has no unconditional adoption of convs[0]", () => {
-    expect(src).not.toMatch(/\{\s*\/\/[^\n]*\n\s*setConversationId\(convs\[0\]\.id\);\s*\}/);
-    const idx = src.indexOf("setConversationId(convs[0].id)");
-    expect(idx).toBeGreaterThan(-1);
-    const before = src.slice(Math.max(0, idx - 200), idx);
-    expect(before).toMatch(/createdMs\s*>=\s*startedAt/);
+  it("the chat route still returns the conversation id on the stream response", () => {
+    anchorIndex(route, '"X-Conversation-Id": String(conversationId)');
   });
-  it("records send-start on submit and Retry and compares created_at", () => {
-    expect(src).toContain("sendStartedAtRef");
-    expect(src.match(/sendStartedAtRef\.current = Date\.now\(\)/g)?.length).toBe(2);
-    expect(src).toContain("convs[0].created_at");
+
+  it("the transport fetch clears the turn id, then records the response header", () => {
+    const wrapper = sliceBetween(src, "const chatFetch", "new DefaultChatTransport(");
+    const clear = anchorIndex(wrapper, "turn.conversationId = null");
+    const call = anchorIndex(wrapper, "await apiFetch(input, init)");
+    const read = anchorIndex(wrapper, 'res.headers.get("X-Conversation-Id")');
+    expect(clear).toBeLessThan(call);
+    expect(call).toBeLessThan(read);
+    anchorIndex(src, 'new DefaultChatTransport({ api: "/api/chat", fetch: chatFetch })');
+    // The box and the transport come out of ONE memo, so they cannot drift.
+    anchorIndex(src, "const { transport, turn } = useMemo(");
+  });
+
+  it("adoption reads only the turn id — never the list head, never a clock", () => {
+    const effect = sliceBetween(
+      src,
+      "const prevStatusRef = useRef(status)",
+      "// Auto-scroll on new content",
+    );
+    anchorIndex(effect, "setConversationId(turn.conversationId)");
+    expect(effect).not.toContain("convs[0]");
+    expect(src).not.toContain("setConversationId(convs[0].id)");
+    expect(src).not.toContain("sendStartedAtRef");
+    expect(effect).not.toContain("Date.now()");
   });
 });

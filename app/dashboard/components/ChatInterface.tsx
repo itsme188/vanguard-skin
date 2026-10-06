@@ -15,7 +15,7 @@ import { getPageContext } from "@/lib/chat/page-context";
 import { humanizeChatError } from "@/lib/chat/error-message";
 import type { ChatScope } from "@/lib/types";
 import type { ChatConversation, ChatMessage } from "@/lib/queries/chat";
-import apiFetch from "@/lib/http/apiFetch";
+import apiFetch, { type ApiFetch } from "@/lib/http/apiFetch";
 
 // Friendly labels for tool call indicators
 const TOOL_LABELS: Record<string, string> = {
@@ -327,10 +327,28 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   // token baked into `headers` here: the same first-render freeze above would
   // pin a stale/absent token forever, whereas apiFetch reads the `vgs_csrf`
   // cookie inside each call.
-  const transport = useMemo(
-    () => new DefaultChatTransport({ api: "/api/chat", fetch: apiFetch }),
-    []
-  );
+  //
+  // chatFetch also records which conversation the server used for THIS turn:
+  // /api/chat returns it in `X-Conversation-Id` on the stream response. A
+  // request that fails before the server creates a row (network error, 4xx,
+  // 5xx) carries no header, so the id stays null and nothing is adopted. The
+  // box lives in the same memo as the transport, so the frozen transport and
+  // the effect below always share it.
+  const { transport, turn } = useMemo(() => {
+    // Plain mutable box, written only inside the fetch call (never in render).
+    const turn: { conversationId: number | null } = { conversationId: null };
+    const chatFetch: ApiFetch = async (input, init) => {
+      turn.conversationId = null;
+      const res = await apiFetch(input, init);
+      const id = Number(res.headers.get("X-Conversation-Id"));
+      turn.conversationId = Number.isInteger(id) && id > 0 ? id : null;
+      return res;
+    };
+    return {
+      transport: new DefaultChatTransport({ api: "/api/chat", fetch: chatFetch }),
+      turn,
+    };
+  }, []);
 
   const {
     messages,
@@ -400,31 +418,23 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
 
   // After streaming ends, refresh conversation list to pick up new/updated conversations
   const prevStatusRef = useRef(status);
-  // Wall-clock ms when the in-flight turn was submitted (send or Retry).
-  const sendStartedAtRef = useRef<number | null>(null);
   useEffect(() => {
     const wasStreaming = prevStatusRef.current === "streaming" || prevStatusRef.current === "submitted";
     const doneNow = status === "ready" || status === "error";
     if (wasStreaming && doneNow) {
-      // Refresh conversations + capture conversationId from the latest if we don't have one
+      // Adopt the conversation the server named on this turn's response (see
+      // chatFetch). Never the head of the list: it is sorted by last update
+      // and shared across devices, so after a first-turn failure it is an
+      // unrelated old thread and Retry would save into it.
       (async () => {
-        const convs = await fetchConversations();
-        if (!conversationId && convs.length > 0) {
-          // Adopt convs[0] only if it was created by THIS turn. A first-turn
-          // failure before the server created a row (network error, 5xx) leaves
-          // convs[0] as an unrelated old thread; adopting it would relabel the
-          // chat and make Retry save into the old conversation. created_at is
-          // SQLite UTC 'YYYY-MM-DD HH:MM:SS'; allow 5s of clock skew.
-          const startedAt = sendStartedAtRef.current;
-          const createdMs = Date.parse(`${convs[0].created_at.replace(" ", "T")}Z`);
-          if (startedAt !== null && Number.isFinite(createdMs) && createdMs >= startedAt - 5000) {
-            setConversationId(convs[0].id);
-          }
+        await fetchConversations();
+        if (!conversationId && turn.conversationId !== null) {
+          setConversationId(turn.conversationId);
         }
       })();
     }
     prevStatusRef.current = status;
-  }, [status, conversationId, fetchConversations]);
+  }, [status, conversationId, fetchConversations, turn]);
 
   // Auto-scroll on new content
   useEffect(() => {
@@ -448,7 +458,6 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
 
     const text = inputText.trim();
     setInputText("");
-    sendStartedAtRef.current = Date.now();
     await sendMessage({ text }, { body: requestBody });
   }
 
@@ -669,10 +678,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         {status === "error" && messages.length > 0 && (
           <div className="flex justify-start">
             <button
-              onClick={() => {
-                sendStartedAtRef.current = Date.now();
-                void regenerate({ body: requestBody });
-              }}
+              onClick={() => regenerate({ body: requestBody })}
               className="px-3 py-1.5 text-xs text-ink-dim border border-edge rounded-lg hover:text-ink hover:border-edge-strong transition-[color,border-color] focus-ring"
             >
               Retry
