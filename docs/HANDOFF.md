@@ -1,58 +1,60 @@
 # Session Handoff — for Codex review
 
-**Waiting on:** USER: (1) the two September 2026 Vanguard statements (the IBKR one has arrived; decision record `september-2026-statements`), then CLAUDE runs `import-monthly-statements` and the rehearsed tax-lot recompute; (2) rulings on the open points listed in `docs/plans/TODO.md` under "Overnight 2026-10-05 — open rulings and follow-ups"; (3) whether to deploy the Cloudflare Worker (`cd workers/cron && npx wrangler deploy`) — its source changed tonight and was NOT deployed; (4) the git-history purge decision for an account-number-shaped id that was removed at HEAD. CODEX: an independent review of the overnight range `2bf2deff..5540a26b` is welcome, especially the valuation back-step, the IBKR parser currency blocks and the recap-modal streaming.
+**Waiting on:** USER: (1) the two September 2026 Vanguard statements (the IBKR one has arrived; decision record `september-2026-statements`), then CLAUDE runs `import-monthly-statements` and the rehearsed tax-lot recompute; (2) a request to GitHub Support to remove cached commits and pull-request refs left by the 2026-10-06 history rewrite (decision record `github-support-history-purge`); (3) whether to review and land PR #99, last night's fixer run (decision record `pr-99-review`). CODEX: an independent review of the session's range on `main` is welcome, especially the IBKR parser currency blocks, the recap-modal streaming and the display-only earnings time. CLAUDE: nothing until the statements arrive.
 
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
+> **Commit ids:** history was rewritten on 2026-10-06, so every commit id written in docs before that date is an old id. A private old-to-new map is in gitignored `docs/private/`.
 
-**Session date:** 2026-10-05 evening, unattended overnight run on the user's instruction ("go through the to-do list and do as much of it as you can"). Authority given by the user for the night: merge to main, push, and deploy reviewed, green work; no live-database changes; no statement import.
+**Session dates:** 2026-10-05 evening → 2026-10-06 morning. Interactive at both ends; unattended overnight on the user's instruction, with authority to merge, push and deploy reviewed work and no authority to change live data.
 
-## 1. What happened, in order
+## 1. Goal + exact files changed
 
-1. **QA rulings recorded.** The user ruled on 11 needs-decision findings; the local ledger and `docs/plans/TODO.md` carry them (`49d8c6d1`).
-2. **Landing of PRs #96–#98** (17 nightly fixes): three read-only Opus reviews, one test repaired against the 10-02 statement-only-closes change, seven small review fixes (`456d157f`), sandbox smoke and browser pass, deployed.
-3. **Backlog waves 1–3** (`163bf9e1` … `671fb8c3`): a read-only triage of every open TODO item produced 27 disjoint work units; parallel coding agents built them in a sibling worktree with one owner per file and no agent git writes. Two Codex review rounds and one Opus UI review found seven real defects, all fixed before landing.
-4. **Wave 4** (`80897e5c`, `9c274e8c`): eight of the user's rulings built, a tests-only hardening pass, tooling. Reviewed, fixed, deployed.
-5. **Wave 5** (`20bc3d55`, `5540a26b`): recap-modal streaming with cancel, zero-bar reader audit, sibling fixes, synthetic fixtures. Reviewed, fixed, deployed.
-6. **Rehearsal** of the September IBKR import on a database copy (nothing live touched).
+**Goal:** clear as much of `docs/plans/TODO.md` as is safe, land the stranded nightly-QA PRs, then act on the user's morning instructions (Worker deploy, history purge, branch cleanup, four second-round rulings).
 
-Range: `2bf2deff..5540a26b`, 36 commits, about 350 files.
+Files, by concern (about 360 files; full list in `git log --stat`):
 
-## 2. Main changes by area (files are in the commits)
+- **Valuation:** `lib/compute/daily-valuation.ts` (cash before the first resolvable anchor is back-stepped through recorded external flows, with no lower bound).
+- **Risk and options:** `app/api/compute/{position-risk,options-greeks,reconciliation}/route.ts`, `lib/compute/{risk,options-greeks,options-strategy,option-expiry}.ts`, `app/dashboard/components/OptionsStrategies.tsx`.
+- **Import (protected area, limited to what TODO items and reviews asked):** `lib/import/parsers/ibkr-activity.ts` (per-currency conversion for Dividends, Fees, Deposits & Withdrawals; mixed-sign blocks skipped; blank trade price or fee becomes undefined with a warning), `lib/import/engine.ts`, `app/api/import/route.ts`, `lib/import/validate.ts` and two parsers (from PRs #96–#97), `app/dashboard/components/{ImportFlow,CanonicalCsvGuide}.tsx`.
+- **Tax lots and reconciliation:** `lib/compute/{tax-lots,tax-convention,synthetic-close-guards,trade-roundtrips}.ts`, `lib/queries/{options,pending-statement,integrity-checks}.ts`, `scripts/reconcile-tax-report-vs-broker.ts` (explicit roll-up mode), `scripts/repair-split-basis-audit.ts` (comment only).
+- **Earnings and calendar:** `lib/digest/send-earnings-email.ts`, `lib/earnings/{eps-delta,debrief,debrief-send,reporter-recap,wrap-send,recap-nudge-gate,cloud-outbox,prepare-armed-event,actuals,wire-times,recap-modal-generate}.ts`, `lib/calendar/{cloud-reconcile,finnhub,macro-events,sync,release-times,display-earnings-time}.ts`, `lib/queries/{calendar,briefing-symbols}.ts`, `lib/mutations/calendar.ts`, `app/api/calendar/events/route.ts`, `app/api/earnings/{recap-modal,release-time,email-content}/route.ts`, `app/dashboard/today/{EarningsHub,EarningsHubAddForm,EarningsRowChips,EarningsDateChip,WeekAheadView,page}.tsx`, `app/dashboard/components/TodayReleases.tsx`; Worker mirrors `workers/cron/src/{ai,armed-events,fallback-digest,fallback-earnings,fallback-evening,newsletter-fetch,todays-reporters}.ts`.
+- **AI gateway:** `lib/ai/{generate,classify-anthropic-error}.ts`, `lib/compute/{classify-batch,classify-factors,classify-securities}.ts`.
+- **Queries:** `lib/queries/{analysis,chat-tools,data-confidence,data-health,today-holdings,level-performance,portfolio-summary,securities,transcripts}.ts`, `lib/trade-review/{market-context,generate}.ts`.
+- **UI honesty, dates, privacy:** `lib/ui/mutation-result.ts` (new) and about twenty components under `app/dashboard/components/` that now use it; `lib/privacy/components.tsx` (`QuantityUnit`, `PrivateNumberInput`), `lib/format/quantity-unit.ts`; Eastern-date fixes in four components and seven `lib/` files; ScrollFade on the remaining wide tables.
+- **Print-watch:** `lib/print-watch/{pdf,read,roads}.ts`, `app/api/print-watch/{drop,go,sources}/route.ts`.
+- **Auth and Plaid minors:** `lib/cron/wrappers.ts`, `lib/auth/password-policy.ts` (new), `app/api/auth/login/route.ts`, `lib/plaid/client.ts`.
+- **Tooling:** `scripts/coord/{coord.py,deploy.sh}`, `scripts/qa/reconcile-ledger-fix-status.py` (new).
+- **Tests:** about ninety test files added or changed, including `tests/helpers/source-anchor.ts` and six new repo guards.
+- **Docs:** `CLAUDE.md`, `docs/DECISIONS.md` (three entries), `docs/plans/TODO.md`, `docs/reference/coordination.md`.
 
-- **Valuation:** cash before the first resolvable anchor is back-stepped from the anchor through recorded external flows instead of reading zero (`lib/compute/daily-valuation.ts`). Floored at the account's first anchor.
-- **Risk and options:** position-risk and options-greeks honor the whole account scope; as-of risk no longer reads prices after the as-of date; covered-call max loss counts uncovered shares and max profit is unlimited when shares exceed covered contracts; legacy eight-digit option expirations are normalized in the shared live-option predicate.
-- **Import (protected area, changes limited to what TODO items and reviews asked):** IBKR Dividends, Fees and Deposits & Withdrawals convert non-USD blocks through the statement's own Total in USD, keep the native figure in note and source key, and skip a block with no conversion line, a zero total or mixed signs; USD rows are byte-identical (pinned). A blank trade price or fee is `undefined` with a plain warning. The stricter numeric validation from PR #97 applies to all parsers.
-- **Tax lots:** split replay reads only split action types; one shared fail-closed tax-convention-pending helper; mixed long/short tests. The reconciliation script gained an explicit `--rollup` mode that fails closed and requires row-for-row agreement when both sides have the same row count.
-- **Earnings and calendar:** composer fixes mirrored Mac and Worker (zero-consensus delta label, unit after rounding, symbol dedupe, one healed event reader with a repo guard); a cloud actual never replaces a local one (conflicts counted and logged); manual add refuses a slot that contradicts the known time, with its own acknowledgement separate from the vendor-supersede guard; hardcoded macro events survive a failed macro fetch; recap generation streams phases, can be cancelled, and makes at most two AI attempts.
-- **AI gateway:** one retry on a rejected native structured-output request (Mac and Worker), four more schemas pinned, shared batch retry for classify-factors.
-- **UI honesty, dates, privacy:** one shared mutation-result reader across the mutating handlers; user-facing "today" and window gates read the Eastern date; privacy-safe quantity nouns, a masked number input, palette subtitle masking; ScrollFade on the remaining wide tables with a repo guard; several small fixes (chat rail focus, risk drawer sort, neutral low-confidence beta tile, AI-unavailable state with manual retry, two-step confirm for a zero-value donation leg, Escape stacking).
-- **Tests and tooling:** source-pin anchors throw when the anchor is missing; print-watch timing tests wait on conditions (the full-suite flake); a dry-run-default script reconciles QA-ledger `fix_status` against main; `--next nobody` in the coordination CLI; synthetic replacements for statement-looking rows.
+## 2. Tests / E2E / deploy
 
-## 3. Tests / E2E / deploy
-
-| Step | Result |
+| Check | Result |
 |---|---|
-| Landing of #96–#98 | full suite 10,575 passed; smoke 4/4; browser pass 8 of 10 (one miss fixed later, one partial noted); deployed |
-| Waves 1–4 | full suite 10,917 passed; smoke 4/4 twice; two browser passes (13 of 15 with 2 partial; 10 of 11 with 1 unreachable); deployed |
-| Wave 5 | full suite 10,981 passed, 0 failed; smoke 4/4; browser pass 7/7; deployed |
-| Type-check | clean before every commit to main |
-| Deploys | three, all through `npm run deploy`. The third failed once at the build step (font download) and succeeded on retry. Final build id is in the coordination register checkpoint for task `overnight-backlog-2026-10-05`. |
+| Full suite at session end | 11,021 passed, 0 failed (943 files); 10,489 at session start |
+| Type-check | clean before every commit to `main`; Worker type-check clean and its own 592 tests passing before its deploy |
+| Independent review | three Opus reviews of PRs #96–#98; three Codex rounds and three Opus rounds on the backlog waves; every Important finding fixed before landing |
+| Browser checks (sandbox, database copy) | smoke 4/4 on each of five runs; six browser passes; misses were fixed and re-checked, except two items that could not be reached (no earnings rows this week) |
+| Real-data checks (copies only) | September IBKR import rehearsal: clean; old-versus-new valuation engine on two copies: identical output |
+| App deploys | five through `npm run deploy`. One attempt failed at the build step (font download) and left the app down for about fifteen minutes until the retry; the wrapper was then changed to build before it quits the app, and the last deploy exercised the new order successfully |
+| Final live build | built from the commit before this handoff; build id recorded in the register checkpoint for task `rulings-2026-10-06` |
+| Worker deploy | done on the user's instruction (2026-10-06) |
 
-## 4. Open concerns, rejected approaches, decisions
+## 3. Open concerns, rejected approaches, user decisions
 
-- **Not built on purpose:** the history-derived time for slot-less vendor earnings rows. It was built, then removed in review: for a slot-less row the accept floor, enrichment window and recap floor read the stored time, so one past print could open those gates early. Only the "time unknown" rendering for a missing time shipped. Needs a second ruling.
-- **Stop-and-report items** (existing tests pin current behaviour): cash for rows before an account's very first anchor; the equal-date split guard in the shared synthetic-close guard; print-watch `forced_open_at` on merge.
-- **Worker not deployed.** Seven Worker source files changed (formatting parity, armed-events parser derivation, AI retry). The Worker could not be type-checked locally (its own dependencies are not installed) and a cloud deploy was outside the night's stated authority. Until it is deployed, Mac and Worker differ in two display strings (zero-consensus delta, compact unit at the rounding boundary).
-- **Deploy wrapper hazard:** it quits the live app before building, so a failed build leaves the app down with the old build installed. Seen once tonight (about fifteen minutes of downtime). Worth changing to build first and quit only before install.
-- **Pre-existing, now recorded:** Mac and Worker compute different no-marker digest fallback windows; one held name has no cached price bars, so its chart is empty until TWS backfills.
-- **Privacy:** an account-number-shaped id and statement-looking rows were replaced with synthetic data at HEAD in tests and two docs. They remain in git history; other files with similar rows are listed in the TODO entry. The purge is the user's decision.
-- **Rehearsal of the September IBKR import (copy only):** parsed with no warnings, no excluded rows, no duplicate twins; lots matched the statement for every position; recompute was idempotent on the copy; valuation on the statement date matched the statement. Observations for the real run: the recompute (not the import) is the large change; a handful of symbols show a realized-result difference versus the statement's own summary that was not root-caused; imported commissions fall short of the statement line by about the two foreign-currency commissions, which are stored in native currency.
+- **User rulings (all in `docs/DECISIONS.md`):** eleven QA rulings on 2026-10-05; four second-round rulings on 2026-10-06 (earnings time display only; pre-first-anchor cash back-stepped; same-date split guard unchanged; print-watch early-open stamp unchanged).
+- **Rejected in review:** storing a history-derived time for slot-less vendor earnings rows (it would move the accept, enrichment and recap gates); one `force` flag answering two different warnings; totals-only matching in the reconciliation roll-up.
+- **Measured no-op:** the pre-first-anchor cash rule changes nothing on the current book, because no account has a daily row dated before its first statement. Its behaviour on real data is covered by unit tests only.
+- **Import rehearsal observations for the real run:** the recompute, not the import, is the large change; a handful of symbols show a realized result that differs from the statement's own summary (not root-caused); foreign-currency commissions are stored in native currency.
+- **History purge limits:** the rewritten branches are on GitHub, but GitHub still serves the old commits by id and through pull-request refs until its support team removes them. Other files with statement-looking rows (listed in the TODO entry) were not synthesized and so were not part of the purge. A backup bundle of the old history is kept locally outside the repository.
+- **Not verified in a browser:** the recap modal against a real generation (the sandbox has no AI key) and the fix-date popover bounds.
+- **Follow-ups filed in `docs/plans/TODO.md`** under "Overnight 2026-10-05 — open rulings and follow-ups", including: Mac and Worker compute different no-marker digest fallback windows; the week-ahead page does one history lookup per slot-less card; the security hub's upcoming-earnings row shows no time; three exported functions with no production caller await a deletion decision.
 
-## 5. State after the session
+## 4. Uncommitted changes and live-process state (after the final deploy)
 
-Main = origin/main at the handoff commit. Worktrees: only the nightly fixer's `../vanguard-skin-qa-fix`. Open PRs: none. Local and remote `qa-*` branches whose work is merged are still present (deleting them needs the user's OK). No dev servers or sandboxes running; no locks held. The live database was read once (read-only copy) and never written by this session.
+Main = origin/main at the handoff commit; working tree clean. Worktrees: only the nightly fixer's `../vanguard-skin-qa-fix` (detached, repointed after the history rewrite). Open PR: #99 (nightly fixer 2026-10-06, unreviewed by this session). Remote branches: `main` and the PR #99 branch only. No dev servers or sandboxes running; no locks held. The live app is up on the final build. The live database was read (read-only copies) and never written by this session.
 
-## 6. Agent
+## 5. Agent
 
 Claude Code (Claude Opus 5.5, 1M context) — https://claude.ai/code/session_013LutcaXwZipndHW2VcrbmP
