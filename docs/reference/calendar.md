@@ -146,6 +146,14 @@ upsert (claude_macro / finnhub / nasdaq).
   rows survive.
 - Invariant: **sync may only ADD data** — the same invariant as the enrichment-runner COALESCE
   guards.
+- **Macro re-sync keeps re-listed rows (2026-10-06).** The macro call passes the fresh list's
+  `source_key`s as `keepSourceKeys`, so only true orphans (rows the fetch no longer lists) are
+  deleted; a re-listed row is refreshed in place and keeps its id. The finnhub and nasdaq calls
+  still pass no keep list (follow-up in `docs/plans/TODO.md`).
+- **Stored estimates are sticky (user ruling 2026-10-06).** `upsertCalendarEvents` writes
+  `consensus_estimate` and `previous_value` as `COALESCE(incoming, stored)` for EVERY source. A
+  fresh list that omits an estimate never blanks the stored one; a non-null incoming value still
+  overwrites. Accepted trade-off: an estimate a vendor later withdraws stays on the row.
 - The upsert's conflict clause never touches enrichment columns and COALESCEs `release_time`.
 
 **Why:** pre-fix, the unconditional delete wiped captured actuals on every "Refresh from Finnhub"
