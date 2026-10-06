@@ -219,7 +219,7 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
   // the adjacent "1d ago" chip for the same position. Only a same-day
   // (daysOld === 0) position may read "today"; a 1-day-old position must
   // read "yesterday"; anything older keeps printing the literal date.
-  it("stalest-position label: 0 days old reads 'today', 1 day old reads 'yesterday', older prints the date", () => {
+  it("stalest-position label always prints the literal ET date, never a relative word", () => {
     const today = insertSecurity(db, "TODAY");
     const yest = insertSecurity(db, "YEST");
     const old = insertSecurity(db, "OLDSYM");
@@ -238,14 +238,33 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
     expect(ibkr!.daysOld).toBe(7);
 
     expect(holdingsRecency.detail).toContain(
-      "Vanguard Taxable: latest: 2026-09-17 · stalest position: TODAY today"
+      "Vanguard Taxable: latest: 2026-09-17 · stalest position: TODAY 2026-09-17"
     );
     expect(holdingsRecency.detail).toContain(
-      "Vanguard Roth IRA: latest: 2026-09-16 · stalest position: YEST yesterday"
+      "Vanguard Roth IRA: latest: 2026-09-16 · stalest position: YEST 2026-09-16"
     );
     expect(holdingsRecency.detail).toContain(
       "IBKR: latest: 2026-09-10 · stalest position: OLDSYM 2026-09-10"
     );
+  });
+
+  it("stale-holdings action names the account, its source and its own days-old figure", () => {
+    const old = insertSecurity(db, "OLDSYM");
+    insertHolding(db, 3, old, 3, "2026-09-10", "canonical:hold:IBKR:OLDSYM:2026-09-10");
+    const { actions } = getDataConfidence(db, new Date("2026-09-17T16:00:00Z"));
+    const a = actions.find((x) => /holdings are/.test(x.message));
+    expect(a).toBeDefined();
+    expect(a!.message).toMatch(/IBKR \(.+\) holdings are 7 days old/);
+  });
+
+  it("enrichment skips cash equivalents case-insensitively (fund_category and 'Money_Market' type)", () => {
+    const a = insertSecurity(db, "SWEEP", { securityType: "Mutual Fund" });
+    db.prepare(`UPDATE securities SET fund_category = 'Cash Equivalent' WHERE id = ?`).run(a);
+    const b = insertSecurity(db, "MMKT", { securityType: "Money_Market" });
+    insertHolding(db, 1, a, 10, "2026-09-17", "canonical:hold:TAX:SWEEP:2026-09-17");
+    insertHolding(db, 1, b, 10, "2026-09-17", "canonical:hold:TAX:MMKT:2026-09-17");
+    const { enrichmentCompleteness: enrichment } = getDataConfidence(db, new Date("2026-09-17T16:00:00Z"));
+    expect(enrichment.missing).toEqual([]);
   });
 
   it("valuation coverage sums per-account latest rows; an account with holdings but no valuation row counts as unpriced", () => {
@@ -310,7 +329,7 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
     expect(staleAction).toBeDefined();
     // (M - N) === K: totalHeld(3) - pricedRecent(2) === 1, matching the
     // detail line's own population/threshold instead of pricedToday's.
-    expect(staleAction!.message).toBe("1 securities have no price from the last 3 days");
+    expect(staleAction!.message).toBe("1 security has no price from the last 3 days");
     expect(staleAction!.message).not.toContain("have stale prices");
   });
 

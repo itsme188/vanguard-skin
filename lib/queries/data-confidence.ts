@@ -9,6 +9,7 @@ import type Database from "better-sqlite3";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
 import { todayET } from "@/lib/calendar/date-utils";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { classifyHoldingSourceKey } from "@/lib/db/holding-sources";
 import { runIntegrityChecks, sortWorstFirst } from "@/lib/queries/integrity-checks";
 import { formatUSD, rendersAsZero } from "@/lib/format";
@@ -390,8 +391,9 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   const parts = perAccount
     .filter(a => a.date)
     .map(a => {
-      const stalestDateLabel =
-        a.daysOld === 0 ? "today" : a.daysOld === 1 ? "yesterday" : a.date;
+      // Always the literal ET date — a relative word ("today") goes stale
+      // inside a cached popover.
+      const stalestDateLabel = a.date;
       const stalestLabel = a.stalestSymbol ? `${a.stalestSymbol} ${stalestDateLabel}` : stalestDateLabel;
       return `${a.name}: latest: ${a.latestDate ?? "—"} · stalest position: ${stalestLabel}`;
     });
@@ -652,15 +654,18 @@ function scoreEnrichment(db: Database.Database): EnrichmentScore {
   const rows = db.prepare(`
     SELECT
       s.id, s.symbol, s.ib_con_id,
-      LOWER(COALESCE(s.security_type, '')) AS sec_type
+      LOWER(COALESCE(s.security_type, '')) AS sec_type,
+      s.fund_category AS fund_category
     FROM securities s
     JOIN holdings h ON h.security_id = s.id
     WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
     GROUP BY s.id
-  `).all() as { id: number; symbol: string; ib_con_id: number | null; sec_type: string }[];
+  `).all() as { id: number; symbol: string; ib_con_id: number | null; sec_type: string; fund_category: string | null }[];
 
   // Bonds and money market don't need enrichment
-  const enrichable = rows.filter(r => !["bond", "money_market", "money market"].includes(r.sec_type));
+  const enrichable = rows.filter(
+    r => r.sec_type !== "bond" && !isCashEquivalentSecurity({ security_type: r.sec_type, fund_category: r.fund_category })
+  );
   const enriched = enrichable.filter(r => r.ib_con_id !== null);
   const missing = enrichable.filter(r => r.ib_con_id === null).map(r => r.symbol);
 
@@ -821,7 +826,7 @@ function deriveActions(
       severity: price.score < 30 ? "critical" : "warning",
       // Same basis as the Prices dimension detail/score: totalHeld -
       // pricedRecent, NOT totalHeld - pricedToday (see RECENT_PRICE_WINDOW_DAYS).
-      message: `${price.totalHeld - price.pricedRecent} securities have no price from the last ${RECENT_PRICE_WINDOW_DAYS} days`,
+      message: `${price.totalHeld - price.pricedRecent} ${price.totalHeld - price.pricedRecent === 1 ? "security has" : "securities have"} no price from the last ${RECENT_PRICE_WINDOW_DAYS} days`,
       fix: "Run Quick Refresh to update all prices (~2 min)",
       autoFixable: true,
       apiEndpoint: "/api/tws/auto-refresh",
@@ -860,7 +865,9 @@ function deriveActions(
   if (staleAccounts.length > 0) {
     actions.push({
       severity: "warning",
-      message: `${staleAccounts.map(a => a.name).join(", ")} holdings are ${Math.max(...staleAccounts.map(a => a.daysOld ?? 0))} days old`,
+      message: `${staleAccounts
+        .map(a => `${a.name}${a.source ? ` (${a.source})` : ""} holdings are ${a.daysOld ?? "?"} days old`)
+        .join("; ")}`,
       fix: "Import latest statement or sync IBKR positions",
       autoFixable: false,
     });
