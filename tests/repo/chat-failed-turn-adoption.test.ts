@@ -16,8 +16,18 @@ const src = readFileSync(join(root, "app/dashboard/components/ChatInterface.tsx"
 const route = readFileSync(join(root, "app/api/chat/route.ts"), "utf8");
 
 describe("chat failed-turn conversation adoption", () => {
-  it("the chat route still returns the conversation id on the stream response", () => {
-    anchorIndex(route, '"X-Conversation-Id": String(conversationId)');
+  it("every chat-route response after the conversation exists names it", () => {
+    const created = anchorIndex(
+      route,
+      'conversationHeaders = { "X-Conversation-Id": String(conversationId) };',
+    );
+    expect(created).toBeGreaterThan(anchorIndex(route, "createConversation(db, scope)"));
+    // Exits after that point: missing key, slot busy, the stream, the catch.
+    const after = route.slice(created);
+    const exits = after.match(/Response\.json\(|toUIMessageStreamResponse\(/g) ?? [];
+    const named = after.match(/headers: conversationHeaders/g) ?? [];
+    expect(exits.length).toBe(4);
+    expect(named.length).toBe(exits.length);
   });
 
   it("the transport fetch clears the turn id, then records the response header", () => {

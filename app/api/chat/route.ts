@@ -42,6 +42,11 @@ export async function POST(request: NextRequest) {
   // matter which path the request takes. Tunables live in lib/chat/budget.ts.
   let releaseSlot: () => void = () => {};
 
+  // Set once this turn has a conversation row. EVERY response sent after that
+  // point names it in X-Conversation-Id (failures included), because the
+  // client adopts a conversation only from this header: a post-create failure
+  // without it would leave Retry opening a second conversation.
+  let conversationHeaders: Record<string, string> | undefined;
   try {
     const { messages, scope: rawScope, conversationId: rawConvId, pageContext } = await request.json();
 
@@ -119,6 +124,7 @@ export async function POST(request: NextRequest) {
     if (!conversationId) {
       conversationId = createConversation(db, scope);
     }
+    conversationHeaders = { "X-Conversation-Id": String(conversationId) };
 
     // Save latest user message
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user");
@@ -137,7 +143,7 @@ export async function POST(request: NextRequest) {
           error:
             "ANTHROPIC_API_KEY not configured. Add it to .env.local to enable chat.",
         },
-        { status: 500 }
+        { status: 500, headers: conversationHeaders }
       );
     }
 
@@ -212,7 +218,7 @@ export async function POST(request: NextRequest) {
     if (!slot.ok) {
       return Response.json(
         { success: false, error: "Too many concurrent chat requests for this session." },
-        { status: 429 }
+        { status: 429, headers: conversationHeaders }
       );
     }
     let slotReleased = false;
@@ -280,7 +286,7 @@ export async function POST(request: NextRequest) {
 
     return result.toUIMessageStreamResponse({
       sendReasoning: true,
-      headers: { "X-Conversation-Id": String(conversationId) },
+      headers: conversationHeaders,
       onError: (error) =>
         error instanceof Error ? error.message : "Stream error",
     });
@@ -292,6 +298,6 @@ export async function POST(request: NextRequest) {
     releaseSlot();
     const message =
       error instanceof Error ? error.message : "Unknown error";
-    return Response.json({ error: message }, { status: 500 });
+    return Response.json({ error: message }, { status: 500, headers: conversationHeaders });
   }
 }
