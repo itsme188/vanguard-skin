@@ -33,7 +33,15 @@ export interface MarketMove {
   /** Percent change of latest close vs prior close (or live vs prior on Yahoo). */
   pct: number;
   kind: "benchmark" | "holding";
+  /**
+   * Direction of the held position, holdings only. `pct` is the PRICE move,
+   * so a short (or a written option) LOSES when pct is positive. "mixed" = the
+   * symbol is long in one account and short in another.
+   */
+  position?: MarketPosition;
 }
+
+export type MarketPosition = "long" | "short" | "mixed";
 
 export interface MarketSnapshot {
   source: "local" | "yahoo" | "none";
@@ -163,6 +171,7 @@ interface UniverseEntry {
   symbol: string;
   name: string | null;
   kind: "benchmark" | "holding";
+  position?: MarketPosition;
 }
 
 /** Distinct (benchmark + held) symbols, benchmarks first, no duplicates. */
@@ -177,15 +186,28 @@ function buildUniverse(db: Database.Database, benchmarks: string[]): UniverseEnt
   }
   // Full held universe: the chat default is the 50 largest long positions,
   // which would silently leave smaller names and shorts unmeasured. A short's
-  // move is the security's price move (closeOn is price-only), so including
-  // shorts neither flips a sign nor double-counts (deduped by symbol below).
+  // move is the security's price move (closeOn is price-only): the sign is not
+  // flipped, so each entry carries the position's direction instead. One row
+  // per symbol; a symbol held on both sides is "mixed".
+  const held = new Map<string, UniverseEntry>();
   for (const h of getHoldingsForChat(db, { limit: 100000, includeShorts: true })) {
     const up = h.symbol?.toUpperCase();
     if (!up || seen.has(up)) continue;
-    seen.add(up);
-    universe.push({ symbol: up, name: h.security_name, kind: "holding" });
+    const side: MarketPosition = h.quantity < 0 ? "short" : "long";
+    const prior = held.get(up);
+    if (prior) {
+      if (prior.position !== side) prior.position = "mixed";
+      continue;
+    }
+    held.set(up, { symbol: up, name: h.security_name, kind: "holding", position: side });
   }
+  universe.push(...held.values());
   return universe;
+}
+
+/** Omits the key for benchmarks so their rows keep the old shape. */
+function positionOf(u: UniverseEntry): { position?: MarketPosition } {
+  return u.position ? { position: u.position } : {};
 }
 
 function closeOn(db: Database.Database, symbol: string, date: string): number | null {
@@ -243,7 +265,7 @@ export async function getMarketSnapshot(
         const latest = closeOn(db, u.symbol, pair.latest);
         const prior = closeOn(db, u.symbol, pair.prior);
         if (latest == null || prior == null || prior === 0) return null;
-        return { symbol: u.symbol, name: u.name, pct: pct(latest, prior), kind: u.kind };
+        return { symbol: u.symbol, name: u.name, pct: pct(latest, prior), kind: u.kind, ...positionOf(u) };
       })
       .filter((m): m is MarketMove => m !== null);
     staleDays = calendarDaysBetween(pair.latest, today);
@@ -282,7 +304,7 @@ export async function getMarketSnapshot(
         .map((u): MarketMove | null => {
           const q = quotes![u.symbol];
           if (!q || q.prior === 0) return null;
-          return { symbol: u.symbol, name: u.name, pct: pct(q.price, q.prior), kind: u.kind };
+          return { symbol: u.symbol, name: u.name, pct: pct(q.price, q.prior), kind: u.kind, ...positionOf(u) };
         })
         .filter((m): m is MarketMove => m !== null);
       if (moves.length > 0) {

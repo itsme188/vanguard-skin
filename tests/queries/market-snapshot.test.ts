@@ -317,6 +317,34 @@ describe("getMarketSnapshot universe coverage", () => {
     expect(small?.pct).toBeCloseTo(50, 1);
     const short = snap.moves.find((m) => m.symbol === "SHRT1");
     expect(short?.pct).toBeCloseTo(5, 1);
+    // pct is the PRICE move; the direction of the position rides beside it so
+    // a reader never takes a rising short for a gain.
+    expect(short?.position).toBe("short");
+    expect(small?.position).toBe("long");
+    expect(snap.moves.find((m) => m.symbol === "SPY")?.position).toBeUndefined();
+  });
+
+  it("marks a name held long in one account and short in another as mixed", async () => {
+    const spyId = seedSecurity("SPY", "SPDR S&P 500 ETF");
+    seedPrice(spyId, "2026-06-04", 600);
+    seedPrice(spyId, "2026-06-05", 585);
+    const taxable = seedAccount("Vanguard Taxable");
+    const ibkr = seedAccount("IBKR");
+    const id = seedSecurity("BOTH1");
+    seedHolding(taxable, id, "2026-06-05");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, -40, '2026-06-05', 'test:both-short')`
+    ).run(ibkr, id);
+    seedPrice(id, "2026-06-04", 100);
+    seedPrice(id, "2026-06-05", 102);
+
+    const fetchQuotes: QuoteFetcher = async () => null;
+    const snap = await getMarketSnapshot(db, { today: "2026-06-05", fetchQuotes });
+
+    const rows = snap.moves.filter((m) => m.symbol === "BOTH1");
+    expect(rows.length).toBe(1);
+    expect(rows[0].position).toBe("mixed");
   });
 });
 
