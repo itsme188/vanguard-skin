@@ -15,6 +15,7 @@ import type Database from "better-sqlite3";
 import { todayET, nowET } from "@/lib/calendar/date-utils";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { normalizeAccountIds } from "@/lib/compute/factors";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -386,7 +387,7 @@ interface OptionHoldingRow {
  */
 export function computePortfolioGreeks(
   db: Database.Database,
-  options?: { accountId?: number; riskFreeRate?: number; today?: string; now?: Date }
+  options?: { accountId?: number; accountIds?: number[]; riskFreeRate?: number; today?: string; now?: Date }
 ): PortfolioGreeks {
   // Risk-free rate flows from FRED's DGS3MO via the settings cache; falls
   // back to 0.045 if never fetched. See lib/queries/risk-free-rate.ts.
@@ -404,11 +405,14 @@ export function computePortfolioGreeks(
     options?.now ??
     (options?.today ? new Date(`${options.today}T16:00:00Z`) : new Date());
 
-  const accountFilter = options?.accountId
-    ? "AND h.account_id = ?"
-    : "";
-  const params: (string | number)[] = [];
-  if (options?.accountId) params.push(options.accountId);
+  // A scope is a SET of accounts; `accountIds` wins over the legacy single
+  // `accountId`. Empty/undefined = whole portfolio.
+  const scopeIds = normalizeAccountIds(options);
+  const accountFilter =
+    scopeIds && scopeIds.length > 0
+      ? `AND h.account_id IN (${scopeIds.map(() => "?").join(",")})`
+      : "";
+  const params: (string | number)[] = scopeIds ?? [];
 
   // Get option positions from latest holdings with underlying prices.
   // asOfDate=today scopes "latest" to today-or-earlier (vs picking up a stray

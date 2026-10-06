@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { computePositionRisk } from "@/lib/compute/risk";
-import { resolveScopeToSingleId } from "@/lib/queries/accounts";
-import { weekAgo } from "@/lib/calendar/date-utils";
+import { resolveScope } from "@/lib/queries/accounts";
+import { weekAgo, todayET } from "@/lib/calendar/date-utils";
 
 /**
  * Position-risk W-o-W shape:
@@ -19,15 +19,16 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const accountIdParam = searchParams.get("accountId");
     const scope = searchParams.get("scope");
-    const accountId = accountIdParam ? Number(accountIdParam) : resolveScopeToSingleId(db, scope);
+    // resolveScope, never resolveScopeToSingleId: a scope is a SET of accounts.
+    const accountIds = accountIdParam ? [Number(accountIdParam)] : resolveScope(db, scope);
     const topNParam = searchParams.get("topN");
     const topN = topNParam ? Number(topNParam) : 10;
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayET();
     const wkAgo = weekAgo(today);
 
-    const now = computePositionRisk(db, { accountId, topN });
-    const past = computePositionRisk(db, { accountId, topN, asOfDate: wkAgo });
+    const now = computePositionRisk(db, { accountIds, topN });
+    const past = computePositionRisk(db, { accountIds, topN, asOfDate: wkAgo });
 
     return NextResponse.json({ success: true, data: now, weekAgo: past, delta: null });
   } catch (error) {
