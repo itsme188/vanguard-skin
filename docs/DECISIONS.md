@@ -413,3 +413,14 @@ Read-only, on VACUUM copies; real figures stay in the gitignored private report.
 - **Scenario stress on option legs: full repricing.** Each leg is repriced at the shocked underlying instead of scaled by one delta. Chosen over the model-free intrinsic floor. Two inputs are still open and come back to the user in a short spec: where each leg's implied volatility comes from (broker data, never a guessed figure) and how volatility is assumed to move under the shock.
 - **Options take their underlying's sector.** An index-fund option lands in the fund's own bucket instead of a model-assigned sector; a dry-run-default repair script (user-run) resets existing rows. The fund bucket can then read above 100 percent net exposure at a single-account scope, which is correct. Possible follow-up: spreading index-option exposure across the fund's sector weights.
 - **Holdings footer: inline disclosure, one commit with its sibling.** The footer says how many positions carry no cost basis and are left out of Cost and Gain. Same ruling as 2026-09-09; the two findings ship together.
+
+## 2026-10-06 — Rulings on eight more QA findings (fifth batch: five fold-ins, three new)
+
+- **Holdings footer, two more findings: folded into the inline-disclosure ruling.** The footer states how many positions carry no cost basis and are left out of Cost and Gain; the three footer findings ship as one commit. Rejected again: shrinking the headline Value to make the subtraction tie.
+- **Footer totals that do not tie: same commit as above.** Disclosure wording covers the count and value of positions without a basis.
+- **Second pre-release actual finding: folded into the pre-release chip ruling.** One build covers Today releases and the hub stage chips.
+- **Slot-less earnings rows showing a definite time: already ruled and shipped on 2026-10-06 (display only).** The sweep confirms it gone and closes it; no new build.
+- **Expired options counted as held in the data-health header: folded into the expired-options ruling.** They leave the counts by expiry date; a dry-run-default script (user-run) retires them afterwards.
+- **Giving, implausibly low basis: flag now, repair when known.** A donated lot whose basis is under one percent of its market value is flagged on the row and left out of the year's avoided-gain total. A user-run repair corrects the lot once the real basis is transcribed.
+- **Rate shock, bonds with no stored duration: derive it from the maturity date.** A bill uses its time to maturity, a coupon bond a standard approximation; a bond with no maturity date is left out and counted as unmodelled. Rejected: the silent five-year default.
+- **Rate shock, bond funds: modelled like bonds, five-year default, noted on the card.** A fund's real duration is used when known. The preset scenarios change as a result, which the user accepted. Deferred: a per-category duration table.
