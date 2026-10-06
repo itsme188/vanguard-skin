@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { ScenarioResult } from "@/lib/compute/scenarios";
 import { findRecipe } from "@/lib/compute/scenario-recipes";
 import { isOptionSecurityType } from "@/lib/compute/option-elasticity";
+import { VOL_MOVE_MIN, VOL_MOVE_MAX, type OptionIvSource, type OptionUnmodelledReason } from "@/lib/compute/option-reprice";
 import { PrivateText } from "@/lib/privacy/components";
 import { formatCompactOptionSymbol } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
@@ -12,16 +13,24 @@ function findRecipeMethodology(id: string): string | null {
   return findRecipe(id)?.methodology ?? null;
 }
 
-// The β column is no longer one number's worth of meaning: for an OPTION the
-// custom engine reports the LEVERED SIGNED exposure (underlying beta × option
-// elasticity Ω = Δ·S/V), which is why a long put shows a negative figure and
-// gains in a crash. Explain it in place rather than leaving a "β-3.2" to be
-// read as a market beta.
-function betaTooltip(securityType: string): string {
-  return isOptionSecurityType(securityType)
-    ? "Levered signed exposure: underlying beta × option elasticity (Ω = Δ·S/V). Negative = moves opposite the underlying, so a long put gains when it falls."
-    : "Beta vs the market: 1.0 moves with the index.";
-}
+// An option row carries no beta: its move comes from repricing the contract
+// at the shocked underlying, so the row names where its volatility came from.
+const IV_SOURCE_LABEL: Record<OptionIvSource, string> = {
+  "own-price": "vol from its price",
+  "broker-underlying": "vol from IBKR",
+};
+const IV_SOURCE_TITLE: Record<OptionIvSource, string> = {
+  "own-price": "Volatility solved from this contract's own last price.",
+  "broker-underlying": "This contract's price gave no usable volatility, so IBKR's figure for the underlying was used.",
+};
+const UNMODELLED_REASON_LABEL: Record<OptionUnmodelledReason, string> = {
+  "no-option-terms": "strike, expiry or type missing",
+  "expired": "expired",
+  "no-option-price": "no price for the contract",
+  "no-underlying-price": "no price for the underlying",
+  "no-volatility": "no usable volatility",
+};
+const BETA_TITLE = "Beta vs the market: 1.0 moves with the index.";
 
 // ─── Formatters ──────────────────────────────────────────────────
 
@@ -74,6 +83,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
   // Custom scenario form state
   const [customMarketMove, setCustomMarketMove] = useState(-10);
   const [customRateMove, setCustomRateMove] = useState(0);
+  const [customVolMove, setCustomVolMove] = useState(0);
   const [customSectorOverrides, setCustomSectorOverrides] = useState<
     { sector: string; move: number }[]
   >([]);
@@ -97,6 +107,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
         body: JSON.stringify({
           marketMove: customMarketMove / 100,
           rateMove: customRateMove || undefined,
+          volMove: customVolMove || undefined,
           sectorMoves: Object.keys(sectorMoves).length > 0 ? sectorMoves : undefined,
           scope,
         }),
@@ -116,7 +127,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
     } finally {
       setCustomLoading(false);
     }
-  }, [customMarketMove, customRateMove, customSectorOverrides, scope]);
+  }, [customMarketMove, customRateMove, customVolMove, customSectorOverrides, scope]);
 
   useEffect(() => {
     setLoading(true);
@@ -187,7 +198,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
         Estimated portfolio impact under hypothetical shocks. Per-position P&amp;L is computed from
         your factor classifications (interest_rate_sensitive, ai_exposure, tariff_exposure, etc.)
         — each scenario surfaces its full methodology when expanded. Custom what-if scenarios
-        use the legacy beta heuristic.
+        use a market beta per position. Options are repriced in every scenario.
       </p>
 
       {/* ── Scenario cards ── */}
@@ -290,13 +301,20 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                               {/* Recipe scenarios are factor-based \u2014 their beta
                                   is a hardcoded 1.0 for type compat, so showing
                                   it would be misleading. */}
-                              {!findRecipe(result.scenario.id) && (
+                              {pos.ivSource ? (
                                 <span
-                                  className="text-ink-faint text-[10px] shrink-0"
-                                  title={betaTooltip(pos.securityType)}
+                                  className="text-ink-faint text-[10px] shrink-0 whitespace-nowrap"
+                                  title={IV_SOURCE_TITLE[pos.ivSource]}
                                 >
-                                  {"\u03B2"}{pos.beta.toFixed(1)}
+                                  {IV_SOURCE_LABEL[pos.ivSource]}
                                 </span>
+                              ) : (
+                                !findRecipe(result.scenario.id) &&
+                                !isOptionSecurityType(pos.securityType) && (
+                                  <span className="text-ink-faint text-[10px] shrink-0" title={BETA_TITLE}>
+                                    {"β"}{pos.beta.toFixed(1)}
+                                  </span>
+                                )
                               )}
                             </div>
                             <div className="flex items-center gap-3 shrink-0">
@@ -329,13 +347,20 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                               <span className="font-mono font-medium text-ink min-w-16 truncate whitespace-nowrap">
                                 {formatCompactOptionSymbol(pos.symbol)}
                               </span>
-                              {!findRecipe(result.scenario.id) && (
+                              {pos.ivSource ? (
                                 <span
-                                  className="text-ink-faint text-[10px] shrink-0"
-                                  title={betaTooltip(pos.securityType)}
+                                  className="text-ink-faint text-[10px] shrink-0 whitespace-nowrap"
+                                  title={IV_SOURCE_TITLE[pos.ivSource]}
                                 >
-                                  {"\u03B2"}{pos.beta.toFixed(1)}
+                                  {IV_SOURCE_LABEL[pos.ivSource]}
                                 </span>
+                              ) : (
+                                !findRecipe(result.scenario.id) &&
+                                !isOptionSecurityType(pos.securityType) && (
+                                  <span className="text-ink-faint text-[10px] shrink-0" title={BETA_TITLE}>
+                                    {"β"}{pos.beta.toFixed(1)}
+                                  </span>
+                                )
                               )}
                             </div>
                             <div className="flex items-center gap-3 shrink-0">
@@ -350,6 +375,48 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                         ))}
                       </div>
                     </div>
+                  )}
+
+                  {/* Options the scenario could not reprice: no figure is
+                      estimated for them, so they are listed, not hidden. */}
+                  {result.optionsUnmodelled.count > 0 && (
+                    <div>
+                      <h4 className="text-[10px] text-ink-faint uppercase tracking-wider mb-1.5">
+                        Options Not Modelled
+                      </h4>
+                      <p className="text-xs text-ink-dim mb-1.5">
+                        <PrivateText>
+                          {result.optionsUnmodelled.count}{" "}
+                          {result.optionsUnmodelled.count === 1 ? "option" : "options"} (
+                          {(result.optionsUnmodelled.valueShare * 100).toFixed(0)}% of option value)
+                        </PrivateText>{" "}
+                        left out of this total. No figure is estimated for them.
+                      </p>
+                      <div className="space-y-1">
+                        {result.positionImpacts
+                          .filter((pos) => pos.unmodelledReason)
+                          .map((pos) => (
+                            <div key={pos.securityId} className="flex items-center justify-between gap-3 text-xs">
+                              <span className="font-mono font-medium text-ink truncate whitespace-nowrap">
+                                {formatCompactOptionSymbol(pos.symbol)}
+                              </span>
+                              <span className="text-ink-faint shrink-0">
+                                {UNMODELLED_REASON_LABEL[pos.unmodelledReason!]}
+                              </span>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {result.positionImpacts.some((pos) => isOptionSecurityType(pos.securityType)) && (
+                    <p className="text-[11px] text-ink-faint leading-relaxed">
+                      Options are repriced at the shocked price of their underlying (Black-Scholes, never below
+                      exercise value). Held fixed: time to expiry, the interest rate, dividends.
+                      {findRecipe(result.scenario.id)
+                        ? " Preset scenarios keep option volatility held at today’s level."
+                        : " Volatility moves only by the amount you set."}
+                    </p>
                   )}
                 </div>
               )}
@@ -412,6 +479,31 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                 placeholder="0"
                 className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink font-mono w-24 focus-ring"
               />
+            </div>
+
+            {/* Volatility change */}
+            <div>
+              <label className="text-[10px] text-ink-faint uppercase tracking-wider block mb-1">
+                Volatility Change (points, options only)
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min={VOL_MOVE_MIN}
+                  max={VOL_MOVE_MAX}
+                  step={1}
+                  value={customVolMove}
+                  onChange={(e) => setCustomVolMove(Number(e.target.value))}
+                  aria-label="Volatility change in points"
+                  className="flex-1 accent-gold"
+                />
+                <span className="font-mono text-sm tabular-nums w-14 text-right text-ink">
+                  {customVolMove > 0 ? "+" : ""}{customVolMove}
+                </span>
+              </div>
+              <p className="text-[11px] text-ink-faint mt-1">
+                Added to each option&apos;s own implied volatility. 0 keeps volatility at today&apos;s level.
+              </p>
             </div>
 
             {/* Sector overrides */}

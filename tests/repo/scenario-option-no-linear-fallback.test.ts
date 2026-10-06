@@ -27,8 +27,7 @@ describe("scenario engines reprice options and never fall back to a fixed figure
     expect(src).not.toMatch(/\?\?\s*0\.30?\b/);
   });
   it("no scenario-facing copy still describes the linear treatment", () => {
-    // Task 5 adds "app/dashboard/components/ScenarioModeling.tsx" to this list when it rewrites that file.
-    for (const file of ["lib/compute/scenario-recipes.ts"]) {
+    for (const file of ["lib/compute/scenario-recipes.ts", "app/dashboard/components/ScenarioModeling.tsx"]) {
       const src = read(file);
       expect(src, file).not.toMatch(/delta elasticity/i);
       expect(src, file).not.toMatch(/fallback 2\.5/i);
