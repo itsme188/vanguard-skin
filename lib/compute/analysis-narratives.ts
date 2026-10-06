@@ -356,7 +356,21 @@ function buildSurfaceInputs(
 
   if (surface === "defense") {
     const result = computeDefenseAnalysis(db, accountIds);
-    if (result.summary.hedgeCount === 0 && result.summary.shortExposure === 0) return empty;
+    // MIRROR of the empty gate in app/dashboard/components/DefenseView.tsx —
+    // the two must change together, or the page renders a full table while the
+    // narrative claims there is nothing to assess. A written put carries long
+    // delta, so it is neither shortExposure nor a scored hedge, but it is an
+    // option position the analysis describes.
+    const s = result.summary;
+    if (
+      s.hedgeCount === 0 &&
+      s.shortExposure === 0 &&
+      result.standaloneBets.length === 0 &&
+      s.optionPositionCount === 0 &&
+      s.shortPositionCount === 0
+    ) {
+      return empty;
+    }
     const payload = {
       summary: result.summary,
       sectorCoverage: result.sectorCoverage,
