@@ -191,10 +191,10 @@ describe("daily valuation — cash before the first resolvable anchor", () => {
     expect(returns.map((r) => r.date)).toEqual([DAY_N30]);
   });
 
-  it("does not reach behind the account's first anchor", () => {
-    // A row that predates EVERY anchor is outside the statement record; the
-    // back-step stops at the first anchor's date (existing "no cash
-    // inference before the first snapshot" contract).
+  it("reaches behind the account's first anchor (user ruling 2026-10-06)", () => {
+    // A row that predates EVERY anchor carries the first resolvable anchor's
+    // cash residual back-stepped through recorded flows. No flows here, so
+    // the residual (15,000 − 100 × 100) carries unchanged.
     seedPrice(db, stock, "2026-02-10", 98);
     seedHolding(db, stock, 100, "2026-02-01");
     seedSnapshot(db, DAY_N, 15_000);
@@ -203,7 +203,8 @@ describe("daily valuation — cash before the first resolvable anchor", () => {
     computeDailyValuations(db);
     const vals = valuations(db);
 
-    expect(vals["2026-02-10"].cash_balance).toBe(0);
+    expect(vals["2026-02-10"].cash_balance).toBe(5_000);
+    expect(vals["2026-02-10"].total_value).toBe(14_800);
     expect(vals[DAY_N27].cash_balance).toBe(5_000);
     expect(vals[DAY_N30].cash_balance).toBe(5_000);
   });

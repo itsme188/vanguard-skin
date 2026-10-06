@@ -470,7 +470,7 @@ describe("daily valuation computation", () => {
     expect(val.total_value).toBe(1500);
   });
 
-  it("dates before first snapshot have no cash inference", () => {
+  it("dates before the first snapshot carry its cash back-stepped (user ruling 2026-10-06)", () => {
     const sec = seedSecurity(db, "AAPL");
     // Holdings from Jan 1 so daily valuations exist on Jan 15
     seedHolding(db, ACCOUNT_ID, sec, 10, "2025-01-01");
@@ -489,9 +489,10 @@ describe("daily valuation computation", () => {
       .prepare("SELECT * FROM daily_valuations WHERE account_id = ? AND valuation_date = '2025-01-31'")
       .get(ACCOUNT_ID) as any;
 
-    // Before snapshot: no cash
-    expect(earlyVal.cash_balance).toBe(0);
-    expect(earlyVal.total_value).toBe(1450);
+    // Before snapshot: the anchor residual (2000 − 10×150 = 500) minus the
+    // recorded external flows after that day (none) = 500. Holdings 10×145.
+    expect(earlyVal.cash_balance).toBe(500);
+    expect(earlyVal.total_value).toBe(1950);
 
     // At snapshot: cash inferred
     expect(snapshotVal.cash_balance).toBe(500);

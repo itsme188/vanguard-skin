@@ -375,9 +375,9 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
       }
     }
 
-    const getFirstValuationDateInRange = db.prepare(
+    const getFirstValuationDateBefore = db.prepare(
       `SELECT MIN(valuation_date) AS min_date FROM daily_valuations
-       WHERE account_id = ? AND valuation_date >= ? AND valuation_date < ?`
+       WHERE account_id = ? AND valuation_date < ?`
     );
 
     // Same residual rule the forward stepper uses — one definition, so the
@@ -416,15 +416,29 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
     // Called once per account, for the first resolvable anchor only — every
     // row at or after that date is owned by the forward stepper, untouched.
     //
-    // Scope: rows in [floorDate, anchor) where floorDate is the account's
-    // FIRST anchor of any kind — i.e. the skipped-anchor window(s), days the
-    // statement record already covers. Rows that predate every anchor keep
-    // "no cash inference" (pinned by tests/compute/daily-valuation.test.ts
-    // "dates before first snapshot have no cash inference"); widening the
-    // floor is a separate ruling, not part of this fix.
-    function backStepCashBeforeAnchor(accountId: number, anchor: CashAnchor, floorDate: string): void {
-      if (floorDate >= anchor.month_end_date) return;
-      const firstRow = getFirstValuationDateInRange.get(accountId, floorDate, anchor.month_end_date) as {
+    // Scope (user ruling 2026-10-06): EVERY daily row of the account dated
+    // before the first resolvable anchor — the skipped-anchor windows and the
+    // rows that predate the account's very first anchor alike. Zero was
+    // certainly wrong there: the whole cash balance appeared on the first
+    // statement day as a one-day jump. The inferred figure rests on the
+    // user's own recorded deposits and withdrawals.
+    //
+    // Conventions, all identical to the forward stepper:
+    //  - Only recorded EXTERNAL cash flows step cash. Purchases and sales do
+    //    not: forward, a trade between two anchors is absorbed by the next
+    //    anchor's residual; backward, a trade before the first anchor stays
+    //    inside that anchor's residual. Holdings follow the same rule (the
+    //    latest snapshot on or before the day), so a trade surfaces on the
+    //    day the holdings snapshot changes, never as a cash step here.
+    //  - No clamp. The forward stepper writes a negative residual or a
+    //    negative stepped balance as-is, and so does this. A negative figure
+    //    before a deposit means the deposit was already invested by the
+    //    anchor date; clamping it to zero would put back a fake step.
+    //  - A day before the account's first recorded flow comes out as the
+    //    residual minus ALL later flows — for an account funded by deposits
+    //    that is zero, so no balance is invented for an unfunded account.
+    function backStepCashBeforeAnchor(accountId: number, anchor: CashAnchor): void {
+      const firstRow = getFirstValuationDateBefore.get(accountId, anchor.month_end_date) as {
         min_date: string | null;
       };
       if (firstRow.min_date === null) return;
@@ -501,17 +515,17 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
         const anchor = anchors[i];
         if (anchor.holdings_value === null && anchor.cash_value === null) continue;
 
-        // The FIRST anchor that resolves also owns the daily rows between
-        // the account's first anchor and itself. Nothing steps forward into
-        // those rows — every earlier anchor was skipped above — so without
-        // this they kept Phase 1's placeholder
-        // cash of 0 while their holdings were complete, and the whole cash
-        // balance "arrived" on the anchor day (the equity-curve base-day
-        // step; a statement anchor at day N with no priced row near it and
-        // rows at N+27 / N+30 leaves exactly that shape).
+        // The FIRST anchor that resolves also owns every daily row dated
+        // before it. Nothing steps forward into those rows — any earlier
+        // anchor was skipped above — so without this they kept Phase 1's
+        // placeholder cash of 0 while their holdings were complete, and the
+        // whole cash balance "arrived" on the anchor day (the equity-curve
+        // base-day step; a statement anchor at day N with no priced row near
+        // it and rows at N+27 / N+30 leaves exactly that shape, and so does
+        // any row that predates the account's first statement).
         if (!backSteppedFromFirstAnchor) {
           backSteppedFromFirstAnchor = true;
-          backStepCashBeforeAnchor(account.account_id, anchor, anchors[0].month_end_date);
+          backStepCashBeforeAnchor(account.account_id, anchor);
         }
 
         // Anchor the TOTAL to the broker-reported snapshot: inferred cash
