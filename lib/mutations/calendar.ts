@@ -61,6 +61,13 @@ export interface CalendarEventInput {
  * event_time) can't clear a value that was backfilled and feeds the
  * enrichment window filter.
  *
+ * consensus_estimate / previous_value are sync-owned (the Claude macro fetch
+ * and vendor feeds supply them) but follow the same "never clear" rule via
+ * COALESCE(incoming, existing): a fresh list that omits an estimate it
+ * supplied on an earlier run must not null the stored one (2026-10-06 QA:
+ * the Today panel lost "Est:" on release morning). A non-null incoming value
+ * still overwrites.
+ *
  * Earnings earlier-wins (2026-08-05): the T-90m wire probe
  * (lib/calendar/wire-probe.ts) writes an earlier observed release_time
  * DIRECTLY to a row, outside this function. A later re-sync (e.g. "Refresh
@@ -146,8 +153,8 @@ export function upsertCalendarEvents(
        title = excluded.title,
        description = excluded.description,
        expected_impact = excluded.expected_impact,
-       consensus_estimate = excluded.consensus_estimate,
-       previous_value = excluded.previous_value,
+       consensus_estimate = COALESCE(excluded.consensus_estimate, calendar_events.consensus_estimate),
+       previous_value = COALESCE(excluded.previous_value, calendar_events.previous_value),
        raw_json = excluded.raw_json,
        fetched_at = datetime('now')`
   );
@@ -1005,15 +1012,21 @@ function deriveReleaseTime(
  * silently drop the stamp — the symbol's release-time cascade would still
  * degrade honestly to unbounded, but a real observation is lost for good.
  * Treated the same as the four enrichment columns: a stamped row survives.
+ *
+ * keepSourceKeys (2026-10-06): when given, rows whose source_key is in the
+ * list are NOT deleted — only TRUE orphans (rows the incoming list no longer
+ * carries) go. A re-listed row is refreshed in place by the upsert instead,
+ * keeping its id and any sync-owned value (consensus_estimate /
+ * previous_value) the fresh list happens to omit. Omitted = legacy
+ * behaviour (every unenriched row for the week/source is a candidate).
  */
 export function deleteUnenrichedEventsForWeek(
   db: Database.Database,
   weekOf: string,
-  source: CalendarEventSource
+  source: CalendarEventSource,
+  keepSourceKeys?: readonly string[]
 ): number {
-  return db
-    .prepare(
-      `DELETE FROM calendar_events
+  const baseSql = `DELETE FROM calendar_events
         WHERE week_of = ? AND source = ?
           AND actual_value IS NULL
           AND consensus_value IS NULL
@@ -1022,9 +1035,31 @@ export function deleteUnenrichedEventsForWeek(
           AND wire_probe_empty_at IS NULL
           AND id NOT IN (SELECT event_id FROM earnings_emails)
           AND id NOT IN (SELECT event_id FROM earnings_email_skips)
-          AND id NOT IN (SELECT event_id FROM earnings_bogeys)`
-    )
-    .run(weekOf, source).changes;
+          AND id NOT IN (SELECT event_id FROM earnings_bogeys)`;
+  if (keepSourceKeys === undefined) {
+    return db.prepare(baseSql).run(weekOf, source).changes;
+  }
+  // Stage the keep list in a temp table rather than an inline IN (...) so an
+  // arbitrarily long list can never hit SQLite's bound-variable limit.
+  const run = db.transaction(() => {
+    db.exec(
+      "CREATE TEMP TABLE IF NOT EXISTS _calendar_keep_keys (source_key TEXT PRIMARY KEY)"
+    );
+    db.exec("DELETE FROM _calendar_keep_keys");
+    const ins = db.prepare(
+      "INSERT OR IGNORE INTO _calendar_keep_keys (source_key) VALUES (?)"
+    );
+    for (const k of keepSourceKeys) ins.run(k);
+    const changes = db
+      .prepare(
+        `${baseSql}
+          AND source_key NOT IN (SELECT source_key FROM _calendar_keep_keys)`
+      )
+      .run(weekOf, source).changes;
+    db.exec("DELETE FROM _calendar_keep_keys");
+    return changes;
+  });
+  return run();
 }
 
 /**
