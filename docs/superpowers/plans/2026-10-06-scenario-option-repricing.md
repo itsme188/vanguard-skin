@@ -169,6 +169,15 @@ describe("repriceOptionUnderShock", () => {
     expect(r.changePercent).toBeGreaterThanOrEqual(-1);
   });
 
+  it("a quote just under exercise value is never accepted as own-price (American floor)", () => {
+    // Exercise value is 20. The European bound K*exp(-rT) - S is about 19.2,
+    // so 19.6 still "solves" under the European formula; it must be rejected.
+    const r = repriceOptionUnderShock(put({ strike_price: 80, own_price: 19.6, underlying_iv: 0.35 }), shock(-0.1));
+    if (!r.modelled) throw new Error("expected modelled");
+    expect(r.ivSource).toBe("broker-underlying");
+    expect(r.v0).toBeGreaterThanOrEqual(20 - 1e-9);
+  });
+
   it("legacy expiry spelling reprices the same as ISO", () => {
     const iso = repriceOptionUnderShock(put(), shock(-0.2));
     const compact = repriceOptionUnderShock(put({ expiration_date: "20260830" }), shock(-0.2));
@@ -313,10 +322,13 @@ export function repriceOptionUnderShock(pos: OptionElasticityInputs, shock: Opti
   let sigma: number;
   let ivSource: OptionIvSource;
   const solved = impliedVolatility(V, S, K, T, r, type);
-  // Round-trip check: a quote below exercise value has no volatility that
-  // explains it, and a solver that returns its lower bound instead of null
-  // must not be trusted. Accept only a volatility that reprices the quote.
+  // A quote below exercise value is stale: these contracts are American, so
+  // no volatility explains it, even where the European formula still solves
+  // (a put between the discounted bound and K - S). Reject it outright, and
+  // round-trip everything else so a solver returning its lower bound instead
+  // of null is never trusted.
   const reprices =
+    V >= intrinsic(type, S, K) &&
     solved != null &&
     Number.isFinite(solved) &&
     solved > 0 &&
@@ -406,7 +418,7 @@ Message: `feat(scenarios): option repricing under a shock, one shared pure modul
 - Consumes: `repriceOptionUnderShock`, `summarizeUnmodelledOptions`, `OptionIvSource`, `OptionUnmodelledReason` from Task 1.
 - Produces (in `lib/compute/scenarios.ts`):
   - `ScenarioDefinition.volMove?: number` — volatility points for a custom scenario.
-  - `PositionImpact.ivSource?: OptionIvSource` and `PositionImpact.unmodelledReason?: OptionUnmodelledReason`.
+  - `PositionImpact.ivSource?: OptionIvSource`, `PositionImpact.unmodelledReason?: OptionUnmodelledReason`, and `PositionImpact.underlyingMove?: number` (options only: the underlying's move before repricing).
   - `ScenarioResult.optionsUnmodelled: { count: number; valueShare: number }` (always present).
   - In `lib/compute/option-elasticity.ts`: `export const OPTION_ROW_SQL = "LOWER(TRIM(s.security_type)) IN ('option', 'call', 'put')"`.
 
@@ -419,7 +431,7 @@ Message: `feat(scenarios): option repricing under a shock, one shared pure modul
 import { repriceOptionUnderShock } from "@/lib/compute/option-reprice";
 import type { OptionElasticityInputs } from "@/lib/compute/option-elasticity";
 ```
-2. Delete every assertion that calls `optionElasticity(` or reads `DEFAULT_OPTION_ELASTICITY` (three `it` blocks around lines 200–230: the sign-matches-omega test, the "equals underlying move × omega" test, and the levered-beta test).
+2. Delete every assertion that calls `optionElasticity(` or reads `DEFAULT_OPTION_ELASTICITY`: the three `it` blocks around lines 200–230 (sign-matches-omega, "equals underlying move × omega", levered-beta) AND the whole `describe("optionElasticity: expiration spellings", …)` block at the end of the file (near line 261). Task 1's tests already cover the compact expiry spelling and an unrecognised one for the new function. When you finish, `grep -n "optionElasticity\|DEFAULT_OPTION_ELASTICITY" tests/compute/scenarios-custom-option-repricing.test.ts` must print nothing.
 3. In `seed()`, add one more option with no price row of its own (id 8, `ZZUL` put, strike 90, same expiry, quantity 1, no `prices` insert) so the query change is exercised.
 4. Add these tests inside the main `describe`:
 
@@ -533,6 +545,8 @@ In `ScenarioDefinition`, after `rateMove`:
 ```
 In `PositionImpact`, after `subjectShare`:
 ```ts
+  /** Options only: the scenario move of the contract's UNDERLYING, before repricing. */
+  underlyingMove?: number;
   /** Options only: where the volatility used to reprice this contract came from. */
   ivSource?: OptionIvSource;
   /** Options only: set when the contract could not be repriced; its change is then zero. */
@@ -575,6 +589,8 @@ Replace the block from `let changePercent: number;` through the end of the `if (
         underlyingMove,
         volChange: (scenario.volMove ?? 0) / 100,
         riskFreeRate,
+        today: runToday,
+        now: runNow,
       });
       if (repriced.modelled) {
         changePercent = repriced.changePercent;
@@ -591,7 +607,14 @@ Replace the block from `let changePercent: number;` through the end of the `if (
       changePercent = Math.max(underlyingMove, -1);
     }
 ```
-Delete the `reportedBeta` variable; in the returned object use `beta` (the underlying's beta for an option) and add `ivSource, unmodelledReason`.
+Just below `const riskFreeRate = getRiskFreeRate(db);` add the run clock, read ONCE so every option in one scenario shares the same time to expiry:
+```ts
+  const runToday = todayET();
+  const runNow = new Date();
+```
+(import `todayET` from `@/lib/calendar/date-utils` if the file does not already).
+
+Delete the `reportedBeta` variable; in the returned object use `beta` (the underlying's beta for an option) and add `ivSource, unmodelledReason, underlyingMove: isOption ? underlyingMove : undefined`.
 
 In the final `return { scenario, … }` add `optionsUnmodelled: summarizeUnmodelledOptions(positionImpacts),`.
 
@@ -689,7 +712,10 @@ describe("both scenario engines price an option through the one shared function"
     const res = computeScenario(db, { id: "custom", name: "c", description: "", category: "custom", marketMove: -0.3 });
     const stock = res.positionImpacts.find((p) => p.securityId === STOCK)!;
     const put = res.positionImpacts.find((p) => p.securityId === PUT)!;
-    const expected = repriceOptionUnderShock(optionInputs(), { underlyingMove: stock.changePercent, riskFreeRate: getRiskFreeRate(db) });
+    // The custom engine gives an option its underlying's beta, so the move
+    // it reports for the underlying must equal the stock row's own move.
+    expect(put.underlyingMove).toBeCloseTo(stock.changePercent, 12);
+    const expected = repriceOptionUnderShock(optionInputs(), { underlyingMove: put.underlyingMove!, riskFreeRate: getRiskFreeRate(db) });
     if (!expected.modelled) throw new Error("fixture must be modelled");
     expect(put.changePercent).toBeCloseTo(expected.changePercent, 10);
     expect(put.estimatedChange).toBeLessThan(0); // short put loses on a drop
@@ -698,9 +724,12 @@ describe("both scenario engines price an option through the one shared function"
   it("every preset", () => {
     for (const preset of PRESET_SCENARIOS) {
       const res = computeScenario(db, preset);
-      const stock = res.positionImpacts.find((p) => p.securityId === STOCK)!;
       const put = res.positionImpacts.find((p) => p.securityId === PUT)!;
-      const expected = repriceOptionUnderShock(optionInputs(), { underlyingMove: stock.changePercent, riskFreeRate: getRiskFreeRate(db) });
+      // The move the engine itself computed for this contract's underlying
+      // (a preset's subject rule can treat the option row and the stock row
+      // differently, so the stock row is not a safe stand-in).
+      expect(typeof put.underlyingMove, preset.id).toBe("number");
+      const expected = repriceOptionUnderShock(optionInputs(), { underlyingMove: put.underlyingMove!, riskFreeRate: getRiskFreeRate(db) });
       if (!expected.modelled) throw new Error("fixture must be modelled");
       expect(put.changePercent, preset.id).toBeCloseTo(expected.changePercent, 10);
       expect(res.estimatedChange, preset.id).toBeCloseTo(res.positionImpacts.reduce((s, p) => s + p.estimatedChange, 0), 8);
@@ -709,7 +738,7 @@ describe("both scenario engines price an option through the one shared function"
   });
 });
 ```
-If the `securities` or `holdings` inserts fail on a NOT NULL column, copy the column list from `seed()` in `tests/compute/scenarios-custom-option-repricing.test.ts`; do not weaken the assertions. The test assumes the engine gives the option's underlying the same move it gives the stock row. If a preset's subject rule keys on something the option row does not inherit (so the two moves differ by design), assert that preset against the move the engine actually computed for the option's underlying, name the preset in a comment, and report it; do not skip the preset.
+If the `securities` or `holdings` inserts fail on a NOT NULL column, copy the column list from `seed()` in `tests/compute/scenarios-custom-option-repricing.test.ts`; do not weaken the assertions.
 
 - [ ] **Step 2: Write the repo guard**
 
@@ -744,6 +773,15 @@ describe("scenario engines reprice options and never fall back to a fixed figure
     expect(src).not.toContain("DEFAULT_OPTION_ELASTICITY");
     expect(src).not.toMatch(/\?\?\s*0\.30?\b/);
   });
+  it("no scenario-facing copy still describes the linear treatment", () => {
+    for (const file of ["lib/compute/scenario-recipes.ts", "app/dashboard/components/ScenarioModeling.tsx"]) {
+      const src = read(file);
+      expect(src, file).not.toMatch(/delta elasticity/i);
+      expect(src, file).not.toMatch(/fallback 2\.5/i);
+      expect(src, file).not.toContain("Δ·S/V");
+    }
+  });
+
   it("the linear helpers are gone from the shared module", () => {
     const src = read("lib/compute/option-elasticity.ts");
     expect(src).not.toContain("export function optionElasticity");
@@ -779,8 +817,15 @@ import {
     // preset — through the same function the custom engine uses.
     let ivSource: OptionIvSource | undefined;
     let unmodelledReason: OptionUnmodelledReason | undefined;
+    let optionUnderlyingMove: number | undefined;
     if (isOptionSecurityType(pos.security_type)) {
-      const repriced = repriceOptionUnderShock(pos, { underlyingMove: changePercent, riskFreeRate });
+      optionUnderlyingMove = changePercent;
+      const repriced = repriceOptionUnderShock(pos, {
+        underlyingMove: changePercent,
+        riskFreeRate,
+        today: runToday,
+        now: runNow,
+      });
       if (repriced.modelled) {
         changePercent = repriced.changePercent;
         ivSource = repriced.ivSource;
@@ -790,11 +835,13 @@ import {
       }
     }
 ```
-4. Add `ivSource, unmodelledReason,` to the returned impact object, and replace the placeholder from Task 2 with `optionsUnmodelled: summarizeUnmodelledOptions(impacts),`.
+4. Just below `const riskFreeRate = getRiskFreeRate(db);` add `const runToday = todayET();` and `const runNow = new Date();` (import `todayET` from `@/lib/calendar/date-utils` if needed).
+5. Add `ivSource, unmodelledReason, underlyingMove: optionUnderlyingMove,` to the returned impact object, and replace the placeholder from Task 2 with `optionsUnmodelled: summarizeUnmodelledOptions(impacts),`.
+6. **Methodology copy.** The rate recipe's `methodology` string (near line 210) says options are "levered by delta elasticity (Ω = Δ·S/V, |Ω| ≤ 8, fallback 2.5× when unpriceable)". That is now false and it is shown to the user. Replace that clause with: `repriced with Black-Scholes at the shocked price of the underlying, volatility held at today's level; an option that cannot be priced is left out and counted.` Then `grep -n -i "elasticity\|fallback 2.5" lib/compute/scenario-recipes.ts` and fix every other user-facing string and stale code comment that still describes the linear treatment (the `DEFAULT_OPTION_ELASTICITY` re-export and its comment stay; reword the comment to say the constant now serves only the delta-exposure column).
 
 - [ ] **Step 5: Delete the dead linear helpers**
 
-Run `grep -rn "optionElasticity\|leverUnderlyingMoveByElasticity\|MAX_OPTION_ELASTICITY" lib app workers --include=*.ts --include=*.tsx`. The only hits must be inside `lib/compute/option-elasticity.ts`. Then delete from that file: `MAX_OPTION_ELASTICITY`, `optionElasticity`, `leverUnderlyingMoveByElasticity`, and the now-unused `import { delta } from "./options-greeks";`. Rewrite the file's header comment to say it now holds the option row predicate, the pricing inputs type, the SQL fragments and the exposure fallback constant, and that scenario pricing lives in `option-reprice.ts`. If the grep shows any other production caller, stop and report it instead of deleting.
+Run `grep -rn "optionElasticity\|leverUnderlyingMoveByElasticity\|MAX_OPTION_ELASTICITY" lib app workers tests --include=*.ts --include=*.tsx`. The only hits must be inside `lib/compute/option-elasticity.ts` and the guard test `tests/repo/scenario-option-no-linear-fallback.test.ts` (which names them in order to forbid them); any other test still importing them is rewritten against `repriceOptionUnderShock` first. Then delete from that file: `MAX_OPTION_ELASTICITY`, `optionElasticity`, `leverUnderlyingMoveByElasticity`, and the now-unused `import { delta } from "./options-greeks";`. Rewrite the file's header comment to say it now holds the option row predicate, the pricing inputs type, the SQL fragments and the exposure fallback constant, and that scenario pricing lives in `option-reprice.ts`. If the grep shows any other production caller, stop and report it instead of deleting.
 
 - [ ] **Step 6: Update the recipe tests**
 
@@ -838,11 +885,11 @@ export const VOL_MOVE_MAX = 60;
 
 - [ ] **Step 2: Write the failing tests**
 
-Read `tests/api/scenarios-route-validation.test.ts` first and follow its existing way of calling the POST handler and mocking `@/lib/db`. Add:
+The file already has two helpers: `postScenario(body)` (JSON body) and `postScenarioRaw(rawBody)` (raw text, for a numeric literal that overflows to Infinity on parse, since `JSON.stringify(Infinity)` collapses to `null`). Use them. Add:
 
 ```ts
   it("accepts a volMove inside the range and passes it to the engine", async () => {
-    const res = await post({ marketMove: -0.2, volMove: 15 });
+    const res = await postScenario({ marketMove: -0.2, volMove: 15 });
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.success).toBe(true);
@@ -850,38 +897,40 @@ Read `tests/api/scenarios-route-validation.test.ts` first and follow its existin
     expect(json.data.scenario.description).toContain("vol +15 pts");
   });
 
-  it("omits volMove from the scenario when it is absent or zero", async () => {
-    const res = await post({ marketMove: -0.2, volMove: 0 });
-    const json = await res.json();
-    expect(json.data.scenario.volMove).toBeUndefined();
-    expect(json.data.scenario.description).not.toContain("vol");
+  it("omits volMove from the scenario when it is zero or null", async () => {
+    for (const unset of [0, null]) {
+      const res = await postScenario({ marketMove: -0.2, volMove: unset });
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.data.scenario.volMove).toBeUndefined();
+      expect(json.data.scenario.description).not.toContain("vol");
+    }
+  });
+
+  it("rejects a volMove that is not a number", async () => {
+    const res = await postScenario({ marketMove: -0.2, volMove: "15" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/volMove/);
   });
 
   it("rejects a non-finite volMove", async () => {
-    for (const bad of ["15", null, Number.NaN, Number.POSITIVE_INFINITY]) {
-      const res = await post({ marketMove: -0.2, volMove: bad });
-      if (bad === null) {
-        expect(res.status).toBe(200); // null means "not set"
-        continue;
-      }
-      expect(res.status, String(bad)).toBe(400);
-      expect((await res.json()).error).toMatch(/volMove/);
-    }
+    const res = await postScenarioRaw('{"marketMove": -0.2, "volMove": 1e400}');
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/volMove/);
   });
 
   it("rejects a volMove outside the slider range", async () => {
     for (const bad of [-21, 61, 500]) {
-      const res = await post({ marketMove: -0.2, volMove: bad });
+      const res = await postScenario({ marketMove: -0.2, volMove: bad });
       expect(res.status, String(bad)).toBe(400);
     }
   });
 ```
-`post` stands for whatever helper the file already uses; if it has none, write `const post = (body: unknown) => POST(new NextRequest("http://localhost/api/compute/scenarios", { method: "POST", body: JSON.stringify(body) }))`. `NaN` and `Infinity` do not survive `JSON.stringify` (they become `null`); send those two as raw text bodies (`'{"marketMove":-0.2,"volMove":1e999}'`) or drop them from the loop and keep the string case, and note which you did.
 
 - [ ] **Step 3: Run and confirm failure**
 
 Run: `PATH=/opt/homebrew/opt/node@24/bin:$PATH npx vitest run tests/api/scenarios-route-validation.test.ts`
-Expected: the four new tests FAIL.
+Expected: the five new tests FAIL.
 
 - [ ] **Step 4: Implement**
 
@@ -1210,3 +1259,5 @@ Dispatch one read-only whole-branch review (the diff `main...<branch>`, the spec
 
 - Spec §4 steps 1–5 → Task 1. D1 → Task 1 (`ivSource`). D2 → Tasks 2, 4, 5. D3 → Tasks 2, 3 and the parity test. D4 → Tasks 1, 2, 3, 5. §5 held-fixed caption → Task 5 Step 7. §6 code shape → Tasks 1–5. §7 beta label → Task 5 Step 6. §8 tests 1–9 → Task 1 (1, 2, 3, 4, 8, 9), Task 2 (6, 7), Task 3 (5, 6). §9 → Task 6.
 - The spec was amended while planning, in three places: the `no-option-price` reason; the dollar change stated as `market_value × ΔV ÷ own_price`; and required test 2, whose first wording (loss at least the rise in exercise value) was not a true bound because it ignored the premium already in today's price. The corrected invariant is `V1 ≥ intrinsic(S')`.
+- Codex review, one round, 2026-10-06 (verdict REVISE; folded): a quote below exercise value is rejected as a volatility source outright; the trailing `optionElasticity` test block and every other test importer are named; the preset methodology copy is corrected and guarded; the clock is read once per scenario run; option rows carry the underlying's own move so the parity test does not infer it from another row; the API tests use the file's real helpers. Not folded, raised with the user: the route's single-account scope resolution (a defect that predates this work) and an automated browser regression in place of the manual browser proof.
+
