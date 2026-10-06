@@ -175,7 +175,11 @@ function buildUniverse(db: Database.Database, benchmarks: string[]): UniverseEnt
     seen.add(up);
     universe.push({ symbol: up, name: null, kind: "benchmark" });
   }
-  for (const h of getHoldingsForChat(db)) {
+  // Full held universe: the chat default is the 50 largest long positions,
+  // which would silently leave smaller names and shorts unmeasured. A short's
+  // move is the security's price move (closeOn is price-only), so including
+  // shorts neither flips a sign nor double-counts (deduped by symbol below).
+  for (const h of getHoldingsForChat(db, { limit: 100000, includeShorts: true })) {
     const up = h.symbol?.toUpperCase();
     if (!up || seen.has(up)) continue;
     seen.add(up);
