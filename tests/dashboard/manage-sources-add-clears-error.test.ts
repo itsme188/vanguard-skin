@@ -48,7 +48,13 @@ describe("ManageSourcesModal — no raw exception text, Escape closes", () => {
   });
 
   it("closes on Escape via a document keydown listener, deferring to the delete confirm", () => {
-    expect(src).toMatch(/e\.key !== "Escape"/);
+    expect(src).toMatch(/e\.key !== "Escape" \|\| e\.defaultPrevented/);
+    const palette = fs.readFileSync(
+      path.join(process.cwd(), "app/dashboard/components/CommandPalette.tsx"),
+      "utf8"
+    );
+    expect(palette).toMatch(/e\.preventDefault\(\);\s*setOpen\(false\)/);
+    expect(palette).toMatch(/addEventListener\("keydown", handleKeyDown, true\)/);
     expect(src).toMatch(/document\.addEventListener\("keydown"/);
     expect(src).toMatch(/document\.removeEventListener\("keydown"/);
     expect(src).toMatch(/pendingDeleteId !== null\) setPendingDeleteId\(null\);\s*else onClose\(\)/);

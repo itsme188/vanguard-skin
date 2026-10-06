@@ -470,7 +470,7 @@ export function ManageSourcesModal({
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || e.defaultPrevented) return;
       if (pendingDeleteId !== null) setPendingDeleteId(null);
       else onClose();
     };

@@ -42,11 +42,14 @@ export function CommandPalette() {
         setOpen((v) => !v);
       }
       if (e.key === "Escape" && open) {
+        // Claim the key so a modal underneath (document-level Escape handler)
+        // does not also close. Capture phase on window runs before document.
+        e.preventDefault();
         setOpen(false);
       }
     }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [open]);
 
   // Focus input when opened

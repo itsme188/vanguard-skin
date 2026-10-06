@@ -39,9 +39,18 @@ describe("gen recap — reads the stream to its terminal event", () => {
   });
 
   it("treats a stream that ends with no terminal event as a failure", () => {
-    const tail = reader.slice(reader.lastIndexOf("return {"));
-    expect(tail).toMatch(/success: false/);
-    expect(tail).toMatch(/connection dropped/);
+    expect(reader.trimEnd()).toMatch(/return RECAP_CONNECTION_DROPPED;$/);
+    const dropped = slice("const RECAP_CONNECTION_DROPPED", "};");
+    expect(dropped).toMatch(/success: false/);
+    expect(dropped).toMatch(/connection dropped/);
+  });
+
+  it("a read that rejects mid-stream is the dropped connection, never the browser's own text", () => {
+    expect(reader).toMatch(/await reader\.read\(\)\.catch\(\(\) => null\)/);
+    expect(reader).toMatch(/if \(!chunk\) return RECAP_CONNECTION_DROPPED;/);
+    // The handler still rules out a cancel before reading the result.
+    const fn = slice("async function generateRecap", "\n  function cancelRecap");
+    expect(fn).toMatch(/readRecapStream\(res,[^]*?\}\);\s*\n\s*if \(controller\.signal\.aborted\) return;/);
   });
 
   it("the handler decides on the terminal payload, not on res.ok alone", () => {
@@ -83,6 +92,22 @@ describe("gen recap — cancel", () => {
     const calls = src.match(/generateRecap\b/g) ?? [];
     expect(calls).toHaveLength(3); // declaration + button onClick + onRetry
     expect(src).toMatch(/onRetry=\{generateRecap\}/);
+  });
+});
+
+describe("gen recap — Escape", () => {
+  const dialog = slice("function RecapGenerateDialog", "\n}\n");
+
+  it("is Cancel while running and Close afterwards", () => {
+    expect(dialog).toMatch(
+      /onKeyDown=\{\(e\) => \{[^]*?e\.key !== "Escape"[^]*?if \(running\) onCancel\(\);\s*\n\s*else onClose\(\);/,
+    );
+  });
+
+  it("listens on the focused dialog, not on the document", () => {
+    expect(dialog).toMatch(/panelRef\.current\?\.focus\(\)/);
+    expect(dialog).toMatch(/tabIndex=\{-1\}/);
+    expect(dialog).not.toMatch(/addEventListener/);
   });
 });
 

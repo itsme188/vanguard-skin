@@ -50,6 +50,12 @@ interface RecapGenResult {
   error?: string;
 }
 
+/** A stream that ended, or broke, before its terminal event. */
+const RECAP_CONNECTION_DROPPED: RecapGenResult = {
+  success: false,
+  error: "The connection dropped before the recap finished. Nothing was saved — try again.",
+};
+
 /**
  * Read the generate stream to its TERMINAL event and return that event's
  * payload. The route streams `data: <json>` lines (same framing as the trade
@@ -73,7 +79,13 @@ async function readRecapStream(
   const decoder = new TextDecoder();
   let buffer = "";
   for (;;) {
-    const { done, value } = await reader.read();
+    // A network drop mid-stream rejects the read with the browser's own
+    // words ("Load failed", "network error") — report it as the dropped
+    // connection it is. A cancel rejects here too; the caller checks its
+    // abort signal before it looks at this result.
+    const chunk = await reader.read().catch(() => null);
+    if (!chunk) return RECAP_CONNECTION_DROPPED;
+    const { done, value } = chunk;
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");
@@ -98,10 +110,7 @@ async function readRecapStream(
       if (typeof event.error === "string") return { success: false, error: event.error };
     }
   }
-  return {
-    success: false,
-    error: "The connection dropped before the recap finished. Nothing was saved — try again.",
-  };
+  return RECAP_CONNECTION_DROPPED;
 }
 
 /**
@@ -121,16 +130,32 @@ function RecapGenerateDialog({
   onRetry: () => void;
   onClose: () => void;
 }) {
+  // Escape works from the dialog itself (it takes focus when it opens) — no
+  // document-level listener, which would also fire for other open overlays.
+  const panelRef = useRef<HTMLDivElement>(null);
+  const open = state !== null;
+  useEffect(() => {
+    if (open) panelRef.current?.focus();
+  }, [open]);
   if (!state || typeof document === "undefined") return null;
   const running = state.status === "running";
   return createPortal(
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" aria-hidden="true" />
       <div
+        ref={panelRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label="Generate earnings recap"
-        className="relative w-full max-w-sm rounded-xl border border-edge bg-panel shadow-2xl px-5 py-4 text-left"
+        onKeyDown={(e) => {
+          if (e.key !== "Escape") return;
+          e.stopPropagation();
+          // Escape is Cancel while running, Close once finished or errored.
+          if (running) onCancel();
+          else onClose();
+        }}
+        className="outline-none relative w-full max-w-sm rounded-xl border border-edge bg-panel shadow-2xl px-5 py-4 text-left"
       >
         <h2 className="text-sm font-medium text-ink whitespace-nowrap!">
           {running ? "Generating recap" : "Recap not generated"}

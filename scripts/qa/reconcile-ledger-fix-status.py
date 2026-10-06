@@ -54,17 +54,40 @@ def short_sha_on_ref(repo, ref, commit):
 
 
 def tagged_commit_on_ref(repo, ref, finding_id):
-    """Short sha of the oldest commit on ref whose subject carries [qa:<id>]."""
+    """(sha, reverted): the newest live commit on ref carrying [qa:<id>].
+
+    `sha` is None when none lands. A tagged commit is dead when a LATER commit
+    reverts it (subject `Revert "<its subject>"` or a body line `This reverts
+    commit <sha>`); a still-later commit with the tag again re-lands it.
+    `reverted` is True when the only tagged commits found were reverted.
+    """
     tag = "[qa:%s]" % finding_id
-    out = git(repo, "log", ref, "--format=%h%x09%s", "--fixed-strings", "--grep", tag).stdout
-    hits = []
-    for line in out.splitlines():
-        sha, _, subject = line.partition("\t")
-        # A revert's subject quotes the original, tag included; it undoes the
-        # fix, so it must never count as landing it.
-        if tag in subject and not subject.startswith("Revert"):
-            hits.append(sha)
-    return hits[-1] if hits else None
+    out = git(repo, "log", ref, "--format=%H%x1f%h%x1f%s%x1f%b%x1e", "--fixed-strings", "--grep", tag).stdout
+    commits = []  # newest first
+    for rec in out.split("\x1e"):
+        rec = rec.strip("\n")
+        if not rec:
+            continue
+        full, short, subject, body = (rec.split("\x1f") + ["", "", "", ""])[:4]
+        commits.append((full, short, subject, body))
+    live = []
+    reverted_any = False
+    for i, (full, short, subject, body) in enumerate(commits):
+        if tag not in subject or subject.startswith("Revert"):
+            continue
+        # Later commits are the ones before index i (newest first).
+        undone = any(
+            ("This reverts commit %s" % full) in later_body
+            or later_subject == 'Revert "%s"' % subject
+            for _, _, later_subject, later_body in commits[:i]
+        )
+        if undone:
+            reverted_any = True
+        else:
+            live.append(short)
+    if live:
+        return live[-1], False  # oldest live commit
+    return None, reverted_any
 
 
 def detect_format(raw):
@@ -112,6 +135,7 @@ def main(argv=None):
     date = today_eastern()
     changes = []
     partials = []
+    reverted = []
     suspects = []
     for f in findings:
         if not isinstance(f, dict):
@@ -126,7 +150,11 @@ def main(argv=None):
         if f.get("fix_status") not in PENDING or not commit or not fid:
             continue
         try:
-            landed = short_sha_on_ref(args.repo, args.ref, commit) or tagged_commit_on_ref(args.repo, args.ref, fid)
+            landed = short_sha_on_ref(args.repo, args.ref, commit)
+            if not landed:
+                landed, was_reverted = tagged_commit_on_ref(args.repo, args.ref, fid)
+                if was_reverted:
+                    reverted.append(fid)
         except RuntimeError as exc:
             sys.stderr.write("reconcile-ledger-fix-status: %s\n" % exc)
             return 1
@@ -139,6 +167,8 @@ def main(argv=None):
         print("%s: %s -> merged  (fix_commit %s, landed %s on %s)" % (fid, old, commit[:12], landed, args.ref))
     for fid, commit, landed in partials:
         print("%s: partial fix landed (fix_commit_partial %s, landed %s on %s); fix_status left as is" % (fid, commit[:12], landed, args.ref))
+    for fid in reverted:
+        print("%s: reverted on %s (tagged fix was reverted and not re-landed; left alone)" % (fid, args.ref))
     for fid in suspects:
         print("suspect: no commit: %s (fix_status fixed, no fix_commit; left alone)" % fid)
     print("%d finding(s) %s" % (len(changes), "updated" if args.apply else "would change (dry run; pass --apply)"))

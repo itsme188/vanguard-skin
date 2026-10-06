@@ -222,9 +222,35 @@ describe("composeEarningsEmail block order (real function, both phases)", () => 
 
     const ac = new AbortController();
     await composeEarningsEmail(db, eventId, "recap", { signal: ac.signal });
-    expect(mockCreate.mock.calls[1][1]).toEqual({ signal: ac.signal });
+    // The modal run also switches off the SDK's own retries, so they cannot
+    // stack under its two-attempt cap.
+    expect(mockCreate.mock.calls[1][1]).toEqual({ signal: ac.signal, maxRetries: 0 });
     // Same request body either way — the signal changes nothing the model sees.
     expect(mockCreate.mock.calls[1][0]).toEqual(mockCreate.mock.calls[0][0]);
+  });
+
+  it("a refusal and a top-rung truncation are typed, with message and status unchanged", async () => {
+    const { getRawAnthropicClient } = await import("@/lib/ai/provider");
+    const mod = await import("@/lib/digest/send-earnings-email");
+    const respond = (stop_reason: string) =>
+      vi.mocked(getRawAnthropicClient).mockReturnValue({
+        messages: { create: vi.fn().mockResolvedValue({ stop_reason, content: [] }) },
+      } as unknown as ReturnType<typeof getRawAnthropicClient>);
+
+    respond("refusal");
+    const refusal = await mod.composeEarningsEmail(db, eventId, "recap").catch((e: unknown) => e);
+    expect(refusal).toBeInstanceOf(mod.EarningsRefusalError);
+    expect(refusal).not.toBeInstanceOf(mod.EarningsEmailError);
+    expect((refusal as Error).message).toBe("Claude refused the earnings email request");
+    expect((refusal as Error).name).toBe("Error");
+
+    respond("max_tokens");
+    const cut = await mod.composeEarningsEmail(db, eventId, "recap").catch((e: unknown) => e);
+    expect(cut).toBeInstanceOf(mod.EarningsOutputTruncatedError);
+    expect(cut).toBeInstanceOf(mod.EarningsEmailError);
+    expect((cut as InstanceType<typeof mod.EarningsEmailError>).status).toBe(500);
+    expect((cut as Error).name).toBe("EarningsEmailError");
+    expect((cut as Error).message).toMatch(/truncated even at 16384 tokens/);
   });
 
   it("recap: scoreboard, then sheet bogeys (no past prints), then AI output", async () => {

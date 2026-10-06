@@ -55,7 +55,14 @@ vi.mock("@/lib/digest/send-earnings-email", () => {
       super(message);
     }
   }
-  return { EarningsEmailError, composeEarningsEmail: hoisted.compose };
+  class EarningsOutputTruncatedError extends EarningsEmailError {}
+  class EarningsRefusalError extends Error {}
+  return {
+    EarningsEmailError,
+    EarningsOutputTruncatedError,
+    EarningsRefusalError,
+    composeEarningsEmail: hoisted.compose,
+  };
 });
 
 vi.mock("@/lib/alerts/print-push", () => ({

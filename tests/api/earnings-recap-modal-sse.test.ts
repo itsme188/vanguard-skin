@@ -35,7 +35,14 @@ vi.mock("@/lib/digest/send-earnings-email", () => {
       super(message);
     }
   }
-  return { EarningsEmailError, composeEarningsEmail: hoisted.compose };
+  class EarningsOutputTruncatedError extends EarningsEmailError {}
+  class EarningsRefusalError extends Error {}
+  return {
+    EarningsEmailError,
+    EarningsOutputTruncatedError,
+    EarningsRefusalError,
+    composeEarningsEmail: hoisted.compose,
+  };
 });
 
 vi.mock("@/lib/calendar/enrichment-runner", () => ({
@@ -219,6 +226,41 @@ describe("POST /api/earnings/recap-modal — SSE generate flow", () => {
     expect(last.complete).toBe(true);
     expect(last.data).toMatchObject({ success: false, notReady: true });
     expect(events.some((e) => e.progress?.phase === "retrying")).toBe(false);
+  });
+
+  it("does not retry a model refusal — one AI call, plain-language error", async () => {
+    const eventId = seedEvent();
+    const { EarningsRefusalError } = await import("@/lib/digest/send-earnings-email");
+    hoisted.compose.mockRejectedValue(
+      new EarningsRefusalError("Claude refused the earnings email request"),
+    );
+
+    const { events } = await readEvents(await post({ eventId }));
+    expect(hoisted.compose).toHaveBeenCalledTimes(1);
+    expect(events.some((e) => e.progress?.phase === "retrying")).toBe(false);
+    expect(events.some((e) => e.complete)).toBe(false);
+    const last = events[events.length - 1];
+    expect(last.error).toMatch(/declined to write this recap/);
+    expect(last.error).not.toMatch(/Claude|refused the earnings email request/);
+  });
+
+  it("does not re-run the token ladder after a top-rung truncation", async () => {
+    const eventId = seedEvent();
+    const { EarningsOutputTruncatedError } = await import("@/lib/digest/send-earnings-email");
+    hoisted.compose.mockRejectedValue(
+      new (EarningsOutputTruncatedError as new (m: string, s: number) => Error)(
+        "Claude output for recap truncated even at 16384 tokens — refusing to send a cut-off email.",
+        500,
+      ),
+    );
+
+    const { events } = await readEvents(await post({ eventId }));
+    // One compose = one ladder; a second would be up to three more requests.
+    expect(hoisted.compose).toHaveBeenCalledTimes(1);
+    expect(events.some((e) => e.progress?.phase === "retrying")).toBe(false);
+    const last = events[events.length - 1];
+    expect(last.error).toMatch(/cut off/);
+    expect(last.error).not.toMatch(/16384|Claude/);
   });
 
   it("an abort mid-generation ends the run: no complete, no retry, nothing stored", async () => {

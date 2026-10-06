@@ -30,6 +30,8 @@ import { describePrePrintFloor } from "@/lib/earnings/pre-print-floor";
 import {
   composeEarningsEmail,
   EarningsEmailError,
+  EarningsOutputTruncatedError,
+  EarningsRefusalError,
 } from "@/lib/digest/send-earnings-email";
 import {
   classifyAnthropicError,
@@ -124,6 +126,13 @@ function isRetryable(err: unknown): boolean {
   // Domain refusals this pipeline raised on purpose (not found, not an
   // earnings event, no actuals yet) will fail identically every time.
   if (err instanceof EarningsEmailError && err.status < 500) return false;
+  // A refusal is the model's answer, not a transport fault — asking again
+  // bills again for the same answer.
+  if (err instanceof EarningsRefusalError) return false;
+  // Truncated at the TOP output rung: the compose already escalated through
+  // every rung, so a retry would re-run the whole ladder (up to six AI
+  // requests for one click instead of two).
+  if (err instanceof EarningsOutputTruncatedError) return false;
   const vendor = classifyVendor(err);
   if (vendor && NO_RETRY_KINDS.has(vendor.kind)) return false;
   return true;
@@ -137,6 +146,12 @@ function isRetryable(err: unknown): boolean {
 export function recapFailureMessage(err: unknown, attempts: number): string {
   if (err instanceof RecapGenerateError) return err.message;
   if (err instanceof EarningsEmailError && err.status < 500) return err.message;
+  if (err instanceof EarningsRefusalError) {
+    return "The AI declined to write this recap. Nothing was saved or sent.";
+  }
+  if (err instanceof EarningsOutputTruncatedError) {
+    return "The recap came back cut off even at the largest size, so it was discarded. Nothing was saved or sent.";
+  }
   const vendor = classifyVendor(err);
   if (vendor) return vendor.userMessage;
   const tries = attempts > 1 ? ` after ${attempts} attempts` : "";

@@ -66,6 +66,21 @@ export class EarningsEmailError extends Error {
   }
 }
 
+/**
+ * The output was still cut off at the TOP rung of the token ladder. Same
+ * message and status as the plain EarningsEmailError it used to be (and still
+ * `instanceof EarningsEmailError`); the class only lets a caller tell it apart
+ * without matching on the text — retrying it re-runs the whole ladder.
+ */
+export class EarningsOutputTruncatedError extends EarningsEmailError {}
+
+/**
+ * The model declined the request. Deliberately NOT an EarningsEmailError and
+ * carries no `name` of its own, so every existing handler sees the same plain
+ * Error it always did; the class only makes the case detectable.
+ */
+export class EarningsRefusalError extends Error {}
+
 export interface SendEarningsEmailOpts {
   recipient?: string;
   footerNote?: string;
@@ -2414,7 +2429,7 @@ export async function createWithTokenLadder<
     response = await create(ladder[i]);
   }
   if (response.stop_reason === "max_tokens") {
-    throw new EarningsEmailError(
+    throw new EarningsOutputTruncatedError(
       `Claude output for ${phase} truncated even at ${ladder[ladder.length - 1]} tokens — refusing to send a cut-off email.`,
       500,
     );
@@ -2491,11 +2506,12 @@ async function callClaude(
         tools: [{ type: "web_search_20250305" as const, name: "web_search" as const, max_uses: 5 }],
         messages: [{ role: "user" as const, content: prompt }],
       };
-      // With a signal the SDK tears the request down on abort (and refuses
-      // to start a ladder rung once aborted); without one the call is the
-      // same single-argument request it has always been.
+      // With a signal (the in-app "gen recap" run only) the SDK tears the
+      // request down on abort, and its own automatic retries are switched
+      // off so they cannot stack under that run's two-attempt cap. Without
+      // one the call is the same single-argument request it has always been.
       return signal
-        ? client.messages.create(body, { signal })
+        ? client.messages.create(body, { signal, maxRetries: 0 })
         : client.messages.create(body);
     },
     phase,
@@ -2503,7 +2519,7 @@ async function callClaude(
   // Guard against Fable-style refusals (stop_reason === "refusal" means the
   // content array is empty — reading content[0] blindly would throw).
   if (response.stop_reason === "refusal") {
-    throw new Error("Claude refused the earnings email request");
+    throw new EarningsRefusalError("Claude refused the earnings email request");
   }
   const textBlocks = response.content.filter(
     (b): b is Anthropic.TextBlock => b.type === "text",

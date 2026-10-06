@@ -147,6 +147,32 @@ describe("reconcile-ledger-fix-status", () => {
     expect(fs.readFileSync(path.join(dir, first), "utf8")).toBe(original);
   });
 
+  it("a tagged fix later reverted is untouched and reported as reverted", () => {
+    git("revert", "--no-edit", c2);
+    const rows = JSON.parse(fs.readFileSync(ledger, "utf8"));
+    rows.findings = rows.findings.filter((r: { id: string }) => r.id !== "direct-id");
+    fs.writeFileSync(ledger, JSON.stringify(rows, null, 2) + "\n");
+    const res = reconcile("--apply");
+    expect(res.stdout).toContain("cherry-id: reverted");
+    expect(res.stdout).not.toContain("cherry-id: branch-unpushed -> merged");
+    const out = JSON.parse(fs.readFileSync(ledger, "utf8")).findings;
+    expect(out.find((r: { id: string }) => r.id === "cherry-id").fix_status).toBe("branch-unpushed");
+  });
+
+  it("reverted then re-landed counts as merged with the re-landing commit", () => {
+    git("revert", "--no-edit", c2);
+    fs.writeFileSync(path.join(dir, "e.txt"), "e\n");
+    git("add", "e.txt");
+    git("commit", "-q", "-m", "fix thing again [qa:cherry-id]");
+    const relanded = git("rev-parse", "--short", "HEAD");
+    const res = reconcile("--apply");
+    expect(res.stdout).toContain("cherry-id: branch-unpushed -> merged");
+    const out = JSON.parse(fs.readFileSync(ledger, "utf8")).findings;
+    const row = out.find((r: { id: string }) => r.id === "cherry-id");
+    expect(row.fix_status).toBe("merged");
+    expect(row.landed_commit).toBe(relanded);
+  });
+
   it("exits non-zero on a missing ledger", () => {
     fs.rmSync(ledger);
     expect(reconcile().status).not.toBe(0);
