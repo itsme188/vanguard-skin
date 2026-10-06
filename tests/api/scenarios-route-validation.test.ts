@@ -149,6 +149,15 @@ describe("POST /api/compute/scenarios — rateMove validation", () => {
     expect(json.data.scenario.description).toContain("vol +15 pts");
   });
 
+  it("accepts both end stops of the slider range", async () => {
+    for (const volMove of [-20, 60]) {
+      const res = await postScenario({ marketMove: -0.2, volMove });
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.data.scenario.volMove).toBe(volMove);
+    }
+  });
+
   it("omits volMove from the scenario when it is zero or null", async () => {
     for (const unset of [0, null]) {
       const res = await postScenario({ marketMove: -0.2, volMove: unset });

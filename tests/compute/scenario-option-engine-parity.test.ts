@@ -76,7 +76,25 @@ describe("both scenario engines price an option through the one shared function"
       if (!expected.modelled) throw new Error("fixture must be modelled");
       expect(put.changePercent, preset.id).toBeCloseTo(expected.changePercent, 10);
       expect(res.estimatedChange, preset.id).toBeCloseTo(res.positionImpacts.reduce((s, p) => s + p.estimatedChange, 0), 8);
-      expect(res.optionsUnmodelled, preset.id).toEqual({ count: 0, valueShare: 0 });
+      expect(res.optionsUnmodelled, preset.id).toEqual({ count: 0, valueShare: 0, unpricedCount: 0 });
     }
+  });
+
+  it("a preset and a custom run that reproduce its underlying move price the option identically", () => {
+    const optionRow = (r: ReturnType<typeof computeScenario>) => r.positionImpacts.find((p) => p.securityId === PUT)!;
+    const custom = (marketMove: number) =>
+      computeScenario(db, { id: "custom", name: "c", description: "", category: "custom", marketMove });
+    // The custom engine's underlying move is marketMove x beta, and its option
+    // row reports that move, so the beta falls out of a first run.
+    const probe = custom(-0.1);
+    const beta = optionRow(probe).underlyingMove! / -0.1;
+    const preset = PRESET_SCENARIOS.find((p) => Math.abs(optionRow(computeScenario(db, p)).underlyingMove ?? 0) > 0);
+    if (!preset) throw new Error("no preset moves the fixture's underlying");
+    const presetRow = optionRow(computeScenario(db, preset));
+    const m = presetRow.underlyingMove!;
+    const customRow = optionRow(custom(m / beta));
+    expect(customRow.underlyingMove!).toBeCloseTo(m, 10);
+    expect(customRow.changePercent).toBeCloseTo(presetRow.changePercent, 8);
+    expect(customRow.estimatedChange).toBeCloseTo(presetRow.estimatedChange, 8);
   });
 });

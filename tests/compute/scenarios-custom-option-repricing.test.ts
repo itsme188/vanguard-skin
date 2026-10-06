@@ -245,9 +245,12 @@ describe("custom what-if scenarios: options are repriced, not scaled by a flat b
 
   it("a zero move with no volatility change leaves every option unchanged", () => {
     const res = computeScenario(db, { ...DOWN_20, id: "custom-flat", marketMove: 0 });
-    for (const p of res.positionImpacts.filter((x) => x.securityType === "Option" && !x.unmodelledReason)) {
-      if (p.ivSource === "own-price") expect(p.estimatedChange).toBeCloseTo(0, 10); // a short row gives -0
-    }
+    const rows = res.positionImpacts.filter(
+      (x) => x.securityType === "Option" && !x.unmodelledReason && x.ivSource === "own-price",
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    // Math.abs: a short row's change can be -0.
+    for (const row of rows) expect(Math.abs(row.estimatedChange)).toBe(0);
   });
 
   it("the volatility slider moves option rows only", () => {
@@ -257,6 +260,15 @@ describe("custom what-if scenarios: options are repriced, not scaled by a flat b
     expect(stock(bumped).estimatedChange).toBe(stock(base).estimatedChange);
     const put = (r: typeof base) => r.positionImpacts.find((p) => p.securityId === LONG_PUT_ID)!;
     expect(put(bumped).estimatedChange).toBeGreaterThan(put(base).estimatedChange);
+    // 20 volatility points reach the repricer as 0.20 (points to a decimal).
+    const longPut = put(bumped);
+    const expected = repriceOptionUnderShock(putInputs(), {
+      underlyingMove: -0.2 * UNDERLYING_BETA,
+      volChange: 0.2,
+      riskFreeRate: getRiskFreeRate(db),
+    });
+    if (!expected.modelled) throw new Error("fixture must be modelled");
+    expect(longPut.estimatedChange).toBeCloseTo(longPut.currentValue * expected.changePercent, 8);
   });
 
   it("an option that cannot be repriced is listed, adds nothing, and is counted", () => {
@@ -270,6 +282,7 @@ describe("custom what-if scenarios: options are repriced, not scaled by a flat b
     expect(priceless.currentValue).toBe(0);
     expect(res.optionsUnmodelled.count).toBe(2);
     expect(res.optionsUnmodelled.valueShare).toBeGreaterThan(0);
+    expect(res.optionsUnmodelled.unpricedCount).toBe(1);
   });
 
   it("the scenario total equals the sum of the rows", () => {

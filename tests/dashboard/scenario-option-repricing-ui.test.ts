@@ -23,6 +23,8 @@ describe("scenario card: option repricing surface", () => {
 
   it("lists options it could not model, with a reason, and a count line", () => {
     anchorIndex(src, "result.optionsUnmodelled.count > 0");
+    anchorIndex(src, "result.optionsUnmodelled.unpricedCount > 0");
+    anchorIndex(src, "with no price left out of this total");
     anchorIndex(src, "UNMODELLED_REASON_LABEL[");
     for (const reason of ["no-option-terms", "expired", "no-option-price", "no-underlying-price", "no-volatility"]) {
       anchorIndex(src, `"${reason}":`);
@@ -31,6 +33,7 @@ describe("scenario card: option repricing surface", () => {
 
   it("an option row shows its volatility source and no beta", () => {
     anchorIndex(src, "IV_SOURCE_LABEL[");
+    anchorIndex(src, "!isOptionSecurityType(pos.securityType)");
     expect(src).not.toContain("option elasticity");
     expect(src).not.toContain("legacy beta heuristic");
   });
