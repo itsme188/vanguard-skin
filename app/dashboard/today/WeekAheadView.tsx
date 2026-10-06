@@ -402,7 +402,7 @@ function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string
     <div className="rounded-lg bg-raised border border-edge p-3 hover:border-edge-strong transition-colors">
       <div className="flex items-center gap-2 mb-1.5 flex-wrap">
         {time && (
-          <span className="text-[11px] font-mono text-ink-faint tabular-nums shrink-0">{time}</span>
+          <span className="text-[11px] font-mono text-ink-faint tabular-nums min-w-0 break-words">{time}</span>
         )}
         {symbol ? (
           <span className="font-mono text-[14px] font-medium text-ink truncate">{symbol}</span>
