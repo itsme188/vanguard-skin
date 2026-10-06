@@ -45,7 +45,7 @@ function formatCorr(value: number): string {
 function corrColor(corr: number): string {
   // High positive correlation = warm (red-ish), low/negative = cool (blue-ish)
   if (corr >= 0.8) return "bg-down/30 text-down";
-  if (corr >= 0.5) return "bg-amber-400/15 text-amber-400";
+  if (corr >= 0.5) return "bg-warn/15 text-warn";
   if (corr >= 0.2) return "bg-ink-faint/15 text-ink-dim";
   if (corr >= -0.2) return "bg-up/20 text-up";
   return "bg-blue-500/20 text-blue-400";

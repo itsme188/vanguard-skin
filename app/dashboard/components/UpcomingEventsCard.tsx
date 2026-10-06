@@ -24,7 +24,7 @@ const EVENT_ICONS: Record<string, string> = {
 
 const IMPACT_COLORS: Record<string, string> = {
   high: "text-down",
-  medium: "text-amber-400",
+  medium: "text-warn",
   low: "text-ink-faint",
 };
 

@@ -1658,7 +1658,7 @@ export function LevelsPanel({
                           ≈ {formatLevelPrice(currency, l.effective_price)}
                         </span>
                       ) : (
-                        <span className="text-[10px] text-amber-400" title="Not enough OHLCV history to compute this MA yet — the level won't fire until bars accumulate.">
+                        <span className="text-[10px] text-warn" title="Not enough OHLCV history to compute this MA yet — the level won't fire until bars accumulate.">
                           insufficient history
                         </span>
                       )}
@@ -1730,7 +1730,7 @@ export function LevelsPanel({
                 {showRequeue && (
                   <button
                     onClick={() => handleRequeue(l.id)}
-                    className="text-[10px] text-amber-400 hover:text-amber-300"
+                    className="text-[10px] text-warn hover:text-warn/80"
                     title="Send back to pending_review so the Alerts Review tab can approve or reject it"
                   >
                     Re-queue

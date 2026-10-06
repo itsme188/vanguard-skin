@@ -427,7 +427,7 @@ export function TaxReportCard({
       {!report.filingReady && (
         <div className="px-5 pt-4">
           <div className="border border-amber-400/20 bg-amber-400/5 rounded-lg p-3">
-            <h4 className="text-xs font-medium text-amber-400">
+            <h4 className="text-xs font-medium text-warn">
               &#x26A0; {filingBannerHeading(scopeAccountName)}
             </h4>
             <p className="text-[10px] text-ink-faint mt-1">{FILING_WARNING_COPY}</p>
@@ -481,7 +481,7 @@ export function TaxReportCard({
 
           <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
             <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">Wash Sales</div>
-            <div className={`text-base font-mono tabular-nums font-semibold ${hasWashSales ? "text-amber-400" : "text-ink"}`}>
+            <div className={`text-base font-mono tabular-nums font-semibold ${hasWashSales ? "text-warn" : "text-ink"}`}>
               {report.washSaleWarnings.length}
             </div>
             <div className="text-[10px] text-ink-faint mt-0.5">
@@ -509,7 +509,7 @@ export function TaxReportCard({
         {/* Wash sale warnings */}
         {hasWashSales && (
           <div className="border border-amber-400/20 bg-amber-400/5 rounded-lg p-3">
-            <h4 className="text-xs font-medium text-amber-400 mb-2 flex items-center gap-1.5">
+            <h4 className="text-xs font-medium text-warn mb-2 flex items-center gap-1.5">
               <span>&#x26A0;</span> Potential Wash Sales
             </h4>
             <div className="space-y-1.5">
