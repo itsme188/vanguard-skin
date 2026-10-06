@@ -135,13 +135,16 @@ const VIEWABLE = new Set(["sent", "delivery-unknown"]);
 
 export function stageChips(
   row: CockpitRowWire,
+  /** Shown on the upcoming chip instead of the stored clock time — see
+   * EarningsRowChips' `timeEstimateLabel`. */
+  timeEstimateLabel: string | null = null,
 ): Array<{ key: string; tone: ChipTone; text: string; title?: string; clickable: "preview" | "recap" | "actuals" | null }> {
   const released = row.stages.released;
   const releasedChip =
     released.state === "released"
       ? { tone: "gold" as ChipTone, text: "released" }
       : released.state === "upcoming"
-        ? { tone: "neutral" as ChipTone, text: row.releaseTime ?? row.eventTime ?? "—" }
+        ? { tone: "neutral" as ChipTone, text: timeEstimateLabel ?? row.releaseTime ?? row.eventTime ?? "—" }
         : { tone: "neutral" as ChipTone, text: row.eventTime ?? "time?" };
   const reaction =
     row.stages.reaction.state === "captured"
@@ -168,13 +171,15 @@ export function stageChips(
 export function StageChipStrip({
   row,
   onOpen,
+  timeEstimateLabel = null,
 }: {
   row: CockpitRowWire;
   onOpen: (what: "preview" | "recap" | "actuals") => void;
+  timeEstimateLabel?: string | null;
 }) {
   return (
     <span className="flex flex-wrap items-center gap-1">
-      {stageChips(row).map((c) =>
+      {stageChips(row, timeEstimateLabel).map((c) =>
         c.clickable ? (
           <button
             key={c.key}

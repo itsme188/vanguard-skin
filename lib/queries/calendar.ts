@@ -7,6 +7,9 @@ import {
 } from "@/lib/queries/manual-actuals-cluster";
 import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+// Display only (user ruling 2026-10-06): the label a person reads for a
+// slot-less vendor earnings row. It never filters or orders rows here.
+import { withDisplayTimes, type WithDisplayTime } from "@/lib/calendar/display-earnings-time";
 
 // ─── Filter types ─────────────────────────────────────────────────
 
@@ -189,7 +192,7 @@ export function getEventsByWeek(
 export function getTodayReleases(
   db: Database.Database,
   today: string = todayET(),
-): { releases: CalendarEvent[]; mode: "today" | "upcoming" } {
+): { releases: WithDisplayTime<CalendarEvent>[]; mode: "today" | "upcoming" } {
   const todayReleases = db
     .prepare(
       `SELECT * FROM calendar_events
@@ -227,8 +230,11 @@ export function getTodayReleases(
     }
   }
 
+  // `display_time` is what the block PRINTS as the time. Selection and
+  // ordering above still run on the stored release_time — a slot-less row
+  // keeps its stored 16:15 position even when its label reads "time unknown".
   return {
-    releases,
+    releases: withDisplayTimes(db, releases),
     mode: todayReleases.length > 0 ? "today" : "upcoming",
   };
 }

@@ -5,6 +5,7 @@ import { formatFinnhubFigure, parseFinnhubFigure, formatFinnhubFigureCompact } f
 import { formatCompactUSD } from "@/lib/format";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { earningsTimeLabel, isFredScheduleRow } from "@/lib/calendar/release-times";
+import type { EarningsDisplayTime } from "@/lib/calendar/display-earnings-time";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { epsDelta } from "@/lib/earnings/eps-delta";
 import { EnrichmentRowSummary } from "../components/calendar/EnrichmentChips";
@@ -20,8 +21,12 @@ import {
   snapshotCoversEventDate,
 } from "@/lib/calendar/reaction-snapshot-core";
 
+/** A calendar row plus the label a screen prints as its time (optional: a
+ * caller that attaches none gets the stored-time label). */
+type DisplayedEvent = CalendarEvent & { display_time?: EarningsDisplayTime };
+
 interface WeekAheadViewProps {
-  events: CalendarEvent[];
+  events: DisplayedEvent[];
   weekOf: string;
 }
 
@@ -219,7 +224,7 @@ interface DayCardProps {
     label: string;
     date: string;
     isToday: boolean;
-    events: CalendarEvent[];
+    events: DisplayedEvent[];
   };
   todayIso: string;
 }
@@ -381,11 +386,14 @@ export function releasedFigureGates(
   };
 }
 
-function EventRow({ event, todayIso }: { event: CalendarEvent; todayIso: string }) {
+function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string }) {
   // "time unknown" for an earnings row with no clock time — never a blank and
   // never a default (user ruling 2026-10-05). Single-sourced with Today's
   // releases in lib/calendar/release-times.ts.
-  const time = earningsTimeLabel(event);
+  // display_time (attached by the page) replaces a slot-less vendor row's
+  // stored default with the company's usual time, or "time unknown" (user
+  // ruling 2026-10-06). Display only — sorting above still uses the stored time.
+  const time = event.display_time?.label ?? earningsTimeLabel(event);
   const symbol = event.symbol ?? null;
   const { consensusDisplay, actualDisplay: rawActualDisplay } = eventFigureDisplays(event);
   const { released, showReaction } = releasedFigureGates(event, todayIso);

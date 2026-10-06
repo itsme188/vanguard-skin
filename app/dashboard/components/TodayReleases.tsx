@@ -7,6 +7,9 @@ import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { todayET } from "@/lib/calendar/date-utils";
 import { earningsTimeLabel } from "@/lib/calendar/release-times";
+// Type only — the module reads the database, so no value may cross into this
+// client bundle.
+import type { EarningsDisplayTime } from "@/lib/calendar/display-earnings-time";
 import { EnrichmentRowSummary } from "./calendar/EnrichmentChips";
 // Import from the dependency-free core, never lib/calendar/reaction-snapshot.ts
 // (that file imports real values from @stoqey/ib — a client bundle that
@@ -16,6 +19,10 @@ import {
   snapshotCoversEventDate,
   type ReactionSnapshot,
 } from "@/lib/calendar/reaction-snapshot-core";
+
+/** A calendar row plus the label a screen prints as its time (optional: a
+ * caller that attaches none gets the stored-time label). */
+type DisplayedEvent = CalendarEvent & { display_time?: EarningsDisplayTime };
 
 /**
  * Today view — "Today's releases" block (left half of the Today header row).
@@ -95,7 +102,7 @@ export function TodayReleases({
   releases,
   mode = "today",
 }: {
-  releases: CalendarEvent[];
+  releases: DisplayedEvent[];
   mode?: "today" | "upcoming";
 }) {
   const upcoming = mode === "upcoming";
@@ -156,7 +163,10 @@ export function TodayReleases({
                   {upcoming && event.event_date && (
                     <span className="text-ink-dim">{fmtDate(event.event_date)} · </span>
                   )}
-                  {earningsTimeLabel(event) ?? ""}
+                  {/* display_time: the usual time or "time unknown" for a
+                      slot-less vendor row, never its stored default (user
+                      ruling 2026-10-06). Absent → the stored-time label. */}
+                  {event.display_time?.label ?? earningsTimeLabel(event) ?? ""}
                 </span>
               </div>
               <div className="text-[12px] font-mono">

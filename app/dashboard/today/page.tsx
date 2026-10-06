@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getAccountByName } from "@/lib/queries/accounts";
 import { getPortfolioTotals } from "@/lib/queries/dashboard";
 import { getEventsByWeek, getTodayReleases } from "@/lib/queries/calendar";
+import { withDisplayTimes } from "@/lib/calendar/display-earnings-time";
 import { getCurrentMonday, resolveWeekOfParam } from "@/lib/calendar/date-utils";
 import {
   getIbkrTodayHoldings,
@@ -58,7 +59,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
     // to the current week) so past enriched weeks and future conflict weeks
     // are browsable — the Calendar Living Record's only week-level UI.
     const weekOf = resolveWeekOfParam(weekOfParam);
-    const events = getEventsByWeek(db, weekOf);
+    const events = withDisplayTimes(db, getEventsByWeek(db, weekOf));
     return <WeekAheadView events={events} weekOf={weekOf} />;
   }
 

@@ -20,6 +20,10 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
+import {
+  withDisplayTimes,
+  type EarningsDisplayTime,
+} from "@/lib/calendar/display-earnings-time";
 import { getSymbolStatus, type SymbolStatus } from "@/lib/queries/briefing-symbols";
 import { buildCockpitPayload } from "@/lib/queries/earnings-cockpit";
 import { decorateCockpitIntel } from "@/lib/queries/earnings-intel";
@@ -46,6 +50,7 @@ import { getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
 import { statusChipClass, statusChipLabel } from "./status-chip";
 
 type EnrichedRow = CalendarEvent & {
+  display_time: EarningsDisplayTime;
   status: SymbolStatus;
   previewSent: boolean;
   recapSent: boolean;
@@ -64,10 +69,24 @@ function fmtDayLong(iso: string): { weekday: string; date: string } {
   };
 }
 
-function fmtSlot(eventTime: string | null, releaseTime: string | null): string {
+// A slot-less vendor row stores the 16:15 default; printing it would read as
+// a confirmed time. For those rows the cell shows the company's usual time
+// (an estimate) or "time unknown" instead — display only, the stored time and
+// every gate that reads it are unchanged (user ruling 2026-10-06).
+function fmtSlot(
+  eventTime: string | null,
+  releaseTime: string | null,
+  display: EarningsDisplayTime,
+): string {
+  if (display.label && display.kind !== "stored") return display.label;
   const t = (eventTime ?? "").trim().toUpperCase();
   if (releaseTime) return `${t || "—"} · ${releaseTime}`;
   return t || "TBD";
+}
+
+/** The estimate/unknown label for the chips, or null when the time is the stored one. */
+function estimateLabel(display: EarningsDisplayTime): string | null {
+  return display.kind === "stored" ? null : display.label;
 }
 
 // statusChipClass / statusChipLabel moved to ./status-chip.ts ([C-17],
@@ -106,7 +125,7 @@ export function earningsHubEmptyStateCopy(weekOf: string, todayIso: string): str
 export function EarningsHub() {
   const weekOf = getCurrentMonday();
   const weekEnd = addDays(weekOf, 6);
-  const events = getEarningsForWeekDeduped(db, weekOf);
+  const events = withDisplayTimes(db, getEarningsForWeekDeduped(db, weekOf));
 
   const symbols = events.map((e) => e.symbol).filter((s): s is string => !!s);
   const statusMap = getSymbolStatus(db, symbols);
@@ -315,7 +334,7 @@ export function EarningsHub() {
 const DESKTOP_GRID_COLUMNS = "84px 64px 92px 1fr 1fr 1fr 1fr 56px 64px 160px";
 
 function DesktopRow({ event }: { event: EnrichedRow }) {
-  const slot = fmtSlot(event.event_time, event.release_time);
+  const slot = fmtSlot(event.event_time, event.release_time, event.display_time);
   const consensus = effectiveConsensus(event);
   const cons = formatFinnhubFigure(consensus);
   const isPostRelease = !!event.enriched_at && !!event.actual_value;
@@ -423,6 +442,7 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           recapSkipped={event.recapSkipped}
           worksheetArmed={event.worksheetArmed}
           worksheetPrinted={event.worksheetPrinted}
+          timeEstimateLabel={estimateLabel(event.display_time)}
         />
         {/* Manual rows delete directly; sync rows delete-with-suppression
             (stays removed across syncs — the wrong-date correction path). */}
@@ -462,7 +482,7 @@ function NumCell({ value, recapEventId }: { value: string | null; recapEventId?:
 }
 
 function MobileCard({ event }: { event: EnrichedRow }) {
-  const slot = fmtSlot(event.event_time, event.release_time);
+  const slot = fmtSlot(event.event_time, event.release_time, event.display_time);
   const consensus = effectiveConsensus(event);
   const cons = formatFinnhubFigure(consensus);
   const isPostRelease = !!event.enriched_at && !!event.actual_value;
@@ -573,6 +593,7 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           recapSkipped={event.recapSkipped}
           worksheetArmed={event.worksheetArmed}
           worksheetPrinted={event.worksheetPrinted}
+          timeEstimateLabel={estimateLabel(event.display_time)}
         />
         {/* Manual rows delete directly; sync rows delete-with-suppression. */}
         <EarningsDeleteButton

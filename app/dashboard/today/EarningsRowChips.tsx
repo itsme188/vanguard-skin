@@ -22,6 +22,14 @@ interface EarningsRowChipsProps {
   recapSkipped: boolean;
   worksheetArmed: boolean;
   worksheetPrinted: boolean;
+  /**
+   * Set when the row's stored time is only the slot-less default: the label to
+   * show instead ("~7:00 AM (usual time)", "Before the open (usual)", "time
+   * unknown"). A countdown to a guessed time must not read as exact, so the
+   * to-the-minute countdown is dropped and the released chip carries this
+   * label. Display only (user ruling 2026-10-06).
+   */
+  timeEstimateLabel?: string | null;
 }
 
 type Phase = "preview" | "recap";
@@ -229,6 +237,7 @@ export function EarningsRowChips({
   recapSkipped,
   worksheetArmed,
   worksheetPrinted,
+  timeEstimateLabel = null,
 }: EarningsRowChipsProps) {
   // Task 9: the live cockpit row comes from the Hub's ONE controller through
   // context, not as a prop the server-rendered row would have to thread down.
@@ -453,7 +462,7 @@ export function EarningsRowChips({
            wraps rather than forcing the lane wide again. */
         <span className="flex flex-col items-end gap-0.5 min-w-0 max-w-full">
           <span className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 max-w-full">
-            <StageChipStrip row={cockpitRow} onOpen={handleCockpitOpen} />
+            <StageChipStrip row={cockpitRow} onOpen={handleCockpitOpen} timeEstimateLabel={timeEstimateLabel} />
             {/* The chips paint on the SERVER (EarningsHub seeds the provider
                 with a server-built cockpit payload), but a second-granular
                 countdown cannot: the server's clock would go into the HTML and
@@ -461,7 +470,12 @@ export function EarningsRowChips({
                 its release would hydrate with a text mismatch. `nowMs` is 0
                 until the client clock starts, so this renders from the first
                 client tick onwards — milliseconds after paint. */}
-            {cockpitRow.stages.released.state === "upcoming" &&
+            {/* No countdown for an estimated time: the instant behind it is
+                the stored default, and "2h 14m" would present a guess as
+                exact. The row's day header carries the date and the released
+                chip the estimate. */}
+            {!timeEstimateLabel &&
+              cockpitRow.stages.released.state === "upcoming" &&
               cockpitRow.stages.released.releaseInstant &&
               !!live?.nowMs && (
                 <span className="text-[10px] font-mono text-ink-faint whitespace-nowrap">
