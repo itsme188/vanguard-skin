@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, type ReactNode } from "react";
 import type { TradeReview } from "@/lib/types";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
-import { Money, Pct, Shares, PrivateText } from "@/lib/privacy/components";
+import { Money, Pct, Shares, PrivateText, Count } from "@/lib/privacy/components";
 import { isNarrativeStale } from "@/lib/trade-review/stale-narrative";
 import { formatProfitFactor } from "@/lib/format";
 import { quantityUnitLabel } from "@/lib/format/quantity-unit";
@@ -192,7 +192,7 @@ export function TradeReviewView({
 
   // Generate state
   const [generating, setGenerating] = useState(false);
-  const [generateMsg, setGenerateMsg] = useState<string | null>(null);
+  const [generateMsg, setGenerateMsg] = useState<ReactNode>(null);
   // Explicit failure flag — the banner's styling must not depend on the copy
   // starting with the word "Error", which pinned the wording to the CSS.
   const [generateFailed, setGenerateFailed] = useState(false);
@@ -322,8 +322,13 @@ export function TradeReviewView({
         }
         if (data.complete) {
           completed = true;
+          // tradeCount / winRate are portfolio-derived — render through the
+          // privacy components so Hide amounts masks them.
           setGenerateMsg(
-            `Review complete — ${data.data.tradeCount} trade(s), ${(data.data.winRate * 100).toFixed(0)}% win rate`
+            <>
+              Review complete — <Count value={data.data.tradeCount} /> trade(s),{" "}
+              <Pct value={data.data.winRate * 100} digits={0} /> win rate
+            </>
           );
         }
         if (data.error) {

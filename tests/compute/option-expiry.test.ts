@@ -1,16 +1,18 @@
 import { describe, it, expect } from "vitest";
+import Database from "better-sqlite3";
 import { liveOptionExpirationSql, isOptionLive, daysToExpiry } from "@/lib/compute/option-expiry";
 
 describe("liveOptionExpirationSql", () => {
   it("produces an IS-NULL-or->=today literal-substituted fragment for the default alias", () => {
     const sql = liveOptionExpirationSql("s", "2026-08-21");
-    expect(sql).toBe("(s.expiration_date IS NULL OR s.expiration_date >= '2026-08-21')");
+    expect(sql).toMatch(/^\(s\.expiration_date IS NULL OR \(CASE WHEN s\.expiration_date GLOB .* END\) >= '2026-08-21'\)$/);
   });
 
   it("respects a custom table alias", () => {
     const sql = liveOptionExpirationSql("su", "2026-08-21");
     expect(sql).toContain("su.expiration_date IS NULL");
-    expect(sql).toContain("su.expiration_date >= '2026-08-21'");
+    expect(sql).toContain("ELSE su.expiration_date END) >= '2026-08-21'");
+    expect(sql).not.toMatch(/\bs\.expiration_date/);
   });
 
   it("never leaves a positional ? behind — it's a literal-substituted date, like latestHoldingsPredicate's asOfDate", () => {
@@ -25,7 +27,30 @@ describe("liveOptionExpirationSql", () => {
 
   it("defaults `today` to todayET() when omitted (no crash, valid literal shape)", () => {
     const sql = liveOptionExpirationSql();
-    expect(sql).toMatch(/^\(s\.expiration_date IS NULL OR s\.expiration_date >= '\d{4}-\d{2}-\d{2}'\)$/);
+    expect(sql).toMatch(/^\(s\.expiration_date IS NULL OR \(CASE .* END\) >= '\d{4}-\d{2}-\d{2}'\)$/);
+  });
+
+  // Legacy rows store the expiration as compact YYYYMMDD. A raw string compare
+  // of '20261004' >= '2026-10-06' is TRUE ('1' > '-'), which kept an expired
+  // legacy-format option live.
+  it("compares legacy YYYYMMDD and dashed expirations on the same footing", () => {
+    const db = new Database(":memory:");
+    db.exec("CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT, expiration_date TEXT)");
+    const ins = db.prepare("INSERT INTO securities (symbol, expiration_date) VALUES (?, ?)");
+    ins.run("LEGACY_EXPIRED", "20261004");
+    ins.run("LEGACY_TODAY", "20261006");
+    ins.run("LEGACY_FUTURE", "20261007");
+    ins.run("DASHED_EXPIRED", "2026-10-04");
+    ins.run("DASHED_TODAY", "2026-10-06");
+    ins.run("DASHED_FUTURE", "2026-10-07");
+    ins.run("STOCK", null);
+    const live = (
+      db
+        .prepare(`SELECT symbol FROM securities s WHERE ${liveOptionExpirationSql("s", "2026-10-06")} ORDER BY id`)
+        .all() as { symbol: string }[]
+    ).map((r) => r.symbol);
+    expect(live).toEqual(["LEGACY_TODAY", "LEGACY_FUTURE", "DASHED_TODAY", "DASHED_FUTURE", "STOCK"]);
+    db.close();
   });
 });
 
@@ -42,6 +67,14 @@ describe("isOptionLive", () => {
 
   it("an option that expired YESTERDAY is not live", () => {
     expect(isOptionLive("2026-08-20", today)).toBe(false);
+  });
+
+  it("handles the legacy YYYYMMDD spelling identically to the SQL fragment", () => {
+    expect(isOptionLive("20261004", "2026-10-06")).toBe(false);
+    expect(isOptionLive("20261006", "2026-10-06")).toBe(true);
+    expect(isOptionLive("20261007", "2026-10-06")).toBe(true);
+    expect(isOptionLive("2026-10-04", "2026-10-06")).toBe(false);
+    expect(isOptionLive("2026-10-07", "2026-10-06")).toBe(true);
   });
 
   it("a null/undefined expiration (non-option, or unknown) is treated as live — never guessed as expired", () => {

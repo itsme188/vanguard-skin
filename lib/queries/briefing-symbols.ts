@@ -38,9 +38,17 @@ export function getSecurityIdForSymbol(
   db: Database.Database,
   symbol: string
 ): number | null {
+  // Any security type that can legitimately own an earnings/calendar event:
+  // stocks AND ETFs (a manual event for an ETF used to store NULL). Options
+  // never match. Case-insensitive on both type and symbol; when several rows
+  // share a symbol, Stock/Common Stock beats ETF, then lowest id.
   const row = db
     .prepare(
-      `SELECT id FROM securities WHERE symbol = ? AND LOWER(COALESCE(security_type, '')) IN ('stock', 'common stock') LIMIT 1`
+      `SELECT id FROM securities
+        WHERE UPPER(symbol) = UPPER(?)
+          AND LOWER(COALESCE(security_type, '')) IN ('stock', 'common stock', 'etf')
+        ORDER BY CASE WHEN LOWER(security_type) = 'etf' THEN 1 ELSE 0 END, id
+        LIMIT 1`
     )
     .get(symbol) as { id: number } | undefined;
   return row?.id ?? null;

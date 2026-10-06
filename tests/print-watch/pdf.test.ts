@@ -127,6 +127,14 @@ describe("pdf.ts — byte and text checks", () => {
   it("textPathFor places the text beside the bytes", () => {
     expect(textPathFor("/data/print-watch/7/abc.pdf")).toBe("/data/print-watch/7/abc.pdftext.txt");
   });
+
+  it("textPathFor fails CLOSED on a path that is not a .pdf — it must never hand back the bytes path itself", () => {
+    // The old replace() returned its input unchanged, so a caller writing the
+    // text layer to the result would have overwritten the acquired bytes.
+    for (const p of ["/data/print-watch/7/abc.html", "/data/print-watch/7/abc", "/data/print-watch/7/abc.pdf.tmp", ""]) {
+      expect(() => textPathFor(p), p).toThrow(/not a \.pdf/);
+    }
+  });
 });
 
 describe("resolvePdftotextPath", () => {
@@ -192,5 +200,41 @@ describe("runPdftotext", () => {
       /stderr exceeded/,
     );
     expect(noisy.killed).toHaveLength(1);
+  });
+
+  it("escalates to SIGKILL when the child ignores the first kill, and never when it exits on its own", async () => {
+    // A child that ignores SIGTERM: `close` only ever follows a SIGKILL.
+    const signals: Array<string | undefined> = [];
+    const stubborn = ((): unknown => {
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: PassThrough;
+        stderr: PassThrough;
+        kill: (signal?: string) => boolean;
+      };
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = (signal?: string) => {
+        signals.push(signal);
+        if (signal === "SIGKILL") setImmediate(() => child.emit("close", null));
+        return true;
+      };
+      return child;
+    }) as unknown as typeof import("node:child_process").spawn;
+
+    await expect(
+      runPdftotext("/p", "/x/a.pdf", { spawn: stubborn, timeoutMs: 10, killGraceMs: 10 }),
+    ).rejects.toThrow(/timed out/);
+    for (let i = 0; i < 200 && signals.length < 2; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(signals).toEqual([undefined, "SIGKILL"]);
+
+    // A child that honours the first kill is never sent a second one.
+    const polite = fakeSpawn({ hang: true });
+    await expect(
+      runPdftotext("/p", "/x/a.pdf", { spawn: polite.spawn, timeoutMs: 10, killGraceMs: 10 }),
+    ).rejects.toThrow(/timed out/);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(polite.killed).toHaveLength(1);
   });
 });

@@ -1,5 +1,6 @@
 "use client";
 
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useEffect, useRef, useState } from "react";
 import { useToast } from "./Toast";
 import { formatChartPrice } from "@/lib/chart/price-formatter";
@@ -93,17 +94,17 @@ export function AddLevelPopover({
           expires_at: null,
         }),
       });
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        toast(`Failed to add level: ${json.error ?? "unknown"}`, "error");
+      const result = await readMutationResult(res);
+      if (!result.ok) {
+        toast(`Couldn't add the level: ${result.message}`, "error");
         setSubmitting(null);
         return;
       }
       toast(`${symbol} ${type} at ${formatChartPrice(currency, price)} added`, "success");
       window.dispatchEvent(new CustomEvent("level-added"));
       onAdded();
-    } catch (e) {
-      toast(`Failed to add level: ${e instanceof Error ? e.message : "error"}`, "error");
+    } catch {
+      toast(networkFailureMessage("add the level"), "error");
       setSubmitting(null);
     }
   }

@@ -25,6 +25,11 @@ export interface CloudReconcileResult {
   reconciled: number;
   skipped_tws_wins: number;
   skipped_deferred: number;
+  /**
+   * Payloads whose non-null actual DIFFERED from a non-null local actual. The
+   * local value is kept (the Mac is source of truth); each one is warned once.
+   */
+  actualConflicts?: number;
   errors?: { eventId: string; error: string }[];
   error?: string;
   note?: string;
@@ -107,6 +112,7 @@ export async function reconcileCloudEnrichment(
   let reconciled = 0;
   let skippedTwsWins = 0;
   let skippedDeferred = 0;
+  let actualConflicts = 0;
   const errors: { eventId: string; error: string }[] = [];
 
   const selectRow = db.prepare(
@@ -196,6 +202,23 @@ export async function reconcileCloudEnrichment(
         }
       }
 
+      // COALESCE(actual_value, ?) below keeps a local actual. A cloud actual
+      // that disagrees with it is a real discrepancy between two captures of
+      // the same print — keep the local one, but say so. (Earnings actuals
+      // are public market data.)
+      if (
+        payload.actual != null &&
+        existing.actual_value != null &&
+        payload.actual !== existing.actual_value
+      ) {
+        actualConflicts += 1;
+        console.warn(
+          `[cloud-reconcile] event ${eventId} (${existing.symbol ?? "no symbol"}): cloud actual ` +
+            `${JSON.stringify(payload.actual)} differs from the local actual ` +
+            `${JSON.stringify(existing.actual_value)} — cloud actual not applied, local value kept`,
+        );
+      }
+
       const rowHasOrGetsActual = payload.actual != null || existing.actual_value != null;
 
       if (existingIsTws) {
@@ -279,6 +302,7 @@ export async function reconcileCloudEnrichment(
     reconciled,
     skipped_tws_wins: skippedTwsWins,
     skipped_deferred: skippedDeferred,
+    actualConflicts,
     errors,
   };
 }

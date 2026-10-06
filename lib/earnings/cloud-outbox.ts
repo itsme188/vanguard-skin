@@ -112,6 +112,43 @@ export async function attemptPostCommitDrain(
   return out;
 }
 
+/** Sent rows are kept this long for diagnosis, then pruned. */
+export const CLOUD_OUTBOX_SENT_RETENTION_DAYS = 30;
+
+/**
+ * Delete delivered outbox rows older than the retention window. Without this
+ * the table grows one row per projection change forever.
+ *
+ * Three rules, all in the one statement:
+ *   - an UNSENT row is never touched — it is the retry queue;
+ *   - the NEWEST row of each kind always survives, however old:
+ *     `readArmedGeneration` takes MAX(generation) from it (deleting it would
+ *     restart the counter below what the Worker holds) and
+ *     `readPreviousArmedEntries` reads its payload for the tombstone
+ *     carry-forward (deleting it would re-publish every tombstone);
+ *   - `sent_at` is compared through `datetime()` on BOTH sides, so a
+ *     T-separated stamp ages exactly like a space-separated one.
+ *
+ * Idempotent, and transactional (a savepoint when the caller is already inside
+ * a transaction). Returns the number of rows deleted. `now` is a test seam.
+ */
+export function pruneSentCloudOutbox(db: Database.Database, opts: { now?: string } = {}): number {
+  const now = opts.now ?? new Date().toISOString();
+  const prune = db.transaction(
+    (): number =>
+      db
+        .prepare(
+          `DELETE FROM cloud_outbox
+            WHERE sent_at IS NOT NULL
+              AND datetime(sent_at) < datetime(?, '-${CLOUD_OUTBOX_SENT_RETENTION_DAYS} days')
+              AND generation < (SELECT MAX(newest.generation) FROM cloud_outbox newest
+                                 WHERE newest.kind = cloud_outbox.kind)`,
+        )
+        .run(now).changes,
+  );
+  return prune();
+}
+
 /** [C-8] One drain at a time per process: overlapping callers (a sweep tick and
  *  a route's post-commit attempt) chain onto the running drain instead of
  *  racing generations onto the wire. */
@@ -172,6 +209,14 @@ async function drainCloudOutboxUnlocked(
   if (!workerUrl || !secret) return { sent: 0, failed: 0, skipped: "no-worker-config" };
   const fetchFn = deps.fetchFn ?? fetch;
   const host = targetHost(workerUrl);
+  // Housekeeping rides on the drain (every sweep tick and every post-commit
+  // push) instead of a timer of its own. Best-effort: a prune that fails must
+  // never cost a delivery, and the next drain simply tries again.
+  try {
+    pruneSentCloudOutbox(db);
+  } catch (err) {
+    console.warn("[cloud-outbox] prune of sent rows failed:", err);
+  }
   const rows = db
     .prepare(
       `SELECT id, generation, payload_json FROM cloud_outbox

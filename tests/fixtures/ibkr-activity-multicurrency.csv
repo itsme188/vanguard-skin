@@ -1,0 +1,29 @@
+Statement,Header,Field Name,Field Value
+Statement,Data,BrokerName,Interactive Brokers LLC
+Statement,Data,Title,Activity Statement
+Statement,Data,Period,"March 1, 2025 - March 31, 2025"
+Dividends,Header,Currency,Account,Date,Description,Amount
+Dividends,Data,EUR,U99999999,2025-03-10,ZZA(XX0000000001) Cash Dividend EUR 0.10 per Share (Ordinary Dividend),10
+Dividends,Data,EUR,U99999999,2025-03-12,ZZB(XX0000000002) Cash Dividend EUR 0.20 per Share (Ordinary Dividend),20
+Dividends,Data,EUR,U99999999,2025-03-14,ZZD(XX0000000004) Cash Dividend EUR 0.40 per Share (Ordinary Dividend),40
+Dividends,Data,Total,,,,70
+Dividends,Data,Total in USD,,,,76.01
+Dividends,Data,USD,U99999999,2025-03-20,ZZC(XX0000000003) Cash Dividend USD 0.25 per Share (Ordinary Dividend),25
+Dividends,Data,Total,,,,25
+Dividends,Data,Total Dividends in USD,,,,101.01
+Fees,Header,Subtitle,Currency,Account,Date,Description,Amount
+Fees,Data,Other Fees,JPY,U99999999,2025-03-03,Market Data Subscription JPY for Mar 2025,-1500
+Fees,Data,Total,,,,,-1500
+Fees,Data,Total in USD,,,,,-10
+Fees,Data,Other Fees,USD,U99999999,2025-03-03,Market Data Subscription for Mar 2025,-30
+Fees,Data,Total,,,,,-30
+Fees,Data,Total Fees in USD,,,,,-40
+Deposits & Withdrawals,Header,Currency,Account,Settle Date,Description,Amount
+Deposits & Withdrawals,Data,CAD,U99999999,2025-03-05,Electronic Fund Transfer CAD,1000
+Deposits & Withdrawals,Data,CAD,U99999999,2025-03-25,Electronic Fund Transfer CAD 2,500
+Deposits & Withdrawals,Data,Total,,,,1500
+Deposits & Withdrawals,Data,Total in USD,,,,1100
+Deposits & Withdrawals,Data,USD,U99999999,2025-03-15,Electronic Fund Transfer,5000
+Deposits & Withdrawals,Data,USD,U99999999,2025-03-20,Disbursement Initiated by User,-1000
+Deposits & Withdrawals,Data,Total,,,,4000
+Deposits & Withdrawals,Data,Total Deposits & Withdrawals in USD,,,,5100

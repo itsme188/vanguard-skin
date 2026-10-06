@@ -593,7 +593,10 @@ describe("restart-after-insert drill (Task 13)", () => {
 
     // A watcher tick — the polling loop already running because the print
     // is in-window — must drain it with no further ingestDocument call.
-    await waitUntil(() => listParseQueue(db, printId).length === 0);
+    // Wait on the DURABLE outcome: `listParseQueue` lists only `queued` rows,
+    // so its length hits 0 the moment the document is CLAIMED — before the
+    // parse has landed.
+    await waitUntil(() => listDocuments(db, printId).find((d) => d.id === docId)?.parsed_at != null);
 
     expect(listDocuments(db, printId).find((d) => d.id === docId)!.parsed_at).not.toBeNull();
 

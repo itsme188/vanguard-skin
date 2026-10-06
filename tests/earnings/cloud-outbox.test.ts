@@ -5,6 +5,7 @@ import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 import {
   attemptPostCommitDrain,
   drainCloudOutbox,
+  pruneSentCloudOutbox,
   writeArmedEventsOutboxRow,
 } from "@/lib/earnings/cloud-outbox";
 import { readArmedGeneration } from "@/lib/earnings/armed-events-projection";
@@ -321,5 +322,109 @@ describe("attemptPostCommitDrain", () => {
       deps: { fetchFn: (async () => new Response("{}")) as unknown as typeof fetch, workerUrl: "https://w", secret: "s" },
     });
     expect(out).toEqual({ timedOut: false, result: null });
+  });
+});
+
+describe("pruneSentCloudOutbox", () => {
+  const NOW = "2026-09-02T12:00:00.000Z";
+  const insert = (
+    kind: string,
+    generation: number,
+    sentAt: string | null,
+    writtenAt = "2026-01-01 00:00:00",
+  ) =>
+    db
+      .prepare(
+        `INSERT INTO cloud_outbox (kind, generation, payload_json, written_at, sent_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(kind, generation, JSON.stringify({ generation, entries: [] }), writtenAt, sentAt);
+  const generations = (kind = "armed-events") =>
+    (
+      db
+        .prepare(`SELECT generation FROM cloud_outbox WHERE kind = ? ORDER BY generation`)
+        .all(kind) as Array<{ generation: number }>
+    ).map((r) => r.generation);
+
+  it("deletes sent rows older than 30 days and keeps recent ones", () => {
+    insert("armed-events", 1, "2026-07-01 00:00:00"); // old → pruned
+    insert("armed-events", 2, "2026-08-02 11:59:59"); // 31 days → pruned
+    insert("armed-events", 3, "2026-08-10 00:00:00"); // 23 days → kept
+    insert("armed-events", 4, "2026-09-01 00:00:00"); // newest → kept
+    expect(pruneSentCloudOutbox(db, { now: NOW })).toBe(2);
+    expect(generations()).toEqual([3, 4]);
+  });
+
+  it("always keeps the newest row of the kind, however old it is", () => {
+    insert("armed-events", 1, "2026-01-01 00:00:00");
+    insert("armed-events", 2, "2026-01-02 00:00:00");
+    expect(pruneSentCloudOutbox(db, { now: NOW })).toBe(1);
+    // readArmedGeneration / readPreviousArmedEntries still see generation 2.
+    expect(generations()).toEqual([2]);
+    expect(readArmedGeneration(db)).toBe(2);
+  });
+
+  it("keeps the newest row PER KIND, not globally", () => {
+    insert("armed-events", 1, "2026-01-01 00:00:00");
+    insert("armed-events", 2, "2026-01-02 00:00:00");
+    insert("other-kind", 7, "2026-01-01 00:00:00");
+    insert("other-kind", 8, "2026-01-02 00:00:00");
+    pruneSentCloudOutbox(db, { now: NOW });
+    expect(generations("armed-events")).toEqual([2]);
+    expect(generations("other-kind")).toEqual([8]);
+  });
+
+  it("never deletes an unsent row — it is the retry queue", () => {
+    insert("armed-events", 1, null); // written in January, never sent
+    insert("armed-events", 2, "2026-01-02 00:00:00");
+    insert("armed-events", 3, "2026-09-01 00:00:00");
+    expect(pruneSentCloudOutbox(db, { now: NOW })).toBe(1);
+    expect(generations()).toEqual([1, 3]);
+  });
+
+  it("compares through datetime() — a T-separated stamp is aged like a spaced one", () => {
+    // String-compared, "2026-08-25T…" sorts AFTER the spaced cutoff of any
+    // same-day instant and "2026-07-01T…" could never be trusted either way.
+    insert("armed-events", 1, "2026-07-01T00:00:00.000Z"); // old → pruned
+    insert("armed-events", 2, "2026-08-03T11:59:59.000Z"); // one second inside → kept
+    insert("armed-events", 3, "2026-09-01T00:00:00.000Z");
+    expect(pruneSentCloudOutbox(db, { now: "2026-09-02 11:59:58" })).toBe(1);
+    expect(generations()).toEqual([2, 3]);
+  });
+
+  it("is idempotent", () => {
+    insert("armed-events", 1, "2026-01-01 00:00:00");
+    insert("armed-events", 2, "2026-09-01 00:00:00");
+    expect(pruneSentCloudOutbox(db, { now: NOW })).toBe(1);
+    expect(pruneSentCloudOutbox(db, { now: NOW })).toBe(0);
+    expect(generations()).toEqual([2]);
+  });
+
+  it("runs from the drain — no timer of its own", async () => {
+    insert("armed-events", 1, "2026-01-01 00:00:00");
+    insert("armed-events", 2, "2026-01-02 00:00:00");
+    insert("armed-events", 3, null);
+    const fetchFn = vi.fn(async () => new Response("{}", { status: 200 }));
+    const out = await drainCloudOutbox(db, {
+      fetchFn: fetchFn as unknown as typeof fetch,
+      workerUrl: "https://w",
+      secret: "s",
+    });
+    expect(out).toEqual({ sent: 1, failed: 0, skipped: null });
+    // 1 and 2 are both ancient and neither is the newest row any more.
+    expect(generations()).toEqual([3]);
+  });
+
+  it("a failed drain still leaves the unsent row and the newest row in place", async () => {
+    insert("armed-events", 1, "2026-01-01 00:00:00");
+    insert("armed-events", 2, null);
+    const fetchFn = vi.fn(async () => new Response("no", { status: 500 }));
+    const out = await drainCloudOutbox(db, {
+      fetchFn: fetchFn as unknown as typeof fetch,
+      workerUrl: "https://w",
+      secret: "s",
+    });
+    expect(out).toEqual({ sent: 0, failed: 1, skipped: null });
+    expect(generations()).toEqual([2]);
   });
 });

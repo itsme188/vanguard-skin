@@ -32,7 +32,7 @@ import {
   type BootstrapResponse,
 } from "./bootstrap-auth";
 import { hashPassword, verifyPassword } from "./password-hash";
-import { promptForNewPassword } from "./password-prompt";
+import { promptForNewPassword, MIN_PASSWORD_LENGTH } from "./password-prompt";
 import { runPasswordChange, type PasswordChangeResult } from "./password-change";
 import { runCredentialRotation, type RotateCredentialResult } from "./credential-rotation";
 
@@ -609,8 +609,8 @@ async function changePasswordTransaction(
   currentPassword: string,
   newPassword: string,
 ): Promise<PasswordChangeResult> {
-  if (typeof newPassword !== "string" || newPassword.length < 8) {
-    return { success: false, error: "New password must be at least 8 characters." };
+  if (typeof newPassword !== "string" || newPassword.length < MIN_PASSWORD_LENGTH) {
+    return { success: false, error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters.` };
   }
   try {
     return await runPasswordChange({

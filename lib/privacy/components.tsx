@@ -9,6 +9,7 @@ import {
   formatUSDPrecise,
   rendersAsZero,
 } from "@/lib/format";
+import { quantityUnitLabel } from "@/lib/format/quantity-unit";
 import { usePrivacy } from "./context";
 
 const MASK = "•••";
@@ -131,6 +132,26 @@ export function Count({ value, fallback = "—", className }: CountProps) {
     return <span className={className}>{MASK}</span>;
   }
   return <span className={className}>{formatNumber(value)}</span>;
+}
+
+interface QuantityUnitProps {
+  securityType: string | null | undefined;
+  quantity: number;
+  className?: string;
+}
+
+/**
+ * The unit noun beside a masked quantity ("shares" / "contracts" / "face
+ * value"). Under Hide amounts it never singularises, so the noun cannot reveal
+ * that the quantity is exactly one.
+ */
+export function QuantityUnit({ securityType, quantity, className }: QuantityUnitProps) {
+  const { isPrivate } = usePrivacy();
+  return (
+    <span className={className}>
+      {quantityUnitLabel(securityType, quantity, isPrivate)}
+    </span>
+  );
 }
 
 interface PrivateTextProps {

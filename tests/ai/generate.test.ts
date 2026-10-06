@@ -19,6 +19,11 @@ import {
 import { setModelCatalogSource } from "@/lib/ai/catalog-source";
 import { setFeatureModelOverrideSource } from "@/lib/ai/override-source";
 
+// Hermetic: provider.ts demands a key; never read the real one from the environment.
+beforeEach(() => {
+  vi.stubEnv("ANTHROPIC_API_KEY", "test-key-not-real");
+});
+
 class FakeNotFound extends Error { statusCode = 404; constructor() { super("model not_found"); } }
 
 describe("generateTextForFeature", () => {
@@ -69,6 +74,13 @@ class FakeForcedToolUnsupported extends Error {
   statusCode = 400;
   constructor() {
     super(TOOL_CHOICE_400);
+  }
+}
+
+class FakeOutputFormatRejected extends Error {
+  statusCode = 400;
+  constructor() {
+    super("output_config.format: json_schema is not supported for this model");
   }
 }
 
@@ -142,9 +154,59 @@ describe("generateObjectForFeature", () => {
       .mockRejectedValueOnce(new FakeForcedToolUnsupported())
       .mockRejectedValueOnce(new FakeForcedToolUnsupported());
     await expect(
-      generateObjectForFeature("tradeReviewMain", { prompt: "hi", schema: {} as never }),
+      generateObjectForFeature("tradeReviewMain", {
+        prompt: "hi",
+        schema: {} as never,
+        providerOptions: { anthropic: { structuredOutputMode: "jsonTool" } },
+      } as never),
     ).rejects.toBeInstanceOf(FakeForcedToolUnsupported);
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT re-send a byte-identical outputFormat request after a forced-tool 400", async () => {
+    generateObjectMock.mockRejectedValueOnce(new FakeForcedToolUnsupported());
+    await expect(
+      generateObjectForFeature("tradeReviewMain", { prompt: "hi", schema: {} as never }),
+    ).rejects.toBeInstanceOf(FakeForcedToolUnsupported);
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("on an outputFormat rejection, retries ONCE with the jsonTool path and keeps maxOutputTokens", async () => {
+    generateObjectMock
+      .mockRejectedValueOnce(new FakeOutputFormatRejected())
+      .mockResolvedValueOnce({ object: { ok: true } });
+    const res = (await generateObjectForFeature("tradeReviewMain", {
+      prompt: "hi",
+      schema: {} as never,
+      maxOutputTokens: 1234,
+    })) as unknown as { object: { ok: boolean } };
+    expect(res.object.ok).toBe(true);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect(anthropicOptionsOf(0)?.structuredOutputMode).toBe("outputFormat");
+    expect(anthropicOptionsOf(1)?.structuredOutputMode).toBe("jsonTool");
+    expect((generateObjectMock.mock.calls[1][0] as { maxOutputTokens: number }).maxOutputTokens).toBe(1234);
+  });
+
+  it("does not retry the jsonTool path a second time", async () => {
+    generateObjectMock
+      .mockRejectedValueOnce(new FakeOutputFormatRejected())
+      .mockRejectedValueOnce(new FakeOutputFormatRejected());
+    await expect(
+      generateObjectForFeature("tradeReviewMain", { prompt: "hi", schema: {} as never }),
+    ).rejects.toBeInstanceOf(FakeOutputFormatRejected);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not re-send an identical jsonTool request after an outputFormat rejection", async () => {
+    generateObjectMock.mockRejectedValueOnce(new FakeOutputFormatRejected());
+    await expect(
+      generateObjectForFeature("tradeReviewMain", {
+        prompt: "hi",
+        schema: {} as never,
+        providerOptions: { anthropic: { structuredOutputMode: "jsonTool" } },
+      } as never),
+    ).rejects.toBeInstanceOf(FakeOutputFormatRejected);
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
   });
 
   it("still fails over on not_found, dropping the dead model for the next rung", async () => {
@@ -171,6 +233,10 @@ describe("generateObjectForFeature", () => {
 });
 
 describe("isForcedToolUnsupported", () => {
+  it("is not confused with an outputFormat rejection", () => {
+    expect(isForcedToolUnsupported(new FakeOutputFormatRejected())).toBe(false);
+  });
+
   it("matches Anthropic's exact forced-tool 400 prose", () => {
     expect(isForcedToolUnsupported(new Error(TOOL_CHOICE_400))).toBe(true);
   });

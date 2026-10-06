@@ -63,4 +63,40 @@ describe("reconcileCloudEnrichment never overwrites a local actual", () => {
     await reconcileCloudEnrichment(db, "secret");
     expect(get(id).actual_value).toBe("EPS 1.50");
   });
+
+  describe("a differing cloud actual is surfaced, not dropped silently", () => {
+    it("warns once with the event id, symbol and both public values, and counts the conflict", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const id = insert("ZZA", "EPS 2.00", null);
+      mockWorker({ [String(id)]: { eventId: id, actual: "EPS 9.99", consensus: null, source: "cloud" } });
+      const r = await reconcileCloudEnrichment(db, "secret");
+      expect(r.actualConflicts).toBe(1);
+      expect(get(id).actual_value).toBe("EPS 2.00");
+      const conflictWarns = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => /cloud actual/i.test(m));
+      expect(conflictWarns).toHaveLength(1);
+      expect(conflictWarns[0]).toContain(`event ${id}`);
+      expect(conflictWarns[0]).toContain("ZZA");
+      expect(conflictWarns[0]).toContain("EPS 9.99");
+      expect(conflictWarns[0]).toContain("EPS 2.00");
+      expect(conflictWarns[0]).toMatch(/not applied/);
+    });
+
+    it("an identical cloud actual, a NULL local actual and a NULL cloud actual are not conflicts", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const same = insert("ZZB", "EPS 1.50", null);
+      const fill = insert("ZZC", null, null);
+      const none = insert("ZZD", "EPS 3.00", null);
+      mockWorker({
+        [String(same)]: { eventId: same, actual: "EPS 1.50", consensus: null, source: "cloud" },
+        [String(fill)]: { eventId: fill, actual: "EPS 1.10", consensus: null, source: "cloud" },
+        [String(none)]: { eventId: none, actual: null, consensus: "EPS 2.90", source: "cloud" },
+      });
+      const r = await reconcileCloudEnrichment(db, "secret");
+      expect(r.actualConflicts).toBe(0);
+      expect(warn.mock.calls.filter((c) => /cloud actual/i.test(String(c[0])))).toHaveLength(0);
+      expect(get(fill).actual_value).toBe("EPS 1.10");
+    });
+  });
 });

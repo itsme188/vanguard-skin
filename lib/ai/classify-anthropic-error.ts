@@ -55,8 +55,13 @@ const BILLING_PATTERNS: RegExp[] = [
 //   tool_choice: type "tool" and "any" are not supported for this model.
 // Checked BEFORE the content patterns, which would otherwise never match this
 // text and drop it into the generic "unknown" bucket with an upstream code.
+//
+// Single source for the forced-tool 400 regex — lib/ai/generate.ts imports it.
+export const FORCED_TOOL_UNSUPPORTED_RE =
+  /tool_choice[\s\S]{0,200}?not supported for this model/i;
+
 const MODEL_CAPABILITY_PATTERNS: RegExp[] = [
-  /tool_choice[\s\S]{0,200}?not supported for this model/i,
+  FORCED_TOOL_UNSUPPORTED_RE,
   /\bnot supported for this model\b/i,
 ];
 

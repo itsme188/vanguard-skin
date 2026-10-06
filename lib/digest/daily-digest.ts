@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { getRecentArticles, countRecentArticles } from "@/lib/queries/research";
 import { bucketByCompany } from "@/lib/digest/group-by-company";
 import { splitDigestOpening } from "./synthesis-editorial";
@@ -217,8 +218,8 @@ export function generateDigestSince(db: Database.Database, sinceDate: string): s
  * this remains for tests and the by-source preview pane.
  */
 export function generateDailyDigest(db: Database.Database): string | null {
-  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  return generateDigestSince(db, yesterday.toISOString().slice(0, 10));
+  // ET yesterday — a UTC slice skips a whole day between 20:00 ET and midnight.
+  return generateDigestSince(db, addDays(todayET(), -1));
 }
 
 function countSources(articles: { source_name: string }[]): number {
@@ -289,7 +290,7 @@ function recordSynthesisFallback(
     const ring: Array<{ date: string; reason: string; articleCount: number }> =
       existing ? JSON.parse(existing.value) : [];
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayET();
     ring.push({ date: today, reason, articleCount });
 
     // Keep last 30 entries

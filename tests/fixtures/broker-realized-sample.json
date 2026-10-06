@@ -11,6 +11,7 @@
           "disposalDate": "2026-03-10",
           "quantity": 100,
           "currency": "USD",
+          "term": "long",
           "proceeds": 10100.00,
           "basis": 8000.00,
           "gain": 2100.00
@@ -20,6 +21,7 @@
           "disposalDate": "2026-06-01",
           "quantity": 50,
           "currency": "USD",
+          "term": "long",
           "proceeds": 5200.00,
           "basis": 4000.00,
           "gain": 1200.00

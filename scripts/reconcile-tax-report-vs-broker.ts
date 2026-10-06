@@ -41,7 +41,24 @@
  *   PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx \
  *     scripts/reconcile-tax-report-vs-broker.ts \
  *     --config data/repair-configs/broker-realized-2026.json \
- *     [--stamp] [--detail-out <gitignored-path>]
+ *     [--rollup] [--stamp] [--detail-out <gitignored-path>]
+ *
+ * MATCH MODES (the summary's second line always names the one that ran):
+ *   - strict (default): one broker row ↔ one engine disposal (a sale
+ *     transaction's FIFO lot rows pre-summed), keyed on quantity too.
+ *   - --rollup: the broker prints one row per closing ORDER while the engine
+ *     records one row per LOT closed, so a day with several orders and
+ *     several lots can never pair one-to-one even when the day agrees. Roll-up
+ *     sums BOTH sides per (account, issuer-canonical symbol, disposal date,
+ *     currency) — and per term (short/long) when EVERY broker row carries
+ *     `term` — then compares group to group: quantity exactly (4dp),
+ *     proceeds / basis / gain each within ACCEPT_TOL_USD per GROUP (the
+ *     tolerance is not scaled by row count). Fail-closed exactly like strict:
+ *     a group present on one side only, or out of tolerance, fails the entry
+ *     and is listed in the detail output. Roll-up changes how rows are
+ *     paired, never what passes: --stamp still requires every group matched.
+ *     Without `term` in the file, holding period is NOT checked — the
+ *     summary says so.
  *
  * DB: opens `REPAIR_DB_PATH` if set, else `data/vanguard.db`. Read-only
  * UNLESS --stamp is passed (write access is needed to call
@@ -98,6 +115,16 @@ export interface BrokerRealizedRow {
   proceeds: number;
   basis: number;
   gain: number;
+  /** Holding period as the broker printed it. Optional; read ONLY by
+   * roll-up mode, and only when every row of the entry carries it. */
+  term?: "short" | "long";
+}
+
+export type MatchMode = "strict" | "rollup";
+
+export interface ReconcileOptions {
+  /** Default "strict". */
+  mode?: MatchMode;
 }
 
 export interface BrokerRealizedEntry {
@@ -177,6 +204,8 @@ interface RawSaleRow {
   costBasisAllocated: number;
   realizedGainLoss: number;
   currency: string;
+  /** tax_lot_sales.is_long_term (NOT NULL 0/1). */
+  isLongTerm: number;
 }
 
 interface EngineGroup {
@@ -217,6 +246,7 @@ function fetchFilingSaleRows(
               tls.proceeds AS proceeds,
               tls.cost_basis_allocated AS costBasisAllocated,
               tls.realized_gain_loss AS realizedGainLoss,
+              tls.is_long_term AS isLongTerm,
               COALESCE(s.currency, 'USD') AS currency
          FROM tax_lot_sales tls
          JOIN tax_lots tl ON tl.id = tls.tax_lot_id
@@ -267,6 +297,212 @@ function groupEngineSales(rows: RawSaleRow[]): EngineGroup[] {
   return order.map((k) => groups.get(k)!);
 }
 
+// ─── Roll-up match mode ────────────────────────────────────────────────
+
+/** One realized row from either side, reduced to what the roll-up sums. */
+export interface RollUpItem {
+  accountId: number;
+  symbol: string;
+  date: string;
+  currency: string;
+  /** null = term is not part of this run's key. */
+  term: "short" | "long" | null;
+  quantity: number;
+  proceeds: number;
+  basis: number;
+  gain: number;
+}
+
+export interface RollUpGroup extends RollUpItem {
+  key: string;
+  /** Source rows summed into this group. */
+  rowCount: number;
+}
+
+function rollUpKey(i: RollUpItem): string {
+  return `${i.accountId}|${canonicalSymbol(i.symbol)}|${i.date}|${i.currency.toUpperCase()}|${i.term ?? "-"}`;
+}
+
+/**
+ * Sums items per (account, issuer-canonical symbol, date, currency, term).
+ * Pure and order-preserving (first-seen group order). Every item lands in
+ * exactly one group — the conservation property the tests pin and
+ * `conserves` re-checks at run time.
+ */
+export function rollUpItems(items: RollUpItem[]): RollUpGroup[] {
+  const groups = new Map<string, RollUpGroup>();
+  for (const i of items) {
+    const key = rollUpKey(i);
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        ...i,
+        symbol: canonicalSymbol(i.symbol),
+        currency: i.currency.toUpperCase(),
+        key,
+        rowCount: 0,
+        quantity: 0,
+        proceeds: 0,
+        basis: 0,
+        gain: 0,
+      };
+      groups.set(key, g);
+    }
+    g.rowCount += 1;
+    g.quantity += i.quantity;
+    g.proceeds += i.proceeds;
+    g.basis += i.basis;
+    g.gain += i.gain;
+  }
+  return [...groups.values()];
+}
+
+function normalizeTerm(term: unknown): "short" | "long" | null {
+  if (typeof term !== "string") return null;
+  const t = term.trim().toLowerCase();
+  return t === "short" || t === "long" ? t : null;
+}
+
+export function brokerRollUpItems(
+  accountId: number,
+  rows: BrokerRealizedRow[],
+  useTerm: boolean,
+): RollUpItem[] {
+  return rows.map((r) => ({
+    accountId,
+    symbol: r.symbol,
+    date: r.disposalDate,
+    currency: r.currency,
+    term: useTerm ? normalizeTerm(r.term) : null,
+    quantity: r.quantity,
+    proceeds: r.proceeds,
+    basis: r.basis,
+    gain: r.gain,
+  }));
+}
+
+/** Filing-eligible engine rows (same predicate as strict mode), one item per
+ * tax_lot_sales row — i.e. per LOT closed. */
+export function engineRollUpItems(
+  db: Database.Database,
+  accountId: number,
+  taxYear: number,
+  useTerm: boolean,
+): RollUpItem[] {
+  return fetchFilingSaleRows(db, accountId, taxYear).map((r) => ({
+    accountId: r.accountId,
+    symbol: r.symbol,
+    date: r.saleDate,
+    currency: r.currency,
+    term: useTerm ? (r.isLongTerm === 1 ? "long" : "short") : null,
+    quantity: r.quantitySold,
+    proceeds: r.proceeds,
+    basis: r.costBasisAllocated,
+    gain: r.realizedGainLoss,
+  }));
+}
+
+/** Run-time conservation guard: Σ rows = Σ groups (float-noise bound only —
+ * this is an arithmetic identity, not a tolerance). */
+function conserves(items: RollUpItem[], groups: RollUpGroup[]): boolean {
+  const fields = ["quantity", "proceeds", "basis", "gain"] as const;
+  if (groups.reduce((a, g) => a + g.rowCount, 0) !== items.length) return false;
+  return fields.every((f) => {
+    const rowSum = items.reduce((a, i) => a + i[f], 0);
+    const groupSum = groups.reduce((a, g) => a + g[f], 0);
+    return Math.abs(rowSum - groupSum) <= 1e-6 * Math.max(1, Math.abs(rowSum));
+  });
+}
+
+function describeGroup(g: RollUpGroup): string {
+  return (
+    `symbol=${g.symbol} date=${g.date} currency=${g.currency}` +
+    `${g.term ? ` term=${g.term}` : ""} rows=${g.rowCount} qty=${g.quantity} ` +
+    `proceeds=${g.proceeds.toFixed(2)} basis=${g.basis.toFixed(2)} gain=${g.gain.toFixed(2)}`
+  );
+}
+
+/**
+ * Roll-up comparison for one entry (the tie-out has already passed). Returns
+ * direction-only reasons plus counts; real figures go to `detail` only.
+ */
+function reconcileEntryRollUp(
+  db: Database.Database,
+  entry: BrokerRealizedEntry,
+  header: string,
+  detail: string[],
+): { reasons: string[]; note: string } {
+  const reasons = new Set<string>();
+
+  // Term joins the key only when the WHOLE file carries it. A file that
+  // carries it on some rows (or with an unknown value) cannot be grouped
+  // honestly either way — refuse rather than guess.
+  const withTerm = entry.rows.filter((r) => r.term !== undefined && r.term !== null).length;
+  const validTerm = entry.rows.filter((r) => normalizeTerm(r.term) !== null).length;
+  if (withTerm > 0 && validTerm !== entry.rows.length) {
+    reasons.add("partial or invalid term");
+    detail.push(
+      `${header}: TERM unusable — ${validTerm} of ${entry.rows.length} broker row(s) carry a ` +
+        "short/long term; roll-up needs all or none",
+    );
+    return { reasons: [...reasons], note: "" };
+  }
+  const useTerm = withTerm > 0;
+
+  const brokerItems = brokerRollUpItems(entry.accountId, entry.rows, useTerm);
+  const engineItems = engineRollUpItems(db, entry.accountId, entry.taxYear, useTerm);
+  const brokerGroups = rollUpItems(brokerItems);
+  const engineGroups = rollUpItems(engineItems);
+
+  if (!conserves(brokerItems, brokerGroups) || !conserves(engineItems, engineGroups)) {
+    reasons.add("roll-up conservation failure");
+    detail.push(`${header}: CONSERVATION failure — grouped totals do not equal row totals`);
+    return { reasons: [...reasons], note: "" };
+  }
+
+  const engineByKey = new Map(engineGroups.map((g) => [g.key, g]));
+  const brokerKeys = new Set(brokerGroups.map((g) => g.key));
+  let matched = 0;
+  let residual = 0;
+
+  for (const bg of brokerGroups) {
+    const eg = engineByKey.get(bg.key);
+    if (!eg) {
+      reasons.add("unmatched broker group");
+      residual++;
+      detail.push(`${header}: UNMATCHED broker group ${describeGroup(bg)} — no engine group found`);
+      continue;
+    }
+    const okQty = round4Key(bg.quantity) === round4Key(eg.quantity);
+    const okProceeds = withinTol(eg.proceeds, bg.proceeds, ACCEPT_TOL_USD);
+    const okBasis = withinTol(eg.basis, bg.basis, ACCEPT_TOL_USD);
+    const okGain = withinTol(eg.gain, bg.gain, ACCEPT_TOL_USD);
+    if (!okQty) reasons.add("quantity mismatch");
+    if (!okProceeds || !okBasis || !okGain) reasons.add("field mismatch");
+    const ok = okQty && okProceeds && okBasis && okGain;
+    if (ok) matched++;
+    else residual++;
+    detail.push(
+      `${header}: GROUP ${ok ? "OK" : "MISMATCH"} broker(${describeGroup(bg)}) vs engine(${describeGroup(eg)})`,
+    );
+  }
+
+  // Filing-only predicate already applied, so RECONCILE_CLOSE and
+  // premium-rollover rows can never appear here.
+  for (const eg of engineGroups) {
+    if (brokerKeys.has(eg.key)) continue;
+    reasons.add("extra engine group");
+    residual++;
+    detail.push(`${header}: EXTRA engine group ${describeGroup(eg)} — no broker group found`);
+  }
+
+  const keyLabel = useTerm ? "symbol, date, term" : "symbol, date — holding period NOT checked";
+  return {
+    reasons: [...reasons],
+    note: `${matched} matched, ${residual} residual group(s); key: ${keyLabel}`,
+  };
+}
+
 // ─── Per-entry reconciliation ──────────────────────────────────────────
 
 interface EntryOutcome {
@@ -277,9 +513,15 @@ interface EntryOutcome {
   /** Real figures — never surfaced outside detailLines/--detail-out. */
   detail: string[];
   coverage?: AcceptanceCoverage;
+  /** Direction-only counts line (roll-up mode) — safe for stdout. */
+  note?: string;
 }
 
-function reconcileEntry(db: Database.Database, entry: BrokerRealizedEntry): EntryOutcome {
+function reconcileEntry(
+  db: Database.Database,
+  entry: BrokerRealizedEntry,
+  mode: MatchMode = "strict",
+): EntryOutcome {
   const detail: string[] = [];
   const reasons = new Set<string>();
   const header = `[${entry.source}] account=${entry.accountId} year=${entry.taxYear}`;
@@ -313,6 +555,21 @@ function reconcileEntry(db: Database.Database, entry: BrokerRealizedEntry): Entr
   if (!tieOk) {
     reasons.add("transcription tie-out mismatch");
     return { source: entry.source, pass: false, reasons: [...reasons], detail };
+  }
+
+  if (mode === "rollup") {
+    const rolled = reconcileEntryRollUp(db, entry, header, detail);
+    // Same gate as strict: ANY reason fails the entry; coverage only when
+    // every group on both sides matched.
+    const rolledPass = rolled.reasons.length === 0;
+    return {
+      source: entry.source,
+      pass: rolledPass,
+      reasons: rolled.reasons,
+      detail,
+      note: rolled.note,
+      coverage: rolledPass ? { accountId: entry.accountId, taxYear: entry.taxYear } : undefined,
+    };
   }
 
   // Step 2: engine side, grouped.
@@ -400,7 +657,13 @@ function reconcileEntry(db: Database.Database, entry: BrokerRealizedEntry): Entr
 export function runReconciliation(
   db: Database.Database,
   config: BrokerRealizedConfig,
+  opts: ReconcileOptions = {},
 ): ReconcileResult {
+  const mode: MatchMode = opts.mode ?? "strict";
+  const modeLine =
+    mode === "rollup"
+      ? "Match mode: roll-up (both sides summed per symbol and disposal date before comparing)"
+      : "Match mode: strict (one broker row to one engine disposal)";
   // Zero configured entries is zero configured coverage — fail closed, same
   // as an entry with zero rows. An empty config must never vacuously pass
   // and must never let --stamp write an empty-coverage acceptance stamp.
@@ -410,6 +673,7 @@ export function runReconciliation(
       coverage: [],
       summary: [
         "Broker-reconciliation acceptance: 0 entries — 0 pass, 0 fail",
+        modeLine,
         "  FAIL (no entries — nothing reconciled)",
         "GATE: FAIL",
       ].join("\n"),
@@ -417,7 +681,7 @@ export function runReconciliation(
     };
   }
 
-  const outcomes = config.entries.map((entry) => reconcileEntry(db, entry));
+  const outcomes = config.entries.map((entry) => reconcileEntry(db, entry, mode));
 
   const coverageMap = new Map<string, AcceptanceCoverage>();
   for (const o of outcomes) {
@@ -430,9 +694,11 @@ export function runReconciliation(
 
   const summaryLines: string[] = [
     `Broker-reconciliation acceptance: ${outcomes.length} entr${outcomes.length === 1 ? "y" : "ies"} — ${passCount} pass, ${failCount} fail`,
+    modeLine,
   ];
   for (const o of outcomes) {
-    summaryLines.push(`  [${o.source}] ${o.pass ? "PASS" : `FAIL (${o.reasons.join(", ")})`}`);
+    const note = o.note ? ` — ${o.note}` : "";
+    summaryLines.push(`  [${o.source}] ${o.pass ? "PASS" : `FAIL (${o.reasons.join(", ")})`}${note}`);
   }
   summaryLines.push(allPass ? "GATE: PASS" : "GATE: FAIL");
 
@@ -446,12 +712,17 @@ export function runReconciliation(
 
 // ─── CLI shell ──────────────────────────────────────────────────────────
 
-function parseArgs(argv: string[]): { configPath: string; stamp: boolean; detailOut?: string } {
+function parseArgs(argv: string[]): {
+  configPath: string;
+  stamp: boolean;
+  rollup: boolean;
+  detailOut?: string;
+} {
   const configIdx = argv.indexOf("--config");
   const configPath = configIdx !== -1 ? argv[configIdx + 1] : undefined;
   if (!configPath) {
     console.error(
-      "Usage: npx tsx scripts/reconcile-tax-report-vs-broker.ts --config <path> [--stamp] [--detail-out <path>]",
+      "Usage: npx tsx scripts/reconcile-tax-report-vs-broker.ts --config <path> [--rollup] [--stamp] [--detail-out <path>]",
     );
     process.exit(1);
   }
@@ -463,7 +734,12 @@ function parseArgs(argv: string[]): { configPath: string; stamp: boolean; detail
     process.exit(1);
   }
 
-  return { configPath, stamp: argv.includes("--stamp"), detailOut };
+  return {
+    configPath,
+    stamp: argv.includes("--stamp"),
+    rollup: argv.includes("--rollup"),
+    detailOut,
+  };
 }
 
 /**
@@ -518,7 +794,7 @@ function loadConfig(configPath: string): BrokerRealizedConfig {
 }
 
 async function main(): Promise<void> {
-  const { configPath, stamp, detailOut } = parseArgs(process.argv.slice(2));
+  const { configPath, stamp, rollup, detailOut } = parseArgs(process.argv.slice(2));
   const resolvedDetailOut = detailOut !== undefined ? assertGitignored(detailOut) : undefined;
   const config = loadConfig(configPath);
 
@@ -533,7 +809,7 @@ async function main(): Promise<void> {
   // explicit flag, and never writes anything but the acceptance stamp.
   const db: Database.Database = new BetterSqlite3(dbPath, { readonly: !stamp }) as Database.Database;
 
-  const result = runReconciliation(db, config);
+  const result = runReconciliation(db, config, { mode: rollup ? "rollup" : "strict" });
 
   // stdout: direction-only, always.
   console.log(result.summary);

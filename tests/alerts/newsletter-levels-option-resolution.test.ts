@@ -551,3 +551,24 @@ describe("provenance note", () => {
     expect(appendProvenance(`author said so\n${note}`, note)).toBe(`author said so\n${note}`);
   });
 });
+
+describe("getTrackedSecurities — held means latest row per (account, security), shorts included", () => {
+  it("counts a short, ignores a position whose latest row is zero, ignores stale historical rows", () => {
+    const db = makeDb();
+    const acct = accountId(db);
+    const short = seedEquity(db, "SHRT", { price: 10 });
+    const closed = seedEquity(db, "CLSD", { price: 10 });
+    const open = seedEquity(db, "OPEN", { price: 10 });
+    const ins = db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key) VALUES (?, ?, ?, ?, ?)",
+    );
+    ins.run(acct, short, -5, "2026-09-04", "t:short");
+    ins.run(acct, closed, 10, "2026-08-01", "t:closed:old");
+    ins.run(acct, closed, 0, "2026-09-04", "t:closed:new");
+    ins.run(acct, open, 3, "2026-09-04", "t:open");
+    const rel = new Map(getTrackedSecurities(db).map((r) => [r.symbol, r.relationship]));
+    expect(rel.get("SHRT")).toBe("held");
+    expect(rel.get("OPEN")).toBe("held");
+    expect(rel.has("CLSD")).toBe(false);
+  });
+});

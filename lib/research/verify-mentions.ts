@@ -68,7 +68,7 @@ interface HaikuVerdict {
   reason: string;
 }
 
-const VERIFICATION_SCHEMA = jsonSchema<{ verdicts: HaikuVerdict[] }>({
+export const VERIFICATION_SCHEMA = jsonSchema<{ verdicts: HaikuVerdict[] }>({
   type: "object",
   additionalProperties: false,
   properties: {

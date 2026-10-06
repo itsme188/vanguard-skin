@@ -1,5 +1,6 @@
 "use client";
 
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState } from "react";
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
 import apiFetch from "@/lib/http/apiFetch";
@@ -250,6 +251,7 @@ export function TranscriptCard({
               </div>
               <button
                 onClick={() => setShowFullTranscript(false)}
+                aria-label="Close transcript"
                 className="text-ink-faint hover:text-ink p-1"
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -293,11 +295,14 @@ export function FetchTranscriptButton({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticker }),
       });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
+      const result = await readMutationResult(res);
+      if (!result.ok) {
+        setError(`Couldn't fetch the transcript: ${result.message}`);
+        return;
+      }
       onFetched?.();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Fetch failed");
+    } catch {
+      setError(networkFailureMessage("fetch the transcript"));
     } finally {
       setIsFetching(false);
     }
@@ -312,7 +317,7 @@ export function FetchTranscriptButton({
       >
         {isFetching ? "Fetching..." : `Fetch ${ticker} Transcript`}
       </button>
-      {error && <span className="text-xs text-down">{error}</span>}
+      {error && <span role="alert" className="text-xs text-down">{error}</span>}
     </div>
   );
 }

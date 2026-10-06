@@ -68,6 +68,7 @@ import {
 } from "@/lib/earnings/send-service";
 import { DELIVERY_UNKNOWN } from "@/lib/earnings/email-states";
 import { recordCloudSentAudit } from "@/lib/mutations/earnings-emails";
+import { sendPushover, type PushoverMessage } from "@/lib/alerts/notify-pushover";
 import { generateTextForFeature } from "@/lib/ai/generate";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
@@ -104,6 +105,9 @@ export async function runMorningDebrief(
     generate?: (prompt: string) => Promise<string>;
     /** Passed straight to deliverClaimedBatch — tests inject the provider seam. */
     seams?: SendServiceSeams;
+    /** DI seam for the delivery-unknown push — defaults to sendPushover, the
+     *  same default `reapStaleEarningsEmailClaims` takes. */
+    notify?: (msg: PushoverMessage) => Promise<unknown>;
   } = {},
 ): Promise<DebriefResult> {
   const now = opts.now ?? new Date();
@@ -243,6 +247,26 @@ export async function runMorningDebrief(
         `[debrief] delivery unknown (message ${res.providerMessageId}) — ${res.note}; ` +
           `covered ${covered.length} name(s): ${covered.join(", ")} — reconcile by hand`,
       );
+      // The reaper pushes when IT flips a stale in-flight row to this state
+      // (reapStaleEarningsEmailClaims); a row this path books itself is already
+      // terminal, so the reaper never sees it and the warning above would live
+      // only in the server log on an unattended morning. Same push, same
+      // wording, same seam. ONE push, not one per name: the debrief is one
+      // stapled email under one Message-ID. Direction-only — names and the
+      // message id, never a figure from the email.
+      const names = covered.join(", ");
+      try {
+        await (opts.notify ?? sendPushover)({
+          title: `Morning debrief recap: delivery unknown`,
+          message:
+            `${names} recap: delivery unknown — message ${res.providerMessageId ?? "(no id recorded)"}; ` +
+            `check the mailbox / Resend log, then resend by hand if it never arrived.`,
+          priority: 0,
+        });
+      } catch (err) {
+        // A push failure must never change the outcome — the rows are terminal.
+        console.warn("[debrief] delivery-unknown push failed:", err);
+      }
       return { sent: true, covered };
     }
 

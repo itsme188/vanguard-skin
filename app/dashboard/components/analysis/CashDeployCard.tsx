@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Money, Pct, PrivateText } from "@/lib/privacy/components";
+import { ScrollFade } from "../ScrollFade";
 import {
   equitySleeveCaptionLead,
   type CashDeploySuggestion,
@@ -114,6 +115,7 @@ export function CashDeployCard({ scope }: Props) {
                   .
                 </p>
               )}
+              <ScrollFade>
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-ink-faint">
@@ -171,6 +173,7 @@ export function CashDeployCard({ scope }: Props) {
                   ))}
                 </tbody>
               </table>
+              </ScrollFade>
             </div>
           )}
 

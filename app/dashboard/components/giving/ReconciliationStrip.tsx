@@ -24,6 +24,9 @@ export function ReconciliationStrip({ report }: { report: ReconciliationReport }
   const router = useRouter();
   const { toast } = useToast();
   const [confirmingId, setConfirmingId] = useState<number | null>(null);
+  // Two-step confirm for a zero-amount OUT leg: the first click arms this id
+  // and shows the warning inline, the second click actually links.
+  const [armedZeroId, setArmedZeroId] = useState<number | null>(null);
 
   const hasAnything =
     report.suggestedMatches.length > 0 ||
@@ -34,6 +37,7 @@ export function ReconciliationStrip({ report }: { report: ReconciliationReport }
     report.unmatchedPairs.length > 0;
 
   async function confirmMatch(donationId: number, outTransactionId: number, artifactTransactionId: number | null) {
+    setArmedZeroId(null);
     setConfirmingId(donationId);
     try {
       const res = await apiFetch(`/api/donations/${donationId}/links`, {
@@ -83,6 +87,8 @@ export function ReconciliationStrip({ report }: { report: ReconciliationReport }
               <ul className="space-y-2">
                 {report.suggestedMatches.map(({ donation, outLeg, artifactLeg }) => {
                   const submitting = confirmingId === donation.id;
+                  const zeroAmount = !outLeg.amount;
+                  const armed = armedZeroId === donation.id;
                   return (
                     <li
                       key={donation.id}
@@ -98,12 +104,22 @@ export function ReconciliationStrip({ report }: { report: ReconciliationReport }
                           <span className="text-ink-faint"> · + routing artifact leg</span>
                         )}
                       </div>
+                      {zeroAmount && armed && (
+                        <p role="alert" className="basis-full text-xs text-warn">
+                          This transfer leg has no recorded value, so the donation&apos;s fair market value
+                          will be missing after linking. Click again to link it anyway.
+                        </p>
+                      )}
                       <button
-                        onClick={() => confirmMatch(donation.id, outLeg.id, artifactLeg?.id ?? null)}
+                        onClick={() =>
+                          zeroAmount && !armed
+                            ? setArmedZeroId(donation.id)
+                            : confirmMatch(donation.id, outLeg.id, artifactLeg?.id ?? null)
+                        }
                         disabled={submitting}
                         className="px-3 py-1.5 rounded-lg bg-gold text-canvas text-xs font-medium hover:brightness-110 disabled:opacity-50 transition-[filter,scale] active:scale-[0.96] focus-ring"
                       >
-                        {submitting ? "Confirming…" : "Confirm"}
+                        {submitting ? "Confirming…" : armed ? "Link anyway" : "Confirm"}
                       </button>
                     </li>
                   );

@@ -13,6 +13,9 @@ export interface RoadOutcome {
   road: PrintWatchDocKind;
   outcome: IngestOutcome | "fetch_failed";
   detail: string;
+  /** The gate's / reader's own reason when it gave one, else null — the same
+   *  field the file-drop branch of `POST /api/print-watch/drop` answers with. */
+  rejectReason: string | null;
   docId: number | null;
   isNew: boolean;
 }
@@ -51,7 +54,7 @@ export async function deliverFromUrl(
 
   const verdict = validatePublicUrl(rawUrl);
   if (!verdict.ok) {
-    return { road, outcome: "refused", detail: `${verdict.reason} (${redactUrl(rawUrl)})`, docId: null, isNew: false };
+    return { road, outcome: "refused", detail: `${verdict.reason} (${redactUrl(rawUrl)})`, rejectReason: null, docId: null, isNew: false };
   }
 
   let fetched;
@@ -60,7 +63,7 @@ export async function deliverFromUrl(
   } catch (err) {
     const detail =
       err instanceof UrlFetchRefused ? err.message : `pasted link: ${redactUrl(rawUrl)} could not be fetched`;
-    return { road, outcome: "fetch_failed", detail, docId: null, isNew: false };
+    return { road, outcome: "fetch_failed", detail, rejectReason: null, docId: null, isNew: false };
   }
 
   const shown = redactUrl(fetched.finalUrl);
@@ -69,6 +72,7 @@ export async function deliverFromUrl(
       road,
       outcome: "refused",
       detail: `binary content at ${shown} — print-watch reads HTML, plain text, or PDF`,
+      rejectReason: null,
       docId: null,
       isNew: false,
     };
@@ -84,6 +88,7 @@ export async function deliverFromUrl(
     road,
     outcome: result.outcome,
     detail,
+    rejectReason: result.rejectReason ?? null,
     docId: result.outcome === "refused" ? null : result.docId,
     isNew: result.isNew,
   };

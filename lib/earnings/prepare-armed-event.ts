@@ -21,7 +21,9 @@
  *     sweep awaits this pass and a hung model call or TWS fetch would
  *     otherwise block the 15-minute earnings tick indefinitely [R13];
  *   - one bad row never starves the others: a step whose FINGERPRINT throws is
- *     failed on its own row and the pass carries on.
+ *     failed on its own row and the pass carries on — EXCEPT a row already
+ *     `done`, which stays done with a warning (a throw is not evidence that
+ *     its inputs changed).
  *
  * Contract for step authors:
  *   - a long step MUST check `ctx.signal.aborted` between units of work (and
@@ -66,7 +68,8 @@ export interface PrepareStepRow { event_id: number; step: string; status: Prepar
 /**
  * `ran` counts step INVOCATIONS; `done`/`pending`/`failed` count row outcomes.
  * They can disagree by design: a row whose fingerprint threw is booked
- * `failed` without the step ever being invoked.
+ * `failed` without the step ever being invoked (a `done` row in that position
+ * is left done and counted `skipped`).
  */
 export interface PrepareRunReport {
   ran: number; done: number; pending: number; failed: number; skipped: number;
@@ -237,6 +240,19 @@ export async function runPrepareSteps(
       fp = def.fingerprint(db, r.event_id);
     } catch (err) {
       const msg = errText(err);
+      if (r.status === "done") {
+        // A fingerprint that THROWS says nothing about staleness: the inputs may
+        // be exactly what this row was prepared against. Booking it `failed`
+        // would discard finished work (and re-invoke the step's side effect) on
+        // the strength of a read error. It stays done, untouched — no attempt,
+        // no last_error — and is re-examined as soon as the fingerprint is
+        // readable again, when ordinary drift detection resumes.
+        report.skipped += 1;
+        console.warn(
+          `[prepare] ${r.step} for event ${r.event_id}: fingerprint failed: ${msg} — row stays done (a throw is not evidence of drift)`,
+        );
+        continue;
+      }
       if (r.attempts >= PREPARE_MAX_ATTEMPTS) {
         // Already spent. Don't keep counting: a fingerprint that throws can never
         // drift (computing it is exactly what fails), so there is nothing left to

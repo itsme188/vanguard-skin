@@ -62,27 +62,62 @@ export function getModelForFeature(
   return anthropic(modelId);
 }
 
+/** Structured-output path a `generateObject` call should ask the provider for. */
+export type StructuredMode = "outputFormat" | "jsonTool";
+
+/**
+ * Provider options asking @ai-sdk/anthropic for native structured output
+ * (`output_config.format`, no tool_choice) — mirror of the Mac side's
+ * `lib/ai/generate.ts::withAnthropicStructuredOutput`. Spread into a Worker
+ * `generateObject` call's `providerOptions` (needed for frontier-tier features,
+ * whose model family rejects the forced-tool fallback).
+ */
+export function structuredOutputProviderOptions(mode: StructuredMode = "outputFormat") {
+  return { anthropic: { structuredOutputMode: mode } };
+}
+
+// Parity-pinned with lib/ai/generate.ts::isOutputFormatRejected (400 only).
+const OUTPUT_FORMAT_REJECTED =
+  /output_config|output_format|outputFormat|json_schema|structured output|(?:for 'array' type|property '\w+')[\s\S]{0,120}not supported/i;
+const FORCED_TOOL_UNSUPPORTED = /tool_choice[\s\S]{0,200}?not supported for this model/i;
+
+function isOutputFormatRejected(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (FORCED_TOOL_UNSUPPORTED.test(msg)) return false;
+  const status = (err as { statusCode?: number } | null)?.statusCode;
+  const is400 = status === 400 || /\b400\b|invalid_request_error/i.test(msg);
+  return is400 && OUTPUT_FORMAT_REJECTED.test(msg);
+}
+
 /**
  * Wraps a single AI call with reactive failover: if the resolved model returns
  * a 404 / not_found, exclude it and retry once with the next model in the tier
- * ladder. On any other error, re-throws immediately.
+ * ladder. If the provider rejects the native structured-output request, retry
+ * ONCE on the same model with mode "jsonTool" (the callback receives the mode
+ * as its second argument; callers that ignore it get an identical request, so
+ * the retry is skipped for them only by their own throw). On any other error,
+ * re-throws immediately.
  */
 export async function generateWithFailover<T>(
   env: AIEnv,
   feature: WorkerFeature,
   catalog: string[],
-  call: (model: LanguageModel) => Promise<T>,
+  call: (model: LanguageModel, mode?: StructuredMode) => Promise<T>,
 ): Promise<T> {
   const excluded = new Set<string>();
   const modelId = resolveTier(FEATURE_TIER[feature], catalog);
   try {
-    return await call(getModelForFeature(env, feature, catalog, excluded));
+    return await call(getModelForFeature(env, feature, catalog, excluded), "outputFormat");
   } catch (err) {
+    if (isOutputFormatRejected(err)) {
+      console.warn(`[worker-ai] ${feature}: ${modelId} rejects native structured output → jsonTool retry`);
+      return await call(getModelForFeature(env, feature, catalog, excluded), "jsonTool");
+    }
     const msg = err instanceof Error ? err.message : String(err);
     const notFound = (err as { statusCode?: number })?.statusCode === 404 || /not_found|may not exist/i.test(msg);
     if (!notFound) throw err;
     excluded.add(modelId);
     console.warn(`[worker-ai] ${feature}: ${modelId} unavailable → failover`);
-    return await call(getModelForFeature(env, feature, catalog, excluded));
+    return await call(getModelForFeature(env, feature, catalog, excluded), "outputFormat");
   }
 }

@@ -13,8 +13,8 @@
 
 import type Database from "better-sqlite3";
 import { SECURITY_CLASSIFICATIONS } from "@/lib/data/security-classifications";
-import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
-import { parseJsonArrayLenient } from "@/lib/ai/extract-json";
+import { generateTextForFeature } from "@/lib/ai/generate";
+import { parseBatchReply, runClassifyBatches, UnusableBatchReplyError } from "@/lib/compute/classify-batch";
 import { normalizeFundCategory } from "@/lib/securities/normalize-fund-category";
 import { normalizeMarketCapCategory } from "@/lib/securities/normalize-market-cap";
 
@@ -227,15 +227,6 @@ const CLASSIFICATION_FIELDS = [
 
 type UnresolvedSecurity = { id: number; symbol: string; security_type: string | null };
 
-/**
- * Distinguishes the two "the model answered but the answer is useless"
- * failure modes (unparseable reply / parsed-but-nothing-usable) from a hard
- * failure (network error, AIRefusalError, DB error). Only THESE get the
- * automatic retry below — a hard failure retried immediately would just fail
- * again for the same reason and burn an extra API call for nothing.
- */
-class UnusableBatchReplyError extends Error {}
-
 export async function classifyUnresolvedWithClaude(
   db: Database.Database,
   unresolved: Array<{ id: number; symbol: string; security_type: string | null }>
@@ -276,15 +267,7 @@ export async function classifyUnresolvedWithClaude(
     // surfaces as a clean per-batch domain error with the SyntaxError as
     // `cause`). Also tolerates a single bare object / {results:[...]} wrapper
     // instead of throwing "results is not iterable".
-    let results: unknown[];
-    try {
-      results = parseJsonArrayLenient(text, "security classifications");
-    } catch (err) {
-      throw new UnusableBatchReplyError(
-        err instanceof Error ? err.message : "AI reply was not a JSON list of security classifications",
-        { cause: err }
-      );
-    }
+    const results = parseBatchReply(text, "security classifications");
     const idMap = new Map(batchItems.map((s) => [s.symbol, s.id]));
     let classifiedInBatch = 0;
     for (const raw of results) {
@@ -326,60 +309,8 @@ export async function classifyUnresolvedWithClaude(
     return classifiedInBatch;
   }
 
-  for (let i = 0; i < unresolved.length; i += BATCH) {
-    const batch = unresolved.slice(i, i + BATCH);
-    const batchNumber = i / BATCH + 1;
-    try {
-      classified += await runBatch(batch);
-    } catch (err) {
-      if (err instanceof AIRefusalError) {
-        errors.push(`Batch ${batchNumber}: AI refusal`);
-        continue;
-      }
-      if (!(err instanceof UnusableBatchReplyError)) {
-        errors.push(`Batch ${batchNumber}: ${err instanceof Error ? err.message : "unknown"}`);
-        continue;
-      }
-
-      // Retry ONCE (qa:analysis-classification--auto-classify-ai-batch-parse-
-      // failure-no-retry-leaves-held-names-unclassified): an unparseable or
-      // nothing-usable reply is often a transient model quirk (truncation, a
-      // non-array shape) rather than a real, durable failure — one more roll
-      // of the dice recovers most of them. Split into two half-size batches
-      // (smaller prompts are less likely to get truncated); a batch already
-      // down to one security just retries itself. No retry of a retry — each
-      // half below records its own failure straight to `errors` rather than
-      // splitting further.
-      if (batch.length === 1) {
-        try {
-          classified += await runBatch(batch);
-        } catch (retryErr) {
-          if (retryErr instanceof AIRefusalError) {
-            errors.push(`Batch ${batchNumber}: AI refusal`);
-          } else {
-            errors.push(`Batch ${batchNumber}: ${retryErr instanceof Error ? retryErr.message : "unknown"}`);
-          }
-        }
-        continue;
-      }
-
-      const mid = Math.ceil(batch.length / 2);
-      const halves = [batch.slice(0, mid), batch.slice(mid)];
-      for (let h = 0; h < halves.length; h++) {
-        try {
-          classified += await runBatch(halves[h]);
-        } catch (halfErr) {
-          if (halfErr instanceof AIRefusalError) {
-            errors.push(`Batch ${batchNumber}: AI refusal`);
-          } else {
-            errors.push(
-              `Batch ${batchNumber}: ${halfErr instanceof Error ? halfErr.message : "unknown"} (retry, part ${h + 1} of 2)`
-            );
-          }
-        }
-      }
-    }
-  }
+  // Retry-once-as-halves behaviour lives in the shared runner (classify-batch.ts).
+  classified += await runClassifyBatches(unresolved, BATCH, runBatch, errors);
   return { classified, errors };
 }
 

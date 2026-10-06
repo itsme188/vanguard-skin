@@ -20,11 +20,19 @@
  *     == Worker ARMED_EVENT_ENTRY_KEYS      (the parser's allowlist)
  *     == Worker ArmedEventEntry interface   (the type consumers read)
  *     == parseEntry's actual output keys    (what really survives a POST)
+ *
+ * A fourth link closes the gap the first three leave: `parseEntry` is DRIVEN by
+ * `ARMED_EVENT_ENTRY_FIELDS` (one rule per key) and walks
+ * `ARMED_EVENT_ENTRY_KEYS`, and the round-trip fixture below is generated from
+ * the same two constants. A key added to every declared list therefore either
+ * has a rule (and round-trips) or fails here — it can no longer be listed and
+ * silently left out of the parser body.
  */
 
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import {
+  ARMED_EVENT_ENTRY_FIELDS,
   ARMED_EVENT_ENTRY_KEYS,
   applyArmedEventsDelta,
   readArmedEventsDelta,
@@ -57,7 +65,57 @@ const macKeys = extractKeyList(
   "the Mac's ARMED_EVENT_PROJECTION_KEYS",
 );
 
+/**
+ * One value per allowlisted key that its parse rule keeps VERBATIM, so a
+ * round-trip can be asserted with `toEqual`. Derived from the constants — there
+ * is deliberately no hand-written field list here to forget a key in.
+ */
+function sampleValue(key: string, index: number): unknown {
+  const rule = (ARMED_EVENT_ENTRY_FIELDS as Record<string, { kind: string; max?: number; upper?: boolean }>)[
+    key
+  ];
+  if (!rule) throw new Error(`armed-events-parity: no parse rule for key "${key}"`);
+  switch (rule.kind) {
+    case "required-int":
+      return 70 + index;
+    case "nullable-number":
+      return index + 0.25;
+    case "tombstone-flag":
+      return true;
+    case "required-string":
+    case "nullable-string":
+    case "tombstone-string": {
+      const text = `${key}-${index}`.slice(0, rule.max ?? 200);
+      return rule.upper ? text.toUpperCase() : text;
+    }
+    default:
+      throw new Error(`armed-events-parity: unknown rule kind "${rule.kind}" for "${key}"`);
+  }
+}
+
+function maximalEntry(): ArmedEventEntry {
+  return Object.fromEntries(
+    ARMED_EVENT_ENTRY_KEYS.map((key, i) => [key, sampleValue(key, i)]),
+  ) as unknown as ArmedEventEntry;
+}
+
 describe("armed-events projection parity (Mac ↔ Worker)", () => {
+  it("every allowlisted key has exactly one parse rule, and no rule is unlisted", () => {
+    expect(Object.keys(ARMED_EVENT_ENTRY_FIELDS).sort()).toEqual([...ARMED_EVENT_ENTRY_KEYS].sort());
+  });
+
+  it("the parser reads its field list from the constant, not a hand-written body", () => {
+    // Source pin: the body must walk the pinned key list. A hand-listed
+    // `eventTime: str("eventTime")` literal is the regression this catches.
+    const src = readFileSync(new URL("../src/armed-events.ts", import.meta.url), "utf8");
+    const body = src.slice(src.indexOf("function parseEntry("));
+    const parser = body.slice(0, body.indexOf("\n}\n"));
+    expect(parser).toMatch(/for \(const key of ARMED_EVENT_ENTRY_KEYS\)/);
+    for (const key of ARMED_EVENT_ENTRY_KEYS) {
+      expect(parser, `parseEntry hand-lists "${key}"`).not.toMatch(new RegExp(`\\b${key}\\b`));
+    }
+  });
+
   it("the Mac key list is non-trivial and includes the tombstone fields", () => {
     // Guards the extraction itself: a regex that silently matched an empty
     // array would make every assertion below vacuously true.
@@ -88,22 +146,10 @@ describe("armed-events projection parity (Mac ↔ Worker)", () => {
       list: vi.fn(async () => ({ keys: [] })),
     } as unknown as KVNamespace;
 
-    // A maximal entry: every field populated, including the tombstone pair.
-    const maximal: ArmedEventEntry = {
-      eventId: 77,
-      symbol: "ACME",
-      eventDate: "2026-09-02",
-      eventTime: "AMC",
-      releaseTime: "16:15",
-      sourceKey: "manual:ACME:2026-09-02:earnings",
-      source: "manual",
-      consensusValue: "EPS 1.20",
-      expectedImpact: "high",
-      securityId: 42,
-      epsConsensusVendor: 1.18,
-      removed: true,
-      removedAt: "2026-09-02T20:00:00.000Z",
-    };
+    // A maximal entry GENERATED from the pinned key list: every allowlisted
+    // field populated (tombstone pair included) with a value its rule keeps.
+    const maximal = maximalEntry();
+    expect(Object.keys(maximal).sort()).toEqual([...ARMED_EVENT_ENTRY_KEYS].sort());
 
     await applyArmedEventsDelta(kv, { generation: 1, entries: [maximal] });
     const stored = await readArmedEventsDelta(kv);

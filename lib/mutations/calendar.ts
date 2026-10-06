@@ -11,6 +11,7 @@ import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 import { isEventArmed } from "@/lib/queries/earnings-worksheet-flags";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
+import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 import { mergeEarningsEventState } from "@/lib/earnings/event-merge";
 import {
   reconcileEarningsDates,
@@ -428,26 +429,23 @@ export interface CorrectEarningsDateResult {
 }
 
 /**
- * The BMO/AMC slot a calendar row effectively sits in: the vendor's own
- * event_time marker when it's one, else the release_time clock hour (before
- * noon ET → bmo). Null when neither resolves.
- *
- * Deliberately a local copy of lib/calendar/verify-earnings-dates.ts's
- * exported `effectiveSlot` rather than an import: that module imports
- * correctEarningsEventDate from THIS file, so importing back would create a
- * cycle. Keep the two in sync if the slot rules ever change.
+ * The BMO/AMC slot a calendar row effectively sits in — a thin uppercase
+ * adapter over the single-sourced `deriveEarningsSlot` (event_time marker /
+ * HH:MM, then raw_json vendor hour). This is a "which half of the day did the
+ * vendor mean" question (adoption agreement), not a pre-print floor, so the
+ * release_time clock hour is allowed as the last resort. Null when nothing
+ * resolves.
  */
-function rowSlot(row: { event_time: string | null; release_time: string | null }): "BMO" | "AMC" | null {
-  const et = row.event_time?.trim().toUpperCase();
-  if (et === "BMO") return "BMO";
-  if (et === "AMC") return "AMC";
-
-  const rt = row.release_time;
-  if (rt && /^\d{2}:\d{2}/.test(rt)) {
-    const hour = parseInt(rt.slice(0, 2), 10);
-    if (!Number.isNaN(hour)) return hour < 12 ? "BMO" : "AMC";
-  }
-  return null;
+export function rowSlot(row: {
+  event_time: string | null;
+  release_time: string | null;
+  raw_json?: string | null;
+}): "BMO" | "AMC" | null {
+  const slot = deriveEarningsSlot(
+    { event_time: row.event_time, release_time: row.release_time, raw_json: row.raw_json ?? null },
+    { allowReleaseTimeFallback: true },
+  );
+  return slot === "bmo" ? "BMO" : slot === "amc" ? "AMC" : null;
 }
 
 /**
@@ -505,7 +503,7 @@ export function correctEarningsEventDate(
 
   const wrongRows = db
     .prepare(
-      `SELECT id, source, source_key, event_time, release_time, actual_value,
+      `SELECT id, source, source_key, event_time, release_time, raw_json, actual_value,
               consensus_estimate, expected_impact
          FROM calendar_events
         WHERE UPPER(symbol) = ? AND event_date = ? AND event_type = 'earnings'`,
@@ -516,6 +514,7 @@ export function correctEarningsEventDate(
     source_key: string;
     event_time: string | null;
     release_time: string | null;
+    raw_json: string | null;
     actual_value: string | null;
     consensus_estimate: string | null;
     expected_impact: string | null;
@@ -567,7 +566,7 @@ export function correctEarningsEventDate(
       const requestedSlot = rowSlot({ event_time: eventTime, release_time: null });
       const onCorrectDate = db
         .prepare(
-          `SELECT id, event_time, release_time
+          `SELECT id, event_time, release_time, raw_json
              FROM calendar_events
             WHERE UPPER(symbol) = ? AND event_date = ? AND event_type = 'earnings'
               AND source != 'manual'
@@ -577,6 +576,7 @@ export function correctEarningsEventDate(
         id: number;
         event_time: string | null;
         release_time: string | null;
+        raw_json: string | null;
       }>;
 
       const adoptable = onCorrectDate.find((r) => {

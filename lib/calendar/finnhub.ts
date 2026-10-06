@@ -80,7 +80,9 @@ async function fetchJson<T>(url: string): Promise<T> {
  * classification honest without parsing the body.
  */
 function isRateLimitMessage(message: string): boolean {
-  return /\b429\b/.test(message);
+  // Anchored to the status phrase fetchJson produces ("Finnhub 429: ..."), so
+  // a 429 elsewhere in the message (a price, an id, the body) is not a limit.
+  return /^Finnhub 429:/.test(message);
 }
 
 function formatHour(h: EarningsCalendarEntry["hour"]): string | null {

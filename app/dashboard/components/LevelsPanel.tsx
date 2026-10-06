@@ -17,6 +17,7 @@ import type {
 // render in the security's NATIVE currency and need a matching label, e.g.
 // "₩976,000" rather than "$976,000" for a KRW security).
 import { formatLevelPrice } from "@/lib/chart/price-formatter";
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 // Suggested-level narratives are Haiku prose and occasionally state a
 // distance figure ("N% above/below") that contradicts the level's own
 // price/currentPrice — QA regression security-detail-suggested-levels--
@@ -269,13 +270,15 @@ function SuggestedLevels({
           expires_at: null,
         }),
       });
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        toast(`Failed to add level: ${json.error ?? "unknown"}`, "error");
+      const result = await readMutationResult(res);
+      if (!result.ok) {
+        toast(`Couldn't add the level: ${result.message}`, "error");
         return;
       }
       toast(`${symbol} ${sug.type} at ${formatLevelPrice(currency, sug.price)} added`, "success");
       onAccepted();
+    } catch {
+      toast(networkFailureMessage("add the level"), "error");
     } finally {
       setAccepting(null);
     }
@@ -788,11 +791,12 @@ export function LevelsPanel({
           expires_at: expiresAt || null,
         }),
       });
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        toast(`Failed to add level: ${json.error ?? "unknown"}`, "error");
+      const result = await readMutationResult<{ warning?: unknown }>(res);
+      if (!result.ok) {
+        toast(`Couldn't add the level: ${result.message}`, "error");
         return;
       }
+      const json = result.data;
       // Honest feedback: the save succeeded, but a level outside the scanner's
       // range is not monitored coverage. The form warns before the save too —
       // this covers the case where the user pressed on anyway, and the "info"
@@ -814,38 +818,55 @@ export function LevelsPanel({
       setExpiresAt("");
       setAdding(false);
       await refresh();
+    } catch {
+      toast(networkFailureMessage("add the level"), "error");
     } finally {
       setLoading(false);
     }
   }
 
   async function handleDeactivate(id: number) {
-    const res = await apiFetch("/api/levels", {
+    try {
+      const res = await apiFetch("/api/levels", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, action: "deactivate" }),
     });
-    if (res.ok) toast("Level paused", "info");
-    else toast("Failed to pause level", "error");
+      const result = await readMutationResult(res);
+      if (result.ok) toast("Level paused", "info");
+      else toast(`Couldn't pause the level: ${result.message}`, "error");
+    } catch {
+      toast(networkFailureMessage("pause the level"), "error");
+    }
     refresh();
   }
 
   async function handleReactivate(id: number) {
-    const res = await apiFetch("/api/levels", {
+    try {
+      const res = await apiFetch("/api/levels", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, action: "reactivate" }),
     });
-    if (res.ok) toast("Level reactivated", "success");
-    else toast("Failed to reactivate level", "error");
+      const result = await readMutationResult(res);
+      if (result.ok) toast("Level reactivated", "success");
+      else toast(`Couldn't reactivate the level: ${result.message}`, "error");
+    } catch {
+      toast(networkFailureMessage("reactivate the level"), "error");
+    }
     refresh();
   }
 
   async function handleDelete(id: number) {
     if (!confirm("Delete this level permanently?")) return;
-    const res = await apiFetch(`/api/levels?id=${id}`, { method: "DELETE" });
-    if (res.ok) toast("Level deleted", "info");
-    else toast("Failed to delete level", "error");
+    try {
+      const res = await apiFetch(`/api/levels?id=${id}`, { method: "DELETE" });
+      const result = await readMutationResult(res);
+      if (result.ok) toast("Level deleted", "info");
+      else toast(`Couldn't delete the level: ${result.message}`, "error");
+    } catch {
+      toast(networkFailureMessage("delete the level"), "error");
+    }
     refresh();
   }
 
@@ -856,17 +877,21 @@ export function LevelsPanel({
   // setLevelReviewStatus, never approveLevelGuarded, so this can never arm
   // a level on its own.
   async function handleRequeue(id: number) {
-    const res = await apiFetch("/api/levels/review", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, status: "pending_review" }),
-    });
-    const data = await res.json().catch(() => null);
-    if (res.ok && data?.success) {
-      toast("Re-queued — visit the Alerts Review tab to approve or reject it", "info");
-      await refresh();
-    } else {
-      toast(`Failed to re-queue level: ${data?.error ?? "unknown error"}`, "error");
+    try {
+      const res = await apiFetch("/api/levels/review", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, status: "pending_review" }),
+      });
+      const result = await readMutationResult(res);
+      if (result.ok) {
+        toast("Re-queued — visit the Alerts Review tab to approve or reject it", "info");
+        await refresh();
+      } else {
+        toast(`Couldn't re-queue the level: ${result.message}`, "error");
+      }
+    } catch {
+      toast(networkFailureMessage("re-queue the level"), "error");
     }
   }
 

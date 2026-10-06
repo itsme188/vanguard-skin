@@ -31,6 +31,8 @@ interface ApiResponse {
   generatedAt?: string;
   fromCache?: boolean;
   error?: string;
+  /** Generate failed because the AI service is unavailable (5xx / unreachable). */
+  unavailable?: boolean;
   /** ms left on the POST route's window — only present on a 429. */
   retryAfter?: number;
   /** Which of the POST route's two limits fired — only present on a 429. */
@@ -77,6 +79,8 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [drawerOpenForThemeIdx, setDrawerOpenForThemeIdx] = useState<number | null>(null);
+  // Bumped only by the manual "Try again" button — never automatically.
+  const [retryNonce, setRetryNonce] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -107,6 +111,7 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
         ...json,
         success: false,
         expected: isExpectedRefreshState(res.status),
+        unavailable: res.status >= 500,
         // A non-429 route message is written for a reader (the themes-parse
         // failures); anything missing falls back to the shared sentence.
         error: routeMessage ?? fallback,
@@ -128,6 +133,7 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
         if (!cancelled) {
           setData({
             success: false,
+            unavailable: true,
             error: describeRefreshFailure(MACRO_THEMES_SUBJECT, 0, null),
           });
         }
@@ -139,7 +145,7 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
     return () => {
       cancelled = true;
     };
-  }, [scope]);
+  }, [scope, retryNonce]);
 
   return (
     <section className="bg-panel border border-edge rounded-lg p-4">
@@ -232,8 +238,19 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
           }`}
         >
           <p className={`text-xs ${data.expected ? "text-ink-faint" : "text-down"}`}>
-            {data.error ?? "Failed to load macro themes"}
+            {data.unavailable
+              ? "AI narrative unavailable right now."
+              : (data.error ?? "Failed to load macro themes")}
           </p>
+          {!data.expected && (
+            <button
+              type="button"
+              onClick={() => setRetryNonce((n) => n + 1)}
+              className="relative mt-2 text-xs font-medium text-amber underline decoration-dotted underline-offset-2 hover:brightness-110 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2"
+            >
+              Try again
+            </button>
+          )}
         </div>
       )}
 

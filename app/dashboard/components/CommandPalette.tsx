@@ -2,13 +2,17 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { PrivateText } from "@/lib/privacy/components";
 
 // Cmd+K is now a global ticker-jump (IA Phase 2). Symbol-first by design;
 // company-name search still works because /api/search?type=security ranks
 // symbol-prefix matches above name matches. Reconsider broadening only if
 // the user complains about a missed name search.
 type SearchResult = {
-  type: "security";
+  // The palette requests type=security only, but the API's other result types
+  // (note, research_article, ...) carry private prose in `subtitle`, so the
+  // render below masks every non-security subtitle.
+  type: "security" | "note" | "research_article" | "research_document" | "level" | "alert" | "transaction";
   id: number;
   title: string;     // symbol
   subtitle: string;  // name · type · sector
@@ -235,7 +239,11 @@ export function CommandPalette() {
                   {result.title}
                 </div>
                 <div className="text-xs text-ink-faint truncate flex-1">
-                  {result.subtitle}
+                  {result.type === "security" ? (
+                    result.subtitle
+                  ) : (
+                    <PrivateText>{result.subtitle}</PrivateText>
+                  )}
                 </div>
                 {i === selectedIndex && (
                   <kbd className="text-[10px] text-ink-faint font-mono bg-muted px-1.5 py-0.5 rounded shrink-0">

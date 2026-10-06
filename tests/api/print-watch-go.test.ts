@@ -181,6 +181,28 @@ describe("POST /api/print-watch/go", () => {
     expect(getPrintByEventId(hoisted.db, eventId)).toBeNull();
   });
 
+  it("400s an unrecognised body shape instead of treating it as a plain go (slice C E2E finding)", async () => {
+    const eventId = seedArmedEvent();
+    const { POST } = await import("@/app/api/print-watch/go/route");
+    const cases: Array<[unknown, RegExp]> = [
+      // A nested file object is a client that meant to send a FILE: a plain go
+      // would drop it silently and tell the desk the press worked.
+      [{ eventId, file: { filename: "r.html", contentBase64: "aGk=" } }, /unrecognised.*'file'/i],
+      [{ eventId, link: "https://ir.acme.example/x" }, /unrecognised.*'link'/i],
+      [{ eventId, filename: "r.html" }, /contentBase64/],
+      [[{ eventId }], /JSON object/],
+    ];
+    for (const [body, re] of cases) {
+      const res = await POST(post("/api/print-watch/go", body));
+      expect(res.status, JSON.stringify(body).slice(0, 80)).toBe(400);
+      const json = (await res.json()) as { success: boolean; error: string };
+      expect(json.success).toBe(false);
+      expect(json.error).toMatch(re);
+    }
+    // Nothing was pressed: no print row, no request row.
+    expect(getPrintByEventId(hoisted.db, eventId)).toBeNull();
+  });
+
   it("a body that is not JSON, and a link this event cannot be pressed for, are 400s with the domain reason — never a 500", async () => {
     const { POST } = await import("@/app/api/print-watch/go/route");
 

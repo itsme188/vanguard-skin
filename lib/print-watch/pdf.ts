@@ -39,6 +39,8 @@ export const PDF_MAX_BYTES = 10 * 1024 * 1024;
 export const PDF_MAX_PAGES = 60;
 export const PDF_MIN_TEXT_CHARS = 500;
 export const PDFTOTEXT_TIMEOUT_MS = 30_000;
+/** How long a child told to stop (SIGTERM) gets before it is sent SIGKILL. */
+export const PDFTOTEXT_KILL_GRACE_MS = 2_000;
 /** Both child streams are bounded (M14): stdout at the 2MB document cap, stderr here. */
 export const PDFTOTEXT_STDERR_CAP = 64 * 1024;
 export const PDFTOTEXT_SETTING_KEY = "pdftotext_path";
@@ -122,9 +124,16 @@ export function checkPdfText(text: string): PdfCheck {
 }
 
 /** `<dir>/<sha>.pdftext.txt`, beside `<dir>/<sha>.pdf`. Content-addressed
- *  like the bytes, so the same PDF delivered twice reuses one text file. */
+ *  like the bytes, so the same PDF delivered twice reuses one text file.
+ *
+ *  Fails CLOSED on anything that is not a `.pdf` path: a plain `replace` hands
+ *  a non-matching input straight back, and a caller that then writes (or
+ *  removes) "the text file" would be writing over the acquired bytes. */
 export function textPathFor(bytesPath: string): string {
-  return bytesPath.replace(/\.pdf$/, ".pdftext.txt");
+  if (!bytesPath.endsWith(".pdf")) {
+    throw new Error(`textPathFor: not a .pdf bytes path (${path.basename(bytesPath) || "empty"})`);
+  }
+  return `${bytesPath.slice(0, -".pdf".length)}.pdftext.txt`;
 }
 
 /**
@@ -157,13 +166,15 @@ export interface PdftotextSeams {
   spawn?: typeof nodeSpawn;
   timeoutMs?: number;
   maxBytes?: number;
+  killGraceMs?: number;
 }
 
 /**
  * `pdftotext -layout -enc UTF-8 <file> -` — layout-preserving text on stdout.
  *
  * Every way this can go wrong is bounded: a hung child is killed at
- * `timeoutMs`, stdout is capped at the same 2MB ceiling every other acquired
+ * `timeoutMs` (SIGTERM, then SIGKILL after `killGraceMs` if it is still
+ * running — a child that ignores SIGTERM must not outlive the call), stdout is capped at the same 2MB ceiling every other acquired
  * document obeys, and stderr is capped too (a poppler build that warns once
  * per malformed object can emit megabytes of it). A password error becomes
  * `PdfEncryptedError`; any other non-zero exit is a plain error carrying the
@@ -177,6 +188,7 @@ export function runPdftotext(
   const spawn = seams.spawn ?? nodeSpawn;
   const timeoutMs = seams.timeoutMs ?? PDFTOTEXT_TIMEOUT_MS;
   const maxBytes = seams.maxBytes ?? MAX_RESPONSE_BYTES;
+  const killGraceMs = seams.killGraceMs ?? PDFTOTEXT_KILL_GRACE_MS;
   return new Promise((resolve, reject) => {
     const child = spawn(binary, ["-layout", "-enc", "UTF-8", pdfPath, "-"], {
       stdio: ["ignore", "pipe", "pipe"],
@@ -185,8 +197,28 @@ export function runPdftotext(
     let total = 0;
     let stderr = "";
     let settled = false;
-    const timer: NodeJS.Timeout = setTimeout(() => {
+    let killTimer: NodeJS.Timeout | null = null;
+    // SIGTERM first; SIGKILL if `close` has not arrived within the grace. The
+    // promise has already settled by then — this only stops the process from
+    // lingering. Unref'd so a pending escalation never holds the process open.
+    function terminate(): void {
       child.kill();
+      if (killTimer) return;
+      killTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // already gone
+        }
+      }, killGraceMs);
+      killTimer.unref?.();
+    }
+    function clearKillTimer(): void {
+      if (killTimer) clearTimeout(killTimer);
+      killTimer = null;
+    }
+    const timer: NodeJS.Timeout = setTimeout(() => {
+      terminate();
       settle(() => reject(new Error(`pdftotext timed out after ${timeoutMs}ms`)));
     }, timeoutMs);
     function settle(fn: () => void): void {
@@ -198,7 +230,7 @@ export function runPdftotext(
     child.stdout?.on("data", (chunk: Buffer) => {
       total += chunk.length;
       if (total > maxBytes) {
-        child.kill();
+        terminate();
         settle(() => reject(new Error(`pdftotext output exceeded the ${maxBytes}-byte cap`)));
         return;
       }
@@ -207,14 +239,18 @@ export function runPdftotext(
     child.stderr?.on("data", (d: Buffer | string) => {
       stderr += String(d);
       if (stderr.length > PDFTOTEXT_STDERR_CAP) {
-        child.kill();
+        terminate();
         settle(() =>
           reject(new Error(`pdftotext stderr exceeded the ${PDFTOTEXT_STDERR_CAP}-byte cap`)),
         );
       }
     });
-    child.on("error", (err) => settle(() => reject(err)));
+    child.on("error", (err) => {
+      clearKillTimer();
+      settle(() => reject(err));
+    });
     child.on("close", (code) => {
+      clearKillTimer();
       settle(() => {
         if (code === 0) {
           resolve(Buffer.concat(out).toString("utf8"));

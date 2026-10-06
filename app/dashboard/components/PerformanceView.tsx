@@ -150,6 +150,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   const totalReturnPct = twrResult?.totalReturn ?? null;
   const annualizedTwr = twrResult?.annualizedReturn ?? null;
   const xirrAnnualized = xirrResult?.xirr ?? null;
+  // Unused (dead code) — no caller reads cumulativeGain; kept pending the TODO "document or delete" ruling.
   const cumulativeGain =
     xirrResult && xirrResult.totalInvested > 0
       ? xirrResult.currentValue + xirrResult.totalWithdrawn - xirrResult.totalInvested

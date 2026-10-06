@@ -1340,7 +1340,7 @@ function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
           )}
           {vsLevelLabel && (
             <span
-              className="text-[10px] text-ink-faint"
+              className="text-[10px] text-ink-dim"
               title="The scanner's guard distance — measured from the LEVEL price, not spot. Shown so this can never read as disagreeing with the move-needed figure above."
             >
               ({vsLevelLabel})
@@ -1837,7 +1837,7 @@ function ReviewRow({
             )}
             {distVal !== null && (
               <span
-                className="text-[10px] text-ink-faint"
+                className="text-[10px] text-ink-dim"
                 title="The scanner's guard distance — measured from the LEVEL price, not spot. Shown so this can never read as disagreeing with the move-needed figure above."
               >
                 ({formatPercent(Math.abs(distVal), 1)} vs level

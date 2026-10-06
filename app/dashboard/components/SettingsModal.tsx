@@ -1,5 +1,6 @@
 "use client";
 
+import { networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useElectron } from "@/lib/hooks/useElectron";
@@ -69,6 +70,9 @@ const SECTIONS = [
 
 type FieldKey = (typeof SECTIONS)[number]["fields"][number]["key"];
 
+/** Failure whose message is already user-facing copy (see saveSettings). */
+class SettingsSaveError extends Error {}
+
 export function SettingsModal() {
   const { isElectron, api } = useElectron();
   const [open, setOpen] = useState(false);
@@ -77,6 +81,7 @@ export function SettingsModal() {
   const [showSensitive, setShowSensitive] = useState<Record<string, boolean>>({});
   const [version, setVersion] = useState("");
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
 
   // Resolve the settings source: Electron IPC first, HTTP dev route as
@@ -109,7 +114,14 @@ export function SettingsModal() {
           body: JSON.stringify(updates),
         });
         if (!res.ok) {
-          throw new Error(`Save failed (HTTP ${res.status})`);
+          // This route answers with the settings object (no success envelope),
+          // so res.ok is the gate; prefer the server's own error text.
+          const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+          const serverText =
+            typeof body?.error === "string" && body.error.trim() ? body.error.trim() : null;
+          throw new SettingsSaveError(
+            serverText ?? `The server returned an error (HTTP ${res.status}).`,
+          );
         }
       },
       // We don't know yet whether the route exists — the first getSettings
@@ -196,7 +208,13 @@ export function SettingsModal() {
       setDirty({});
       // Reload settings to get updated sanitized values
       await loadSettings();
-    } catch {
+    } catch (err) {
+      // Only our own copy is shown; an IPC/transport exception stays generic.
+      setSaveError(
+        err instanceof SettingsSaveError
+          ? err.message
+          : networkFailureMessage("save the settings"),
+      );
       setSaveStatus("error");
     }
   }
@@ -426,7 +444,9 @@ export function SettingsModal() {
                     <span className="text-[11px] text-up">Saved</span>
                   )}
                   {saveStatus === "error" && (
-                    <span className="text-[11px] text-down">Save failed</span>
+                    <span role="alert" className="text-[11px] text-down">
+                      {saveError ? `Couldn't save the settings: ${saveError}` : "Save failed"}
+                    </span>
                   )}
                 </div>
                 {saveStatus === "saved" && isElectron && (

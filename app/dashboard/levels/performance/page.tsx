@@ -4,6 +4,7 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { getSourcePerformance } from "@/lib/queries/level-performance";
 import { Chip } from "../../components/Chip";
+import { ScrollFade } from "../../components/ScrollFade";
 
 function fmtPct(n: number | null): string {
   if (n == null) return "—";
@@ -67,7 +68,7 @@ export default function LevelPerformancePage() {
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <ScrollFade>
           <table className="w-full min-w-[720px] text-sm">
             <thead>
               <tr className="border-b border-edge text-[11px] uppercase tracking-wider text-ink-faint">
@@ -131,7 +132,7 @@ export default function LevelPerformancePage() {
               ))}
             </tbody>
           </table>
-          </div>
+          </ScrollFade>
         )}
       </section>
     </div>

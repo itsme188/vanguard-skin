@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { REVIEW_SCHEMA } from "@/lib/trade-review/generate";
 import { FIRST_PASS_OUTPUT_SCHEMA } from "@/lib/print-watch/first-pass-prompt";
+import { VERIFICATION_SCHEMA } from "@/lib/research/verify-mentions";
+import { NARRATIVE_SCHEMA } from "@/lib/chart/narrate-levels";
+import { QUESTIONS_SCHEMA } from "@/lib/trade-review/questions";
+import { ANALYSIS_SCHEMA } from "@/lib/gmail/process";
 
 // QA: analysis-trade-reviews--generate-review-dies-raw-anthropic-tool-choice-error
 //
@@ -75,6 +79,53 @@ function arraysWithUnsupportedCounts(schema: unknown): string[] {
     return out;
   });
 }
+
+/** Constraint keywords native structured output rejects (numeric / string / recursion). */
+const UNSUPPORTED_KEYWORDS = [
+  "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+  "minLength", "maxLength", "pattern", "maxItems", "$ref", "$defs", "definitions",
+];
+
+function unsupportedKeywordPaths(node: unknown, path = "$"): string[] {
+  if (Array.isArray(node)) {
+    return node.flatMap((c, i) => unsupportedKeywordPaths(c, `${path}[${i}]`));
+  }
+  if (node === null || typeof node !== "object") return [];
+  const obj = node as JsonNode;
+  const here = UNSUPPORTED_KEYWORDS.filter((k) => k in obj && k !== "properties").map(
+    (k) => `${path}.${k}`,
+  );
+  // `properties` keys are field names, not keywords — recurse into the values only.
+  const children = Object.entries(obj).flatMap(([key, value]) =>
+    key === "properties" && value && typeof value === "object"
+      ? Object.entries(value as JsonNode).flatMap(([f, v]) =>
+          unsupportedKeywordPaths(v, `${path}.properties.${f}`),
+        )
+      : unsupportedKeywordPaths(value, `${path}.${key}`),
+  );
+  return [...here, ...children];
+}
+
+// The four anthropic generateObject schemas that were previously unpinned.
+const OTHER_SCHEMAS: Array<[string, unknown]> = [
+  ["verify-mentions VERIFICATION_SCHEMA", VERIFICATION_SCHEMA],
+  ["narrate-levels NARRATIVE_SCHEMA", NARRATIVE_SCHEMA],
+  ["trade-review QUESTIONS_SCHEMA", QUESTIONS_SCHEMA],
+  ["gmail/process ANALYSIS_SCHEMA", ANALYSIS_SCHEMA],
+];
+
+describe.each(OTHER_SCHEMAS)("native-mode rules: %s", (_name, schema) => {
+  it("sets additionalProperties:false on every object node", () => {
+    expect(objectNodes(rawSchema(schema)).length).toBeGreaterThanOrEqual(1);
+    expect(nodesMissingFlag(schema)).toEqual([]);
+  });
+  it("carries no array count constraint", () => {
+    expect(arraysWithUnsupportedCounts(schema)).toEqual([]);
+  });
+  it("carries no numeric/string constraint or recursion keyword", () => {
+    expect(unsupportedKeywordPaths(rawSchema(schema))).toEqual([]);
+  });
+});
 
 describe("structured-output schemas", () => {
   it("REVIEW_SCHEMA sets additionalProperties:false on every object node", () => {

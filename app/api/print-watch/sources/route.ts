@@ -35,6 +35,9 @@ export const dynamic = "force-dynamic";
  *  RDS-A), 1–12 characters. Deliberately narrower than "any string" and wider
  *  than plain A–Z. */
 const SYMBOL_RE = /^[A-Z0-9.\-]{1,12}$/;
+/** `linkMustContain` is a short literal the desk types to narrow link text —
+ *  bounded so a pasted page of text never lands in the sources row. */
+const LINK_MUST_CONTAIN_MAX = 200;
 
 /**
  * GET /api/print-watch/sources?symbol=XMPL1 — what is stored for one symbol.
@@ -121,6 +124,15 @@ export async function PUT(request: NextRequest) {
       typeof body.linkMustContain === "string" && body.linkMustContain.trim()
         ? body.linkMustContain.trim()
         : null;
+    if (linkMustContain !== null && linkMustContain.length > LINK_MUST_CONTAIN_MAX) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Body field 'linkMustContain' must be at most ${LINK_MUST_CONTAIN_MAX} characters.`,
+        },
+        { status: 400 },
+      );
+    }
     const row = upsertPrintWatchSource(db, { symbol, irPageUrl, linkMustContain });
     return NextResponse.json({ success: true, data: row });
   } catch (error) {

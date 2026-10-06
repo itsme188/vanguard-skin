@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { generateTextForFeature } from "@/lib/ai/generate";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { upsertLevel } from "@/lib/mutations/security-levels";
 import {
   indexTrackedSymbols,
@@ -219,7 +220,10 @@ export function getTrackedSecurities(db: Database.Database): RelevantSymbol[] {
               CASE WHEN h.security_id IS NOT NULL THEN 'held' ELSE 'watchlist' END AS relationship
        FROM securities s
        LEFT JOIN (
-         SELECT DISTINCT security_id FROM holdings WHERE quantity > 0
+         -- Latest row per (account, security), quantity != 0: a short is
+         -- exposure, so newsletter levels stay relevant to it.
+         SELECT DISTINCT h.security_id FROM holdings h
+         WHERE ${latestHoldingsPredicate({ keyBy: "account_security" })}
        ) h ON h.security_id = s.id
        LEFT JOIN (
          SELECT security_id FROM watchlist WHERE is_active = 1

@@ -17,6 +17,7 @@
  */
 
 import type Database from "better-sqlite3";
+import { todayET } from "@/lib/calendar/date-utils";
 
 export interface SourcePerformance {
   source_author: string;
@@ -69,7 +70,8 @@ function fetchForwardReturn(
   const targetIso = new Date(new Date(fromDate).getTime() + daysOut * 86_400_000)
     .toISOString()
     .slice(0, 10);
-  const todayIso = new Date().toISOString().slice(0, 10);
+  // ET day: a UTC slice reads tomorrow from 20:00 ET and widens the window.
+  const todayIso = todayET();
   const windowEnd = targetIso < todayIso ? targetIso : todayIso;
 
   const row = db

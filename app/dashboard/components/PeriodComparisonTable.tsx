@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { computeTwr } from "@/lib/compute/twr";
 import { Pct } from "@/lib/privacy/components";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 interface PeriodRow {
   label: string;
@@ -50,28 +51,24 @@ function valueClass(value: number | null): string {
 }
 
 export function PeriodComparisonTable() {
-  const today = new Date().toISOString().slice(0, 10);
+  // ET day, not a UTC slice (a UTC slice reads tomorrow from 20:00 ET). The
+  // look-back starts are whole days counted back from that same ET day.
+  const today = todayET();
   const year = today.slice(0, 4);
 
   const periods: { label: string; startDate: string | undefined }[] = [
     { label: "YTD", startDate: `${year}-01-01` },
     {
       label: "1Y",
-      startDate: new Date(Date.now() - 365 * 24 * 3600 * 1000)
-        .toISOString()
-        .slice(0, 10),
+      startDate: addDays(today, -365),
     },
     {
       label: "3Y",
-      startDate: new Date(Date.now() - 3 * 365.25 * 24 * 3600 * 1000)
-        .toISOString()
-        .slice(0, 10),
+      startDate: addDays(today, -Math.round(3 * 365.25)),
     },
     {
       label: "5Y",
-      startDate: new Date(Date.now() - 5 * 365.25 * 24 * 3600 * 1000)
-        .toISOString()
-        .slice(0, 10),
+      startDate: addDays(today, -Math.round(5 * 365.25)),
     },
     { label: "All", startDate: undefined },
   ];

@@ -13,6 +13,8 @@ export interface SearchableDocument {
   author?: string | null;
   summary?: string | null;
   tags?: string | null;
+  /** JSON-string column, same shape as `tags`; the row renders these as chips. */
+  mentioned_symbols?: string | null;
 }
 
 function parseTagList(json: string | null | undefined): string[] {
@@ -34,6 +36,7 @@ export function documentMatchesSearch(doc: SearchableDocument, search: string): 
     has(doc.source) ||
     has(doc.author) ||
     has(doc.summary) ||
-    parseTagList(doc.tags).some((t) => t.toLowerCase().includes(needle))
+    parseTagList(doc.tags).some((t) => t.toLowerCase().includes(needle)) ||
+    parseTagList(doc.mentioned_symbols).some((t) => t.toLowerCase().includes(needle))
   );
 }

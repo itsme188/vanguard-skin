@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { getIncomeSummary } from "@/lib/queries/income";
 import { resolveScope } from "@/lib/queries/accounts";
 import { Money } from "@/lib/privacy/components";
+import { todayET } from "@/lib/calendar/date-utils";
 
 interface IncomeYieldSectionProps {
   scope?: string;
@@ -18,9 +19,12 @@ interface IncomeYieldSectionProps {
 export async function IncomeYieldSection({ scope }: IncomeYieldSectionProps) {
   const accountIds = scope ? resolveScope(db, scope) : undefined;
 
-  const today = new Date().toISOString().slice(0, 10);
-  const yearAgo = new Date();
-  yearAgo.setFullYear(yearAgo.getFullYear() - 1);
+  // ET day, not a UTC slice (a UTC slice reads tomorrow from 20:00 ET). The
+  // year-back step then runs in UTC on a Date built from that ET day, so it
+  // cannot drift with the machine's timezone.
+  const today = todayET();
+  const yearAgo = new Date(today + "T00:00:00Z");
+  yearAgo.setUTCFullYear(yearAgo.getUTCFullYear() - 1);
   const startDate = yearAgo.toISOString().slice(0, 10);
 
   const summary = getIncomeSummary(db, startDate, today, accountIds);

@@ -67,8 +67,11 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
   // "marketValue" re-sorted the list by size in the browser, so a panel
   // titled "by risk" displayed the largest balance first — the money-market
   // sweep [qa:analysis-risk-drawer--top10-by-risk-ranked-by-value-vmfxx-first].
+  // The risk drawer gets its OWN sort scope: useSortParam honours a persisted
+  // `?drillSort` over the default, so a sort left by a sector drawer would
+  // re-sort the risk drawer by size under a "by risk contribution" title.
   const { sort, setSort } = useSortParam<SortField>(
-    "drill",
+    isRisk ? "drillRisk" : "drill",
     isRisk ? "risk" : "marketValue",
     "desc"
   );

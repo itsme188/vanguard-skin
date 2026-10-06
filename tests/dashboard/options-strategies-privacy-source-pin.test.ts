@@ -40,6 +40,13 @@ describe("OptionsStrategies privacy masking", () => {
     );
   });
 
+  it("renders an unlimited Max Profit (null — e.g. a covered call with uncovered shares) as plain text, never through Money", () => {
+    expect(src).toMatch(
+      /s\.maxProfit != null \? \(\s*<Money value=\{s\.maxProfit\} \/>\s*\) : \(\s*"Unlimited"\s*\)/
+    );
+    expect(src).toMatch(/maxProfit: number \| null;/);
+  });
+
   it("still masks Max Loss through Money", () => {
     expect(src).toMatch(
       /<Money value=\{s\.maxLoss\} \/>/

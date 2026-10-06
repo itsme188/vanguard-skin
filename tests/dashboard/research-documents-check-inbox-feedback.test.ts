@@ -91,7 +91,7 @@ describe("InboxForwardCard ('Check inbox') surfaces a silent 400 inline, not jus
   it("a successful check clears any standing error", () => {
     const check = functionBody(inboxCard, "const check = useCallback(", "}, [toast, onIngested]);");
     const successBranch = check.slice(
-      check.indexOf("if (res.ok && data.success)"),
+      check.indexOf("if (result.ok)"),
       check.indexOf("} else {"),
     );
     expect(successBranch).toMatch(/setCheckError\(null\)/);

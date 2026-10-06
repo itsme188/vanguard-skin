@@ -127,6 +127,105 @@ export function parseIBKROptionSymbol(description: string): {
   return { underlying, strike, expiry, optionType, occSymbol };
 }
 
+/** One dated cash row of a per-currency section block, at its printed native amount. */
+interface NativeCashRow {
+  /** fields[0] of the CSV row — the currency on a data row, or a "Total…" label. */
+  label: string;
+  currency: string;
+  date: string;
+  description: string;
+  amount: number;
+}
+
+/**
+ * Walk a per-currency cash section (Dividends / Fees / Deposits & Withdrawals):
+ * native rows, a native "Total" line, then IBKR's own "Total in USD" line.
+ * USD rows pass through untouched (`converted = false`, amount as printed).
+ * Non-USD rows are scaled by the block's Total-in-USD ÷ native-Total ratio —
+ * the same unrounded pro-rata method as the Interest loop, so a block's
+ * converted rows sum to IBKR's Total in USD. A non-USD block with no
+ * conversion line, one whose rows carry BOTH signs (the net-over-net ratio is
+ * not an exchange rate there), or one whose ratio cannot be derived (native
+ * total 0, or a non-positive / non-finite ratio), is SKIPPED with a warning —
+ * never stored at native magnitude as dollars.
+ */
+function emitCurrencyBlocks(
+  sectionLabel: string,
+  entries: NativeCashRow[],
+  warnings: string[],
+  emit: (row: NativeCashRow, usdAmount: number, converted: boolean) => void
+): void {
+  let block: NativeCashRow[] = [];
+  let blockNativeTotal: number | null = null;
+
+  const flush = (usdTotal: number | null) => {
+    if (block.length === 0) {
+      blockNativeTotal = null;
+      return;
+    }
+    const currency = block[0].currency;
+    const nativeTotal =
+      blockNativeTotal ?? block.reduce((sum, r) => sum + r.amount, 0);
+    // An empty currency cell is passed through as printed (pre-fix behaviour).
+    if (currency === "USD" || currency === "") {
+      for (const r of block) emit(r, r.amount, false);
+    } else if (usdTotal == null) {
+      warnings.push(
+        `${sectionLabel}: skipped ${block.length} ${currency} row(s) (native total ${nativeTotal}) — ` +
+          `no "Total in USD" line follows the block, so they cannot be converted`
+      );
+    } else if (block.some((r) => r.amount > 0) && block.some((r) => r.amount < 0)) {
+      // IBKR converts each row at its own date's rate, so Total-in-USD ÷
+      // native-Total is only a sane exchange rate when the rows share a sign.
+      // Where a deposit and a withdrawal (or a dividend and its reversal)
+      // nearly cancel, net-over-net can be off by any factor. Fail closed.
+      warnings.push(
+        `${sectionLabel}: skipped ${block.length} ${currency} row(s) (native total ${nativeTotal}, ` +
+          `Total in USD ${usdTotal}) — mixed-sign blocks cannot be converted from the statement totals ` +
+          `and must be entered manually`
+      );
+    } else {
+      const ratio = nativeTotal === 0 ? NaN : usdTotal / nativeTotal;
+      if (!Number.isFinite(ratio) || ratio <= 0) {
+        warnings.push(
+          `${sectionLabel}: skipped ${block.length} ${currency} row(s) (native total ${nativeTotal}, ` +
+            `Total in USD ${usdTotal}) — no usable conversion ratio can be derived from the block totals`
+        );
+      } else {
+        for (const r of block) emit(r, r.amount * ratio, true);
+      }
+    }
+    block = [];
+    blockNativeTotal = null;
+  };
+
+  for (const entry of entries) {
+    if (entry.label === "Total") {
+      if (!isNaN(entry.amount)) blockNativeTotal = entry.amount;
+      continue;
+    }
+    if (entry.label === "Total in USD") {
+      flush(isNaN(entry.amount) ? null : entry.amount);
+      continue;
+    }
+    if (/^Total\b/.test(entry.label)) {
+      // "Total <Section> in USD" — the grand total across currencies, not a
+      // per-block conversion: closes a USD block, never scales one.
+      flush(null);
+      continue;
+    }
+    if (isNaN(entry.amount)) continue;
+    // A currency change without an intervening "Total in USD" line means the
+    // previous block never got its conversion — flush it (warns if non-USD).
+    if (block.length > 0 && block[0].currency !== entry.currency) flush(null);
+    block.push(entry);
+  }
+  flush(null);
+}
+
+const convertedNote = (r: NativeCashRow): string =>
+  `${r.description} (${r.currency} ${r.amount} converted at IBKR's Total-in-USD rate)`;
+
 export function parseIbkrActivity(
   content: string,
   filename: string
@@ -442,22 +541,25 @@ export function parseIbkrActivity(
     });
   }
 
-  // Parse Dividends
-  for (const row of rows) {
-    if (
-      row.section === "Dividends" &&
-      row.discriminator === "Data" &&
-      row.fields[0] !== "Total"
-    ) {
+  // Parse Dividends — per-currency blocks like Interest (see emitCurrencyBlocks):
+  // non-USD rows are stored in USD via the block's Total-in-USD ratio; the
+  // source key keeps the printed native figure so older imports dedupe.
+  emitCurrencyBlocks(
+    "Dividends",
+    rows
+      .filter((row) => row.section === "Dividends" && row.discriminator === "Data")
       // fields: Currency, Account, Date, Description, Amount
-      const date = row.fields[2];
-      const description = row.fields[3];
-      const amount = parseFloat(row.fields[4]);
-
-      if (isNaN(amount) || row.fields[0] === "Total") continue;
-
+      .map((row) => ({
+        label: row.fields[0],
+        currency: row.fields[0],
+        date: row.fields[2],
+        description: row.fields[3],
+        amount: parseFloat(row.fields[4]),
+      })),
+    warnings,
+    (r, usdAmount, converted) => {
       // Extract symbol from description like "AAPL(US0378331005) Cash Dividend..."
-      const symbolMatch = description.match(/^(\w+)\(/);
+      const symbolMatch = r.description.match(/^(\w+)\(/);
       const symbol = symbolMatch ? symbolMatch[1] : undefined;
 
       if (symbol) {
@@ -466,14 +568,15 @@ export function parseIbkrActivity(
 
       transactions.push({
         accountName: "IBKR",
-        tradeDate: date,
+        tradeDate: r.date,
         type: "DIVIDEND",
         symbol,
-        amount,
-        sourceKey: `ibkr:div:${date}:${symbol || "unknown"}:${amount}`,
+        amount: usdAmount,
+        ...(converted ? { notes: convertedNote(r) } : {}),
+        sourceKey: `ibkr:div:${r.date}:${symbol || "unknown"}:${r.amount}`,
       });
     }
-  }
+  );
 
   // Parse Interest — one block per currency: the native rows, a "Total" line
   // in that currency, then IBKR's own "Total in USD" conversion of the block.
@@ -560,58 +663,65 @@ export function parseIbkrActivity(
     flush(null);
   }
 
-  // Parse Fees
-  for (const row of rows) {
-    if (
-      row.section === "Fees" &&
-      row.discriminator === "Data" &&
-      row.fields[0] !== "Total"
-    ) {
+  // Parse Fees — per-currency blocks (see emitCurrencyBlocks).
+  emitCurrencyBlocks(
+    "Fees",
+    rows
+      .filter((row) => row.section === "Fees" && row.discriminator === "Data")
       // fields: Subtitle, Currency, Account, Date, Description, Amount
-      const date = row.fields[3];
-      const description = row.fields[4];
-      const amount = parseFloat(row.fields[5]);
-
-      if (isNaN(amount)) continue;
-
+      // (Total lines carry their label in the Subtitle column)
+      .map((row) => ({
+        label: row.fields[0],
+        currency: row.fields[1],
+        date: row.fields[3],
+        description: row.fields[4],
+        amount: parseFloat(row.fields[5]),
+      })),
+    warnings,
+    (r, usdAmount, converted) => {
       transactions.push({
         accountName: "IBKR",
-        tradeDate: date,
+        tradeDate: r.date,
         type: "FEE",
-        amount,
-        notes: description,
-        sourceKey: `ibkr:fee:${date}:${amount}:${description}`,
+        amount: usdAmount,
+        notes: converted ? convertedNote(r) : r.description,
+        sourceKey: `ibkr:fee:${r.date}:${r.amount}:${r.description}`,
       });
     }
-  }
+  );
 
-  // Parse Deposits & Withdrawals as external flow transactions
-  for (const row of rows) {
-    if (
-      (row.section === "Deposits & Withdrawals" ||
-        row.section === "Deposits/Withdrawals") &&
-      row.discriminator === "Data" &&
-      row.fields[0] !== "Total"
-    ) {
+  // Parse Deposits & Withdrawals as external flow transactions — per-currency
+  // blocks (see emitCurrencyBlocks). Direction comes from the printed row.
+  emitCurrencyBlocks(
+    "Deposits & Withdrawals",
+    rows
+      .filter(
+        (row) =>
+          (row.section === "Deposits & Withdrawals" ||
+            row.section === "Deposits/Withdrawals") &&
+          row.discriminator === "Data"
+      )
       // fields: Currency, Account, Settle Date, Description, Amount
-      const currency = row.fields[0];
-      const date = row.fields[2];
-      const description = row.fields[3];
-      const amount = parseFloat(row.fields[4]);
-
-      if (isNaN(amount) || currency === "Total") continue;
-
+      .map((row) => ({
+        label: row.fields[0],
+        currency: row.fields[0],
+        date: row.fields[2],
+        description: row.fields[3],
+        amount: parseFloat(row.fields[4]),
+      })),
+    warnings,
+    (r, usdAmount, converted) => {
       transactions.push({
         accountName: "IBKR",
-        tradeDate: date,
-        type: amount >= 0 ? "DEPOSIT" : "WITHDRAWAL",
-        amount,
+        tradeDate: r.date,
+        type: r.amount >= 0 ? "DEPOSIT" : "WITHDRAWAL",
+        amount: usdAmount,
         isExternalFlow: true,
-        notes: description,
-        sourceKey: `ibkr:dw:${date}:${amount}:${description}`,
+        notes: converted ? convertedNote(r) : r.description,
+        sourceKey: `ibkr:dw:${r.date}:${r.amount}:${r.description}`,
       });
     }
-  }
+  );
 
   // Parse Open Positions → holdings + prices
   const holdings: ParsedHolding[] = [];

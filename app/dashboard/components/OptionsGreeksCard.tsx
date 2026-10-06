@@ -6,6 +6,7 @@ import { PrivateText, Count } from "@/lib/privacy/components";
 import { formatUSDPrecise, rendersAsZero } from "@/lib/format";
 import { formatOptionExpiry } from "@/lib/format/option-expiry";
 import { EmptySection } from "./EmptySection";
+import { ScrollFade } from "./ScrollFade";
 import {
   interpretDelta,
   interpretGamma,
@@ -106,7 +107,7 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
       )}
 
       {/* Per-position table */}
-      <div className="overflow-x-auto">
+      <ScrollFade>
         <table className="w-full text-xs">
           <thead>
             <tr className="text-ink-faint border-b border-edge">
@@ -183,7 +184,7 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
             })}
           </tbody>
         </table>
-      </div>
+      </ScrollFade>
 
       {/* Diagnostics: positions that couldn't compute Greeks */}
       {data.diagnostics && data.diagnostics.length > 0 && (

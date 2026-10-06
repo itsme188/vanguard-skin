@@ -14,6 +14,7 @@
  *     unmute. Symbols are upper-cased + deduped server-side.
  */
 
+import { networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -35,8 +36,8 @@ export function EarningsEmailsSection() {
       .then((data: EarningsSettings) => {
         if (!cancelled) setState(data);
       })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Load failed");
+      .catch(() => {
+        if (!cancelled) setError("Couldn't load the earnings email settings. Reload to try again.");
       });
     return () => {
       cancelled = true;
@@ -52,14 +53,22 @@ export function EarningsEmailsSection() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(updates),
       });
-      if (!res.ok) {
-        const json = (await res.json()) as { error?: string };
-        throw new Error(json.error ?? `HTTP ${res.status}`);
+      // This route answers with the settings object itself (no success
+      // envelope), so the check is res.ok plus a readable settings body.
+      const body = (await res.json().catch(() => null)) as
+        | (Partial<EarningsSettings> & { error?: unknown })
+        | null;
+      if (!res.ok || !body || typeof body.enabled !== "boolean" || !Array.isArray(body.mutedSymbols)) {
+        const serverText =
+          typeof body?.error === "string" && body.error.trim() ? body.error.trim() : null;
+        setError(
+          `Couldn't save the earnings email settings: ${serverText ?? `the server returned an error (HTTP ${res.status}).`}`,
+        );
+        return;
       }
-      const next = (await res.json()) as EarningsSettings;
-      setState(next);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Save failed");
+      setState(body as EarningsSettings);
+    } catch {
+      setError(networkFailureMessage("save the earnings email settings"));
     } finally {
       setSaving(false);
     }
@@ -100,7 +109,7 @@ export function EarningsEmailsSection() {
       </p>
 
       {error && (
-        <p className="text-[11px] text-down">{error}</p>
+        <p role="alert" className="text-[11px] text-down">{error}</p>
       )}
 
       {state && (

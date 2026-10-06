@@ -773,6 +773,38 @@ describe("auditAndRepair — ledger walk integration", () => {
     expect(report.targets[0].ledger!.ties).toBe(true);
   });
 
+  it("a sold-out position reads as ZERO: a later zero-quantity tombstone supersedes the last nonzero row", () => {
+    const db = fresh();
+    // Fully closed: bought and sold, last nonzero snapshot, then a tombstone.
+    const closedId = seedSecurity(db, "AAAA");
+    seedTxn(db, { securityId: closedId, tradeDate: "2021-01-05", type: "BUY", quantity: 40, price: 10 });
+    seedTxn(db, { securityId: closedId, tradeDate: "2025-03-01", type: "SELL", quantity: 40, price: 12 });
+    seedHolding(db, closedId, 40, "2025-02-28");
+    seedHolding(db, closedId, 0, "2025-03-31");
+
+    // Closed in account 1 only; account 2 still holds it.
+    const partId = seedSecurity(db, "PART");
+    seedTxn(db, { securityId: partId, tradeDate: "2021-01-05", type: "BUY", quantity: 15, price: 10 });
+    seedTxn(db, { securityId: partId, tradeDate: "2025-03-01", type: "SELL", quantity: 15, price: 12 });
+    seedTxn(db, { securityId: partId, tradeDate: "2022-01-05", type: "BUY", quantity: 7, price: 10, accountId: 2 });
+    seedHolding(db, partId, 15, "2025-02-28", 1);
+    seedHolding(db, partId, 0, "2025-03-31", 1);
+    seedHolding(db, partId, 7, "2024-12-31", 2);
+
+    const map = fetchLatestHoldingsQtyBySecurity(db);
+    expect(map.has(closedId)).toBe(false); // not the stale 40
+    expect(map.get(partId)).toBe(7); // not 15 + 7
+
+    // Targeted audit: the closed name walks to zero and ties against zero.
+    const report = auditAndRepair(db, [target()], { apply: false });
+    expect(report.targets[0].ledger!.latestHoldingsQty).toBe(0);
+    expect(report.targets[0].ledger!.ties).toBe(true);
+    // Sweep: the closed name is not a live position; the half-closed one ties.
+    expect(report.siblings).toEqual([]);
+    expect(report.siblingsScanned).toBe(1);
+    expect(report.applied).toBe(false);
+  });
+
   it("excludes a demoted routing-artifact donation leg from the walk", () => {
     const db = fresh();
     const secId = seedSecurity(db, "AAAA");

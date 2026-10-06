@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 import {
   getCashEstimates,
   getHoldingsForChat,
@@ -99,7 +100,7 @@ export function computeIbkrTradingContext(
   }
 
   // 5. Repeat names — symbols traded 3+ times in last 90 days
-  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const ninetyDaysAgo = addDays(todayET(), -90); // counted back from the ET day
   const repeatNames = db
     .prepare(
       `SELECT s.symbol, COUNT(*) as trade_count, MAX(t.trade_date) as last_traded

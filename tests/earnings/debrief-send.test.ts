@@ -574,6 +574,7 @@ describe("the debrief goes out through the one lifecycle primitive (slice E, R-E
       // Never answers: the deadline decides. 20 ms keeps the test instant; the
       // production deadline is SEND_TIMEOUT_MS.
       seams: { sendEmail: () => new Promise<never>(() => {}), timeoutMs: 20 },
+      notify: vi.fn(),
     });
 
     // The email may well have gone out — the safe reading, and the reason the
@@ -586,6 +587,68 @@ describe("the debrief goes out through the one lifecycle primitive (slice E, R-E
     // Terminal-unknown claims the phase for each member so the Worker fallback
     // never sends a second copy of a recap that did arrive.
     expect(mockedMacSent).toHaveBeenCalledTimes(3);
+  });
+
+  it("a self-booked delivery_unknown fires ONE Pushover, the reaper's shape, with no figures", async () => {
+    seedThreeDebriefCandidates();
+    const notify = vi.fn().mockResolvedValue({ sent: true });
+
+    const res = await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: stubGenerate("## Debrief\n\nbody"),
+      seams: { sendEmail: () => new Promise<never>(() => {}), timeoutMs: 20 },
+      notify,
+    });
+
+    expect(res.sent).toBe(true);
+    // One email went (maybe) out, so one push — not one per stapled name.
+    expect(notify).toHaveBeenCalledTimes(1);
+    const msg = notify.mock.calls[0][0] as { title: string; message: string; priority?: number };
+    const messageId = (
+      db.prepare(`SELECT DISTINCT provider_message_id AS id FROM earnings_emails`).all() as {
+        id: string;
+      }[]
+    ).map((r) => r.id);
+    expect(messageId).toHaveLength(1);
+    expect(msg.title).toMatch(/recap: delivery unknown$/);
+    expect(msg.message).toContain("AAA, BBB, CCC recap: delivery unknown — message " + messageId[0]);
+    expect(msg.message).toMatch(/check the mailbox \/ Resend log/);
+    expect(msg.priority).toBe(0);
+    // Direction-only: names and the message id, nothing from the email body.
+    expect(msg.message).not.toMatch(/[$%]/);
+    expect(msg.message).not.toContain("body");
+  });
+
+  it("a failed delivery-unknown push never changes the debrief's result", async () => {
+    seedThreeDebriefCandidates();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: stubGenerate("## Debrief\n\nbody"),
+      seams: { sendEmail: () => new Promise<never>(() => {}), timeoutMs: 20 },
+      notify: vi.fn().mockRejectedValue(new Error("pushover down")),
+    });
+    expect(res.sent).toBe(true);
+    expect(res.covered).toHaveLength(3);
+    expect(warn.mock.calls.some((c) => c.join(" ").includes("delivery-unknown push failed"))).toBe(
+      true,
+    );
+    warn.mockRestore();
+  });
+
+  it("a delivered or a definitively failed debrief fires no push", async () => {
+    seedThreeDebriefCandidates();
+    const notify = vi.fn();
+    await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: stubGenerate("## Debrief\n\nbody"),
+      seams: { sendEmail: async (o: SendEmailOptions) => ({ messageId: o.messageId!, response: "250 OK" }) },
+      notify,
+    });
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it("a definitive rejection releases every claim and reports not-sent", async () => {

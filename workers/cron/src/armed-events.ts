@@ -251,46 +251,111 @@ export async function readArmedEventsDelta(kv: KVNamespace): Promise<ArmedEvents
   }
 }
 
+type ArmedEventEntryKey = (typeof ARMED_EVENT_ENTRY_KEYS)[number];
+
+/** How one allowlisted key is read off an untrusted POST body. */
+type ArmedEventFieldRule =
+  /** Must be an integer, or the whole entry is rejected. */
+  | { kind: "required-int" }
+  /** Must be a string, or the whole entry is rejected. Truncated to `max`. */
+  | { kind: "required-string"; max: number; upper?: boolean }
+  /** A string truncated to `max`, else null. */
+  | { kind: "nullable-string"; max: number }
+  /** A finite number, else null. */
+  | { kind: "nullable-number" }
+  /** D7 tombstone marker: kept only when literally `true`, otherwise absent. */
+  | { kind: "tombstone-flag" }
+  /** Kept only on a tombstone, and only when a string. Truncated to `max`. */
+  | { kind: "tombstone-string"; max: number };
+
+/**
+ * One parse rule per allowlisted key — the ONLY place a field's handling is
+ * written down. `parseEntry` walks `ARMED_EVENT_ENTRY_KEYS` and looks each key
+ * up here, so the parser body cannot drift from the pinned key set:
+ *
+ *   - the mapped type makes a key added to `ARMED_EVENT_ENTRY_KEYS` without a
+ *     rule a COMPILE error (and a rule for an unlisted key likewise);
+ *   - `parseEntry` throws at run time on a key with no rule, and the parity
+ *     test asserts the two key sets are equal, for the suites that do not
+ *     type-check.
+ *
+ * Before this table the body hand-listed every field, so a key added to all
+ * three declared lists and forgotten here was dropped in the cloud with every
+ * suite green.
+ */
+export const ARMED_EVENT_ENTRY_FIELDS: { readonly [K in ArmedEventEntryKey]: ArmedEventFieldRule } = {
+  eventId: { kind: "required-int" },
+  symbol: { kind: "required-string", max: 16, upper: true },
+  eventDate: { kind: "required-string", max: 10 },
+  eventTime: { kind: "nullable-string", max: 200 },
+  releaseTime: { kind: "nullable-string", max: 200 },
+  sourceKey: { kind: "required-string", max: 200 },
+  source: { kind: "required-string", max: 32 },
+  consensusValue: { kind: "nullable-string", max: 200 },
+  expectedImpact: { kind: "nullable-string", max: 200 },
+  securityId: { kind: "nullable-number" },
+  epsConsensusVendor: { kind: "nullable-number" },
+  removed: { kind: "tombstone-flag" },
+  removedAt: { kind: "tombstone-string", max: 40 },
+};
+
+const isRequiredRule = (rule: ArmedEventFieldRule): boolean =>
+  rule.kind === "required-int" || rule.kind === "required-string";
+
 /**
  * [C-19] Strict, allowlisted parse — the KV value can only ever hold the
  * projection shape. Unknown keys are DROPPED rather than stored: the endpoint
  * is reachable by anything holding the cron secret, and this is the one place
  * that guarantees the Worker never persists (and so never renders) prose the
  * data-flow contract excludes.
+ *
+ * Driven entirely by the pinned key list and its rule table above — it names
+ * no field itself.
  */
 function parseEntry(raw: unknown): ArmedEventEntry {
   const r = (raw ?? {}) as Record<string, unknown>;
-  const str = (k: string): string | null =>
-    typeof r[k] === "string" ? (r[k] as string).slice(0, 200) : null;
-  const num = (k: string): number | null =>
-    typeof r[k] === "number" && Number.isFinite(r[k] as number) ? (r[k] as number) : null;
-  if (
-    !Number.isInteger(r.eventId) ||
-    typeof r.symbol !== "string" ||
-    typeof r.eventDate !== "string" ||
-    typeof r.sourceKey !== "string" ||
-    typeof r.source !== "string"
-  ) {
-    throw new Error("armed-events: entry missing eventId/symbol/eventDate/sourceKey/source");
-  }
-  const entry: ArmedEventEntry = {
-    eventId: r.eventId as number,
-    symbol: (r.symbol as string).slice(0, 16).toUpperCase(),
-    eventDate: (r.eventDate as string).slice(0, 10),
-    eventTime: str("eventTime"),
-    releaseTime: str("releaseTime"),
-    sourceKey: (r.sourceKey as string).slice(0, 200),
-    source: (r.source as string).slice(0, 32),
-    consensusValue: str("consensusValue"),
-    expectedImpact: str("expectedImpact"),
-    securityId: num("securityId"),
-    epsConsensusVendor: num("epsConsensusVendor"),
+  const rules: Record<string, ArmedEventFieldRule | undefined> = ARMED_EVENT_ENTRY_FIELDS;
+  const out: Record<string, unknown> = {};
+  const missing = (): never => {
+    const required = ARMED_EVENT_ENTRY_KEYS.filter((k) => isRequiredRule(ARMED_EVENT_ENTRY_FIELDS[k]));
+    throw new Error(`armed-events: entry missing ${required.join("/")}`);
   };
-  if (r.removed === true) {
-    entry.removed = true;
-    if (typeof r.removedAt === "string") entry.removedAt = r.removedAt.slice(0, 40);
+  // A tombstone is declared by its flag alone; the fields that ride on it are
+  // kept only when that flag is literally true.
+  const tombstone = ARMED_EVENT_ENTRY_KEYS.some(
+    (k) => ARMED_EVENT_ENTRY_FIELDS[k].kind === "tombstone-flag" && r[k] === true,
+  );
+  for (const key of ARMED_EVENT_ENTRY_KEYS) {
+    const rule = rules[key];
+    if (!rule) throw new Error(`armed-events: no parse rule for allowlisted key "${key}"`);
+    const v = r[key];
+    switch (rule.kind) {
+      case "required-int":
+        if (!Number.isInteger(v)) missing();
+        out[key] = v;
+        break;
+      case "required-string": {
+        if (typeof v !== "string") return missing();
+        const text = v.slice(0, rule.max);
+        out[key] = rule.upper ? text.toUpperCase() : text;
+        break;
+      }
+      case "nullable-string":
+        out[key] = typeof v === "string" ? v.slice(0, rule.max) : null;
+        break;
+      case "nullable-number":
+        out[key] = typeof v === "number" && Number.isFinite(v) ? v : null;
+        break;
+      case "tombstone-flag":
+        if (v === true) out[key] = true;
+        break;
+      case "tombstone-string":
+        if (tombstone && typeof v === "string") out[key] = v.slice(0, rule.max);
+        break;
+    }
   }
-  return entry; // every other key is dropped
+  // Built key by key from the allowlist, so every other key is dropped.
+  return out as unknown as ArmedEventEntry;
 }
 
 /**

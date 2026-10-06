@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { computeRiskMetrics, computePositionRisk } from "@/lib/compute/risk";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 function createTestDb(): Database.Database {
   const db = new Database(":memory:");
@@ -309,5 +310,72 @@ describe("computePositionRisk with asOfDate", () => {
       expect(riskDay100.positions[0].symbol).toBe("MSFT");
       expect(riskDay100.positions[0].weight).toBeGreaterThan(0.7);
     }
+  });
+
+  // Look-ahead guard: an as-of view must be computed only from information
+  // available on that date. Prices printed AFTER the as-of date (here a
+  // violent move in the following week) must not change the as-of market
+  // value, weight, volatility or correlation.
+  it("is not changed by prices dated after the as-of date", () => {
+    const asOf = addDays(todayET(), -7);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+    db.exec(`
+      INSERT INTO securities (id, symbol, name) VALUES
+      (1, 'ZZA', 'Synthetic A'),
+      (2, 'ZZB', 'Synthetic B');
+    `);
+    const insPrice = db.prepare(
+      "INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, ?)"
+    );
+    // 120 daily closes ending ON the as-of date; deterministic wiggles.
+    for (let i = 120; i >= 0; i--) {
+      const date = addDays(asOf, -i);
+      insPrice.run(1, date, 100 + 3 * Math.sin(i * 0.9) + 0.05 * i);
+      insPrice.run(2, date, 50 + 2 * Math.cos(i * 0.7) + 0.02 * i);
+    }
+    const insHolding = db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (?, ?, ?, ?)"
+    );
+    insHolding.run(1, 1, asOf, 100);
+    insHolding.run(1, 2, asOf, 100);
+
+    const before = computePositionRisk(db, { accountId: 1, asOfDate: asOf, topN: 5 });
+    expect(before.positions).toHaveLength(2);
+    expect(before.positions[0].annualizedVol).not.toBeNull();
+    expect(before.portfolioVol).not.toBeNull();
+
+    // The week AFTER the as-of date: one name triples, the other halves.
+    for (let i = 1; i <= 7; i++) {
+      const date = addDays(asOf, i);
+      insPrice.run(1, date, 100 * (1 + i * 0.3));
+      insPrice.run(2, date, 50 / (1 + i * 0.15));
+    }
+
+    const after = computePositionRisk(db, { accountId: 1, asOfDate: asOf, topN: 5 });
+    expect(after).toEqual(before);
+
+    // The un-dated (current) view DOES see the new prices.
+    const current = computePositionRisk(db, { accountId: 1, topN: 5 });
+    expect(current.positions[0].annualizedVol).not.toBe(before.positions[0].annualizedVol);
+  });
+
+  it("anchors the one-year lookback on the as-of date, not on today", () => {
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+    db.exec("INSERT INTO securities (id, symbol, name) VALUES (1, 'ZZA', 'Synthetic A')");
+    const insPrice = db.prepare(
+      "INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, ?)"
+    );
+    // A fixed historical window, years before any real "today".
+    for (let i = 99; i >= 0; i--) {
+      insPrice.run(1, addDays("2024-04-10", -i), 100 + 3 * Math.sin(i * 0.9));
+    }
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (?, ?, ?, ?)"
+    ).run(1, 1, "2024-04-10", 10);
+
+    const r = computePositionRisk(db, { accountId: 1, asOfDate: "2024-04-10", topN: 3 });
+    expect(r.positions).toHaveLength(1);
+    expect(r.positions[0].dataPoints).toBe(99);
+    expect(r.positions[0].annualizedVol).not.toBeNull();
   });
 });

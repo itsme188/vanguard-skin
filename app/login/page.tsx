@@ -22,8 +22,8 @@
 
 import { useState, type FormEvent } from "react";
 import { safeNextPath } from "@/lib/auth/safe-next";
+import type { LoginResponse } from "@/app/api/auth/login/route";
 
-type LoginResponse = { success: true; data: { csrfToken: string } } | { success: false; error: string };
 
 export default function LoginPage() {
   const [password, setPassword] = useState("");

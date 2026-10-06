@@ -13,7 +13,7 @@ import type { OhlcBar } from "./indicators";
  * cost (single Haiku call amortizes across a day of same-level views).
  */
 
-const NARRATIVE_SCHEMA = jsonSchema<{ narrative: string }>({
+export const NARRATIVE_SCHEMA = jsonSchema<{ narrative: string }>({
   type: "object",
   additionalProperties: false,
   properties: {

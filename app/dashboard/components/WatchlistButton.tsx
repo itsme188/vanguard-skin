@@ -1,5 +1,6 @@
 "use client";
 
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "./Toast";
@@ -33,7 +34,11 @@ export function WatchlistButton({
         );
         if (item) {
           const res = await apiFetch(`/api/watchlist?id=${item.id}`, { method: "DELETE" });
-          if (!res.ok) throw new Error(`server returned ${res.status}`);
+          const result = await readMutationResult(res);
+          if (!result.ok) {
+            toast(`Couldn't remove from watchlist: ${result.message}`, "error");
+            return;
+          }
         }
         setWatched(false);
       } else {
@@ -42,16 +47,17 @@ export function WatchlistButton({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ securityId }),
         });
-        if (!res.ok) throw new Error(`server returned ${res.status}`);
+        const result = await readMutationResult(res);
+        if (!result.ok) {
+          toast(`Couldn't add to watchlist: ${result.message}`, "error");
+          return;
+        }
         setWatched(true);
       }
       router.refresh();
-    } catch (err) {
+    } catch {
       // The state only flips after the server confirms — say why it didn't
-      toast(
-        `Couldn't ${watched ? "remove from" : "add to"} watchlist: ${err instanceof Error ? err.message : "network error"}.`,
-        "error"
-      );
+      toast(networkFailureMessage(watched ? "remove from the watchlist" : "add to the watchlist"), "error");
     } finally {
       setLoading(false);
     }

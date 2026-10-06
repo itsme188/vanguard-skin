@@ -129,10 +129,8 @@ export function checkPrePrintFloor(
 // "Enrichment and the recap stay locked until then.") so one floor reads
 // correctly on both the save road and the generate road.
 //
-// Sibling: lib/earnings/actuals.ts::prePrintMessage carries its own copy of
-// this wording for the manual-actuals save path (it predates this helper).
-// Collapse that one onto this function when that file is next touched — the
-// two must keep saying the same thing about the same floor.
+// The manual-actuals save path (lib/earnings/actuals.ts::prePrintMessage)
+// builds on this function; never restate the floor wording elsewhere.
 
 const ET_TZ = "America/New_York";
 

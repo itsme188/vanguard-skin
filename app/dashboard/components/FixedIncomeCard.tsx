@@ -4,6 +4,7 @@ import { useState, useEffect, type ReactNode } from "react";
 import { Pct, PrivateText } from "@/lib/privacy/components";
 import { formatCompactUSD } from "@/lib/format";
 import { EmptySection } from "./EmptySection";
+import { ScrollFade } from "./ScrollFade";
 import {
   interpretDuration,
   interpretPortfolioRateSensitivity,
@@ -178,7 +179,7 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
       )}
 
       {/* Bond positions table */}
-      <div className="overflow-x-auto">
+      <ScrollFade>
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-edge text-ink-faint">
@@ -226,7 +227,7 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
             ))}
           </tbody>
         </table>
-      </div>
+      </ScrollFade>
     </div>
   );
 }

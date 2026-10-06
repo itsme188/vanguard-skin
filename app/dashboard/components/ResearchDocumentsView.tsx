@@ -1,5 +1,6 @@
 "use client";
 
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ResearchDocumentSummary,
@@ -120,8 +121,8 @@ function UploadZone({ onUploadComplete }: UploadZoneProps) {
           return;
         }
         onUploadComplete();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Upload failed");
+      } catch {
+        setError(networkFailureMessage("upload the document"));
       } finally {
         setUploading(false);
         setCurrentFilename(null);
@@ -733,8 +734,9 @@ function InboxForwardCard({ onIngested }: { onIngested: () => void }) {
     setChecking(true);
     try {
       const res = await apiFetch("/api/research/ingest-inbox", { method: "POST" });
-      const data = await res.json();
-      if (res.ok && data.success) {
+      const result = await readMutationResult<{ ingested?: number; failed?: number }>(res);
+      if (result.ok) {
+        const data = result.data;
         // A successful check clears any standing error from a prior attempt.
         setCheckError(null);
         const n: number = data.ingested ?? 0;
@@ -744,11 +746,11 @@ function InboxForwardCard({ onIngested }: { onIngested: () => void }) {
         } else {
           toast("Inbox checked — nothing new to file.", "info");
         }
-        if (data.failed > 0) {
+        if ((data.failed ?? 0) > 0) {
           toast(`${data.failed} forwarded message(s) couldn't be processed.`, "error");
         }
       } else {
-        const message = `Couldn't check the inbox: ${data.error ?? res.status}`;
+        const message = `Couldn't check the inbox: ${result.message}`;
         setCheckError(message);
         toast(message, "error");
       }

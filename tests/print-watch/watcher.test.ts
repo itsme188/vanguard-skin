@@ -882,9 +882,14 @@ describe("watch loop", () => {
 
     ensurePrintWatch(db);
     // Well under the 10s cadence: only a burst can produce a second DJ poll.
-    await tick(2_000);
+    // Wait on the CONDITION, not on a fixed number of I/O flushes — the hit's
+    // ingest is real fs I/O, and under a loaded machine a single `tick` can
+    // return before it lands. The fake clock still moves at most 2s in total
+    // (40 x 50ms), so the cadence sleep can never be what produced the poll.
+    await waitUntil(() => fake.djCalls >= 2, 40, 50);
 
     expect(fake.djCalls).toBeGreaterThanOrEqual(2);
+    expect(Date.now() - IN_WINDOW.getTime()).toBeLessThan(CADENCE_MS);
   });
 
   it("skips DJ with a 'tws offline' note when the connection seam reports down", async () => {
@@ -1190,14 +1195,25 @@ describe("source seen-sets", () => {
     };
 
     ensurePrintWatch(db);
-    await tick(1);
+    // Condition waits, not fixed flush counts: both halves sit behind real I/O
+    // (the acquired document's fs writes), which a loaded machine can stretch
+    // past one `tick`. The fake clock stays far inside the first cadence sleep
+    // here (40ms at most), so this is still the FIRST poll.
+    await waitUntil(
+      () => fake.irCalls.length >= 1 && (getWatchStatus(db)[0].sources.rss ?? "").includes("baseline"),
+      40,
+      1,
+    );
 
     // First poll of the watch: baseline, with nothing seen yet.
+    expect(fake.irCalls).toHaveLength(1);
     expect(fake.irCalls[0].baseline).toBe(true);
     expect(fake.irCalls[0].seen).toEqual([]);
     expect(getWatchStatus(db)[0].sources.rss).toContain("baseline");
 
-    await tick(11_000);
+    // The same 11s budget as before (22 x 500ms), stepped so the ingest's I/O
+    // gets a flush between steps.
+    await waitUntil(() => fake.irCalls[fake.irCalls.length - 1].seen.includes(IR_LINK), 22, 500);
 
     const later = fake.irCalls[fake.irCalls.length - 1];
     expect(later.baseline).toBe(false);
@@ -2039,7 +2055,9 @@ describe("pipeline", () => {
     db.prepare(`DELETE FROM settings WHERE key = 'print_watch_lease'`).run();
 
     ensurePrintWatch(db);
-    await flushIo();
+    // A durable condition, not a fixed flush count: the drain reads the stored
+    // bytes back off disk, which a loaded machine can stretch past one flush.
+    await waitUntil(() => listDocuments(db, printId)[0].parsed_at !== null, 40, 1);
 
     expect(getPrintByEventId(db, eventId)!.state).toBe("parsed");
     expect(listDocuments(db, printId)[0].parsed_at).not.toBeNull();

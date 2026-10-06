@@ -33,6 +33,7 @@ import type { FeatureKey } from "@/lib/ai/feature-keys";
 import { getModelForFeature } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { dropModelFromCatalog } from "@/lib/ai/catalog-source";
+import { FORCED_TOOL_UNSUPPORTED_RE } from "@/lib/ai/classify-anthropic-error";
 
 export class AIRefusalError extends Error {
   constructor(public feature: FeatureKey, public modelId: string) {
@@ -61,8 +62,7 @@ function isModelUnavailable(err: unknown): boolean {
  * Matched on the error message AND on an APICallError's response body, because
  * the SDK does not always fold the upstream body into `message`.
  */
-const FORCED_TOOL_UNSUPPORTED =
-  /tool_choice[\s\S]{0,200}?not supported for this model/i;
+const FORCED_TOOL_UNSUPPORTED = FORCED_TOOL_UNSUPPORTED_RE;
 
 export function isForcedToolUnsupported(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -70,6 +70,27 @@ export function isForcedToolUnsupported(err: unknown): boolean {
   if (APICallError.isInstance(err) && err.statusCode === 400) {
     const body = typeof err.responseBody === "string" ? err.responseBody : "";
     if (FORCED_TOOL_UNSUPPORTED.test(body)) return true;
+  }
+  return false;
+}
+
+/**
+ * The provider rejected the NATIVE structured-output request itself
+ * (`output_config.format` / json_schema unsupported on this model, or a schema
+ * keyword the native mode refuses). Only meaningful on a 400.
+ */
+const OUTPUT_FORMAT_REJECTED =
+  /output_config|output_format|outputFormat|json_schema|structured output|(?:for 'array' type|property '\w+')[\s\S]{0,120}not supported/i;
+
+export function isOutputFormatRejected(err: unknown): boolean {
+  if (isForcedToolUnsupported(err)) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+  const status = (err as { statusCode?: number } | null)?.statusCode;
+  const is400 = status === 400 || /\b400\b|invalid_request_error/i.test(msg);
+  if (!is400) return false;
+  if (OUTPUT_FORMAT_REJECTED.test(msg)) return true;
+  if (APICallError.isInstance(err) && typeof err.responseBody === "string") {
+    return OUTPUT_FORMAT_REJECTED.test(err.responseBody);
   }
   return false;
 }
@@ -103,18 +124,25 @@ export async function generateTextForFeature(feature: FeatureKey, opts: GenTextO
   }
 }
 
+type StructuredMode = "outputFormat" | "jsonTool";
+
+function anthropicModeOf(opts: GenObjOpts): unknown {
+  const po = (opts as { providerOptions?: Record<string, Record<string, unknown>> }).providerOptions;
+  return po?.anthropic?.structuredOutputMode;
+}
+
 /**
  * Ask @ai-sdk/anthropic for Anthropic's NATIVE structured output instead of the
  * synthetic-json-tool fallback (see item 3 in the file header). Only applies to
  * the Anthropic provider; every other provider's options are left untouched.
  *
- * `force` is used by the one retry: it overrides a caller-supplied mode, which
- * is the only way a forced-tool 400 can still reach us after the up-front merge.
+ * `force` overrides a caller-supplied mode with `mode` (used by the retries).
  */
 function withAnthropicStructuredOutput(
   feature: FeatureKey,
   opts: GenObjOpts,
   force: boolean,
+  mode: StructuredMode = "outputFormat",
 ): GenObjOpts {
   if (resolveFeatureModel(feature).provider !== "anthropic") return opts;
   const providerOptions = (opts as { providerOptions?: Record<string, Record<string, unknown>> })
@@ -128,13 +156,16 @@ function withAnthropicStructuredOutput(
     ...opts,
     providerOptions: {
       ...providerOptions,
-      anthropic: { ...anthropicOptions, structuredOutputMode: "outputFormat" },
+      anthropic: { ...anthropicOptions, structuredOutputMode: mode },
     },
   } as GenObjOpts;
 }
 
 export async function generateObjectForFeature(feature: FeatureKey, opts: GenObjOpts) {
-  const { modelId } = resolveFeatureModel(feature);
+  const { modelId, provider } = resolveFeatureModel(feature);
+  // The mode the FIRST request actually carries (caller's, else our default).
+  const firstMode =
+    provider === "anthropic" ? (anthropicModeOf(opts) ?? "outputFormat") : undefined;
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return await generateObject({
@@ -144,16 +175,32 @@ export async function generateObjectForFeature(feature: FeatureKey, opts: GenObj
     } as any);
   } catch (err) {
     if (isForcedToolUnsupported(err)) {
-      // The model rejects forced tool use outright (Fable/Mythos 5 family).
-      // Retry ONCE with native structured output forced — that request body
-      // carries no tool and no tool_choice at all, so there is nothing to
-      // reject. Same model: this is a capability mismatch, not a dead model.
+      // Retry ONCE with native structured output forced — no tool, no
+      // tool_choice in the body. Only worth it when the first request was NOT
+      // already that request: otherwise the retry is byte-identical and can
+      // only fail the same way (wasted round-trip), so surface the error.
+      if (provider !== "anthropic" || firstMode === "outputFormat") throw err;
       console.warn(
         `[ai] ${feature}: ${modelId} rejects forced tool use → retrying with native structured output`,
       );
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return await generateObject({
-        ...withAnthropicStructuredOutput(feature, opts, true),
+        ...withAnthropicStructuredOutput(feature, opts, true, "outputFormat"),
+        model: getModelForFeature(feature),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    }
+    if (isOutputFormatRejected(err)) {
+      // The model (e.g. a tier that degraded to one without native structured
+      // output) rejects the native request. Retry ONCE via the JSON-tool path.
+      // Skip when that is what we already sent (identical request).
+      if (provider !== "anthropic" || firstMode === "jsonTool") throw err;
+      console.warn(
+        `[ai] ${feature}: ${modelId} rejects native structured output → retrying with JSON-tool path`,
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return await generateObject({
+        ...withAnthropicStructuredOutput(feature, opts, true, "jsonTool"),
         model: getModelForFeature(feature),
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any);

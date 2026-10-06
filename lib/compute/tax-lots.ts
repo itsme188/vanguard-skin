@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import { marketValue, unitPriceFromMarketValue } from "@/lib/valuation";
 import { stampTaxLotsConventionIfPresent } from "@/lib/compute/tax-convention";
 import { statementGradeHoldingSql } from "@/lib/db/holding-sources";
-import { findLaterImportSplit, positionChangingTxnTypesSql } from "@/lib/compute/synthetic-close-guards";
+import { findLaterImportSplit, IMPORT_SPLIT_ACTION_TYPES_SQL, positionChangingTxnTypesSql } from "@/lib/compute/synthetic-close-guards";
 
 interface TaxLotComputeResult {
   lotsCreated: number;
@@ -383,7 +383,9 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     // 'manual' rows already rewrote history at apply time (legacy road) and
     // are excluded here — replaying them would double-apply. Only
     // 'import' rows (statement-sourced) are replayed chronologically,
-    // merged into the sells loop below.
+    // merged into the sells loop below. Only SPLIT / REVERSE_SPLIT rows are
+    // split events: any other action type (MERGER, SPINOFF) carries a ratio
+    // that is not a share-count multiplier and must never be replayed as one.
     const splitEvents = db
       .prepare(
         `SELECT ca.id, ca.security_id, ca.account_id, ca.effective_date,
@@ -392,6 +394,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
          FROM corporate_actions ca
          JOIN securities s ON s.id = ca.security_id
          WHERE ca.source = 'import'
+           AND UPPER(ca.action_type) IN (${IMPORT_SPLIT_ACTION_TYPES_SQL})
          ORDER BY ca.effective_date, ca.id`
       )
       .all() as SplitEvent[];

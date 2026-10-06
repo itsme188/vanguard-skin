@@ -37,6 +37,15 @@ export function positionChangingTxnTypesSql(): string {
   return POSITION_CHANGING_TXN_TYPES.map((t) => `'${t}'`).join(", ");
 }
 
+/**
+ * The `corporate_actions.action_type` values that are share splits, as a SQL
+ * `IN (...)` list body. Compare with `UPPER(action_type)`. The engine's split
+ * replay and the pending-statement split guard both read import-sourced rows
+ * through this list, so a future non-split action type (MERGER, SPINOFF) is
+ * neither replayed as a split nor allowed to trip the split guard.
+ */
+export const IMPORT_SPLIT_ACTION_TYPES_SQL = "'SPLIT', 'REVERSE_SPLIT'";
+
 /** The minimal shape of an import-sourced split row the split guard reads. */
 export interface ImportSplitDate {
   security_id: number;

@@ -95,6 +95,10 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  // The generate call failed because the AI service itself is unavailable
+  // (5xx, or the request never completed) — the cold-failure state then says
+  // so in plain words instead of echoing the request-failed sentence.
+  const [aiUnavailable, setAiUnavailable] = useState(false);
   // Which control started the refresh, so the outcome renders under the
   // button the user actually pressed. The drift banner's button is ~128px
   // above the footer line where the status used to be its ONLY home, with
@@ -114,6 +118,7 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
   const handleRefresh = useCallback(async (origin: "banner" | "footer" = "footer") => {
     setRefreshing(true);
     setRefreshError(null);
+    setAiUnavailable(false);
     setRefreshOrigin(origin);
     try {
       const res = await apiFetch("/api/analysis/narrative", {
@@ -135,11 +140,13 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
         // rate limit and every other non-OK status, so no response can
         // reach the card as a bare token or as nothing at all.
         setRefreshError(describeRefreshFailure(NARRATIVE_SUBJECT, res.status, data));
+        setAiUnavailable(res.status >= 500);
       }
     } catch {
       // Network-level failure (offline, server restarting mid-click). The
       // browser's raw message ("Failed to fetch") is not domain language.
       setRefreshError(describeRefreshFailure(NARRATIVE_SUBJECT, 0, null));
+      setAiUnavailable(true);
     } finally {
       setRefreshing(false);
     }
@@ -187,7 +194,7 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
         role="alert"
         className="not-italic text-xs text-warn mt-2 flex flex-wrap items-center gap-x-2 gap-y-1"
       >
-        <span>{refreshError}</span>
+        <span>{aiUnavailable ? "AI narrative unavailable right now." : refreshError}</span>
         <button
           type="button"
           onClick={() => handleRefresh("footer")}

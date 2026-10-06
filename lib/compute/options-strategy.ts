@@ -214,10 +214,21 @@ function detectCoveredStrategies(
       underlying: stock.symbol,
       expiration: call.expiration,
       legs: [stock, call],
-      maxProfit: (strike - stockCost + (call.currentPrice ?? 0)) * call.multiplier * coveredContracts,
+      // The short call caps the upside of the COVERED shares only. Any share
+      // beyond coveredContracts x multiplier is plain long stock with no cap,
+      // so the package's upside is unlimited (null) — a finite figure here
+      // would understate it.
+      maxProfit:
+        uncoveredShares > 0
+          ? null
+          : (strike - stockCost + (call.currentPrice ?? 0)) * call.multiplier * coveredContracts,
       maxLoss,
       breakevens: [stockCost - (call.currentPrice ?? 0)],
-      description: `Long ${shares} shares + short ${Math.abs(call.quantity)} ${formatExpiry(call.expiration)} ${formatStrike(strike)} call${Math.abs(call.quantity) > 1 ? "s" : ""}`,
+      description: `Long ${shares} shares + short ${Math.abs(call.quantity)} ${formatExpiry(call.expiration)} ${formatStrike(strike)} call${Math.abs(call.quantity) > 1 ? "s" : ""}${
+        uncoveredShares > 0
+          ? ` (${coveredShares} sh covered of ${shares} held — ${uncoveredShares} sh uncapped)`
+          : ""
+      }`,
     });
   }
 

@@ -23,10 +23,14 @@ import { createSession } from "@/lib/mutations/sessions";
 import { checkLoginThrottle, recordLoginFailure, resetLoginThrottle } from "@/lib/auth/throttle";
 import { buildSessionCookie, buildCsrfCookie, serializeSetCookie, type SetCookie } from "@/lib/auth/cookies";
 
+export type LoginResponse =
+  | { success: true; data: { csrfToken: string } }
+  | { success: false; error: string };
+
 export interface LoginResult {
   status: number;
   setCookies: SetCookie[];
-  body: { success: true; data: { csrfToken: string } } | { success: false; error: string };
+  body: LoginResponse;
 }
 
 /**

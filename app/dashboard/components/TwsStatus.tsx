@@ -1,5 +1,6 @@
 "use client";
 
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState, useEffect, useCallback } from "react";
 import type { TwsStatus as TwsStatusType } from "@/lib/tws/types";
 import type { SyncState } from "@/lib/tws/sync-state";
@@ -192,19 +193,20 @@ function TwsPanel({
           clientId: Number(clientId),
         }),
       });
-      const json = await res.json();
-      if (json.success) {
-        onStatusChange(json.data);
+      const r = await readMutationResult<{ data: { state?: string; error?: string } & Record<string, unknown> }>(res);
+      if (r.ok) {
+        const json = r.data;
+        onStatusChange(json.data as never);
         if (json.data.state === "connected") {
           setResult("Connected successfully");
         } else if (json.data.error) {
           setResult(`Error: ${json.data.error}`);
         }
       } else {
-        setResult(`Error: ${json.error}`);
+        setResult(`Error: couldn't connect to TWS. ${r.message}`);
       }
-    } catch (err) {
-      setResult(`Error: ${err instanceof Error ? err.message : "Failed"}`);
+    } catch {
+      setResult(`Error: ${networkFailureMessage("connect to TWS")}`);
     } finally {
       setLoading(null);
     }
@@ -216,13 +218,15 @@ function TwsPanel({
     setResultBalances(null);
     try {
       const res = await apiFetch("/api/tws/disconnect", { method: "POST" });
-      const json = await res.json();
-      if (json.success) {
-        onStatusChange(json.data);
+      const r = await readMutationResult<{ data: never }>(res);
+      if (r.ok) {
+        onStatusChange(r.data.data);
         setResult("Disconnected");
+      } else {
+        setResult(`Error: couldn't disconnect from TWS. ${r.message}`);
       }
     } catch {
-      setResult("Error disconnecting");
+      setResult(`Error: ${networkFailureMessage("disconnect from TWS")}`);
     } finally {
       setLoading(null);
     }
@@ -244,8 +248,8 @@ function TwsPanel({
       });
 
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: "Failed" }));
-        setResult(`Error: ${data.error || "Failed"}`);
+        const failed = await readMutationResult(res);
+        setResult(`Error: ${failed.ok ? "the server returned an unexpected reply." : failed.message}`);
         setLoading(null);
         return;
       }
@@ -315,8 +319,8 @@ function TwsPanel({
           }
         }
       }
-    } catch (err) {
-      setResult(`Error: ${err instanceof Error ? err.message : "Failed"}`);
+    } catch {
+      setResult(`Error: ${networkFailureMessage("fetch prices")}`);
     } finally {
       setLoading(null);
       setPriceProgress(null);
@@ -333,17 +337,17 @@ function TwsPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      const json = await res.json();
-      if (json.success) {
-        const d = json.data;
+      const r = await readMutationResult<{ data: { enriched: number; securities: number; errors: number } }>(res);
+      if (r.ok) {
+        const d = r.data.data;
         setResult(
           `Enriched ${d.enriched} of ${d.securities} securities, ${d.errors} errors`,
         );
       } else {
-        setResult(`Error: ${json.error}`);
+        setResult(`Error: couldn't enrich securities. ${r.message}`);
       }
-    } catch (err) {
-      setResult(`Error: ${err instanceof Error ? err.message : "Failed"}`);
+    } catch {
+      setResult(`Error: ${networkFailureMessage("enrich securities")}`);
     } finally {
       setLoading(null);
     }
@@ -359,8 +363,8 @@ function TwsPanel({
       const res = await apiFetch("/api/tws/positions", { method: "POST" });
 
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: "Failed" }));
-        setResult(`Error: ${data.error || "Failed"}`);
+        const failed = await readMutationResult(res);
+        setResult(`Error: ${failed.ok ? "the server returned an unexpected reply." : failed.message}`);
         setLoading(null);
         setSyncStatus(null);
         return;
@@ -421,8 +425,8 @@ function TwsPanel({
           }
         }
       }
-    } catch (err) {
-      setResult(`Error: ${err instanceof Error ? err.message : "Failed"}`);
+    } catch {
+      setResult(`Error: ${networkFailureMessage("sync the portfolio")}`);
     } finally {
       setLoading(null);
       setSyncStatus(null);
@@ -580,13 +584,17 @@ function TwsPanel({
             <button
               onClick={async () => {
                 try {
-                  await apiFetch("/api/tws/auto-refresh", {
+                  const res = await apiFetch("/api/tws/auto-refresh", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ level: "full" }),
                   });
+                  const r = await readMutationResult(res);
+                  // Progress and the final outcome come from sync-status polling;
+                  // only a refusal to start needs saying here.
+                  if (!r.ok) setResult(`Error: couldn't start the full sync. ${r.message}`);
                 } catch {
-                  // sync-status polling will show the result
+                  setResult(`Error: ${networkFailureMessage("start the full sync")}`);
                 }
               }}
               disabled={syncState.status === "syncing" || loading !== null}

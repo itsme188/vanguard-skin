@@ -7,13 +7,18 @@
  * "face value" (bonds) is uncountable and is never singular/plural branched.
  * "contract"/"share" branch on the ABSOLUTE quantity being exactly 1, so a
  * short 1-contract position (-1) also reads "1 contract", not "-1 contracts".
+ *
+ * Privacy: when `isPrivate` is true the quantity beside the noun is masked, so
+ * the noun must not singularise (a "•••  contract" would reveal a quantity of
+ * one). Masked output is always the neutral plural form.
  */
 export function quantityUnitLabel(
   securityType: string | null | undefined,
-  quantity: number
+  quantity: number,
+  isPrivate = false
 ): string {
   const type = securityType?.toLowerCase();
-  const isSingular = Math.abs(quantity) === 1;
+  const isSingular = !isPrivate && Math.abs(quantity) === 1;
 
   if (type === "option") return isSingular ? "contract" : "contracts";
   if (type === "bond") return "face value";

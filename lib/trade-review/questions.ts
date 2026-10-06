@@ -68,7 +68,7 @@ interface QuestionsResult {
   }>;
 }
 
-const QUESTIONS_SCHEMA = jsonSchema<QuestionsResult>({
+export const QUESTIONS_SCHEMA = jsonSchema<QuestionsResult>({
   type: "object",
   additionalProperties: false,
   properties: {

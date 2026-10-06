@@ -385,9 +385,15 @@ export function fetchLedgerLegs(
 }
 
 /**
- * Latest nonzero holdings quantity per security, summed across accounts.
- * Uses `latestHoldingsPredicate` (per-(account, security) MAX(as_of_date)) —
- * never a global MAX.
+ * Current holdings quantity per security, summed across accounts, by the
+ * shared latest-holdings rule (`latestHoldingsPredicate`): the LATEST row per
+ * (account, security) — never a global MAX — kept only when its quantity is
+ * nonzero. A later zero-quantity tombstone therefore supersedes a sold-out
+ * position's last nonzero row: the pair drops out, and a security closed
+ * everywhere is absent from the map (callers read that as zero / not live).
+ * Never hand-roll a "latest nonzero row" here — that flags closed names
+ * forever. A closed pair with NO tombstone still reads as held; minting
+ * tombstones is the closed-position reconciler's job, not this audit's.
  */
 export function fetchLatestHoldingsQtyBySecurity(db: Database.Database): Map<number, number> {
   const rows = db

@@ -27,7 +27,7 @@ import { tradeGradeGroupCaption } from "./trade-grade-group";
 import { computeSecurityFactorShare } from "@/lib/compute/factors";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { QuoteStats } from "../../components/QuoteStats";
-import { Money, Pct, Shares, PrivateText } from "@/lib/privacy/components";
+import { Money, Pct, Shares, PrivateText, QuantityUnit } from "@/lib/privacy/components";
 import { computeLotCoverageGaps } from "@/lib/compute/lot-coverage";
 import { daysToExpiry, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import type { EarningsTranscript } from "@/lib/types";
@@ -461,16 +461,20 @@ export default async function SecurityDetailPage(props: {
               {lotCoverageGaps.map((gap) => (
                 <p key={gap.accountId} className="text-xs text-ink-faint">
                   <span className="text-ink-dim">{gap.accountName}</span>: lots cover{" "}
-                  <Shares value={gap.coveredQty} /> of <Shares value={gap.positionQty} /> shares
+                  <Shares value={gap.coveredQty} /> of <Shares value={gap.positionQty} />{" "}
+                  <QuantityUnit securityType={security.security_type} quantity={gap.positionQty} />
                   {" — "}
                   {gap.missingQty > 0 ? (
                     <>
-                      <Shares value={gap.missingQty} /> shares have no cost-basis history
+                      <Shares value={gap.missingQty} />{" "}
+                      <QuantityUnit securityType={security.security_type} quantity={gap.missingQty} />{" "}
+                      have no cost-basis history
                     </>
                   ) : (
                     <>
-                      <Shares value={Math.abs(gap.missingQty)} /> more shares in lots than the
-                      position shows
+                      <Shares value={Math.abs(gap.missingQty)} /> more{" "}
+                      <QuantityUnit securityType={security.security_type} quantity={gap.missingQty} />{" "}
+                      in lots than the position shows
                     </>
                   )}
                 </p>

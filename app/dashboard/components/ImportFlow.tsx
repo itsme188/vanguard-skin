@@ -321,11 +321,17 @@ export function ImportFlow() {
     // A file that parses but contains zero records is equally un-importable:
     // committing it only creates an empty import_batches row (the 0-record
     // rows in Import History that invite a pointless 95s Undo).
-    const previewRecordCount = (p: NonNullable<(typeof state.results)[number]["preview"]>) =>
-      p.transactionCount + p.securityCount + p.holdingCount + p.priceCount + p.snapshotCount + p.corporateActions.count + (p.donations?.count ?? 0);
+    // Securities are by-products of the other rows: when rows were excluded
+    // and ONLY securities remain, the file has nothing real to import, so the
+    // security count alone must not keep the button enabled.
+    const previewRecordCount = (
+      p: NonNullable<(typeof state.results)[number]["preview"]>,
+      onlySecuritiesLeftIsEmpty: boolean,
+    ) =>
+      p.transactionCount + (onlySecuritiesLeftIsEmpty ? 0 : p.securityCount) + p.holdingCount + p.priceCount + p.snapshotCount + p.corporateActions.count + (p.donations?.count ?? 0);
     const parsedResults = state.results.filter((r) => r.success && r.preview);
     const importableCount = parsedResults.filter(
-      (r) => previewRecordCount(r.preview!) > 0
+      (r) => previewRecordCount(r.preview!, (r.skippedRows?.length ?? 0) > 0) > 0
     ).length;
     const parsedButEmptyCount = parsedResults.length - importableCount;
     return (

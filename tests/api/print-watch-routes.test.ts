@@ -688,6 +688,34 @@ describe("POST /api/print-watch/drop", () => {
     expect(JSON.stringify(body)).not.toContain("token=SECRET");
   });
 
+  it("the file branch and the URL branch answer with ONE data shape (slice B minor)", async () => {
+    upsertPrint(hoisted.db, 720, "ACME", "2026-08-26", "16:15");
+    upsertPrint(hoisted.db, 721, "ACME", "2026-08-26", "16:15");
+    const html = "<html><body><h1>ACME Reports Second Quarter 2026 Results</h1></body></html>";
+    urlFetchMock.mockResolvedValueOnce({
+      bytes: Buffer.from(html, "utf8"),
+      finalUrl: "https://ir.example/r",
+      status: 200,
+      contentType: "text/html",
+    });
+    const mod = await import("@/app/api/print-watch/drop/route");
+
+    const file = await (
+      await mod.POST(
+        dropReq({ eventId: 720, filename: "r.html", contentBase64: Buffer.from(html, "utf8").toString("base64") }),
+      )
+    ).json();
+    const url = await (await mod.POST(dropReq({ eventId: 721, url: "https://ir.example/r" }))).json();
+
+    const KEYS = ["detail", "docId", "isNew", "outcome", "rejectReason", "road"];
+    expect(Object.keys(file.data).sort()).toEqual(KEYS);
+    expect(Object.keys(url.data).sort()).toEqual(KEYS);
+    expect(file.data).toMatchObject({ road: "user-drop", outcome: "parsed", rejectReason: null });
+    expect(url.data).toMatchObject({ road: "user-url", outcome: "parsed", rejectReason: null });
+    expect(typeof file.data.detail).toBe("string");
+    expect(typeof url.data.detail).toBe("string");
+  });
+
   it("refuses a body carrying BOTH url and contentBase64, and a non-https url, with 400", async () => {
     upsertPrint(hoisted.db, 713, "ACME", "2026-08-26", "16:15");
     const mod = await import("@/app/api/print-watch/drop/route");

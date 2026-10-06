@@ -222,6 +222,28 @@ function hasSettingsTable(db: Database.Database): boolean {
 }
 
 /**
+ * The one "are lot-derived dollars still waiting on a recompute?" probe for
+ * read surfaces that only LABEL their figures (options P&L, trade round
+ * trips). It never throws and never hides data — it decides a caution label.
+ *
+ * Fails CLOSED: if the marker cannot be read (query error, damaged settings
+ * table, unusable handle) the answer is "pending", so the label stays on
+ * rather than the figures being silently trusted.
+ *
+ * One deliberate exception, shared with the guarded wrappers below: a schema
+ * with no `settings` table at all (minimal test DBs) does not model the
+ * marker, so it reads "not pending". Production always has the table.
+ */
+export function isTaxConventionPending(db: Database.Database): boolean {
+  try {
+    if (!hasSettingsTable(db)) return false;
+    return !getTaxConventionState(db).recomputeCurrent;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Wrapper for mutation sites that run on minimal test DBs (no settings table).
  * No-ops if the settings table is missing.
  */

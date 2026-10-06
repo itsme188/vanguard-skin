@@ -1,20 +1,6 @@
 import { readIbkrTradeDirection } from "@/lib/import/ibkr-trade-direction";
 import type Database from "better-sqlite3";
-import { getTaxConventionState } from "@/lib/compute/tax-convention";
-
-/**
- * Whether the current tax-lot convention state is pending a recompute
- * (number-trust durable fixes, WS1 pending-state contract). Guarded against
- * minimal test DBs that never created a `settings` table — those don't model
- * this dimension, so they default to "not pending" rather than throwing.
- */
-function isConventionPending(db: Database.Database): boolean {
-  try {
-    return !getTaxConventionState(db).recomputeCurrent;
-  } catch {
-    return false;
-  }
-}
+import { isTaxConventionPending } from "@/lib/compute/tax-convention";
 
 /**
  * A round-trip trade: one buy→sell cycle extracted from tax_lot_sales.
@@ -212,7 +198,7 @@ export function getRoundTrips(
   // (foreign-currency convention: conversion happens at read time only) —
   // convert here, before any cross-security aggregation sums mixed currencies.
   // conventionPending is computed once per call, not per row.
-  const conventionPending = isConventionPending(db);
+  const conventionPending = isTaxConventionPending(db);
   return rows.map((r) => {
     const direction = readIbkrTradeDirection(r.transaction_notes);
     const fx = r.usd_per_unit > 0 ? r.usd_per_unit : 1;

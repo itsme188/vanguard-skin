@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { ingestDocument } from "@/lib/print-watch/watcher";
-import { deliverFromUrl } from "@/lib/print-watch/roads";
+import { ingestDocument, type IngestOutcome } from "@/lib/print-watch/watcher";
+import { deliverFromUrl, type RoadOutcome } from "@/lib/print-watch/roads";
 import { getPrintByEventId } from "@/lib/print-watch/store";
 
 /**
@@ -10,6 +10,17 @@ import { getPrintByEventId } from "@/lib/print-watch/store";
  * oversized/hostile drop never pays for the Buffer.from allocation.
  */
 const MAX_BASE64_LENGTH = 14 * 1024 * 1024;
+
+/** The file branch's `detail` line — the drop-road twin of the URL road's copy
+ *  in `lib/print-watch/roads.ts`. */
+const DROP_OUTCOME_COPY: Record<IngestOutcome, string> = {
+  parsed: "read and parsed — the sheet has been updated",
+  rejected: "read, but the document was refused by the issuer/period gate",
+  duplicate: "this release was already in hand",
+  queued: "stored — parsing is waiting on the process that owns the watcher",
+  refused: "the file was refused",
+  parse_failed: "stored, but the parse attempt failed — it will be retried",
+};
 
 /** The two shapes this route accepts. Parsed UP FRONT (Codex #15) rather than
  *  validated field by field: the old order demanded `filename` immediately
@@ -122,10 +133,18 @@ export async function POST(request: NextRequest) {
     // duplicate and a failed parse are all HTTP 200 — the drop itself worked —
     // but they are NOT "parsing now", and only ingestDocument knows which of
     // them happened.
-    return NextResponse.json({
-      success: true,
-      data: { road: "user-drop", docId, isNew, outcome, rejectReason: rejectReason ?? null },
-    });
+    // ONE data shape for both branches (`RoadOutcome`): the URL branch's
+    // `deliverFromUrl` answers with the same six fields.
+    const reason = rejectReason ?? null;
+    const data: RoadOutcome = {
+      road: "user-drop",
+      outcome,
+      detail: reason ? `${DROP_OUTCOME_COPY[outcome]}: ${reason}` : DROP_OUTCOME_COPY[outcome],
+      rejectReason: reason,
+      docId,
+      isNew,
+    };
+    return NextResponse.json({ success: true, data });
   } catch (error) {
     // Message only, never a URL or a body: `deliverFromUrl` propagates
     // infrastructure exceptions by ruling, and this is where they land.

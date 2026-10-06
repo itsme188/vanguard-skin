@@ -142,3 +142,18 @@ describe("plaid client", () => {
     });
   });
 });
+
+describe("plaidPost non-JSON response", () => {
+  it("a non-JSON 5xx throws PlaidApiError with status and a short excerpt", async () => {
+    const { PlaidApiError, createLinkToken } = await import("@/lib/plaid/client");
+    const impl = (async () =>
+      new Response("<html>Bad Gateway".padEnd(500, "x"), { status: 502 })) as unknown as typeof fetch;
+    const cfg = { clientId: "id", secret: "SECRET-VALUE", env: "sandbox" as const, redirectUri: null, fetchImpl: impl };
+    const err = await createLinkToken(cfg).catch((e) => e);
+    expect(err).toBeInstanceOf(PlaidApiError);
+    expect(err.errorCode).toBe("HTTP_502");
+    expect(err.message).toContain("502");
+    expect(err.message.length).toBeLessThan(300);
+    expect(err.message).not.toContain("SECRET-VALUE");
+  });
+});

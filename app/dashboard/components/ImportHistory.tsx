@@ -1,5 +1,6 @@
 "use client";
 
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { ImportBatch } from "@/lib/types";
@@ -68,9 +69,13 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
       // short-lived, single-use confirmation token; the second presents it.
       // A stray or replayed DELETE therefore can't unwind a batch on its own.
       const challenge = await apiFetch(`/api/import?batchId=${batchId}`, { method: "DELETE" });
-      const challengeData = await challenge.json().catch(() => ({ error: "Undo failed" }));
-      if (!challenge.ok || !challengeData.requiresConfirmation || !challengeData.confirmToken) {
-        setUndoError(challengeData.error ?? "Undo failed");
+      const challengeData = await challenge.json().catch(() => null);
+      if (!challenge.ok || !challengeData?.requiresConfirmation || !challengeData?.confirmToken) {
+        setUndoError(
+          typeof challengeData?.error === "string" && challengeData.error
+            ? challengeData.error
+            : `Couldn't undo the import: the server returned an error (HTTP ${challenge.status}).`,
+        );
         return;
       }
 
@@ -79,14 +84,14 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
         `/api/import?batchId=${batchId}&confirm=${confirmToken}`,
         { method: "DELETE" },
       );
-      const data = await res.json().catch(() => ({ error: "Undo failed" }));
-      if (!res.ok || !data.success) {
-        setUndoError(data.error ?? "Undo failed");
+      const result = await readMutationResult(res);
+      if (!result.ok) {
+        setUndoError(`Couldn't undo the import: ${result.message}`);
         return;
       }
       router.refresh();
-    } catch (err) {
-      setUndoError(err instanceof Error ? err.message : "Undo failed");
+    } catch {
+      setUndoError(networkFailureMessage("undo the import"));
     } finally {
       setUndoingId(null);
     }

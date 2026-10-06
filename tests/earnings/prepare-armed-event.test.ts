@@ -595,4 +595,55 @@ describe("prepare registry + runner (spec §4.1 prepare work table)", () => {
     });
     expect(row(id, "s")).toMatchObject({ status: "claimed", claim_token: "live" });
   });
+
+  // ── A throwing fingerprint says nothing about staleness ──
+  it("a DONE row whose fingerprint throws stays done, with a warning and no attempt booked", async () => {
+    let fail = false;
+    let runs = 0;
+    registerPrepareStep("s", {
+      fingerprint: () => {
+        if (fail) throw new Error("cannot read inputs");
+        return "f";
+      },
+      run: async () => {
+        runs += 1;
+        return { status: "done" };
+      },
+    });
+    const id = seedArmed();
+    enqueuePrepareSteps(db, id);
+    await runPrepareSteps(db, { eventId: id });
+    expect(row(id, "s")).toMatchObject({ status: "done", attempts: 1, input_fingerprint: "f" });
+
+    fail = true;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (let i = 0; i < PREPARE_MAX_ATTEMPTS + 1; i++) {
+      expect(await runPrepareSteps(db, { eventId: id })).toEqual({
+        ran: 0,
+        done: 0,
+        pending: 0,
+        failed: 0,
+        skipped: 1,
+      });
+    }
+    expect(row(id, "s")).toMatchObject({
+      status: "done",
+      attempts: 1,
+      input_fingerprint: "f",
+      last_error: null,
+    });
+    expect(runs).toBe(1);
+    expect(
+      warn.mock.calls.some((c) => {
+        const line = c.join(" ");
+        return line.includes("fingerprint failed") && line.includes("stays done");
+      }),
+    ).toBe(true);
+    warn.mockRestore();
+
+    // Once the fingerprint is readable again, ordinary drift detection resumes.
+    fail = false;
+    expect((await runPrepareSteps(db, { eventId: id })).ran).toBe(0);
+    expect(row(id, "s").status).toBe("done");
+  });
 });

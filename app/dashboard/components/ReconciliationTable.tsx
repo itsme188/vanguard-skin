@@ -1,5 +1,6 @@
 "use client";
 
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ReconciliationCheckpoint } from "@/lib/queries/reconciliation";
@@ -57,18 +58,18 @@ export function ReconciliationTable({
           notes: formData.notes || undefined,
         }),
       });
-      const data = await res.json();
-      if (data.success) {
+      const result = await readMutationResult(res);
+      if (result.ok) {
         setShowForm(false);
         setFormData({ accountId: accounts[0]?.id?.toString() ?? "", checkpointDate: "", statementValue: "", notes: "" });
         setError(null);
         toast("Checkpoint saved", "success");
         router.refresh();
       } else {
-        setError(data.error ?? "Failed to save checkpoint");
+        setError(`Couldn't save the checkpoint: ${result.message}`);
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save checkpoint");
+    } catch {
+      setError(networkFailureMessage("save the checkpoint"));
     } finally {
       setIsSubmitting(false);
     }
@@ -78,12 +79,16 @@ export function ReconciliationTable({
     setDeleteTarget(null);
     try {
       const res = await apiFetch(`/api/reconciliation?id=${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("Failed to delete checkpoint");
+      const result = await readMutationResult(res);
+      if (!result.ok) {
+        setError(`Couldn't remove the checkpoint: ${result.message}`);
+        return;
+      }
       setError(null);
       toast("Checkpoint removed", "success");
       router.refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete");
+    } catch {
+      setError(networkFailureMessage("remove the checkpoint"));
     }
   }
 

@@ -20,6 +20,7 @@
 import { useState } from "react";
 import { useElectron } from "@/lib/hooks/useElectron";
 import apiFetch from "@/lib/http/apiFetch";
+import { MIN_PASSWORD_LENGTH } from "@/lib/auth/password-policy";
 
 type Status = "idle" | "pending" | "ok" | "error";
 
@@ -35,9 +36,9 @@ export function SecuritySection() {
 
   async function handleChangePassword() {
     if (!api?.changePassword) return;
-    if (next.length < 8) {
+    if (next.length < MIN_PASSWORD_LENGTH) {
       setPwStatus("error");
-      setPwError("New password must be at least 8 characters.");
+      setPwError(`New password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
       return;
     }
     if (next !== confirm) {

@@ -315,8 +315,10 @@ export async function runFirstPassRead(
     const caveats = sanitizeProseLines(o.caveats, CAVEATS_MAX);
     const dropped = read.dropped + watch.dropped;
     if (read.kept.length < READ_LINES_MIN) {
+      // The code names why the READ is short: only READ lines count. A dropped
+      // call-watch line is tolerated (R-D36) and must not relabel this failure.
       return fail(
-        dropped > 0 ? "cites" : "sanitisation",
+        read.dropped > 0 ? "cites" : "sanitisation",
         `prose failed validation: read ${read.kept.length}/${READ_LINES_MIN}+`,
         true,
       );

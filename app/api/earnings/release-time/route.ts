@@ -50,7 +50,7 @@ export async function GET(req: NextRequest) {
   const slotRaw = req.nextUrl.searchParams.get("slot");
   const slot = slotRaw === "bmo" || slotRaw === "amc" ? slotRaw : null;
   if (!symbol) {
-    return NextResponse.json({ success: false, error: "symbol is required" }, { status: 400 });
+    return NextResponse.json({ success: false, error: "Pick a ticker symbol before setting a release time." }, { status: 400 });
   }
   const since = new Date(Date.now() - OBSERVATION_LOOKBACK_DAYS * 24 * 60 * 60 * 1000)
     .toISOString()
@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
     | null;
   const symbol = body?.symbol?.trim().toUpperCase();
   if (!symbol) {
-    return NextResponse.json({ success: false, error: "symbol is required" }, { status: 400 });
+    return NextResponse.json({ success: false, error: "Pick a ticker symbol before setting a release time." }, { status: 400 });
   }
   if (body?.releaseTime == null) {
     const cleared = clearUserReleaseTime(db, symbol);

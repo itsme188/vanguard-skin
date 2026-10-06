@@ -3,7 +3,12 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
   runReconciliation,
+  rollUpItems,
+  brokerRollUpItems,
+  engineRollUpItems,
   type BrokerRealizedConfig,
+  type BrokerRealizedRow,
+  type RollUpItem,
 } from "@/scripts/reconcile-tax-report-vs-broker";
 import { stampBrokerAcceptance, getTaxConventionState, stampTaxLotsConvention } from "@/lib/compute/tax-convention";
 import sampleConfig from "@/tests/fixtures/broker-realized-sample.json";
@@ -79,6 +84,7 @@ function insertSaleRow(
     realizedGainLoss: number;
     saleDate: string;
     premiumRollover?: number;
+    isLongTerm?: boolean;
   },
 ): number {
   const result = db
@@ -87,7 +93,7 @@ function insertSaleRow(
          (tax_lot_id, sale_transaction_id, quantity_sold, sale_price, proceeds,
           cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days,
           sale_date, premium_rollover)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, 400, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       opts.taxLotId,
@@ -97,6 +103,8 @@ function insertSaleRow(
       opts.proceeds,
       opts.costBasisAllocated,
       opts.realizedGainLoss,
+      (opts.isLongTerm ?? true) ? 1 : 0,
+      (opts.isLongTerm ?? true) ? 400 : 100,
       opts.saleDate,
       opts.premiumRollover ?? 0,
     );
@@ -120,6 +128,7 @@ function seedDisposal(
     gain: number;
     txnType?: string;
     premiumRollover?: number;
+    isLongTerm?: boolean;
   },
 ): void {
   const securityId = ensureSecurity(db, opts.symbol);
@@ -150,6 +159,7 @@ function seedDisposal(
     realizedGainLoss: opts.gain,
     saleDate: opts.saleDate,
     premiumRollover: opts.premiumRollover,
+    isLongTerm: opts.isLongTerm,
   });
 }
 
@@ -630,5 +640,287 @@ describe("runReconciliation", () => {
     const state = getTaxConventionState(db);
     expect(state.acceptance.current).toBe(true);
     expect(state.acceptance.coverage).toEqual([{ accountId: ACCOUNT_ID, taxYear: 2026 }]);
+  });
+});
+
+// ─── Roll-up match mode ────────────────────────────────────────────────
+// The broker prints one row per closing ORDER; the engine records one
+// tax_lot_sales row per LOT closed. Roll-up aggregates BOTH sides per
+// (symbol, disposal date[, term]) before comparing. All figures synthetic.
+
+const ROLLUP = { mode: "rollup" as const };
+
+function row(
+  symbol: string,
+  disposalDate: string,
+  quantity: number,
+  proceeds: number,
+  basis: number,
+  term?: "short" | "long",
+): BrokerRealizedRow {
+  const r: BrokerRealizedRow = {
+    symbol,
+    disposalDate,
+    quantity,
+    currency: "USD",
+    proceeds,
+    basis,
+    gain: proceeds - basis,
+  };
+  if (term) r.term = term;
+  return r;
+}
+
+function entryOf(source: string, rows: BrokerRealizedRow[]): BrokerRealizedConfig {
+  return {
+    entries: [
+      {
+        accountId: ACCOUNT_ID,
+        taxYear: 2026,
+        source,
+        statementTotal: {
+          proceeds: rows.reduce((a, r) => a + r.proceeds, 0),
+          basis: rows.reduce((a, r) => a + r.basis, 0),
+          gain: rows.reduce((a, r) => a + r.gain, 0),
+        },
+        rows,
+      },
+    ],
+  };
+}
+
+/** Three lots closed by TWO sale transactions on one day: qty 60+40+50. */
+function seedMultiLotDay(db: Database.Database, symbol = "ROLL"): void {
+  const base = { accountId: ACCOUNT_ID, symbol, saleDate: "2026-04-01" };
+  seedDisposal(db, { ...base, acquisitionDate: "2024-01-01", quantity: 60, proceeds: 4200, basis: 3000, gain: 1200 });
+  seedDisposal(db, { ...base, acquisitionDate: "2024-02-01", quantity: 40, proceeds: 2800, basis: 2200, gain: 600 });
+  seedDisposal(db, {
+    ...base,
+    acquisitionDate: "2026-01-15",
+    quantity: 50,
+    proceeds: 3500,
+    basis: 3100,
+    gain: 400,
+    isLongTerm: false,
+  });
+  // Totals: qty 150, proceeds 10500, basis 8300, gain 2200.
+  // Long: qty 100, 7000 / 5200. Short: qty 50, 3500 / 3100.
+}
+
+function sums(items: Array<{ quantity: number; proceeds: number; basis: number; gain: number }>) {
+  return items.reduce(
+    (a, i) => ({
+      quantity: a.quantity + i.quantity,
+      proceeds: a.proceeds + i.proceeds,
+      basis: a.basis + i.basis,
+      gain: a.gain + i.gain,
+    }),
+    { quantity: 0, proceeds: 0, basis: 0, gain: 0 },
+  );
+}
+
+describe("runReconciliation — roll-up match mode", () => {
+  it("strict stays the default and the summary names the mode that ran", () => {
+    const db = createTestDb();
+    seedMultiLotDay(db);
+    const config = entryOf("rollup-default", [row("ROLL", "2026-04-01", 150, 10500, 8300)]);
+
+    const strict = runReconciliation(db, config);
+    expect(strict.pass).toBe(false); // structural: one broker row vs three engine disposals
+    expect(strict.summary).toContain("Match mode: strict");
+
+    const rolled = runReconciliation(db, config, ROLLUP);
+    expect(rolled.pass).toBe(true);
+    expect(rolled.summary).toContain("Match mode: roll-up");
+    expect(rolled.coverage).toEqual([{ accountId: ACCOUNT_ID, taxYear: 2026 }]);
+  });
+
+  it("many broker orders vs many engine lots on one (symbol, date) match on summed totals", () => {
+    const db = createTestDb();
+    seedMultiLotDay(db);
+    // Broker split the day into two ORDERS that do not line up with the lots.
+    const config = entryOf("rollup-many", [
+      row("ROLL", "2026-04-01", 90, 6300, 4980),
+      row("ROLL", "2026-04-01", 60, 4200, 3320),
+    ]);
+    expect(runReconciliation(db, config, ROLLUP).pass).toBe(true);
+  });
+
+  it("the synthetic sample fixture passes in roll-up mode against multi-lot engine rows", () => {
+    const db = createTestDb();
+    const a = { accountId: ACCOUNT_ID, symbol: "ACME", saleDate: "2026-03-10" };
+    seedDisposal(db, { ...a, acquisitionDate: "2024-01-05", quantity: 70, proceeds: 7070, basis: 5600, gain: 1470 });
+    seedDisposal(db, { ...a, acquisitionDate: "2024-02-05", quantity: 30, proceeds: 3030, basis: 2400, gain: 630 });
+    seedDisposal(db, {
+      accountId: ACCOUNT_ID,
+      symbol: "ACME",
+      acquisitionDate: "2024-04-01",
+      saleDate: "2026-06-01",
+      quantity: 50,
+      proceeds: 5200,
+      basis: 4000,
+      gain: 1200,
+    });
+    const result = runReconciliation(db, sampleConfig as BrokerRealizedConfig, ROLLUP);
+    expect(result.pass).toBe(true);
+  });
+
+  it("CONSERVATION: grouping loses nothing — Σ rows = Σ groups for quantity, proceeds and basis on BOTH sides", () => {
+    const db = createTestDb();
+    seedMultiLotDay(db, "ROLL");
+    seedMultiLotDay(db, "OTHER");
+    seedDisposal(db, {
+      accountId: ACCOUNT_ID,
+      symbol: "ROLL",
+      acquisitionDate: "2025-01-01",
+      saleDate: "2026-05-01",
+      quantity: 12.5,
+      proceeds: 1250.25,
+      basis: 1000.1,
+      gain: 250.15,
+    });
+    const brokerRows = [
+      row("ROLL", "2026-04-01", 90, 6300, 4980, "long"),
+      row("ROLL", "2026-04-01", 10, 700, 220, "long"),
+      row("ROLL", "2026-04-01", 50, 3500, 3100, "short"),
+      row("OTHER", "2026-04-01", 150, 10500, 8300, "long"),
+      row("ROLL", "2026-05-01", 12.5, 1250.25, 1000.1, "long"),
+    ];
+
+    for (const useTerm of [true, false]) {
+      const sides: RollUpItem[][] = [
+        brokerRollUpItems(ACCOUNT_ID, brokerRows, useTerm),
+        engineRollUpItems(db, ACCOUNT_ID, 2026, useTerm),
+      ];
+      for (const items of sides) {
+        const groups = rollUpItems(items);
+        expect(groups.length).toBeLessThan(items.length);
+        expect(groups.reduce((a, g) => a + g.rowCount, 0)).toBe(items.length);
+        const rowSum = sums(items);
+        const groupSum = sums(groups);
+        expect(groupSum.quantity).toBeCloseTo(rowSum.quantity, 6);
+        expect(groupSum.proceeds).toBeCloseTo(rowSum.proceeds, 6);
+        expect(groupSum.basis).toBeCloseTo(rowSum.basis, 6);
+        expect(groupSum.gain).toBeCloseTo(rowSum.gain, 6);
+      }
+    }
+  });
+
+  it("FAIL-CLOSED: an unmatched broker group fails, is listed, and yields no coverage", () => {
+    const db = createTestDb();
+    seedMultiLotDay(db);
+    const config = entryOf("rollup-broker-residual", [
+      row("ROLL", "2026-04-01", 150, 10500, 8300),
+      row("GHOST", "2026-05-01", 5, 500, 400),
+    ]);
+    const result = runReconciliation(db, config, ROLLUP);
+    expect(result.pass).toBe(false);
+    expect(result.coverage).toEqual([]);
+    expect(result.summary).toContain("unmatched broker group");
+    expect(result.summary).toContain("1 residual group(s)");
+    expect(result.detailLines.some((l) => l.includes("UNMATCHED broker group") && l.includes("GHOST"))).toBe(true);
+  });
+
+  it("FAIL-CLOSED: an engine group the broker never printed fails and is listed", () => {
+    const db = createTestDb();
+    seedMultiLotDay(db);
+    seedMultiLotDay(db, "EXTRA");
+    const config = entryOf("rollup-engine-residual", [row("ROLL", "2026-04-01", 150, 10500, 8300)]);
+    const result = runReconciliation(db, config, ROLLUP);
+    expect(result.pass).toBe(false);
+    expect(result.coverage).toEqual([]);
+    expect(result.summary).toContain("extra engine group");
+    expect(result.detailLines.some((l) => l.includes("EXTRA engine group") && l.includes("EXTRA"))).toBe(true);
+  });
+
+  it("a match needs proceeds AND basis, not just gain — equal gain with shifted proceeds/basis fails", () => {
+    const db = createTestDb();
+    seedMultiLotDay(db);
+    // Same gain (2200) and quantity; proceeds and basis both 100 higher.
+    const config = entryOf("rollup-gain-only", [row("ROLL", "2026-04-01", 150, 10600, 8400)]);
+    const result = runReconciliation(db, config, ROLLUP);
+    expect(result.pass).toBe(false);
+    expect(result.summary).toContain("field mismatch");
+    expect(result.coverage).toEqual([]);
+  });
+
+  it("quantity must agree exactly even when every dollar field ties", () => {
+    const db = createTestDb();
+    seedMultiLotDay(db);
+    const config = entryOf("rollup-qty", [row("ROLL", "2026-04-01", 149, 10500, 8300)]);
+    const result = runReconciliation(db, config, ROLLUP);
+    expect(result.pass).toBe(false);
+    expect(result.summary).toContain("quantity mismatch");
+  });
+
+  it("keeps the existing per-field tolerance per GROUP: $0.01 passes, $0.02 fails", () => {
+    const db = createTestDb();
+    seedMultiLotDay(db);
+    const ok = entryOf("rollup-tol-ok", [row("ROLL", "2026-04-01", 150, 10500.01, 8300)]);
+    expect(runReconciliation(db, ok, ROLLUP).pass).toBe(true);
+    const bad = entryOf("rollup-tol-bad", [row("ROLL", "2026-04-01", 150, 10500.02, 8300)]);
+    expect(runReconciliation(db, bad, ROLLUP).pass).toBe(false);
+  });
+
+  it("when the broker file carries term, short and long are separate groups", () => {
+    const db = createTestDb();
+    seedMultiLotDay(db);
+    const good = entryOf("rollup-term-ok", [
+      row("ROLL", "2026-04-01", 100, 7000, 5200, "long"),
+      row("ROLL", "2026-04-01", 50, 3500, 3100, "short"),
+    ]);
+    const okResult = runReconciliation(db, good, ROLLUP);
+    expect(okResult.pass).toBe(true);
+    expect(okResult.summary).toContain("term");
+
+    // Same day totals, but the broker calls 60 of the shares short-term:
+    // the day ties in aggregate and must STILL fail on holding period.
+    const misclassified = entryOf("rollup-term-bad", [
+      row("ROLL", "2026-04-01", 90, 6300, 4680, "long"),
+      row("ROLL", "2026-04-01", 60, 4200, 3620, "short"),
+    ]);
+    const bad = runReconciliation(db, misclassified, ROLLUP);
+    expect(bad.pass).toBe(false);
+    expect(bad.coverage).toEqual([]);
+  });
+
+  it("a file that carries term on only SOME rows fails closed rather than guessing", () => {
+    const db = createTestDb();
+    seedMultiLotDay(db);
+    const config = entryOf("rollup-term-partial", [
+      row("ROLL", "2026-04-01", 100, 7000, 5200, "long"),
+      row("ROLL", "2026-04-01", 50, 3500, 3100),
+    ]);
+    const result = runReconciliation(db, config, ROLLUP);
+    expect(result.pass).toBe(false);
+    expect(result.summary).toContain("partial or invalid term");
+  });
+
+  it("stamping stays gated on every group matching: one residual among many clears nothing", () => {
+    const db = createTestDb();
+    seedMultiLotDay(db);
+    seedMultiLotDay(db, "SECOND");
+    stampTaxLotsConvention(db);
+    const config = entryOf("rollup-stamp", [
+      row("ROLL", "2026-04-01", 150, 10500, 8300),
+      row("SECOND", "2026-04-01", 150, 10500, 8250), // basis off by 50
+    ]);
+    const result = runReconciliation(db, config, ROLLUP);
+    expect(result.pass).toBe(false);
+    if (result.pass) {
+      db.transaction(() => stampBrokerAcceptance(db, result.coverage))();
+    }
+    expect(result.coverage).toEqual([]);
+    expect(getTaxConventionState(db).acceptance.coverage ?? []).toEqual([]);
+  });
+
+  it("RECONCILE_CLOSE and premium-rollover rows stay out of the roll-up too", () => {
+    const db = createTestDb();
+    seedMultiLotDay(db);
+    const base = { accountId: ACCOUNT_ID, acquisitionDate: "2025-01-01", saleDate: "2026-04-01" };
+    seedDisposal(db, { ...base, symbol: "ROLL", quantity: 3, proceeds: 300, basis: 250, gain: 50, txnType: "RECONCILE_CLOSE" });
+    seedDisposal(db, { ...base, symbol: "ROLL", quantity: 1, proceeds: 50, basis: 40, gain: 10, premiumRollover: 1 });
+    const config = entryOf("rollup-filing-only", [row("ROLL", "2026-04-01", 150, 10500, 8300)]);
+    expect(runReconciliation(db, config, ROLLUP).pass).toBe(true);
   });
 });

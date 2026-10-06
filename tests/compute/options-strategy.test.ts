@@ -82,6 +82,28 @@ describe("detectStrategies", () => {
     expect(cc.maxLoss).toBeCloseTo(19000, 6);
   });
 
+  it("covered call maxProfit: fully covered is capped at (strike - price + premium) x shares", () => {
+    const [cc] = detectStrategies([
+      stock("ZZA", 100, 50),
+      option("ZZA", "CALL", 60, -1, { price: 2 }),
+    ]);
+    expect(cc.type).toBe("covered_call");
+    expect(cc.pricingIncomplete).toBe(false);
+    expect(cc.maxProfit).toBeCloseTo(1200, 6);
+  });
+
+  it("covered call maxProfit: shares beyond the covered contracts have unlimited upside (null)", () => {
+    // 150 shares, 1 short call: 50 shares are plain long stock with no cap.
+    const [cc] = detectStrategies([
+      stock("ZZA", 150, 50),
+      option("ZZA", "CALL", 60, -1, { price: 2 }),
+    ]);
+    expect(cc.type).toBe("covered_call");
+    expect(cc.pricingIncomplete).toBe(false); // null here means unlimited, not unpriced
+    expect(cc.maxProfit).toBeNull();
+    expect(cc.description).toMatch(/50 sh uncapped/);
+  });
+
   it("covered call maxLoss: shares beyond the covered contracts carry full value", () => {
     // 300 sh @ 100, 2 calls @ 5 -> 300*100 - 5*100*2 = 29,000 (was 19,000)
     const [cc] = detectStrategies([

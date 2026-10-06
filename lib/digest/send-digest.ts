@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
 import { fetchNewArticles, backfillSourceUrls } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
@@ -83,12 +84,12 @@ export async function sendDigestEmail(
   // articles" skip. Same race produced 3 weekdays of mystery skips
   // (Apr 22 / 23 / 24 2026).
   const sinceSnapshot = (() => {
-    if (opts.mode === "today") return new Date().toISOString().slice(0, 10);
+    // ET-anchored: a UTC slice reads tomorrow from 20:00 ET, which emptied
+    // an evening "today" digest and skipped a day on the 24h fallback.
+    if (opts.mode === "today") return todayET();
     if (opts.mode === "since_last") {
       const lastSent = getLastDigestSentAt(db);
-      const fallback = new Date(Date.now() - 24 * 60 * 60 * 1000)
-        .toISOString()
-        .slice(0, 10);
+      const fallback = addDays(todayET(), -1);
       return lastSent || fallback;
     }
     if (opts.mode === "since_date" && opts.sinceDate) return opts.sinceDate;
@@ -119,7 +120,7 @@ export async function sendDigestEmail(
 
   const digest = sinceSnapshot !== null
     ? await generateDigestSinceAdaptive(db, sinceSnapshot, { includeAnomalies: false, edition: "morning" })
-    : await generateDigestSinceAdaptive(db, new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10), { includeAnomalies: false, edition: "morning" });
+    : await generateDigestSinceAdaptive(db, addDays(todayET(), -1), { includeAnomalies: false, edition: "morning" });
 
   if (!digest) {
     return {

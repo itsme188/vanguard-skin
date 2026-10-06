@@ -10,6 +10,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
   correctEarningsEventDate,
+  rowSlot,
   insertCalendarEvent,
   upsertCalendarEvents,
   type CalendarEventInput,
@@ -730,5 +731,26 @@ describe("correctEarningsEventDate", () => {
       .prepare(`SELECT event_time FROM calendar_events WHERE source='manual' AND symbol='ZZZ'`)
       .get() as { event_time: string };
     expect(manual.event_time).toBe("AMC");
+  });
+});
+
+describe("rowSlot (single-sourced on deriveEarningsSlot)", () => {
+  it("reads literal BMO/AMC markers case-insensitively", () => {
+    expect(rowSlot({ event_time: "bmo", release_time: null })).toBe("BMO");
+    expect(rowSlot({ event_time: "AMC", release_time: "07:00" })).toBe("AMC");
+  });
+  it("falls back to the release_time clock hour (adoption question, not a floor)", () => {
+    expect(rowSlot({ event_time: null, release_time: "08:00" })).toBe("BMO");
+    expect(rowSlot({ event_time: null, release_time: "17:00" })).toBe("AMC");
+    expect(rowSlot({ event_time: "TAS", release_time: "16:05" })).toBe("AMC");
+  });
+  it("reads an HH:MM event_time and the vendor raw_json hour (hand-rolled copy missed both)", () => {
+    expect(rowSlot({ event_time: "09:30", release_time: "17:00" })).toBe("BMO");
+    expect(
+      rowSlot({ event_time: null, release_time: null, raw_json: JSON.stringify({ entry: { hour: "amc" } }) }),
+    ).toBe("AMC");
+  });
+  it("is null when nothing resolves", () => {
+    expect(rowSlot({ event_time: null, release_time: null })).toBeNull();
   });
 });

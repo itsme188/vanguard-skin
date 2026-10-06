@@ -1,5 +1,6 @@
 "use client";
 
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState, useEffect, useCallback } from "react";
 import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
@@ -70,16 +71,16 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
-        const data = await res.json();
+        const r = await readMutationResult<{ skipped?: boolean; sentTo?: string }>(res);
 
-        if (data.success && data.skipped) {
+        if (r.ok && r.data.skipped) {
           setResult({ success: false, message: "No articles in the selected range" });
-        } else if (data.success) {
-          setResult({ success: true, message: `Sent to ${data.sentTo}` });
+        } else if (r.ok) {
+          setResult({ success: true, message: `Sent to ${r.data.sentTo}` });
           // Update status
           setStatus((s) => s ? { ...s, lastDigestSentAt: new Date().toISOString() } : s);
         } else {
-          setResult({ success: false, message: data.error || "Failed to send" });
+          setResult({ success: false, message: `Couldn't send the digest: ${r.message}` });
         }
       } else {
         // Weekly briefing
@@ -97,17 +98,17 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ weekOf, to: recipient.trim() }),
         });
-        const data = await res.json();
+        const r = await readMutationResult<{ sentTo?: string }>(res);
 
-        if (data.success) {
-          setResult({ success: true, message: `Sent to ${data.sentTo}` });
+        if (r.ok) {
+          setResult({ success: true, message: `Sent to ${r.data.sentTo}` });
           setStatus((s) => s ? { ...s, lastBriefingSentAt: new Date().toISOString() } : s);
         } else {
-          setResult({ success: false, message: data.error || "Failed to send" });
+          setResult({ success: false, message: `Couldn't send the briefing: ${r.message}` });
         }
       }
-    } catch (err) {
-      setResult({ success: false, message: err instanceof Error ? err.message : "Network error" });
+    } catch {
+      setResult({ success: false, message: networkFailureMessage("send the email") });
     } finally {
       setSending(false);
     }
@@ -119,7 +120,11 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
     <div className="rounded-lg border border-edge bg-panel/50 p-4 space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-ink">Send Email</h3>
-        <button onClick={onClose} className="text-ink-faint hover:text-ink text-sm">
+        <button
+          onClick={onClose}
+          aria-label="Close send email panel"
+          className="text-ink-faint hover:text-ink text-sm p-3.5 -m-3.5"
+        >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
           </svg>

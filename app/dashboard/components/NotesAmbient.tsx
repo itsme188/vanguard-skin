@@ -200,7 +200,7 @@ export function NotesAmbient() {
         </div>
         <button
           onClick={() => setOpen(false)}
-          className="text-ink-faint hover:text-ink transition-colors"
+          className="relative text-ink-faint hover:text-ink transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-3"
           aria-label="Close ambient notes"
           title="Close (Esc)"
         >

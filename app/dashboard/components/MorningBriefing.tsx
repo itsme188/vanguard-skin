@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import { getLatestBriefing } from "@/lib/queries/calendar";
 import Link from "next/link";
+import { todayET } from "@/lib/calendar/date-utils";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 
 // ── Event icons (shared with UpcomingEventsCard) ──
@@ -73,7 +74,8 @@ function extractBriefingSummary(content: string, maxLen = 200): string {
 // ── Main component ──
 
 export function MorningBriefing() {
-  const today = new Date().toISOString().slice(0, 10);
+  // ET day, not a UTC slice — a UTC slice reads tomorrow from 20:00 ET.
+  const today = todayET();
   const market = getMarketSession();
 
   // Today's events

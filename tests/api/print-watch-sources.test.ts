@@ -167,6 +167,22 @@ describe("PUT /api/print-watch/sources", () => {
     });
   });
 
+  it("400s a linkMustContain longer than the cap, and stores one exactly at it", async () => {
+    const { PUT } = await import("@/app/api/print-watch/sources/route");
+    const over = await PUT(
+      putReq({ symbol: "ACME", irPageUrl: "https://ir.acme.example/news", linkMustContain: "r".repeat(201) }),
+    );
+    expect(over.status).toBe(400);
+    expect(((await over.json()) as { error: string }).error).toMatch(/linkMustContain.*200/);
+    expect(getPrintWatchSource(hoisted.db, "ACME")).toBeNull();
+
+    const at = await PUT(
+      putReq({ symbol: "ACME", irPageUrl: "https://ir.acme.example/news", linkMustContain: "r".repeat(200) }),
+    );
+    expect(at.status).toBe(200);
+    expect(getPrintWatchSource(hoisted.db, "ACME")?.link_must_contain).toHaveLength(200);
+  });
+
   it("a malformed body is a 400, never a 500", async () => {
     const { PUT } = await import("@/app/api/print-watch/sources/route");
     const res = await PUT(

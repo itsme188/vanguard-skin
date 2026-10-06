@@ -5,10 +5,10 @@
  */
 
 import type Database from "better-sqlite3";
-import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
+import { generateTextForFeature } from "@/lib/ai/generate";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
-import { parseJsonArrayLenient } from "@/lib/ai/extract-json";
+import { parseBatchReply, runClassifyBatches, UnusableBatchReplyError } from "@/lib/compute/classify-batch";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 export interface FactorClassifyResult {
@@ -210,97 +210,95 @@ export async function classifyFactors(
 
   // Batch and classify with Claude
   const BATCH_SIZE = 25;
-  let classified = 0;
   const errors: string[] = [];
 
-  for (let i = 0; i < toClassify.length; i += BATCH_SIZE) {
-    const batch = toClassify.slice(i, i + BATCH_SIZE);
+  const updateSector = db.prepare(
+    "UPDATE securities SET sector = COALESCE(?, sector), sector_source = CASE WHEN ? IS NOT NULL THEN 'ai_classify' ELSE sector_source END, industry = COALESCE(NULLIF(industry,''), ?) WHERE id = ?"
+  );
+
+  /**
+   * One AI call + parse + write for a (sub-)batch. An unparseable or
+   * nothing-usable reply throws UnusableBatchReplyError, which the shared
+   * runner (classify-batch.ts) retries once as two half batches.
+   */
+  async function runBatch(batch: typeof toClassify): Promise<number> {
     const prompt = `Classify these securities:\n\n${batch
       .map((s) => `- ${s.symbol}: ${s.name ?? "Unknown"} (type: ${s.security_type ?? "stock"})`)
       .join("\n")}`;
 
-    try {
-      // No `temperature`: tier-resolved models can reject it as deprecated
-      // (live 502 "temperature is deprecated for this model", QA 2026-07-07).
-      const { text } = await generateTextForFeature("factorClassification", {
-        maxOutputTokens: 8000,
-        system: SYSTEM_PROMPT,
-        prompt,
-      });
+    // No `temperature`: tier-resolved models can reject it as deprecated
+    // (live 502 "temperature is deprecated for this model", QA 2026-07-07).
+    const { text } = await generateTextForFeature("factorClassification", {
+      maxOutputTokens: 8000,
+      system: SYSTEM_PROMPT,
+      prompt,
+    });
 
-      // Strip fences + isolate the JSON array (the model sometimes prepends a
-      // prose preamble like "I need to ..." before the array), and tolerate a
-      // single bare object or a {results:[...]}-style wrapper when the batch
-      // has only one item (common one-item-prompt model behavior).
-      const results = parseJsonArrayLenient(text, "classifications");
+    // Strip fences + isolate the JSON array (the model sometimes prepends a
+    // prose preamble like "I need to ..." before the array), and tolerate a
+    // single bare object or a {results:[...]}-style wrapper when the batch
+    // has only one item (common one-item-prompt model behavior).
+    const results = parseBatchReply(text, "classifications");
 
-      // Build symbol → security_id map for this batch
-      const idMap = new Map(batch.map((s) => [s.symbol, s.id]));
+    // Build symbol → security_id map for this batch
+    const idMap = new Map(batch.map((s) => [s.symbol, s.id]));
 
-      let usableInBatch = 0;
-      for (const raw of results) {
-        if (
-          typeof raw !== "object" ||
-          raw === null ||
-          typeof (raw as Record<string, unknown>).symbol !== "string"
-        ) {
-          continue;
-        }
-        const result = raw as Record<string, unknown>;
-
-        // An element carrying a symbol but NO recognized factor key
-        // ({"symbol":"SILC"}, or {"symbol":"SILC","error":"unknown ticker"}) used
-        // to write nine NULL factor columns with factor_source='auto'. That is a
-        // permanent silent hole: the candidate query only re-offers securities
-        // with no security_factors row at all, so the security was never retried.
-        if (!FACTOR_COLUMNS.some((col) => typeof result[col] === "string")) continue;
-
-        const secId = idMap.get(result.symbol as string);
-        if (!secId) continue;
-
-        upsertFactor.run(
-          secId,
-          factorValue(result, "interest_rate_sensitive"),
-          factorValue(result, "growth_vs_value"),
-          factorValue(result, "cyclical"),
-          factorValue(result, "international_exposure"),
-          factorValue(result, "geopolitical_onshoring"),
-          factorValue(result, "tariff_exposure"),
-          factorValue(result, "ai_exposure"),
-          factorValue(result, "crypto_adjacent"),
-          factorValue(result, "regulatory_risk"),
-          "auto"
-        );
-
-        // Also update sector/industry on the securities table
-        const sector = typeof result.sector === "string" ? result.sector : null;
-        const industry = typeof result.industry === "string" ? result.industry : null;
-        if (sector || industry) {
-          const gics = normalizeSector(sector);
-          db.prepare(
-            "UPDATE securities SET sector = COALESCE(?, sector), sector_source = CASE WHEN ? IS NOT NULL THEN 'ai_classify' ELSE sector_source END, industry = COALESCE(NULLIF(industry,''), ?) WHERE id = ?"
-          ).run(gics, gics, industry ?? sector, secId);
-        }
-
-        classified++;
-        usableInBatch++;
-      }
-
-      // A reply that PARSED but yielded nothing usable ([null], {"errors":[...]},
-      // or symbol-only objects) is an error, not a zero-classification success:
-      // reporting success leaves the batch un-retried and hides the failure.
-      if (results.length > 0 && usableInBatch === 0) {
-        throw new Error("AI reply contained no usable classifications for this batch");
-      }
-    } catch (err) {
-      if (err instanceof AIRefusalError) {
-        errors.push(`Batch ${i / BATCH_SIZE + 1}: AI refusal`);
+    let usableInBatch = 0;
+    for (const raw of results) {
+      if (
+        typeof raw !== "object" ||
+        raw === null ||
+        typeof (raw as Record<string, unknown>).symbol !== "string"
+      ) {
         continue;
       }
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      errors.push(`Batch ${i / BATCH_SIZE + 1}: ${msg}`);
+      const result = raw as Record<string, unknown>;
+
+      // An element carrying a symbol but NO recognized factor key
+      // ({"symbol":"SILC"}, or {"symbol":"SILC","error":"unknown ticker"}) used
+      // to write nine NULL factor columns with factor_source='auto'. That is a
+      // permanent silent hole: the candidate query only re-offers securities
+      // with no security_factors row at all, so the security was never retried.
+      if (!FACTOR_COLUMNS.some((col) => typeof result[col] === "string")) continue;
+
+      const secId = idMap.get(result.symbol as string);
+      if (!secId) continue;
+
+      upsertFactor.run(
+        secId,
+        factorValue(result, "interest_rate_sensitive"),
+        factorValue(result, "growth_vs_value"),
+        factorValue(result, "cyclical"),
+        factorValue(result, "international_exposure"),
+        factorValue(result, "geopolitical_onshoring"),
+        factorValue(result, "tariff_exposure"),
+        factorValue(result, "ai_exposure"),
+        factorValue(result, "crypto_adjacent"),
+        factorValue(result, "regulatory_risk"),
+        "auto"
+      );
+
+      // Also update sector/industry on the securities table
+      const sector = typeof result.sector === "string" ? result.sector : null;
+      const industry = typeof result.industry === "string" ? result.industry : null;
+      if (sector || industry) {
+        const gics = normalizeSector(sector);
+        updateSector.run(gics, gics, industry ?? sector, secId);
+      }
+
+      usableInBatch++;
     }
+
+    // A reply that PARSED but yielded nothing usable ([null], {"errors":[...]},
+    // or symbol-only objects) is an error, not a zero-classification success:
+    // reporting success leaves the batch un-retried and hides the failure.
+    if (results.length > 0 && usableInBatch === 0) {
+      throw new UnusableBatchReplyError("AI reply contained no usable classifications for this batch");
+    }
+    return usableInBatch;
   }
+
+  const classified = await runClassifyBatches(toClassify, BATCH_SIZE, runBatch, errors);
 
   return { classified, skipped, errors, candidates: toClassify.length, underlyingsCreated };
 }

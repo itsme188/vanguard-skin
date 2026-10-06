@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { liveOriginHoldingSql, statementGradeHoldingSql } from "@/lib/db/holding-sources";
 import {
   findLaterImportSplit,
+  IMPORT_SPLIT_ACTION_TYPES_SQL,
   positionChangingTxnTypesSql,
   type ImportSplitDate,
 } from "@/lib/compute/synthetic-close-guards";
@@ -118,7 +119,9 @@ export function getPendingStatementPairs(
   // over the same row set (import-sourced corporate actions).
   const splits = db
     .prepare(
-      `SELECT security_id, effective_date FROM corporate_actions WHERE source = 'import'`
+      `SELECT security_id, effective_date FROM corporate_actions
+        WHERE source = 'import'
+          AND UPPER(action_type) IN (${IMPORT_SPLIT_ACTION_TYPES_SQL})`
     )
     .all() as ImportSplitDate[];
   return rows.filter((r) => !findLaterImportSplit(splits, r.security_id, r.live_flat_date));

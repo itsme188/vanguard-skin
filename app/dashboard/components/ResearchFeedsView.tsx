@@ -1,5 +1,6 @@
 "use client";
 
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState, useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
 import type {
@@ -207,10 +208,11 @@ export function ResearchFeedsView({
       const res = await apiFetch(`/api/research/articles/${articleId}/unfilter`, {
         method: "POST",
       });
-      if (!res.ok) {
+      const result = await readMutationResult(res);
+      if (!result.ok) {
         // Rollback: refetch the full filtered list to recover correct state —
         // and explain, or the reappearing row looks like a glitch.
-        toast(`Couldn't unfilter the article (server returned ${res.status}) — it stays in the filtered list.`, "error");
+        toast(`Couldn't unfilter the article: ${result.message} It stays in the filtered list.`, "error");
         const reload = await fetch(`/api/research/articles?filtered=1&limit=${FILTERED_PAGE_SIZE}`);
         const data = await reload.json();
         if (data.success) {
@@ -419,8 +421,8 @@ export function ResearchFeedsView({
       }
 
       await refreshArticles();
-    } catch (err) {
-      setSyncFeedback(errorFeedback(err instanceof Error ? err.message : "Sync failed"));
+    } catch {
+      setSyncFeedback(errorFeedback(networkFailureMessage("sync articles")));
     } finally {
       manualSyncRef.current = false;
       setSyncing(false);
@@ -508,10 +510,12 @@ export function ResearchFeedsView({
         // render a blank panel — prefer the stored raw_text in that case.
         setExpandedHtml(html && htmlHidesStoredText(html, text) ? null : html);
       }
-    } catch { /* ignore */ } finally {
+    } catch {
+      toast("Couldn't open the article — check your connection and try again.", "error");
+    } finally {
       setLoadingExpand(false);
     }
-  }, [expandedId]);
+  }, [expandedId, toast]);
 
   return (
     <div className="space-y-5">

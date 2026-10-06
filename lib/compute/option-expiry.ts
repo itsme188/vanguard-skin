@@ -60,21 +60,34 @@ export function liveOptionExpirationSql(alias = "s", today: string = todayET()):
   if (!DATE_PATTERN.test(today)) {
     throw new Error(`liveOptionExpirationSql: today must match YYYY-MM-DD, got ${JSON.stringify(today)}`);
   }
-  return `(${alias}.expiration_date IS NULL OR ${alias}.expiration_date >= '${today}')`;
+  const e = `${alias}.expiration_date`;
+  // Legacy rows store the expiration as compact `YYYYMMDD` (stored rows are
+  // NOT normalized). A raw string compare of '20261004' >= '2026-10-06' is
+  // TRUE ('1' sorts after '-'), which kept an expired legacy-format contract
+  // live — so rebuild the dashed form before comparing.
+  return `(${e} IS NULL OR (CASE WHEN ${e} GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' THEN substr(${e},1,4) || '-' || substr(${e},5,2) || '-' || substr(${e},7,2) ELSE ${e} END) >= '${today}')`;
+}
+
+const COMPACT_DATE_PATTERN = /^(\d{4})(\d{2})(\d{2})$/;
+
+/** Dashed form of a stored expiration: `YYYYMMDD` is rebuilt, anything else passes through. */
+function dashedExpiration(expirationDate: string): string {
+  const compact = COMPACT_DATE_PATTERN.exec(expirationDate);
+  return compact ? `${compact[1]}-${compact[2]}-${compact[3]}` : expirationDate;
 }
 
 /**
  * JS-side twin of {@link liveOptionExpirationSql}, for post-query filtering
- * and tests. A missing/unparseable expiration is treated as "unknown, keep
- * it" — never as expired — mirroring options-strategy.ts's
- * `normalizeExpiration` convention.
+ * and tests. A missing expiration is treated as "unknown, keep it" — never
+ * as expired. Both the dashed and the legacy compact `YYYYMMDD` spellings
+ * are compared in dashed form, exactly as the SQL fragment does.
  */
 export function isOptionLive(
   expirationDate: string | null | undefined,
   today: string = todayET()
 ): boolean {
   if (!expirationDate) return true;
-  return expirationDate >= today;
+  return dashedExpiration(expirationDate) >= today;
 }
 
 /**

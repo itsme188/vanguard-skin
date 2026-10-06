@@ -5,6 +5,7 @@
  * closes. Own calendar_events history is one season deep — NOT the source.
  */
 import type Database from "better-sqlite3";
+import { todayET } from "@/lib/calendar/date-utils";
 import { fetchYahooDailyCloses, type DailyClose } from "@/lib/quotes/yahoo-daily";
 import { replaceReportHistory, type ReportHistoryRow } from "@/lib/mutations/earnings-intel";
 
@@ -138,7 +139,7 @@ export async function refreshReportHistory(
     if (reports.length === 0) return false;
     const oldest = reports[reports.length - 1].reportedDate;
     const from = new Date(Date.parse(`${oldest}T00:00:00Z`) - 7 * 86400_000).toISOString().slice(0, 10);
-    const to = new Date().toISOString().slice(0, 10);
+    const to = todayET(); // fetchYahooDailyCloses reads toDate as an ET day
     const closes = await fetchYahooDailyCloses(symbol, from, to, deps.fetchImpl ?? fetch);
     replaceReportHistory(db, symbol, computePostPrintMoves(reports, closes));
     return true;

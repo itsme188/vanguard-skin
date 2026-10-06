@@ -7,6 +7,9 @@ import type { RoadReport } from "@/lib/print-watch/types";
 
 export const dynamic = "force-dynamic";
 
+/** The only fields a go press may carry. */
+const GO_BODY_KEYS: ReadonlySet<string> = new Set(["eventId", "url", "filename", "contentBase64"]);
+
 /**
  * POST /api/print-watch/go — "print is live" (spec §4.3).
  *
@@ -36,8 +39,28 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ success: false, error: "Body must be JSON." }, { status: 400 });
   }
-  if (typeof body !== "object" || body === null) {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return NextResponse.json({ success: false, error: "Body must be a JSON object." }, { status: 400 });
+  }
+  // An unrecognised shape is REFUSED, never read as a plain go: a client that
+  // nested its file (`file: {…}`) or misnamed its link would otherwise be told
+  // the press worked while its input was silently dropped (slice C E2E).
+  const unknownKeys = Object.keys(body).filter((k) => !GO_BODY_KEYS.has(k));
+  if (unknownKeys.length > 0) {
+    const shown = unknownKeys.slice(0, 5).map((k) => `'${k.slice(0, 40)}'`).join(", ");
+    return NextResponse.json(
+      {
+        success: false,
+        error: `Unrecognised body field ${shown} — send 'eventId' alone, or with 'url', or with 'contentBase64' (+ optional 'filename').`,
+      },
+      { status: 400 },
+    );
+  }
+  if (body.filename !== undefined && body.contentBase64 === undefined) {
+    return NextResponse.json(
+      { success: false, error: "'filename' needs 'contentBase64' — a file press carries its bytes." },
+      { status: 400 },
+    );
   }
 
   const eventId = body.eventId;

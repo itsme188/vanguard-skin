@@ -9,6 +9,7 @@ import {
   CONFIDENCE_RESIDUAL_ABS_FLOOR,
   CONFIDENCE_RESIDUAL_REL_FLOOR,
 } from "@/lib/compute/cash-flow-audit";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { pendingStatementKeySet } from "@/lib/queries/pending-statement";
@@ -207,11 +208,18 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
       a.name,
     ])
   );
-  const symbolBySecurityId = new Map(
-    (db.prepare(`SELECT id, symbol FROM securities`).all() as { id: number; symbol: string }[]).map(
-      (s) => [s.id, s.symbol]
-    )
-  );
+  const secRows = db
+    .prepare(`SELECT id, symbol, security_type, fund_category FROM securities`)
+    .all() as {
+    id: number;
+    symbol: string;
+    security_type: string | null;
+    fund_category: string | null;
+  }[];
+  const symbolBySecurityId = new Map(secRows.map((s) => [s.id, s.symbol]));
+  // Sweep / money-market funds carry no meaningful tax lots, so a position
+  // with zero lots is expected, not drift (single source: isCashEquivalentSecurity).
+  const cashEquivalentIds = new Set(secRows.filter((s) => isCashEquivalentSecurity(s)).map((s) => s.id));
 
   const fillsStmt = db.prepare(
     `SELECT COUNT(*) AS n FROM transactions
@@ -232,6 +240,7 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
     const [accountIdStr, securityIdStr] = key.split(":");
     const accountId = Number(accountIdStr);
     const securityId = Number(securityIdStr);
+    if (cashEquivalentIds.has(securityId)) continue;
     const pos = posByKey.get(key);
     const lot = lotsByKey.get(key);
     const posQty = pos?.posQty ?? 0;

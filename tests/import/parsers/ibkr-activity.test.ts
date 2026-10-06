@@ -302,3 +302,208 @@ describe("IBKR activity parser", () => {
     expect(keys[1]).toBe(keys[0] + ":#2");
   });
 });
+
+// U9 (2026-10-05): the Dividends, Fees and Deposits & Withdrawals sections are
+// per-currency blocks like Interest — native rows, a native "Total", then
+// IBKR's own "Total in USD". Non-USD rows convert through that line.
+describe("IBKR activity parser — non-USD Dividends / Fees / Deposits & Withdrawals", () => {
+  const multi = fs.readFileSync(
+    path.join(__dirname, "../../fixtures/ibkr-activity-multicurrency.csv"),
+    "utf-8"
+  );
+  const CASH_TYPES = ["DIVIDEND", "FEE", "DEPOSIT", "WITHDRAWAL"];
+  const cashRows = (csv: string) =>
+    parseIbkrActivity(csv, "test.csv").transactions.filter((t) =>
+      CASH_TYPES.includes(t.type)
+    );
+  const STATEMENT =
+    "Statement,Header,Field Name,Field Value\n" +
+    'Statement,Data,Period,"March 1, 2025 - March 31, 2025"\n';
+
+  it("USD byte-identity: the USD-only sample fixture yields the exact pre-change records and source keys", () => {
+    // Snapshot computed from the parser BEFORE the U9 change (JSON string, so
+    // key order and absent `notes` are pinned too). A changed USD source_key
+    // would re-import every historical row as new.
+    const before =
+      '[{"accountName":"IBKR","tradeDate":"2025-01-31","type":"DIVIDEND","symbol":"AAPL","amount":25,"sourceKey":"ibkr:div:2025-01-31:AAPL:25"},' +
+      '{"accountName":"IBKR","tradeDate":"2025-01-31","type":"DIVIDEND","symbol":"SPY","amount":125,"sourceKey":"ibkr:div:2025-01-31:SPY:125"},' +
+      '{"accountName":"IBKR","tradeDate":"2025-01-03","type":"FEE","amount":-30,"notes":"Market Data Subscription for Jan 2025","sourceKey":"ibkr:fee:2025-01-03:-30:Market Data Subscription for Jan 2025"},' +
+      '{"accountName":"IBKR","tradeDate":"2025-01-15","type":"DEPOSIT","amount":5000,"isExternalFlow":true,"notes":"Electronic Fund Transfer","sourceKey":"ibkr:dw:2025-01-15:5000:Electronic Fund Transfer"},' +
+      '{"accountName":"IBKR","tradeDate":"2025-01-20","type":"WITHDRAWAL","amount":-3224.5,"isExternalFlow":true,"notes":"Disbursement Initiated by User","sourceKey":"ibkr:dw:2025-01-20:-3224.5:Disbursement Initiated by User"}]';
+    const result = parseIbkrActivity(fixture, "ibkr-activity-sample.csv");
+    expect(JSON.stringify(result.transactions.filter((t) => CASH_TYPES.includes(t.type)))).toBe(before);
+    expect(JSON.stringify(result.transactions)).toHaveLength(1654);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("USD byte-identity: USD rows inside a multi-currency statement are untouched", () => {
+    const usd = cashRows(multi).filter((t) => !/converted at IBKR/.test(t.notes ?? ""));
+    expect(JSON.stringify(usd)).toBe(
+      '[{"accountName":"IBKR","tradeDate":"2025-03-20","type":"DIVIDEND","symbol":"ZZC","amount":25,"sourceKey":"ibkr:div:2025-03-20:ZZC:25"},' +
+        '{"accountName":"IBKR","tradeDate":"2025-03-03","type":"FEE","amount":-30,"notes":"Market Data Subscription for Mar 2025","sourceKey":"ibkr:fee:2025-03-03:-30:Market Data Subscription for Mar 2025"},' +
+        '{"accountName":"IBKR","tradeDate":"2025-03-15","type":"DEPOSIT","amount":5000,"isExternalFlow":true,"notes":"Electronic Fund Transfer","sourceKey":"ibkr:dw:2025-03-15:5000:Electronic Fund Transfer"},' +
+        '{"accountName":"IBKR","tradeDate":"2025-03-20","type":"WITHDRAWAL","amount":-1000,"isExternalFlow":true,"notes":"Disbursement Initiated by User","sourceKey":"ibkr:dw:2025-03-20:-1000:Disbursement Initiated by User"}]'
+    );
+  });
+
+  it("never emits a Total / Total in USD / grand-total line as a transaction", () => {
+    const rows = cashRows(multi);
+    // 4 dividends + 2 fees + 4 deposits/withdrawals, all dated.
+    expect(rows).toHaveLength(10);
+    expect(rows.every((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.tradeDate))).toBe(true);
+    expect(parseIbkrActivity(multi, "test.csv").warnings).toEqual([]);
+  });
+
+  it("converts a EUR dividend block pro rata, keeping the native figure in the note and the source key", () => {
+    const divs = cashRows(multi).filter((t) => t.type === "DIVIDEND");
+    const zza = divs.find((d) => d.symbol === "ZZA")!;
+    expect(zza.amount).toBeCloseTo(10 * (76.01 / 70), 9);
+    expect(zza.notes).toContain("EUR 10 converted at IBKR's Total-in-USD rate");
+    expect(zza.sourceKey).toBe("ibkr:div:2025-03-10:ZZA:10");
+    const result = parseIbkrActivity(multi, "test.csv");
+    expect(result.securities.map((s) => s.symbol)).toEqual(
+      expect.arrayContaining(["ZZA", "ZZB", "ZZC", "ZZD"])
+    );
+  });
+
+  it("converts a JPY fee, keeping the native figure in the note and the source key", () => {
+    const jpy = cashRows(multi).find((t) => t.type === "FEE" && /JPY/.test(t.notes ?? ""))!;
+    expect(jpy.amount).toBeCloseTo(-10, 9);
+    expect(jpy.notes).toBe(
+      "Market Data Subscription JPY for Mar 2025 (JPY -1500 converted at IBKR's Total-in-USD rate)"
+    );
+    expect(jpy.sourceKey).toBe("ibkr:fee:2025-03-03:-1500:Market Data Subscription JPY for Mar 2025");
+  });
+
+  // The fixture's CAD block is single-sign (two deposits): a mixed-sign block
+  // is skipped, not converted — see the mixed-sign case below.
+  it("converts a single-sign CAD deposit block and keeps the external-flow flag and the direction type", () => {
+    const cad = cashRows(multi).filter((t) => /CAD/.test(t.notes ?? ""));
+    expect(cad.map((t) => t.type)).toEqual(["DEPOSIT", "DEPOSIT"]);
+    expect(cad.every((t) => t.isExternalFlow === true)).toBe(true);
+    expect(cad[0].amount).toBeCloseTo(1000 * (1100 / 1500), 9);
+    expect(cad[1].amount).toBeCloseTo(500 * (1100 / 1500), 9);
+    expect(cad.map((t) => t.sourceKey)).toEqual([
+      "ibkr:dw:2025-03-05:1000:Electronic Fund Transfer CAD",
+      "ibkr:dw:2025-03-25:500:Electronic Fund Transfer CAD 2",
+    ]);
+  });
+
+  it("converts a single-sign non-USD withdrawal block and keeps the WITHDRAWAL direction", () => {
+    const csv =
+      STATEMENT +
+      "Deposits & Withdrawals,Header,Currency,Account,Settle Date,Description,Amount\n" +
+      "Deposits & Withdrawals,Data,CAD,U99999999,2025-03-25,Disbursement Initiated by User CAD,-500\n" +
+      "Deposits & Withdrawals,Data,Total,,,,-500\n" +
+      "Deposits & Withdrawals,Data,Total in USD,,,,-360\n";
+    const result = parseIbkrActivity(csv, "test.csv");
+    const rows = result.transactions.filter((t) => CASH_TYPES.includes(t.type));
+    expect(rows.map((t) => [t.type, t.amount, t.isExternalFlow])).toEqual([["WITHDRAWAL", -360, true]]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("conservation: each non-USD block's converted rows sum to IBKR's own Total in USD to the cent", () => {
+    const rows = cashRows(multi).filter((t) => /converted at IBKR/.test(t.notes ?? ""));
+    const cents = (pred: (t: (typeof rows)[number]) => boolean) =>
+      Math.round(rows.filter(pred).reduce((s, t) => s + (t.amount ?? 0), 0) * 100);
+    expect(cents((t) => t.type === "DIVIDEND")).toBe(7601); // EUR block
+    expect(cents((t) => t.type === "FEE")).toBe(-1000); // JPY block
+    expect(cents((t) => t.type === "DEPOSIT" || t.type === "WITHDRAWAL")).toBe(110000); // CAD block
+  });
+
+  it("skips a non-USD block with no Total-in-USD line and warns, rather than storing native magnitude as dollars", () => {
+    const csv =
+      STATEMENT +
+      "Dividends,Header,Currency,Account,Date,Description,Amount\n" +
+      "Dividends,Data,EUR,U99999999,2025-03-10,ZZA(XX0000000001) Cash Dividend,10\n" +
+      "Dividends,Data,Total,,,,10\n" +
+      "Dividends,Data,USD,U99999999,2025-03-20,ZZC(XX0000000003) Cash Dividend,25\n" +
+      "Dividends,Data,Total,,,,25\n" +
+      "Fees,Header,Subtitle,Currency,Account,Date,Description,Amount\n" +
+      "Fees,Data,Other Fees,JPY,U99999999,2025-03-03,Market Data JPY,-1500\n" +
+      "Fees,Data,Total,,,,,-1500\n" +
+      "Deposits & Withdrawals,Header,Currency,Account,Settle Date,Description,Amount\n" +
+      "Deposits & Withdrawals,Data,CAD,U99999999,2025-03-05,Electronic Fund Transfer CAD,2000\n" +
+      "Deposits & Withdrawals,Data,Total,,,,2000\n";
+    const result = parseIbkrActivity(csv, "test.csv");
+    const rows = result.transactions.filter((t) => CASH_TYPES.includes(t.type));
+    expect(rows.map((t) => [t.type, t.amount])).toEqual([["DIVIDEND", 25]]);
+    expect(result.warnings.some((w) => /^Dividends:/.test(w) && /EUR/.test(w) && /Total in USD/.test(w))).toBe(true);
+    expect(result.warnings.some((w) => /^Fees:/.test(w) && /JPY/.test(w))).toBe(true);
+    expect(result.warnings.some((w) => /^Deposits & Withdrawals:/.test(w) && /CAD/.test(w))).toBe(true);
+  });
+
+  it("skips a non-USD block whose native Total is 0 (no ratio derivable) with a warning — never divides by zero", () => {
+    const csv =
+      STATEMENT +
+      "Deposits & Withdrawals,Header,Currency,Account,Settle Date,Description,Amount\n" +
+      "Deposits & Withdrawals,Data,CAD,U99999999,2025-03-05,Electronic Fund Transfer CAD,2000\n" +
+      "Deposits & Withdrawals,Data,CAD,U99999999,2025-03-25,Disbursement Initiated by User CAD,-2000\n" +
+      "Deposits & Withdrawals,Data,Total,,,,0\n" +
+      "Deposits & Withdrawals,Data,Total in USD,,,,12\n" +
+      "Deposits & Withdrawals,Data,USD,U99999999,2025-03-15,Electronic Fund Transfer,5000\n" +
+      "Deposits & Withdrawals,Data,Total,,,,5000\n" +
+      "Deposits & Withdrawals,Data,Total Deposits & Withdrawals in USD,,,,5012\n";
+    const result = parseIbkrActivity(csv, "test.csv");
+    const rows = result.transactions.filter((t) => CASH_TYPES.includes(t.type));
+    expect(rows.map((t) => t.amount)).toEqual([5000]);
+    expect(rows.every((t) => Number.isFinite(t.amount))).toBe(true);
+    // This block is also mixed-sign, so the mixed-sign guard is what skips it;
+    // the warning still names the zero native total.
+    expect(result.warnings.some((w) => /CAD/.test(w) && /native total 0/.test(w))).toBe(true);
+  });
+
+  it("skips a single-sign non-USD block whose printed Total is 0 — no ratio derivable", () => {
+    const csv =
+      STATEMENT +
+      "Fees,Header,Subtitle,Currency,Account,Date,Description,Amount\n" +
+      "Fees,Data,Other Fees,JPY,U99999999,2025-03-03,Market Data JPY,-1500\n" +
+      "Fees,Data,Total,,,,,0\n" +
+      "Fees,Data,Total in USD,,,,,-10\n";
+    const result = parseIbkrActivity(csv, "test.csv");
+    expect(result.transactions.filter((t) => CASH_TYPES.includes(t.type))).toEqual([]);
+    expect(result.warnings.some((w) => /^Fees:/.test(w) && /no usable conversion ratio/.test(w))).toBe(true);
+  });
+
+  // IBKR converts each row at its own date's rate, so Total-in-USD / native
+  // Total is only a sane exchange rate when the rows share a sign. In a block
+  // where a deposit and a withdrawal (or a dividend and its reversal) nearly
+  // cancel, net-over-net can be wildly off. Fail closed.
+  it("skips a mixed-sign non-USD block with a manual-entry warning instead of applying a net-over-net ratio", () => {
+    const csv =
+      STATEMENT +
+      "Dividends,Header,Currency,Account,Date,Description,Amount\n" +
+      "Dividends,Data,EUR,U99999999,2025-03-10,ZZA(XX0000000001) Cash Dividend,100\n" +
+      "Dividends,Data,EUR,U99999999,2025-03-12,ZZA(XX0000000001) Cash Dividend (Reversal),-99\n" +
+      "Dividends,Data,Total,,,,1\n" +
+      "Dividends,Data,Total in USD,,,,3.5\n" +
+      "Dividends,Data,USD,U99999999,2025-03-20,ZZC(XX0000000003) Cash Dividend,25\n" +
+      "Dividends,Data,USD,U99999999,2025-03-21,ZZC(XX0000000003) Cash Dividend (Reversal),-5\n" +
+      "Dividends,Data,Total,,,,20\n" +
+      "Dividends,Data,Total Dividends in USD,,,,23.5\n" +
+      "Deposits & Withdrawals,Header,Currency,Account,Settle Date,Description,Amount\n" +
+      "Deposits & Withdrawals,Data,CAD,U99999999,2025-03-05,Electronic Fund Transfer CAD,2000\n" +
+      "Deposits & Withdrawals,Data,CAD,U99999999,2025-03-25,Disbursement Initiated by User CAD,-1990\n" +
+      "Deposits & Withdrawals,Data,Total,,,,10\n" +
+      "Deposits & Withdrawals,Data,Total in USD,,,,31\n" +
+      "Deposits & Withdrawals,Data,JPY,U99999999,2025-03-06,Electronic Fund Transfer JPY,1500\n" +
+      "Deposits & Withdrawals,Data,JPY,U99999999,2025-03-07,Electronic Fund Transfer JPY 2,3000\n" +
+      "Deposits & Withdrawals,Data,Total,,,,4500\n" +
+      "Deposits & Withdrawals,Data,Total in USD,,,,30\n";
+    const result = parseIbkrActivity(csv, "test.csv");
+    const rows = result.transactions.filter((t) => CASH_TYPES.includes(t.type));
+    // The mixed-sign EUR and CAD blocks emit nothing; the mixed-sign USD block
+    // and the single-sign JPY block are untouched.
+    expect(rows.map((t) => [t.type, Math.round((t.amount ?? 0) * 100) / 100])).toEqual([
+      ["DIVIDEND", 25],
+      ["DIVIDEND", -5],
+      ["DEPOSIT", 10],
+      ["DEPOSIT", 20],
+    ]);
+    const mixed = result.warnings.filter((w) => /mixed-sign/.test(w));
+    expect(mixed).toHaveLength(2);
+    expect(mixed.some((w) => /^Dividends:/.test(w) && /EUR/.test(w) && /entered manually/.test(w))).toBe(true);
+    expect(mixed.some((w) => /^Deposits & Withdrawals:/.test(w) && /CAD/.test(w) && /entered manually/.test(w))).toBe(true);
+    expect(result.warnings).toHaveLength(2);
+  });
+});

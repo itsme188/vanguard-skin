@@ -98,6 +98,27 @@ function ChatDrawerInner() {
   // hasn't collapsed it. The panel slides off-screen when collapsed.
   const railVisible = isLargeDesktop ? !collapsed : open;
 
+  // Collapse the large-desktop rail from its own button. The button sits inside
+  // the panel that goes `inert` + aria-hidden on collapse, so focus must LEAVE
+  // first: hand it to the header control that re-opens the rail (falls back to
+  // <main>) instead of leaving it on a now-hidden element.
+  const collapseRail = useCallback(() => {
+    setCollapsed(true);
+    setTimeout(() => {
+      const reopen = document.querySelector<HTMLElement>(
+        'button[aria-label="Toggle chat assistant"]',
+      );
+      const target =
+        reopen && reopen.offsetParent !== null
+          ? reopen
+          : document.querySelector<HTMLElement>("main");
+      if (target && target.tagName === "MAIN" && !target.hasAttribute("tabindex")) {
+        target.setAttribute("tabindex", "-1");
+      }
+      target?.focus();
+    }, 0);
+  }, []);
+
   const toggle = useCallback(() => {
     if (isLargeDesktop) {
       // On large desktop, the toggle flips collapsed state. When expanding,
@@ -332,7 +353,7 @@ function ChatDrawerInner() {
                 ChatToggleButton picks up at xl when collapsed for re-expand. */}
             {isLargeDesktop && (
               <button
-                onClick={() => setCollapsed(true)}
+                onClick={collapseRail}
                 className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised"
                 aria-label="Collapse chat rail"
                 title="Collapse chat (Cmd+J)"

@@ -221,6 +221,14 @@ describe("runFirstPassRead", () => {
     expect(listReads(db, printId)[0].error).toBe("prose failed validation: read 5/6+");
   });
 
+  it("a read-floor failure is never filed as 'cites' because CALL-WATCH lines dropped (slice D minor b)", async () => {
+    // Five clean read lines (none dropped) + a call-watch line dropped for an
+    // ungrounded number: the read is short, nothing about its cites is wrong.
+    _setReadSeams({ generate: async () => ({ object: { ...GOOD, read: GOOD.read.slice(0, 5), call_watch: [{ text: "Does revenue reach $950M next quarter?", cites: ["revenue_q"] }] }, modelId: "test-model-1" }) });
+    expect(await runFirstPassRead(db, printId)).toMatchObject({ kind: "failed", errorCode: "sanitisation" });
+    expect(listReads(db, printId)[0].error).toBe("prose failed validation: read 5/6+");
+  });
+
   it("skips a print with no facts and never calls the wrapper; warnings carry ids only", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const eid = Number(db.prepare(`INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol) VALUES ('manual','earnings','2026-09-11','BETA','k2','BETA')`).run().lastInsertRowid);

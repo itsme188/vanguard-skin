@@ -3,6 +3,7 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { formatUSD, formatNumber } from "@/lib/format";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { todayET } from "@/lib/calendar/date-utils";
 import {
   isPendingStatementLot,
   pendingStatementKey,
@@ -74,7 +75,9 @@ interface PairKeyed {
 }
 
 export function getPortfolioSummaryForChat(db: Database.Database, accountName?: string): string {
-  const today = new Date().toISOString().slice(0, 10);
+  // ET day — a UTC slice reads tomorrow from 20:00 ET and shifts every
+  // days-to-long-term count and trailing window below by one.
+  const today = todayET();
   const lines: string[] = [];
   lines.push("## Portfolio Summary\n");
   const conventionPending = !getTaxConventionState(db).recomputeCurrent;
@@ -512,8 +515,10 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   if (latestPriceDate?.max_date) {
     lines.push(`\n### Data Freshness`);
     lines.push(`- Latest price date: ${latestPriceDate.max_date}`);
-    const priceAge = Math.floor(
-      (Date.now() - new Date(latestPriceDate.max_date + "T00:00:00Z").getTime()) /
+    // Whole calendar days from the price date to the ET day (both parsed as
+    // UTC midnights, so this is pure date arithmetic).
+    const priceAge = Math.round(
+      (Date.parse(today + "T00:00:00Z") - Date.parse(latestPriceDate.max_date + "T00:00:00Z")) /
         (1000 * 60 * 60 * 24)
     );
     if (priceAge > 7) {

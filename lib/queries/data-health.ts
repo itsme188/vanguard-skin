@@ -3,22 +3,10 @@ import { scaledCostBasisFallbackSQL } from "@/lib/valuation";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
 
 // ── Types ────────────────────────────────────────────────────────────
-
-/**
- * "Still a live position" guard for the held-universe readers. Tolerates the
- * legacy `YYYYMMDD` expiration spelling (stored rows are NOT normalized):
- * the value is compared in dashed form on both formats. `today` is the ET
- * calendar date (never SQLite's UTC `date('now')`).
- */
-function liveOptionSql(alias: string, today: string = todayET()): string {
-  const e = `${alias}.expiration_date`;
-  return `(${e} IS NULL OR (CASE WHEN ${e} GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
-      THEN substr(${e},1,4) || '-' || substr(${e},5,2) || '-' || substr(${e},7,2)
-      ELSE ${e} END) >= '${today}')`;
-}
 
 export interface PriceFreshness {
   securityId: number;
@@ -146,7 +134,7 @@ export function getPriceFreshness(db: Database.Database): PriceFreshness[] {
         FROM holdings h
         JOIN securities hs ON hs.id = h.security_id
         WHERE ${latestHoldingsPredicate()}
-          AND ${liveOptionSql("hs")}
+          AND ${liveOptionExpirationSql("hs")}
         GROUP BY h.security_id
       ) hc ON hc.security_id = s.id
       WHERE hc.cnt > 0 OR pc.cnt > 0
@@ -201,7 +189,7 @@ export function getAccountCoverage(db: Database.Database): AccountCoverage[] {
         AND ${latestHoldingsPredicate()}
         AND NOT EXISTS (
           SELECT 1 FROM securities xs
-          WHERE xs.id = h.security_id AND NOT ${liveOptionSql("xs")}
+          WHERE xs.id = h.security_id AND NOT ${liveOptionExpirationSql("xs")}
         )
       LEFT JOIN (
         SELECT security_id, MAX(date) AS latest_date
@@ -235,7 +223,7 @@ export function getDataGaps(db: Database.Database): DataGaps {
       SELECT DISTINCT s.id, s.symbol, s.security_type AS securityType
       FROM securities s
       JOIN holdings h ON h.security_id = s.id AND ${latestHoldingsPredicate()}
-      WHERE ${liveOptionSql("s")}
+      WHERE ${liveOptionExpirationSql("s")}
         AND NOT EXISTS (SELECT 1 FROM prices p WHERE p.security_id = s.id)
       ORDER BY s.symbol
       `,
@@ -252,7 +240,7 @@ export function getDataGaps(db: Database.Database): DataGaps {
       SELECT DISTINCT s.id, s.symbol, s.security_type AS securityType
       FROM securities s
       JOIN holdings h ON h.security_id = s.id AND ${latestHoldingsPredicate()}
-      WHERE ${liveOptionSql("s")}
+      WHERE ${liveOptionExpirationSql("s")}
         AND NOT EXISTS (SELECT 1 FROM transactions t WHERE t.security_id = s.id)
         AND LOWER(COALESCE(s.security_type, '')) NOT IN ('cash', 'money_market', 'money market')
         AND s.symbol NOT LIKE 'CUSIP:%'
@@ -466,7 +454,7 @@ export function getFxRateHealth(
       FROM securities s
       JOIN holdings h ON h.security_id = s.id AND ${latestHoldingsPredicate()}
       WHERE s.currency IS NOT NULL
-        AND ${liveOptionSql("s")}
+        AND ${liveOptionExpirationSql("s")}
         AND TRIM(s.currency) != ''
         AND UPPER(s.currency) != 'USD'
       `,
@@ -618,7 +606,7 @@ export function getDataHealthSummary(
         SELECT DISTINCT h.security_id FROM holdings h
         JOIN securities hs ON hs.id = h.security_id
         WHERE ${latestHoldingsPredicate()}
-          AND ${liveOptionSql("hs")}
+          AND ${liveOptionExpirationSql("hs")}
       )`;
 
   const secCounts = db

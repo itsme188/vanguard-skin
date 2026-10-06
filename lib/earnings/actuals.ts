@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import type { CalendarEvent } from "@/lib/types";
 import { mergeFinnhubActual } from "@/lib/format/finnhub-figure";
-import { checkPrePrintFloor } from "@/lib/earnings/pre-print-floor";
+import { checkPrePrintFloor, describePrePrintFloor } from "@/lib/earnings/pre-print-floor";
 import {
   clusterManualActualsAt,
   clusterStampedEventIds,
@@ -31,52 +31,15 @@ export type ClearManualActualsResult =
   | { ok: false; status: 404; error: string }
   | { ok: false; status: 409; error: string; code: "not_manual" };
 
-const ET = "America/New_York";
-
-/** "Aug 27, 2026" in ET. */
-function etDateLabel(instant: Date): string {
-  return instant.toLocaleString("en-US", { timeZone: ET, dateStyle: "medium" });
-}
-
 /**
- * The refusal message, worded for the basis that produced it — a slot floor
- * and a release-time floor are different claims and must not be described
- * with the same sentence.
+ * The refusal message: the shared floor description (basis-aware, one source
+ * in pre-print-floor.ts) plus this road's own action clause.
  */
 function prePrintMessage(
   eventDate: string,
   prePrint: ReturnType<typeof checkPrePrintFloor>,
 ): string {
-  if (prePrint.basis === "slot" && prePrint.floor) {
-    const nowEtDate = new Intl.DateTimeFormat("en-CA", {
-      timeZone: ET,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
-    // Name the day too whenever "now" is not the print date, so a save two
-    // days early cannot read as "any minute now".
-    const nowLabel = new Date().toLocaleString("en-US", {
-      timeZone: ET,
-      ...(nowEtDate === eventDate
-        ? { timeStyle: "short" as const }
-        : { dateStyle: "medium" as const, timeStyle: "short" as const }),
-    });
-    return prePrint.slot === "amc"
-      ? `This is an after-close print — actuals can be accepted from 4:00 PM ET on ${etDateLabel(prePrint.floor)} (now ${nowLabel} ET). Confirm to save anyway.`
-      : `This is a before-open print — actuals can be accepted from 7:00 AM ET on ${etDateLabel(prePrint.floor)} (now ${nowLabel} ET). Confirm to save anyway.`;
-  }
-  if (prePrint.release) {
-    const releaseEt = prePrint.release.toLocaleString("en-US", {
-      timeZone: ET,
-      dateStyle: "medium",
-      timeStyle: "short",
-    });
-    return `This event's release time (${releaseEt} ET) is still in the future — saving actuals now would record a print that hasn't happened. Confirm to save anyway.`;
-  }
-  // Unreachable while the caller gates on an anchor, but a refusal must never
-  // depend on a "!" to have a sentence.
-  return `This print does not look to have happened yet — saving actuals now would record a print that hasn't happened. Confirm to save anyway.`;
+  return `${describePrePrintFloor(eventDate, prePrint)} Saving actuals now would record a print that hasn't happened. Confirm to save anyway.`;
 }
 
 /**

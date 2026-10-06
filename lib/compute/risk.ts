@@ -13,7 +13,7 @@ import {
 } from "@/lib/queries/concentration-universe";
 import { normalizeAccountIds } from "@/lib/compute/factors";
 import { buildFlowAdjustedIndex, fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
-import { calendarDaysBetween, todayET } from "@/lib/calendar/date-utils";
+import { addDays, calendarDaysBetween, todayET } from "@/lib/calendar/date-utils";
 
 // Drop per-position return pairs whose dates straddle a multi-week hole. The
 // prices table mixes sparse month-end statement anchors with dense daily TWS
@@ -601,6 +601,18 @@ export function computePositionRisk(
   // week" view still carries a bond that had not redeemed yet.
   const maturityCutoff = options?.asOfDate ?? todayET();
 
+  // No look-ahead: an as-of view may only read prices dated on or before the
+  // as-of day. Without this bound the "week ago" snapshot was valued at
+  // today's close and its volatility / correlation series ran to today, so
+  // the week-over-week comparison measured the same future prices twice.
+  // Validated and inlined as a literal (the latestHoldingsPredicate pattern)
+  // so the positional params below keep their order.
+  const asOf = options?.asOfDate ?? todayET();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) {
+    throw new Error(`computePositionRisk: asOfDate must match YYYY-MM-DD, got ${JSON.stringify(asOf)}`);
+  }
+  const latestPriceBound = options?.asOfDate ? `WHERE date <= '${asOf}'` : "";
+
   // 1. Get current positions with weights
   const positions = db
     .prepare(
@@ -614,7 +626,7 @@ export function computePositionRisk(
          SELECT security_id, close_price
          FROM prices
          WHERE (security_id, date) IN (
-           SELECT security_id, MAX(date) FROM prices GROUP BY security_id
+           SELECT security_id, MAX(date) FROM prices ${latestPriceBound} GROUP BY security_id
          )
        )
        SELECT
@@ -661,7 +673,7 @@ export function computePositionRisk(
          SELECT security_id, close_price
          FROM prices
          WHERE (security_id, date) IN (
-           SELECT security_id, MAX(date) FROM prices GROUP BY security_id
+           SELECT security_id, MAX(date) FROM prices ${latestPriceBound} GROUP BY security_id
          )
        )
        SELECT SUM(${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) AS total
@@ -678,9 +690,8 @@ export function computePositionRisk(
   const securityIds = positions.map((p) => p.security_id);
 
   // 2. Fetch daily prices for all top positions (last 1 year)
-  const oneYearAgo = new Date(Date.now() - 365 * 24 * 3600 * 1000)
-    .toISOString()
-    .slice(0, 10);
+  // The lookback is anchored on the as-of day (ET), not on the wall clock.
+  const oneYearAgo = addDays(asOf, -365);
 
   const priceRows = db
     .prepare(
@@ -688,9 +699,10 @@ export function computePositionRisk(
        FROM prices
        WHERE security_id IN (${securityIds.map(() => "?").join(",")})
          AND date >= ?
+         AND date <= ?
        ORDER BY date ASC`
     )
-    .all(...securityIds, oneYearAgo) as {
+    .all(...securityIds, oneYearAgo, asOf) as {
     security_id: number;
     date: string;
     close_price: number;

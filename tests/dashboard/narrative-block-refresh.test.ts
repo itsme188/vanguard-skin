@@ -244,7 +244,9 @@ describe("NarrativeBlock wires the cold-failure state to a visible retry, never 
     expect(branchStart).toBeGreaterThan(-1);
     const branch = src.slice(branchStart, branchStart + 1200);
     expect(branch).toMatch(/role="alert"/);
-    expect(branch).toContain("{refreshError}");
+    // The message is the domain-language refreshError, or the plain
+    // "unavailable" copy on a 5xx / unreachable server.
+    expect(branch).toMatch(/aiUnavailable \? "AI narrative unavailable right now\." : refreshError/);
     expect(branch).toMatch(/Try again/);
     expect(branch).toMatch(/handleRefresh\("footer"\)/);
     expect(branch).toMatch(/disabled=\{refreshing\}/);

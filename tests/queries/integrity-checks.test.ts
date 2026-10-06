@@ -290,6 +290,17 @@ describe("runIntegrityChecks — check 3: position ↔ tax-lot drift", () => {
     expect(warnings.map((w) => w.key)).not.toContain("lot-drift:1:102");
   });
 
+  it("cash-equivalent sweep funds (fund_category-driven) never show as lot drift", () => {
+    insertSecurity(db, 108, "SWEEP", "Mutual Fund"); // type is NOT money_market — category decides
+    db.prepare(`UPDATE securities SET fund_category = 'Cash Equivalent' WHERE id = 108`).run();
+    insertHolding(db, 1, 108, 5000);
+    insertBuys(db, 1, 108, 2); // fills but zero lots would otherwise be critical
+
+    const { critical, warnings } = runIntegrityChecks(db);
+    expect(critical.map((c) => c.key)).not.toContain("lot-drift:1:108");
+    expect(warnings.map((w) => w.key)).not.toContain("lot-drift:1:108");
+  });
+
   it("warning: zero-transaction zero-lot position (known Data-Health class)", () => {
     insertSecurity(db, 103, "DDD");
     insertHolding(db, 1, 103, 50); // no lots, no transactions at all

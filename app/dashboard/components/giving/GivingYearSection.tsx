@@ -11,6 +11,7 @@ import { useToast } from "../Toast";
 import apiFetch from "@/lib/http/apiFetch";
 import { todayET } from "@/lib/calendar/date-utils";
 import { LotAssignmentDrawer } from "./LotAssignmentDrawer";
+import { ScrollFade } from "../ScrollFade";
 
 /**
  * One year's giving ledger (Task 13) — stock donations table + a visually
@@ -188,7 +189,8 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
       </header>
 
       {stockDonations.length > 0 && (
-        <div className="rounded-lg border border-edge overflow-hidden overflow-x-auto">
+        <div className="rounded-lg border border-edge overflow-hidden">
+          <ScrollFade>
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-edge bg-raised/40">
@@ -293,6 +295,7 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
               })}
             </tbody>
           </table>
+          </ScrollFade>
         </div>
       )}
 

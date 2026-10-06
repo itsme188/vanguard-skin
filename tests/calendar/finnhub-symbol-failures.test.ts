@@ -127,6 +127,27 @@ describe("fetchFinnhubEarningsForSymbols — per-symbol failure reporting", () =
     expect(failures[0].message).toContain("503");
   });
 
+  it("does not misread a non-429 failure whose body merely contains 429", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      httpError(500, "order id 429 and price 1429.5 failed"),
+    );
+
+    const failures: FinnhubSymbolFailure[] = [];
+    await fetchFinnhubEarningsForSymbols(
+      db,
+      ["AAA"],
+      "2026-07-13",
+      "2026-07-19",
+      "2026-07-13",
+      undefined,
+      (failure) => failures.push(failure),
+    );
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0].message).toContain("429");
+    expect(failures[0].rateLimited).toBe(false);
+  });
+
   it("reports the failure BEFORE ticking progress for that symbol — sync.ts subtracts failures from `done`", async () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
       httpError(429, "Too many requests"),

@@ -380,3 +380,39 @@ describe("classifyFactors — unusable AI elements never write a row", () => {
     expect(row.cyclical).toBeNull();
   });
 });
+
+describe("classifyFactors — unparseable batch reply is retried once as halves", () => {
+  it("retries a truncated reply as two half batches and classifies both securities", async () => {
+    const db = makeDb();
+    const aId = insertSecurity(db, { symbol: "AAA", security_type: "Stock" });
+    const bId = insertSecurity(db, { symbol: "BBB", security_type: "Stock" });
+    insertHolding(db, aId);
+    insertHolding(db, bId);
+    const mock = generateTextForFeature as ReturnType<typeof vi.fn>;
+    mock.mockReset();
+    mock
+      .mockResolvedValueOnce({ text: '[{"symbol":"AAA","ai_exposure":"Hi' }) // truncated
+      .mockResolvedValueOnce({ text: JSON.stringify([{ symbol: "AAA", ai_exposure: "High" }]) })
+      .mockResolvedValueOnce({ text: JSON.stringify([{ symbol: "BBB", ai_exposure: "Low" }]) });
+
+    const result = await classifyFactors(db);
+
+    expect(mock).toHaveBeenCalledTimes(3);
+    expect(result.classified).toBe(2);
+    expect(result.errors).toEqual([]);
+  });
+
+  it("does not retry a hard failure (network error)", async () => {
+    const db = makeDb();
+    const aId = insertSecurity(db, { symbol: "AAA", security_type: "Stock" });
+    insertHolding(db, aId);
+    const mock = generateTextForFeature as ReturnType<typeof vi.fn>;
+    mock.mockReset();
+    mock.mockRejectedValue(new Error("network down"));
+
+    const result = await classifyFactors(db);
+
+    expect(mock).toHaveBeenCalledTimes(1);
+    expect(result.errors).toEqual(["Batch 1: network down"]);
+  });
+});

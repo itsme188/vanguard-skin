@@ -56,7 +56,17 @@ async function plaidPost<T>(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ client_id: cfg.clientId, secret: cfg.secret, ...body }),
   });
-  const json = (await res.json()) as Record<string, unknown>;
+  const text = await res.text();
+  let json: Record<string, unknown>;
+  try {
+    json = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    throw new PlaidApiError(
+      `Plaid ${path} returned non-JSON (HTTP ${res.status}): ${text.slice(0, 200)}`,
+      `HTTP_${res.status}`,
+      "UNKNOWN",
+    );
+  }
   if (!res.ok || typeof json.error_code === "string") {
     throw new PlaidApiError(
       String(json.error_message ?? `Plaid ${path} failed (HTTP ${res.status})`),

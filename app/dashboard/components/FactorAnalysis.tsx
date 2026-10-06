@@ -19,6 +19,7 @@ import {
   interpretTrackingError,
   type InterpretTone,
 } from "@/lib/analysis/interpret";
+import { betaConfidenceVerdict } from "@/lib/compute/beta-confidence";
 import type { DrillDownFilter } from "@/lib/queries/drill-down";
 
 // ─── W-o-W delta shape (mirrors computeFactorDelta in the API route) ─────
@@ -192,7 +193,17 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
                     </>
                   }
                   hint={betaInterp.text}
-                  color={reg.beta > 1 ? "amber" : reg.beta > 0.7 ? "neutral" : "blue"}
+                  color={
+                    // Below the publish gate (r² floor / pair count) the beta
+                    // is noise — never paint it off its magnitude bucket.
+                    !betaConfidenceVerdict({ rSquared: reg.rSquared, pairs: reg.dataPoints }).ok
+                      ? "neutral"
+                      : reg.beta > 1
+                        ? "amber"
+                        : reg.beta > 0.7
+                          ? "neutral"
+                          : "blue"
+                  }
                 />
                 <MetricCell
                   label="Alpha"

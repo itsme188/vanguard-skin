@@ -9,23 +9,9 @@ import type Database from "better-sqlite3";
 import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
-import { getTaxConventionState } from "@/lib/compute/tax-convention";
+import { isTaxConventionPending } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
-
-/**
- * Whether the current tax-lot convention state is pending a recompute (WS1
- * pending-state contract). Guarded against minimal test DBs that never
- * created a `settings` table — those default to "not pending" rather than
- * throwing (mirrors the same guard in lib/compute/trade-roundtrips.ts).
- */
-function isConventionPending(db: Database.Database): boolean {
-  try {
-    return !getTaxConventionState(db).recomputeCurrent;
-  } catch {
-    return false;
-  }
-}
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -410,7 +396,7 @@ export function getOptionsPnL(
     closedTrades,
     totalUnrealizedPnl,
     totalRealizedPnl,
-    conventionPending: isConventionPending(db),
+    conventionPending: isTaxConventionPending(db),
   };
 }
 

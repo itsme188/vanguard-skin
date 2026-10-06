@@ -29,24 +29,24 @@ export async function withCronAuth<T>(
   const expected = process.env.CRON_SHARED_SECRET;
   if (!expected) {
     return Response.json(
-      { error: "Server not configured: CRON_SHARED_SECRET missing." },
+      { success: false, error: "Server not configured: CRON_SHARED_SECRET missing." },
       { status: 500 },
     );
   }
   const provided = request.headers.get("x-cron-secret") ?? "";
   if (!constantTimeEqual(provided, expected)) {
-    return Response.json({ error: "unauthorized" }, { status: 401 });
+    return Response.json({ success: false, error: "unauthorized" }, { status: 401 });
   }
   try {
     const result = await fn();
     return Response.json(result);
   } catch (err) {
     if (isCronAuthError(err)) {
-      return Response.json({ error: err.message }, { status: err.status });
+      return Response.json({ success: false, error: err.message }, { status: err.status });
     }
     console.error("[cron]", err);
     return Response.json(
-      { error: err instanceof Error ? err.message : "Unknown error" },
+      { success: false, error: err instanceof Error ? err.message : "Unknown error" },
       { status: 500 },
     );
   }
