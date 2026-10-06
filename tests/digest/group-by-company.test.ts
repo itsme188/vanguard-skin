@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { bucketByCompany, renderDigestByCompany } from "@/lib/digest/group-by-company";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 interface ArticleLike {
   id: number;
@@ -287,10 +288,10 @@ describe("renderDigestByCompany — one copy per article", () => {
     ];
     const md = renderDigestByCompany(articles, "", "Friday");
 
-    const sourceLine = md.indexOf("**Vital** · *neutral*");
-    const headline = md.indexOf("### [Three-name note](https://example.test/note)");
-    const chips = md.indexOf("Mentions: AAA · BBB · CCC");
-    const summary = md.indexOf("A single unmistakable sentence");
+    const sourceLine = anchorIndex(md, "**Vital** · *neutral*");
+    const headline = anchorIndex(md, "### [Three-name note](https://example.test/note)");
+    const chips = anchorIndex(md, "Mentions: AAA · BBB · CCC");
+    const summary = anchorIndex(md, "A single unmistakable sentence");
 
     expect(sourceLine).toBeGreaterThan(-1);
     expect(headline).toBeGreaterThan(sourceLine);
@@ -310,7 +311,7 @@ describe("renderDigestByCompany — one copy per article", () => {
     expect(md).toContain("## BBB · 1 article");
     expect(md).toContain("also mentioned in 1 article filed under other companies");
     // AAA homes everything it is mentioned in, so it carries no such note.
-    const aaaSection = md.slice(md.indexOf("## AAA"), md.indexOf("## BBB"));
+    const aaaSection = md.slice(anchorIndex(md, "## AAA"), anchorIndex(md, "## BBB"));
     expect(aaaSection).not.toContain("also mentioned in");
   });
 
@@ -387,7 +388,7 @@ describe("case-duplicate symbols do not inflate mention counts", () => {
     // AAA: 2 real mentions (shared + aOnly); the case-duplicate must not
     // inflate this to 3, so AAA homes both and shows no "also mentioned" line.
     expect(md).toContain("## AAA · 2 articles");
-    const aaaSection = md.slice(md.indexOf("## AAA"), md.indexOf("## BBB"));
+    const aaaSection = md.slice(anchorIndex(md, "## AAA"), anchorIndex(md, "## BBB"));
     expect(aaaSection).not.toContain("also mentioned in");
 
     // BBB: mentioned by both shared and bOnly, but shared is homed under AAA

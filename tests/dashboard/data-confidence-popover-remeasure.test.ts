@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // This repo has no React component-rendering harness (no @testing-library/react,
 // no jsdom environment in vitest.config.ts — see the precedent note in
@@ -27,13 +28,13 @@ const COMPONENT_PATH = path.join(
 
 function anchorEffectBody(source: string): string {
   const marker = "Pick which edge the popover hangs off of";
-  const start = source.indexOf(marker);
+  const start = anchorIndex(source, marker);
   expect(start, "anchor-edge useLayoutEffect comment not found").toBeGreaterThan(-1);
   // The effect is a small, self-contained block — grab up to (and including)
   // its closing `}, [showPopover]);` so later effects/functions in the file
   // can't accidentally satisfy these assertions.
   const closeMarker = "}, [showPopover]);";
-  const closeIdx = source.indexOf(closeMarker, start);
+  const closeIdx = anchorIndex(source, closeMarker, start);
   expect(closeIdx, "could not find the effect's closing dependency array").toBeGreaterThan(-1);
   return source.slice(start, closeIdx + closeMarker.length);
 }
@@ -50,8 +51,8 @@ describe("DataConfidenceIndicator popover re-measures on viewport change while o
   });
 
   it("calls popoverAnchorFor from inside measure(), not directly in the effect body", () => {
-    const measureStart = body.indexOf("const measure = () => {");
-    const measureEnd = body.indexOf("measure();", measureStart);
+    const measureStart = anchorIndex(body, "const measure = () => {");
+    const measureEnd = anchorIndex(body, "measure();", measureStart);
     expect(measureEnd).toBeGreaterThan(measureStart);
     const measureFnBody = body.slice(measureStart, measureEnd);
     expect(measureFnBody).toMatch(/popoverAnchorFor\(/);

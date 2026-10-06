@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // This repo has no React component-rendering harness (no @testing-library/react,
 // no jsdom environment in vitest.config.ts — see the precedent note in
@@ -21,7 +22,7 @@ const COMPONENT_PATH = path.join(
 );
 
 function actionRowBody(source: string): string {
-  const start = source.indexOf("function ActionRow(");
+  const start = anchorIndex(source, "function ActionRow(");
   expect(start, "ActionRow function not found in DataConfidenceIndicator.tsx").toBeGreaterThan(-1);
   // ActionRow is the last function in the file — read to EOF.
   return source.slice(start);

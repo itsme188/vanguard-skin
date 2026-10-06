@@ -30,7 +30,15 @@ vi.mock("ai", () => ({
 // Mock AI provider
 vi.mock("../src/ai", () => ({
   getModelForFeature: vi.fn(() => "mock-model"),
-  generateWithFailover: vi.fn(async (_env: unknown, _feature: unknown, _catalog: unknown, call: (model: unknown) => Promise<unknown>) => call("mock-model")),
+  generateWithFailover: vi.fn(
+    async (
+      _env: unknown,
+      _feature: unknown,
+      _catalog: unknown,
+      call: (model: unknown, mode: "outputFormat" | "jsonTool") => Promise<unknown>,
+    ) => call("mock-model", "outputFormat"),
+  ),
+  structuredOutputProviderOptions: vi.fn(() => ({})),
 }));
 
 // Mock state loader

@@ -20,6 +20,13 @@ describe("ChatDrawer collapse moves focus out of the inert rail", () => {
     expect(fn).toContain('"main"');
     expect(fn).toContain(".focus()");
   });
+  it("focus moves BEFORE the collapse state change hides the rail", () => {
+    const fn = src.slice(src.indexOf("const collapseRail"), src.indexOf("const toggle = useCallback"));
+    const firstFocus = fn.indexOf(".focus()");
+    const collapse = fn.indexOf("setCollapsed(true)");
+    expect(firstFocus).toBeGreaterThan(-1);
+    expect(firstFocus).toBeLessThan(collapse);
+  });
 });
 
 describe("DrillDownPanel risk sort scope", () => {

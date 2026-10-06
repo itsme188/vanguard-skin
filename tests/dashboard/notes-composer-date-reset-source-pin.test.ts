@@ -19,6 +19,7 @@
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const src = readFileSync("app/dashboard/components/NotesView.tsx", "utf8");
 
@@ -36,8 +37,8 @@ describe("NotesView formDate is ET-anchored, never UTC-sliced", () => {
 
   it("seeds the initial formDate from todayET()", () => {
     const formDateInit = src.slice(
-      src.indexOf("const [formDate, setFormDate]"),
-      src.indexOf("const [formDate, setFormDate]") + 200,
+      anchorIndex(src, "const [formDate, setFormDate]"),
+      anchorIndex(src, "const [formDate, setFormDate]") + 200,
     );
     expect(formDateInit).toMatch(/useState\(\s*\(\)\s*=>\s*todayET\(\)\s*\)/);
   });
@@ -45,9 +46,9 @@ describe("NotesView formDate is ET-anchored, never UTC-sliced", () => {
 
 describe("NotesView create handler resets formDate back to today after a save", () => {
   function extractHandleCreate(): string {
-    const start = src.indexOf("async function handleCreate");
+    const start = anchorIndex(src, "async function handleCreate");
     expect(start).toBeGreaterThan(-1);
-    const end = src.indexOf("// ─── Update note ───", start);
+    const end = anchorIndex(src, "// ─── Update note ───", start);
     expect(end).toBeGreaterThan(start);
     return src.slice(start, end);
   }
@@ -59,19 +60,19 @@ describe("NotesView create handler resets formDate back to today after a save", 
 
   it("resets formDate alongside (after) the other reset calls, not before them", () => {
     const create = extractHandleCreate();
-    const contentReset = create.indexOf('setFormContent("")');
-    const dateReset = create.indexOf("setFormDate(todayET())");
+    const contentReset = anchorIndex(create, 'setFormContent("")');
+    const dateReset = anchorIndex(create, "setFormDate(todayET())");
     expect(contentReset).toBeGreaterThan(-1);
     expect(dateReset).toBeGreaterThan(contentReset);
   });
 
   it("the date reset happens only after a confirmed success (after both failure returns)", () => {
     const create = extractHandleCreate();
-    const dateReset = create.indexOf("setFormDate(todayET())");
+    const dateReset = anchorIndex(create, "setFormDate(todayET())");
     // Both failure branches ("if (!res)" and "if (!res.ok || !data?.success)")
     // must appear, and return, before the reset block.
-    const networkFailure = create.indexOf("if (!res)");
-    const serverFailure = create.indexOf("if (!res.ok || !data?.success)");
+    const networkFailure = anchorIndex(create, "if (!res)");
+    const serverFailure = anchorIndex(create, "if (!res.ok || !data?.success)");
     expect(networkFailure).toBeGreaterThan(-1);
     expect(serverFailure).toBeGreaterThan(networkFailure);
     expect(dateReset).toBeGreaterThan(serverFailure);

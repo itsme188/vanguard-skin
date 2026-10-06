@@ -40,6 +40,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const VIEW_PATH = path.join(
   process.cwd(),
@@ -50,11 +51,11 @@ const source = readFileSync(VIEW_PATH, "utf8");
 
 /** Source slice from a function declaration to the start of the next one. */
 function functionBody(src: string, declaration: string, endMarker: string): string {
-  const startIdx = src.indexOf(declaration);
+  const startIdx = anchorIndex(src, declaration);
   if (startIdx === -1) {
     throw new Error(`declaration not found in ResearchDocumentsView.tsx: ${declaration}`);
   }
-  const endIdx = src.indexOf(endMarker, startIdx);
+  const endIdx = anchorIndex(src, endMarker, startIdx);
   if (endIdx === -1) {
     throw new Error(`end marker ${endMarker} not found after ${declaration}`);
   }
@@ -76,7 +77,7 @@ describe("InboxForwardCard ('Check inbox') surfaces a silent 400 inline, not jus
 
   it("the failure branch (res not ok / data.success false) sets checkError", () => {
     const check = functionBody(inboxCard, "const check = useCallback(", "}, [toast, onIngested]);");
-    const elseBranch = check.slice(check.indexOf("} else {"));
+    const elseBranch = check.slice(anchorIndex(check, "} else {"));
     // Same message the toast already used — now also stored for inline render.
     expect(elseBranch).toMatch(/Couldn't check the inbox:/);
     expect(elseBranch).toMatch(/setCheckError\(/);
@@ -84,15 +85,15 @@ describe("InboxForwardCard ('Check inbox') surfaces a silent 400 inline, not jus
 
   it("the network-catch branch sets checkError too — a thrown res.json() must not read as silence", () => {
     const check = functionBody(inboxCard, "const check = useCallback(", "}, [toast, onIngested]);");
-    const catchBlock = check.slice(check.indexOf("} catch"));
+    const catchBlock = check.slice(anchorIndex(check, "} catch"));
     expect(catchBlock).toMatch(/setCheckError\(/);
   });
 
   it("a successful check clears any standing error", () => {
     const check = functionBody(inboxCard, "const check = useCallback(", "}, [toast, onIngested]);");
     const successBranch = check.slice(
-      check.indexOf("if (result.ok)"),
-      check.indexOf("} else {"),
+      anchorIndex(check, "if (result.ok)"),
+      anchorIndex(check, "} else {"),
     );
     expect(successBranch).toMatch(/setCheckError\(null\)/);
   });
@@ -104,15 +105,15 @@ describe("InboxForwardCard ('Check inbox') surfaces a silent 400 inline, not jus
 
   it("renders a role=alert line under the button, gated on checkError", () => {
     expect(inboxCard).toMatch(/checkError && \(/);
-    const alertIdx = inboxCard.indexOf("checkError && (");
+    const alertIdx = anchorIndex(inboxCard, "checkError && (");
     const alertBlock = inboxCard.slice(alertIdx, alertIdx + 300);
     expect(alertBlock).toMatch(/role="alert"/);
     expect(alertBlock).toContain("{checkError}");
   });
 
   it("the alert line sits after the Check-inbox button in source order (under it, not above)", () => {
-    const buttonIdx = inboxCard.indexOf("Check inbox");
-    const alertIdx = inboxCard.indexOf("checkError && (");
+    const buttonIdx = anchorIndex(inboxCard, "Check inbox");
+    const alertIdx = anchorIndex(inboxCard, "checkError && (");
     expect(buttonIdx).toBeGreaterThan(-1);
     expect(alertIdx).toBeGreaterThan(buttonIdx);
   });
@@ -125,8 +126,8 @@ describe("InboxForwardCard ('Check inbox') surfaces a silent 400 inline, not jus
     // own JSX, which IS inside <main> — verified structurally here.
     const layoutPath = path.join(process.cwd(), "app/dashboard/layout.tsx");
     const layoutSrc = readFileSync(layoutPath, "utf8");
-    const toastProviderIdx = layoutSrc.indexOf("<ToastProvider>");
-    const mainIdx = layoutSrc.indexOf('<main id="main-content"');
+    const toastProviderIdx = anchorIndex(layoutSrc, "<ToastProvider>");
+    const mainIdx = anchorIndex(layoutSrc, '<main id="main-content"');
     expect(toastProviderIdx).toBeGreaterThan(-1);
     expect(mainIdx).toBeGreaterThan(toastProviderIdx);
   });

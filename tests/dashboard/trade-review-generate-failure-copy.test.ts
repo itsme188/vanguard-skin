@@ -30,6 +30,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { tradeReviewFailureMessage } from "@/app/dashboard/components/TradeReviewView";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const src = readFileSync("app/dashboard/components/TradeReviewView.tsx", "utf8");
 
@@ -39,8 +40,8 @@ const src = readFileSync("app/dashboard/components/TradeReviewView.tsx", "utf8")
  * `slice(start, -1)` then silently widens the "pin" to the whole file.
  */
 function section(startAnchor: string, endAnchor: string): string {
-  const start = src.indexOf(startAnchor);
-  const end = src.indexOf(endAnchor);
+  const start = anchorIndex(src, startAnchor);
+  const end = anchorIndex(src, endAnchor);
   if (start < 0 || end <= start) {
     throw new Error(
       `TradeReviewView.tsx anchors moved (${startAnchor} / ${endAnchor}) \u2014 update this test`,
@@ -147,7 +148,7 @@ describe("TradeReviewView banner wiring", () => {
 
   it("words the transport catch as an unknown save state and refreshes the list", () => {
     const doGenerate = doGenerateSrc;
-    const transportCatch = doGenerate.slice(doGenerate.indexOf("} catch (err)"));
+    const transportCatch = doGenerate.slice(anchorIndex(doGenerate, "} catch (err)"));
     expect(transportCatch).toContain("tradeReviewFailureMessage(");
     // The fetch/stream may have broken AFTER the server saved — never assert
     // "nothing was saved" here...
@@ -163,8 +164,8 @@ describe("TradeReviewView banner wiring", () => {
     expect(doGenerate).toMatch(/data\.savedUnknown/);
     // An HTTP-level failure never reached generation, so it keeps the default.
     const httpBranch = doGenerate.slice(
-      doGenerate.indexOf("if (!res.ok)"),
-      doGenerate.indexOf("// Track Phase-1"),
+      anchorIndex(doGenerate, "if (!res.ok)"),
+      anchorIndex(doGenerate, "// Track Phase-1"),
     );
     expect(httpBranch).toMatch(/tradeReviewFailureMessage\(errorBody\?\.error\)/);
   });
@@ -176,8 +177,8 @@ describe("TradeReviewView banner wiring", () => {
 
   it("clears a stale banner when the account changes", () => {
     const handler = src.slice(
-      src.indexOf("const handleAccountChange = async ("),
-      src.indexOf("// ── Month change"),
+      anchorIndex(src, "const handleAccountChange = async ("),
+      anchorIndex(src, "// ── Month change"),
     );
     expect(handler.length).toBeGreaterThan(0);
     expect(handler).toMatch(/setGenerateMsg\(null\)/);
@@ -186,8 +187,8 @@ describe("TradeReviewView banner wiring", () => {
 
   it("clears a stale banner when the month changes", () => {
     const handler = src.slice(
-      src.indexOf("const handlePeriodChange = ("),
-      src.indexOf("// ── Find unreviewed periods"),
+      anchorIndex(src, "const handlePeriodChange = ("),
+      anchorIndex(src, "// ── Find unreviewed periods"),
     );
     expect(handler.length).toBeGreaterThan(0);
     expect(handler).toMatch(/setSelectedPeriod\(periodStart\)/);

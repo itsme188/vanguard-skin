@@ -25,6 +25,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 function read(relPath: string): string {
   return fs.readFileSync(path.join(process.cwd(), relPath), "utf8");
@@ -105,7 +106,7 @@ describe("alerts page — Scan now banner discloses skipped coverage", () => {
   });
 
   it("the old blanket reassurance ('still active and being monitored') is guarded by totalSkipped === 0, i.e. unreachable when anything was skipped", () => {
-    const reassuranceIdx = src.indexOf("Your levels are still active and being monitored");
+    const reassuranceIdx = anchorIndex(src, "Your levels are still active and being monitored");
     expect(reassuranceIdx).toBeGreaterThan(-1);
 
     // Walk backward from the reassurance string to the nearest ternary

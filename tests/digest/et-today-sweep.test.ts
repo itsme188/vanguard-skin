@@ -12,6 +12,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { generateDailyDigest } from "@/lib/digest/daily-digest";
 import { refreshReportHistory } from "@/lib/earnings/report-history";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 vi.mock("@/lib/tws/positions", () => ({
   syncPortfolio: vi.fn().mockResolvedValue(undefined),
@@ -103,9 +104,9 @@ describe("synthesis fallback ring date stamp", () => {
   // failing live synthesis call, so the stamp is source-pinned.
   it("stamps the ET day, never a UTC slice", () => {
     const src = readFileSync(join(process.cwd(), "lib/digest/daily-digest.ts"), "utf8");
-    const start = src.indexOf("function recordSynthesisFallback(");
+    const start = anchorIndex(src, "function recordSynthesisFallback(");
     expect(start).toBeGreaterThan(-1);
-    const body = src.slice(start, src.indexOf("\n}\n", start));
+    const body = src.slice(start, anchorIndex(src, "\n}\n", start));
     expect(body).toMatch(/const today = todayET\(\)/);
     expect(body).not.toMatch(/toISOString\(\)\.slice\(0, 10\)/);
   });

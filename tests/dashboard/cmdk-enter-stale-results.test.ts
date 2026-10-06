@@ -17,6 +17,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const src = readFileSync(
   path.join(process.cwd(), "app/dashboard/components/CommandPalette.tsx"),
@@ -30,36 +31,36 @@ describe("CommandPalette — Enter vs. stale / not-yet-loaded results", () => {
   });
 
   it("Enter navigates only when the results match the typed query, else queues a pending submit", () => {
-    const enter = src.slice(src.indexOf('e.key === "Enter"'));
+    const enter = src.slice(anchorIndex(src, 'e.key === "Enter"'));
     expect(enter).toMatch(/resultsQuery === /);
     expect(enter).toMatch(/pendingSubmit\.current = true/);
   });
 
   it("the fetch drops a response for a query that is no longer current and fires the pending submit", () => {
     expect(src).toMatch(/latestQuery\.current !== /);
-    const fetchBlock = src.slice(src.indexOf("/api/search?q="));
+    const fetchBlock = src.slice(anchorIndex(src, "/api/search?q="));
     expect(fetchBlock).toMatch(/pendingSubmit\.current[\s\S]{0,200}navigate\(/);
   });
 
   it("a queued Enter is dropped when the palette closes (Esc before results arrive must not navigate later)", () => {
-    const openEffectStart = src.indexOf("// Focus input when opened");
-    const navigateStart = src.indexOf("const navigate = useCallback");
+    const openEffectStart = anchorIndex(src, "// Focus input when opened");
+    const navigateStart = anchorIndex(src, "const navigate = useCallback");
     expect(openEffectStart).toBeGreaterThan(-1);
     expect(navigateStart).toBeGreaterThan(openEffectStart);
     const openEffect = src.slice(openEffectStart, navigateStart);
-    const elseBranchStart = openEffect.indexOf("} else {");
+    const elseBranchStart = anchorIndex(openEffect, "} else {");
     expect(elseBranchStart).toBeGreaterThan(-1);
     const elseBranch = openEffect.slice(elseBranchStart);
     expect(elseBranch).toMatch(/pendingSubmit\.current = false/);
   });
 
   it("clearing the query while a fetch is in flight clears the spinner (the !q branch must not skip setLoading(false))", () => {
-    const debounceEffectStart = src.indexOf("// Debounced search");
-    const timerStart = src.indexOf("const timer = setTimeout");
+    const debounceEffectStart = anchorIndex(src, "// Debounced search");
+    const timerStart = anchorIndex(src, "const timer = setTimeout");
     expect(debounceEffectStart).toBeGreaterThan(-1);
     expect(timerStart).toBeGreaterThan(debounceEffectStart);
     const debounceEffect = src.slice(debounceEffectStart, timerStart);
-    const emptyBranchStart = debounceEffect.indexOf("if (!q) {");
+    const emptyBranchStart = anchorIndex(debounceEffect, "if (!q) {");
     expect(emptyBranchStart).toBeGreaterThan(-1);
     const emptyBranch = debounceEffect.slice(emptyBranchStart);
     expect(emptyBranch).toMatch(/setLoading\(false\)/);

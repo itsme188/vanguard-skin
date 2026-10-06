@@ -357,9 +357,13 @@ export function parseIbkrActivity(
       const symbol = row.fields[idxSymbol];
       const dateTime = row.fields[idxDateTime];
       const quantity = parseFloat((row.fields[idxQty] ?? "").replace(/,/g, ""));
-      const tradePrice = parseFloat(row.fields[idxPrice]);
+      // A blank/unparseable T. Price or Comm/Fee cell is "absent" (undefined),
+      // never NaN — the shared validator would exclude the whole trade.
+      const tradePriceRaw = parseFloat(row.fields[idxPrice]);
+      const tradePrice = isNaN(tradePriceRaw) ? undefined : tradePriceRaw;
       const proceeds = parseFloat(row.fields[idxProceeds]);
-      const commFee = parseFloat(row.fields[idxComm]);
+      const commFeeRaw = parseFloat(row.fields[idxComm]);
+      const commFee = isNaN(commFeeRaw) ? undefined : Math.abs(commFeeRaw);
       const tradeDate = parseDatetime(dateTime);
 
       if (isNaN(quantity) || !symbol) continue;
@@ -384,7 +388,7 @@ export function parseIbkrActivity(
           quantity: Math.abs(quantity),
           amount: proceeds,
           pricePerShare: tradePrice,
-          fees: Math.abs(commFee),
+          fees: commFee,
           ...(directionNote ? { notes: directionNote } : {}),
           sourceKey: uniqueKey(
             `ibkr:trade:${tradeDate}:${effectiveSymbol}:${quantity}:${proceeds}`
@@ -410,7 +414,7 @@ export function parseIbkrActivity(
           quantity: Math.abs(quantity),
           amount: proceeds,
           pricePerShare: tradePrice,
-          fees: Math.abs(commFee),
+          fees: commFee,
           ...(directionNote ? { notes: directionNote } : {}),
           sourceKey: uniqueKey(
             `ibkr:trade:${tradeDate}:${symbol}:${quantity}:${proceeds}`

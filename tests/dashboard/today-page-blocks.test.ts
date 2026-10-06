@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PrivacyProvider } from "@/lib/privacy/context";
 import { MomentumPulse } from "@/app/dashboard/components/MomentumPulse";
 import type { MomentumPulse as MomentumPulseData } from "@/lib/compute/momentum-spread";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const today = readFileSync("app/dashboard/today/page.tsx", "utf8");
 const analysis = readFileSync("app/dashboard/analysis/page.tsx", "utf8");
@@ -23,7 +24,7 @@ describe("Today keeps only the blocks the spec keeps (§2 ruling, §4.6)", () =>
     expect(today).toContain("<EarningsHub");
     expect(today).toContain("<OpenChatButton");
     expect(today).toContain("<TodayReleases");
-    const order = ["Portfolio", "<TodayReleases", "<EarningsHub", "<OpenChatButton", "IBKR today"].map((s) => today.indexOf(s));
+    const order = ["Portfolio", "<TodayReleases", "<EarningsHub", "<OpenChatButton", "IBKR today"].map((s) => anchorIndex(today, s));
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(order.every((i) => i > -1)).toBe(true);
   });
@@ -41,8 +42,8 @@ describe("Today keeps only the blocks the spec keeps (§2 ruling, §4.6)", () =>
     // button that this margin used to clear no longer exists. Pin the
     // negative: no bottom-margin workaround on the section, and no mention
     // of the FAB anywhere in the file (the ghost must not come back quietly).
-    const sectionAt = today.indexOf("<section", today.indexOf("IBKR today — one line"));
-    const openTag = today.slice(sectionAt, today.indexOf(">", sectionAt));
+    const sectionAt = anchorIndex(today, "<section", anchorIndex(today, "IBKR today — one line"));
+    const openTag = today.slice(sectionAt, anchorIndex(today, ">", sectionAt));
     expect(openTag).not.toMatch(/md:mb-\d/);
     expect(today).not.toMatch(/FAB/);
   });
@@ -68,7 +69,7 @@ describe("Today keeps only the blocks the spec keeps (§2 ruling, §4.6)", () =>
     // `value=` props — a bare `{todayGain}`/`{todayPct}`/`{holdings.length}`
     // used any other way (e.g. as raw JSX text) is the exact bug this test
     // guards against.
-    const line = today.slice(today.indexOf("IBKR today — one line"), today.indexOf("</section>", today.indexOf("IBKR today — one line")));
+    const line = today.slice(anchorIndex(today, "IBKR today — one line"), anchorIndex(today, "</section>", anchorIndex(today, "IBKR today — one line")));
     expect(line).not.toMatch(/(?<!value=)(\{todayGain\}|\{todayPct\}|\{holdings\.length\})/);
   });
 });
@@ -88,9 +89,9 @@ describe("Analysis diagnostics gains the two moved cards (§4.6 bullet 2)", () =
   it("imports and renders both, above TrustStrip and below the view toggle", () => {
     expect(analysis).toContain("SignificantMovesCard");
     expect(analysis).toContain("computeMomentumPulse");
-    const toggle = analysis.indexOf("<AnalysisViewToggle");
-    const cards = analysis.indexOf("<SignificantMovesCard");
-    const pulse = analysis.indexOf("<MomentumPulse");
+    const toggle = anchorIndex(analysis, "<AnalysisViewToggle");
+    const cards = anchorIndex(analysis, "<SignificantMovesCard");
+    const pulse = anchorIndex(analysis, "<MomentumPulse");
     const trust = analysis.lastIndexOf("<TrustStrip");
     expect(toggle).toBeGreaterThan(-1);
     expect(cards).toBeGreaterThan(toggle);

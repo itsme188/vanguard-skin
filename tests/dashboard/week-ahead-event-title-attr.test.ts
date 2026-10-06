@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // This repo has no React component-rendering harness (no @testing-library/react,
 // no jsdom environment in vitest.config.ts) — following the static-scan
@@ -29,7 +30,7 @@ describe("WeekAheadView EventRow's clipped title carries a title= attribute", ()
     // Grab the small window around the line-clamp-2 className up through the
     // {event.title} expression and require the title= prop to appear in it
     // (order-independent — className and title= can appear in either order).
-    const idx = source.indexOf("line-clamp-2");
+    const idx = anchorIndex(source, "line-clamp-2");
     expect(idx, "line-clamp-2 not found").toBeGreaterThan(-1);
     const windowSrc = source.slice(Math.max(0, idx - 200), idx + 300);
     expect(windowSrc).toMatch(/title=\{event\.title \?\? undefined\}/);

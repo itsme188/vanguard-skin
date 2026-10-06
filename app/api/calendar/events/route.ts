@@ -15,6 +15,7 @@ import { mondayOf, addDays } from "@/lib/calendar/date-utils";
 import { getSecurityIdForSymbol } from "@/lib/queries/briefing-symbols";
 import { attemptPostCommitDrain } from "@/lib/earnings/cloud-outbox";
 import { checkManualAddWouldSupersedeVendor } from "@/lib/calendar/reconcile-earnings-dates";
+import { checkManualSlotAgainstKnownTime } from "@/lib/earnings/wire-times";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +74,18 @@ export async function GET(request: Request) {
  * it would replace; `force: true` skips the check and inserts. Same refuse +
  * override shape as approveLevelGuarded on /api/levels/review. Supersession
  * itself is unchanged — the user simply gets told before it happens.
+ *
+ * Third 409, `slot_contradicts_known_time` (user ruling 2026-10-05): a manual
+ * earnings row may not store a BMO/AMC slot and a release time on opposite
+ * sides of the session. When the chosen slot contradicts the symbol's known
+ * release time (checkManualSlotAgainstKnownTime — the release cascade's own
+ * evidence and side-of-noon rule) the write is refused; `force: true` inserts
+ * and stores the SLOT default time, never the contradicting remembered one.
+ * With no known time there is no refusal and the slot default is stored; a
+ * same-side known time is kept. An explicit `release_time` in the body is the
+ * caller's own statement and is not second-guessed. Checked before the
+ * supersede guard: it is about the row itself, and a `force` that answers the
+ * supersede question still can never store an opposite-side time.
  */
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
@@ -101,6 +114,35 @@ export async function POST(request: Request) {
     const symbol = body.symbol.trim().toUpperCase();
     const eventType = body.event_type ?? "earnings";
 
+    // Slot vs known time — only for an earnings add that names a BMO/AMC slot
+    // and leaves the clock time to the server.
+    const slotMarker = (body.event_time ?? "AMC").trim().toUpperCase();
+    const slotCheck =
+      eventType === "earnings" &&
+      (slotMarker === "BMO" || slotMarker === "AMC") &&
+      (body.release_time === undefined || body.release_time === null)
+        ? checkManualSlotAgainstKnownTime(db, symbol, slotMarker === "BMO" ? "bmo" : "amc")
+        : null;
+    if (slotCheck && !slotCheck.ok && body.force !== true) {
+      return Response.json(
+        {
+          success: false,
+          error: slotCheck.message,
+          code: "slot_contradicts_known_time",
+          slot: slotMarker,
+          knownTime: slotCheck.knownTime,
+          slotDefaultTime: slotCheck.slotDefaultTime,
+        },
+        { status: 409 },
+      );
+    }
+    // Reaching here with a contradiction means `force`: store the slot default.
+    const guardedReleaseTime = slotCheck
+      ? slotCheck.ok
+        ? slotCheck.releaseTime
+        : slotCheck.slotDefaultTime
+      : undefined;
+
     if (body.force !== true) {
       const guard = checkManualAddWouldSupersedeVendor(db, {
         symbol,
@@ -128,7 +170,7 @@ export async function POST(request: Request) {
       event_date: body.event_date,
       event_type: eventType,
       event_time: body.event_time ?? "AMC",
-      release_time: body.release_time ?? undefined,
+      release_time: body.release_time ?? guardedReleaseTime,
       expected_impact: body.expected_impact ?? "high",
       consensus_estimate: body.consensus_estimate ?? null,
       description: body.description ?? null,

@@ -33,6 +33,7 @@ import type {
   CockpitPayload,
   CockpitRow,
 } from "@/lib/queries/earnings-cockpit";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const snap = (o: Partial<ExpansionSnapshot> = {}): ExpansionSnapshot => ({
   printId: 1,
@@ -204,7 +205,7 @@ describe("manual toggle persistence", () => {
  *  Brace-depth aware, so `lanes: { bmo: … }` contributes `lanes` and nothing
  *  else, and comment lines contribute nothing. */
 function interfaceFields(source: string, name: string): string[] {
-  const start = source.indexOf(`export interface ${name} {`);
+  const start = anchorIndex(source, `export interface ${name} {`);
   if (start < 0) throw new Error(`interface ${name} not found — the mirror has nothing to pin against`);
   const lines = source.slice(start).split("\n");
   const fields: string[] = [];

@@ -164,6 +164,24 @@ describe("IBKR activity parser", () => {
     expect(buy!.quantity).toBe(200);
   });
 
+  it("maps a blank T. Price / Comm/Fee cell to undefined, never NaN", () => {
+    const line =
+      'Trades,Data,Order,Stocks,USD,U99999999,MSFT,"2025-01-10, 10:30:00",-50,387.00,375.00,19350,-2.75,-18750,597.25,600,C';
+    const blank = line.replace(",-50,387.00,375.00,19350,-2.75,", ",-50,,375.00,19350,,");
+    expect(blank).not.toBe(line);
+    const base = parseIbkrActivity(fixture, "IBKR 2025-01 activity.csv");
+    const result = parseIbkrActivity(fixture.replace(line, blank), "IBKR 2025-01 activity.csv");
+    const t = result.transactions.find((x) => x.symbol === "MSFT" && x.type === "SELL")!;
+    expect(t).toBeTruthy();
+    expect(t.fees).toBeUndefined();
+    expect(t.pricePerShare).toBeUndefined();
+    expect(t.amount).toBe(19350);
+    const b = base.transactions.find((x) => x.symbol === "MSFT" && x.type === "SELL")!;
+    expect(b.fees).toBe(2.75);
+    expect(b.pricePerShare).toBe(387);
+    expect(t.sourceKey).toBe(b.sourceKey);
+  });
+
   it("routes 'Equity and Index Options' trades down the option branch", () => {
     // Regression: real IBKR statements label option trades "Equity and Index
     // Options", never "Options". A strict equality check sent every option

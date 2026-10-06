@@ -57,6 +57,8 @@ TASK_LIVE_STATUSES = ("active", "blocked")
 # status decides: review/blocked wait on the user, active/planned on the owner.
 NEXT_ACTORS = ("user", "codex", "claude")
 NEXT_ACTOR_RE = re.compile(r"^\s*(USER|CODEX|CLAUDE)\s*:", re.IGNORECASE)
+# A finished task has nobody to act: `--next nobody|none|-` is a deliberate value.
+NEXT_NOBODY_RE = re.compile(r"^\s*(nobody|none|-)\s*$", re.IGNORECASE)
 
 TASK_FIELDS = [
     "id",
@@ -473,7 +475,11 @@ def cmd_task_checkpoint(coord_dir: str, args: argparse.Namespace) -> int:
         record["evidence"] = args.evidence
     if args.next is not None:
         record["next_action"] = args.next
-        if not NEXT_ACTOR_RE.match(args.next) and (args.status or record.get("status")) != "decision":
+        if (
+            not NEXT_ACTOR_RE.match(args.next)
+            and not NEXT_NOBODY_RE.match(args.next)
+            and (args.status or record.get("status")) != "decision"
+        ):
             sys.stderr.write(
                 "coord: hint: start --next with USER:, CODEX: or CLAUDE: so `coord inbox` "
                 "knows who acts next (classifying by status for now)\n"
@@ -1087,6 +1093,8 @@ def next_actor(record: Dict[str, Any]) -> Tuple[str, bool]:
     if record.get("status") == "decision":
         # A decision is the user's by definition, label or not.
         return "user", True
+    if NEXT_NOBODY_RE.match(record.get("next_action") or ""):
+        return "nobody", True
     text = record.get("next_action") or ""
     match = NEXT_ACTOR_RE.match(text)
     if match:
@@ -1159,8 +1167,10 @@ def cmd_inbox(coord_dir: str, args: argparse.Namespace) -> int:
                 }
             )
             continue
-        flags = compute_flags(record, stale_after)
         actor, explicit = next_actor(record)
+        if actor == "nobody":
+            continue  # nobody to act: not waiting on anyone
+        flags = compute_flags(record, stale_after)
         if not explicit:
             unlabeled += 1
         checkpoint = record.get("last_checkpoint") or {}

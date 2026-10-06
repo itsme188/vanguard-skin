@@ -363,6 +363,14 @@ export function NotesView({
             <option value="trade_thesis">Stock Note</option>
           </select>
 
+          {searchParams.get("via") === "option" && formType !== "journal" && (
+            <p className="basis-full text-xs text-ink-dim">
+              {formSymbol
+                ? `Notes on an option are filed under ${formSymbol}.`
+                : "Pick the underlying security for this option note."}
+            </p>
+          )}
+
           {(formType === "earnings" || formType === "trade_thesis") && (
             <select
               value={formSymbol}

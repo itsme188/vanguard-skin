@@ -7,6 +7,7 @@ import {
   NARRATIVE_SURFACES,
 } from "@/lib/compute/analysis-narratives";
 import { generateTextForFeature } from "@/lib/ai/generate";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // Mock generateTextForFeature so tests don't burn real Sonnet calls when
 // ANTHROPIC_API_KEY is loaded into the env (e.g. via .env.local). Without
@@ -210,7 +211,7 @@ describe("buildContextForSurface position-risk ranks by risk contribution (via g
     // topN:5 market-value query never sees it. It must be present now.
     expect(capturedPrompt).toContain("HOOD");
 
-    const jsonStart = capturedPrompt.indexOf("{");
+    const jsonStart = anchorIndex(capturedPrompt, "{");
     const context = JSON.parse(capturedPrompt.slice(jsonStart));
     const symbols: string[] = context.positions.map((p: { symbol: string }) => p.symbol);
     const riskContribs: (number | null)[] = context.positions.map(

@@ -86,30 +86,37 @@ function isOutputFormatRejected(err: unknown): boolean {
   if (FORCED_TOOL_UNSUPPORTED.test(msg)) return false;
   const status = (err as { statusCode?: number } | null)?.statusCode;
   const is400 = status === 400 || /\b400\b|invalid_request_error/i.test(msg);
-  return is400 && OUTPUT_FORMAT_REJECTED.test(msg);
+  if (!is400) return false;
+  if (OUTPUT_FORMAT_REJECTED.test(msg)) return true;
+  // Mirror of the Mac check: the rejection text can live only in responseBody.
+  const body = (err as { responseBody?: unknown } | null)?.responseBody;
+  return typeof body === "string" && OUTPUT_FORMAT_REJECTED.test(body);
 }
 
 /**
  * Wraps a single AI call with reactive failover: if the resolved model returns
  * a 404 / not_found, exclude it and retry once with the next model in the tier
  * ladder. If the provider rejects the native structured-output request, retry
- * ONCE on the same model with mode "jsonTool" (the callback receives the mode
- * as its second argument; callers that ignore it get an identical request, so
- * the retry is skipped for them only by their own throw). On any other error,
- * re-throws immediately.
+ * ONCE on the same model with mode "jsonTool". That retry only happens for
+ * `opts.structured` callers (a `generateObject` call that spreads
+ * `structuredOutputProviderOptions(mode)` from the callback's second argument);
+ * text-only calls never send a schema, so the retry would be an identical
+ * re-send and the error is re-thrown instead. On any other error, re-throws
+ * immediately.
  */
 export async function generateWithFailover<T>(
   env: AIEnv,
   feature: WorkerFeature,
   catalog: string[],
-  call: (model: LanguageModel, mode?: StructuredMode) => Promise<T>,
+  call: (model: LanguageModel, mode: StructuredMode) => Promise<T>,
+  opts: { structured?: boolean } = {},
 ): Promise<T> {
   const excluded = new Set<string>();
   const modelId = resolveTier(FEATURE_TIER[feature], catalog);
   try {
     return await call(getModelForFeature(env, feature, catalog, excluded), "outputFormat");
   } catch (err) {
-    if (isOutputFormatRejected(err)) {
+    if (opts.structured === true && isOutputFormatRejected(err)) {
       console.warn(`[worker-ai] ${feature}: ${modelId} rejects native structured output → jsonTool retry`);
       return await call(getModelForFeature(env, feature, catalog, excluded), "jsonTool");
     }

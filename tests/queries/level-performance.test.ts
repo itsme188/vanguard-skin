@@ -345,6 +345,32 @@ describe("getSectorEtfGaps", () => {
     expect(rows.map((r) => r.symbol)).toEqual(["BETA", "GAMMA", "ACME"]);
   });
 
+  it("hides rows whose security now carries a mappable sector (read-time only)", () => {
+    const ins = db.prepare(
+      `INSERT INTO sector_etf_gaps (symbol, sector, count) VALUES (?, ?, 1)`,
+    );
+    ins.run("RESOLVED", null);
+    ins.run("BRK.B", null);
+    ins.run("STILLGAP", null);
+    ins.run("UNMAPPEDSEC", null);
+    seedSecurity(db, 1, "RESOLVED");
+    seedSecurity(db, 2, "BRK/B");
+    seedSecurity(db, 3, "UNMAPPEDSEC");
+    seedSecurity(db, 4, "STILLGAP");
+    db.prepare("UPDATE securities SET sector='Technology' WHERE id=1").run();
+    db.prepare("UPDATE securities SET sector='Financials' WHERE id=2").run();
+    db.prepare("UPDATE securities SET sector='Not A Sector' WHERE id=3").run();
+
+    expect(getSectorEtfGaps(db).map((r) => r.symbol).sort()).toEqual([
+      "STILLGAP",
+      "UNMAPPEDSEC",
+    ]);
+    // stored rows untouched
+    expect(
+      (db.prepare("SELECT COUNT(*) c FROM sector_etf_gaps").get() as { c: number }).c,
+    ).toBe(4);
+  });
+
   it("aggregates NULL-sector duplicate rows into one entry (PK never conflicts on NULL)", () => {
     // The write-side upsert keys on (symbol, sector); SQLite treats NULLs as
     // DISTINCT in the primary key, so each enrichment tick inserts a fresh

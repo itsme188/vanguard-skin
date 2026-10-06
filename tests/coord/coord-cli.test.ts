@@ -485,6 +485,22 @@ describe("inbox", () => {
   });
 });
 
+describe("checkpoint --next nobody", () => {
+  it.each(["nobody", "NONE", "-"])("--next %s passes without a hint, is stored as given, and is not listed in the inbox", (value) => {
+    run(["task", "register", "--id", "nb-1", "--owner", "claude", "--branch", "b", "--worktree", "/tmp"]);
+    const res = run(["task", "checkpoint", "nb-1", "--note", "done", "--next", value]);
+    expect(res.status).toBe(0);
+    expect(res.stderr).toBe("");
+    const shown = JSON.parse(run(["task", "show", "nb-1", "--json"]).stdout);
+    expect(shown.next_action).toBe(value);
+    const inbox = run(["inbox", "--no-prs"]);
+    expect(inbox.stdout).not.toContain("nb-1");
+    const json = JSON.parse(run(["inbox", "--no-prs", "--json"]).stdout);
+    expect(JSON.stringify(json)).not.toContain("nb-1");
+    expect(json.unlabeled).toBe(0);
+  });
+});
+
 // ─── decision records: questions only the user can answer ─────────
 
 describe("decision records", () => {

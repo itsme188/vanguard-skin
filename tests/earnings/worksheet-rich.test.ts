@@ -11,6 +11,7 @@ import {
   mdToPlainText,
   renderMonospaceTable,
 } from "@/lib/earnings/worksheet-rich";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const PREVIEW_MD = `## Line-by-line bogies
 
@@ -290,7 +291,7 @@ function richInputs(overrides: Partial<RichWorksheetInputs> = {}): RichWorksheet
 describe("composeRichWorksheet", () => {
   it("orders sections: header, scoreboard, past prints, bogies, commentary, notes", () => {
     const text = composeRichWorksheet(richInputs());
-    const idx = (s: string) => text.indexOf(s);
+    const idx = (s: string) => anchorIndex(text, s);
     expect(idx("AMZN — ")).toBe(0);
     expect(idx("SCOREBOARD")).toBeGreaterThan(0);
     expect(idx("PAST PRINTS")).toBeGreaterThan(idx("SCOREBOARD"));

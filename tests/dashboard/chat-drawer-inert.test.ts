@@ -24,13 +24,14 @@
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const src = readFileSync("app/dashboard/components/ChatDrawer.tsx", "utf8");
 const layout = readFileSync("app/dashboard/layout.tsx", "utf8");
 
 describe("collapsed / closed chat panel leaves the tab order", () => {
   it("marks the panel inert on the same predicate that hides it from a11y", () => {
-    const panel = src.slice(src.indexOf("{/* Chat panel."), src.indexOf("{/* Header */}"));
+    const panel = src.slice(anchorIndex(src, "{/* Chat panel."), anchorIndex(src, "{/* Header */}"));
     expect(panel).toContain("aria-hidden={!railVisible}");
     expect(panel).toContain("inert={!railVisible}");
   });

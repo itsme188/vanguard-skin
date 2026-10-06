@@ -13,11 +13,12 @@
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const SRC_PATH = "app/dashboard/components/analysis/TrustStripDrawer.tsx";
 
 function extractBondDurationContent(src: string): string {
-  const start = src.indexOf("function BondDurationContent");
+  const start = anchorIndex(src, "function BondDurationContent");
   expect(start).toBeGreaterThan(-1);
   // Next top-level function declaration marks the end of this component's
   // body — there are no nested `function` declarations inside it.

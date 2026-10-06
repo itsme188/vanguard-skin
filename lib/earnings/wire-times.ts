@@ -13,7 +13,11 @@
  */
 import type Database from "better-sqlite3";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
-import { resolveReleaseTime } from "@/lib/calendar/release-times";
+import {
+  earningsHourToReleaseTime,
+  resolveReleaseTime,
+  SYMBOL_RELEASE_TIMES_ET,
+} from "@/lib/calendar/release-times";
 import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 import { todayET } from "@/lib/calendar/date-utils";
 
@@ -327,10 +331,60 @@ export function resolveSymbolReleaseTime(
 }
 
 /**
+ * How many of a family's most recent REPORTED earnings rows are searched for
+ * a slot. Twins share a date, so eight rows is roughly the last four prints.
+ */
+const LAST_PRINT_SLOT_LOOKBACK_ROWS = 8;
+
+/**
+ * The BMO/AMC slot of the issuer family's most recent reported print that
+ * names one — the last rung of "history first" for a slot-less vendor row
+ * (user ruling 2026-10-05). "Reported" = `actual_value IS NOT NULL`, the same
+ * bar the recap road uses; the slot comes from deriveEarningsSlot (event_time
+ * marker / raw_json vendor hour), never from a stored release_time, which may
+ * itself be an old 16:15 default. Superseded twins are read on purpose: the
+ * Nasdaq twin of a surviving Finnhub row is often the one carrying the hour.
+ */
+export function lastReportedPrintSlot(
+  db: Database.Database,
+  symbol: string,
+): "bmo" | "amc" | null {
+  try {
+    const family = issuerSiblings(symbol).map((s) => s.toUpperCase());
+    const ph = family.map(() => "?").join(",");
+    const rows = db
+      .prepare(
+        `SELECT event_time, raw_json
+           FROM calendar_events
+          WHERE event_type = 'earnings' AND UPPER(symbol) IN (${ph})
+            AND actual_value IS NOT NULL
+          ORDER BY event_date DESC, id DESC
+          LIMIT ${LAST_PRINT_SLOT_LOOKBACK_ROWS}`,
+      )
+      .all(...family) as Array<{ event_time: string | null; raw_json: string | null }>;
+    for (const r of rows) {
+      const slot = deriveEarningsSlot(r);
+      if (slot) return slot;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Full release-time resolution for one earnings row: explicit HH:MM
  * event_time → layers 1–3 → legacy constant + BMO/AMC defaults
  * (resolveReleaseTime) → pull-down rule (any observation earlier than a
  * layer-≥3 resolution pulls it down; user/web layers are never pulled).
+ *
+ * A SLOT-LESS vendor row (hour null / "unknown" / "dmh") is history-first
+ * (user ruling 2026-10-05): layers 1–3 with no side-of-noon filter → the
+ * curated per-symbol constant → the slot of the family's last reported print
+ * (its slot default) → and only then the legacy 16:15 default. The no-history
+ * case is deliberately UNCHANGED (still 16:15): storing no time there would
+ * drop the row out of every time-gated pipeline reader and off the pre-print
+ * floor — a separate decision, not made here.
  */
 export function resolveEarningsReleaseTime(
   db: Database.Database,
@@ -361,6 +415,18 @@ export function resolveEarningsReleaseTime(
   }
 
   let resolved = fromSymbol?.time ?? resolveReleaseTime(row);
+  // Slot-less row about to ride the bare default (no cascade hit, no curated
+  // per-symbol constant): the last reported print's slot beats that default.
+  // A row resolveReleaseTime leaves NULL stays NULL, exactly as before.
+  if (
+    resolved &&
+    !fromSymbol &&
+    slot === null &&
+    !SYMBOL_RELEASE_TIMES_ET[row.symbol.trim().toUpperCase()]
+  ) {
+    const historySlot = lastReportedPrintSlot(db, row.symbol);
+    if (historySlot) resolved = earningsHourToReleaseTime(historySlot);
+  }
   if (!resolved) return null;
 
   // Pull-down: ANY observation (bounded or not) earlier than the resolved
@@ -477,6 +543,87 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
     }
   }
   return { ok: true };
+}
+
+/** "16:05" → "4:05 PM". */
+function clock12(hhmm: string): string {
+  const [hh, mm] = hhmm.split(":");
+  const h = parseInt(hh, 10);
+  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${h12}:${mm} ${h >= 12 ? "PM" : "AM"}`;
+}
+
+export type ManualSlotCheck =
+  | {
+      ok: true;
+      /** The time to store: the symbol's known same-side time, else the slot default. */
+      releaseTime: string;
+      basis: "known" | "slot_default";
+    }
+  | {
+      ok: false;
+      slot: "bmo" | "amc";
+      /** The symbol's known time, on the OTHER side of the session. */
+      knownTime: string;
+      /** What a forced add stores instead of `knownTime`. */
+      slotDefaultTime: string;
+      /** Plain-English refusal, ready to render. */
+      message: string;
+    };
+
+/**
+ * Guard for the manual "+ Add ticker" road (user ruling 2026-10-05; QA
+ * findings: BMO picked, 4:05 PM stored): a manual earnings row may never
+ * carry a slot and a release time on opposite sides of the session — the
+ * countdown reads the time, the accept gate reads the slot, and the two then
+ * disagree by nine hours.
+ *
+ * The symbol's "known time" is the same evidence the release cascade uses
+ * (user override → web_verified → observed wire time → the curated
+ * per-symbol constant), and the side of the session is the SAME
+ * sameSideOfNoon rule the cascade and the release-time route guard
+ * (checkUserReleaseTimeAgainstUpcomingSlot) apply — never a second copy.
+ *
+ *   - a known time on the chosen slot's side      → ok, keep it
+ *   - a known time only on the other side         → REFUSED (the route 409s
+ *     `slot_contradicts_known_time`; `force` stores `slotDefaultTime`)
+ *   - no known time at all                        → ok, slot default
+ */
+export function checkManualSlotAgainstKnownTime(
+  db: Database.Database,
+  symbol: string,
+  slot: "bmo" | "amc",
+): ManualSlotCheck {
+  const sym = symbol.trim().toUpperCase();
+  const constant = SYMBOL_RELEASE_TIMES_ET[sym] ?? null;
+  const slotDefaultTime = earningsHourToReleaseTime(slot);
+
+  const sameSide =
+    resolveSymbolReleaseTime(db, sym, slot)?.time ??
+    (constant && sameSideOfNoon(constant, slot) ? constant : null);
+  if (sameSide) return { ok: true, releaseTime: sameSide, basis: "known" };
+
+  // Nothing on the chosen side. Ask again with no slot filter: anything that
+  // comes back now is, by construction, evidence for the OTHER side — unless
+  // it is a same-side time the cascade merely distrusts (a suspect 17:00 AMC
+  // call time), which is no contradiction and falls to the slot default.
+  const known = resolveSymbolReleaseTime(db, sym, null)?.time ?? constant;
+  if (!known || sameSideOfNoon(known, slot)) {
+    return { ok: true, releaseTime: slotDefaultTime, basis: "slot_default" };
+  }
+
+  const picked = slot === "bmo" ? "BMO (before the open)" : "AMC (after the close)";
+  const knownSide = slot === "bmo" ? "after the close" : "before the open";
+  return {
+    ok: false,
+    slot,
+    knownTime: known,
+    slotDefaultTime,
+    message:
+      `${sym} is on record reporting at ${clock12(known)} ET, ${knownSide} — but you picked ${picked}. ` +
+      `Nothing was added. Change the slot, or add anyway to save it as ${slot.toUpperCase()} ` +
+      `at the default ${clock12(slotDefaultTime)} ET.`,
+  };
 }
 
 /** Re-resolve release_time for future, untouched family earnings rows. */

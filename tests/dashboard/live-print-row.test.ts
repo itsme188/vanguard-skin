@@ -23,6 +23,7 @@ import type {
   PrintStatusEntry,
 } from "@/app/dashboard/today/hub-live/types";
 import type { PrintWatchLine } from "@/lib/print-watch/types";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // `LivePrintRow` calls `useRouter()` for its post-promote refresh. There is no
 // app-router context in an SSR-only harness, so it is stubbed exactly as the
@@ -87,7 +88,7 @@ describe("the Δ column is masked whenever the bogey is (M-F19)", () => {
   it("wraps the delta cell in PrivateText on the same condition as the bogey cell", () => {
     // A masked bogey with an unmasked Δ leaks the bogey by division.
     expect(src).toMatch(/Δ vs bogey|delta/i);
-    const deltaCell = src.slice(src.indexOf("delta === null"));
+    const deltaCell = src.slice(anchorIndex(src, "delta === null"));
     expect(deltaCell).toMatch(/<PrivateText/);
     expect(deltaCell).toMatch(/line\.expected \? <PrivateText>/);
   });

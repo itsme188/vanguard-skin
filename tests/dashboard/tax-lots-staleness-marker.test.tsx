@@ -28,6 +28,7 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { TaxLotStalenessNotice } from "@/app/dashboard/components/TaxLotSummary";
 import type { TaxLotStalenessMarker } from "@/lib/compute/tax-convention";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const privacyState = vi.hoisted(() => ({ isPrivate: false }));
 vi.mock("@/lib/privacy/context", () => ({
@@ -143,8 +144,8 @@ describe("tax lots page wiring", () => {
   });
 
   it("keeps the notice adjacent to the Recompute button", () => {
-    const noticeAt = src.indexOf("<TaxLotStalenessNotice");
-    const buttonAt = src.indexOf('<RecomputeButton endpoint="/api/compute/tax-lots"');
+    const noticeAt = anchorIndex(src, "<TaxLotStalenessNotice");
+    const buttonAt = anchorIndex(src, '<RecomputeButton endpoint="/api/compute/tax-lots"');
     expect(noticeAt).toBeGreaterThan(-1);
     expect(buttonAt).toBeGreaterThan(noticeAt);
     // Same JSX block — nothing but the notice sits between them.

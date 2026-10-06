@@ -26,6 +26,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const VIEW_PATH = path.join(
   process.cwd(),
@@ -34,11 +35,11 @@ const VIEW_PATH = path.join(
 
 /** Source slice from a heading's text through the end of its <section>. */
 function sectionAfterHeading(src: string, heading: string): string {
-  const headingIdx = src.indexOf(heading);
+  const headingIdx = anchorIndex(src, heading);
   if (headingIdx === -1) {
     throw new Error(`heading not found in DataHealthView.tsx: ${heading}`);
   }
-  const sectionEndIdx = src.indexOf("</section>", headingIdx);
+  const sectionEndIdx = anchorIndex(src, "</section>", headingIdx);
   if (sectionEndIdx === -1) {
     throw new Error(`no closing </section> found after heading: ${heading}`);
   }

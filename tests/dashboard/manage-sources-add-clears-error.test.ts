@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "fs";
 import path from "path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const src = fs.readFileSync(
   path.join(process.cwd(), "app/dashboard/components/ManageSourcesModal.tsx"),
@@ -8,9 +9,9 @@ const src = fs.readFileSync(
 );
 
 function handlerBody(name: string): string {
-  const start = src.indexOf(`const ${name} = useCallback(`);
+  const start = anchorIndex(src, `const ${name} = useCallback(`);
   expect(start).toBeGreaterThan(-1);
-  const next = src.indexOf("useCallback(", start + 30);
+  const next = src.indexOf("useCallback(", start + 30); // last handler has no successor
   return src.slice(start, next === -1 ? undefined : next);
 }
 
@@ -19,7 +20,7 @@ describe("ManageSourcesModal add handlers clear the stale mutation error", () =>
     it(`${name} resets mutationError before the request`, () => {
       const body = handlerBody(name);
       const clear = body.search(/setMutationError\(\s*null\s*\)/);
-      const fetchAt = body.indexOf("apiFetch(");
+      const fetchAt = anchorIndex(body, "apiFetch(");
       expect(clear).toBeGreaterThan(-1);
       expect(clear).toBeLessThan(fetchAt);
     });

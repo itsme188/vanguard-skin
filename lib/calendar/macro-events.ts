@@ -3,6 +3,7 @@ import type { CalendarEventInput } from "@/lib/mutations/calendar";
 import { SONNET_MODEL } from "@/lib/claude-models";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
+import { FRED_SOURCE_KEY_PREFIX } from "@/lib/calendar/release-times";
 
 // ── FRED Release IDs → Calendar Event Types ──────────────────────
 //
@@ -456,6 +457,112 @@ Return ONLY a JSON array. No markdown, no preamble.`;
   }
 }
 
+// ── Hardcoded rows (FOMC + non-FRED) ─────────────────────────────
+//
+// One builder per hardcoded table, shared by fetchMacroEvents (the normal
+// road) and buildHardcodedMacroEvents (the no-network road), so the two can
+// never mint different titles or source_keys for the same meeting.
+
+function fomcEventInput(meeting: FomcMeeting, weekOf: string): CalendarEventInput {
+  const title = meeting.hasSEP
+    ? "FOMC Rate Decision + Projections"
+    : "FOMC Rate Decision";
+  const description = meeting.hasSEP
+    ? "Federal Open Market Committee announces interest rate decision, releases Summary of Economic Projections (dot plot), and holds press conference at 2:30 PM ET."
+    : "Federal Open Market Committee announces interest rate decision and holds press conference at 2:30 PM ET.";
+  return {
+    source: "claude_macro" as const,
+    event_type: "fomc",
+    event_date: meeting.date,
+    event_time: "14:00",
+    title,
+    description,
+    expected_impact: "high",
+    consensus_estimate: null,
+    previous_value: null,
+    source_key: `fomc:${meeting.date}`,
+    week_of: weekOf,
+  };
+}
+
+/** `nonfred:<Short_Name>:` — the per-indicator source_key prefix (date follows). */
+function nonFredKeyPrefix(shortName: string): string {
+  return `nonfred:${shortName.replace(/\s+/g, "_")}:`;
+}
+
+function nonFredEventInput(
+  src: NonFredEvent,
+  finalDate: string,
+  weekOf: string,
+  verify?: ScheduleVerifyResult,
+): CalendarEventInput {
+  const reportingPeriod = getReportingPeriod(finalDate, src.reportingLag);
+  const title = reportingPeriod
+    ? `${reportingPeriod} ${src.shortName}`
+    : src.shortName;
+  return {
+    source: "claude_macro" as const,
+    event_type: src.eventType,
+    event_date: finalDate,
+    event_time: src.releaseTime,
+    title,
+    description: null,
+    expected_impact: src.defaultImpact,
+    consensus_estimate: null,
+    previous_value: null,
+    raw_json: verify
+      ? JSON.stringify({
+          reschedule_verified_at: new Date().toISOString(),
+          verify_status: verify.status,
+          original_date: src.date,
+          source_url: verify.sourceUrl ?? null,
+          note: verify.note ?? null,
+        })
+      : null,
+    source_key: `${nonFredKeyPrefix(src.shortName)}${finalDate}`,
+    week_of: weekOf,
+  };
+}
+
+/**
+ * The hardcoded macro rows for a date window — FOMC meetings plus the
+ * non-FRED indicators (ISM, UMich, Conference Board) — with NO network and NO
+ * AI call (user ruling 2026-10-05).
+ *
+ * Why it exists: fetchMacroEvents builds these same rows, but only after the
+ * FRED fetch and the Claude enrichment have both succeeded — so one FRED 5xx
+ * took a week's FOMC decision down with it, and the far weeks of the
+ * four-week horizon (where FRED has the least to say) showed earnings only.
+ * The sync falls back to this when fetchMacroEvents throws.
+ *
+ * Dates come ONLY from FOMC_MEETINGS_2026 / NON_FRED_SCHEDULE_2026 above —
+ * nothing here computes or infers a date, and a window past the end of those
+ * tables simply returns nothing. Non-FRED rows carry the hardcoded date
+ * unverified (no reschedule check ran); `nonFredKeyPrefixes` lets the caller
+ * skip an indicator the verified road already wrote on a rescheduled date.
+ */
+export function buildHardcodedMacroEvents(
+  startDate: string,
+  endDate: string,
+  weekOf: string,
+): { events: CalendarEventInput[]; nonFredKeyPrefixes: Map<string, string> } {
+  const events: CalendarEventInput[] = [];
+  const nonFredKeyPrefixes = new Map<string, string>();
+  for (const meeting of FOMC_MEETINGS_2026) {
+    if (meeting.date >= startDate && meeting.date <= endDate) {
+      events.push(fomcEventInput(meeting, weekOf));
+    }
+  }
+  for (const src of NON_FRED_SCHEDULE_2026) {
+    if (src.date >= startDate && src.date <= endDate) {
+      const input = nonFredEventInput(src, src.date, weekOf);
+      events.push(input);
+      nonFredKeyPrefixes.set(input.source_key, nonFredKeyPrefix(src.shortName));
+    }
+  }
+  return { events, nonFredKeyPrefixes };
+}
+
 // ── Main fetch function ──────────────────────────────────────────
 
 /**
@@ -504,7 +611,7 @@ export async function fetchMacroEvents(
       ? `${reportingPeriod} ${e.config.shortName}`
       : e.config.shortName;
     const title = extra?.title || fallbackTitle;
-    const sourceKey = `fred:${e.config.releaseId}:${e.date}`;
+    const sourceKey = `${FRED_SOURCE_KEY_PREFIX}${e.config.releaseId}:${e.date}`;
 
     return {
       source: "claude_macro" as const,
@@ -526,26 +633,7 @@ export async function fetchMacroEvents(
   // Step 4: Add FOMC meeting dates (hardcoded, from federalreserve.gov)
   for (const meeting of FOMC_MEETINGS_2026) {
     if (meeting.date >= startDate && meeting.date <= endDate) {
-      const title = meeting.hasSEP
-        ? "FOMC Rate Decision + Projections"
-        : "FOMC Rate Decision";
-      const description = meeting.hasSEP
-        ? "Federal Open Market Committee announces interest rate decision, releases Summary of Economic Projections (dot plot), and holds press conference at 2:30 PM ET."
-        : "Federal Open Market Committee announces interest rate decision and holds press conference at 2:30 PM ET.";
-
-      events.push({
-        source: "claude_macro" as const,
-        event_type: "fomc",
-        event_date: meeting.date,
-        event_time: "14:00",
-        title,
-        description,
-        expected_impact: "high",
-        consensus_estimate: null,
-        previous_value: null,
-        source_key: `fomc:${meeting.date}`,
-        week_of: weekOf,
-      });
+      events.push(fomcEventInput(meeting, weekOf));
     }
   }
 
@@ -585,33 +673,7 @@ export async function fetchMacroEvents(
         }
       }
 
-      const reportingPeriod = getReportingPeriod(finalDate, src.reportingLag);
-      const title = reportingPeriod
-        ? `${reportingPeriod} ${src.shortName}`
-        : src.shortName;
-
-      events.push({
-        source: "claude_macro" as const,
-        event_type: src.eventType,
-        event_date: finalDate,
-        event_time: src.releaseTime,
-        title,
-        description: null,
-        expected_impact: src.defaultImpact,
-        consensus_estimate: null,
-        previous_value: null,
-        raw_json: verify
-          ? JSON.stringify({
-              reschedule_verified_at: new Date().toISOString(),
-              verify_status: verify.status,
-              original_date: src.date,
-              source_url: verify.sourceUrl ?? null,
-              note: verify.note ?? null,
-            })
-          : null,
-        source_key: `nonfred:${src.shortName.replace(/\s+/g, "_")}:${finalDate}`,
-        week_of: weekOf,
-      });
+      events.push(nonFredEventInput(src, finalDate, weekOf, verify));
     }
   }
 

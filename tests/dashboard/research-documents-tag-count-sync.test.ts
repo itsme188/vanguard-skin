@@ -23,6 +23,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const VIEW_PATH = path.join(
   process.cwd(),
@@ -33,11 +34,11 @@ const source = readFileSync(VIEW_PATH, "utf8");
 
 /** Source slice from a function declaration to the start of the next one. */
 function functionBody(src: string, declaration: string, endMarker: string): string {
-  const startIdx = src.indexOf(declaration);
+  const startIdx = anchorIndex(src, declaration);
   if (startIdx === -1) {
     throw new Error(`declaration not found in ResearchDocumentsView.tsx: ${declaration}`);
   }
-  const endIdx = src.indexOf(endMarker, startIdx);
+  const endIdx = anchorIndex(src, endMarker, startIdx);
   if (endIdx === -1) {
     throw new Error(`end marker ${endMarker} not found after ${declaration}`);
   }
@@ -53,7 +54,7 @@ const listView = functionBody(source, "export function ResearchDocumentsView()",
 
 describe("research documents: collapsed header tag count stays in sync with the editor", () => {
   it("DocumentRow takes an onTagsChanged callback carrying the document id", () => {
-    const signature = documentRow.slice(0, documentRow.indexOf("}) {"));
+    const signature = documentRow.slice(0, anchorIndex(documentRow, "}) {"));
     expect(signature).toMatch(/onTagsChanged,/);
     expect(documentRow).toMatch(
       /onTagsChanged:\s*\(\s*docId:\s*number\s*,\s*tags:\s*string\[\]\s*\)\s*=>\s*void/,

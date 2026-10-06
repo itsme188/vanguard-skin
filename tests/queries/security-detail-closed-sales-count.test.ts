@@ -16,6 +16,7 @@ import {
   countClosedSalesBySecurity,
   getSecurityDetail,
 } from "@/lib/queries/security-detail";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const ACCOUNT_ID = 1; // seeded by migration 002
 
@@ -91,7 +92,7 @@ describe("security hub page — Recent Sales header", () => {
   );
 
   it("renders the true total beside the shown count and links to the full list", () => {
-    const idx = src.indexOf("Recent Sales");
+    const idx = anchorIndex(src, "Recent Sales");
     expect(idx).toBeGreaterThan(-1);
     const section = src.slice(idx, idx + 600);
     expect(section).toContain("closedSalesTotal");

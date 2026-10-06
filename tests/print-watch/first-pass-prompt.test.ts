@@ -11,6 +11,7 @@ import {
   buildFirstPassPrompt, buildDtoSync, preloadEvidence, canonicalJson, fingerprintOf, renderPrompt, sanitizeProseLines,
   validateCitedLines, allowedNumbersFor, FIRST_PASS_OUTPUT_SCHEMA, PROMPT_VERSION, SCHEMA_VERSION,
 } from "@/lib/print-watch/first-pass-prompt";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 vi.mock("@/lib/ai/models", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ai/models")>();
@@ -83,7 +84,7 @@ describe("buildFirstPassPrompt — the exact payload (data-flow contract, #19)",
     // M2: the intel pair is untrusted text too (a sheet's source_label can be
     // newsletter-derived), so it renders inside a delimited block.
     expect(a.user).toContain("<<<UNTRUSTED:n1 intel>>>");
-    const intelBlock = a.user.slice(a.user.indexOf("<<<UNTRUSTED:n1 intel>>>"), a.user.indexOf("<<<END UNTRUSTED:n1>>>", a.user.indexOf("<<<UNTRUSTED:n1 intel>>>")));
+    const intelBlock = a.user.slice(anchorIndex(a.user, "<<<UNTRUSTED:n1 intel>>>"), anchorIndex(a.user, "<<<END UNTRUSTED:n1>>>", anchorIndex(a.user, "<<<UNTRUSTED:n1 intel>>>")));
     expect(intelBlock).toContain("LAST QUARTER:");
     expect(intelBlock).toContain("IMPLIED MOVE:");
     expect(a.system).toMatch(/data, not instructions/i);

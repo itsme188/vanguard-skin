@@ -18,6 +18,8 @@
 
 import type Database from "better-sqlite3";
 import { todayET } from "@/lib/calendar/date-utils";
+import { SECTOR_TO_ETF } from "@/lib/calendar/reaction-snapshot";
+import { normalizeSector } from "@/lib/securities/normalize-sector";
 
 export interface SourcePerformance {
   source_author: string;
@@ -231,7 +233,7 @@ export function getSectorEtfGaps(db: Database.Database): SectorEtfGap[] {
   // count=1 row per enrichment tick instead of incrementing. Aggregate at
   // read time (GROUP BY treats NULLs as EQUAL) so duplicates collapse and
   // the most common unmapped symbols actually rise to the top.
-  return db
+  const rows = db
     .prepare(
       `SELECT symbol, sector,
               MIN(first_seen_at) AS first_seen_at,
@@ -242,6 +244,24 @@ export function getSectorEtfGaps(db: Database.Database): SectorEtfGap[] {
        ORDER BY count DESC, last_seen_at DESC`,
     )
     .all() as SectorEtfGap[];
+
+  // Read-time resolution (ruled 2026-10-05): a gap row is a stale capture once
+  // its security now carries a sector that maps to a sector ETF. Nothing stored
+  // is deleted or rewritten. Share-class forms (BRK.B / BRK/B / BRK-B) match.
+  const mappable = new Set<string>();
+  const secs = db
+    .prepare(`SELECT symbol, sector FROM securities WHERE sector IS NOT NULL`)
+    .all() as { symbol: string; sector: string }[];
+  for (const s of secs) {
+    const canonical = normalizeSector(s.sector) ?? s.sector;
+    if (SECTOR_TO_ETF[canonical]) mappable.add(shareClassKey(s.symbol));
+  }
+  return rows.filter((r) => !mappable.has(shareClassKey(r.symbol)));
+}
+
+/** Tolerant share-class key: BRK.B = BRK/B = BRK-B = "BRK B". */
+function shareClassKey(symbol: string): string {
+  return symbol.toUpperCase().replace(/[./\s-]+/g, "");
 }
 
 /**

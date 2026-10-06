@@ -13,14 +13,15 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const src = readFileSync(
   join(process.cwd(), "app/dashboard/components/DataHealthView.tsx"),
   "utf8",
 );
 
-const start = src.indexOf("{/* Cross-Source Discrepancies */}");
-const end = src.indexOf("{/* Snapshot Reconciliation */}");
+const start = anchorIndex(src, "{/* Cross-Source Discrepancies */}");
+const end = anchorIndex(src, "{/* Snapshot Reconciliation */}");
 const discrepancies = src.slice(start, end);
 const reconciliation = src.slice(end);
 

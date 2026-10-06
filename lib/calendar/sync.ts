@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { fetchWshEvents } from "@/lib/tws/wsh";
 import { parseWshEvents } from "@/lib/calendar/parse-wsh";
-import { fetchMacroEvents } from "@/lib/calendar/macro-events";
+import { fetchMacroEvents, buildHardcodedMacroEvents } from "@/lib/calendar/macro-events";
 import { fetchFinnhubEarningsForSymbols, type FinnhubSymbolFailure } from "@/lib/calendar/finnhub";
 import { fetchNasdaqEarningsForSymbols } from "@/lib/calendar/nasdaq";
 import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
@@ -167,6 +167,46 @@ function writeAndCountNewKeys(
   return fresh;
 }
 
+/**
+ * Write the hardcoded macro rows (FOMC + ISM/UMich/Conference Board) for a
+ * week when the full macro fetch failed. Upsert only — idempotent on
+ * source_key, never deletes, never calls a network or an AI.
+ *
+ * A non-FRED indicator that the normal road already wrote for this week is
+ * skipped: that road may have moved it to a publisher-rescheduled date, and
+ * re-adding the unverified hardcoded date beside it would show the release
+ * twice. Never throws — a fallback failure must not mask the original error.
+ */
+function writeHardcodedMacroFallback(
+  db: Database.Database,
+  startDate: string,
+  endDate: string,
+  weekOf: string,
+): { written: number; fresh: number } {
+  try {
+    const { events, nonFredKeyPrefixes } = buildHardcodedMacroEvents(startDate, endDate, weekOf);
+    const hasPrefix = db.prepare(
+      `SELECT 1 FROM calendar_events
+        WHERE week_of = ? AND substr(source_key, 1, ?) = ? LIMIT 1`,
+    );
+    const toWrite = events.filter((e) => {
+      const prefix = nonFredKeyPrefixes.get(e.source_key);
+      if (!prefix) return true; // FOMC — keyed on the meeting date itself
+      return hasPrefix.get(weekOf, prefix.length, prefix) === undefined;
+    });
+    if (toWrite.length === 0) return { written: 0, fresh: 0 };
+    const fresh = writeAndCountNewKeys(db, toWrite, () => {
+      upsertCalendarEvents(db, toWrite);
+    });
+    return { written: toWrite.length, fresh };
+  } catch (err) {
+    console.warn(
+      `[calendar-sync] hardcoded macro fallback failed: ${err instanceof Error ? err.message : err}`,
+    );
+    return { written: 0, fresh: 0 };
+  }
+}
+
 export async function syncCalendarForWeek(
   db: Database.Database,
   weekOf: string,
@@ -270,7 +310,21 @@ export async function syncCalendarForWeek(
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       errors.push(`macro: ${msg}`);
-      send({ phase: "macro_error", message: `Macro event fetch failed: ${msg}` });
+      // The FRED/Claude leg failed — but the FOMC and non-FRED dates are a
+      // hardcoded table that needs neither (user ruling 2026-10-05: they are
+      // synced for the full four-week horizon, not only when FRED answers).
+      // Add-only: no orphan cleanup ran, so nothing is deleted here.
+      const kept = writeHardcodedMacroFallback(db, startDate, endDate, weekOf);
+      macroEvents = kept.written;
+      macroNew = kept.fresh;
+      send({
+        phase: "macro_error",
+        message:
+          `Macro event fetch failed: ${msg}` +
+          (kept.written > 0
+            ? ` — kept ${kept.written} scheduled event${kept.written !== 1 ? "s" : ""} from the built-in FOMC/ISM/UMich/Conference Board calendar`
+            : ""),
+      });
     }
   }
 

@@ -17,6 +17,7 @@
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 describe("LevelsPanel load-error handling (source pin)", () => {
   const src = readFileSync("app/dashboard/components/LevelsPanel.tsx", "utf8");
@@ -59,7 +60,7 @@ describe("LevelsPanel load-error handling (source pin)", () => {
     // an explanatory comment elsewhere in the file also references "No
     // active levels" in prose — so the guard-window check below anchors on
     // the real render branch.
-    const copyIndex = src.indexOf(
+    const copyIndex = anchorIndex(src, 
       "No active levels · accept a suggestion or add your own",
     );
     expect(copyIndex).toBeGreaterThan(-1);

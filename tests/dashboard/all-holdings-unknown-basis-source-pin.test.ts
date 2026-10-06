@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 /**
  * Source pin for AllHoldingsTable.tsx's "a zero cost basis is unknown"
@@ -36,7 +37,7 @@ describe("AllHoldingsTable treats a zero cost basis as unknown everywhere", () =
 
   it("the Cost Basis cell renders the unknown placeholder when hasKnownBasis is false", () => {
     const text = src();
-    const cellIdx = text.indexOf("Cost Basis");
+    const cellIdx = anchorIndex(text, "Cost Basis");
     expect(cellIdx).toBeGreaterThan(-1);
     // Find the <td> block that renders h.cost_basis (skip the header cell).
     const bodyCellMatch = text.match(
@@ -67,17 +68,17 @@ describe("AllHoldingsTable treats a zero cost basis as unknown everywhere", () =
 
   it("the footer cost cell is unknown when no filtered row has a known basis (never ~$0.00 over nothing)", () => {
     const text = src();
-    const footerIdx = text.indexOf("<tfoot>");
+    const footerIdx = anchorIndex(text, "<tfoot>");
     expect(footerIdx).toBeGreaterThan(-1);
     const footer = text.slice(footerIdx);
     expect(footer).toContain("holdingsWithCost.length === 0");
     // The all-unknown branch must come BEFORE the "~" partial-sum branch.
-    expect(footer.indexOf("holdingsWithCost.length === 0")).toBeLessThan(footer.indexOf("missingCostCount > 0"));
+    expect(anchorIndex(footer, "holdingsWithCost.length === 0")).toBeLessThan(anchorIndex(footer, "missingCostCount > 0"));
   });
 
   it("the footer gain cell distinguishes zero known rows, partial coverage, and full coverage", () => {
     const text = src();
-    const footerIdx = text.indexOf("<tfoot>");
+    const footerIdx = anchorIndex(text, "<tfoot>");
     expect(footerIdx).toBeGreaterThan(-1);
     const footer = text.slice(footerIdx);
     expect(footer).toContain("knownGainRows.length === 0");
@@ -151,7 +152,7 @@ describe("AllHoldingsTable treats a zero cost basis as unknown everywhere", () =
 
   it("the footer Gain % uses the abs-denominator ratio helper, not a raw divide", () => {
     const text = src();
-    const footerIdx = text.indexOf("<tfoot>");
+    const footerIdx = anchorIndex(text, "<tfoot>");
     expect(footerIdx).toBeGreaterThan(-1);
     const footer = text.slice(footerIdx);
     expect(footer).not.toMatch(/totalGain\s*\/\s*totalCostBasis/);
@@ -161,7 +162,7 @@ describe("AllHoldingsTable treats a zero cost basis as unknown everywhere", () =
 
   it("the footer Gain % cell gets the same zero/partial/full branching as Gain $", () => {
     const text = src();
-    const footerIdx = text.indexOf("<tfoot>");
+    const footerIdx = anchorIndex(text, "<tfoot>");
     expect(footerIdx).toBeGreaterThan(-1);
     const footer = text.slice(footerIdx);
     const zeroBranches = footer.match(/knownGainRows\.length === 0/g) ?? [];

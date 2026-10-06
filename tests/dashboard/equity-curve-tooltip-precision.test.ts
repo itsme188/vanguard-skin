@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { formatUSD } from "@/lib/format";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 describe("Equity curve tooltip shows full-precision dollars", () => {
   const src = () =>
@@ -20,7 +21,7 @@ describe("Equity curve tooltip shows full-precision dollars", () => {
     const text = src();
     // Isolate the EquityCurveChart component body (per-account chart), which
     // starts after the PerformanceCurveChart (indexed-to-100) component.
-    const accountChartStart = text.indexOf("export function EquityCurveChart");
+    const accountChartStart = anchorIndex(text, "export function EquityCurveChart");
     expect(accountChartStart).toBeGreaterThan(-1);
     const accountChartSrc = text.slice(accountChartStart);
 
@@ -31,7 +32,7 @@ describe("Equity curve tooltip shows full-precision dollars", () => {
     expect(tooltipBlocks.length).toBeGreaterThanOrEqual(2);
 
     for (const block of tooltipBlocks) {
-      const formatterIdx = block.indexOf("formatter={");
+      const formatterIdx = anchorIndex(block, "formatter={");
       expect(formatterIdx).toBeGreaterThan(-1);
       // `formatter=` is the last prop in these Tooltip elements, so slicing
       // from its start to the block's end captures the whole callback body.

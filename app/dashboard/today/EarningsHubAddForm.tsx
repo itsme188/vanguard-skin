@@ -49,16 +49,30 @@ export interface VendorSupersedeRefusal {
   vendorEventId: number | null;
 }
 
+/**
+ * The chosen BMO/AMC slot contradicts the symbol's known release time — the
+ * 409 `slot_contradicts_known_time` refusal (user ruling 2026-10-05). Nothing
+ * was written; the same add with `force: true` goes through and stores the
+ * slot's default time instead of the contradicting remembered one.
+ */
+export interface SlotContradictionRefusal {
+  /** The server's plain-English sentence — rendered as-is. */
+  message: string;
+  knownTime: string;
+  slotDefaultTime: string;
+}
+
 export type ManualAddOutcome =
   | { kind: "saved"; id: number | null }
   | { kind: "supersede_refused"; refusal: VendorSupersedeRefusal }
+  | { kind: "slot_refused"; refusal: SlotContradictionRefusal }
   | { kind: "failed"; message: string };
 
 interface ManualAddInput {
   symbol: string;
   date: string;
   slot: Slot;
-  /** Skip the would-supersede-a-vendor-date check (the user confirmed). */
+  /** Skip the server's refuse-and-ask checks (the user confirmed). */
   force?: boolean;
 }
 
@@ -96,7 +110,24 @@ export async function postManualEarningsEvent(
       vendorDate?: string;
       vendorSource?: string;
       vendorEventId?: number;
+      knownTime?: string;
+      slotDefaultTime?: string;
     } | null;
+
+    if (
+      res.status === 409 &&
+      data?.code === "slot_contradicts_known_time" &&
+      typeof data.error === "string"
+    ) {
+      return {
+        kind: "slot_refused",
+        refusal: {
+          message: data.error,
+          knownTime: data.knownTime ?? "",
+          slotDefaultTime: data.slotDefaultTime ?? "",
+        },
+      };
+    }
 
     if (
       res.status === 409 &&
@@ -135,6 +166,9 @@ export function EarningsHubAddForm({ weekOf }: Props) {
   // was written, so the form stays open with the typed values and asks. Same
   // shape as the alerts inbox's arm-refusal confirm.
   const [supersede, setSupersede] = useState<VendorSupersedeRefusal | null>(null);
+  // Same contract for a 409 slot_contradicts_known_time: refused, nothing
+  // written, the form asks inline (never a browser dialog).
+  const [slotRefusal, setSlotRefusal] = useState<SlotContradictionRefusal | null>(null);
 
   async function save(force: boolean) {
     if (!symbol.trim()) {
@@ -144,8 +178,13 @@ export function EarningsHubAddForm({ weekOf }: Props) {
     setSubmitting(true);
     setError(null);
     setSupersede(null);
+    setSlotRefusal(null);
     try {
       const outcome = await postManualEarningsEvent({ symbol, date, slot, force });
+      if (outcome.kind === "slot_refused") {
+        setSlotRefusal(outcome.refusal);
+        return;
+      }
       if (outcome.kind === "supersede_refused") {
         setSupersede(outcome.refusal);
         return;
@@ -219,11 +258,19 @@ export function EarningsHubAddForm({ weekOf }: Props) {
       />
       <select
         value={slot}
-        onChange={(e) => setSlot(e.target.value as Slot)}
+        onChange={(e) => {
+          // The refusal was about the slot that WAS picked — a new pick is a
+          // new question, so the stale "Add anyway" must not linger.
+          setSlot(e.target.value as Slot);
+          setSlotRefusal(null);
+        }}
         className="bg-raised border border-edge rounded px-2 py-1 text-ink focus:outline-none focus:border-gold"
       >
-        <option value="BMO">BMO (08:00)</option>
-        <option value="AMC">AMC (16:15)</option>
+        {/* Labels carry no clock time (user ruling 2026-10-05): the stored
+            time is the symbol's own when it agrees with the slot, so a
+            printed default here was a promise the server did not keep. */}
+        <option value="BMO">BMO</option>
+        <option value="AMC">AMC</option>
       </select>
       <button
         type="submit"
@@ -238,6 +285,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
           setOpen(false);
           setError(null);
           setSupersede(null);
+          setSlotRefusal(null);
         }}
         disabled={submitting}
         className="text-ink-faint hover:text-ink-dim"
@@ -245,6 +293,29 @@ export function EarningsHubAddForm({ weekOf }: Props) {
         Cancel
       </button>
       {error && <span className="text-[11px] text-down w-full">{error}</span>}
+      {slotRefusal && (
+        <div className="w-full rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] text-gold-ink">
+          {slotRefusal.message}
+          <div className="mt-1.5 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => save(true)}
+              disabled={submitting}
+              className="px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink hover:bg-gold/10 disabled:opacity-50"
+            >
+              {submitting ? "Adding…" : `Add anyway as ${slot}`}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSlotRefusal(null)}
+              disabled={submitting}
+              className="px-3 py-1 text-[11px] rounded text-ink-dim hover:text-ink disabled:opacity-50"
+            >
+              Change the slot
+            </button>
+          </div>
+        </div>
+      )}
       {supersede && (
         // gold-ink, not amber-*: the amber palette is dark-tuned and washes
         // out on the light theme's panel; gold-ink is the house pair for

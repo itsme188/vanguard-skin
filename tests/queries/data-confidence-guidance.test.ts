@@ -4,6 +4,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getDataConfidence } from "@/lib/queries/data-confidence";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 /**
  * Regression coverage for qa:header-dataconfidence--guidance-contradicts-
@@ -310,7 +311,7 @@ describe("data-confidence guidance — derived from counts, not score thresholds
 
     it("the cash action gate reads the cash guidance predicate (source pin)", () => {
       const src = fs.readFileSync(path.join(process.cwd(), "lib/queries/data-confidence.ts"), "utf8");
-      const fn = src.slice(src.indexOf("function deriveActions("));
+      const fn = src.slice(anchorIndex(src, "function deriveActions("));
       expect(fn).toContain("if (cash.guidanceActionable)");
       expect(fn).not.toContain("if (cash.score < 50)");
     });

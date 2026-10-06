@@ -7,6 +7,7 @@ import { upsertLines, getSheet } from "@/lib/print-watch/store";
 import { compileContracts } from "@/lib/print-watch/contracts";
 import { reconcile } from "@/lib/print-watch/reconcile";
 import type { PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const A = "5b7a1f42-9c3e-4d18-8f6a-2e0b91c7d4a3";
 const metric = (o: Record<string, unknown> = {}) => ({
@@ -353,7 +354,7 @@ describe("recompileContracts", () => {
 
 describe("writeLines is serialised against recompileContracts (R-F4)", () => {
   const src = readFileSync("lib/print-watch/watcher.ts", "utf8");
-  const body = src.slice(src.indexOf("function writeLines("), src.indexOf("type ParsePassResult"));
+  const body = src.slice(anchorIndex(src, "function writeLines("), anchorIndex(src, "type ParsePassResult"));
   it("slices the real function body, not the rest of the file (anchor guard)", () => {
     // If either anchor vanished the slice would run to EOF and every assertion
     // below would pass vacuously against unrelated code.
@@ -363,12 +364,12 @@ describe("writeLines is serialised against recompileContracts (R-F4)", () => {
   it("wraps compile → getSheet → reconcile → upsertLines in ONE immediate transaction", () => {
     expect(body).toMatch(/db\.transaction\(/);
     expect(body).toMatch(/\.immediate\(\)/);
-    const tx = body.indexOf("db.transaction(");
-    expect(body.indexOf("compileContracts(")).toBeGreaterThan(tx);
-    expect(body.indexOf("upsertLines(")).toBeGreaterThan(tx);
+    const tx = anchorIndex(body, "db.transaction(");
+    expect(anchorIndex(body, "compileContracts(")).toBeGreaterThan(tx);
+    expect(anchorIndex(body, "upsertLines(")).toBeGreaterThan(tx);
   });
   it("keeps the lease claim OUTSIDE the transaction (it is the cross-process arbiter, not the write)", () => {
-    expect(body.indexOf("claimLease(db)")).toBeLessThan(body.indexOf("db.transaction("));
+    expect(anchorIndex(body, "claimLease(db)")).toBeLessThan(anchorIndex(body, "db.transaction("));
   });
 });
 
@@ -377,7 +378,7 @@ describe("writeLines is serialised against recompileContracts (R-F4)", () => {
  *  when someone drops `.immediate()` or hoists the print read back out. */
 describe("recompileContracts is ONE immediate transaction with the print read inside it (R-F4 / F-S6)", () => {
   const src = readFileSync("lib/print-watch/recompile.ts", "utf8");
-  const body = src.slice(src.indexOf("export function recompileContracts("));
+  const body = src.slice(anchorIndex(src, "export function recompileContracts("));
   it("slices the real function body (anchor guard)", () => {
     expect(body.length).toBeGreaterThan(200);
   });
@@ -386,8 +387,8 @@ describe("recompileContracts is ONE immediate transaction with the print read in
     expect(body).toMatch(/\.immediate\(\)/);
   });
   it("reads the print INSIDE that transaction (F-S6)", () => {
-    const tx = body.indexOf("db.transaction(");
+    const tx = anchorIndex(body, "db.transaction(");
     expect(tx).toBeGreaterThan(-1);
-    expect(body.indexOf("getPrintById(")).toBeGreaterThan(tx);
+    expect(anchorIndex(body, "getPrintById(")).toBeGreaterThan(tx);
   });
 });

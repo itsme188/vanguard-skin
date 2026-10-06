@@ -24,6 +24,7 @@ import {
   RETIREMENT_ACCOUNT_COPY,
   NO_RETIREMENT_STAMP_COPY,
 } from "@/app/dashboard/components/TaxReportCard";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const ROOT = path.resolve(__dirname, "../..");
 
@@ -85,16 +86,16 @@ describe("TaxReportCard retirement branch", () => {
   );
 
   it("renders the retirement notice BEFORE the no-sales bail", () => {
-    const retirementBranch = source.indexOf("if (report.retirementAccount)");
-    const noSalesBail = source.indexOf("if (totalSales === 0) return null;");
+    const retirementBranch = anchorIndex(source, "if (report.retirementAccount)");
+    const noSalesBail = anchorIndex(source, "if (totalSales === 0) return null;");
     expect(retirementBranch).toBeGreaterThan(-1);
     expect(noSalesBail).toBeGreaterThan(-1);
     expect(retirementBranch).toBeLessThan(noSalesBail);
   });
 
   it("offers no CSV/TXF button inside the retirement branch", () => {
-    const start = source.indexOf("if (report.retirementAccount)");
-    const end = source.indexOf("const totalSales =", start);
+    const start = anchorIndex(source, "if (report.retirementAccount)");
+    const end = anchorIndex(source, "const totalSales =", start);
     const branch = source.slice(start, end);
     expect(branch).toContain("RETIREMENT_ACCOUNT_COPY");
     expect(branch).not.toContain("handleDownload");
@@ -126,8 +127,8 @@ describe("tax-report API refuses a retirement-scoped file export", () => {
     expect(source).toContain("status: 409");
     expect(source).toContain("no Form 8949 export");
     // The refusal must come before either file is generated.
-    expect(source.indexOf("report.retirementAccount")).toBeLessThan(
-      source.indexOf('if (format === "csv")')
+    expect(anchorIndex(source, "report.retirementAccount")).toBeLessThan(
+      anchorIndex(source, 'if (format === "csv")')
     );
   });
 });

@@ -18,6 +18,7 @@
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const src = readFileSync("app/dashboard/today/EarningsRowChips.tsx", "utf8");
 const route = readFileSync("app/api/earnings/recap-modal/route.ts", "utf8");
@@ -40,8 +41,8 @@ describe("gen recap — a pre-print click reads as information, not failure", ()
   });
 
   it("handles the expected states BEFORE the generic failure branch that throws", () => {
-    const expected = src.indexOf("json.prePrint");
-    const failure = src.indexOf("if (!res.ok || !json.success)");
+    const expected = anchorIndex(src, "json.prePrint");
+    const failure = anchorIndex(src, "if (!res.ok || !json.success)");
     expect(expected).toBeGreaterThan(-1);
     expect(failure).toBeGreaterThan(-1);
     expect(expected).toBeLessThan(failure);
@@ -56,8 +57,8 @@ describe("gen recap — a pre-print click reads as information, not failure", ()
 
   it("the route no longer answers the pre-print floor with a 409", () => {
     const branch = route.slice(
-      route.indexOf('r?.reason === "pre_print"'),
-      route.indexOf("if (r) {"),
+      anchorIndex(route, 'r?.reason === "pre_print"'),
+      anchorIndex(route, "if (r) {"),
     );
     expect(branch.length).toBeGreaterThan(0);
     expect(branch).not.toContain("status: 409");
@@ -72,8 +73,8 @@ describe("gen recap — a pre-print click reads as information, not failure", ()
 describe("gen recap — network failures and the opensAt contract field", () => {
   it("classifies a rejected fetch before the generic catch, with domain copy", () => {
     const fn = src.slice(
-      src.indexOf("async function generateRecap"),
-      src.indexOf("\n  return (", src.indexOf("async function generateRecap")),
+      anchorIndex(src, "async function generateRecap"),
+      anchorIndex(src, "\n  return (", anchorIndex(src, "async function generateRecap")),
     );
     expect(fn).toMatch(/apiFetch\([^]*?\)\.catch\(\(\) => null\)/);
     expect(fn).toMatch(/if \(!res\)\s*\{\s*\n\s*toast\("Couldn't reach the server[^"]*", "error"\);/);
@@ -85,8 +86,8 @@ describe("gen recap — network failures and the opensAt contract field", () => 
 
   it("types and reads json.opensAt instead of ignoring it", () => {
     const fn = src.slice(
-      src.indexOf("async function generateRecap"),
-      src.indexOf("\n  return (", src.indexOf("async function generateRecap")),
+      anchorIndex(src, "async function generateRecap"),
+      anchorIndex(src, "\n  return (", anchorIndex(src, "async function generateRecap")),
     );
     expect(fn).toMatch(/opensAt\?:\s*string \| null/);
     expect(fn).toMatch(/json\.opensAt/);
@@ -97,8 +98,8 @@ describe("gen recap — network failures and the opensAt contract field", () => 
       /import \{ formatEnrichedAtET \} from "@\/lib\/format"/,
     );
     const fn = src.slice(
-      src.indexOf("async function generateRecap"),
-      src.indexOf("\n  return (", src.indexOf("async function generateRecap")),
+      anchorIndex(src, "async function generateRecap"),
+      anchorIndex(src, "\n  return (", anchorIndex(src, "async function generateRecap")),
     );
     expect(fn).toMatch(/formatEnrichedAtET\(json\.opensAt\)/);
   });

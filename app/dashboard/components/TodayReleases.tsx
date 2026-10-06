@@ -6,6 +6,7 @@ import { SymbolLink } from "./SymbolLink";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { todayET } from "@/lib/calendar/date-utils";
+import { earningsTimeLabel } from "@/lib/calendar/release-times";
 import { EnrichmentRowSummary } from "./calendar/EnrichmentChips";
 // Import from the dependency-free core, never lib/calendar/reaction-snapshot.ts
 // (that file imports real values from @stoqey/ib — a client bundle that
@@ -77,14 +78,6 @@ export function isReleaseEnriched(
 export function preReleaseEstimateText(consensus: string | null): string {
   const compact = consensus ? formatFinnhubFigureCompact(consensus) : "";
   return compact ? `Est: ${compact}` : "Pending release";
-}
-
-function fmtTime(release_time: string): string {
-  const [hh, mm] = release_time.split(":");
-  const h = parseInt(hh, 10);
-  const suffix = h >= 12 ? "PM" : "AM";
-  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
-  return `${h12}:${mm} ${suffix}`;
 }
 
 /** event_date is an ET market date (YYYY-MM-DD) → "Wed Jun 10". */
@@ -163,7 +156,7 @@ export function TodayReleases({
                   {upcoming && event.event_date && (
                     <span className="text-ink-dim">{fmtDate(event.event_date)} · </span>
                   )}
-                  {event.release_time ? fmtTime(event.release_time) : ""}
+                  {earningsTimeLabel(event) ?? ""}
                 </span>
               </div>
               <div className="text-[12px] font-mono">

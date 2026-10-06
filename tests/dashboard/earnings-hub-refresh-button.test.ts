@@ -23,6 +23,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { buildSyncOutcome } from "@/app/dashboard/today/EarningsHubRefreshButton";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 describe("buildSyncOutcome — the outcome line the button keeps visible after a run", () => {
   it("reports new + updated counts", () => {
@@ -214,8 +215,8 @@ describe("EarningsHubRefreshButton source — frame parsing and outcome lifecycl
     // before the fetch. If it appeared again after the drain loop, the
     // outcome would be wiped the instant syncing finishes.
     expect(src.match(/setOutcome\(null\)/g)).toHaveLength(1);
-    const clearIdx = src.indexOf("setOutcome(null)");
-    const fetchIdx = src.indexOf("apiFetch(");
+    const clearIdx = anchorIndex(src, "setOutcome(null)");
+    const fetchIdx = anchorIndex(src, "apiFetch(");
     expect(clearIdx).toBeGreaterThan(-1);
     expect(clearIdx).toBeLessThan(fetchIdx);
   });
@@ -244,8 +245,8 @@ describe("EarningsHubRefreshButton source — frame parsing and outcome lifecycl
 
   it("renders the errors as a click-to-expand <details>, keyed on outcome.title", () => {
     const block = src.slice(
-      src.indexOf("{!progress && outcome && ("),
-      src.indexOf("{error && "),
+      anchorIndex(src, "{!progress && outcome && ("),
+      anchorIndex(src, "{error && "),
     );
     expect(block).toMatch(/outcome\.title\s*\?/);
     expect(block).toContain("<details");
@@ -256,11 +257,11 @@ describe("EarningsHubRefreshButton source — frame parsing and outcome lifecycl
 
   it("falls back to a plain one-line span when there is nothing to expand", () => {
     const block = src.slice(
-      src.indexOf("{!progress && outcome && ("),
-      src.indexOf("{error && "),
+      anchorIndex(src, "{!progress && outcome && ("),
+      anchorIndex(src, "{error && "),
     );
     // The ternary's else branch: a bare span with no <details>/<summary>.
-    const elseBranch = block.slice(block.indexOf(") : ("));
+    const elseBranch = block.slice(anchorIndex(block, ") : ("));
     expect(elseBranch).not.toContain("<details");
     expect(elseBranch).toContain("{outcome.text}");
   });

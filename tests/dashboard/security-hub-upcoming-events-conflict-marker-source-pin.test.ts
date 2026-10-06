@@ -19,15 +19,16 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const SRC_PATH = "app/dashboard/security/[id]/page.tsx";
 const src = readFileSync(SRC_PATH, "utf8");
 
 /** The Upcoming Events row's own markup — scope of this regression. */
 function extractUpcomingEventsRow(content: string): string {
-  const start = content.indexOf('{upcomingEvents.map((event, idx) => (');
+  const start = anchorIndex(content, '{upcomingEvents.map((event, idx) => (');
   if (start === -1) throw new Error("could not find the upcomingEvents.map row in the source");
-  const end = content.indexOf("))}", start);
+  const end = anchorIndex(content, "))}", start);
   if (end === -1) throw new Error("could not find the end of the upcomingEvents.map block");
   return content.slice(start, end);
 }

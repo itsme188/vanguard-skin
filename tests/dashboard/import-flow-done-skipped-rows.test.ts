@@ -15,6 +15,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const source = fs.readFileSync(
   path.join(process.cwd(), "app/dashboard/components/ImportFlow.tsx"),
@@ -23,8 +24,8 @@ const source = fs.readFileSync(
 
 // The done panel is everything from the `status === "done"` branch to the
 // error fallback below it.
-const doneStart = source.indexOf('if (state.status === "done")');
-const doneEnd = source.indexOf("// Error", doneStart);
+const doneStart = anchorIndex(source, 'if (state.status === "done")');
+const doneEnd = anchorIndex(source, "// Error", doneStart);
 const donePanel = source.slice(doneStart, doneEnd);
 
 describe("ImportFlow done panel reports excluded rows", () => {
@@ -36,8 +37,8 @@ describe("ImportFlow done panel reports excluded rows", () => {
   it("renders skippedRows through the same block the preview uses", () => {
     expect(donePanel).toMatch(/<SkippedRowsDetails[\s\S]*?result\.skippedRows/);
     const previewPanel = source.slice(
-      source.indexOf('if (state.status === "preview")'),
-      source.indexOf('if (state.status === "importing")'),
+      anchorIndex(source, 'if (state.status === "preview")'),
+      anchorIndex(source, 'if (state.status === "importing")'),
     );
     expect(previewPanel).toContain("<SkippedRowsDetails");
   });

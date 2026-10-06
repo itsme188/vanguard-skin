@@ -35,6 +35,8 @@ export interface TranscriptSummaryEntry {
   sentiment_score: number | null;
   has_full_transcript: boolean;
   fetched_at: string;
+  /** SEC filing URL (edgar_8k rows); render only via secFilingHref. */
+  filing_url?: string | null;
 }
 
 // ─── Query Functions ────────────────────────────────────────────
@@ -198,6 +200,7 @@ export function getTranscriptsSummary(
            et.sentiment_score,
            CASE WHEN et.transcript IS NOT NULL AND LENGTH(et.transcript) > 100 THEN 1 ELSE 0 END AS has_full_transcript,
            et.fetched_at,
+           et.filing_url,
            ROW_NUMBER() OVER (
              PARTITION BY UPPER(et.ticker), et.year, et.quarter
              ORDER BY ${SOURCE_RANK_SQL}, et.id DESC
@@ -208,7 +211,7 @@ export function getTranscriptsSummary(
        SELECT
          id, ticker, security_name, year, quarter, call_date, source,
          summary, guidance, risk_factors, sentiment_label, sentiment_score,
-         has_full_transcript, fetched_at
+         has_full_transcript, fetched_at, filing_url
        FROM ranked
        WHERE rn = 1
        ${extraWhere}

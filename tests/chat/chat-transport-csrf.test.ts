@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 /**
  * QA chat--send-401-csrf-token-never-attached-raw-envelope-rendered.
@@ -32,9 +33,9 @@ describe("ChatInterface transport attaches the CSRF token", () => {
   });
 
   it("hands apiFetch to DefaultChatTransport as its fetch implementation", () => {
-    const start = source.indexOf("new DefaultChatTransport(");
+    const start = anchorIndex(source, "new DefaultChatTransport(");
     expect(start, "DefaultChatTransport construction not found").toBeGreaterThan(-1);
-    const construction = source.slice(start, source.indexOf(")", start) + 1);
+    const construction = source.slice(start, anchorIndex(source, ")", start) + 1);
     expect(construction).toMatch(/fetch:\s*apiFetch/);
   });
 
@@ -42,8 +43,8 @@ describe("ChatInterface transport attaches the CSRF token", () => {
     // The known useChat gotcha: the transport is frozen at FIRST render, so a
     // token captured at construction would be stale/absent forever. apiFetch's
     // reader runs inside the call, so the memo may stay dependency-free.
-    const start = source.indexOf("new DefaultChatTransport(");
-    const construction = source.slice(start, source.indexOf(")", start) + 1);
+    const start = anchorIndex(source, "new DefaultChatTransport(");
+    const construction = source.slice(start, anchorIndex(source, ")", start) + 1);
     expect(construction).not.toMatch(/X-CSRF-Token/);
   });
 

@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { composeCallTranscriptsBlock } from "@/lib/digest/call-transcripts";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 let db: Database.Database;
 
@@ -583,8 +584,8 @@ describe("call-transcripts block wiring in generateDigestSinceAdaptive", () => {
     });
 
     expect(digest).toContain("## Call transcripts");
-    expect(digest!.indexOf("## Overnight")).toBeLessThan(digest!.indexOf("## Call transcripts"));
-    expect(digest!.indexOf("## Call transcripts")).toBeLessThan(digest!.indexOf("Some Letter"));
+    expect(anchorIndex(digest!, "## Overnight")).toBeLessThan(anchorIndex(digest!, "## Call transcripts"));
+    expect(anchorIndex(digest!, "## Call transcripts")).toBeLessThan(anchorIndex(digest!, "Some Letter"));
   });
 
   it("evening edition never renders the block", async () => {

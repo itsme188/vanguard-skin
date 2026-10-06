@@ -23,6 +23,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const REPO = path.resolve(__dirname, "..", "..");
 
@@ -78,7 +79,7 @@ describe("DrillDownPanel presents the metric it ranks by", () => {
 
   it("renders the risk contribution through the privacy component, not raw", () => {
     // Portfolio-derived percentages go through <Pct> (lib/privacy/components).
-    const idx = code.indexOf("riskContribution != null");
+    const idx = anchorIndex(code, "riskContribution != null");
     expect(idx).toBeGreaterThanOrEqual(0);
     expect(code.slice(idx, idx + 220)).toMatch(/<Pct\b/);
     // No raw toFixed on the metric.
@@ -117,9 +118,9 @@ describe("DrillDownPanel presents the metric it ranks by", () => {
     // The table (641px) is wider than the panel's scroller (479px). The risk
     // drawer's ranking metric — the reason the drawer exists — sat last in
     // the column order (after Beta), off-screen until the user scrolled.
-    const tickerHeaderIdx = code.indexOf('field="symbol"');
-    const riskHeaderIdx = code.indexOf('field="risk"');
-    const weightHeaderIdx = code.indexOf('field="weight"');
+    const tickerHeaderIdx = anchorIndex(code, 'field="symbol"');
+    const riskHeaderIdx = anchorIndex(code, 'field="risk"');
+    const weightHeaderIdx = anchorIndex(code, 'field="weight"');
     expect(tickerHeaderIdx).toBeGreaterThanOrEqual(0);
     expect(riskHeaderIdx).toBeGreaterThanOrEqual(0);
     expect(weightHeaderIdx).toBeGreaterThanOrEqual(0);
@@ -128,9 +129,9 @@ describe("DrillDownPanel presents the metric it ranks by", () => {
   });
 
   it("places the Risk cell right after the Ticker cell, ahead of the Weight cell", () => {
-    const tickerCellIdx = code.indexOf("r.symbol");
-    const riskCellIdx = code.indexOf("riskContribution != null");
-    const weightCellIdx = code.indexOf("r.weight * 100");
+    const tickerCellIdx = anchorIndex(code, "r.symbol");
+    const riskCellIdx = anchorIndex(code, "riskContribution != null");
+    const weightCellIdx = anchorIndex(code, "r.weight * 100");
     expect(tickerCellIdx).toBeGreaterThanOrEqual(0);
     expect(riskCellIdx).toBeGreaterThanOrEqual(0);
     expect(weightCellIdx).toBeGreaterThanOrEqual(0);

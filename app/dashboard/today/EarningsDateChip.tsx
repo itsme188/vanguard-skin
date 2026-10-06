@@ -345,6 +345,9 @@ export function EarningsDateChip({
   if (!dateStatus) return null;
 
   if (dateStatus !== "conflict") {
+    // Same bounds as the conflict popover's custom-date input below (the
+    // server refuses a date more than MAX_EARNINGS_DAYS_AHEAD days out).
+    const todayIso = todayET();
     const passive = {
       confirmed: {
         label: "✓ 2 src",
@@ -398,6 +401,8 @@ export function EarningsDateChip({
                 value={fixDate}
                 onChange={(e) => setFixDate(e.target.value)}
                 className="text-[10px] bg-raised rounded px-1 py-0.5 flex-1 min-w-0 text-ink"
+                min={todayIso}
+                max={addDays(todayIso, MAX_EARNINGS_DAYS_AHEAD)}
                 aria-label="Corrected earnings date"
               />
               <select

@@ -94,6 +94,49 @@ export function earningsHourToReleaseTime(
   }
 }
 
+/**
+ * source_key prefix of a row that came from FRED's release schedule
+ * (`fred:<releaseId>:<date>`, minted by fetchMacroEvents). Lives in this
+ * dependency-free module so the week-ahead grid can ask "has this week's FRED
+ * schedule been fetched" without importing the AI-backed macro fetcher.
+ */
+export const FRED_SOURCE_KEY_PREFIX = "fred:";
+
+export function isFredScheduleRow(row: { source_key?: string | null }): boolean {
+  return typeof row.source_key === "string" && row.source_key.startsWith(FRED_SOURCE_KEY_PREFIX);
+}
+
+/** What every surface says for an earnings print with no clock time on record. */
+export const UNKNOWN_RELEASE_TIME_LABEL = "time unknown";
+
+/** "16:05" → "4:05 PM"; null for anything that is not an HH:MM clock time. */
+export function formatClockTime12(t: string | null | undefined): string | null {
+  if (!t || !/^\d{1,2}:\d{2}/.test(t)) return null;
+  const [h, m] = t.split(":").map((n) => parseInt(n, 10));
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  const period = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${m.toString().padStart(2, "0")} ${period}`;
+}
+
+/**
+ * The time label for a calendar row on a schedule surface (week-ahead card,
+ * Today's releases). A clock time formats as "4:05 PM". An EARNINGS row with
+ * no clock time reads "time unknown" — never a blank that the eye fills in,
+ * and never a default (user ruling 2026-10-05). A time-less macro row stays
+ * unlabelled (null), as before. A BMO/AMC marker in event_time is a slot, not
+ * a clock time; the row's title already carries it.
+ */
+export function earningsTimeLabel(row: {
+  event_type: string;
+  release_time: string | null;
+  event_time?: string | null;
+}): string | null {
+  const clock = formatClockTime12(row.release_time) ?? formatClockTime12(row.event_time);
+  if (clock) return clock;
+  return row.event_type === "earnings" ? UNKNOWN_RELEASE_TIME_LABEL : null;
+}
+
 export function normalizeEarningsHour(value: unknown): "bmo" | "amc" | "dmh" | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();

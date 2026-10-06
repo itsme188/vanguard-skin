@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { OpenLotForDonation } from "@/lib/queries/giving-view";
-import { Money, Shares } from "@/lib/privacy/components";
+import { Money, PrivateNumberInput, Shares } from "@/lib/privacy/components";
 import { Chip } from "../Chip";
 import { useToast } from "../Toast";
 import apiFetch from "@/lib/http/apiFetch";
@@ -270,8 +270,8 @@ export function LotAssignmentDrawer({
                     </label>
                     {checked && (
                       <div className="mt-2 pl-6">
-                        <input
-                          type="number"
+                        <PrivateNumberInput
+                          aria-label={`Shares to assign from lot ${lot.acquisitionTransactionId}`}
                           min={0}
                           max={lot.remainingAsOfDonationDate}
                           step="any"

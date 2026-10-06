@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // Source-pin tests only (no DOM harness in this repo) — see
 // docs/reference (reference_no_dom_test_harness_source_pin). These pin
@@ -40,9 +41,9 @@ function extractScopeEffectBody(text: string): string {
   const closerIndex = closerMatch!.index;
   const useEffectIdx = text.lastIndexOf("useEffect(", closerIndex);
   expect(useEffectIdx).toBeGreaterThan(-1);
-  const arrowIdx = text.indexOf("=>", useEffectIdx);
+  const arrowIdx = anchorIndex(text, "=>", useEffectIdx);
   expect(arrowIdx).toBeGreaterThan(useEffectIdx);
-  const openBraceIdx = text.indexOf("{", arrowIdx);
+  const openBraceIdx = anchorIndex(text, "{", arrowIdx);
   expect(openBraceIdx).toBeGreaterThan(arrowIdx);
   return extractBalancedBody(text, openBraceIdx);
 }
@@ -83,7 +84,7 @@ describe("Custom scenario result is invalidated on scope switch and Hide", () =>
 
   it("hiding the custom scenario builder clears result/error/expanded INSIDE the showBuilder branch; opening does not", () => {
     const text = src();
-    const labelIdx = text.indexOf('Custom Scenario{" "}');
+    const labelIdx = anchorIndex(text, 'Custom Scenario{" "}');
     expect(labelIdx).toBeGreaterThan(-1);
     const beforeLabel = text.slice(0, labelIdx);
     const btnStart = beforeLabel.lastIndexOf("<button");
@@ -131,7 +132,7 @@ describe("Custom scenario result is invalidated on scope switch and Hide", () =>
     const guardMatch = guardRe.exec(body);
     expect(guardMatch, "expected an early-return guard comparing the ref against the captured token").not.toBeNull();
 
-    const resultIdx = body.indexOf("setCustomResult(json.data)");
+    const resultIdx = anchorIndex(body, "setCustomResult(json.data)");
     expect(resultIdx).toBeGreaterThan(-1);
     expect(guardMatch!.index).toBeLessThan(resultIdx);
   });

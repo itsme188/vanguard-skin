@@ -21,6 +21,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const VIEW_PATH = path.join(
   process.cwd(),
@@ -30,11 +31,11 @@ const QUERY_PATH = path.join(process.cwd(), "lib/queries/data-health.ts");
 
 /** Source slice from a heading's text through the end of its <section>. */
 function sectionAfterHeading(src: string, heading: string): string {
-  const headingIdx = src.indexOf(heading);
+  const headingIdx = anchorIndex(src, heading);
   if (headingIdx === -1) {
     throw new Error(`heading not found in DataHealthView.tsx: ${heading}`);
   }
-  const sectionEndIdx = src.indexOf("</section>", headingIdx);
+  const sectionEndIdx = anchorIndex(src, "</section>", headingIdx);
   if (sectionEndIdx === -1) {
     throw new Error(`no closing </section> found after heading: ${heading}`);
   }
@@ -91,11 +92,11 @@ describe("getSnapshotReconciliation query — excludes live snapshot sources", (
   });
 
   function functionBody(fnName: string): string {
-    const startIdx = source.indexOf(`export function ${fnName}`);
+    const startIdx = anchorIndex(source, `export function ${fnName}`);
     if (startIdx === -1) {
       throw new Error(`function not found: ${fnName}`);
     }
-    const nextFnIdx = source.indexOf("export function", startIdx + 1);
+    const nextFnIdx = anchorIndex(source, "export function", startIdx + 1);
     const endIdx = nextFnIdx === -1 ? source.length : nextFnIdx;
     return source.slice(startIdx, endIdx);
   }

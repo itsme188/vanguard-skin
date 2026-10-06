@@ -18,6 +18,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const RECONCILIATION_TABLE_PATH = path.join(
   process.cwd(),
@@ -54,25 +55,25 @@ describe("ReconciliationTable checkpoints table is reachable on a phone", () => 
   });
 
   it("the checkpoints table sits inside a <ScrollFade> wrapper", () => {
-    const tableIdx = source.indexOf("<table");
+    const tableIdx = anchorIndex(source, "<table");
     expect(tableIdx).toBeGreaterThan(-1);
     expect(source.slice(tableIdx)).toContain("</ScrollFade>");
     expect(innermostOpenTagBefore(source, tableIdx)).toMatch(/^<ScrollFade\b/);
   });
 
   it("no overflow-hidden box directly encloses the table", () => {
-    const tableIdx = source.indexOf("<table");
+    const tableIdx = anchorIndex(source, "<table");
     expect(innermostOpenTagBefore(source, tableIdx)).not.toContain(
       "overflow-hidden",
     );
   });
 
   describe("the per-row Remove button", () => {
-    const ariaIdx = source.indexOf("aria-label={`Remove checkpoint for");
+    const ariaIdx = anchorIndex(source, "aria-label={`Remove checkpoint for");
     const buttonSource = (() => {
       if (ariaIdx === -1) return "";
       const start = source.lastIndexOf("<button", ariaIdx);
-      const end = source.indexOf("</button>", ariaIdx);
+      const end = anchorIndex(source, "</button>", ariaIdx);
       return start === -1 || end === -1 ? "" : source.slice(start, end);
     })();
 

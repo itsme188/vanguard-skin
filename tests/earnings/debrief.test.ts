@@ -27,6 +27,7 @@ import {
   setMutedEarningsSymbols,
   setEarningsEmailsEnabled,
 } from "@/lib/queries/earnings-settings";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // "Today" for every test — ET. Chosen so composeReleaseInstant's DST branch
 // resolves to EDT (August). NOW is 2026-08-02T11:45 UTC = 07:45 ET.
@@ -681,11 +682,11 @@ describe("assembleDebriefMarkdown", () => {
       roster,
     );
 
-    const aiIdx = result.indexOf("# What changed overnight");
-    const scoreboardsIdx = result.indexOf("## The scoreboards");
-    const aaaIdx = result.indexOf("### AAA section");
-    const bbbIdx = result.indexOf("### BBB section");
-    const rosterIdx = result.indexOf(
+    const aiIdx = anchorIndex(result, "# What changed overnight");
+    const scoreboardsIdx = anchorIndex(result, "## The scoreboards");
+    const aaaIdx = anchorIndex(result, "### AAA section");
+    const bbbIdx = anchorIndex(result, "### BBB section");
+    const rosterIdx = anchorIndex(result, 
       "Recapped individually overnight: XXX 4:00 PM · YYY 2:00 AM",
     );
 

@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type InputHTMLAttributes, type ReactNode } from "react";
 import {
   formatNumber,
   formatPercent,
@@ -176,4 +176,50 @@ export function usePrivateFormatter<T>(
 ): (v: T) => string {
   const { isPrivate } = usePrivacy();
   return (v) => (isPrivate ? MASK : visible(v));
+}
+
+/** Pure branch for <PrivateNumberInput>: masked only in privacy mode while unfocused. */
+export function isPrivateInputMasked(isPrivate: boolean, focused: boolean): boolean {
+  return isPrivate && !focused;
+}
+
+type PrivateNumberInputProps = Omit<
+  InputHTMLAttributes<HTMLInputElement>,
+  "type" | "value"
+> & { value: number | string };
+
+/**
+ * Editable number input that hides its value in privacy mode. One focusable
+ * element: unfocused + private shows bullets in a read-only text input;
+ * focusing reveals the real value (editable by keyboard or touch), blur
+ * re-masks. Outside privacy mode it is a plain number input.
+ */
+export function PrivateNumberInput({
+  value,
+  onFocus,
+  onBlur,
+  ...rest
+}: PrivateNumberInputProps) {
+  const { isPrivate } = usePrivacy();
+  const [focused, setFocused] = useState(false);
+  const masked = isPrivateInputMasked(isPrivate, focused);
+  return (
+    <input
+      {...rest}
+      // max/min can carry a portfolio-derived share count; omit while masked.
+      max={masked ? undefined : rest.max}
+      min={masked ? undefined : rest.min}
+      type={masked ? "text" : "number"}
+      value={masked ? MASK : value}
+      readOnly={masked ? true : rest.readOnly}
+      onFocus={(e) => {
+        setFocused(true);
+        onFocus?.(e);
+      }}
+      onBlur={(e) => {
+        setFocused(false);
+        onBlur?.(e);
+      }}
+    />
+  );
 }

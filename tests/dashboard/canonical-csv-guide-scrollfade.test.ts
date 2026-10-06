@@ -17,6 +17,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const GUIDE_PATH = path.join(
   process.cwd(),
@@ -29,11 +30,11 @@ const GUIDE_PATH = path.join(
  * "somewhere in the file".
  */
 function sectionBetweenMarkers(src: string, start: string, end: string): string {
-  const startIdx = src.indexOf(start);
+  const startIdx = anchorIndex(src, start);
   if (startIdx === -1) {
     throw new Error(`marker not found in CanonicalCsvGuide.tsx: ${start}`);
   }
-  const endIdx = src.indexOf(end, startIdx);
+  const endIdx = anchorIndex(src, end, startIdx);
   if (endIdx === -1) {
     throw new Error(`end marker ${end} not found after ${start}`);
   }
@@ -55,7 +56,7 @@ describe("CanonicalCsvGuide wraps its horizontal scrollers in ScrollFade", () =>
       "{/* Header row */}",
       "{/* Column table */}",
     );
-    const codeIdx = block.indexOf("<code");
+    const codeIdx = anchorIndex(block, "<code");
     expect(codeIdx).toBeGreaterThan(-1);
     expect(block.slice(0, codeIdx)).toMatch(/<ScrollFade[^>]*>/);
     expect(block.slice(codeIdx)).toContain("</ScrollFade>");
@@ -67,7 +68,7 @@ describe("CanonicalCsvGuide wraps its horizontal scrollers in ScrollFade", () =>
       "{/* Column table */}",
       "{/* Constraints */}",
     );
-    const tableIdx = block.indexOf("<table");
+    const tableIdx = anchorIndex(block, "<table");
     expect(tableIdx).toBeGreaterThan(-1);
     expect(block.slice(0, tableIdx)).toMatch(/<ScrollFade[^>]*>/);
     expect(block.slice(tableIdx)).toContain("</ScrollFade>");
@@ -75,7 +76,7 @@ describe("CanonicalCsvGuide wraps its horizontal scrollers in ScrollFade", () =>
 
   it("the example <pre> block sits inside a <ScrollFade> wrapper and keeps whitespace-pre", () => {
     const block = sectionBetweenMarkers(source, "{/* Example */}", "</details>");
-    const preIdx = block.indexOf("<pre");
+    const preIdx = anchorIndex(block, "<pre");
     expect(preIdx).toBeGreaterThan(-1);
     expect(block.slice(0, preIdx)).toMatch(/<ScrollFade[^>]*>/);
     expect(block.slice(preIdx)).toContain("</ScrollFade>");

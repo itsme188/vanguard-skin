@@ -103,20 +103,23 @@ function ChatDrawerInner() {
   // first: hand it to the header control that re-opens the rail (falls back to
   // <main>) instead of leaving it on a now-hidden element.
   const collapseRail = useCallback(() => {
+    // Focus FIRST, synchronously, so no element inside the rail still holds
+    // focus when the subtree turns aria-hidden/inert (browser warns otherwise).
+    const findReopen = () =>
+      document.querySelector<HTMLElement>('button[aria-label="Toggle chat assistant"]');
+    const reopen = findReopen();
+    const reopenVisible = reopen !== null && reopen.offsetParent !== null;
+    const main = document.querySelector<HTMLElement>("main");
+    if (main && !main.hasAttribute("tabindex")) main.setAttribute("tabindex", "-1");
+    (reopenVisible ? reopen : main)?.focus();
     setCollapsed(true);
-    setTimeout(() => {
-      const reopen = document.querySelector<HTMLElement>(
-        'button[aria-label="Toggle chat assistant"]',
-      );
-      const target =
-        reopen && reopen.offsetParent !== null
-          ? reopen
-          : document.querySelector<HTMLElement>("main");
-      if (target && target.tagName === "MAIN" && !target.hasAttribute("tabindex")) {
-        target.setAttribute("tabindex", "-1");
-      }
-      target?.focus();
-    }, 0);
+    if (!reopenVisible) {
+      // The toggle only appears after collapse: hand focus to it once it exists.
+      setTimeout(() => {
+        const late = findReopen();
+        if (late && late.offsetParent !== null) late.focus();
+      }, 0);
+    }
   }, []);
 
   const toggle = useCallback(() => {

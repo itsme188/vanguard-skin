@@ -414,6 +414,51 @@ function conserves(items: RollUpItem[], groups: RollUpGroup[]): boolean {
   });
 }
 
+/** Row-level compatibility: the strict matcher's rule (quantity exact,
+ * proceeds / basis / gain each within ACCEPT_TOL_USD). */
+function rowsCompatible(a: RollUpItem, b: RollUpItem): boolean {
+  return (
+    round4Key(a.quantity) === round4Key(b.quantity) &&
+    withinTol(a.proceeds, b.proceeds, ACCEPT_TOL_USD) &&
+    withinTol(a.basis, b.basis, ACCEPT_TOL_USD) &&
+    withinTol(a.gain, b.gain, ACCEPT_TOL_USD)
+  );
+}
+
+/** True when the two row lists admit a perfect one-to-one matching under
+ * `rowsCompatible` (order-independent; augmenting paths, so two rows on one
+ * side can never both claim the same row on the other). */
+function hasPerfectRowMatching(left: RollUpItem[], right: RollUpItem[]): boolean {
+  if (left.length !== right.length) return false;
+  const owner: number[] = new Array(right.length).fill(-1);
+  const tryAssign = (l: number, seen: boolean[]): boolean => {
+    for (let r = 0; r < right.length; r++) {
+      if (seen[r] || !rowsCompatible(left[l], right[r])) continue;
+      seen[r] = true;
+      if (owner[r] === -1 || tryAssign(owner[r], seen)) {
+        owner[r] = l;
+        return true;
+      }
+    }
+    return false;
+  };
+  for (let l = 0; l < left.length; l++) {
+    if (!tryAssign(l, new Array(right.length).fill(false))) return false;
+  }
+  return true;
+}
+
+function itemsByKey(items: RollUpItem[]): Map<string, RollUpItem[]> {
+  const m = new Map<string, RollUpItem[]>();
+  for (const i of items) {
+    const k = rollUpKey(i);
+    const list = m.get(k);
+    if (list) list.push(i);
+    else m.set(k, [i]);
+  }
+  return m;
+}
+
 function describeGroup(g: RollUpGroup): string {
   return (
     `symbol=${g.symbol} date=${g.date} currency=${g.currency}` +
@@ -461,6 +506,8 @@ function reconcileEntryRollUp(
   }
 
   const engineByKey = new Map(engineGroups.map((g) => [g.key, g]));
+  const brokerItemsByKey = itemsByKey(brokerItems);
+  const engineItemsByKey = itemsByKey(engineItems);
   const brokerKeys = new Set(brokerGroups.map((g) => g.key));
   let matched = 0;
   let residual = 0;
@@ -479,11 +526,21 @@ function reconcileEntryRollUp(
     const okGain = withinTol(eg.gain, bg.gain, ACCEPT_TOL_USD);
     if (!okQty) reasons.add("quantity mismatch");
     if (!okProceeds || !okBasis || !okGain) reasons.add("field mismatch");
-    const ok = okQty && okProceeds && okBasis && okGain;
+    const totalsOk = okQty && okProceeds && okBasis && okGain;
+    // Same granularity on both sides: totals alone could net two offsetting
+    // row errors, so the rows themselves must match one-to-one. Roll-up only
+    // bridges a DIFFERENT row count.
+    const sameCount = bg.rowCount === eg.rowCount;
+    const rowsOk =
+      !sameCount ||
+      hasPerfectRowMatching(brokerItemsByKey.get(bg.key) ?? [], engineItemsByKey.get(bg.key) ?? []);
+    if (totalsOk && !rowsOk) reasons.add("same row count but rows differ (offsetting differences)");
+    const ok = totalsOk && rowsOk;
     if (ok) matched++;
     else residual++;
     detail.push(
-      `${header}: GROUP ${ok ? "OK" : "MISMATCH"} broker(${describeGroup(bg)}) vs engine(${describeGroup(eg)})`,
+      `${header}: GROUP ${ok ? "OK" : "MISMATCH"} broker(${describeGroup(bg)}) vs engine(${describeGroup(eg)})` +
+        (totalsOk && !rowsOk ? " — same row count but rows differ (offsetting differences)" : ""),
     );
   }
 

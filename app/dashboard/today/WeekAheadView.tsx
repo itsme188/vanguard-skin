@@ -4,6 +4,7 @@ import { addDays, formatWeekRange, todayET, getCurrentMonday, mondayOf } from "@
 import { formatFinnhubFigure, parseFinnhubFigure, formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { formatCompactUSD } from "@/lib/format";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
+import { earningsTimeLabel, isFredScheduleRow } from "@/lib/calendar/release-times";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { epsDelta } from "@/lib/earnings/eps-delta";
 import { EnrichmentRowSummary } from "../components/calendar/EnrichmentChips";
@@ -36,16 +37,6 @@ function impactClass(impact: string | null): string {
   if (impact === "high") return "bg-down/10 text-down";
   if (impact === "medium") return "bg-blue/15 text-blue";
   return "bg-raised text-ink-faint";
-}
-
-function fmtTime(t: string | null): string | null {
-  if (!t) return null;
-  // event_time is HH:MM (24h) — render as h:mm a
-  const [h, m] = t.split(":").map((n) => parseInt(n, 10));
-  if (isNaN(h) || isNaN(m)) return null;
-  const period = h >= 12 ? "PM" : "AM";
-  const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12}:${m.toString().padStart(2, "0")} ${period}`;
 }
 
 // QA finding today-week-ahead--weekend-current-week-labelled-past-week-this-week-jumps-forward-regression-1:
@@ -104,6 +95,30 @@ export function weekAheadEmptyStateCopy(
     : `No events recorded for the week of ${weekOf}. Calendar sync covers roughly four weeks ahead and history since spring 2026.`;
 }
 
+/** The grid's note for a week whose FRED macro schedule is not in yet. */
+export const MACRO_NOT_LOADED_NOTE = "Macro schedule not loaded yet for this week";
+
+/**
+ * Whether the grid should say the week's macro schedule is not loaded (user
+ * ruling 2026-10-05). The far weeks of the four-week horizon used to show
+ * earnings — and now the hardcoded FOMC/ISM/UMich/Conference Board dates —
+ * with a silently empty macro area, which reads as "nothing scheduled".
+ *
+ * "Loaded" = the week holds at least one FRED-sourced row (`fred:` source_key,
+ * isFredScheduleRow). Hardcoded rows do not count: they are synced without
+ * FRED and say nothing about whether CPI/jobs/GDP dates have been fetched.
+ * Only a week that is not over yet can be "not loaded YET" — a past week with
+ * no FRED rows is simply a thin record, and gets no note.
+ */
+export function macroScheduleNotLoaded(
+  events: Pick<CalendarEvent, "source_key">[],
+  weekOf: string,
+  todayIso: string,
+): boolean {
+  if (addDays(weekOf, 6) < todayIso) return false;
+  return !events.some(isFredScheduleRow);
+}
+
 export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
   const todayIso = todayET();
   const currentMonday = getCurrentMonday();
@@ -129,6 +144,7 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
   });
 
   const totalEvents = days.reduce((sum, d) => sum + d.events.length, 0);
+  const macroNotLoaded = macroScheduleNotLoaded(events, weekOf, todayIso);
 
   // Prev/next chevrons — plain links (server component), each week is a URL
   // so past enriched weeks are shareable/bookmarkable. Touch targets get the
@@ -180,10 +196,18 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
           </p>
         </section>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-          {days.map((day) => (
-            <DayCard key={day.date} day={day} todayIso={todayIso} />
-          ))}
+        <div className="space-y-3">
+          {/* Same muted style as a day card's "No events" line. Only on a
+              week that HAS rows: the empty state above already explains an
+              unsynced week in full. */}
+          {macroNotLoaded && (
+            <p className="text-[13px] text-ink-faint italic">{MACRO_NOT_LOADED_NOTE}</p>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            {days.map((day) => (
+              <DayCard key={day.date} day={day} todayIso={todayIso} />
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -358,7 +382,10 @@ export function releasedFigureGates(
 }
 
 function EventRow({ event, todayIso }: { event: CalendarEvent; todayIso: string }) {
-  const time = fmtTime(event.release_time ?? event.event_time);
+  // "time unknown" for an earnings row with no clock time — never a blank and
+  // never a default (user ruling 2026-10-05). Single-sourced with Today's
+  // releases in lib/calendar/release-times.ts.
+  const time = earningsTimeLabel(event);
   const symbol = event.symbol ?? null;
   const { consensusDisplay, actualDisplay: rawActualDisplay } = eventFigureDisplays(event);
   const { released, showReaction } = releasedFigureGates(event, todayIso);

@@ -8,6 +8,7 @@ import {
   hasDeskNote,
   isFilingRow,
   kindLabel,
+  secFilingHref,
   sourceLabel,
 } from "@/lib/transcripts/presentation";
 
@@ -69,6 +70,18 @@ export function TranscriptCard({
   // Both rules live in lib/transcripts/presentation.ts.
   const isFiling = isFilingRow(t);
   const showFilingDeskNote = isFiling && hasDeskNote(t);
+  // Only a sec.gov https URL on a filing row ever becomes a link.
+  const filingHref = isFiling ? secFilingHref(t.filing_url) : null;
+  const filingLink = filingHref ? (
+    <a
+      href={filingHref}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-xs text-gold-ink hover:text-gold/80"
+    >
+      Open the filing on SEC.gov ↗
+    </a>
+  ) : null;
 
   // Shared between the call branch and the filing desk-note branch so the
   // expand/collapse affordance behaves identically on both.
@@ -211,6 +224,7 @@ export function TranscriptCard({
               {loadingFull ? "Loading..." : isFiling ? "View filing" : "View Full Transcript"}
             </button>
           )}
+          {filingLink}
           {onFetch && (
             <button
               onClick={() => onFetch(t.ticker, t.year, t.quarter)}
@@ -259,6 +273,8 @@ export function TranscriptCard({
                 </svg>
               </button>
             </div>
+
+            {filingLink && <div className="px-6 pt-3">{filingLink}</div>}
 
             {/* Modal body */}
             <div className="overflow-y-auto px-6 py-4">

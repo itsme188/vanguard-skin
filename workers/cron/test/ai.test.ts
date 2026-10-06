@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { generateWithFailover } from "../src/ai";
+import { generateWithFailover, structuredOutputProviderOptions } from "../src/ai";
 
 describe("worker reactive failover", () => {
   it("fails over on a 404", async () => {
@@ -34,11 +34,46 @@ describe("worker reactive failover", () => {
     const call = vi.fn()
       .mockRejectedValueOnce(Object.assign(new Error("output_config.format: json_schema is not supported"), { statusCode: 400 }))
       .mockResolvedValueOnce("ok");
-    const out = await generateWithFailover(env as never, "fallbackBriefing", ["claude-fable-5"], call);
+    const out = await generateWithFailover(env as never, "fallbackBriefing", ["claude-fable-5"], call, { structured: true });
     expect(out).toBe("ok");
     expect(call).toHaveBeenCalledTimes(2);
     expect(call.mock.calls[0][1]).toBe("outputFormat");
     expect(call.mock.calls[1][1]).toBe("jsonTool");
+    expect(structuredOutputProviderOptions(call.mock.calls[0][1])).not.toEqual(
+      structuredOutputProviderOptions(call.mock.calls[1][1]),
+    );
+    expect(structuredOutputProviderOptions("jsonTool").anthropic.structuredOutputMode).toBe("jsonTool");
+  });
+
+  it("detects the rejection from responseBody alone", async () => {
+    const env = { ANTHROPIC_API_KEY: "k" };
+    const call = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("Bad Request"), { statusCode: 400, responseBody: '{"error":{"message":"output_config.format not supported"}}' }))
+      .mockResolvedValueOnce("ok");
+    await generateWithFailover(env as never, "fallbackBriefing", ["claude-fable-5"], call, { structured: true });
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it("never mode-retries a text (non-structured) call", async () => {
+    const env = { ANTHROPIC_API_KEY: "k" };
+    const call = vi.fn().mockRejectedValue(
+      Object.assign(new Error("output_config.format: json_schema is not supported"), { statusCode: 400 }),
+    );
+    await expect(
+      generateWithFailover(env as never, "fallbackEvening", ["claude-sonnet-4-6"], call),
+    ).rejects.toThrow("output_config");
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it("a structured call that keeps failing is called at most twice", async () => {
+    const env = { ANTHROPIC_API_KEY: "k" };
+    const call = vi.fn().mockRejectedValue(
+      Object.assign(new Error("output_config.format: json_schema is not supported"), { statusCode: 400 }),
+    );
+    await expect(
+      generateWithFailover(env as never, "fallbackBriefing", ["claude-fable-5"], call, { structured: true }),
+    ).rejects.toThrow("output_config");
+    expect(call).toHaveBeenCalledTimes(2);
   });
 
   it("does not jsonTool-retry a forced-tool 400", async () => {
@@ -47,7 +82,7 @@ describe("worker reactive failover", () => {
       Object.assign(new Error('tool_choice: type "tool" and "any" are not supported for this model.'), { statusCode: 400 }),
     );
     await expect(
-      generateWithFailover(env as never, "fallbackBriefing", ["claude-fable-5"], call),
+      generateWithFailover(env as never, "fallbackBriefing", ["claude-fable-5"], call, { structured: true }),
     ).rejects.toThrow("tool_choice");
     expect(call).toHaveBeenCalledTimes(1);
   });

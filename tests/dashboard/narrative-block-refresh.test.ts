@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { formatGeneratedAt } from "@/lib/calendar/date-utils";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // This repo has no React component-rendering harness (no @testing-library/react,
 // no jsdom environment in vitest.config.ts — confirmed by grep before writing
@@ -131,9 +132,9 @@ describe("NarrativeBlock renders the refresh status under the button that was pr
   });
 
   it("puts the banner status inside the drift banner, after the button", () => {
-    const banner = src.slice(src.indexOf("{drifted && ("), src.indexOf("<PrivateText>"));
-    const button = banner.indexOf("Refresh to regenerate");
-    const status = banner.indexOf('refreshError && refreshOrigin === "banner"');
+    const banner = src.slice(anchorIndex(src, "{drifted && ("), anchorIndex(src, "<PrivateText>"));
+    const button = anchorIndex(banner, "Refresh to regenerate");
+    const status = anchorIndex(banner, 'refreshError && refreshOrigin === "banner"');
     expect(button).toBeGreaterThan(-1);
     expect(status).toBeGreaterThan(button);
   });
@@ -240,7 +241,7 @@ describe("NarrativeBlock wires the cold-failure state to a visible retry, never 
   });
 
   it("renders a role=alert status with a Try again button, wired to the footer refresh, on cold-failure", () => {
-    const branchStart = src.indexOf('renderState === "cold-failure"');
+    const branchStart = anchorIndex(src, 'renderState === "cold-failure"');
     expect(branchStart).toBeGreaterThan(-1);
     const branch = src.slice(branchStart, branchStart + 1200);
     expect(branch).toMatch(/role="alert"/);

@@ -32,7 +32,7 @@ import {
   type ExtractedMessage,
 } from "./gmail";
 import { loadLatestSnapshot, type Snapshot } from "./state";
-import { generateWithFailover } from "./ai";
+import { generateWithFailover, structuredOutputProviderOptions } from "./ai";
 import { normalizeThemes, sanitizeModelSummary } from "./fallback-digest";
 import { getCurrentETHour, getCurrentETMinute } from "./dst";
 
@@ -346,13 +346,15 @@ ATTRIBUTION (provenance): If this piece is primarily RELAYING a third party's vi
     env,
     "fallbackNewsletterProcessing",
     catalog,
-    (model) =>
+    (model, mode) =>
       generateObject({
         model,
         maxOutputTokens: 2048,
         schema: ARTICLE_SCHEMA,
         prompt,
+        providerOptions: structuredOutputProviderOptions(mode),
       }),
+    { structured: true },
   );
 
   return {

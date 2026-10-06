@@ -4,6 +4,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getHoldingsBySecurity } from "@/lib/queries/security-detail";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 /**
  * The Security Detail POSITIONS read must drop an option past its
@@ -104,9 +105,9 @@ describe("Security hub Related Options query applies the expiry guard", () => {
       path.join(process.cwd(), "app/dashboard/security/[id]/page.tsx"),
       "utf8"
     );
-    const start = src.indexOf("const relatedOptions = db");
+    const start = anchorIndex(src, "const relatedOptions = db");
     expect(start).toBeGreaterThan(-1);
-    const end = src.indexOf(".all(security.symbol)", start);
+    const end = anchorIndex(src, ".all(security.symbol)", start);
     expect(end).toBeGreaterThan(start);
     expect(src.slice(start, end)).toMatch(/\$\{liveOptionExpirationSql\("s"\)\}/);
   });

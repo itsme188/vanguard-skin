@@ -30,4 +30,12 @@ describe("Fix date out-of-week notice", () => {
   it("hub mounts the note with weekOf", () => {
     expect(read("EarningsHub.tsx")).toContain("<EarningsHubDateCorrectionNote weekOf={weekOf} />");
   });
+
+  it("lock-chip corrected-date input carries the same min/max bounds as the conflict custom-date input", () => {
+    const src = read("EarningsDateChip.tsx");
+    const at = src.indexOf('aria-label="Corrected earnings date"');
+    const tag = src.slice(src.lastIndexOf("<input", at), at);
+    expect(tag).toContain("min={todayIso}");
+    expect(tag).toContain("max={addDays(todayIso, MAX_EARNINGS_DAYS_AHEAD)}");
+  });
 });

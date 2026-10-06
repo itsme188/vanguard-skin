@@ -25,6 +25,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const DRILL_DOWN_PANEL_PATH = path.join(
   process.cwd(),
@@ -41,7 +42,7 @@ describe("DrillDownPanel wraps its table in ScrollFade and gives the close butto
   });
 
   it("the <table> sits inside a <ScrollFade> wrapper", () => {
-    const tableIdx = source.indexOf("<table");
+    const tableIdx = anchorIndex(source, "<table");
     expect(tableIdx).toBeGreaterThan(-1);
     expect(source.slice(0, tableIdx)).toMatch(/<ScrollFade[^>]*>/);
     expect(source.slice(tableIdx)).toContain("</ScrollFade>");
@@ -52,9 +53,9 @@ describe("DrillDownPanel wraps its table in ScrollFade and gives the close butto
     const lastScrollFadeOpenBeforeTable = source
       .slice(0, tableIdx)
       .lastIndexOf("<ScrollFade");
-    const closeTableIdx = source.indexOf("</table>", tableIdx);
+    const closeTableIdx = anchorIndex(source, "</table>", tableIdx);
     expect(closeTableIdx).toBeGreaterThan(-1);
-    const nextScrollFadeCloseAfterTable = source.indexOf(
+    const nextScrollFadeCloseAfterTable = anchorIndex(source, 
       "</ScrollFade>",
       closeTableIdx,
     );
@@ -63,14 +64,14 @@ describe("DrillDownPanel wraps its table in ScrollFade and gives the close butto
   });
 
   it("the close button carries the pointer-coarse touch hit-area extension", () => {
-    const closeButtonLabelIdx = source.indexOf(
+    const closeButtonLabelIdx = anchorIndex(source, 
       'aria-label="Close drill-down"',
     );
     expect(closeButtonLabelIdx).toBeGreaterThan(-1);
     // The className sits on the <button ...> opening tag that this
     // aria-label belongs to — look at the nearest <button before it.
     const buttonOpenIdx = source.lastIndexOf("<button", closeButtonLabelIdx);
-    const buttonCloseTagIdx = source.indexOf(">", closeButtonLabelIdx);
+    const buttonCloseTagIdx = anchorIndex(source, ">", closeButtonLabelIdx);
     const buttonOpenTag = source.slice(buttonOpenIdx, buttonCloseTagIdx + 1);
     expect(buttonOpenTag).toContain("relative");
     expect(buttonOpenTag).toContain("pointer-coarse:after:absolute");

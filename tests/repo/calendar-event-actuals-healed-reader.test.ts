@@ -32,6 +32,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -171,9 +172,9 @@ describe("calendar-event actuals are read by id through getEventById", () => {
 
   it("the healed reader exists and heals", () => {
     const src = fs.readFileSync(path.join(REPO_ROOT, "lib/queries/calendar.ts"), "utf8");
-    const start = src.indexOf("export function getEventById(");
+    const start = anchorIndex(src, "export function getEventById(");
     if (start === -1) throw new Error("getEventById is missing from lib/queries/calendar.ts");
-    const body = src.slice(start, src.indexOf("\n}\n", start));
+    const body = src.slice(start, anchorIndex(src, "\n}\n", start));
     expect(body).toContain("withClusterManualActuals(");
     expect(findActualsReadsById(src)).toHaveLength(1);
   });

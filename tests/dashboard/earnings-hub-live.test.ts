@@ -39,6 +39,7 @@ import type {
   PrepareStepWire,
   PrintStatusEntry,
 } from "@/app/dashboard/today/hub-live/types";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const entry = (o: Partial<PrintStatusEntry> = {}): PrintStatusEntry => ({
   printId: 1,
@@ -397,8 +398,8 @@ describe("EarningsHubLive source", () => {
   it("clears the not-updating banner when the polls stop (review M3)", () => {
     // Nothing is polling on a hidden tab or after the controller is torn down,
     // so a surviving banner outlives the condition it describes.
-    const pause = src.indexOf("controller.pause()");
-    const cleared = src.indexOf("setStatusError(null)", pause);
+    const pause = anchorIndex(src, "controller.pause()");
+    const cleared = anchorIndex(src, "setStatusError(null)", pause);
     expect(pause).toBeGreaterThan(-1);
     expect(cleared).toBeGreaterThan(pause);
     // …and again in the effect teardown.
@@ -447,8 +448,8 @@ describe("EarningsHubLive source", () => {
 
   it("captures the previous print snapshot BEFORE overwriting the ref (Codex 8 / F-S1)", () => {
     expect(src).toMatch(/const prevSnap = snapRef\.current\[id\] \?\? null;/);
-    const capture = src.indexOf("const prevSnap = snapRef.current[id]");
-    const write = src.indexOf("snapRef.current[id] = snap");
+    const capture = anchorIndex(src, "const prevSnap = snapRef.current[id]");
+    const write = anchorIndex(src, "snapRef.current[id] = snap");
     expect(capture).toBeGreaterThan(-1);
     expect(write).toBeGreaterThan(-1);
     expect(capture).toBeLessThan(write);
@@ -536,7 +537,7 @@ describe("EarningsHub wiring", () => {
   it("keeps the expansion inside the two responsive containers so globals.css still switches it", () => {
     // .earnings-hub-desktop / .earnings-hub-mobile are the md: + rail switch
     // (app/globals.css). A slot outside them would render twice at 1280.
-    const desktop = src.slice(src.indexOf("earnings-hub-desktop"), src.indexOf("earnings-hub-mobile"));
+    const desktop = src.slice(anchorIndex(src, "earnings-hub-desktop"), anchorIndex(src, "earnings-hub-mobile"));
     expect(desktop).toMatch(/<LivePrintSlot/);
   });
 
@@ -573,8 +574,8 @@ describe("EarningsRowChips reads the live cockpit row from context", () => {
     // of defect as the 2026-07-27 "+ BOG silently skipped the recap" bug the
     // root's own comment records, and the same fix: let it shrink so its
     // flex-wrap engages.
-    const lane = src.slice(src.indexOf("{cockpitRow && ("));
-    const laneOpen = lane.slice(lane.indexOf("<span className=\"flex flex-col"), lane.indexOf("<StageChipStrip"));
+    const lane = src.slice(anchorIndex(src, "{cockpitRow && ("));
+    const laneOpen = lane.slice(anchorIndex(lane, "<span className=\"flex flex-col"), anchorIndex(lane, "<StageChipStrip"));
     expect(laneOpen).not.toMatch(/shrink-0/);
     expect(laneOpen).toMatch(/min-w-0/);
     // The row holding the chips + countdown must wrap too — a non-wrapping

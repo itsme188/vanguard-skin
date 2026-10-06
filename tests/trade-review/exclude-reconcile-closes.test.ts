@@ -53,7 +53,7 @@ function createDb(): Database.Database {
     );
     CREATE TABLE tax_lot_sales (
       id INTEGER PRIMARY KEY, tax_lot_id INTEGER NOT NULL,
-      sale_transaction_id INTEGER, sale_date TEXT NOT NULL, quantity_sold REAL NOT NULL
+      sale_transaction_id INTEGER NOT NULL, sale_date TEXT NOT NULL, quantity_sold REAL NOT NULL
     );
     CREATE TABLE trade_reviews (
       id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, period_start TEXT NOT NULL
@@ -65,17 +65,14 @@ function createDb(): Database.Database {
 
 function addSale(
   db: Database.Database,
-  opts: { saleDate: string; type: string; qty?: number; noTransaction?: boolean },
+  opts: { saleDate: string; type: string; qty?: number },
 ) {
   const qty = opts.qty ?? 10;
-  let txId: number | bigint | null = null;
-  if (!opts.noTransaction) {
-    txId = db
-      .prepare(
-        "INSERT INTO transactions (account_id, security_id, trade_date, type, quantity) VALUES (1, 1, ?, ?, ?)",
-      )
-      .run(opts.saleDate, opts.type, -qty).lastInsertRowid;
-  }
+  const txId = db
+    .prepare(
+      "INSERT INTO transactions (account_id, security_id, trade_date, type, quantity) VALUES (1, 1, ?, ?, ?)",
+    )
+    .run(opts.saleDate, opts.type, -qty).lastInsertRowid;
   const lotId = db
     .prepare("INSERT INTO tax_lots (account_id, security_id, acquisition_date) VALUES (1, 1, '2026-01-02')")
     .run().lastInsertRowid;
@@ -106,13 +103,6 @@ describe("review periods exclude engine RECONCILE_CLOSE sales", () => {
     const periods = getAvailableReviewPeriods(db, 1);
     expect(periods.map((p) => p.periodStart)).toEqual(["2026-03-01"]);
     expect(detectNewTradeReviewPeriods(db).map((p) => p.periodStart)).toEqual(["2026-03-01"]);
-  });
-
-  it("counts a legacy sale with no sale transaction as a real sale", () => {
-    addSale(db, { saleDate: "2026-05-05", type: "SELL", noTransaction: true });
-    const periods = getAvailableReviewPeriods(db, 1);
-    expect(periods).toHaveLength(1);
-    expect(periods[0].tradeCount).toBe(1);
   });
 });
 

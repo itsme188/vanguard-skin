@@ -26,6 +26,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const SRC_PATH = "app/dashboard/security/[id]/page.tsx";
 const src = readFileSync(SRC_PATH, "utf8");
@@ -36,9 +37,9 @@ const src = readFileSync(SRC_PATH, "utf8");
  * different concern and out of scope here, so the checks below are scoped
  * to just this cell rather than banning `Date.now()` file-wide.) */
 function extractExpirationCell(content: string): string {
-  const cellStart = content.indexOf('label="Expiration"');
+  const cellStart = anchorIndex(content, 'label="Expiration"');
   if (cellStart === -1) throw new Error('could not find label="Expiration" in the source');
-  const cellEnd = content.indexOf(")}", cellStart);
+  const cellEnd = anchorIndex(content, ")}", cellStart);
   if (cellEnd === -1) throw new Error("could not find the end of the Expiration OptionCell block");
   return content.slice(cellStart, cellEnd);
 }

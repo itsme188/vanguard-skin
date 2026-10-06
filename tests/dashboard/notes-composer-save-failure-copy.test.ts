@@ -24,6 +24,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { describeNoteSaveFailure } from "@/lib/notes/save-failure-copy";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const src = readFileSync("app/dashboard/components/NotesView.tsx", "utf8");
 
@@ -172,10 +173,10 @@ describe("describeNoteSaveFailure", () => {
 
 describe("NotesView update/delete handlers route every failure through the helper", () => {
   function extractFn(name: string): string {
-    const start = src.indexOf(`async function ${name}`);
+    const start = anchorIndex(src, `async function ${name}`);
     expect(start).toBeGreaterThan(-1);
     // Both handlers are followed by a "// ─── ... ───" section comment.
-    const next = src.indexOf("\n  // ─── ", start + 1);
+    const next = anchorIndex(src, "\n  // ─── ", start + 1);
     expect(next).toBeGreaterThan(start);
     return src.slice(start, next);
   }
@@ -209,8 +210,8 @@ describe("NotesView update/delete handlers route every failure through the helpe
 describe("NotesView create handler routes every failure through the helper", () => {
   it("no longer sets a raw Error message as the composer's error text", () => {
     const create = src.slice(
-      src.indexOf("async function handleCreate"),
-      src.indexOf("// ─── Update note ───"),
+      anchorIndex(src, "async function handleCreate"),
+      anchorIndex(src, "// ─── Update note ───"),
     );
     expect(create.length).toBeGreaterThan(0);
     expect(create).not.toMatch(/setSaveError\([^)]*err instanceof Error/);
@@ -221,19 +222,19 @@ describe("NotesView create handler routes every failure through the helper", () 
 
   it("checks res.ok AND data.success, per the mutating-handler convention", () => {
     const create = src.slice(
-      src.indexOf("async function handleCreate"),
-      src.indexOf("// ─── Update note ───"),
+      anchorIndex(src, "async function handleCreate"),
+      anchorIndex(src, "// ─── Update note ───"),
     );
     expect(create).toMatch(/!res\.ok \|\| !data\?\.success/);
   });
 
   it("keeps the typed note on a failure — the form only resets after a success", () => {
     const create = src.slice(
-      src.indexOf("async function handleCreate"),
-      src.indexOf("// ─── Update note ───"),
+      anchorIndex(src, "async function handleCreate"),
+      anchorIndex(src, "// ─── Update note ───"),
     );
-    const firstFailure = create.indexOf("describeNoteSaveFailure");
-    const reset = create.indexOf('setFormContent("")');
+    const firstFailure = anchorIndex(create, "describeNoteSaveFailure");
+    const reset = anchorIndex(create, 'setFormContent("")');
     expect(firstFailure).toBeGreaterThan(-1);
     expect(reset).toBeGreaterThan(firstFailure);
     // Every failure branch returns before reaching the reset.

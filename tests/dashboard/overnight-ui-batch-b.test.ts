@@ -5,6 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { documentMatchesSearch } from "@/app/dashboard/components/research-documents-search";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const read = (p: string) => readFileSync(p, "utf8");
 
@@ -15,7 +16,7 @@ describe("armed-levels '(x% vs level)' contrast", () => {
     let from = 0;
     let seen = 0;
     for (;;) {
-      const i = src.indexOf(marker, from);
+      const i = src.indexOf(marker, from); // loop ends on -1; seen===2 pins the count
       if (i === -1) break;
       const open = src.lastIndexOf("<span", i);
       expect(src.slice(open, i)).toContain("text-ink-dim");
@@ -30,8 +31,8 @@ describe("armed-levels '(x% vs level)' contrast", () => {
 describe("useResearchSync debounce stamp", () => {
   const src = read("lib/hooks/useResearchSync.ts");
   it("stamps only after a completed sync (early return on failure precedes setItem)", () => {
-    const a = src.indexOf("if (!(await researchSyncCompleted(res))) return;");
-    const b = src.indexOf("localStorage.setItem(SYNC_DEBOUNCE_KEY");
+    const a = anchorIndex(src, "if (!(await researchSyncCompleted(res))) return;");
+    const b = anchorIndex(src, "localStorage.setItem(SYNC_DEBOUNCE_KEY");
     expect(a).toBeGreaterThan(-1);
     expect(b).toBeGreaterThan(a);
   });

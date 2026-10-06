@@ -9,6 +9,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { parseExtraMetrics } from "@/lib/print-watch/extra-metrics";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const src = readFileSync("app/dashboard/today/BogeysEditModal.tsx", "utf8");
 
@@ -64,12 +65,12 @@ describe("BogeysEditModal — id identity and the shared parser (Codex round 1)"
 describe("extraRowsToJson coerces nothing — the shared parser reads each unit", () => {
   const OPEN = "function extraRowsToJson(";
   const CLOSE = "const plural =";
-  const serialiser = src.slice(src.indexOf(OPEN), src.indexOf(CLOSE));
+  const serialiser = src.slice(anchorIndex(src, OPEN), anchorIndex(src, CLOSE));
 
   it("slices the real function, not the rest of the file (anchor guard)", () => {
     expect(src.indexOf(OPEN), "the serialiser was renamed").toBeGreaterThan(-1);
-    expect(src.indexOf(CLOSE), "the closing anchor moved above the serialiser").toBeGreaterThan(
-      src.indexOf(OPEN),
+    expect(anchorIndex(src, CLOSE), "the closing anchor moved above the serialiser").toBeGreaterThan(
+      anchorIndex(src, OPEN),
     );
     expect(serialiser).toMatch(/JSON\.stringify\(/);
     expect(serialiser.length).toBeLessThan(src.length / 2);
@@ -95,8 +96,8 @@ describe("extraRowsToJson coerces nothing — the shared parser reads each unit"
 describe("BogeysEditModal — honest feedback", () => {
   const between = (open: string, close: string) => {
     expect(src.indexOf(open), `${open} vanished`).toBeGreaterThan(-1);
-    expect(src.indexOf(close), `${close} moved above ${open}`).toBeGreaterThan(src.indexOf(open));
-    return src.slice(src.indexOf(open), src.indexOf(close));
+    expect(anchorIndex(src, close), `${close} moved above ${open}`).toBeGreaterThan(anchorIndex(src, open));
+    return src.slice(anchorIndex(src, open), anchorIndex(src, close));
   };
   const save = between("async function save(", "async function submitActuals(");
 
@@ -110,7 +111,7 @@ describe("BogeysEditModal — honest feedback", () => {
     expect(save).toMatch(/would erase them/);
     expect(src).toMatch(/discard the unreadable metrics/);
     // The refusal comes BEFORE the POST, so nothing is written.
-    expect(save.indexOf("!discardUnreadable")).toBeLessThan(save.indexOf("apiFetch("));
+    expect(anchorIndex(save, "!discardUnreadable")).toBeLessThan(anchorIndex(save, "apiFetch("));
   });
 
   it("consumes the POST's recompile report rather than discarding it (I-2)", () => {
@@ -119,9 +120,9 @@ describe("BogeysEditModal — honest feedback", () => {
     expect(save).toMatch(/needsAcknowledgement\(recompiled\)/);
     // …and that branch RETURNS before onClose(), so the modal cannot close on
     // an outcome the desk has not seen.
-    const tail = save.slice(save.indexOf("const recompiled = data.recompiled;"));
+    const tail = save.slice(anchorIndex(save, "const recompiled = data.recompiled;"));
     expect(tail.indexOf("return;")).toBeGreaterThan(-1);
-    expect(tail.indexOf("return;")).toBeLessThan(tail.indexOf("onClose();"));
+    expect(anchorIndex(tail, "return;")).toBeLessThan(anchorIndex(tail, "onClose();"));
   });
 
   it("will not close on a retirement, a removal, a conflict or a sheet that did not move (I-2)", () => {

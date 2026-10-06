@@ -137,3 +137,22 @@ export function transcriptCountLabel(rows: TranscriptKindRow[]): string {
   if (filings > 0) parts.push(`${filings} filing${filings === 1 ? "" : "s"}`);
   return parts.join(", ");
 }
+
+/**
+ * The stored `filing_url` as a safe outbound href, or null. Only an https
+ * URL whose host is sec.gov (or a subdomain, e.g. www.sec.gov) is returned —
+ * an arbitrary stored URL is never rendered as a link. Malformed input,
+ * empty strings and look-alike hosts (sec.gov.evil.com, notsec.gov) are null.
+ */
+export function secFilingHref(url: string | null | undefined): string | null {
+  const raw = (url ?? "").trim();
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.toLowerCase();
+    const isSec = host === "sec.gov" || host.endsWith(".sec.gov");
+    return u.protocol === "https:" && isSec ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}

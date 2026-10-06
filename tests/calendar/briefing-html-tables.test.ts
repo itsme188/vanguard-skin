@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 describe("briefingToHtml — markdown tables", () => {
   it("converts a basic markdown table into an email-safe HTML table", () => {
@@ -161,7 +162,7 @@ Up 5%, every segment grew
     const html = briefingToHtml(md, "Test");
     expect(html.match(/<thead>/g)?.length).toBe(1);
     expect(html).not.toMatch(/<p[^>]*>\s*\|/);
-    const body = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
+    const body = html.slice(anchorIndex(html, "<tbody>"), anchorIndex(html, "</tbody>"));
     expect(body.match(/<tr/g)?.length).toBe(3); // three metrics, no phantom rows
     expect(body).toMatch(/<td[^>]*>\s*6%\s*<\/td>/); // the actual is its own cell
     expect(body).toMatch(/<td[^>]*>\s*\+2pp beat\s*<\/td>/); // the delta is its own cell
@@ -174,7 +175,7 @@ Up 5%, every segment grew
 | EPS | 0.70 |
 | Revenue | $12.5B | $13.0B | +4% |`;
     const html = briefingToHtml(short, "Test");
-    const body = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
+    const body = html.slice(anchorIndex(html, "<tbody>"), anchorIndex(html, "</tbody>"));
     expect(body.match(/<tr/g)?.length).toBe(2);
     expect(body).toMatch(/<td[^>]*>\s*EPS\s*<\/td>/);
     expect(body).toMatch(/<td[^>]*>\s*Revenue\s*<\/td>/);
@@ -186,7 +187,7 @@ Up 5%, every segment grew
 | EPS | 0.70 |
 | Revenue | 12.5B |`;
     const html = briefingToHtml(short, "Test");
-    const body = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
+    const body = html.slice(anchorIndex(html, "<tbody>"), anchorIndex(html, "</tbody>"));
     expect(body.match(/<tr/g)?.length).toBe(2);
     expect(body).toMatch(/<td[^>]*>\s*EPS\s*<\/td>/);
     expect(body).toMatch(/<td[^>]*>\s*Revenue\s*<\/td>/);
@@ -200,7 +201,7 @@ Up 5%, every segment grew
 | +3% |
 | Revenue | 12.5B |`;
     const html = briefingToHtml(md, "Test");
-    const body = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
+    const body = html.slice(anchorIndex(html, "<tbody>"), anchorIndex(html, "</tbody>"));
     expect(body.match(/<tr/g)?.length).toBe(2);
     expect(body).toMatch(/<td[^>]*>\s*0\.72\s*<\/td>/);
     expect(body).toMatch(/<td[^>]*>\s*\+3%\s*<\/td>/);

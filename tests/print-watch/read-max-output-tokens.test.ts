@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { FIRST_PASS_MAX_OUTPUT_TOKENS } from "@/lib/print-watch/read";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // Source pin (no DOM/AI harness): the first-pass read must pass an explicit
 // output cap to generateObjectForFeature. The Anthropic provider defaults an
@@ -11,8 +12,8 @@ describe("print-watch first-pass read output cap", () => {
   const src = fs.readFileSync(path.join(process.cwd(), "lib/print-watch/read.ts"), "utf8");
 
   it("passes FIRST_PASS_MAX_OUTPUT_TOKENS to the printWatchFirstPass generateObject call", () => {
-    const call = src.slice(src.indexOf('generateObjectForFeature("printWatchFirstPass"'));
-    const body = call.slice(0, call.indexOf("} as never)"));
+    const call = src.slice(anchorIndex(src, 'generateObjectForFeature("printWatchFirstPass"'));
+    const body = call.slice(0, anchorIndex(call, "} as never)"));
     expect(body).toContain("maxOutputTokens: FIRST_PASS_MAX_OUTPUT_TOKENS");
   });
 

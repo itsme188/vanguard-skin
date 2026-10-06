@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { withPreservedParams } from "@/app/dashboard/components/TabDropdown";
 import { tabs } from "@/app/dashboard/components/nav-tabs";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // Regression covered (2026-08-20 code review of b687a6e): the original
 // withCurrentScope hardcoded 'scope' as a param every tab's dropdown should
@@ -94,9 +95,9 @@ describe("Analysis Workspace scope-pill hrefs (analysis/page.tsx)", () => {
   );
 
   function scopePillBlock(src: string): string {
-    const start = src.indexOf("SCOPE_PILLS.map((s) =>");
+    const start = anchorIndex(src, "SCOPE_PILLS.map((s) =>");
     expect(start, "SCOPE_PILLS.map(...) block not found in analysis/page.tsx").toBeGreaterThan(-1);
-    const end = src.indexOf("</div>", start);
+    const end = anchorIndex(src, "</div>", start);
     return src.slice(start, end);
   }
 

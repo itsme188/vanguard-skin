@@ -7,6 +7,7 @@ import {
   MACRO_THEMES_SUBJECT,
   NARRATIVE_SUBJECT,
 } from "@/app/dashboard/components/analysis/refresh-failure-message";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // This repo has no React component-rendering harness (no @testing-library/react,
 // no jsdom environment in vitest.config.ts — see the precedent note in
@@ -207,7 +208,7 @@ describe("MacroOverlayCard wiring", () => {
   it("renders an expected state (the rate limit) neutrally, not in the loss colour", () => {
     // The failure box is shared by both cases; only a real breakage may reach
     // the down/loss treatment.
-    const box = source.slice(source.indexOf("!data.success && !data.underThreshold"));
+    const box = source.slice(anchorIndex(source, "!data.success && !data.underThreshold"));
     expect(box).toMatch(/data\.expected\s*\?\s*["']status["']\s*:\s*["']alert["']/);
     expect(box).toMatch(/data\.expected\s*\?\s*["']border-edge\/40["']\s*:\s*["']border-down\/40["']/);
     expect(box).toMatch(/data\.expected\s*\?\s*["']text-ink-faint["']\s*:\s*["']text-down["']/);

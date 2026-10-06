@@ -7,6 +7,7 @@ import {
   insertBeforeAlsoCovered,
 } from "@/lib/digest/thin-coverage";
 import type { CompanyBucket, ArticleLike } from "@/lib/digest/group-by-company";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 function art(symbols: string[] | null, over: Partial<ArticleLike> = {}): ArticleLike {
   return {
@@ -133,7 +134,7 @@ describe("insertBeforeAlsoCovered", () => {
   it("inserts the block immediately before ## Also covered", () => {
     const md = "## The Session\n\nX.\n\n## Also covered\n\nY.";
     const out = insertBeforeAlsoCovered(md, "BLOCK");
-    expect(out.indexOf("BLOCK")).toBeLessThan(out.indexOf("## Also covered"));
+    expect(anchorIndex(out, "BLOCK")).toBeLessThan(anchorIndex(out, "## Also covered"));
     expect(out).toContain("BLOCK\n\n## Also covered");
   });
 

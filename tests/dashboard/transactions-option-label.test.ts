@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 /**
  * QA security-detail-transactions--raw-occ-fallback-beside-formatted-option-rows.
@@ -29,7 +30,7 @@ describe("TransactionsSection OptionLabel falls back to parsing the symbol", () 
   });
 
   it("derives the rendered fields through it instead of reading the columns raw", () => {
-    const start = source.indexOf("function OptionLabel(");
+    const start = anchorIndex(source, "function OptionLabel(");
     expect(start, "OptionLabel not found").toBeGreaterThan(-1);
     const body = source.slice(start);
     expect(body).toMatch(/resolveOptionFields\(/);

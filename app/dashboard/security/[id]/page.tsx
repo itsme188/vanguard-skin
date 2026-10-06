@@ -31,6 +31,8 @@ import { Money, Pct, Shares, PrivateText, QuantityUnit } from "@/lib/privacy/com
 import { computeLotCoverageGaps } from "@/lib/compute/lot-coverage";
 import { daysToExpiry, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import type { EarningsTranscript } from "@/lib/types";
+import { resolveOptionUnderlying } from "@/lib/queries/securities";
+import { getNotesForSecurity } from "@/lib/queries/notes";
 import { hasDeskNote, isFilingRow, kindLabel } from "@/lib/transcripts/presentation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { EarningsConflictMarker } from "../../components/calendar/EarningsConflictMarker";
@@ -207,6 +209,18 @@ export default async function SecurityDetailPage(props: {
   // left as an unexplained contradiction between the two sections below.
   const lotCoverageGaps = computeLotCoverageGaps(positions, openTaxLots);
 
+  // Option hubs: notes are filed under the UNDERLYING (the composer has no
+  // option picker). Resolve it through the existing option→underlying relation.
+  const isOptionHub = (security.security_type ?? "").toLowerCase() === "option";
+  const optionUnderlying = isOptionHub ? resolveOptionUnderlying(db, securityId) : null;
+  const underlyingNotes = optionUnderlying ? getNotesForSecurity(db, optionUnderlying.id) : [];
+  const shownNotes = [...notes, ...underlyingNotes];
+  const noteComposerHref = isOptionHub
+    ? optionUnderlying
+      ? `/dashboard/research?view=notes&type=trade_thesis&symbol=${encodeURIComponent(optionUnderlying.symbol)}&security=${optionUnderlying.id}&via=option`
+      : `/dashboard/research?view=notes&type=trade_thesis&via=option`
+    : `/dashboard/research?view=notes&type=trade_thesis&symbol=${encodeURIComponent(security.symbol)}&security=${securityId}`;
+
   const watched = isOnWatchlist(db, securityId);
   const watchlistItem = watched ? getWatchlistItem(db, securityId) : null;
 
@@ -269,7 +283,7 @@ export default async function SecurityDetailPage(props: {
             A bare ?security= link saved orphaned journal notes with
             security_id NULL — 4-time QA ledger finding. */}
         <Link
-          href={`/dashboard/research?view=notes&type=trade_thesis&symbol=${encodeURIComponent(security.symbol)}&security=${securityId}`}
+          href={noteComposerHref}
           className={ACTION_BUTTON_CLASS}
         >
           + Note
@@ -452,7 +466,7 @@ export default async function SecurityDetailPage(props: {
           title={`Open Tax Lots · ${openTaxLots.length}`}
           action={
             <Link href={`/dashboard/tax-lots?security=${securityId}`} className={ACTION_LINK_CLASS}>
-              View all →
+              Open in Tax Lots →
             </Link>
           }
         >
@@ -734,13 +748,17 @@ export default async function SecurityDetailPage(props: {
 
 
       {/* Notes & Theses */}
-      {notes.length > 0 && (
+      {shownNotes.length > 0 && (
         <Section
-          title={`Notes · ${notes.length}`}
+          title={
+            underlyingNotes.length > 0 && optionUnderlying
+              ? `Notes · ${shownNotes.length} (includes ${optionUnderlying.symbol} notes, filed under the underlying)`
+              : `Notes · ${shownNotes.length}`
+          }
           action={
             <span className="flex items-center gap-4">
               <Link
-                href={`/dashboard/research?view=notes&type=trade_thesis&symbol=${encodeURIComponent(security.symbol)}`}
+                href={noteComposerHref}
                 className={ACTION_LINK_CLASS}
               >
                 + Add note
@@ -752,7 +770,7 @@ export default async function SecurityDetailPage(props: {
           }
         >
           <div>
-            {notes.slice(0, 5).map((note, idx) => (
+            {shownNotes.slice(0, 5).map((note, idx) => (
               <div
                 key={note.id}
                 className={`px-5 py-3.5 ${idx === 0 ? "" : "border-t border-edge"}`}
@@ -954,7 +972,7 @@ export default async function SecurityDetailPage(props: {
       {positions.length === 0 &&
         openTaxLots.length === 0 &&
         recentTransactions.length === 0 &&
-        notes.length === 0 && (
+        shownNotes.length === 0 && (
           <div className="rounded-xl border border-dashed border-edge p-8 text-center">
             <p className="text-sm text-ink-dim">
               No portfolio data for {security.symbol}. Import holdings or

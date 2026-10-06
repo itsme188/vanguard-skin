@@ -66,6 +66,23 @@ function bodyRepeatsLead({ lead, body }: LeadBanner): boolean {
   return body.startsWith(leadCore);
 }
 
+/**
+ * Banner paragraphs with NO bold lead span (e.g. TradeReviewView's
+ * pairingsStale banner) are invisible to extractLeadBanners. Collect their
+ * text so a sentence repeated inside the same paragraph is still caught.
+ */
+function extractLeadlessBannerSentences(src: string): string[][] {
+  const out: string[][] = [];
+  const pRegex = /<p className="text-xs text-ink-dim leading-5">([\s\S]*?)<\/p>/g;
+  let m: RegExpExecArray | null;
+  while ((m = pRegex.exec(src))) {
+    if (/<span className="text-gold-ink font-medium">/.test(m[1])) continue;
+    const text = m[1].replace(/\{"\s*"\}/g, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    out.push(text.split(/(?<=[.!?])\s+/).map((x) => x.trim().toLowerCase()).filter(Boolean));
+  }
+  return out;
+}
+
 describe("pending-recompute banners do not repeat their lead sentence", () => {
   it("self-test: flags a body that restates the lead, clears a body that continues it", () => {
     const repeatedParagraph = `<p className="text-xs text-ink-dim leading-5">
@@ -105,4 +122,20 @@ describe("pending-recompute banners do not repeat their lead sentence", () => {
       }
     });
   }
+
+  it("TradeReviewView's lead-less banners (pairingsStale) never repeat a sentence", () => {
+    const src = fs.readFileSync(
+      path.join(REPO_ROOT, "app/dashboard/components/TradeReviewView.tsx"),
+      "utf8",
+    );
+    const leadless = extractLeadlessBannerSentences(src);
+    expect(leadless.length, "expected at least one lead-less banner paragraph").toBeGreaterThan(0);
+    expect(
+      leadless.some((s) => s.join(" ").includes("outdated or unresolved trade pairings")),
+      "the pairingsStale banner paragraph was not found by the extractor",
+    ).toBe(true);
+    for (const sentences of leadless) {
+      expect(new Set(sentences).size, `repeated sentence in: ${sentences.join(" | ")}`).toBe(sentences.length);
+    }
+  });
 });

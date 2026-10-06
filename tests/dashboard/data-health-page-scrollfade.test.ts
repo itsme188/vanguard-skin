@@ -20,6 +20,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const DATA_HEALTH_PAGE_PATH = path.join(
   process.cwd(),
@@ -32,7 +33,7 @@ const DATA_HEALTH_PAGE_PATH = path.join(
  * wrapper chain above the table and the table itself are in view.
  */
 function sectionForHeading(src: string, heading: string): string {
-  const headingIdx = src.indexOf(heading);
+  const headingIdx = anchorIndex(src, heading);
   if (headingIdx === -1) {
     throw new Error(`heading not found in data-health/page.tsx: ${heading}`);
   }
@@ -40,7 +41,7 @@ function sectionForHeading(src: string, heading: string): string {
   if (sectionStartIdx === -1) {
     throw new Error(`no opening <section> found before heading: ${heading}`);
   }
-  const sectionEndIdx = src.indexOf("</section>", headingIdx);
+  const sectionEndIdx = anchorIndex(src, "</section>", headingIdx);
   if (sectionEndIdx === -1) {
     throw new Error(`no closing </section> found after heading: ${heading}`);
   }
@@ -75,7 +76,7 @@ describe("data-health page wraps its two tables in ScrollFade", () => {
   for (const heading of ["Unmapped sector ETFs", "Sector disagreements"]) {
     it(`the ${heading} table sits inside a <ScrollFade> wrapper`, () => {
       const block = sectionForHeading(source, heading);
-      const tableIdx = block.indexOf("<table");
+      const tableIdx = anchorIndex(block, "<table");
       expect(tableIdx).toBeGreaterThan(-1);
       expect(block.slice(tableIdx)).toContain("</ScrollFade>");
       // ScrollFade must be the element IMMEDIATELY enclosing the table — one
@@ -85,7 +86,7 @@ describe("data-health page wraps its two tables in ScrollFade", () => {
 
     it(`no overflow-hidden box directly encloses the ${heading} table`, () => {
       const block = sectionForHeading(source, heading);
-      const tableIdx = block.indexOf("<table");
+      const tableIdx = anchorIndex(block, "<table");
       expect(tableIdx).toBeGreaterThan(-1);
       expect(innermostOpenTagBefore(block, tableIdx)).not.toContain(
         "overflow-hidden",

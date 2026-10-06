@@ -21,6 +21,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const DATA_HEALTH_VIEW_PATH = path.join(
   process.cwd(),
@@ -33,11 +34,11 @@ const DATA_HEALTH_VIEW_PATH = path.join(
  * isolation rather than just "somewhere in the file".
  */
 function sectionAfterHeading(src: string, heading: string): string {
-  const headingIdx = src.indexOf(heading);
+  const headingIdx = anchorIndex(src, heading);
   if (headingIdx === -1) {
     throw new Error(`heading not found in DataHealthView.tsx: ${heading}`);
   }
-  const sectionEndIdx = src.indexOf("</section>", headingIdx);
+  const sectionEndIdx = anchorIndex(src, "</section>", headingIdx);
   if (sectionEndIdx === -1) {
     throw new Error(`no closing </section> found after heading: ${heading}`);
   }
@@ -55,7 +56,7 @@ describe("DataHealthView wraps its horizontally-scrollable tables in ScrollFade"
 
   it("the Price Freshness table sits inside a <ScrollFade> wrapper", () => {
     const block = sectionAfterHeading(source, "Price Freshness");
-    const tableIdx = block.indexOf("<table");
+    const tableIdx = anchorIndex(block, "<table");
     expect(tableIdx).toBeGreaterThan(-1);
     expect(block.slice(0, tableIdx)).toMatch(/<ScrollFade[^>]*>/);
     expect(block.slice(tableIdx)).toContain("</ScrollFade>");
@@ -63,7 +64,7 @@ describe("DataHealthView wraps its horizontally-scrollable tables in ScrollFade"
 
   it("the Cross-Source Discrepancies table sits inside a <ScrollFade> wrapper", () => {
     const block = sectionAfterHeading(source, "Cross-Source Discrepancies");
-    const tableIdx = block.indexOf("<table");
+    const tableIdx = anchorIndex(block, "<table");
     expect(tableIdx).toBeGreaterThan(-1);
     expect(block.slice(0, tableIdx)).toMatch(/<ScrollFade[^>]*>/);
     expect(block.slice(tableIdx)).toContain("</ScrollFade>");
@@ -71,7 +72,7 @@ describe("DataHealthView wraps its horizontally-scrollable tables in ScrollFade"
 
   it("the Snapshot Reconciliation table sits inside a <ScrollFade> wrapper", () => {
     const block = sectionAfterHeading(source, "Snapshot Reconciliation");
-    const tableIdx = block.indexOf("<table");
+    const tableIdx = anchorIndex(block, "<table");
     expect(tableIdx).toBeGreaterThan(-1);
     expect(block.slice(0, tableIdx)).toMatch(/<ScrollFade[^>]*>/);
     expect(block.slice(tableIdx)).toContain("</ScrollFade>");

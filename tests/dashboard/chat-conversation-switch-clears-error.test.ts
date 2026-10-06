@@ -12,6 +12,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const src = readFileSync(
   path.join(process.cwd(), "app/dashboard/components/ChatInterface.tsx"),
@@ -19,7 +20,7 @@ const src = readFileSync(
 );
 
 function sliceFrom(marker: string, length = 900): string {
-  const i = src.indexOf(marker);
+  const i = anchorIndex(src, marker);
   expect(i, `${marker} not found`).toBeGreaterThan(-1);
   return src.slice(i, i + length);
 }

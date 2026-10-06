@@ -28,6 +28,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const pageSrc = () => readFileSync("app/dashboard/charts/page.tsx", "utf8");
 const viewSrc = () =>
@@ -105,8 +106,8 @@ describe("charts landing — rule 1 (client): last viewed wins over the server's
   it("writes the last-viewed id from the existing select handler", () => {
     const src = viewSrc();
     const handleSelectBody = src.slice(
-      src.indexOf("const handleSelect ="),
-      src.indexOf("const handleSelect =") + 400,
+      anchorIndex(src, "const handleSelect ="),
+      anchorIndex(src, "const handleSelect =") + 400,
     );
     expect(handleSelectBody).toContain("writeLastChartSymbolId(secId);");
   });
@@ -114,9 +115,9 @@ describe("charts landing — rule 1 (client): last viewed wins over the server's
   it("reads the last-viewed id inside a useEffect, gated on no explicit ?id=, with an empty dep array (mount-only)", () => {
     const src = viewSrc();
     expect(importsFrom(src, "react", ["useEffect", "useState"])).toBe(true);
-    const effectStart = src.indexOf("useEffect(() => {");
+    const effectStart = anchorIndex(src, "useEffect(() => {");
     expect(effectStart).toBeGreaterThan(-1);
-    const effectBody = src.slice(effectStart, src.indexOf("}, []);", effectStart) + 10);
+    const effectBody = src.slice(effectStart, anchorIndex(src, "}, []);", effectStart) + 10);
     expect(effectBody).toContain("if (hasExplicitId) return;");
     expect(effectBody).toContain("readLastChartSymbolId()");
     expect(effectBody).toContain("router.replace(`/dashboard/charts?id=${lastId}`");
@@ -126,8 +127,8 @@ describe("charts landing — rule 1 (client): last viewed wins over the server's
 
   it("the restore is UNCONDITIONAL on a stored id — it overrides the server default rather than deferring to it", () => {
     const src = viewSrc();
-    const effectStart = src.indexOf("useEffect(() => {");
-    const effectBody = src.slice(effectStart, src.indexOf("}, []);", effectStart) + 10);
+    const effectStart = anchorIndex(src, "useEffect(() => {");
+    const effectBody = src.slice(effectStart, anchorIndex(src, "}, []);", effectStart) + 10);
     // The ONLY early returns are: an explicit ?id=, no/identical stored id,
     // and a stored id that no longer resolves to a listed security. Nothing
     // consults whether the server picked a held position, which is what
@@ -140,7 +141,7 @@ describe("charts landing — rule 1 (client): last viewed wins over the server's
 
   it("never reads localStorage during render — the read only happens inside the useEffect body", () => {
     const src = viewSrc();
-    const beforeEffect = src.slice(0, src.indexOf("useEffect(() => {"));
+    const beforeEffect = src.slice(0, anchorIndex(src, "useEffect(() => {"));
     expect(beforeEffect).not.toContain("readLastChartSymbolId(");
   });
 
@@ -153,9 +154,9 @@ describe("charts landing — rule 1 (client): last viewed wins over the server's
 describe("charts landing — the ruled order is documented, in order, where the rule lives", () => {
   it("last-symbol.ts states last-viewed FIRST and largest-held SECOND", () => {
     const doc = lastSymbolSrc();
-    const lastViewedIdx = doc.indexOf("1. the LAST VIEWED symbol");
-    const heldIdx = doc.indexOf("2. else the largest currently-held position");
-    const alphaIdx = doc.indexOf("3. else alphabetical-first");
+    const lastViewedIdx = anchorIndex(doc, "1. the LAST VIEWED symbol");
+    const heldIdx = anchorIndex(doc, "2. else the largest currently-held position");
+    const alphaIdx = anchorIndex(doc, "3. else alphabetical-first");
     expect(lastViewedIdx).toBeGreaterThan(-1);
     expect(heldIdx).toBeGreaterThan(lastViewedIdx);
     expect(alphaIdx).toBeGreaterThan(heldIdx);

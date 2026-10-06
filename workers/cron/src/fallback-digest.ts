@@ -27,7 +27,7 @@ import {
 } from "./gmail";
 import { sendEmail } from "./resend";
 import { loadLatestSnapshot, type Snapshot, type RecentArticleMeta } from "./state";
-import { generateWithFailover } from "./ai";
+import { generateWithFailover, structuredOutputProviderOptions } from "./ai";
 import { briefingToHtml } from "./html";
 import { todayET } from "./dst";
 import { sourceKind, editionLabel } from "./editions";
@@ -374,13 +374,15 @@ ${text}`;
     env,
     "fallbackNewsletterProcessing",
     catalog,
-    (model) =>
+    (model, mode) =>
       generateObject({
         model,
         maxOutputTokens: 2048,
         schema: ARTICLE_SCHEMA,
         prompt,
+        providerOptions: structuredOutputProviderOptions(mode),
       }),
+    { structured: true },
   );
 
   return {

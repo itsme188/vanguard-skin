@@ -924,3 +924,36 @@ describe("runReconciliation — roll-up match mode", () => {
     expect(runReconciliation(db, config, ROLLUP).pass).toBe(true);
   });
 });
+
+describe("runReconciliation — roll-up: no netting of offsetting row errors", () => {
+  const day = "2026-04-02";
+  function seedAB(db: Database.Database, a: [number, number], b: [number, number]): void {
+    const base = { accountId: ACCOUNT_ID, symbol: "NETT", saleDate: day };
+    seedDisposal(db, { ...base, acquisitionDate: "2024-01-01", quantity: 1, proceeds: a[0], basis: 100, gain: a[0] - 100 });
+    seedDisposal(db, { ...base, acquisitionDate: "2024-02-01", quantity: 1, proceeds: b[0], basis: 200, gain: b[0] - 200 });
+  }
+
+  it("same row count with offsetting differences fails, is listed, and yields no coverage", () => {
+    const db = createTestDb();
+    seedAB(db, [120, 0], [180, 0]);
+    const config = entryOf("net-offset", [row("NETT", day, 1, 110, 100), row("NETT", day, 1, 190, 200)]);
+    const result = runReconciliation(db, config, ROLLUP);
+    expect(result.pass).toBe(false);
+    expect(result.coverage).toEqual([]);
+    expect(result.detailLines.some((l) => l.includes("same row count but rows differ"))).toBe(true);
+  });
+
+  it("the same true match passes regardless of row order", () => {
+    const db = createTestDb();
+    seedAB(db, [110, 0], [190, 0]);
+    const config = entryOf("net-order", [row("NETT", day, 1, 190, 200), row("NETT", day, 1, 110, 100)]);
+    expect(runReconciliation(db, config, ROLLUP).pass).toBe(true);
+  });
+
+  it("one broker row vs three engine lot rows with equal totals still passes", () => {
+    const db = createTestDb();
+    seedMultiLotDay(db);
+    const config = entryOf("net-1v3", [row("ROLL", "2026-04-01", 150, 10500, 8300)]);
+    expect(runReconciliation(db, config, ROLLUP).pass).toBe(true);
+  });
+});

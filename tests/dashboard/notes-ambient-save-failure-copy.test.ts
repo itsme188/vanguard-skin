@@ -26,13 +26,14 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { describeNoteSaveFailure } from "@/lib/notes/save-failure-copy";
+import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const src = readFileSync("app/dashboard/components/NotesAmbient.tsx", "utf8");
 
 function extractHandleSaveToNotes(): string {
-  const start = src.indexOf("const handleSaveToNotes = useCallback");
+  const start = anchorIndex(src, "const handleSaveToNotes = useCallback");
   expect(start).toBeGreaterThan(-1);
-  const end = src.indexOf("const handleClear = useCallback", start + 1);
+  const end = anchorIndex(src, "const handleClear = useCallback", start + 1);
   expect(end).toBeGreaterThan(start);
   return src.slice(start, end);
 }
@@ -98,7 +99,7 @@ describe("footer layout survives a long error message without squeezing the Clea
   it("the error row wraps long text instead of forcing it onto one line", () => {
     const errorRow = src.slice(
       src.search(/saveState\s*===\s*"error"\s*&&\s*\(/),
-      src.indexOf("errorMsg", src.search(/saveState\s*===\s*"error"\s*&&\s*\(/)) + 200,
+      anchorIndex(src, "errorMsg", src.search(/saveState\s*===\s*"error"\s*&&\s*\(/)) + 200,
     );
     expect(errorRow).toMatch(/break-words/);
   });
@@ -120,25 +121,25 @@ describe("a sticky save error clears once the user changes the draft again", () 
   // repo's react-hooks/set-state-in-effect lint rule).
 
   it("defines a reset that only downgrades an \"error\" saveState (never clobbers saving/saved) and always clears errorMsg", () => {
-    const start = src.indexOf("clearStickyError");
+    const start = anchorIndex(src, "clearStickyError");
     expect(start).toBeGreaterThan(-1);
-    const block = src.slice(start, src.indexOf("handleSaveToNotes", start));
+    const block = src.slice(start, anchorIndex(src, "handleSaveToNotes", start));
     expect(block).toMatch(/prev\s*===\s*"error"\s*\?\s*"idle"\s*:\s*prev/);
     expect(block).toMatch(/setErrorMsg\(null\)/);
   });
 
   it("the textarea's onChange calls the reset alongside setDraft", () => {
-    const onChangeStart = src.indexOf("onChange={(e) => {");
+    const onChangeStart = anchorIndex(src, "onChange={(e) => {");
     expect(onChangeStart).toBeGreaterThan(-1);
-    const onChangeBlock = src.slice(onChangeStart, src.indexOf("}}", onChangeStart));
+    const onChangeBlock = src.slice(onChangeStart, anchorIndex(src, "}}", onChangeStart));
     expect(onChangeBlock).toMatch(/setDraft\(e\.target\.value\)/);
     expect(onChangeBlock).toMatch(/clearStickyError\(\)/);
   });
 
   it("handleClear also calls the reset — clearing the draft is itself a draft change", () => {
-    const start = src.indexOf("const handleClear = useCallback");
+    const start = anchorIndex(src, "const handleClear = useCallback");
     expect(start).toBeGreaterThan(-1);
-    const end = src.indexOf("// Closed: render nothing", start);
+    const end = anchorIndex(src, "// Closed: render nothing", start);
     expect(end).toBeGreaterThan(start);
     const fn = src.slice(start, end);
     expect(fn).toMatch(/setDraft\(""\)/);
@@ -172,8 +173,8 @@ describe("handleSaveToNotes routes every failure through the helper", () => {
 
   it("keeps the draft on failure — the reset only happens after a success", () => {
     const fn = extractHandleSaveToNotes();
-    const firstFailure = fn.indexOf("describeNoteSaveFailure");
-    const reset = fn.indexOf('setDraft("")');
+    const firstFailure = anchorIndex(fn, "describeNoteSaveFailure");
+    const reset = anchorIndex(fn, 'setDraft("")');
     expect(firstFailure).toBeGreaterThan(-1);
     expect(reset).toBeGreaterThan(firstFailure);
     // Every failure branch returns before reaching the reset.

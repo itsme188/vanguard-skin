@@ -43,8 +43,10 @@ describe("alerts page — ?view= parsing is single-sourced", () => {
   });
 
   it("never re-declares StreamFilter or FILTER_OPTIONS locally (single-sourced, not a parallel copy)", () => {
-    expect(src).not.toMatch(/^type StreamFilter\s*=/m);
-    expect(src).not.toMatch(/^const FILTER_OPTIONS\s*[:=]/m);
+    // Not anchored at column 0: an indented, exported or renamed-by-keyword
+    // local copy must not escape the pin.
+    expect(src).not.toMatch(/\btype\s+StreamFilter\s*=/);
+    expect(src).not.toMatch(/\b(?:const|let|var)\s+FILTER_OPTIONS\b/);
   });
 
   it("derives initialFilter via parseAlertsViewParam, not a hand-rolled ternary", () => {
