@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
@@ -11,6 +11,7 @@ import {
 } from "@/lib/compute/scenario-recipes";
 import { computeScenario, PRESET_SCENARIOS } from "@/lib/compute/scenarios";
 import { repriceOptionUnderShock } from "@/lib/compute/option-reprice";
+import { callPrice, yearsToExpiry } from "@/lib/compute/options-greeks";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
@@ -386,22 +387,61 @@ describe("computeRecipeScenario", () => {
       expect(aiCapex.positionImpacts.find((p) => p.symbol === symbol)).toBeUndefined();
     });
 
-    it("an option expiring TODAY stays in the scenario (live through end of day) and is never silently dropped", () => {
-      const symbol = seedOption(24, todayET());
+    // Expiry-day behaviour depends on the ET wall clock (16:00 close), so
+    // these two freeze ONLY Date (timers stay real) and restore it after.
+    describe("an option expiring today, on a frozen clock", () => {
+      const FROZEN_DAY = "2026-06-15"; // a Monday; Eastern is UTC-4
+      afterEach(() => vi.useRealTimers());
 
-      const result = computeRecipeScenario(db, findRecipe("ai_capex_pause")!);
-      const opt = result.positionImpacts.find((p) => p.symbol === symbol);
-      expect(opt).toBeDefined();
-      // After the 16:00 ET close the shared pricing rule treats an
-      // expiry-day contract as expired, so the row is listed as unmodelled
-      // (zero P&L, counted) instead of being priced; before the close it is
-      // repriced. Either way it is never dropped and never given a guess.
-      if (opt!.unmodelledReason) {
-        expect(opt!.changePercent).toBe(0);
-        expect(result.optionsUnmodelled.count).toBeGreaterThan(0);
-      } else {
-        expect(opt!.changePercent).not.toBe(0);
+      function seedExpiryDayCall(frozenNow: Date) {
+        // Price the contract at a round 60% volatility with the hours left
+        // before the close, so its implied volatility is solvable.
+        const T = yearsToExpiry(FROZEN_DAY, FROZEN_DAY, frozenNow);
+        const price = Number(callPrice(1000, 1000, T, getRiskFreeRate(db), 0.6).toFixed(4));
+        const symbol = "NVDA  260615C01000000";
+        db.prepare(
+          `INSERT INTO securities (id, symbol, security_type, underlying_symbol, strike_price, expiration_date, option_type, multiplier)
+           VALUES (24, ?, 'Option', 'NVDA', 1000, ?, 'CALL', 100)`
+        ).run(symbol, FROZEN_DAY);
+        // A price dated the frozen day so it is the option's latest close.
+        db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (24, ?, ?, 'tws')`).run(FROZEN_DAY, price);
+        db.prepare(
+          `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 24, '2026-04-30', 2, 'h-opt-24')`
+        ).run();
+        return symbol;
       }
+
+      it("before the 16:00 ET close it is repriced from its own implied volatility", () => {
+        const now = new Date("2026-06-15T19:00:00Z"); // 15:00 Eastern
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(now);
+        const symbol = seedExpiryDayCall(now);
+
+        const result = computeRecipeScenario(db, findRecipe("ai_capex_pause")!);
+        const opt = result.positionImpacts.find((p) => p.symbol === symbol)!;
+        expect(opt).toBeDefined();
+        expect(opt.unmodelledReason).toBeUndefined();
+        expect(opt.ivSource).toBe("own-price");
+        expect(opt.underlyingMove).toBeCloseTo(-0.21, 3);
+        expect(Math.abs(opt.estimatedChange)).toBeGreaterThan(0);
+        expect(result.optionsUnmodelled.count).toBe(0);
+      });
+
+      it("after the close it is listed as expired and unmodelled, never guessed", () => {
+        const now = new Date("2026-06-15T21:00:00Z"); // 17:00 Eastern
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(now);
+        // Priced as it would have been at 15:00 so only the clock differs.
+        const symbol = seedExpiryDayCall(new Date("2026-06-15T19:00:00Z"));
+
+        const result = computeRecipeScenario(db, findRecipe("ai_capex_pause")!);
+        const opt = result.positionImpacts.find((p) => p.symbol === symbol)!;
+        expect(opt).toBeDefined();
+        expect(opt.unmodelledReason).toBe("expired");
+        expect(opt.changePercent).toBe(0);
+        expect(Math.abs(opt.estimatedChange)).toBe(0);
+        expect(result.optionsUnmodelled.count).toBe(1);
+      });
     });
 
     it("legacy computeScenario also excludes an option expired yesterday", () => {
