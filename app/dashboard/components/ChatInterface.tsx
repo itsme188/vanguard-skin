@@ -400,6 +400,8 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
 
   // After streaming ends, refresh conversation list to pick up new/updated conversations
   const prevStatusRef = useRef(status);
+  // Wall-clock ms when the in-flight turn was submitted (send or Retry).
+  const sendStartedAtRef = useRef<number | null>(null);
   useEffect(() => {
     const wasStreaming = prevStatusRef.current === "streaming" || prevStatusRef.current === "submitted";
     const doneNow = status === "ready" || status === "error";
@@ -408,8 +410,16 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
       (async () => {
         const convs = await fetchConversations();
         if (!conversationId && convs.length > 0) {
-          // The server created a conversation — find the most recent one
-          setConversationId(convs[0].id);
+          // Adopt convs[0] only if it was created by THIS turn. A first-turn
+          // failure before the server created a row (network error, 5xx) leaves
+          // convs[0] as an unrelated old thread; adopting it would relabel the
+          // chat and make Retry save into the old conversation. created_at is
+          // SQLite UTC 'YYYY-MM-DD HH:MM:SS'; allow 5s of clock skew.
+          const startedAt = sendStartedAtRef.current;
+          const createdMs = Date.parse(`${convs[0].created_at.replace(" ", "T")}Z`);
+          if (startedAt !== null && Number.isFinite(createdMs) && createdMs >= startedAt - 5000) {
+            setConversationId(convs[0].id);
+          }
         }
       })();
     }
@@ -438,6 +448,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
 
     const text = inputText.trim();
     setInputText("");
+    sendStartedAtRef.current = Date.now();
     await sendMessage({ text }, { body: requestBody });
   }
 
@@ -658,7 +669,10 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         {status === "error" && messages.length > 0 && (
           <div className="flex justify-start">
             <button
-              onClick={() => regenerate({ body: requestBody })}
+              onClick={() => {
+                sendStartedAtRef.current = Date.now();
+                void regenerate({ body: requestBody });
+              }}
               className="px-3 py-1.5 text-xs text-ink-dim border border-edge rounded-lg hover:text-ink hover:border-edge-strong transition-[color,border-color] focus-ring"
             >
               Retry

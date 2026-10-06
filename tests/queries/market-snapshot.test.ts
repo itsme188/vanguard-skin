@@ -283,3 +283,40 @@ describe("parseYahooChart", () => {
     expect(parseYahooChart(chartFixture([], {}))).toBeNull();
   });
 });
+
+describe("getMarketSnapshot universe coverage", () => {
+  it("measures every held name (beyond the 50 largest) and short positions", async () => {
+    const spyId = seedSecurity("SPY", "SPDR S&P 500 ETF");
+    seedPrice(spyId, "2026-06-04", 600);
+    seedPrice(spyId, "2026-06-05", 585);
+    const acctId = seedAccount("Vanguard Taxable");
+    // 60 long holdings; SYM01 is the smallest by value (price 1) and the biggest mover.
+    for (let i = 1; i <= 60; i++) {
+      const sym = `SYM${String(i).padStart(2, "0")}`;
+      const id = seedSecurity(sym);
+      seedHolding(acctId, id, "2026-06-05");
+      const base = i === 1 ? 1 : 100 + i;
+      seedPrice(id, "2026-06-04", base);
+      seedPrice(id, "2026-06-05", i === 1 ? base * 1.5 : base * 1.01);
+    }
+    // A short position (negative quantity) with prices.
+    const shortId = seedSecurity("SHRT1");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, -50, '2026-06-05', 'test:short')`
+    ).run(acctId, shortId);
+    seedPrice(shortId, "2026-06-04", 200);
+    seedPrice(shortId, "2026-06-05", 210); // +5% price move (sign not flipped)
+
+    const fetchQuotes: QuoteFetcher = async () => null;
+    const snap = await getMarketSnapshot(db, { today: "2026-06-05", fetchQuotes });
+
+    const holdings = snap.moves.filter((m) => m.kind === "holding");
+    expect(holdings.length).toBe(61);
+    const small = snap.moves.find((m) => m.symbol === "SYM01");
+    expect(small?.pct).toBeCloseTo(50, 1);
+    const short = snap.moves.find((m) => m.symbol === "SHRT1");
+    expect(short?.pct).toBeCloseTo(5, 1);
+  });
+});
+

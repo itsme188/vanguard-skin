@@ -294,11 +294,18 @@ export async function syncCalendarForWeek(
     try {
       const macroInputs = await fetchMacroEvents(startDate, endDate, weekOf);
       if (macroInputs.length > 0) {
-        // Reschedule-orphan cleanup — un-enriched rows only. Enriched rows are
-        // historical records of releases that happened; the upsert below
-        // refreshes their sync-owned metadata without touching enrichment.
+        // Reschedule-orphan cleanup — un-enriched TRUE orphans only (rows this
+        // fetch no longer lists). Re-listed rows are refreshed in place by the
+        // upsert, which keeps their id and any stored consensus_estimate /
+        // previous_value this fetch omits. Enriched rows are historical
+        // records of releases that happened and are never deleted.
         macroNew = writeAndCountNewKeys(db, macroInputs, () => {
-          deleteUnenrichedEventsForWeek(db, weekOf, "claude_macro");
+          deleteUnenrichedEventsForWeek(
+            db,
+            weekOf,
+            "claude_macro",
+            macroInputs.map((e) => e.source_key),
+          );
           upsertCalendarEvents(db, macroInputs);
         });
       }
