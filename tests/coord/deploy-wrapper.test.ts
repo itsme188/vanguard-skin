@@ -160,11 +160,11 @@ async function makeFixture(): Promise<Fixture> {
   // --- fake chain ---
   writeExecutable(
     path.join(chainDir, "pack.sh"),
-    `#!/bin/bash\nset -u\necho pack > "${markersDir}/pack"\necho "fake pack"\nexit 0\n`,
+    `#!/bin/bash\nset -u\necho pack > "${markersDir}/pack"\necho pack >> "${root}/order.log"\necho "fake pack"\nexit 0\n`,
   );
   writeExecutable(
     path.join(chainDir, "gate.sh"),
-    `#!/bin/bash\nset -u\necho gate > "${markersDir}/gate"\necho "fake bundle gate"\nexit 0\n`,
+    `#!/bin/bash\nset -u\necho gate > "${markersDir}/gate"\necho gate >> "${root}/order.log"\necho "fake bundle gate"\nexit 0\n`,
   );
   const port = await freePort();
   writeExecutable(
@@ -173,6 +173,7 @@ async function makeFixture(): Promise<Fixture> {
       "#!/bin/bash",
       "set -u",
       `echo install > "${markersDir}/install"`,
+      `echo install >> "${root}/order.log"`,
       `mkdir -p "${path.dirname(buildIdFile(installedApp))}"`,
       `cat "${buildIdFile(builtApp)}" > "${buildIdFile(installedApp)}"`,
       `nohup python3 -m http.server ${port} --bind 127.0.0.1 --directory "${wwwDir}" > "${root}/listener.log" 2>&1 < /dev/null &`,
@@ -188,6 +189,7 @@ async function makeFixture(): Promise<Fixture> {
     path.join(root, "quit.sh"),
     [
       "#!/bin/bash",
+      `echo quit >> "${root}/order.log"`,
       `for f in "${listenerPidFile}" "${oldPidFile}"; do`,
       '  if [ -f "$f" ]; then',
       '    p=$(cat "$f" 2>/dev/null)',
@@ -220,6 +222,7 @@ async function makeFixture(): Promise<Fixture> {
       PD_DEPLOY_HEALTH_URL: `http://127.0.0.1:${port}/login`,
       PD_DEPLOY_HEALTH_MARKER: "Portfolio Desk",
       PD_DEPLOY_QUIT_CMD: `bash ${quitScript}`,
+      PD_DEPLOY_OPEN_CMD: `echo open >> "${root}/order.log"`,
       PD_DEPLOY_EXPECT_CMD_SUBSTR: "http.server",
       PD_DEPLOY_SKIP_CODESIGN: "1",
       PD_SKIP_FETCH: "1",
@@ -260,6 +263,11 @@ function runCoord(fx: Fixture, args: string[]): RunResult {
 
 function marker(fx: Fixture, name: string): boolean {
   return fs.existsSync(path.join(fx.markersDir, name));
+}
+
+function orderLog(fx: Fixture): string[] {
+  const file = path.join(fx.root, "order.log");
+  return fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
 }
 
 function heldLocks(fx: Fixture): string[] {
@@ -417,7 +425,7 @@ describe("scripts/coord/deploy.sh", () => {
     expect(heldLocks(fx)).toEqual([]);
   }, 30_000);
 
-  it("fails (70) before building when the old app is still listening after the quit", async () => {
+  it("fails (70) before installing when the old app is still listening after the quit", async () => {
     const fx = await makeFixture();
     await startOldListener(fx);
 
@@ -425,10 +433,60 @@ describe("scripts/coord/deploy.sh", () => {
 
     expect(result.status).toBe(70);
     expect(result.output).toMatch(/still listening/);
-    expect(marker(fx, "pack")).toBe(false);
-    expect(marker(fx, "gate")).toBe(false);
+    expect(marker(fx, "pack")).toBe(true);
+    expect(marker(fx, "gate")).toBe(true);
     expect(marker(fx, "install")).toBe(false);
+    // the old app is still up, so there is nothing to relaunch
+    expect(orderLog(fx)).not.toContain("open");
     expect(heldLocks(fx)).toEqual([]);
+  }, 30_000);
+
+  it("build failure never quits the app and exits with the build's code", async () => {
+    const fx = await makeFixture();
+    writeExecutable(path.join(fx.chainDir, "pack.sh"), "#!/bin/bash\necho pack >> \"" + fx.root + "/order.log\"\nexit 9\n");
+
+    const result = runDeploy(fx);
+
+    expect(result.status).toBe(9);
+    expect(orderLog(fx)).toEqual(["pack"]);
+    expect(result.output).not.toMatch(/RECOVERY/);
+    expect(heldLocks(fx)).toEqual([]);
+  }, 30_000);
+
+  it("bundle-gate failure never quits the app", async () => {
+    const fx = await makeFixture();
+    writeExecutable(path.join(fx.chainDir, "gate.sh"), "#!/bin/bash\necho gate >> \"" + fx.root + "/order.log\"\nexit 8\n");
+
+    const result = runDeploy(fx);
+
+    expect(result.status).toBe(8);
+    expect(orderLog(fx)).toEqual(["pack", "gate"]);
+    expect(heldLocks(fx)).toEqual([]);
+  }, 30_000);
+
+  it("install failure after the quit relaunches the installed app once and keeps the install's code", async () => {
+    const fx = await makeFixture();
+    writeExecutable(
+      path.join(fx.chainDir, "install.sh"),
+      "#!/bin/bash\necho install >> \"" + fx.root + "/order.log\"\nexit 6\n",
+    );
+
+    const result = runDeploy(fx);
+
+    expect(result.status).toBe(6);
+    expect(orderLog(fx)).toEqual(["pack", "gate", "quit", "install", "open"]);
+    expect(result.output).toMatch(/RECOVERY: relaunched the installed app after a failed step/);
+    expect(heldLocks(fx)).toEqual([]);
+  }, 30_000);
+
+  it("success path runs pack, verify, quit, install in that order with no relaunch", async () => {
+    const fx = await makeFixture();
+
+    const result = runDeploy(fx);
+
+    expect(result.status).toBe(0);
+    expect(orderLog(fx)).toEqual(["pack", "gate", "quit", "install"]);
+    expect(result.output).not.toMatch(/RECOVERY/);
   }, 30_000);
 
   it("runs the whole chain, post-verifies, records the deploy and checkpoints the task", async () => {
@@ -475,6 +533,7 @@ describe("scripts/coord/deploy.sh", () => {
     expect(marker(fx, "pack")).toBe(false);
     expect(marker(fx, "gate")).toBe(false);
     expect(marker(fx, "install")).toBe(false);
+    expect(orderLog(fx)).toEqual([]);
     expect(heldLocks(fx)).toEqual([]);
   }, 30_000);
 });

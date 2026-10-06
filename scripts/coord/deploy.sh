@@ -10,8 +10,8 @@
 #     2. node scripts/verify-bundle.js
 #     3. npm run electron:install
 # with named locks (so nobody lands or deploys underneath a running build),
-# a preflight that refuses to build the wrong tree, a pre-quit of the running
-# app, and a post-verify that proves the app on disk is the one that was
+# a preflight that refuses to build the wrong tree, a late pre-quit of the
+# running app (after build + gate, before install; relaunched on failure), and a post-verify that proves the app on disk is the one that was
 # just built and is actually answering.
 #
 # Design: docs/superpowers/specs/2026-09-08-agent-coordination-design.md
@@ -37,7 +37,7 @@
 #       commit, tracer leak, missing next binary, stale TODO.md, missing
 #       toolchain, missing test chain script)
 #   70  post-verify failure — including the pre-quit check (old app still
-#       listening), BUILD_ID mismatch, codesign, no new listener, health probe
+#       listening after the quit, before install), BUILD_ID mismatch, codesign, no new listener, health probe
 #   75  lock contention (propagated from coord.sh; the holder is printed)
 #   N   the failing chain step's own exit code (step 1, 2 or 3)
 #
@@ -61,6 +61,8 @@
 #   PD_DEPLOY_HEALTH_URL          health URL (default http://127.0.0.1:<port>/login)
 #   PD_DEPLOY_HEALTH_MARKER       string the health body must contain (default "Portfolio Desk")
 #   PD_DEPLOY_QUIT_CMD            shell command used to quit the running app
+#   PD_DEPLOY_OPEN_CMD            shell command used to relaunch the installed app on
+#                                 recovery (default: open "<installed app>")
 #   PD_DEPLOY_EXPECT_CMD_SUBSTR   substring the new listener's command must contain
 #                                 (default: the installed .app path)
 #   PD_DEPLOY_SKIP_CODESIGN=1     skip the codesign verification
@@ -176,8 +178,28 @@ cleanup() {
   LOCK_TOKENS=()
 }
 
+# If this script quit the app and then failed with nothing listening, put the
+# installed app back so a failed step never leaves the app down. Never runs
+# when the script did not quit anything (QUIT_DONE stays 0 in --dry-run and
+# on any failure before the pre-quit).
+QUIT_DONE=0
+recover_app() {
+  if [ "$QUIT_DONE" != "1" ]; then
+    return 0
+  fi
+  if [ -n "$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null)" ]; then
+    return 0
+  fi
+  if [ -d "$INSTALLED_APP" ]; then
+    log "RECOVERY: relaunched the installed app after a failed step"
+    sh -c "$OPEN_CMD" >> "$LOG" 2>&1 || true
+  else
+    log "RECOVERY: installed app missing at $INSTALLED_APP — cannot relaunch"
+  fi
+}
+
 # The trap must never clobber the exit code, and cleanup must never exit.
-trap 'rc=$?; cleanup; exit $rc' EXIT
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then recover_app; fi; cleanup; exit $rc' EXIT
 
 acquire_lock() {
   local name="$1"
@@ -280,6 +302,7 @@ resolve_seam PD_DEPLOY_PORT "3099"; PORT="$SEAM_VALUE"
 resolve_seam PD_DEPLOY_HEALTH_URL "http://127.0.0.1:$PORT/login"; HEALTH_URL="$SEAM_VALUE"
 resolve_seam PD_DEPLOY_HEALTH_MARKER "Portfolio Desk"; HEALTH_MARKER="$SEAM_VALUE"
 resolve_seam PD_DEPLOY_QUIT_CMD "osascript -e 'tell application \"$INSTALLED_APP\" to quit'"; QUIT_CMD="$SEAM_VALUE"
+resolve_seam PD_DEPLOY_OPEN_CMD "open \"$INSTALLED_APP\""; OPEN_CMD="$SEAM_VALUE"
 resolve_seam PD_DEPLOY_EXPECT_CMD_SUBSTR "$INSTALLED_APP"; EXPECT_CMD_SUBSTR="$SEAM_VALUE"
 resolve_seam PD_DEPLOY_SKIP_CODESIGN "0"; SKIP_CODESIGN="$SEAM_VALUE"
 resolve_seam PD_SKIP_FETCH "0"; SKIP_FETCH="$SEAM_VALUE"
@@ -483,6 +506,7 @@ log "PLAN commit=$HEAD_SHA"
 log "PLAN built-app=$BUILT_APP"
 log "PLAN installed-app=$INSTALLED_APP"
 log "PLAN health=$HEALTH_URL (port $PORT, marker \"$HEALTH_MARKER\")"
+log "PLAN order: pack -> verify-bundle -> pre-quit -> install -> post-verify"
 log "PLAN log=$LOG"
 
 if [ "$DRY_RUN" = "1" ]; then
@@ -491,41 +515,50 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Pre-quit (F11): the old app must be gone before the chain runs
+# Chain
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Pre-quit (F11): build first, quit late. The old app is only quit once the
+# build (step 1) and the bundle gate (step 2) have both succeeded, immediately
+# before install (step 3). A failed build therefore never takes the live app
+# down. The build does not need the app stopped: it reads only the repo and
+# writes only dist/.
 # ---------------------------------------------------------------------------
 
 listeners_on_port() {
   lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u | tr '\n' ' '
 }
 
-OLD_PIDS="$(listeners_on_port)"
-if [ -n "$OLD_PIDS" ]; then
-  log "PRE-QUIT: existing listener(s) on port $PORT: $OLD_PIDS"
-else
-  log "PRE-QUIT: no listener on port $PORT"
-fi
+OLD_PIDS=""
 
-sh -c "$QUIT_CMD" >> "$LOG" 2>&1 || true
-
-quit_waited=0
-while [ "$quit_waited" -lt "$QUIT_WAIT" ]; do
-  if [ -z "$(listeners_on_port)" ]; then
-    break
+pre_quit() {
+  OLD_PIDS="$(listeners_on_port)"
+  if [ -n "$OLD_PIDS" ]; then
+    log "PRE-QUIT: existing listener(s) on port $PORT: $OLD_PIDS"
+  else
+    log "PRE-QUIT: no listener on port $PORT"
   fi
-  sleep 1
-  quit_waited=$((quit_waited + 1))
-done
 
-STILL="$(listeners_on_port)"
-if [ -n "$STILL" ]; then
-  log_err "POST-VERIFY FAIL: old app still listening on port $PORT (pid $STILL) after ${QUIT_WAIT}s — refusing to build"
-  exit 70
-fi
-log "PRE-QUIT ok: port $PORT free"
+  QUIT_DONE=1
+  sh -c "$QUIT_CMD" >> "$LOG" 2>&1 || true
 
-# ---------------------------------------------------------------------------
-# Chain
-# ---------------------------------------------------------------------------
+  local quit_waited=0
+  while [ "$quit_waited" -lt "$QUIT_WAIT" ]; do
+    if [ -z "$(listeners_on_port)" ]; then
+      break
+    fi
+    sleep 1
+    quit_waited=$((quit_waited + 1))
+  done
+
+  STILL="$(listeners_on_port)"
+  if [ -n "$STILL" ]; then
+    log_err "POST-VERIFY FAIL: old app still listening on port $PORT (pid $STILL) after ${QUIT_WAIT}s — refusing to install"
+    exit 70
+  fi
+  log "PRE-QUIT ok: port $PORT free"
+}
 
 STEP_RC=0
 
@@ -568,6 +601,8 @@ else
   run_chain_step 2 "node scripts/verify-bundle.js" node scripts/verify-bundle.js
 fi
 check_step 2
+
+pre_quit
 
 if [ -n "$CHAIN_DIR" ]; then
   run_chain_step 3 "$CHAIN_DIR/install.sh" "$CHAIN_DIR/install.sh"
