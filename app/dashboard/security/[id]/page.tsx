@@ -688,7 +688,7 @@ export default async function SecurityDetailPage(props: {
                           >
                             Assessment
                           </span>
-                          {assessment}
+                          <PrivateText>{assessment}</PrivateText>
                         </p>
                       )}
                       {whatWorked && (
@@ -699,7 +699,7 @@ export default async function SecurityDetailPage(props: {
                           >
                             Worked
                           </span>
-                          {whatWorked}
+                          <PrivateText>{whatWorked}</PrivateText>
                         </p>
                       )}
                       {whatDidnt && (
@@ -710,7 +710,7 @@ export default async function SecurityDetailPage(props: {
                           >
                             Didn&apos;t
                           </span>
-                          {whatDidnt}
+                          <PrivateText>{whatDidnt}</PrivateText>
                         </p>
                       )}
                     </div>

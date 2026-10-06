@@ -555,6 +555,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
             <PeriodAttributionSection
               attribution={attribution}
               benchmarkSymbol={BENCHMARK_SYMBOL}
+              requestedStart={startDate}
             />
           )}
         </>

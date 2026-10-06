@@ -16,11 +16,15 @@ type CanonicalType = "transactions" | "holdings" | "prices" | "snapshots";
 // (parseFloat with "1,234.56" returns 1), which would corrupt comma-grouped
 // amounts from a Co-Work session. Returning NaN here lets the existing isNaN()
 // guards + validate.ts skip-with-warning behavior take over.
+const STRICT_DECIMAL = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
+
 function parseStrictNumber(s: string | undefined): number {
   if (!s) return NaN;
   const trimmed = s.trim();
   if (!trimmed) return NaN;
   if (trimmed.includes(",")) return NaN;
+  // Whole-cell check: parseFloat alone would read "5O" as 5 and "1.2.3" as 1.2.
+  if (!STRICT_DECIMAL.test(trimmed)) return NaN;
   return parseFloat(trimmed);
 }
 

@@ -1,12 +1,16 @@
+import { dataWindowNotice } from "@/lib/compute/data-window";
 import type { PeriodAttribution } from "@/lib/compute/period-attribution";
 import { Pct } from "@/lib/privacy/components";
 
 export function PeriodAttributionSection({
   attribution,
   benchmarkSymbol,
+  requestedStart,
 }: {
   attribution: PeriodAttribution;
   benchmarkSymbol: string;
+  /** The selected period's start (undefined for All), as the sibling captions use. */
+  requestedStart: string | undefined;
 }) {
   const hasContribDetract =
     attribution.topContributors.length > 0 || attribution.topDetractors.length > 0;
@@ -14,6 +18,15 @@ export function PeriodAttributionSection({
   const hasBetaAlpha =
     attribution.betaVsAlpha.betaContribution !== 0 ||
     attribution.betaVsAlpha.alphaContribution !== 0;
+  // Same honesty caption as the Max drawdown & Sharpe tiles and the equity
+  // curve: the regression runs on daily_valuations, and at a multi-account
+  // scope only the dates every account co-exists survive, so the window can
+  // be shorter than the selected period (YTD/3Y/5Y then share one window).
+  const betaWindowNotice = dataWindowNotice(
+    requestedStart,
+    attribution.betaWindow?.start ?? null,
+    attribution.betaWindow?.end ?? null,
+  );
 
   return (
     <>
@@ -144,6 +157,9 @@ export function PeriodAttributionSection({
               </p>
             </div>
           </div>
+          {betaWindowNotice && (
+            <p className="text-xs text-ink-faint mt-3">{betaWindowNotice}</p>
+          )}
         </section>
       )}
     </>

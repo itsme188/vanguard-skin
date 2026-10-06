@@ -208,6 +208,7 @@ describe("computePeriodAttribution", () => {
     expect(r.topDetractors).toEqual([]);
     expect(r.sectorContribution).toEqual([]);
     expect(r.betaVsAlpha).toEqual({ betaContribution: 0, alphaContribution: 0 });
+    expect(r.betaWindow).toBeNull();
   });
 
   describe("multi-account scopes (never collapse to accountIds[0])", () => {
@@ -345,6 +346,137 @@ describe("computePeriodAttribution", () => {
       expect(
         r.betaVsAlpha.betaContribution + r.betaVsAlpha.alphaContribution,
       ).toBeCloseTo(expectedReturn, 8);
+    });
+
+    // QA finding analysis-performance--beta-alpha-decomposition-ignores-
+    // period-selector-regression-1: at a multi-account scope the card read
+    // the same figures at every period. The window IS threaded through the
+    // summed-series path; what froze it is the full-coverage clamp (every
+    // period starting before the accounts co-exist computes over the same
+    // co-coverage window). These pin both halves: the window moves the
+    // figures whenever the summed series covers it, and the result reports
+    // the window it actually used so the card can caption a clamp.
+    describe("period window at a multi-account scope", () => {
+      // April: benchmark and portfolio move together (beta ≈ 1, alpha ≈ 0).
+      // May: portfolio runs at 2× the benchmark plus a drift.
+      const april = (i: number) => `2026-04-${String(1 + i).padStart(2, "0")}`;
+      const may = (i: number) => `2026-05-${String(1 + i).padStart(2, "0")}`;
+      const aprBench = [0.01, -0.005, 0.008, 0.002, -0.003, 0.006, 0.001, -0.004, 0.009];
+      const aprPort = aprBench.map((b) => b);
+      const mayBench = [0.004, -0.006, 0.01, -0.002, 0.005, 0.003, -0.007, 0.006, 0.002];
+      const mayPort = mayBench.map((b) => 2 * b + 0.003);
+
+      /** Seeds benchmark + the account-2 active series + an account-3 cash
+       *  ballast over April then May; returns the SUMMED value per date. */
+      const seedTwoAccounts = (target: Database.Database, ballastFrom?: string) => {
+        const summed: { date: string; value: number }[] = [];
+        let bench = 400;
+        let port = 1000;
+        const write = (date: string) => {
+          target
+            .prepare(
+              `INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('SPY', ?, ?, 'tws')`,
+            )
+            .run(date, bench);
+          target
+            .prepare(
+              `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (2, ?, 0, ?, ?)`,
+            )
+            .run(date, port, port);
+          const hasBallast = !ballastFrom || date >= ballastFrom;
+          if (hasBallast) {
+            target
+              .prepare(
+                `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (3, ?, 500, 0, 500)`,
+              )
+              .run(date);
+          }
+          summed.push({ date, value: port + (hasBallast ? 500 : 0) });
+        };
+        write(april(0));
+        aprBench.forEach((b, i) => {
+          bench *= 1 + b;
+          port *= 1 + aprPort[i];
+          write(april(i + 1));
+        });
+        // 2026-04-10 → 2026-05-01 is a >7-day hole; restart May from May 1.
+        write(may(0));
+        mayBench.forEach((b, i) => {
+          bench *= 1 + b;
+          port *= 1 + mayPort[i];
+          write(may(i + 1));
+        });
+        return summed;
+      };
+
+      it("two windows over a two-account scope yield different decompositions", () => {
+        seedTwoAccounts(db);
+        const wide = computePeriodAttribution(db, [2, 3], april(0), may(9), "SPY");
+        const narrow = computePeriodAttribution(db, [2, 3], may(0), may(9), "SPY");
+        expect(narrow.betaVsAlpha.betaContribution).not.toBeCloseTo(
+          wide.betaVsAlpha.betaContribution,
+          4,
+        );
+        expect(narrow.betaVsAlpha.alphaContribution).not.toBeCloseTo(
+          wide.betaVsAlpha.alphaContribution,
+          4,
+        );
+        expect(wide.betaWindow).toEqual({ start: april(0), end: may(9) });
+        expect(narrow.betaWindow).toEqual({ start: may(0), end: may(9) });
+      });
+
+      it("the multi-account result equals the single-account math on the same summed series", () => {
+        const summed = seedTwoAccounts(db);
+        const single = new Database(":memory:");
+        single.pragma("foreign_keys = ON");
+        runMigrations(single);
+        for (const s of summed) {
+          single
+            .prepare(
+              `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (1, ?, 0, ?, ?)`,
+            )
+            .run(s.date, s.value, s.value);
+        }
+        const benches = db
+          .prepare(`SELECT date, close_price FROM benchmark_prices WHERE symbol = 'SPY'`)
+          .all() as { date: string; close_price: number }[];
+        for (const b of benches) {
+          single
+            .prepare(
+              `INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('SPY', ?, ?, 'tws')`,
+            )
+            .run(b.date, b.close_price);
+        }
+
+        for (const [start, end] of [
+          [april(0), may(9)],
+          [may(0), may(9)],
+        ]) {
+          const multi = computePeriodAttribution(db, [2, 3], start, end, "SPY");
+          const one = computePeriodAttribution(single, 1, start, end, "SPY");
+          expect(multi.betaVsAlpha.betaContribution).toBeCloseTo(
+            one.betaVsAlpha.betaContribution,
+            10,
+          );
+          expect(multi.betaVsAlpha.alphaContribution).toBeCloseTo(
+            one.betaVsAlpha.alphaContribution,
+            10,
+          );
+          expect(multi.betaWindow).toEqual(one.betaWindow);
+        }
+        single.close();
+      });
+
+      it("a window starting before full coverage reports the clamped co-coverage window", () => {
+        // Account 3 only appears in May: every request starting earlier is
+        // clamped to May by fullCoverageOnly, so the decomposition matches
+        // the May-only one and betaWindow names May — the caption's input.
+        seedTwoAccounts(db, may(0));
+        const early = computePeriodAttribution(db, [2, 3], "2026-01-01", may(9), "SPY");
+        const mayOnly = computePeriodAttribution(db, [2, 3], may(0), may(9), "SPY");
+        expect(early.betaVsAlpha).toEqual(mayOnly.betaVsAlpha);
+        expect(early.betaWindow).toEqual({ start: may(0), end: may(9) });
+      });
     });
 
     it("keeps single-account positional calls working (back-compat)", () => {

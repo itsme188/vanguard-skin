@@ -339,6 +339,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     sendMessage,
     regenerate,
     setMessages,
+    clearError,
     stop,
   } = useChat({ transport });
 
@@ -377,6 +378,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         const data = await res.json();
         const dbMessages: ChatMessage[] = data.messages ?? [];
         const uiMessages = dbMessages.map(dbMessageToUIMessage);
+        clearError();
         setMessages(uiMessages);
         setConversationId(conv.id);
         setScope((conv.scope as ChatScope) || "all");
@@ -384,7 +386,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     } catch {
       // Silently fail
     }
-  }, [setMessages]);
+  }, [setMessages, clearError]);
 
   // On mount: default to a FRESH conversation (U2a). We populate the history
   // list so past chats stay reachable (Recent Conversations in the empty state),
@@ -448,6 +450,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
 
   function handleNewConversation() {
     if (isStreaming) stop();
+    clearError();
     setMessages([]);
     setConversationId(null);
     setScope("all");
@@ -477,6 +480,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
       // If the deleted conversation is currently loaded, reset to empty state
       if (conv.id === conversationId) {
         if (isStreaming) stop();
+        clearError();
         setMessages([]);
         setConversationId(null);
       }
@@ -484,7 +488,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     } catch {
       toast("Couldn't delete the conversation: could not reach the server.", "error");
     }
-  }, [deletePending, conversationId, fetchConversations, isStreaming, setMessages, stop, toast]);
+  }, [deletePending, conversationId, fetchConversations, isStreaming, setMessages, clearError, stop, toast]);
 
   function handleQuickAction(prompt: string) {
     setInputText(prompt);

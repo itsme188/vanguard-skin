@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
 import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
-import { mondayOf } from "@/lib/calendar/date-utils";
+import { addDays, mondayOf, MAX_EARNINGS_DAYS_AHEAD } from "@/lib/calendar/date-utils";
 import { resolveEarningsReleaseTime } from "@/lib/earnings/wire-times";
 
 export interface ConfirmEarningsDateInput {
@@ -50,6 +50,14 @@ export function confirmEarningsDate(
     return {
       ok: false,
       refusedReason: `${input.confirmedDate} is in the past — that looks like the stale prior-quarter source date, not the upcoming print. Pick the future date or enter the real one.`,
+    };
+  }
+  // Symmetric upper bound: a far-future date (a typo'd year) would mint a
+  // locked manual row that no sync can ever correct.
+  if (input.confirmedDate > addDays(input.today, MAX_EARNINGS_DAYS_AHEAD)) {
+    return {
+      ok: false,
+      refusedReason: `${input.confirmedDate} is more than a year out — an upcoming print is never that far; check the year.`,
     };
   }
   const symbol = input.symbol.toUpperCase();

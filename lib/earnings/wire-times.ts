@@ -389,9 +389,13 @@ export function resolveEarningsReleaseTime(
  * slot default instead. Call this BEFORE the write so the route can reject
  * the mismatch instead of accepting a value the cascade will never honor.
  *
- * Uses the SAME predicate as applyResolvedReleaseTimeToUpcomingEvents
- * (issuer family, event_date >= today, actual_value IS NULL, enriched_at IS
- * NULL, not superseded), narrowed to the single nearest row. Skips the
+ * Uses the apply predicate's issuer family / event_date >= today / not
+ * superseded, narrowed to the nearest date, but deliberately does NOT
+ * exclude rows that already carry actuals or were enriched: those are the
+ * rows the user is editing, and the standing override is discarded by the
+ * resolver against them just the same (QA finding
+ * today-earningshub-release-time--wrong-side-time-saves-200-then-ignored-
+ * when-row-has-actuals). Skips the
  * check (ok: true) when there's no upcoming event, the row is TAS, or the
  * row's slot can't be derived — mirroring resolveEarningsReleaseTime's own
  * TAS/null-slot handling, where slot=null means "no side of noon to check".
@@ -403,7 +407,14 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
   opts: { today?: string } = {},
 ):
   | { ok: true }
-  | { ok: false; slot: "bmo" | "amc"; eventDate: string; eventId: number } {
+  | {
+      ok: false;
+      slot: "bmo" | "amc";
+      eventDate: string;
+      eventId: number;
+      /** false = no upcoming event existed; checked against the latest past print. */
+      upcoming: boolean;
+    } {
   const today = opts.today ?? todayET();
   type Row = {
     id: number;
@@ -414,6 +425,7 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
     event_date: string;
   };
   let rows: Row[];
+  let upcoming = true;
   try {
     const family = issuerSiblings(symbol).map((s) => s.toUpperCase());
     const ph = family.map(() => "?").join(",");
@@ -422,11 +434,27 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
         `SELECT id, event_type, event_time, raw_json, symbol, event_date
          FROM calendar_events
          WHERE event_type = 'earnings' AND UPPER(symbol) IN (${ph})
-           AND event_date >= ? AND actual_value IS NULL AND enriched_at IS NULL
+           AND event_date >= ?
            AND COALESCE(superseded, 0) = 0
          ORDER BY event_date ASC, id ASC`,
       )
       .all(...family, today) as Row[];
+    if (rows.length === 0) {
+      // No upcoming print: the editor is on a reported row. Check the most
+      // recent past date (all its twins) so a wrong-side write is refused
+      // instead of stored and ignored.
+      upcoming = false;
+      rows = db
+        .prepare(
+          `SELECT id, event_type, event_time, raw_json, symbol, event_date
+           FROM calendar_events
+           WHERE event_type = 'earnings' AND UPPER(symbol) IN (${ph})
+             AND event_date < ?
+             AND COALESCE(superseded, 0) = 0
+           ORDER BY event_date DESC, id ASC`,
+        )
+        .all(...family, today) as Row[];
+    }
   } catch {
     return { ok: true };
   }
@@ -445,7 +473,7 @@ export function checkUserReleaseTimeAgainstUpcomingSlot(
     const slot = deriveEarningsSlot(row);
     if (slot === null) continue;
     if (!sameSideOfNoon(releaseTime, slot)) {
-      return { ok: false, slot, eventDate: row.event_date, eventId: row.id };
+      return { ok: false, slot, eventDate: row.event_date, eventId: row.id, upcoming };
     }
   }
   return { ok: true };

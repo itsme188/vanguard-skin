@@ -26,11 +26,15 @@ interface DafContributionRow {
 // Reject comma-bearing numerics (same rationale as canonical-csv.ts's
 // parseStrictNumber, not exported from there so replicated here):
 // parseFloat("1,234.56") silently truncates to 1 instead of failing.
+const STRICT_DECIMAL = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
+
 function parseStrictNumber(s: string | undefined): number {
   if (!s) return NaN;
   const trimmed = s.trim();
   if (!trimmed) return NaN;
   if (trimmed.includes(",")) return NaN;
+  // Whole-cell check: parseFloat alone would read "5O" as 5 and "1.2.3" as 1.2.
+  if (!STRICT_DECIMAL.test(trimmed)) return NaN;
   return parseFloat(trimmed);
 }
 
