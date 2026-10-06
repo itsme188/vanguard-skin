@@ -116,7 +116,7 @@ export async function reconcileCloudEnrichment(
   );
   const updateWithReaction = db.prepare(
     `UPDATE calendar_events
-     SET actual_value = COALESCE(?, actual_value),
+     SET actual_value = COALESCE(actual_value, ?),
          consensus_value = COALESCE(consensus_value, ?),
          reaction_snapshot = COALESCE(?, reaction_snapshot),
          enriched_at = COALESCE(enriched_at, datetime('now'))
@@ -124,7 +124,7 @@ export async function reconcileCloudEnrichment(
   );
   const updateActualOnly = db.prepare(
     `UPDATE calendar_events
-     SET actual_value = COALESCE(?, actual_value),
+     SET actual_value = COALESCE(actual_value, ?),
          consensus_value = COALESCE(consensus_value, ?),
          enriched_at = COALESCE(enriched_at, datetime('now'))
      WHERE id = ?`,
@@ -135,7 +135,7 @@ export async function reconcileCloudEnrichment(
   // actual would prematurely kill that retry loop.
   const updateActualOnlyNoStamp = db.prepare(
     `UPDATE calendar_events
-     SET actual_value = COALESCE(?, actual_value),
+     SET actual_value = COALESCE(actual_value, ?),
          consensus_value = COALESCE(consensus_value, ?)
      WHERE id = ?`,
   );
