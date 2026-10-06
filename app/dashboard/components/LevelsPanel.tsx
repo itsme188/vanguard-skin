@@ -1730,7 +1730,7 @@ export function LevelsPanel({
                 {showRequeue && (
                   <button
                     onClick={() => handleRequeue(l.id)}
-                    className="text-[10px] text-warn hover:text-warn/80"
+                    className="text-[10px] text-warn hover:text-warn/90"
                     title="Send back to pending_review so the Alerts Review tab can approve or reject it"
                   >
                     Re-queue

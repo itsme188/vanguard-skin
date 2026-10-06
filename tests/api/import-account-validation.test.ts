@@ -204,7 +204,8 @@ Vanguard Taxable,2025-06-15,,BUY,ZZQD,Synthetic Delta Co,Stock,10,20.00,-200.00,
        VALUES (?, ?, '2025-01-10', 'BUY', 10, 10, -100, 0, 0, 'seed:zzqa:buy')`,
     ).run(acct, sec);
     db.prepare(
-      "INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (?, ?, 0, '2025-03-31')",
+      // Statement-grade key: only statement evidence mints a saved synthetic close.
+      "INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key) VALUES (?, ?, 0, '2025-03-31', 'canonical:hold:seed:zzqa')",
     ).run(acct, sec);
     computeTaxLots(db);
   }

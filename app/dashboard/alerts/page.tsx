@@ -1800,7 +1800,7 @@ function ReviewRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 flex-wrap">
             <span
-              className="inline-block px-1.5 py-0.5 rounded text-[9px] bg-amber-500/20 text-amber-500 uppercase tracking-wider"
+              className="inline-block px-1.5 py-0.5 rounded text-[9px] bg-warn/20 text-warn uppercase tracking-wider"
               title="Newsletter-extracted level awaiting your approval before it arms"
             >
               Review

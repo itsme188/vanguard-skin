@@ -559,11 +559,14 @@ export function ImportFlow() {
     // 0 records + skippedRows, no batch). It must not read as a "0 records"
     // success, and when no file imported anything the heading must not be
     // the green "Import Complete".
+    // Key on the server's "no batch written" signal (batchId === null), not
+    // on a zero record count: an all-duplicates re-import with one bad row
+    // still created a batch.
     const excludedOnly = (r: CommitResult) =>
-      (r.committed?.totalRecords ?? 0) === 0 && (r.skippedRows?.length ?? 0) > 0;
+      r.batchId === null && (r.skippedRows?.length ?? 0) > 0;
     const nothingImported =
       state.results.some(excludedOnly) &&
-      state.results.every((r) => (r.committed?.totalRecords ?? 0) === 0);
+      state.results.every((r) => r.batchId === null);
     return (
       <div className="rounded-xl border border-edge bg-panel p-5 space-y-4">
         <div className="flex items-center gap-3">

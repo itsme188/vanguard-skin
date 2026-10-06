@@ -200,7 +200,7 @@ describe("confirmEarningsDate far-future guard", () => {
   it("refuses a far-future date and writes nothing", () => {
     const result = run("2099-01-15");
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.refusedReason).toMatch(/more than a year out/i);
+    if (!result.ok) expect(result.refusedReason).toMatch(/more than 400 days out/i);
     expect(manualCount()).toBe(0);
   });
 

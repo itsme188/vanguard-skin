@@ -405,8 +405,8 @@ export function ManageSourcesModal({
             sender_email: sender.email,
           }),
         });
-        const data = await res.json();
-        if (data.success) {
+        const data = await res.json().catch(() => null);
+        if (res.ok && data?.success) {
           setAddedEmails((prev) => new Set([...prev, sender.email.toLowerCase()]));
           // Refresh sources
           const srcRes = await fetch("/api/research/sources");
@@ -414,7 +414,9 @@ export function ManageSourcesModal({
           if (srcData.success) setSources(srcData.data);
           onSourcesChanged();
         } else {
-          setMutationError(`Couldn't add ${sender.email}: ${data.error ?? "unknown error"}.`);
+          setMutationError(
+            `Couldn't add ${sender.email}: ${data?.error ?? `The server returned an error (HTTP ${res.status})`}.`,
+          );
         }
       } catch {
         setMutationError(`Couldn't add ${sender.email}: could not reach the server.`);
@@ -438,8 +440,8 @@ export function ManageSourcesModal({
           sender_email: manualEmail.trim(),
         }),
       });
-      const data = await res.json();
-      if (data.success) {
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success) {
         setManualName("");
         setManualEmail("");
         setShowManual(false);
@@ -449,7 +451,9 @@ export function ManageSourcesModal({
         if (srcData.success) setSources(srcData.data);
         onSourcesChanged();
       } else {
-        setMutationError(`Couldn't add the source: ${data.error ?? "unknown error"}.`);
+        setMutationError(
+          `Couldn't add the source: ${data?.error ?? `The server returned an error (HTTP ${res.status})`}.`,
+        );
       }
     } catch {
       setMutationError("Couldn't add the source: could not reach the server.");

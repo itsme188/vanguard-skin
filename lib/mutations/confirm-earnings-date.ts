@@ -57,7 +57,7 @@ export function confirmEarningsDate(
   if (input.confirmedDate > addDays(input.today, MAX_EARNINGS_DAYS_AHEAD)) {
     return {
       ok: false,
-      refusedReason: `${input.confirmedDate} is more than a year out — an upcoming print is never that far; check the year.`,
+      refusedReason: `${input.confirmedDate} is more than ${MAX_EARNINGS_DAYS_AHEAD} days out — an upcoming print is never that far; check the year.`,
     };
   }
   const symbol = input.symbol.toUpperCase();

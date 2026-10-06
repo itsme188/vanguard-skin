@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 /**
- * Guard: a bare `text-amber-400` is near-invisible on the light cream theme
+ * Guard: a bare `text-amber-300/400/500` is near-invisible on the light cream theme
  * (fails the 4.5:1 rule). Use the theme-aware `text-warn` token instead.
  * Variant-prefixed forms (`dark:text-amber-400`) are allowed.
  */
@@ -22,10 +22,10 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-describe("no bare text-amber-400", () => {
-  it("uses text-warn instead of a bare text-amber-400 in app/**/*.tsx", () => {
+describe("no bare text-amber-300/400/500", () => {
+  it("uses text-warn instead of a bare text-amber-300/400/500 in app/**/*.tsx", () => {
     const offenders: string[] = [];
-    const re = /(^|[^:\w-])text-amber-400/;
+    const re = /(^|[^:\w-])text-amber-(300|400|500)\b/;
     for (const file of walk(ROOT)) {
       fs.readFileSync(file, "utf8")
         .split("\n")
@@ -37,7 +37,7 @@ describe("no bare text-amber-400", () => {
     }
     expect(
       offenders,
-      `Bare text-amber-400 is unreadable on the light theme. Use text-warn (theme-aware --warn token) instead:\n${offenders.join("\n")}`,
+      `Bare text-amber-300/400/500 is unreadable on the light theme. Use text-warn (theme-aware --warn token) instead:\n${offenders.join("\n")}`,
     ).toEqual([]);
   });
 });

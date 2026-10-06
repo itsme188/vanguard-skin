@@ -540,7 +540,7 @@ export default async function SecurityDetailPage(props: {
           action={
             closedSalesTotal > closedSales.length ? (
               <Link href={`/dashboard/tax-lots?security=${securityId}`} className={ACTION_LINK_CLASS}>
-                View all →
+                Open in Tax Lots →
               </Link>
             ) : undefined
           }

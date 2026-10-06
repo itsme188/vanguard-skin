@@ -233,7 +233,7 @@ export function NotificationBell() {
           {(reviewCount ?? 0) > 0 && (
             <div>
               <div className="px-3 py-1.5 bg-raised border-b border-edge border-t">
-                <span className="text-[9px] font-medium text-amber-500 uppercase tracking-wider">
+                <span className="text-[9px] font-medium text-warn uppercase tracking-wider">
                   Levels to review
                 </span>
               </div>

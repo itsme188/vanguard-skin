@@ -117,10 +117,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error:
-          `${t} is ${enteredLabel} time, but the ${slotCheck.upcoming ? "next" : "latest"} ${symbol} print on ` +
-          `${slotCheck.eventDate} is slotted ${slotLabel}. Enter ${fixLabel} time, ` +
-          `or correct the event's slot first.`,
+        error: slotCheck.upcoming
+          ? `${t} is ${enteredLabel} time, but the next ${symbol} print on ` +
+            `${slotCheck.eventDate} is slotted ${slotLabel}. Enter ${fixLabel} time, ` +
+            `or correct the event's slot first.`
+          : `${symbol} last reported ${slotCheck.slot === "bmo" ? "before the open" : "after the close"} ` +
+            `(${slotCheck.eventDate}); a standing time on the other side of the session is refused ` +
+            `until an upcoming event carries the new slot.`,
         code: "slot_mismatch",
         data: { slot: slotCheck.slot, eventDate: slotCheck.eventDate },
       },

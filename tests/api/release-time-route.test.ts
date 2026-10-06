@@ -85,6 +85,19 @@ describe("POST /api/earnings/release-time — slot-mismatch guard (409)", () => 
     expect(body.error).toMatch(/2099-01-01/);
   });
 
+  it("uses past-print wording (no 'correct the slot') when only a past print exists", async () => {
+    seedAmcEventWithWebVerified("XMTR", "2000-01-01");
+
+    const res = await POST(postReq({ symbol: "XMTR", releaseTime: "07:30" }));
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("slot_mismatch");
+    expect(body.error).toMatch(/XMTR last reported after the close/);
+    expect(body.error).toMatch(/until an upcoming event carries the new slot/);
+    expect(body.error).not.toMatch(/correct the event's slot/);
+  });
+
   it("leaves the standing web_verified row completely untouched on a 409", async () => {
     seedAmcEventWithWebVerified("XMTR", "2099-01-01");
 
@@ -146,7 +159,7 @@ describe("POST /api/earnings/release-time — slot-mismatch guard (409)", () => 
     expect(row).toEqual({ release_time: "16:20", source: "user" });
   });
 
-  it("with only a past reported print, refuses wrong-side with 409 saying latest, stores nothing", async () => {
+  it("with only a past reported print, refuses wrong-side with 409 saying last reported, stores nothing", async () => {
     hoisted.db
       .prepare(
         `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, symbol, title, source_key, week_of, actual_value)
@@ -160,7 +173,7 @@ describe("POST /api/earnings/release-time — slot-mismatch guard (409)", () => 
     const body = await res.json();
     expect(body.code).toBe("slot_mismatch");
     expect(body.data).toEqual({ slot: "amc", eventDate: "2000-01-03" });
-    expect(body.error).toMatch(/latest TESTB print/);
+    expect(body.error).toMatch(/TESTB last reported after the close/);
     expect(body.error).not.toMatch(/next/);
     expect(
       hoisted.db.prepare("SELECT COUNT(*) AS n FROM symbol_release_times WHERE symbol = 'TESTB'").get(),

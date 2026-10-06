@@ -46,6 +46,12 @@ describe("ImportFlow done panel reports excluded rows", () => {
     expect(donePanel).toContain("Nothing imported");
   });
 
+  it("keys 'nothing imported' on batchId === null, not on a zero record count", () => {
+    expect(donePanel).toMatch(/r\.batchId === null && \(r\.skippedRows\?\.length \?\? 0\) > 0/);
+    expect(donePanel).toMatch(/state\.results\.every\(\(r\) => r\.batchId === null\)/);
+    expect(donePanel).not.toMatch(/totalRecords \?\? 0\) === 0/);
+  });
+
   it("does not show the green Import Complete heading when nothing was imported", () => {
     expect(donePanel).toMatch(/nothingImported\s*\?/);
     expect(donePanel).toContain("Nothing Imported");

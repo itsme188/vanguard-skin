@@ -23,5 +23,12 @@ describe("ManageSourcesModal add handlers clear the stale mutation error", () =>
       expect(clear).toBeGreaterThan(-1);
       expect(clear).toBeLessThan(fetchAt);
     });
+
+    it(`${name} checks res.ok AND data.success and parses JSON defensively`, () => {
+      const body = handlerBody(name);
+      expect(body).toMatch(/res\.json\(\)\.catch\(\s*\(\)\s*=>\s*null\s*\)/);
+      expect(body).toMatch(/res\.ok\s*&&\s*data\?\.success/);
+      expect(body).toContain("The server returned an error (HTTP ${res.status})");
+    });
   }
 });
