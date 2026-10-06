@@ -118,4 +118,65 @@ describe("commitImport — unknown account names", () => {
     expect(syms).toContain("AAPL");
     expect(syms).not.toContain("MSFT");
   });
+
+  /**
+   * QA 2026-10-02: a route import whose EVERY row named an unknown account
+   * still created an empty import_batches row (an Undo-able ghost in Import
+   * History) and let the route run the full post-commit pipeline. The opt-in
+   * path now returns a no-op result (batchId null) when exclusion left
+   * nothing to write.
+   */
+  it("opt-in: a file whose every row names an unknown account writes NOTHING (no batch, no raw_imports) and reports the skipped rows", () => {
+    const parsed = mixedParsed();
+    parsed.transactions = parsed.transactions.slice(1); // only "Typo Account A"
+    parsed.securities = parsed.securities.slice(1); // only MSFT
+    const before = {
+      batches: count("import_batches"),
+      maxBatchId: (db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM import_batches").get() as { m: number }).m,
+      raw: count("raw_imports"),
+      securities: count("securities"),
+      transactions: count("transactions"),
+      holdings: count("holdings"),
+    };
+
+    const r = commitImport(db, parsed, { excludeUnknownAccounts: true });
+
+    expect(r.batchId).toBeNull();
+    expect(r.recordCount).toBe(0);
+    expect(r.newTransactions).toBe(0);
+    expect(r.newHoldings).toBe(0);
+    expect(r.newSecurities).toBe(0);
+    expect(r.skippedRows.map((s) => s.category).sort()).toEqual(["holding", "transaction"]);
+    expect(count("import_batches")).toBe(before.batches);
+    expect(
+      (db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM import_batches").get() as { m: number }).m,
+    ).toBe(before.maxBatchId);
+    expect(count("raw_imports")).toBe(before.raw);
+    expect(count("securities")).toBe(before.securities);
+    expect(count("transactions")).toBe(before.transactions);
+    expect(count("holdings")).toBe(before.holdings);
+  });
+
+  it("default: a file whose every row names an unknown account still throws before writing", () => {
+    const parsed = mixedParsed();
+    parsed.transactions = parsed.transactions.slice(1);
+    parsed.securities = parsed.securities.slice(1);
+    const batches = count("import_batches");
+    expect(() => commitImport(db, parsed)).toThrow(/Typo Account A/);
+    expect(count("import_batches")).toBe(batches);
+  });
+
+  it("an empty file with NO excluded rows keeps today's behavior on both paths (a batch is created)", () => {
+    const empty = (): ParsedImportResult => ({
+      ...mixedParsed(),
+      transactions: [],
+      securities: [],
+      holdings: [],
+    });
+    const scripted = commitImport(db, empty());
+    expect(typeof scripted.batchId).toBe("number");
+    const routed = commitImport(db, empty(), { excludeUnknownAccounts: true });
+    expect(typeof routed.batchId).toBe("number");
+    expect(count("import_batches")).toBe(2);
+  });
 });

@@ -198,7 +198,7 @@ export default async function SecurityDetailPage(props: {
 
   if (!detail) notFound();
 
-  const { security, price, kpis, positions, openTaxLots, closedSales, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, researchMentions } = detail;
+  const { security, price, kpis, positions, openTaxLots, closedSales, closedSalesTotal, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, researchMentions } = detail;
 
   // Per-account reconciliation: a position's quantity should equal the sum of
   // that account's open tax lots. Statement import and computeTaxLots are
@@ -531,7 +531,20 @@ export default async function SecurityDetailPage(props: {
 
       {/* Closed Sales */}
       {closedSales.length > 0 && (
-        <Section title={`Recent Sales · ${closedSales.length}`}>
+        <Section
+          title={
+            closedSalesTotal > closedSales.length
+              ? `Recent Sales · ${closedSales.length} of ${closedSalesTotal}`
+              : `Recent Sales · ${closedSales.length}`
+          }
+          action={
+            closedSalesTotal > closedSales.length ? (
+              <Link href={`/dashboard/tax-lots?security=${securityId}`} className={ACTION_LINK_CLASS}>
+                View all →
+              </Link>
+            ) : undefined
+          }
+        >
           <ScrollFade>
             <table className="w-full">
               <thead>

@@ -55,6 +55,8 @@ function analysis(opts: {
       netExposure: 900_000,
       grossExposure: 1_100_000,
       hedgeCount: hedges.length,
+      optionPositionCount: hedges.length,
+      shortPositionCount: 0,
     },
     pairs: [],
     proxies: [],

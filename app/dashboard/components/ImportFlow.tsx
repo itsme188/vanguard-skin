@@ -63,7 +63,8 @@ interface CommitResult {
   success: boolean;
   error?: string;
   sourceType?: string;
-  batchId?: number;
+  // null when every row was excluded and nothing was written (no batch).
+  batchId?: number | null;
   committed?: {
     newTransactions: number;
     newHoldings: number;
@@ -77,6 +78,44 @@ interface CommitResult {
     totalRecords: number;
   };
   warnings?: string[];
+  skippedRows?: SkippedRow[];
+}
+
+/**
+ * Excluded-row list, shared by the preview ("will be excluded") and the done
+ * panel ("excluded"). Top-level, not nested in ImportFlow, so it never
+ * remounts on a parent render.
+ */
+function SkippedRowsDetails({
+  rows,
+  summary,
+  open,
+}: {
+  rows: SkippedRow[];
+  summary: string;
+  open?: boolean;
+}) {
+  return (
+    <details open={open} className="mt-3 rounded-lg border border-gold/20 bg-gold/5">
+      <summary className="px-3 py-2 text-xs font-medium text-gold-ink cursor-pointer hover:bg-gold/10 transition-colors">
+        {summary}
+      </summary>
+      <div className="px-3 pb-2 space-y-1">
+        {rows.slice(0, 20).map((row, j) => (
+          <p key={j} className="text-xs text-ink-dim font-mono">
+            <span className="text-gold/70">{row.category}[{row.index}]</span>
+            {row.symbol && <span className="text-ink-faint"> {row.symbol}</span>}
+            {" — "}{row.reason}
+          </p>
+        ))}
+        {rows.length > 20 && (
+          <p className="text-xs text-ink-faint">
+            ...and {rows.length - 20} more
+          </p>
+        )}
+      </div>
+    </details>
+  );
 }
 
 type ReplayResult = {
@@ -453,25 +492,10 @@ export function ImportFlow() {
 
               {/* Skipped rows detail */}
               {result.skippedRows && result.skippedRows.length > 0 && (
-                <details className="mt-3 rounded-lg border border-gold/20 bg-gold/5">
-                  <summary className="px-3 py-2 text-xs font-medium text-gold-ink cursor-pointer hover:bg-gold/10 transition-colors">
-                    {result.skippedRows.length} row{result.skippedRows.length !== 1 ? "s" : ""} will be excluded (invalid data)
-                  </summary>
-                  <div className="px-3 pb-2 space-y-1">
-                    {result.skippedRows.slice(0, 20).map((row, j) => (
-                      <p key={j} className="text-xs text-ink-dim font-mono">
-                        <span className="text-gold/70">{row.category}[{row.index}]</span>
-                        {row.symbol && <span className="text-ink-faint"> {row.symbol}</span>}
-                        {" — "}{row.reason}
-                      </p>
-                    ))}
-                    {result.skippedRows.length > 20 && (
-                      <p className="text-xs text-ink-faint">
-                        ...and {result.skippedRows.length - 20} more
-                      </p>
-                    )}
-                  </div>
-                </details>
+                <SkippedRowsDetails
+                  rows={result.skippedRows}
+                  summary={`${result.skippedRows.length} row${result.skippedRows.length !== 1 ? "s" : ""} will be excluded (invalid data)`}
+                />
               )}
 
               {/* Warnings */}
@@ -531,15 +555,34 @@ export function ImportFlow() {
 
   // Done — success
   if (state.status === "done") {
+    // A file whose every row was excluded wrote nothing (the route returns
+    // 0 records + skippedRows, no batch). It must not read as a "0 records"
+    // success, and when no file imported anything the heading must not be
+    // the green "Import Complete".
+    const excludedOnly = (r: CommitResult) =>
+      (r.committed?.totalRecords ?? 0) === 0 && (r.skippedRows?.length ?? 0) > 0;
+    const nothingImported =
+      state.results.some(excludedOnly) &&
+      state.results.every((r) => (r.committed?.totalRecords ?? 0) === 0);
     return (
       <div className="rounded-xl border border-edge bg-panel p-5 space-y-4">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-up-tint flex items-center justify-center">
-            <svg className="w-4 h-4 text-up" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-            </svg>
-          </div>
-          <h3 className="text-lg font-medium text-ink">Import Complete</h3>
+          {nothingImported ? (
+            <div className="w-8 h-8 rounded-full bg-gold/15 flex items-center justify-center">
+              <svg className="w-4 h-4 text-gold-ink" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+              </svg>
+            </div>
+          ) : (
+            <div className="w-8 h-8 rounded-full bg-up-tint flex items-center justify-center">
+              <svg className="w-4 h-4 text-up" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+              </svg>
+            </div>
+          )}
+          <h3 className="text-lg font-medium text-ink">
+            {nothingImported ? "Nothing Imported" : "Import Complete"}
+          </h3>
         </div>
 
         <div className="space-y-2">
@@ -555,7 +598,12 @@ export function ImportFlow() {
                   </svg>
                   <span className="text-sm text-ink">{result.filename}</span>
                 </div>
-                {result.committed && (
+                {result.committed && excludedOnly(result) ? (
+                  <span className="text-xs font-mono text-gold-ink tabular-nums">
+                    Nothing imported — {result.skippedRows?.length ?? 0} row
+                    {(result.skippedRows?.length ?? 0) !== 1 ? "s" : ""} excluded
+                  </span>
+                ) : result.committed && (
                   <span className="text-xs font-mono text-ink-dim tabular-nums">
                     {result.committed.totalRecords} records
                     {result.committed.skippedDuplicates > 0 && (
@@ -576,6 +624,16 @@ export function ImportFlow() {
                   </span>
                 )}
               </div>
+
+              {/* Rows commit excluded (e.g. an unknown account name) — opened
+                  by default when they are the reason nothing was imported. */}
+              {result.skippedRows && result.skippedRows.length > 0 && (
+                <SkippedRowsDetails
+                  rows={result.skippedRows}
+                  summary={`${result.skippedRows.length} row${result.skippedRows.length !== 1 ? "s" : ""} excluded (invalid data)`}
+                  open={excludedOnly(result)}
+                />
+              )}
 
               {/* Parser/commit warnings (e.g. corporate actions skipped for an
                   unresolved symbol or a ratio collision) */}

@@ -243,6 +243,16 @@ export interface CommitResult {
   skippedRows: SkippedRow[];
 }
 
+/**
+ * Opt-in path only: every row was excluded by validation, so there was
+ * nothing to write. No `import_batches` row exists (`batchId` is null), every
+ * count is 0, and `skippedRows` says why — the caller must not run its
+ * post-commit pipeline for this file.
+ */
+export interface NothingImportedResult extends Omit<CommitResult, "batchId"> {
+  batchId: null;
+}
+
 // Map the parser's sourceType to the price.source value used by step 5's
 // priority CASE. Sources not listed here fall through to the ELSE=4 bucket.
 function holdingDerivedPriceSource(sourceType: SourceType): string {
@@ -323,11 +333,39 @@ function pruneSecuritiesOfExcludedAccounts(
   };
 }
 
+/**
+ * True when a validated parse carries no row of any kind commitImport writes
+ * (transactions, securities, holdings, prices, snapshots, corporate actions,
+ * factors, donations).
+ */
+function hasNothingToWrite(p: ParsedImportResult): boolean {
+  return (
+    p.transactions.length === 0 &&
+    p.securities.length === 0 &&
+    p.holdings.length === 0 &&
+    p.prices.length === 0 &&
+    p.snapshots.length === 0 &&
+    p.corporateActions.length === 0 &&
+    (p.factors?.length ?? 0) === 0 &&
+    (p.donations?.length ?? 0) === 0
+  );
+}
+
+export function commitImport(
+  db: Database.Database,
+  parsed: ParsedImportResult,
+  options: CommitImportOptions & { excludeUnknownAccounts: true },
+): CommitResult | NothingImportedResult;
+export function commitImport(
+  db: Database.Database,
+  parsed: ParsedImportResult,
+  options?: CommitImportOptions & { excludeUnknownAccounts?: false },
+): CommitResult;
 export function commitImport(
   db: Database.Database,
   parsed: ParsedImportResult,
   options: CommitImportOptions = {},
-): CommitResult {
+): CommitResult | NothingImportedResult {
   // Validate before writing — removes rows with invalid dates/quantities/prices.
   const knownAccountNames = (
     db.prepare("SELECT name FROM accounts").all() as { name: string }[]
@@ -371,6 +409,35 @@ export function commitImport(
       skippedRows.map((r) => `${r.category}[${r.index}]: ${r.reason}`),
     );
   }
+  // Opt-in path: exclusion left nothing to write. Return a no-op instead of
+  // an empty import_batches row (an Undo-able ghost in Import History) — the
+  // caller skips its post-commit pipeline on a null batchId (QA 2026-10-02).
+  // A file that was empty to begin with (no excluded rows) keeps today's
+  // behavior, as does the script path.
+  if (
+    options.excludeUnknownAccounts &&
+    skippedRows.length > 0 &&
+    hasNothingToWrite(validatedResult)
+  ) {
+    return {
+      batchId: null,
+      recordCount: 0,
+      newTransactions: 0,
+      newHoldings: 0,
+      newPrices: 0,
+      newSnapshots: 0,
+      newSecurities: 0,
+      newFactors: 0,
+      newCorporateActions: 0,
+      newDonations: 0,
+      updatedDonations: 0,
+      skippedDuplicates: 0,
+      warnings: [],
+      corporateActionWarningCount: 0,
+      skippedRows,
+    };
+  }
+
   // Use the validated (cleaned) result for all DB writes
   parsed = validatedResult;
 
