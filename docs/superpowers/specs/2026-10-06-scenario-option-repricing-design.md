@@ -42,7 +42,7 @@ For each option position in a scenario:
    - Otherwise the option is unmodelled, reason `no-volatility`.
 3. **Shocked volatility (D2).** `σ' = max(σ + Δvol, 0.01)`, where `Δvol` is the scenario's volatility change as a decimal (15 points = 0.15) and is 0 when the scenario does not set one.
 4. **Values.** `V0 = max(BS(S, K, T, r, σ), intrinsic(S))` and `V1 = max(BS(S', K, T, r, σ'), intrinsic(S'))`. `BS` is the existing `callPrice` / `putPrice`. The exercise-value floor is the early-exercise treatment for American-style contracts.
-5. **Change.** Per-share change `ΔV = V1 − V0`. Position change in dollars = `ΔV × quantity × multiplier × FX factor`, using the same quantity sign, `COALESCE(multiplier, 1)` and FX conversion the position's market value already uses. The displayed percent is that dollar change over the absolute market value, signed.
+5. **Change.** Per-share change `ΔV = V1 − V0`. The position's market value already equals `ownPrice × quantity × multiplier × FX factor`, so the change in dollars is `marketValue × ΔV ÷ ownPrice`; no second quantity or FX path is introduced. The displayed percent is `ΔV ÷ ownPrice`, floored at −100% (with the fallback volatility source the model's value today can sit above the market price, and a position cannot lose more than it is worth).
 
 Notes:
 
@@ -54,6 +54,7 @@ Notes:
 
 | Reason | Condition |
 |---|---|
+| `no-option-price` | the contract has no last close of its own (its position value is zero in the scenario, and the dollar change cannot be scaled without it) |
 | `no-underlying-price` | the underlying has no last close, or it is not positive |
 | `no-option-terms` | strike, expiry or option type missing or unparseable |
 | `expired` | not live per `isOptionLive` (`lib/compute/option-expiry.ts`) |
@@ -75,7 +76,7 @@ These are model limits. The card lists them in one caption line. Adding rate and
 - **`lib/compute/scenarios.ts` and `lib/compute/scenario-recipes.ts`:** the option branch calls `repriceOptionUnderShock` in place of `optionElasticity` + `leverUnderlyingMoveByElasticity`. Both position queries already select the needed columns through `OPTION_PRICING_COLUMNS_SQL`; the quantity and multiplier are added if a query lacks them.
 - **`ScenarioDefinition`** gains `volMove?: number` (volatility points). `PositionImpact` gains `ivSource` and `unmodelledReason`. `ScenarioResult` gains `optionsUnmodelled: { count, valueShare }`.
 - **`app/api/compute/scenarios/route.ts`:** accepts and validates `volMove` for a custom scenario (finite, within the slider's range).
-- **`app/dashboard/components/ScenarioModeling.tsx`:** a third slider "Volatility change" (points, default 0, step 1; range −20 to +60 is this spec's proposal and the one figure here the user may want to adjust); per-option-row source chip and "not modelled" state; the unmodelled count line; the caption from §5; the preset note "option volatility held at today's level". Portfolio-derived figures keep rendering through the privacy components.
+- **`app/dashboard/components/ScenarioModeling.tsx`** (the card lists only the five largest losers and winners, so an unmodelled option, whose change is zero, never appears there; the card therefore carries its own short "not modelled" list with each contract and its reason)**:** a third slider "Volatility change" (points, default 0, step 1; range −20 to +60 is this spec's proposal and the one figure here the user may want to adjust); per-option-row source chip and "not modelled" state; the unmodelled count line; the caption from §5; the preset note "option volatility held at today's level". Portfolio-derived figures keep rendering through the privacy components.
 - **`lib/compute/option-elasticity.ts`:** `optionElasticity` and `leverUnderlyingMoveByElasticity` lose their two scenario callers. `DEFAULT_OPTION_ELASTICITY`, `isOptionSecurityType` and the SQL fragments stay (the delta-exposure column in `lib/compute/exposure.ts` and both queries use them). Functions left with no production caller are deleted in the same change.
 - **No schema change. No Worker mirror** (the Worker has no scenario code).
 
@@ -88,7 +89,7 @@ One label does change: an option row today prints a levered beta (the underlying
 ## 8. Required tests (named)
 
 1. **Zero-shock identity.** Own-price source, move 0, `volMove` 0 → change is 0 to within solver tolerance.
-2. **Short-put floor (the finding).** For a short put and any downward move, the loss is at least the rise in exercise value: `ΔV ≥ intrinsic(S') − intrinsic(S)`.
+2. **Short-put floor (the finding).** For any option and any move, the shocked value is at least the exercise value at the shocked price: `V1 ≥ intrinsic(S')`. For a short put on a downward move this means the loss per share is at least `intrinsic(S') − today's price`. (Amended at plan time: the first draft compared against the rise in exercise value, which ignores the premium already in today's price and is not a true bound.)
 3. **Sign.** On a downward move a long put gains and a long call loses; reversed on an upward move; a short position has the opposite dollar sign of the long.
 4. **Monotonic in volatility.** Raising `volMove` never lowers a long option's shocked value.
 5. **Engine parity.** A preset and a custom scenario with identical moves and `volMove` 0 give identical per-option results (one shared function, pinned by a test that runs both engines on one fixture).
