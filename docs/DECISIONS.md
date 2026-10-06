@@ -441,3 +441,11 @@ Spec: `docs/superpowers/specs/2026-10-06-scenario-option-repricing-design.md`.
 - **Scope:** presets and custom scenarios together, through one shared function.
 - **Options that cannot be repriced:** excluded from the total, shown as not modelled with the reason, and counted. The fixed-elasticity and 30 percent fallbacks leave the scenario path.
 
+## 2026-10-06 — Scenario option repricing: built, and what the build decided
+
+- **Built as specified:** one shared repricing function, both engines, the volatility slider, and not-modelled options listed and counted. The linear elasticity is deleted from the scenario path and a repo test keeps it out.
+- **The -100% floor stays (controller ruling during the build, upheld by the final review).** When a contract's quote is stale and sits below exercise value, the volatility comes from the broker's figure and the model's value today is above the quote, so the model change can exceed the quoted value. The row is floored at -100% of the quoted value so a long option's estimated value never goes negative. Cost: such a row caps its loss at the shown position value. It carries the broker-source chip.
+- **An unpriced option is named as unpriced.** A contract with no price of its own has an unknown value, so the card says how many have no price instead of counting them into a share that would read 0%.
+- **Test 2 of the spec was restated while planning.** The true bound is "shocked value is at least exercise value at the shocked price"; the first wording ignored the premium already in today's price.
+- **For the user to rule on later:** a deep in-the-money option quoted at parity with no broker volatility is not modelled (it drops out of the total and is listed); and a collapsed card shows its total with no hint that options were left out (the count appears when the card is expanded).
+

@@ -557,6 +557,18 @@ puts) correctly reads exposure < MV and can go negative. Tests: `tests/compute/e
 
 ---
 
+### Scenario option legs are repriced, never estimated from a fixed figure (2026-10-06)
+
+Both scenario engines (`lib/compute/scenarios.ts` for custom what-ifs, `lib/compute/scenario-recipes.ts` for presets) value an option through ONE function, `repriceOptionUnderShock` (`lib/compute/option-reprice.ts`): Black-Scholes at the shocked price of the underlying, never below exercise value. Design: `docs/superpowers/specs/2026-10-06-scenario-option-repricing-design.md`.
+
+- Volatility comes from the contract's own last price (solved, and rejected when the quote sits below exercise value); the broker's figure for the underlying is second; with neither the option is **not modelled**.
+- A not-modelled option adds nothing to the scenario total and is listed with its reason and counted (`ScenarioResult.optionsUnmodelled`). An option with no price of its own is counted as unpriced, never shown as a 0% share.
+- Volatility moves only by a custom scenario's `volMove` (points; divided by 100 once, in `scenarios.ts`). Presets hold it at today's level. No coefficient ties volatility to the market move.
+- Held fixed: time to expiry, the risk-free rate (even under a rate move), dividends.
+- The percent change is floored at -100% of the QUOTED value, so a row never implies a negative value for a long option.
+- Never reintroduce a linear elasticity, a fixed elasticity fallback or a volatility default on this path: `tests/repo/scenario-option-no-linear-fallback.test.ts` fails on it. `DEFAULT_OPTION_ELASTICITY` survives only for the delta-exposure column (`lib/compute/exposure.ts`), which measures exposure at today's price and is not a stress test.
+- `scripts/compare-scenario-option-repricing.ts <db-copy>` prints a read-only, direction-only tally (sources, not-modelled reasons, signs) for a before/after check.
+
 ## F. Classification: sectors, factors, look-throughs
 
 ### GICS sector normalization (single source)
