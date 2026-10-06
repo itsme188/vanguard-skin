@@ -36,4 +36,13 @@ describe("resolveOptionUnderlying", () => {
     ins("YYY", "option", null);
     expect(resolveOptionUnderlying(db, opt)).toBeNull();
   });
+
+  // securities.symbol is UNIQUE, so a same-symbol bond/equity tie cannot exist
+  // in the real schema; the equity-first ranking is defensive. A sole non-equity
+  // row is still the fallback, and an option row is never one.
+  it("falls back to a sole non-equity, non-option row", () => {
+    const bond = ins("WWW", "Bond", null);
+    const opt = ins("WWW  261218C00100000", "Option", "WWW");
+    expect(resolveOptionUnderlying(db, opt)?.id).toBe(bond);
+  });
 });

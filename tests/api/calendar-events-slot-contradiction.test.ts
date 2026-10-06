@@ -9,8 +9,11 @@
  * Ruling: the symbol's known time is kept only when it sits on the SAME side of
  * noon as the chosen slot. A contradiction refuses with 409
  * `slot_contradicts_known_time` and writes nothing; the same POST with
- * `force: true` inserts and stores the SLOT default, never the contradicting
- * remembered time. No known time → no refusal, slot default.
+ * `forceSlot: true` inserts and stores the SLOT default, never the
+ * contradicting remembered time. No known time → no refusal, slot default.
+ *
+ * `forceSlot` and `force` are separate acknowledgements (review fix): each
+ * skips only its own guard, so one add can be refused twice in sequence.
  *
  * Dates derive from todayET() so the fixture can never go wall-clock stale.
  */
@@ -109,20 +112,20 @@ describe("POST /api/calendar/events — slot vs the symbol's known release time"
     expect(storedRow()).toBeUndefined();
   });
 
-  it("force: true inserts and stores the SLOT default, never the contradicting time", async () => {
+  it("forceSlot: true inserts and stores the SLOT default, never the contradicting time", async () => {
     rememberTime("16:05");
     const res = await POST(
-      postReq({ symbol: SYM, event_date: eventDate, event_time: "BMO", force: true }),
+      postReq({ symbol: SYM, event_date: eventDate, event_time: "BMO", forceSlot: true }),
     );
     expect(res.status).toBe(200);
     expect((await res.json()).success).toBe(true);
     expect(storedRow()).toEqual({ event_time: "BMO", release_time: "08:00" });
   });
 
-  it("force on the AMC side stores 16:15", async () => {
+  it("forceSlot on the AMC side stores 16:15", async () => {
     rememberTime("07:30");
     const res = await POST(
-      postReq({ symbol: SYM, event_date: eventDate, event_time: "AMC", force: true }),
+      postReq({ symbol: SYM, event_date: eventDate, event_time: "AMC", forceSlot: true }),
     );
     expect(res.status).toBe(200);
     expect(storedRow()).toEqual({ event_time: "AMC", release_time: "16:15" });
@@ -149,5 +152,64 @@ describe("POST /api/calendar/events — slot vs the symbol's known release time"
     rememberTime("16:05");
     const res = await POST(postReq({ symbol: SYM, event_date: eventDate, event_time: "TAS" }));
     expect(res.status).toBe(200);
+  });
+
+  it("`force` (the vendor-supersede acknowledgement) does NOT answer the slot warning", async () => {
+    rememberTime("16:05");
+    const res = await POST(
+      postReq({ symbol: SYM, event_date: eventDate, event_time: "BMO", force: true }),
+    );
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("slot_contradicts_known_time");
+    expect(storedRow()).toBeUndefined();
+  });
+});
+
+describe("slot contradiction + vendor supersede on the same add — two separate warnings", () => {
+  // A live vendor date one week after the manual date: a different week,
+  // inside the reconciler's clustering window (same shape as the supersede
+  // guard's own fixture).
+  const vendorDate = addDays(eventDate, 7);
+  const add = { symbol: SYM, event_date: eventDate, event_time: "BMO" };
+
+  beforeEach(() => {
+    rememberTime("16:05");
+    hoisted.db
+      .prepare(
+        `INSERT INTO calendar_events
+           (source, event_type, event_date, title, symbol, source_key, week_of, raw_json)
+         VALUES ('finnhub', 'earnings', ?, ?, ?, ?, ?, '{}')`,
+      )
+      .run(vendorDate, `${SYM} earnings`, SYM, `finnhub:${SYM}:${vendorDate}:earnings`, mondayOf(vendorDate));
+  });
+
+  it("no acknowledgement → first 409 is the slot warning", async () => {
+    const res = await POST(postReq(add));
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("slot_contradicts_known_time");
+    expect(storedRow()).toBeUndefined();
+  });
+
+  it("forceSlot only → second 409 is the supersede warning, still nothing written", async () => {
+    const res = await POST(postReq({ ...add, forceSlot: true }));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("would_supersede_vendor");
+    expect(body.vendorDate).toBe(vendorDate);
+    expect(storedRow()).toBeUndefined();
+  });
+
+  it("force only → still refused, by the slot warning", async () => {
+    const res = await POST(postReq({ ...add, force: true }));
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("slot_contradicts_known_time");
+    expect(storedRow()).toBeUndefined();
+  });
+
+  it("both acknowledgements → created, with the slot default time", async () => {
+    const res = await POST(postReq({ ...add, forceSlot: true, force: true }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).success).toBe(true);
+    expect(storedRow()).toEqual({ event_time: "BMO", release_time: "08:00" });
   });
 });

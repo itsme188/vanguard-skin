@@ -369,6 +369,11 @@ export function parseIbkrActivity(
       if (isNaN(quantity) || !symbol) continue;
 
       const isBuy = quantity > 0;
+      if (tradePrice === undefined) {
+        warnings.push(
+          `Trades: ${symbol} ${tradeDate}: the statement shows no trade price; the row is imported but will not create or close a tax lot until a price is entered`
+        );
+      }
       const directionNote = ibkrTradeDirectionNote(idxCode == null ? "" : row.fields[idxCode] ?? "", dateTime);
 
       // Real statements label option trades "Equity and Index Options" —

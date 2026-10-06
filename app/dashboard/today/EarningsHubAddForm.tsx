@@ -52,8 +52,8 @@ export interface VendorSupersedeRefusal {
 /**
  * The chosen BMO/AMC slot contradicts the symbol's known release time — the
  * 409 `slot_contradicts_known_time` refusal (user ruling 2026-10-05). Nothing
- * was written; the same add with `force: true` goes through and stores the
- * slot's default time instead of the contradicting remembered one.
+ * was written; the same add with `forceSlot: true` goes through and stores
+ * the slot's default time instead of the contradicting remembered one.
  */
 export interface SlotContradictionRefusal {
   /** The server's plain-English sentence — rendered as-is. */
@@ -72,8 +72,10 @@ interface ManualAddInput {
   symbol: string;
   date: string;
   slot: Slot;
-  /** Skip the server's refuse-and-ask checks (the user confirmed). */
+  /** Skip ONLY the would-supersede-a-vendor-date check (the user confirmed it). */
   force?: boolean;
+  /** Skip ONLY the slot-contradicts-known-time check (the user confirmed it). */
+  forceSlot?: boolean;
 }
 
 /**
@@ -100,6 +102,7 @@ export async function postManualEarningsEvent(
         event_time: input.slot,
         event_type: "earnings",
         ...(input.force ? { force: true } : {}),
+        ...(input.forceSlot ? { forceSlot: true } : {}),
       }),
     });
     const data = (await res.json().catch(() => null)) as {
@@ -153,6 +156,13 @@ export async function postManualEarningsEvent(
   }
 }
 
+/** Which of the two server warnings the user has answered for THIS add. */
+interface GuardAcks {
+  force: boolean;
+  forceSlot: boolean;
+}
+const NO_ACKS: GuardAcks = { force: false, forceSlot: false };
+
 export function EarningsHubAddForm({ weekOf }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -169,8 +179,22 @@ export function EarningsHubAddForm({ weekOf }: Props) {
   // Same contract for a 409 slot_contradicts_known_time: refused, nothing
   // written, the form asks inline (never a browser dialog).
   const [slotRefusal, setSlotRefusal] = useState<SlotContradictionRefusal | null>(null);
+  // Each warning has its own acknowledgement. One already given is carried
+  // into the resend if the OTHER guard then fires, so the user clicks at most
+  // once per warning — and never answers a warning they were not shown.
+  const [acks, setAcks] = useState<GuardAcks>(NO_ACKS);
 
-  async function save(force: boolean) {
+  // A refusal (and any acknowledgement of it) is about the exact ticker, date
+  // and slot that were checked. Changing any of them is a new question: drop
+  // BOTH stored refusals and both acks, so "Add anyway" can never force-add a
+  // symbol or date the server did not check.
+  function resetGuards() {
+    setSupersede(null);
+    setSlotRefusal(null);
+    setAcks(NO_ACKS);
+  }
+
+  async function save(nextAcks: GuardAcks) {
     if (!symbol.trim()) {
       setError("Symbol is required.");
       return;
@@ -179,8 +203,9 @@ export function EarningsHubAddForm({ weekOf }: Props) {
     setError(null);
     setSupersede(null);
     setSlotRefusal(null);
+    setAcks(nextAcks);
     try {
-      const outcome = await postManualEarningsEvent({ symbol, date, slot, force });
+      const outcome = await postManualEarningsEvent({ symbol, date, slot, ...nextAcks });
       if (outcome.kind === "slot_refused") {
         setSlotRefusal(outcome.refusal);
         return;
@@ -196,6 +221,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
       // Reset + close + reload server component; the cockpit is a client
       // poller and needs its own signal to pick up the new reporter now.
       setOutOfWeekNote(outOfWeekSaveNote(date, weekOf));
+      setAcks(NO_ACKS);
       setSymbol("");
       setOpen(false);
       window.dispatchEvent(new Event("earnings-data-changed"));
@@ -207,7 +233,8 @@ export function EarningsHubAddForm({ weekOf }: Props) {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    await save(false);
+    // A plain "Add" is a fresh question — it carries no acknowledgement.
+    await save(NO_ACKS);
   }
 
   if (!open) {
@@ -244,7 +271,10 @@ export function EarningsHubAddForm({ weekOf }: Props) {
       <input
         type="text"
         value={symbol}
-        onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+        onChange={(e) => {
+          setSymbol(e.target.value.toUpperCase());
+          resetGuards();
+        }}
         placeholder="TICKER"
         autoFocus
         className="font-mono uppercase bg-raised border border-edge rounded px-2 py-1 w-20 text-ink focus:outline-none focus:border-gold"
@@ -253,16 +283,17 @@ export function EarningsHubAddForm({ weekOf }: Props) {
       <input
         type="date"
         value={date}
-        onChange={(e) => setDate(e.target.value)}
+        onChange={(e) => {
+          setDate(e.target.value);
+          resetGuards();
+        }}
         className="bg-raised border border-edge rounded px-2 py-1 text-ink focus:outline-none focus:border-gold"
       />
       <select
         value={slot}
         onChange={(e) => {
-          // The refusal was about the slot that WAS picked — a new pick is a
-          // new question, so the stale "Add anyway" must not linger.
           setSlot(e.target.value as Slot);
-          setSlotRefusal(null);
+          resetGuards();
         }}
         className="bg-raised border border-edge rounded px-2 py-1 text-ink focus:outline-none focus:border-gold"
       >
@@ -284,8 +315,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
         onClick={() => {
           setOpen(false);
           setError(null);
-          setSupersede(null);
-          setSlotRefusal(null);
+          resetGuards();
         }}
         disabled={submitting}
         className="text-ink-faint hover:text-ink-dim"
@@ -299,7 +329,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
           <div className="mt-1.5 flex items-center gap-2">
             <button
               type="button"
-              onClick={() => save(true)}
+              onClick={() => save({ ...acks, forceSlot: true })}
               disabled={submitting}
               className="px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink hover:bg-gold/10 disabled:opacity-50"
             >
@@ -307,7 +337,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
             </button>
             <button
               type="button"
-              onClick={() => setSlotRefusal(null)}
+              onClick={resetGuards}
               disabled={submitting}
               className="px-3 py-1 text-[11px] rounded text-ink-dim hover:text-ink disabled:opacity-50"
             >
@@ -326,7 +356,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
           <div className="mt-1.5 flex items-center gap-2">
             <button
               type="button"
-              onClick={() => save(true)}
+              onClick={() => save({ ...acks, force: true })}
               disabled={submitting}
               className="px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink hover:bg-gold/10 disabled:opacity-50"
             >
@@ -334,7 +364,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
             </button>
             <button
               type="button"
-              onClick={() => setSupersede(null)}
+              onClick={resetGuards}
               disabled={submitting}
               className="px-3 py-1 text-[11px] rounded text-ink-dim hover:text-ink disabled:opacity-50"
             >

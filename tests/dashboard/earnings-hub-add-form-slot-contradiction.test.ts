@@ -68,16 +68,30 @@ describe("postManualEarningsEvent — the 409 slot_contradicts_known_time path",
     expect(calls[0].body.force).toBeUndefined();
   });
 
-  it("the confirm click re-sends the identical add with force: true", async () => {
+  it("the confirm click re-sends the identical add with forceSlot only — never force", async () => {
     const { calls, fetchImpl } = recordingFetch([{ status: 200, body: { success: true, id: 7 } }]);
-    const outcome = await postManualEarningsEvent({ ...ADD, force: true }, fetchImpl);
+    const outcome = await postManualEarningsEvent({ ...ADD, forceSlot: true }, fetchImpl);
     expect(outcome).toEqual({ kind: "saved", id: 7 });
     expect(calls[0].body).toMatchObject({
       symbol: "ZQTEST",
       event_date: "2026-10-12",
       event_time: "BMO",
-      force: true,
+      forceSlot: true,
     });
+    expect(calls[0].body.force).toBeUndefined();
+  });
+
+  it("a vendor-supersede confirm sends force only — never forceSlot", async () => {
+    const { calls, fetchImpl } = recordingFetch([{ status: 200, body: { success: true, id: 8 } }]);
+    await postManualEarningsEvent({ ...ADD, force: true }, fetchImpl);
+    expect(calls[0].body.force).toBe(true);
+    expect(calls[0].body.forceSlot).toBeUndefined();
+  });
+
+  it("both acknowledgements travel together once both warnings were answered", async () => {
+    const { calls, fetchImpl } = recordingFetch([{ status: 200, body: { success: true, id: 9 } }]);
+    await postManualEarningsEvent({ ...ADD, force: true, forceSlot: true }, fetchImpl);
+    expect(calls[0].body).toMatchObject({ force: true, forceSlot: true });
   });
 
   it("a 409 without the code is still a plain failure", async () => {
@@ -90,10 +104,32 @@ describe("postManualEarningsEvent — the 409 slot_contradicts_known_time path",
 });
 
 describe("EarningsHubAddForm wiring (source pin)", () => {
-  it("renders the refusal inline with an explicit Add anyway button that forces", () => {
+  it("renders the refusal inline; its Add anyway sends forceSlot, the vendor one sends force", () => {
     expect(SOURCE).toMatch(/slotRefusal\.message/);
-    expect(SOURCE).toMatch(/Add anyway/);
-    expect(SOURCE).toMatch(/onClick=\{\(\) => save\(true\)\}/);
+    expect(SOURCE).toMatch(/Add anyway as \$\{slot\}/);
+    expect(SOURCE).toMatch(/onClick=\{\(\) => save\(\{ \.\.\.acks, forceSlot: true \}\)\}/);
+    expect(SOURCE).toMatch(/onClick=\{\(\) => save\(\{ \.\.\.acks, force: true \}\)\}/);
+    // No button may answer both warnings at once.
+    expect(SOURCE).not.toMatch(/save\(true\)/);
+    expect(SOURCE).not.toMatch(/force: true, forceSlot: true/);
+  });
+
+  it("an acknowledgement is remembered across the resend, and a plain Add carries none", () => {
+    expect(SOURCE).toMatch(/setAcks\(nextAcks\)/);
+    expect(SOURCE).toMatch(/await save\(NO_ACKS\)/);
+  });
+
+  it("changing the ticker, the date or the slot clears BOTH refusals and both acks", () => {
+    const reset = SOURCE.match(/function resetGuards\(\) \{([\s\S]*?)\n  \}/);
+    expect(reset).not.toBeNull();
+    expect(reset![1]).toContain("setSupersede(null)");
+    expect(reset![1]).toContain("setSlotRefusal(null)");
+    expect(reset![1]).toContain("setAcks(NO_ACKS)");
+    for (const setter of ["setSymbol(e.target.value.toUpperCase())", "setDate(e.target.value)", "setSlot(e.target.value as Slot)"]) {
+      const i = SOURCE.indexOf(setter);
+      expect(i).toBeGreaterThan(-1);
+      expect(SOURCE.slice(i, i + 120)).toContain("resetGuards()");
+    }
   });
 
   it("never uses a browser confirm dialog", () => {

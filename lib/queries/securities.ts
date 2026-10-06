@@ -29,13 +29,21 @@ export function resolveOptionUnderlying(
     .prepare("SELECT security_type, underlying_symbol FROM securities WHERE id = ?")
     .get(optionSecurityId) as { security_type: string | null; underlying_symbol: string | null } | undefined;
   if (!opt || (opt.security_type ?? "").toLowerCase() !== "option" || !opt.underlying_symbol) return null;
-  return (
-    (db
-      .prepare(
-        "SELECT id, symbol FROM securities WHERE symbol = ? AND LOWER(security_type) != 'option' ORDER BY id LIMIT 1",
-      )
-      .get(opt.underlying_symbol) as { id: number; symbol: string } | undefined) ?? null
-  );
+  const candidates = db
+    .prepare(
+      "SELECT id, symbol, security_type FROM securities WHERE symbol = ? AND LOWER(COALESCE(security_type, '')) != 'option' ORDER BY id",
+    )
+    .all(opt.underlying_symbol) as { id: number; symbol: string; security_type: string | null }[];
+  // Equity first (stock / common stock), then ETF, then any other non-option
+  // row (bond, fund…); lowest id breaks ties. Case-insensitive.
+  const rank = (t: string | null): number => {
+    const v = (t ?? "").toLowerCase();
+    if (v === "stock" || v === "common stock") return 0;
+    if (v === "etf") return 1;
+    return 2;
+  };
+  const best = [...candidates].sort((a, b) => rank(a.security_type) - rank(b.security_type) || a.id - b.id)[0];
+  return best ? { id: best.id, symbol: best.symbol } : null;
 }
 
 export function getSecurityById(db: Database.Database, id: number): Security | null {

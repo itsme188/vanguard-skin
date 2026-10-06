@@ -214,7 +214,13 @@ export default async function SecurityDetailPage(props: {
   const isOptionHub = (security.security_type ?? "").toLowerCase() === "option";
   const optionUnderlying = isOptionHub ? resolveOptionUnderlying(db, securityId) : null;
   const underlyingNotes = optionUnderlying ? getNotesForSecurity(db, optionUnderlying.id) : [];
-  const shownNotes = [...notes, ...underlyingNotes];
+  const underlyingNoteIds = new Set(underlyingNotes.map((n) => n.id));
+  // Newest first by the displayed date; created_at breaks same-day ties.
+  const shownNotes = [...notes, ...underlyingNotes].sort(
+    (a, b) =>
+      b.event_date.localeCompare(a.event_date) ||
+      String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")),
+  );
   const noteComposerHref = isOptionHub
     ? optionUnderlying
       ? `/dashboard/research?view=notes&type=trade_thesis&symbol=${encodeURIComponent(optionUnderlying.symbol)}&security=${optionUnderlying.id}&via=option`
@@ -763,7 +769,10 @@ export default async function SecurityDetailPage(props: {
               >
                 + Add note
               </Link>
-              <Link href={`/dashboard/research?security=${securityId}`} className={ACTION_LINK_CLASS}>
+              <Link
+                href={`/dashboard/research?security=${optionUnderlying ? optionUnderlying.id : securityId}`}
+                className={ACTION_LINK_CLASS}
+              >
                 View all →
               </Link>
             </span>
@@ -785,6 +794,11 @@ export default async function SecurityDetailPage(props: {
                   >
                     {note.event_date}
                   </span>
+                  {optionUnderlying && underlyingNoteIds.has(note.id) && (
+                    <span className="text-xs text-ink-faint">
+                      filed under {optionUnderlying.symbol}
+                    </span>
+                  )}
                   {note.sentiment && (
                     <span
                       className="font-mono uppercase text-ink-faint"

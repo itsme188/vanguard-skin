@@ -176,7 +176,9 @@ describe("EarningsHubAddForm — supersede confirm wiring (static scan)", () => 
 
   it("offers a confirm button that re-submits with force", () => {
     expect(src).toMatch(/Add anyway/);
-    expect(src).toMatch(/onClick=\{\(\) => save\(true\)\}/);
+    // `force` answers ONLY the vendor-supersede warning; a slot acknowledgement
+    // already given is carried along (review fix 2026-10-05).
+    expect(src).toMatch(/onClick=\{\(\) => save\(\{ \.\.\.acks, force: true \}\)\}/);
   });
 
   it("offers a way out that keeps the vendor date", () => {

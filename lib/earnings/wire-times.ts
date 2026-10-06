@@ -331,60 +331,11 @@ export function resolveSymbolReleaseTime(
 }
 
 /**
- * How many of a family's most recent REPORTED earnings rows are searched for
- * a slot. Twins share a date, so eight rows is roughly the last four prints.
- */
-const LAST_PRINT_SLOT_LOOKBACK_ROWS = 8;
-
-/**
- * The BMO/AMC slot of the issuer family's most recent reported print that
- * names one — the last rung of "history first" for a slot-less vendor row
- * (user ruling 2026-10-05). "Reported" = `actual_value IS NOT NULL`, the same
- * bar the recap road uses; the slot comes from deriveEarningsSlot (event_time
- * marker / raw_json vendor hour), never from a stored release_time, which may
- * itself be an old 16:15 default. Superseded twins are read on purpose: the
- * Nasdaq twin of a surviving Finnhub row is often the one carrying the hour.
- */
-export function lastReportedPrintSlot(
-  db: Database.Database,
-  symbol: string,
-): "bmo" | "amc" | null {
-  try {
-    const family = issuerSiblings(symbol).map((s) => s.toUpperCase());
-    const ph = family.map(() => "?").join(",");
-    const rows = db
-      .prepare(
-        `SELECT event_time, raw_json
-           FROM calendar_events
-          WHERE event_type = 'earnings' AND UPPER(symbol) IN (${ph})
-            AND actual_value IS NOT NULL
-          ORDER BY event_date DESC, id DESC
-          LIMIT ${LAST_PRINT_SLOT_LOOKBACK_ROWS}`,
-      )
-      .all(...family) as Array<{ event_time: string | null; raw_json: string | null }>;
-    for (const r of rows) {
-      const slot = deriveEarningsSlot(r);
-      if (slot) return slot;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Full release-time resolution for one earnings row: explicit HH:MM
  * event_time → layers 1–3 → legacy constant + BMO/AMC defaults
  * (resolveReleaseTime) → pull-down rule (any observation earlier than a
  * layer-≥3 resolution pulls it down; user/web layers are never pulled).
- *
- * A SLOT-LESS vendor row (hour null / "unknown" / "dmh") is history-first
- * (user ruling 2026-10-05): layers 1–3 with no side-of-noon filter → the
- * curated per-symbol constant → the slot of the family's last reported print
- * (its slot default) → and only then the legacy 16:15 default. The no-history
- * case is deliberately UNCHANGED (still 16:15): storing no time there would
- * drop the row out of every time-gated pipeline reader and off the pre-print
- * floor — a separate decision, not made here.
+
  */
 export function resolveEarningsReleaseTime(
   db: Database.Database,
@@ -415,18 +366,6 @@ export function resolveEarningsReleaseTime(
   }
 
   let resolved = fromSymbol?.time ?? resolveReleaseTime(row);
-  // Slot-less row about to ride the bare default (no cascade hit, no curated
-  // per-symbol constant): the last reported print's slot beats that default.
-  // A row resolveReleaseTime leaves NULL stays NULL, exactly as before.
-  if (
-    resolved &&
-    !fromSymbol &&
-    slot === null &&
-    !SYMBOL_RELEASE_TIMES_ET[row.symbol.trim().toUpperCase()]
-  ) {
-    const historySlot = lastReportedPrintSlot(db, row.symbol);
-    if (historySlot) resolved = earningsHourToReleaseTime(historySlot);
-  }
   if (!resolved) return null;
 
   // Pull-down: ANY observation (bounded or not) earlier than the resolved

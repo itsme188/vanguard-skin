@@ -180,6 +180,12 @@ describe("IBKR activity parser", () => {
     expect(b.fees).toBe(2.75);
     expect(b.pricePerShare).toBe(387);
     expect(t.sourceKey).toBe(b.sourceKey);
+    expect(
+      result.warnings.some(
+        (w) => w.includes("MSFT 2025-01-10") && /no trade price/.test(w) && /tax lot/.test(w)
+      )
+    ).toBe(true);
+    expect(base.warnings.some((w) => /no trade price/.test(w))).toBe(false);
   });
 
   it("routes 'Equity and Index Options' trades down the option branch", () => {
