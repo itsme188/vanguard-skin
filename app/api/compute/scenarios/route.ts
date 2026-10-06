@@ -5,6 +5,7 @@ import { matchScenariosToThemes, SCENARIO_RECIPES } from "@/lib/compute/scenario
 import { getCachedMacroThemes } from "@/lib/queries/analysis-macro-themes";
 import { mondayOf } from "@/lib/calendar/date-utils";
 import { resolveScopeToSingleId } from "@/lib/queries/accounts";
+import { VOL_MOVE_MIN, VOL_MOVE_MAX } from "@/lib/compute/option-reprice";
 
 export async function GET(request: NextRequest) {
   try {
@@ -54,6 +55,7 @@ export async function GET(request: NextRequest) {
  * Body: {
  *   marketMove: number (-0.50 to 0.30),
  *   rateMove?: number (basis points),
+ *   volMove?: number (volatility points, -20 to 60) — option repricing only,
  *   sectorMoves?: Record<string, number>,
  *   name?: string,
  *   accountId?: number
@@ -62,9 +64,10 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { marketMove, rateMove, sectorMoves, name, accountId: bodyAccountId, scope } = body as {
+    const { marketMove, rateMove, volMove, sectorMoves, name, accountId: bodyAccountId, scope } = body as {
       marketMove?: number;
       rateMove?: number;
+      volMove?: number;
       sectorMoves?: Record<string, number>;
       name?: string;
       accountId?: number;
@@ -95,15 +98,31 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (volMove != null) {
+      if (typeof volMove !== "number" || !Number.isFinite(volMove)) {
+        return NextResponse.json(
+          { success: false, error: "volMove must be a finite number (volatility points)" },
+          { status: 400 }
+        );
+      }
+      if (volMove < VOL_MOVE_MIN || volMove > VOL_MOVE_MAX) {
+        return NextResponse.json(
+          { success: false, error: `volMove must be between ${VOL_MOVE_MIN} and ${VOL_MOVE_MAX} points` },
+          { status: 400 }
+        );
+      }
+    }
+
     const hasSectorMoves = sectorMoves && Object.keys(sectorMoves).length > 0;
 
     const scenario: ScenarioDefinition = {
       id: "custom",
       name: name || "Custom Scenario",
-      description: buildCustomDescription(marketMove, rateMove, sectorMoves),
+      description: buildCustomDescription(marketMove, rateMove, sectorMoves, volMove),
       category: hasSectorMoves ? "sector" : rateMove ? "rate" : "custom",
       marketMove,
       rateMove,
+      volMove: volMove || undefined,
       sectorMoves: hasSectorMoves ? sectorMoves : undefined,
     };
 
@@ -121,13 +140,15 @@ export async function POST(request: NextRequest) {
 function buildCustomDescription(
   marketMove: number,
   rateMove?: number,
-  sectorMoves?: Record<string, number>
+  sectorMoves?: Record<string, number>,
+  volMove?: number
 ): string {
   const parts: string[] = [];
   const pct = (v: number) => `${v >= 0 ? "+" : ""}${(v * 100).toFixed(0)}%`;
 
   parts.push(`Market ${pct(marketMove)}`);
   if (rateMove) parts.push(`rates ${rateMove > 0 ? "+" : ""}${rateMove}bp`);
+  if (volMove) parts.push(`vol ${volMove > 0 ? "+" : ""}${volMove} pts`);
   if (sectorMoves) {
     const overrides = Object.entries(sectorMoves)
       .slice(0, 3)

@@ -139,4 +139,42 @@ describe("POST /api/compute/scenarios — rateMove validation", () => {
     const body = await res.json();
     expect(body.success).toBe(false);
   });
+
+  it("accepts a volMove inside the range and passes it to the engine", async () => {
+    const res = await postScenario({ marketMove: -0.2, volMove: 15 });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.success).toBe(true);
+    expect(json.data.scenario.volMove).toBe(15);
+    expect(json.data.scenario.description).toContain("vol +15 pts");
+  });
+
+  it("omits volMove from the scenario when it is zero or null", async () => {
+    for (const unset of [0, null]) {
+      const res = await postScenario({ marketMove: -0.2, volMove: unset });
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.data.scenario.volMove).toBeUndefined();
+      expect(json.data.scenario.description).not.toContain("vol");
+    }
+  });
+
+  it("rejects a volMove that is not a number", async () => {
+    const res = await postScenario({ marketMove: -0.2, volMove: "15" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/volMove/);
+  });
+
+  it("rejects a non-finite volMove", async () => {
+    const res = await postScenarioRaw('{"marketMove": -0.2, "volMove": 1e400}');
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/volMove/);
+  });
+
+  it("rejects a volMove outside the slider range", async () => {
+    for (const bad of [-21, 61, 500]) {
+      const res = await postScenario({ marketMove: -0.2, volMove: bad });
+      expect(res.status, String(bad)).toBe(400);
+    }
+  });
 });

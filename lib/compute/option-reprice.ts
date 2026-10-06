@@ -25,6 +25,9 @@ export type OptionUnmodelledReason =
 
 /** Shocked volatility never goes to or below zero (the formula divides by it). */
 export const MIN_SHOCKED_VOL = 0.01;
+/** Range of the custom scenario's volatility slider, in points (spec §6). */
+export const VOL_MOVE_MIN = -20;
+export const VOL_MOVE_MAX = 60;
 
 export interface OptionRepriceShock {
   /** The UNDERLYING's scenario move, e.g. -0.2. Floored at -100% here. */
