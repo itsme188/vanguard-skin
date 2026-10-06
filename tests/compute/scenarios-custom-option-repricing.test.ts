@@ -2,11 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { computeScenario, type ScenarioDefinition } from "@/lib/compute/scenarios";
-import {
-  optionElasticity,
-  DEFAULT_OPTION_ELASTICITY,
-  type OptionElasticityInputs,
-} from "@/lib/compute/option-elasticity";
+import { repriceOptionUnderShock } from "@/lib/compute/option-reprice";
+import type { OptionElasticityInputs } from "@/lib/compute/option-elasticity";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 
@@ -39,6 +36,7 @@ const SHORT_PUT_ID = 4;
 const ORPHAN_PUT_ID = 5;
 const ORPHAN_UNDERLYING_ID = 6;
 const MMF_ID = 7;
+const PRICELESS_PUT_ID = 8;
 
 /** Technology + no style/size tilt → estimateBeta = 1.15. */
 const UNDERLYING_BETA = 1.15;
@@ -97,8 +95,8 @@ function seed(db: Database.Database) {
     `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, ?, ?, -1, 'h-zzul-put90-short')`
   ).run(SHORT_PUT_ID, today);
 
-  // Unpriceable option: its underlying ZZNP exists but carries no price row,
-  // so elasticity has to fall back to ±DEFAULT_OPTION_ELASTICITY.
+  // Unrepriceable option: its underlying ZZNP exists but carries no price row,
+  // so repricing cannot run and the row is reported as unmodelled.
   db.prepare(
     `INSERT INTO securities (id, symbol, name, security_type) VALUES (?, 'ZZNP', 'Zulu No-Price', 'Stock')`
   ).run(ORPHAN_UNDERLYING_ID);
@@ -110,6 +108,15 @@ function seed(db: Database.Database) {
   db.prepare(
     `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, ?, ?, 1, 'h-zznp-put50')`
   ).run(ORPHAN_PUT_ID, today);
+
+  // Option with no price row of its own: kept by the query, listed as unmodelled.
+  db.prepare(
+    `INSERT INTO securities (id, symbol, security_type, underlying_symbol, strike_price, expiration_date, option_type, multiplier)
+     VALUES (?, 'ZZUL  PUT90B', 'Option', 'ZZUL', 90, ?, 'PUT', 100)`
+  ).run(PRICELESS_PUT_ID, expiry);
+  db.prepare(
+    `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, ?, ?, 1, 'h-zzul-put90-priceless')`
+  ).run(PRICELESS_PUT_ID, today);
 
   // Money-market sweep fund the broker typed 'Mutual Fund' — identity lives
   // in fund_category, exactly like the live VMFXX rows.
@@ -134,11 +141,7 @@ function putInputs(): OptionElasticityInputs {
   };
 }
 
-function callInputs(): OptionElasticityInputs {
-  return { ...putInputs(), option_type: "CALL", strike_price: 105 };
-}
-
-describe("custom what-if scenarios: options use signed elasticity, not a flat 2x beta", () => {
+describe("custom what-if scenarios: options are repriced, not scaled by a flat beta", () => {
   let db: Database.Database;
 
   beforeEach(() => {
@@ -197,45 +200,6 @@ describe("custom what-if scenarios: options use signed elasticity, not a flat 2x
     expect(Math.sign(up.longPut.changePercent)).toBe(-1);
     expect(Math.sign(down.longCall.changePercent)).toBe(-1);
     expect(Math.sign(up.longCall.changePercent)).toBe(1);
-    expect(Math.sign(down.orphanPut.changePercent)).toBe(1);
-    expect(Math.sign(up.orphanPut.changePercent)).toBe(-1);
-  });
-
-  it("the custom path's option direction is exactly the shared helper's elasticity sign", () => {
-    // On an UP move the option moves WITH Ω; on a down move, against it.
-    const rate = getRiskFreeRate(db);
-    const up = impacts(UP_20);
-    expect(Math.sign(up.longPut.changePercent)).toBe(Math.sign(optionElasticity(putInputs(), rate)));
-    expect(Math.sign(up.longCall.changePercent)).toBe(Math.sign(optionElasticity(callInputs(), rate)));
-  });
-
-  it("the custom leg equals underlying move x elasticity (clamped), not marketMove x 2", () => {
-    const rate = getRiskFreeRate(db);
-    const { longPut } = impacts(DOWN_20);
-    const omega = optionElasticity(putInputs(), rate);
-    const expected = Math.max(-1, -0.2 * UNDERLYING_BETA * omega);
-    expect(longPut.changePercent).toBeCloseTo(expected, 6);
-    // The pre-fix behaviour was a flat -0.4 for every option.
-    expect(longPut.changePercent).not.toBeCloseTo(-0.4, 3);
-  });
-
-  it("reports the option's LEVERED signed exposure in the beta column", () => {
-    const rate = getRiskFreeRate(db);
-    const { longPut, longCall } = impacts(DOWN_20);
-    expect(longPut.beta).toBeCloseTo(UNDERLYING_BETA * optionElasticity(putInputs(), rate), 6);
-    expect(longPut.beta).toBeLessThan(0);
-    expect(longCall.beta).toBeCloseTo(UNDERLYING_BETA * optionElasticity(callInputs(), rate), 6);
-    expect(longCall.beta).toBeGreaterThan(0);
-    // Never the old flat 2.0.
-    expect(longPut.beta).not.toBeCloseTo(2, 3);
-    expect(longCall.beta).not.toBeCloseTo(2, 3);
-  });
-
-  it("an unpriceable option falls back to ±2.5 x the underlying move, signed by put/call", () => {
-    const { orphanPut } = impacts(DOWN_20);
-    // ZZNP has no sector/style/size → underlying beta 1.0 → move -0.2.
-    expect(orphanPut.changePercent).toBeCloseTo(-0.2 * -DEFAULT_OPTION_ELASTICITY, 6);
-    expect(orphanPut.beta).toBeCloseTo(-DEFAULT_OPTION_ELASTICITY, 6);
   });
 
   it("an option inherits the underlying's classification (sector), never its own null sector", () => {
@@ -256,52 +220,71 @@ describe("custom what-if scenarios: options use signed elasticity, not a flat 2x
     expect(mmf.changePercent).toBe(0);
     expect(mmf.estimatedChange).toBe(0);
   });
-});
 
-describe("optionElasticity: expiration spellings", () => {
-  // The DB carries BOTH shapes: ISO for most rows, the compact YYYYMMDD on
-  // TWS-enriched ones (same two `normalizeExpiration` in
-  // lib/compute/options-strategy.ts handles). `new Date("20270115")` is an
-  // Invalid Date, so the compact spelling used to make T non-finite and every
-  // such option silently took the ±2.5 fallback instead of its real Δ·S/V.
-  const RATE = 0.045;
-
-  function isoInputs(): OptionElasticityInputs {
-    return {
-      option_type: "PUT",
-      strike_price: 95,
-      expiration_date: addDays(todayET(), 90),
-      own_price: 3,
-      underlying_price: 100,
-      underlying_iv: 0.3,
-    };
-  }
-
-  /** The same date, spelled YYYYMMDD. */
-  function compactInputs(): OptionElasticityInputs {
-    const iso = isoInputs();
-    return { ...iso, expiration_date: iso.expiration_date!.replace(/-/g, "") };
-  }
-
-  it("the compact YYYYMMDD spelling produces the SAME elasticity as the ISO one", () => {
-    expect(optionElasticity(compactInputs(), RATE)).toBeCloseTo(
-      optionElasticity(isoInputs(), RATE),
-      6,
-    );
+  it("an option's change is the shared repricing result (engine and module agree)", () => {
+    const res = computeScenario(db, DOWN_20);
+    const longPut = res.positionImpacts.find((p) => p.securityId === LONG_PUT_ID)!;
+    const expected = repriceOptionUnderShock(putInputs(), {
+      underlyingMove: -0.2 * UNDERLYING_BETA,
+      riskFreeRate: getRiskFreeRate(db),
+    });
+    if (!expected.modelled) throw new Error("fixture must be modelled");
+    expect(longPut.changePercent).toBeCloseTo(expected.changePercent, 10);
+    expect(longPut.ivSource).toBe(expected.ivSource);
+    expect(longPut.estimatedChange).toBeCloseTo(longPut.currentValue * expected.changePercent, 8);
   });
 
-  it("the compact spelling is priced, not dropped onto the ±2.5 fallback", () => {
-    const omega = optionElasticity(compactInputs(), RATE);
-    expect(omega).toBeLessThan(0); // a put stays signed
-    expect(omega).not.toBeCloseTo(-DEFAULT_OPTION_ELASTICITY, 6);
+  it("a long put gains and a long call loses on a down move; a short put loses dollars", () => {
+    const res = computeScenario(db, DOWN_20);
+    const by = (id: number) => res.positionImpacts.find((p) => p.securityId === id)!;
+    expect(by(LONG_PUT_ID).estimatedChange).toBeGreaterThan(0);
+    expect(by(LONG_CALL_ID).estimatedChange).toBeLessThan(0);
+    expect(by(SHORT_PUT_ID).currentValue).toBeLessThan(0);
+    expect(by(SHORT_PUT_ID).estimatedChange).toBeLessThan(0);
   });
 
-  it("an unrecognized expiration spelling still falls back, signed by put/call", () => {
-    const garbled = { ...isoInputs(), expiration_date: "JAN-15-27" };
-    expect(optionElasticity(garbled, RATE)).toBeCloseTo(-DEFAULT_OPTION_ELASTICITY, 6);
-    expect(optionElasticity({ ...garbled, option_type: "CALL" }, RATE)).toBeCloseTo(
-      DEFAULT_OPTION_ELASTICITY,
-      6,
-    );
+  it("a zero move with no volatility change leaves every option unchanged", () => {
+    const res = computeScenario(db, { ...DOWN_20, id: "custom-flat", marketMove: 0 });
+    for (const p of res.positionImpacts.filter((x) => x.securityType === "Option" && !x.unmodelledReason)) {
+      if (p.ivSource === "own-price") expect(p.estimatedChange).toBeCloseTo(0, 10); // a short row gives -0
+    }
+  });
+
+  it("the volatility slider moves option rows only", () => {
+    const base = computeScenario(db, DOWN_20);
+    const bumped = computeScenario(db, { ...DOWN_20, volMove: 20 });
+    const stock = (r: typeof base) => r.positionImpacts.find((p) => p.securityId === STOCK_ID)!;
+    expect(stock(bumped).estimatedChange).toBe(stock(base).estimatedChange);
+    const put = (r: typeof base) => r.positionImpacts.find((p) => p.securityId === LONG_PUT_ID)!;
+    expect(put(bumped).estimatedChange).toBeGreaterThan(put(base).estimatedChange);
+  });
+
+  it("an option that cannot be repriced is listed, adds nothing, and is counted", () => {
+    const res = computeScenario(db, DOWN_20);
+    const orphan = res.positionImpacts.find((p) => p.securityId === ORPHAN_PUT_ID)!;
+    expect(orphan.unmodelledReason).toBe("no-underlying-price");
+    expect(orphan.estimatedChange).toBe(0);
+    expect(orphan.changePercent).toBe(0);
+    const priceless = res.positionImpacts.find((p) => p.securityId === PRICELESS_PUT_ID)!;
+    expect(priceless.unmodelledReason).toBe("no-option-price");
+    expect(priceless.currentValue).toBe(0);
+    expect(res.optionsUnmodelled.count).toBe(2);
+    expect(res.optionsUnmodelled.valueShare).toBeGreaterThan(0);
+  });
+
+  it("the scenario total equals the sum of the rows", () => {
+    const res = computeScenario(db, { ...DOWN_20, volMove: 10 });
+    const sum = res.positionImpacts.reduce((s, p) => s + p.estimatedChange, 0);
+    expect(res.estimatedChange).toBeCloseTo(sum, 8);
+  });
+
+  it("all options unmodelled: the result still computes and the total ties", () => {
+    db.prepare(`DELETE FROM prices WHERE security_id = ?`).run(STOCK_ID); // every ZZUL option loses its underlying price
+    const res = computeScenario(db, DOWN_20);
+    const options = res.positionImpacts.filter((p) => p.securityType === "Option");
+    expect(options.length).toBeGreaterThan(0);
+    expect(options.every((p) => p.unmodelledReason)).toBe(true);
+    expect(res.optionsUnmodelled.count).toBe(options.length);
+    expect(res.estimatedChange).toBeCloseTo(res.positionImpacts.reduce((s, p) => s + p.estimatedChange, 0), 8);
   });
 });

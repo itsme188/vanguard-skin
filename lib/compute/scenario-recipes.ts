@@ -709,6 +709,7 @@ ${OPTION_PRICING_JOINS_SQL}
     positionImpacts: impacts,
     biggestLosers,
     biggestWinners,
+    optionsUnmodelled: { count: 0, valueShare: 0 },
   };
 }
 

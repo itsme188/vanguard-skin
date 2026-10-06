@@ -135,3 +135,10 @@ export const OPTION_PRICING_COLUMNS_SQL = `        s.strike_price,
 export const OPTION_PRICING_JOINS_SQL = `      LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
       LEFT JOIN latest_prices lp_u ON lp_u.security_id = s_u.id
       LEFT JOIN security_quotes q_u ON q_u.security_id = s_u.id`;
+
+/**
+ * SQL twin of `isOptionSecurityType` for the `s` alias. Both position queries
+ * use it to keep an option row that has no price of its own, so the scenario
+ * can list it as "not modelled" instead of dropping it silently.
+ */
+export const OPTION_ROW_SQL = `LOWER(TRIM(s.security_type)) IN ('option', 'call', 'put')`;

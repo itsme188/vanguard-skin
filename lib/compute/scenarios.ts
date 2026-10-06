@@ -9,12 +9,18 @@ import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { normalizeMarketCapCategory } from "@/lib/securities/normalize-market-cap";
 import {
-  optionElasticity,
   isOptionSecurityType,
-  leverUnderlyingMoveByElasticity,
   OPTION_PRICING_COLUMNS_SQL,
   OPTION_PRICING_JOINS_SQL,
+  OPTION_ROW_SQL,
 } from "./option-elasticity";
+import {
+  repriceOptionUnderShock,
+  summarizeUnmodelledOptions,
+  type OptionIvSource,
+  type OptionUnmodelledReason,
+} from "./option-reprice";
+import { todayET } from "@/lib/calendar/date-utils";
 import {
   SCENARIO_RECIPES,
   findRecipe,
@@ -31,6 +37,8 @@ export interface ScenarioDefinition {
   category: "crash" | "rate" | "sector" | "custom";
   marketMove: number; // e.g., -0.10 for -10%
   rateMove?: number; // basis points, e.g., 100 for +1%
+  /** Volatility change in points for option repricing (15 = +15 points). Custom scenarios only; presets hold volatility at today's level. */
+  volMove?: number;
   sectorMoves?: Record<string, number>; // sector name → move (e.g., { "Technology": -0.25 })
   /** Factor this scenario primarily stresses — set from ScenarioRecipe for preset scenarios. */
   primaryFactor?: FactorColumn;
@@ -55,6 +63,12 @@ export interface PositionImpact {
    * value was in the subject sector.
    */
   subjectShare?: number;
+  /** Options only: the scenario move of the contract's UNDERLYING, before repricing. */
+  underlyingMove?: number;
+  /** Options only: where the volatility used to reprice this contract came from. */
+  ivSource?: OptionIvSource;
+  /** Options only: set when the contract could not be repriced; its change is then zero. */
+  unmodelledReason?: OptionUnmodelledReason;
 }
 
 export interface ScenarioResult {
@@ -66,6 +80,8 @@ export interface ScenarioResult {
   positionImpacts: PositionImpact[];
   biggestLosers: PositionImpact[];
   biggestWinners: PositionImpact[];
+  /** Option rows left out of the total because they could not be repriced. */
+  optionsUnmodelled: { count: number; valueShare: number };
   /** Set when the scenario's primaryFactor matches an active macro theme's factor_label. */
   liveNowReason?: string;
 }
@@ -144,7 +160,7 @@ ${OPTION_PRICING_COLUMNS_SQL},
        LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
 ${OPTION_PRICING_JOINS_SQL}
-       WHERE COALESCE(lp.close_price, 0) > 0
+       WHERE (COALESCE(lp.close_price, 0) > 0 OR ${OPTION_ROW_SQL})
          AND ${liveOptionExpirationSql("s")}
        ORDER BY market_value DESC`
     )
@@ -178,6 +194,9 @@ ${OPTION_PRICING_JOINS_SQL}
   const etfWeights = scenario.sectorMoves ? getEtfSectorWeights(db) : new Map<string, Array<{ sector: string; weight_pct: number }>>();
 
   const riskFreeRate = getRiskFreeRate(db);
+  // Read the clock ONCE so every option in a scenario shares one time to expiry.
+  const runToday = todayET();
+  const runNow = new Date();
 
   // 2. Estimate beta for each position
   const positionImpacts: PositionImpact[] = positions.map((pos) => {
@@ -238,30 +257,33 @@ ${OPTION_PRICING_JOINS_SQL}
     const underlyingMove = marketLeg + rateLeg;
 
     let changePercent: number;
-    let reportedBeta = beta;
+    let ivSource: OptionIvSource | undefined;
+    let unmodelledReason: OptionUnmodelledReason | undefined;
     if (isOption) {
-      // QA fix (2026-09-11): options used to take a flat beta of 2.0 with no
-      // put/call sign, so a -20% shock showed EVERY option at -40% — a held
-      // put lost money in a crash. Lever the underlying's whole move by
-      // signed elasticity Ω = Δ·S/V instead, exactly as the recipe engine
-      // does (it applies Ω to the entire factor-derived underlying move,
-      // rate component included; here the rate leg is 0 for an option, since
-      // estimateRateLeg only prices bonds and cash off the position's own
-      // type). Ω is negative for puts, so protection GAINS on a down shock.
-      const omega = optionElasticity(pos, riskFreeRate);
-      changePercent = leverUnderlyingMoveByElasticity(underlyingMove, omega);
-      // Report the effective LEVERED exposure (signed): the UI prints this as
-      // "β-9.2" next to the position, and a long put is genuinely short the
-      // market at several times its notional sensitivity.
-      reportedBeta = beta * omega;
+      // Reprice at the shocked underlying (spec 2026-10-06). The engine's
+      // move describes the UNDERLYING; the option's own change comes from
+      // Black-Scholes, so a short put's loss on a large drop is no longer a
+      // straight line capped at 8x. An option that cannot be priced adds
+      // nothing and is reported, never estimated from a fixed figure.
+      const repriced = repriceOptionUnderShock(pos, {
+        underlyingMove,
+        volChange: (scenario.volMove ?? 0) / 100,
+        riskFreeRate,
+        today: runToday,
+        now: runNow,
+      });
+      if (repriced.modelled) {
+        changePercent = repriced.changePercent;
+        ivSource = repriced.ivSource;
+      } else {
+        changePercent = 0;
+        unmodelledReason = repriced.reason;
+      }
     } else {
       // The UNDERLYING can't fall below zero, i.e. changePercent can't go
       // below -100% — for longs AND shorts. A short's direction is already
       // carried by its negative market_value; estimatedChange = market_value *
-      // changePercent still flips sign correctly. Leaving shorts unclamped let
-      // changePercent < -1 flip the sign of estimatedNewValue, implying a
-      // short could earn more than its full notional proceeds. (The option
-      // branch applies the same clamp inside leverUnderlyingMoveByElasticity.)
+      // changePercent still flips sign correctly.
       changePercent = Math.max(underlyingMove, -1);
     }
 
@@ -277,7 +299,10 @@ ${OPTION_PRICING_JOINS_SQL}
       estimatedChange,
       estimatedNewValue: pos.market_value + estimatedChange,
       changePercent,
-      beta: reportedBeta,
+      beta,
+      ivSource,
+      unmodelledReason,
+      underlyingMove: isOption ? underlyingMove : undefined,
     };
   });
 
@@ -305,6 +330,7 @@ ${OPTION_PRICING_JOINS_SQL}
     positionImpacts,
     biggestLosers,
     biggestWinners,
+    optionsUnmodelled: summarizeUnmodelledOptions(positionImpacts),
   };
 }
 
