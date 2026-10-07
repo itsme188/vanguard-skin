@@ -65,6 +65,22 @@ interface DropResponse {
   error?: string;
 }
 
+/**
+ * True once a print is finished: its window has closed (expired / disarmed) or
+ * its sheet parsed and the effective window has ended. A finished print shows
+ * no pending-source copy ("awaiting first poll", "EDGAR: CIK pending", a
+ * waiting prep step) because nothing is pending any more.
+ */
+export function isPrintFinished(
+  state: string,
+  effectiveWindow: { start: string; end: string } | null | undefined,
+  nowMs: number,
+): boolean {
+  if (state === "expired" || state === "disarmed") return true;
+  if (state !== "parsed") return false;
+  return effectiveWindow ? nowMs > Date.parse(effectiveWindow.end) : false;
+}
+
 export default function LivePrintRow({
   print,
   prepareSteps,
@@ -97,6 +113,7 @@ export default function LivePrintRow({
   }, []);
 
   const ladder = ladderText(print.sources);
+  const finished = isPrintFinished(print.state, print.effectiveWindow, Date.now());
   const summary = promoteSummary(print.lines);
   const agreedIds = print.lines.filter((l) => l.state === "agreed").map((l) => l.metric_id);
   const noEventId = print.eventId === undefined;
@@ -407,7 +424,7 @@ export default function LivePrintRow({
       </div>
 
       <p className="text-[11px] font-mono text-ink-faint mb-3">
-        {ladder || "awaiting first poll — sources reset after a server restart"}
+        {ladder || (finished ? "" : "awaiting first poll — sources reset after a server restart")}
         {print.coverage.length > 0 && (
           <span className="block mt-0.5 text-ink-faint italic" style={{ fontSize: "10px" }}>
             {print.coverage.join(" · ")}
@@ -425,7 +442,7 @@ export default function LivePrintRow({
 
       <div className="mt-2 mb-3 space-y-1.5">
         <IrPageField symbol={print.symbol} onNote={note} onError={fail} />
-        <PrepareStatus steps={prepareSteps} />
+        {!finished && <PrepareStatus steps={prepareSteps} />}
         {/* Which document each road actually produced. The status route has
             sent this since slice B and nothing consumed it: "EDGAR: ok" in the
             ladder above says a road ran, not WHICH filing it handed over. */}

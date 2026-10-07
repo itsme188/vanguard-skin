@@ -194,7 +194,7 @@ export default function GoControls({
     : null;
 
   return (
-    <div className="flex items-center gap-2 flex-wrap">
+    <div className="flex items-center gap-2 flex-wrap min-w-0">
       <button
         type="button"
         onClick={handleGo}
@@ -234,7 +234,7 @@ export default function GoControls({
         }}
         placeholder="Paste the release link"
         disabled={busy || noEventId}
-        className="w-[20rem] max-w-full bg-raised border border-edge rounded px-2 py-1 font-mono text-[12px] text-ink focus:outline-none focus:border-gold disabled:opacity-60"
+        className="w-full sm:w-[20rem] min-w-0 max-w-full bg-raised border border-edge rounded px-2 py-1 font-mono text-[12px] text-ink focus:outline-none focus:border-gold disabled:opacity-60"
         aria-label="Paste the release link"
       />
       <button
