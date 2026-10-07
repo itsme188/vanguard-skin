@@ -10,6 +10,7 @@ import {
 const FIXTURE = {
   symbol: "IBM",
   quarter: "2024Q1",
+  date: "2024-04-24",
   transcript: [
     {
       speaker: "Operator",
@@ -89,6 +90,11 @@ describe("getEarningsTranscript — response mapping", () => {
   it("averages segment sentiments into overall_sentiment", async () => {
     const result = await getEarningsTranscript("IBM", 2024, 1);
     expect(result!.overall_sentiment).toBeCloseTo((0.5 + 0.9 + 0.7) / 3, 5);
+  });
+
+  it("carries a vendor call date when the payload provides one", async () => {
+    const result = await getEarningsTranscript("IBM", 2024, 1);
+    expect(result!.call_date).toBe("2024-04-24");
   });
 
   it("builds the documented query URL with a fiscal YYYYQN quarter", async () => {

@@ -339,7 +339,9 @@ export async function fetchSameDayTranscripts(
     attempted += 1;
 
     try {
-      const result = await fetchTranscript(db, symbol, year, quarter);
+      const result = await fetchTranscript(db, symbol, year, quarter, {
+        eventDate: row.event_date,
+      });
       // fromCache: true means a FAILED upgrade (fetchTranscript echoed the
       // cached edgar row back) — not a fetch, and re-summarizing the same
       // edgar text would burn an AI call per attempt.

@@ -4,10 +4,16 @@ import { runMigrations } from "@/lib/db/migrate";
 import { upsertTranscript } from "@/lib/mutations/transcripts";
 import {
   deriveFilingReportingQuarter,
+  extractGuidance,
+  extractRiskFactors,
   fetchTranscript,
   getTranscriptForChat,
 } from "@/lib/transcripts/fetch";
 import { getEarnings8KFilings } from "@/lib/apis/edgar";
+import {
+  isApiNinjasConfigured,
+  getEarningsTranscript as getApiNinjasTranscript,
+} from "@/lib/apis/api-ninjas";
 import {
   isAlphaVantageConfigured,
   getEarningsTranscript as getAlphaVantageTranscript,
@@ -19,7 +25,7 @@ import { getLatestTranscript as getMotleyFoolTranscript } from "@/lib/apis/motle
 // expects either a successful refresh with non-legacy content or a full
 // miss — a real network call would hang the suite at 5s.
 vi.mock("@/lib/apis/api-ninjas", () => ({
-  isApiNinjasConfigured: () => false,
+  isApiNinjasConfigured: vi.fn(() => false),
   getEarningsTranscript: vi.fn(async () => null),
 }));
 
@@ -49,6 +55,25 @@ vi.mock("@/lib/apis/edgar", () => ({
     },
   ]),
 }));
+
+function resetExternalMocks() {
+  vi.mocked(isApiNinjasConfigured).mockReturnValue(false);
+  vi.mocked(getApiNinjasTranscript).mockResolvedValue(null);
+  vi.mocked(isAlphaVantageConfigured).mockReturnValue(true);
+  vi.mocked(getAlphaVantageTranscript).mockResolvedValue(null);
+  vi.mocked(getEarnings8KFilings).mockResolvedValue([
+    {
+      accessionNumber: "refresh-accession",
+      filingDate: "2026-04-25",
+      filingUrl: "https://example.test/filing",
+      pressReleaseText: "refreshed ".repeat(2000),
+    },
+  ]);
+}
+
+beforeEach(() => {
+  resetExternalMocks();
+});
 
 function makeDb(): Database.Database {
   const db = new Database(":memory:");
@@ -205,6 +230,7 @@ describe("fetchTranscript — Alpha Vantage chain position", () => {
   it("uses Alpha Vantage when it returns a transcript — EDGAR never reached", async () => {
     vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce({
       transcript: "Jane Doe (CEO): We had a strong quarter with revenue growth.",
+      call_date: "2026-04-22",
       participants: [{ name: "Jane Doe", title: "CEO" }],
       overall_sentiment: 0.6,
     });
@@ -261,6 +287,7 @@ describe("fetchTranscript — Alpha Vantage chain position", () => {
     seedCached(db, "TER", 2026, 1, "edgar_8k", "press release excerpt only");
     vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce({
       transcript: "Jane Doe (CEO): Full call transcript with Q&A.",
+      call_date: "2026-04-22",
       participants: [{ name: "Jane Doe", title: "CEO" }],
       overall_sentiment: 0.1,
     });
@@ -291,6 +318,170 @@ describe("fetchTranscript — Alpha Vantage chain position", () => {
     expect(result).not.toBeNull();
     expect(result!.transcript.source).toBe("api_ninjas");
     expect(getAlphaVantageTranscript).not.toHaveBeenCalled();
+  });
+});
+
+describe("fetchTranscript — print-date call guard", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = makeDb();
+    vi.clearAllMocks();
+  });
+
+  it("caches an Alpha Vantage transcript whose vendor call date is near the print date", async () => {
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce({
+      transcript: "Jane Doe (CEO): Prepared remarks for the current call.",
+      call_date: "2026-09-30",
+      participants: [{ name: "Jane Doe", title: "CEO" }],
+      overall_sentiment: 0.2,
+    });
+
+    const result = await fetchTranscript(db, "ZZD", 2026, 2, {
+      eventDate: "2026-09-30",
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.transcript.source).toBe("alpha_vantage");
+    expect(result!.transcript.call_date).toBe("2026-09-30");
+    const cached = db
+      .prepare("SELECT COUNT(*) AS c FROM earnings_transcripts WHERE ticker = 'ZZD'")
+      .get() as { c: number };
+    expect(cached.c).toBe(1);
+  });
+
+  it("rejects an Alpha Vantage transcript whose vendor call date is six months older, and a later fetch can cache the real call", async () => {
+    vi.mocked(getAlphaVantageTranscript)
+      .mockResolvedValueOnce({
+        transcript: "Jane Doe (CEO): Prepared remarks for the older call.",
+        call_date: "2026-03-30",
+        participants: [{ name: "Jane Doe", title: "CEO" }],
+        overall_sentiment: 0.2,
+      })
+      .mockResolvedValueOnce({
+        transcript: "Jane Doe (CEO): Prepared remarks for the real call.",
+        call_date: "2026-09-30",
+        participants: [{ name: "Jane Doe", title: "CEO" }],
+        overall_sentiment: 0.4,
+      });
+
+    const stale = await fetchTranscript(db, "ZZR", 2026, 2, {
+      eventDate: "2026-09-30",
+    });
+
+    expect(stale).toBeNull();
+    expect(
+      (db.prepare("SELECT COUNT(*) AS c FROM earnings_transcripts WHERE ticker = 'ZZR'").get() as {
+        c: number;
+      }).c,
+    ).toBe(0);
+
+    const fresh = await fetchTranscript(db, "ZZR", 2026, 2, {
+      eventDate: "2026-09-30",
+    });
+
+    expect(fresh).not.toBeNull();
+    expect(fresh!.transcript.transcript).toContain("real call");
+    expect(
+      (db.prepare("SELECT COUNT(*) AS c FROM earnings_transcripts WHERE ticker = 'ZZR'").get() as {
+        c: number;
+      }).c,
+    ).toBe(1);
+  });
+
+  it("rejects an Alpha Vantage transcript when only an older quarter phrase can be established", async () => {
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce({
+      transcript:
+        "Operator: Welcome to ZZQ's fiscal second quarter 2026 financial conference call.\n\nJane Doe (CEO): Prepared remarks.",
+      call_date: null,
+      participants: [{ name: "Jane Doe", title: "CEO" }],
+      overall_sentiment: 0.1,
+    });
+
+    const result = await fetchTranscript(db, "ZZQ", 2026, 2, {
+      eventDate: "2026-09-30",
+    });
+
+    expect(result).toBeNull();
+    expect(
+      (db.prepare("SELECT COUNT(*) AS c FROM earnings_transcripts WHERE ticker = 'ZZQ'").get() as {
+        c: number;
+      }).c,
+    ).toBe(0);
+  });
+
+  it("rejects an API Ninjas transcript whose vendor date is six months older", async () => {
+    vi.mocked(isApiNinjasConfigured).mockReturnValueOnce(true);
+    vi.mocked(getApiNinjasTranscript).mockResolvedValueOnce({
+      date: "2026-03-30T20:00:00Z",
+      transcript: "Jane Doe: Older API Ninjas call.",
+      summary: null,
+      guidance: null,
+      risk_factors: null,
+      participants: [],
+      overall_sentiment: 0,
+    } as never);
+
+    const result = await fetchTranscript(db, "ZZN", 2026, 2, {
+      eventDate: "2026-09-30",
+    });
+
+    expect(result).toBeNull();
+    expect(
+      (db.prepare("SELECT COUNT(*) AS c FROM earnings_transcripts WHERE ticker = 'ZZN'").get() as {
+        c: number;
+      }).c,
+    ).toBe(0);
+  });
+
+  it("rejects an EDGAR fallback whose filing date is six months older than the print date", async () => {
+    vi.mocked(getEarnings8KFilings).mockResolvedValueOnce([
+      {
+        accessionNumber: "older-filing",
+        filingDate: "2026-04-22",
+        filingUrl: "https://example.test/older",
+        pressReleaseText: "Q1 2026 content",
+      },
+    ]);
+
+    const result = await fetchTranscript(db, "ZZE", 2026, 1, {
+      eventDate: "2026-10-22",
+    });
+
+    expect(result).toBeNull();
+    expect(
+      (db.prepare("SELECT COUNT(*) AS c FROM earnings_transcripts WHERE ticker = 'ZZE'").get() as {
+        c: number;
+      }).c,
+    ).toBe(0);
+  });
+});
+
+describe("extractGuidance / extractRiskFactors", () => {
+  const transcript = [
+    "Operator: Good afternoon, and welcome to the ZZG fiscal year 2026 earnings conference call.",
+    "Investor Relations: Before we begin, I would like to remind you that today's remarks include forward-looking statements and risks and uncertainties.",
+    "8-K Cover Page: The registrant furnished this report and Exhibit 99.1 under Item 2.02.",
+    "Jane Doe (CEO): In our prepared remarks, we expect next quarter revenue to improve and we are raising our full-year outlook.",
+    "Pat Roe (CFO): Prepared remarks also note tariff pressure and supply disruption risks that could impact gross margin.",
+    "Analyst: Do you expect the same tariff risk to affect guidance?",
+  ].join("\n\n");
+
+  it("skips welcome, safe-harbor, and 8-K cover boilerplate while preferring prepared remarks", () => {
+    expect(extractGuidance(transcript)).toBe(
+      "Jane Doe (CEO): In our prepared remarks, we expect next quarter revenue to improve and we are raising our full-year outlook.",
+    );
+    expect(extractRiskFactors(transcript)).toBe(
+      "Pat Roe (CFO): Prepared remarks also note tariff pressure and supply disruption risks that could impact gross margin.",
+    );
+  });
+
+  it("never returns the same paragraph for guidance and risk", () => {
+    const both = [
+      "Jane Doe (CEO): Prepared remarks: We expect stronger demand, though tariff risk could affect that outlook.",
+    ].join("\n\n");
+
+    expect(extractGuidance(both)).toContain("stronger demand");
+    expect(extractRiskFactors(both)).toBeNull();
   });
 });
 

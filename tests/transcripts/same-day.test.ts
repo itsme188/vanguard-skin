@@ -217,7 +217,9 @@ describe("fetchSameDayTranscripts", () => {
     const result = await fetchSameDayTranscripts(db, { now: NOW });
 
     expect(result).toEqual({ attempted: 1, fetched: 1 });
-    expect(mockedFetch).toHaveBeenCalledWith(db, "AAA", expect.any(Number), expect.any(Number));
+    expect(mockedFetch).toHaveBeenCalledWith(db, "AAA", expect.any(Number), expect.any(Number), {
+      eventDate: rel.date,
+    });
     expect(getAttemptedAt(eventId)).not.toBeNull();
   });
 
@@ -390,7 +392,9 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
     const result = await fetchSameDayTranscripts(db, { now: NOW });
 
     expect(result).toEqual({ attempted: 1, fetched: 1 });
-    expect(mockedFetch).toHaveBeenCalledWith(db, "UPA", 2026, 2);
+    expect(mockedFetch).toHaveBeenCalledWith(db, "UPA", 2026, 2, {
+      eventDate: rel.date,
+    });
     expect(getAttemptedAt(eventId)).not.toBeNull();
   });
 
@@ -498,7 +502,9 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
 
     expect(result.attempted).toBe(1);
     expect(mockedFetch).toHaveBeenCalledTimes(1);
-    expect(mockedFetch).toHaveBeenCalledWith(db, "FRE", 2026, 2);
+    expect(mockedFetch).toHaveBeenCalledWith(db, "FRE", 2026, 2, {
+      eventDate: relFresh.date,
+    });
   });
 });
 

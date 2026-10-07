@@ -40,6 +40,21 @@ export interface FetchTranscriptResult {
   fromCache: boolean;
 }
 
+export interface FetchTranscriptOptions {
+  /** Earnings print date whose same-day fetch is warming this cache row. */
+  eventDate?: string;
+}
+
+export interface TranscriptCallDateEvidence {
+  date: string;
+  source: "vendor_payload" | "opening_quarter_phrase";
+}
+
+// Stage-1 guard: the bad rows in the QA finding were roughly six months old.
+// Allow a little slop for timezone/vendor posting lag, but fail closed when
+// the call evidence is not within the print week.
+export const TRANSCRIPT_CALL_DATE_WINDOW_DAYS = 10;
+
 // ─── Summary Generation ─────────────────────────────────────────
 
 /**
@@ -95,16 +110,7 @@ export function generateSummary(text: string): string {
 export function extractGuidance(text: string): string | null {
   if (!text) return null;
 
-  const paragraphs = text.split(/\n\n+/);
-  const guidanceKeywords = /\b(guidance|outlook|expect|forecast|anticipate|project|looking ahead|full[- ]year|next quarter)\b/i;
-
-  const guidanceParagraphs = paragraphs
-    .filter((p) => guidanceKeywords.test(p) && p.length > 30)
-    .slice(0, 3)
-    .map((p) => {
-      const words = p.split(/\s+/);
-      return words.length > 80 ? words.slice(0, 80).join(" ") + "..." : p;
-    });
+  const guidanceParagraphs = selectTranscriptSectionParagraphs(text, "guidance");
 
   return guidanceParagraphs.length > 0 ? guidanceParagraphs.join("\n\n") : null;
 }
@@ -115,18 +121,142 @@ export function extractGuidance(text: string): string | null {
 export function extractRiskFactors(text: string): string | null {
   if (!text) return null;
 
-  const paragraphs = text.split(/\n\n+/);
-  const riskKeywords = /\b(risk|challenge|headwind|decline|pressure|uncertain|concern|difficult|disruption|tariff|impact)\b/i;
-
-  const riskParagraphs = paragraphs
-    .filter((p) => riskKeywords.test(p) && p.length > 30)
-    .slice(0, 2)
-    .map((p) => {
-      const words = p.split(/\s+/);
-      return words.length > 80 ? words.slice(0, 80).join(" ") + "..." : p;
-    });
+  const guidance = new Set(selectTranscriptSectionParagraphs(text, "guidance"));
+  const riskParagraphs = selectTranscriptSectionParagraphs(text, "risk").filter(
+    (p) => !guidance.has(p),
+  );
 
   return riskParagraphs.length > 0 ? riskParagraphs.join("\n\n") : null;
+}
+
+type TranscriptSection = "guidance" | "risk";
+
+const GUIDANCE_KEYWORDS =
+  /\b(guidance|outlook|expect|forecast|anticipate|project|looking ahead|full[- ]year|next quarter|raising|lowering|reaffirm)\b/i;
+const RISK_KEYWORDS =
+  /\b(risk|challenge|headwind|decline|pressure|uncertain|concern|difficult|disruption|tariff|impact)\b/i;
+const PREPARED_REMARKS_RE = /\b(prepared remarks|management remarks|opening remarks)\b/i;
+const QUESTION_SPEAKER_RE = /^(?:Analyst|Operator|Question|Q\s*[-:])/i;
+const BOILERPLATE_RE =
+  /\b(welcome to|good (?:morning|afternoon|evening).{0,80}conference call|forward-looking statements?|safe harbor|risks and uncertainties|actual results (?:may|could) differ|SEC|Form 8-K|Exhibit 99\.?1|Item 2\.02|registrant furnished|investor relations)\b/i;
+
+function normalizeParagraphs(text: string): string[] {
+  return text
+    .split(/\n\n+/)
+    .map((p) => p.replace(/\s+/g, " ").trim())
+    .filter((p) => p.length > 30);
+}
+
+function truncateParagraph(p: string): string {
+  const words = p.split(/\s+/);
+  return words.length > 80 ? words.slice(0, 80).join(" ") + "..." : p;
+}
+
+function isBoilerplateParagraph(p: string): boolean {
+  return BOILERPLATE_RE.test(p);
+}
+
+function selectTranscriptSectionParagraphs(text: string, section: TranscriptSection): string[] {
+  const keyword = section === "guidance" ? GUIDANCE_KEYWORDS : RISK_KEYWORDS;
+  const limit = section === "guidance" ? 3 : 2;
+  const candidates = normalizeParagraphs(text).filter(
+    (p) => keyword.test(p) && !isBoilerplateParagraph(p) && !QUESTION_SPEAKER_RE.test(p),
+  );
+  const prepared = candidates.filter((p) => PREPARED_REMARKS_RE.test(p));
+  const pool = prepared.length > 0 ? prepared : candidates;
+  return pool.slice(0, limit).map(truncateParagraph);
+}
+
+function parseDateOnly(date: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const ms = Date.parse(`${date}T12:00:00Z`);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function daysBetween(a: string, b: string): number | null {
+  const aMs = parseDateOnly(a);
+  const bMs = parseDateOnly(b);
+  if (aMs === null || bMs === null) return null;
+  return Math.abs(aMs - bMs) / 86_400_000;
+}
+
+function normalizedDate(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const date = raw.slice(0, 10);
+  return parseDateOnly(date) === null ? null : date;
+}
+
+const ORDINAL_QUARTERS: Record<string, number> = {
+  first: 1,
+  second: 2,
+  third: 3,
+  fourth: 4,
+};
+
+function quarterPhraseDateEstimate(text: string): string | null {
+  const opening = text.slice(0, 2500);
+  const ordinal = opening.match(
+    /\b(first|second|third|fourth)\s+quarter\s+(?:fiscal\s+)?(?:year\s+)?(\d{4})\b/i,
+  );
+  const compact = opening.match(/\bQ([1-4])\s+(?:FY|fiscal\s+)?(\d{4})\b/i);
+  const fiscalCompact = opening.match(/\b(?:FY|fiscal\s+)(\d{4})\s+Q([1-4])\b/i);
+
+  let quarter: number | null = null;
+  let year: number | null = null;
+  if (ordinal) {
+    quarter = ORDINAL_QUARTERS[ordinal[1].toLowerCase()] ?? null;
+    year = Number(ordinal[2]);
+  } else if (compact) {
+    quarter = Number(compact[1]);
+    year = Number(compact[2]);
+  } else if (fiscalCompact) {
+    year = Number(fiscalCompact[1]);
+    quarter = Number(fiscalCompact[2]);
+  }
+  if (!quarter || !year) return null;
+
+  // The stage-1 fallback has no fiscal calendar source. Use the common
+  // September fiscal-year-end cadence seen in the finding's stale rows:
+  // fiscal Q2 -> March call, fiscal Q4 -> September print. This is purposely
+  // conservative; stage 2 replaces it with real fiscal-quarter mapping.
+  const endDates: Record<number, string> = {
+    1: `${year - 1}-12-31`,
+    2: `${year}-03-31`,
+    3: `${year}-06-30`,
+    4: `${year}-09-30`,
+  };
+  return endDates[quarter] ?? null;
+}
+
+export function transcriptCallDateEvidence(
+  transcript: string | null | undefined,
+  vendorCallDate?: string | null,
+): TranscriptCallDateEvidence | null {
+  const vendorDate = normalizedDate(vendorCallDate);
+  if (vendorDate) return { date: vendorDate, source: "vendor_payload" };
+  if (!transcript) return null;
+  const phraseDate = quarterPhraseDateEstimate(transcript);
+  return phraseDate ? { date: phraseDate, source: "opening_quarter_phrase" } : null;
+}
+
+export function transcriptMatchesEventDate(
+  transcript: string | null | undefined,
+  eventDate: string,
+  vendorCallDate?: string | null,
+): boolean {
+  const evidence = transcriptCallDateEvidence(transcript, vendorCallDate);
+  if (!evidence) return false;
+  const diff = daysBetween(evidence.date, eventDate);
+  return diff !== null && diff <= TRANSCRIPT_CALL_DATE_WINDOW_DAYS;
+}
+
+function shouldCacheForEvent(
+  transcript: string | null | undefined,
+  options: FetchTranscriptOptions | undefined,
+  vendorCallDate?: string | null,
+): boolean {
+  if (!options?.eventDate) return true;
+  return transcriptMatchesEventDate(transcript, options.eventDate, vendorCallDate);
 }
 
 /**
@@ -212,17 +342,21 @@ async function tryAlphaVantage(
   securityId: number | null,
   upperTicker: string,
   year: number,
-  quarter: number
-): Promise<EarningsTranscript | null> {
-  if (!isAlphaVantageConfigured()) return null;
+  quarter: number,
+  options?: FetchTranscriptOptions,
+): Promise<{ transcript: EarningsTranscript | null; rejected: boolean }> {
+  if (!isAlphaVantageConfigured()) return { transcript: null, rejected: false };
   const result = await getAlphaVantageTranscript(upperTicker, year, quarter);
-  if (!result || !result.transcript) return null;
-  return upsertTranscript(db, {
+  if (!result || !result.transcript) return { transcript: null, rejected: false };
+  if (!shouldCacheForEvent(result.transcript, options, result.call_date)) {
+    return { transcript: null, rejected: true };
+  }
+  return { transcript: upsertTranscript(db, {
     security_id: securityId,
     ticker: upperTicker,
     year,
     quarter,
-    call_date: null, // Alpha Vantage response carries no call date
+    call_date: result.call_date,
     source: "alpha_vantage",
     transcript: result.transcript,
     summary: generateSummary(result.transcript),
@@ -242,14 +376,15 @@ async function tryAlphaVantage(
         ? JSON.stringify(result.participants)
         : null,
     source_key: `alpha_vantage:${upperTicker}:${year}:${quarter}`,
-  });
+  }), rejected: false };
 }
 
 export async function fetchTranscript(
   db: Database.Database,
   ticker: string,
   year?: number,
-  quarter?: number
+  quarter?: number,
+  options: FetchTranscriptOptions = {},
 ): Promise<FetchTranscriptResult | null> {
   const upperTicker = ticker.toUpperCase();
 
@@ -275,9 +410,10 @@ export async function fetchTranscript(
         cached.security_id ?? resolveSecurityId(db, upperTicker),
         upperTicker,
         year,
-        quarter
+        quarter,
+        options,
       );
-      if (upgraded) return { transcript: upgraded, fromCache: false };
+      if (upgraded.transcript) return { transcript: upgraded.transcript, fromCache: false };
     }
     return { transcript: cached, fromCache: true };
   }
@@ -291,12 +427,16 @@ export async function fetchTranscript(
     try {
       const result = await getApiNinjasTranscript(upperTicker, year, quarter);
       if (result && result.transcript) {
+        const callDate = result.date ? result.date.slice(0, 10) : null;
+        if (!shouldCacheForEvent(result.transcript, options, callDate)) {
+          return null;
+        }
         const transcript = upsertTranscript(db, {
           security_id: securityId,
           ticker: upperTicker,
           year,
           quarter,
-          call_date: result.date ? result.date.slice(0, 10) : null,
+          call_date: callDate,
           source: "api_ninjas",
           transcript: result.transcript,
           summary: result.summary || generateSummary(result.transcript),
@@ -328,8 +468,9 @@ export async function fetchTranscript(
   // through to EDGAR (see lib/transcripts/alpha-vantage.ts header).
   // The client never throws — null falls through to EDGAR.
   {
-    const transcript = await tryAlphaVantage(db, securityId, upperTicker, year, quarter);
-    if (transcript) return { transcript, fromCache: false };
+    const transcript = await tryAlphaVantage(db, securityId, upperTicker, year, quarter, options);
+    if (transcript.rejected) return null;
+    if (transcript.transcript) return { transcript: transcript.transcript, fromCache: false };
   }
 
   // 4. Fall back to EDGAR 8-K press release.
@@ -352,6 +493,9 @@ export async function fetchTranscript(
       return q.year === year && q.quarter === quarter;
     });
     if (matchingFiling) {
+      if (!shouldCacheForEvent(matchingFiling.pressReleaseText, options, matchingFiling.filingDate)) {
+        return null;
+      }
       const transcript = upsertTranscript(db, {
         security_id: securityId,
         ticker: upperTicker,

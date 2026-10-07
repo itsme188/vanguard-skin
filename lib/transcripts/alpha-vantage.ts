@@ -33,6 +33,8 @@ interface AlphaVantageSegment {
 export interface AlphaVantageTranscriptResult {
   /** Full transcript body: "Speaker (Title): content" paragraphs. */
   transcript: string;
+  /** Vendor-provided call date, when present in the payload. */
+  call_date: string | null;
   /** Distinct speakers in order of first appearance. */
   participants: { name: string; title: string | null }[];
   /** Average of per-segment LLM sentiment scores, or null when absent. */
@@ -82,6 +84,9 @@ export async function getEarningsTranscript(
     // "Information"/"Error Message" payload and no transcript array —
     // the array check below covers them.
     const data = (await response.json()) as {
+      date?: unknown;
+      call_date?: unknown;
+      earnings_call_date?: unknown;
       transcript?: AlphaVantageSegment[];
     };
     if (!Array.isArray(data?.transcript)) return null;
@@ -123,7 +128,13 @@ export async function getEarningsTranscript(
         ? sentiments.reduce((sum, n) => sum + n, 0) / sentiments.length
         : null;
 
-    return { transcript: body, participants, overall_sentiment };
+    const rawDate = data.call_date ?? data.date ?? data.earnings_call_date;
+    const callDate =
+      typeof rawDate === "string" && /^\d{4}-\d{2}-\d{2}/.test(rawDate)
+        ? rawDate.slice(0, 10)
+        : null;
+
+    return { transcript: body, call_date: callDate, participants, overall_sentiment };
   } catch {
     return null;
   }
