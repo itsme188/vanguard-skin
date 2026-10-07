@@ -28,6 +28,15 @@
  * rows RECEIVED on or between those dates. received_at is stored in UTC, so
  * these are UTC dates: an evening Eastern-time arrival falls on the next day.
  *
+ * NAMED ROWS: --ids 1,2,3 re-queues exactly those rows, even when the stored
+ * reason is not account-level (the owner has looked at them and wants another
+ * try). With --ids the automatic selection above does NOT run: only the named
+ * ids are considered, and --since / --until are refused. A named id is still
+ * re-queued only while it is excluded_category = 'enrichment_failed' and
+ * is_relevant = 0; any other named id is reported as not eligible and left
+ * alone. A row whose own content caused the failure will fail again and use
+ * up to three more model calls before it is excluded again.
+ *
  * WHAT IT WRITES. For each selected row, the same re-queue the Filtered tab's
  * Retry action performs: is_relevant = 1, excluded_category and
  * excluded_reason cleared, processed_at cleared, enrich_attempts = 0. No row
@@ -46,6 +55,8 @@
  *   npx tsx scripts/repair-requeue-failed-enrichment.ts
  * Apply (one transaction, after a VACUUM INTO backup beside the database):
  *   npx tsx scripts/repair-requeue-failed-enrichment.ts --apply
+ * Named rows only (dry run, then --apply):
+ *   npx tsx scripts/repair-requeue-failed-enrichment.ts --ids 12,15
  * Rehearse on a copy first (run from the repo root):
  *   sqlite3 data/vanguard.db "VACUUM INTO '/tmp/rehearsal.db'"
  *   REPAIR_DB_PATH=/tmp/rehearsal.db npx tsx scripts/repair-requeue-failed-enrichment.ts --apply
@@ -57,9 +68,15 @@ import type Database from "better-sqlite3";
 import { classifyStoredFailureReason, type StoredFailureKind } from "../lib/gmail/enrichment-failure";
 import { requeueArticlesForEnrichment } from "../lib/mutations/research-articles";
 
+/**
+ * Class shown for a row selected by --ids whose stored reason is not
+ * account-level (article-level, unrecognised or missing).
+ */
+export const NAMED_ID_KIND = "named_id";
+
 export interface RequeueCandidate {
   id: number;
-  kind: StoredFailureKind;
+  kind: StoredFailureKind | typeof NAMED_ID_KIND;
   /** The article's subject line. Private: terminal output only. */
   title: string;
 }
@@ -80,6 +97,56 @@ export interface RequeueRepairResult {
   skipped: number;
   /** Rows written. 0 on a dry run. */
   requeued: number;
+  /**
+   * Set only in --ids mode: the ids asked for, and those of them left alone
+   * because they do not exist or are not currently excluded as
+   * 'enrichment_failed'. In this mode `scanned` is the number of ids asked
+   * for, `matched` the eligible ones and `skipped` the not-eligible count.
+   */
+  named?: { requested: number[]; notEligible: number[] };
+}
+
+/** Deduplicated ids in the order given. Throws on anything that is not a positive whole number. */
+function normalizeIds(ids: number[]): number[] {
+  const out: number[] = [];
+  for (const id of ids) {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`--ids takes positive whole numbers (got "${id}")`);
+    if (!out.includes(id)) out.push(id);
+  }
+  if (out.length === 0) throw new Error("--ids needs at least one id, like --ids 12,15");
+  return out;
+}
+
+/**
+ * --ids mode. Selects ONLY the named rows, and of those only the ones that
+ * are currently excluded as 'enrichment_failed' with is_relevant = 0. The
+ * stored reason is not a condition; it only labels the row. Read-only.
+ */
+export function findNamedRequeueCandidates(
+  db: Database.Database,
+  ids: number[],
+): { requested: number[]; matched: RequeueCandidate[]; notEligible: number[] } {
+  const requested = normalizeIds(ids);
+  const find = db.prepare(
+    `SELECT id, subject, excluded_reason
+       FROM research_articles
+      WHERE id = ? AND excluded_category = 'enrichment_failed' AND is_relevant = 0`,
+  );
+  const matched: RequeueCandidate[] = [];
+  const notEligible: number[] = [];
+  for (const id of requested) {
+    const row = find.get(id) as { id: number; subject: string | null; excluded_reason: string | null } | undefined;
+    if (!row) {
+      notEligible.push(id);
+      continue;
+    }
+    matched.push({
+      id: row.id,
+      kind: classifyStoredFailureReason(row.excluded_reason) ?? NAMED_ID_KIND,
+      title: row.subject ?? "",
+    });
+  }
+  return { requested, matched, notEligible };
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -89,6 +156,11 @@ function assertDate(label: string, value: string | undefined): void {
     throw new Error(`${label} must be a date like 2026-01-31 (got "${value}")`);
   }
 }
+
+export type RequeueOptions = { apply: boolean; ids?: number[] } & RequeueWindow;
+
+const IDS_WITH_WINDOW_ERROR =
+  "--ids cannot be combined with --since or --until: with --ids, only the named rows are selected";
 
 /** Select the excluded rows whose recorded failure is account-level. Read-only. */
 export function findRequeueCandidates(
@@ -135,8 +207,27 @@ export function findRequeueCandidates(
  */
 export function repairRequeueFailedEnrichment(
   db: Database.Database,
-  opts: { apply: boolean } & RequeueWindow,
+  opts: RequeueOptions,
 ): RequeueRepairResult {
+  if (opts.ids !== undefined) {
+    // Named rows only: the automatic selection is not run and never added in.
+    if (opts.since !== undefined || opts.until !== undefined) throw new Error(IDS_WITH_WINDOW_ERROR);
+    const { requested, matched, notEligible } = findNamedRequeueCandidates(db, opts.ids);
+    const requeued =
+      opts.apply && matched.length > 0
+        ? requeueArticlesForEnrichment(
+            db,
+            matched.map((m) => m.id),
+          )
+        : 0;
+    return {
+      scanned: requested.length,
+      matched,
+      skipped: notEligible.length,
+      requeued,
+      named: { requested, notEligible },
+    };
+  }
   const { scanned, matched } = findRequeueCandidates(db, { since: opts.since, until: opts.until });
   const requeued =
     opts.apply && matched.length > 0
@@ -164,11 +255,30 @@ function oneLineTitle(title: string): string {
  */
 export function formatRequeueReport(result: RequeueRepairResult, apply: boolean): string[] {
   const lines: string[] = [];
-  lines.push(`Excluded as enrichment_failed in scope: ${result.scanned}`);
-  lines.push(`Recorded failure is account-level:      ${result.matched.length}`);
-  lines.push(`Left alone (article-level or unclear):  ${result.skipped}`);
+  if (result.named) {
+    lines.push(
+      `--ids given: selecting ONLY the ${result.named.requested.length} named row(s). ` +
+        `The automatic account-level selection was not run, and the stored reason was not checked.`,
+    );
+    lines.push(`Named ids:                                        ${result.named.requested.join(", ")}`);
+    lines.push(`Currently excluded as enrichment_failed (eligible): ${result.matched.length}`);
+    lines.push(`Left alone (not found, or not currently excluded):  ${result.named.notEligible.length}`);
+    if (result.named.notEligible.length > 0) {
+      lines.push(`  not eligible: ids ${result.named.notEligible.join(", ")}`);
+    }
+    if (result.matched.some((m) => m.kind === NAMED_ID_KIND)) {
+      lines.push(
+        `  [${NAMED_ID_KIND}] rows have no account-level reason on record. If the article itself ` +
+          `caused the failure it will fail again, at up to three model calls each.`,
+      );
+    }
+  } else {
+    lines.push(`Excluded as enrichment_failed in scope: ${result.scanned}`);
+    lines.push(`Recorded failure is account-level:      ${result.matched.length}`);
+    lines.push(`Left alone (article-level or unclear):  ${result.skipped}`);
+  }
 
-  const byKind = new Map<StoredFailureKind, number[]>();
+  const byKind = new Map<RequeueCandidate["kind"], number[]>();
   for (const m of result.matched) byKind.set(m.kind, [...(byKind.get(m.kind) ?? []), m.id]);
   for (const [kind, ids] of [...byKind.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     lines.push(`  ${kind}: ${ids.length} row(s), ids ${ids.join(", ")}`);
@@ -194,8 +304,8 @@ export function formatRequeueReport(result: RequeueRepairResult, apply: boolean)
 }
 
 /** Parse CLI flags. Throws on anything it does not understand. */
-export function parseRequeueArgs(args: string[]): { apply: boolean } & RequeueWindow {
-  const out: { apply: boolean } & RequeueWindow = { apply: false };
+export function parseRequeueArgs(args: string[]): RequeueOptions {
+  const out: RequeueOptions = { apply: false };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--apply") {
@@ -207,9 +317,26 @@ export function parseRequeueArgs(args: string[]): { apply: boolean } & RequeueWi
       if (arg === "--since") out.since = value;
       else out.until = value;
       i += 1;
+    } else if (arg === "--ids") {
+      const value = args[i + 1];
+      if (value === undefined || value.startsWith("--")) throw new Error("--ids needs a list like 12,15,20");
+      if (out.ids !== undefined) throw new Error("--ids was given twice; put every id in one list like 12,15,20");
+      const parts = value.split(",").map((p) => p.trim());
+      for (const part of parts) {
+        if (!/^[1-9]\d*$/.test(part)) {
+          throw new Error(`--ids takes positive whole numbers separated by commas (got "${value}")`);
+        }
+      }
+      out.ids = normalizeIds(parts.map(Number));
+      i += 1;
     } else {
-      throw new Error(`Unknown argument "${arg}". Flags: --apply, --since YYYY-MM-DD, --until YYYY-MM-DD`);
+      throw new Error(
+        `Unknown argument "${arg}". Flags: --apply, --since YYYY-MM-DD, --until YYYY-MM-DD, --ids 1,2,3`,
+      );
     }
+  }
+  if (out.ids !== undefined && (out.since !== undefined || out.until !== undefined)) {
+    throw new Error(IDS_WITH_WINDOW_ERROR);
   }
   return out;
 }
@@ -228,7 +355,7 @@ if (isMain) {
     const path = await import("node:path");
     const fs = await import("node:fs");
 
-    let opts: { apply: boolean } & RequeueWindow;
+    let opts: RequeueOptions;
     try {
       opts = parseRequeueArgs(process.argv.slice(2));
     } catch (err) {
@@ -256,10 +383,15 @@ if (isMain) {
       console.log(
         `Re-queue failed enrichments ${opts.apply ? "[APPLY]" : "[DRY RUN]"} — db: ${dbPath}` +
           (scope ? ` — received ${scope}` : "") +
+          (opts.ids ? ` — named ids only` : "") +
           "\n",
       );
 
-      if (opts.apply && findRequeueCandidates(db, opts).matched.length > 0) {
+      const wouldWrite =
+        opts.ids !== undefined
+          ? findNamedRequeueCandidates(db, opts.ids).matched.length
+          : findRequeueCandidates(db, opts).matched.length;
+      if (opts.apply && wouldWrite > 0) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
         const backupDir = path.default.join(path.default.dirname(dbPath), "backups");
         fs.default.mkdirSync(backupDir, { recursive: true });

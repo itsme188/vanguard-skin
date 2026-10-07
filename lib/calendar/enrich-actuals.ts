@@ -114,6 +114,18 @@ interface FredObservationsResponse {
   observations: FredObservation[];
 }
 
+/**
+ * Calendar months from `earlier` to `later` (both `YYYY-MM-DD`), ignoring the
+ * day. A date-only string parses as UTC midnight, so the UTC getters are the
+ * only ones that read back the month as written: the local getters put the
+ * first of a month in the PREVIOUS month anywhere west of UTC.
+ */
+export function monthsBetweenDates(earlier: string, later: string): number {
+  const d = new Date(earlier);
+  const ld = new Date(later);
+  return (ld.getUTCFullYear() - d.getUTCFullYear()) * 12 + (ld.getUTCMonth() - d.getUTCMonth());
+}
+
 export async function fetchFredSeriesLatest(
   seriesId: string,
   /** Optional upper bound on observation_date — "<= observationEnd". */
@@ -158,11 +170,7 @@ export async function fetchFredSeriesLatest(
   // Exact 12 months back first — rows are DESC, so a first-match 11–13
   // window always lands on 11 months and computes YoY against the wrong
   // base month. The window survives only as a fallback for vintage holes.
-  const monthsBack = (r: FredObservation) => {
-    const d = new Date(r.date);
-    const ld = new Date(latest.date);
-    return (ld.getFullYear() - d.getFullYear()) * 12 + (ld.getMonth() - d.getMonth());
-  };
+  const monthsBack = (r: FredObservation) => monthsBetweenDates(r.date, latest.date);
   const priorYear =
     rows.find((r) => monthsBack(r) === 12) ??
     rows.find((r) => {

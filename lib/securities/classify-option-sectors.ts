@@ -4,6 +4,7 @@ import { normalizeSector, GICS_SECTORS } from "@/lib/securities/normalize-sector
 import { parseJsonArrayLenient } from "@/lib/ai/extract-json";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { todayET } from "@/lib/calendar/date-utils";
 
 export interface OptionSectorResult {
   /** Option rows written this run (inherited + resynced + AI). */
@@ -44,6 +45,67 @@ function maintainedOptionSectorSql(alias: string): string {
 }
 
 /**
+ * Remembered AI misses. An underlying that has no usable stored sector is put
+ * to the AI; when the AI ANSWERS and still gives no canonical sector for it,
+ * the option stays blank and, before this memory, the same question was paid
+ * for again on every sync. The miss is kept in the `settings` key-value table
+ * as a JSON object { "<UNDERLYING>": "<YYYY-MM-DD it was asked, ET>" }.
+ *
+ * What a remembered miss suppresses: ONLY the AI question, and only for
+ * `OPTION_SECTOR_AI_MISS_RETRY_DAYS` days. It never suppresses inheritance:
+ * the moment the underlying has a usable stored sector the option takes it
+ * (no AI call) and the entry is dropped. A failed call (network, account,
+ * refusal, unparseable reply) is not a miss and is not remembered: nothing
+ * was learned about the ticker.
+ */
+export const OPTION_SECTOR_AI_MISSES_KEY = "option_sector_ai_misses";
+export const OPTION_SECTOR_AI_MISS_RETRY_DAYS = 30;
+
+const MISS_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function readAiMisses(db: Database.Database): Map<string, string> {
+  const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get(OPTION_SECTOR_AI_MISSES_KEY) as
+    | { value: string }
+    | undefined;
+  const out = new Map<string, string>();
+  if (!row) return out;
+  try {
+    const parsed: unknown = JSON.parse(row.value);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return out;
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === "string" && MISS_DATE_RE.test(v)) out.set(k.trim().toUpperCase(), v);
+    }
+  } catch {
+    // An unreadable value is treated as no memory: the cost is one repeated question.
+  }
+  return out;
+}
+
+function writeAiMisses(db: Database.Database, misses: Map<string, string>): void {
+  if (misses.size === 0) {
+    db.prepare(`DELETE FROM settings WHERE key = ?`).run(OPTION_SECTOR_AI_MISSES_KEY);
+    return;
+  }
+  const value = JSON.stringify(Object.fromEntries([...misses.entries()].sort(([a], [b]) => a.localeCompare(b))));
+  db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  ).run(OPTION_SECTOR_AI_MISSES_KEY, value);
+}
+
+/** Whole days from `from` to `to` (both YYYY-MM-DD), by calendar date. */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+}
+
+/** The miss recorded on `askedOn` still suppresses the AI question on `today`. */
+function missStillFresh(askedOn: string, today: string): boolean {
+  const age = daysBetween(askedOn, today);
+  // A date in the future (clock change, hand edit) is not trusted.
+  return Number.isFinite(age) && age >= 0 && age < OPTION_SECTOR_AI_MISS_RETRY_DAYS;
+}
+
+/**
  * The pre-check both callers use to decide whether `classifyOptionSectors` has
  * work: distinct underlying tickers (upper-case, trimmed) of HELD options that
  *   1. still have a blank sector, or
@@ -51,9 +113,15 @@ function maintainedOptionSectorSql(alias: string): string {
  *      underlying's stored sector (the underlying was sectored after the
  *      option, or its sector changed).
  * Blank-sector underlyings come first. The name is historical.
+ *
+ * Left out: a blank-sector underlying with no usable stored sector whose AI
+ * question is a remembered miss (see `OPTION_SECTOR_AI_MISSES_KEY`). There is
+ * nothing to do for it until the underlying gets a sector or the miss ages out.
  */
-export function getUnsectoredOptionUnderlyings(db: Database.Database): string[] {
-  return optionSectorWork(db).map((w) => w.underlying);
+export function getUnsectoredOptionUnderlyings(db: Database.Database, today: string = todayET()): string[] {
+  return optionSectorWork(db, today)
+    .filter((w) => !w.rememberedMiss)
+    .map((w) => w.underlying);
 }
 
 interface OptionSectorWork {
@@ -62,9 +130,11 @@ interface OptionSectorWork {
   blank: boolean;
   /** The underlying's usable stored sector, or null (unknown / no sector). */
   resolved: UnderlyingSector | null;
+  /** Unresolved, and the AI was asked recently and gave no usable sector. */
+  rememberedMiss: boolean;
 }
 
-function optionSectorWork(db: Database.Database): OptionSectorWork[] {
+function optionSectorWork(db: Database.Database, today: string): OptionSectorWork[] {
   const held = `FROM holdings h
        JOIN securities s ON s.id = h.security_id
        WHERE ${latestHoldingsPredicate({})}
@@ -83,9 +153,18 @@ function optionSectorWork(db: Database.Database): OptionSectorWork[] {
     )
     .all() as Array<{ u: string; sector: string }>;
 
+  const misses = blanks.length > 0 ? readAiMisses(db) : new Map<string, string>();
   const work = new Map<string, OptionSectorWork>();
   for (const { u } of blanks) {
-    work.set(u, { underlying: u, blank: true, resolved: resolveUnderlyingSector(db, u) });
+    const resolved = resolveUnderlyingSector(db, u);
+    const askedOn = misses.get(u);
+    work.set(u, {
+      underlying: u,
+      blank: true,
+      resolved,
+      // A resolved underlying is never held back: inheriting costs nothing.
+      rememberedMiss: resolved === null && askedOn !== undefined && missStillFresh(askedOn, today),
+    });
   }
   const cache = new Map<string, UnderlyingSector | null>();
   for (const { u, sector } of maintained) {
@@ -95,7 +174,7 @@ function optionSectorWork(db: Database.Database): OptionSectorWork[] {
     // An underlying that is unknown or has lost its sector proves nothing
     // about the stored value: the option keeps it.
     if (resolved && resolved.sector !== sector) {
-      work.set(u, { underlying: u, blank: false, resolved });
+      work.set(u, { underlying: u, blank: false, resolved, rememberedMiss: false });
     }
   }
   return [...work.values()];
@@ -183,10 +262,18 @@ For sector/thematic ETFs use the dominant GICS sector (SMH/IGV/SOXX/HACK->Techno
  * that list, every option row naming it is written, held or not. An underlying
  * with no held option that needs work is not visited.
  *
+ * An underlying the AI was asked about and gave no canonical sector for is a
+ * remembered miss (`OPTION_SECTOR_AI_MISSES_KEY`): it is not asked again for
+ * `OPTION_SECTOR_AI_MISS_RETRY_DAYS` days, and it still inherits, with no AI
+ * call, as soon as the underlying has a usable stored sector.
+ *
  * Idempotent: a second run finds no work.
  */
-export async function classifyOptionSectors(db: Database.Database): Promise<OptionSectorResult> {
-  const work = optionSectorWork(db);
+export async function classifyOptionSectors(
+  db: Database.Database,
+  today: string = todayET()
+): Promise<OptionSectorResult> {
+  const work = optionSectorWork(db, today);
   if (work.length === 0) return { classified: 0, inherited: 0, resynced: 0, errors: [] };
 
   const writeSector = db.prepare(
@@ -206,10 +293,14 @@ export async function classifyOptionSectors(db: Database.Database): Promise<Opti
   let inherited = 0;
   let resynced = 0;
   const needAi: string[] = [];
-  for (const { underlying, resolved } of work) {
+  // Underlyings still waiting on the AI (asked now or held back). Any
+  // remembered miss outside this set is finished business and is dropped.
+  const unresolved = new Set<string>();
+  for (const { underlying, resolved, rememberedMiss } of work) {
     if (!resolved) {
       // Only a blank-sector option puts an unresolved underlying on the list.
-      needAi.push(underlying);
+      unresolved.add(underlying);
+      if (!rememberedMiss) needAi.push(underlying);
       continue;
     }
     resynced += resyncSector.run(resolved.sector, underlying, resolved.sector).changes;
@@ -218,6 +309,7 @@ export async function classifyOptionSectors(db: Database.Database): Promise<Opti
 
   let classified = inherited + resynced;
   const errors: string[] = [];
+  const newMisses: string[] = [];
   const BATCH = 30;
   for (let i = 0; i < needAi.length; i += BATCH) {
     const batch = needAi.slice(i, i + BATCH);
@@ -231,6 +323,7 @@ export async function classifyOptionSectors(db: Database.Database): Promise<Opti
       // characters inside string literals. A reply that is none of those throws
       // a plain-English error instead of "results is not iterable".
       const results = parseJsonArrayLenient(text, "sector classifications");
+      const answered = new Set<string>();
       for (const raw of results) {
         if (typeof raw !== "object" || raw === null) continue;
         const r = raw as Record<string, unknown>;
@@ -245,7 +338,12 @@ export async function classifyOptionSectors(db: Database.Database): Promise<Opti
         const symbol = String(r.symbol).trim().toUpperCase();
         if (!asked.has(symbol)) continue;
         classified += writeSector.run(gics, OPTION_SECTOR_SOURCE_AI, symbol).changes;
+        answered.add(symbol);
+        // Sectored now: no longer waiting on anything.
+        unresolved.delete(symbol);
       }
+      // The AI replied and these tickers still have no canonical sector.
+      for (const t of batch) if (!answered.has(t)) newMisses.push(t);
     } catch (err) {
       if (err instanceof AIRefusalError) {
         errors.push(`Batch ${i / BATCH + 1}: AI refusal`);
@@ -254,5 +352,15 @@ export async function classifyOptionSectors(db: Database.Database): Promise<Opti
       errors.push(`Batch ${i / BATCH + 1}: ${err instanceof Error ? err.message : "unknown"}`);
     }
   }
+
+  // Keep the memory in step: record this run's misses, drop every entry whose
+  // underlying is no longer waiting on the AI. Written only when it changes.
+  const before = readAiMisses(db);
+  const after = new Map<string, string>();
+  for (const [u, askedOn] of before) if (unresolved.has(u)) after.set(u, askedOn);
+  for (const u of newMisses) after.set(u, today);
+  const changed = after.size !== before.size || [...after].some(([u, d]) => before.get(u) !== d);
+  if (changed) writeAiMisses(db, after);
+
   return { classified, inherited, resynced, errors };
 }

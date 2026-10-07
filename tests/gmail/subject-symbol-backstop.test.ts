@@ -136,7 +136,9 @@ function makeDb(): Database.Database {
       id INTEGER PRIMARY KEY,
       symbol TEXT NOT NULL UNIQUE,
       name TEXT,
-      security_type TEXT
+      security_type TEXT,
+      underlying_symbol TEXT,
+      expiration_date TEXT
     );
     CREATE TABLE holdings (
       id INTEGER PRIMARY KEY,

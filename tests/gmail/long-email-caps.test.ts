@@ -77,7 +77,7 @@ function makeDb(): Database.Database {
       sentiment TEXT,
       UNIQUE(article_id, security_id)
     );
-    CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL UNIQUE, name TEXT, security_type TEXT);
+    CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL UNIQUE, name TEXT, security_type TEXT, underlying_symbol TEXT, expiration_date TEXT);
     CREATE TABLE holdings (
       id INTEGER PRIMARY KEY,
       account_id INTEGER NOT NULL,

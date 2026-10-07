@@ -1,6 +1,8 @@
 import type Database from "better-sqlite3";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { todayET } from "@/lib/calendar/date-utils";
 
 /**
  * Deterministic guard for the newsletter D3 off-topic vote: the model has
@@ -11,21 +13,34 @@ import { issuerSiblings } from "@/lib/securities/issuer-family";
  */
 
 /**
- * Uppercase symbols of everything currently held (same universe as the
- * prompt's portfolio context in lib/gmail/process.ts: per-(account,
- * security) latest row, quantity > 0). Held only, not the watchlist.
+ * Uppercase symbols of every name the owner currently has a position in
+ * (per-(account, security) latest row, `quantity != 0`):
+ *   - long AND short positions in a stock, fund or bond, by their own symbol;
+ *   - the UNDERLYING of every live option held, long or short (an expired
+ *     contract still waiting on the purge sweep does not count).
+ * Held only, not the watchlist. Wider than the prompt's portfolio context in
+ * lib/gmail/process.ts, which lists long positions only: the model may vote
+ * an article on a shorted name off-topic, and this guard overrides the vote.
  * Compute once per batch.
  */
-export function getHeldSymbolSet(db: Database.Database): Set<string> {
+export function getHeldSymbolSet(db: Database.Database, today: string = todayET()): Set<string> {
   const rows = db
     .prepare(
-      `SELECT DISTINCT s.symbol
+      `SELECT DISTINCT
+              CASE WHEN LOWER(COALESCE(s.security_type, '')) = 'option'
+                   THEN s.underlying_symbol ELSE s.symbol END AS symbol
        FROM holdings h
        JOIN securities s ON h.security_id = s.id
-       WHERE ${latestHoldingsPredicate({ includeShorts: false })}`
+       WHERE ${latestHoldingsPredicate({})}
+         AND ${liveOptionExpirationSql("s", today)}`
     )
-    .all() as { symbol: string }[];
-  return new Set(rows.map((r) => r.symbol.toUpperCase()));
+    .all() as { symbol: string | null }[];
+  const held = new Set<string>();
+  for (const r of rows) {
+    const symbol = (r.symbol ?? "").trim().toUpperCase();
+    if (symbol !== "") held.add(symbol);
+  }
+  return held;
 }
 
 /**

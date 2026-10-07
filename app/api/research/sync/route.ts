@@ -36,6 +36,38 @@ function runnerFromRequest(req: Request): SyncRunner {
 }
 
 /**
+ * Plain-words notice for articles the AI pass left queued because of an
+ * ACCOUNT-level failure, or null when there were none. Reads only
+ * `ProcessArticlesResult.deferred` (lib/gmail/process.ts): the number of
+ * failures the pass judged account-level and did not count against an
+ * article. 2 means the pass stopped at two such failures in a row.
+ *
+ * The pass does not return WHICH account-level cause it saw (credit, key,
+ * rate limit, outage, no connection), so the notice lists them rather than
+ * naming one. The exact cause is in the server log.
+ */
+function accountFailureNotice(deferred: number): { stopped: boolean; message: string } | null {
+  if (!(deferred > 0)) return null;
+  const causes =
+    "the AI service refused the request or could not be reached (for example the AI account is out of credit, " +
+    "the API key is wrong, the service is busy, or this Mac cannot connect to it)";
+  if (deferred >= 2) {
+    return {
+      stopped: true,
+      message:
+        `AI analysis stopped early: ${causes}. Nothing is wrong with the articles. ` +
+        `They stay queued and will be tried again on the next sync.`,
+    };
+  }
+  return {
+    stopped: false,
+    message:
+      `1 article was not analysed: ${causes}. Nothing is wrong with the article. ` +
+      `It stays queued and will be tried again on the next sync.`,
+  };
+}
+
+/**
  * POST /api/research/sync — Fetch and process newsletter articles from Gmail.
  * Returns SSE stream with progress events.
  */
@@ -78,6 +110,10 @@ export async function POST(req: Request) {
             encoder.encode(`data: ${JSON.stringify(data)}\n\n`)
           );
         };
+
+        // Set by the AI pass; repeated on the closing event because the
+        // client's last status line is the one that stays on screen.
+        let accountFailureMessage: string | null = null;
 
         try {
           // Phase 0: Drain any cloud-fetched newsletter payloads first so the
@@ -125,11 +161,19 @@ export async function POST(req: Request) {
             // Always process — there may be articles from previous fetches
             send({ phase: "process", status: "started" });
             const processResult = await processUnprocessedArticles(db);
+            const deferred = processResult.deferred ?? 0;
+            const notice = accountFailureNotice(deferred);
+            accountFailureMessage = notice?.message ?? null;
             send({
               phase: "process",
               status: "done",
               processed: processResult.processed,
               failed: processResult.failed,
+              // Of `failed`: left queued, attempt not counted, because the
+              // failure was the AI account's or the connection's.
+              deferred,
+              stoppedOnAccountFailure: notice?.stopped ?? false,
+              accountFailureMessage,
             });
           }
 
@@ -200,6 +244,7 @@ export async function POST(req: Request) {
             phase: "complete",
             totalFetched: fetchResult.fetched,
             sources: fetchResult.sources,
+            accountFailureMessage,
           });
         } catch (err) {
           send({

@@ -15,7 +15,9 @@ import { describe, it, expect, beforeAll } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
+  NAMED_ID_KIND,
   PRIVATE_OUTPUT_NOTICE,
+  findNamedRequeueCandidates,
   findRequeueCandidates,
   formatRequeueReport,
   parseRequeueArgs,
@@ -294,5 +296,160 @@ describe("report and flags", () => {
     expect(() => parseRequeueArgs(["--since"])).toThrow(/needs a date/);
     expect(() => parseRequeueArgs(["--since", "--apply"])).toThrow(/needs a date/);
     expect(() => parseRequeueArgs(["--since", "yesterday"])).toThrow(/must be a date/);
+  });
+});
+
+describe("--ids: named rows only", () => {
+  it("selects exactly the named rows, even when the stored reason is not account-level", () => {
+    const db = makeDb();
+    const ids = seed(db);
+
+    const found = findNamedRequeueCandidates(db, [ids.refusal, ids.noReason, ids.billing]);
+
+    expect(found.matched.map((m) => [m.id, m.kind])).toEqual([
+      [ids.refusal, NAMED_ID_KIND],
+      [ids.noReason, NAMED_ID_KIND],
+      [ids.billing, "billing"],
+    ]);
+    expect(found.notEligible).toEqual([]);
+  });
+
+  it("does not add the automatic selection: account-level rows that were not named are left alone", () => {
+    const db = makeDb();
+    const ids = seed(db);
+    const before = snapshot(db);
+
+    const result = repairRequeueFailedEnrichment(db, { apply: true, ids: [ids.malformed] });
+
+    expect(result.matched.map((m) => m.id)).toEqual([ids.malformed]);
+    expect(result.requeued).toBe(1);
+    const after = snapshot(db) as { id: number }[];
+    for (const row of before as { id: number }[]) {
+      if (row.id === ids.malformed) continue;
+      expect(after.find((r) => r.id === row.id)).toEqual(row);
+    }
+    expect(
+      db
+        .prepare(
+          `SELECT is_relevant, excluded_category, excluded_reason, processed_at, enrich_attempts
+             FROM research_articles WHERE id = ?`,
+        )
+        .get(ids.malformed),
+    ).toEqual({ is_relevant: 1, excluded_category: null, excluded_reason: null, processed_at: null, enrich_attempts: 0 });
+  });
+
+  it("a named row that is not currently enrichment_failed with is_relevant = 0 is never written", () => {
+    const db = makeDb();
+    const ids = seed(db);
+    const missing = 999_999;
+    const before = snapshot(db);
+
+    const result = repairRequeueFailedEnrichment(db, {
+      apply: true,
+      ids: [ids.offTopic, ids.alreadyRelevant, missing],
+    });
+
+    expect(result.matched).toEqual([]);
+    expect(result.requeued).toBe(0);
+    expect(result.named).toEqual({
+      requested: [ids.offTopic, ids.alreadyRelevant, missing],
+      notEligible: [ids.offTopic, ids.alreadyRelevant, missing],
+    });
+    expect(snapshot(db)).toEqual(before);
+  });
+
+  it("is a dry run unless apply is set, and a second apply writes nothing", () => {
+    const db = makeDb();
+    const ids = seed(db);
+    const before = snapshot(db);
+
+    const dry = repairRequeueFailedEnrichment(db, { apply: false, ids: [ids.refusal, ids.tooLong] });
+    expect(dry.matched).toHaveLength(2);
+    expect(dry.requeued).toBe(0);
+    expect(snapshot(db)).toEqual(before);
+
+    expect(repairRequeueFailedEnrichment(db, { apply: true, ids: [ids.refusal, ids.tooLong] }).requeued).toBe(2);
+    const again = repairRequeueFailedEnrichment(db, { apply: true, ids: [ids.refusal, ids.tooLong] });
+    expect(again.requeued).toBe(0);
+    expect(again.named?.notEligible).toEqual([ids.refusal, ids.tooLong]);
+  });
+
+  it("a repeated id is taken once; an id that is not a positive whole number is refused", () => {
+    const db = makeDb();
+    const ids = seed(db);
+
+    const result = repairRequeueFailedEnrichment(db, { apply: true, ids: [ids.refusal, ids.refusal] });
+    expect(result.named?.requested).toEqual([ids.refusal]);
+    expect(result.requeued).toBe(1);
+
+    for (const bad of [[], [0], [-3], [1.5], [Number.NaN]]) {
+      expect(() => repairRequeueFailedEnrichment(db, { apply: false, ids: bad })).toThrow(/--ids/);
+    }
+  });
+
+  it("refuses to combine with --since / --until, in the flags and in the function", () => {
+    const db = makeDb();
+    const ids = seed(db);
+    const before = snapshot(db);
+
+    expect(() => parseRequeueArgs(["--ids", "1,2", "--since", "2026-01-05"])).toThrow(/cannot be combined/);
+    expect(() => parseRequeueArgs(["--until", "2026-01-05", "--ids", "1,2"])).toThrow(/cannot be combined/);
+    expect(() =>
+      repairRequeueFailedEnrichment(db, { apply: true, ids: [ids.refusal], since: "2026-01-01" }),
+    ).toThrow(/cannot be combined/);
+    expect(snapshot(db)).toEqual(before);
+  });
+
+  it("parses --ids as one comma list and refuses anything else", () => {
+    expect(parseRequeueArgs(["--ids", "3,1,2"])).toEqual({ apply: false, ids: [3, 1, 2] });
+    expect(parseRequeueArgs(["--ids", "7, 7 ,8", "--apply"])).toEqual({ apply: true, ids: [7, 8] });
+    expect(() => parseRequeueArgs(["--ids"])).toThrow(/needs a list/);
+    expect(() => parseRequeueArgs(["--ids", "--apply"])).toThrow(/needs a list/);
+    for (const bad of ["", "1,,2", "1,x", "0", "-4", "1.5", "1e3", "all"]) {
+      expect(() => parseRequeueArgs(["--ids", bad])).toThrow(/positive whole numbers/);
+    }
+    expect(() => parseRequeueArgs(["--ids", "1", "--ids", "2"])).toThrow(/given twice/);
+  });
+
+  it("the report says only the named rows were selected, and keeps the private-output notice", () => {
+    const db = makeDb();
+    const ids = seed(db);
+    const missing = 999_999;
+    const opts = { apply: false, ids: [ids.refusal, ids.billing, ids.offTopic, missing] };
+    const lines = formatRequeueReport(repairRequeueFailedEnrichment(db, opts), false);
+    const text = lines.join("\n");
+
+    expect(lines[0]).toMatch(/--ids given: selecting ONLY the 4 named row\(s\)/);
+    expect(lines[0]).toMatch(/automatic account-level selection was not run/);
+    expect(text).toContain(`not eligible: ids ${ids.offTopic}, ${missing}`);
+    expect(text).toMatch(/will fail again/);
+    expect(text).not.toContain("Recorded failure is account-level:");
+
+    const noticeAt = lines.indexOf(PRIVATE_OUTPUT_NOTICE);
+    expect(noticeAt).toBeGreaterThan(-1);
+    const titleLines = lines.filter((l) => l.startsWith("  id "));
+    expect(titleLines).toEqual([
+      `  id ${ids.refusal}  [${NAMED_ID_KIND}]  ${titleOf(db, ids.refusal)}`,
+      `  id ${ids.billing}  [billing]  ${titleOf(db, ids.billing)}`,
+    ]);
+    expect(lines.indexOf(titleLines[0])).toBeGreaterThan(noticeAt);
+    expect(text).toMatch(/Dry run: 2 row\(s\) would be re-queued/);
+
+    // Rows that were not named, or not eligible, are never titled; no reason, sender or body.
+    for (const other of [ids.rateLimit, ids.auth, ids.offTopic]) expect(text).not.toContain(titleOf(db, other));
+    expect(text).not.toMatch(/example\.test|credit balance|Failed after|ZZ body/);
+
+    const none = formatRequeueReport(repairRequeueFailedEnrichment(db, { apply: false, ids: [missing] }), false);
+    expect(none.join("\n")).toMatch(/Nothing to re-queue/);
+    expect(none).not.toContain(PRIVATE_OUTPUT_NOTICE);
+  });
+
+  it("without --ids the selection and the report are unchanged", () => {
+    const db = makeDb();
+    const ids = seed(db);
+    const result = repairRequeueFailedEnrichment(db, { apply: false });
+    expect(result.named).toBeUndefined();
+    expect(result.matched.map((m) => m.id)).toEqual([ids.billing, ids.rateLimit, ids.overloaded, ids.gateway, ids.auth]);
+    expect(formatRequeueReport(result, false)[0]).toBe("Excluded as enrichment_failed in scope: 10");
   });
 });
