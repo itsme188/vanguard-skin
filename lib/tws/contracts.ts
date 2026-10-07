@@ -6,8 +6,11 @@ import { mapSecurityType, shouldRetypeAsEtf } from "./security-type-map";
 import type { EnrichResult } from "./types";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { todayET } from "@/lib/calendar/date-utils";
-import { assessBrokerCoupon, storeBrokerCoupon } from "./bond-coupon";
-import { getLiveHeldOptionUnderlyings } from "./option-underlyings";
+import {
+  clearUnderlyingLookupFailures,
+  getPendingOptionUnderlyings,
+  recordUnderlyingLookupFailure,
+} from "./option-underlyings";
 
 const rateLimiter = new RateLimiter();
 
@@ -92,17 +95,24 @@ function buildContract(sec: SecurityRow): Record<string, unknown> | null {
  *   - Mutual funds: resolved by symbol with SecType.FUND
  *   - Options (OCC format): resolved by underlying + expiry + strike + right
  *   - Also the not-held underlyings of held live options with no contract id
- *     (lib/tws/option-underlyings.ts), so the price snapshot can price them
- *   - A bond's coupon from the contract details is stored when it passes
- *     lib/tws/bond-coupon.ts
+ *     (lib/tws/option-underlyings.ts), so the price snapshot can price them.
+ *     Nothing but this lookup ever sets their contract id, so they are held
+ *     to a stricter rule than held rows: the broker must return EXACTLY ONE
+ *     contract, and a symbol that fails three times is no longer asked for.
+ *     `options.optionUnderlyingIds` marks such rows on the ids path.
  *   - Excluded: CUSIP-prefixed bonds, Cash, non-OCC option symbols
  */
 export async function enrichSecurities(
   db: Database.Database,
   securityIds?: number[],
+  options?: { optionUnderlyingIds?: number[] },
 ): Promise<EnrichResult[]> {
   const api = getIbApi();
   if (!api) throw new Error("TWS not connected");
+
+  const today = todayET();
+  // Rows that are here ONLY as the underlying of a held option.
+  const underlyingOnlyIds = new Set<number>(options?.optionUnderlyingIds ?? []);
 
   let securities: SecurityRow[];
   if (securityIds?.length) {
@@ -144,13 +154,15 @@ export async function enrichSecurities(
     // (owner ruling 2026-10-07). They are not held, so the query above never
     // reaches them, and the price snapshot only prices a row that has a
     // contract id. Appended after the held rows; the held rows and their
-    // order are unchanged.
+    // order are unchanged. A symbol that has already failed three lookups is
+    // left out.
     // A failure in this extra set must never cost the held rows their turn.
     try {
       const seen = new Set(securities.map((s) => s.id));
-      for (const u of getLiveHeldOptionUnderlyings(db, todayET())) {
-        if (u.ib_con_id != null || seen.has(u.id)) continue;
+      for (const u of getPendingOptionUnderlyings(db, today)) {
+        if (seen.has(u.id)) continue;
         seen.add(u.id);
+        underlyingOnlyIds.add(u.id);
         securities.push({ id: u.id, symbol: u.symbol, security_type: u.security_type, name: u.name, currency: u.currency });
       }
     } catch (err) {
@@ -186,6 +198,7 @@ export async function enrichSecurities(
   const results: EnrichResult[] = [];
 
   for (const sec of securities) {
+    const underlyingOnly = underlyingOnlyIds.has(sec.id);
     try {
       await rateLimiter.waitForSlot();
 
@@ -201,6 +214,21 @@ export async function enrichSecurities(
       }
 
       const details = await api.getContractDetails(contract);
+
+      // An option underlying is looked up by bare symbol and nothing else
+      // (no positions sync) ever corrects its contract id, so a wrong match
+      // would feed a wrong price into option repricing every 30 minutes.
+      // Zero or several matches is a failed lookup: nothing is written.
+      if (underlyingOnly && details.length !== 1) {
+        recordUnderlyingLookupFailure(db, sec.id, today);
+        results.push({
+          symbol: sec.symbol,
+          securityId: sec.id,
+          enriched: false,
+          error: `Expected exactly one contract for an option underlying, got ${details.length}`,
+        });
+        continue;
+      }
 
       if (details.length > 0) {
         const detail = details[0];
@@ -224,19 +252,7 @@ export async function enrichSecurities(
           sec.id,
         );
 
-        // A bond's coupon (annual percent). Stored only when the broker's
-        // figure passes lib/tws/bond-coupon.ts; the one writer of
-        // securities.coupon_rate, fill-only.
-        let couponRatePct: number | undefined;
-        if ((sec.security_type ?? "").trim().toLowerCase() === "bond") {
-          const storedName = sec.name && sec.name !== sec.symbol ? sec.name : longName;
-          const decision = assessBrokerCoupon(detail.coupon, storedName);
-          if (decision.store) {
-            if (storeBrokerCoupon(db, sec.id, decision.couponRatePct)) couponRatePct = decision.couponRatePct;
-          } else if (decision.reason !== "absent") {
-            console.warn(`[enrichSecurities] Bond coupon for security ${sec.id} not stored: ${decision.reason}`);
-          }
-        }
+        if (underlyingOnly) clearUnderlyingLookupFailures(db, sec.id);
 
         results.push({
           symbol: sec.symbol,
@@ -247,7 +263,6 @@ export async function enrichSecurities(
           exchange: exchange ?? undefined,
           conId: conId ?? undefined,
           retypedToEtf: retypeAsEtf,
-          ...(couponRatePct !== undefined ? { couponRatePct } : {}),
         });
       } else {
         results.push({
@@ -257,6 +272,13 @@ export async function enrichSecurities(
         });
       }
     } catch (err) {
+      if (underlyingOnly) {
+        try {
+          recordUnderlyingLookupFailure(db, sec.id, today);
+        } catch {
+          // The count is bookkeeping; never let it mask the lookup error.
+        }
+      }
       results.push({
         symbol: sec.symbol,
         securityId: sec.id,
@@ -267,4 +289,20 @@ export async function enrichSecurities(
   }
 
   return results;
+}
+
+/**
+ * Look up ONLY the pending underlyings of held live options (no contract id,
+ * fewer than three failed lookups). The auto-refresh uses this when no held
+ * security needs enriching, so one unresolved underlying never re-runs the
+ * whole (much wider) held selection. Makes no broker request when nothing is
+ * pending.
+ */
+export async function enrichPendingOptionUnderlyings(
+  db: Database.Database,
+  today: string = todayET(),
+): Promise<EnrichResult[]> {
+  const ids = getPendingOptionUnderlyings(db, today).map((u) => u.id);
+  if (ids.length === 0) return [];
+  return enrichSecurities(db, ids, { optionUnderlyingIds: ids });
 }

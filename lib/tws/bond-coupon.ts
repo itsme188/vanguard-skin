@@ -1,4 +1,22 @@
 /**
+ * INTENTIONALLY NOT CALLED YET (controller ruling 2026-10-07). No production
+ * file imports this module; tests/repo/bond-coupon-unwired.test.ts fails if
+ * one starts to.
+ *
+ * Why: today the only way a bond reaches a contract-details request is by
+ * SYMBOL with secType BOND, which can return many issues of one issuer.
+ * Taking the first and storing its coupon would attach another bond's coupon
+ * to this one, and a stored coupon outranks the bond's name from then on.
+ *
+ * What must be proven against a real broker session before wiring it:
+ *   1. a contract-details request BY CONTRACT ID (`{ conId }`) for a held
+ *      bond returns exactly one contract, that bond;
+ *   2. the reply fills `coupon` at all (the type below says it may not);
+ *   3. its unit (percent, as the column needs, or a fraction);
+ *   4. what a bill and a zero-coupon bond return.
+ * Then call `assessBrokerCoupon` + `storeBrokerCoupon` from that by-id
+ * request only, never from a by-symbol lookup.
+ *
  * A bond's coupon from the broker's contract details: the one place that
  * decides whether a broker figure is stored, and the one statement that
  * writes `securities.coupon_rate` (owner ruling 2026-10-07).
@@ -32,6 +50,10 @@
  *     A coupon bond stored as zero-coupon would be given its full time to
  *     maturity as its duration, which overstates its loss under a rate rise.
  *
+ *   - A figure that differs from the coupon the bond's own name states is
+ *     refused: two sources that disagree are not evidence for either, and a
+ *     stored figure would silently outrank the name.
+ *
  * A refused figure stores nothing: the bond then falls back to the coupon in
  * its name, or stays not modelled. Nothing is ever guessed.
  */
@@ -49,7 +71,13 @@ export type BrokerCouponDecision =
   | { store: true; couponRatePct: number }
   | {
       store: false;
-      reason: "absent" | "out-of-range" | "zero-unconfirmed" | "unit-mismatch-with-name" | "unit-ambiguous";
+      reason:
+        | "absent"
+        | "out-of-range"
+        | "zero-unconfirmed"
+        | "unit-mismatch-with-name"
+        | "differs-from-name"
+        | "unit-ambiguous";
     };
 
 /**
@@ -72,11 +100,12 @@ export function assessBrokerCoupon(raw: unknown, name: string | null | undefined
     if (nameCoupon > 0 && Math.abs(raw * 100 - nameCoupon) <= SAME_COUPON_TOLERANCE) {
       return { store: false, reason: "unit-mismatch-with-name" };
     }
+    // The name states a different coupon: store neither.
+    return { store: false, reason: "differs-from-name" };
   }
 
   if (raw <= UNIT_AMBIGUOUS_AT_OR_BELOW) return { store: false, reason: "unit-ambiguous" };
-  // Broker first: a plain percent figure is stored even when the name states
-  // a different coupon.
+  // The name states no coupon, and the figure cannot be a fraction.
   return { store: true, couponRatePct: raw };
 }
 

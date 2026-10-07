@@ -33,12 +33,14 @@ const UNMODELLED_REASON_LABEL: Record<OptionUnmodelledReason, string> = {
 };
 // A bond the rate move could not price: no duration, coupon or yield is ever
 // assumed for it, so the row names the stored input that is missing.
-// A coupon comes from the broker's contract details first, then from the
-// bond's stored name; with neither, the bond is left out.
+// A stored coupon is used first, then the one the bond's stored name states;
+// with neither, the bond is left out. (Only the broker source may ever store
+// a coupon, and it is not wired yet, so today the name is the working source.)
 const BOND_UNMODELLED_REASON_LABEL: Record<BondUnmodelledReason, string> = {
   "no-maturity": "no maturity date",
   "matured": "past its maturity date",
   "no-coupon": "no coupon from the broker, and none readable in the bond's name",
+  "unusable-coupon": "the stored coupon is not a usable figure",
   "no-price": "no price",
   "no-yield": "price gives no usable yield",
 };

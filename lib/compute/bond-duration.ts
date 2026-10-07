@@ -76,7 +76,15 @@ export type RateDurationSource =
 /** Where a bond's coupon came from: the stored broker figure, or the bond's stored name. */
 export type CouponSource = "broker" | "name";
 
-export type BondUnmodelledReason = "no-maturity" | "matured" | "no-coupon" | "no-price" | "no-yield";
+export type BondUnmodelledReason =
+  | "no-maturity"
+  | "matured"
+  /** No coupon stored and none readable in the name. */
+  | "no-coupon"
+  /** A coupon IS stored but is not a usable number (negative, not finite). The name is not consulted. */
+  | "unusable-coupon"
+  | "no-price"
+  | "no-yield";
 
 /** The stored inputs the rate leg reads. Both engines select exactly these. */
 export interface RateLegInputs {
@@ -383,7 +391,10 @@ export function estimateBondRateLeg(pos: RateLegInputs, rateBps: number, today: 
     return modelled(days / DAYS_PER_YEAR, "single-flow");
   }
 
-  if (coupon == null || !Number.isFinite(coupon) || coupon < 0) return unmodelled("no-coupon");
+  if (coupon == null) return unmodelled("no-coupon");
+  // Same outcome as before (left out, nothing assumed); only the reason now
+  // says a coupon is on file and is bad, so the card does not claim "none".
+  if (!Number.isFinite(coupon) || coupon < 0) return unmodelled("unusable-coupon");
   const derived = couponBondModifiedDuration({
     couponRatePct: coupon,
     cleanPrice: pos.bond_price,

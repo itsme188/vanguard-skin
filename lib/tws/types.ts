@@ -72,8 +72,6 @@ export interface EnrichResult {
    *  from IBKR contract-details stockType (see shouldRetypeAsEtf). */
   retypedToEtf?: boolean;
   error?: string;
-  /** Annual coupon in percent, when this run stored one for a bond. */
-  couponRatePct?: number;
 }
 
 /** Progress updates during portfolio sync. */

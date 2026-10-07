@@ -15,6 +15,12 @@ import { assessBrokerCoupon, storeBrokerCoupon } from "@/lib/tws/bond-coupon";
 
 const mockedGetIbApi = vi.mocked(getIbApi);
 
+/**
+ * lib/tws/bond-coupon.ts is a pure, UNWIRED module (controller ruling
+ * 2026-10-07): these tests pin its rules for the day it is wired, and the
+ * last block pins that enrichment does not store a coupon today.
+ */
+
 /** Synthetic figures only. */
 describe("assessBrokerCoupon: the unit is an annual percent, and a doubtful figure is not stored", () => {
   it("stores a plain percent figure", () => {
@@ -51,8 +57,11 @@ describe("assessBrokerCoupon: the unit is an annual percent, and a doubtful figu
     expect(assessBrokerCoupon(0, "ZZ NOTE CPN 4.000% DUE 01/15/40")).toEqual({ store: false, reason: "zero-unconfirmed" });
   });
 
-  it("the broker wins over a different coupon in the name (broker first)", () => {
-    expect(assessBrokerCoupon(4.5, "ZZ NOTE CPN 4.000% DUE 01/15/40")).toEqual({ store: true, couponRatePct: 4.5 });
+  it("refuses a figure that differs from the coupon the name states", () => {
+    expect(assessBrokerCoupon(4.5, "ZZ NOTE CPN 4.000% DUE 01/15/40")).toEqual({ store: false, reason: "differs-from-name" });
+    expect(assessBrokerCoupon(5, "ZZ NOTE 4% 2030")).toEqual({ store: false, reason: "differs-from-name" });
+    // ...and stores one the name confirms.
+    expect(assessBrokerCoupon(4, "ZZ NOTE 4% 2030")).toEqual({ store: true, couponRatePct: 4 });
   });
 });
 
@@ -100,50 +109,25 @@ describe("storeBrokerCoupon + enrichSecurities", () => {
     expect(couponOf(bond)).toBeNull();
   });
 
-  it("enrichment stores the contract-details coupon for a bond, in percent", async () => {
-    const bond = seed("ZZBOND1", "Bond", "ZZ Corp note");
-    mockDetails({ coupon: 4.375 });
-    const results = await enrichSecurities(db, [bond]);
-    expect(results[0].enriched).toBe(true);
-    expect(results[0].couponRatePct).toBe(4.375);
-    expect(couponOf(bond)).toBe(4.375);
-  });
-
-  it("enrichment with no coupon in the details leaves a stored coupon alone (never null over a value)", async () => {
-    const bond = seed("ZZBOND1", "Bond", "ZZ Corp note", 3);
-    mockDetails({});
-    const results = await enrichSecurities(db, [bond]);
-    expect(results[0].enriched).toBe(true);
-    expect(results[0].couponRatePct).toBeUndefined();
-    expect(couponOf(bond)).toBe(3);
-  });
-
-  it("enrichment does not store a doubtful figure: zero on a coupon-bond name, a fraction, an over-range value", async () => {
+  it("enrichment does NOT store a contract-details coupon: the broker source is not wired", async () => {
     for (const [coupon, name] of [
-      [0, "ZZ Corp note"],
-      [0.04375, "ZZ Corp note"],
-      [0.04, "ZZ NOTE CPN 4.000% DUE 01/15/40"],
-      [437.5, "ZZ Corp note"],
+      [4.375, "ZZ Corp note"],
+      [4, "ZZ NOTE CPN 4.000% DUE 01/15/40"],
+      [0, "ZZ TREASURY BILL DUE 04/14/30"],
     ] as const) {
-      const bond = seed(`ZZBOND${coupon}${name.length}`, "Bond", name);
+      const bond = seed(`ZZBOND${coupon}`, "Bond", name);
       mockDetails({ coupon });
-      await enrichSecurities(db, [bond]);
+      const results = await enrichSecurities(db, [bond]);
+      expect(results[0].enriched).toBe(true);
+      expect(results[0]).not.toHaveProperty("couponRatePct");
       expect(couponOf(bond), `${coupon} / ${name}`).toBeNull();
     }
   });
 
-  it("enrichment never writes a coupon onto a row that is not a bond", async () => {
-    const stock = seed("ZZA", "Stock", "ZZ A Corp");
-    mockDetails({ coupon: 4.375, industry: "Technology" });
-    const results = await enrichSecurities(db, [stock]);
-    expect(results[0].enriched).toBe(true);
-    expect(couponOf(stock)).toBeNull();
-  });
-
-  it("a bill's zero coupon is stored when the name says bill", async () => {
-    const bill = seed("ZZBILL1", "Bond", "ZZ TREASURY BILL DUE 04/14/30");
-    mockDetails({ coupon: 0 });
-    await enrichSecurities(db, [bill]);
-    expect(couponOf(bill)).toBe(0);
+  it("enrichment leaves a stored coupon alone", async () => {
+    const bond = seed("ZZBOND1", "Bond", "ZZ Corp note", 3);
+    mockDetails({ coupon: 4.375 });
+    await enrichSecurities(db, [bond]);
+    expect(couponOf(bond)).toBe(3);
   });
 });

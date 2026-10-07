@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
     { enriched: true },
     { enriched: false, error: "not found" },
   ]),
+  enrichPendingOptionUnderlyings: vi.fn(async () => [{ enriched: true }]),
   fetchSnapshotPrices: vi.fn(async () => [
     { symbol: "SPY", price: 700, error: null },
   ]),
@@ -34,7 +35,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/tws/positions", () => ({ syncPortfolio: mocks.syncPortfolio }));
-vi.mock("@/lib/tws/contracts", () => ({ enrichSecurities: mocks.enrichSecurities }));
+vi.mock("@/lib/tws/contracts", () => ({
+  enrichSecurities: mocks.enrichSecurities,
+  enrichPendingOptionUnderlyings: mocks.enrichPendingOptionUnderlyings,
+}));
 vi.mock("@/lib/tws/snapshot", () => ({
   fetchSnapshotPrices: mocks.fetchSnapshotPrices,
 }));
@@ -199,38 +203,71 @@ describe("auto-refresh — integration", () => {
     expect(mocks.enrichSecurities).not.toHaveBeenCalled();
   });
 
-  it("runs enrichment when the only unresolved security is the underlying of a held live option", async () => {
-    db.prepare("INSERT INTO accounts (name) VALUES ('Test')").run();
-    db.prepare("INSERT INTO securities (symbol, source_key) VALUES ('ZZU', 'underlying:ZZU')").run();
+  /** A held live option on ZZU whose underlying row has no contract id. */
+  function seedUnresolvedUnderlying(expiration = "2099-06-19", heldOn = "2026-04-23"): number {
+    if (!db.prepare("SELECT 1 FROM accounts LIMIT 1").get()) db.prepare("INSERT INTO accounts (name) VALUES ('Test')").run();
+    const under = db.prepare("INSERT INTO securities (symbol, source_key) VALUES ('ZZU', 'underlying:ZZU')").run();
+    const yymmdd = expiration.replace(/-/g, "").slice(2);
     const opt = db
       .prepare(
         `INSERT INTO securities (symbol, name, security_type, ib_con_id, underlying_symbol, strike_price, expiration_date, option_type, multiplier)
-         VALUES ('ZZU   990619C00100000', 'ZZU call', 'Option', 8001, 'ZZU', 100, '2099-06-19', 'CALL', 100)`,
+         VALUES (?, 'ZZU call', 'Option', 8001, 'ZZU', 100, ?, 'CALL', 100)`,
       )
-      .run();
+      .run(`ZZU   ${yymmdd}C00100000`, expiration);
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
-       VALUES (1, ?, 2, '2026-04-23', 'seed')`,
-    ).run(opt.lastInsertRowid);
+       VALUES (1, ?, 2, ?, 'seed-opt')`,
+    ).run(opt.lastInsertRowid, heldOn);
+    return Number(under.lastInsertRowid);
+  }
+
+  it("with only an option underlying unresolved, just the underlyings are looked up, never the wider held selection", async () => {
+    seedUnresolvedUnderlying();
+    const result = await runAutoRefresh(db, "full");
+    expect(mocks.enrichPendingOptionUnderlyings).toHaveBeenCalledTimes(1);
+    expect(mocks.enrichSecurities).not.toHaveBeenCalled();
+    expect(result!.securitiesEnriched).toBe(1);
+  });
+
+  it("a held unenriched row still triggers the usual run, called exactly as before", async () => {
+    seedSecurityWithHolding(db);
+    seedUnresolvedUnderlying();
     await runAutoRefresh(db, "full");
     expect(mocks.enrichSecurities).toHaveBeenCalledTimes(1);
+    expect(mocks.enrichSecurities).toHaveBeenCalledWith(db);
+    expect(mocks.enrichPendingOptionUnderlyings).not.toHaveBeenCalled();
+  });
+
+  it("an underlying that has failed three lookups no longer trips the gate", async () => {
+    const under = seedUnresolvedUnderlying();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('tws_option_underlying_lookup_failures', ?)").run(
+      JSON.stringify({ [under]: { failures: 3, lastTried: "2026-04-23" } }),
+    );
+    await runAutoRefresh(db, "full");
+    expect(mocks.enrichSecurities).not.toHaveBeenCalled();
+    expect(mocks.enrichPendingOptionUnderlyings).not.toHaveBeenCalled();
+  });
+
+  it("an underlying with two failed lookups still trips it", async () => {
+    const under = seedUnresolvedUnderlying();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('tws_option_underlying_lookup_failures', ?)").run(
+      JSON.stringify({ [under]: { failures: 2, lastTried: "2026-04-23" } }),
+    );
+    await runAutoRefresh(db, "full");
+    expect(mocks.enrichPendingOptionUnderlyings).toHaveBeenCalledTimes(1);
   });
 
   it("an expired option's unresolved underlying does not trigger enrichment", async () => {
-    db.prepare("INSERT INTO accounts (name) VALUES ('Test')").run();
-    db.prepare("INSERT INTO securities (symbol, source_key) VALUES ('ZZU', 'underlying:ZZU')").run();
-    const opt = db
-      .prepare(
-        `INSERT INTO securities (symbol, name, security_type, ib_con_id, underlying_symbol, strike_price, expiration_date, option_type, multiplier)
-         VALUES ('ZZU   200619C00100000', 'ZZU call', 'Option', 8001, 'ZZU', 100, '2020-06-19', 'CALL', 100)`,
-      )
-      .run();
-    db.prepare(
-      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
-       VALUES (1, ?, 2, '2020-04-23', 'seed')`,
-    ).run(opt.lastInsertRowid);
+    seedUnresolvedUnderlying("2020-06-19", "2020-04-23");
     await runAutoRefresh(db, "full");
     expect(mocks.enrichSecurities).not.toHaveBeenCalled();
+    expect(mocks.enrichPendingOptionUnderlyings).not.toHaveBeenCalled();
+  });
+
+  it("quick refresh never looks up underlyings", async () => {
+    seedUnresolvedUnderlying();
+    await runAutoRefresh(db, "quick");
+    expect(mocks.enrichPendingOptionUnderlyings).not.toHaveBeenCalled();
   });
 
   it("mid-pipeline failure is isolated — later steps still run", async () => {

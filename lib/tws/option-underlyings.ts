@@ -61,7 +61,91 @@ export function getLiveHeldOptionUnderlyings(db: Database.Database, today: strin
     .all() as OptionUnderlyingRow[];
 }
 
-/** How many of those underlyings still have no broker contract id. */
-export function countUnenrichedLiveOptionUnderlyings(db: Database.Database, today: string): number {
-  return getLiveHeldOptionUnderlyings(db, today).filter((u) => u.ib_con_id == null).length;
+/**
+ * Failed contract lookups for option underlyings, so a symbol the broker can
+ * never resolve as one contract (an index, an ambiguous ticker) is not asked
+ * for again on every full sync. One JSON value in the `settings` table:
+ * `{ "<security id>": { "failures": n, "lastTried": "YYYY-MM-DD" } }`.
+ * A success removes the entry. To retry a skipped symbol by hand, delete its
+ * entry (or the whole key).
+ */
+export const UNDERLYING_LOOKUP_FAILURES_KEY = "tws_option_underlying_lookup_failures";
+/** After this many failed lookups an underlying is no longer requested. */
+export const MAX_UNDERLYING_LOOKUP_FAILURES = 3;
+
+type FailureLedger = Record<string, { failures: number; lastTried: string }>;
+
+function readFailureLedger(db: Database.Database): FailureLedger {
+  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(UNDERLYING_LOOKUP_FAILURES_KEY) as
+    | { value: string }
+    | undefined;
+  if (!row) return {};
+  try {
+    const parsed: unknown = JSON.parse(row.value);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    const ledger: FailureLedger = {};
+    for (const [id, entry] of Object.entries(parsed as Record<string, unknown>)) {
+      const e = entry as { failures?: unknown; lastTried?: unknown } | null;
+      if (e && typeof e.failures === "number" && Number.isFinite(e.failures) && e.failures > 0) {
+        ledger[id] = { failures: Math.floor(e.failures), lastTried: typeof e.lastTried === "string" ? e.lastTried : "" };
+      }
+    }
+    return ledger;
+  } catch {
+    // An unreadable value is treated as "no failures recorded": the cost is a
+    // few extra lookups, never a skipped symbol.
+    return {};
+  }
+}
+
+function writeFailureLedger(db: Database.Database, ledger: FailureLedger): void {
+  db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  ).run(UNDERLYING_LOOKUP_FAILURES_KEY, JSON.stringify(ledger));
+}
+
+/** Failed lookups recorded for one underlying (0 when none). */
+export function getUnderlyingLookupFailures(db: Database.Database, securityId: number): number {
+  return readFailureLedger(db)[String(securityId)]?.failures ?? 0;
+}
+
+/** Count one failed lookup. Returns the new count. */
+export function recordUnderlyingLookupFailure(db: Database.Database, securityId: number, today: string): number {
+  const ledger = readFailureLedger(db);
+  const failures = (ledger[String(securityId)]?.failures ?? 0) + 1;
+  ledger[String(securityId)] = { failures, lastTried: today };
+  writeFailureLedger(db, ledger);
+  return failures;
+}
+
+/** A successful lookup clears the count. */
+export function clearUnderlyingLookupFailures(db: Database.Database, securityId: number): void {
+  const ledger = readFailureLedger(db);
+  if (!(String(securityId) in ledger)) return;
+  delete ledger[String(securityId)];
+  writeFailureLedger(db, ledger);
+}
+
+/**
+ * The underlyings the enrichment step should look up now: no contract id yet
+ * and fewer than MAX_UNDERLYING_LOOKUP_FAILURES failed lookups. Logs one line
+ * per symbol left out for repeated failures.
+ */
+export function getPendingOptionUnderlyings(db: Database.Database, today: string): OptionUnderlyingRow[] {
+  const ledger = readFailureLedger(db);
+  const pending: OptionUnderlyingRow[] = [];
+  for (const u of getLiveHeldOptionUnderlyings(db, today)) {
+    if (u.ib_con_id != null) continue;
+    const failures = ledger[String(u.id)]?.failures ?? 0;
+    if (failures >= MAX_UNDERLYING_LOOKUP_FAILURES) {
+      console.log(
+        `[option-underlyings] Skipping contract lookup for ${u.symbol}: ${failures} failed lookups ` +
+          `(clear "${UNDERLYING_LOOKUP_FAILURES_KEY}" in settings to retry)`,
+      );
+      continue;
+    }
+    pending.push(u);
+  }
+  return pending;
 }

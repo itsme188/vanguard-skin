@@ -84,8 +84,20 @@ describe("estimateBondRateLeg: where the coupon came from", () => {
     ).toBeUndefined();
   });
 
-  it("a stored coupon that is not a usable number is not replaced by the name", () => {
-    const res = estimateBondRateLeg(row({ coupon_rate: -1, security_name: "ZZ NOTE CPN 4.000%" }), 100, TODAY)!;
-    expect(res.unmodelledReason).toBe("no-coupon");
+  it("a stored coupon that is not a usable number is not replaced by the name, and the reason says a coupon is on file", () => {
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const res = estimateBondRateLeg(row({ coupon_rate: bad, security_name: "ZZ NOTE CPN 4.000%" }), 100, TODAY)!;
+      expect(res.unmodelledReason).toBe("unusable-coupon");
+      expect(res.changePercent).toBe(0);
+      expect(res.durationYears).toBeUndefined();
+    }
+    // With nothing stored and nothing in the name the reason is still "no-coupon".
+    expect(estimateBondRateLeg(row({}), 100, TODAY)!.unmodelledReason).toBe("no-coupon");
+  });
+
+  it("a floater or a yield in the name is never used as a coupon", () => {
+    for (const name of ["ZZ BANK FLTG RATE NT VAR 5.310% 01/13/40", "ZZ CORP NT YLD 5.1% DUE 2040", "ZZ CORP 6.5%/7.5% PIK TOGGLE 2040"]) {
+      expect(estimateBondRateLeg(row({ security_name: name }), 100, TODAY)!.unmodelledReason, name).toBe("no-coupon");
+    }
   });
 });

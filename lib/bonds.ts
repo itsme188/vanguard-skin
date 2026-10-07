@@ -99,26 +99,46 @@ const CPN_TOKEN = /\bCPN\s+(\d{1,2}(?:\.\d{1,5})?)(?:\s*%)?(?=\s|$)/gi;
  */
 const PERCENT_TOKEN = /(?<![\d.,/$+-])(\d{1,2}(?:\.\d{1,5})?)\s*%/g;
 
+/** Every number that is followed by a percent sign, whatever precedes it. */
+const ANY_PERCENT_FIGURE = /(\d+(?:\.\d+)?)\s*%/g;
+
+/**
+ * Words that mean a percent figure in the name is NOT a fixed coupon: a
+ * yield, a floating or variable rate, a step-up, a reference rate (the figure
+ * is then a spread), a pay-in-kind toggle. Whole words, any case.
+ */
+const NOT_A_FIXED_COUPON =
+  /\b(?:YLD|YIELD|FLTG|FLOAT|FLOATER|FLOATING|FRN|VAR|VARIABLE|STEP|SOFR|LIBOR|PIK|TOGGLE)\b/i;
+
 /**
  * Read a bond's annual coupon, in PERCENT of face (4.375 means 4.375%), from
- * its stored name. The backstop for a bond the broker gave no coupon for
- * (owner ruling 2026-10-07).
+ * its stored name. The backstop for a bond with no stored coupon (owner
+ * ruling 2026-10-07).
  *
- * Strict on purpose: a coupon is returned ONLY when the name carries a
- * percent sign or an explicit CPN token, in the shapes this file's maturity
- * parser already sees:
+ * Strict on purpose: every wrong answer here is a silently wrong duration. A
+ * coupon is returned ONLY when the name carries a percent sign or an explicit
+ * CPN token, in the shapes this file's maturity parser already sees:
  *   "T-Note 4.375% (due 05/15/34)"                          → 4.375   percent sign
  *   "U S TREASURY NOTE CPN 4.125% DUE 11/15/32 DTD ..."     → 4.125   CPN + percent
  *   "U S TREASURY BILL CPN 0.00000  MTD 2024-08-20 DTD ..." → 0       CPN, no percent
  *
- * A bare number is never a coupon, so the two-date shape
- * "U S TREASURY NOTE 4.625 02/15/35 02/15/25" returns null: nothing in the
- * name says the number is a coupon and not a price. Two different figures in
- * one name (a step-up note) return null. Zero is a valid coupon. Anything
- * outside 0 to MAX_PLAUSIBLE_COUPON_PCT returns null.
+ * Returns null when:
+ *   - the name carries a word from NOT_A_FIXED_COUPON ("YLD 5.1%", "FLTG
+ *     RATE NT VAR 5.310%", "SOFR + 0.25%", "6.5%/7.5% PIK TOGGLE");
+ *   - ANY percent figure in the name differs from the coupon found, counted
+ *     before any lookbehind ("6.5%/7.5%", "CPN 4.125 ... PRICE 98.5%",
+ *     "4.375% ... CALLABLE 100%", "4 3/8%"). With two different percent
+ *     figures nothing in the name says which one is the coupon, so neither
+ *     is taken, even when one of them is a call price;
+ *   - the only number is bare: the two-date shape "U S TREASURY NOTE 4.625
+ *     02/15/35 02/15/25" has nothing that says the number is a coupon;
+ *   - the figure is outside 0 to MAX_PLAUSIBLE_COUPON_PCT.
+ * Zero is a valid coupon.
  */
 export function extractCouponRate(name: string | null | undefined): number | null {
   if (!name) return null;
+  if (NOT_A_FIXED_COUPON.test(name)) return null;
+
   const found: number[] = [];
   for (const pattern of [CPN_TOKEN, PERCENT_TOKEN]) {
     for (const match of name.matchAll(pattern)) found.push(Number(match[1]));
@@ -126,6 +146,10 @@ export function extractCouponRate(name: string | null | undefined): number | nul
   if (found.length === 0) return null;
   const coupon = found[0];
   if (found.some((value) => value !== coupon)) return null;
+  // Every percent figure anywhere in the name must be that same coupon.
+  for (const match of name.matchAll(ANY_PERCENT_FIGURE)) {
+    if (Number(match[1]) !== coupon) return null;
+  }
   if (!Number.isFinite(coupon) || coupon < 0 || coupon > MAX_PLAUSIBLE_COUPON_PCT) return null;
   return coupon;
 }

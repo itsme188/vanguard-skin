@@ -19,7 +19,7 @@ describe("scenario card: bonds the rate move could not price", () => {
     anchorIndex(s, "pos.bondUnmodelledReason");
     anchorIndex(s, "BOND_UNMODELLED_REASON_LABEL[");
     anchorIndex(s, "No figure is estimated for them.");
-    for (const reason of ["no-maturity", "matured", "no-coupon", "no-price", "no-yield"]) {
+    for (const reason of ["no-maturity", "matured", "no-coupon", "unusable-coupon", "no-price", "no-yield"]) {
       anchorIndex(card, `"${reason}":`);
     }
   });
@@ -60,6 +60,9 @@ describe("scenario card: where a bond's coupon came from", () => {
   it("the not-modelled reason names both sources that were tried", () => {
     anchorIndex(card, `"no-coupon": "no coupon from the broker, and none readable in the bond's name"`);
     expect(card).not.toContain("no coupon on file");
+    // A coupon that IS stored but unusable is not described as "no coupon".
+    anchorIndex(card, `"unusable-coupon": "the stored coupon is not a usable figure"`);
+    anchorIndex(helper, 'return unmodelled("unusable-coupon")');
   });
 
   it("the caption says which coupon source a run used, keyed on the engine's own source values", () => {

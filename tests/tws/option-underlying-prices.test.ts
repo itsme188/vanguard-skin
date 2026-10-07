@@ -12,8 +12,14 @@ vi.mock("@/lib/tws/rate-limiter", () => ({
 
 import { getIbApi } from "@/lib/tws/client";
 import { fetchSnapshotPrices } from "@/lib/tws/snapshot";
-import { enrichSecurities } from "@/lib/tws/contracts";
-import { countUnenrichedLiveOptionUnderlyings, getLiveHeldOptionUnderlyings } from "@/lib/tws/option-underlyings";
+import { enrichPendingOptionUnderlyings, enrichSecurities } from "@/lib/tws/contracts";
+import {
+  MAX_UNDERLYING_LOOKUP_FAILURES,
+  UNDERLYING_LOOKUP_FAILURES_KEY,
+  getLiveHeldOptionUnderlyings,
+  getPendingOptionUnderlyings,
+  getUnderlyingLookupFailures,
+} from "@/lib/tws/option-underlyings";
 import { fetchAndStoreQuotes } from "@/lib/ibkr/refresh";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
@@ -273,7 +279,7 @@ describe("enrichment resolves a contract id for a live option's underlying", () 
     const under = db.prepare("INSERT INTO securities (symbol, source_key) VALUES ('ZZU', 'underlying:ZZU')").run()
       .lastInsertRowid as number;
     hold(option("ZZU", "2099-06-19", 8001), 2); // enrichSecurities reads the real ET date
-    expect(countUnenrichedLiveOptionUnderlyings(db, TRADING_DAY)).toBe(1);
+    expect(getPendingOptionUnderlyings(db, TRADING_DAY)).toHaveLength(1);
     const api = detailsApi();
 
     const results = await enrichSecurities(db);
@@ -281,7 +287,7 @@ describe("enrichment resolves a contract id for a live option's underlying", () 
     expect(results.map((r) => r.securityId)).toEqual([under]);
     expect(api.getContractDetails).toHaveBeenCalledWith({ symbol: "ZZU", secType: "STK", exchange: "SMART", currency: "USD" });
     expect((db.prepare("SELECT ib_con_id FROM securities WHERE id = ?").get(under) as { ib_con_id: number }).ib_con_id).toBe(7001);
-    expect(countUnenrichedLiveOptionUnderlyings(db, TRADING_DAY)).toBe(0);
+    expect(getPendingOptionUnderlyings(db, TRADING_DAY)).toHaveLength(0);
     expect(db.prepare("SELECT COUNT(*) AS n FROM holdings WHERE security_id = ?").get(under)).toEqual({ n: 0 });
   });
 
@@ -384,5 +390,152 @@ describe("a failure in the extra set never costs the held rows", () => {
     errorLog.mockRestore();
     expect(requestedConIds(api)).toEqual([7003]);
     expect(results.map((r) => r.securityId)).toEqual([held]);
+  });
+});
+
+describe("underlying lookups are exact and bounded", () => {
+  const FAR = "2099-06-19"; // enrichSecurities reads the real ET date
+  const conIdOf = (id: number) =>
+    (db.prepare("SELECT ib_con_id, sector, name FROM securities WHERE id = ?").get(id) as {
+      ib_con_id: number | null;
+      sector: string | null;
+      name: string | null;
+    });
+  function api(reply: unknown[] | Error) {
+    const mock = {
+      getContractDetails: reply instanceof Error ? vi.fn().mockRejectedValue(reply) : vi.fn().mockResolvedValue(reply),
+    };
+    mockedGetIbApi.mockReturnValue(mock as unknown as ReturnType<typeof getIbApi>);
+    return mock;
+  }
+  const match = (conId: number) => ({ industry: "Technology", longName: "ZZ Match", contract: { conId, primaryExch: "ZZX" } });
+  function underlyingOnly(symbol = "ZZU"): number {
+    const id = db.prepare("INSERT INTO securities (symbol, source_key) VALUES (?, ?)").run(symbol, `underlying:${symbol}`)
+      .lastInsertRowid as number;
+    hold(option(symbol, FAR, 8000 + id), 2);
+    return id;
+  }
+
+  it("two matches for an underlying is a failed lookup: nothing is written", async () => {
+    const under = underlyingOnly();
+    api([match(7001), match(7002)]);
+    const results = await enrichSecurities(db);
+    expect(results).toEqual([
+      { symbol: "ZZU", securityId: under, enriched: false, error: "Expected exactly one contract for an option underlying, got 2" },
+    ]);
+    expect(conIdOf(under)).toEqual({ ib_con_id: null, sector: null, name: null });
+    expect(getUnderlyingLookupFailures(db, under)).toBe(1);
+  });
+
+  it("no match for an underlying is a failed lookup too", async () => {
+    const under = underlyingOnly();
+    api([]);
+    const results = await enrichSecurities(db);
+    expect(results[0].enriched).toBe(false);
+    expect(results[0].error).toMatch(/got 0/);
+    expect(getUnderlyingLookupFailures(db, under)).toBe(1);
+  });
+
+  it("a HELD row still takes the first of several matches, as before, and records no failure", async () => {
+    const held = stock("ZZH", null);
+    hold(held, 100);
+    api([match(7001), match(7002)]);
+    const results = await enrichSecurities(db);
+    expect(results[0].enriched).toBe(true);
+    expect(conIdOf(held).ib_con_id).toBe(7001);
+    expect(getUnderlyingLookupFailures(db, held)).toBe(0);
+    expect(db.prepare("SELECT 1 FROM settings WHERE key = ?").get(UNDERLYING_LOOKUP_FAILURES_KEY)).toBeUndefined();
+  });
+
+  it("a held row with no match is not counted as an underlying failure", async () => {
+    const held = stock("ZZH", null);
+    hold(held, 100);
+    api([]);
+    await enrichSecurities(db);
+    expect(getUnderlyingLookupFailures(db, held)).toBe(0);
+  });
+
+  it("a failing underlying is requested on three full syncs and not on the fourth", async () => {
+    const under = underlyingOnly();
+    const mock = api([match(7001), match(7002)]);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    for (let sync = 1; sync <= 3; sync++) {
+      const results = await enrichPendingOptionUnderlyings(db, TRADING_DAY);
+      expect(results).toHaveLength(1);
+      expect(mock.getContractDetails).toHaveBeenCalledTimes(sync);
+      expect(getUnderlyingLookupFailures(db, under)).toBe(sync);
+    }
+    expect(MAX_UNDERLYING_LOOKUP_FAILURES).toBe(3);
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining("Skipping contract lookup for ZZU"));
+
+    expect(await enrichPendingOptionUnderlyings(db, TRADING_DAY)).toEqual([]);
+    expect(mock.getContractDetails).toHaveBeenCalledTimes(3);
+    expect(getPendingOptionUnderlyings(db, TRADING_DAY)).toEqual([]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("Skipping contract lookup for ZZU: 3 failed lookups"));
+    log.mockRestore();
+    expect(conIdOf(under).ib_con_id).toBeNull();
+  });
+
+  it("a thrown lookup error counts as a failure as well", async () => {
+    const under = underlyingOnly();
+    api(new Error("lookup failed"));
+    const results = await enrichPendingOptionUnderlyings(db, TRADING_DAY);
+    expect(results[0]).toMatchObject({ enriched: false, error: "lookup failed" });
+    expect(getUnderlyingLookupFailures(db, under)).toBe(1);
+  });
+
+  it("a success resets the count and stores the one contract", async () => {
+    const under = underlyingOnly();
+    api([]);
+    await enrichPendingOptionUnderlyings(db, TRADING_DAY);
+    await enrichPendingOptionUnderlyings(db, TRADING_DAY);
+    expect(getUnderlyingLookupFailures(db, under)).toBe(2);
+    api([match(7001)]);
+    const results = await enrichPendingOptionUnderlyings(db, TRADING_DAY);
+    expect(results[0].enriched).toBe(true);
+    expect(conIdOf(under).ib_con_id).toBe(7001);
+    expect(getUnderlyingLookupFailures(db, under)).toBe(0);
+    expect(getPendingOptionUnderlyings(db, TRADING_DAY)).toEqual([]);
+  });
+
+  it("with only underlyings pending, the wider held selection is NOT requested", async () => {
+    const under = underlyingOnly();
+    // A held row the broad selection would pick up (its name still echoes its symbol) but the gate does not count.
+    const nameless = db
+      .prepare("INSERT INTO securities (symbol, name, security_type, ib_con_id) VALUES ('ZZN', 'ZZN', 'Stock', 7050)")
+      .run().lastInsertRowid as number;
+    hold(nameless, 10);
+    const mock = api([match(7001)]);
+    const results = await enrichPendingOptionUnderlyings(db, TRADING_DAY);
+    expect(results.map((r) => r.securityId)).toEqual([under]);
+    expect(mock.getContractDetails).toHaveBeenCalledTimes(1);
+    expect(mock.getContractDetails).toHaveBeenCalledWith({ symbol: "ZZU", secType: "STK", exchange: "SMART", currency: "USD" });
+    expect(conIdOf(nameless).name).toBe("ZZN");
+  });
+
+  it("makes no broker request when nothing is pending", async () => {
+    const mock = api([match(7001)]);
+    expect(await enrichPendingOptionUnderlyings(db, TRADING_DAY)).toEqual([]);
+    expect(mock.getContractDetails).not.toHaveBeenCalled();
+  });
+
+  it("on the usual run a skipped underlying no longer rides along; a held row is still enriched", async () => {
+    const under = underlyingOnly();
+    const held = stock("ZZH", null);
+    hold(held, 100);
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+      UNDERLYING_LOOKUP_FAILURES_KEY,
+      JSON.stringify({ [under]: { failures: 3, lastTried: "2026-01-01" } }),
+    );
+    const mock = api([match(7003)]);
+    const results = await enrichSecurities(db);
+    expect(results.map((r) => r.securityId)).toEqual([held]);
+    expect(mock.getContractDetails).toHaveBeenCalledTimes(1);
+  });
+
+  it("an unreadable failure record is treated as no failures, never as a skip", () => {
+    underlyingOnly();
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(UNDERLYING_LOOKUP_FAILURES_KEY, "not json");
+    expect(getPendingOptionUnderlyings(db, TRADING_DAY)).toHaveLength(1);
   });
 });

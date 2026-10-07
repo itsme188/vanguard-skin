@@ -54,6 +54,41 @@ describe("extractCouponRate: a coupon is read only from a percent sign or an exp
     expect(extractCouponRate("ZZA   300618C00175000")).toBeNull();
   });
 
+  it("a yield, a floating rate, a spread and a pay-in-kind toggle are not fixed coupons", () => {
+    expect(extractCouponRate("ZZ CORP NT YLD 5.1% DUE 2030")).toBeNull();
+    expect(extractCouponRate("ZZ BANK FLTG RATE NT VAR 5.310% 01/15/29")).toBeNull();
+    expect(extractCouponRate("ZZ CORP SOFR + 0.25% 2030")).toBeNull();
+    expect(extractCouponRate("ZZ CORP 6.5%/7.5% PIK TOGGLE 2030")).toBeNull();
+    // Each blocking word on its own, any case, whole words only.
+    for (const word of ["YLD", "yield", "FLTG", "FLOAT", "Floater", "FLOATING", "FRN", "VAR", "VARIABLE", "STEP", "SOFR", "LIBOR", "PIK", "TOGGLE"]) {
+      expect(extractCouponRate(`ZZ CORP ${word} 5.25% 2031`), word).toBeNull();
+    }
+    expect(extractCouponRate("ZZ CORP STEP-UP 5.25% 2031")).toBeNull();
+    // A longer word that merely contains one is not blocked.
+    expect(extractCouponRate("ZZ VARCO STEPSTONE 5.25% 2031")).toBe(5.25);
+  });
+
+  it("the slash no longer hides a second percent figure", () => {
+    expect(extractCouponRate("ZZ CORP 6.5%/7.5% 2030")).toBeNull();
+    expect(extractCouponRate("ZZ CORP 6.5% / 6.5% 2030")).toBe(6.5);
+  });
+
+  it("a fraction coupon, a price in percent and a call price leave nothing to choose from", () => {
+    expect(extractCouponRate("ZZ CORP 4 3/8% 2030")).toBeNull();
+    expect(extractCouponRate("ZZ NOTE CPN 4.125 DUE 01/15/30 PRICE 98.5%")).toBeNull();
+    // Two different percent figures: nothing in the name says which is the
+    // coupon, so neither is taken, even though 100% is plainly a call price.
+    expect(extractCouponRate("ZZ CORP 4.375 % DUE 01/15/30 CALLABLE 100%")).toBeNull();
+    expect(extractCouponRate("ZZ CORP 4.375 % DUE 01/15/30")).toBe(4.375);
+  });
+
+  it("the plain shapes still read", () => {
+    expect(extractCouponRate("ZZ TREASURY NOTE 4.250% Due 11/15/34")).toBe(4.25);
+    expect(extractCouponRate("ZZ TREASURY BILL CPN 0.00000  MTD 2030-08-20")).toBe(0);
+    expect(extractCouponRate("ZZ CORP 5.25% 2031 SR NT")).toBe(5.25);
+    expect(extractCouponRate("ZZ TREASURY INFL IX NOTE 0.125% DUE 04/15/32")).toBe(0.125);
+  });
+
   it("an empty or missing name gives nothing", () => {
     expect(extractCouponRate("")).toBeNull();
     expect(extractCouponRate("   ")).toBeNull();
