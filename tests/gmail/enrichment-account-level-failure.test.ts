@@ -23,7 +23,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { processUnprocessedArticles, type ProcessArticlesResult } from "@/lib/gmail/process";
 import {
-  CHARGED_TO_ARTICLE_MARKER,
+  COUNTED_AGAINST_ARTICLE_MARKER,
   MAX_ENRICH_ATTEMPTS,
   classifyStoredFailureReason,
 } from "@/lib/gmail/enrichment-failure";
@@ -140,6 +140,23 @@ function queue(
     out.push({ id, subject });
   }
   return out;
+}
+
+/** New mail: one article newer than everything queued so far (so it is attempted first). */
+let arrivals = 0;
+function newMail(db: Database.Database, sourceId: number): { id: number; subject: string } {
+  seq += 1;
+  arrivals += 1;
+  const subject = `ZZ letter ${seq}`;
+  const receivedAt = `2026-03-01 ${String(Math.floor(arrivals / 60)).padStart(2, "0")}:${String(arrivals % 60).padStart(2, "0")}:00`;
+  const id = db
+    .prepare(
+      `INSERT INTO research_articles
+         (source_id, gmail_message_id, subject, sender, raw_text, received_at)
+       VALUES (?, ?, ?, 'letters@example.test', 'ZZAA raised its outlook for the year.', ?)`,
+    )
+    .run(sourceId, `g3-msg-${seq}`, subject, receivedAt).lastInsertRowid as number;
+  return { id, subject };
 }
 
 interface Row {
@@ -278,16 +295,36 @@ describe("an outage (every article fails account-level) never uses an attempt", 
     }
   });
 
-  it("an outage does not erase or add to attempts articles already used", async () => {
-    const { db, sourceId } = makeDb();
-    const [a, b] = queue(db, sourceId, 2, { attempts: [MAX_ENRICH_ATTEMPTS - 1, 1] });
-    respondAll(ANTHROPIC_FAILURES.overloaded529);
+  it.each(accountLevel)(
+    "%s on a queue whose articles already used attempts [1, 2], ten passes: nothing changes",
+    async (name) => {
+      const { db, sourceId } = makeDb();
+      const [a, b] = queue(db, sourceId, 2, { attempts: [1, 2] });
+      respondAll(ANTHROPIC_FAILURES[name]);
 
-    for (let i = 0; i < 4; i++) await runPass(db);
+      for (let i = 0; i < 10; i++) {
+        expect(await runPass(db)).toEqual({ processed: 0, failed: 2, deferred: 2 });
+      }
 
-    expect(row(db, a.id)).toMatchObject(queuedWith(MAX_ENRICH_ATTEMPTS - 1));
-    expect(row(db, b.id)).toMatchObject(queuedWith(1));
-  });
+      expect(row(db, a.id)).toMatchObject(queuedWith(1));
+      expect(row(db, b.id)).toMatchObject(queuedWith(2));
+    },
+  );
+
+  it.each(accountLevel)(
+    "%s with ONE queued article that already used two attempts, ten passes: never counted, never excluded",
+    async (name) => {
+      const { db, sourceId } = makeDb();
+      const [a] = queue(db, sourceId, 1, { attempts: [MAX_ENRICH_ATTEMPTS - 1] });
+      respondAll(ANTHROPIC_FAILURES[name]);
+
+      for (let i = 0; i < 10; i++) {
+        expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 1 });
+      }
+
+      expect(row(db, a.id)).toMatchObject(queuedWith(MAX_ENRICH_ATTEMPTS - 1));
+    },
+  );
 
   it("the log names the class and status but not the provider's message", async () => {
     const { db, sourceId } = makeDb();
@@ -382,14 +419,40 @@ describe("who is charged: orderings within one pass", () => {
     expect(row(db, a.id)).toMatchObject(UNTOUCHED);
   });
 
-  it("[account] alone, article that already has a counted attempt: charged", async () => {
+  it("[account] alone, article that already has a counted attempt: still not counted", async () => {
     const { db, sourceId } = makeDb();
     const [a] = queue(db, sourceId, 1, { attempts: [1] });
     respondAll(ANTHROPIC_FAILURES.apiError500);
 
-    expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 0 });
-    expect(row(db, a.id)).toMatchObject(queuedWith(2));
+    expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 1 });
+    expect(row(db, a.id)).toMatchObject(queuedWith(1));
   });
+
+  it("[ok, 429, ok]: a rate limit followed by an answer for a LATER article is counted once", async () => {
+    const { db, sourceId } = makeDb();
+    const [a, b, c] = queue(db, sourceId, 3);
+    respondBySubject({ [b.subject]: ANTHROPIC_FAILURES.rateLimit429 });
+
+    expect(await runPass(db)).toEqual({ processed: 2, failed: 1, deferred: 0 });
+
+    expectEnriched(db, a.id);
+    expect(row(db, b.id)).toMatchObject(queuedWith(1));
+    expectEnriched(db, c.id);
+  });
+
+  it.each(["rateLimit429", "bare429"] as AnthropicFailureName[])(
+    "[ok, %s] with the rate limit LAST: not counted (the earlier call may be what used up the limit)",
+    async (name) => {
+      const { db, sourceId } = makeDb();
+      const [a, b] = queue(db, sourceId, 2);
+      respondBySubject({ [b.subject]: ANTHROPIC_FAILURES[name] });
+
+      expect(await runPass(db)).toEqual({ processed: 1, failed: 1, deferred: 1 });
+
+      expectEnriched(db, a.id);
+      expect(row(db, b.id)).toMatchObject(UNTOUCHED);
+    },
+  );
 
   it("[account, unknown-with-no-status]: an error that proves nothing leaves the account failure uncharged", async () => {
     const { db, sourceId } = makeDb();
@@ -433,7 +496,7 @@ describe("who is charged: orderings within one pass", () => {
   });
 });
 
-describe("one article that always fails does not block the queue (the reviewer's probe)", () => {
+describe("one article that always fails does not block the queue", () => {
   const poisons: Array<[string, () => Response, RegExp]> = [
     ["a 500 for its own content", ANTHROPIC_FAILURES.apiError500, /Internal server error/],
     ["a 403", ANTHROPIC_FAILURES.permission403, /does not have permission/],
@@ -442,76 +505,160 @@ describe("one article that always fails does not block the queue (the reviewer's
       ANTHROPIC_FAILURES.billing400,
       /credit balance is too low/,
     ],
-    ["a 429", ANTHROPIC_FAILURES.rateLimit429, /rate limit/],
   ];
 
-  it.each(poisons)("%s: the older articles are enriched and the article is capped", async (_label, poison, text) => {
+  it.each(poisons)(
+    "reviewer probe [newer, bad, older, older], %s: the others are enriched in pass 1; the bad one is capped by pass 3 as mail keeps arriving",
+    async (_label, poison, text) => {
+      const { db, sourceId } = makeDb();
+      const [newer, bad, older1, older2] = queue(db, sourceId, 4);
+      respondBySubject({ [bad.subject]: poison });
+
+      // Pass 1: everything else is enriched; the bad article is counted once.
+      expect(await runPass(db)).toEqual({ processed: 3, failed: 1, deferred: 0 });
+      for (const a of [newer, older1, older2]) expectEnriched(db, a.id);
+      expect(row(db, bad.id)).toMatchObject(queuedWith(1));
+
+      // Passes 2 and 3: new mail is enriched ahead of it, so it is counted again.
+      const m2 = newMail(db, sourceId);
+      expect(await runPass(db)).toEqual({ processed: 1, failed: 1, deferred: 0 });
+      expectEnriched(db, m2.id);
+      expect(row(db, bad.id)).toMatchObject(queuedWith(2));
+      const m3 = newMail(db, sourceId);
+      expect(await runPass(db)).toEqual({ processed: 1, failed: 1, deferred: 0 });
+      expectEnriched(db, m3.id);
+
+      const capped = row(db, bad.id);
+      expect(capped.enrich_attempts).toBe(MAX_ENRICH_ATTEMPTS);
+      expect(capped.excluded_category).toBe("enrichment_failed");
+      expect(capped.is_relevant).toBe(0);
+      expect(capped.processed_at).not.toBeNull();
+      // The reason still says what the provider returned, and why it was counted.
+      expect(capped.excluded_reason).toMatch(/^Enrichment failed 3 times — last failure: /);
+      expect(capped.excluded_reason).toMatch(text);
+      expect(capped.excluded_reason).toContain(COUNTED_AGAINST_ARTICLE_MARKER);
+      // ...so the repair script does not take it for an outage casualty.
+      expect(classifyStoredFailureReason(capped.excluded_reason)).toBeNull();
+
+      // Out of the queue: later passes make no call at all.
+      fetchStub.mockClear();
+      for (let i = 0; i < 7; i++) {
+        expect(await runPass(db)).toEqual({ processed: 0, failed: 0, deferred: 0 });
+      }
+      expect(fetchStub).not.toHaveBeenCalled();
+    },
+  );
+
+  it("the same probe with NO new mail: the others are enriched, the bad one waits at one attempt, one call per pass", async () => {
     const { db, sourceId } = makeDb();
     const [newer, bad, older1, older2] = queue(db, sourceId, 4);
-    respondBySubject({ [bad.subject]: poison });
+    respondBySubject({ [bad.subject]: ANTHROPIC_FAILURES.billing400 });
 
-    // Pass 1: everything else is enriched; the bad article is charged once.
     expect(await runPass(db)).toEqual({ processed: 3, failed: 1, deferred: 0 });
     for (const a of [newer, older1, older2]) expectEnriched(db, a.id);
-    expect(row(db, bad.id)).toMatchObject(queuedWith(1));
 
-    // Passes 2 and 3: it is alone now, but already has a counted attempt.
-    expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 0 });
-    expect(row(db, bad.id)).toMatchObject(queuedWith(2));
-    expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 0 });
-
-    const capped = row(db, bad.id);
-    expect(capped.enrich_attempts).toBe(MAX_ENRICH_ATTEMPTS);
-    expect(capped.excluded_category).toBe("enrichment_failed");
-    expect(capped.is_relevant).toBe(0);
-    expect(capped.processed_at).not.toBeNull();
-    // The reason still says what the provider returned, and why it was counted.
-    expect(capped.excluded_reason).toMatch(/^Enrichment failed 3 times — last failure: /);
-    expect(capped.excluded_reason).toMatch(text);
-    expect(capped.excluded_reason).toContain(CHARGED_TO_ARTICLE_MARKER);
-    // ...so the repair script does not take it for an outage casualty.
-    expect(classifyStoredFailureReason(capped.excluded_reason)).toBeNull();
-
-    // Out of the queue: later passes make no call at all.
     fetchStub.mockClear();
-    for (let i = 0; i < 7; i++) {
-      expect(await runPass(db)).toEqual({ processed: 0, failed: 0, deferred: 0 });
+    for (let i = 0; i < 10; i++) {
+      expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 1 });
     }
-    expect(fetchStub).not.toHaveBeenCalled();
+    expect(fetchStub).toHaveBeenCalledTimes(10);
+    expect(row(db, bad.id)).toMatchObject(queuedWith(1));
   });
 
-  it("a bad article at the tail of the queue is capped as newer mail arrives and is enriched ahead of it", async () => {
+  it("a fresh bad article alone in the queue, ten passes: attempts stay 0, one call per pass", async () => {
     const { db, sourceId } = makeDb();
     const [bad] = queue(db, sourceId, 1);
-    const subjects: Record<string, () => Response> = { [bad.subject]: ANTHROPIC_FAILURES.apiError500 };
-    respondBySubject(subjects);
+    respondAll(ANTHROPIC_FAILURES.billing400);
 
-    // Alone and fresh: not charged, however many passes.
-    for (let i = 0; i < 4; i++) expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 1 });
+    for (let i = 0; i < 10; i++) {
+      expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 1 });
+    }
+
+    expect(fetchStub).toHaveBeenCalledTimes(10);
     expect(row(db, bad.id)).toMatchObject(UNTOUCHED);
-
-    // New mail arrives (newer, so it is attempted first) and is enriched.
-    db.prepare(`UPDATE research_articles SET received_at = '2026-01-01 00:00:00' WHERE id = ?`).run(bad.id);
-    const [fresh] = queue(db, sourceId, 1);
-    expect(await runPass(db)).toEqual({ processed: 1, failed: 1, deferred: 0 });
-    expectEnriched(db, fresh.id);
-    expect(row(db, bad.id)).toMatchObject(queuedWith(1));
-
-    await runPass(db);
-    await runPass(db);
-    expect(row(db, bad.id)).toMatchObject({ enrich_attempts: MAX_ENRICH_ATTEMPTS, excluded_category: "enrichment_failed" });
   });
 
-  it("the stored message is the provider's own text", async () => {
+  it("the stored message is the provider's own text followed by why it was counted", async () => {
     const { db, sourceId } = makeDb();
-    const [bad] = queue(db, sourceId, 2);
+    const [, bad] = queue(db, sourceId, 2);
     respondBySubject({ [bad.subject]: ANTHROPIC_FAILURES.billing400 });
-    for (let i = 0; i < MAX_ENRICH_ATTEMPTS; i++) await runPass(db);
+    await runPass(db);
+    for (let i = 1; i < MAX_ENRICH_ATTEMPTS; i++) {
+      newMail(db, sourceId);
+      await runPass(db);
+    }
 
     expect(row(db, bad.id).excluded_reason).toBe(
       `Enrichment failed 3 times — last failure: ${CREDIT_BALANCE_MESSAGE.slice(0, 200)} ` +
-        `${CHARGED_TO_ARTICLE_MARKER} it failed alone after an earlier counted failure]`,
+        `[counted against this article: the provider answered another article in the same pass]`,
     );
+  });
+});
+
+describe("an outage that starts in the middle of a pass does not exclude a healthy article", () => {
+  it.each([
+    ["a 500", ANTHROPIC_FAILURES.apiError500, 3],
+    ["out of credit (the billing 400)", ANTHROPIC_FAILURES.billing400, 1],
+  ] as Array<[string, () => Response, number]>)(
+    "reviewer probe: pass 1 is [ok, fail], then the provider stays down with the article alone (%s)",
+    async (_label, failure, callsPerAttempt) => {
+      const { db, sourceId } = makeDb();
+      const [first, healthy] = queue(db, sourceId, 2);
+
+      // Pass 1: the first article is answered, then the provider goes down.
+      respondBySubject({ [healthy.subject]: failure });
+      expect(await runPass(db)).toEqual({ processed: 1, failed: 1, deferred: 0 });
+      expectEnriched(db, first.id);
+      expect(row(db, healthy.id)).toMatchObject(queuedWith(1));
+
+      // Three more passes, provider down for everything, the article alone.
+      respondAll(failure);
+      fetchStub.mockClear();
+      for (let i = 0; i < 3; i++) {
+        expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 1 });
+      }
+      expect(fetchStub).toHaveBeenCalledTimes(3 * callsPerAttempt);
+      expect(row(db, healthy.id)).toMatchObject(queuedWith(1));
+
+      // The provider returns: the article is enriched.
+      respondAll(ok);
+      expect(await runPass(db)).toEqual({ processed: 1, failed: 0, deferred: 0 });
+      expectEnriched(db, healthy.id);
+      expect(row(db, healthy.id).excluded_category).toBeNull();
+    },
+  );
+});
+
+describe("a rate limit at the tail of a pass is not the tail article's fault", () => {
+  it("reviewer probe: [ok x 19, 429] over four passes with new mail before each: the tail article's attempts stay 0", async () => {
+    const { db, sourceId } = makeDb();
+    const [tail] = queue(db, sourceId, 1);
+    respondBySubject({ [tail.subject]: ANTHROPIC_FAILURES.rateLimit429 });
+
+    for (let pass = 0; pass < 4; pass++) {
+      const fresh = Array.from({ length: 19 }, () => newMail(db, sourceId));
+      fetchStub.mockClear();
+
+      expect(await runPass(db)).toEqual({ processed: 19, failed: 1, deferred: 1 });
+
+      // 19 answered calls, then the tail's call tried three times by the SDK.
+      expect(fetchStub).toHaveBeenCalledTimes(19 + 3);
+      for (const f of fresh) expectEnriched(db, f.id);
+      expect(row(db, tail.id)).toMatchObject(UNTOUCHED);
+    }
+  });
+
+  it("when the limit lifts, the tail article is enriched", async () => {
+    const { db, sourceId } = makeDb();
+    const [tail] = queue(db, sourceId, 1);
+    respondBySubject({ [tail.subject]: ANTHROPIC_FAILURES.rateLimit429 });
+    newMail(db, sourceId);
+    await runPass(db);
+    expect(row(db, tail.id)).toMatchObject(UNTOUCHED);
+
+    respondAll(ok);
+    expect(await runPass(db)).toEqual({ processed: 1, failed: 0, deferred: 0 });
+    expectEnriched(db, tail.id);
   });
 });
 
@@ -540,7 +687,7 @@ describe("article-level failures still count and still exclude at the cap", () =
     expect(after.processed_at).not.toBeNull();
     expect(after.excluded_reason).toMatch(/^Enrichment failed 3 times — last failure: /);
     expect(after.excluded_reason).toMatch(reason);
-    expect(after.excluded_reason).not.toContain(CHARGED_TO_ARTICLE_MARKER);
+    expect(after.excluded_reason).not.toContain(COUNTED_AGAINST_ARTICLE_MARKER);
 
     // And it is out of the queue: a fourth pass makes no call.
     fetchStub.mockClear();

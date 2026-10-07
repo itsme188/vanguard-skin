@@ -11,7 +11,7 @@ import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
 import { getActiveWatchlistStockSymbols } from "@/lib/queries/watchlist";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import {
-  CHARGED_TO_ARTICLE_MARKER,
+  COUNTED_AGAINST_ARTICLE_MARKER,
   MAX_ENRICH_ATTEMPTS,
   classifyEnrichmentError,
   describeEnrichmentFailure,
@@ -27,8 +27,6 @@ interface UnprocessedArticle {
   source_name: string;
   processing_prompt: string | null;
   allow_off_topic: number;
-  /** Attempts already charged to the article before this pass. */
-  enrich_attempts: number;
 }
 
 interface ProcessedResult {
@@ -77,37 +75,26 @@ export interface ProcessArticlesResult {
  * Extracts: summary, key themes, sentiment, mentioned tickers, portfolio relevance.
  * Links mentioned symbols to existing securities in the portfolio.
  *
- * Failure accounting (owner ruling 2026-10-06):
- *   - ARTICLE-level failure (empty parse, refusal, malformed output, a request
- *     the provider rejects, anything unrecognised): uses one of the article's
- *     MAX_ENRICH_ATTEMPTS; at the cap the article is excluded as
- *     'enrichment_failed'.
- *   - ACCOUNT-level failure (out of credit, bad or missing key, rate limit,
- *     provider outage, no network): by itself uses NO attempt and leaves
- *     processed_at NULL, so a later pass retries the article.
- *
- * An error that LOOKS account-level can still be one article's own problem (a
- * provider that answers 500 for one particular body). The queue is newest
- * first, so leaving such an article uncounted and stopping would block every
- * older article behind it forever. The pass therefore decides from what
- * happens around it:
- *   1. Two account-level failures IN A ROW mean the provider is down for
- *      everyone: the pass stops, neither is counted, the rest of the queue is
- *      not attempted. An outage costs two enrichment calls per pass.
- *   2. If the provider ANSWERS another article in the same pass (a success, or
- *      a failure that is a real answer: refusal, unparseable output, a
- *      rejected request), the provider was reachable, so the account-level
- *      failure is charged to its article as a normal counted attempt. The
- *      answer may come before or after it; rule 1 is checked first.
- *   3. If nothing else in the pass shows either way (the article failed
- *      alone), it is NOT counted when it has no counted attempt yet, so a
- *      fresh article can never be excluded by an outage. If it already has a
- *      counted attempt, the lone failure is counted, which is what finally
- *      caps an article that fails on its own content once the queue behind it
- *      has drained.
- * What then bounds the call rate is the pass cadence (the 90-minute
- * market-hours job, the in-app refresh, a manual Sync, the two digest sends),
- * each holding the research sync lock.
+ * Failure accounting (owner ruling 2026-10-06). An ARTICLE-level failure
+ * (empty parse, refusal, malformed output, a rejected request, anything
+ * unrecognised) uses one of the article's MAX_ENRICH_ATTEMPTS. An
+ * ACCOUNT-level failure (out of credit, bad or missing key, rate limit,
+ * outage, no network) is judged by what else happens in the same pass:
+ *   1. Two account-level failures in a row stop the pass; neither is counted.
+ *   2. It is counted against its article when the provider ANSWERS another
+ *      article in the same pass (a success or a real reply such as a refusal),
+ *      before or after it; rule 1 is checked first.
+ *   3. A RATE LIMIT is counted only when a LATER article gets an answer: the
+ *      pass's own earlier calls can be what used up the limit.
+ *   4. Otherwise (alone in the pass, or last with nothing proving it) it is
+ *      never counted, whatever attempts the article already has.
+ * Rule 2 exists because the queue is newest first: an article the provider
+ * always fails would otherwise block everything older. Rule 4 means an outage
+ * alone can never exclude an article. An outage costs two enrichment calls per
+ * pass; an article that fails alone costs one per pass until newer mail is
+ * enriched in the same pass. The pass cadence (the 90-minute market-hours
+ * job, the in-app refresh, a manual Sync, the two digest sends, each holding
+ * the research sync lock) bounds the rest.
  */
 export async function processUnprocessedArticles(
   db: Database.Database
@@ -116,8 +103,7 @@ export async function processUnprocessedArticles(
     .prepare(
       `SELECT a.id, a.source_id, a.subject, a.sender, a.raw_text,
               s.name as source_name, s.processing_prompt,
-              COALESCE(s.allow_off_topic, 0) as allow_off_topic,
-              COALESCE(a.enrich_attempts, 0) as enrich_attempts
+              COALESCE(s.allow_off_topic, 0) as allow_off_topic
        FROM research_articles a
        JOIN research_sources s ON a.source_id = s.id
        WHERE a.processed_at IS NULL
@@ -251,7 +237,7 @@ export async function processUnprocessedArticles(
     providerAnswered: false,
   };
 
-  /** Rule 2 / rule 3: count the pending account-level failure against its article. */
+  /** Rules 2 and 3: count the pending account-level failure against its article. */
   const chargePendingToArticle = (because: string): void => {
     const p = blame.pending;
     if (!p) return;
@@ -261,7 +247,7 @@ export async function processUnprocessedArticles(
         `(${describeEnrichmentFailure(p.failure)}) counted toward the retry cap because ${because}.`
     );
     // The reason keeps what the provider returned and says why it was counted.
-    recordEnrichmentFailure(p.article.id, `${p.why} ${CHARGED_TO_ARTICLE_MARKER} ${because}]`);
+    recordEnrichmentFailure(p.article.id, `${p.why} ${COUNTED_AGAINST_ARTICLE_MARKER} ${because}]`);
   };
 
   /** The provider gave a real answer for some article in this pass. */
@@ -413,18 +399,17 @@ export async function processUnprocessedArticles(
   }
 
   // The pass ended (queue or batch exhausted) with one account-level failure
-  // still undecided: nothing was attempted after it.
+  // still undecided: nothing was attempted after it. An answer EARLIER in the
+  // pass counts it (rule 2), except for a rate limit (rule 3). With no such
+  // answer it is never counted (rule 4).
   if (blame.pending) {
     const p = blame.pending;
-    if (blame.providerAnswered) {
+    if (blame.providerAnswered && p.failure.kind !== "rate_limit") {
       chargePendingToArticle("the provider answered another article in the same pass");
-    } else if (p.article.enrich_attempts >= 1) {
-      chargePendingToArticle("it failed alone after an earlier counted failure");
     } else {
-      // Rule 3: alone, and never yet shown to be at fault. Leave it queued.
       console.error(
         `[research] Article ${p.article.id}: account-level AI failure ` +
-          `(${describeEnrichmentFailure(p.failure)}) with nothing else in the pass to compare. ` +
+          `(${describeEnrichmentFailure(p.failure)}) with nothing in the pass to show the article is at fault. ` +
           `Attempt not counted; it will be retried on the next pass.`
       );
       blame.pending = null;

@@ -275,7 +275,7 @@ function classifyApiCallError(err: Record<string | symbol, unknown>): Enrichment
  *     would still be caught by the structured checks.
  *   - A 4xx whose provider message happens to contain the billing phrase
  *     for another reason reads as account-level. The enrichment pass bounds
- *     that: an account-level failure is charged to the article anyway when
+ *     that: an account-level failure is counted against the article anyway when
  *     the provider answers other articles in the same pass.
  */
 export function classifyEnrichmentError(err: unknown): EnrichmentFailureClass {
@@ -342,7 +342,7 @@ const LAST_FAILURE_MARKER = "last failure:";
  * carrying it is never read as account-level, so the repair script does not
  * re-queue an article that fails on its own content.
  */
-export const CHARGED_TO_ARTICLE_MARKER = "[charged to the article:";
+export const COUNTED_AGAINST_ARTICLE_MARKER = "[counted against this article:";
 
 /**
  * Classify a stored `excluded_reason`. Returns the account-level kind, or null
@@ -364,7 +364,7 @@ export function classifyStoredFailureReason(reason: string | null | undefined): 
   const at = reason.indexOf(LAST_FAILURE_MARKER);
   if (at === -1) return null;
   const why = reason.slice(at + LAST_FAILURE_MARKER.length).trim();
-  if (why.includes(CHARGED_TO_ARTICLE_MARKER)) return null;
+  if (why.includes(COUNTED_AGAINST_ARTICLE_MARKER)) return null;
 
   if (isBillingProse(why)) return "billing";
   if (/^Failed after \d+ attempts\. Last error: /.test(why)) return "retried_transient";

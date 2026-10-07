@@ -10,7 +10,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { APICallError, RetryError, NoObjectGeneratedError } from "ai";
 import {
-  CHARGED_TO_ARTICLE_MARKER,
+  COUNTED_AGAINST_ARTICLE_MARKER,
   classifyEnrichmentError,
   classifyStoredFailureReason,
   describeEnrichmentFailure,
@@ -346,10 +346,14 @@ describe("classifyStoredFailureReason: what an excluded row remembers", () => {
     expect(classifyStoredFailureReason(stored((error as Error).message))).toBeNull();
   });
 
-  it("a failure the pass charged to the article is never read as account-level", async () => {
+  it("the marker reads as plain words on the Filtered row", () => {
+    expect(COUNTED_AGAINST_ARTICLE_MARKER).toBe("[counted against this article:");
+  });
+
+  it("a failure the pass counted against the article is never read as account-level", async () => {
     const { error } = await errorFromRealSdk(ANTHROPIC_FAILURES.billing400);
     const charged = stored(
-      `${(error as Error).message.slice(0, 200)} ${CHARGED_TO_ARTICLE_MARKER} the provider answered another article in the same pass]`,
+      `${(error as Error).message.slice(0, 200)} ${COUNTED_AGAINST_ARTICLE_MARKER} the provider answered another article in the same pass]`,
     );
     expect(charged).toContain("credit balance is too low");
     expect(classifyStoredFailureReason(charged)).toBeNull();
@@ -357,7 +361,7 @@ describe("classifyStoredFailureReason: what an excluded row remembers", () => {
 
   it("the marker tested here is the one process.ts appends", () => {
     const src = readFileSync("lib/gmail/process.ts", "utf8");
-    expect(src).toContain("recordEnrichmentFailure(p.article.id, `${p.why} ${CHARGED_TO_ARTICLE_MARKER} ${because}]`)");
+    expect(src).toContain("recordEnrichmentFailure(p.article.id, `${p.why} ${COUNTED_AGAINST_ARTICLE_MARKER} ${because}]`)");
   });
 
   it.each([
