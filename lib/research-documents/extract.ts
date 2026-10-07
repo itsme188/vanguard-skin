@@ -79,14 +79,35 @@ export class ResearchPdfTooLargeError extends Error {
   }
 }
 
+/**
+ * `upstream` = the AI service failed or refused the request (a gateway-class
+ * failure). `unusable_output` = the service answered, but with nothing this
+ * document can be built from; that is a fact about the file, not an outage.
+ */
+export type ResearchPdfExtractionErrorKind = "upstream" | "unusable_output";
+
 export class ResearchPdfExtractionError extends Error {
   public readonly rawSnippet: string;
-  constructor(message: string, rawSnippet: string) {
+  public readonly kind: ResearchPdfExtractionErrorKind;
+  constructor(
+    message: string,
+    rawSnippet: string,
+    kind: ResearchPdfExtractionErrorKind = "upstream",
+  ) {
     super(message);
     this.name = "ResearchPdfExtractionError";
     this.rawSnippet = rawSnippet;
+    this.kind = kind;
   }
 }
+
+/**
+ * Shown when the model answers with no text at all (a scanned or image-only
+ * PDF, or one with no readable content). User-facing: no internal term, and
+ * no snippet goes with it (the "output" is an empty list).
+ */
+export const RESEARCH_PDF_NO_READABLE_OUTPUT_MESSAGE =
+  "Claude could not read this PDF: it returned no summary. Try a text-based report rather than a scanned or image-only file.";
 
 // ─── Prompts ─────────────────────────────────────────────────────
 
@@ -265,9 +286,17 @@ async function callClaudeWithPdf(
   }
   const textBlock = response.content.find((b) => b.type === "text");
   if (!textBlock || textBlock.type !== "text") {
+    // QA: research-documents-upload--500-renders-raw-anthropic-envelope-regression-1.
+    // The old copy ("...contained no text block" + a "[]" snippet) was an
+    // internal diagnostic rendered verbatim under the drop zone.
+    console.error(
+      "Research PDF extraction: model returned no text block; content types:",
+      response.content.map((b) => b.type),
+    );
     throw new ResearchPdfExtractionError(
-      "Claude response contained no text block",
-      JSON.stringify(response.content).slice(0, 200),
+      RESEARCH_PDF_NO_READABLE_OUTPUT_MESSAGE,
+      "",
+      "unusable_output",
     );
   }
   return textBlock.text;
@@ -294,6 +323,7 @@ export function parseMetadataResponse(
     throw new ResearchPdfExtractionError(
       "Metadata response was not valid JSON.",
       jsonText.slice(0, 500),
+      "unusable_output",
     );
   }
   return normalizeMetadata(parsed, modelId);
@@ -321,15 +351,26 @@ const SENTIMENTS: ResearchDocumentSentiment[] = [
   "mixed",
 ];
 
+/** Longest tag kept, in characters (after normalization). */
+export const RESEARCH_TAG_MAX_LENGTH = 40;
+/** Most tags one document carries. */
+export const RESEARCH_TAG_MAX_COUNT = 15;
+
 /**
- * Normalize free-text tags: lowercase, trim, strip weird chars, dedupe, cap
- * per-tag length + collection size. Accepts an array or a single string.
- * Exported for the mutation layer to reuse on user-edited tags.
+ * Normalize free-text tags: split comma-separated entries, lowercase, trim,
+ * strip weird chars, dedupe, cap per-tag length + collection size. Accepts an
+ * array of strings. Exported for the mutation layer to reuse on user-edited
+ * tags.
+ *
+ * The comma split runs BEFORE the character whitelist: the whitelist turns a
+ * comma into a space, so "alpha, beta" used to be stored as the single tag
+ * "alpha beta".
  */
 export function normalizeTags(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   const cleaned = raw
     .filter((t): t is string => typeof t === "string")
+    .flatMap((t) => t.split(","))
     .map((t) =>
       t
         .toLowerCase()
@@ -337,7 +378,7 @@ export function normalizeTags(raw: unknown): string[] {
         .replace(/\s+/g, " ")
         .trim(),
     )
-    .filter((t) => t.length > 0 && t.length <= 40);
+    .filter((t) => t.length > 0 && t.length <= RESEARCH_TAG_MAX_LENGTH);
   const seen = new Set<string>();
   const out: string[] = [];
   for (const t of cleaned) {
@@ -345,7 +386,7 @@ export function normalizeTags(raw: unknown): string[] {
       seen.add(t);
       out.push(t);
     }
-    if (out.length >= 15) break;
+    if (out.length >= RESEARCH_TAG_MAX_COUNT) break;
   }
   return out;
 }
