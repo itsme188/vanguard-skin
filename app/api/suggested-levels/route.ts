@@ -155,7 +155,13 @@ export async function GET(req: NextRequest) {
  * POST /api/suggested-levels?securityId=…&narratives=1
  *
  * Generate (or reuse today's cached) per-level narratives — the paid-AI write
- * path. Returns the same shape as GET, with narratives populated.
+ * path. Returns the same shape as GET, with narratives populated and, per
+ * level, `narrativeUnavailable: true` when generation failed.
+ *
+ * `narrative` is the model's sentence only. The card composes what it shows
+ * (templated facts, then this sentence when it agrees with the chip) through
+ * `composeLevelNarrative` in lib/levels/narrative-guard.ts, and ACCEPT stores
+ * that same string.
  */
 export async function POST(req: NextRequest) {
   const outcome = computeBase(req);
@@ -175,9 +181,14 @@ export async function POST(req: NextRequest) {
         }),
       ),
     );
+    // getOrGenerateNarrative swallows a failed (or empty) AI call and returns
+    // null. This is the generation path, so a null here is a failure, not "not
+    // generated yet" — say so, or the card shows a blank with no reason. GET
+    // never sets the marker: a null in a cache read only means POST has not run.
     const enriched = result.levels.map((level: SuggestedLevel, i: number) => ({
       ...level,
       narrative: narratives[i],
+      narrativeUnavailable: narratives[i] == null,
     }));
     return Response.json({ ...result, levels: enriched, usdPerUnit });
   }

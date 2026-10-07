@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import type {
   SecurityLevel,
   LevelType,
@@ -18,15 +19,14 @@ import type {
 // "₩976,000" rather than "$976,000" for a KRW security).
 import { formatLevelPrice } from "@/lib/chart/price-formatter";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
-// Suggested-level narratives are Haiku prose and occasionally state a
-// distance figure ("N% above/below") that contradicts the level's own
-// price/currentPrice — QA regression security-detail-suggested-levels--
-// narrative-magnitude-contradiction-regression-6 (2026-08-16). Storage
-// already gates this (lib/chart/narrate-levels.ts), but this render call
-// is defense for rows persisted before that fix, and resolveAcceptedThesis
-// is the ACCEPT-path gate so a bad sentence can never ride into
-// security_levels.thesis on an armed level.
-import { guardNarrative, resolveAcceptedThesis } from "@/lib/levels/narrative-guard";
+// What a suggested-level card says is one composed string: a templated fact
+// sentence written from the same metadata the chip prints (touch count, touch
+// dates), then the model's sentence as the rationale — shown only when every
+// figure in it agrees with the chip, otherwise hidden (never rewritten).
+// resolveAcceptedThesis returns that same string, so ACCEPT can never store a
+// sentence the card would have hidden. Owner rulings built 2026-10-07; see
+// lib/levels/narrative-guard.ts.
+import { composeLevelNarrative, resolveAcceptedThesis } from "@/lib/levels/narrative-guard";
 import { levelActionVisibility, levelReviewGuidance } from "@/lib/levels/action-visibility";
 import { lastFiredDateET } from "@/lib/levels/last-fired-date";
 // The scanner's two skip conditions. A level outside the plausibility band —
@@ -95,6 +95,83 @@ function priceSourceLabel(src: LevelPriceSource): string {
   return PRICE_SOURCE_OPTIONS.find((o) => o.value === src)?.label ?? src;
 }
 
+/** The status a row's chips show. `is_active` alone is not it: an active row
+ *  can be armed, pending review or rejected, and an inactive one either fired
+ *  or was paused. Derived from levelActionVisibility (the single owner of the
+ *  armed / unarmed rules) so it cannot drift from the chips and buttons. */
+export type LevelRowStatus = "armed" | "triggered" | "pending_review" | "rejected" | "inactive";
+
+export function levelRowStatus(
+  level: Pick<SecurityLevel, "is_active" | "review_status" | "triggered_at">,
+): LevelRowStatus {
+  const { showPause, unarmedReview, showRequeue } = levelActionVisibility(level);
+  if (showPause) return "armed";
+  if (unarmedReview) return showRequeue ? "rejected" : "pending_review";
+  return level.triggered_at != null ? "triggered" : "inactive";
+}
+
+// Status sort order. The pill's first click sorts descending, so the first
+// status here gets the highest rank and leads the list.
+const LEVEL_STATUS_ORDER: LevelRowStatus[] = [
+  "armed",
+  "triggered",
+  "pending_review",
+  "rejected",
+  "inactive",
+];
+
+/** Sort key for the Status pill: one number per visible status, so rows with
+ *  the same chip sit together (sorting on `is_active` interleaved them). */
+export function levelStatusRank(
+  l: Pick<SecurityLevel, "is_active" | "review_status" | "triggered_at">,
+): number {
+  return LEVEL_STATUS_ORDER.length - LEVEL_STATUS_ORDER.indexOf(levelRowStatus(l));
+}
+
+const HIDDEN_STATUS_LABEL: Array<[LevelRowStatus, string]> = [
+  ["pending_review", "pending review"],
+  ["rejected", "rejected"],
+  ["triggered", "fired"],
+  ["inactive", "inactive"],
+];
+
+/** What the default (armed-only) view leaves out, named by status — e.g.
+ *  "3 not shown: 1 pending review, 2 rejected". Null when nothing is hidden. */
+export function hiddenLevelsSummary(
+  allLevels: Array<Pick<SecurityLevel, "is_active" | "review_status" | "triggered_at">>,
+): string | null {
+  const counts = new Map<LevelRowStatus, number>();
+  for (const l of allLevels) {
+    const status = levelRowStatus(l);
+    if (status === "armed") continue;
+    counts.set(status, (counts.get(status) ?? 0) + 1);
+  }
+  const parts = HIDDEN_STATUS_LABEL.flatMap(([status, label]) => {
+    const n = counts.get(status) ?? 0;
+    return n > 0 ? [`${n} ${label}`] : [];
+  });
+  if (parts.length === 0) return null;
+  const total = Array.from(counts.values()).reduce((a, b) => a + b, 0);
+  return `${total} not shown: ${parts.join(", ")}`;
+}
+
+/** The muted line under a row's chips: when it was added (Eastern date of the
+ *  stored UTC timestamp), and the timeframe and expiry the add form took.
+ *  `expires_at` is a plain date; past it the scanner ignores the level, so it
+ *  reads "Expired". `today` is the Eastern date (todayET()). */
+export function levelRowMeta(
+  l: Pick<SecurityLevel, "created_at" | "timeframe" | "expires_at">,
+  today: string,
+): string[] {
+  const parts: string[] = [];
+  // lastFiredDateET is the shared "stored UTC timestamp to Eastern date" reader.
+  const added = lastFiredDateET(l.created_at);
+  if (added) parts.push(`Added ${added}`);
+  if (l.timeframe) parts.push(`Timeframe ${l.timeframe}`);
+  if (l.expires_at) parts.push(`${l.expires_at < today ? "Expired" : "Expires"} ${l.expires_at}`);
+  return parts;
+}
+
 /** The two refusals the reactivate route can return; both can be overridden. */
 type ArmRefusalCode = "would_fire_immediately" | "beyond_scan_range";
 
@@ -141,7 +218,11 @@ interface SuggestedLevel {
   firstTouchDate: string;
   confidence: "high" | "medium" | "low";
   distancePct: number;
+  /** The model's sentence only (null until generated). The card shows it
+   *  through composeLevelNarrative, never raw. */
   narrative?: string | null;
+  /** Set by POST /api/suggested-levels when generating this narrative failed. */
+  narrativeUnavailable?: boolean;
 }
 
 interface SuggestedLevelsResponse {
@@ -178,6 +259,9 @@ function SuggestedLevels({
   const [loading, setLoading] = useState(true);
   const [accepting, setAccepting] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(true);
+  // The narrative request itself failed (network, non-2xx). The cards then say
+  // so instead of showing the facts with an unexplained gap.
+  const [narrativeRequestFailed, setNarrativeRequestFailed] = useState(false);
   // Suggested prices/ATR arrive NATIVE. Prices render NATIVE — the accepted-
   // levels list in this same panel is documented "intentionally left native"
   // (CLAUDE.md foreign-currency section), and a USD-converted suggestion next
@@ -197,6 +281,7 @@ function SuggestedLevels({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setNarrativeRequestFailed(false);
 
     // GET is side-effect-free (#35 task 5): it returns levels with narratives
     // READ FROM CACHE (null when not yet generated). When any narrative is
@@ -216,13 +301,20 @@ function SuggestedLevels({
         const needsNarratives =
           json?.levels?.some((l) => l.narrative == null) ?? false;
         if (needsNarratives) {
-          const postRes = await apiFetch(
-            `/api/suggested-levels?securityId=${securityId}&narratives=1`,
-            { method: "POST" },
-          );
-          if (postRes.ok) {
-            const enriched = (await postRes.json()) as SuggestedLevelsResponse;
-            if (!cancelled) setData(enriched);
+          try {
+            const postRes = await apiFetch(
+              `/api/suggested-levels?securityId=${securityId}&narratives=1`,
+              { method: "POST" },
+            );
+            if (postRes.ok) {
+              const enriched = (await postRes.json()) as SuggestedLevelsResponse;
+              if (!cancelled) setData(enriched);
+            } else if (!cancelled) {
+              setNarrativeRequestFailed(true);
+            }
+          } catch {
+            // The levels from the GET stay on screen; only the commentary is missing.
+            if (!cancelled) setNarrativeRequestFailed(true);
           }
         }
       } catch {
@@ -249,13 +341,15 @@ function SuggestedLevels({
     );
   });
 
-  // Render-time defense: re-check the narrative's numeric claims against
-  // this card's own price/level even though storage already gates them —
-  // covers rows that were cached before the guard shipped. Falls back to
-  // the raw narrative only when currentPrice isn't known yet (best effort).
-  const displayNarrative = data?.currentPrice != null
-    ? (sug: SuggestedLevel) => guardNarrative(sug.narrative ?? null, data.currentPrice as number, sug)
-    : (sug: SuggestedLevel) => sug.narrative ?? null;
+  // The card's text: templated facts from the chip's own metadata, then the
+  // model's sentence when it agrees with the chip. The same call ACCEPT makes
+  // (resolveAcceptedThesis), so the card and the stored thesis are one string.
+  const displayNarrative = (sug: SuggestedLevel) =>
+    composeLevelNarrative(sug, data?.currentPrice ?? null);
+  // True when this card has no model sentence because generating it failed
+  // (the server's per-level marker, or the request itself failing).
+  const narrativeUnavailable = (sug: SuggestedLevel) =>
+    sug.narrative == null && (sug.narrativeUnavailable === true || narrativeRequestFailed);
 
   async function accept(sug: SuggestedLevel, index: number) {
     setAccepting(index);
@@ -420,17 +514,29 @@ function SuggestedLevels({
                         {sug.confidence} · {sug.touches}× · last {sug.lastTouchDate}
                       </span>
                     </div>
-                    {sug.narrative && (
+                    <p
+                      style={{
+                        marginTop: "10px",
+                        fontFamily: "Geist, system-ui, sans-serif",
+                        fontSize: "14px",
+                        lineHeight: 1.55,
+                        color: "#bbb",
+                      }}
+                    >
+                      {displayNarrative(sug)}
+                    </p>
+                    {narrativeUnavailable(sug) && (
                       <p
                         style={{
-                          marginTop: "10px",
-                          fontFamily: "Geist, system-ui, sans-serif",
-                          fontSize: "14px",
-                          lineHeight: 1.55,
-                          color: "#bbb",
+                          marginTop: "4px",
+                          fontFamily: "var(--font-mono), monospace",
+                          fontSize: "11px",
+                          letterSpacing: "0.14em",
+                          textTransform: "uppercase",
+                          color: "#888",
                         }}
                       >
-                        {displayNarrative(sug)}
+                        AI commentary unavailable
                       </p>
                     )}
                   </div>
@@ -524,9 +630,12 @@ function SuggestedLevels({
                     {sug.touches}× · last {sug.lastTouchDate}
                   </span>
                 </div>
-                {sug.narrative && (
-                  <p className="mt-1 text-[11px] text-ink-dim leading-snug">
-                    {displayNarrative(sug)}
+                <p className="mt-1 text-[11px] text-ink-dim leading-snug">
+                  {displayNarrative(sug)}
+                </p>
+                {narrativeUnavailable(sug) && (
+                  <p className="mt-0.5 text-[11px] text-ink-faint">
+                    AI commentary unavailable
                   </p>
                 )}
               </div>
@@ -673,6 +782,12 @@ export function LevelsPanel({
 }) {
   const { toast } = useToast();
   const [levels, setLevels] = useState<EnrichedLevel[]>([]);
+  // Every level for this security, whatever the Show-inactive toggle says.
+  // `levels` above is only what the list displays. The suggestion de-dupe and
+  // the empty state read this one, so a display toggle cannot change which
+  // suggestions exist or hide that paused / rejected / pending rows are there.
+  // Null until the first successful load.
+  const [allLevels, setAllLevels] = useState<EnrichedLevel[] | null>(null);
   const [loading, setLoading] = useState(false);
   // [qa:security-detail-levels-panel--failed-fetch-renders-no-active-levels-empty-state]
   // A rejected fetch or a non-2xx/{success:false} response used to leave
@@ -737,7 +852,19 @@ export function LevelsPanel({
         setLoadError("Levels could not be loaded");
         return;
       }
+      // The full set. With Show inactive on, the list already is the full set.
+      let full: EnrichedLevel[] = json.levels;
+      if (!showInactive) {
+        const fullRes = await fetch(`/api/levels?securityId=${securityId}&activeOnly=false`);
+        const fullJson = await fullRes.json().catch(() => null);
+        if (!fullRes.ok || !fullJson?.success) {
+          setLoadError("Levels could not be loaded");
+          return;
+        }
+        full = fullJson.levels;
+      }
       setLevels(json.levels);
+      setAllLevels(full);
       setLoadError(null);
     } catch {
       // Network error / timeout / thrown fetch — same treatment as an
@@ -1256,7 +1383,7 @@ export function LevelsPanel({
       <SuggestedLevels
         securityId={securityId}
         symbol={symbol}
-        userLevels={levels}
+        userLevels={allLevels ?? levels}
         onAccepted={refresh}
         embedded={embedded}
         currency={currency}
@@ -1304,15 +1431,22 @@ export function LevelsPanel({
           authorFilter === "All"
             ? levels
             : levels.filter((l) => l.source_author === authorFilter);
+        // The Status pill keeps its URL key (`is_active`) but sorts on the
+        // status the row's chips show, not on the raw flag.
+        const sortValue = (l: EnrichedLevel): unknown =>
+          levelSort.field === "is_active"
+            ? levelStatusRank(l)
+            : l[levelSort.field as keyof EnrichedLevel];
         const visibleLevels = levelSort.field
           ? [...filtered].sort((a, b) =>
-              compareValues(
-                a[levelSort.field as keyof EnrichedLevel] as unknown,
-                b[levelSort.field as keyof EnrichedLevel] as unknown,
-                levelSort.dir,
-              ),
+              compareValues(sortValue(a), sortValue(b), levelSort.dir),
             )
           : filtered;
+        const today = todayET();
+        // Only the default view hides rows; with Show inactive on, an empty
+        // list really is empty.
+        const hiddenSummary =
+          !showInactive && levels.length === 0 ? hiddenLevelsSummary(allLevels ?? []) : null;
 
         if (visibleLevels.length === 0) {
           // [qa:security-detail-levels-panel--failed-fetch-renders-no-active-levels-empty-state]
@@ -1341,8 +1475,32 @@ export function LevelsPanel({
                     }}
                   >
                     {levels.length === 0
-                      ? "No active levels · accept a suggestion or add your own"
+                      ? hiddenSummary
+                        ? `No armed levels · ${hiddenSummary}`
+                        : "No active levels · accept a suggestion or add your own"
                       : `No levels from ${authorFilter}`}
+                    {levels.length === 0 && hiddenSummary && (
+                      <>
+                        {" · "}
+                        <button
+                          type="button"
+                          onClick={() => setShowInactive(true)}
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            padding: 0,
+                            color: "#60a5fa",
+                            textDecoration: "underline",
+                            cursor: "pointer",
+                            font: "inherit",
+                            letterSpacing: "inherit",
+                            textTransform: "inherit",
+                          }}
+                        >
+                          Show inactive
+                        </button>
+                      </>
+                    )}
                   </p>
                 )}
               </>
@@ -1356,8 +1514,22 @@ export function LevelsPanel({
               {!loadError && (
                 <p className="text-[11px] text-ink-faint italic py-4 text-center">
                   {levels.length === 0
-                    ? "No levels set. Add one above."
+                    ? hiddenSummary
+                      ? `No armed levels. ${hiddenSummary}.`
+                      : "No levels set. Add one above."
                     : `No levels from ${authorFilter}.`}
+                  {levels.length === 0 && hiddenSummary && (
+                    <>
+                      {" "}
+                      <button
+                        type="button"
+                        onClick={() => setShowInactive(true)}
+                        className="text-blue hover:text-blue/80 underline not-italic"
+                      >
+                        Show inactive
+                      </button>
+                    </>
+                  )}
                 </p>
               )}
             </>
@@ -1404,6 +1576,8 @@ export function LevelsPanel({
                 // row gets — do not add conditions on top of its result here.
                 const { unarmedReview, showPause, showReactivate, showRequeue } =
                   levelActionVisibility(l);
+                const meta = levelRowMeta(l, today);
+                const pendingReview = levelRowStatus(l) === "pending_review";
                 return (
                   <div
                     key={l.id}
@@ -1604,6 +1778,20 @@ export function LevelsPanel({
                           </span>
                         )}
                       </div>
+                      {meta.length > 0 && (
+                        <p
+                          style={{
+                            marginTop: "6px",
+                            fontFamily: "var(--font-mono), monospace",
+                            fontSize: "11px",
+                            letterSpacing: "0.14em",
+                            textTransform: "uppercase",
+                            color: "#888",
+                          }}
+                        >
+                          {meta.join(" · ")}
+                        </p>
+                      )}
                       {(l.thesis || l.source_author) && (
                         <p
                           style={{
@@ -1633,6 +1821,30 @@ export function LevelsPanel({
                       )}
                     </div>
                     <div style={{ display: "flex", gap: "8px", alignSelf: "center" }}>
+                      {/* A pending level is decided in the alerts inbox — the one
+                          review surface (owner ruling 2026-09-14). This is a link
+                          to it, not a second Approve / Reject. */}
+                      {pendingReview && (
+                        <Link
+                          href="/dashboard/alerts?view=review"
+                          title="Approve or reject this level in the alerts inbox"
+                          className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1"
+                          style={{
+                            border: "1px solid #f59e0b",
+                            color: "#f59e0b",
+                            fontFamily: "var(--font-mono), monospace",
+                            fontSize: "11px",
+                            fontWeight: 600,
+                            letterSpacing: "0.2em",
+                            textTransform: "uppercase",
+                            padding: "5px 10px",
+                            borderRadius: "2px",
+                            textDecoration: "none",
+                          }}
+                        >
+                          Review
+                        </Link>
+                      )}
                       {showRequeue && (
                         <button
                           onClick={() => handleRequeue(l.id)}
@@ -1744,6 +1956,8 @@ export function LevelsPanel({
               const inactive = l.is_active === 0 && !lastFired;
               // Single owner, as in the embedded rows above.
               const { showPause, showReactivate, showRequeue } = levelActionVisibility(l);
+              const meta = levelRowMeta(l, today);
+              const pendingReview = levelRowStatus(l) === "pending_review";
               return (
             <li key={l.id} className="py-2.5 flex items-start gap-3">
               <div
@@ -1826,6 +2040,9 @@ export function LevelsPanel({
                     </Chip>
                   )}
                 </div>
+                {meta.length > 0 && (
+                  <p className="text-[11px] text-ink-faint mt-0.5">{meta.join(" · ")}</p>
+                )}
                 {(l.thesis || l.source_author) && (
                   <p className="text-[11px] text-ink-faint mt-0.5">
                     {l.source_author && (
@@ -1836,6 +2053,16 @@ export function LevelsPanel({
                 )}
               </div>
               <div className="flex gap-1 shrink-0 items-center">
+                {/* The alerts inbox is the one review surface; link to it. */}
+                {pendingReview && (
+                  <Link
+                    href="/dashboard/alerts?view=review"
+                    className="text-[10px] text-warn hover:text-warn/90 underline"
+                    title="Approve or reject this level in the alerts inbox"
+                  >
+                    Review
+                  </Link>
+                )}
                 {showRequeue && (
                   <button
                     onClick={() => handleRequeue(l.id)}
