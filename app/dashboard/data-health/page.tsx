@@ -2,13 +2,19 @@ export const dynamic = "force-dynamic";
 
 import { db } from "@/lib/db";
 import { getSectorEtfGaps } from "@/lib/queries/level-performance";
-import { getSectorDisagreements } from "@/lib/queries/data-health";
+import {
+  getSectorCheckMissingSector,
+  getSectorDisagreements,
+} from "@/lib/queries/data-health";
 import { DataHealthView } from "../components/DataHealthView";
 import { ScrollFade } from "../components/ScrollFade";
+import { SymbolLink } from "../components/SymbolLink";
+import { Count } from "@/lib/privacy/components";
 
 export default function DataHealthPage() {
   const sectorGaps = getSectorEtfGaps(db);
   const sectorDisagreements = getSectorDisagreements(db);
+  const sectorMissingCount = getSectorCheckMissingSector(db).length;
 
   return (
     <div className="max-w-[1400px] mx-auto px-6 py-8 space-y-6">
@@ -56,7 +62,17 @@ export default function DataHealthPage() {
                     key={`${g.symbol}:${g.sector ?? "null"}`}
                     className="border-b border-edge/50 last:border-0"
                   >
-                    <td className="px-5 py-2 text-ink font-mono">{g.symbol}</td>
+                    <td className="px-5 py-2 text-ink font-mono">
+                      {g.securityId != null ? (
+                        <SymbolLink
+                          securityId={g.securityId}
+                          symbol={g.symbol}
+                          className="text-blue font-mono"
+                        />
+                      ) : (
+                        g.symbol
+                      )}
+                    </td>
                     <td className="px-5 py-2 text-ink-dim">
                       {g.sector ?? "—"}
                     </td>
@@ -115,7 +131,13 @@ export default function DataHealthPage() {
                     key={d.symbol}
                     className="border-b border-edge/50 last:border-0"
                   >
-                    <td className="px-5 py-2 text-ink font-mono">{d.symbol}</td>
+                    <td className="px-5 py-2 text-ink font-mono">
+                      <SymbolLink
+                        securityId={d.securityId}
+                        symbol={d.symbol}
+                        className="text-blue font-mono"
+                      />
+                    </td>
                     <td className="px-5 py-2 text-ink-dim">
                       {d.sector ?? "—"}
                     </td>
@@ -130,6 +152,17 @@ export default function DataHealthPage() {
               </tbody>
             </table>
           </ScrollFade>
+        )}
+
+        {/* Rows with no sector tag cannot disagree, so they are not in the
+            table above. Count them here so they do not vanish. */}
+        {sectorMissingCount > 0 && (
+          <p className="px-5 py-3 border-t border-edge text-[12px] text-ink-dim">
+            <Count value={sectorMissingCount} />{" "}
+            {sectorMissingCount === 1 ? "stock" : "stocks"} in this check{" "}
+            {sectorMissingCount === 1 ? "has" : "have"} no sector tag, so
+            there is nothing to compare against the fund category.
+          </p>
         )}
       </section>
     </div>

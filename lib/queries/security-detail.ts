@@ -32,6 +32,9 @@ import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { computeATR, type OhlcBar } from "@/lib/chart/indicators";
 import { todayET } from "@/lib/calendar/date-utils";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+// One predicate for the row cells and the TOTAL row: a basis of NULL or
+// exactly 0 is unknown.
+import { hasKnownBasis as hasKnownPositionBasis } from "@/lib/compute/known-basis";
 
 // ─── Result types ──────────────────────────────────────────────
 
@@ -46,17 +49,6 @@ export interface SecurityPosition {
   unrealized_gain: number | null;
   security_type: string | null;
   multiplier: number;
-}
-
-/**
- * A position's cost basis is KNOWN only when it is neither NULL nor exactly 0.
- * Single predicate for this file so the row cells and the TOTAL row can never
- * disagree; the convention itself lives in lib/queries/holdings.ts
- * (NULLIF(costBasisExpr, 0) IS NOT NULL) and is mirrored in
- * AllHoldingsTable.tsx's hasKnownBasis.
- */
-function hasKnownPositionBasis(p: { cost_basis: number | null }): boolean {
-  return p.cost_basis !== null && p.cost_basis !== 0;
 }
 
 export interface SecurityPriceInfo {

@@ -90,7 +90,9 @@ function MetricCard({
         <div className="text-xs text-ink-faint mt-1">{sublabel}</div>
       )}
       {interp && (
-        <div className={`text-xs mt-1 ${toneClass(interp.tone)}`}>{interp.text}</div>
+        <div className={`text-xs mt-1 ${toneClass(interp.tone)}`}>
+          <PrivateText>{interp.text}</PrivateText>
+        </div>
       )}
     </div>
   );
@@ -292,7 +294,11 @@ export function RiskMetrics({ scope }: { scope?: string }) {
           label="Sharpe Ratio"
           value={
             <>
-              {metrics.sharpeRatio != null ? metrics.sharpeRatio.toFixed(2) : "\u2014"}
+              {metrics.sharpeRatio != null ? (
+                <PrivateText>{metrics.sharpeRatio.toFixed(2)}</PrivateText>
+              ) : (
+                "\u2014"
+              )}
               <WeekOverWeekBadge
                 value={delta?.sharpeRatio ?? null}
                 kind="signed"
@@ -348,12 +354,14 @@ export function RiskMetrics({ scope }: { scope?: string }) {
 
           {metrics.herfindahl != null && metrics.herfindahl > 0 && (
             <p className={`text-xs mb-3 ${toneClass(interpretHHI(metrics.herfindahl).tone)}`}>
-              {interpretHHI(metrics.herfindahl).text}
+              <PrivateText>{interpretHHI(metrics.herfindahl).text}</PrivateText>
             </p>
           )}
 
           <div className="h-40">
-            <ResponsiveContainer width="100%" height="100%">
+            {/* Fixed pixel height (h-40 = 160px): a percent height measures
+                a negative size before layout and logs a Recharts warning. */}
+            <ResponsiveContainer width="100%" height={160}>
               <BarChart
                 data={concentrationData}
                 layout="vertical"

@@ -221,6 +221,8 @@ export function getSourcePerformance(
  */
 export interface SectorEtfGap {
   symbol: string;
+  /** The matching security (symbol compared case-insensitively), or null. */
+  securityId: number | null;
   sector: string | null;
   first_seen_at: string;
   last_seen_at: string;
@@ -235,12 +237,19 @@ export function getSectorEtfGaps(db: Database.Database): SectorEtfGap[] {
   // the most common unmapped symbols actually rise to the top.
   const rows = db
     .prepare(
-      `SELECT symbol, sector,
-              MIN(first_seen_at) AS first_seen_at,
-              MAX(last_seen_at) AS last_seen_at,
-              SUM(count) AS count
-       FROM sector_etf_gaps
-       GROUP BY symbol, sector
+      // securityId is a scalar lookup, not a join: securities.symbol is
+      // unique only case-sensitively, so a join could repeat a gap row and
+      // double its SUM. An exact-case match wins, then the lowest id.
+      `SELECT g.symbol, g.sector,
+              (SELECT s.id FROM securities s
+                WHERE UPPER(s.symbol) = UPPER(g.symbol)
+                ORDER BY (s.symbol = g.symbol) DESC, s.id
+                LIMIT 1) AS securityId,
+              MIN(g.first_seen_at) AS first_seen_at,
+              MAX(g.last_seen_at) AS last_seen_at,
+              SUM(g.count) AS count
+       FROM sector_etf_gaps g
+       GROUP BY g.symbol, g.sector
        ORDER BY count DESC, last_seen_at DESC`,
     )
     .all() as SectorEtfGap[];

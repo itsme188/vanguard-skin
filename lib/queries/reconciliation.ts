@@ -69,6 +69,54 @@ export type SaveCheckpointResult =
     }
   | { status: "exists"; existing: ExistingCheckpointSummary };
 
+/** A checkpoint input the caller must fix (the route answers 400 with the message). */
+export class CheckpointInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CheckpointInputError";
+  }
+}
+
+/** True for a `YYYY-MM-DD` string that names a real calendar day. */
+function isRealIsoDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const d = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
+}
+
+/**
+ * Why a checkpoint cannot be saved, in plain words, or null when it can.
+ * The form blocks the same inputs (`checkpointFormBlocker`); this is the
+ * check for a request that did not come through the form. Inputs are typed
+ * `unknown` because the route passes the parsed JSON body straight in.
+ */
+export function checkpointInputProblem(
+  db: Database.Database,
+  accountId: unknown,
+  checkpointDate: unknown,
+  statementValue: unknown,
+  notes?: unknown
+): string | null {
+  if (typeof accountId !== "number" || !Number.isInteger(accountId) || accountId <= 0) {
+    return "Account must be the id of an existing account";
+  }
+  if (!isRealIsoDate(checkpointDate)) {
+    return "Statement date must be a real date in YYYY-MM-DD form";
+  }
+  if (typeof statementValue !== "number" || !Number.isFinite(statementValue)) {
+    return "Statement value must be a number";
+  }
+  if (statementValue <= 0) {
+    return "Statement value must be greater than 0";
+  }
+  if (notes !== undefined && notes !== null && typeof notes !== "string") {
+    return "Notes must be text";
+  }
+  const account = db.prepare("SELECT 1 FROM accounts WHERE id = ?").get(accountId);
+  if (!account) return "Account not found";
+  return null;
+}
+
 export function addReconciliationCheckpoint(
   db: Database.Database,
   accountId: number,
@@ -77,6 +125,9 @@ export function addReconciliationCheckpoint(
   notes?: string,
   options: { replaceCheckpointId?: number } = {}
 ): SaveCheckpointResult {
+  const problem = checkpointInputProblem(db, accountId, checkpointDate, statementValue, notes);
+  if (problem) throw new CheckpointInputError(problem);
+
   const save = db.transaction((): SaveCheckpointResult => {
     const existing = db
       .prepare(

@@ -3,7 +3,10 @@
 import { useState } from "react";
 import type { Account, MonthlySnapshot } from "@/lib/types";
 import type { AccountHoldingRow } from "@/lib/queries/holdings";
-import type { TransactionWithSecurity } from "@/lib/queries/transactions";
+import type {
+  TransactionSort,
+  TransactionWithSecurity,
+} from "@/lib/queries/transactions";
 import type { DailyValuation } from "@/lib/queries/daily-valuations";
 import type { AccountCashLine } from "@/lib/queries/account-cash-line";
 import { HoldingsTable } from "./HoldingsTable";
@@ -17,6 +20,10 @@ interface AccountDetailProps {
   selectedAccount: Account;
   holdings: AccountHoldingRow[];
   transactions: TransactionWithSecurity[];
+  /** Every transaction the account has, so the list can state its cap. */
+  transactionTotal?: number;
+  /** The sort the server fetched `transactions` in, applied before the cap. */
+  transactionSort?: TransactionSort;
   snapshots: MonthlySnapshot[];
   dailyValuations?: DailyValuation[];
   /** Positions / cash / total from the latest daily valuation, for the
@@ -29,6 +36,8 @@ export function AccountDetail({
   selectedAccount,
   holdings,
   transactions,
+  transactionTotal,
+  transactionSort,
   snapshots,
   dailyValuations,
   cashLine,
@@ -71,7 +80,11 @@ export function AccountDetail({
 
       <HoldingsTable holdings={holdings} cashLine={cashLine ?? null} />
 
-      <TransactionHistory transactions={transactions} />
+      <TransactionHistory
+        transactions={transactions}
+        total={transactionTotal}
+        serverSort={transactionSort}
+      />
 
       {reconciliationCheckpoints && (
         <ReconciliationSection

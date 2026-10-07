@@ -6,7 +6,7 @@ import {
   getAllHoldings,
   getValuedHoldingsByAccount,
 } from "@/lib/queries/holdings";
-import { getTransactionsByAccount } from "@/lib/queries/transactions";
+import { getAccountTransactionPage } from "@/lib/queries/transactions";
 import { getSnapshotsByAccount } from "@/lib/queries/monthly-snapshots";
 import { getDailyValuationsByAccount } from "@/lib/queries/daily-valuations";
 import { getAccountCashLine } from "@/lib/queries/account-cash-line";
@@ -20,7 +20,7 @@ import { Count } from "@/lib/privacy/components";
 import { PlaidSyncButton } from "../components/PlaidSyncButton";
 
 export default async function AccountsPage(props: {
-  searchParams: Promise<{ id?: string }>;
+  searchParams: Promise<{ id?: string; txnsSort?: string; txnsDir?: string }>;
 }) {
   const searchParams = await props.searchParams;
 
@@ -105,12 +105,16 @@ export default async function AccountsPage(props: {
   const selectedAccount =
     accounts.find((a) => a.id === selectedId) ?? accounts[0];
 
-  let holdings, transactions, snapshots, dailyValuations, cashLine, reconciliationCheckpoints;
+  let holdings, transactionPage, snapshots, dailyValuations, cashLine, reconciliationCheckpoints;
   try {
     // The same priced rows the All Accounts table shows, bound to this
     // account (value, gain and cost basis per row).
     holdings = getValuedHoldingsByAccount(db, selectedAccount.id);
-    transactions = getTransactionsByAccount(db, selectedAccount.id, {
+    // txnsSort / txnsDir are what the table's useSortParam("txns") writes;
+    // the sort runs over the full history before the cap.
+    transactionPage = getAccountTransactionPage(db, selectedAccount.id, {
+      sortParam: searchParams.txnsSort,
+      dirParam: searchParams.txnsDir,
       limit: 50,
     });
     snapshots = getSnapshotsByAccount(db, selectedAccount.id);
@@ -127,7 +131,9 @@ export default async function AccountsPage(props: {
       <AccountDetail
         selectedAccount={selectedAccount}
         holdings={holdings}
-        transactions={transactions}
+        transactions={transactionPage.rows}
+        transactionTotal={transactionPage.total}
+        transactionSort={transactionPage.sort}
         snapshots={snapshots}
         dailyValuations={dailyValuations}
         cashLine={cashLine}

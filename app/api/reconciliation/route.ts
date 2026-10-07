@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import {
   addReconciliationCheckpoint,
+  checkpointInputProblem,
+  CheckpointInputError,
   deleteReconciliationCheckpoint,
 } from "@/lib/queries/reconciliation";
 
@@ -15,6 +17,13 @@ export async function POST(request: NextRequest) {
         { success: false, error: "Missing required fields: accountId, checkpointDate, statementValue" },
         { status: 400 }
       );
+    }
+
+    // The form blocks these; a request posted straight to the route does not
+    // pass through the form.
+    const problem = checkpointInputProblem(db, accountId, checkpointDate, statementValue, notes);
+    if (problem) {
+      return NextResponse.json({ success: false, error: problem }, { status: 400 });
     }
 
     // Replacing a saved checkpoint needs the id of the row the user was shown;
@@ -55,6 +64,9 @@ export async function POST(request: NextRequest) {
       replaced: result.status === "replaced",
     });
   } catch (error) {
+    if (error instanceof CheckpointInputError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: 400 });
+    }
     const message = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json({ success: false, error: message }, { status: 500 });
   }
@@ -66,6 +78,14 @@ export async function DELETE(request: NextRequest) {
     if (!id) {
       return NextResponse.json(
         { success: false, error: "Missing id parameter" },
+        { status: 400 }
+      );
+    }
+
+    // parseInt would read "2x" as 2 and delete that row.
+    if (!/^[1-9]\d*$/.test(id)) {
+      return NextResponse.json(
+        { success: false, error: "id must be the id of a saved checkpoint" },
         { status: 400 }
       );
     }
