@@ -13,6 +13,8 @@ import path from "node:path";
 import { NextRequest } from "next/server";
 import { runMigrations } from "@/lib/db/migrate";
 import { getGivingView } from "@/lib/queries/giving-view";
+import { computeTaxLots } from "@/lib/compute/tax-lots";
+import { bumpTaxInputGeneration } from "@/lib/compute/tax-convention";
 import { classifyRoute, listRouteHandlers } from "@/lib/auth/route-policy";
 import { seedFlaggedGift, seedTxn } from "../helpers/giving-basis-fixture";
 
@@ -130,6 +132,26 @@ describe("POST basis-verified", () => {
     const notALot = await post(outLeg, { sourceNote: "synthetic source" });
     expect(notALot.status).toBe(409);
     expect(markers()).toBe(0);
+  });
+
+  it("409 with a plain message while the tax-lot ledger is waiting on a recompute; nothing is written", async () => {
+    const bad = seedFlaggedGift(hoisted.db);
+    bumpTaxInputGeneration(hoisted.db);
+    const out = await post(bad.lotTxn, { sourceNote: "synthetic source" });
+    expect(out.status).toBe(409);
+    expect(out.json).toEqual({
+      success: false,
+      error:
+        "The tax-lot ledger is waiting on a recompute, so the basis shown may be out of date. Recompute first, then verify.",
+    });
+    expect(markers()).toBe(0);
+    expect(leftOut()).toBe(1);
+
+    computeTaxLots(hoisted.db);
+    expect((await post(bad.lotTxn, { sourceNote: "synthetic source" })).status).toBe(200);
+    // Undo is never blocked: it only removes a note.
+    bumpTaxInputGeneration(hoisted.db);
+    expect(await del(bad.lotTxn)).toEqual({ status: 200, json: { success: true, data: { removed: true } } });
   });
 
   it("marking twice keeps one marker and takes the newer note", async () => {

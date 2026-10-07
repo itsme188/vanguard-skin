@@ -26,6 +26,8 @@ import {
  *  - implausible: warn chip, "Mark basis verified".
  *  - verified: quiet chip with the source and date, "Undo".
  *  - verified-stale: warn chip, the old source, "Mark basis verified".
+ * The server refuses a mark while the tax-lot ledger is waiting on a
+ * recompute; its plain reason is shown in the form like any other refusal.
  *
  * These two actions are the only Giving writes that do NOT go through
  * LedgerRecomputeDialog: a marker changes no tax figure and nothing is
@@ -75,7 +77,7 @@ export function LotBasisStatus({
       )}
       {lot.state === "verified-stale" && (
         <span className="text-xs text-warn">
-          The lot&apos;s amount or share count has changed since then, so this gift is left out again.
+          The lot&apos;s basis or share count has changed since then, so this gift is left out again.
         </span>
       )}
       {lot.state === "verified" ? (
@@ -192,6 +194,7 @@ export function BasisVerifiedDialog({
             required
             maxLength={SOURCE_NOTE_MAX_LENGTH}
             autoComplete="off"
+            placeholder="final K-1, 2020"
             className="w-full rounded-lg bg-raised border border-edge px-3 py-2 text-sm text-ink"
           />
           {error && (
@@ -224,6 +227,7 @@ export function BasisVerifiedDialog({
 
 export function LotBasisControl({ lot, symbol }: { lot: GivingFlaggedLot; symbol: string }) {
   const router = useRouter();
+  const { isPrivate } = usePrivacy();
   // Outside React state on purpose: a second click in the same frame is refused.
   const [guard] = useState(() => createBusyGuard());
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -234,8 +238,9 @@ export function LotBasisControl({ lot, symbol }: { lot: GivingFlaggedLot; symbol
 
   function openDialog() {
     if (busy) return;
-    // Verifying again starts from the source given last time.
-    setNote(lot.sourceNote ?? "");
+    // Verifying again starts from the source given last time. Not in privacy
+    // mode: a text field cannot be masked, so it starts empty there.
+    setNote(isPrivate ? "" : (lot.sourceNote ?? ""));
     setDialogError(null);
     setNotice(null);
     setDialogOpen(true);

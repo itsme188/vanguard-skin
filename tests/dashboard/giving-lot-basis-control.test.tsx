@@ -19,6 +19,8 @@ import Database from "better-sqlite3";
 import { NextRequest } from "next/server";
 import { runMigrations } from "@/lib/db/migrate";
 import { getGivingView, type GivingFlaggedLot } from "@/lib/queries/giving-view";
+import { computeTaxLots } from "@/lib/compute/tax-lots";
+import { bumpTaxInputGeneration } from "@/lib/compute/tax-convention";
 import { SOURCE_NOTE_MAX_LENGTH as SERVER_NOTE_MAX } from "@/lib/mutations/lot-basis-verifications";
 import { anchorIndex, sliceBetween } from "../helpers/source-anchor";
 import { seedFlaggedGift, seedPlausibleGift } from "../helpers/giving-basis-fixture";
@@ -122,6 +124,18 @@ describe("sendMarkBasisVerified / sendUnmarkBasisVerified against the real route
     const missing = await sendMarkBasisVerified(fetcher, 999999, "synthetic source");
     expect(missing.ok).toBe(false);
     expect(missing.message).toContain("not found");
+    expect(markers()).toBe(0);
+  });
+
+  it("a ledger waiting on a recompute comes back as that plain reason", async () => {
+    const bad = seedFlaggedGift(hoisted.db);
+    bumpTaxInputGeneration(hoisted.db);
+    const { fetcher } = routeFetch();
+    expect(await sendMarkBasisVerified(fetcher, bad.lotTxn, "synthetic source")).toEqual({
+      ok: false,
+      message:
+        "The tax-lot ledger is waiting on a recompute, so the basis shown may be out of date. Recompute first, then verify.",
+    });
     expect(markers()).toBe(0);
   });
 
@@ -338,6 +352,7 @@ describe("GivingYearSection with the real view", () => {
     expect(html).toContain(">Undo</button>");
 
     hoisted.db.prepare("UPDATE transactions SET amount = 2 WHERE id = ?").run(bad.lotTxn);
+    computeTaxLots(hoisted.db);
     html = render();
     expect(html).toContain("rows left out for an implausible basis");
     expect(html).toContain("basis changed since verified, verify again");
@@ -403,6 +418,15 @@ describe("how the control is written", () => {
     expect(src).not.toMatch(/[^A-Za-z]fetch\(/);
   });
 
+  it("verifying again pre-fills the old source, except in privacy mode", () => {
+    const src = read("LotBasisControl.tsx");
+    const open = sliceBetween(src, "function openDialog() {", "function closeDialog() {");
+    expect(open).toContain('setNote(isPrivate ? "" : (lot.sourceNote ?? ""));');
+    const control = src.slice(anchorIndex(src, "export function LotBasisControl("));
+    expect(control).toContain("const { isPrivate } = usePrivacy();");
+    expect(src).toContain('placeholder="final K-1, 2020"');
+  });
+
   it("no component is defined inside another, and the dialog is centred", () => {
     const src = read("LotBasisControl.tsx");
     // Every function component in the file starts at column 0.
@@ -430,6 +454,10 @@ describe("how the control is written", () => {
     expect(count(view, "isDonatedLotBasisImplausible(")).toBe(2); // its definition and the one call
     const reader = sliceBetween(view, "export function donatedLotBasisState", "\n}\n");
     expect(reader).toContain("if (!isDonatedLotBasisImplausible(input)) return \"plausible\";");
-    expect(count(view, "donatedLotBasisState({")).toBe(1);
+    // Two call sites, one reader: a lot in the ledger, and a marked lot that is gone from it.
+    expect(count(view, "donatedLotBasisState({")).toBe(2);
+    // The snapshot is compared with the figures the 1% rule reads, not with the transaction row.
+    expect(reader).toContain("sameCents(verification.verifiedAmount, input.lotCostBasis)");
+    expect(reader).toContain("sameQuantity(verification.verifiedQuantity, input.lotQuantityAcquired)");
   });
 });

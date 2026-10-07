@@ -11,10 +11,13 @@
 -- marker per transaction, and it covers every gift that draws on the lot.
 -- Deleting the transaction (an import-batch undo) removes the marker with it.
 --
--- verified_amount / verified_quantity are the transaction's `amount` and
--- `quantity` at the moment of verification. If either later differs from the
--- row's current value, the marker is stale and no longer applies: what was
--- verified is not what the row says now.
+-- verified_amount / verified_quantity are the LOT's cost basis and quantity
+-- acquired (tax_lots.cost_basis and tax_lots.quantity_acquired for this
+-- acquisition transaction) at the moment of verification. Those are the
+-- figures the Giving page shows and its 1% rule reads. If either later
+-- differs from the lot's current value, or the lot is gone from the ledger,
+-- the marker is stale and no longer applies: what was verified is not what
+-- the lot says now.
 --
 -- The marker is a note about a check. It is not a tax input: nothing here
 -- feeds the tax-lot engine, and writing a row never triggers a recompute.

@@ -27,15 +27,27 @@ export function seedTxn(
   type: string,
   qty: number,
   price: number,
-  importBatchId: number | null = null
+  importBatchId: number | null = null,
+  opts: { amount?: number | null; fees?: number } = {}
 ): number {
   seq++;
   return db
     .prepare(
       `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount, fees, source_key, import_batch_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(FIXTURE_ACCOUNT_ID, sec, date, type, qty, price, qty * price, `basis-fixture-${seq}`, importBatchId)
+    .run(
+      FIXTURE_ACCOUNT_ID,
+      sec,
+      date,
+      type,
+      qty,
+      price,
+      opts.amount === undefined ? qty * price : opts.amount,
+      opts.fees ?? 0,
+      `basis-fixture-${seq}`,
+      importBatchId
+    )
     .lastInsertRowid as number;
 }
 

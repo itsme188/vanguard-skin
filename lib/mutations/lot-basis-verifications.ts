@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 import { LOT_CREATING_TYPES } from "@/lib/mutations/donation-links";
+import { readDonatedLotBasisFigures } from "@/lib/queries/giving-view";
+import { isTaxConventionPending } from "@/lib/compute/tax-convention";
 
 /**
  * "Basis verified" markers for donated lots (owner request 2026-10-07,
@@ -24,7 +26,9 @@ export type LotBasisVerificationErrorCode =
   | "invalid_note"
   | "not_found"
   | "not_acquisition"
-  | "not_donated";
+  | "not_donated"
+  | "ledger_pending"
+  | "no_lot";
 
 /** Every refusal in this file. `code` lets a route pick its status; the
  *  message is plain English and safe to show. */
@@ -49,9 +53,14 @@ function isPositiveInteger(n: unknown): n is number {
 
 /**
  * Records that the owner verified this lot's basis against `sourceNote`.
- * Snapshots the acquisition row's current amount and quantity so a later
- * change to either makes the marker stale. Marking a lot again replaces its
- * one marker: new note, new snapshot, new date.
+ * Snapshots the LOT's cost basis and quantity acquired (`tax_lots`, the
+ * figures the Giving view shows and the 1% rule reads), so anything that
+ * later moves either makes the marker stale. Marking a lot again replaces
+ * its one marker: new note, new snapshot, new date.
+ *
+ * Refused while the tax-lot ledger is waiting on a recompute: the stored
+ * lot may not show the basis the next recompute will produce, and a
+ * snapshot of it would verify a figure the owner never saw settle.
  */
 export function markLotBasisVerified(
   db: Database.Database,
@@ -77,10 +86,8 @@ export function markLotBasisVerified(
 
   return db.transaction(() => {
     const txn = db
-      .prepare("SELECT id, type, amount, quantity FROM transactions WHERE id = ?")
-      .get(acquisitionTransactionId) as
-      | { id: number; type: string; amount: number | null; quantity: number | null }
-      | undefined;
+      .prepare("SELECT id, type FROM transactions WHERE id = ?")
+      .get(acquisitionTransactionId) as { id: number; type: string } | undefined;
     if (!txn) {
       throw new LotBasisVerificationError("not_found", `Transaction ${acquisitionTransactionId} was not found.`);
     }
@@ -99,6 +106,19 @@ export function markLotBasisVerified(
         `No donation draws on this lot, so there is no donated basis to verify.`
       );
     }
+    if (isTaxConventionPending(db)) {
+      throw new LotBasisVerificationError(
+        "ledger_pending",
+        "The tax-lot ledger is waiting on a recompute, so the basis shown may be out of date. Recompute first, then verify."
+      );
+    }
+    const lot = readDonatedLotBasisFigures(db, acquisitionTransactionId);
+    if (!lot) {
+      throw new LotBasisVerificationError(
+        "no_lot",
+        "This lot is not in the tax-lot ledger, so there is no basis to verify. Recompute first, then verify."
+      );
+    }
 
     db.prepare(
       `INSERT INTO lot_basis_verifications
@@ -109,7 +129,7 @@ export function markLotBasisVerified(
          verified_amount = excluded.verified_amount,
          verified_quantity = excluded.verified_quantity,
          verified_at = datetime('now')`
-    ).run(acquisitionTransactionId, sourceNote, txn.amount, txn.quantity);
+    ).run(acquisitionTransactionId, sourceNote, lot.costBasis, lot.quantityAcquired);
 
     const saved = db
       .prepare("SELECT source_note, verified_at FROM lot_basis_verifications WHERE acquisition_transaction_id = ?")

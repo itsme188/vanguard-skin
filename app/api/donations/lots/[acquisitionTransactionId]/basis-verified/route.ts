@@ -17,7 +17,10 @@
  * transaction, tax lot or tax figure moves, and nothing is recomputed.
  *
  * Status codes: 400 a bad id, body or note; 404 an unknown transaction;
- * 409 a transaction that is not a lot or that no donation draws on.
+ * 409 a transaction that is not a lot or that no donation draws on, and 409
+ * while the tax-lot ledger is waiting on a recompute (the basis shown may be
+ * out of date, so there is nothing settled to verify). That 409 only asks
+ * the owner to recompute elsewhere first; this route still recomputes nothing.
  */
 
 import { db } from "@/lib/db";
@@ -34,6 +37,8 @@ const STATUS_BY_CODE: Record<LotBasisVerificationErrorCode, number> = {
   not_found: 404,
   not_acquisition: 409,
   not_donated: 409,
+  ledger_pending: 409,
+  no_lot: 409,
 };
 
 type Params = { params: Promise<{ acquisitionTransactionId: string }> };

@@ -23,6 +23,7 @@ import {
 } from "@/lib/mutations/lot-basis-verifications";
 import { assignDonationLots } from "@/lib/mutations/donation-links";
 import { createImportBatch } from "@/lib/mutations/import-batches";
+import { bumpTaxInputGeneration, isTaxConventionPending } from "@/lib/compute/tax-convention";
 import { undoImport } from "@/lib/import/engine";
 import { applyDonatedLotBasisRepair, planDonatedLotBasisRepair } from "@/scripts/repair-donated-lot-basis";
 import {
@@ -97,8 +98,6 @@ describe("donatedLotBasisState: the one reader", () => {
     donationQuantity: 10,
     lotCostBasis: 1,
     lotQuantityAcquired: 100,
-    currentAmount: 1,
-    currentQuantity: 100,
     verification: null,
   };
   const marked = (verifiedAmount: number | null, verifiedQuantity: number | null) => ({
@@ -120,7 +119,13 @@ describe("donatedLotBasisState: the one reader", () => {
     expect(donatedLotBasisState({ ...marked(999, 7), lotCostBasis: 4000 })).toBe("plausible");
   });
 
-  it("the amount is compared in cents", () => {
+  it("the snapshot is compared with the very figures the 1% rule reads", () => {
+    // The lot's basis moved (still under 1%): what was verified is gone.
+    expect(donatedLotBasisState({ ...marked(1, 100), lotCostBasis: 2 })).toBe("verified-stale");
+    expect(donatedLotBasisState({ ...marked(1, 100), lotQuantityAcquired: 200 })).toBe("verified-stale");
+  });
+
+  it("the basis is compared in cents", () => {
     expect(donatedLotBasisState(marked(1.004, 100))).toBe("verified"); // same cent
     expect(donatedLotBasisState(marked(1.01, 100))).toBe("verified-stale");
     expect(donatedLotBasisState(marked(2, 100))).toBe("verified-stale");
@@ -131,16 +136,21 @@ describe("donatedLotBasisState: the one reader", () => {
     expect(donatedLotBasisState(marked(1, 100.0001))).toBe("verified-stale");
   });
 
-  it("a missing figure equals a missing figure, and differs from any number", () => {
-    const blank = { ...flagged, currentAmount: null, currentQuantity: null };
-    expect(donatedLotBasisState({ ...blank, verification: { verifiedAmount: null, verifiedQuantity: null } })).toBe(
-      "verified"
-    );
-    expect(donatedLotBasisState({ ...blank, verification: { verifiedAmount: 0, verifiedQuantity: null } })).toBe(
-      "verified-stale"
-    );
+  it("a snapshot with a missing figure never matches a lot", () => {
     expect(donatedLotBasisState(marked(null, 100))).toBe("verified-stale");
     expect(donatedLotBasisState(marked(1, null))).toBe("verified-stale");
+  });
+
+  it("a marker whose lot is gone from the ledger is stale", () => {
+    for (const gone of [null, undefined]) {
+      expect(donatedLotBasisState({ ...marked(1, 100), lotCostBasis: gone, lotQuantityAcquired: gone })).toBe(
+        "verified-stale"
+      );
+      // Even against a snapshot that is itself blank: no lot, nothing verified.
+      expect(donatedLotBasisState({ ...marked(null, null), lotCostBasis: gone, lotQuantityAcquired: gone })).toBe(
+        "verified-stale"
+      );
+    }
   });
 });
 
@@ -257,10 +267,8 @@ describe("getGivingView with a verified lot", () => {
     expect(year().gainAvoidedRowsLeftOut).toBe(0);
 
     db.prepare("UPDATE transactions SET amount = 2, price_per_share = 0.02 WHERE id = ?").run(bad.lotTxn);
-    // Stale the moment the row changes, before any recompute...
-    expect(states(bad.donationId)).toEqual(["verified-stale"]);
+    // The marker follows the LOT's basis, which moves when the ledger is recomputed.
     computeTaxLots(db);
-    // ...and still after it.
     expect(states(bad.donationId)).toEqual(["verified-stale"]);
     expect(row(bad.donationId).basisImplausible).toBe(true);
     expect(row(bad.donationId).flaggedLots[0].sourceNote).toBe("synthetic source");
@@ -428,6 +436,198 @@ describe("markLotBasisVerified / unmarkLotBasisVerified", () => {
   });
 });
 
+// ── The marker follows the lot's basis, through the real engine ─────────────
+
+describe("any change to the lot's basis makes the marker stale", () => {
+  function lotRow(lotTxn: number) {
+    return db.prepare("SELECT id, cost_basis, quantity_acquired FROM tax_lots WHERE acquisition_transaction_id = ?").all(
+      lotTxn
+    ) as { id: number; cost_basis: number; quantity_acquired: number }[];
+  }
+
+  /** A flagged gift whose acquisition row is seeded with the given amount and fees. */
+  function flagged(opts: { amount?: number | null; fees?: number }, type = "TRANSFER_IN") {
+    const sec = seedSecurity(db, "ZZBB");
+    const lotTxn = seedTxn(db, sec, "2010-01-10", type, 100, 0.01, null, opts);
+    const donationId = seedGift(db, sec, "2026-04-02", 10, 1000);
+    assign(db, donationId, [{ acquisitionTransactionId: lotTxn, quantity: 10 }]);
+    expect(states(donationId)).toEqual(["implausible"]);
+    markLotBasisVerified(db, { acquisitionTransactionId: lotTxn, sourceNote: "synthetic source" });
+    expect(states(donationId)).toEqual(["verified"]);
+    expect(year().gainAvoidedRowsLeftOut).toBe(0);
+    return { sec, lotTxn, donationId };
+  }
+
+  function expectStaleAndLeftOut(donationId: number) {
+    expect(states(donationId)).toEqual(["verified-stale"]);
+    expect(row(donationId).basisImplausible).toBe(true);
+    expect(year().gainAvoidedRowsLeftOut).toBe(1);
+    expect(year().gainAvoidedRowsCounted).toBe(0);
+    expectConserved();
+  }
+
+  it("the snapshot is the lot's cost basis and quantity acquired, the figures the view prices the gift from", () => {
+    const bad = flagged({ fees: 0.25 });
+    const lots = lotRow(bad.lotTxn);
+    expect(lots).toHaveLength(1);
+    expect(lots[0].cost_basis).toBeCloseTo(1.25, 9); // amount 1 plus the fee
+    expect(marker(bad.lotTxn)).toMatchObject({
+      verified_amount: lots[0].cost_basis,
+      verified_quantity: lots[0].quantity_acquired,
+    });
+    // The view's basis for the 10 shares given comes from those same two figures.
+    expect(row(bad.donationId).basis).toBeCloseTo((10 * lots[0].cost_basis) / lots[0].quantity_acquired, 9);
+  });
+
+  it("one acquisition transaction opens exactly one lot", () => {
+    seedPlausibleGift(db);
+    const bad = flagged({});
+    seedTxn(db, bad.sec, "2026-05-01", "SELL", 20, 90);
+    computeTaxLots(db);
+    expect(
+      db
+        .prepare(
+          "SELECT acquisition_transaction_id FROM tax_lots GROUP BY acquisition_transaction_id HAVING COUNT(*) > 1"
+        )
+        .all()
+    ).toEqual([]);
+    expect(lotRow(bad.lotTxn)).toHaveLength(1);
+  });
+
+  it("no amount on the row, and the price changes", () => {
+    const bad = flagged({ amount: null });
+    expect(lotRow(bad.lotTxn)[0].cost_basis).toBeCloseTo(1, 9);
+    db.prepare("UPDATE transactions SET price_per_share = 0.02 WHERE id = ?").run(bad.lotTxn);
+    computeTaxLots(db);
+    expect(lotRow(bad.lotTxn)[0].cost_basis).toBeCloseTo(2, 9);
+    expectStaleAndLeftOut(bad.donationId);
+  });
+
+  it("a zero amount on the row, and the price changes", () => {
+    const bad = flagged({ amount: 0 });
+    db.prepare("UPDATE transactions SET price_per_share = 0.02 WHERE id = ?").run(bad.lotTxn);
+    computeTaxLots(db);
+    expect(lotRow(bad.lotTxn)[0].cost_basis).toBeCloseTo(2, 9);
+    expectStaleAndLeftOut(bad.donationId);
+  });
+
+  it("the fees change", () => {
+    const bad = flagged({});
+    db.prepare("UPDATE transactions SET fees = 0.5 WHERE id = ?").run(bad.lotTxn);
+    computeTaxLots(db);
+    expect(lotRow(bad.lotTxn)[0].cost_basis).toBeCloseTo(1.5, 9);
+    expectStaleAndLeftOut(bad.donationId);
+  });
+
+  it("the row changed before the mark, and the recompute came after it", () => {
+    const sec = seedSecurity(db, "ZZBB");
+    const lotTxn = seedTxn(db, sec, "2010-01-10", "TRANSFER_IN", 100, 0.01);
+    const donationId = seedGift(db, sec, "2026-04-02", 10, 1000);
+    assign(db, donationId, [{ acquisitionTransactionId: lotTxn, quantity: 10 }]);
+    // A hand edit that did not announce itself: the ledger does not know it is behind.
+    db.prepare("UPDATE transactions SET amount = 3, price_per_share = 0.03 WHERE id = ?").run(lotTxn);
+    markLotBasisVerified(db, { acquisitionTransactionId: lotTxn, sourceNote: "synthetic source" });
+    // What was verified is the basis the page showed: the lot's, not the edited row's.
+    expect(marker(lotTxn)?.verified_amount).toBeCloseTo(1, 9);
+    expect(states(donationId)).toEqual(["verified"]);
+    computeTaxLots(db);
+    expect(lotRow(lotTxn)[0].cost_basis).toBeCloseTo(3, 9);
+    expectStaleAndLeftOut(donationId);
+  });
+
+  it("an exercised option's premium rolls into the lot's basis with no change to the acquisition row", () => {
+    const bad = flagged({}, "BUY");
+    const before = JSON.stringify(db.prepare("SELECT * FROM transactions WHERE id = ?").get(bad.lotTxn));
+    // A call bought and exercised into those same shares: its premium belongs in their basis.
+    const option = db
+      .prepare(
+        `INSERT INTO securities (symbol, currency, security_type, underlying_symbol, option_type, strike_price, expiration_date, multiplier)
+         VALUES ('ZZBB  100619C00000010', 'USD', 'option', 'ZZBB', 'CALL', 0.01, '2010-06-19', 100)`
+      )
+      .run().lastInsertRowid as number;
+    seedTxn(db, option, "2009-12-01", "BUY_TO_OPEN", 1, 0.002, null, { amount: 0.2 });
+    seedTxn(db, option, "2010-01-10", "EXERCISED", 1, 0.002, null, { amount: 0.2 });
+    computeTaxLots(db);
+
+    expect(JSON.stringify(db.prepare("SELECT * FROM transactions WHERE id = ?").get(bad.lotTxn))).toBe(before);
+    expect(lotRow(bad.lotTxn)[0].cost_basis).toBeCloseTo(1.2, 9);
+    expectStaleAndLeftOut(bad.donationId);
+  });
+
+  it("a recompute that leaves the lot's basis and quantity alone keeps it verified", () => {
+    const bad = flagged({ fees: 0.25 });
+    const firstId = lotRow(bad.lotTxn)[0].id;
+    computeTaxLots(db);
+    computeTaxLots(db);
+    // The engine rebuilds every lot, so the lot's own id is new each time...
+    expect(lotRow(bad.lotTxn)[0].id).not.toBe(firstId);
+    // ...and the marker, keyed by the acquisition transaction, still applies.
+    expect(states(bad.donationId)).toEqual(["verified"]);
+    expect(year().gainAvoidedRowsLeftOut).toBe(0);
+
+    // An unrelated trade and another recompute change nothing for this lot either.
+    const other = seedPlausibleGift(db);
+    seedTxn(db, other.sec, "2026-05-01", "SELL", 20, 90);
+    computeTaxLots(db);
+    expect(states(bad.donationId)).toEqual(["verified"]);
+    expectConserved();
+  });
+
+  it("a lot that is gone from the ledger leaves its marker stale and the gift out", () => {
+    const good = seedPlausibleGift(db);
+    const bad = flagged({});
+    db.prepare("DELETE FROM tax_lots WHERE acquisition_transaction_id = ?").run(bad.lotTxn);
+    expect(states(bad.donationId)).toEqual(["verified-stale"]);
+    expect(row(bad.donationId).basisImplausible).toBe(true);
+    expect(row(bad.donationId).flaggedLots[0].acquisitionDate).toBe("2010-01-10");
+    expect(states(good.donationId)).toEqual([]);
+  });
+});
+
+describe("marking while the tax-lot ledger is waiting on a recompute", () => {
+  it("is refused with a plain message and writes nothing", () => {
+    const bad = seedFlaggedGift(db);
+    bumpTaxInputGeneration(db);
+    expect(isTaxConventionPending(db)).toBe(true);
+    try {
+      markLotBasisVerified(db, { acquisitionTransactionId: bad.lotTxn, sourceNote: "synthetic source" });
+      throw new Error("expected a refusal");
+    } catch (error) {
+      expect(error).toBeInstanceOf(LotBasisVerificationError);
+      expect((error as LotBasisVerificationError).code).toBe("ledger_pending");
+      expect((error as Error).message).toBe(
+        "The tax-lot ledger is waiting on a recompute, so the basis shown may be out of date. Recompute first, then verify."
+      );
+    }
+    expect(marker(bad.lotTxn)).toBeUndefined();
+
+    computeTaxLots(db);
+    expect(isTaxConventionPending(db)).toBe(false);
+    expect(() =>
+      markLotBasisVerified(db, { acquisitionTransactionId: bad.lotTxn, sourceNote: "synthetic source" })
+    ).not.toThrow();
+  });
+
+  it("an existing marker is left alone by a refused re-mark, and undo still works", () => {
+    const bad = seedFlaggedGift(db);
+    markLotBasisVerified(db, { acquisitionTransactionId: bad.lotTxn, sourceNote: "first" });
+    bumpTaxInputGeneration(db);
+    expect(() => markLotBasisVerified(db, { acquisitionTransactionId: bad.lotTxn, sourceNote: "second" })).toThrow(
+      /waiting on a recompute/
+    );
+    expect(marker(bad.lotTxn)?.source_note).toBe("first");
+    expect(unmarkLotBasisVerified(db, bad.lotTxn)).toBe(true);
+  });
+
+  it("the ordinary resting state is not pending: a freshly computed book can be marked", () => {
+    const bad = seedFlaggedGift(db);
+    expect(isTaxConventionPending(db)).toBe(false);
+    expect(() =>
+      markLotBasisVerified(db, { acquisitionTransactionId: bad.lotTxn, sourceNote: "synthetic source" })
+    ).not.toThrow();
+  });
+});
+
 // ── The basis repair script ─────────────────────────────────────────────────
 
 describe("scripts/repair-donated-lot-basis.ts against a verified lot", () => {
@@ -454,7 +654,11 @@ describe("scripts/repair-donated-lot-basis.ts against a verified lot", () => {
     expect(plan.ok).toBe(true);
     expect(applyDonatedLotBasisRepair(db, plan, "2026-10-07")).toEqual({ updated: 1 });
 
-    expect(states(bad.donationId)).toEqual(["verified-stale"]);
+    // The repair leaves the ledger waiting on a recompute. Until it runs, the
+    // lot still shows the verified basis and nothing new can be verified.
+    expect(() =>
+      markLotBasisVerified(db, { acquisitionTransactionId: bad.lotTxn, sourceNote: "too early" })
+    ).toThrow(/waiting on a recompute/);
     computeTaxLots(db);
     expect(states(bad.donationId)).toEqual(["verified-stale"]);
     expect(year().gainAvoidedRowsLeftOut).toBe(1);

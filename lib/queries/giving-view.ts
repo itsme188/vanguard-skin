@@ -65,9 +65,10 @@ export interface GivingDonation {
  *  - `plausible`: the 1% rule does not fire. Any marker is ignored.
  *  - `implausible`: the rule fires and nobody has verified the lot.
  *  - `verified`: the rule fires, the owner marked the lot's basis verified,
- *    and the acquisition row still says what it said then.
- *  - `verified-stale`: the rule fires and a marker exists, but the row's
- *    amount or quantity has changed since. Treated like `implausible`.
+ *    and the lot's cost basis and quantity acquired are still what they were.
+ *  - `verified-stale`: the rule fires and a marker exists, but the lot's
+ *    cost basis or quantity acquired has changed since, or the lot is no
+ *    longer in the ledger. Treated like `implausible`.
  */
 export type DonatedLotBasisState = "plausible" | "implausible" | "verified" | "verified-stale";
 
@@ -95,9 +96,6 @@ interface AssignmentRow {
   acquisition_date: string;
   quantity_acquired: number;
   cost_basis: number;
-  /** The acquisition transaction's stored amount and quantity, as of now. */
-  txn_amount: number | null;
-  txn_quantity: number | null;
   /** 1 when a `lot_basis_verifications` row exists for the acquisition transaction. */
   has_verification: number;
   verified_amount: number | null;
@@ -156,21 +154,23 @@ export function isDonatedLotBasisImplausible(input: DonatedLotBasisInput): boole
 /** Share-count tolerance, the same one lib/mutations/donation-links.ts uses. */
 const QUANTITY_EPS = 1e-9;
 
+/** Two dollar figures that are both present and equal to the cent. */
 function sameCents(a: number | null | undefined, b: number | null | undefined): boolean {
-  if (a == null || b == null) return a == null && b == null;
+  if (a == null || b == null) return false;
   return Math.round(a * 100) === Math.round(b * 100);
 }
 
+/** Two share counts that are both present and equal within the tolerance. */
 function sameQuantity(a: number | null | undefined, b: number | null | undefined): boolean {
-  if (a == null || b == null) return a == null && b == null;
+  if (a == null || b == null) return false;
   return Math.abs(a - b) <= QUANTITY_EPS;
 }
 
 export interface DonatedLotBasisStateInput extends DonatedLotBasisInput {
-  /** The acquisition transaction's `amount` and `quantity` as stored now. */
-  currentAmount: number | null | undefined;
-  currentQuantity: number | null | undefined;
-  /** The lot's `lot_basis_verifications` snapshot, or null when it has no marker. */
+  /**
+   * The lot's `lot_basis_verifications` snapshot, or null when it has no
+   * marker: the lot's cost basis and quantity acquired when it was verified.
+   */
   verification: { verifiedAmount: number | null; verifiedQuantity: number | null } | null;
 }
 
@@ -179,19 +179,43 @@ export interface DonatedLotBasisStateInput extends DonatedLotBasisInput {
  * The row chips, the row's left-out flag, the year total and the year's
  * left-out count all come from here.
  *
- * A marker only ever matters on a lot the 1% rule flags. It is stale when the
- * acquisition row's amount (compared in cents) or quantity (compared with the
- * share tolerance) is no longer what was verified; a missing figure equals a
- * missing figure and differs from any number.
+ * A marker only ever matters on a lot the 1% rule flags. The snapshot is
+ * compared with `lotCostBasis` and `lotQuantityAcquired`, the very figures
+ * the 1% rule itself reads, so the two cannot drift: whatever moves the
+ * lot's basis (the row's amount, price or fees, an option premium rolled
+ * into it, a split) makes the marker stale. Basis is compared in cents and
+ * quantity with the share tolerance. A lot that is not in the ledger, or a
+ * snapshot with a missing figure, never matches.
  */
 export function donatedLotBasisState(input: DonatedLotBasisStateInput): DonatedLotBasisState {
   if (!isDonatedLotBasisImplausible(input)) return "plausible";
   const { verification } = input;
   if (verification == null) return "implausible";
   const unchanged =
-    sameCents(verification.verifiedAmount, input.currentAmount) &&
-    sameQuantity(verification.verifiedQuantity, input.currentQuantity);
+    sameCents(verification.verifiedAmount, input.lotCostBasis) &&
+    sameQuantity(verification.verifiedQuantity, input.lotQuantityAcquired);
   return unchanged ? "verified" : "verified-stale";
+}
+
+/**
+ * The two figures a "basis verified" marker snapshots: the lot's cost basis
+ * and quantity acquired, read from the same `tax_lots` row the Giving view
+ * joins each assignment to. Null when the acquisition transaction has no lot
+ * in the ledger. One acquisition transaction opens exactly one lot (the
+ * engine's `createLot` runs once per transaction; a test asserts it), so
+ * anything else is also answered null rather than guessed at.
+ */
+export function readDonatedLotBasisFigures(
+  db: Database.Database,
+  acquisitionTransactionId: number
+): { costBasis: number; quantityAcquired: number } | null {
+  const rows = db
+    .prepare(
+      `SELECT cost_basis AS costBasis, quantity_acquired AS quantityAcquired
+         FROM tax_lots WHERE acquisition_transaction_id = ?`
+    )
+    .all(acquisitionTransactionId) as { costBasis: number; quantityAcquired: number }[];
+  return rows.length === 1 ? rows[0] : null;
 }
 
 /** True for the two states that keep a gift row out of "Gain avoided". */
@@ -217,27 +241,64 @@ function fetchOutLegs(db: Database.Database): Map<number, OutLegRow> {
  * both the basis/gain math and the LT/ST split. Assumes the 1:1
  * acquisition_transaction_id -> tax_lots relationship the engine itself
  * relies on (assignDonationLots' own lot lookup uses .get(), not .all()).
- * Each row also carries the acquisition transaction's current amount and
- * quantity and its "basis verified" marker, if any (LEFT JOINs: neither can
- * drop an assignment from the basis math). */
+ * Each row also carries the lot's "basis verified" marker, if any (a LEFT
+ * JOIN: it cannot drop an assignment from the basis math). */
 function fetchAssignmentsByDonation(db: Database.Database): Map<number, AssignmentRow[]> {
   const rows = db
     .prepare(
       `SELECT dl.donation_id AS donation_id, dl.acquisition_transaction_id AS acquisition_transaction_id,
               dl.quantity AS quantity, tl.acquisition_date AS acquisition_date,
               tl.quantity_acquired AS quantity_acquired, tl.cost_basis AS cost_basis,
-              t.amount AS txn_amount, t.quantity AS txn_quantity,
               v.id IS NOT NULL AS has_verification,
               v.verified_amount AS verified_amount, v.verified_quantity AS verified_quantity,
               v.source_note AS source_note, v.verified_at AS verified_at
          FROM donation_lots dl
          JOIN tax_lots tl ON tl.acquisition_transaction_id = dl.acquisition_transaction_id
-         LEFT JOIN transactions t ON t.id = dl.acquisition_transaction_id
          LEFT JOIN lot_basis_verifications v ON v.acquisition_transaction_id = dl.acquisition_transaction_id
         ORDER BY dl.donation_id, dl.id`
     )
     .all() as AssignmentRow[];
   const map = new Map<number, AssignmentRow[]>();
+  for (const row of rows) {
+    const list = map.get(row.donation_id);
+    if (list) list.push(row);
+    else map.set(row.donation_id, [row]);
+  }
+  return map;
+}
+
+interface OrphanMarkerRow {
+  donation_id: number;
+  acquisition_transaction_id: number;
+  trade_date: string;
+  verified_amount: number | null;
+  verified_quantity: number | null;
+  source_note: string;
+  verified_at: string;
+}
+
+/**
+ * Assigned lots that carry a marker but have NO `tax_lots` row (the ledger
+ * was rebuilt without them). The assignment query above cannot see these
+ * (its join to `tax_lots` drops them, as it always has), so they are read
+ * separately: a marker whose lot is gone must show as stale, not vanish.
+ */
+function fetchOrphanMarkersByDonation(db: Database.Database): Map<number, OrphanMarkerRow[]> {
+  const rows = db
+    .prepare(
+      `SELECT dl.donation_id AS donation_id, dl.acquisition_transaction_id AS acquisition_transaction_id,
+              t.trade_date AS trade_date,
+              v.verified_amount AS verified_amount, v.verified_quantity AS verified_quantity,
+              v.source_note AS source_note, v.verified_at AS verified_at
+         FROM donation_lots dl
+         JOIN lot_basis_verifications v ON v.acquisition_transaction_id = dl.acquisition_transaction_id
+         JOIN transactions t ON t.id = dl.acquisition_transaction_id
+        WHERE NOT EXISTS (
+                SELECT 1 FROM tax_lots tl WHERE tl.acquisition_transaction_id = dl.acquisition_transaction_id)
+        ORDER BY dl.donation_id, dl.id`
+    )
+    .all() as OrphanMarkerRow[];
+  const map = new Map<number, OrphanMarkerRow[]>();
   for (const row of rows) {
     const list = map.get(row.donation_id);
     if (list) list.push(row);
@@ -272,6 +333,7 @@ function buildGivingDonation(
   d: DonationRow,
   outLegs: Map<number, OutLegRow>,
   assignmentsByDonation: Map<number, AssignmentRow[]>,
+  orphanMarkersByDonation: Map<number, OrphanMarkerRow[]>,
   currencies: Map<number, string>
 ): GivingDonation {
   const outLeg = outLegs.get(d.id) ?? null;
@@ -302,8 +364,6 @@ function buildGivingDonation(
         lotQuantityAcquired: a.quantity_acquired,
         donationFmvUsd: d.fmv_usd,
         donationQuantity: d.quantity,
-        currentAmount: a.txn_amount,
-        currentQuantity: a.txn_quantity,
         verification: hasMarker
           ? { verifiedAmount: a.verified_amount, verifiedQuantity: a.verified_quantity }
           : null,
@@ -326,6 +386,29 @@ function buildGivingDonation(
     gainAvoided = d.fmv_usd - basisSum;
     longTermQuantity = lt;
     shortTermQuantity = st;
+  }
+
+  // A marked lot that is no longer in the ledger: the same reader, with no
+  // lot figures, answers "verified-stale" and the row is left out.
+  if (d.kind === "stock" && outLeg != null) {
+    for (const o of orphanMarkersByDonation.get(d.id) ?? []) {
+      const state = donatedLotBasisState({
+        lotCostBasis: null,
+        lotQuantityAcquired: null,
+        donationFmvUsd: d.fmv_usd,
+        donationQuantity: d.quantity,
+        verification: { verifiedAmount: o.verified_amount, verifiedQuantity: o.verified_quantity },
+      });
+      if (state === "plausible") continue;
+      flaggedLots.push({
+        acquisitionTransactionId: o.acquisition_transaction_id,
+        acquisitionDate: o.trade_date,
+        state,
+        sourceNote: o.source_note,
+        verifiedAt: o.verified_at,
+      });
+      if (leavesRowOut(state)) basisImplausible = true;
+    }
   }
 
   const currency = d.security_id != null ? currencies.get(d.security_id) ?? "USD" : null;
@@ -359,12 +442,13 @@ export function getGivingView(db: Database.Database): {
   const reconciliation = reconcileDonations(db);
   const outLegs = fetchOutLegs(db);
   const assignmentsByDonation = fetchAssignmentsByDonation(db);
+  const orphanMarkersByDonation = fetchOrphanMarkersByDonation(db);
   const currencies = fetchSecurityCurrencies(db);
 
   const byYear = new Map<string, GivingDonation[]>();
   for (const d of donations) {
     const year = d.received_date.slice(0, 4);
-    const gd = buildGivingDonation(d, outLegs, assignmentsByDonation, currencies);
+    const gd = buildGivingDonation(d, outLegs, assignmentsByDonation, orphanMarkersByDonation, currencies);
     const list = byYear.get(year);
     if (list) list.push(gd);
     else byYear.set(year, [gd]);
