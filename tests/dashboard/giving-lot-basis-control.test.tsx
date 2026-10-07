@@ -134,7 +134,7 @@ describe("sendMarkBasisVerified / sendUnmarkBasisVerified against the real route
     expect(await sendMarkBasisVerified(fetcher, bad.lotTxn, "synthetic source")).toEqual({
       ok: false,
       message:
-        "The tax-lot ledger is waiting on a recompute, so the basis shown may be out of date. Recompute first, then verify.",
+        "The tax-lot ledger is waiting on a recompute, so the basis shown may be out of date. Run Recompute on the Tax Lots page, then verify.",
     });
     expect(markers()).toBe(0);
   });

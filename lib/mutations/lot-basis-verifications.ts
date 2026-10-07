@@ -109,14 +109,14 @@ export function markLotBasisVerified(
     if (isTaxConventionPending(db)) {
       throw new LotBasisVerificationError(
         "ledger_pending",
-        "The tax-lot ledger is waiting on a recompute, so the basis shown may be out of date. Recompute first, then verify."
+        "The tax-lot ledger is waiting on a recompute, so the basis shown may be out of date. Run Recompute on the Tax Lots page, then verify."
       );
     }
     const lot = readDonatedLotBasisFigures(db, acquisitionTransactionId);
     if (!lot) {
       throw new LotBasisVerificationError(
         "no_lot",
-        "This lot is not in the tax-lot ledger, so there is no basis to verify. Recompute first, then verify."
+        "The tax-lot ledger has no single lot for this purchase, so there is no basis to verify. Run Recompute on the Tax Lots page, then try again."
       );
     }
 

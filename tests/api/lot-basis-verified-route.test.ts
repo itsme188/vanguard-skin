@@ -142,7 +142,7 @@ describe("POST basis-verified", () => {
     expect(out.json).toEqual({
       success: false,
       error:
-        "The tax-lot ledger is waiting on a recompute, so the basis shown may be out of date. Recompute first, then verify.",
+        "The tax-lot ledger is waiting on a recompute, so the basis shown may be out of date. Run Recompute on the Tax Lots page, then verify.",
     });
     expect(markers()).toBe(0);
     expect(leftOut()).toBe(1);

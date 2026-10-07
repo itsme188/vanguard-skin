@@ -596,7 +596,7 @@ describe("marking while the tax-lot ledger is waiting on a recompute", () => {
       expect(error).toBeInstanceOf(LotBasisVerificationError);
       expect((error as LotBasisVerificationError).code).toBe("ledger_pending");
       expect((error as Error).message).toBe(
-        "The tax-lot ledger is waiting on a recompute, so the basis shown may be out of date. Recompute first, then verify."
+        "The tax-lot ledger is waiting on a recompute, so the basis shown may be out of date. Run Recompute on the Tax Lots page, then verify."
       );
     }
     expect(marker(bad.lotTxn)).toBeUndefined();
