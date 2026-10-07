@@ -11,6 +11,12 @@ import { earningsTimeLabel } from "@/lib/calendar/release-times";
 // client bundle.
 import type { EarningsDisplayTime } from "@/lib/calendar/display-earnings-time";
 import { EnrichmentRowSummary } from "./calendar/EnrichmentChips";
+import { Chip } from "./Chip";
+import {
+  isPreReleaseActual,
+  preReleaseActualChipText,
+  PRE_RELEASE_ACTUAL_TITLE,
+} from "@/lib/calendar/pre-release-actual";
 // Import from the dependency-free core, never lib/calendar/reaction-snapshot.ts
 // (that file imports real values from @stoqey/ib — a client bundle that
 // pulls a value from it fails webpack with "Can't resolve 'net'").
@@ -135,6 +141,16 @@ export function TodayReleases({
           // isReleaseEnriched also blocks a date-corrected future row (upcoming
           // mode) from showing a prior print's stranded actual/enrichment.
           const enriched = isReleaseEnriched(event, snapshot, mode, todayIso);
+          // An actual saved before its own print window opened (owner ruling
+          // 2026-10-06, display-only): show it muted with a "pre-release"
+          // chip instead of as reported fact, and without a reaction line
+          // (no market move can belong to a print that has not happened).
+          // Reverts to the normal summary once the slot instant passes.
+          const preRelease = enriched && isPreReleaseActual(event);
+          const preReleaseFigure =
+            preRelease && event.actual_value
+              ? formatFinnhubFigureCompact(event.actual_value)
+              : "";
           const showPill = !!event.symbol && event.security_id != null;
           // Earnings titles already begin with the ticker ("NKE earnings (AMC)").
           // When the symbol pill is shown, drop that leading prefix so we don't
@@ -170,7 +186,19 @@ export function TodayReleases({
                 </span>
               </div>
               <div className="text-[12px] font-mono">
-                {enriched ? (
+                {preRelease ? (
+                  <span className="flex flex-wrap items-center gap-1.5 text-[11px] font-mono">
+                    {preReleaseFigure && (
+                      <>
+                        <span className="text-ink-faint">actual</span>
+                        <span className="text-ink-faint italic">{preReleaseFigure}</span>
+                      </>
+                    )}
+                    <Chip tone="warn" size="xs" title={PRE_RELEASE_ACTUAL_TITLE}>
+                      {preReleaseActualChipText(event.manual_actuals_at)}
+                    </Chip>
+                  </span>
+                ) : enriched ? (
                   <EnrichmentRowSummary
                     actual={event.actual_value}
                     snapshot={snapshot}
