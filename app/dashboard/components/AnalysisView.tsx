@@ -23,7 +23,7 @@ import { FixedIncomeCard } from "./FixedIncomeCard";
 import { OptionsGreeksCard } from "./OptionsGreeksCard";
 import { OptionsStrategies } from "./OptionsStrategies";
 import { ExpirationCalendar } from "./ExpirationCalendar";
-import { Pct, PrivateText } from "@/lib/privacy/components";
+import { Money, Pct, PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import { FactorModeCard } from "./analysis/FactorModeCard";
 import { ClassificationCard } from "./analysis/ClassificationCard";
@@ -322,7 +322,7 @@ export function AnalysisView({
                   ))}
                 </Pie>
                 <Tooltip
-                  formatter={(value) => [formatMoney(Number(value)), "Value"]}
+                  formatter={(value) => [<Money key="v" value={Number(value)} />, "Value"]}
                   contentStyle={{
                     backgroundColor: "#0F1219",
                     border: "1px solid #1E2533",

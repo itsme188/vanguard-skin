@@ -738,7 +738,7 @@ export function ImportFlow() {
         {(state as { status: "error"; message: string }).message}
       </p>
       <p className="text-xs text-ink-faint mb-4">
-        Supported formats: Vanguard PDFs, IBKR CSVs, Vanguard CSVs, Canonical CSVs (see format guide below)
+        Supported formats: Vanguard PDFs, IBKR activity and holdings CSVs, Vanguard holdings, export and cost basis CSVs, Canonical CSVs, monthly values CSVs, factor CSVs, DAF contribution CSVs (see format guide below)
       </p>
       <button
         onClick={reset}
