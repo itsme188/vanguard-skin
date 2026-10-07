@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getNotesFiltered, getSecurityIdBySymbol } from "@/lib/queries/notes";
 import { createNote, updateNote, deleteNote } from "@/lib/mutations/notes";
-import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
+import { NOTE_TYPES, NOTE_SENTIMENTS, type NoteType } from "@/lib/types";
 import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
 import { todayET } from "@/lib/calendar/date-utils";
 
@@ -108,7 +108,7 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     const body = await request.json();
-    const { id, content, event_date, tags, sentiment } = body;
+    const { id, content, event_date, tags, sentiment, note_type, security_id } = body;
 
     if (!id) {
       return NextResponse.json(
@@ -124,9 +124,44 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    // note_type / security_id: an absent key leaves the column alone;
+    // security_id null clears the link. Validate before anything is written.
+    let noteType: NoteType | undefined;
+    if (note_type !== undefined) {
+      noteType = coerceNoteType(typeof note_type === "string" ? note_type : null);
+      if (!noteType) {
+        return NextResponse.json(
+          { success: false, error: `Invalid note_type. Must be one of: ${VALID_TYPES.join(", ")}` },
+          { status: 400 }
+        );
+      }
+    }
+    if (security_id !== undefined && security_id !== null) {
+      if (typeof security_id !== "number" || !Number.isInteger(security_id) || security_id <= 0) {
+        return NextResponse.json(
+          { success: false, error: "Invalid security_id. Must be null or a positive integer" },
+          { status: 400 }
+        );
+      }
+      const exists = db.prepare("SELECT 1 FROM securities WHERE id = ?").get(security_id);
+      if (!exists) {
+        return NextResponse.json(
+          { success: false, error: "Security not found" },
+          { status: 404 }
+        );
+      }
+    }
+
     // || undefined: an empty-string event_date must mean "leave unchanged",
     // never overwrite a real date with "" (same header-corruption class as POST).
-    const note = updateNote(db, id, { content, event_date: event_date || undefined, tags, sentiment });
+    const note = updateNote(db, id, {
+      content,
+      event_date: event_date || undefined,
+      tags,
+      sentiment,
+      note_type: noteType,
+      security_id,
+    });
     if (!note) {
       return NextResponse.json(
         { success: false, error: "Note not found" },

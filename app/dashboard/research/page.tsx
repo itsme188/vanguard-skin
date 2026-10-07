@@ -61,7 +61,7 @@ export default async function ResearchPage({ searchParams }: PageProps) {
   let earningsTimeline: EarningsTimelineEntry[] = [];
   let transcriptSummaries: TranscriptSummaryEntry[] = [];
   let transcriptTickers: string[] = [];
-  let securities: { id: number; symbol: string; name: string | null }[] = [];
+  let securities: { id: number; symbol: string; name: string | null; security_type: string | null }[] = [];
 
   if (showNotesView) {
     try {
@@ -102,13 +102,13 @@ export default async function ResearchPage({ searchParams }: PageProps) {
 
       securities = db
         .prepare(
-          `SELECT DISTINCT s.id, s.symbol, s.name
+          `SELECT DISTINCT s.id, s.symbol, s.name, s.security_type
            FROM securities s
            WHERE s.symbol IS NOT NULL AND s.symbol != ''
              AND LOWER(s.security_type) IN ('stock', 'etf', 'mutual fund')
            ORDER BY s.symbol`
         )
-        .all() as { id: number; symbol: string; name: string | null }[];
+        .all() as { id: number; symbol: string; name: string | null; security_type: string | null }[];
     } catch {
       throw new Error("Failed to load research data. The database may be unavailable.");
     }

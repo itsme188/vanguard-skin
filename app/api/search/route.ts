@@ -92,7 +92,7 @@ export async function GET(request: NextRequest) {
     for (const n of notes) {
       const typeLabel =
         n.note_type === "trade_thesis"
-          ? "Trade Thesis"
+          ? "Stock Note"
           : n.note_type === "earnings"
             ? "Earnings"
             : "Journal";
