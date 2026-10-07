@@ -976,3 +976,8 @@ renders collapsed with no accept control) and it cannot reach promote or any
 outbound send. The route is outside slice F's edit list; the fix has to gate
 on the `~retired~` id substring rather than on `state`, because `state` is what
 the bug flips.
+
+## Transcripts: fiscal keys and the stated-quarter guard (2026-10-07)
+
+The same-day transcript step requests the print's FISCAL quarter and caches a vendor call only when the call itself states that quarter; a filing is matched to its print by filing date. Detail and the full rules: `docs/reference/data-integrity.md` §13b.
+

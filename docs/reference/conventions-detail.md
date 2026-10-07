@@ -582,6 +582,11 @@ One helper, `lib/compute/bond-duration.ts`, used by both scenario engines (they 
 - **Cross-account footer:** Value covers every position. A block below the table says how many positions carry no cost basis (left out of Cost Basis and Gain) and how many have a basis but no current price (left out of Value, Gain and Gain %). Gain % divides by the cost basis of the positions that are in Gain.
 - **Single-account footer** (`lib/queries/account-cash-line.ts`): Positions, Cash and the Account total from the latest daily valuation, each dated. Cash is shown only when a RESOLVABLE snapshot on or before that date owns it; otherwise one sentence says no broker snapshot anchors cash for that date. On a live-source day the cash line carries the live-snapshot timing-residual wording (pinned to `lib/queries/data-confidence.ts`). A money-market fund held as a row is named as already counted in Cash. An engine test pins the query's anchor rule to `computeDailyValuations`.
 
+### Tax Lots readers: currency conversions and expired options (2026-10-07)
+
+- **Currency conversions are Section 988 items, never Form 8949 rows.** One predicate, exported from `lib/queries/tax-lots.ts` as SQL (`CURRENCY_CONVERSION_SECURITY_SQL`) and JS (`isCurrencyConversionSecurityType`), a plain case-insensitive match on the security type that imports nothing from the broker library. The Tax Lots page shows them in their own block; the open-lot count, the gain tiles, both 8949 exports, the chat portfolio summary and `scripts/reconcile-tax-report-vs-broker.ts` all exclude them through it. Per-lot chat rows keep them, labelled. The engine and the stored rows do not change. Never classify them through `lib/tws/security-type-map.ts`: that mapper builds live broker contracts.
+- **An option past expiry is not an open lot on screen.** Open Lots, the Unrealized tile, the chat summary and the data-health universes drop it by the shared live-option rule and count it under "expired contracts awaiting a closing entry" (distinct contracts). The lot stays open in the ledger until its real outcome is imported; nothing synthesizes a close.
+
 ## F. Classification: sectors, factors, look-throughs
 
 ### GICS sector normalization (single source)

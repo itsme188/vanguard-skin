@@ -304,6 +304,17 @@ Spec: `docs/superpowers/specs/2026-07-08-earnings-intelligence-design.md`.
 
 ---
 
+## 13b. Transcripts are keyed by FISCAL quarter, and a call must say which quarter it is (2026-10-07)
+
+Supersedes the parts of §14 below that describe a calendar-derived request and "at most one vendor call per day per name".
+
+- **The vendor's quarter parameter is fiscal.** A print's fiscal quarter and year come from the Finnhub entry stored on an earnings event (`calendar_events.raw_json`, `$.entry.quarter` / `$.entry.year`), often on a superseded twin beside the live row: `expectedFiscalQuarterForPrint` (`lib/transcripts/fetch.ts`). Requesting a calendar quarter for a company with an offset fiscal year returns an OLDER call, which the app used to treat as the print's.
+- **A call has no date; its only evidence is its own words.** `statedFiscalQuarterFromTranscript` (`lib/mutations/transcripts.ts`) reads the quarter the opening states. On the same-day path a vendor call is cached only when it states the print's fiscal quarter (and year, when it states one); a call that states nothing is rejected. Every other writer is guarded at the single insert, `upsertTranscript`: a call is never stored under a key its text contradicts.
+- **A filing has a real date.** An 8-K whose filing date is within `PRINT_FILING_WINDOW_DAYS` of the print is stored for that print under the print's key even when the release's own label differs. A call can never use this exemption (the insert checks the source).
+- **No Finnhub entry means no vendor request**; the filing path runs. Vendor requests for one print are bounded to one per 12-hour slot while nothing is cached.
+- **Nothing is deleted.** Rows keyed the old way are correct transcripts of the quarter they state. `scripts/audit-transcript-keys.ts` and `scripts/audit-transcripts-quarter-mismatch.ts` are read-only reports (the old delete flag is refused).
+- **Guidance and Risk sections** are sliced from paragraphs before the Q&A, skip the welcome, safe-harbor sentences and filing cover text, exclude analyst and operator turns, and start at the matching sentence. `scripts/repair-transcript-sections.ts` (dry-run by default; skips sources that supply their own sections and empty text) rewrites stored sections; expect nearly every stored call to change.
+
 ## 14. Same-day transcripts (#12, 2026-07-16)
 
 `lib/transcripts/same-day.ts::fetchSameDayTranscripts` runs as the **LAST** best-effort step of

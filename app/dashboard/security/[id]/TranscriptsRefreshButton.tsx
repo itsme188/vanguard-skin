@@ -42,7 +42,7 @@ export function formatCacheNotice(data: unknown): string {
  * quarter-match guard) and then refreshes the page on success.
  *
  * No quarter is passed — the fetcher defaults to the most recent
- * quarter via getMostRecentQuarter, which is what the user wants when
+ * quarter of the latest print (its fiscal quarter when known), which is what the user wants when
  * they click "refresh" on a security they don't follow per-quarter.
  *
  * fromCache:true means the newest quarter was already cached — nothing

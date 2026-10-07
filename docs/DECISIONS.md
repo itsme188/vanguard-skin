@@ -474,3 +474,10 @@ Spec: `docs/superpowers/specs/2026-10-06-scenario-option-repricing-design.md`.
 - The custom scenario engine gives a bond fund a market sensitivity of 1.0, and the new rate leg now stacks on it.
 - With two hand-entered rows, a print on the later date gets no recap until the earlier row is deleted; the 14-day window chains; pushes and digest lists still use both rows.
 
+## 2026-10-07 — Ruled builds, Codex's branch (transcripts, the Tax Lots page)
+
+- **Transcripts: the two ruled stages became one.** The ruling was a call-date guard first and fiscal-quarter mapping second. The vendor supplies no call date, so the guard cannot exist without the mapping: the print's fiscal quarter (already stored from the earnings calendar) now drives the request, and a call is cached only when it says it is that quarter. Stored rows were never corrupt, so nothing is deleted and the planned purge script was dropped for a read-only audit. Three builds and three reviews: the first two were built by Codex and failed review (a guessed date field; a filing fallback that could not succeed and a guard that accepted silence); the third, by a new builder, passed.
+- **A filing is matched to its print by its filing date** (within four days) and stored under the print's key even when its own label differs. A call can never use that exemption.
+- **Tax Lots: the broker contract mapper was not changed.** Codex's first build mapped Forex to the broker's cash contract type; the review found that would change what the live sync requests, and it was reverted. Currency conversions are labelled at read time only.
+- **For the owner:** currency-conversion sales exist in three IBKR tax years; they leave the 8949 export and appear in the Section 988 block.
+
