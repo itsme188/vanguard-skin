@@ -35,6 +35,7 @@ function row(over: Record<string, unknown> = {}) {
     riskContribution: 0.05,
     correlationWithPortfolio: 0.6,
     dataPoints: 200,
+    cashEquivalent: false,
     ...over,
   };
 }
