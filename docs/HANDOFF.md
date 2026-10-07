@@ -1,6 +1,6 @@
 # Session Handoff — for Codex review
 
-**Waiting on:** USER: (1) all three September 2026 statements are now in the statements folder (the last arrived on the afternoon of 2026-10-07), so the import, then the rehearsed tax-lot recompute and the broker stamp, is the next session's focus (decision record `september-2026-statements`); (2) four repair scripts to run, each as a dry run on a database copy first: transcript sections, donated-lot basis, re-queue failed enrichment, option sectors (commands in `docs/plans/TODO.md`); (3) confirm or reverse the controller and builder rulings listed in `docs/DECISIONS.md` under 2026-10-06 and 2026-10-07; (4) pick one of the two options in the TODO for the Worker gap on replaced earnings entries; (5) the request to GitHub Support to remove cached commits left by the 2026-10-06 history rewrite (decision record `github-support-history-purge`). CODEX: nothing assigned; a review of this span's range on `main` is welcome, especially the items in section 3. CLAUDE: the September import once the user starts it.
+**Waiting on:** USER: (1) the September 2026 statements are IMPORTED (2026-10-07 afternoon, section 1b). That leaves four things with the user: (1a) the venture fund's final Schedule K-1, which settles one donated lot's basis; (1b) realized-gain reports from both brokers, so the reconciliation config can be rebuilt (the broker stamp is blocked until then); (1c) one question for the tax preparer about a short-term gifted lot; (1d) confirm how the gift ruling is stored (cash-only flow field, adjusted return; `docs/DECISIONS.md` 2026-10-07, September import entry). All four are in `docs/plans/TODO.md` under the import's follow-up item; (2) four repair scripts to run, each as a dry run on a database copy first: transcript sections, donated-lot basis, re-queue failed enrichment, option sectors (commands in `docs/plans/TODO.md`); (3) confirm or reverse the controller and builder rulings listed in `docs/DECISIONS.md` under 2026-10-06 and 2026-10-07; (4) pick one of the two options in the TODO for the Worker gap on replaced earnings entries; (5) the request to GitHub Support to remove cached commits left by the 2026-10-06 history rewrite (decision record `github-support-history-purge`). CODEX: nothing assigned; a review of this span's range on `main` is welcome, especially the items in section 3. CLAUDE: nothing assigned; the live tax-lot recompute (rehearsed on a copy only) waits for the user's go-ahead.
 
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
@@ -39,6 +39,18 @@ Files, by concern:
 - **Scripts (new, all dry-run by default):** `scripts/repair-{transcript-sections,donated-lot-basis,requeue-failed-enrichment,option-sectors}.ts`, `scripts/audit-transcript-keys.ts`, `scripts/compare-scenario-option-repricing.ts`.
 - **Tests:** about one hundred test files added or changed. **Docs:** `CLAUDE.md` (two invariants dated 2026-10-07), `docs/DECISIONS.md`, `docs/plans/TODO.md`, reference docs.
 
+### 1b. September 2026 statement import (2026-10-07 afternoon, appended)
+
+**No code changed in this part of the session. Data and docs only.** No deploy, no test run.
+
+- **Imported:** all three accounts through the app's import API, after a database backup. Batches 220 (IBKR), 221–224 (Roth), 225–228 (Taxable), 229 undone and replaced by 232 (Taxable monthly snapshot), 230 (the donor-advised fund (DAF) contributions file), 231 (an empty batch from a no-op re-import).
+- **Result:** every account's month-end value equals its statement (zero delta). Every gate passed to the penny except the Taxable cost-basis spot check, which could not run because that statement printed no cost basis; the basis was filled from the broker's lot report under a strict rule. Estimated closes fell from 11 to 2.
+- **Live-database writes through the app's API:** the import commits above; one two-step batch undo (229); four donation links (each stamps the DAF value on the gift's OUT leg and runs the whole-ledger recompute, acknowledged after the 409); lot assignments for the September gifts, and for two earlier gifts of one stock whose lots were swapped.
+- **Live-database write outside the API:** one. A single same-day live-feed holdings row, for a position fully sold on the last trading day, was set to zero and valuations were recomputed (the runbook's last-trading-day fix, owner-approved). The total did not move; the cash/holdings split changed by exactly that position's value.
+- **Rehearsed on a copy only, nothing live:** the IBKR direction backfill (nothing to do), the full tax-lot recompute (no realized gain changed in any tax year; second run identical), and the broker reconciliation (does not pass with the existing config).
+- **Docs changed:** `docs/DECISIONS.md`, `docs/plans/TODO.md`, `docs/reference/conventions-detail.md`, `.claude/skills/import-monthly-statements/SKILL.md` (new Phase 6 for gifts; the Phase 4 sweep note corrected), this file.
+- **Real figures** are only in the gate reports in the owner's statements folder (`canonical/2026-09/GATES-202609-*.md`) and a private rehearsal report. Nothing was written to `docs/private/`.
+
 ## 2. Tests / E2E / deploy
 
 | Check | Result |
@@ -63,10 +75,12 @@ Files, by concern:
 - **Transcripts keyed by fiscal quarter** (`lib/transcripts/fetch.ts`): a wrong filing inside the four-day window is stored and never replaced.
 - **First wave:** bond duration derived from maturity (`lib/compute/bond-duration.ts`) and option-underlying pricing in the sync (`lib/tws/option-underlyings.ts`).
 - **`lib/tws/bond-coupon.ts` is intentionally unwired.** A repo test guards that; the name parser is the only working coupon source.
+- **Gift months: cash-only flow field plus an adjusted return (September import).** The owner ruled that gifted shares are an external outflow. The controller stored that as: `deposits_withdrawals` cash-only, `twr` by Modified Dietz with each gift as a dated outflow, `investment_gain` with gifts excluded. So `total − starting − deposits_withdrawals` no longer equals `investment_gain` in a gift month. Check every reader that rebuilds one of these fields from the others, and the statement-return audit's treatment of such a month. June 2026 is still on the old convention.
+- **Open lots against the broker's lot report (Taxable, first comparison).** About seven in ten positions match on quantity and cost, about two in ten on quantity only, and a few differ in quantity or exist on one side only. Causes found: early lots missing from the ledger, exercise rows with no price (premium booked as an option loss instead of stock basis), one exercise typed as a corporate action, stray rows from old ticker changes, lot-relief differences, accrued interest in Treasury basis. Each is a TODO follow-up; the exercise handling is the one to look at in code first.
 
 **User decisions and rejected approaches:** every ruling, with the alternatives the user turned down, is in `docs/DECISIONS.md` (entries dated 2026-10-06 and 2026-10-07). The entries headed "Controller rulings (for the owner to confirm or reverse)" were made by builders or the controller, not by the user. Owner questions and to-dos are in the matching `docs/plans/TODO.md` entries.
 
-**Held builds:** the IBKR monthly-return scale (code and repair must land in one step, with the owner present) and the missing-sales hunt for the lot overhang (done with the September import).
+**Held builds:** the IBKR monthly-return scale (code and repair must land in one step, with the owner present) and the missing-sales hunt for the lot overhang (done with the September import). Update, 2026-10-07 afternoon: the import is done, so both are unblocked; neither is built.
 
 **Operational notes:**
 
@@ -76,7 +90,7 @@ Files, by concern:
 
 ## 4. Uncommitted changes and live-process state (after the final deploy)
 
-Main = origin/main at `e418b329`, plus this handoff commit; working tree clean. No open pull requests. No locks held. No dev servers or sandboxes running. The live app is up on the final build. The live database was not written by any repair script in this span; the four repair scripts wait for the user.
+Main = origin/main at `e418b329`, plus this handoff commit; working tree clean. No open pull requests. No locks held. No dev servers or sandboxes running. The live app is up on the final build. The live database was not written by any repair script in this span; the four repair scripts wait for the user. After the September import (section 1b): the working tree holds the five edited doc files, uncommitted; the live database carries the import and the writes listed in 1b; a pre-import backup of the database exists.
 
 ## 5. Agent
 

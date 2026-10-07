@@ -500,6 +500,17 @@ month all break the chain). Detail: `docs/reference/data-integrity.md` §18,
   snapshot path**: snapshot `deposits_withdrawals` never contains in-kind; `UNION` branches over
   snapshots prefer statement `deposits_withdrawals` or fall through to statement-anchored transaction
   sum (which includes in-kind, pre-signed) — never double-count legs via both paths.
+- **Gift months (owner ruling 2026-10-07, from September 2026 on):** shares given away are an external
+  OUTFLOW for the monthly return, not an investment loss. The snapshot's `deposits_withdrawals` still
+  stays cash-only (the invariant above; daily cash stepping and the `flow-total-mismatch` check in
+  `lib/compute/dietz.ts` depend on it), so the ruling is carried by the stored `twr` (Modified Dietz
+  with each gift as a dated outflow) and `investment_gain` (gifts excluded). In a gift month
+  `total_value − starting_value − deposits_withdrawals ≠ investment_gain`, on purpose — never "repair"
+  it. Earlier gift months were counted the old way and are not restated. The stored form is a
+  controller choice awaiting the owner's confirmation (`docs/DECISIONS.md` 2026-10-07).
+- **Gift valuation:** a donor-advised fund (DAF) values a stock gift at the MEAN of the day's high and
+  low on the receipt date (the broker's gifted-shares summary does the same), not the close. The DAF
+  value is the authority for the OUT leg's `amount`; linking the donation stamps it over the stand-in.
 - Cost-basis fallback single source: `lib/valuation.ts::scaledCostBasisFallbackSQL` scales a stale
   statement row's basis per-share to the current quantity and signs like the position (never serve a
   different share count's whole basis); consumers wrap it `NULLIF(<expr>, 0)` — a zero stored basis
