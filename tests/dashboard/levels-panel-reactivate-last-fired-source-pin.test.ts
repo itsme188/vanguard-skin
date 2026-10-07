@@ -4,7 +4,7 @@ import { anchorIndex, sliceBetween } from "@/tests/helpers/source-anchor";
 
 describe("LevelsPanel reactivate last-fired handling (source pin)", () => {
   const src = readFileSync("app/dashboard/components/LevelsPanel.tsx", "utf8");
-  const handler = sliceBetween(src, "async function handleReactivate", "async function handleDelete");
+  const handler = sliceBetween(src, "async function handleReactivate", "function handleDelete");
 
   it("reactivate retries with force after a would-fire-immediately 409 confirmation", () => {
     expect(handler).toMatch(/confirmed: ArmRefusalCode \| null = null/);
@@ -18,7 +18,9 @@ describe("LevelsPanel reactivate last-fired handling (source pin)", () => {
 
   it("an out-of-range refusal gets its own confirm-and-retry, with formatted prices", () => {
     const branch = sliceBetween(handler, 'code === "beyond_scan_range"', "Couldn't reactivate the level");
-    expect(branch).toMatch(/confirm\(/);
+    // The confirm is the app's ConfirmDialog (setConfirmPrompt), not the
+    // browser's native confirm().
+    expect(branch).toMatch(/setConfirmPrompt\(/);
     expect(branch).toMatch(/outside the scanner's range/);
     expect(branch).toMatch(/handleReactivate\(id,\s*"beyond_scan_range"\)/);
     // Prices in every refusal prompt go through the row formatter.

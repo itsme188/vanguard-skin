@@ -13,6 +13,8 @@ import {
   isLevelBeyondScanRange,
   levelPriceIsFreshSql,
 } from "@/lib/levels/scan-range";
+import { lastFiredDateET } from "@/lib/levels/last-fired-date";
+import { todayET } from "@/lib/calendar/date-utils";
 
 /** The scanner's price-freshness test, built once from the shared window and
  *  reused by every query below — findCrossedLevels (which enforces it),
@@ -797,13 +799,11 @@ export function getActiveLevelCountsForSecurityIds(
   const placeholders = securityIds.map(() => "?").join(",");
   const rows = db
     .prepare(
-      `SELECT security_id, COUNT(*) AS n
-         FROM security_levels
-        WHERE is_active = 1
-          AND review_status = 'auto_approved'
-          AND (expires_at IS NULL OR expires_at >= date('now'))
-          AND security_id IN (${placeholders})
-        GROUP BY security_id`
+      `SELECT sl.security_id, COUNT(*) AS n
+         FROM security_levels sl
+        WHERE ${ARMED_UNIVERSE_WHERE_SQL}
+          AND sl.security_id IN (${placeholders})
+        GROUP BY sl.security_id`
     )
     .all(...securityIds) as Array<{ security_id: number; n: number }>;
   for (const r of rows) result.set(r.security_id, r.n);
@@ -857,21 +857,66 @@ export function getPendingAlertCount(db: Database.Database): number {
   return row.n;
 }
 
+/** How far back the alerted-today reads look before the Eastern-day test in
+ *  JS. An Eastern day is at most 25 hours long, so 48 covers it with room. */
+const ALERTED_TODAY_LOOKBACK_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Alert rows recent enough to possibly fall in the current EASTERN day,
+ * narrowed to that day in JS. `triggered_at` is a UTC instant, so "today" is
+ * never decided by a SQL string compare: SQLite date('now') is the UTC day,
+ * which rolls over at 20:00 ET (19:00 in winter). The SQL bound is only a
+ * coarse lower limit, with datetime() on both sides.
+ */
+function alertedTodayLevelIds(
+  db: Database.Database,
+  now: Date,
+  levelId?: number
+): Set<number> {
+  const since = new Date(now.getTime() - ALERTED_TODAY_LOOKBACK_MS).toISOString();
+  const rows = db
+    .prepare(
+      `SELECT level_id, triggered_at FROM level_alerts
+       WHERE datetime(triggered_at) >= datetime(?)
+         ${levelId === undefined ? "" : "AND level_id = ?"}`
+    )
+    .all(...(levelId === undefined ? [since] : [since, levelId])) as Array<{
+    level_id: number;
+    triggered_at: string;
+  }>;
+  const today = todayET(now);
+  const ids = new Set<number>();
+  for (const r of rows) {
+    if (lastFiredDateET(r.triggered_at) === today) ids.add(r.level_id);
+  }
+  return ids;
+}
+
+/**
+ * Every level that already alerted in the current Eastern day, in ONE read —
+ * the page-sized form of hasAlertToday (same rows, same day test), so a list
+ * of levels never runs one query per row.
+ */
+export function getLevelIdsAlertedToday(
+  db: Database.Database,
+  now: Date = new Date()
+): Set<number> {
+  return alertedTodayLevelIds(db, now);
+}
+
 /**
  * Check if an alert already exists today for the given level — dedup guard.
  * Used at insert time so a level that oscillates around its price doesn't fire repeatedly.
  * (Secondary safety net — the primary dedup is the is_active=0 flip on trigger.)
+ *
+ * "Today" is the Eastern calendar day (todayET), so the day this guard, the
+ * "alerted today" chip and the "next alert can come tomorrow" wording all
+ * mean rolls over at Eastern midnight.
  */
 export function hasAlertToday(
   db: Database.Database,
-  levelId: number
+  levelId: number,
+  now: Date = new Date()
 ): boolean {
-  const row = db
-    .prepare(
-      `SELECT 1 FROM level_alerts
-       WHERE level_id = ? AND date(triggered_at) = date('now')
-       LIMIT 1`
-    )
-    .get(levelId);
-  return !!row;
+  return alertedTodayLevelIds(db, now, levelId).has(levelId);
 }

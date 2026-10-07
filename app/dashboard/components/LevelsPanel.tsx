@@ -45,6 +45,7 @@ import {
 import { todayET } from "@/lib/calendar/date-utils";
 import { useToast } from "./Toast";
 import { Chip } from "./Chip";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { SortPicker } from "./SortPicker";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 import apiFetch from "@/lib/http/apiFetch";
@@ -708,6 +709,16 @@ export function LevelsPanel({
   // behind a "More options" disclosure to keep tap targets large. Desktop
   // always shows the full form.
   const [showAdvanced, setShowAdvanced] = useState(false);
+  // The one confirmation this panel is waiting on (delete, or overriding an
+  // arm refusal), shown in the app's ConfirmDialog. Null when none is open.
+  const [confirmPrompt, setConfirmPrompt] = useState<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    variant?: "danger" | "default";
+    onConfirm: () => void;
+    onCancel?: () => void;
+  } | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -891,25 +902,21 @@ export function LevelsPanel({
         const consequence = alertedToday
           ? "It already alerted today, so a re-armed level can next alert tomorrow."
           : "Reactivating will fire an alert on the next scan.";
-        if (
-          confirm(
-            `Price ${current} is already past this level (${effective}). ${consequence} Reactivate anyway?`
-          )
-        ) {
-          await handleReactivate(id, "would_fire_immediately");
-          return;
-        }
-        toast("Level left paused", "info");
+        setConfirmPrompt({
+          title: "Reactivate this level?",
+          message: `Price ${current} is already past this level (${effective}). ${consequence} Reactivate anyway?`,
+          confirmLabel: "Reactivate anyway",
+          onConfirm: () => handleReactivate(id, "would_fire_immediately"),
+          onCancel: () => toast("Level left paused", "info"),
+        });
       } else if (result.status === 409 && result.code === "beyond_scan_range") {
-        if (
-          confirm(
-            `This level (${effective}) is outside the scanner's range at the current price ${current}, so every scan would skip it and it could not alert. This usually means a mis-scaled price. Reactivate anyway?`
-          )
-        ) {
-          await handleReactivate(id, "beyond_scan_range");
-          return;
-        }
-        toast("Level left paused", "info");
+        setConfirmPrompt({
+          title: "Reactivate this level?",
+          message: `This level (${effective}) is outside the scanner's range at the current price ${current}, so every scan would skip it and it could not alert. This usually means a mis-scaled price. Reactivate anyway?`,
+          confirmLabel: "Reactivate anyway",
+          onConfirm: () => handleReactivate(id, "beyond_scan_range"),
+          onCancel: () => toast("Level left paused", "info"),
+        });
       } else {
         toast(`Couldn't reactivate the level: ${result.message}`, "error");
       }
@@ -919,8 +926,17 @@ export function LevelsPanel({
     refresh();
   }
 
-  async function handleDelete(id: number) {
-    if (!confirm("Delete this level permanently?")) return;
+  function handleDelete(id: number) {
+    setConfirmPrompt({
+      title: "Delete level",
+      message: "Delete this level permanently?",
+      confirmLabel: "Delete",
+      variant: "danger",
+      onConfirm: () => deleteConfirmedLevel(id),
+    });
+  }
+
+  async function deleteConfirmedLevel(id: number) {
     try {
       const res = await apiFetch(`/api/levels?id=${id}`, { method: "DELETE" });
       const result = await readMutationResult(res);
@@ -1866,6 +1882,23 @@ export function LevelsPanel({
           </>
         );
       })()}
+      <ConfirmDialog
+        open={confirmPrompt !== null}
+        title={confirmPrompt?.title ?? ""}
+        message={confirmPrompt?.message ?? ""}
+        confirmLabel={confirmPrompt?.confirmLabel}
+        variant={confirmPrompt?.variant}
+        onConfirm={() => {
+          const prompt = confirmPrompt;
+          setConfirmPrompt(null);
+          prompt?.onConfirm();
+        }}
+        onCancel={() => {
+          const prompt = confirmPrompt;
+          setConfirmPrompt(null);
+          prompt?.onCancel?.();
+        }}
+      />
     </section>
   );
 }

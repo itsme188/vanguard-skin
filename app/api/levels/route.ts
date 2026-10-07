@@ -6,7 +6,7 @@ import {
   getLevelById,
   getScanPriceStalenessBySecurity,
   getLatestScanPriceForSecurity,
-  hasAlertToday,
+  getLevelIdsAlertedToday,
 } from "@/lib/queries/security-levels";
 import {
   BEYOND_SCAN_RANGE_EXPLANATION,
@@ -46,15 +46,19 @@ export async function GET(request: NextRequest) {
       db,
       levels.map((l) => l.security_id),
     );
+    // One read for the whole page (not one per level): the levels that
+    // already alerted in the current Eastern day.
+    const alertedToday = getLevelIdsAlertedToday(db);
     const enriched = levels.map((l) => ({
       ...l,
       effective_price:
         l.price_source === "static" ? l.price : resolveLevelPrice(db, l),
       price_date: staleness.get(l.security_id)?.priceDate ?? null,
       price_is_stale: staleness.get(l.security_id)?.isStale ?? false,
-      // The scanner's own same-day dedupe fact (hasAlertToday), so the panel
-      // never has to guess "today" from the browser's local date.
-      alerted_today: hasAlertToday(db, l.id),
+      // The scanner's own same-day dedupe fact (the Eastern day triggerLevel
+      // dedupes on), so the panel never has to guess "today" from the
+      // browser's local date.
+      alerted_today: alertedToday.has(l.id),
     }));
     // Note: resolveLevelPrice return type already narrows to `number | null`.
 
@@ -150,6 +154,12 @@ export async function PATCH(request: NextRequest) {
     if (!id) {
       return NextResponse.json({ success: false, error: "id required" }, { status: 400 });
     }
+    // A missing row is a 404 on every branch. Without this the UPDATE simply
+    // matches nothing and the caller is told the level was paused, re-armed
+    // or edited.
+    if (!getLevelById(db, id)) {
+      return NextResponse.json({ success: false, error: "Level not found" }, { status: 404 });
+    }
     if (action === "deactivate") {
       deactivateLevel(db, id);
     } else if (action === "reactivate") {
@@ -204,6 +214,9 @@ export async function DELETE(request: NextRequest) {
     const id = searchParams.get("id");
     if (!id) {
       return NextResponse.json({ success: false, error: "id required" }, { status: 400 });
+    }
+    if (!getLevelById(db, Number(id))) {
+      return NextResponse.json({ success: false, error: "Level not found" }, { status: 404 });
     }
     deleteLevel(db, Number(id));
     return NextResponse.json({ success: true });
