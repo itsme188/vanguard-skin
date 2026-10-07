@@ -33,10 +33,12 @@ const UNMODELLED_REASON_LABEL: Record<OptionUnmodelledReason, string> = {
 };
 // A bond the rate move could not price: no duration, coupon or yield is ever
 // assumed for it, so the row names the stored input that is missing.
+// A coupon comes from the broker's contract details first, then from the
+// bond's stored name; with neither, the bond is left out.
 const BOND_UNMODELLED_REASON_LABEL: Record<BondUnmodelledReason, string> = {
   "no-maturity": "no maturity date",
   "matured": "past its maturity date",
-  "no-coupon": "no coupon on file",
+  "no-coupon": "no coupon from the broker, and none readable in the bond's name",
   "no-price": "no price",
   "no-yield": "price gives no usable yield",
 };
@@ -472,6 +474,19 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                     <p className="text-[11px] text-ink-faint leading-relaxed">
                       Bond funds move with rates by their duration. A fund&apos;s duration defaults to{" "}
                       {FUND_DEFAULT_DURATION_YEARS} years when unknown.
+                    </p>
+                  )}
+
+                  {/* Coupon source note */}
+                  {result.positionImpacts.some(
+                    (pos) => pos.rateDurationSource === "coupon-yield" || pos.rateDurationSource === "coupon-yield-name",
+                  ) && (
+                    <p className="text-[11px] text-ink-faint leading-relaxed">
+                      A coupon bond&apos;s rate move comes from its coupon, maturity and price.
+                      {result.positionImpacts.some((pos) => pos.rateDurationSource === "coupon-yield") &&
+                        " Coupon from the broker where the broker gives one."}
+                      {result.positionImpacts.some((pos) => pos.rateDurationSource === "coupon-yield-name") &&
+                        " Coupon read from the bond’s name where the broker gives none."}
                     </p>
                   )}
 

@@ -39,6 +39,8 @@ import { fetchBenchmarkPrices } from "./benchmark";
 import { fetchBenchmarkClosesFromYahoo } from "../benchmark/yahoo-benchmarks";
 import { computeDailyValuations } from "../compute/daily-valuation";
 import { runLevelScanCycle } from "../alerts/scan-cycle";
+import { countUnenrichedLiveOptionUnderlyings } from "./option-underlyings";
+import { todayET } from "../calendar/date-utils";
 
 export type RefreshLevel = "full" | "quick";
 
@@ -169,12 +171,25 @@ export async function runAutoRefresh(
              AND LOWER(COALESCE(s.security_type, '')) NOT IN ('bond', 'money_market')`,
         )
         .get() as { cnt: number };
+      // Not-held underlyings of held live options also need a contract id
+      // before the snapshot step can price them (owner ruling 2026-10-07).
+      // Counted on its own so a failure here can never skip the held rows.
+      let unenrichedUnderlyings = 0;
+      try {
+        unenrichedUnderlyings = countUnenrichedLiveOptionUnderlyings(db, todayET());
+      } catch (err) {
+        console.error(
+          "[auto-refresh] Option-underlying enrichment check error:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+      const toEnrich = unenriched.cnt + unenrichedUnderlyings;
 
-      if (unenriched.cnt > 0) {
+      if (toEnrich > 0) {
         setSyncPhase("enriching", {
           current: 0,
-          total: unenriched.cnt,
-          label: `Enriching ${unenriched.cnt} securities...`,
+          total: toEnrich,
+          label: `Enriching ${toEnrich} securities...`,
         });
         try {
           const results = await enrichSecurities(db);

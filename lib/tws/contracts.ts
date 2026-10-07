@@ -5,6 +5,9 @@ import { RateLimiter } from "./rate-limiter";
 import { mapSecurityType, shouldRetypeAsEtf } from "./security-type-map";
 import type { EnrichResult } from "./types";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { todayET } from "@/lib/calendar/date-utils";
+import { assessBrokerCoupon, storeBrokerCoupon } from "./bond-coupon";
+import { getLiveHeldOptionUnderlyings } from "./option-underlyings";
 
 const rateLimiter = new RateLimiter();
 
@@ -88,6 +91,10 @@ function buildContract(sec: SecurityRow): Record<string, unknown> | null {
  *   - Stocks/ETFs: resolved by symbol
  *   - Mutual funds: resolved by symbol with SecType.FUND
  *   - Options (OCC format): resolved by underlying + expiry + strike + right
+ *   - Also the not-held underlyings of held live options with no contract id
+ *     (lib/tws/option-underlyings.ts), so the price snapshot can price them
+ *   - A bond's coupon from the contract details is stored when it passes
+ *     lib/tws/bond-coupon.ts
  *   - Excluded: CUSIP-prefixed bonds, Cash, non-OCC option symbols
  */
 export async function enrichSecurities(
@@ -132,6 +139,23 @@ export async function enrichSecurities(
            )`,
       )
       .all() as SecurityRow[];
+
+    // Plus the underlyings of held live options that have no contract id yet
+    // (owner ruling 2026-10-07). They are not held, so the query above never
+    // reaches them, and the price snapshot only prices a row that has a
+    // contract id. Appended after the held rows; the held rows and their
+    // order are unchanged.
+    // A failure in this extra set must never cost the held rows their turn.
+    try {
+      const seen = new Set(securities.map((s) => s.id));
+      for (const u of getLiveHeldOptionUnderlyings(db, todayET())) {
+        if (u.ib_con_id != null || seen.has(u.id)) continue;
+        seen.add(u.id);
+        securities.push({ id: u.id, symbol: u.symbol, security_type: u.security_type, name: u.name, currency: u.currency });
+      }
+    } catch (err) {
+      console.error("[enrichSecurities] Option-underlying selection failed:", err instanceof Error ? err.message : err);
+    }
   }
 
   // `name` is set when the existing value is missing or just echoes the
@@ -200,6 +224,20 @@ export async function enrichSecurities(
           sec.id,
         );
 
+        // A bond's coupon (annual percent). Stored only when the broker's
+        // figure passes lib/tws/bond-coupon.ts; the one writer of
+        // securities.coupon_rate, fill-only.
+        let couponRatePct: number | undefined;
+        if ((sec.security_type ?? "").trim().toLowerCase() === "bond") {
+          const storedName = sec.name && sec.name !== sec.symbol ? sec.name : longName;
+          const decision = assessBrokerCoupon(detail.coupon, storedName);
+          if (decision.store) {
+            if (storeBrokerCoupon(db, sec.id, decision.couponRatePct)) couponRatePct = decision.couponRatePct;
+          } else if (decision.reason !== "absent") {
+            console.warn(`[enrichSecurities] Bond coupon for security ${sec.id} not stored: ${decision.reason}`);
+          }
+        }
+
         results.push({
           symbol: sec.symbol,
           securityId: sec.id,
@@ -209,6 +247,7 @@ export async function enrichSecurities(
           exchange: exchange ?? undefined,
           conId: conId ?? undefined,
           retypedToEtf: retypeAsEtf,
+          ...(couponRatePct !== undefined ? { couponRatePct } : {}),
         });
       } else {
         results.push({

@@ -54,6 +54,33 @@ describe("scenario card: fund duration note", () => {
   });
 });
 
+describe("scenario card: where a bond's coupon came from", () => {
+  const note = () => sliceBetween(card, "{/* Coupon source note */}", "{result.positionImpacts.some((pos) => isOptionSecurityType");
+
+  it("the not-modelled reason names both sources that were tried", () => {
+    anchorIndex(card, `"no-coupon": "no coupon from the broker, and none readable in the bond's name"`);
+    expect(card).not.toContain("no coupon on file");
+  });
+
+  it("the caption says which coupon source a run used, keyed on the engine's own source values", () => {
+    const s = note();
+    anchorIndex(s, 'pos.rateDurationSource === "coupon-yield"');
+    anchorIndex(s, 'pos.rateDurationSource === "coupon-yield-name"');
+    anchorIndex(s, "Coupon from the broker");
+    anchorIndex(s, "Coupon read from the bond’s name");
+    // Both source values exist on the shared helper, so the caption cannot key on a dead string.
+    anchorIndex(helper, '| "coupon-yield"');
+    anchorIndex(helper, '| "coupon-yield-name"');
+  });
+
+  it("prints no portfolio figure, uses readable text and no caret glyph", () => {
+    const s = note();
+    expect(s).not.toMatch(/bondsUnmodelled|valueShare|currentValue|formatMoney|formatPct|\.length/);
+    expect(s).not.toMatch(/text-ink-(muted|ghost)/);
+    expect(s).not.toMatch(/[▾▼▸▶⌄]/);
+  });
+});
+
 describe("both engines take the bond rate leg from the one shared helper", () => {
   for (const [file, src] of [
     ["lib/compute/scenarios.ts", custom],

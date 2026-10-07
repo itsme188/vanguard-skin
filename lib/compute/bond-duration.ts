@@ -12,15 +12,21 @@
  *      duration; a matured bond has no rate risk left to estimate).
  *   2. A stored duration is used as stored.
  *   3. No maturity date: unmodelled.
- *   4. Zero coupon (a stored coupon of 0, or a Treasury bill by name with no
+ *   4. Zero coupon (a coupon of 0, or a Treasury bill by name with no
  *      stored coupon): years to maturity.
  *   5. Within one coupon period of maturity: one cash flow is left, so the
  *      duration is the time to maturity. Needs neither coupon nor price.
- *   6. A coupon bond: modified duration from its stored coupon, its maturity
- *      and the yield its stored price implies.
- *   7. Anything else (no stored coupon, no usable price or yield) adds
- *      NOTHING to the rate leg and is reported as unmodelled. No coupon,
- *      yield or duration is ever assumed for a bond.
+ *   6. A coupon bond: modified duration from its coupon, its maturity and the
+ *      yield its stored price implies.
+ *   7. Anything else (no coupon, no usable price or yield) adds NOTHING to
+ *      the rate leg and is reported as unmodelled. No coupon, yield or
+ *      duration is ever assumed for a bond.
+ *
+ * Where the coupon comes from (owner ruling 2026-10-07): the stored coupon
+ * (`securities.coupon_rate`, written only from the broker's contract details)
+ * first; with none stored, the coupon read from the bond's stored name by the
+ * strict parser in lib/bonds.ts; a name that does not parse leaves the bond
+ * unmodelled. The result says which was used (`couponSource`).
  *
  * A fixed-income FUND uses its stored duration, else a 5-year default. The
  * default is for funds only.
@@ -35,6 +41,7 @@
 import { isCashEquivalentSecurity } from "./cash-equivalents";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isBondFundCategory, isLeveragedInverseFundCategory } from "@/lib/securities/normalize-fund-category";
+import { extractCouponRate } from "@/lib/bonds";
 
 /** Ruled 2026-10-06: a bond FUND with no stored duration is priced at 5 years. */
 export const FUND_DEFAULT_DURATION_YEARS = 5;
@@ -57,12 +64,17 @@ export type RateDurationSource =
   | "bill-maturity"
   /** Coupon bond with one cash flow left: years to maturity. */
   | "single-flow"
-  /** Coupon bond: modified duration from coupon, maturity and price-implied yield. */
+  /** Coupon bond: modified duration from the STORED (broker) coupon, maturity and price-implied yield. */
   | "coupon-yield"
+  /** The same derivation with the coupon read from the bond's name (none stored). */
+  | "coupon-yield-name"
   /** `securities.duration_years` on a fixed-income fund. */
   | "fund-stored"
   /** Fixed-income fund with no stored duration: FUND_DEFAULT_DURATION_YEARS. */
   | "fund-default";
+
+/** Where a bond's coupon came from: the stored broker figure, or the bond's stored name. */
+export type CouponSource = "broker" | "name";
 
 export type BondUnmodelledReason = "no-maturity" | "matured" | "no-coupon" | "no-price" | "no-yield";
 
@@ -87,6 +99,13 @@ export interface BondRateLeg {
   durationYears?: number;
   durationSource?: RateDurationSource;
   unmodelledReason?: BondUnmodelledReason;
+  /**
+   * Set only when a coupon decided the outcome: a zero coupon, the coupon
+   * bond derivation, or a coupon bond left out for want of a price or yield.
+   * Absent for a stored duration, a bill known by name alone, a single
+   * remaining flow, a fund, and a bond with no coupon at all.
+   */
+  couponSource?: CouponSource;
 }
 
 /**
@@ -327,12 +346,17 @@ export function estimateBondRateLeg(pos: RateLegInputs, rateBps: number, today: 
     };
   }
 
-  const modelled = (durationYears: number, durationSource: RateDurationSource): BondRateLeg => ({
+  const modelled = (durationYears: number, durationSource: RateDurationSource, couponSource?: CouponSource): BondRateLeg => ({
     changePercent: rateLegForDuration(durationYears, rateBps),
     durationYears,
     durationSource,
+    ...(couponSource ? { couponSource } : {}),
   });
-  const unmodelled = (unmodelledReason: BondUnmodelledReason): BondRateLeg => ({ changePercent: 0, unmodelledReason });
+  const unmodelled = (unmodelledReason: BondUnmodelledReason, couponSource?: CouponSource): BondRateLeg => ({
+    changePercent: 0,
+    unmodelledReason,
+    ...(couponSource ? { couponSource } : {}),
+  });
 
   const days = pos.maturity_date ? signedDaysBetween(today, pos.maturity_date) : null;
   // A known maturity date in the past wins over a stored duration.
@@ -340,11 +364,17 @@ export function estimateBondRateLeg(pos: RateLegInputs, rateBps: number, today: 
   if (stored != null) return modelled(stored, "stored");
   if (days == null) return unmodelled("no-maturity");
 
-  // Zero-coupon: one cash flow, so the duration is the time to it. The name
-  // decides only when no coupon is stored; a positive stored coupon on a row
-  // named like a bill is a coupon bond.
-  const coupon = pos.coupon_rate;
-  if (coupon === 0 || (coupon == null && isTreasuryBillName(pos.security_name))) {
+  // The stored coupon first; with none stored, the one the name states.
+  const storedCoupon = pos.coupon_rate;
+  const nameCoupon = storedCoupon == null ? extractCouponRate(pos.security_name) : null;
+  const coupon = storedCoupon ?? nameCoupon;
+  const couponSource: CouponSource | undefined = storedCoupon != null ? "broker" : nameCoupon != null ? "name" : undefined;
+
+  // Zero-coupon: one cash flow, so the duration is the time to it. The bill
+  // name decides only when no coupon is stored; a positive stored coupon on a
+  // row named like a bill is a coupon bond.
+  if (coupon === 0) return modelled(days / DAYS_PER_YEAR, "bill-maturity", couponSource);
+  if (storedCoupon == null && isTreasuryBillName(pos.security_name)) {
     return modelled(days / DAYS_PER_YEAR, "bill-maturity");
   }
 
@@ -360,8 +390,8 @@ export function estimateBondRateLeg(pos: RateLegInputs, rateBps: number, today: 
     maturityDate: pos.maturity_date!,
     today,
   });
-  if (!derived.ok) return unmodelled(derived.reason);
-  return modelled(derived.modifiedDuration, "coupon-yield");
+  if (!derived.ok) return unmodelled(derived.reason, couponSource);
+  return modelled(derived.modifiedDuration, couponSource === "name" ? "coupon-yield-name" : "coupon-yield", couponSource);
 }
 
 /**

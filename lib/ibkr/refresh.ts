@@ -26,7 +26,8 @@ import {
 import { mapPosition, extractLedgerFxRates, type MappedPosition } from "./map-positions";
 import { getLiveSessionToken, type IbkrOAuthConfig } from "./oauth-client";
 import { getMarketDataSnapshot, type ParsedQuote } from "./market-data";
-import { getQuoteCandidateConids } from "../queries/security-quotes";
+import { getQuoteCandidateConids, type QuoteCandidate } from "../queries/security-quotes";
+import { getLiveHeldOptionUnderlyings } from "../tws/option-underlyings";
 import { upsertSecurityQuote } from "../mutations/security-quotes";
 import { runLevelScanCycle } from "../alerts/scan-cycle";
 import {
@@ -338,7 +339,27 @@ export async function fetchAndStoreQuotes(
     opts.fetchSnapshot ?? ((c, l, conids) => getMarketDataSnapshot(c, l, conids));
   const fetchYields: YieldFetcher = opts.fetchYields ?? fetchFinnhubDividendYields;
 
-  const candidates = getQuoteCandidateConids(db);
+  const candidates: QuoteCandidate[] = getQuoteCandidateConids(db);
+  // Plus the underlying of every held live option (owner ruling 2026-10-07),
+  // so scenario repricing has a price for an underlying that is not itself
+  // held. Price-only: the ruling asks for a price, so no security_quotes row
+  // is cached for a row that is only here as an underlying. A row that is
+  // already a candidate (held or on the watchlist) keeps its own tier and is
+  // not requested twice. Needs a contract id, which only the TWS enrichment
+  // step resolves; this path has no enrichment of its own.
+  // A failure in this extra set must never cost the existing candidates.
+  try {
+    const candidateIds = new Set(candidates.map((c) => c.securityId));
+    const candidateConids = new Set(candidates.map((c) => c.conid));
+    for (const u of getLiveHeldOptionUnderlyings(db, asOf)) {
+      if (u.ib_con_id == null || candidateIds.has(u.id) || candidateConids.has(u.ib_con_id)) continue;
+      candidateIds.add(u.id);
+      candidateConids.add(u.ib_con_id);
+      candidates.push({ securityId: u.id, conid: u.ib_con_id, priceOnly: true });
+    }
+  } catch (err) {
+    console.error("[ibkr-refresh] Option-underlying selection failed:", err instanceof Error ? err.message : err);
+  }
   if (candidates.length === 0) {
     return { conidsRequested: 0, securitiesUpdated: 0, pricesWritten: 0 };
   }

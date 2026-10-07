@@ -6,6 +6,7 @@ import { todayET, nowET } from "@/lib/calendar/date-utils";
 import { isMarketClosed } from "@/lib/calendar/market-holidays";
 import { bumpIfPricesAffectSyntheticCloses } from "@/lib/compute/tax-convention";
 import type { PriceFetchProgress, SnapshotPriceResult } from "./types";
+import { getLiveHeldOptionUnderlyings } from "./option-underlyings";
 
 /**
  * Price extraction priority — TIME-AWARE (qa: net-2026-08-06-ah-close-poisoning).
@@ -132,6 +133,31 @@ export async function fetchSnapshotPrices(
          WHERE s.ib_con_id IS NOT NULL`,
       )
       .all() as SecurityRow[];
+
+    // Plus the underlying of every held live option (owner ruling
+    // 2026-10-07): an option whose underlying is not itself held had no
+    // price for it, so scenario repricing could not model the option. Broker
+    // only, same request and same write path as every row above. Appended
+    // after the held rows (their order is unchanged); a row already in the
+    // list is not added twice; a row with no contract id waits for the
+    // enrichment step to resolve one. These rows are priced, never held.
+    // A failure in this extra set must never cost the held rows their prices.
+    try {
+      const seen = new Set(securities.map((s) => s.id));
+      for (const u of getLiveHeldOptionUnderlyings(db, today)) {
+        if (u.ib_con_id == null || seen.has(u.id)) continue;
+        seen.add(u.id);
+        securities.push({
+          id: u.id,
+          symbol: u.symbol,
+          security_type: u.security_type,
+          ib_con_id: u.ib_con_id,
+          currency: u.currency,
+        });
+      }
+    } catch (err) {
+      console.error("[fetchSnapshotPrices] Option-underlying selection failed:", err instanceof Error ? err.message : err);
+    }
   }
 
   const upsertPrice = db.prepare(`

@@ -199,6 +199,40 @@ describe("auto-refresh — integration", () => {
     expect(mocks.enrichSecurities).not.toHaveBeenCalled();
   });
 
+  it("runs enrichment when the only unresolved security is the underlying of a held live option", async () => {
+    db.prepare("INSERT INTO accounts (name) VALUES ('Test')").run();
+    db.prepare("INSERT INTO securities (symbol, source_key) VALUES ('ZZU', 'underlying:ZZU')").run();
+    const opt = db
+      .prepare(
+        `INSERT INTO securities (symbol, name, security_type, ib_con_id, underlying_symbol, strike_price, expiration_date, option_type, multiplier)
+         VALUES ('ZZU   990619C00100000', 'ZZU call', 'Option', 8001, 'ZZU', 100, '2099-06-19', 'CALL', 100)`,
+      )
+      .run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (1, ?, 2, '2026-04-23', 'seed')`,
+    ).run(opt.lastInsertRowid);
+    await runAutoRefresh(db, "full");
+    expect(mocks.enrichSecurities).toHaveBeenCalledTimes(1);
+  });
+
+  it("an expired option's unresolved underlying does not trigger enrichment", async () => {
+    db.prepare("INSERT INTO accounts (name) VALUES ('Test')").run();
+    db.prepare("INSERT INTO securities (symbol, source_key) VALUES ('ZZU', 'underlying:ZZU')").run();
+    const opt = db
+      .prepare(
+        `INSERT INTO securities (symbol, name, security_type, ib_con_id, underlying_symbol, strike_price, expiration_date, option_type, multiplier)
+         VALUES ('ZZU   200619C00100000', 'ZZU call', 'Option', 8001, 'ZZU', 100, '2020-06-19', 'CALL', 100)`,
+      )
+      .run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (1, ?, 2, '2020-04-23', 'seed')`,
+    ).run(opt.lastInsertRowid);
+    await runAutoRefresh(db, "full");
+    expect(mocks.enrichSecurities).not.toHaveBeenCalled();
+  });
+
   it("mid-pipeline failure is isolated — later steps still run", async () => {
     seedSecurityWithHolding(db);
     mocks.fetchSnapshotPrices.mockRejectedValueOnce(new Error("TWS dropped"));

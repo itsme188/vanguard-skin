@@ -1,8 +1,8 @@
 /**
- * Bond maturity date utilities.
+ * Bond maturity date and coupon utilities.
  *
- * Extracts maturity dates from bond security names (e.g., Vanguard statement format)
- * and provides maturity-awareness helpers for portfolio queries.
+ * Extracts maturity dates and coupons from bond security names (e.g., Vanguard
+ * statement format) and provides maturity-awareness helpers for portfolio queries.
  */
 
 /**
@@ -80,4 +80,52 @@ function validateAndFormat(year: string, monthStr: string, dayStr: string): stri
 export function isBondMatured(maturityDate: string | null, asOfDate: string): boolean {
   if (!maturityDate) return false;
   return maturityDate < asOfDate;
+}
+
+/** A coupon above this is treated as bad data, not a real bond. Annual percent. */
+export const MAX_PLAUSIBLE_COUPON_PCT = 25;
+
+/**
+ * An explicit coupon token: "CPN 4.125%", "CPN 0.00000". The figure must end
+ * the token (whitespace or end of name after the optional percent sign), so
+ * "CPN 4.1.25" and "CPN 100" do not match.
+ */
+const CPN_TOKEN = /\bCPN\s+(\d{1,2}(?:\.\d{1,5})?)(?:\s*%)?(?=\s|$)/gi;
+
+/**
+ * A percent figure: "4.375%", "3.000%". At most two whole digits, and it may
+ * not continue a longer number, a date, a dollar amount, a signed figure or a
+ * spread ("100%", "$4.5%", "-4%", "SOFR+0.25%" do not match).
+ */
+const PERCENT_TOKEN = /(?<![\d.,/$+-])(\d{1,2}(?:\.\d{1,5})?)\s*%/g;
+
+/**
+ * Read a bond's annual coupon, in PERCENT of face (4.375 means 4.375%), from
+ * its stored name. The backstop for a bond the broker gave no coupon for
+ * (owner ruling 2026-10-07).
+ *
+ * Strict on purpose: a coupon is returned ONLY when the name carries a
+ * percent sign or an explicit CPN token, in the shapes this file's maturity
+ * parser already sees:
+ *   "T-Note 4.375% (due 05/15/34)"                          → 4.375   percent sign
+ *   "U S TREASURY NOTE CPN 4.125% DUE 11/15/32 DTD ..."     → 4.125   CPN + percent
+ *   "U S TREASURY BILL CPN 0.00000  MTD 2024-08-20 DTD ..." → 0       CPN, no percent
+ *
+ * A bare number is never a coupon, so the two-date shape
+ * "U S TREASURY NOTE 4.625 02/15/35 02/15/25" returns null: nothing in the
+ * name says the number is a coupon and not a price. Two different figures in
+ * one name (a step-up note) return null. Zero is a valid coupon. Anything
+ * outside 0 to MAX_PLAUSIBLE_COUPON_PCT returns null.
+ */
+export function extractCouponRate(name: string | null | undefined): number | null {
+  if (!name) return null;
+  const found: number[] = [];
+  for (const pattern of [CPN_TOKEN, PERCENT_TOKEN]) {
+    for (const match of name.matchAll(pattern)) found.push(Number(match[1]));
+  }
+  if (found.length === 0) return null;
+  const coupon = found[0];
+  if (found.some((value) => value !== coupon)) return null;
+  if (!Number.isFinite(coupon) || coupon < 0 || coupon > MAX_PLAUSIBLE_COUPON_PCT) return null;
+  return coupon;
 }
