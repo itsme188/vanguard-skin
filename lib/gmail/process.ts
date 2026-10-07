@@ -10,6 +10,11 @@ import { subjectSymbolBackstop } from "@/lib/gmail/subject-symbol-backstop";
 import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
 import { getActiveWatchlistStockSymbols } from "@/lib/queries/watchlist";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import {
+  MAX_ENRICH_ATTEMPTS,
+  classifyEnrichmentError,
+  describeEnrichmentFailure,
+} from "@/lib/gmail/enrichment-failure";
 
 interface UnprocessedArticle {
   id: number;
@@ -45,24 +50,46 @@ export function isEmptyEnrichmentResult(result: ProcessedResult): boolean {
   return result.summary.trim() === "" && result.key_themes.length === 0;
 }
 
-/**
- * Retry ceiling for failed enrichments (empty parses and hard errors alike).
- * An article that fails this many passes is excluded as 'enrichment_failed'
- * (D5 Filtered tab surfaces it) instead of retrying forever — an uncapped
- * retry both leaks a model call per pass and can wedge the LIMIT-20 queue
- * head when many recent articles fail at once (model outage, prompt-cap
- * regression).
- */
-export const MAX_ENRICH_ATTEMPTS = 3;
+// Retry ceiling for ARTICLE-level failures. Defined (with the account-level
+// vs article-level classifier) in lib/gmail/enrichment-failure.ts; re-exported
+// so existing importers keep working.
+export { MAX_ENRICH_ATTEMPTS };
+
+export interface ProcessArticlesResult {
+  processed: number;
+  /** Articles tried this pass that did not end up enriched. */
+  failed: number;
+  /**
+   * Of `failed`, how many were left queued WITHOUT using an attempt because
+   * the failure was account-level (billing, key, rate limit, outage, no
+   * network). 0 or 1: the pass stops at the first one.
+   */
+  deferred: number;
+}
 
 /**
  * Process unprocessed research articles with Claude Sonnet.
  * Extracts: summary, key themes, sentiment, mentioned tickers, portfolio relevance.
  * Links mentioned symbols to existing securities in the portfolio.
+ *
+ * Failure accounting (owner ruling 2026-10-06):
+ *   - ARTICLE-level failure (empty parse, refusal, malformed output, a request
+ *     the provider rejects, anything unrecognised): uses one of the article's
+ *     MAX_ENRICH_ATTEMPTS; at the cap the article is excluded as
+ *     'enrichment_failed'.
+ *   - ACCOUNT-level failure (out of credit, bad or missing key, rate limit,
+ *     provider outage, no network): uses NO attempt and leaves processed_at
+ *     NULL, so the article is retried by a later pass once the provider is
+ *     reachable. The pass also STOPS there: the rest of the queue would fail
+ *     the same way, so during an outage one pass makes one enrichment call,
+ *     not twenty. What bounds the retry rate is then the pass cadence (the
+ *     90-minute market-hours job, the in-app refresh debounced to once per
+ *     five minutes, a manual Sync, and the two digest sends), each of which
+ *     holds the research sync lock.
  */
 export async function processUnprocessedArticles(
   db: Database.Database
-): Promise<{ processed: number; failed: number }> {
+): Promise<ProcessArticlesResult> {
   const articles = db
     .prepare(
       `SELECT a.id, a.source_id, a.subject, a.sender, a.raw_text,
@@ -78,7 +105,7 @@ export async function processUnprocessedArticles(
     )
     .all() as UnprocessedArticle[];
 
-  if (articles.length === 0) return { processed: 0, failed: 0 };
+  if (articles.length === 0) return { processed: 0, failed: 0, deferred: 0 };
 
   // Get current holdings for portfolio context. Latest is keyed per-(account,
   // security) via latestHoldingsPredicate (default keyBy/includeShorts:
@@ -155,10 +182,12 @@ export async function processUnprocessedArticles(
   `);
 
   /**
-   * Shared failure accounting for both failure modes (empty parse, hard
-   * error): increment the attempt counter; at MAX_ENRICH_ATTEMPTS exclude
-   * the article as 'enrichment_failed' (stamping processed_at removes it
-   * from the retry queue for good; the D5 Filtered tab surfaces it).
+   * Failure accounting for an ARTICLE-level failure (empty parse, or an error
+   * classifyEnrichmentError puts on the article): increment the attempt
+   * counter; at MAX_ENRICH_ATTEMPTS exclude the article as
+   * 'enrichment_failed' (stamping processed_at removes it from the retry
+   * queue; the Filtered tab surfaces it and offers Retry). Never call this
+   * for an account-level failure.
    */
   const recordEnrichmentFailure = (articleId: number, why: string): void => {
     const { enrich_attempts } = bumpAttempts.get(articleId) as { enrich_attempts: number };
@@ -184,6 +213,7 @@ export async function processUnprocessedArticles(
 
   let processed = 0;
   let failed = 0;
+  let deferred = 0;
 
   for (const article of articles) {
     try {
@@ -277,10 +307,38 @@ export async function processUnprocessedArticles(
 
       processed++;
     } catch (err) {
+      const failure = classifyEnrichmentError(err);
+
+      if (failure.scope === "account") {
+        // Not this article's fault: no attempt used, processed_at stays NULL.
+        // Stop the pass, since every remaining article would fail the same
+        // way; the next pass starts again from the head of the queue.
+        const waiting = articles.length - articles.indexOf(article);
+        console.error(
+          `[research] Enrichment stopped by an account-level AI failure ` +
+            `(${describeEnrichmentFailure(failure)}) at article ${article.id}. ` +
+            `Attempt not counted; ${waiting} queued article(s) from this pass will be retried on the next pass.`
+        );
+        failed++;
+        deferred++;
+        break;
+      }
+
       console.error(
         `[research] Failed to process article ${article.id} ("${article.subject}"):`,
         err instanceof Error ? err.message : err
       );
+      if (failure.kind === "unknown") {
+        // Default bucket for a shape the classifier does not know. Counting it
+        // is the safe side (it cannot cause endless retries); logging it is
+        // how a new account-level shape gets noticed and added.
+        console.warn(
+          `[research] Article ${article.id}: unrecognised enrichment error ` +
+            `(${describeEnrichmentFailure(failure)}; ` +
+            `${err instanceof Error ? err.name : typeof err}) counted toward the retry cap. ` +
+            `If this is a provider or account fault, add it to lib/gmail/enrichment-failure.ts.`
+        );
+      }
       recordEnrichmentFailure(
         article.id,
         err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200)
@@ -289,7 +347,7 @@ export async function processUnprocessedArticles(
     }
   }
 
-  return { processed, failed };
+  return { processed, failed, deferred };
 }
 
 // ── Claude extraction ───────────────────────────────────────────────

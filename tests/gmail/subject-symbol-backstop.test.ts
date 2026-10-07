@@ -191,7 +191,7 @@ describe("processUnprocessedArticles — subject-line backstop wiring", () => {
     });
 
     const result = await processUnprocessedArticles(db);
-    expect(result).toEqual({ processed: 1, failed: 0 });
+    expect(result).toEqual({ processed: 1, failed: 0, deferred: 0 });
 
     const row = db
       .prepare(`SELECT mentioned_symbols FROM research_articles WHERE id = 1`)

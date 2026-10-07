@@ -1,0 +1,256 @@
+/**
+ * scripts/repair-requeue-failed-enrichment.ts — recovers articles the old
+ * retry cap excluded during an account-level AI outage.
+ *
+ * Finding: research-feeds--billing-outage-burned-enrich-retry-cap-no-retry-when-credit-returns.
+ *
+ * The stored reasons are produced the way production produces them: the real
+ * enrichment pass (lib/gmail/process.ts as it was BEFORE the fix would have
+ * written the same text) records the first 200 characters of the real SDK
+ * error's message. Here each reason is built from a real SDK error
+ * (tests/helpers/ai-sdk-real-errors.ts) with the template process.ts uses.
+ * In-memory database; the script is imported, never spawned.
+ */
+import { describe, it, expect, beforeAll } from "vitest";
+import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
+import {
+  findRequeueCandidates,
+  formatRequeueReport,
+  parseRequeueArgs,
+  repairRequeueFailedEnrichment,
+} from "@/scripts/repair-requeue-failed-enrichment";
+import { ANTHROPIC_FAILURES, errorFromRealSdk, type AnthropicFailureName } from "../helpers/ai-sdk-real-errors";
+
+const reasons = {} as Record<AnthropicFailureName, string>;
+
+beforeAll(async () => {
+  for (const name of Object.keys(ANTHROPIC_FAILURES) as AnthropicFailureName[]) {
+    const { error } = await errorFromRealSdk(ANTHROPIC_FAILURES[name]);
+    reasons[name] = `Enrichment failed 3 times — last failure: ${(error as Error).message.slice(0, 200)}`;
+  }
+});
+
+/** Id of the source makeDb() registered (the migrations seed sources of their own). */
+let sourceId = 0;
+
+function makeDb(): Database.Database {
+  const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  runMigrations(db);
+  sourceId = db.prepare(`INSERT INTO research_sources (name) VALUES ('ZZ Test Letter')`).run()
+    .lastInsertRowid as number;
+  return db;
+}
+
+let seq = 0;
+function insert(
+  db: Database.Database,
+  f: {
+    category?: string | null;
+    reason?: string | null;
+    isRelevant?: 0 | 1;
+    processedAt?: string | null;
+    attempts?: number;
+    receivedAt?: string;
+    summary?: string | null;
+  },
+): number {
+  seq += 1;
+  return db
+    .prepare(
+      `INSERT INTO research_articles
+         (source_id, gmail_message_id, subject, sender, raw_text, received_at,
+          is_relevant, excluded_category, excluded_reason, processed_at, enrich_attempts, summary)
+       VALUES (?, ?, ?, 'letters@example.test', 'ZZ body text', ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      sourceId,
+      `repair-${seq}`,
+      `ZZ PRIVATE SUBJECT ${seq}`,
+      f.receivedAt ?? "2026-01-05 12:00:00",
+      f.isRelevant ?? 0,
+      f.category === undefined ? "enrichment_failed" : f.category,
+      f.reason ?? null,
+      f.processedAt === undefined ? "2026-01-05 13:00:00" : f.processedAt,
+      f.attempts ?? 3,
+      f.summary ?? null,
+    ).lastInsertRowid as number;
+}
+
+function snapshot(db: Database.Database): unknown[] {
+  return db.prepare(`SELECT * FROM research_articles ORDER BY id`).all();
+}
+
+function seed(db: Database.Database) {
+  return {
+    billing: insert(db, { reason: reasons.billing400 }),
+    rateLimit: insert(db, { reason: reasons.rateLimit429 }),
+    overloaded: insert(db, { reason: reasons.overloaded529 }),
+    gateway: insert(db, { reason: reasons.gatewayHtml502 }),
+    auth: insert(db, { reason: reasons.auth401 }),
+    // Not account-level: must be left alone.
+    refusal: insert(db, { reason: reasons.refusal }),
+    malformed: insert(db, { reason: reasons.malformedOutput }),
+    tooLong: insert(db, { reason: reasons.promptTooLong400 }),
+    emptyParse: insert(db, {
+      reason: "Enrichment failed 3 times — last failure: empty enrichment (no summary, no themes)",
+    }),
+    noReason: insert(db, { reason: null }),
+    // Not 'enrichment_failed' at all, even though the text mentions credit.
+    offTopic: insert(db, {
+      category: "off_topic",
+      reason: "Your credit balance is too low is the headline of this off-topic piece",
+      summary: "A real summary.",
+    }),
+    // Billing reason but no longer excluded: nothing to recover.
+    alreadyRelevant: insert(db, { isRelevant: 1, category: null, reason: reasons.billing400 }),
+  };
+}
+
+describe("selection", () => {
+  it("selects only excluded rows whose recorded failure is account-level", () => {
+    const db = makeDb();
+    const ids = seed(db);
+
+    const { scanned, matched } = findRequeueCandidates(db);
+
+    expect(scanned).toBe(10);
+    expect(matched).toEqual([
+      { id: ids.billing, kind: "billing" },
+      { id: ids.rateLimit, kind: "retried_transient" },
+      { id: ids.overloaded, kind: "retried_transient" },
+      { id: ids.gateway, kind: "retried_transient" },
+      { id: ids.auth, kind: "auth" },
+    ]);
+  });
+
+  it("--since / --until narrow by received date, inclusive", () => {
+    const db = makeDb();
+    const early = insert(db, { reason: reasons.billing400, receivedAt: "2026-01-04 23:59:59" });
+    const first = insert(db, { reason: reasons.billing400, receivedAt: "2026-01-05 00:00:00" });
+    const last = insert(db, { reason: reasons.billing400, receivedAt: "2026-01-07 23:59:59" });
+    const late = insert(db, { reason: reasons.billing400, receivedAt: "2026-01-08 00:00:00" });
+
+    const ids = (w: { since?: string; until?: string }) => findRequeueCandidates(db, w).matched.map((m) => m.id);
+    expect(ids({ since: "2026-01-05", until: "2026-01-07" })).toEqual([first, last]);
+    expect(ids({ since: "2026-01-05" })).toEqual([first, last, late]);
+    expect(ids({ until: "2026-01-04" })).toEqual([early]);
+    expect(ids({})).toEqual([early, first, last, late]);
+  });
+
+  it("rejects a malformed or inverted window instead of guessing", () => {
+    const db = makeDb();
+    expect(() => findRequeueCandidates(db, { since: "01/05/2026" })).toThrow(/--since must be a date/);
+    expect(() => findRequeueCandidates(db, { since: "2026-01-07", until: "2026-01-05" })).toThrow(/is after/);
+  });
+});
+
+describe("dry run", () => {
+  it("changes nothing", () => {
+    const db = makeDb();
+    seed(db);
+    const before = snapshot(db);
+
+    const result = repairRequeueFailedEnrichment(db, { apply: false });
+
+    expect(result).toMatchObject({ scanned: 10, skipped: 5, requeued: 0 });
+    expect(result.matched).toHaveLength(5);
+    expect(snapshot(db)).toEqual(before);
+  });
+});
+
+describe("apply", () => {
+  it("re-queues the matched rows and leaves every other row byte-for-byte alone", () => {
+    const db = makeDb();
+    const ids = seed(db);
+    const before = snapshot(db) as Array<{ id: number }>;
+    const matchedIds = new Set([ids.billing, ids.rateLimit, ids.overloaded, ids.gateway, ids.auth]);
+
+    const result = repairRequeueFailedEnrichment(db, { apply: true });
+
+    expect(result).toMatchObject({ scanned: 10, skipped: 5, requeued: 5 });
+    const after = snapshot(db) as Array<Record<string, unknown> & { id: number }>;
+    expect(after).toHaveLength(before.length);
+    for (const row of after) {
+      const original = before.find((b) => b.id === row.id);
+      if (matchedIds.has(row.id)) {
+        expect(row).toEqual({
+          ...original,
+          is_relevant: 1,
+          excluded_category: null,
+          excluded_reason: null,
+          processed_at: null,
+          enrich_attempts: 0,
+        });
+      } else {
+        expect(row).toEqual(original);
+      }
+    }
+  });
+
+  it("is idempotent: a second apply selects nothing and writes nothing", () => {
+    const db = makeDb();
+    seed(db);
+    repairRequeueFailedEnrichment(db, { apply: true });
+    const afterFirst = snapshot(db);
+
+    const second = repairRequeueFailedEnrichment(db, { apply: true });
+
+    expect(second).toMatchObject({ scanned: 5, skipped: 5, requeued: 0 });
+    expect(second.matched).toEqual([]);
+    expect(snapshot(db)).toEqual(afterFirst);
+  });
+
+  it("the re-queued rows are what the enrichment queue selects", () => {
+    const db = makeDb();
+    const ids = seed(db);
+    repairRequeueFailedEnrichment(db, { apply: true });
+
+    const queued = (
+      db
+        .prepare(
+          `SELECT id FROM research_articles
+            WHERE processed_at IS NULL AND COALESCE(is_relevant, 1) = 1 AND COALESCE(enrich_attempts, 0) < 3
+            ORDER BY id`,
+        )
+        .all() as { id: number }[]
+    ).map((r) => r.id);
+    expect(queued).toEqual([ids.billing, ids.rateLimit, ids.overloaded, ids.gateway, ids.auth]);
+  });
+});
+
+describe("report and flags", () => {
+  it("prints counts and ids, never a subject, sender, reason or body", () => {
+    const db = makeDb();
+    const ids = seed(db);
+    const dry = formatRequeueReport(repairRequeueFailedEnrichment(db, { apply: false }), false).join("\n");
+
+    expect(dry).toContain("Excluded as enrichment_failed in scope: 10");
+    expect(dry).toContain("Recorded failure is account-level:      5");
+    expect(dry).toContain(`billing: 1 row(s), ids ${ids.billing}`);
+    expect(dry).toContain(`retried_transient: 3 row(s), ids ${ids.rateLimit}, ${ids.overloaded}, ${ids.gateway}`);
+    expect(dry).toMatch(/Dry run: 5 row\(s\) would be re-queued/);
+    expect(dry).not.toMatch(/PRIVATE SUBJECT|example\.test|credit balance|ZZ body/);
+
+    const applied = formatRequeueReport(repairRequeueFailedEnrichment(db, { apply: true }), true).join("\n");
+    expect(applied).toMatch(/Re-queued 5 row\(s\)/);
+
+    const again = formatRequeueReport(repairRequeueFailedEnrichment(db, { apply: true }), true).join("\n");
+    expect(again).toMatch(/Nothing to re-queue/);
+  });
+
+  it("is a dry run unless --apply is given, and refuses flags it does not know", () => {
+    expect(parseRequeueArgs([])).toEqual({ apply: false });
+    expect(parseRequeueArgs(["--apply"])).toEqual({ apply: true });
+    expect(parseRequeueArgs(["--since", "2026-01-05", "--until", "2026-01-07"])).toEqual({
+      apply: false,
+      since: "2026-01-05",
+      until: "2026-01-07",
+    });
+    expect(() => parseRequeueArgs(["--aply"])).toThrow(/Unknown argument/);
+    expect(() => parseRequeueArgs(["--since"])).toThrow(/needs a date/);
+    expect(() => parseRequeueArgs(["--since", "--apply"])).toThrow(/needs a date/);
+    expect(() => parseRequeueArgs(["--since", "yesterday"])).toThrow(/must be a date/);
+  });
+});

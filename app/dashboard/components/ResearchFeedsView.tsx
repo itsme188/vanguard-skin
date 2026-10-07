@@ -193,7 +193,17 @@ export function ResearchFeedsView({
   const filteredTotal = filteredCategoryCounts.reduce((sum, c) => sum + c.count, 0);
   const filteredRemaining = Math.max(0, filteredTotal - filteredArticles.length);
 
-  const handleUnfilter = useCallback(async (articleId: number) => {
+  // Unfilter and Retry enrichment both take a row OUT of the filtered list, so
+  // they share one handler: optimistic removal, then the server's answer
+  // decides. A refusal reloads the list (the row may really have changed); a
+  // request that never arrived restores exactly what was on screen.
+  const releaseFilteredArticle = useCallback(async (articleId: number, action: FilteredRowAction) => {
+    const copy = FILTERED_ROW_ACTION_COPY[action];
+    const before = {
+      articles: filteredArticles,
+      count: filteredCount,
+      categoryCounts: filteredCategoryCounts,
+    };
     // Optimistic removal — flicker would be worse than a race-loss on failure.
     const removed = filteredArticles.find((a) => a.id === articleId);
     const removedCategory = removed?.excluded_category || "other";
@@ -205,14 +215,14 @@ export function ResearchFeedsView({
         .filter((c) => c.count > 0),
     );
     try {
-      const res = await apiFetch(`/api/research/articles/${articleId}/unfilter`, {
+      const res = await apiFetch(`/api/research/articles/${articleId}/${copy.endpoint}`, {
         method: "POST",
       });
-      const result = await readMutationResult(res);
+      const result = await readMutationResult<{ data?: { requeued?: boolean } }>(res);
       if (!result.ok) {
         // Rollback: refetch the full filtered list to recover correct state —
         // and explain, or the reappearing row looks like a glitch.
-        toast(`Couldn't unfilter the article: ${result.message} It stays in the filtered list.`, "error");
+        toast(`Couldn't ${copy.verb} the article: ${result.message} It stays in the filtered list.`, "error");
         const reload = await fetch(`/api/research/articles?filtered=1&limit=${FILTERED_PAGE_SIZE}`);
         const data = await reload.json();
         if (data.success) {
@@ -223,13 +233,31 @@ export function ResearchFeedsView({
           // global count, same thing getFilteredArticleCount would return.
           setFilteredCount(counts.reduce((sum, c) => sum + c.count, 0));
         }
+        return;
+      }
+      if (result.data.data?.requeued) {
+        // The article has no enrichment yet, so it will not show in the feed
+        // until a sync has analysed it. Say where it went.
+        toast(REQUEUED_FOR_ENRICHMENT_NOTICE, "success");
       }
     } catch {
-      // Network blip — the row already vanished optimistically, so say the
-      // server may not have gotten it rather than leaving a silent mismatch.
-      toast("Unfilter may not have reached the server — check the Filtered tab after the next sync.", "info");
+      // The request never got an answer, so nothing changed on the server:
+      // put the row back and say so.
+      setFilteredArticles(before.articles);
+      setFilteredCount(before.count);
+      setFilteredCategoryCounts(before.categoryCounts);
+      toast(`${networkFailureMessage(`${copy.verb} the article`)} It stays in the filtered list.`, "error");
     }
-  }, [toast, filteredArticles]);
+  }, [toast, filteredArticles, filteredCount, filteredCategoryCounts]);
+
+  const handleUnfilter = useCallback(
+    (articleId: number) => releaseFilteredArticle(articleId, "unfilter"),
+    [releaseFilteredArticle],
+  );
+  const handleRetryEnrichment = useCallback(
+    (articleId: number) => releaseFilteredArticle(articleId, "retry"),
+    [releaseFilteredArticle],
+  );
 
   const handleLoadMoreFiltered = useCallback(async () => {
     setLoadingMoreFiltered(true);
@@ -709,6 +737,7 @@ export function ResearchFeedsView({
             articles={filteredArticles}
             categoryCounts={filteredCategoryCounts}
             onUnfilter={handleUnfilter}
+            onRetryEnrichment={handleRetryEnrichment}
             hasActiveFilter={searchQuery.length >= 2 || sourceFilter !== null}
           />
           {filteredRemaining > 0 && (
@@ -971,10 +1000,24 @@ export function computeFilteredBadgeCount(
   return filteredCategoryCounts.reduce((sum, c) => sum + c.count, 0);
 }
 
+/** The category the enrichment pass writes when an article runs out of attempts. */
+const ENRICHMENT_FAILED_CATEGORY = "enrichment_failed";
+
+type FilteredRowAction = "unfilter" | "retry";
+
+const FILTERED_ROW_ACTION_COPY: Record<FilteredRowAction, { endpoint: string; verb: string }> = {
+  unfilter: { endpoint: "unfilter", verb: "unfilter" },
+  retry: { endpoint: "retry-enrichment", verb: "retry enrichment for" },
+};
+
+const REQUEUED_FOR_ENRICHMENT_NOTICE =
+  "Queued for enrichment. It will be analysed on the next feed sync (click Sync Feeds to run one now) and then appear in the feed. If the analysis fails again it comes back to this list.";
+
 function FilteredArticlesList({
   articles,
   categoryCounts,
   onUnfilter,
+  onRetryEnrichment,
   hasActiveFilter = false,
 }: {
   articles: FilteredArticle[];
@@ -983,6 +1026,7 @@ function FilteredArticlesList({
    *  `articles` (which is only the loaded page, capped at 100 rows). */
   categoryCounts: FilteredArticleCategoryCount[];
   onUnfilter: (id: number) => void;
+  onRetryEnrichment: (id: number) => void;
   hasActiveFilter?: boolean;
 }) {
   if (articles.length === 0 && categoryCounts.length === 0) {
@@ -1039,6 +1083,7 @@ function FilteredArticlesList({
                     key={article.id}
                     article={article}
                     onUnfilter={onUnfilter}
+                    onRetryEnrichment={onRetryEnrichment}
                   />
                 ))}
               </div>
@@ -1059,10 +1104,15 @@ function FilteredArticlesList({
 function FilteredArticleRow({
   article,
   onUnfilter,
+  onRetryEnrichment,
 }: {
   article: FilteredArticle;
   onUnfilter: (id: number) => void;
+  onRetryEnrichment: (id: number) => void;
 }) {
+  // An "Enrichment failed" row has no AI analysis to release into the digest,
+  // so its action is to run the analysis again, not to unfilter it as it is.
+  const enrichmentFailed = article.excluded_category === ENRICHMENT_FAILED_CATEGORY;
   const dateStr = new Date(article.received_at).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -1093,14 +1143,25 @@ function FilteredArticleRow({
           </p>
         )}
       </div>
-      <button
-        type="button"
-        onClick={() => onUnfilter(article.id)}
-        className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors"
-        title="Move back into the digest stream"
-      >
-        Unfilter
-      </button>
+      {enrichmentFailed ? (
+        <button
+          type="button"
+          onClick={() => onRetryEnrichment(article.id)}
+          className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors"
+          title="Queue this article for AI analysis again on the next feed sync"
+        >
+          Retry enrichment
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => onUnfilter(article.id)}
+          className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors"
+          title="Move back into the digest stream"
+        >
+          Unfilter
+        </button>
+      )}
     </div>
   );
 }

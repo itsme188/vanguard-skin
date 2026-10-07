@@ -4,6 +4,9 @@ import { unfilterArticle } from "@/lib/mutations/research-articles";
 /**
  * POST /api/research/articles/:id/unfilter — D5 audit override.
  * Flips is_relevant back to 1 + clears excluded_category/reason.
+ * An article that was excluded because its enrichment failed is also
+ * re-queued for enrichment (`data.requeued: true`), so it is actually
+ * analysed on the next pass instead of sitting in the feed empty.
  * In-app pattern (no cron-auth) — only the user clicks this from the
  * Filtered tab in Research → Feeds.
  */
@@ -24,5 +27,5 @@ export async function POST(
       { status: 404 },
     );
   }
-  return Response.json({ success: true });
+  return Response.json({ success: true, data: { requeued: result.requeued } });
 }
