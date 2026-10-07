@@ -30,6 +30,8 @@ function fakeResult(overrides: Partial<FactorAnalysisResult> = {}): FactorAnalys
       trackingError: 0.04,
       correlation: 0.92,
       dataPoints: 252,
+      windowStart: "2025-01-02",
+      windowEnd: "2025-12-31",
     },
     sizeTilt: null,
     styleTilt: null,
@@ -56,6 +58,8 @@ describe("GET /api/compute/factors", () => {
             trackingError: 0.04,
             correlation: 0.95,
             dataPoints: 252,
+            windowStart: "2025-01-02",
+            windowEnd: "2025-12-31",
           },
         })
       )
@@ -68,6 +72,8 @@ describe("GET /api/compute/factors", () => {
             trackingError: 0.04,
             correlation: 0.92,
             dataPoints: 245,
+            windowStart: "2025-01-02",
+            windowEnd: "2025-12-31",
           },
         })
       );
@@ -103,6 +109,8 @@ describe("GET /api/compute/factors", () => {
             trackingError: 0,
             correlation: 0,
             dataPoints: 100,
+            windowStart: "2025-01-02",
+            windowEnd: "2025-12-31",
           },
         })
       )

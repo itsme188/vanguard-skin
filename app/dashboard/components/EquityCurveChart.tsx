@@ -17,6 +17,12 @@ import type { MonthlySnapshot } from "@/lib/types";
 import type { DailyValuation } from "@/lib/queries/daily-valuations";
 import { usePrivateFormatter } from "@/lib/privacy/components";
 import { formatUSD } from "@/lib/format";
+import {
+  anchorDailiesToStatements,
+  equityCurveCaption,
+  formatAnchoredTooltipValue,
+  type AnchoredCurveSummary,
+} from "@/lib/chart/equity-curve-anchor";
 
 // Hex colors are intentionally hardcoded here — these must stay visible in both
 // light (Amber) and dark (Bloomberg-pro) themes. #60A5FA (blue-400) and #34D399
@@ -130,6 +136,8 @@ function filterByRange<T extends { date: string }>(
 interface ChartPoint {
   date: string;
   total: number;
+  /** Recorded daily valuation behind this point; null for a statement anchor. */
+  recordedValue: number | null;
   holdings?: number;
   cash?: number;
 }
@@ -137,118 +145,22 @@ interface ChartPoint {
 // ─── Data merging ───────────────────────────────────────────────
 
 /**
- * Merge monthly snapshots (authoritative) with daily valuations (inter-month shape).
- *
- * Monthly snapshots come from actual Vanguard statements and are always correct.
- * Daily valuations are computed and structurally lower (missing cash, incomplete
- * holdings). We use daily data only for inter-month *shape* (relative movement),
- * not absolute values. The algorithm:
- *
- * 1. Monthly snapshots are exact anchor points: snapA at date1, snapB at date2
- * 2. Daily values between them are normalized to map onto the snapA→snapB range
- *    proportionally — preserving the shape of daily fluctuations while ensuring
- *    the curve smoothly connects the monthly anchors with zero discontinuity
- * 3. If a segment has no usable daily data, the monthly points just connect directly
+ * Statement values (month-end snapshots) plot exactly; recorded daily values
+ * keep their shape and are corrected additively onto the statements. The math
+ * lives in `lib/chart/equity-curve-anchor.ts` (pure, unit-tested).
  */
-function mergeSnapshotsAndDaily(
+function buildChartData(
   snapshots: MonthlySnapshot[],
   dailyValuations?: DailyValuation[]
-): ChartPoint[] {
-  const sortedSnapshots = [...snapshots].sort(
-    (a, b) => a.month_end_date.localeCompare(b.month_end_date)
+): { points: ChartPoint[]; summary: AnchoredCurveSummary } {
+  const { points, summary } = anchorDailiesToStatements(
+    snapshots.map((s) => ({ date: s.month_end_date, value: s.total_value })),
+    (dailyValuations ?? []).map((d) => ({ date: d.valuation_date, value: d.total_value }))
   );
-
-  if (!dailyValuations || dailyValuations.length === 0 || sortedSnapshots.length === 0) {
-    return sortedSnapshots.map((s) => ({ date: s.month_end_date, total: s.total_value }));
-  }
-
-  const result: ChartPoint[] = [];
-
-  for (let i = 0; i < sortedSnapshots.length; i++) {
-    const snap = sortedSnapshots[i];
-    result.push({ date: snap.month_end_date, total: snap.total_value });
-
-    const nextSnap = sortedSnapshots[i + 1];
-    if (!nextSnap) {
-      // After last snapshot: append daily data scaled by last snapshot ratio
-      addTrailingDailyData(result, snap, dailyValuations);
-      continue;
-    }
-
-    // Collect daily values strictly between the two snapshot dates
-    const between = dailyValuations.filter(
-      (d) => d.valuation_date > snap.month_end_date && d.valuation_date < nextSnap.month_end_date
-    );
-    if (between.length === 0) continue;
-
-    // Data quality gate: skip daily data when it's too noisy or incomplete.
-    // Check if daily values are internally consistent (max/min range < 30% of mean).
-    // Wild internal swings indicate incomplete holdings extraction that month.
-    const dailyValues = between.map((d) => d.total_value);
-    const dailyMin = Math.min(...dailyValues);
-    const dailyMax = Math.max(...dailyValues);
-    const dailyMean = dailyValues.reduce((a, b) => a + b, 0) / dailyValues.length;
-    if (dailyMean > 0 && (dailyMax - dailyMin) / dailyMean > 0.3) continue;
-
-    // Shape-preserving normalization: map daily relative movement onto snapshot range.
-    const dailyFirst = between[0].total_value;
-    const dailyLast = between[between.length - 1].total_value;
-    const dailyRange = dailyLast - dailyFirst;
-    const snapRange = nextSnap.total_value - snap.total_value;
-    const internalRange = dailyMax - dailyMin;
-
-    // If the end-to-end change is small relative to internal swings, the data
-    // is effectively "noisy flat" and shape normalization would amplify noise.
-    // Fall back to time-based interpolation in that case.
-    const useTimeInterpolation =
-      Math.abs(dailyRange) < 1 ||
-      Math.abs(dailyRange) < internalRange * 0.3;
-
-    const daysBetween = (new Date(nextSnap.month_end_date).getTime() - new Date(snap.month_end_date).getTime()) / 86400000;
-
-    for (let j = 0; j < between.length; j++) {
-      const d = between[j];
-      const daysIn = (new Date(d.valuation_date).getTime() - new Date(snap.month_end_date).getTime()) / 86400000;
-      const t = daysIn / daysBetween;
-      let total: number;
-
-      if (useTimeInterpolation) {
-        // Interpolate linearly by time between snapshots
-        total = snap.total_value + t * snapRange;
-      } else {
-        // Map daily progress (0→1) onto snapshot range
-        const progress = (d.total_value - dailyFirst) / dailyRange;
-        total = snap.total_value + progress * snapRange;
-      }
-
-      result.push({ date: d.valuation_date, total });
-    }
-  }
-
-  return result.sort((a, b) => a.date.localeCompare(b.date));
-}
-
-/** After the last monthly snapshot, append daily data using a fixed scale factor. */
-function addTrailingDailyData(
-  result: ChartPoint[],
-  lastSnap: MonthlySnapshot,
-  dailyValuations: DailyValuation[]
-): void {
-  const trailing = dailyValuations.filter(
-    (d) => d.valuation_date > lastSnap.month_end_date
-  );
-  if (trailing.length === 0) return;
-
-  // Find the daily value closest to the snapshot date for the scale reference
-  const firstDaily = trailing[0];
-  if (firstDaily.total_value === 0) return;
-
-  const scale = lastSnap.total_value / firstDaily.total_value;
-  if (scale > 2 || scale < 0.5) return; // daily data is too far off
-
-  for (const d of trailing) {
-    result.push({ date: d.valuation_date, total: d.total_value * scale });
-  }
+  return {
+    points: points.map((p) => ({ date: p.date, total: p.value, recordedValue: p.recordedValue })),
+    summary,
+  };
 }
 
 // ─── Performance benchmark overlay chart ────────────────────────
@@ -365,11 +277,11 @@ export function EquityCurveChart({
   const currencyTickFormatter = usePrivateFormatter(formatCurrency);
   const currencyTooltipFormatter = usePrivateFormatter(formatUSD);
 
-  // Merge monthly snapshots (authoritative) with daily valuations (inter-month granularity).
-  // Monthly snapshots come from actual statements and are always correct.
-  // Daily valuations are computed and may be inaccurate when holdings data is incomplete.
-  const rawData: ChartPoint[] = mergeSnapshotsAndDaily(snapshots, dailyValuations);
+  // Statement values are authoritative and plot exactly; recorded daily values
+  // keep their shape, corrected additively onto the statements.
+  const { points: rawData, summary: anchorSummary } = buildChartData(snapshots, dailyValuations);
   const hasDaily = dailyValuations && dailyValuations.length > 0;
+  const anchorCaption = equityCurveCaption(anchorSummary);
 
   const data = filterByRange(rawData, selectedRange);
   const color = ACCOUNT_COLORS[accountName] ?? "#C9A44E";
@@ -485,8 +397,14 @@ export function EquityCurveChart({
                 }}
                 labelFormatter={(label) => dateFormatter(String(label))}
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                formatter={(value: any, name: any) => [
-                  currencyTooltipFormatter(Number(value)),
+                formatter={(value: any, name: any, item: any) => [
+                  String(name) === "total"
+                    ? formatAnchoredTooltipValue(
+                        Number(value),
+                        (item?.payload as ChartPoint | undefined)?.recordedValue,
+                        currencyTooltipFormatter
+                      )
+                    : currencyTooltipFormatter(Number(value)),
                   String(name) === "total"
                     ? "Total Value"
                     : String(name) === "holdings"
@@ -579,8 +497,12 @@ export function EquityCurveChart({
                 }}
                 labelFormatter={(label) => dateFormatter(String(label))}
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                formatter={(value: any) => [
-                  currencyTooltipFormatter(Number(value)),
+                formatter={(value: any, _name: any, item: any) => [
+                  formatAnchoredTooltipValue(
+                    Number(value),
+                    (item?.payload as ChartPoint | undefined)?.recordedValue,
+                    currencyTooltipFormatter
+                  ),
                   "Value",
                 ]}
               />
@@ -596,6 +518,9 @@ export function EquityCurveChart({
         </ResponsiveContainer>
       </div>
 
+      {anchorCaption && (
+        <p className="text-[10px] text-ink-faint mt-2">{anchorCaption}</p>
+      )}
       {!hasDaily && (
         <p className="text-[10px] text-ink-faint mt-2">
           Monthly resolution. Fetch historical prices via TWS for daily charts.

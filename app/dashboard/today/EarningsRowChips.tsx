@@ -30,6 +30,14 @@ interface EarningsRowChipsProps {
    * label. Display only (user ruling 2026-10-06).
    */
   timeEstimateLabel?: string | null;
+  /**
+   * Non-null when the row's actual was saved before its print window opened —
+   * the server row decides it with isPreReleaseActual and passes the shared
+   * tooltip (lib/calendar/pre-release-actual.ts; this client file may not
+   * value-import it). The "act" stage chip then reads "act pre-release"
+   * instead of "act ✓". Display only (owner ruling 2026-10-06).
+   */
+  preReleaseActualTitle?: string | null;
 }
 
 type Phase = "preview" | "recap";
@@ -238,6 +246,7 @@ export function EarningsRowChips({
   worksheetArmed,
   worksheetPrinted,
   timeEstimateLabel = null,
+  preReleaseActualTitle = null,
 }: EarningsRowChipsProps) {
   // Task 9: the live cockpit row comes from the Hub's ONE controller through
   // context, not as a prop the server-rendered row would have to thread down.
@@ -462,7 +471,7 @@ export function EarningsRowChips({
            wraps rather than forcing the lane wide again. */
         <span className="flex flex-col items-end gap-0.5 min-w-0 max-w-full">
           <span className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 max-w-full">
-            <StageChipStrip row={cockpitRow} onOpen={handleCockpitOpen} timeEstimateLabel={timeEstimateLabel} />
+            <StageChipStrip row={cockpitRow} onOpen={handleCockpitOpen} timeEstimateLabel={timeEstimateLabel} preReleaseActualTitle={preReleaseActualTitle} />
             {/* The chips paint on the SERVER (EarningsHub seeds the provider
                 with a server-built cockpit payload), but a second-granular
                 countdown cannot: the server's clock would go into the HTML and

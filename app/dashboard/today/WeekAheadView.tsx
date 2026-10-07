@@ -10,6 +10,12 @@ import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { epsDelta } from "@/lib/earnings/eps-delta";
 import { EnrichmentRowSummary } from "../components/calendar/EnrichmentChips";
 import { EarningsConflictMarker } from "../components/calendar/EarningsConflictMarker";
+import { Chip } from "../components/Chip";
+import {
+  isPreReleaseActual,
+  preReleaseActualChipText,
+  PRE_RELEASE_ACTUAL_TITLE,
+} from "@/lib/calendar/pre-release-actual";
 // This is a Server Component (no "use client"): parseReactionSnapshot /
 // snapshotCoversEventDate must come from the dependency-free
 // reaction-snapshot-core module — never call a value export of
@@ -341,6 +347,8 @@ export function eventFigureDisplays(
 const CHIP_TONE_UP = "text-up bg-up/10";
 const CHIP_TONE_DOWN = "text-down bg-down/10";
 const CHIP_TONE_NEUTRAL = "text-ink-dim bg-raised border border-edge";
+/** A pre-release actual (isPreReleaseActual): faint italic, never beat/miss colored. */
+const PRE_RELEASE_ACTUAL_CHIP_CLASS = "text-ink-faint italic bg-raised border border-edge";
 
 // QA finding today-week-ahead--actual-chip-always-green-miss-reads-as-beat-regression-3:
 // the "actual …" chip used to be hard-coded to the up/green tone, so an
@@ -350,9 +358,34 @@ const CHIP_TONE_NEUTRAL = "text-ink-dim bg-raised border border-edge";
 // direction — a hot CPI print is not a beat — so they always render neutral.
 export function actualChipClass(
   event: Pick<CalendarEvent, "event_type" | "consensus_estimate" | "actual_value"> &
-    Partial<Pick<CalendarEvent, "consensus_value" | "manual_actuals_at">>,
+    Partial<
+      Pick<
+        CalendarEvent,
+        "consensus_value" | "manual_actuals_at" | "event_date" | "event_time" | "release_time" | "raw_json"
+      >
+    >,
+  now: Date = new Date(),
 ): string {
   if (event.event_type !== "earnings") return CHIP_TONE_NEUTRAL;
+  // Owner ruling 2026-10-06 (display-only): an actual saved before the
+  // print's own window opened is never colored as a beat/miss — faint italic
+  // until the window opens (the card adds the "pre-release" chip beside it).
+  if (
+    event.event_date &&
+    isPreReleaseActual(
+      {
+        event_type: event.event_type,
+        event_date: event.event_date,
+        event_time: event.event_time ?? null,
+        release_time: event.release_time ?? null,
+        raw_json: event.raw_json ?? null,
+        actual_value: event.actual_value,
+      },
+      now,
+    )
+  ) {
+    return PRE_RELEASE_ACTUAL_CHIP_CLASS;
+  }
   const consensus = effectiveConsensus(event);
   // Same plausibility gate as eventFigureDisplays: today the chip only
   // renders when actualDisplay is non-null (already gated), but the helper
@@ -398,6 +431,10 @@ function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string
   const { consensusDisplay, actualDisplay: rawActualDisplay } = eventFigureDisplays(event);
   const { released, showReaction } = releasedFigureGates(event, todayIso);
   const actualDisplay = released ? rawActualDisplay : null;
+  // Owner ruling 2026-10-06 (display-only): an actual saved before the
+  // print's own BMO/AMC window opened is shown muted under a "pre-release"
+  // chip, never colored as a beat/miss. Reverts once the window opens.
+  const preRelease = !!actualDisplay && isPreReleaseActual(event);
   const inner = (
     <div className="rounded-lg bg-raised border border-edge p-3 hover:border-edge-strong transition-colors">
       <div className="flex items-center gap-2 mb-1.5 flex-wrap">
@@ -443,6 +480,11 @@ function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string
           >
             actual {actualDisplay}
           </span>
+        )}
+        {preRelease && (
+          <Chip tone="warn" size="xs" title={PRE_RELEASE_ACTUAL_TITLE} className="max-w-full">
+            {preReleaseActualChipText(event.manual_actuals_at)}
+          </Chip>
         )}
       </div>
       <p

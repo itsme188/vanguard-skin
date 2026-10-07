@@ -615,3 +615,30 @@ describe("computeMarketRegression coverage-jump guard", () => {
     expect(Math.abs(reg.alpha)).toBeLessThan(1);
   });
 });
+
+// QA ruling 2026-10-06 (Option 1): the Diagnostics Market Regression card
+// captions its OWN window next to the risk card's common comparison window,
+// so the regression payload names the first and last day it actually used.
+describe("computeMarketRegression reports its window", () => {
+  it("windowStart/windowEnd are the scope's first and last full-coverage days", () => {
+    const db = createTestDb();
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'A'), (2, 'B')");
+    for (let i = 59; i >= 0; i--) {
+      const date = recentDate(i);
+      const price = 500 + (59 - i) * 0.3 + Math.sin((59 - i) * 0.5) * 10;
+      db.prepare("INSERT OR IGNORE INTO benchmark_prices (symbol, date, close_price) VALUES ('SPY', ?, ?)").run(date, price);
+      db.prepare("INSERT OR IGNORE INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (1, ?, 0, ?, ?)").run(date, price * 200, price * 200);
+      if (i <= 34) {
+        db.prepare("INSERT OR IGNORE INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (2, ?, 0, ?, ?)").run(date, 1000, 1000);
+      }
+    }
+
+    const single = computeFactorAnalysis(db, { accountIds: [1] }).marketRegression!;
+    expect(single.windowStart).toBe(recentDate(59));
+    expect(single.windowEnd).toBe(recentDate(0));
+
+    const both = computeFactorAnalysis(db, { accountIds: [1, 2] }).marketRegression!;
+    expect(both.windowStart).toBe(recentDate(34));
+    expect(both.windowEnd).toBe(recentDate(0));
+  });
+});

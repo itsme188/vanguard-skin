@@ -718,6 +718,64 @@ describe("correctEarningsEventDate", () => {
     expect(emails[0].ai_output_md).toBe("# right-row prose");
   });
 
+  it("revives a SUPERSEDED manual row on correctDate (UNIQUE-conflict adopt) instead of leaving the symbol with no live row", () => {
+    // qa: fix-date onto a date that holds a superseded twin deleted the event.
+    const wrongId = seedFinnhub(db, "QQZ", "2026-08-12", { eventTime: "BMO" });
+    const manualId = insertCalendarEvent(db, {
+      symbol: "QQZ",
+      event_date: "2026-08-13",
+      event_type: "earnings",
+      event_time: "BMO",
+      week_of: "2026-08-10",
+    }).id;
+    // Folded by the reconciler earlier: superseded, with a stale cross-check verdict.
+    db.prepare(
+      `UPDATE calendar_events SET superseded = 1, date_status = 'conflict', date_conflict_with = '2026-08-12' WHERE id = ?`,
+    ).run(manualId);
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "QQZ",
+      wrongDate: "2026-08-12",
+      correctDate: "2026-08-13",
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.newEventId).toBe(manualId);
+    expect(res.deletedIds).toEqual([wrongId]);
+
+    const row = db
+      .prepare(
+        `SELECT superseded, event_time, date_status, date_conflict_with FROM calendar_events WHERE id = ?`,
+      )
+      .get(manualId) as {
+      superseded: number;
+      event_time: string;
+      date_status: string | null;
+      date_conflict_with: string | null;
+    };
+    expect(row.superseded).toBe(0);
+    expect(row.event_time).toBe("AMC");
+    expect(row.date_status).toBeNull();
+    expect(row.date_conflict_with).toBeNull();
+
+    // The wrong row is gone and no second manual row was minted.
+    expect(db.prepare(`SELECT id FROM calendar_events WHERE id = ?`).get(wrongId)).toBeUndefined();
+    const manualCount = db
+      .prepare(`SELECT COUNT(*) AS n FROM calendar_events WHERE source = 'manual' AND symbol = 'QQZ'`)
+      .get() as { n: number };
+    expect(manualCount.n).toBe(1);
+
+    // The symbol keeps exactly one LIVE earnings row.
+    const live = db
+      .prepare(
+        `SELECT id FROM calendar_events WHERE symbol = 'QQZ' AND event_type = 'earnings' AND COALESCE(superseded, 0) = 0`,
+      )
+      .all() as Array<{ id: number }>;
+    expect(live.map((r) => r.id)).toEqual([manualId]);
+  });
+
   it("falls back to AMC when there is no wrong row and no slot passed", () => {
     const res = correctEarningsEventDate(db, {
       symbol: "ZZZ",
