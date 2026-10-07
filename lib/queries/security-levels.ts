@@ -65,6 +65,21 @@ const ARMED_UNIVERSE_WHERE_SQL = `sl.is_active = 1
          AND sl.review_status = 'auto_approved'
          AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))`;
 
+/**
+ * Would the scanner watch this level right now? The same ARMED_UNIVERSE
+ * predicate findCrossedLevels scans, asked about one row — so a caller that
+ * needs "is this level armed" (the reactivation guard) never restates it.
+ */
+export function isLevelInArmedUniverse(db: Database.Database, id: number): boolean {
+  const row = db
+    .prepare(
+      `SELECT 1 FROM security_levels sl
+       WHERE sl.id = ? AND ${ARMED_UNIVERSE_WHERE_SQL}`
+    )
+    .get(id);
+  return !!row;
+}
+
 // ─── Filter types ──────────────────────────────────────────────────
 
 export interface LevelFilters {

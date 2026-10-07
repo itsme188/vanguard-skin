@@ -6,6 +6,7 @@ import {
   getLevelById,
   getScanPriceStalenessBySecurity,
   getLatestScanPriceForSecurity,
+  hasAlertToday,
 } from "@/lib/queries/security-levels";
 import {
   BEYOND_SCAN_RANGE_EXPLANATION,
@@ -51,6 +52,9 @@ export async function GET(request: NextRequest) {
         l.price_source === "static" ? l.price : resolveLevelPrice(db, l),
       price_date: staleness.get(l.security_id)?.priceDate ?? null,
       price_is_stale: staleness.get(l.security_id)?.isStale ?? false,
+      // The scanner's own same-day dedupe fact (hasAlertToday), so the panel
+      // never has to guess "today" from the browser's local date.
+      alerted_today: hasAlertToday(db, l.id),
     }));
     // Note: resolveLevelPrice return type already narrows to `number | null`.
 
@@ -151,10 +155,18 @@ export async function PATCH(request: NextRequest) {
     } else if (action === "reactivate") {
       const result = reactivateLevel(db, id, { force: body.force === true });
       if (!result.ok) {
+        // No currency glyph: a level is stored in the security's NATIVE
+        // currency and this route has no FX context to justify a "$". The
+        // panel builds its own wording from currentPrice / effectivePrice with
+        // the row formatter; this text is the fallback for other callers.
+        const current = result.currentPrice.toFixed(2);
+        const effective = result.effectivePrice.toFixed(2);
         const error =
           result.code === "beyond_scan_range"
-            ? `Level ${result.effectivePrice} is outside the scanner's range at the current price ${result.currentPrice}; check for a mis-scaled price before reactivating.`
-            : `Price $${result.currentPrice.toFixed(2)} is already past this level ($${result.effectivePrice.toFixed(2)}) — reactivating will fire an alert on the next scan.`;
+            ? `Level ${effective} is outside the scanner's range at the current price ${current}, so every scan would skip it and it could never alert. Check for a mis-scaled price before reactivating.`
+            : result.alertedToday
+              ? `Price ${current} is already past this level (${effective}). It already alerted today, so a re-armed level can next alert tomorrow.`
+              : `Price ${current} is already past this level (${effective}), so reactivating will fire an alert on the next scan.`;
         return NextResponse.json(
           {
             success: false,
@@ -162,10 +174,20 @@ export async function PATCH(request: NextRequest) {
             code: result.code,
             currentPrice: result.currentPrice,
             effectivePrice: result.effectivePrice,
+            alertedToday: result.alertedToday,
           },
           { status: 409 }
         );
       }
+      return NextResponse.json({
+        success: true,
+        level: getLevelById(db, id),
+        // armed: the scanner watches it now (false for a rejected, pending or
+        // expired level). alertedToday: it already fired in the scanner's
+        // current dedupe day, so the next alert cannot come before tomorrow.
+        armed: result.armed,
+        alertedToday: result.alertedToday,
+      });
     } else {
       upsertLevel(db, body);
     }

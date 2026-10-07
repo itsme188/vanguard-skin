@@ -355,3 +355,108 @@ describe("PATCH /api/levels — reactivate guard", () => {
     });
   });
 });
+
+describe("PATCH /api/levels — reactivate: same-day honesty and unarmed rows", () => {
+  function getReq(securityId: number): NextRequest {
+    return new NextRequest(`http://test/api/levels?securityId=${securityId}&activeOnly=false`);
+  }
+
+  it("says when the level already alerted today: on the 409, on the forced 200 and on GET", async () => {
+    const secId = seedSecurity(hoisted.db, "ZZG2T");
+    const levelId = upsertLevel(hoisted.db, {
+      security_id: secId,
+      level_type: "resistance",
+      price: 100,
+    });
+    seedPrice(hoisted.db, secId, 120, "2099-01-02");
+    // Fired today (the default stamp is now).
+    triggerLevel(hoisted.db, { levelId, securityId: secId, triggeredPrice: 120 });
+
+    const mod = await import("@/app/api/levels/route");
+
+    const listed = (await (await mod.GET(getReq(secId))).json()) as {
+      levels: Array<{ id: number; alerted_today: boolean }>;
+    };
+    expect(listed.levels.find((l) => l.id === levelId)!.alerted_today).toBe(true);
+
+    const refused = await mod.PATCH(patchReq({ id: levelId, action: "reactivate" }));
+    expect(refused.status).toBe(409);
+    const refusedBody = (await refused.json()) as { alertedToday: boolean; error: string };
+    expect(refusedBody.alertedToday).toBe(true);
+    expect(refusedBody.error).toContain("already alerted today");
+    expect(refusedBody.error).not.toContain("next scan");
+
+    const forced = await mod.PATCH(patchReq({ id: levelId, action: "reactivate", force: true }));
+    expect(forced.status).toBe(200);
+    expect(await forced.json()).toMatchObject({ success: true, armed: true, alertedToday: true });
+  });
+
+  it("reports alertedToday false for a level whose last fire was on an earlier day", async () => {
+    const secId = seedSecurity(hoisted.db, "ZZG2U");
+    const levelId = upsertLevel(hoisted.db, {
+      security_id: secId,
+      level_type: "resistance",
+      price: 100,
+    });
+    seedPrice(hoisted.db, secId, 120, "2099-01-02");
+    triggerLevel(hoisted.db, {
+      levelId,
+      securityId: secId,
+      triggeredPrice: 110,
+      triggeredAt: "2099-01-01T15:00:00.000Z",
+    });
+
+    const mod = await import("@/app/api/levels/route");
+    const listed = (await (await mod.GET(getReq(secId))).json()) as {
+      levels: Array<{ id: number; alerted_today: boolean }>;
+    };
+    expect(listed.levels.find((l) => l.id === levelId)!.alerted_today).toBe(false);
+
+    const refused = await mod.PATCH(patchReq({ id: levelId, action: "reactivate" }));
+    const body = (await refused.json()) as { alertedToday: boolean; error: string };
+    expect(body.alertedToday).toBe(false);
+    expect(body.error).toContain("next scan");
+  });
+
+  it("re-activates a crossed REJECTED level without a 409 and says it is not armed", async () => {
+    const secId = seedSecurity(hoisted.db, "ZZG2V");
+    const levelId = upsertLevel(hoisted.db, {
+      security_id: secId,
+      level_type: "resistance",
+      price: 100,
+      review_status: "rejected",
+    });
+    seedPrice(hoisted.db, secId, 120, "2099-01-02");
+    hoisted.db.prepare("UPDATE security_levels SET is_active = 0 WHERE id = ?").run(levelId);
+
+    const mod = await import("@/app/api/levels/route");
+    const res = await mod.PATCH(patchReq({ id: levelId, action: "reactivate" }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true, armed: false, alertedToday: false });
+    expect(getLevelById(hoisted.db, levelId)).toMatchObject({
+      is_active: 1,
+      review_status: "rejected",
+    });
+  });
+
+  it("the out-of-range refusal prints two-decimal prices, not raw floats", async () => {
+    const secId = seedSecurity(hoisted.db, "ZZG2W");
+    const levelId = upsertLevel(hoisted.db, {
+      security_id: secId,
+      level_type: "resistance",
+      price: 100.1 + 0.2,
+    });
+    seedPrice(hoisted.db, secId, 10, "2099-01-02");
+    hoisted.db.prepare("UPDATE security_levels SET is_active = 0 WHERE id = ?").run(levelId);
+
+    const mod = await import("@/app/api/levels/route");
+    const res = await mod.PATCH(patchReq({ id: levelId, action: "reactivate" }));
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code: string; error: string };
+    expect(body.code).toBe("beyond_scan_range");
+    expect(body.error).toContain("Level 100.30 ");
+    expect(body.error).toContain("current price 10.00");
+  });
+});

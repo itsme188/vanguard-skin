@@ -18,23 +18,37 @@ describe("levelActionVisibility", () => {
     });
   });
 
-  it("active + pending_review: unarmed, Pause visible (restored), Re-queue hidden — the Review tab already covers pending rows", () => {
+  // 2026-10-07 ruling (reactivate finding, sibling fix): Pause is offered only
+  // on a row the scanner actually watches. Pausing a rejected or pending row
+  // would stop nothing. Neither row is a dead end: a pending row is decided on
+  // the Alerts Review tab, a rejected row has Re-queue.
+  it("active + pending_review: unarmed, no Pause (the scanner ignores it), Re-queue hidden — the Review tab covers pending rows", () => {
     const v = levelActionVisibility({ is_active: 1, review_status: "pending_review" });
     expect(v).toEqual({
       unarmedReview: true,
-      showPause: true,
+      showPause: false,
       showReactivate: false,
       showRequeue: false,
     });
   });
 
-  it("active + rejected: unarmed, Pause visible (restored) AND Re-queue visible — the only path back to the Review tab", () => {
+  it("active + rejected: unarmed, no Pause (the scanner ignores it), Re-queue visible — the path back to the Review tab", () => {
     const v = levelActionVisibility({ is_active: 1, review_status: "rejected" });
     expect(v).toEqual({
       unarmedReview: true,
-      showPause: true,
+      showPause: false,
       showReactivate: false,
       showRequeue: true,
+    });
+  });
+
+  it("inactive + pending_review: Reactivate visible — an inactive never-approved row must not be left with Delete only", () => {
+    const v = levelActionVisibility({ is_active: 0, review_status: "pending_review" });
+    expect(v).toEqual({
+      unarmedReview: false,
+      showPause: false,
+      showReactivate: true,
+      showRequeue: false,
     });
   });
 
@@ -58,12 +72,20 @@ describe("levelActionVisibility", () => {
     });
   });
 
-  it("showPause and showReactivate are always mutually exclusive", () => {
+  it("Pause and Reactivate are never offered together, and every inactive row can be reactivated", () => {
     for (const is_active of [0, 1]) {
       for (const review_status of ["auto_approved", "pending_review", "rejected"] as const) {
         const v = levelActionVisibility({ is_active, review_status });
-        expect(v.showPause).toBe(!v.showReactivate);
+        expect(v.showPause && v.showReactivate).toBe(false);
+        expect(v.showReactivate).toBe(is_active === 0);
       }
+    }
+  });
+
+  it("no row is a dead end: an unarmed active row has Re-queue or is pending on the Review tab", () => {
+    for (const review_status of ["pending_review", "rejected"] as const) {
+      const v = levelActionVisibility({ is_active: 1, review_status });
+      expect(v.showRequeue || review_status === "pending_review").toBe(true);
     }
   });
 });

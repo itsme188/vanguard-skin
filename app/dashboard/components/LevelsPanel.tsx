@@ -73,6 +73,10 @@ type EnrichedLevel = SecurityLevel & {
   /** True when that price is too old for the scanner's freshness window — the
    *  level is armed but not being monitored. */
   price_is_stale?: boolean;
+  /** True when this level already produced an alert in the scanner's current
+   *  dedupe day. Stamped by GET /api/levels from the scanner's own check, so
+   *  the panel never derives "today" from the browser's local date. */
+  alerted_today?: boolean;
 };
 
 const PRICE_SOURCE_OPTIONS: Array<{ value: LevelPriceSource; label: string }> = [
@@ -87,16 +91,6 @@ const PRICE_SOURCE_OPTIONS: Array<{ value: LevelPriceSource; label: string }> = 
 
 function priceSourceLabel(src: LevelPriceSource): string {
   return PRICE_SOURCE_OPTIONS.find((o) => o.value === src)?.label ?? src;
-}
-
-function triggeredToday(triggeredAt: string | null): boolean {
-  if (!triggeredAt) return false;
-  // Compare local dates (user's tz). The scanner dedup uses SQLite's date('now')
-  // which is UTC, but this is a UI hint — good-enough tolerance.
-  const t = new Date(triggeredAt);
-  if (isNaN(t.getTime())) return false;
-  const now = new Date();
-  return t.toDateString() === now.toDateString();
 }
 
 function lastFiredCopy(l: EnrichedLevel, currency?: string | null): string {
@@ -856,25 +850,55 @@ export function LevelsPanel({
       body: JSON.stringify({ id, action: "reactivate", force }),
     });
       const raw = (await res.clone().json().catch(() => null)) as
-        | { code?: unknown; currentPrice?: unknown; effectivePrice?: unknown }
+        | {
+            code?: unknown;
+            currentPrice?: unknown;
+            effectivePrice?: unknown;
+            alertedToday?: unknown;
+            armed?: unknown;
+          }
         | null;
       const result = { ...(await readMutationResult(res)), code: raw?.code };
+      // The server says whether this level already alerted in the scanner's
+      // current dedupe day; a re-armed level then stays quiet until tomorrow.
+      const alertedToday = raw?.alertedToday === true;
+      const current =
+        typeof raw?.currentPrice === "number" ? formatLevelPrice(currency, raw.currentPrice) : "the current price";
+      const effective =
+        typeof raw?.effectivePrice === "number" ? formatLevelPrice(currency, raw.effectivePrice) : "this level";
       if (result.ok) {
-        toast(force ? "Level reactivated — price is already past this level, so it will fire on the next scan" : "Level reactivated", "success");
+        if (raw?.armed === false) {
+          toast("Level is active again, but the alert scanner is not watching it (it is not approved, or it has expired).", "info");
+        } else if (alertedToday) {
+          toast("Re-armed. It already alerted today, so the next alert can come tomorrow.", "success");
+        } else if (force) {
+          toast("Re-armed. The price is already past this level, so it will alert on the next scan.", "success");
+        } else {
+          toast("Level reactivated", "success");
+        }
       } else if (result.status === 409 && result.code === "would_fire_immediately") {
-        const current =
-          typeof raw?.currentPrice === "number" ? formatLevelPrice(currency, raw.currentPrice) : "the current price";
-        const effective =
-          typeof raw?.effectivePrice === "number" ? formatLevelPrice(currency, raw.effectivePrice) : "this level";
+        const consequence = alertedToday
+          ? "It already alerted today, so a re-armed level can next alert tomorrow."
+          : "Reactivating will fire an alert on the next scan.";
         if (
           confirm(
-            `Price ${current} is already past this level (${effective}) — reactivating will fire an alert on the next scan. Reactivate anyway?`
+            `Price ${current} is already past this level (${effective}). ${consequence} Reactivate anyway?`
           )
         ) {
           await handleReactivate(id, true);
-        } else {
-          toast("Level left paused", "info");
+          return;
         }
+        toast("Level left paused", "info");
+      } else if (result.status === 409 && result.code === "beyond_scan_range") {
+        if (
+          confirm(
+            `This level (${effective}) is outside the scanner's range at the current price ${current}, so every scan would skip it and it could not alert. This usually means a mis-scaled price. Reactivate anyway?`
+          )
+        ) {
+          await handleReactivate(id, true);
+          return;
+        }
+        toast("Level left paused", "info");
       } else {
         toast(`Couldn't reactivate the level: ${result.message}`, "error");
       }
@@ -1344,21 +1368,15 @@ export function LevelsPanel({
               {visibleLevels.map((l) => {
                 const color = typeColor(l.level_type);
                 const lastFired = l.triggered_at != null;
-                const triggered = l.is_active === 0 && lastFired;
-                const alertedToday = triggeredToday(l.triggered_at);
+                const alertedToday = l.alerted_today === true;
                 const inactive = l.is_active === 0 && !lastFired;
                 // is_active=1 alone does not make a level armed — the scanner's
                 // whitelist also requires review_status='auto_approved'.
                 // Rejected / pending-review levels must read as not-armed here.
-                const actionVisibility = levelActionVisibility(l);
-                const {
-                  unarmedReview,
-                  showRequeue,
-                } = actionVisibility;
-                const showPause =
-                  actionVisibility.showPause && l.review_status === "auto_approved";
-                const showReactivate =
-                  actionVisibility.showReactivate && l.review_status === "auto_approved";
+                // levelActionVisibility is the single owner of which buttons a
+                // row gets — do not add conditions on top of its result here.
+                const { unarmedReview, showPause, showReactivate, showRequeue } =
+                  levelActionVisibility(l);
                 return (
                   <div
                     key={l.id}
@@ -1471,12 +1489,12 @@ export function LevelsPanel({
                               borderRadius: "2px",
                             }}
                           >
-                            {triggered ? "Triggered at" : "Last fired at"} {lastFiredCopy(l, currency)}
+                            Last fired at {lastFiredCopy(l, currency)}
                           </span>
                         )}
                         {alertedToday && (
                           <span
-                            title="Already alerted today. Reactivating now would no-op — the dedup guard suppresses a same-day second alert."
+                            title="Already alerted today. The scanner sends one alert per level per day, so the next alert can come tomorrow."
                             style={{
                               fontFamily: "var(--font-mono), monospace",
                               fontSize: "11px",
@@ -1695,14 +1713,10 @@ export function LevelsPanel({
             <ul className="divide-y divide-edge">
             {visibleLevels.map((l) => {
               const lastFired = l.triggered_at != null;
-              const triggered = l.is_active === 0 && lastFired;
+              const alertedToday = l.alerted_today === true;
               const inactive = l.is_active === 0 && !lastFired;
-              const actionVisibility = levelActionVisibility(l);
-              const showPause =
-                actionVisibility.showPause && l.review_status === "auto_approved";
-              const showReactivate =
-                actionVisibility.showReactivate && l.review_status === "auto_approved";
-              const { showRequeue } = actionVisibility;
+              // Single owner, as in the embedded rows above.
+              const { showPause, showReactivate, showRequeue } = levelActionVisibility(l);
               return (
             <li key={l.id} className="py-2.5 flex items-start gap-3">
               <div
@@ -1744,15 +1758,15 @@ export function LevelsPanel({
                   )}
                   {lastFired && (
                     <Chip size="xs" tone="gold">
-                      {triggered ? "triggered at" : "last fired at"} {lastFiredCopy(l, currency)}
+                      last fired at {lastFiredCopy(l, currency)}
                     </Chip>
                   )}
-                  {triggeredToday(l.triggered_at) && (
+                  {alertedToday && (
                     <Chip
                       size="xs"
                       tone="warn"
                       uppercase
-                      title="Already alerted today. Reactivating now would no-op — the dedup guard suppresses a same-day second alert. Reactivate tomorrow or after the price has moved off the level."
+                      title="Already alerted today. The scanner sends one alert per level per day, so the next alert can come tomorrow."
                     >
                       alerted today
                     </Chip>
@@ -1815,10 +1829,10 @@ export function LevelsPanel({
                 ) : showReactivate ? (
                   <button
                     onClick={() => handleReactivate(l.id)}
-                    disabled={triggeredToday(l.triggered_at)}
+                    disabled={alertedToday}
                     className="text-[10px] text-emerald-400 hover:text-emerald-300 disabled:text-ink-faint disabled:cursor-not-allowed disabled:hover:text-ink-faint"
                     title={
-                      triggeredToday(l.triggered_at)
+                      alertedToday
                         ? "Already alerted today — reactivation is blocked until tomorrow to prevent duplicate alerts."
                         : "Reactivate"
                     }

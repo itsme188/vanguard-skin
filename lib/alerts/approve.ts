@@ -1,9 +1,6 @@
 import type Database from "better-sqlite3";
-import {
-  getLevelById,
-  getLatestScanPriceForSecurity,
-  checkLevelTriggerState,
-} from "@/lib/queries/security-levels";
+import { getLevelById } from "@/lib/queries/security-levels";
+import { ARMED_CROSSED_AT_SET_SQL, evaluateArmGuard } from "@/lib/alerts/arm-guard";
 
 export interface ApproveLevelGuardResult {
   ok: boolean;
@@ -27,10 +24,11 @@ export interface ApproveLevelGuardResult {
  * approving a pending level whose trigger condition is ALREADY satisfied
  * arms a guaranteed false alert on the very next scan.
  *
- * Resolves the current price the exact same way findCrossedLevels does
- * (getLatestScanPriceForSecurity) and evaluates the condition through
- * checkLevelTriggerState — the same helper the scanner uses — so the guard
- * and the scanner can never disagree about what "already hit" means.
+ * The guard is evaluateArmGuard (lib/alerts/arm-guard.ts), shared with
+ * reactivateLevel. It resolves the current price the exact same way
+ * findCrossedLevels does and evaluates the condition through the scanner's
+ * own trigger-state helper — so the guard and the scanner can never disagree
+ * about what "already hit" means.
  *
  * A level whose price is missing, stale, or unresolvable (MA needs more OHLCV
  * history) is treated as NOT already-fired — matching what the scanner itself
@@ -40,8 +38,8 @@ export interface ApproveLevelGuardResult {
  * here (2026-08-20). The band forces `hit:false`, so the would_fire check can
  * never catch it: a mis-scaled extracted level (SPX prices on SPY, per-contract
  * vs per-share) used to approve silently and arm coverage the scanner skips on
- * every single pass. `state.beyondScanRange` — reported by the scanner's own
- * checkLevelTriggerState, never re-derived here — turns that into an honest
+ * every single pass. The scanner's own beyond-range verdict, never re-derived
+ * here, turns that into an honest
  * refusal the caller can override.
  *
  * - Condition satisfied AND !force → refuse, no write: { ok:false,
@@ -74,58 +72,18 @@ export function approveLevelGuarded(
     return { ok: true };
   }
 
-  const priceInfo = getLatestScanPriceForSecurity(db, level.security_id);
+  // The guard itself (price resolution, both refusals, the stamp rule) is
+  // shared with reactivateLevel — see lib/alerts/arm-guard.ts.
+  const verdict = evaluateArmGuard(db, level, opts);
+  if (verdict.refusal) return { ok: false, ...verdict.refusal };
 
-  let wouldFire = false;
-  let beyondScanRange = false;
-  let effectivePrice: number | null = null;
-
-  if (priceInfo.currentPrice !== null && priceInfo.isFresh) {
-    const state = checkLevelTriggerState(
-      db,
-      {
-        id: level.id,
-        security_id: level.security_id,
-        level_type: level.level_type,
-        price: level.price,
-        price_source: level.price_source,
-        sec_type: priceInfo.secType,
-      },
-      priceInfo.currentPrice
-    );
-    wouldFire = state.hit;
-    beyondScanRange = state.beyondScanRange;
-    effectivePrice = state.effectivePrice;
-  }
-
-  if (wouldFire && !opts.force) {
-    return {
-      ok: false,
-      code: "would_fire_immediately",
-      currentPrice: priceInfo.currentPrice as number,
-      effectivePrice: effectivePrice as number,
-    };
-  }
-
-  // Mutually exclusive with wouldFire by construction (the band guard returns
-  // hit:false), so the order of these two checks is not load-bearing.
-  if (beyondScanRange && !opts.force) {
-    return {
-      ok: false,
-      code: "beyond_scan_range",
-      currentPrice: priceInfo.currentPrice as number,
-      effectivePrice: effectivePrice as number,
-    };
-  }
-
-  const stamp = wouldFire && opts.force;
   db.prepare(
     `UPDATE security_levels
      SET review_status = 'auto_approved',
-         armed_crossed_at = CASE WHEN ? THEN datetime('now') ELSE NULL END,
+         ${ARMED_CROSSED_AT_SET_SQL},
          updated_at = datetime('now')
      WHERE id = ?`
-  ).run(stamp ? 1 : 0, id);
+  ).run(verdict.stampCrossed ? 1 : 0, id);
 
   return { ok: true };
 }

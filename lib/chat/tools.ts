@@ -783,7 +783,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_levels",
     description:
-      "Query active price levels — support, resistance, entry, exit, stop, and scale-in prices set by the user or extracted from research newsletters. Each level includes its effective price (live-computed MA for EMA/SMA-based levels, or the static price) plus the author, thesis, and timeframe context. Use when the user asks 'what levels are closest to triggering?', 'show Eliant's levels', 'what support levels do I have on SPY?', or 'which levels should I watch this week?'.",
+      "Query active price levels — support, resistance, entry, exit, stop, and scale-in prices set by the user or extracted from research newsletters. Each level includes its effective price (live-computed MA for EMA/SMA-based levels, or the static price) plus the author, thesis, and timeframe context. `is_active` (1 or 0) says whether the level is armed now; `last_fired_at` / `last_fired_price` record the most recent time it alerted and are history only — a level can be active again after it fired, so never call a level triggered just because `last_fired_at` is set. Use when the user asks 'what levels are closest to triggering?', 'show Eliant's levels', 'what support levels do I have on SPY?', or 'which levels should I watch this week?'.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1629,9 +1629,13 @@ export async function executeTool(
             thesis: l.thesis,
             timeframe: l.timeframe,
             expires_at: l.expires_at,
+            // is_active says whether the level is armed NOW. The two fields
+            // below are history only: a re-armed level keeps its last fire, so
+            // they are named last_fired_* (not triggered_*) to stop a model
+            // reading an active level as "triggered".
             is_active: l.is_active,
-            triggered_at: l.triggered_at,
-            triggered_price: l.triggered_price,
+            last_fired_at: l.triggered_at,
+            last_fired_price: l.triggered_price,
             set_date: l.set_date,
           };
         });

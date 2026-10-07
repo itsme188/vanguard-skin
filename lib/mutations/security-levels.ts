@@ -10,11 +10,15 @@ import type {
   AlertResponse,
 } from "@/lib/types";
 import {
-  checkLevelTriggerState,
-  getLatestScanPriceForSecurity,
   getLevelById,
   hasAlertToday,
+  isLevelInArmedUniverse,
 } from "@/lib/queries/security-levels";
+import {
+  ARMED_CROSSED_AT_SET_SQL,
+  evaluateArmGuard,
+  type ArmGuardRefusal,
+} from "@/lib/alerts/arm-guard";
 
 // ─── Level mutations ───────────────────────────────────────────────
 
@@ -120,60 +124,74 @@ export function deactivateLevel(db: Database.Database, id: number): void {
 }
 
 export type ReactivateLevelResult =
-  | { ok: true }
   | {
-      ok: false;
-      code: "would_fire_immediately" | "beyond_scan_range";
-      currentPrice: number;
-      effectivePrice: number;
-    };
+      ok: true;
+      /** True when the scanner watches the level after this write. False for
+       *  a rejected, pending-review or expired level: it is active again but
+       *  the scanner still ignores it, so nothing was armed. */
+      armed: boolean;
+      /** True when this level already produced an alert in the scanner's
+       *  current dedupe day (hasAlertToday). A re-armed level then cannot
+       *  alert again until that day rolls over. */
+      alertedToday: boolean;
+    }
+  | ({ ok: false; alertedToday: boolean } & ArmGuardRefusal);
 
+/** Thrown inside reactivateLevel's transaction to undo the trial write. */
+class ReactivationRefused extends Error {
+  constructor(readonly refusal: ArmGuardRefusal) {
+    super(refusal.code);
+  }
+}
+
+/**
+ * Re-activate a paused or fired level. `triggered_at` / `triggered_price` are
+ * kept: they are the level's "last fired" record, not a scanner block.
+ *
+ * Arming goes through the same guard as approval (evaluateArmGuard,
+ * lib/alerts/arm-guard.ts): a level the price has already crossed, or one
+ * outside the scan range, is refused with no write unless `force` is set, and
+ * `armed_crossed_at` is stamped or cleared by the same rule approval uses.
+ *
+ * The guard applies only when the level is in the scanner's armed universe
+ * after the write. Whether it is comes from the scanner's own predicate
+ * (isLevelInArmedUniverse), read back inside the transaction after the trial
+ * write; a refusal rolls that write back, so "refused" still means nothing
+ * changed. A rejected, pending-review or expired level re-activates freely —
+ * the scanner ignores it, so "it will fire on the next scan" would be false.
+ */
 export function reactivateLevel(
   db: Database.Database,
   id: number,
   opts: { force?: boolean } = {}
 ): ReactivateLevelResult {
+  const alertedToday = hasAlertToday(db, id);
   const level = getLevelById(db, id);
-  if (level) {
-    const priceInfo = getLatestScanPriceForSecurity(db, level.security_id);
-    if (priceInfo.currentPrice !== null && priceInfo.isFresh) {
-      const state = checkLevelTriggerState(
-        db,
-        {
-          id: level.id,
-          security_id: level.security_id,
-          level_type: level.level_type,
-          price: level.price,
-          price_source: level.price_source,
-          sec_type: priceInfo.secType,
-        },
-        priceInfo.currentPrice
-      );
-      if (state.hit && !opts.force) {
-        return {
-          ok: false,
-          code: "would_fire_immediately",
-          currentPrice: priceInfo.currentPrice,
-          effectivePrice: state.effectivePrice as number,
-        };
-      }
-      if (state.beyondScanRange && !opts.force) {
-        return {
-          ok: false,
-          code: "beyond_scan_range",
-          currentPrice: priceInfo.currentPrice,
-          effectivePrice: state.effectivePrice as number,
-        };
-      }
-    }
-  }
 
-  db.prepare(
-    `UPDATE security_levels
-     SET is_active = 1, updated_at = datetime('now')
-     WHERE id = ?`
-  ).run(id);
-  return { ok: true };
+  const tx = db.transaction((): boolean => {
+    db.prepare(
+      `UPDATE security_levels
+       SET is_active = 1, armed_crossed_at = NULL, updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(id);
+    if (!level || !isLevelInArmedUniverse(db, id)) return false;
+
+    const verdict = evaluateArmGuard(db, level, opts);
+    if (verdict.refusal) throw new ReactivationRefused(verdict.refusal);
+    db.prepare(
+      `UPDATE security_levels SET ${ARMED_CROSSED_AT_SET_SQL} WHERE id = ?`
+    ).run(verdict.stampCrossed ? 1 : 0, id);
+    return true;
+  });
+
+  try {
+    return { ok: true, armed: tx(), alertedToday };
+  } catch (err) {
+    if (err instanceof ReactivationRefused) {
+      return { ok: false, alertedToday, ...err.refusal };
+    }
+    throw err;
+  }
 }
 
 export function deleteLevel(db: Database.Database, id: number): void {

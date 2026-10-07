@@ -4,13 +4,19 @@
  * testable independent of the two near-duplicate render branches (terminal
  * "embedded" rows + the compact list rows) that both need them.
  *
- * Bug fixed here (Codex advisory #49, 2026-08-16): a prior change hid
- * Pause/Deactivate for every "unarmed review" row (pending_review OR
- * rejected — is_active=1 but review_status != 'auto_approved'), leaving
- * Delete as the only visible action on a rejected level. Pause/Reactivate
- * are reversible and independent of review_status (the scanner whitelist
- * check is is_active AND review_status, not is_active alone), so they
- * belong on every row regardless of review state.
+ * History. Codex advisory #49 (2026-08-16): a prior change hid Pause for
+ * every "unarmed review" row and left Delete as the only action on a rejected
+ * level. The fix then was to show Pause/Reactivate on every row.
+ *
+ * Rule since the 2026-10-07 ruling (reactivate finding, sibling fix): Pause is
+ * offered only on a row the scanner actually watches (active AND
+ * auto_approved). Pausing a rejected or pending row would stop nothing, and it
+ * read as if the row had been armed. Reactivate stays on EVERY inactive row,
+ * whatever its review status, so no inactive row is left with Delete only (the
+ * dead end #49 removed). An active unarmed row is not a dead end either: a
+ * pending row is decided on the Alerts Review tab and a rejected row has
+ * Re-queue. This helper is the single owner of these rules — LevelsPanel must
+ * not add conditions on top of its result.
  *
  * The rejected chip also told the user to "approve or reject it on the
  * Alerts Review tab" — but that tab's query (getPendingReviewLevels) only
@@ -34,12 +40,13 @@ export interface LevelActionVisibility {
    *  (still pending_review) or was rejected. Mirrors the scanner's
    *  whitelist check (lib/queries/security-levels.ts findCrossedLevels). */
   unarmedReview: boolean;
-  /** Pause is available on every active row, regardless of review status —
-   *  a reversible way to stop watching it without deleting it. */
+  /** Pause is available on an active row the scanner watches
+   *  (auto_approved) — a reversible way to stop watching it without deleting
+   *  it. Not offered on a pending or rejected row: there is nothing to pause. */
   showPause: boolean;
   /** Reactivate is available on every inactive row, regardless of review
-   *  status — mirrors showPause's "reversible regardless of review state"
-   *  stance. */
+   *  status. Re-activating a rejected or pending row does not arm it (the
+   *  server skips the arm guard and reports armed:false). */
   showReactivate: boolean;
   /** Re-queue is the only path back onto the Alerts Review tab for a
    *  rejected row still worth reconsidering; scoped to active+rejected so
@@ -52,7 +59,7 @@ export function levelActionVisibility(l: LevelActionVisibilityInput): LevelActio
   const unarmedReview = l.is_active === 1 && l.review_status !== "auto_approved";
   return {
     unarmedReview,
-    showPause: l.is_active === 1,
+    showPause: l.is_active === 1 && !unarmedReview,
     showReactivate: l.is_active !== 1,
     showRequeue: unarmedReview && l.review_status === "rejected",
   };
