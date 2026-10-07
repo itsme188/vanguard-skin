@@ -802,13 +802,10 @@ export function LivePrintSlot({
  * puts one here — a date correction or a late filer.
  *
  * A SEPARATE top-level component (never nested — the remount trap), taking its
- * rows as a prop so `react-dom/server` can render it in a test. The status
- * payload carries no event DATE (verified: the status route's mapper returns
- * printId, eventId, symbol, state, sources, coverage, the window fields,
- * goRequest, lines, documents, documentRoads, read, activeRead, lastAttempt,
- * callouts — and F may not edit that route, E owns it), so the line names the
- * symbol, the state and the effective window instead of inventing a date. That
- * is a recorded residual, not a gap to paper over with a client-side lookup.
+ * rows as a prop so `react-dom/server` can render it in a test. The line names
+ * the symbol, the DAY the print belongs to, the state and the effective window.
+ * The day is the status route's additive `eventDate` (the print's own event
+ * date) — never a client-side lookup; an entry without one simply omits it.
  *
  * `nowMs` is the provider's shared clock (review M4) — this used to read
  * `Date.now()` in render, which is impure and could disagree with the very
@@ -817,6 +814,28 @@ export function LivePrintSlot({
  * unreachable in practice: a non-empty `prints` can only come from a client
  * poll, by which time the clock has started.
  */
+/**
+ * "Thu, Sep 10" for a `YYYY-MM-DD` calendar date, or null for anything else.
+ *
+ * A calendar date has no timezone, so it is anchored at UTC noon and formatted
+ * in UTC — the label can never slide to the neighbouring day on a travelling
+ * Mac. The round-trip check refuses an impossible date ("2026-02-30") rather
+ * than letting `Date` roll it forward into a day nobody scheduled.
+ */
+export function eventDateLabel(value: unknown): string | null {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T12:00:00Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) return null;
+  return date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+/** The status entry's event date, read structurally so an entry from a server
+ *  that does not send the field yet (or a type that does not declare it yet)
+ *  is simply "no date". */
+function orphanEventDate(p: PrintStatusEntry): string | null {
+  return "eventDate" in p ? eventDateLabel(p.eventDate) : null;
+}
+
 export function LivePrintsOutsideWeek({
   prints,
   nowMs,
@@ -839,6 +858,7 @@ export function LivePrintsOutsideWeek({
                 "XMPL2 · window closed · window closed 5:00 PM ET". */}
             {[
               p.symbol,
+              ...(orphanEventDate(p) ? [orphanEventDate(p)] : []),
               ...stateAndWindowSegments(
                 printStateLabel(p.state).text,
                 p.effectiveWindow ? windowText(p.effectiveWindow, clock) : null,

@@ -82,6 +82,8 @@ export interface PrintOutputsWire {
 export interface PrintStatusEntry {
   printId: number;
   eventId?: number;
+  /** The print's own event date (YYYY-MM-DD); null when its row is gone. */
+  eventDate?: string | null;
   symbol: string;
   state: PrintWatchStateWire;
   sources: Record<string, string>;
