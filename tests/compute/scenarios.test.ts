@@ -35,6 +35,8 @@ function createTestDb(): Database.Database {
       market_cap_category TEXT,
       style TEXT,
       duration_years REAL,
+      maturity_date TEXT,
+      coupon_rate REAL,
       credit_rating TEXT,
       underlying_symbol TEXT,
       strike_price REAL,
@@ -159,8 +161,9 @@ describe("computeScenario via recipe dispatch", () => {
     const scenario = PRESET_SCENARIOS.find((s) => s.id === "rate_shock_up_25bp")!;
     const result = computeScenario(db, scenario);
     const bnd = result.positionImpacts.find((p) => p.symbol === "BND")!;
-    // 5y duration × 25bp = 125bp = -1.25%
-    expect(bnd.changePercent).toBeCloseTo(-0.0125, 4);
+    // 5y duration, +25bp: exp(-5 × 0.0025) - 1 ≈ -1.24% — the same
+    // convexity-aware rule the custom engine uses (shared helper).
+    expect(bnd.changePercent).toBeCloseTo(Math.exp(-5 * 0.0025) - 1, 10);
   });
 
   it("identifies biggest losers ordered by estimatedChange ascending", () => {

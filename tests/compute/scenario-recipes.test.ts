@@ -107,11 +107,12 @@ describe("computeRecipeScenario", () => {
     expect(jnj.changePercent).toBeCloseTo(0, 4);
   });
 
-  it("rate_shock_up_25bp: bond moves by duration × Δy/100", () => {
+  it("rate_shock_up_25bp: bond moves by exp(-duration × Δy) - 1", () => {
     const result = computeRecipeScenario(db, findRecipe("rate_shock_up_25bp")!);
     const bond = result.positionImpacts.find((p) => p.symbol === "BOND1")!;
-    // shockMagnitude -0.025 → rateBpsMove = 25bp; duration 5y → -5 * 25 / 10000 = -0.0125
-    expect(bond.changePercent).toBeCloseTo(-0.0125, 4);
+    // shockMagnitude -0.025 → +25bp; duration 5y → exp(-5 × 0.0025) - 1 ≈ -0.01242
+    // (the shared duration rule, same as a custom +25bp move).
+    expect(bond.changePercent).toBeCloseTo(Math.exp(-5 * 0.0025) - 1, 10);
   });
 
   it("rate_shock_up_25bp: growth equity takes both rate-sensitive and growth tilt hits", () => {
@@ -785,8 +786,8 @@ describe("scenario subjects", () => {
       expect(semi.positionImpacts.find((p) => p.symbol === "TBILL")!.changePercent).toBe(0);
 
       const rate = computeRecipeScenario(db, findRecipe("rate_shock_up_25bp")!);
-      // Still the SUBJECT of a rate shock: 5y duration x 25bp = -1.25%.
-      expect(rate.positionImpacts.find((p) => p.symbol === "TBILL")!.changePercent).toBeCloseTo(-0.0125, 4);
+      // Still the SUBJECT of a rate shock: 5y stored duration, +25bp.
+      expect(rate.positionImpacts.find((p) => p.symbol === "TBILL")!.changePercent).toBeCloseTo(Math.exp(-5 * 0.0025) - 1, 10);
     });
 
     it("a money-market sweep fund takes no scenario P&L at all", () => {

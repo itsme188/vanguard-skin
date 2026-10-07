@@ -5,6 +5,7 @@ import type { ScenarioResult } from "@/lib/compute/scenarios";
 import { findRecipe } from "@/lib/compute/scenario-recipes";
 import { isOptionSecurityType } from "@/lib/compute/option-elasticity";
 import { VOL_MOVE_MIN, VOL_MOVE_MAX, type OptionIvSource, type OptionUnmodelledReason } from "@/lib/compute/option-reprice";
+import { FUND_DEFAULT_DURATION_YEARS, type BondUnmodelledReason } from "@/lib/compute/bond-duration";
 import { PrivateText } from "@/lib/privacy/components";
 import { formatCompactOptionSymbol } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
@@ -29,6 +30,15 @@ const UNMODELLED_REASON_LABEL: Record<OptionUnmodelledReason, string> = {
   "no-option-price": "no price for the contract",
   "no-underlying-price": "no price for the underlying",
   "no-volatility": "no usable volatility",
+};
+// A bond the rate move could not price: no duration, coupon or yield is ever
+// assumed for it, so the row names the stored input that is missing.
+const BOND_UNMODELLED_REASON_LABEL: Record<BondUnmodelledReason, string> = {
+  "no-maturity": "no maturity date",
+  "matured": "past its maturity date",
+  "no-coupon": "no coupon on file",
+  "no-price": "no price",
+  "no-yield": "price gives no usable yield",
 };
 const BETA_TITLE = "Beta vs the market: 1.0 moves with the index.";
 
@@ -422,6 +432,47 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                           ))}
                       </div>
                     </div>
+                  )}
+
+                  {/* Bonds the rate move could not price: no duration is
+                      assumed for them, so they are listed, not hidden. */}
+                  {result.bondsUnmodelled.count > 0 && (
+                    <div>
+                      <h4 className="text-[10px] text-ink-faint uppercase tracking-wider mb-1.5">
+                        Bonds Not Modelled
+                      </h4>
+                      <p className="text-xs text-ink-dim mb-1.5">
+                        <PrivateText>
+                          {result.bondsUnmodelled.count}{" "}
+                          {result.bondsUnmodelled.count === 1 ? "bond" : "bonds"} (
+                          {(result.bondsUnmodelled.valueShare * 100).toFixed(0)}% of bond value) left out of the
+                          rate move.
+                        </PrivateText>{" "}
+                        No figure is estimated for them.
+                      </p>
+                      <div className="space-y-1">
+                        {result.positionImpacts
+                          .filter((pos) => pos.bondUnmodelledReason)
+                          .map((pos) => (
+                            <div key={pos.securityId} className="flex items-center justify-between gap-3 text-xs">
+                              <span className="font-mono font-medium text-ink truncate whitespace-nowrap">
+                                {pos.symbol}
+                              </span>
+                              <span className="text-ink-faint shrink-0">
+                                {BOND_UNMODELLED_REASON_LABEL[pos.bondUnmodelledReason!]}
+                              </span>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Fund duration note */}
+                  {result.positionImpacts.some((pos) => pos.rateDurationSource === "fund-default") && (
+                    <p className="text-[11px] text-ink-faint leading-relaxed">
+                      Bond funds move with rates by their duration. A fund&apos;s duration defaults to{" "}
+                      {FUND_DEFAULT_DURATION_YEARS} years when unknown.
+                    </p>
                   )}
 
                   {result.positionImpacts.some((pos) => isOptionSecurityType(pos.securityType)) && (
