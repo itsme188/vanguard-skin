@@ -50,39 +50,34 @@ describe("AllHoldingsTable treats a zero cost basis as unknown everywhere", () =
     expect(block).toMatch(/&mdash;|\\u2014|—/);
   });
 
-  it("holdingsWithCost filters through hasKnownBasis", () => {
-    expect(src()).toMatch(/holdingsWithCost\s*=\s*filtered\.filter\(hasKnownBasis\)/);
+  // The footer totals moved into summarizeHoldingsFooter (2026-10-07, the
+  // inline-disclosure ruling). Its arithmetic is tested with real rows in
+  // tests/dashboard/all-holdings-footer-disclosure.test.tsx; these pins keep
+  // the "unknown, never zero" contract visible in the source.
+  it("the footer totals come from summarizeHoldingsFooter, which filters through hasKnownBasis", () => {
+    const text = src();
+    const summary = text.slice(
+      anchorIndex(text, "export function summarizeHoldingsFooter"),
+      anchorIndex(text, "export function AllHoldingsTable"),
+    );
+    expect(summary).toMatch(/withBasis\s*=\s*rows\.filter\(hasKnownBasis\)/);
+    expect(summary).toMatch(/noBasis\s*=\s*rows\.filter\(\(h\)\s*=>\s*!hasKnownBasis\(h\)\)/);
+    // Guard against a second, disagreeing predicate reappearing.
+    expect(text).not.toMatch(/filter\(\(h\) => h\.cost_basis !== null\)/);
   });
 
-  it("missingCostCount is derived from holdingsWithCost (no separate cost_basis !== null check)", () => {
+  it("a total with no contributing row is null (unknown), never a zero", () => {
     const text = src();
-    expect(text).toMatch(/missingCostCount\s*=\s*filtered\.length\s*-\s*holdingsWithCost\.length/);
-    // Guard against a second, disagreeing predicate reappearing nearby.
-    expect(text).not.toMatch(/filtered\.filter\(\(h\) => h\.cost_basis !== null\)/);
+    expect(text).toMatch(/totalCostBasis:\s*withBasis\.length === 0 \? null/);
+    expect(text).toMatch(/withGain\s*=\s*rows\.filter\(\(h\)\s*=>\s*h\.unrealized_gain\s*!==\s*null\)/);
+    expect(text).toMatch(/totalGain:\s*withGain\.length === 0 \? null/);
   });
 
-  it("the footer gain path checks unrealized_gain !== null before asserting a total", () => {
+  it("the footer cost cell renders the unknown placeholder for a null total", () => {
     const text = src();
-    expect(text).toMatch(/knownGainRows\s*=\s*filtered\.filter\(\(h\)\s*=>\s*h\.unrealized_gain\s*!==\s*null\)/);
-  });
-
-  it("the footer cost cell is unknown when no filtered row has a known basis (never ~$0.00 over nothing)", () => {
-    const text = src();
-    const footerIdx = anchorIndex(text, "<tfoot>");
-    expect(footerIdx).toBeGreaterThan(-1);
-    const footer = text.slice(footerIdx);
-    expect(footer).toContain("holdingsWithCost.length === 0");
-    // The all-unknown branch must come BEFORE the "~" partial-sum branch.
-    expect(anchorIndex(footer, "holdingsWithCost.length === 0")).toBeLessThan(anchorIndex(footer, "missingCostCount > 0"));
-  });
-
-  it("the footer gain cell distinguishes zero known rows, partial coverage, and full coverage", () => {
-    const text = src();
-    const footerIdx = anchorIndex(text, "<tfoot>");
-    expect(footerIdx).toBeGreaterThan(-1);
-    const footer = text.slice(footerIdx);
-    expect(footer).toContain("knownGainRows.length === 0");
-    expect(footer).toMatch(/knownGainRows\.length\s*<\s*filtered\.length/);
+    const footer = text.slice(anchorIndex(text, "<tfoot>"));
+    expect(footer).toContain("footer.totalCostBasis === null");
+    expect(footer).toContain("<GainCell value={footer.totalGain} />");
   });
 
   /**
@@ -101,28 +96,24 @@ describe("AllHoldingsTable treats a zero cost basis as unknown everywhere", () =
    *    unrealizedGainRatio helper instead) and never got the "~" partial
    *    disclosure the Gain $ cell next to it gets.
    */
-  it("splits the missing-gain count into no-basis and no-price causes", () => {
+  it("splits the rows a column leaves out into no-basis and no-price causes", () => {
     const text = src();
+    // A known basis with no gain is the no-price case (holdings.ts nulls
+    // unrealized_gain whenever the price is missing).
     expect(text).toMatch(
-      /missingGainRows\s*=\s*filtered\.filter\(\(h\)\s*=>\s*h\.unrealized_gain\s*===\s*null\)/
+      /noPrice\s*=\s*withBasis\.filter\(\(h\)\s*=>\s*h\.unrealized_gain\s*===\s*null\)/
     );
-    expect(text).toMatch(
-      /noBasisCount\s*=\s*missingGainRows\.filter\(\(h\)\s*=>\s*!hasKnownBasis\(h\)\)\.length/
-    );
-    expect(text).toMatch(/noPriceCount\s*=\s*missingGainCount\s*-\s*noBasisCount/);
+    expect(text).toContain("noBasisCount: noBasis.length");
+    expect(text).toContain("noPriceCount: noPrice.length");
   });
 
-  it("names whichever missing-gain reason(s) apply in the shared tooltip text", () => {
+  it("names each cause inline in the footer, not in a hover title", () => {
     const text = src();
-    expect(text).toContain("with unknown cost basis");
-    expect(text).toContain("with no current price");
-    expect(text).toMatch(/missingGainTooltip\s*=\s*`/);
-  });
-
-  it("both footer Gain cells (Gain $ and Gain %) use the shared missing-gain tooltip", () => {
-    const text = src();
-    const occurrences = text.match(/title=\{missingGainTooltip\}/g) ?? [];
-    expect(occurrences.length).toBeGreaterThanOrEqual(2);
+    const footer = text.slice(anchorIndex(text, "<tfoot>"));
+    expect(footer).toContain("Positions with no cost basis");
+    expect(footer).toContain("Positions with a cost basis but no current price");
+    expect(footer).not.toContain("title=");
+    expect(text).not.toContain("missingGainTooltip");
   });
 
   it("the per-row Cost Basis em-dash carries the same tooltip HoldingsTable.tsx uses", () => {
@@ -152,24 +143,10 @@ describe("AllHoldingsTable treats a zero cost basis as unknown everywhere", () =
 
   it("the footer Gain % uses the abs-denominator ratio helper, not a raw divide", () => {
     const text = src();
-    const footerIdx = anchorIndex(text, "<tfoot>");
-    expect(footerIdx).toBeGreaterThan(-1);
-    const footer = text.slice(footerIdx);
-    expect(footer).not.toMatch(/totalGain\s*\/\s*totalCostBasis/);
-    const ratioCalls = footer.match(/unrealizedGainRatio\(totalGain,\s*totalCostBasis\)/g) ?? [];
-    expect(ratioCalls.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("the footer Gain % cell gets the same zero/partial/full branching as Gain $", () => {
-    const text = src();
-    const footerIdx = anchorIndex(text, "<tfoot>");
-    expect(footerIdx).toBeGreaterThan(-1);
-    const footer = text.slice(footerIdx);
-    const zeroBranches = footer.match(/knownGainRows\.length === 0/g) ?? [];
-    const partialBranches = footer.match(/knownGainRows\.length < filtered\.length/g) ?? [];
-    // One occurrence each for the Gain $ cell and one each for the Gain %
-    // cell — a single shared branch would mean Gain % never disclosed.
-    expect(zeroBranches.length).toBeGreaterThanOrEqual(2);
-    expect(partialBranches.length).toBeGreaterThanOrEqual(2);
+    const footer = text.slice(anchorIndex(text, "<tfoot>"));
+    expect(footer).not.toMatch(/totalGain\s*\/\s*(footer\.)?totalCostBasis/);
+    expect(footer).toMatch(
+      /unrealizedGainRatio\(footer\.totalGain,\s*footer\.totalCostBasis\)/
+    );
   });
 });
