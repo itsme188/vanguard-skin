@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   anchorDailiesToStatements,
   equityCurveCaption,
+  equityCurveRangeCaption,
   formatAnchoredTooltipValue,
   MAX_REFERENCE_LOOKBACK_DAYS,
   MIN_SEGMENT_DAILIES,
@@ -219,7 +220,7 @@ describe("anchorDailiesToStatements — shape-preserving anchor correction", () 
     expect(summary.segmentsSkipped).toBe(1);
   });
 
-  it("skips a segment whose dailies swing more than 30% of their mean (incomplete extraction)", () => {
+  it("a large swing (a deposit) no longer skips a segment: the 30% test was dropped 2026-10-07", () => {
     const anchors = [A("2026-01-31", 1000), A("2026-02-28", 1000)];
     const dailies = [
       D("2026-02-05", 1000),
@@ -228,8 +229,18 @@ describe("anchorDailiesToStatements — shape-preserving anchor correction", () 
       D("2026-02-20", 990),
     ];
     const { points, summary } = anchorDailiesToStatements(anchors, dailies);
-    expect(points.every((p) => p.isAnchor)).toBe(true);
-    expect(summary.segmentsSkipped).toBe(1);
+    expect(points.filter((p) => !p.isAnchor)).toHaveLength(4);
+    expect(summary.segmentsSkipped).toBe(0);
+    expect(summary.segmentsAnchored).toBe(1);
+  });
+
+  it("a run with a gap over 7 days between plotted points is recorded as sparse", () => {
+    const anchors = [A("2026-01-31", 1000), A("2026-02-28", 1000)];
+    const dailies = [D("2026-02-02", 1000), D("2026-02-03", 1000), D("2026-02-04", 1000)];
+    const { summary } = anchorDailiesToStatements(anchors, dailies);
+    expect(summary.sparseSpans).toEqual([{ from: "2026-01-31", to: "2026-02-28" }]);
+    const dense = Array.from({ length: 20 }, (_, i) => D(`2026-02-${String(i + 2).padStart(2, "0")}`, 1000));
+    expect(anchorDailiesToStatements(anchors, dense).summary.sparseSpans).toEqual([]);
   });
 
   it("(d) trailing dailies after the last anchor carry a constant offset; the last anchor stays exact", () => {
@@ -279,6 +290,9 @@ describe("anchorDailiesToStatements — shape-preserving anchor correction", () 
       segmentsSkipped: 0,
       trailingDays: 0,
       trailingSkipped: false,
+      anchoredSpans: [],
+      skippedSpans: [],
+      sparseSpans: [],
     });
   });
 
@@ -350,5 +364,64 @@ describe("formatAnchoredTooltipValue", () => {
   it("routes both figures through the supplied (privacy) formatter", () => {
     const mask = () => "•••";
     expect(formatAnchoredTooltipValue(1050, 1000, mask)).toBe("••• · recorded •••");
+  });
+});
+
+describe("equityCurveRangeCaption", () => {
+  const base = {
+    segmentsAnchored: 0,
+    segmentsSkipped: 0,
+    trailingDays: 0,
+    trailingSkipped: false,
+    anchoredSpans: [],
+    skippedSpans: [],
+    sparseSpans: [],
+  };
+  const old = { from: "2025-02-01", to: "2025-02-15" };
+  const recent = { from: "2026-08-31", to: "2026-09-30" };
+
+  it("counts only spans that end inside the selected range", () => {
+    const summary = {
+      ...base,
+      segmentsAnchored: 1,
+      segmentsSkipped: 2,
+      anchoredSpans: [recent],
+      skippedSpans: [old, { from: "2026-07-31", to: "2026-08-31" }],
+    };
+    expect(equityCurveRangeCaption(summary, null)).toBe(
+      "Daily values anchored to statement and broker snapshot values · 2 stretches plotted from statements only",
+    );
+    expect(equityCurveRangeCaption(summary, "2026-08-01")).toBe(
+      "Daily values anchored to statement and broker snapshot values · 1 month plotted from statements only",
+    );
+  });
+
+  it("says nothing about skipped history outside the range", () => {
+    const summary = { ...base, segmentsAnchored: 1, segmentsSkipped: 1, anchoredSpans: [recent], skippedSpans: [old] };
+    expect(equityCurveRangeCaption(summary, "2026-08-01")).toBe(
+      "Daily values anchored to statement and broker snapshot values",
+    );
+  });
+
+  it("uses stretches, not months, for a short skipped gap", () => {
+    const summary = {
+      ...base,
+      segmentsAnchored: 1,
+      segmentsSkipped: 1,
+      anchoredSpans: [recent],
+      skippedSpans: [{ from: "2026-09-01", to: "2026-09-12" }],
+    };
+    expect(equityCurveRangeCaption(summary, null)).toContain("1 stretch plotted from statements only");
+  });
+
+  it("captions sparse runs", () => {
+    const summary = { ...base, segmentsAnchored: 1, anchoredSpans: [recent], sparseSpans: [recent] };
+    expect(equityCurveRangeCaption(summary, null)).toBe(
+      "Daily values anchored to statement and broker snapshot values · 1 stretch with gaps drawn as straight lines",
+    );
+  });
+
+  it("null when nothing in range is plotted or skipped", () => {
+    expect(equityCurveRangeCaption({ ...base, skippedSpans: [old], segmentsSkipped: 1 }, "2026-08-01")).toBeNull();
   });
 });

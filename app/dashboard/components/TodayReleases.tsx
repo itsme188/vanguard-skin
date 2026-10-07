@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { CalendarEvent } from "@/lib/types";
 import { SymbolLink } from "./SymbolLink";
@@ -12,6 +13,7 @@ import { earningsTimeLabel } from "@/lib/calendar/release-times";
 import type { EarningsDisplayTime } from "@/lib/calendar/display-earnings-time";
 import { EnrichmentRowSummary } from "./calendar/EnrichmentChips";
 import { Chip } from "./Chip";
+import { preReleaseClearsAtMs } from "../today/pre-release-clear";
 import {
   isPreReleaseActual,
   preReleaseActualChipText,
@@ -113,6 +115,21 @@ export function TodayReleases({
 }) {
   const upcoming = mode === "upcoming";
   const todayIso = todayET();
+  // A pre-release chip is decided from the clock at render. One timer, set for
+  // the soonest print window to open, bumps `tick` so the rows re-evaluate and
+  // the chip clears without a reload; the effect re-arms for the next one.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const now = new Date();
+    let next: number | null = null;
+    for (const r of releases) {
+      const at = preReleaseClearsAtMs(r, now);
+      if (at !== null && (next === null || at < next)) next = at;
+    }
+    if (next === null) return;
+    const id = setTimeout(() => setTick((t) => t + 1), Math.max(0, next - Date.now()));
+    return () => clearTimeout(id);
+  }, [releases, tick]);
   return (
     <section className="rounded-xl bg-panel p-4">
       <div className="mb-2 flex items-baseline justify-between">

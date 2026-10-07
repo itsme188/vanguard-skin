@@ -19,7 +19,7 @@ import { usePrivateFormatter } from "@/lib/privacy/components";
 import { formatUSD } from "@/lib/format";
 import {
   anchorDailiesToStatements,
-  equityCurveCaption,
+  equityCurveRangeCaption,
   formatAnchoredTooltipValue,
   type AnchoredCurveSummary,
 } from "@/lib/chart/equity-curve-anchor";
@@ -107,27 +107,29 @@ function monthStartTicks<T extends { date: string }>(
 
 // ─── Data filtering ─────────────────────────────────────────────
 
-function filterByRange<T extends { date: string }>(
-  data: T[],
-  rangeIndex: number
-): T[] {
-  if (data.length === 0) return data;
-
+/** First date the selected range shows (YYYY-MM-DD); null for All. */
+function rangeCutoffIso(rangeIndex: number): string | null {
   const range = DATE_RANGES[rangeIndex];
   const today = new Date();
-
-  if (range.label === "All") return data;
-
+  if (range.label === "All") return null;
   let cutoff: Date;
   if (range.label === "YTD") {
     cutoff = new Date(today.getFullYear(), 0, 1);
   } else if (range.days) {
     cutoff = new Date(today.getTime() - range.days * 24 * 3600 * 1000);
   } else {
-    return data;
+    return null;
   }
+  return cutoff.toISOString().slice(0, 10);
+}
 
-  const cutoffStr = cutoff.toISOString().slice(0, 10);
+function filterByRange<T extends { date: string }>(
+  data: T[],
+  rangeIndex: number
+): T[] {
+  if (data.length === 0) return data;
+  const cutoffStr = rangeCutoffIso(rangeIndex);
+  if (cutoffStr === null) return data;
   return data.filter((d) => d.date >= cutoffStr);
 }
 
@@ -281,7 +283,7 @@ export function EquityCurveChart({
   // keep their shape, corrected additively onto the statements.
   const { points: rawData, summary: anchorSummary } = buildChartData(snapshots, dailyValuations);
   const hasDaily = dailyValuations && dailyValuations.length > 0;
-  const anchorCaption = equityCurveCaption(anchorSummary);
+  const anchorCaption = equityCurveRangeCaption(anchorSummary, rangeCutoffIso(selectedRange));
 
   const data = filterByRange(rawData, selectedRange);
   const color = ACCOUNT_COLORS[accountName] ?? "#C9A44E";

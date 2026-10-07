@@ -1,4 +1,5 @@
 import { dataWindowNotice } from "@/lib/compute/data-window";
+import { dataWindowCoveredCaption } from "@/lib/compute/data-window-caption";
 import type { PeriodAttribution } from "@/lib/compute/period-attribution";
 import { Pct } from "@/lib/privacy/components";
 
@@ -27,6 +28,11 @@ export function PeriodAttributionSection({
     attribution.betaWindow?.start ?? null,
     attribution.betaWindow?.end ?? null,
   );
+  // Always name the window: the notice above speaks only when history is
+  // shorter than the period, so a covered period would otherwise be silent.
+  const betaWindowCaption =
+    betaWindowNotice ??
+    dataWindowCoveredCaption(attribution.betaWindow?.start ?? null, attribution.betaWindow?.end ?? null);
 
   return (
     <>
@@ -157,8 +163,8 @@ export function PeriodAttributionSection({
               </p>
             </div>
           </div>
-          {betaWindowNotice && (
-            <p className="text-xs text-ink-faint mt-3">{betaWindowNotice}</p>
+          {betaWindowCaption && (
+            <p className="text-xs text-ink-faint mt-3">{betaWindowCaption}</p>
           )}
         </section>
       )}

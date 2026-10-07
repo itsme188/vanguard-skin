@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
+import { usePreReleaseActive } from "./use-pre-release-clear";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
 import { useToast } from "../components/Toast";
@@ -38,6 +39,12 @@ interface EarningsRowChipsProps {
    * instead of "act ✓". Display only (owner ruling 2026-10-06).
    */
   preReleaseActualTitle?: string | null;
+  /**
+   * Epoch ms at which the pre-release state ends (preReleaseClearsAtMs, computed
+   * by the server row beside preReleaseActualTitle). A timer clears the chip at
+   * that instant so it does not wait for a re-render. Null/absent = no timer.
+   */
+  preReleaseClearsAtMs?: number | null;
 }
 
 type Phase = "preview" | "recap";
@@ -246,8 +253,12 @@ export function EarningsRowChips({
   worksheetArmed,
   worksheetPrinted,
   timeEstimateLabel = null,
-  preReleaseActualTitle = null,
+  preReleaseActualTitle: preReleaseActualTitleProp = null,
+  preReleaseClearsAtMs = null,
 }: EarningsRowChipsProps) {
+  // The server decides pre-release; a timer clears it when the print window opens.
+  const stillPreRelease = usePreReleaseActive(preReleaseActualTitleProp !== null, preReleaseClearsAtMs);
+  const preReleaseActualTitle = stillPreRelease ? preReleaseActualTitleProp : null;
   // Task 9: the live cockpit row comes from the Hub's ONE controller through
   // context, not as a prop the server-rendered row would have to thread down.
   // `useHubLive()` returns null outside the provider (and on the very first

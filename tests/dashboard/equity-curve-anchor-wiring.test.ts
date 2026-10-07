@@ -10,7 +10,7 @@ const src = () => readFileSync("app/dashboard/components/EquityCurveChart.tsx", 
 describe("EquityCurveChart anchor-correction wiring", () => {
   it("imports the pure anchor module", () => {
     expect(src()).toMatch(
-      /import\s*\{[^}]*\banchorDailiesToStatements\b[^}]*\bequityCurveCaption\b[^}]*\bformatAnchoredTooltipValue\b[^}]*\}\s*from\s*"@\/lib\/chart\/equity-curve-anchor"/,
+      /import\s*\{[^}]*\banchorDailiesToStatements\b[^}]*\bequityCurveRangeCaption\b[^}]*\bformatAnchoredTooltipValue\b[^}]*\}\s*from\s*"@\/lib\/chart\/equity-curve-anchor"/,
     );
   });
 
@@ -38,7 +38,7 @@ describe("EquityCurveChart anchor-correction wiring", () => {
 
   it("renders the caption from equityCurveCaption in a small muted line", () => {
     const chart = src().slice(anchorIndex(src(), "export function EquityCurveChart"));
-    expect(chart).toContain("const anchorCaption = equityCurveCaption(anchorSummary);");
+    expect(chart).toContain("const anchorCaption = equityCurveRangeCaption(anchorSummary, rangeCutoffIso(selectedRange));");
     expect(chart).toMatch(
       /\{anchorCaption && \(\s*<p className="text-\[10px\] text-ink-faint mt-2">\{anchorCaption\}<\/p>/,
     );

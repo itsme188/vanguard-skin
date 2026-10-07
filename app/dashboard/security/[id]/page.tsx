@@ -36,6 +36,9 @@ import { getNotesForSecurity } from "@/lib/queries/notes";
 import { hasDeskNote, isFilingRow, kindLabel } from "@/lib/transcripts/presentation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { EarningsConflictMarker } from "../../components/calendar/EarningsConflictMarker";
+// DISPLAY ONLY (user ruling 2026-10-06): the usual time / "time unknown" for a
+// slot-less earnings row. app/** is an allowed importer.
+import { displayEarningsTime } from "@/lib/calendar/display-earnings-time";
 
 function gainClass(value: number | null): string {
   if (value == null) return "text-ink-dim";
@@ -860,6 +863,11 @@ export default async function SecurityDetailPage(props: {
                   className="flex-shrink-0"
                 />
                 <span className="truncate text-sm text-ink">{event.title}</span>
+                {event.event_type === "earnings" && (
+                  <span className="ml-auto flex-shrink-0 font-mono text-[11px] text-ink-faint">
+                    {displayEarningsTime(db, event).label}
+                  </span>
+                )}
               </div>
             ))}
           </div>
