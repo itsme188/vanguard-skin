@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { HoldingsTable } from "@/app/dashboard/components/HoldingsTable";
 import { PrivacyProvider } from "@/lib/privacy/context";
-import type { HoldingWithSecurity } from "@/lib/queries/holdings";
+import type { AccountHoldingRow } from "@/lib/queries/holdings";
 import {
   LIVE_SNAPSHOT_CASH_CAPTION,
   type AccountCashLine,
@@ -24,7 +24,7 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/dashboard/accounts",
 }));
 
-function holding(id: number, symbol: string): HoldingWithSecurity {
+function holding(id: number, symbol: string): AccountHoldingRow {
   return {
     id,
     account_id: 1,
@@ -43,7 +43,11 @@ function holding(id: number, symbol: string): HoldingWithSecurity {
     expiration_date: null,
     option_type: null,
     multiplier: 1,
-  } as HoldingWithSecurity;
+    fund_category: null,
+    current_price: 120,
+    current_value: 1200,
+    unrealized_gain: 200,
+  };
 }
 
 function cashLine(over: Partial<AccountCashLine> = {}): AccountCashLine {
@@ -64,7 +68,7 @@ function cashLine(over: Partial<AccountCashLine> = {}): AccountCashLine {
   };
 }
 
-function render(holdings: HoldingWithSecurity[], line: AccountCashLine | null): string {
+function render(holdings: AccountHoldingRow[], line: AccountCashLine | null): string {
   return renderToStaticMarkup(
     <PrivacyProvider>
       <HoldingsTable holdings={holdings} cashLine={line} />

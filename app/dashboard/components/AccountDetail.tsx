@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { Account, MonthlySnapshot } from "@/lib/types";
-import type { HoldingWithSecurity } from "@/lib/queries/holdings";
+import type { AccountHoldingRow } from "@/lib/queries/holdings";
 import type { TransactionWithSecurity } from "@/lib/queries/transactions";
 import type { DailyValuation } from "@/lib/queries/daily-valuations";
 import type { AccountCashLine } from "@/lib/queries/account-cash-line";
@@ -10,12 +10,12 @@ import { HoldingsTable } from "./HoldingsTable";
 import { TransactionHistory } from "./TransactionHistory";
 import { EquityCurveChart } from "./EquityCurveChart";
 import { ReconciliationTable } from "./ReconciliationTable";
-import { SnapshotAge } from "./SnapshotAge";
+import { SnapshotAge, summarizeSnapshot } from "./SnapshotAge";
 import type { ReconciliationCheckpoint } from "@/lib/queries/reconciliation";
 
 interface AccountDetailProps {
   selectedAccount: Account;
-  holdings: HoldingWithSecurity[];
+  holdings: AccountHoldingRow[];
   transactions: TransactionWithSecurity[];
   snapshots: MonthlySnapshot[];
   dailyValuations?: DailyValuation[];
@@ -34,29 +34,31 @@ export function AccountDetail({
   cashLine,
   reconciliationCheckpoints,
 }: AccountDetailProps) {
-  // Vanguard accounts update only on statement import — the holdings table
-  // reflects the period-end of the last imported statement, not live data.
-  // Surfacing the snapshot age here makes that boundary explicit (vs IBKR
-  // which has a sibling refresh button that already shows live sync state).
-  const isVanguard = selectedAccount.name.toLowerCase().includes("vanguard");
-  // getHoldingsByAccount's default (no explicit asOfDate) branch keys
-  // "latest" per (account, security) — NOT a single account-wide date — and
-  // orders by symbol, not date. So holdings[0] can be a statement-only bond
-  // still carrying an older as_of_date (e.g. 2026-07-31) while the rest of
-  // the account synced days later (2026-08-28); reading holdings[0] alone
-  // painted a false "stale" snapshot-age chip. Dates are YYYY-MM-DD, so a
-  // plain string max across the rows gives the true latest date without a
-  // second DB round trip (this is a client component — no `db` access).
-  const snapshotDate = holdings.reduce<string | null>(
-    (latest, h) => (latest === null || h.as_of_date > latest ? h.as_of_date : latest),
-    null
-  );
+  // Every account gets the chip: the page has no other freshness control,
+  // and the account with no chip (IBKR) was the one with the stalest rows.
+  //
+  // The holdings read keys "latest" per (account, security) — NOT a single
+  // account-wide date — so the rows can carry several as-of dates at once:
+  // a statement-only bond or cash fund stays on the month-end date while the
+  // rest of the account synced days later. summarizeSnapshot reads the
+  // newest and oldest date, each sleeve's own dates and the newest rows'
+  // source off the rows already on screen (this is a client component — no
+  // `db` access). Age and tone follow the NEWEST date, so one old bond does
+  // not paint the whole account stale; the chip shows the range so it does
+  // not claim that date for the older rows either (ruling 2026-09-14).
+  const snapshot = summarizeSnapshot(holdings);
 
   return (
     <div className="space-y-6">
-      {isVanguard && snapshotDate && (
+      {snapshot && (
         <div className="flex items-center justify-end -mb-3">
-          <SnapshotAge asOfDate={snapshotDate} alwaysShow />
+          <SnapshotAge
+            asOfDate={snapshot.newest}
+            oldestAsOfDate={snapshot.oldest}
+            source={snapshot.source}
+            sleeves={snapshot.sleeves}
+            alwaysShow
+          />
         </div>
       )}
       {(snapshots.length > 0 || (dailyValuations && dailyValuations.length > 0)) && (

@@ -280,7 +280,11 @@ describe("AllHoldingsTable footer (source)", () => {
 
   it("decides 'no cost basis' with the file's one predicate", () => {
     const text = src();
-    expect((text.match(/const hasKnownBasis\s*=/g) ?? []).length).toBe(1);
+    // 2026-10-07: the one predicate is now the shared helper in
+    // lib/compute/known-basis.ts (also used by HoldingsTable.tsx); this file
+    // imports it and defines no copy.
+    expect(text).toMatch(/import\s*\{\s*hasKnownBasis\s*\}\s*from\s*"@\/lib\/compute\/known-basis"/);
+    expect(text).not.toMatch(/(const|function)\s+hasKnownBasis\b/);
     const summary = text.slice(
       anchorIndex(text, "export function summarizeHoldingsFooter"),
       anchorIndex(text, "export function AllHoldingsTable"),

@@ -24,15 +24,17 @@ describe("AllHoldingsTable treats a zero cost basis as unknown everywhere", () =
   const src = () =>
     readFileSync("app/dashboard/components/AllHoldingsTable.tsx", "utf8");
 
-  it("defines exactly one hasKnownBasis predicate that excludes both null and zero", () => {
+  // 2026-10-07: the private predicate moved to lib/compute/known-basis.ts so
+  // HoldingsTable.tsx and this table share one definition. What it answers
+  // (null and exactly-zero are both "unknown") is tested with real values in
+  // tests/compute/known-basis.test.ts.
+  it("takes hasKnownBasis from the one shared helper and defines no local copy", () => {
     const text = src();
-    const matches = text.match(/const hasKnownBasis\s*=/g) ?? [];
-    expect(matches.length).toBe(1);
-    // Mirrors the query's NULLIF(costBasisExpr, 0) convention — both null
-    // and exactly-zero are "unknown."
     expect(text).toMatch(
-      /hasKnownBasis\s*=\s*\([^)]*\)[^=]*=>\s*[\s\S]*?cost_basis\s*!==\s*null\s*&&\s*[\s\S]*?cost_basis\s*!==\s*0/
+      /import\s*\{\s*hasKnownBasis\s*\}\s*from\s*"@\/lib\/compute\/known-basis"/
     );
+    expect(text).not.toMatch(/(const|function)\s+hasKnownBasis\b/);
+    expect(text).not.toMatch(/cost_basis\s*!==\s*0/);
   });
 
   it("the Cost Basis cell renders the unknown placeholder when hasKnownBasis is false", () => {
@@ -128,11 +130,17 @@ describe("AllHoldingsTable treats a zero cost basis as unknown everywhere", () =
     expect(bodyCellMatch![0]).toContain("title={NO_COST_BASIS_TOOLTIP}");
   });
 
-  it("the sort key maps a stored 0 to null for cost_basis and unrealized_gain only", () => {
+  // 2026-10-07 (QA accounts-holdings-gain-sort--real-zero-gain-sorted-as-
+  // unknown-below-every-loss): the key used to null ANY 0 in these two
+  // columns, so a real $0.00 gain sorted as unknown. It now nulls a figure
+  // only when the row's basis is unknown; tests/dashboard/holdings-sort-
+  // value.test.ts covers the behaviour with real rows.
+  it("the sort key maps cost_basis and unrealized_gain to null only for an unknown basis", () => {
     const text = src();
     expect(text).toMatch(
-      /field === "cost_basis" \|\| field === "unrealized_gain"[\s\S]{0,40}v === 0/
+      /\(field === "cost_basis" \|\| field === "unrealized_gain"\) && !hasKnownBasis\(row\)/
     );
+    expect(text).not.toMatch(/v === 0/);
     expect(text).toMatch(/compareValues\(sortValue\(a\),\s*sortValue\(b\),\s*sort\.dir\)/);
     // The old raw-field compare must be gone — otherwise the mapped
     // sortValue helper is dead code and the bug persists.

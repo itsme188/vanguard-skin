@@ -4,7 +4,7 @@ import { db } from "@/lib/db";
 import { getAllAccounts } from "@/lib/queries/accounts";
 import {
   getAllHoldings,
-  getHoldingsByAccount,
+  getValuedHoldingsByAccount,
 } from "@/lib/queries/holdings";
 import { getTransactionsByAccount } from "@/lib/queries/transactions";
 import { getSnapshotsByAccount } from "@/lib/queries/monthly-snapshots";
@@ -15,6 +15,8 @@ import { AccountDetail } from "../components/AccountDetail";
 import { AccountSelector } from "../components/AccountSelector";
 import { AllHoldingsTable } from "../components/AllHoldingsTable";
 import { EmptyState } from "../components/EmptyState";
+import { EmptySection } from "../components/EmptySection";
+import { Count } from "@/lib/privacy/components";
 import { PlaidSyncButton } from "../components/PlaidSyncButton";
 
 export default async function AccountsPage(props: {
@@ -58,7 +60,8 @@ export default async function AccountsPage(props: {
             <div>
               <h2 className="text-lg font-medium text-ink">Holdings</h2>
               <p className="text-sm text-ink-faint mt-0.5">
-                {holdings.length} positions across all accounts
+                {/* A portfolio-derived count: masked under Hide amounts. */}
+                <Count value={holdings.length} /> positions across all accounts
               </p>
             </div>
             <PlaidSyncButton />
@@ -78,6 +81,20 @@ export default async function AccountsPage(props: {
             <AllHoldingsTable holdings={holdings} />
           )}
         </section>
+        {/* The three sections below exist per account only. Say so here
+            instead of dropping them without a word. */}
+        <EmptySection
+          title="Equity Curve"
+          reason="The equity curve is drawn for one account at a time. Pick an account above to see its curve."
+        />
+        <EmptySection
+          title="Recent Transactions"
+          reason="Transactions are listed for one account at a time. Pick an account above to see its activity."
+        />
+        <EmptySection
+          title="Reconciliation"
+          reason="Reconciliation checkpoints compare one account against its own statement. Pick an account above to see or add them."
+        />
       </div>
     );
   }
@@ -90,7 +107,9 @@ export default async function AccountsPage(props: {
 
   let holdings, transactions, snapshots, dailyValuations, cashLine, reconciliationCheckpoints;
   try {
-    holdings = getHoldingsByAccount(db, selectedAccount.id);
+    // The same priced rows the All Accounts table shows, bound to this
+    // account (value, gain and cost basis per row).
+    holdings = getValuedHoldingsByAccount(db, selectedAccount.id);
     transactions = getTransactionsByAccount(db, selectedAccount.id, {
       limit: 50,
     });
