@@ -29,7 +29,7 @@ import { YearSelector, AccountSelector } from "../components/YearSelector";
 import { EmptyState } from "../components/EmptyState";
 import { TaxReportCard } from "../components/TaxReportCard";
 import { resolveSelectedYear } from "./select-year";
-import { Count } from "@/lib/privacy/components";
+import { Count, PrivateText } from "@/lib/privacy/components";
 
 export default async function TaxLotsPage(props: {
   searchParams: Promise<{ year?: string; account?: string; security?: string }>;
@@ -96,6 +96,8 @@ export default async function TaxLotsPage(props: {
   const currencyConversionClosedSales = closedSales.filter(isCurrencyConversionTaxLot);
   const capitalOpenLots = openLots.filter((l) => !isCurrencyConversionTaxLot(l));
   const capitalClosedSales = closedSales.filter((s) => !isCurrencyConversionTaxLot(s));
+  const expiredOptionSymbols = [...new Set(expiredOptionLotsAwaitingClose.map((l) => l.symbol))];
+  const expiredOptionContractCount = expiredOptionSymbols.length;
 
   const isNarrowed = Boolean(selectedAccount) || filterSecurityId != null;
 
@@ -246,10 +248,11 @@ export default async function TaxLotsPage(props: {
               tax-lots--account-filter-ignored-by-tax-report-card-and-exports);
               the ?security= narrowing is display-only and never scopes an
               8949 export. */}
-          {expiredOptionLotsAwaitingClose.length > 0 && (
+          {expiredOptionContractCount > 0 && (
             <p className="text-sm text-ink-dim">
-              <Count value={expiredOptionLotsAwaitingClose.length} /> expired contracts awaiting a closing entry:{" "}
-              {expiredOptionLotsAwaitingClose.map((lot) => lot.symbol).join(", ")}
+              <Count value={expiredOptionContractCount} /> expired{" "}
+              {expiredOptionContractCount === 1 ? "contract" : "contracts"} awaiting a closing entry:{" "}
+              <PrivateText>{expiredOptionSymbols.join(", ")}</PrivateText>
             </p>
           )}
           <TaxReportCard year={selectedYear} accountName={selectedAccount || undefined} />

@@ -49,6 +49,76 @@ function seedPrice(
   ).run(securityId, date, price);
 }
 
+function seedTaxLot(
+  db: Database.Database,
+  accountId: number,
+  securityId: number,
+  opts: {
+    acquisitionDate: string;
+    acquisitionPrice: number;
+    quantityAcquired: number;
+    quantityRemaining: number;
+    costBasis: number;
+  }
+): number {
+  const result = db
+    .prepare(
+      `INSERT INTO tax_lots
+         (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      accountId,
+      securityId,
+      opts.acquisitionDate,
+      opts.acquisitionPrice,
+      opts.quantityAcquired,
+      opts.quantityRemaining,
+      opts.costBasis
+    );
+  return result.lastInsertRowid as number;
+}
+
+function seedTaxLotSale(
+  db: Database.Database,
+  accountId: number,
+  securityId: number,
+  taxLotId: number,
+  opts: {
+    saleDate: string;
+    quantitySold: number;
+    proceeds: number;
+    costBasisAllocated: number;
+    realizedGainLoss: number;
+    isLongTerm?: boolean;
+  }
+): void {
+  const txnId = db
+    .prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, source_key)
+       VALUES (?, ?, ?, 'SELL', ?)`
+    )
+    .run(accountId, securityId, opts.saleDate, `summary-sale-${taxLotId}`)
+    .lastInsertRowid as number;
+  db.prepare(
+    `INSERT INTO tax_lot_sales
+       (tax_lot_id, sale_transaction_id, sale_date, sale_price, quantity_sold, proceeds,
+        cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    taxLotId,
+    txnId,
+    opts.saleDate,
+    opts.proceeds / opts.quantitySold,
+    opts.quantitySold,
+    opts.proceeds,
+    opts.costBasisAllocated,
+    opts.realizedGainLoss,
+    opts.isLongTerm === false ? 0 : 1,
+    opts.isLongTerm === false ? 100 : 400
+  );
+}
+
 function seedSnapshot(
   db: Database.Database,
   accountId: number,
@@ -211,6 +281,51 @@ describe("getPortfolioSummaryForChat", () => {
     expect(summary).toContain("Tax Summary");
     expect(summary).toContain("Open lots: 1");
     expect(summary).toContain("cost basis: $2,000");
+  });
+
+  it("excludes currency conversions and expired options from chat tax totals", () => {
+    const stock = seedSecurity(db, "ZZSTOCK", "ZZ Stock", "stock");
+    seedTaxLot(db, ACCOUNT_ID, stock, {
+      acquisitionDate: "2026-01-01",
+      acquisitionPrice: 100,
+      quantityAcquired: 10,
+      quantityRemaining: 10,
+      costBasis: 1000,
+    });
+
+    const fx = seedSecurity(db, "ZZE.USD", "ZZ Euro conversion", "Forex");
+    const fxLot = seedTaxLot(db, ACCOUNT_ID, fx, {
+      acquisitionDate: "2026-01-01",
+      acquisitionPrice: 100,
+      quantityAcquired: 1,
+      quantityRemaining: 0,
+      costBasis: 100,
+    });
+    seedTaxLotSale(db, ACCOUNT_ID, fx, fxLot, {
+      saleDate: "2026-03-01",
+      quantitySold: 1,
+      proceeds: 120,
+      costBasisAllocated: 100,
+      realizedGainLoss: 20,
+      isLongTerm: false,
+    });
+
+    const expiredOption = seedSecurity(db, "ZZOPT 260101C00050000", "ZZ expired call", "Option");
+    db.prepare("UPDATE securities SET multiplier = 100, expiration_date = '2026-01-01' WHERE id = ?").run(expiredOption);
+    seedTaxLot(db, ACCOUNT_ID, expiredOption, {
+      acquisitionDate: "2025-12-01",
+      acquisitionPrice: 2,
+      quantityAcquired: 1,
+      quantityRemaining: 1,
+      costBasis: 200,
+    });
+
+    const summary = getPortfolioSummaryForChat(db);
+    expect(summary).toContain("Open lots: 1");
+    expect(summary).toContain("cost basis: $1,000");
+    expect(summary).toContain("Realized gains: $0");
+    expect(summary).not.toContain("ZZOPT");
+    expect(summary).not.toContain("$1,200");
   });
 });
 

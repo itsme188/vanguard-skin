@@ -25,10 +25,10 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function ensureSecurity(db: Database.Database, symbol: string): number {
+function ensureSecurity(db: Database.Database, symbol: string, securityType = "Stock"): number {
   db.prepare(
-    "INSERT OR IGNORE INTO securities (symbol, name, security_type) VALUES (?, ?, 'Stock')",
-  ).run(symbol, symbol);
+    "INSERT OR IGNORE INTO securities (symbol, name, security_type) VALUES (?, ?, ?)",
+  ).run(symbol, symbol, securityType);
   return (db.prepare("SELECT id FROM securities WHERE symbol = ?").get(symbol) as { id: number })
     .id;
 }
@@ -160,6 +160,22 @@ function seedDisposal(
     saleDate: opts.saleDate,
     premiumRollover: opts.premiumRollover,
     isLongTerm: opts.isLongTerm,
+  });
+}
+
+function seedForexDisposal(db: Database.Database): void {
+  const securityId = ensureSecurity(db, "ZZE.USD", "Forex");
+  const saleTransactionId = insertSellTransaction(db, ACCOUNT_ID, securityId, "2026-03-01");
+  const taxLotId = insertTaxLot(db, ACCOUNT_ID, securityId, "2026-01-01", 100, 1, 0, 100);
+  insertSaleRow(db, {
+    taxLotId,
+    saleTransactionId,
+    quantitySold: 1,
+    salePrice: 120,
+    proceeds: 120,
+    costBasisAllocated: 100,
+    realizedGainLoss: 20,
+    saleDate: "2026-03-01",
   });
 }
 
@@ -535,6 +551,48 @@ describe("runReconciliation", () => {
     const result = runReconciliation(db, config);
     expect(result.pass).toBe(true);
     expect(result.summary).not.toContain("extra engine disposal");
+  });
+
+  it("currency-conversion engine rows are invisible to filing reconciliation", () => {
+    const db = createTestDb();
+    seedDisposal(db, {
+      accountId: ACCOUNT_ID,
+      symbol: "KNOWNFX",
+      acquisitionDate: "2026-01-01",
+      saleDate: "2026-02-01",
+      quantity: 10,
+      proceeds: 1000,
+      basis: 800,
+      gain: 200,
+    });
+    seedForexDisposal(db);
+
+    const config: BrokerRealizedConfig = {
+      entries: [
+        {
+          accountId: ACCOUNT_ID,
+          taxYear: 2026,
+          source: "test-fx",
+          statementTotal: { proceeds: 1000, basis: 800, gain: 200 },
+          rows: [
+            {
+              symbol: "KNOWNFX",
+              disposalDate: "2026-02-01",
+              quantity: 10,
+              currency: "USD",
+              proceeds: 1000,
+              basis: 800,
+              gain: 200,
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = runReconciliation(db, config);
+    expect(result.pass).toBe(true);
+    expect(result.summary).not.toContain("extra engine disposal");
+    expect(engineRollUpItems(db, ACCOUNT_ID, 2026, false).map((r) => r.symbol)).toEqual(["KNOWNFX"]);
   });
 
   it("ambiguous match: two engine groups sharing one broker identity key fail closed", () => {

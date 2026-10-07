@@ -27,7 +27,7 @@ import { tradeGradeGroupCaption } from "./trade-grade-group";
 import { computeSecurityFactorShare } from "@/lib/compute/factors";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { QuoteStats } from "../../components/QuoteStats";
-import { Money, Pct, Shares, PrivateText, QuantityUnit } from "@/lib/privacy/components";
+import { Count, Money, Pct, Shares, PrivateText, QuantityUnit } from "@/lib/privacy/components";
 import { computeLotCoverageGaps } from "@/lib/compute/lot-coverage";
 import { daysToExpiry, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import type { EarningsTranscript } from "@/lib/types";
@@ -200,7 +200,7 @@ export default async function SecurityDetailPage(props: {
 
   if (!detail) notFound();
 
-  const { security, price, kpis, positions, openTaxLots, closedSales, closedSalesTotal, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, researchMentions } = detail;
+  const { security, price, kpis, positions, openTaxLots, expiredOptionLotsAwaitingClose, closedSales, closedSalesTotal, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, researchMentions } = detail;
 
   // Per-account reconciliation: a position's quantity should equal the sum of
   // that account's open tax lots. Statement import and computeTaxLots are
@@ -467,7 +467,7 @@ export default async function SecurityDetailPage(props: {
       )}
 
       {/* Tax Lots */}
-      {(openTaxLots.length > 0 || lotCoverageGaps.length > 0) && (
+      {(openTaxLots.length > 0 || expiredOptionLotsAwaitingClose.length > 0 || lotCoverageGaps.length > 0) && (
         <Section
           title={`Open Tax Lots · ${openTaxLots.length}`}
           action={
@@ -500,6 +500,12 @@ export default async function SecurityDetailPage(props: {
                 </p>
               ))}
             </div>
+          )}
+          {expiredOptionLotsAwaitingClose.length > 0 && (
+            <p className="px-5 py-3 border-b border-edge text-xs text-ink-dim">
+              <Count value={expiredOptionLotsAwaitingClose.length} /> expired{" "}
+              {expiredOptionLotsAwaitingClose.length === 1 ? "lot is" : "lots are"} awaiting a closing entry.
+            </p>
           )}
           <ScrollFade>
             <table className="w-full">

@@ -4,6 +4,8 @@ import { formatUSD, formatNumber } from "@/lib/format";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { CURRENCY_CONVERSION_SECURITY_SQL } from "@/lib/queries/tax-lots";
 import {
   isPendingStatementLot,
   pendingStatementKey,
@@ -307,7 +309,11 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
        FROM tax_lots
        JOIN securities s ON s.id = tax_lots.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
-       WHERE quantity_remaining > 0 AND quantity_acquired != 0 ${taxLotsAccountFilter}
+       WHERE quantity_remaining > 0
+         AND quantity_acquired != 0
+         AND NOT (${CURRENCY_CONVERSION_SECURITY_SQL})
+         AND ${liveOptionExpirationSql("s", today)}
+         ${taxLotsAccountFilter}
        GROUP BY tax_lots.account_id, tax_lots.security_id, tax_lots.is_short`
     )
     .all(...taxLotsAccountParams) as Array<{
@@ -330,9 +336,10 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     }
   }
 
-  const realizedGainsJoin = accountId != null
-    ? `JOIN tax_lots ON tax_lots.id = tax_lot_sales.tax_lot_id WHERE tax_lots.account_id = ?`
-    : "";
+  const realizedGainsJoin = `JOIN tax_lots ON tax_lots.id = tax_lot_sales.tax_lot_id
+       JOIN securities s ON s.id = tax_lots.security_id
+       WHERE NOT (${CURRENCY_CONVERSION_SECURITY_SQL})
+       ${accountId != null ? "AND tax_lots.account_id = ?" : ""}`;
   const realizedGainsParams = accountId != null ? [accountId] : [];
   const realizedGains = db
     .prepare(
@@ -381,6 +388,8 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       LEFT JOIN latest_prices lp ON lp.security_id = tl.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE tl.quantity_remaining > 0
+        AND NOT (${CURRENCY_CONVERSION_SECURITY_SQL})
+        AND ${liveOptionExpirationSql("s", today)}
         AND lp.close_price IS NOT NULL
         AND (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
              - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) < -100
@@ -428,6 +437,8 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       LEFT JOIN latest_prices lp ON lp.security_id = tl.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE tl.quantity_remaining > 0
+        AND NOT (${CURRENCY_CONVERSION_SECURITY_SQL})
+        AND ${liveOptionExpirationSql("s", today)}
         AND julianday(date(tl.acquisition_date, '+366 days')) > julianday(?)
         AND julianday(date(tl.acquisition_date, '+366 days')) - julianday(?) <= 60
         ${taxLotsFilter}

@@ -92,6 +92,7 @@ import { spawnSync } from "node:child_process";
 import type Database from "better-sqlite3";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { stampBrokerAcceptance, type AcceptanceCoverage } from "@/lib/compute/tax-convention";
+import { CURRENCY_CONVERSION_SECURITY_SQL } from "@/lib/queries/tax-lots";
 
 // ─── Tolerances ──────────────────────────────────────────────────────
 
@@ -223,10 +224,11 @@ interface EngineGroup {
 /**
  * Filing-eligible tax_lot_sales rows for one (account, tax year), mirroring
  * getClosedTaxLotSales's filingOnly predicate exactly (tls.premium_rollover
- * = 0 AND t.type != 'RECONCILE_CLOSE' — lib/queries/tax-lots.ts). Queried
- * directly rather than through getClosedTaxLotSales because its returned
- * shape (TaxLotSaleWithDetails) doesn't carry sale_transaction_id, which
- * this script needs for the FIFO-split grouping key.
+ * = 0 AND t.type != 'RECONCILE_CLOSE' and no currency conversions —
+ * lib/queries/tax-lots.ts). Queried directly rather than through
+ * getClosedTaxLotSales because its returned shape (TaxLotSaleWithDetails)
+ * doesn't carry sale_transaction_id, which this script needs for the
+ * FIFO-split grouping key.
  *
  * ORDER BY tl.acquisition_date, tls.id gives groupEngineSales a
  * deterministic row order to sum in (spec: "summed deterministically").
@@ -255,6 +257,7 @@ function fetchFilingSaleRows(
         WHERE tl.account_id = ?
           AND tls.sale_date >= ? AND tls.sale_date <= ?
           AND tls.premium_rollover = 0 AND t.type != 'RECONCILE_CLOSE'
+          AND NOT (${CURRENCY_CONVERSION_SECURITY_SQL})
         ORDER BY tl.acquisition_date, tls.id`,
     )
     .all(accountId, `${taxYear}-01-01`, `${taxYear}-12-31`) as RawSaleRow[];

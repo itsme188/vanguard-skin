@@ -1,4 +1,4 @@
-import { getOpenTaxLots } from "@/lib/queries/tax-lots";
+import { getExpiredOptionLotsAwaitingClose, getOpenTaxLots } from "@/lib/queries/tax-lots";
 import { getStaleTradeReviewIds } from "@/lib/queries/trade-review-pairings";
 /**
  * Consolidated queries for the Security Detail page.
@@ -106,6 +106,7 @@ export interface SecurityDetailData {
   /** null when every constituent position's gain is unknown */
   totalUnrealizedGain: number | null;
   openTaxLots: TaxLotWithSecurity[];
+  expiredOptionLotsAwaitingClose: TaxLotWithSecurity[];
   closedSales: TaxLotSaleWithDetails[];
   /** Every closed sale for the security; closedSales is capped at 20. */
   closedSalesTotal: number;
@@ -251,6 +252,13 @@ export function getHoldingsBySecurity(
  */
 export function getOpenTaxLotsBySecurity(db: Database.Database, securityId: number): TaxLotWithSecurity[] {
   return getOpenTaxLots(db, securityId);
+}
+
+export function getExpiredOptionLotsAwaitingCloseBySecurity(
+  db: Database.Database,
+  securityId: number
+): TaxLotWithSecurity[] {
+  return getExpiredOptionLotsAwaitingClose(db, { securityId });
 }
 
 /**
@@ -652,6 +660,7 @@ export function getSecurityDetail(
   const kpis = getKpisForSecurity(db, securityId);
   const positions = getHoldingsBySecurity(db, securityId);
   const openTaxLots = getOpenTaxLotsBySecurity(db, securityId);
+  const expiredOptionLotsAwaitingClose = getExpiredOptionLotsAwaitingCloseBySecurity(db, securityId);
   const closedSales = getClosedSalesBySecurity(db, securityId);
   const closedSalesTotal = countClosedSalesBySecurity(db, securityId);
   const recentTransactions = getTransactionsBySecurity(db, securityId);
@@ -709,6 +718,7 @@ export function getSecurityDetail(
     totalCostBasis,
     totalUnrealizedGain,
     openTaxLots,
+    expiredOptionLotsAwaitingClose,
     closedSales,
     closedSalesTotal,
     recentTransactions,

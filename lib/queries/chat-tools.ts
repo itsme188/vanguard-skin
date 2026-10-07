@@ -7,6 +7,8 @@ import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 import { isPendingStatementLot, pendingStatementKeySet } from "@/lib/queries/pending-statement";
+import { isOptionLive } from "@/lib/compute/option-expiry";
+import { isCurrencyConversionSecurityType } from "@/lib/queries/tax-lots";
 
 /**
  * Chat sector-FILTER-only alias, on top of normalizeSector. normalizeSector
@@ -125,6 +127,8 @@ export interface TaxLotResult {
   account_name: string;
   symbol: string;
   security_name: string | null;
+  security_type?: string | null;
+  expiration_date?: string | null;
   acquisition_date: string;
   acquisition_price: number;
   quantity_remaining: number;
@@ -491,6 +495,8 @@ export function getTaxLotsForChat(
         a.name AS account_name,
         s.symbol,
         s.name AS security_name,
+        s.security_type,
+        s.expiration_date,
         tl.acquisition_date,
         tl.acquisition_price,
         tls.quantity_sold AS quantity_remaining,
@@ -520,6 +526,7 @@ export function getTaxLotsForChat(
     return rows.map((r) => ({
       ...r,
       is_long_term: Boolean(r.is_long_term),
+      status_note: taxLotStatusNote(r, today),
     })) as TaxLotResult[];
   }
 
@@ -555,6 +562,8 @@ export function getTaxLotsForChat(
       a.name AS account_name,
       s.symbol,
       s.name AS security_name,
+      s.security_type,
+      s.expiration_date,
       tl.acquisition_date,
       tl.acquisition_price,
       tl.quantity_remaining,
@@ -596,6 +605,7 @@ export function getTaxLotsForChat(
   const pendingKeys = pendingStatementKeySet(db);
   return rows.map(({ account_id, security_id, is_short, ...r }) => {
     const pending = isPendingStatementLot(pendingKeys, { account_id, security_id, is_short });
+    const statusNote = taxLotStatusNote(r, today);
     return pending
       ? {
           ...r,
@@ -603,15 +613,29 @@ export function getTaxLotsForChat(
           unrealized_gain: null,
           is_long_term: Boolean(r.is_long_term),
           pending_statement: true,
-          status_note: PENDING_STATEMENT_CHAT_NOTE,
+          status_note: statusNote ? `${PENDING_STATEMENT_CHAT_NOTE} ${statusNote}` : PENDING_STATEMENT_CHAT_NOTE,
         }
-      : { ...r, is_long_term: Boolean(r.is_long_term), pending_statement: false };
+      : { ...r, is_long_term: Boolean(r.is_long_term), pending_statement: false, status_note: statusNote };
   }) as TaxLotResult[];
 }
 
 /** How chat describes a pending-statement lot (pinned by tests). */
 export const PENDING_STATEMENT_CHAT_NOTE =
   "Pending statement: this position was closed per live broker data, awaiting the broker statement for the closing trade. It is not an unrealized holding, and its realized gain is unknown until the statement is imported.";
+
+const CURRENCY_CONVERSION_CHAT_NOTE =
+  "Currency conversion: this is a Section 988 ordinary-income cash-management lot, not a capital tax lot.";
+
+const EXPIRED_OPTION_CHAT_NOTE =
+  "Expired option: this contract is past expiration and is awaiting a real broker closing entry.";
+
+function taxLotStatusNote(row: { security_type?: string | null; expiration_date?: string | null }, today: string): string | undefined {
+  if (isCurrencyConversionSecurityType(row.security_type)) return CURRENCY_CONVERSION_CHAT_NOTE;
+  if ((row.security_type ?? "").trim().toLowerCase() === "option" && !isOptionLive(row.expiration_date, today)) {
+    return EXPIRED_OPTION_CHAT_NOTE;
+  }
+  return undefined;
+}
 
 /**
  * Search transaction history with filters.

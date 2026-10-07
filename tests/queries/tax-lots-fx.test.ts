@@ -321,6 +321,9 @@ describe("tax-lots FX conversion", () => {
     });
 
     it("filingOnly excludes Forex conversion sales while the operational reader keeps them classified", () => {
+      const csvBefore = generateForm8949CSV(generateTaxReport(db, YEAR));
+      const txfBefore = generateTXF(generateTaxReport(db, YEAR));
+
       const fx = seedSecurity(db, "ZZE.USD", { security_type: "Forex" });
       seedSale(db, ACCOUNT_ID, fx, "2026-07-12", {
         proceeds: 120,
@@ -336,8 +339,12 @@ describe("tax-lots FX conversion", () => {
 
       const report = generateTaxReport(db, YEAR);
       expect(report.shortTermRows.some((r) => r.symbol === "ZZE.USD")).toBe(false);
-      expect(generateForm8949CSV(report)).not.toContain("ZZE.USD");
-      expect(generateTXF(report)).not.toContain("ZZE.USD");
+      const csvAfter = generateForm8949CSV(report);
+      const txfAfter = generateTXF(report);
+      expect(csvAfter).not.toContain("ZZE.USD");
+      expect(txfAfter).not.toContain("ZZE.USD");
+      expect(csvAfter).toBe(csvBefore);
+      expect(txfAfter).toBe(txfBefore);
     });
   });
 });

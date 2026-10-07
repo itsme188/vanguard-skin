@@ -1,8 +1,6 @@
 import type Database from "better-sqlite3";
-import { SecType } from "@stoqey/ib";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
-import { mapSecurityType } from "@/lib/tws/security-type-map";
 import {
   isPendingStatementLot,
   pendingStatementKey,
@@ -153,10 +151,10 @@ export interface AccountTaxSummary extends EngineEstimatedDisclosure {
 
 /** Realized G/L is stored native per security; only USD rows may sum into USD totals. */
 const USD_ONLY = `COALESCE(s.currency, 'USD') = 'USD'`;
-const CURRENCY_CONVERSION_SECURITY = `LOWER(COALESCE(s.security_type, '')) = 'forex'`;
+export const CURRENCY_CONVERSION_SECURITY_SQL = `LOWER(TRIM(COALESCE(s.security_type, ''))) = 'forex'`;
 
 export function isCurrencyConversionSecurityType(securityType: string | null | undefined): boolean {
-  return mapSecurityType(securityType ?? null) === SecType.CASH;
+  return (securityType ?? "").trim().toLowerCase() === "forex";
 }
 
 export function isCurrencyConversionTaxLot(
@@ -303,7 +301,7 @@ export function getClosedTaxLotSales(
         tls.is_long_term, tls.holding_period_days,
         COALESCE(s.currency, 'USD') AS currency,
         (t.type = 'RECONCILE_CLOSE') AS is_synthetic_close,
-        (${CURRENCY_CONVERSION_SECURITY}) AS currency_conversion
+        (${CURRENCY_CONVERSION_SECURITY_SQL}) AS currency_conversion
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN accounts a ON a.id = tl.account_id
@@ -322,7 +320,7 @@ export function getClosedTaxLotSales(
   }
   if (opts?.filingOnly) {
     conditions.push("tls.premium_rollover = 0 AND t.type != 'RECONCILE_CLOSE'");
-    conditions.push(`NOT (${CURRENCY_CONVERSION_SECURITY})`);
+    conditions.push(`NOT (${CURRENCY_CONVERSION_SECURITY_SQL})`);
   }
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
@@ -367,7 +365,7 @@ export function getTaxLotSummary(
       LEFT JOIN prices p ON p.security_id = tl.security_id
         AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = tl.security_id)
       WHERE tl.quantity_remaining > 0
-        AND NOT (${CURRENCY_CONVERSION_SECURITY})
+        AND NOT (${CURRENCY_CONVERSION_SECURITY_SQL})
         AND ${liveOptionExpirationSql("s", opts?.today)}
       GROUP BY tl.account_id, tl.security_id, tl.is_short`
     )
@@ -406,7 +404,7 @@ export function getTaxLotSummary(
        FROM tax_lots tl
        JOIN securities s ON s.id = tl.security_id
        WHERE tl.quantity_remaining > 0
-         AND ${CURRENCY_CONVERSION_SECURITY}`
+         AND ${CURRENCY_CONVERSION_SECURITY_SQL}`
     ).get() as { count: number }
   ).count;
 
@@ -431,7 +429,7 @@ export function getTaxLotSummary(
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN securities s ON s.id = tl.security_id
       JOIN transactions t ON t.id = tls.sale_transaction_id
-      WHERE NOT (${CURRENCY_CONVERSION_SECURITY})`;
+      WHERE NOT (${CURRENCY_CONVERSION_SECURITY_SQL})`;
 
   const closedSales = (year
     ? db.prepare(`${closedSalesSql} AND tls.sale_date >= ? AND tls.sale_date <= ?`).get(`${year}-01-01`, `${year}-12-31`)
@@ -487,7 +485,7 @@ export function getTaxLotSummaryByAccount(
       JOIN securities s ON s.id = tl.security_id
       JOIN transactions t ON t.id = tls.sale_transaction_id
       WHERE tls.sale_date >= ? AND tls.sale_date <= ?
-        AND NOT (${CURRENCY_CONVERSION_SECURITY})
+        AND NOT (${CURRENCY_CONVERSION_SECURITY_SQL})
       GROUP BY tl.account_id
       ORDER BY a.name`
     )

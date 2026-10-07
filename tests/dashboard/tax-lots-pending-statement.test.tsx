@@ -129,8 +129,8 @@ describe("Tax Lots page filtered reducer (source pin)", () => {
   const src = readFileSync("app/dashboard/tax-lots/page.tsx", "utf8");
 
   it("splits rows by the shared pending_statement flag", () => {
-    expect(src).toContain("const pendingStatementRows = openLots.filter((l) => l.pending_statement);");
-    expect(src).toContain("const heldOpenLots = openLots.filter((l) => !l.pending_statement);");
+    expect(src).toContain("const pendingStatementRows = capitalOpenLots.filter((l) => l.pending_statement);");
+    expect(src).toContain("const heldOpenLots = capitalOpenLots.filter((l) => !l.pending_statement);");
   });
 
   it("unrealized sums held lots only; the pending fields come from the pending rows", () => {

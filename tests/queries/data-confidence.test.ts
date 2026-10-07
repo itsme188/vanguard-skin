@@ -301,7 +301,6 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
     insertHolding(db, 1, expiredLegacy, 1, "2026-08-20", "tws-1-zzleg-2026-08-20");
     insertHolding(db, 1, live, 1, "2026-08-22", "tws-1-zzlive-2026-08-22");
     insertPrice(db, live, "2026-08-22", 5);
-    insertDailyValuation(db, 1, "2026-08-22", 1, 1);
 
     const { priceFreshness, holdingsRecency, valuationCoverage } = getDataConfidence(
       db,
@@ -314,7 +313,10 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
     expect(taxable?.stalestSymbol).toBe("ZZLIVE 260822C00050000");
     expect(taxable?.latestDate).toBe("2026-08-22");
     expect(valuationCoverage.totalCount).toBe(1);
-    expect(valuationCoverage.pricedCount).toBe(1);
+    expect(valuationCoverage.pricedCount).toBe(0);
+    expect(valuationCoverage.perAccountAsOf).toEqual(
+      expect.arrayContaining([{ accountName: "Vanguard Taxable", asOfDate: null }])
+    );
   });
 
   it("evening ET boundary: at 2026-08-23T23:30-04:00 the staleness baseline is 2026-08-23, not -24", () => {

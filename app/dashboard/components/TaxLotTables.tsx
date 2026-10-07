@@ -3,8 +3,9 @@
 import { useMemo } from "react";
 import type { TaxLotWithSecurity, TaxLotSaleWithDetails } from "@/lib/queries/tax-lots";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
-import { Money, PrivateText, Shares } from "@/lib/privacy/components";
+import { Count, Money, PrivateText, Shares } from "@/lib/privacy/components";
 import { Chip } from "./Chip";
+import { EmptySection } from "./EmptySection";
 import { PENDING_STATEMENT_CHIP_LABEL, PENDING_STATEMENT_TITLE } from "./pending-statement-copy";
 import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
 import { ScrollFade } from "./ScrollFade";
@@ -224,14 +225,19 @@ export function TaxLotCurrencyConversionTable({
   showAccount?: boolean;
 }) {
   if (lots.length === 0 && sales.length === 0) {
-    return null;
+    return (
+      <EmptySection
+        title="Currency conversions (Section 988, ordinary income)"
+        reason="No currency-conversion tax lot rows are currently present."
+      />
+    );
   }
 
   return (
     <div>
       <h4 className="text-xs font-medium text-ink-faint mb-2">
         Currency conversions (Section 988, ordinary income)
-        <span className="ml-1.5 text-ink-faint/60">({lots.length + sales.length})</span>
+        <span className="ml-1.5 text-ink-faint">(<Count value={lots.length + sales.length} />)</span>
       </h4>
       <div className="rounded-xl border border-edge overflow-hidden">
         <ScrollFade>

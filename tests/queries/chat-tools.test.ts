@@ -613,6 +613,53 @@ describe("getTaxLotsForChat", () => {
     expect(closed[0].is_long_term).toBe(true);
   });
 
+  it("labels currency-conversion and expired-option lots for the model instead of hiding rows", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-07T16:00:00Z"));
+
+    const fx = seedSecurity(db, "ZZE.USD", { security_type: "Forex" });
+    const fxOpenLot = seedTaxLot(db, 1, fx, {
+      acquisition_date: "2026-01-01",
+      acquisition_price: 100,
+      quantity_acquired: 1,
+      quantity_remaining: 1,
+      cost_basis: 100,
+    });
+    seedTaxLotSale(db, fxOpenLot, {
+      sale_date: "2026-03-01",
+      sale_price: 120,
+      quantity_sold: 1,
+      proceeds: 120,
+      cost_basis_allocated: 100,
+      realized_gain_loss: 20,
+      is_long_term: false,
+      holding_period_days: 60,
+    });
+
+    const expired = seedSecurity(db, "ZZOPT 260101C00050000", {
+      security_type: "Option",
+      multiplier: 100,
+    });
+    db.prepare("UPDATE securities SET expiration_date = '2026-01-01' WHERE id = ?").run(expired);
+    seedTaxLot(db, 1, expired, {
+      acquisition_date: "2025-12-01",
+      acquisition_price: 2,
+      quantity_acquired: 1,
+      quantity_remaining: 1,
+      cost_basis: 200,
+    });
+
+    const open = getTaxLotsForChat(db, { status: "open", sort_by: "acquisition_date" });
+    expect(open.map((r) => r.symbol)).toEqual(["ZZOPT 260101C00050000", "ZZE.USD"]);
+    expect(open.find((r) => r.symbol === "ZZE.USD")?.status_note).toMatch(/currency conversion/i);
+    expect(open.find((r) => r.symbol === "ZZOPT 260101C00050000")?.status_note).toMatch(/expired option/i);
+
+    const closed = getTaxLotsForChat(db, { status: "closed" });
+    expect(closed.find((r) => r.symbol === "ZZE.USD")?.status_note).toMatch(/currency conversion/i);
+
+    vi.useRealTimers();
+  });
+
   it("filters by symbol", () => {
     const aapl = seedSecurity(db, "AAPL");
     const msft = seedSecurity(db, "MSFT");
