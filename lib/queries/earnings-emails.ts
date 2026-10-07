@@ -7,6 +7,7 @@ import {
   SENT_BY_CLOUD,
 } from "@/lib/earnings/email-states";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
 
 export interface EarningsEmailAudit {
   id: number;
@@ -101,6 +102,20 @@ export function getSentPhasesForEvents(
   return out;
 }
 
+/**
+ * Where to look instead, for an email whose calendar entry was later replaced:
+ * the LIVE entry for the same company and print, and that entry's own email
+ * of the same kind when one was sent.
+ */
+export interface SupersededEmailReplacement {
+  /** The live calendar entry. */
+  event_id: number;
+  event_date: string;
+  /** `sent_at` of the live entry's email of the SAME phase; null when it has
+   *  none (a different phase is a different email and is never offered). */
+  email_sent_at: string | null;
+}
+
 export interface SentEarningsEmail {
   event_id: number;
   phase: "preview" | "recap";
@@ -112,6 +127,127 @@ export interface SentEarningsEmail {
   /** 1 = terminal 'delivery_unknown': the provider's answer was never received.
    *  It IS listed (a body exists), but it is the one row a human must resolve. */
   delivery_unknown: 0 | 1;
+  /** 1 = the calendar entry this email was sent for is NOW superseded: a
+   *  later reconcile replaced it with another entry for the same print. The
+   *  email is real history and stays listed; it is not the print's email. */
+  event_superseded: 0 | 1;
+  /** Only on an `event_superseded = 1` earnings row, and only when a live
+   *  entry for the same print exists. Null otherwise. */
+  replacement: SupersededEmailReplacement | null;
+}
+
+/**
+ * Two earnings rows of one issuer family this many days apart or closer are
+ * the same reporting event. This is the reconciler's CLUSTER_PROXIMITY_DAYS
+ * (lib/calendar/reconcile-earnings-dates.ts, not exported); the reconciler is
+ * the only thing that supersedes a row, so the archive has to look for the
+ * live twin across the same span.
+ * tests/queries/earnings-emails-superseded.test.ts pins the two together.
+ */
+export const SUPERSEDED_TWIN_CLUSTER_DAYS = 14;
+
+interface TwinRow {
+  id: number;
+  event_date: string;
+  superseded: number;
+}
+
+function dayNumber(date: string): number {
+  return Math.round(Date.parse(date + "T00:00:00Z") / 86_400_000);
+}
+
+/**
+ * The live entry that replaced a superseded earnings row, and its email.
+ *
+ * `calendar_events` stores no pointer from a superseded row to the row that
+ * replaced it, so the twin is found the way the reconciler made it one
+ * (`clusterByProximity`): every earnings row of the issuer family, in date
+ * order, chained while consecutive rows are within the cluster span. The
+ * cluster that holds the superseded row is the print; its live rows are the
+ * candidates. The nearest by date wins, the earlier date on a tie (the same
+ * order `repointDependentsBeforeDelete` hands audit rows over in), then a row
+ * that carries this phase's email, then the lower id.
+ *
+ * With two live hand-entered rows the reconciler keeps both visible and email
+ * follows the EARLIER one (lib/earnings/manual-twin-email.ts), so a pick that
+ * rule ignores is swapped for the row email follows.
+ *
+ * Read-only, and a read of TODAY's state: a row revived tomorrow simply stops
+ * being marked.
+ */
+function createReplacementResolver(db: Database.Database) {
+  const emailStmt = db.prepare(
+    `SELECT sent_at FROM earnings_emails
+      WHERE event_id = ? AND phase = ?
+        AND ${notLiveClaimSql("error")}`,
+  );
+  const emailSentAt = (eventId: number, phase: string): string | null =>
+    (emailStmt.get(eventId, phase) as { sent_at: string } | undefined)?.sent_at ?? null;
+  const dateStmt = db.prepare(`SELECT event_date FROM calendar_events WHERE id = ?`);
+  let ignoredTwins: ReturnType<typeof getEmailIgnoredManualTwins> | null = null;
+
+  return function resolve(
+    eventId: number,
+    symbol: string,
+    phase: "preview" | "recap",
+  ): SupersededEmailReplacement | null {
+    const family = Array.from(new Set(issuerSiblings(symbol).map((s) => s.toUpperCase())));
+    if (family.length === 0) return null;
+    const rows = db
+      .prepare(
+        `SELECT id, event_date, COALESCE(superseded, 0) AS superseded
+           FROM calendar_events
+          WHERE event_type = 'earnings'
+            AND UPPER(symbol) IN (${family.map(() => "?").join(",")})
+          ORDER BY event_date ASC, id ASC`,
+      )
+      .all(...family) as TwinRow[];
+
+    // The reconciler's proximity chain, cut down to the cluster holding this row.
+    let cluster: TwinRow[] = [];
+    let found = false;
+    for (const r of rows) {
+      const last = cluster[cluster.length - 1];
+      if (
+        last &&
+        dayNumber(r.event_date) - dayNumber(last.event_date) > SUPERSEDED_TWIN_CLUSTER_DAYS
+      ) {
+        if (found) break;
+        cluster = [];
+      }
+      cluster.push(r);
+      if (r.id === eventId) found = true;
+    }
+    if (!found) return null;
+    const self = cluster.find((r) => r.id === eventId)!;
+    const live = cluster.filter((r) => r.superseded === 0 && r.id !== eventId);
+    if (live.length === 0) return null;
+
+    const distance = (r: TwinRow) => Math.abs(dayNumber(r.event_date) - dayNumber(self.event_date));
+    const pick = [...live].sort(
+      (a, b) =>
+        distance(a) - distance(b) ||
+        a.event_date.localeCompare(b.event_date) ||
+        Number(emailSentAt(b.id, phase) != null) - Number(emailSentAt(a.id, phase) != null) ||
+        a.id - b.id,
+    )[0];
+
+    ignoredTwins ??= getEmailIgnoredManualTwins(db);
+    const follows = ignoredTwins.get(pick.id);
+    const target = follows
+      ? {
+          id: follows.emailRowId,
+          event_date:
+            (dateStmt.get(follows.emailRowId) as { event_date: string } | undefined)?.event_date ??
+            follows.emailRowDate,
+        }
+      : pick;
+    return {
+      event_id: target.id,
+      event_date: target.event_date,
+      email_sent_at: emailSentAt(target.id, phase),
+    };
+  };
 }
 
 /**
@@ -125,6 +261,13 @@ export interface SentEarningsEmail {
  * human still has to close, by confirming delivery (`markDelivered`) or by
  * refiring. The optional symbol filter is family-aware via issuerSiblings so
  * a GOOG page finds GOOGL events and vice versa.
+ *
+ * An email whose calendar entry is now superseded stays listed (owner ruling
+ * 2026-10-06: honest history, nothing deleted or repointed) and is marked
+ * `event_superseded = 1`, with `replacement` naming the live entry for the
+ * same print and that entry's email of the same phase. The marking is a
+ * per-row decoration applied AFTER the list is selected: it never adds,
+ * drops or reorders a row, so any count of this list stays the list's length.
  */
 export function getSentEarningsEmails(
   db: Database.Database,
@@ -142,19 +285,35 @@ export function getSentEarningsEmails(
     params.push(...family);
   }
 
-  return db
+  const rows = db
     .prepare(
       `SELECT
          ee.event_id, ee.phase, ce.symbol, ce.event_date, ee.sent_at,
          CASE WHEN ee.error = '${SENT_BY_CLOUD}' THEN 1 ELSE 0 END AS sent_by_cloud,
-         CASE WHEN ee.error = '${DELIVERY_UNKNOWN}' THEN 1 ELSE 0 END AS delivery_unknown
+         CASE WHEN ee.error = '${DELIVERY_UNKNOWN}' THEN 1 ELSE 0 END AS delivery_unknown,
+         CASE WHEN COALESCE(ce.superseded, 0) = 0 THEN 0 ELSE 1 END AS event_superseded,
+         ce.event_type
        FROM earnings_emails ee
        JOIN calendar_events ce ON ce.id = ee.event_id
        WHERE ${conditions.join(" AND ")}
        ORDER BY ee.sent_at DESC
        LIMIT ?`,
     )
-    .all(...params, limit) as SentEarningsEmail[];
+    .all(...params, limit) as Array<
+    Omit<SentEarningsEmail, "replacement"> & { event_type: string | null }
+  >;
+
+  let resolve: ReturnType<typeof createReplacementResolver> | null = null;
+  return rows.map(({ event_type, ...row }) => {
+    let replacement: SupersededEmailReplacement | null = null;
+    // The twin rule is an earnings rule: a flagged row of any other type is
+    // marked but nothing is guessed about what replaced it.
+    if (row.event_superseded === 1 && event_type === "earnings" && row.symbol) {
+      resolve ??= createReplacementResolver(db);
+      replacement = resolve(row.event_id, row.symbol, row.phase);
+    }
+    return { ...row, replacement };
+  });
 }
 
 /**

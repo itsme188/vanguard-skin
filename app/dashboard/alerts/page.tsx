@@ -1098,9 +1098,49 @@ function fmtSentAt(sentAt: string): string {
   });
 }
 
+// An email sent for a calendar entry that a later reconcile replaced (owner
+// ruling 2026-10-06). The email stays in the archive; this line says in plain
+// words that it is not the print's email and offers the one that is. Always
+// visible text, never a hover-only hint. Symbols and dates are public market
+// data, so nothing here needs a privacy component.
+function SupersededEmailNote({
+  email,
+  onOpen,
+}: {
+  email: SentEarningsEmail;
+  onOpen: (target: Pick<SentEarningsEmail, "event_id" | "phase">) => void;
+}) {
+  const live = email.replacement;
+  return (
+    <p className="px-4 pb-2.5 -mt-1 text-[11px] text-ink-dim">
+      The calendar entry this {email.phase} was sent for was later replaced.{" "}
+      {live == null ? (
+        <>No current entry for this report was found.</>
+      ) : live.email_sent_at == null ? (
+        <>
+          The current entry reports {live.event_date}; no {email.phase} was sent for it.
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={() => onOpen({ event_id: live.event_id, phase: email.phase })}
+          className="underline underline-offset-2 text-ink hover:text-gold transition-colors"
+        >
+          Open the {email.phase} for the current entry (reports {live.event_date}, sent{" "}
+          {fmtSentAt(live.email_sent_at)})
+        </button>
+      )}
+    </p>
+  );
+}
+
 function SentEmailsList({ emails }: { emails: SentEarningsEmail[] }) {
   const [symbolFilter, setSymbolFilter] = useState("");
-  const [viewing, setViewing] = useState<SentEarningsEmail | null>(null);
+  // The viewer needs only the two keys, so the "current entry" link can open
+  // an email that is filtered out of (or cut off the end of) the list.
+  const [viewing, setViewing] = useState<Pick<SentEarningsEmail, "event_id" | "phase"> | null>(
+    null,
+  );
 
   const filtered = symbolFilter.trim()
     ? emails.filter((e) =>
@@ -1124,35 +1164,44 @@ function SentEmailsList({ emails }: { emails: SentEarningsEmail[] }) {
       ) : (
         <div className="rounded-xl border border-edge bg-panel divide-y divide-edge">
           {filtered.map((e) => (
-            <button
-              key={`${e.event_id}-${e.phase}`}
-              onClick={() => setViewing(e)}
-              className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-raised transition-colors"
-              title={`Open the ${e.phase} email for ${e.symbol}`}
-            >
-              <span className="font-mono text-sm text-ink w-16 shrink-0">{e.symbol}</span>
-              <Chip tone={e.phase === "preview" ? "gold" : "info"} size="xs">
-                {e.phase}
-              </Chip>
-              <span className="text-[11px] text-ink-dim">
-                reports {e.event_date}
-              </span>
-              {e.sent_by_cloud === 1 && (
-                <Chip tone="neutral" size="xs">cloud</Chip>
-              )}
-              {e.delivery_unknown === 1 && (
-                <Chip
-                  tone="warn"
-                  size="xs"
-                  title="The email provider never confirmed delivery. It may have gone out; confirm it in your sent mail."
-                >
-                  delivery unconfirmed
+            <div key={`${e.event_id}-${e.phase}`}>
+              <button
+                onClick={() => setViewing(e)}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-raised transition-colors"
+                title={`Open the ${e.phase} email for ${e.symbol}`}
+              >
+                <span className="font-mono text-sm text-ink w-16 shrink-0">{e.symbol}</span>
+                <Chip tone={e.phase === "preview" ? "gold" : "info"} size="xs">
+                  {e.phase}
                 </Chip>
+                <span className="text-[11px] text-ink-dim">
+                  reports {e.event_date}
+                </span>
+                {e.sent_by_cloud === 1 && (
+                  <Chip tone="neutral" size="xs">cloud</Chip>
+                )}
+                {e.delivery_unknown === 1 && (
+                  <Chip
+                    tone="warn"
+                    size="xs"
+                    title="The email provider never confirmed delivery. It may have gone out; confirm it in your sent mail."
+                  >
+                    delivery unconfirmed
+                  </Chip>
+                )}
+                {e.event_superseded === 1 && (
+                  <Chip tone="warn" size="xs">
+                    entry replaced
+                  </Chip>
+                )}
+                <span className="ml-auto text-[11px] text-ink-faint font-mono">
+                  sent {fmtSentAt(e.sent_at)}
+                </span>
+              </button>
+              {e.event_superseded === 1 && (
+                <SupersededEmailNote email={e} onOpen={setViewing} />
               )}
-              <span className="ml-auto text-[11px] text-ink-faint font-mono">
-                sent {fmtSentAt(e.sent_at)}
-              </span>
-            </button>
+            </div>
           ))}
         </div>
       )}
