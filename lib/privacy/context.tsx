@@ -35,6 +35,18 @@ export function PrivacyProvider({ children }: { children: ReactNode }) {
     } catch {}
   }, []);
 
+  // Follow the toggle made in another open tab (the storage event fires only
+  // in the OTHER documents of the same origin). A wiped store (key null)
+  // is ignored (never fail open and unmask figures on a store wipe).
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== STORAGE_KEY) return;
+      setIsPrivate(e.newValue === "1");
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   const setPrivate = useCallback((next: boolean) => {
     setIsPrivate(next);
     try {
