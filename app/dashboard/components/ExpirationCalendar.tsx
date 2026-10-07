@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Money, Shares } from "@/lib/privacy/components";
+import { Count, Shares } from "@/lib/privacy/components";
+import { formatUSDPrecise } from "@/lib/format";
 import { EmptySection } from "./EmptySection";
 
 interface ExpiringOption {
@@ -16,18 +17,38 @@ interface ExpiringOption {
   accountName: string;
 }
 
+/** The card lists expirations inside this many days; later ones are counted. */
+export const EXPIRATION_WINDOW_DAYS = 90;
+// Asked of the API so the card can COUNT what lies beyond the listed window
+// (a century of days = "every live contract").
+const ALL_LIVE_DAYS = 36500;
+
+/**
+ * Split the live contracts into the ones the card lists (expiring within the
+ * window) and a count of the ones it does not, so the card can say how many
+ * it left out instead of dropping them silently.
+ */
+export function splitExpirationWindow<T extends { daysToExpiry: number }>(
+  options: T[],
+  windowDays: number = EXPIRATION_WINDOW_DAYS,
+): { within: T[]; beyondCount: number } {
+  const within = options.filter((o) => o.daysToExpiry <= windowDays);
+  return { within, beyondCount: options.length - within.length };
+}
+
 /**
  * Options expiration calendar — shows upcoming option expirations
  * with countdown badges. Only renders if there are expiring options.
  */
 export function ExpirationCalendar({ scope }: { scope?: string }) {
-  const [options, setOptions] = useState<ExpiringOption[]>([]);
+  const [allOptions, setOptions] = useState<ExpiringOption[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Fetch options expiring in the next 90 days
-    const qs = scope ? `?scope=${encodeURIComponent(scope)}` : "";
-    fetch(`/api/compute/options-expirations${qs}`)
+    // Fetch every live contract; the card lists the next 90 days and counts
+    // the rest (see splitExpirationWindow).
+    const qs = scope ? `&scope=${encodeURIComponent(scope)}` : "";
+    fetch(`/api/compute/options-expirations?days=${ALL_LIVE_DAYS}${qs}`)
       .then((r) => r.json())
       .then((json) => {
         if (json.success && Array.isArray(json.data)) {
@@ -41,12 +62,13 @@ export function ExpirationCalendar({ scope }: { scope?: string }) {
   }, [scope]);
 
   if (loading) return null;
-  if (options.length === 0) {
+  const { within: options, beyondCount } = splitExpirationWindow(allOptions);
+  if (allOptions.length === 0) {
     return (
       <EmptySection
         title="Option Expirations"
         reason="No options expiring within 90 days."
-        hint="Shows the next 90 days of option expirations once you hold dated calls or puts. LEAP options >90 days out are excluded by design."
+        hint="Shows the next 90 days of option expirations once you hold dated calls or puts. Contracts expiring later than that are counted here, not listed."
       />
     );
   }
@@ -62,6 +84,14 @@ export function ExpirationCalendar({ scope }: { scope?: string }) {
   return (
     <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-4">
       <h3 className="text-sm font-medium text-ink">Option Expirations</h3>
+      {/* Window caption: the card is a 90-day view, so say so and say how
+          many live contracts fall outside it. */}
+      <p className="text-xs text-ink-faint">
+        {options.length === 0 ? "Nothing expires in the next" : "Next"} {EXPIRATION_WINDOW_DAYS} days
+        {beyondCount > 0 && (
+          <> · <Count value={beyondCount} /> more beyond</>
+        )}
+      </p>
 
       <div className="space-y-3">
         {Array.from(byDate.entries()).map(([date, opts]) => {
@@ -97,7 +127,10 @@ export function ExpirationCalendar({ scope }: { scope?: string }) {
                         {o.underlying}
                       </span>
                       <span className="text-ink-dim">
-                        <Money value={o.strike} precise /> {o.optionType[0]}
+                        {/* The strike is a public contract term, not a
+                            portfolio figure: it stays readable under privacy
+                            (only the quantity masks). */}
+                        {formatUSDPrecise(o.strike)} {o.optionType[0]}
                       </span>
                       <span
                         className={`font-mono ${
