@@ -214,7 +214,7 @@ describe("computeIbkrTradingContext — shorts visibility", () => {
     expect(ctx.longShortSummary).toContain("SHRTCO");
   });
 
-  it("default-consumer surfaces (e.g. market-snapshot's plain getHoldingsForChat(db) call) stay long-only, unaffected by ibkr-context's opt-in", () => {
+  it("a default getHoldingsForChat call (the query_holdings tool shape, scoped by account_name) stays long-only, unaffected by ibkr-context's opt-in", () => {
     const long = seedSecurity("LONGCO");
     const short = seedSecurity("SHRTCO");
     seedHolding(long, 10, 100);
@@ -224,8 +224,8 @@ describe("computeIbkrTradingContext — shorts visibility", () => {
     const ctx = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
     expect(ctx.longShortSummary).toContain("Short: 1 positions");
 
-    // ...but a default call (the shape every other consumer — query_holdings
-    // tool, market-snapshot's buildUniverse — uses) still excludes the short.
+    // ...but a default call (the shape other default consumers, e.g. the query_holdings
+    // tool, use) still excludes the short.
     const defaultHoldings = getHoldingsForChat(db, { account_name: "IBKR" });
     expect(defaultHoldings.map((h) => h.symbol)).toEqual(["LONGCO"]);
   });

@@ -114,8 +114,36 @@ ab_reap_orphans
 ab_baseline
 
 bash "$SCRIPT_DIR/sandbox.sh" up || { notify_failure "sandbox boot failed"; exit 1; }
-# Single EXIT trap (bash traps replace, not stack): sandbox down + release lock + browser cleanup.
-trap 'bash "$SCRIPT_DIR/sandbox.sh" down; rm -rf "$LOCK_DIR" 2>/dev/null; ab_cleanup' EXIT
+
+# --- Finalization order (2026-09-15 fix) ---------------------------------------
+# On 2026-09-15 the sweep died mid-run: zone parts were merged into the ledger and
+# a fix was committed, but NO run log was written, so the morning had no record of
+# what that night did. The model owns qa/findings/runs/<date>.md; when it dies
+# before writing it, THIS wrapper writes a stub to <date>.incomplete.md from the
+# EXIT trap, which fires on every exit path (normal, `exit 1`, SIGTERM/SIGINT/SIGHUP
+# via the traps below). The stub is deliberately NOT <date>.md: that file is the
+# completeness signal the guard and the fixer gate key on, and a stub must never
+# fake it. Registered BEFORE the sweep starts so a death at any later point is covered.
+SWEEP_STARTED=0
+RUN_LOG="$SCRIPT_DIR/findings/runs/$(date +%Y-%m-%d).md"
+write_incomplete_run_log() {
+  [ "$SWEEP_STARTED" = "1" ] || return 0
+  [ -f "$RUN_LOG" ] && return 0
+  local stub="${RUN_LOG%.md}.incomplete.md"
+  mkdir -p "$(dirname "$stub")" 2>/dev/null || return 0
+  {
+    echo "# Deep QA run $(date +%Y-%m-%d) -- INCOMPLETE (written by qa/nightly-deep-qa.sh)"
+    echo "- The sweep ended without writing its own run log; zone parts may already be merged into the ledger."
+    echo "- model: ${MODEL:-unresolved}; claude exit: ${STATUS:-not-reached}; wrapper ended: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "- Check qa/findings/ledger.json for tonight's merged parts and 'git log --since=midnight' for commits."
+  } > "$stub" 2>/dev/null || true
+}
+# Single EXIT trap (bash traps replace, not stack): stub run log + sandbox down + release lock + browser cleanup.
+trap 'write_incomplete_run_log; bash "$SCRIPT_DIR/sandbox.sh" down; rm -rf "$LOCK_DIR" 2>/dev/null; ab_cleanup' EXIT
+# Turn termination signals into a normal exit so the EXIT trap above always runs.
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 # --- Model selection: PROBE for the strongest CALLABLE model -----------------
 # Do NOT rely on `--model fable --fallback-model opus,sonnet`. That was the
@@ -169,6 +197,7 @@ echo "Resolved callable model: $MODEL"
 # the next day; the post-run completeness guard below turns a >6h cut into a loud fail.
 export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=21600000  # 6h
 
+SWEEP_STARTED=1
 claude -p "/qa-deep-sweep" --model "$MODEL"
 STATUS=$?
 [ "$STATUS" -ne 0 ] && notify_failure "/qa-deep-sweep exited $STATUS (model $MODEL)"
@@ -178,7 +207,6 @@ STATUS=$?
 # ~4 nights. The sweep's FINAL action is appending qa/findings/runs/<today>.md
 # (SKILL.md "Run log" step), so its absence means the sweep died before finalizing —
 # regardless of exit code. Alert on that even when STATUS is 0.
-RUN_LOG="$SCRIPT_DIR/findings/runs/$(date +%Y-%m-%d).md"
 if [ "$STATUS" -eq 0 ] && [ ! -f "$RUN_LOG" ]; then
   notify_failure "/qa-deep-sweep exited 0 but wrote no run log ($(basename "$RUN_LOG")) — sweep died before finalizing findings"
 fi
@@ -204,6 +232,19 @@ if [ "$STATUS" -eq 0 ] && [ -f "$RUN_LOG" ] && [ "$FIXER_ENABLED" = "True" ]; th
     fi
     echo "=== QA auto-fix chain finished (exit $FIX_STATUS) $(date '+%H:%M:%S') ==="
   fi
+fi
+
+# --- Ledger fix_status reconcile (after the fixer chain) -----------------------
+# Flips branch-unpushed / pr-open -> merged for every fix_commit (or [qa:<id>]
+# cherry-pick) now reachable from origin/main, so tomorrow's fixer never
+# match-and-holds a landed fix (ledger gap found 2026-09-03). Idempotent, backs the
+# ledger up before writing, and touches only fix_status/merged_date/landed_commit.
+# Never changes the sweep's exit status: every failure here is logged and ignored.
+if [ -f "$SCRIPT_DIR/findings/ledger.json" ]; then
+  echo "=== QA ledger reconcile $(date '+%H:%M:%S') ==="
+  perl -e 'alarm shift; exec @ARGV' 60 git fetch --quiet origin main >/dev/null 2>&1 || true
+  python3 "$PROJECT_DIR/scripts/qa/reconcile-ledger-fix-status.py" --apply \
+    || echo "ledger reconcile failed (ignored; sweep exit status unchanged)" >&2
 fi
 
 echo "=== Deep QA finished (claude exit $STATUS) $(date '+%Y-%m-%d %H:%M:%S') ==="
