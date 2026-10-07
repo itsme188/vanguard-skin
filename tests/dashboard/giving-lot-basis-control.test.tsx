@@ -323,6 +323,19 @@ describe("BasisVerifiedDialog", () => {
     expect(busy).toMatch(/<button type="button" disabled=""[^>]*>Cancel/);
   });
 
+  it("an empty or whitespace-only field says why Save is disabled, tied to the input", () => {
+    for (const note of ["", "   "]) {
+      const html = dialog({ note });
+      const hint = /<p id="([^"]+)" class="text-xs text-ink-dim[^"]*">Enter where you checked this basis, then save\.<\/p>/.exec(html);
+      expect(hint, JSON.stringify(note)).not.toBeNull();
+      expect(html).toContain(`aria-describedby="${hint?.[1]}"`);
+      expect(html).toMatch(/<button type="submit" disabled=""/);
+    }
+    const filled = dialog({ note: "synthetic source" });
+    expect(filled).not.toContain("Enter where you checked this basis");
+    expect(filled).not.toContain("aria-describedby");
+  });
+
   it("a refusal is shown inside the form", () => {
     const html = dialog({ note: "x", error: "Transaction 9 was not found." });
     expect(html).toContain('role="alert"');
@@ -425,6 +438,30 @@ describe("how the control is written", () => {
     const control = src.slice(anchorIndex(src, "export function LotBasisControl("));
     expect(control).toContain("const { isPrivate } = usePrivacy();");
     expect(src).toContain('placeholder="final K-1, 2020"');
+  });
+
+  it("the empty-field hint and the Save button read one flag", () => {
+    const src = read("LotBasisControl.tsx");
+    expect(src).toContain("const noteEmpty = note.trim().length === 0;");
+    expect(src).toContain("aria-describedby={noteEmpty ? hintId : undefined}");
+    const hint = sliceBetween(src, "{noteEmpty && (", ")}");
+    expect(hint).toContain("<p id={hintId}");
+    expect(hint).toContain("text-ink-dim");
+    expect(src).toContain("disabled={busy || noteEmpty}");
+  });
+
+  it("Undo and Mark basis verified are 32px-tall tap targets that do not grow the row", () => {
+    const src = read("LotBasisControl.tsx");
+    expect(src).toContain('const ROW_ACTION_HIT_AREA = "inline-flex items-center min-h-8 -my-2";');
+    const undo = sliceBetween(src, "onClick={onUndo}", "</button>");
+    const mark = sliceBetween(src, "onClick={onMark}", "</button>");
+    for (const button of [undo, mark]) expect(button).toContain("className={`${ROW_ACTION_HIT_AREA} text-xs ");
+    // And in what is actually drawn.
+    const undoHtml = status(lot({ state: "verified", sourceNote: "s" }));
+    expect(undoHtml).toMatch(/<button[^>]*class="inline-flex items-center min-h-8 -my-2 [^"]*"[^>]*>Undo</);
+    expect(status(lot({}))).toMatch(
+      /<button[^>]*class="inline-flex items-center min-h-8 -my-2 [^"]*"[^>]*>Mark basis verified</
+    );
   });
 
   it("no component is defined inside another, and the dialog is centred", () => {

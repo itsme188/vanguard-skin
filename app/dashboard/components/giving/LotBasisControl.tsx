@@ -40,6 +40,13 @@ const CHIP_TONE: Record<GivingFlaggedLot["state"], ChipTone> = {
   "verified-stale": "warn",
 };
 
+/**
+ * A 32px-tall tap target for the small text actions, without making the row
+ * taller: the button grows to 32px and the negative margin gives the extra
+ * height back to the layout, so only the area that takes a tap changes.
+ */
+const ROW_ACTION_HIT_AREA = "inline-flex items-center min-h-8 -my-2";
+
 export interface LotBasisNotice {
   tone: "error" | "info";
   text: string;
@@ -86,7 +93,7 @@ export function LotBasisStatus({
           onClick={onUndo}
           disabled={busy}
           aria-label={`Undo basis verified for the lot acquired ${lot.acquisitionDate}`}
-          className="text-xs text-ink-dim underline hover:text-ink transition-colors focus-ring disabled:opacity-50"
+          className={`${ROW_ACTION_HIT_AREA} text-xs text-ink-dim underline hover:text-ink transition-colors focus-ring disabled:opacity-50`}
         >
           {busy ? "Undoing…" : "Undo"}
         </button>
@@ -95,7 +102,7 @@ export function LotBasisStatus({
           type="button"
           onClick={onMark}
           disabled={busy}
-          className="text-xs text-gold-ink hover:underline focus-ring disabled:opacity-50"
+          className={`${ROW_ACTION_HIT_AREA} text-xs text-gold-ink hover:underline focus-ring disabled:opacity-50`}
         >
           Mark basis verified
         </button>
@@ -137,6 +144,9 @@ export function BasisVerifiedDialog({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const inputId = useId();
+  const hintId = useId();
+  // Save stays disabled with nothing to save; the hint says why.
+  const noteEmpty = note.trim().length === 0;
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -195,8 +205,14 @@ export function BasisVerifiedDialog({
             maxLength={SOURCE_NOTE_MAX_LENGTH}
             autoComplete="off"
             placeholder="final K-1, 2020"
+            aria-describedby={noteEmpty ? hintId : undefined}
             className="w-full rounded-lg bg-raised border border-edge px-3 py-2 text-sm text-ink"
           />
+          {noteEmpty && (
+            <p id={hintId} className="text-xs text-ink-dim mt-1.5">
+              Enter where you checked this basis, then save.
+            </p>
+          )}
           {error && (
             <p role="alert" className="text-xs text-down mt-2">
               {error}
@@ -214,7 +230,7 @@ export function BasisVerifiedDialog({
           </button>
           <button
             type="submit"
-            disabled={busy || note.trim().length === 0}
+            disabled={busy || noteEmpty}
             className="px-4 py-2 rounded-lg text-sm font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {busy ? "Saving…" : "Save"}
