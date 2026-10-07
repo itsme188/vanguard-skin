@@ -138,6 +138,14 @@ export function stageChips(
   /** Shown on the upcoming chip instead of the stored clock time — see
    * EarningsRowChips' `timeEstimateLabel`. */
   timeEstimateLabel: string | null = null,
+  /** Non-null when the row's actual was saved before its print window opened
+   * (owner ruling 2026-10-06, display-only). The SERVER row decides it with
+   * isPreReleaseActual and passes PRE_RELEASE_ACTUAL_TITLE as the tooltip —
+   * this client file may not value-import @/lib/calendar
+   * (tests/repo/hub-live-client-boundary.test.ts). A captured actual then
+   * reads "act pre-release" in the warn tone instead of the green "act ✓";
+   * every other state is unchanged. */
+  preReleaseActualTitle: string | null = null,
 ): Array<{ key: string; tone: ChipTone; text: string; title?: string; clickable: "preview" | "recap" | "actuals" | null }> {
   const released = row.stages.released;
   const releasedChip =
@@ -151,6 +159,11 @@ export function stageChips(
       ? { tone: "up" as ChipTone, text: `rxn ✓${row.stages.reaction.source ? ` ${row.stages.reaction.source}` : ""}` }
       : { tone: "neutral" as ChipTone, text: "rxn" };
 
+  const actualChip =
+    preReleaseActualTitle !== null && row.stages.actual === "captured"
+      ? { tone: "warn" as ChipTone, text: "act pre-release", title: preReleaseActualTitle }
+      : chipFor("act", row.stages.actual);
+
   return [
     { key: "released", ...releasedChip, clickable: null },
     {
@@ -158,7 +171,7 @@ export function stageChips(
       ...withFullWord(chipFor("pre", row.stages.preview), row.stages.preview),
       clickable: VIEWABLE.has(row.stages.preview) ? "preview" : null,
     },
-    { key: "actual", ...chipFor("act", row.stages.actual), clickable: row.stages.actual === "blocked" ? "actuals" : null },
+    { key: "actual", ...actualChip, clickable: row.stages.actual === "blocked" ? "actuals" : null },
     { key: "reaction", ...reaction, clickable: null },
     {
       key: "recap",
@@ -172,14 +185,16 @@ export function StageChipStrip({
   row,
   onOpen,
   timeEstimateLabel = null,
+  preReleaseActualTitle = null,
 }: {
   row: CockpitRowWire;
   onOpen: (what: "preview" | "recap" | "actuals") => void;
   timeEstimateLabel?: string | null;
+  preReleaseActualTitle?: string | null;
 }) {
   return (
     <span className="flex flex-wrap items-center gap-1">
-      {stageChips(row, timeEstimateLabel).map((c) =>
+      {stageChips(row, timeEstimateLabel, preReleaseActualTitle).map((c) =>
         c.clickable ? (
           <button
             key={c.key}

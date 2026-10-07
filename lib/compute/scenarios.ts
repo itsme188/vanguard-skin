@@ -20,6 +20,13 @@ import {
   type OptionIvSource,
   type OptionUnmodelledReason,
 } from "./option-reprice";
+import {
+  estimateBondRateLeg,
+  summarizeUnmodelledBonds,
+  type BondRateLeg,
+  type BondUnmodelledReason,
+  type RateDurationSource,
+} from "./bond-duration";
 import { todayET } from "@/lib/calendar/date-utils";
 import {
   SCENARIO_RECIPES,
@@ -69,6 +76,12 @@ export interface PositionImpact {
   ivSource?: OptionIvSource;
   /** Options only: set when the contract could not be repriced; its change is then zero. */
   unmodelledReason?: OptionUnmodelledReason;
+  /** Bonds and bond funds under a rate move: the duration the rate leg used, in years. */
+  rateDurationYears?: number;
+  /** Bonds and bond funds under a rate move: where that duration came from. */
+  rateDurationSource?: RateDurationSource;
+  /** Bonds only: set when the rate move could not be priced; the rate leg is then zero. */
+  bondUnmodelledReason?: BondUnmodelledReason;
 }
 
 export interface ScenarioResult {
@@ -82,6 +95,8 @@ export interface ScenarioResult {
   biggestWinners: PositionImpact[];
   /** Option rows left out of the total because they could not be repriced. */
   optionsUnmodelled: { count: number; valueShare: number; unpricedCount: number };
+  /** Individual bonds whose rate leg is zero because no duration could be derived. */
+  bondsUnmodelled: { count: number; valueShare: number };
   /** Set when the scenario's primaryFactor matches an active macro theme's factor_label. */
   liveNowReason?: string;
 }
@@ -151,6 +166,9 @@ export function computeScenario(
          COALESCE(s.market_cap_category, s_u.market_cap_category) AS market_cap_category,
          s.fund_category,
          s.duration_years,
+         s.maturity_date,
+         s.coupon_rate,
+         lp.close_price AS bond_price,
          s.credit_rating,
          s_u.security_type AS underlying_security_type,
 ${OPTION_PRICING_COLUMNS_SQL},
@@ -174,6 +192,10 @@ ${OPTION_PRICING_JOINS_SQL}
     market_cap_category: string | null;
     fund_category: string | null;
     duration_years: number | null;
+    maturity_date: string | null;
+    coupon_rate: number | null;
+    /** Latest stored price; read by the bond rate leg only. */
+    bond_price: number | null;
     credit_rating: string | null;
     /** Security type of the option's underlying; null for non-options. */
     underlying_security_type: string | null;
@@ -197,6 +219,10 @@ ${OPTION_PRICING_JOINS_SQL}
   // Read the clock ONCE so every option in a scenario shares one time to expiry.
   const runToday = todayET();
   const runNow = new Date();
+  const rateBps =
+    typeof scenario.rateMove === "number" && Number.isFinite(scenario.rateMove) && scenario.rateMove !== 0
+      ? scenario.rateMove
+      : null;
 
   // 2. Estimate beta for each position
   const positionImpacts: PositionImpact[] = positions.map((pos) => {
@@ -222,9 +248,9 @@ ${OPTION_PRICING_JOINS_SQL}
     // marketLeg + rateLeg — instead of `category` switching the whole model.
     // marketLeg is always today's sector-aware beta logic; rateLeg is always
     // computed independently whenever scenario.rateMove is a nonzero finite
-    // number, regardless of category or sectorMoves. Bond rateLeg uses a
-    // convexity-aware exponential (exp(-D*dy) - 1) so it can never reach
-    // -100% on its own, unlike the old unclamped linear duration estimate.
+    // number, regardless of category or sectorMoves. Bonds and bond funds
+    // take the shared duration rule (lib/compute/bond-duration.ts), a
+    // convexity-aware exponential that can never reach -100% on its own.
     let marketLeg: number;
     if (scenario.sectorMoves) {
       // Sector rotation: each sector slice of the position responds to its
@@ -247,10 +273,22 @@ ${OPTION_PRICING_JOINS_SQL}
       marketLeg = scenario.marketMove * beta;
     }
 
-    const rateLeg =
-      typeof scenario.rateMove === "number" && Number.isFinite(scenario.rateMove) && scenario.rateMove !== 0
-        ? estimateRateLeg(pos.security_type, scenario.rateMove, pos.duration_years, isCashEquivalent)
-        : 0;
+    // The rate leg. Equities have none here: style sensitivity already lives
+    // inside estimateBeta via the marketLeg, and adding it again would
+    // double-count it. A bond whose duration cannot be derived adds nothing
+    // and is reported, never given an assumed duration.
+    let rateLeg = 0;
+    let bondLeg: BondRateLeg | null = null;
+    if (rateBps != null) {
+      if (isCashEquivalent) {
+        // Cash equivalents benefit slightly from higher rates (existing
+        // treatment, keyed on the shared fund_category-driven predicate).
+        rateLeg = (rateBps / 100) * 0.002;
+      } else if (!isOption) {
+        bondLeg = estimateBondRateLeg(pos, rateBps, runToday);
+        rateLeg = bondLeg?.changePercent ?? 0;
+      }
+    }
 
     // Both legs describe the move of the thing the position tracks — for an
     // option, that is its UNDERLYING.
@@ -303,6 +341,9 @@ ${OPTION_PRICING_JOINS_SQL}
       ivSource,
       unmodelledReason,
       underlyingMove: isOption ? underlyingMove : undefined,
+      rateDurationYears: bondLeg?.durationYears,
+      rateDurationSource: bondLeg?.durationSource,
+      bondUnmodelledReason: bondLeg?.unmodelledReason,
     };
   });
 
@@ -331,6 +372,7 @@ ${OPTION_PRICING_JOINS_SQL}
     biggestLosers,
     biggestWinners,
     optionsUnmodelled: summarizeUnmodelledOptions(positionImpacts),
+    bondsUnmodelled: summarizeUnmodelledBonds(positionImpacts),
   };
 }
 
@@ -393,38 +435,4 @@ function estimateBeta(
   if (normalizedMarketCap === "Mid Cap") beta *= 1.05;
 
   return beta;
-}
-
-/**
- * The rate leg of a shock — applied independently of `category`/sectorMoves
- * whenever scenario.rateMove is set. Equities have no rate leg here: the
- * old Growth 1.3 / Value 0.7 rate-category amplification of marketMove is
- * gone — that style sensitivity already lives inside estimateBeta via the
- * marketLeg, and folding it into rateLeg too would double-count it.
- */
-function estimateRateLeg(
-  securityType: string,
-  rateBps: number,
-  durationYears?: number | null,
-  isCashEquivalent = false
-): number {
-  const type = securityType.toLowerCase();
-
-  // Cash equivalents benefit slightly from higher rates — same magnitude as
-  // the old literal 'money market' type branch, now keyed on the shared
-  // fund_category-driven predicate so the live sweep funds qualify too.
-  if (isCashEquivalent) return (rateBps / 100) * 0.002;
-
-  // Bonds: convexity-aware exponential duration estimate (use actual
-  // duration if available, else assume 5yr). exp(-D*dy) - 1 is smooth and
-  // monotonic in dy and asymptotes to -1 without ever reaching it, unlike
-  // the old linear -duration*rateChange/100 which could exceed -100%.
-  if (type === "bond") {
-    const duration = durationYears ?? 5;
-    const dy = rateBps / 10000; // basis points -> decimal rate change
-    return Math.exp(-duration * dy) - 1;
-  }
-
-  // Everything else: no independent rate leg.
-  return 0;
 }

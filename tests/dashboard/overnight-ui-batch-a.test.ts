@@ -44,9 +44,13 @@ describe("FactorAnalysis beta tile", () => {
   });
 });
 
-describe("Custom scenario linear-option disclosure", () => {
+describe("Custom scenario option disclosure", () => {
   const src = read("app/dashboard/components/ScenarioModeling.tsx");
-  it("states options are approximated linearly (delta only)", () => {
-    expect(src).toContain("Option positions are approximated linearly (delta only)");
+  // Options have been repriced since 2026-10-06, so the old linear
+  // (delta only) disclosure under the Compute button is false and is gone.
+  it("no longer says options are approximated linearly, and says they are repriced", () => {
+    expect(src).not.toMatch(/approximated\s+linearly/i);
+    expect(src).not.toMatch(/delta only/i);
+    expect(src).toContain("Options are repriced at the shocked price of their underlying");
   });
 });

@@ -43,6 +43,7 @@ import {
   type OptionIvSource,
   type OptionUnmodelledReason,
 } from "./option-reprice";
+import { estimateBondRateLeg, summarizeUnmodelledBonds, type BondRateLeg } from "./bond-duration";
 import { todayET } from "@/lib/calendar/date-utils";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
@@ -207,12 +208,16 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
     // -2.5% for the rate-sensitive cohort.
     spillover: 0.25,
     methodology:
-      "Subject = rate-sensitive assets: bonds (priced off duration, not buckets), " +
+      "Subject = rate-sensitive assets: bonds and bond funds (priced off duration, not buckets), " +
       "long-duration growth equity, REITs and utilities. Subject P&L = position_value × -2.5% × " +
       "max(membership floor, blend), blend = interest_rate_sensitive bucket + 0.5 × growth tilt " +
       "(Value adds nothing — it falls less than growth on a hike, it doesn't rally). " +
       "Everything else takes the spillover leg: 25% of the shock scaled by its own capped blend " +
-      "(≈ -0.6% at most). Bonds: duration × 25bp / 100. Options: inherit the underlying's rate " +
+      "(≈ -0.6% at most). Bonds and bond funds: exp(-duration × 0.25%) - 1. A bond with no stored " +
+      "duration takes it from its maturity date (a Treasury bill: years to maturity; a coupon bond: " +
+      "modified duration from its coupon, maturity and the yield its price implies); a bond that " +
+      "cannot be derived is left out of the rate move and counted. A bond fund with no stored " +
+      "duration uses 5 years. Options: inherit the underlying's rate " +
       "exposure, repriced with Black-Scholes at the shocked price of the underlying, volatility held at today's level; an option that cannot be priced is left out and counted. " +
       "Calibrated to typical 25bp surprise-day historical reaction.",
   },
@@ -397,6 +402,10 @@ interface RecipePositionRow {
   currency: string | null;
   market_value: number;
   duration_years: number | null;
+  maturity_date: string | null;
+  coupon_rate: number | null;
+  /** Latest stored price; read by the bond rate leg only. */
+  bond_price: number | null;
   interest_rate_sensitive: string | null;
   growth_vs_value: string | null;
   cyclical: string | null;
@@ -517,8 +526,8 @@ export { DEFAULT_OPTION_ELASTICITY } from "./option-elasticity";
  * Compute the per-position P&L impact for a factor-anchored recipe.
  *
  * Subject positions take `shock × max(membership floor, factor blend)`;
- * everything else takes `shock × spillover × clamp(blend, ±1)`. Bonds use
- * duration-based pricing for rate scenarios (they ARE the subject there),
+ * everything else takes `shock × spillover × clamp(blend, ±1)`. Bonds and
+ * bond funds use duration-based pricing for rate scenarios (they ARE the subject there),
  * and options are repriced at whatever move their underlying's path produced.
  */
 export function computeRecipeScenario(
@@ -559,6 +568,9 @@ export function computeRecipeScenario(
         COALESCE(s.geography, s_u.geography) AS geography,
         COALESCE(s.currency, s_u.currency) AS currency,
         s.duration_years,
+        s.maturity_date,
+        s.coupon_rate,
+        lp.close_price AS bond_price,
 ${OPTION_PRICING_COLUMNS_SQL},
         COALESCE(sf.interest_rate_sensitive, sf_u.interest_rate_sensitive) AS interest_rate_sensitive,
         COALESCE(sf.growth_vs_value, sf_u.growth_vs_value) AS growth_vs_value,
@@ -601,6 +613,9 @@ ${OPTION_PRICING_JOINS_SQL}
   const riskFreeRate = getRiskFreeRate(db);
   const runToday = todayET();
   const runNow = new Date();
+  // The rate recipe's shock is the equity-side impact of its rate move
+  // (-0.025 for +25bp), so the move in basis points is -shock x 1000.
+  const rateBps = recipe.category === "rate" ? -recipe.shockMagnitude * 1000 : null;
 
   const impacts: PositionImpact[] = positions.map((pos) => {
     const blend = factorBlend(recipe, pos);
@@ -608,6 +623,10 @@ ${OPTION_PRICING_JOINS_SQL}
 
     let changePercent: number;
     let subjectShare: number;
+    // Null for anything that is not an individual bond or a bond fund, and
+    // for every recipe that is not a rate shock.
+    const bondLeg: BondRateLeg | null =
+      rateBps != null && !isCashEquivalentSecurity(pos) ? estimateBondRateLeg(pos, rateBps, runToday) : null;
 
     // FINANCE RULE (QA finding `analysis-scenarios--preset-rate-shock-still-
     // marks-money-market-sweep-down`): a cash-equivalent sweep fund has a
@@ -621,16 +640,13 @@ ${OPTION_PRICING_JOINS_SQL}
     if (isCashEquivalentSecurity(pos)) {
       changePercent = 0;
       subjectShare = 0;
-    } else if (recipe.category === "rate" && pos.security_type.toLowerCase() === "bond") {
-      // Bonds ARE the subject of a rate shock, and duration prices them
-      // better than any factor bucket could.
-      const duration = pos.duration_years ?? 5;
-      // Recipe shock is the equity-side impact for a 25bp move (~-0.025).
-      // Convert to bps: -0.025 = -25bp on equities; the corresponding bond
-      // hit is duration × Δy/100.
-      const rateBpsMove = -recipe.shockMagnitude * 1000; // recipe.shockMagnitude in [-0.5, 0.5] → bps
-      changePercent = -duration * rateBpsMove / 10000;
-      subjectShare = 1;
+    } else if (bondLeg) {
+      // Bonds and bond funds ARE the subject of a rate shock, and duration
+      // prices them better than any factor bucket could. The rule is the one
+      // the custom engine uses (lib/compute/bond-duration.ts). A bond whose
+      // duration cannot be derived adds nothing and is reported.
+      changePercent = bondLeg.changePercent;
+      subjectShare = bondLeg.unmodelledReason ? 0 : 1;
     } else {
       // Per sector slice: a fund with cached weights can be part subject
       // (its healthcare sleeve) and part spillover (everything else).
@@ -710,6 +726,9 @@ ${OPTION_PRICING_JOINS_SQL}
       ivSource,
       unmodelledReason,
       underlyingMove: optionUnderlyingMove,
+      rateDurationYears: bondLeg?.durationYears,
+      rateDurationSource: bondLeg?.durationSource,
+      bondUnmodelledReason: bondLeg?.unmodelledReason,
     };
   });
 
@@ -735,6 +754,7 @@ ${OPTION_PRICING_JOINS_SQL}
     biggestLosers,
     biggestWinners,
     optionsUnmodelled: summarizeUnmodelledOptions(impacts),
+    bondsUnmodelled: summarizeUnmodelledBonds(impacts),
   };
 }
 

@@ -24,7 +24,7 @@ import {
   type AutoRefreshResult,
 } from "./sync-state";
 import { syncPortfolio } from "./positions";
-import { enrichSecurities } from "./contracts";
+import { enrichSecurities, enrichPendingOptionUnderlyings } from "./contracts";
 import {
   classifyOptionSectors,
   getUnsectoredOptionUnderlyings,
@@ -39,6 +39,8 @@ import { fetchBenchmarkPrices } from "./benchmark";
 import { fetchBenchmarkClosesFromYahoo } from "../benchmark/yahoo-benchmarks";
 import { computeDailyValuations } from "../compute/daily-valuation";
 import { runLevelScanCycle } from "../alerts/scan-cycle";
+import { getPendingOptionUnderlyings } from "./option-underlyings";
+import { todayET } from "../calendar/date-utils";
 
 export type RefreshLevel = "full" | "quick";
 
@@ -169,15 +171,35 @@ export async function runAutoRefresh(
              AND LOWER(COALESCE(s.security_type, '')) NOT IN ('bond', 'money_market')`,
         )
         .get() as { cnt: number };
+      // Not-held underlyings of held live options also need a contract id
+      // before the snapshot step can price them (owner ruling 2026-10-07).
+      // Counted on its own so a failure here can never skip the held rows.
+      // "Pending" leaves out a symbol skipped for repeated definitive
+      // failures (until its 30-day retry is due), so one that can never
+      // resolve stops tripping this gate.
+      let unenrichedUnderlyings = 0;
+      try {
+        unenrichedUnderlyings = getPendingOptionUnderlyings(db, todayET()).length;
+      } catch (err) {
+        console.error(
+          "[auto-refresh] Option-underlying enrichment check error:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+      const toEnrich = unenriched.cnt + unenrichedUnderlyings;
 
-      if (unenriched.cnt > 0) {
+      if (toEnrich > 0) {
         setSyncPhase("enriching", {
           current: 0,
-          total: unenriched.cnt,
-          label: `Enriching ${unenriched.cnt} securities...`,
+          total: toEnrich,
+          label: `Enriching ${toEnrich} securities...`,
         });
         try {
-          const results = await enrichSecurities(db);
+          // A held row needs enriching: the usual run, exactly as before (the
+          // pending underlyings ride along inside it). Only underlyings
+          // pending: look up just those, never the wider held selection.
+          const results =
+            unenriched.cnt > 0 ? await enrichSecurities(db) : await enrichPendingOptionUnderlyings(db);
           securitiesEnriched = results.filter((r) => r.enriched).length;
           const enrichErrors = results.filter((r) => r.error);
           if (enrichErrors.length > 0) {

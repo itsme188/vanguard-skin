@@ -64,6 +64,8 @@ function createTestDb(): Database.Database {
       market_cap_category TEXT,
       style TEXT,
       duration_years REAL,
+      maturity_date TEXT,
+      coupon_rate REAL,
       credit_rating TEXT,
       expiration_date TEXT,
       underlying_symbol TEXT,

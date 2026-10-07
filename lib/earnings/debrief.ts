@@ -34,6 +34,7 @@ import type Database from "better-sqlite3";
 import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earnings-settings";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { loadIntelView, renderHeadlineTable } from "@/lib/digest/send-earnings-email";
@@ -134,8 +135,16 @@ export function findDebriefCandidates(
   const settings = getEarningsSettings(db);
   const coveredIds = coveredForEvents(db, rawRows.map((r) => ({ symbol: r.symbol, eventId: r.eventId })));
 
+  // Two live hand-entered rows for one company: email follows the EARLIER
+  // date; the later row is never an unsent recap (owner ruling 2026-10-07,
+  // lib/earnings/manual-twin-email.ts).
+  const ignoredManualTwins = getEmailIgnoredManualTwins(db);
+
   let candidates = rawRows.filter(
-    (r) => coveredIds.has(r.eventId) && shouldSendEarningsEmail(settings, r.symbol),
+    (r) =>
+      !ignoredManualTwins.has(r.eventId) &&
+      coveredIds.has(r.eventId) &&
+      shouldSendEarningsEmail(settings, r.symbol),
   );
 
   // Release-recency filter: a known release_time under an hour old is held

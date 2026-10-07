@@ -41,6 +41,8 @@ import { EarningsHubRefreshButton } from "./EarningsHubRefreshButton";
 import { EarningsRowChips } from "./EarningsRowChips";
 import EarningsHubLive, { LivePrintSlot } from "./EarningsHubLive";
 import { EarningsDeleteButton } from "./EarningsDeleteButton";
+import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
+import { emailFollowsEarlierCopy } from "./email-follows-earlier-copy";
 import { EarningsDateChip } from "./EarningsDateChip";
 import { BogeysUploadButton } from "./BogeysUploadButton";
 import { BogeysEditButton } from "./BogeysEditButton";
@@ -48,6 +50,12 @@ import { getSkippedPhasesForEvents } from "@/lib/queries/earnings-skips";
 import { getWorksheetFlagsForEvents } from "@/lib/queries/earnings-worksheet-flags";
 import { getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
 import { statusChipClass, statusChipLabel } from "./status-chip";
+import { Chip } from "../components/Chip";
+import {
+  isPreReleaseActual,
+  preReleaseActualChipText,
+  PRE_RELEASE_ACTUAL_TITLE,
+} from "@/lib/calendar/pre-release-actual";
 
 type EnrichedRow = CalendarEvent & {
   display_time: EarningsDisplayTime;
@@ -59,6 +67,12 @@ type EnrichedRow = CalendarEvent & {
   worksheetPrinted: boolean;
   recapSkipped: boolean;
   hasBogeys: boolean;
+  /**
+   * Set on the LATER of two live hand-entered rows for one company: the date
+   * of the earlier row, which email follows instead (owner ruling
+   * 2026-10-07). Null on every other row.
+   */
+  emailFollowsDate: string | null;
 };
 
 function fmtDayLong(iso: string): { weekday: string; date: string } {
@@ -157,6 +171,12 @@ export function EarningsHub() {
   const initialCockpit = buildCockpitPayload(db, new Date(), { weekOf });
   decorateCockpitIntel(db, initialCockpit);
 
+  // With two live hand-entered rows for one company, email follows the
+  // earlier date; the later row is marked so the desk knows why it is quiet.
+  // Same read every email finder uses, so the mark and the sends cannot
+  // disagree.
+  const ignoredManualTwins = getEmailIgnoredManualTwins(db);
+
   const enriched: EnrichedRow[] = events.map((e) => ({
     ...e,
     status: e.symbol ? (statusMap[e.symbol.toUpperCase()] ?? "neither") : "neither",
@@ -167,6 +187,7 @@ export function EarningsHub() {
     worksheetArmed: worksheetMap.has(e.id),
     worksheetPrinted: worksheetMap.get(e.id)?.printedAt != null,
     hasBogeys: bogeysSet.has(e.id),
+    emailFollowsDate: ignoredManualTwins.get(e.id)?.emailRowDate ?? null,
   }));
 
   // Group by event_date for day separators.
@@ -333,6 +354,30 @@ export function EarningsHub() {
 // Bogeys (80→64); the 1fr numeric columns absorb the rest.
 const DESKTOP_GRID_COLUMNS = "84px 64px 92px 1fr 1fr 1fr 1fr 56px 64px 160px";
 
+/**
+ * The mark on the later of two hand-entered rows for one company. Plain
+ * always-visible text (no hover), public calendar data only. Renders nothing
+ * for an unmarked row.
+ */
+function EmailFollowsEarlierNote({
+  symbol,
+  emailFollowsDate,
+  className,
+  style,
+}: {
+  symbol: string | null;
+  emailFollowsDate: string | null;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  if (!emailFollowsDate || !symbol) return null;
+  return (
+    <span className={`text-ink-dim ${className ?? ""}`} style={{ fontSize: "11px", ...style }}>
+      {emailFollowsEarlierCopy(symbol, emailFollowsDate)}
+    </span>
+  );
+}
+
 function DesktopRow({ event }: { event: EnrichedRow }) {
   const slot = fmtSlot(event.event_time, event.release_time, event.display_time);
   const consensus = effectiveConsensus(event);
@@ -348,6 +393,10 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
     isPostRelease && !implausible
       ? epsDelta(consensus, event.actual_value)
       : null;
+  // Owner ruling 2026-10-06 (display-only): an actual saved before the
+  // print's own BMO/AMC window opened renders muted under a "pre-release"
+  // chip, never as reported fact. Reverts on its own once the window opens.
+  const preRelease = isPostRelease && !implausible && isPreReleaseActual(event);
   // When a pre-release event has no consensus at all (Finnhub hasn't
   // published estimates), the four numeric cells used to render as a row of
   // em-dashes which read as broken. Show a single italic hint spanning the
@@ -378,6 +427,11 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
         ) : (
           event.symbol ?? "—"
         )}
+        {preRelease && (
+          <span className="block mt-0.5">
+            <PreReleaseChip manualActualsAt={event.manual_actuals_at ?? null} />
+          </span>
+        )}
         {event.date_status && (
           <span className="block mt-0.5">
             <EarningsDateChip
@@ -400,9 +454,9 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
       ) : (
         <>
           <NumCell value={cons.eps} recapEventId={event.recapSent ? event.id : undefined} />
-          <NumCell value={act.eps} recapEventId={event.recapSent ? event.id : undefined} />
+          <NumCell value={act.eps} recapEventId={event.recapSent ? event.id : undefined} muted={preRelease} />
           <NumCell value={cons.revenue} recapEventId={event.recapSent ? event.id : undefined} />
-          <NumCell value={act.revenue} recapEventId={event.recapSent ? event.id : undefined} />
+          <NumCell value={act.revenue} recapEventId={event.recapSent ? event.id : undefined} muted={preRelease} />
         </>
       )}
       {implausible ? (
@@ -415,7 +469,7 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
         </span>
       ) : (
         <span
-          className={`font-mono tabular-nums ${deltaToneClass(delta)}`}
+          className={`font-mono tabular-nums ${preRelease ? "text-ink-faint" : deltaToneClass(delta)}`}
           style={{ fontSize: "12px", textAlign: "right" }}
         >
           {delta?.label ?? "—"}
@@ -443,6 +497,7 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           worksheetArmed={event.worksheetArmed}
           worksheetPrinted={event.worksheetPrinted}
           timeEstimateLabel={estimateLabel(event.display_time)}
+          preReleaseActualTitle={preRelease ? PRE_RELEASE_ACTUAL_TITLE : null}
         />
         {/* Manual rows delete directly; sync rows delete-with-suppression
             (stays removed across syncs — the wrong-date correction path). */}
@@ -452,6 +507,12 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           source={event.source}
         />
       </span>
+      {/* Spans every column, so it sits on its own line under the row. */}
+      <EmailFollowsEarlierNote
+        symbol={event.symbol}
+        emailFollowsDate={event.emailFollowsDate}
+        style={{ gridColumn: "1 / -1" }}
+      />
     </div>
   );
 }
@@ -465,8 +526,19 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
  * button opening the recap viewer (R9) — same viewer the "rec ✓" chip
  * opens, via RecapFigureButton's scoped custom event.
  */
-function NumCell({ value, recapEventId }: { value: string | null; recapEventId?: number }) {
-  const cls = `font-mono tabular-nums truncate ${value ? "text-ink-dim" : "text-ink-faint"}`;
+function NumCell({
+  value,
+  recapEventId,
+  muted = false,
+}: {
+  value: string | null;
+  recapEventId?: number;
+  /** A pre-release actual (isPreReleaseActual): faint italic, not fact ink. */
+  muted?: boolean;
+}) {
+  const cls = `font-mono tabular-nums truncate ${
+    value && !muted ? "text-ink-dim" : muted ? "text-ink-faint italic" : "text-ink-faint"
+  }`;
   if (recapEventId != null && value) {
     return (
       <RecapFigureButton eventId={recapEventId} className={cls} style={{ fontSize: "13px" }}>
@@ -478,6 +550,16 @@ function NumCell({ value, recapEventId }: { value: string | null; recapEventId?:
     <span className={cls} style={{ fontSize: "13px" }}>
       {value ?? "—"}
     </span>
+  );
+}
+
+/** The "pre-release" warn chip for an actual saved before its print window
+ *  opened. Top-level (never nested in a row body — the remount trap). */
+function PreReleaseChip({ manualActualsAt }: { manualActualsAt: string | null }) {
+  return (
+    <Chip tone="warn" size="xs" title={PRE_RELEASE_ACTUAL_TITLE}>
+      {preReleaseActualChipText(manualActualsAt)}
+    </Chip>
   );
 }
 
@@ -496,6 +578,10 @@ function MobileCard({ event }: { event: EnrichedRow }) {
     isPostRelease && !implausible
       ? epsDelta(consensus, event.actual_value)
       : null;
+  // Owner ruling 2026-10-06 (display-only): an actual saved before the
+  // print's own BMO/AMC window opened renders muted under a "pre-release"
+  // chip, never as reported fact. Reverts on its own once the window opens.
+  const preRelease = isPostRelease && !implausible && isPreReleaseActual(event);
   const consensusMissing = !cons.eps && !cons.revenue && !isPostRelease;
 
   return (
@@ -514,6 +600,7 @@ function MobileCard({ event }: { event: EnrichedRow }) {
         >
           {statusChipLabel(event.status)}
         </span>
+        {preRelease && <PreReleaseChip manualActualsAt={event.manual_actuals_at ?? null} />}
         {event.date_status && (
           <EarningsDateChip
             symbol={event.symbol ?? ""}
@@ -565,13 +652,15 @@ function MobileCard({ event }: { event: EnrichedRow }) {
               ) : (
                 <span className="text-ink-faint">
                   Act{" "}
-                  <span className="text-ink-dim">
+                  <span className={preRelease ? "text-ink-faint italic" : "text-ink-dim"}>
                     {act.eps ?? "—"} · {act.revenue ?? "—"}
                   </span>
                 </span>
               )}
               {delta && (
-                <span className={`font-semibold ${deltaToneClass(delta)}`}>{delta.label}</span>
+                <span className={`font-semibold ${preRelease ? "text-ink-faint" : deltaToneClass(delta)}`}>
+                  {delta.label}
+                </span>
               )}
             </>
           )
@@ -594,6 +683,7 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           worksheetArmed={event.worksheetArmed}
           worksheetPrinted={event.worksheetPrinted}
           timeEstimateLabel={estimateLabel(event.display_time)}
+          preReleaseActualTitle={preRelease ? PRE_RELEASE_ACTUAL_TITLE : null}
         />
         {/* Manual rows delete directly; sync rows delete-with-suppression. */}
         <EarningsDeleteButton
@@ -602,6 +692,11 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           source={event.source}
         />
       </div>
+      <EmailFollowsEarlierNote
+        symbol={event.symbol}
+        emailFollowsDate={event.emailFollowsDate}
+        className="block mt-1.5"
+      />
     </div>
   );
 }

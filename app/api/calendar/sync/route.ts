@@ -49,6 +49,11 @@ export async function POST(request: Request) {
             refreshedEvents: result.refreshedEvents,
             errors: result.errors,
             skipped: result.skipped,
+            // Rows this refresh deleted / hid / brought back, each with a reason — the Hub
+            // names them on its outcome line (owner rulings 2026-10-06).
+            removed: result.removed,
+            superseded: result.superseded,
+            restored: result.restored,
           },
         });
       } catch (error) {

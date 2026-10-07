@@ -34,6 +34,11 @@ interface FactorDelta {
 
 // ─── Formatters ──────────────────────────────────────────────────
 
+function formatDate(dateStr: string): string {
+  const d = new Date(dateStr + "T00:00:00");
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
 function formatPct(value: number, decimals = 1): string {
   const pct = value * 100;
   return `${pct >= 0 ? "+" : ""}${pct.toFixed(decimals)}%`;
@@ -155,9 +160,20 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
       {/* ── Market regression ── */}
       {reg && (
         <div>
-          <h4 className="text-xs text-ink-faint uppercase tracking-widest mb-3">
+          <h4 className="text-xs text-ink-faint uppercase tracking-widest mb-1">
             Market Regression (vs {benchmark})
           </h4>
+          {/* Names its own window: the Risk Decomposition card above uses the
+              common comparison window shared across account scopes, so the
+              two cards can count different days (QA ruling 2026-10-06). */}
+          <p className="text-xs text-ink-faint font-mono mb-3">
+            {reg.dataPoints} daily observations
+            {" · "}
+            {formatDate(reg.windowStart)}
+            {" → "}
+            {formatDate(reg.windowEnd)}
+            {" (this scope's full history)"}
+          </p>
           {/* Honest-labeling sibling of dataWindowNotice: at very low R² the
               regression explains almost nothing, so narrating its beta/alpha
               as fact is misleading (a large positive alpha at a near-zero R²

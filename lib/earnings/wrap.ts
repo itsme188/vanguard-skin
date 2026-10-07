@@ -21,6 +21,7 @@ import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
 import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earnings-settings";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
 import { deliveredSql } from "@/lib/earnings/email-states";
 import type { CalendarEvent } from "@/lib/types";
 
@@ -120,7 +121,13 @@ export function getExpectedRecapCluster(
     ).all(...ids) as { event_id: number }[]).map((r) => r.event_id),
   );
 
+  // Two live hand-entered rows for one company: email follows the EARLIER
+  // date; the later row is not a recap this cluster expects (owner ruling
+  // 2026-10-07, lib/earnings/manual-twin-email.ts).
+  const ignoredManualTwins = getEmailIgnoredManualTwins(db);
+
   const filtered = events.filter((e) => {
+    if (ignoredManualTwins.has(e.id)) return false;
     if (!coveredIds.has(e.id)) return false;
     if (sentRecaps.has(e.id) || skipped.has(e.id)) return false;
     if (!shouldSendEarningsEmail(settings, e.symbol!)) return false;

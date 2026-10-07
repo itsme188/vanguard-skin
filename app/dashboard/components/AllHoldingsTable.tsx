@@ -5,7 +5,7 @@ import { displaySecurityName, unrealizedGainRatio } from "@/lib/format";
 import { SymbolLink } from "./SymbolLink";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
-import { Money, Pct, Shares } from "@/lib/privacy/components";
+import { Count, Money, Pct, Shares } from "@/lib/privacy/components";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 import type { AllHoldingsRow } from "@/lib/queries/holdings";
 
@@ -53,6 +53,73 @@ function GainPercentCell({ value }: { value: number | null }) {
   return <Pct value={value * 100} digits={2} signed className={className} />;
 }
 
+export interface HoldingsFooterSummary {
+  /** Market value of every priced row. Never narrowed to make the columns
+   *  subtract: it is what the positions are worth. */
+  totalValue: number;
+  /** Cost basis of the rows whose basis is known; null when none is. */
+  totalCostBasis: number | null;
+  /** Gain of the rows that have one (known basis AND a price); null when
+   *  none does. */
+  totalGain: number | null;
+  /** Cost basis of the rows that are in Gain (known basis AND a price): the
+   *  only honest base for Gain %. Equals totalCostBasis − noPriceCostBasis.
+   *  Null when no row has a gain. */
+  gainCostBasis: number | null;
+  /** Rows with no cost basis (null or the stored-zero convention). They are
+   *  in neither Cost Basis nor Gain. */
+  noBasisCount: number;
+  /** How many of those rows have a current price. Only these are in Value. */
+  noBasisPricedCount: number;
+  /** Combined market value of the PRICED no-basis rows (shorts net against
+   *  longs). Says nothing about the unpriced ones: unknown is not zero. */
+  noBasisValue: number;
+  /** How many of those rows have no current price either. Their value is
+   *  unknown and they are in none of the totals. */
+  noBasisUnpricedCount: number;
+  /** Rows with a known basis but no gain, which the query produces only
+   *  when there is no current price. They are in Cost Basis, and in none of
+   *  Value, Gain and Gain %. */
+  noPriceCount: number;
+  /** Combined cost basis of those rows. */
+  noPriceCostBasis: number;
+}
+
+/**
+ * The footer's three money columns are summed over three different sets of
+ * rows by necessity: a gain cannot be stated without a basis, and real
+ * market value must not be dropped from a portfolio total to make a
+ * subtraction look neat. This returns the three totals AND the two
+ * populations that make them differ, so the footer can say so in words:
+ *
+ *   Value − Cost Basis − Gain = noBasisValue − noPriceCostBasis
+ *
+ * tests/dashboard/all-holdings-footer-disclosure.test.tsx pins that identity.
+ */
+export function summarizeHoldingsFooter(
+  rows: Pick<AllHoldingsRow, "cost_basis" | "current_value" | "unrealized_gain">[],
+): HoldingsFooterSummary {
+  const sum = (values: number[]) => values.reduce((total, v) => total + v, 0);
+
+  const withBasis = rows.filter(hasKnownBasis);
+  const noBasis = rows.filter((h) => !hasKnownBasis(h));
+  const withGain = rows.filter((h) => h.unrealized_gain !== null);
+  const noPrice = withBasis.filter((h) => h.unrealized_gain === null);
+
+  return {
+    totalValue: sum(rows.map((h) => h.current_value ?? 0)),
+    totalCostBasis: withBasis.length === 0 ? null : sum(withBasis.map((h) => h.cost_basis!)),
+    totalGain: withGain.length === 0 ? null : sum(withGain.map((h) => h.unrealized_gain!)),
+    gainCostBasis: withGain.length === 0 ? null : sum(withGain.map((h) => h.cost_basis!)),
+    noBasisCount: noBasis.length,
+    noBasisPricedCount: noBasis.filter((h) => h.current_value !== null).length,
+    noBasisValue: sum(noBasis.map((h) => h.current_value ?? 0)),
+    noBasisUnpricedCount: noBasis.filter((h) => h.current_value === null).length,
+    noPriceCount: noPrice.length,
+    noPriceCostBasis: sum(noPrice.map((h) => h.cost_basis!)),
+  };
+}
+
 export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
   const { sort, setSort } = useSortParam<Field>("holdings", "current_value", "desc");
   const [filter, setFilter] = useState("");
@@ -71,11 +138,10 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
 
   // Totals reflect the filtered view so the footer stays honest when a
   // filter is applied — otherwise "$2.1M total" is misleading when you're
-  // looking at a 3-row subset.
-  const totalValue = useMemo(
-    () => filtered.reduce((sum, h) => sum + (h.current_value ?? 0), 0),
-    [filtered],
-  );
+  // looking at a 3-row subset. The same summary also names the rows each
+  // column leaves out (see summarizeHoldingsFooter).
+  const footer = useMemo(() => summarizeHoldingsFooter(filtered), [filtered]);
+  const totalValue = footer.totalValue;
 
   // Alloc % denominator stays anchored to the UNFILTERED set — the filter
   // narrows which rows show, not what the portfolio is (pre-fix a 1.22%
@@ -115,36 +181,6 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
     };
     return [...enriched].sort((a, b) => compareValues(sortValue(a), sortValue(b), sort.dir));
   }, [filtered, sort, unfilteredTotal]);
-
-  const holdingsWithCost = filtered.filter(hasKnownBasis);
-  const totalCostBasis = holdingsWithCost.reduce((sum, h) => sum + h.cost_basis!, 0);
-  const missingCostCount = filtered.length - holdingsWithCost.length;
-
-  // Gain follows the same "unknown, not zero" rule: a row whose own cell
-  // shows an em-dash must never be folded into the footer sum as if its
-  // gain were $0. When some (but not all) rows are unknown, the "~" prefix
-  // + tooltip disclose the partial sum the same way the Cost Basis cell
-  // already does, so Value − Cost and the disclosed Gain visibly agree.
-  const knownGainRows = filtered.filter((h) => h.unrealized_gain !== null);
-  const totalGain = knownGainRows.reduce((sum, h) => sum + h.unrealized_gain!, 0);
-
-  // A missing gain has two distinct causes, both rendering the same "—":
-  // the cost basis is unknown (null or the stored-zero-means-unknown
-  // convention, hasKnownBasis above), or the basis IS known but there's no
-  // current price to net against it (holdings.ts nulls unrealized_gain
-  // whenever p.close_price IS NULL, even with a known nonzero basis — see
-  // lib/queries/holdings.ts ~lines 70-75). The old single "cost basis
-  // unknown" tooltip text was wrong for the second case, so split the count
-  // and name whichever reason(s) actually apply.
-  const missingGainRows = filtered.filter((h) => h.unrealized_gain === null);
-  const missingGainCount = missingGainRows.length;
-  const noBasisCount = missingGainRows.filter((h) => !hasKnownBasis(h)).length;
-  const noPriceCount = missingGainCount - noBasisCount;
-  const missingGainReasons = [
-    noBasisCount > 0 ? `${noBasisCount} with unknown cost basis` : null,
-    noPriceCount > 0 ? `${noPriceCount} with no current price` : null,
-  ].filter((s): s is string => s !== null);
-  const missingGainTooltip = `${missingGainCount} position${missingGainCount > 1 ? "s" : ""} excluded — ${missingGainReasons.join(" and ")}`;
 
   const isFiltered = filter.trim().length > 0;
 
@@ -274,45 +310,27 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                   : `Total (${holdings.length} positions)`}
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums font-medium text-ink-dim">
-                {holdingsWithCost.length === 0 ? (
+                {footer.totalCostBasis === null ? (
                   // No filtered row knows its basis: the footer restates the
-                  // rows, so it is unknown too — never a "~$0.00" over nothing.
+                  // rows, so it is unknown too — never a "$0.00" over nothing.
                   <span className="text-ink-faint">&mdash;</span>
-                ) : missingCostCount > 0 ? (
-                  <span
-                    title={`${missingCostCount} position${missingCostCount > 1 ? "s" : ""} missing cost basis data`}
-                    className="cursor-help"
-                  >
-                    ~<Money value={totalCostBasis} precise />
-                  </span>
                 ) : (
-                  <Money value={totalCostBasis} precise />
+                  <Money value={footer.totalCostBasis} precise />
                 )}
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums font-medium text-ink">
                 <Money value={totalValue} precise />
               </td>
               <td className="px-4 py-3 text-right">
-                {knownGainRows.length === 0 ? (
-                  <GainCell value={null} />
-                ) : knownGainRows.length < filtered.length ? (
-                  <span title={missingGainTooltip} className="cursor-help">
-                    ~<GainCell value={totalGain} />
-                  </span>
-                ) : (
-                  <GainCell value={totalGain} />
-                )}
+                <GainCell value={footer.totalGain} />
               </td>
               <td className="px-4 py-3 text-right">
-                {knownGainRows.length === 0 ? (
-                  <GainPercentCell value={null} />
-                ) : knownGainRows.length < filtered.length ? (
-                  <span title={missingGainTooltip} className="cursor-help">
-                    ~<GainPercentCell value={unrealizedGainRatio(totalGain, totalCostBasis)} />
-                  </span>
-                ) : (
-                  <GainPercentCell value={unrealizedGainRatio(totalGain, totalCostBasis)} />
-                )}
+                {/* Over the cost basis of the rows that are IN Gain, not the
+                    Cost Basis total: a percent whose two halves cover
+                    different positions is not a figure. */}
+                <GainPercentCell
+                  value={unrealizedGainRatio(footer.totalGain, footer.gainCostBasis)}
+                />
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                 {unfilteredTotal > 0 ? (
@@ -325,6 +343,51 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
           </tfoot>
         </table>
       </ScrollFade>
+      {(footer.noBasisCount > 0 || footer.noPriceCount > 0) && (
+        // Said in words, under the table and OUTSIDE the horizontal scroller
+        // so a phone reads it without scrolling sideways: the footer's money
+        // columns cover different sets of positions, so Value − Cost Basis
+        // is not Gain. The wording is the same for one position or many, so
+        // Hide amounts cannot leak "exactly one" through the grammar.
+        <div
+          data-footer-disclosures
+          className="border-t border-edge bg-panel/50 px-4 py-3 text-xs text-ink-dim space-y-1"
+        >
+          {footer.noBasisCount > 0 && (
+            <p data-footer-disclosure="no-basis">
+              Positions with no cost basis: <Count value={footer.noBasisCount} />
+              {footer.noBasisUnpricedCount === 0 ? (
+                <>
+                  , worth <Money value={footer.noBasisValue} precise />. They are counted in Value
+                  and left out of Cost Basis, Gain and Gain %.
+                </>
+              ) : footer.noBasisPricedCount === 0 ? (
+                // Unknown is not zero: no figure at all.
+                <>
+                  . None has a current price, so their value is unknown and they are in none of
+                  the totals.
+                </>
+              ) : (
+                <>
+                  . With a current price: <Count value={footer.noBasisPricedCount} />, worth{" "}
+                  <Money value={footer.noBasisValue} precise />; they are counted in Value and
+                  left out of Cost Basis, Gain and Gain %. Without a current price:{" "}
+                  <Count value={footer.noBasisUnpricedCount} />; their value is unknown and they
+                  are in none of the totals.
+                </>
+              )}
+            </p>
+          )}
+          {footer.noPriceCount > 0 && (
+            <p data-footer-disclosure="no-price">
+              Positions with a cost basis but no current price:{" "}
+              <Count value={footer.noPriceCount} />, cost basis{" "}
+              <Money value={footer.noPriceCostBasis} precise />. They are counted in Cost Basis
+              and left out of Value, Gain and Gain %.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

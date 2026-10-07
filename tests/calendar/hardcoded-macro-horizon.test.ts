@@ -64,7 +64,10 @@ function rows(): Array<{ source_key: string; event_date: string; event_type: str
 describe("hardcoded macro events across the four-week horizon", () => {
   it("syncing a week three weeks out inserts the hardcoded FOMC row", async () => {
     const result = await syncCalendarForWeek(db, WEEK, NO_OTHER_LEGS);
-    expect(result.errors).toEqual([]);
+    // No source key is a failed read of the release schedule, reported as
+    // such (2026-10-07): it used to come back as an empty schedule, which the
+    // orphan cleanup then acted on. The built-in rows still land.
+    expect(result.errors).toEqual([expect.stringMatching(/^macro: FRED_API_KEY/)]);
     const fomc = rows().filter((r) => r.event_type === "fomc");
     expect(fomc).toEqual([
       { source_key: "fomc:2026-10-28", event_date: "2026-10-28", event_type: "fomc", week_of: WEEK },

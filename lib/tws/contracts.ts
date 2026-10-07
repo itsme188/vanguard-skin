@@ -5,6 +5,14 @@ import { RateLimiter } from "./rate-limiter";
 import { mapSecurityType, shouldRetypeAsEtf } from "./security-type-map";
 import type { EnrichResult } from "./types";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { todayET } from "@/lib/calendar/date-utils";
+import {
+  UNDERLYING_LOOKUP_RETRY_AFTER_DAYS,
+  clearUnderlyingLookupFailures,
+  getPendingOptionUnderlyings,
+  getUnderlyingLookupState,
+  recordUnderlyingLookupFailure,
+} from "./option-underlyings";
 
 const rateLimiter = new RateLimiter();
 
@@ -88,14 +96,28 @@ function buildContract(sec: SecurityRow): Record<string, unknown> | null {
  *   - Stocks/ETFs: resolved by symbol
  *   - Mutual funds: resolved by symbol with SecType.FUND
  *   - Options (OCC format): resolved by underlying + expiry + strike + right
+ *   - Also the not-held underlyings of held live options with no contract id
+ *     (lib/tws/option-underlyings.ts), so the price snapshot can price them.
+ *     Nothing but this lookup ever sets their contract id, so they are held
+ *     to a stricter rule than held rows: the broker must return EXACTLY ONE
+ *     contract. Zero or several is a definitive failure; after three the
+ *     symbol is skipped and tried once more every 30 days. A thrown error
+ *     (timeout, dropped connection) is not a failure and counts for nothing.
+ *     `options.optionUnderlyingIds` marks such rows on the ids path;
+ *     `options.today` is the run's ET date (injectable for tests).
  *   - Excluded: CUSIP-prefixed bonds, Cash, non-OCC option symbols
  */
 export async function enrichSecurities(
   db: Database.Database,
   securityIds?: number[],
+  options?: { optionUnderlyingIds?: number[]; today?: string },
 ): Promise<EnrichResult[]> {
   const api = getIbApi();
   if (!api) throw new Error("TWS not connected");
+
+  const today = options?.today ?? todayET();
+  // Rows that are here ONLY as the underlying of a held option.
+  const underlyingOnlyIds = new Set<number>(options?.optionUnderlyingIds ?? []);
 
   let securities: SecurityRow[];
   if (securityIds?.length) {
@@ -132,6 +154,25 @@ export async function enrichSecurities(
            )`,
       )
       .all() as SecurityRow[];
+
+    // Plus the underlyings of held live options that have no contract id yet
+    // (owner ruling 2026-10-07). They are not held, so the query above never
+    // reaches them, and the price snapshot only prices a row that has a
+    // contract id. Appended after the held rows; the held rows and their
+    // order are unchanged. A symbol skipped for repeated definitive failures
+    // is left out until its cool-off has passed.
+    // A failure in this extra set must never cost the held rows their turn.
+    try {
+      const seen = new Set(securities.map((s) => s.id));
+      for (const u of getPendingOptionUnderlyings(db, today)) {
+        if (seen.has(u.id)) continue;
+        seen.add(u.id);
+        underlyingOnlyIds.add(u.id);
+        securities.push({ id: u.id, symbol: u.symbol, security_type: u.security_type, name: u.name, currency: u.currency });
+      }
+    } catch (err) {
+      console.error("[enrichSecurities] Option-underlying selection failed:", err instanceof Error ? err.message : err);
+    }
   }
 
   // `name` is set when the existing value is missing or just echoes the
@@ -162,6 +203,7 @@ export async function enrichSecurities(
   const results: EnrichResult[] = [];
 
   for (const sec of securities) {
+    const underlyingOnly = underlyingOnlyIds.has(sec.id);
     try {
       await rateLimiter.waitForSlot();
 
@@ -176,7 +218,29 @@ export async function enrichSecurities(
         continue;
       }
 
+      if (underlyingOnly && getUnderlyingLookupState(db, sec.id, today) === "retry-due") {
+        console.log(
+          `[enrichSecurities] Retrying contract lookup for ${sec.symbol} after the ${UNDERLYING_LOOKUP_RETRY_AFTER_DAYS}-day cool-off`,
+        );
+      }
+
       const details = await api.getContractDetails(contract);
+
+      // An option underlying is looked up by bare symbol and nothing else
+      // (no positions sync) ever corrects its contract id, so a wrong match
+      // would feed a wrong price into option repricing every 30 minutes.
+      // Zero or several matches is a DEFINITIVE failed lookup: nothing is
+      // written and it counts toward the skip.
+      if (underlyingOnly && details.length !== 1) {
+        recordUnderlyingLookupFailure(db, sec.id, today, sec.symbol);
+        results.push({
+          symbol: sec.symbol,
+          securityId: sec.id,
+          enriched: false,
+          error: `Expected exactly one contract for an option underlying, got ${details.length}`,
+        });
+        continue;
+      }
 
       if (details.length > 0) {
         const detail = details[0];
@@ -200,6 +264,8 @@ export async function enrichSecurities(
           sec.id,
         );
 
+        if (underlyingOnly) clearUnderlyingLookupFailures(db, sec.id, sec.symbol);
+
         results.push({
           symbol: sec.symbol,
           securityId: sec.id,
@@ -218,6 +284,9 @@ export async function enrichSecurities(
         });
       }
     } catch (err) {
+      // A thrown error (timeout, dropped connection, a request the client
+      // could not send) is not an answer about the symbol: for an option
+      // underlying it neither adds to the failure count nor clears it.
       results.push({
         symbol: sec.symbol,
         securityId: sec.id,
@@ -228,4 +297,20 @@ export async function enrichSecurities(
   }
 
   return results;
+}
+
+/**
+ * Look up ONLY the pending underlyings of held live options (no contract id,
+ * and not inside a skip cool-off). The auto-refresh uses this when no held
+ * security needs enriching, so one unresolved underlying never re-runs the
+ * whole (much wider) held selection. Makes no broker request when nothing is
+ * pending.
+ */
+export async function enrichPendingOptionUnderlyings(
+  db: Database.Database,
+  today: string = todayET(),
+): Promise<EnrichResult[]> {
+  const ids = getPendingOptionUnderlyings(db, today).map((u) => u.id);
+  if (ids.length === 0) return [];
+  return enrichSecurities(db, ids, { optionUnderlyingIds: ids, today });
 }

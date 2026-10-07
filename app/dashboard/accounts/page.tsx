@@ -9,6 +9,7 @@ import {
 import { getTransactionsByAccount } from "@/lib/queries/transactions";
 import { getSnapshotsByAccount } from "@/lib/queries/monthly-snapshots";
 import { getDailyValuationsByAccount } from "@/lib/queries/daily-valuations";
+import { getAccountCashLine } from "@/lib/queries/account-cash-line";
 import { getReconciliationCheckpoints } from "@/lib/queries/reconciliation";
 import { AccountDetail } from "../components/AccountDetail";
 import { AccountSelector } from "../components/AccountSelector";
@@ -87,7 +88,7 @@ export default async function AccountsPage(props: {
   const selectedAccount =
     accounts.find((a) => a.id === selectedId) ?? accounts[0];
 
-  let holdings, transactions, snapshots, dailyValuations, reconciliationCheckpoints;
+  let holdings, transactions, snapshots, dailyValuations, cashLine, reconciliationCheckpoints;
   try {
     holdings = getHoldingsByAccount(db, selectedAccount.id);
     transactions = getTransactionsByAccount(db, selectedAccount.id, {
@@ -95,6 +96,7 @@ export default async function AccountsPage(props: {
     });
     snapshots = getSnapshotsByAccount(db, selectedAccount.id);
     dailyValuations = getDailyValuationsByAccount(db, selectedAccount.id);
+    cashLine = getAccountCashLine(db, selectedAccount.id);
     reconciliationCheckpoints = getReconciliationCheckpoints(db, selectedAccount.id);
   } catch {
     throw new Error(`Failed to load data for ${selectedAccount.name}. The database may be unavailable.`);
@@ -109,6 +111,7 @@ export default async function AccountsPage(props: {
         transactions={transactions}
         snapshots={snapshots}
         dailyValuations={dailyValuations}
+        cashLine={cashLine}
         reconciliationCheckpoints={reconciliationCheckpoints}
       />
     </div>

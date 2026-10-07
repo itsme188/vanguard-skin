@@ -17,6 +17,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 
 interface Props {
   weekOf: string;
@@ -29,11 +30,48 @@ interface SyncCompleteData {
   /** Domain-language entries for legs that never ran (e.g. no TWS, no Finnhub
    * key) — distinct from `errors`, which is failures during an attempt. */
   skipped?: string[];
+  /** Rows the refresh DELETED that were showing before it, each with a reason. */
+  removed?: SyncRowChange[];
+  /** Earnings rows the refresh HID (superseded) that were showing before it. */
+  superseded?: SyncRowChange[];
+  /** Hand-entered earnings rows the refresh brought BACK beside a twin. */
+  restored?: SyncRowChange[];
+}
+
+/** One row a refresh took off the calendar — mirrors `CalendarRowChange` in
+ * lib/calendar/sync.ts. Title and date are public calendar data. */
+interface SyncRowChange {
+  title: string;
+  eventDate: string;
+  /** The pipeline that owned the row; carried on the frame, not shown. */
+  source?: string;
+  reason: string;
 }
 
 export interface SyncOutcome {
   text: string;
   title?: string;
+  /** Every removed / hidden row, one line each — set only when the visible
+   * line could not name them all (more than one of a kind). */
+  changes?: string[];
+}
+
+/** Keeps only well-formed entries, so a stale or odd server frame can never
+ * throw inside the outcome composer or print "undefined". */
+function rowChanges(value: unknown): SyncRowChange[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (r): r is SyncRowChange =>
+      typeof r === "object" &&
+      r !== null &&
+      typeof (r as SyncRowChange).title === "string" &&
+      typeof (r as SyncRowChange).eventDate === "string" &&
+      typeof (r as SyncRowChange).reason === "string",
+  );
+}
+
+function describeRowChange(verb: "Removed" | "Hidden" | "Restored", row: SyncRowChange): string {
+  return `${verb} ${row.title} (${row.eventDate}) — ${row.reason}`;
 }
 
 /** Longest error summary we will put on the always-visible outcome line. */
@@ -81,6 +119,15 @@ function summarizeError(message: string): string {
  * `errors`. Each skipped entry is appended inline after the count, same as
  * an error, but never counted into the errors "(+N more)" tally — a skip
  * isn't one of the N failed attempts.
+ *
+ * A row the refresh took off the calendar is NAMED, with the reason (owner
+ * rulings 2026-10-06): "Removed" for a row the cleanup deleted, "Hidden" for
+ * an earnings row another date superseded (still stored, no longer shown),
+ * "Restored" for a hand-entered row brought back beside its hand-entered twin.
+ * Each kind is counted beside new/updated, its first row is spelled out on
+ * the line, and when there are more the full list goes in `changes` (the
+ * tap-to-expand detail). A run whose only effect was a removal never reads
+ * "no changes".
  */
 export function buildSyncOutcome(data: SyncCompleteData): SyncOutcome {
   const newEvents = data.newEvents ?? 0;
@@ -88,10 +135,29 @@ export function buildSyncOutcome(data: SyncCompleteData): SyncOutcome {
   const errors = data.errors ?? [];
   const skipped = data.skipped ?? [];
 
+  const removed = rowChanges(data.removed);
+  const hidden = rowChanges(data.superseded);
+  const restored = rowChanges(data.restored);
+
   const parts: string[] = [];
   if (newEvents > 0) parts.push(`${newEvents} new`);
   if (refreshedEvents > 0) parts.push(`${refreshedEvents} updated`);
+  if (removed.length > 0) parts.push(`${removed.length} removed`);
+  if (hidden.length > 0) parts.push(`${hidden.length} hidden`);
+  if (restored.length > 0) parts.push(`${restored.length} restored`);
   let text = parts.length > 0 ? `Refreshed — ${parts.join(", ")}` : "Refreshed — no changes";
+
+  const removedLines = removed.map((r) => describeRowChange("Removed", r));
+  const hiddenLines = hidden.map((r) => describeRowChange("Hidden", r));
+  const restoredLines = restored.map((r) => describeRowChange("Restored", r));
+  for (const lines of [removedLines, hiddenLines, restoredLines]) {
+    if (lines.length === 0) continue;
+    text += ` · ${lines[0]}${lines.length > 1 ? ` (+${lines.length - 1} more)` : ""}`;
+  }
+  const changes =
+    removedLines.length > 1 || hiddenLines.length > 1 || restoredLines.length > 1
+      ? [...removedLines, ...hiddenLines, ...restoredLines]
+      : undefined;
 
   for (const entry of skipped) {
     text += ` · ${entry}`;
@@ -105,9 +171,9 @@ export function buildSyncOutcome(data: SyncCompleteData): SyncOutcome {
     const inlineIndex = notScannedIndex >= 0 ? notScannedIndex : 0;
     const more = errors.length > 1 ? ` (+${errors.length - 1} more)` : "";
     text += ` · ${summarizeError(errors[inlineIndex])}${more}`;
-    return { text, title: errors.join("; ") };
+    return { text, title: errors.join("; "), ...(changes ? { changes } : {}) };
   }
-  return { text };
+  return changes ? { text, changes } : { text };
 }
 
 interface SyncFrame {
@@ -136,9 +202,24 @@ export function EarningsHubRefreshButton({ weekOf }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ weekOf }),
       });
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
+        // A refused request never opens the stream — it answers with the
+        // JSON error envelope (sign-in expired, blocked origin, server
+        // error). Read it through the shared reader so the line says what
+        // went wrong instead of a bare status code.
+        const failure = await readMutationResult(res);
         setProgress(null);
-        setError(`HTTP ${res.status}`);
+        setError(
+          failure.ok
+            ? "Refresh failed: the server refused the request."
+            : `Refresh failed: ${failure.message}`,
+        );
+        setSyncing(false);
+        return;
+      }
+      if (!res.body) {
+        setProgress(null);
+        setError("Refresh failed: the server sent no result — reload to check.");
         setSyncing(false);
         return;
       }
@@ -182,9 +263,12 @@ export function EarningsHubRefreshButton({ weekOf }: Props) {
       }
       setSyncing(false);
       router.refresh();
-    } catch (err) {
+    } catch {
+      // Never a raw exception ("Failed to fetch"): the request, or the stream
+      // mid-run, lost the server. The run may have partly applied — the next
+      // refresh is idempotent.
       setProgress(null);
-      setError(err instanceof Error ? err.message : "Network error");
+      setError(networkFailureMessage("refresh the calendar"));
       setSyncing(false);
     }
   }
@@ -193,7 +277,7 @@ export function EarningsHubRefreshButton({ weekOf }: Props) {
     <div className="flex items-center gap-2 text-[14px]">
       {progress && <span className="text-[11px] text-ink-faint italic">{progress}</span>}
       {!progress && outcome && (
-        outcome.title ? (
+        outcome.title || outcome.changes ? (
           // The joined per-phase errors used to live ONLY in the `title`
           // attribute — a hover-only affordance a touch user can never
           // trigger (CLAUDE.md: hover-only = touch tap-trap). A <details>
@@ -203,7 +287,20 @@ export function EarningsHubRefreshButton({ weekOf }: Props) {
             <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">
               {outcome.text} <span aria-hidden="true">▾</span>
             </summary>
-            <div className="mt-1 text-down whitespace-pre-wrap">{outcome.title}</div>
+            {outcome.changes && (
+              // Every row the refresh removed, hid or restored, one per line
+              // — public calendar titles and dates, so no privacy wrapper.
+              // Capped and scrollable: a long list must not push the toolbar
+              // around. Index key: two rows can produce the same line.
+              <ul className="mt-1 space-y-0.5 max-h-40 overflow-y-auto">
+                {outcome.changes.map((line, index) => (
+                  <li key={index}>{line}</li>
+                ))}
+              </ul>
+            )}
+            {outcome.title && (
+              <div className="mt-1 text-down whitespace-pre-wrap">{outcome.title}</div>
+            )}
           </details>
         ) : (
           <span className="text-[11px] text-ink-faint">{outcome.text}</span>

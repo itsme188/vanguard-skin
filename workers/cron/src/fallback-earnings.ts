@@ -80,6 +80,7 @@ import {
   type CloudEnrichedPayload,
 } from "./cloud-enriched";
 import { isPlausibleEarnings } from "./plausibility";
+import { emailIgnoredManualTwins } from "./manual-twin-email";
 import { resolveExpectedMove } from "./expected-move";
 import { formatEtTimestamp, todayET } from "./dst";
 
@@ -334,11 +335,17 @@ function buildWrapCluster(
       .map((r) => r.event_id),
   );
 
+  // Two live hand-entered rows for one company: email follows the EARLIER
+  // date; the later row is not a recap this cluster expects (owner ruling
+  // 2026-10-07). Mirrors lib/earnings/wrap.ts::getExpectedRecapCluster.
+  const ignoredManualTwins = emailIgnoredManualTwins(eff.events, issuerSiblings);
+
   const raw: CalendarEventRow[] = [];
   for (const e of eff.events) {
     if (e.event_type !== "earnings") continue;
     if (!e.symbol) continue;
     if (e.superseded) continue;
+    if (ignoredManualTwins.has(e.id)) continue;
     if (e.event_date !== date) continue;
     if (wrapSlotForCloud(e) !== slot) continue;
     if (!isCoveredInCloud(snapshot, eff, e)) continue;
@@ -647,6 +654,12 @@ async function findCandidatesFromSnapshot(
   const out: SnapshotCandidate[] = [];
   const skips: ScanSkip[] = [];
 
+  // Two live hand-entered rows for one company: email follows the EARLIER
+  // date and the later row is ignored for preview AND recap (owner ruling
+  // 2026-10-07). Same rule, same file contents, as the Mac finders
+  // (lib/earnings/manual-twin-email.ts <-> ./manual-twin-email.ts).
+  const ignoredManualTwins = emailIgnoredManualTwins(eff.events, issuerSiblings);
+
   for (const e of eff.events) {
     if (e.event_type !== "earnings") continue;
     if (!e.symbol) continue;
@@ -657,6 +670,7 @@ async function findCandidatesFromSnapshot(
     // otherwise each source row sends its own email (2026-07-14: JPM/BAC
     // previews doubled while the Mac slept).
     if (e.superseded) continue;
+    if (ignoredManualTwins.has(e.id)) continue;
     const sym = e.symbol.toUpperCase();
     // Coverage = ARMED (an event fact — v2 slice A §4.1) OR the classic
     // family-aware held/watchlist walk, so a GOOGL event with GOOG held isn't

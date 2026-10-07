@@ -569,6 +569,19 @@ Both scenario engines (`lib/compute/scenarios.ts` for custom what-ifs, `lib/comp
 - Never reintroduce a linear elasticity, a fixed elasticity fallback or a volatility default on this path: `tests/repo/scenario-option-no-linear-fallback.test.ts` fails on it. `DEFAULT_OPTION_ELASTICITY` survives only for the delta-exposure column (`lib/compute/exposure.ts`), which measures exposure at today's price and is not a stress test.
 - `scripts/compare-scenario-option-repricing.ts <db-copy>` prints a read-only, direction-only tally (sources, not-modelled reasons, signs) for a before/after check.
 
+### Scenario rate leg: bonds by their own duration, bond funds by rule (2026-10-07)
+
+One helper, `lib/compute/bond-duration.ts`, used by both scenario engines (they agree row for row; the rate preset's bond formula is the exponential form `exp(-D x dy) - 1`).
+
+- **A bond's duration, in order:** a stored `duration_years`; a bill or zero-coupon bond uses time to maturity; a bond within one coupon period of maturity uses time to maturity (one flow left); a coupon bond uses modified duration from its coupon (stored, else read from the name), its maturity and a yield solved from the stored price (semiannual coupons stepped back by calendar months; the price is treated as a clean quote). A bond past maturity, with no maturity date, or with no usable coupon is NOT modelled: it adds nothing and is listed and counted on the card (`ScenarioResult.bondsUnmodelled`). No bond ever takes a default duration.
+- **Bond funds** (`isFixedIncomeFund`): a fund-family security type only, not a cash equivalent, not a leveraged or inverse fund, and either a Fixed Income sector or a normalized fund category in `BOND_FUND_CATEGORIES` (`lib/securities/normalize-fund-category.ts`, the single list). They use the fund's stored duration, else a 5-year default that the card states.
+- A bill is recognised by its stored name only when no positive coupon is stored.
+
+### Holdings footers state exactly what each total covers (2026-10-07)
+
+- **Cross-account footer:** Value covers every position. A block below the table says how many positions carry no cost basis (left out of Cost Basis and Gain) and how many have a basis but no current price (left out of Value, Gain and Gain %). Gain % divides by the cost basis of the positions that are in Gain.
+- **Single-account footer** (`lib/queries/account-cash-line.ts`): Positions, Cash and the Account total from the latest daily valuation, each dated. Cash is shown only when a RESOLVABLE snapshot on or before that date owns it; otherwise one sentence says no broker snapshot anchors cash for that date. On a live-source day the cash line carries the live-snapshot timing-residual wording (pinned to `lib/queries/data-confidence.ts`). A money-market fund held as a row is named as already counted in Cash. An engine test pins the query's anchor rule to `computeDailyValuations`.
+
 ## F. Classification: sectors, factors, look-throughs
 
 ### GICS sector normalization (single source)
