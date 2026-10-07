@@ -149,7 +149,23 @@ export async function PATCH(request: NextRequest) {
     if (action === "deactivate") {
       deactivateLevel(db, id);
     } else if (action === "reactivate") {
-      reactivateLevel(db, id);
+      const result = reactivateLevel(db, id, { force: body.force === true });
+      if (!result.ok) {
+        const error =
+          result.code === "beyond_scan_range"
+            ? `Level ${result.effectivePrice} is outside the scanner's range at the current price ${result.currentPrice}; check for a mis-scaled price before reactivating.`
+            : `Price $${result.currentPrice.toFixed(2)} is already past this level ($${result.effectivePrice.toFixed(2)}) — reactivating will fire an alert on the next scan.`;
+        return NextResponse.json(
+          {
+            success: false,
+            error,
+            code: result.code,
+            currentPrice: result.currentPrice,
+            effectivePrice: result.effectivePrice,
+          },
+          { status: 409 }
+        );
+      }
     } else {
       upsertLevel(db, body);
     }

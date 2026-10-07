@@ -9,7 +9,12 @@ import type {
   LevelReviewStatus,
   AlertResponse,
 } from "@/lib/types";
-import { hasAlertToday } from "@/lib/queries/security-levels";
+import {
+  checkLevelTriggerState,
+  getLatestScanPriceForSecurity,
+  getLevelById,
+  hasAlertToday,
+} from "@/lib/queries/security-levels";
 
 // ─── Level mutations ───────────────────────────────────────────────
 
@@ -114,13 +119,61 @@ export function deactivateLevel(db: Database.Database, id: number): void {
   ).run(id);
 }
 
-export function reactivateLevel(db: Database.Database, id: number): void {
+export type ReactivateLevelResult =
+  | { ok: true }
+  | {
+      ok: false;
+      code: "would_fire_immediately" | "beyond_scan_range";
+      currentPrice: number;
+      effectivePrice: number;
+    };
+
+export function reactivateLevel(
+  db: Database.Database,
+  id: number,
+  opts: { force?: boolean } = {}
+): ReactivateLevelResult {
+  const level = getLevelById(db, id);
+  if (level) {
+    const priceInfo = getLatestScanPriceForSecurity(db, level.security_id);
+    if (priceInfo.currentPrice !== null && priceInfo.isFresh) {
+      const state = checkLevelTriggerState(
+        db,
+        {
+          id: level.id,
+          security_id: level.security_id,
+          level_type: level.level_type,
+          price: level.price,
+          price_source: level.price_source,
+          sec_type: priceInfo.secType,
+        },
+        priceInfo.currentPrice
+      );
+      if (state.hit && !opts.force) {
+        return {
+          ok: false,
+          code: "would_fire_immediately",
+          currentPrice: priceInfo.currentPrice,
+          effectivePrice: state.effectivePrice as number,
+        };
+      }
+      if (state.beyondScanRange && !opts.force) {
+        return {
+          ok: false,
+          code: "beyond_scan_range",
+          currentPrice: priceInfo.currentPrice,
+          effectivePrice: state.effectivePrice as number,
+        };
+      }
+    }
+  }
+
   db.prepare(
     `UPDATE security_levels
-     SET is_active = 1, triggered_at = NULL, triggered_price = NULL,
-         updated_at = datetime('now')
+     SET is_active = 1, updated_at = datetime('now')
      WHERE id = ?`
   ).run(id);
+  return { ok: true };
 }
 
 export function deleteLevel(db: Database.Database, id: number): void {

@@ -19,6 +19,7 @@ import {
   setAlertSuggestion,
   setLevelReviewStatus,
 } from "@/lib/mutations/security-levels";
+import { detectAndFireAlerts } from "@/lib/alerts/detect";
 import {
   getPendingReviewCount,
   getPendingReviewLevels,
@@ -193,20 +194,75 @@ describe("security_levels — deactivate / reactivate", () => {
     expect(getLevelById(db, id)!.is_active).toBe(0);
   });
 
-  it("reactivateLevel clears triggered_at and returns to active", () => {
-    const secId = seedSecurity("AAPL");
-    const id = upsertLevel(db, { security_id: secId, level_type: "entry", price: 180 });
-    seedPrice(secId, 175);
+  it("reactivateLevel refuses a crossed level without force and changes nothing", () => {
+    const secId = seedSecurity("ZZG2A");
+    const id = upsertLevel(db, { security_id: secId, level_type: "resistance", price: 100 });
+    seedPrice(secId, 120, "2099-01-02");
 
-    triggerLevel(db, { levelId: id, securityId: secId, triggeredPrice: 175 });
+    triggerLevel(db, {
+      levelId: id,
+      securityId: secId,
+      triggeredPrice: 110,
+      triggeredAt: "2099-01-01T15:00:00.000Z",
+    });
+
+    const before = getLevelById(db, id)!;
+    const result = reactivateLevel(db, id);
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: "would_fire_immediately",
+      currentPrice: 120,
+      effectivePrice: 100,
+    });
+    expect(getLevelById(db, id)).toMatchObject({
+      is_active: before.is_active,
+      triggered_at: before.triggered_at,
+      triggered_price: before.triggered_price,
+    });
+  });
+
+  it("reactivateLevel with force returns to active and preserves last-fired fields", () => {
+    const secId = seedSecurity("ZZG2B");
+    const id = upsertLevel(db, { security_id: secId, level_type: "entry", price: 180 });
+    seedPrice(secId, 175, "2099-01-02");
+
+    triggerLevel(db, {
+      levelId: id,
+      securityId: secId,
+      triggeredPrice: 175,
+      triggeredAt: "2099-01-01T15:00:00.000Z",
+    });
     expect(getLevelById(db, id)!.is_active).toBe(0);
     expect(getLevelById(db, id)!.triggered_at).not.toBeNull();
 
-    reactivateLevel(db, id);
+    const result = reactivateLevel(db, id, { force: true });
+    expect(result.ok).toBe(true);
     const level = getLevelById(db, id)!;
     expect(level.is_active).toBe(1);
-    expect(level.triggered_at).toBeNull();
-    expect(level.triggered_price).toBeNull();
+    expect(level.triggered_at).toBe("2099-01-01T15:00:00.000Z");
+    expect(level.triggered_price).toBe(175);
+  });
+
+  it("pause then reactivate is reversible for a never-fired level", () => {
+    const secId = seedSecurity("ZZG2C");
+    const id = upsertLevel(db, { security_id: secId, level_type: "entry", price: 180 });
+    seedPrice(secId, 220, "2099-01-02");
+
+    deactivateLevel(db, id);
+    expect(getLevelById(db, id)).toMatchObject({
+      is_active: 0,
+      triggered_at: null,
+      triggered_price: null,
+    });
+
+    const result = reactivateLevel(db, id);
+    expect(result.ok).toBe(true);
+    expect(getLevelById(db, id)).toMatchObject({
+      is_active: 1,
+      triggered_at: null,
+      triggered_price: null,
+    });
   });
 });
 
@@ -352,6 +408,23 @@ describe("security_levels — findCrossedLevels", () => {
     const crossed = findCrossedLevels(db);
     expect(crossed).toHaveLength(1);
     expect(crossed[0].level_type).toBe("exit");
+  });
+
+  it("includes a re-armed level with last-fired fields when the condition is crossed again", () => {
+    const secId = seedSecurity("ZZG2D");
+    const id = upsertLevel(db, { security_id: secId, level_type: "resistance", price: 100 });
+    seedPrice(secId, 120, "2099-01-02");
+    triggerLevel(db, {
+      levelId: id,
+      securityId: secId,
+      triggeredPrice: 110,
+      triggeredAt: "2099-01-01T15:00:00.000Z",
+    });
+    reactivateLevel(db, id, { force: true });
+
+    const crossed = findCrossedLevels(db);
+    expect(crossed.map((l) => l.id)).toContain(id);
+    expect(crossed.find((l) => l.id === id)!.triggered_at).toBe("2099-01-01T15:00:00.000Z");
   });
 });
 
@@ -552,6 +625,29 @@ describe("security_levels — triggerLevel + alerts", () => {
     const alert = getAlerts(db).find((a) => a.id === alertId)!;
     expect(alert.position_context).toContain('"onWatchlist":true');
     expect(alert.suggested_action).toContain("Purple Drink");
+  });
+
+  it("detectAndFireAlerts overwrites last-fired fields when a re-armed level fires again", () => {
+    const secId = seedSecurity("ZZG2E");
+    const levelId = upsertLevel(db, { security_id: secId, level_type: "resistance", price: 100 });
+    seedPrice(secId, 120, "2099-01-02");
+    triggerLevel(db, {
+      levelId,
+      securityId: secId,
+      triggeredPrice: 110,
+      triggeredAt: "2099-01-01T15:00:00.000Z",
+    });
+    reactivateLevel(db, levelId, { force: true });
+
+    const result = detectAndFireAlerts(db);
+    expect(result.fired).toBe(1);
+    expect(result.deduped).toBe(0);
+
+    const level = getLevelById(db, levelId)!;
+    expect(level.is_active).toBe(0);
+    expect(level.triggered_price).toBe(120);
+    expect(level.triggered_at).not.toBe("2099-01-01T15:00:00.000Z");
+    expect(getAlerts(db)).toHaveLength(2);
   });
 });
 

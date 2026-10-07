@@ -99,6 +99,13 @@ function triggeredToday(triggeredAt: string | null): boolean {
   return t.toDateString() === now.toDateString();
 }
 
+function lastFiredCopy(l: EnrichedLevel, currency?: string | null): string {
+  const price =
+    l.triggered_price !== null ? formatLevelPrice(currency ?? null, l.triggered_price) : "an unrecorded price";
+  const date = l.triggered_at ? l.triggered_at.slice(0, 10) : "an unrecorded date";
+  return `${price} on ${date}`;
+}
+
 const LEVEL_TYPE_OPTIONS: LevelType[] = [
   "support",
   "resistance",
@@ -841,16 +848,36 @@ export function LevelsPanel({
     refresh();
   }
 
-  async function handleReactivate(id: number) {
+  async function handleReactivate(id: number, force = false) {
     try {
       const res = await apiFetch("/api/levels", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, action: "reactivate" }),
+      body: JSON.stringify({ id, action: "reactivate", force }),
     });
-      const result = await readMutationResult(res);
-      if (result.ok) toast("Level reactivated", "success");
-      else toast(`Couldn't reactivate the level: ${result.message}`, "error");
+      const raw = (await res.clone().json().catch(() => null)) as
+        | { code?: unknown; currentPrice?: unknown; effectivePrice?: unknown }
+        | null;
+      const result = { ...(await readMutationResult(res)), code: raw?.code };
+      if (result.ok) {
+        toast(force ? "Level reactivated — price is already past this level, so it will fire on the next scan" : "Level reactivated", "success");
+      } else if (result.status === 409 && result.code === "would_fire_immediately") {
+        const current =
+          typeof raw?.currentPrice === "number" ? formatLevelPrice(currency, raw.currentPrice) : "the current price";
+        const effective =
+          typeof raw?.effectivePrice === "number" ? formatLevelPrice(currency, raw.effectivePrice) : "this level";
+        if (
+          confirm(
+            `Price ${current} is already past this level (${effective}) — reactivating will fire an alert on the next scan. Reactivate anyway?`
+          )
+        ) {
+          await handleReactivate(id, true);
+        } else {
+          toast("Level left paused", "info");
+        }
+      } else {
+        toast(`Couldn't reactivate the level: ${result.message}`, "error");
+      }
     } catch {
       toast(networkFailureMessage("reactivate the level"), "error");
     }
@@ -1316,14 +1343,22 @@ export function LevelsPanel({
               )}
               {visibleLevels.map((l) => {
                 const color = typeColor(l.level_type);
-                const triggered = l.is_active === 0 && l.triggered_at != null;
+                const lastFired = l.triggered_at != null;
+                const triggered = l.is_active === 0 && lastFired;
                 const alertedToday = triggeredToday(l.triggered_at);
-                const inactive = l.is_active === 0 && !l.triggered_at;
+                const inactive = l.is_active === 0 && !lastFired;
                 // is_active=1 alone does not make a level armed — the scanner's
                 // whitelist also requires review_status='auto_approved'.
                 // Rejected / pending-review levels must read as not-armed here.
-                const { unarmedReview, showPause, showReactivate, showRequeue } =
-                  levelActionVisibility(l);
+                const actionVisibility = levelActionVisibility(l);
+                const {
+                  unarmedReview,
+                  showRequeue,
+                } = actionVisibility;
+                const showPause =
+                  actionVisibility.showPause && l.review_status === "auto_approved";
+                const showReactivate =
+                  actionVisibility.showReactivate && l.review_status === "auto_approved";
                 return (
                   <div
                     key={l.id}
@@ -1423,7 +1458,7 @@ export function LevelsPanel({
                             .filter(Boolean)
                             .join(" · ")}
                         </span>
-                        {triggered && (
+                        {lastFired && (
                           <span
                             style={{
                               fontFamily: "var(--font-mono), monospace",
@@ -1436,7 +1471,7 @@ export function LevelsPanel({
                               borderRadius: "2px",
                             }}
                           >
-                            Triggered @ {l.triggered_price !== null ? formatLevelPrice(currency, l.triggered_price) : "—"}
+                            {triggered ? "Triggered at" : "Last fired at"} {lastFiredCopy(l, currency)}
                           </span>
                         )}
                         {alertedToday && (
@@ -1659,7 +1694,15 @@ export function LevelsPanel({
             )}
             <ul className="divide-y divide-edge">
             {visibleLevels.map((l) => {
-              const { showPause, showReactivate, showRequeue } = levelActionVisibility(l);
+              const lastFired = l.triggered_at != null;
+              const triggered = l.is_active === 0 && lastFired;
+              const inactive = l.is_active === 0 && !lastFired;
+              const actionVisibility = levelActionVisibility(l);
+              const showPause =
+                actionVisibility.showPause && l.review_status === "auto_approved";
+              const showReactivate =
+                actionVisibility.showReactivate && l.review_status === "auto_approved";
+              const { showRequeue } = actionVisibility;
               return (
             <li key={l.id} className="py-2.5 flex items-start gap-3">
               <div
@@ -1699,9 +1742,9 @@ export function LevelsPanel({
                       {l.action_hint.replace("_", " ")}
                     </Chip>
                   )}
-                  {l.is_active === 0 && l.triggered_at && (
+                  {lastFired && (
                     <Chip size="xs" tone="gold">
-                      triggered @ {l.triggered_price !== null ? formatLevelPrice(currency, l.triggered_price) : "—"}
+                      {triggered ? "triggered at" : "last fired at"} {lastFiredCopy(l, currency)}
                     </Chip>
                   )}
                   {triggeredToday(l.triggered_at) && (
@@ -1714,7 +1757,7 @@ export function LevelsPanel({
                       alerted today
                     </Chip>
                   )}
-                  {l.is_active === 0 && !l.triggered_at && (
+                  {inactive && (
                     <Chip size="xs" tone="neutral">inactive</Chip>
                   )}
                   {rowBeyondScanRange(l) && (

@@ -18,7 +18,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import { NextRequest } from "next/server";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { getLevelById } from "@/lib/queries/security-levels";
-import { upsertLevel } from "@/lib/mutations/security-levels";
+import { triggerLevel, upsertLevel } from "@/lib/mutations/security-levels";
 
 const hoisted = vi.hoisted(() => ({
   db: null as unknown as Database.Database,
@@ -42,6 +42,12 @@ function seedSecurity(db: Database.Database, symbol: string): number {
       "INSERT INTO securities (symbol, name, security_type, asset_class, multiplier) VALUES (?, ?, 'stock', 'equity', 1)"
     )
     .run(symbol, `${symbol} Corp`).lastInsertRowid as number;
+}
+
+function seedPrice(db: Database.Database, securityId: number, price: number, date: string): void {
+  db.prepare(
+    "INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'manual')"
+  ).run(securityId, date, price);
 }
 
 function postReq(body: unknown): NextRequest {
@@ -274,5 +280,78 @@ describe("PATCH /api/levels — update path is not gated by the past-expiry guar
 
     const level = getLevelById(hoisted.db, id)!;
     expect(level.expires_at).toBe(past);
+  });
+});
+
+describe("PATCH /api/levels — reactivate guard", () => {
+  it("refuses to reactivate a crossed triggered level without force (409, no write)", async () => {
+    const secId = seedSecurity(hoisted.db, "ZZG2R");
+    const levelId = upsertLevel(hoisted.db, {
+      security_id: secId,
+      level_type: "resistance",
+      price: 100,
+    });
+    seedPrice(hoisted.db, secId, 120, "2099-01-02");
+    triggerLevel(hoisted.db, {
+      levelId,
+      securityId: secId,
+      triggeredPrice: 110,
+      triggeredAt: "2099-01-01T15:00:00.000Z",
+    });
+
+    const mod = await import("@/app/api/levels/route");
+    const res = await mod.PATCH(
+      patchReq({ id: levelId, action: "reactivate" })
+    );
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as {
+      success: boolean;
+      code: string;
+      currentPrice: number;
+      effectivePrice: number;
+    };
+    expect(body).toMatchObject({
+      success: false,
+      code: "would_fire_immediately",
+      currentPrice: 120,
+      effectivePrice: 100,
+    });
+
+    expect(getLevelById(hoisted.db, levelId)).toMatchObject({
+      is_active: 0,
+      triggered_at: "2099-01-01T15:00:00.000Z",
+      triggered_price: 110,
+    });
+  });
+
+  it("force-reactivates a crossed triggered level and keeps last-fired fields", async () => {
+    const secId = seedSecurity(hoisted.db, "ZZG2F");
+    const levelId = upsertLevel(hoisted.db, {
+      security_id: secId,
+      level_type: "resistance",
+      price: 100,
+    });
+    seedPrice(hoisted.db, secId, 120, "2099-01-02");
+    triggerLevel(hoisted.db, {
+      levelId,
+      securityId: secId,
+      triggeredPrice: 110,
+      triggeredAt: "2099-01-01T15:00:00.000Z",
+    });
+
+    const mod = await import("@/app/api/levels/route");
+    const res = await mod.PATCH(
+      patchReq({ id: levelId, action: "reactivate", force: true })
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean };
+    expect(body.success).toBe(true);
+    expect(getLevelById(hoisted.db, levelId)).toMatchObject({
+      is_active: 1,
+      triggered_at: "2099-01-01T15:00:00.000Z",
+      triggered_price: 110,
+    });
   });
 });
