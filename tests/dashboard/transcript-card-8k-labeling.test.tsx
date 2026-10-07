@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { TranscriptCard } from "@/app/dashboard/components/TranscriptCard";
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
+import { sliceBetween } from "../helpers/source-anchor";
 
 // QA finding: research-transcripts-list--8k-cover-pages-labelled-transcript-duplicate-quarter-cards-regression-1
 //
@@ -96,8 +99,6 @@ describe("TranscriptCard — edgar_8k cover pages are labeled as filings, not tr
   });
 
   it("source: the modal header renders '8-K Filing' (not 'Earnings') for edgar_8k rows", () => {
-    const fs = require("node:fs");
-    const path = require("node:path");
     const source = fs.readFileSync(
       path.join(process.cwd(), "app/dashboard/components/TranscriptCard.tsx"),
       "utf8"
@@ -204,5 +205,30 @@ describe("TranscriptCard — every other source keeps today's labels exactly", (
     expect(html).toContain("Guidance");
     expect(html).toContain("Risk Factors");
     expect(html).toContain("Test Co reported strong revenue growth this quarter.");
+  });
+
+  it("renders an empty section when no guidance or risk passages were found", () => {
+    const html = renderToStaticMarkup(
+      <TranscriptCard
+        transcript={sampleTranscript({
+          source: "alpha_vantage",
+          guidance: null,
+          risk_factors: null,
+        })}
+      />
+    );
+
+    expect(html).toContain("No guidance or risk passages were found in this call.");
+    expect(html).toContain("empty");
+  });
+
+  it("source: empty guidance/risk wording comes from kindLabel so filings are not called calls", () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), "app/dashboard/components/TranscriptCard.tsx"),
+      "utf8",
+    );
+    const emptySectionRegion = sliceBetween(source, "No guidance or risk passages", "{/* Actions */}");
+    expect(emptySectionRegion).toContain("kindLabel");
+    expect(emptySectionRegion).not.toContain("No guidance or risk passages were found in this call.");
   });
 });

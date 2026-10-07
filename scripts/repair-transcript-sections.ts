@@ -29,13 +29,16 @@ export function planTranscriptSectionsRepair(
 ): TranscriptSectionsRepairResult {
   const rows = db
     .prepare(
-      `SELECT id, transcript, guidance, risk_factors
+      `SELECT id, source, transcript, guidance, risk_factors
          FROM earnings_transcripts
         WHERE transcript IS NOT NULL
+          AND TRIM(transcript) <> ''
+          AND source <> 'api_ninjas'
         ORDER BY id`,
     )
     .all() as Array<{
       id: number;
+      source: string;
       transcript: string;
       guidance: string | null;
       risk_factors: string | null;

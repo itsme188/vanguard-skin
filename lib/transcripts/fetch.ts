@@ -22,7 +22,12 @@ import {
   getCachedTranscript,
   getLatestCachedTranscript,
 } from "@/lib/queries/transcripts";
-import { upsertTranscript } from "@/lib/mutations/transcripts";
+import {
+  statedFiscalQuarterFromTranscript,
+  transcriptQuarterMismatchReason,
+  upsertTranscript,
+} from "@/lib/mutations/transcripts";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
 import {
   isApiNinjasConfigured,
   getEarningsTranscript as getApiNinjasTranscript,
@@ -43,17 +48,19 @@ export interface FetchTranscriptResult {
 export interface FetchTranscriptOptions {
   /** Earnings print date whose same-day fetch is warming this cache row. */
   eventDate?: string;
+  expectedFiscalQuarter?: { year: number; quarter: number };
+  skipAlphaVantage?: boolean;
 }
 
-export interface TranscriptCallDateEvidence {
-  date: string;
-  source: "vendor_payload" | "opening_quarter_phrase";
-}
+export { statedFiscalQuarterFromTranscript };
 
-// Stage-1 guard: the bad rows in the QA finding were roughly six months old.
-// Allow a little slop for timezone/vendor posting lag, but fail closed when
-// the call evidence is not within the print week.
+// Real filing/vendor dates can differ by a few days around print time because
+// releases, calls, SEC filing acceptance and vendor posting are not simultaneous.
 export const TRANSCRIPT_CALL_DATE_WINDOW_DAYS = 10;
+
+// Cross-source earnings calendar rows for the same print can disagree by a
+// day or two; include nearby superseded Finnhub twins when resolving fiscal Q.
+export const FISCAL_QUARTER_EVENT_TOLERANCE_DAYS = 3;
 
 // ─── Summary Generation ─────────────────────────────────────────
 
@@ -132,13 +139,17 @@ export function extractRiskFactors(text: string): string | null {
 type TranscriptSection = "guidance" | "risk";
 
 const GUIDANCE_KEYWORDS =
-  /\b(guidance|outlook|expect|forecast|anticipate|project|looking ahead|full[- ]year|next quarter|raising|lowering|reaffirm)\b/i;
+  /\b(guidance|outlook|expect|forecast|anticipate|projects|projected|projecting|looking ahead|full[- ]year|next quarter|raising|lowering|reaffirm)\b/i;
 const RISK_KEYWORDS =
   /\b(risk|challenge|headwind|decline|pressure|uncertain|concern|difficult|disruption|tariff|impact)\b/i;
-const PREPARED_REMARKS_RE = /\b(prepared remarks|management remarks|opening remarks)\b/i;
-const QUESTION_SPEAKER_RE = /^(?:Analyst|Operator|Question|Q\s*[-:])/i;
+const QUESTION_SPEAKER_RE =
+  /^(?:Analyst|Operator|Question|Q\s*[-:]|[^:\n]{1,120}\((?:[^)]*\b(?:analyst|operator)\b[^)]*)\):)/i;
+const QA_MARKER_RE =
+  /^(?:Operator:\s*)?(?:question-and-answer session|we (?:will|can) now (?:begin|open).{0,80}questions|open.{0,80}for questions)|^Q\s*[-:]/i;
 const BOILERPLATE_RE =
   /\b(welcome to|good (?:morning|afternoon|evening).{0,80}conference call|forward-looking statements?|safe harbor|risks and uncertainties|actual results (?:may|could) differ|SEC|Form 8-K|Exhibit 99\.?1|Item 2\.02|registrant furnished|investor relations)\b/i;
+const BOILERPLATE_SENTENCE_RE =
+  /\b(?:before we begin|today's remarks include|this (?:call|presentation) contains|forward-looking statements?|safe harbor|risks and uncertainties|actual results (?:may|could) differ|registrant furnished|Item 2\.02|Exhibit 99\.?1)\b/i;
 
 function normalizeParagraphs(text: string): string[] {
   return text
@@ -156,15 +167,29 @@ function isBoilerplateParagraph(p: string): boolean {
   return BOILERPLATE_RE.test(p);
 }
 
+function stripBoilerplateSentences(p: string): string {
+  return p
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => !BOILERPLATE_SENTENCE_RE.test(sentence))
+    .join(" ")
+    .replace(/^(?:Investor Relations|Operator):\s*/i, "")
+    .trim();
+}
+
+function preparedPool(paragraphs: string[]): string[] {
+  const firstQa = paragraphs.findIndex((p) => QA_MARKER_RE.test(p));
+  return firstQa === -1 ? paragraphs : paragraphs.slice(0, firstQa);
+}
+
 function selectTranscriptSectionParagraphs(text: string, section: TranscriptSection): string[] {
   const keyword = section === "guidance" ? GUIDANCE_KEYWORDS : RISK_KEYWORDS;
   const limit = section === "guidance" ? 3 : 2;
-  const candidates = normalizeParagraphs(text).filter(
-    (p) => keyword.test(p) && !isBoilerplateParagraph(p) && !QUESTION_SPEAKER_RE.test(p),
-  );
-  const prepared = candidates.filter((p) => PREPARED_REMARKS_RE.test(p));
-  const pool = prepared.length > 0 ? prepared : candidates;
-  return pool.slice(0, limit).map(truncateParagraph);
+  const candidates = preparedPool(normalizeParagraphs(text))
+    .filter((p) => !QUESTION_SPEAKER_RE.test(p))
+    .map(stripBoilerplateSentences)
+    .filter((p) => p.length > 30)
+    .filter((p) => keyword.test(p) && !isBoilerplateParagraph(p));
+  return candidates.slice(0, limit).map(truncateParagraph);
 }
 
 function parseDateOnly(date: string): number | null {
@@ -186,77 +211,62 @@ function normalizedDate(raw: string | null | undefined): string | null {
   return parseDateOnly(date) === null ? null : date;
 }
 
-const ORDINAL_QUARTERS: Record<string, number> = {
-  first: 1,
-  second: 2,
-  third: 3,
-  fourth: 4,
-};
-
-function quarterPhraseDateEstimate(text: string): string | null {
-  const opening = text.slice(0, 2500);
-  const ordinal = opening.match(
-    /\b(first|second|third|fourth)\s+quarter\s+(?:fiscal\s+)?(?:year\s+)?(\d{4})\b/i,
-  );
-  const compact = opening.match(/\bQ([1-4])\s+(?:FY|fiscal\s+)?(\d{4})\b/i);
-  const fiscalCompact = opening.match(/\b(?:FY|fiscal\s+)(\d{4})\s+Q([1-4])\b/i);
-
-  let quarter: number | null = null;
-  let year: number | null = null;
-  if (ordinal) {
-    quarter = ORDINAL_QUARTERS[ordinal[1].toLowerCase()] ?? null;
-    year = Number(ordinal[2]);
-  } else if (compact) {
-    quarter = Number(compact[1]);
-    year = Number(compact[2]);
-  } else if (fiscalCompact) {
-    year = Number(fiscalCompact[1]);
-    quarter = Number(fiscalCompact[2]);
-  }
-  if (!quarter || !year) return null;
-
-  // The stage-1 fallback has no fiscal calendar source. Use the common
-  // September fiscal-year-end cadence seen in the finding's stale rows:
-  // fiscal Q2 -> March call, fiscal Q4 -> September print. This is purposely
-  // conservative; stage 2 replaces it with real fiscal-quarter mapping.
-  const endDates: Record<number, string> = {
-    1: `${year - 1}-12-31`,
-    2: `${year}-03-31`,
-    3: `${year}-06-30`,
-    4: `${year}-09-30`,
-  };
-  return endDates[quarter] ?? null;
-}
-
-export function transcriptCallDateEvidence(
-  transcript: string | null | undefined,
-  vendorCallDate?: string | null,
-): TranscriptCallDateEvidence | null {
-  const vendorDate = normalizedDate(vendorCallDate);
-  if (vendorDate) return { date: vendorDate, source: "vendor_payload" };
-  if (!transcript) return null;
-  const phraseDate = quarterPhraseDateEstimate(transcript);
-  return phraseDate ? { date: phraseDate, source: "opening_quarter_phrase" } : null;
-}
-
-export function transcriptMatchesEventDate(
-  transcript: string | null | undefined,
-  eventDate: string,
-  vendorCallDate?: string | null,
-): boolean {
-  const evidence = transcriptCallDateEvidence(transcript, vendorCallDate);
-  if (!evidence) return false;
-  const diff = daysBetween(evidence.date, eventDate);
+function realDateMatchesEvent(date: string | null | undefined, eventDate: string | undefined): boolean {
+  if (!eventDate) return true;
+  const normalized = normalizedDate(date);
+  if (!normalized) return false;
+  const diff = daysBetween(normalized, eventDate);
   return diff !== null && diff <= TRANSCRIPT_CALL_DATE_WINDOW_DAYS;
 }
 
-function shouldCacheForEvent(
+function parseFinnhubQuarter(rawJson: string | null): { year: number; quarter: number } | null {
+  if (!rawJson) return null;
+  try {
+    const parsed = JSON.parse(rawJson) as { entry?: { quarter?: unknown; year?: unknown } };
+    const quarter = Number(parsed.entry?.quarter);
+    const year = Number(parsed.entry?.year);
+    if (![1, 2, 3, 4].includes(quarter) || !Number.isInteger(year)) return null;
+    return { quarter, year };
+  } catch {
+    return null;
+  }
+}
+
+export function expectedFiscalQuarterForPrint(
+  db: Database.Database,
+  symbol: string,
+  eventDate: string,
+): { year: number; quarter: number } | null {
+  const siblings = [...issuerSiblings(symbol)].map((s) => s.toUpperCase());
+  if (siblings.length === 0) return null;
+  const placeholders = siblings.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT raw_json
+         FROM calendar_events
+        WHERE (event_type = 'earnings' OR source = 'finnhub')
+          AND source = 'finnhub'
+          AND UPPER(symbol) IN (${placeholders})
+          AND raw_json IS NOT NULL
+          AND ABS(julianday(event_date) - julianday(?)) <= ?
+        ORDER BY ABS(julianday(event_date) - julianday(?)) ASC, id ASC`,
+    )
+    .all(...siblings, eventDate, FISCAL_QUARTER_EVENT_TOLERANCE_DAYS, eventDate) as Array<{
+    raw_json: string | null;
+  }>;
+
+  for (const row of rows) {
+    const q = parseFinnhubQuarter(row.raw_json);
+    if (q) return q;
+  }
+  return null;
+}
+
+function transcriptMatchesKey(
   transcript: string | null | undefined,
-  options: FetchTranscriptOptions | undefined,
-  vendorCallDate?: string | null,
+  key: { ticker: string; year: number; quarter: number; source: TranscriptSource },
 ): boolean {
-  if (!options?.eventDate) return true;
-  return transcriptMatchesEventDate(transcript, options.eventDate, vendorCallDate);
+  return transcriptQuarterMismatchReason({ ...key, transcript }) === null;
 }
 
 /**
@@ -345,10 +355,20 @@ async function tryAlphaVantage(
   quarter: number,
   options?: FetchTranscriptOptions,
 ): Promise<{ transcript: EarningsTranscript | null; rejected: boolean }> {
-  if (!isAlphaVantageConfigured()) return { transcript: null, rejected: false };
+  if (options?.skipAlphaVantage || !isAlphaVantageConfigured()) return { transcript: null, rejected: false };
   const result = await getAlphaVantageTranscript(upperTicker, year, quarter);
   if (!result || !result.transcript) return { transcript: null, rejected: false };
-  if (!shouldCacheForEvent(result.transcript, options, result.call_date)) {
+  const mismatch = transcriptQuarterMismatchReason({
+    ticker: upperTicker,
+    year,
+    quarter,
+    source: "alpha_vantage",
+    transcript: result.transcript,
+  });
+  if (mismatch) {
+    console.warn(
+      `[transcripts] rejected alpha_vantage ${upperTicker} ${year}Q${quarter}: ${mismatch}; falling through to EDGAR`,
+    );
     return { transcript: null, rejected: true };
   }
   return { transcript: upsertTranscript(db, {
@@ -356,7 +376,7 @@ async function tryAlphaVantage(
     ticker: upperTicker,
     year,
     quarter,
-    call_date: result.call_date,
+    call_date: null,
     source: "alpha_vantage",
     transcript: result.transcript,
     summary: generateSummary(result.transcript),
@@ -428,34 +448,46 @@ export async function fetchTranscript(
       const result = await getApiNinjasTranscript(upperTicker, year, quarter);
       if (result && result.transcript) {
         const callDate = result.date ? result.date.slice(0, 10) : null;
-        if (!shouldCacheForEvent(result.transcript, options, callDate)) {
-          return null;
-        }
-        const transcript = upsertTranscript(db, {
-          security_id: securityId,
+        if (!realDateMatchesEvent(callDate, options.eventDate)) {
+          console.warn(
+            `[transcripts] rejected api_ninjas ${upperTicker} ${year}Q${quarter}: call date ${callDate ?? "missing"} does not match print ${options.eventDate}; falling through`,
+          );
+        } else if (!transcriptMatchesKey(result.transcript, {
           ticker: upperTicker,
           year,
           quarter,
-          call_date: callDate,
           source: "api_ninjas",
-          transcript: result.transcript,
-          summary: result.summary || generateSummary(result.transcript),
-          guidance: result.guidance || extractGuidance(result.transcript),
-          risk_factors: result.risk_factors || extractRiskFactors(result.transcript),
-          sentiment_score: result.overall_sentiment ?? null,
-          sentiment_label: result.overall_sentiment
-            ? result.overall_sentiment > 0.2
-              ? "bullish"
-              : result.overall_sentiment < -0.2
-                ? "bearish"
-                : "neutral"
-            : null,
-          participants: result.participants
-            ? JSON.stringify(result.participants)
-            : null,
-          source_key: `api_ninjas:${upperTicker}:${year}:${quarter}`,
-        });
-        return { transcript, fromCache: false };
+        })) {
+          console.warn(
+            `[transcripts] rejected api_ninjas ${upperTicker} ${year}Q${quarter}: stated quarter contradicts key; falling through`,
+          );
+        } else {
+          const transcript = upsertTranscript(db, {
+            security_id: securityId,
+            ticker: upperTicker,
+            year,
+            quarter,
+            call_date: callDate,
+            source: "api_ninjas",
+            transcript: result.transcript,
+            summary: result.summary || generateSummary(result.transcript),
+            guidance: result.guidance || extractGuidance(result.transcript),
+            risk_factors: result.risk_factors || extractRiskFactors(result.transcript),
+            sentiment_score: result.overall_sentiment ?? null,
+            sentiment_label: result.overall_sentiment
+              ? result.overall_sentiment > 0.2
+                ? "bullish"
+                : result.overall_sentiment < -0.2
+                  ? "bearish"
+                  : "neutral"
+              : null,
+            participants: result.participants
+              ? JSON.stringify(result.participants)
+              : null,
+            source_key: `api_ninjas:${upperTicker}:${year}:${quarter}`,
+          });
+          return { transcript, fromCache: false };
+        }
       }
     } catch {
       // Fall through to next source
@@ -469,7 +501,6 @@ export async function fetchTranscript(
   // The client never throws — null falls through to EDGAR.
   {
     const transcript = await tryAlphaVantage(db, securityId, upperTicker, year, quarter, options);
-    if (transcript.rejected) return null;
     if (transcript.transcript) return { transcript: transcript.transcript, fromCache: false };
   }
 
@@ -493,7 +524,10 @@ export async function fetchTranscript(
       return q.year === year && q.quarter === quarter;
     });
     if (matchingFiling) {
-      if (!shouldCacheForEvent(matchingFiling.pressReleaseText, options, matchingFiling.filingDate)) {
+      if (!realDateMatchesEvent(matchingFiling.filingDate, options.eventDate)) {
+        console.warn(
+          `[transcripts] rejected edgar_8k ${upperTicker} ${year}Q${quarter}: filing date ${matchingFiling.filingDate} does not match print ${options.eventDate}`,
+        );
         return null;
       }
       const transcript = upsertTranscript(db, {
@@ -565,6 +599,30 @@ export async function getTranscriptForChat(
   has_full_transcript: boolean;
   truncated: boolean;
 } | null> {
+  if (!year || !quarter) {
+    const siblings = [...issuerSiblings(ticker)].map((s) => s.toUpperCase());
+    if (siblings.length > 0) {
+      const placeholders = siblings.map(() => "?").join(",");
+      const row = db
+        .prepare(
+          `SELECT symbol, event_date
+             FROM calendar_events
+            WHERE (event_type = 'earnings' OR source = 'finnhub')
+              AND UPPER(symbol) IN (${placeholders})
+              AND actual_value IS NOT NULL
+            ORDER BY event_date DESC, id ASC
+            LIMIT 1`,
+        )
+        .get(...siblings) as { symbol: string; event_date: string } | undefined;
+      if (row) {
+        const expected = expectedFiscalQuarterForPrint(db, row.symbol, row.event_date);
+        if (expected) {
+          year = expected.year;
+          quarter = expected.quarter;
+        }
+      }
+    }
+  }
   let result = await fetchTranscript(db, ticker, year, quarter);
   if (!result) return null;
 

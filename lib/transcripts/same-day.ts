@@ -67,7 +67,11 @@
  */
 
 import type Database from "better-sqlite3";
-import { fetchTranscript, deriveFilingReportingQuarter } from "@/lib/transcripts/fetch";
+import {
+  fetchTranscript,
+  deriveFilingReportingQuarter,
+  expectedFiscalQuarterForPrint,
+} from "@/lib/transcripts/fetch";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
 import { getCachedTranscript } from "@/lib/queries/transcripts";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
@@ -300,7 +304,9 @@ export async function fetchSameDayTranscripts(
   // 36h/30-min clock.
   const candidates = covered.flatMap((row) => {
     const symbol = row.symbol!.toUpperCase();
-    const { year, quarter } = deriveFilingReportingQuarter(row.event_date);
+    const calendarQuarter = deriveFilingReportingQuarter(row.event_date);
+    const expected = expectedFiscalQuarterForPrint(db, symbol, row.event_date);
+    const { year, quarter } = expected ?? calendarQuarter;
     const cached = getCachedTranscript(db, symbol, year, quarter);
     const ageMs = ageByRow.get(row)!;
 
@@ -315,7 +321,7 @@ export async function fetchSameDayTranscripts(
         : null;
       if (lastMs !== null && nowMs - lastMs < UPGRADE_PACING_MS) return [];
     }
-    return [{ row, symbol, year, quarter, isUpgrade: !!cached }];
+    return [{ row, symbol, year, quarter, expected, isUpgrade: !!cached }];
   });
 
   // Fresh candidates spend the shared attempt budget first — a same-day
@@ -330,7 +336,7 @@ export async function fetchSameDayTranscripts(
   let attempted = 0;
   let fetched = 0;
 
-  for (const { row, symbol, year, quarter } of candidates) {
+  for (const { row, symbol, year, quarter, expected } of candidates) {
     if (attempted >= maxAttempts) break;
 
     // Stamp BEFORE the fetch attempt so a hung fetchTranscript call can't
@@ -341,6 +347,7 @@ export async function fetchSameDayTranscripts(
     try {
       const result = await fetchTranscript(db, symbol, year, quarter, {
         eventDate: row.event_date,
+        ...(expected ? { expectedFiscalQuarter: expected } : { skipAlphaVantage: true }),
       });
       // fromCache: true means a FAILED upgrade (fetchTranscript echoed the
       // cached edgar row back) — not a fetch, and re-summarizing the same

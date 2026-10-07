@@ -2,44 +2,19 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertTranscript } from "@/lib/mutations/transcripts";
-import {
-  planStaleTranscriptRepair,
-  runStaleTranscriptRepair,
-} from "../../scripts/repair-stale-transcripts";
+import { auditTranscriptKeys } from "../../scripts/audit-transcript-keys";
 import {
   planTranscriptSectionsRepair,
   runTranscriptSectionsRepair,
 } from "../../scripts/repair-transcript-sections";
 
 let db: Database.Database;
-let eventCounter = 0;
 
 beforeEach(() => {
   db = new Database(":memory:");
   db.pragma("foreign_keys = ON");
   runMigrations(db);
-  eventCounter = 0;
 });
-
-function seedEvent(symbol: string, eventDate: string): number {
-  eventCounter += 1;
-  return Number(
-    db
-      .prepare(
-        `INSERT INTO calendar_events
-          (source, event_type, event_date, release_time, title, symbol,
-           actual_value, source_key, week_of, superseded)
-         VALUES ('finnhub', 'earnings', ?, '16:00', ?, ?, 'EPS 1.00', ?, ?, 0)`,
-      )
-      .run(
-        eventDate,
-        `${symbol} earnings`,
-        symbol,
-        `finnhub:${symbol}:${eventDate}:${eventCounter}`,
-        eventDate,
-      ).lastInsertRowid,
-  );
-}
 
 function seedTranscript(opts: {
   ticker: string;
@@ -47,6 +22,7 @@ function seedTranscript(opts: {
   quarter: number;
   sourceKey: string;
   transcript: string;
+  source?: "alpha_vantage" | "api_ninjas" | "edgar_8k";
   callDate?: string | null;
   guidance?: string | null;
   riskFactors?: string | null;
@@ -56,7 +32,7 @@ function seedTranscript(opts: {
     year: opts.year,
     quarter: opts.quarter,
     call_date: opts.callDate ?? null,
-    source: "alpha_vantage",
+    source: opts.source ?? "alpha_vantage",
     transcript: opts.transcript,
     summary: null,
     guidance: opts.guidance ?? null,
@@ -68,43 +44,48 @@ function seedTranscript(opts: {
   }).id;
 }
 
-describe("repair-stale-transcripts", () => {
-  it("dry-runs stale call-date mismatches, apply deletes them, and rerun is idempotent", () => {
-    seedEvent("ZZS", "2026-09-30");
-    const staleId = seedTranscript({
-      ticker: "ZZS",
-      year: 2026,
-      quarter: 2,
-      sourceKey: "alpha_vantage:ZZS:2026:2",
-      callDate: "2026-03-30",
-      transcript: "Jane Doe (CEO): Older call.",
-    });
+describe("audit-transcript-keys", () => {
+  it("reports key contradictions and counts rows with no stated quarter without writing", () => {
     seedTranscript({
-      ticker: "ZZS",
+      ticker: "ZZA",
       year: 2026,
       quarter: 2,
-      sourceKey: "alpha_vantage:ZZS:fresh",
-      callDate: "2026-09-30",
-      transcript: "Jane Doe (CEO): Fresh call.",
+      sourceKey: "alpha_vantage:ZZA:2026:2",
+      transcript: "Operator: Welcome to ZZA's fiscal second quarter 2026 earnings call.",
+    });
+    db.prepare(
+      `INSERT INTO earnings_transcripts
+        (ticker, year, quarter, source, transcript, source_key, fetched_at)
+       VALUES ('ZZB', 2026, 4, 'alpha_vantage',
+        'Operator: Welcome to ZZB fiscal second quarter 2026 earnings call.',
+        'alpha_vantage:ZZB:2026:4', datetime('now'))`,
+    ).run();
+    seedTranscript({
+      ticker: "ZZC",
+      year: 2026,
+      quarter: 3,
+      sourceKey: "alpha_vantage:ZZC:2026:3",
+      transcript: "Jane Doe (CEO): Operating remarks without a quarter phrase.",
     });
 
-    const plan = planStaleTranscriptRepair(db);
-    expect(plan.rows.map((r) => r.id)).toEqual([staleId]);
+    const before = (db.prepare("SELECT COUNT(*) AS c FROM earnings_transcripts").get() as {
+      c: number;
+    }).c;
+    const audit = auditTranscriptKeys(db);
 
-    const dryRun = runStaleTranscriptRepair(db, { apply: false });
-    expect(dryRun.applied).toBe(false);
+    expect(audit.contradictions).toEqual([
+      expect.objectContaining({
+        ticker: "ZZB",
+        key_year: 2026,
+        key_quarter: 4,
+        stated_year: 2026,
+        stated_quarter: 2,
+      }),
+    ]);
+    expect(audit.noStatementCount).toBe(1);
     expect(
       (db.prepare("SELECT COUNT(*) AS c FROM earnings_transcripts").get() as { c: number }).c,
-    ).toBe(2);
-
-    const applied = runStaleTranscriptRepair(db, { apply: true });
-    expect(applied.applied).toBe(true);
-    expect(applied.rows.map((r) => r.id)).toEqual([staleId]);
-    expect(
-      (db.prepare("SELECT COUNT(*) AS c FROM earnings_transcripts").get() as { c: number }).c,
-    ).toBe(1);
-
-    expect(runStaleTranscriptRepair(db, { apply: true }).rows).toEqual([]);
+    ).toBe(before);
   });
 });
 
@@ -112,17 +93,14 @@ describe("repair-transcript-sections", () => {
   it("dry-runs extractor changes, apply rewrites rows, and rerun is idempotent", () => {
     const transcript = [
       "Operator: Welcome to the ZZG fiscal year 2026 earnings conference call.",
-      "Investor Relations: Before we begin, today's remarks include forward-looking statements and risks and uncertainties.",
-      "8-K Cover Page: The registrant furnished this report and Exhibit 99.1 under Item 2.02.",
-      "Jane Doe (CEO): In our prepared remarks, we expect next quarter revenue to improve and we are raising our full-year outlook.",
-      "Pat Roe (CFO): Prepared remarks also note tariff pressure and supply disruption risks that could impact gross margin.",
+      "Investor Relations: Before we begin, today's remarks include forward-looking statements and risks and uncertainties. Jane Doe (CEO): We expect next quarter revenue to improve and we are raising our full-year outlook.",
+      "Pat Roe (CFO): Tariff pressure and supply disruption risks could affect gross margin.",
     ].join("\n\n");
     const rowId = seedTranscript({
       ticker: "ZZG",
       year: 2026,
       quarter: 2,
       sourceKey: "alpha_vantage:ZZG:2026:2",
-      callDate: "2026-09-30",
       transcript,
       guidance: "Operator: Welcome to the ZZG fiscal year 2026 earnings conference call.",
       riskFactors: "Operator: Welcome to the ZZG fiscal year 2026 earnings conference call.",
@@ -149,5 +127,28 @@ describe("repair-transcript-sections", () => {
     expect(after.risk_factors).toContain("supply disruption risks");
 
     expect(runTranscriptSectionsRepair(db, { apply: true }).changed).toBe(0);
+  });
+
+  it("skips API Ninjas rows and rows with empty transcript text", () => {
+    const apiRow = seedTranscript({
+      ticker: "ZZN",
+      year: 2026,
+      quarter: 2,
+      source: "api_ninjas",
+      sourceKey: "api_ninjas:ZZN:2026:2",
+      transcript: "Jane Doe (CEO): We expect demand to improve next quarter.",
+      guidance: null,
+    });
+    db.prepare(
+      `INSERT INTO earnings_transcripts
+        (ticker, year, quarter, source, transcript, guidance, source_key, fetched_at)
+       VALUES ('ZZE', 2026, 2, 'alpha_vantage', '   ', NULL,
+        'alpha_vantage:ZZE:2026:2', datetime('now'))`,
+    ).run();
+
+    const plan = planTranscriptSectionsRepair(db);
+
+    expect(plan.rows.map((r) => r.id)).not.toContain(apiRow);
+    expect(plan.changed).toBe(0);
   });
 });

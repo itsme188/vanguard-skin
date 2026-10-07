@@ -11,6 +11,7 @@ import {
   secFilingHref,
   sourceLabel,
 } from "@/lib/transcripts/presentation";
+import { EmptySection } from "./EmptySection";
 
 const SOURCE_BADGE_CLASSES: Record<string, string> = {
   edgar_8k: "bg-gold/20 text-gold-ink",
@@ -186,7 +187,7 @@ export function TranscriptCard({
             {summaryBody}
 
             {/* Expandable sections */}
-            {(t.guidance || t.risk_factors) && (
+            {t.guidance || t.risk_factors ? (
               <div className="space-y-2 mb-3">
                 {t.guidance && (
                   <details className="group">
@@ -208,6 +209,13 @@ export function TranscriptCard({
                     </p>
                   </details>
                 )}
+              </div>
+            ) : (
+              <div className="mb-3">
+                <EmptySection
+                  title="Guidance and Risk"
+                  reason={`No guidance or risk passages were found in this ${kindLabel(t) === "8-K filing" ? "filing" : "call"}.`}
+                />
               </div>
             )}
           </>

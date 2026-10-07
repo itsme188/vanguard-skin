@@ -81,6 +81,7 @@ function seedEvent(opts: {
   transcriptAttemptedAt?: string | null;
   superseded?: number;
   source?: string;
+  rawJson?: string | null;
 }): number {
   eventCounter += 1;
   return Number(
@@ -88,8 +89,8 @@ function seedEvent(opts: {
       .prepare(
         `INSERT INTO calendar_events
           (source, event_type, event_date, release_time, title, symbol,
-           actual_value, transcript_attempted_at, source_key, week_of, superseded)
-         VALUES (?, 'earnings', ?, ?, ?, ?, ?, ?, ?, '2026-07-13', ?)`,
+           actual_value, transcript_attempted_at, source_key, week_of, superseded, raw_json)
+         VALUES (?, 'earnings', ?, ?, ?, ?, ?, ?, ?, '2026-07-13', ?, ?)`,
       )
       .run(
         opts.source ?? "finnhub",
@@ -101,6 +102,7 @@ function seedEvent(opts: {
         opts.transcriptAttemptedAt ?? null,
         `finnhub:${opts.symbol}:${opts.date}:${eventCounter}`,
         opts.superseded ?? 0,
+        opts.rawJson ?? null,
       ).lastInsertRowid,
   );
 }
@@ -219,8 +221,69 @@ describe("fetchSameDayTranscripts", () => {
     expect(result).toEqual({ attempted: 1, fetched: 1 });
     expect(mockedFetch).toHaveBeenCalledWith(db, "AAA", expect.any(Number), expect.any(Number), {
       eventDate: rel.date,
+      skipAlphaVantage: true,
     });
     expect(getAttemptedAt(eventId)).not.toBeNull();
+  });
+
+  it("uses the Finnhub fiscal quarter for same-day Alpha Vantage requests", async () => {
+    seedHeld("FQ4");
+    const rel = hoursAgoEt(3);
+    seedEvent({
+      symbol: "FQ4",
+      date: rel.date,
+      releaseTime: rel.time,
+      rawJson: JSON.stringify({ entry: { quarter: 4, year: 2026 } }),
+    });
+    mockedFetch.mockResolvedValue(fakeFetchResult());
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 1, fetched: 1 });
+    expect(mockedFetch).toHaveBeenCalledWith(db, "FQ4", 2026, 4, {
+      eventDate: rel.date,
+      expectedFiscalQuarter: { year: 2026, quarter: 4 },
+    });
+  });
+
+  it("uses a superseded nearby Finnhub twin to resolve the live row's fiscal quarter", async () => {
+    seedHeld("TWN");
+    const rel = hoursAgoEt(3);
+    seedEvent({
+      symbol: "TWN",
+      date: rel.date,
+      releaseTime: rel.time,
+      source: "manual",
+    });
+    seedEvent({
+      symbol: "TWN",
+      date: addDays(rel.date, -1),
+      releaseTime: rel.time,
+      superseded: 1,
+      rawJson: JSON.stringify({ entry: { quarter: 4, year: 2026 } }),
+    });
+    mockedFetch.mockResolvedValue(fakeFetchResult());
+
+    await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(mockedFetch).toHaveBeenCalledWith(db, "TWN", 2026, 4, {
+      eventDate: rel.date,
+      expectedFiscalQuarter: { year: 2026, quarter: 4 },
+    });
+  });
+
+  it("skips Alpha Vantage for prints with no Finnhub fiscal quarter and falls through via fetchTranscript", async () => {
+    seedHeld("NOF");
+    const rel = hoursAgoEt(3);
+    seedEvent({ symbol: "NOF", date: rel.date, releaseTime: rel.time });
+    mockedFetch.mockResolvedValue(fakeFetchResult());
+
+    await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(mockedFetch).toHaveBeenCalledWith(db, "NOF", 2026, 2, {
+      eventDate: rel.date,
+      skipAlphaVantage: true,
+    });
   });
 
   // fetchSameDayTranscripts' getSymbolStatus call takes no `today` override
@@ -394,6 +457,7 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
     expect(result).toEqual({ attempted: 1, fetched: 1 });
     expect(mockedFetch).toHaveBeenCalledWith(db, "UPA", 2026, 2, {
       eventDate: rel.date,
+      skipAlphaVantage: true,
     });
     expect(getAttemptedAt(eventId)).not.toBeNull();
   });
@@ -504,6 +568,7 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
     expect(mockedFetch).toHaveBeenCalledTimes(1);
     expect(mockedFetch).toHaveBeenCalledWith(db, "FRE", 2026, 2, {
       eventDate: relFresh.date,
+      skipAlphaVantage: true,
     });
   });
 });
