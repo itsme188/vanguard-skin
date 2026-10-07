@@ -9,6 +9,7 @@ import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-ca
 import { isPendingStatementLot, pendingStatementKeySet } from "@/lib/queries/pending-statement";
 import { isOptionLive, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCurrencyConversionSecurityType } from "@/lib/queries/tax-lots";
+import { isLongTermSql, longTermDateSql } from "@/lib/queries/long-term-sql";
 
 /**
  * Chat sector-FILTER-only alias, on top of normalizeSector. normalizeSector
@@ -279,10 +280,11 @@ export function getHoldingsForChat(
     params.push(normalizeSectorFilter(sector));
   }
 
+  const grossExposureSort = "sort_market_exposure DESC, s.symbol ASC";
   const sortMap: Record<string, string> = {
-    market_value: "market_value DESC",
+    market_value: includeShorts ? grossExposureSort : "market_value DESC",
     unrealized_gain: "unrealized_gain DESC",
-    position_weight: "market_value DESC",
+    position_weight: includeShorts ? grossExposureSort : "market_value DESC",
     symbol: "s.symbol ASC",
   };
 
@@ -306,6 +308,9 @@ export function getHoldingsForChat(
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
         ELSE NULL END AS market_value,
+      CASE WHEN lp.close_price IS NOT NULL
+        THEN ABS(${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")})
+        ELSE 0 END AS sort_market_exposure,
       CASE WHEN lp.close_price IS NOT NULL AND h.cost_basis IS NOT NULL AND h.cost_basis > 0
         THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (h.cost_basis * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain,
@@ -592,11 +597,8 @@ export function getTaxLotsForChat(
       -- year on, built as a string like that function does: SQLite's
       -- date(x, '+1 year') rolls Feb 29 forward to Mar 1, which made a
       -- Feb-29 lot long-term one day late (Mar 2 instead of Mar 1).
-      CASE WHEN ? > (printf('%04d', CAST(substr(tl.acquisition_date, 1, 4) AS INTEGER) + 1) || substr(tl.acquisition_date, 5, 6))
-        THEN 1 ELSE 0 END AS is_long_term,
-      CASE WHEN substr(tl.acquisition_date, 6, 5) = '02-29'
-        THEN date(tl.acquisition_date, '+1 year')
-        ELSE date(tl.acquisition_date, '+1 year', '+1 day') END AS long_term_date
+      ${isLongTermSql("tl.acquisition_date")} AS is_long_term,
+      ${longTermDateSql("tl.acquisition_date")} AS long_term_date
     FROM tax_lots tl
     JOIN accounts a ON a.id = tl.account_id
     JOIN securities s ON s.id = tl.security_id

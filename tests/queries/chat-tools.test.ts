@@ -332,6 +332,30 @@ describe("getHoldingsForChat", () => {
     const totalWeight = result.reduce((sum, h) => sum + (h.position_weight_pct ?? 0), 0);
     expect(totalWeight).toBeCloseTo(100, 5);
   });
+
+  it("includeShorts: true caps by gross exposure so a large short is not sorted behind every long", () => {
+    const long1 = seedSecurity(db, "LONG1");
+    const long2 = seedSecurity(db, "LONG2");
+    const short = seedSecurity(db, "SHRT");
+    const option = seedSecurity(db, "OPTCALL", { security_type: "option", asset_class: "option", multiplier: 100 });
+    const tiny = seedSecurity(db, "TINY");
+
+    seedHolding(db, 1, long1, 10, "2025-01-31", 900); // mv = 1000
+    seedHolding(db, 1, long2, 9, "2025-01-31", 800); // mv = 900
+    seedHolding(db, 1, short, -19, "2025-01-31", 800); // mv = -950
+    seedHolding(db, 1, option, 1, "2025-01-31", 700); // mv = 800 (1 * 8 * 100)
+    seedHolding(db, 1, tiny, 1, "2025-01-31", 1); // mv = 1
+    seedPrice(db, long1, "2025-01-31", 100);
+    seedPrice(db, long2, "2025-01-31", 100);
+    seedPrice(db, short, "2025-01-31", 50);
+    seedPrice(db, option, "2025-01-31", 8);
+    seedPrice(db, tiny, "2025-01-31", 1);
+
+    const result = getHoldingsForChat(db, { includeShorts: true, limit: 4 });
+
+    expect(result.map((h) => h.symbol)).toEqual(["LONG1", "SHRT", "LONG2", "OPTCALL"]);
+    expect(result.find((h) => h.symbol === "SHRT")?.market_value).toBe(-950);
+  });
 });
 
 describe("getPriceHistory", () => {
