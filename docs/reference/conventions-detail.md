@@ -145,8 +145,12 @@ is a module-scoped, token-gated lock (single Next process, no DB row needed); a 
   date string passes `timeZone:"America/New_York"` to `toLocaleDateString`; the Worker briefing
   `weekOf` uses `briefingWeekOf()`. **The Mac travels, the Worker is UTC.**
 - **Option expiry "today" is ET-anchored** (`2b2d310`, 2026-08-28): `computePortfolioGreeks` /
-  `getExpiringOptions` take an injectable `today` defaulting to `todayET()` — never derive it from
-  `toISOString()`, which reads a day early overnight and shows runway as -1d.
+  `getExpiringOptions` (`lib/compute/options-expirations.ts`) take an injectable `today` defaulting
+  to `todayET()` — never derive it from `toISOString()`, which reads a day early overnight and shows
+  runway as -1d. The unused copy of `getExpiringOptions` in `lib/queries/options.ts` was deleted on
+  2026-10-07; the name now lives in two places with different signatures, the one above and the
+  briefing's own in `lib/calendar/briefing.ts`.
+- **"Alerted today" for a price level is the Eastern day** (2026-10-07): see section J.
 
 ---
 
@@ -218,6 +222,11 @@ stay per-unit prices, untouched.
   CALENDAR anniversary of acquisition, not a fixed 365-day count — a fixed count misclassifies a
   Feb-29 acquisition's anniversary sale as long-term one day early. Single-sourced for
   `tax_lot_sales.is_long_term` and the donated-lot LT/ST split alike.
+- **One long-term rule in SQL** (2026-10-07): `isLongTermSql` / `longTermDateSql`
+  (`lib/queries/long-term-sql.ts`) are the SQL twins of `isLongTermHolding`, pinned to it by
+  `tests/queries/long-term-sql.test.ts`. The chat open-lots read and the chat portfolio summary use
+  them. Never write `date(x, '+1 year')` or a fixed 365- or 366-day count in a query: the first makes
+  a Feb-29 lot long-term a day late, the second is wrong across a leap day.
 - **Convention marker**: `computeTaxLots` stamps `tax_lots_convention = "v2:<generation>"`
   (`lib/compute/tax-convention.ts`) as its final in-transaction act. A recompute regenerates every row
   under the new convention — no data migration. `getTaxConventionState(db).recomputeCurrent` is the
@@ -611,6 +620,7 @@ One helper, `lib/compute/bond-duration.ts`, used by both scenario engines (they 
 
 ### Holdings footers state exactly what each total covers (2026-10-07)
 
+- **"Do we know what this position cost?" has one answer** (2026-10-07): `hasKnownBasis` (`lib/compute/known-basis.ts`). A stored cost basis of exactly 0 means unknown; a negative basis (a short) is known. Both holdings tables and the security page's position totals read it; never write an inline zero-basis test.
 - **Cross-account footer:** Value covers every position. A block below the table says how many positions carry no cost basis (left out of Cost Basis and Gain) and how many have a basis but no current price (left out of Value, Gain and Gain %). Gain % divides by the cost basis of the positions that are in Gain.
 - **Single-account footer** (`lib/queries/account-cash-line.ts`): Positions, Cash and the Account total from the latest daily valuation, each dated. Cash is shown only when a RESOLVABLE snapshot on or before that date owns it; otherwise one sentence says no broker snapshot anchors cash for that date. On a live-source day the cash line carries the live-snapshot timing-residual wording (pinned to `lib/queries/data-confidence.ts`). A money-market fund held as a row is named as already counted in Cash. An engine test pins the query's anchor rule to `computeDailyValuations`.
 
@@ -1100,6 +1110,11 @@ every consumer (including the Worker snapshot) already treats a missing row as "
 negative betas at r² ≈ 0 were statistically insignificant regressions, not bad prices — no data repair
 needed, just a publish gate. `refresh-vanguard-betas.ts` applies decisions in one transaction.
 
+### Earnings bogeys and the armed-events payload (2026-10-07)
+
+- **"Has bogeys" has one rule:** `bogeyHasContent` and its SQL twin `bogeyHasContentSql` (`lib/mutations/earnings-bogeys.ts`). A bogey row (the consensus figures a print is judged against) with every content column empty is not coverage. An empty write stores nothing and never erases figures already stored; the manual route refuses it; the Hub chip ignores a stored empty row. A zero is a real figure. Any new reader that counts or selects bogey rows uses the SQL twin. Readers on the send paths have not all moved to it yet (see the TODO).
+- **The armed-events payload carries two more lists:** `supersededEventIds` (earnings rows replaced on the Mac) and `removedEventIds` (earnings rows deleted on the Mac, each `{ id, eventDate, removedAt }`). The Worker marks a matching snapshot row replaced, one way only: it never clears the mark, deletes a row or invents one. Both sides are parity-pinned (`workers/cron/test/armed-events-parity.test.ts`); deploy the Worker first. Detail: `docs/reference/cron-and-workers.md`.
+
 ---
 
 ## I. Brokers and connectors — IBKR, TWS, Plaid
@@ -1256,6 +1271,14 @@ net for re-activation. `triggerLevel` returns a discriminated union
 later fire overwrites them. Nothing may treat a non-null `triggered_at` as "do not fire": the
 scanner decides from `is_active`, the review whitelist and `hasAlertToday`.
 
+**"Today" is the Eastern day (2026-10-07).** `hasAlertToday` (`lib/queries/security-levels.ts`)
+decides the day with `todayET()` in JS, never with SQLite `date('now')`, which is the UTC day and
+rolls over in the Eastern evening. One function serves the "alerted today" chip, the reactivate
+result and the Mac scanner's once-a-day guard in `triggerLevel`, so all three roll over at Eastern
+midnight. Not moved: a level's expiry day still compares against `date('now')` (UTC) in the armed
+predicate and the list filter, and the Worker's cloud level scan keeps its own 24-hour guard (see
+the TODO).
+
 ### Arm guard and action visibility: single owners (2026-10-07)
 
 - **One arm guard.** `lib/alerts/arm-guard.ts::evaluateArmGuard` is called by both
@@ -1276,7 +1299,9 @@ scanner decides from `is_active`, the review whitelist and `hasAlertToday`.
 - **Last-fired date is Eastern:** `lib/levels/last-fired-date.ts::lastFiredDateET`. The label is
   always "Last fired at <price> on <date>".
 - **Alerted-today is a server fact.** The reactivate result and each `GET /api/levels` row carry
-  `alertedToday` / `alerted_today` from `hasAlertToday`; the panel never computes its own date.
+  `alertedToday` / `alerted_today`; the panel never computes its own date. The reactivate result
+  reads `hasAlertToday`. The list route reads every level in one query through
+  `getLevelIdsAlertedToday` (same rows, same Eastern-day test), never one query per level.
 - The Worker level scan does not read `triggered_at`; `tests/alerts/level-scan-reactivated-parity.test.ts`
   runs the Mac scanner and the Worker scan on one re-armed fixture.
 
