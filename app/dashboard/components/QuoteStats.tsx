@@ -10,6 +10,26 @@ import { formatUSDPrecise, formatPercent } from "@/lib/format";
  * IV); it reveals nothing about the user's holdings, so it uses plain
  * formatters and is NOT privacy-masked. Renders nothing when no quote exists.
  */
+/**
+ * Where the current price sits against the cached 52-week band (0 = low,
+ * 1 = high). The cached band can lag the price, so a price beyond it is
+ * reported as `outside` rather than silently pinned to the nearest end — a
+ * marker clamped at 100% reads as "exactly at the high" while the printed
+ * numbers say the price is above it.
+ */
+export function rangeMarker(
+  currentPrice: number | null,
+  low: number,
+  high: number,
+): { pos: number; outside: "above" | "below" | null } | null {
+  if (currentPrice == null) return null;
+  const raw = (currentPrice - low) / (high - low);
+  return {
+    pos: Math.max(0, Math.min(1, raw)),
+    outside: currentPrice > high ? "above" : currentPrice < low ? "below" : null,
+  };
+}
+
 export function QuoteStats({
   quote,
   currentPrice,
@@ -31,12 +51,7 @@ export function QuoteStats({
   const hasVol = iv_underlying != null || hv_30d != null;
   if (!hasRange && !hasVol && dividend_yield == null) return null;
 
-  // Current price position within the 52-week band (0 = low, 1 = high).
-  let pos: number | null = null;
-  if (hasRange && currentPrice != null) {
-    pos = (currentPrice - week52_low!) / (week52_high! - week52_low!);
-    pos = Math.max(0, Math.min(1, pos));
-  }
+  const marker = hasRange ? rangeMarker(currentPrice, week52_low!, week52_high!) : null;
 
   return (
     <div className="flex flex-wrap items-center gap-x-8 gap-y-3 rounded-lg border border-edge bg-panel px-4 py-3">
@@ -49,11 +64,24 @@ export function QuoteStats({
             )}
           </div>
           <div className="relative h-1.5 rounded-full bg-muted">
-            {pos != null && (
+            {marker != null && (
               <div
                 className="absolute top-1/2 h-3 w-1 -translate-y-1/2 rounded-full bg-gold"
-                style={{ left: `calc(${(pos * 100).toFixed(1)}% - 2px)` }}
-                title={`${(pos * 100).toFixed(0)}% of 52-wk range`}
+                // Outside the cached band the marker sits just past the bar's
+                // end instead of on it.
+                style={{
+                  left:
+                    marker.outside === "above"
+                      ? "calc(100% + 4px)"
+                      : marker.outside === "below"
+                        ? "-8px"
+                        : `calc(${(marker.pos * 100).toFixed(1)}% - 2px)`,
+                }}
+                title={
+                  marker.outside
+                    ? `${marker.outside} the cached 52-wk range`
+                    : `${(marker.pos * 100).toFixed(0)}% of 52-wk range`
+                }
               />
             )}
           </div>
@@ -61,6 +89,11 @@ export function QuoteStats({
             <span>{formatUSDPrecise(week52_low! * usdPerUnit)}</span>
             <span>{formatUSDPrecise(week52_high! * usdPerUnit)}</span>
           </div>
+          {marker?.outside && (
+            <div className="mt-1 text-[11px] font-mono text-ink-dim">
+              Price is {marker.outside} the cached range · range as of {quote.as_of_date}
+            </div>
+          )}
         </div>
       )}
 
