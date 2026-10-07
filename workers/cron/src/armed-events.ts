@@ -70,6 +70,7 @@ export const ARMED_EVENT_ENTRY_KEYS = [
 /** Hard caps on what one POST may carry (see applyArmedEventsDelta, [C-19]). */
 export const ARMED_EVENTS_MAX_ENTRIES = 500;
 export const ARMED_EVENTS_MAX_SUPERSEDED_IDS = 2000;
+export const ARMED_EVENTS_MAX_REMOVED_IDS = ARMED_EVENTS_MAX_SUPERSEDED_IDS;
 export const ARMED_EVENTS_MAX_BODY_BYTES = 256 * 1024;
 
 export interface EffectiveCalendar {
@@ -207,7 +208,8 @@ export function effectiveCalendarEvents(
       armed.add(e.eventId);
       upsert(e);
     }
-    for (const id of delta.supersededEventIds ?? []) {
+    const removedIds = (delta.removedEventIds ?? []).map((r) => r.id);
+    for (const id of [...(delta.supersededEventIds ?? []), ...removedIds]) {
       const existing = byId.get(id);
       if (!existing) continue;
       byId.set(id, { ...existing, superseded: 1 });
@@ -254,6 +256,7 @@ export async function readArmedEventsDelta(kv: KVNamespace): Promise<ArmedEvents
       generation?: unknown;
       entries?: unknown;
       supersededEventIds?: unknown;
+      removedEventIds?: unknown;
     };
     if (typeof parsed.generation !== "number" || !Array.isArray(parsed.entries)) return null;
     const supersededEventIds =
@@ -264,6 +267,7 @@ export async function readArmedEventsDelta(kv: KVNamespace): Promise<ArmedEvents
       generation: parsed.generation,
       entries: parsed.entries as ArmedEventEntry[],
       supersededEventIds,
+      removedEventIds: readRemovedEventIds(parsed.removedEventIds),
     };
   } catch {
     return null;
@@ -396,6 +400,48 @@ function parseSupersededEventIds(raw: unknown): number[] {
   return [...new Set(ids)].sort((a, b) => a - b);
 }
 
+function readRemovedEventIds(raw: unknown): Array<{ id: number; eventDate: string; removedAt: string }> {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<number>();
+  const out: Array<{ id: number; eventDate: string; removedAt: string }> = [];
+  for (const item of raw) {
+    const r = item as { id?: unknown; eventDate?: unknown; removedAt?: unknown };
+    if (!Number.isInteger(r.id) || (r.id as number) <= 0) continue;
+    if (typeof r.eventDate !== "string" || typeof r.removedAt !== "string") continue;
+    if (seen.has(r.id as number)) continue;
+    seen.add(r.id as number);
+    out.push({
+      id: r.id as number,
+      eventDate: r.eventDate.slice(0, 10),
+      removedAt: r.removedAt.slice(0, 40),
+    });
+  }
+  return out.sort((a, b) => a.id - b.id);
+}
+
+function parseRemovedEventIds(raw: unknown): Array<{ id: number; eventDate: string; removedAt: string }> {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error("armed-events: removedEventIds must be an array");
+  }
+  if (raw.length > ARMED_EVENTS_MAX_REMOVED_IDS) {
+    throw new Error(
+      `armed-events: too many removed ids (${raw.length} > ${ARMED_EVENTS_MAX_REMOVED_IDS})`,
+    );
+  }
+  for (const item of raw) {
+    const r = item as { id?: unknown; eventDate?: unknown; removedAt?: unknown };
+    if (!Number.isInteger(r.id) || (r.id as number) <= 0) {
+      throw new Error("armed-events: removedEventIds must contain positive integer ids");
+    }
+    if (typeof r.eventDate !== "string" || typeof r.removedAt !== "string") {
+      throw new Error("armed-events: removedEventIds entries need eventDate and removedAt strings");
+    }
+  }
+  return readRemovedEventIds(raw);
+}
+
 /**
  * Read-compare-write: applies only when `body.generation` is strictly greater
  * than the generation already stored. A replayed or out-of-order POST is a
@@ -405,7 +451,10 @@ export async function applyArmedEventsDelta(
   kv: KVNamespace,
   body: unknown,
 ): Promise<{ applied: boolean; generation: number }> {
-  const b = body as { generation?: unknown; entries?: unknown; supersededEventIds?: unknown } | null;
+  const b =
+    body as
+      | { generation?: unknown; entries?: unknown; supersededEventIds?: unknown; removedEventIds?: unknown }
+      | null;
   if (
     !b ||
     typeof b.generation !== "number" ||
@@ -421,12 +470,13 @@ export async function applyArmedEventsDelta(
   }
   const entries = b.entries.map(parseEntry);
   const supersededEventIds = parseSupersededEventIds(b.supersededEventIds);
+  const removedEventIds = parseRemovedEventIds(b.removedEventIds);
   const current = await readArmedEventsDelta(kv);
   const held = current?.generation ?? 0;
   if (b.generation <= held) return { applied: false, generation: held };
   await kv.put(
     ARMED_EVENTS_KV_KEY,
-    JSON.stringify({ generation: b.generation, entries, supersededEventIds }),
+    JSON.stringify({ generation: b.generation, entries, supersededEventIds, removedEventIds }),
   );
   return { applied: true, generation: b.generation };
 }

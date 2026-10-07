@@ -16,11 +16,14 @@ import { todayET } from "@/lib/calendar/date-utils";
 import {
   ARMED_EVENTS_KIND,
   buildArmedEventsEntries,
+  buildRemovedEventIds,
   buildSupersededEventIds,
   readArmedGeneration,
   readPreviousArmedEntries,
+  readPreviousRemovedEventIds,
   readPreviousSupersededEventIds,
   sameProjection,
+  sameRemovedEventIds,
   sameSupersededEventIds,
   type ArmedEventsPayload,
 } from "./armed-events-projection";
@@ -39,7 +42,7 @@ const DEFAULT_POST_COMMIT_CAP_MS = 2000;
  */
 export function writeArmedEventsOutboxRow(
   db: Database.Database,
-  opts: { today?: string; nowMs?: number } = {},
+  opts: { today?: string; nowMs?: number; removedEvents?: Array<{ id: number; eventDate: string }> } = {},
 ): { generation: number; written: boolean } {
   if (!db.inTransaction) {
     throw new Error("writeArmedEventsOutboxRow must run inside a transaction");
@@ -51,18 +54,24 @@ export function writeArmedEventsOutboxRow(
     nowMs: opts.nowMs,
   });
   const supersededEventIds = buildSupersededEventIds(db, { today });
+  const removedEventIds = buildRemovedEventIds(db, {
+    today,
+    nowMs: opts.nowMs,
+    removedEvents: opts.removedEvents,
+  });
   // Read the previous entries through the projection's GUARDED reader: a
   // truncated payload must be treated as "no previous entries", never thrown
   // from inside armWorksheet's transaction, or one corrupt row would wedge
   // every future arm/disarm/edit.
   if (
     sameProjection(readPreviousArmedEntries(db), entries) &&
-    sameSupersededEventIds(readPreviousSupersededEventIds(db), supersededEventIds)
+    sameSupersededEventIds(readPreviousSupersededEventIds(db), supersededEventIds) &&
+    sameRemovedEventIds(readPreviousRemovedEventIds(db), removedEventIds)
   ) {
     return { generation: current, written: false };
   }
   const generation = current + 1;
-  const payload: ArmedEventsPayload = { generation, entries, supersededEventIds };
+  const payload: ArmedEventsPayload = { generation, entries, supersededEventIds, removedEventIds };
   db.prepare(`INSERT INTO cloud_outbox (kind, generation, payload_json) VALUES (?, ?, ?)`).run(
     ARMED_EVENTS_KIND,
     generation,
@@ -232,6 +241,7 @@ async function drainCloudOutboxUnlocked(
     )
     .all(ARMED_EVENTS_KIND) as Array<{ id: number; generation: number; payload_json: string }>;
   let sent = 0;
+  let failed = 0;
   for (const row of rows) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -242,6 +252,14 @@ async function drainCloudOutboxUnlocked(
         body: row.payload_json,
         signal: controller.signal,
       });
+      if (res.status === 400) {
+        db.prepare(`UPDATE cloud_outbox SET send_error = ? WHERE id = ?`).run(
+          `${host}: HTTP 400`.slice(0, 200),
+          row.id,
+        );
+        failed += 1;
+        continue;
+      }
       if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}`);
       // [F2] The restored-DB wedge. A Mac whose DB came back from a backup
       // restarts its generation counter below the one KV holds, so every POST
@@ -296,5 +314,5 @@ async function drainCloudOutboxUnlocked(
       clearTimeout(timer);
     }
   }
-  return { sent, failed: 0, skipped: null };
+  return { sent, failed, skipped: null };
 }

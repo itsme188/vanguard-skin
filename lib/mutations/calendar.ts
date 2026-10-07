@@ -416,7 +416,13 @@ export function deleteAndSuppressCalendarEvent(
     // row was not armed but the merge changed an armed survivor's shape (a
     // vendor-EPS bogey landing on it); the writer is a no-op when the
     // projection is unchanged (D10), so an extra call is free.
-    if (wasArmed || mergeChanged || supersededChanged) writeArmedEventsOutboxRow(db, { today });
+    if (row.event_type === "earnings" || wasArmed || mergeChanged || supersededChanged) {
+      writeArmedEventsOutboxRow(db, {
+        today,
+        removedEvents:
+          row.event_type === "earnings" ? [{ id, eventDate: row.event_date }] : undefined,
+      });
+    }
   });
   txn();
 
@@ -918,9 +924,9 @@ export function deleteCalendarEvent(
   // out not to be deletable must not leave those moves behind.
   const txn = db.transaction((): boolean => {
     const existing = db
-      .prepare("SELECT source, event_type, symbol FROM calendar_events WHERE id = ?")
+      .prepare("SELECT source, event_type, symbol, event_date FROM calendar_events WHERE id = ?")
       .get(id) as
-      | { source: string; event_type: string; symbol: string | null }
+      | { source: string; event_type: string; symbol: string | null; event_date: string }
       | undefined;
     if (!existing) return false;
     if (existing.source !== "manual") return false;
@@ -968,7 +974,10 @@ export function deleteCalendarEvent(
     // changed an armed survivor's shape; the writer is a no-op on an unchanged
     // projection (D10), so the extra call is free.
     if (deleted && (wasArmed || mergeChanged || restoreSymbol)) {
-      writeArmedEventsOutboxRow(db, { today });
+      writeArmedEventsOutboxRow(db, {
+        today,
+        removedEvents: restoreSymbol ? [{ id, eventDate: existing.event_date }] : undefined,
+      });
     }
     return deleted;
   });

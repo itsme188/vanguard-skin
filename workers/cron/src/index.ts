@@ -620,6 +620,7 @@ export default {
         generation: delta?.generation ?? 0,
         entries: delta?.entries ?? [],
         supersededEventIds: delta?.supersededEventIds ?? [],
+        removedEventIds: delta?.removedEventIds ?? [],
       });
     }
 

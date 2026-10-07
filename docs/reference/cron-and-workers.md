@@ -287,11 +287,12 @@ cover BMO previews + AMC recaps. Plan: `~/.claude/plans/okay-let-s-see-if-joyful
   `formatCombinedExposurePresence` in the Worker `presence-position.ts` mirror).
 - Snapshot **v8** adds `watchlistSymbols` (see §8).
 
-**Replaced entries after the snapshot (2026-10-07).** The armed-events payload also carries
-`supersededEventIds` for replaced earnings rows in the same 14-day lookback window; a newer KV
-delta marks matching snapshot rows superseded one-way, removes them from `armedEventIds`, and keeps
-Worker preview / recap / wrap / today's-reporters paths quiet for those entries after the Mac
-outbox drains.
+**Replaced and deleted entries after the snapshot (2026-10-07).** The armed-events payload also
+carries `supersededEventIds` for replaced earnings rows and `removedEventIds` entries
+(`{ id, eventDate, removedAt }`) for earnings rows deleted on the Mac; a newer KV delta marks
+matching snapshot rows superseded one-way, removes them from `armedEventIds`, and keeps Worker
+preview / recap / wrap / today's-reporters paths quiet for those entries after the Mac outbox
+drains.
 
 ## 12. Tier 4a — cloud level scan + Pushover (2026-05-11)
 
@@ -391,7 +392,7 @@ every Worker fallback, so a Mac asleep before the print produced nothing.
   `eps_consensus`; every surface labels it "vendor, basis unspecified").
 
 **KV key + endpoints.** The delta lives under KV key `armed-events` =
-`{ generation, entries, supersededEventIds }`.
+`{ generation, entries, supersededEventIds, removedEventIds }`.
 Deviation D2: **the Mac never writes KV.** Its outbox drain POSTs the full payload to the Worker,
 exactly like every other Mac↔Worker marker:
 
@@ -424,9 +425,9 @@ single collection every Worker earnings consumer reads — never the raw snapsho
    inference, and the enrichment/recap gates read `enriched_at` / `actual_value` /
    `reaction_snapshot`. An event with NO snapshot row at all is synthesised whole — safe precisely
    because there is nothing to overwrite;
-5. only when that KV delta is newer than the snapshot, `supersededEventIds` marks existing
-   effective rows superseded and removes them from the armed set; it never clears superseded, never
-   deletes a row, and never synthesises a missing id;
+5. only when that KV delta is newer than the snapshot, `supersededEventIds` and
+   `removedEventIds[].id` mark existing effective rows superseded and remove them from the armed
+   set; they never clear superseded, never delete a row, and never synthesise a missing id;
 6. **degraded-v10**: a snapshot below v11 (or a v11 one with no watermark) ignores the delta and
    returns exactly today's behaviour — snapshot rows only, nothing armed. Cloud coverage falls back
    to held + watchlist.
@@ -439,9 +440,12 @@ Date windowing stays each consumer's own job.
 dated `>= today − 14`. An event that ages past the horizon simply drops out of the list — it is
 NOT tombstoned, because it is still armed (a tombstone says "no longer armed", and would then be
 re-carried for 48 hours for nothing). The same lower-bound-only window limits
-`supersededEventIds` for earnings rows; the sweep-tick reconcile writes the first post-horizon
-generation naturally, since the payload differs. Nothing in the cloud selects an event that old, so
-the only effect is that the payload stops growing as never-disarmed worksheets and replaced ids
+`supersededEventIds` for earnings rows. `removedEventIds` are retained while `eventDate >= today −
+14` OR their `removedAt` stamp is younger than 48 hours, then drop out. Both id lists are capped at
+the Worker's 2,000-id limit by keeping the newest event dates first; the Mac logs one warning with
+only the dropped count. The sweep-tick reconcile writes the first post-horizon generation
+naturally, since the payload differs. Nothing in the cloud selects an event that old, so the only
+effect is that the payload stops growing as never-disarmed worksheets, replaced ids, and deleted ids
 accumulate.
 
 **Mac↔Worker coverage asymmetry — accepted.** The Mac's armed leg is CLUSTER-aware (R11: an event
@@ -462,6 +466,15 @@ needs a reset"` and stops, instead of looping silently forever. Every `send_erro
 (`ARMED_EVENT_PROJECTION_KEYS` ⇄ `ARMED_EVENT_ENTRY_KEYS`) because the Worker's parser drops
 unlisted keys silently; the `armed` status chip is pinned between `lib/digest/todays-reporters.ts`
 and its Worker mirror. Change both sides in the same commit (§14).
+
+**Deploy order for id-list payload changes.** Deploy the Worker FIRST. If a Mac build that sends
+`removedEventIds` ships first, the old Worker drops or rejects the new top-level list, and D10 will
+not resend an unchanged projection after the Worker catches up.
+
+**Accepted silence after a post-snapshot replacement.** Marking is one-way and never synthesises a
+row. Owner-approved 2026-10-07: if a company is replaced by a NEW unarmed row after the 2 AM
+snapshot, the cloud sends no preview/recap until the next snapshot rather than risking a wrong
+email.
 
 **Operational note — a restored Mac DB wedges the key.** Generations come from the local
 `cloud_outbox`. Restore the Mac DB from a backup and the counter restarts lower than the one KV

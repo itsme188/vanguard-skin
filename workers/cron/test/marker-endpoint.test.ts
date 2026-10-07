@@ -271,6 +271,7 @@ describe("POST /internal/armed-events", () => {
       generation: 4,
       entries: [entry(77, "ACME", "2026-09-02")],
       supersededEventIds: [],
+      removedEventIds: [],
     });
   });
 
@@ -387,6 +388,7 @@ describe("GET /internal/armed-events", () => {
       generation: 0,
       entries: [],
       supersededEventIds: [],
+      removedEventIds: [],
     });
   });
 
@@ -400,6 +402,7 @@ describe("GET /internal/armed-events", () => {
       generation: 4,
       entries: [entry(77, "ACME", "2026-09-02")],
       supersededEventIds: [],
+      removedEventIds: [],
     });
   });
 

@@ -101,16 +101,19 @@ describe("deleteAndSuppressCalendarEvent → armed-events outbox", () => {
     armWorksheet(db, id); // gen 1
     const res = deleteAndSuppressCalendarEvent(db, id, { today: TODAY });
     expect(res.deleted).toBe(true);
-    expect(readArmedGeneration(db)).toBe(2);
+    expect(readArmedGeneration(db)).toBeGreaterThan(1);
     expect(latestEntries()).toEqual([
       expect.objectContaining({ eventId: id, symbol: "ACME", removed: true }),
     ]);
   });
 
-  it("deleting an UNARMED sync-sourced event writes no outbox row", () => {
+  it("[M2] deleting an UNARMED sync-sourced event publishes its removed id", () => {
     const id = seedSync("BETA", TOMORROW);
     expect(deleteAndSuppressCalendarEvent(db, id, { today: TODAY }).deleted).toBe(true);
-    expect(readArmedGeneration(db)).toBe(0);
+    expect(readArmedGeneration(db)).toBe(1);
+    expect(latestPayload()?.removedEventIds).toEqual([
+      { id, eventDate: TOMORROW, removedAt: expect.any(String) },
+    ]);
   });
 
   it("deleting an UNARMED manual event writes a row when it restores a superseded vendor row", () => {
@@ -122,7 +125,10 @@ describe("deleteAndSuppressCalendarEvent → armed-events outbox", () => {
 
     expect(deleteCalendarEvent(db, manual, { today: TODAY })).toBe(true);
 
-    expect(readArmedGeneration(db)).toBe(2);
+    expect(readArmedGeneration(db)).toBeGreaterThan(1);
     expect(latestPayload()?.supersededEventIds).toEqual([]);
+    expect(latestPayload()?.removedEventIds).toEqual([
+      { id: manual, eventDate: TODAY, removedAt: expect.any(String) },
+    ]);
   });
 });

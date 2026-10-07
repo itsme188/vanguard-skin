@@ -27,6 +27,8 @@ export const ARMED_EVENTS_KIND = "armed-events";
  * never-disarmed worksheets accumulate.
  */
 export const LIVE_LOOKBACK_DAYS = 14;
+/** Worker top-level id-list cap; parity-pinned to workers/cron/src/armed-events.ts. */
+export const ARMED_EVENTS_MAX_ID_LIST = 2000;
 /** Tombstones are carried while event_date >= today - TOMBSTONE_LOOKBACK_DAYS (D7). */
 const TOMBSTONE_LOOKBACK_DAYS = 2;
 /** ...and, independently, while the removal itself is younger than this (D7). */
@@ -54,6 +56,14 @@ export interface ArmedEventsPayload {
   generation: number;
   entries: ArmedEventProjection[];
   supersededEventIds: number[];
+  removedEventIds: RemovedEventId[];
+}
+
+export interface RemovedEventId {
+  id: number;
+  eventDate: string;
+  /** ISO instant the deletion was first written. */
+  removedAt: string;
 }
 
 /** The exact key set the projection may carry — asserted by the data-flow
@@ -132,6 +142,44 @@ export function readPreviousSupersededEventIds(db: Database.Database): number[] 
   }
 }
 
+/** Deleted earnings ids from the newest payload. Older payloads read as []. */
+export function readPreviousRemovedEventIds(db: Database.Database): RemovedEventId[] {
+  const row = db
+    .prepare(
+      `SELECT payload_json FROM cloud_outbox WHERE kind = ? ORDER BY generation DESC LIMIT 1`,
+    )
+    .get(ARMED_EVENTS_KIND) as { payload_json: string } | undefined;
+  if (!row) return [];
+  try {
+    const parsed = JSON.parse(row.payload_json) as { removedEventIds?: unknown };
+    return Array.isArray(parsed.removedEventIds)
+      ? parsed.removedEventIds.filter((item): item is RemovedEventId => {
+          const r = item as Partial<RemovedEventId>;
+          return (
+            Number.isInteger(r.id) &&
+            typeof r.eventDate === "string" &&
+            typeof r.removedAt === "string"
+          );
+        })
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function capNewestByEventDate<T extends { eventDate: string }>(
+  list: T[],
+  label: string,
+  restoreOrder: (list: T[]) => T[],
+): T[] {
+  if (list.length <= ARMED_EVENTS_MAX_ID_LIST) return list;
+  const kept = [...list]
+    .sort((a, b) => b.eventDate.localeCompare(a.eventDate))
+    .slice(0, ARMED_EVENTS_MAX_ID_LIST);
+  console.warn(`[armed-events] dropped ${list.length - kept.length} ${label} over cap`);
+  return restoreOrder(kept);
+}
+
 /**
  * Earnings rows the Worker must treat as replaced even when they are not armed.
  * The window is intentionally lower-bounded only so the payload cannot grow
@@ -144,15 +192,47 @@ export function buildSupersededEventIds(
   const cutoff = addDays(opts.today, -LIVE_LOOKBACK_DAYS);
   const rows = db
     .prepare(
-      `SELECT DISTINCT id
+      `SELECT DISTINCT id, event_date AS eventDate
          FROM calendar_events
         WHERE event_type = 'earnings'
           AND COALESCE(superseded, 0) <> 0
           AND event_date >= ?
         ORDER BY id ASC`,
     )
-    .all(cutoff) as Array<{ id: number }>;
-  return rows.map((r) => r.id);
+    .all(cutoff) as Array<{ id: number; eventDate: string }>;
+  return capNewestByEventDate(rows, "superseded event ids", (kept) =>
+    kept.sort((a, b) => a.id - b.id),
+  ).map((r) => r.id);
+}
+
+/**
+ * Deleted earnings ids the Worker must suppress one-way. There is no table
+ * tonight, so these are carried from the previous payload just like D7 armed
+ * tombstones. `calendar_events.id` is AUTOINCREMENT, so a removed id cannot
+ * later refer to a recreated row.
+ */
+export function buildRemovedEventIds(
+  db: Database.Database,
+  opts: { today: string; nowMs?: number; removedEvents?: Array<{ id: number; eventDate: string }> },
+): RemovedEventId[] {
+  const nowMs = opts.nowMs ?? Date.now();
+  const now = new Date(nowMs).toISOString();
+  const cutoff = addDays(opts.today, -LIVE_LOOKBACK_DAYS);
+  const byId = new Map<number, RemovedEventId>();
+  for (const prev of readPreviousRemovedEventIds(db)) {
+    byId.set(prev.id, prev);
+  }
+  for (const removed of opts.removedEvents ?? []) {
+    if (!Number.isInteger(removed.id) || removed.id <= 0) continue;
+    byId.set(removed.id, byId.get(removed.id) ?? { ...removed, removedAt: now });
+  }
+  const retained = [...byId.values()].filter((r) => {
+    const fresh = nowMs - Date.parse(r.removedAt) < TOMBSTONE_RETENTION_MS;
+    return r.eventDate >= cutoff || fresh;
+  });
+  return capNewestByEventDate(retained, "removed event ids", (kept) =>
+    kept.sort((a, b) => a.id - b.id),
+  );
 }
 
 /**
@@ -225,5 +305,9 @@ export function sameProjection(a: ArmedEventProjection[], b: ArmedEventProjectio
 }
 
 export function sameSupersededEventIds(a: number[], b: number[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+export function sameRemovedEventIds(a: RemovedEventId[], b: RemovedEventId[]): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }

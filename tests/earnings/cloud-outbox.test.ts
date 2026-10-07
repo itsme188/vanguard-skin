@@ -44,7 +44,7 @@ describe("drainCloudOutbox", () => {
     const fetchFn = vi.fn(async (url: string, init: RequestInit) => {
       calls.push({
         url,
-        body: JSON.parse(String(init.body)),
+      body: JSON.parse(String(init.body)),
         headers: init.headers as Record<string, string>,
       });
       return new Response("{}", { status: 200 });
@@ -61,6 +61,7 @@ describe("drainCloudOutbox", () => {
       generation: 1,
       entries: [expect.objectContaining({ symbol: "ACME" })],
       supersededEventIds: [],
+      removedEventIds: [],
     });
     expect(db.prepare(`SELECT sent_at IS NOT NULL AS sent FROM cloud_outbox`).get()).toEqual({
       sent: 1,
@@ -106,6 +107,33 @@ describe("drainCloudOutbox", () => {
       }),
     ).toEqual({ sent: 0, failed: 1, skipped: null });
     expect(seen).toEqual([1]);
+  });
+
+  it("[L2] an HTTP 400 on one full-list generation does not wedge a later generation", async () => {
+    const a = seedArmed();
+    db.prepare(`UPDATE calendar_events SET release_time = '16:30' WHERE id = ?`).run(a);
+    db.transaction(() => writeArmedEventsOutboxRow(db)).immediate(); // gen 2
+    const seen: number[] = [];
+    const fetchFn = vi.fn(async (_url: string, init: RequestInit) => {
+      const generation = (JSON.parse(String(init.body)) as { generation: number }).generation;
+      seen.push(generation);
+      return new Response(generation === 1 ? "bad" : "{}", { status: generation === 1 ? 400 : 200 });
+    });
+
+    expect(
+      await drainCloudOutbox(db, {
+        fetchFn: fetchFn as unknown as typeof fetch,
+        workerUrl: "https://w",
+        secret: "s",
+      }),
+    ).toEqual({ sent: 1, failed: 1, skipped: null });
+    expect(seen).toEqual([1, 2]);
+    expect(
+      db.prepare(`SELECT generation, sent_at IS NOT NULL AS sent, send_error FROM cloud_outbox ORDER BY generation`).all(),
+    ).toEqual([
+      { generation: 1, sent: 0, send_error: "w: HTTP 400" },
+      { generation: 2, sent: 1, send_error: null },
+    ]);
   });
 
   it("send_error names the target host so a silent drain failure is diagnosable, never the secret", async () => {

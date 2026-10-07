@@ -26,6 +26,13 @@ beforeEach(() => {
   runMigrations(db);
 });
 
+const latestPayload = () => {
+  const row = db
+    .prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`)
+    .get() as { payload_json: string } | undefined;
+  return row ? (JSON.parse(row.payload_json) as Record<string, unknown>) : null;
+};
+
 // helper: seed a finnhub earnings row
 function seedFinnhub(
   db: Database.Database,
@@ -139,6 +146,27 @@ describe("correctEarningsEventDate", () => {
         .get() as { c: number }
     ).c;
     expect(afterCount).toBe(0);
+  });
+
+  it("[M2] publishes every deleted wrong-row id in the newest payload", () => {
+    const wrongDate = inLiveHorizon(1);
+    const correctDate = inLiveHorizon(8);
+    const finn = seedFinnhub(db, "DUO", wrongDate, { source: "finnhub" });
+    const nas = seedFinnhub(db, "DUO", wrongDate, { source: "nasdaq", sourceKeySuffix: ":nas" });
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "DUO",
+      wrongDate,
+      correctDate,
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.deletedIds?.sort((a, b) => a - b)).toEqual([finn, nas].sort((a, b) => a - b));
+    expect(latestPayload()?.removedEventIds).toEqual([
+      { id: finn, eventDate: wrongDate, removedAt: expect.any(String) },
+      { id: nas, eventDate: wrongDate, removedAt: expect.any(String) },
+    ]);
   });
 
   it("refuses when the wrong row has captured actuals", () => {

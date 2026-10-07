@@ -296,6 +296,13 @@ export interface ArmedEventsDelta {
   generation: number;
   entries: ArmedEventEntry[];
   supersededEventIds: number[];
+  removedEventIds?: RemovedEventId[];
+}
+
+export interface RemovedEventId {
+  id: number;
+  eventDate: string;
+  removedAt: string;
 }
 
 export interface Snapshot {

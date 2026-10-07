@@ -328,6 +328,26 @@ describe("armed chip (effective calendar)", () => {
     expect(block).toBeNull();
   });
 
+  it("[M2] omits a snapshot reporter marked removed by a newer delta; control still renders", () => {
+    const snapshot = makeSnapshot({
+      schemaVersion: 11,
+      armedGeneration: 3,
+      armedEvents: [],
+      calendarEvents: [
+        makeEvent({ id: 1, symbol: "HELDCO" }),
+        makeEvent({ id: 2, symbol: "WATCHCO" }),
+      ] as never,
+      heldSymbols: ["HELDCO", "WATCHCO"],
+    });
+    const block = buildTodaysReportersBlock(snapshot, TODAY, {
+      generation: 4,
+      entries: [],
+      removedEventIds: [{ id: 1, eventDate: TODAY, removedAt: "2026-09-02T12:00:00.000Z" }],
+    })!;
+    expect(block).not.toContain("HELDCO");
+    expect(block).toContain("| WATCHCO | held |");
+  });
+
   it("keeps a snapshot reporter when the superseded-id delta is not newer", () => {
     const snapshot = makeSnapshot({
       schemaVersion: 11,
