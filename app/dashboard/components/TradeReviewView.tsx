@@ -7,8 +7,9 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
 import { Money, Pct, Shares, PrivateText, Count, QuantityUnit } from "@/lib/privacy/components";
+import { usePrivacy } from "@/lib/privacy/context";
 import { isNarrativeStale } from "@/lib/trade-review/stale-narrative";
-import { formatProfitFactor } from "@/lib/format";
+import { formatEnrichedAtET, formatProfitFactor } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -124,6 +125,53 @@ export function tradeReviewFailureMessage(
   return `${head} ${tail}`;
 }
 
+/**
+ * The one unit Trade Reviews counts in (owner ruling 2026-08-19): a round
+ * trip is one closing trade with the opening lots it closed. Under Hide
+ * amounts the noun never singularises, so it cannot reveal a count of one.
+ */
+export function roundTripNoun(count: number, isPrivate = false): string {
+  return count === 1 && !isPrivate ? "round trip" : "round trips";
+}
+
+/**
+ * Month-picker option text. The count is round trips — the same number a
+ * review of that month reports — never closing legs. A month where some
+ * closes lack lot history says so in words, without a second count. An
+ * `<option>` cannot hold a privacy component, so under Hide amounts the count
+ * is left out of the text altogether.
+ */
+export function reviewPeriodOptionLabel(
+  monthLabel: string,
+  period: { tradeCount: number; reviewableCount: number },
+  opts: { hasReview: boolean; isPrivate: boolean }
+): string {
+  const parts = [monthLabel];
+  if (!opts.isPrivate) {
+    parts.push(
+      `${period.reviewableCount} ${roundTripNoun(period.reviewableCount)}`
+    );
+  }
+  const partial =
+    period.reviewableCount < period.tradeCount ? " (partial history)" : "";
+  return `${parts.join(" · ")}${partial}${opts.hasReview ? " ✓" : ""}`;
+}
+
+/**
+ * A saved review keeps the round-trip count it was written against. When the
+ * trade history has changed since, the month now holds a different number:
+ * return that current number so the card can WARN beside the saved one
+ * (the saved review and its prose are never rewritten). Null = no drift, or
+ * the month is no longer offered for review.
+ */
+export function savedReviewRoundTripDrift(
+  savedCount: number,
+  period: { reviewableCount: number } | undefined
+): number | null {
+  if (!period) return null;
+  return period.reviewableCount !== savedCount ? period.reviewableCount : null;
+}
+
 function GradeBadge({ grade }: { grade: string | null }) {
   if (!grade) return <span className="text-ink-faint">—</span>;
   return (
@@ -170,6 +218,7 @@ export function TradeReviewView({
   initialPeriods,
   defaultAccountId,
 }: TradeReviewViewProps) {
+  const { isPrivate } = usePrivacy();
   const [reviews, setReviews] = useState(initialReviews);
   const [periods, setPeriods] = useState(initialPeriods);
   const [selectedAccountId, setSelectedAccountId] = useState(
@@ -325,7 +374,7 @@ export function TradeReviewView({
           // privacy components so Hide amounts masks them.
           setGenerateMsg(
             <>
-              Review complete — <Count value={data.data.tradeCount} /> trade(s),{" "}
+              Review complete — <Count value={data.data.tradeCount} /> round trip(s),{" "}
               <Pct value={data.data.winRate * 100} digits={0} /> win rate
             </>
           );
@@ -486,7 +535,10 @@ export function TradeReviewView({
           </select>
         </div>
 
-        <div className="flex items-center gap-3 flex-1">
+        {/* Wraps: at phone width the label + month select + button are wider
+            than the page gutter allows, so the button drops to its own line
+            instead of running past the right edge. */}
+        <div className="flex flex-wrap items-center gap-3 flex-1 min-w-0">
           <label className="text-xs text-ink-faint uppercase tracking-wide">
             Month
           </label>
@@ -494,7 +546,7 @@ export function TradeReviewView({
             value={selectedPeriod}
             onChange={(e) => handlePeriodChange(e.target.value)}
             disabled={generating || periods.length === 0}
-            className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus-ring min-w-[160px]"
+            className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus-ring min-w-0 max-w-full sm:min-w-[160px]"
           >
             {periods.length === 0 && (
               <option value="">No trades found</option>
@@ -505,14 +557,13 @@ export function TradeReviewView({
                   r.account_id === selectedAccountId &&
                   r.period_start === p.periodStart
               );
-              const countLabel =
-                p.reviewableCount < p.tradeCount
-                  ? `${p.reviewableCount} of ${p.tradeCount} reviewable`
-                  : `${p.tradeCount} trade${p.tradeCount !== 1 ? "s" : ""}`;
               return (
                 <option key={p.periodStart} value={p.periodStart}>
-                  {formatMonthLabelShort(p.periodStart)} · {countLabel}
-                  {hasReview ? " ✓" : ""}
+                  {reviewPeriodOptionLabel(
+                    formatMonthLabelShort(p.periodStart),
+                    p,
+                    { hasReview, isPrivate }
+                  )}
                 </option>
               );
             })}
@@ -605,15 +656,17 @@ export function TradeReviewView({
         !generating &&
         questions.length === 0 && (
           <div className="rounded-lg border border-gold/20 bg-gold/5 px-4 py-3 text-sm text-ink-dim">
-            {unreviewedPeriods.length} month
-            {unreviewedPeriods.length > 1 ? "s" : ""} with trades but no
-            review:{" "}
+            <Count value={unreviewedPeriods.length} /> month
+            {unreviewedPeriods.length > 1 || isPrivate ? "s" : ""} with trades
+            but no review:{" "}
             {unreviewedPeriods
               .slice(0, 3)
               .map((p) => formatMonthLabel(p.periodStart))
               .join(", ")}
             {unreviewedPeriods.length > 3 &&
-              ` and ${unreviewedPeriods.length - 3} more`}
+              (isPrivate
+                ? " and more"
+                : ` and ${unreviewedPeriods.length - 3} more`)}
           </div>
         )}
 
@@ -644,6 +697,17 @@ export function TradeReviewView({
               }
               detailError={
                 expandedReviewId === review.id ? detailError : null
+              }
+              currentRoundTrips={
+                // `periods` belongs to the selected account only.
+                review.account_id === selectedAccountId
+                  ? savedReviewRoundTripDrift(
+                      review.total_trades,
+                      periods.find(
+                        (p) => p.periodStart === review.period_start
+                      )
+                    )
+                  : null
               }
               onToggle={() => loadReviewDetail(review.id)}
               onRegenerate={() =>
@@ -684,6 +748,7 @@ function ReviewCard({
   conventionPending,
   loadingDetail,
   detailError,
+  currentRoundTrips,
   onToggle,
   onRegenerate,
 }: {
@@ -693,9 +758,12 @@ function ReviewCard({
   conventionPending: boolean;
   loadingDetail: boolean;
   detailError: string | null;
+  /** The month's round-trip count today, when it differs from the saved one. */
+  currentRoundTrips: number | null;
   onToggle: () => void;
   onRegenerate: () => void;
 }) {
+  const { isPrivate } = usePrivacy();
   const pnlColor =
     review.total_realized_pnl >= 0 ? "text-up" : "text-down";
 
@@ -717,10 +785,11 @@ function ReviewCard({
 
         <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
           <span className="text-ink-dim">
-            <span className="text-ink font-medium">
-              {review.total_trades}
-            </span>{" "}
-            trade{review.total_trades !== 1 ? "s" : ""}
+            <Count
+              value={review.total_trades}
+              className="text-ink font-medium"
+            />{" "}
+            {roundTripNoun(review.total_trades, isPrivate)}
           </span>
           <span className="text-ink-dim">
             <Pct
@@ -740,9 +809,9 @@ function ReviewCard({
           </span>
           {review.profit_factor != null && (
             <span className="text-ink-dim">
-              <span className="text-ink font-medium">
+              <PrivateText className="text-ink font-medium">
                 {formatProfitFactor(review.profit_factor)}
-              </span>{" "}
+              </PrivateText>{" "}
               profit factor
             </span>
           )}
@@ -754,6 +823,17 @@ function ReviewCard({
             •••
           </span>
         </div>
+
+        {/* Saved count vs today's ledger: warn, never rewrite the review. */}
+        {currentRoundTrips != null && (
+          <div className="mt-2 text-xs text-gold-ink">
+            Trade history changed since this review was written: it covers{" "}
+            <Count value={review.total_trades} />{" "}
+            {roundTripNoun(review.total_trades, isPrivate)}, and the month now
+            has <Count value={currentRoundTrips} />. Regenerate to review the
+            current set.
+          </div>
+        )}
       </button>
 
       {/* Expanded detail */}
@@ -799,7 +879,11 @@ function ReviewDetail({
   const tabs = [
     {
       key: "trades" as const,
-      label: `Trades (${groupedTrades.length})`,
+      label: (
+        <>
+          Round trips (<Count value={groupedTrades.length} />)
+        </>
+      ),
     },
     { key: "review" as const, label: "Full Review" },
     { key: "patterns" as const, label: "Patterns" },
@@ -873,7 +957,11 @@ function ReviewDetail({
         {review.profit_factor != null && (
           <MetricBadge
             label="Profit Factor"
-            value={formatProfitFactor(review.profit_factor)}
+            value={
+              <PrivateText>
+                {formatProfitFactor(review.profit_factor)}
+              </PrivateText>
+            }
             color="text-ink"
           />
         )}
@@ -959,7 +1047,8 @@ function ReviewDetail({
             {review.completion_tokens?.toLocaleString()} out
           </span>
         )}
-        <span>Generated: {review.generated_at}</span>
+        {/* Stored as UTC; shown as Eastern wall-clock with its zone label. */}
+        <span>Generated: {formatEnrichedAtET(review.generated_at)}</span>
       </div>
     </div>
   );

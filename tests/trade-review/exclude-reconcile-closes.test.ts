@@ -47,19 +47,29 @@ function createDb(): Database.Database {
       trade_date TEXT NOT NULL, type TEXT NOT NULL, quantity REAL,
       price_per_share REAL, amount REAL, notes TEXT
     );
+    -- The period counts run through getRoundTrips (the review generator's own
+    -- reader), so the fixture carries the columns that query selects.
+    CREATE TABLE securities (
+      id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, name TEXT,
+      security_type TEXT DEFAULT 'Stock', currency TEXT DEFAULT 'USD'
+    );
+    CREATE TABLE fx_rates (currency TEXT PRIMARY KEY, usd_per_unit REAL NOT NULL);
     CREATE TABLE tax_lots (
       id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, security_id INTEGER NOT NULL,
-      acquisition_date TEXT NOT NULL
+      acquisition_date TEXT NOT NULL, acquisition_price REAL DEFAULT 10, is_short INTEGER DEFAULT 0
     );
     CREATE TABLE tax_lot_sales (
       id INTEGER PRIMARY KEY, tax_lot_id INTEGER NOT NULL,
-      sale_transaction_id INTEGER NOT NULL, sale_date TEXT NOT NULL, quantity_sold REAL NOT NULL
+      sale_transaction_id INTEGER NOT NULL, sale_date TEXT NOT NULL, quantity_sold REAL NOT NULL,
+      sale_price REAL DEFAULT 11, proceeds REAL DEFAULT 110, cost_basis_allocated REAL DEFAULT 100,
+      realized_gain_loss REAL DEFAULT 10, holding_period_days INTEGER DEFAULT 30
     );
     CREATE TABLE trade_reviews (
       id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, period_start TEXT NOT NULL
     );
   `);
   db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test Brokerage')");
+  db.exec("INSERT INTO securities (id, symbol, name) VALUES (1, 'AAA', 'Test Co')");
   return db;
 }
 
