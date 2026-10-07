@@ -40,6 +40,11 @@ import { compareValues, useSortParam, type SortState } from "@/lib/hooks/useSort
 import { EarningsDateChip } from "../today/EarningsDateChip";
 import type { EarningsDateConflict } from "@/lib/queries/calendar";
 import type { SentEarningsEmail } from "@/lib/queries/earnings-emails";
+import {
+  SupersededEmailChip,
+  SupersededEmailNote,
+  type EmailViewTarget,
+} from "../components/SupersededEmailNote";
 import { EarningsEmailViewer } from "../components/EarningsEmailViewer";
 import apiFetch from "@/lib/http/apiFetch";
 import {
@@ -1098,49 +1103,11 @@ function fmtSentAt(sentAt: string): string {
   });
 }
 
-// An email sent for a calendar entry that a later reconcile replaced (owner
-// ruling 2026-10-06). The email stays in the archive; this line says in plain
-// words that it is not the print's email and offers the one that is. Always
-// visible text, never a hover-only hint. Symbols and dates are public market
-// data, so nothing here needs a privacy component.
-function SupersededEmailNote({
-  email,
-  onOpen,
-}: {
-  email: SentEarningsEmail;
-  onOpen: (target: Pick<SentEarningsEmail, "event_id" | "phase">) => void;
-}) {
-  const live = email.replacement;
-  return (
-    <p className="px-4 pb-2.5 -mt-1 text-[11px] text-ink-dim">
-      The calendar entry this {email.phase} was sent for was later replaced.{" "}
-      {live == null ? (
-        <>No current entry for this report was found.</>
-      ) : live.email_sent_at == null ? (
-        <>
-          The current entry reports {live.event_date}; no {email.phase} was sent for it.
-        </>
-      ) : (
-        <button
-          type="button"
-          onClick={() => onOpen({ event_id: live.event_id, phase: email.phase })}
-          className="underline underline-offset-2 text-ink hover:text-gold transition-colors"
-        >
-          Open the {email.phase} for the current entry (reports {live.event_date}, sent{" "}
-          {fmtSentAt(live.email_sent_at)})
-        </button>
-      )}
-    </p>
-  );
-}
-
 function SentEmailsList({ emails }: { emails: SentEarningsEmail[] }) {
   const [symbolFilter, setSymbolFilter] = useState("");
   // The viewer needs only the two keys, so the "current entry" link can open
   // an email that is filtered out of (or cut off the end of) the list.
-  const [viewing, setViewing] = useState<Pick<SentEarningsEmail, "event_id" | "phase"> | null>(
-    null,
-  );
+  const [viewing, setViewing] = useState<EmailViewTarget | null>(null);
 
   const filtered = symbolFilter.trim()
     ? emails.filter((e) =>
@@ -1189,18 +1156,17 @@ function SentEmailsList({ emails }: { emails: SentEarningsEmail[] }) {
                     delivery unconfirmed
                   </Chip>
                 )}
-                {e.event_superseded === 1 && (
-                  <Chip tone="warn" size="xs">
-                    entry replaced
-                  </Chip>
-                )}
+                <SupersededEmailChip email={e} />
                 <span className="ml-auto text-[11px] text-ink-faint font-mono">
                   sent {fmtSentAt(e.sent_at)}
                 </span>
               </button>
-              {e.event_superseded === 1 && (
-                <SupersededEmailNote email={e} onOpen={setViewing} />
-              )}
+              <SupersededEmailNote
+                email={e}
+                onOpen={setViewing}
+                formatSentAt={fmtSentAt}
+                className="px-4 pb-2.5 -mt-1"
+              />
             </div>
           ))}
         </div>
