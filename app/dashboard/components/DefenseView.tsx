@@ -120,6 +120,16 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
         standaloneBetKinds={standaloneBetKinds}
       />
 
+      {/* Sibling-priced Greeks: a caveat on the figures above, so it is
+          stated in the open, not inside the collapsed diagnostics. */}
+      {analysis.siblingPricedPositions > 0 && (
+        <p className="text-xs text-ink-dim">
+          <Count value={analysis.siblingPricedPositions} /> option position(s) here are priced off a
+          sibling share class&apos;s closing price, because the contract&apos;s own underlying has no
+          close on file. Their exposure and daily cost rest on that substitute price.
+        </p>
+      )}
+
       {/* Diagnostics */}
       {analysis.diagnostics.length > 0 && (
         <details className="bg-panel border border-edge rounded-lg p-4">

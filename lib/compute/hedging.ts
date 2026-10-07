@@ -608,6 +608,13 @@ export interface DefenseAnalysis {
   rankedExposures: RankedExposure[];
   hedgeScores: HedgeScore[];
   diagnostics: DefenseDiagnostic[];
+  /**
+   * Option positions whose Greeks here were priced off a SIBLING share class's
+   * close (a GOOGL contract off GOOG) because the contract's own underlying
+   * has none — `underlyingPriceSource` on PositionGreeks. Their exposure and
+   * theta rest on a substitute price, so the view states the count.
+   */
+  siblingPricedPositions: number;
 }
 
 /**
@@ -681,6 +688,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
   // across scoped accounts; ±2.5×MV fallback when Greeks unavailable. ──
   const greeksMap = new Map<number, GreeksAgg>();
   const greeksDiagBySymbol = new Map<string, GreeksDiagnostic>();
+  const siblingPricedSecurityIds = new Set<number>();
   const scopes: Array<number | undefined> = scopedAccountIds ?? [undefined];
   for (const accountId of scopes) {
     const greeks = computePortfolioGreeks(db, accountId !== undefined ? { accountId } : undefined);
@@ -701,6 +709,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
         cur.thetaPerDay += pos.greeks.theta * pos.multiplier * pos.quantity;
         cur.delta = pos.greeks.delta;
         cur.greeksAvailable = true;
+        if (pos.underlyingPriceSource) siblingPricedSecurityIds.add(pos.securityId);
       }
       cur.daysToExpiry = pos.daysToExpiry;
       cur.strike = pos.strike;
@@ -1101,5 +1110,12 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       protects: relabel(h.protects),
     })),
     diagnostics,
+    // Counted over the option rows this analysis actually loaded, so a
+    // contract outside the view's universe never inflates it.
+    siblingPricedPositions: rows.filter(
+      (r) =>
+        (r.security_type ?? "").toLowerCase() === "option" &&
+        siblingPricedSecurityIds.has(r.security_id)
+    ).length,
   };
 }

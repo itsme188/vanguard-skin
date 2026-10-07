@@ -50,12 +50,12 @@ export interface HoldingsFilters {
   sort_by?: "market_value" | "unrealized_gain" | "position_weight" | "symbol";
   limit?: number;
   /**
-   * Opt-in shorts inclusion (default false — every existing consumer, incl.
-   * the query_holdings chat tool and the market-snapshot universe, stays on
-   * the long-book predicate and long-book denominator unchanged). Only
-   * lib/chat/ibkr-context.ts passes `true`, because its shortPositions /
-   * longShortSummary section can only ever populate from a `!= 0` row set.
-   * See the position_weight_pct comment below for the gross-exposure
+   * Opt-in shorts inclusion (default false: a bare call stays on the
+   * long-book predicate and long-book denominator). The query_holdings chat
+   * tool, lib/chat/ibkr-context.ts and the market-snapshot universe all pass
+   * `true` — a short is a holding, and none of them can report one from a
+   * `> 0` row set. Rows then carry SIGNED quantity / market_value (negative =
+   * short). See the position_weight_pct comment below for the gross-exposure
    * convention this flips on.
    */
   includeShorts?: boolean;
@@ -280,7 +280,13 @@ export function getHoldingsForChat(
     params.push(normalizeSectorFilter(sector));
   }
 
-  const grossExposureSort = "sort_market_exposure DESC, s.symbol ASC";
+  // Ranked by the expression itself: selecting it as a column leaked an
+  // internal sort key into every returned row and the tool JSON. The account
+  // name completes the tie-break, so two accounts holding the same symbol at
+  // the same exposure always come back in the same order.
+  const grossExposureSort = `CASE WHEN lp.close_price IS NOT NULL
+        THEN ABS(${denominatorMvExpr})
+        ELSE 0 END DESC, s.symbol ASC, a.name ASC`;
   const sortMap: Record<string, string> = {
     market_value: includeShorts ? grossExposureSort : "market_value DESC",
     unrealized_gain: "unrealized_gain DESC",
@@ -308,9 +314,6 @@ export function getHoldingsForChat(
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
         ELSE NULL END AS market_value,
-      CASE WHEN lp.close_price IS NOT NULL
-        THEN ABS(${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")})
-        ELSE 0 END AS sort_market_exposure,
       CASE WHEN lp.close_price IS NOT NULL AND h.cost_basis IS NOT NULL AND h.cost_basis > 0
         THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (h.cost_basis * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain,

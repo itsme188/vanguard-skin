@@ -80,8 +80,13 @@ describe("OptionsStrategies withholds figures when a leg is unpriced", () => {
     expect(src).toMatch(/Not available<\/span>\s*\)\}\s*\{s\.breakevens\.map/);
   });
 
-  it("explains the missing price under the description", () => {
-    expect(src).toMatch(/One or more legs have no price yet/);
+  // The note is worded from the engine's reason (missing price / zero mark /
+  // below intrinsic) — "no price yet" was false for the last two. The wording
+  // itself is pinned in tests/compute/options-strategy-marks-and-sizing.test.ts.
+  it("explains WHY the figures are withheld under the description, from the engine's reason", () => {
+    expect(src).toMatch(/\{pricingIncompleteNote\(s\.pricingIncompleteReason\)\}/);
+    expect(src).toMatch(/pricingIncompleteReason\?:\s*PricingIncompleteReason \| null/);
+    expect(src).not.toMatch(/One or more legs have no price yet/);
   });
 });
 

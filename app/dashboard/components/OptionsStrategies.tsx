@@ -4,6 +4,10 @@ import { useState, useEffect } from "react";
 import { Money, PrivateText } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
 import { EmptySection } from "./EmptySection";
+import {
+  pricingIncompleteNote,
+  type PricingIncompleteReason,
+} from "@/lib/compute/options-strategy";
 
 interface Strategy {
   type: string;
@@ -14,8 +18,10 @@ interface Strategy {
   maxLoss: number | null;
   breakevens: number[];
   description: string;
-  /** A leg has no price: payoff figures are withheld (null here is NOT "unlimited"). */
+  /** A leg has no usable mark: payoff figures are withheld (null here is NOT "unlimited"). */
   pricingIncomplete?: boolean;
+  /** Why: missing price, zero mark, or an option marked below intrinsic value. */
+  pricingIncompleteReason?: PricingIncompleteReason | null;
 }
 
 /**
@@ -79,7 +85,7 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
             </p>
             {s.pricingIncomplete && (
               <p className="text-xs text-ink-faint mt-1">
-                One or more legs have no price yet — refresh prices to compute the payoff.
+                {pricingIncompleteNote(s.pricingIncompleteReason)}
               </p>
             )}
 

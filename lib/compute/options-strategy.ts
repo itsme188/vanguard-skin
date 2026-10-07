@@ -55,49 +55,103 @@ export interface DetectedStrategy {
    * maxProfit / maxLoss as "unlimited".
    */
   pricingIncomplete: boolean;
+  /**
+   * WHY the figures are withheld; null when pricingIncomplete is false. A
+   * price row can exist and still be unusable, so the note under a withheld
+   * strategy is worded from this, never assumed to be "no price yet".
+   */
+  pricingIncompleteReason: PricingIncompleteReason | null;
+}
+
+/**
+ * - `missing_price`   — a leg has no price at all (or a non-finite one).
+ * - `zero_mark`       — a leg is marked at zero or below.
+ * - `below_intrinsic` — an option is marked below what it is worth if
+ *                       exercised right now, so the mark cannot be real.
+ */
+export type PricingIncompleteReason =
+  | "missing_price"
+  | "zero_mark"
+  | "below_intrinsic";
+
+/**
+ * The sentence shown under a strategy whose figures are withheld. Worded from
+ * the reason: "no price yet" is false when a price exists but is zero or
+ * below intrinsic value. An absent reason (an older payload) gets the neutral
+ * wording.
+ */
+export function pricingIncompleteNote(
+  reason: PricingIncompleteReason | null | undefined
+): string {
+  switch (reason) {
+    case "missing_price":
+      return "One or more legs have no price yet — refresh prices to compute the payoff.";
+    case "zero_mark":
+      return "One or more legs are marked at zero, which is not a real price — the payoff is withheld until a real mark arrives.";
+    case "below_intrinsic":
+      return "An option leg is marked below its intrinsic value (what it is worth if exercised now), so the mark is stale — the payoff is withheld until prices refresh.";
+    default:
+      return "One or more legs have no usable price — the payoff is withheld.";
+  }
 }
 
 /** A strategy as the builders produce it, before the pricing gate runs. */
-type StrategyDraft = Omit<DetectedStrategy, "pricingIncomplete">;
+type StrategyDraft = Omit<
+  DetectedStrategy,
+  "pricingIncomplete" | "pricingIncompleteReason"
+>;
+
+/** Worst problem first: the note names one reason per strategy. */
+const REASON_PRIORITY: PricingIncompleteReason[] = [
+  "missing_price",
+  "zero_mark",
+  "below_intrinsic",
+];
 
 /**
- * Every leg carries a usable mark. Missing, non-finite, zero/negative, or
- * option marks below intrinsic are not payoff-grade: the structure is still
- * known, but risk figures would read as fact off stale quote data.
+ * Why a leg's mark is not payoff-grade, or null when it is usable.
+ *
+ * `underlyingPrice` is the underlying stock's price as detectStrategies knows
+ * it (the account's stock leg), NOT a search of the strategy's own legs — a
+ * spread or a naked option has no stock leg, and searching its legs left every
+ * such option unchecked against intrinsic value.
+ *
+ * Intrinsic rule: an option's mark is withheld only when it sits below
+ * intrinsic value by MORE than max($0.05, 1% of intrinsic). The stock close
+ * and the option close are taken moments apart, so a real mark can trail
+ * intrinsic by a few cents; anything further below cannot be a real price.
+ *
+ * When the underlying has no usable price (the account holds no stock leg for
+ * it, or that leg is unpriced) intrinsic cannot be checked: the option's mark
+ * is then accepted on the positive-and-finite test alone.
  */
-function legsPriced(legs: PositionLeg[]): boolean {
-  return legs.every((leg) => legHasUsableMark(leg, legs));
-}
-
-function legHasUsableMark(leg: PositionLeg, allLegs: PositionLeg[]): boolean {
-  if (
-    typeof leg.currentPrice !== "number" ||
-    !Number.isFinite(leg.currentPrice) ||
-    leg.currentPrice <= 0
-  ) {
-    return false;
+function legPricingProblem(
+  leg: PositionLeg,
+  underlyingPrice: number | null | undefined
+): PricingIncompleteReason | null {
+  if (typeof leg.currentPrice !== "number" || !Number.isFinite(leg.currentPrice)) {
+    return "missing_price";
   }
+  if (leg.currentPrice <= 0) return "zero_mark";
 
   if (leg.securityType !== "option" || !leg.optionType || leg.strike == null) {
-    return true;
+    return null;
   }
-
-  const stock = allLegs.find(
-    (l) => l.securityType === "stock" && l.symbol === leg.underlying
-  );
   if (
-    !stock ||
-    typeof stock.currentPrice !== "number" ||
-    !Number.isFinite(stock.currentPrice)
+    typeof underlyingPrice !== "number" ||
+    !Number.isFinite(underlyingPrice) ||
+    underlyingPrice <= 0
   ) {
-    return true;
+    return null;
   }
 
   const intrinsic =
     leg.optionType === "PUT"
-      ? leg.strike - stock.currentPrice
-      : stock.currentPrice - leg.strike;
-  return intrinsic <= 0 || leg.currentPrice >= intrinsic;
+      ? leg.strike - underlyingPrice
+      : underlyingPrice - leg.strike;
+  if (intrinsic <= 0) return null;
+  const tolerance = Math.max(0.05, intrinsic * 0.01);
+  return leg.currentPrice < intrinsic - tolerance ? "below_intrinsic" : null;
 }
 
 /**
@@ -109,14 +163,24 @@ function legHasUsableMark(leg: PositionLeg, allLegs: PositionLeg[]): boolean {
  * payoff-grade the figures are withheld; fully priced strategies pass through
  * with their math untouched.
  */
-function withPricing(draft: StrategyDraft): DetectedStrategy {
-  if (legsPriced(draft.legs)) return { ...draft, pricingIncomplete: false };
+function withPricing(
+  draft: StrategyDraft,
+  underlyingPrice: number | null | undefined
+): DetectedStrategy {
+  const problems = new Set(
+    draft.legs.map((leg) => legPricingProblem(leg, underlyingPrice))
+  );
+  const reason = REASON_PRIORITY.find((r) => problems.has(r)) ?? null;
+  if (reason === null) {
+    return { ...draft, pricingIncomplete: false, pricingIncompleteReason: null };
+  }
   return {
     ...draft,
     maxProfit: null,
     maxLoss: null,
     breakevens: [],
     pricingIncomplete: true,
+    pricingIncompleteReason: reason,
   };
 }
 
@@ -203,7 +267,9 @@ export function detectStrategies(
     }
   }
 
-  return strategies.map(withPricing);
+  return strategies.map((draft) =>
+    withPricing(draft, stockBySymbol.get(draft.underlying)?.currentPrice)
+  );
 }
 
 // ─── Covered Strategies (stock + option) ────────────────────────
@@ -241,6 +307,11 @@ function detectCoveredStrategies(
       0,
       coveredShares * stockCost + uncoveredShares * stockCost - coveredPremium
     );
+    // Short calls beyond what the shares cover are NAKED: above the strike
+    // their loss has no limit. The figures here stay those of the covered
+    // part, so the description must say so in words — a finite max loss with
+    // no caveat would read as the whole position's risk.
+    const nakedContracts = Math.abs(call.quantity) - coveredContracts;
 
     strategies.push({
       type: "covered_call",
@@ -252,15 +323,26 @@ function detectCoveredStrategies(
       // beyond coveredContracts x multiplier is plain long stock with no cap,
       // so the package's upside is unlimited (null) — a finite figure here
       // would understate it.
+      // With NAKED contracts the position is net short above the strike, so
+      // the upside is not unlimited: profit peaks AT the strike, where every
+      // share has gained (strike - cost) and every short call expires
+      // worthless with its premium kept.
       maxProfit:
-        uncoveredShares > 0
-          ? null
-          : (strike - stockCost + (call.currentPrice ?? 0)) * call.multiplier * coveredContracts,
+        nakedContracts > 0
+          ? (strike - stockCost) * shares +
+            (call.currentPrice ?? 0) * call.multiplier * Math.abs(call.quantity)
+          : uncoveredShares > 0
+            ? null
+            : (strike - stockCost + (call.currentPrice ?? 0)) * call.multiplier * coveredContracts,
       maxLoss,
       breakevens: [stockCost - (call.currentPrice ?? 0)],
       description: `Long ${shares} shares + short ${Math.abs(call.quantity)} ${formatExpiry(call.expiration)} ${formatStrike(strike)} call${Math.abs(call.quantity) > 1 ? "s" : ""}${
         uncoveredShares > 0
-          ? ` (${coveredShares} sh covered of ${shares} held — ${uncoveredShares} sh uncapped)`
+          ? ` (${coveredShares} sh covered of ${shares} held — ${uncoveredShares} sh ${nakedContracts > 0 ? "beyond the covered contracts" : "uncapped"})`
+          : ""
+      }${
+        nakedContracts > 0
+          ? `. ${nakedContracts} call contract${nakedContracts > 1 ? "s are" : " is"} uncovered: unlimited loss above ${formatStrike(strike)}; max profit is reached at the strike, and the max loss shown is the downside case only`
           : ""
       }`,
     });
@@ -398,25 +480,29 @@ function detectVerticalSpreads(
       const highStrike = Math.max(long.strike, short.strike);
       const spread = highStrike - lowStrike;
       const multiplier = long.multiplier;
+      // Dollar figures cover the MATCHED contracts only; breakevens are per
+      // share and do not scale. Any remainder is named in the description.
+      const contracts = matchedContracts([long, short]);
+      const size = multiplier * contracts;
 
       if (type === "CALL") {
         if (long.strike < short.strike) {
           // Bull Call Spread: buy lower, sell higher
-          const netDebit = ((long.currentPrice ?? 0) - (short.currentPrice ?? 0)) * multiplier;
+          const netDebit = ((long.currentPrice ?? 0) - (short.currentPrice ?? 0)) * size;
           strategies.push({
             type: "bull_call_spread",
             name: `Bull Call Spread: ${underlying} ${formatStrike(lowStrike)}/${formatStrike(highStrike)}`,
             underlying,
             expiration: expiry,
             legs: [long, short],
-            maxProfit: (spread * multiplier) - netDebit,
+            maxProfit: (spread * size) - netDebit,
             maxLoss: netDebit,
-            breakevens: [lowStrike + netDebit / multiplier],
-            description: `Long ${formatStrike(lowStrike)} call, short ${formatStrike(highStrike)} call ${formatExpiry(expiry)}`,
+            breakevens: [lowStrike + netDebit / size],
+            description: `Long ${formatStrike(lowStrike)} call, short ${formatStrike(highStrike)} call ${formatExpiry(expiry)}${sizingNote([long, short], contracts)}`,
           });
         } else {
           // Bear Call Spread: sell lower, buy higher
-          const netCredit = ((short.currentPrice ?? 0) - (long.currentPrice ?? 0)) * multiplier;
+          const netCredit = ((short.currentPrice ?? 0) - (long.currentPrice ?? 0)) * size;
           strategies.push({
             type: "bear_call_spread",
             name: `Bear Call Spread: ${underlying} ${formatStrike(lowStrike)}/${formatStrike(highStrike)}`,
@@ -424,30 +510,30 @@ function detectVerticalSpreads(
             expiration: expiry,
             legs: [short, long],
             maxProfit: netCredit,
-            maxLoss: (spread * multiplier) - netCredit,
-            breakevens: [lowStrike + netCredit / multiplier],
-            description: `Short ${formatStrike(lowStrike)} call, long ${formatStrike(highStrike)} call ${formatExpiry(expiry)}`,
+            maxLoss: (spread * size) - netCredit,
+            breakevens: [lowStrike + netCredit / size],
+            description: `Short ${formatStrike(lowStrike)} call, long ${formatStrike(highStrike)} call ${formatExpiry(expiry)}${sizingNote([long, short], contracts)}`,
           });
         }
       } else {
         // PUT spreads
         if (long.strike > short.strike) {
           // Bear Put Spread: buy higher, sell lower
-          const netDebit = ((long.currentPrice ?? 0) - (short.currentPrice ?? 0)) * multiplier;
+          const netDebit = ((long.currentPrice ?? 0) - (short.currentPrice ?? 0)) * size;
           strategies.push({
             type: "bear_put_spread",
             name: `Bear Put Spread: ${underlying} ${formatStrike(lowStrike)}/${formatStrike(highStrike)}`,
             underlying,
             expiration: expiry,
             legs: [long, short],
-            maxProfit: (spread * multiplier) - netDebit,
+            maxProfit: (spread * size) - netDebit,
             maxLoss: netDebit,
-            breakevens: [highStrike - netDebit / multiplier],
-            description: `Long ${formatStrike(highStrike)} put, short ${formatStrike(lowStrike)} put ${formatExpiry(expiry)}`,
+            breakevens: [highStrike - netDebit / size],
+            description: `Long ${formatStrike(highStrike)} put, short ${formatStrike(lowStrike)} put ${formatExpiry(expiry)}${sizingNote([long, short], contracts)}`,
           });
         } else {
           // Bull Put Spread: sell higher, buy lower
-          const netCredit = ((short.currentPrice ?? 0) - (long.currentPrice ?? 0)) * multiplier;
+          const netCredit = ((short.currentPrice ?? 0) - (long.currentPrice ?? 0)) * size;
           strategies.push({
             type: "bull_put_spread",
             name: `Bull Put Spread: ${underlying} ${formatStrike(lowStrike)}/${formatStrike(highStrike)}`,
@@ -455,9 +541,9 @@ function detectVerticalSpreads(
             expiration: expiry,
             legs: [short, long],
             maxProfit: netCredit,
-            maxLoss: (spread * multiplier) - netCredit,
-            breakevens: [highStrike - netCredit / multiplier],
-            description: `Short ${formatStrike(highStrike)} put, long ${formatStrike(lowStrike)} put ${formatExpiry(expiry)}`,
+            maxLoss: (spread * size) - netCredit,
+            breakevens: [highStrike - netCredit / size],
+            description: `Short ${formatStrike(highStrike)} put, long ${formatStrike(lowStrike)} put ${formatExpiry(expiry)}${sizingNote([long, short], contracts)}`,
           });
         }
       }
@@ -485,8 +571,10 @@ function detectStraddles(
       const strike = call.strike;
       const isLong = call.quantity > 0;
       const multiplier = call.multiplier;
-      const totalPremium =
-        ((call.currentPrice ?? 0) + (put.currentPrice ?? 0)) * multiplier;
+      // Figures cover the matched contracts; breakevens stay per share.
+      const contracts = matchedContracts([call, put]);
+      const perShare = (call.currentPrice ?? 0) + (put.currentPrice ?? 0);
+      const totalPremium = perShare * multiplier * contracts;
 
       strategies.push({
         type: "straddle",
@@ -497,10 +585,10 @@ function detectStraddles(
         maxProfit: isLong ? null : totalPremium,
         maxLoss: isLong ? totalPremium : null,
         breakevens: [
-          strike - totalPremium / multiplier,
-          strike + totalPremium / multiplier,
+          strike - perShare,
+          strike + perShare,
         ],
-        description: `${isLong ? "Long" : "Short"} ${formatStrike(strike)} call + put ${formatExpiry(expiry)}`,
+        description: `${isLong ? "Long" : "Short"} ${formatStrike(strike)} call + put ${formatExpiry(expiry)}${sizingNote([call, put], contracts)}`,
       });
     }
   }
@@ -525,8 +613,10 @@ function detectStrangles(
 
       const isLong = call.quantity > 0;
       const multiplier = call.multiplier;
-      const totalPremium =
-        ((call.currentPrice ?? 0) + (put.currentPrice ?? 0)) * multiplier;
+      // Figures cover the matched contracts; breakevens stay per share.
+      const contracts = matchedContracts([call, put]);
+      const perShare = (call.currentPrice ?? 0) + (put.currentPrice ?? 0);
+      const totalPremium = perShare * multiplier * contracts;
 
       strategies.push({
         type: "strangle",
@@ -537,10 +627,10 @@ function detectStrangles(
         maxProfit: isLong ? null : totalPremium,
         maxLoss: isLong ? totalPremium : null,
         breakevens: [
-          put.strike - totalPremium / multiplier,
-          call.strike + totalPremium / multiplier,
+          put.strike - perShare,
+          call.strike + perShare,
         ],
-        description: `${isLong ? "Long" : "Short"} ${formatStrike(put.strike)} put + ${formatStrike(call.strike)} call ${formatExpiry(expiry)}`,
+        description: `${isLong ? "Long" : "Short"} ${formatStrike(put.strike)} put + ${formatStrike(call.strike)} call ${formatExpiry(expiry)}${sizingNote([put, call], contracts)}`,
       });
     }
   }
@@ -574,12 +664,15 @@ function detectIronCondors(
           const multiplier = sc.multiplier;
           const callSpread = lc.strike - sc.strike;
           const putSpread = sp.strike - lp.strike;
-          const netCredit =
-            ((sc.currentPrice ?? 0) -
-              (lc.currentPrice ?? 0) +
-              (sp.currentPrice ?? 0) -
-              (lp.currentPrice ?? 0)) *
-            multiplier;
+          // Figures cover the matched contracts; breakevens stay per share.
+          const contracts = matchedContracts([lp, sp, sc, lc]);
+          const size = multiplier * contracts;
+          const creditPerShare =
+            (sc.currentPrice ?? 0) -
+            (lc.currentPrice ?? 0) +
+            (sp.currentPrice ?? 0) -
+            (lp.currentPrice ?? 0);
+          const netCredit = creditPerShare * size;
 
           strategies.push({
             type: "iron_condor",
@@ -588,12 +681,12 @@ function detectIronCondors(
             expiration: expiry,
             legs: [lp, sp, sc, lc],
             maxProfit: netCredit,
-            maxLoss: Math.max(callSpread, putSpread) * multiplier - netCredit,
+            maxLoss: Math.max(callSpread, putSpread) * size - netCredit,
             breakevens: [
-              sp.strike - netCredit / multiplier,
-              sc.strike + netCredit / multiplier,
+              sp.strike - creditPerShare,
+              sc.strike + creditPerShare,
             ],
-            description: `Put spread ${formatStrike(lp.strike)}/${formatStrike(sp.strike)} + Call spread ${formatStrike(sc.strike)}/${formatStrike(lc.strike)} ${formatExpiry(expiry)}`,
+            description: `Put spread ${formatStrike(lp.strike)}/${formatStrike(sp.strike)} + Call spread ${formatStrike(sc.strike)}/${formatStrike(lc.strike)} ${formatExpiry(expiry)}${sizingNote([lp, sp, sc, lc], contracts)}`,
           });
         }
       }
@@ -601,6 +694,37 @@ function detectIronCondors(
   }
 
   return strategies;
+}
+
+// ─── Contract Sizing (option + option structures) ───────────────
+
+/**
+ * A multi-leg structure exists once per MATCHED contract: the smallest
+ * contract count across its legs. Dollar figures are sized on this.
+ */
+function matchedContracts(legs: PositionLeg[]): number {
+  return Math.min(...legs.map((l) => Math.abs(l.quantity)));
+}
+
+/**
+ * Description suffix that states the sizing. Says how many contracts the
+ * figures cover when more than one, and names every contract left over when
+ * the legs are unequal — the remainder is real exposure that the figures do
+ * not include, so it is never dropped silently.
+ */
+function sizingNote(legs: PositionLeg[], matched: number): string {
+  const leftovers = legs
+    .filter((l) => Math.abs(l.quantity) > matched)
+    .map((l) => {
+      const extra = Math.abs(l.quantity) - matched;
+      const kind = l.optionType === "CALL" ? "call" : "put";
+      return `${extra} ${l.quantity > 0 ? "long" : "short"} ${formatStrike(l.strike!)} ${kind}${extra !== 1 ? "s" : ""}`;
+    });
+  const sized = `${matched} contract${matched !== 1 ? "s" : ""}`;
+  if (leftovers.length > 0) {
+    return ` (figures sized on ${sized}; ${leftovers.join(", ")} unmatched and not in these figures)`;
+  }
+  return matched !== 1 ? ` (${sized})` : "";
 }
 
 // ─── Naked Options ──────────────────────────────────────────────
