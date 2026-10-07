@@ -625,6 +625,20 @@ export function correctEarningsEventDate(
           .get(symbol, opts.correctDate) as { id: number };
         newEventId = existing.id;
 
+        // The collided manual row may be a SUPERSEDED twin (minted by an
+        // earlier confirm/correction, later folded by the reconciler).
+        // Adopting it without reviving it deleted the wrong row and merged
+        // all state onto a hidden row — the symbol had no live earnings row
+        // and vanished from Today
+        // (qa: fix-date onto a date holding a superseded twin). Revive it,
+        // clearing the same columns resuppressSuppressedTuples resets when it
+        // hides a row, so a stale cross-check verdict from before the fold
+        // does not ride along. Guarded on superseded = 1 so a live row's own
+        // verdict is left untouched.
+        db.prepare(
+          "UPDATE calendar_events SET superseded = 0, date_status = NULL, date_conflict_with = NULL WHERE id = ? AND superseded = 1",
+        ).run(existing.id);
+
         // The WHERE clause above guarantees the adopted row is always
         // source='manual' — i.e. correction-owned, never sync-owned — so
         // editing its slot in place does NOT run afoul of the "never edit
