@@ -130,6 +130,37 @@ Vanguard Taxable,2026-08-31,100000,,,,,,,,5`;
   });
 });
 
+describe("POST /api/import?mode=commit — canonical monthly snapshot validation matches preview", () => {
+  it("commits exactly the valid row of a file that also carries a percent-scale twr row", async () => {
+    const csv = `${CANONICAL_SNAPSHOT_HEADER}
+Vanguard Taxable,2026-08-31,100000,,,,,,,,5
+Vanguard Taxable,2026-09-30,200000,,,,,,,,0.05`;
+
+    const mod = await import("@/app/api/import/route");
+    const res = await mod.POST(importReq("commit", [{ name: "snapshots.csv", content: csv }]));
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ImportRouteResponse;
+    expect(body.success).toBe(true);
+    const fileResult = body.results[0];
+    expect(fileResult.success).toBe(true);
+    expect(fileResult.skippedRows).toHaveLength(1);
+    expect(fileResult.skippedRows![0].category).toBe("snapshot");
+    expect(fileResult.skippedRows![0].reason).toContain("+500%");
+
+    const rows = hoisted.db
+      .prepare(
+        `SELECT a.name AS account, ms.month_end_date, ms.total_value, ms.twr
+           FROM monthly_snapshots ms JOIN accounts a ON a.id = ms.account_id
+          ORDER BY ms.month_end_date`,
+      )
+      .all();
+    expect(rows).toEqual([
+      { account: "Vanguard Taxable", month_end_date: "2026-09-30", total_value: 200000, twr: 0.05 },
+    ]);
+  });
+});
+
 /**
  * QA regression import-preview--no-account-validation-500-on-commit-regression-1
  * (2026-09-24 sweep): the preview half above shipped in 19341671, but

@@ -450,10 +450,14 @@ export function validateParsedResult(
       }
 
       if (s.twr != null && Number.isFinite(s.twr) && Math.abs(s.twr) > 1) {
+        // Rounded for display only: 5.1 * 100 is 509.99999999999994 in binary
+        // floating point. Twelve significant digits drops that noise and
+        // still shows every digit a person could have typed.
+        const impliedPct = Number((s.twr * 100).toPrecision(12));
         skippedRows.push({
           category: "snapshot",
           index: i,
-          reason: `twr is a decimal: ${s.twr} means ${s.twr > 0 ? "+" : ""}${s.twr * 100}% for the month. Enter 0.05 for 5%.`,
+          reason: `twr is a decimal: ${s.twr} means ${impliedPct > 0 ? "+" : ""}${impliedPct}% for the month. Enter 0.05 for 5%.`,
         });
         skip = true;
       }

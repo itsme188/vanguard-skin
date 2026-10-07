@@ -736,6 +736,22 @@ describe("validateParsedResult: canonical monthly snapshots", () => {
     expect(skippedRows[0].reason).toContain("0.05");
   });
 
+  it("prints the implied percent without floating-point noise", () => {
+    const { skippedRows } = validateSnapshotRows(
+      [
+        "Vanguard Taxable,2026-08-31,100000,,,,,,,,5.1",
+        "Vanguard Taxable,2026-09-30,200000,,,,,,,,1.0000001",
+        "Vanguard Taxable,2026-10-31,300000,,,,,,,,-1.1",
+      ].join("\n"),
+    );
+
+    expect(skippedRows.map((r) => r.reason)).toEqual([
+      "twr is a decimal: 5.1 means +510% for the month. Enter 0.05 for 5%.",
+      "twr is a decimal: 1.0000001 means +100.00001% for the month. Enter 0.05 for 5%.",
+      "twr is a decimal: -1.1 means -110% for the month. Enter 0.05 for 5%.",
+    ]);
+  });
+
   it("keeps canonical decimal twr values at and inside the 100% boundary", () => {
     const { skippedRows, validatedResult } = validateSnapshotRows(
       [
