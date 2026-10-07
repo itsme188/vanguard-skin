@@ -449,3 +449,9 @@ Spec: `docs/superpowers/specs/2026-10-06-scenario-option-repricing-design.md`.
 - **Test 2 of the spec was restated while planning.** The true bound is "shocked value is at least exercise value at the shocked price"; the first wording ignored the premium already in today's price.
 - **For the user to rule on later:** a deep in-the-money option quoted at parity with no broker volatility is not modelled (it drops out of the total and is listed); and a collapsed card shows its total with no hint that options were left out (the count appears when the card is expanded).
 
+## 2026-10-07 — Landing PR #100 (nightly fixer built three of the 2026-10-06 high rulings)
+
+- **Landed as written:** the Diagnostics window captions (dates only; no figure moves), the pre-release actual chip (display only; a repo test now limits the helper's importers to app files), and the revive of a superseded hand-entered twin on a date correction.
+- **Equity curve landed with a review fix.** Where no daily value exists on a statement date (a weekend or holiday month-end), the start offset is measured from the last value recorded at or before that date, within five calendar days. The fixer's version measured it from the first trading day after the statement, which erased that day's move and spread it across the month, the smoothing the ruling removed.
+- **Left for the owner:** what makes a month "too incomplete to plot" (the ruling named the idea, not a threshold), and the pre-release state of a hand-entered actual on a row with no time slot.
+
