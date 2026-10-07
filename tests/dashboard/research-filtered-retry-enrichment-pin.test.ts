@@ -71,24 +71,48 @@ describe("the shared handler behind Unfilter and Retry", () => {
 
   it("a refusal is explained in words and the list is reloaded", () => {
     const refusal = sliceBetween(handler, "if (!result.ok) {", "return;");
-    expect(refusal).toContain("toast(`Couldn't ${copy.verb} the article: ${result.message} It stays in the filtered list.`, \"error\")");
-    expect(refusal).toContain("setFilteredArticles(data.data ?? [])");
+    expect(refusal).toContain("const reloaded = await reloadFilteredList();");
+    expect(refusal).toContain("Couldn't ${copy.verb} the article: ${result.message} It stays in the filtered list.");
+    expect(refusal).toContain("if (!reloaded) restoreBefore();");
+    expect(refusal).toContain("The list could not be refreshed and may be out of date.");
   });
 
-  it("a request that never arrived restores the row, its counts, and says so", () => {
-    const failure = handler.slice(anchorIndex(handler, "} catch {"));
-    expect(failure).toContain("setFilteredArticles(before.articles);");
-    expect(failure).toContain("setFilteredCount(before.count);");
-    expect(failure).toContain("setFilteredCategoryCounts(before.categoryCounts);");
-    expect(failure).toContain("networkFailureMessage(`${copy.verb} the article`)");
+  it("a request that did not complete says the outcome is unknown, then reloads the list", () => {
+    const failure = sliceBetween(handler, "} catch {", "const result = await readMutationResult<");
+    // It must not claim nothing changed: the request may have reached the server.
+    expect(failure).toContain("did not complete, so it may or may not have gone through");
+    expect(failure).not.toMatch(/nothing changed|stays in the filtered list|was not changed/i);
+    expect(failure).toContain("const reloaded = await reloadFilteredList();");
+    // The reload happens before either message is chosen.
+    expect(anchorIndex(failure, "await reloadFilteredList()")).toBeLessThan(anchorIndex(failure, "toast("));
+  });
+
+  it("a reload that also fails is reported, and the row is put back rather than left missing", () => {
+    const failure = sliceBetween(handler, "} catch {", "const result = await readMutationResult<");
+    const unreloaded = failure.slice(anchorIndex(failure, "} else {"));
+    expect(unreloaded).toContain("restoreBefore();");
+    expect(unreloaded).toContain("the filtered list could not be reloaded either");
+    expect(unreloaded).toContain("may or may not have changed");
+    const restore = sliceBetween(handler, "const restoreBefore = () => {", "};");
+    expect(restore).toContain("setFilteredArticles(before.articles);");
+    expect(restore).toContain("setFilteredCount(before.count);");
+    expect(restore).toContain("setFilteredCategoryCounts(before.categoryCounts);");
     // The snapshot is taken before the optimistic removal.
     expect(anchorIndex(handler, "const before = {")).toBeLessThan(
       anchorIndex(handler, "setFilteredArticles((prev) => prev.filter("),
     );
   });
 
+  it("the reload helper reports failure instead of swallowing it", () => {
+    const reload = sliceBetween(view, "const reloadFilteredList = useCallback(", "}, []);");
+    expect(reload).toContain("if (!reload.ok || !data?.success) return false;");
+    expect(reload).toContain("setFilteredArticles(data.data ?? [])");
+    expect(reload).toMatch(/catch \{\s+\/\/ No answer from the server: the caller reports it\.\s+return false;/);
+    expect(reload).toContain("return true;");
+  });
+
   it("a re-queue tells the user where the article went and when it will be analysed", () => {
-    const success = sliceBetween(handler, "if (result.data.data?.requeued) {", "} catch {");
+    const success = handler.slice(anchorIndex(handler, "if (result.data.data?.requeued) {"));
     expect(success).toContain('toast(REQUEUED_FOR_ENRICHMENT_NOTICE, "success")');
     const notice = sliceBetween(view, "const REQUEUED_FOR_ENRICHMENT_NOTICE =", ";\n");
     expect(notice).toMatch(/Queued for enrichment/);

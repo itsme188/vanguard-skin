@@ -1,5 +1,6 @@
 /**
- * An account-level AI failure must not burn an article's retry cap.
+ * An account-level AI failure must not burn an article's retry cap, and one
+ * failing article must not block the queue behind it.
  *
  * Finding: research-feeds--billing-outage-burned-enrich-retry-cap-no-retry-when-credit-returns
  * Owner ruling: billing, rate-limit and outage failures do not count toward
@@ -10,17 +11,26 @@
  * repo's AI gateway (generateObjectForFeature) -> the AI SDK -> the Anthropic
  * provider. ONLY the network is replaced (global fetch), with Anthropic's
  * error envelopes from tests/helpers/ai-sdk-real-errors.ts, so the error the
- * failure handler sees is the one production sees. The API key is forced to a
- * dummy value and every test asserts the stub was what answered.
+ * failure handler sees is the one production sees.
+ *
+ * Network isolation: the API key is forced to a dummy value; the default
+ * fetch stub THROWS and records the call, and afterEach fails the test if any
+ * request arrived that the test did not install a responder for; every pass
+ * first checks that global fetch is still the stub.
  */
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { processUnprocessedArticles } from "@/lib/gmail/process";
-import { MAX_ENRICH_ATTEMPTS } from "@/lib/gmail/enrichment-failure";
+import { processUnprocessedArticles, type ProcessArticlesResult } from "@/lib/gmail/process";
+import {
+  CHARGED_TO_ARTICLE_MARKER,
+  MAX_ENRICH_ATTEMPTS,
+  classifyStoredFailureReason,
+} from "@/lib/gmail/enrichment-failure";
 import { retryArticleEnrichment, unfilterArticle } from "@/lib/mutations/research-articles";
 import {
   ANTHROPIC_FAILURES,
+  CREDIT_BALANCE_MESSAGE,
   anthropicMessage,
   fetchFailed,
   type AnthropicFailureName,
@@ -35,32 +45,64 @@ const GOOD_ANALYSIS = {
   portfolio_relevance: "Relevant to your ZZAA position.",
   is_portfolio_relevant: true,
 };
+const ok = () => anthropicMessage(JSON.stringify(GOOD_ANALYSIS));
 
-type Responder = () => Response | Promise<Response>;
-let respond: Responder;
+/** A responder sees the subject of the article the request is about. */
+type Responder = (subject: string) => Response | Promise<Response>;
+let responder: Responder | null;
+let unstubbedRequests: string[];
 let fetchStub: ReturnType<typeof vi.fn>;
 let errorLog: MockInstance<typeof console.error>;
 let warnLog: MockInstance<typeof console.warn>;
 let savedKey: string | undefined;
 
+function subjectOf(init: RequestInit | undefined): string {
+  const body = typeof init?.body === "string" ? init.body : "";
+  return /Subject: (ZZ letter \d+)/.exec(body)?.[1] ?? "(no subject in request)";
+}
+
 beforeEach(() => {
   savedKey = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = "test-key-not-real";
-  respond = () => anthropicMessage(JSON.stringify(GOOD_ANALYSIS));
-  fetchStub = vi.fn(async () => respond());
+  responder = null;
+  unstubbedRequests = [];
+  fetchStub = vi.fn(async (input: unknown, init?: RequestInit) => {
+    if (!responder) {
+      unstubbedRequests.push(String(input));
+      throw new Error(`TEST BUG: a request reached fetch with no responder installed (${String(input)})`);
+    }
+    return responder(subjectOf(init));
+  });
   vi.stubGlobal("fetch", fetchStub);
   errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
   warnLog = vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 
 afterEach(() => {
+  const leaked = unstubbedRequests;
   vi.unstubAllGlobals();
   vi.useRealTimers();
   errorLog.mockRestore();
   warnLog.mockRestore();
   if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
   else process.env.ANTHROPIC_API_KEY = savedKey;
+  expect(leaked, "a request was made that no test responder was installed for").toEqual([]);
 });
+
+/** One enrichment pass, refusing to run if the network stub is not in place. */
+async function runPass(db: Database.Database): Promise<ProcessArticlesResult> {
+  if (globalThis.fetch !== fetchStub) throw new Error("TEST BUG: global fetch is not the test stub");
+  return processUnprocessedArticles(db);
+}
+
+/** Every request gets the same answer. */
+function respondAll(r: () => Response | Promise<Response>): void {
+  responder = () => r();
+}
+/** Answer by article subject; anything not listed succeeds. */
+function respondBySubject(map: Record<string, () => Response | Promise<Response>>): void {
+  responder = (subject) => (map[subject] ?? ok)();
+}
 
 function makeDb(): { db: Database.Database; sourceId: number } {
   const db = new Database(":memory:");
@@ -71,21 +113,33 @@ function makeDb(): { db: Database.Database; sourceId: number } {
   return { db, sourceId };
 }
 
+/**
+ * Queue articles newest-first: the first one inserted is the head of the
+ * queue. Returns ids and subjects in queue order.
+ */
 let seq = 0;
-function insertQueued(
+function queue(
   db: Database.Database,
   sourceId: number,
-  opts: { receivedAt?: string; attempts?: number } = {},
-): number {
-  seq += 1;
-  return db
-    .prepare(
-      `INSERT INTO research_articles
-         (source_id, gmail_message_id, subject, sender, raw_text, received_at, enrich_attempts)
-       VALUES (?, ?, ?, 'letters@example.test', 'ZZAA raised its outlook for the year.', ?, ?)`,
-    )
-    .run(sourceId, `g3-msg-${seq}`, `ZZ letter ${seq}`, opts.receivedAt ?? "2026-01-05 12:00:00", opts.attempts ?? 0)
-    .lastInsertRowid as number;
+  count: number,
+  opts: { attempts?: number[] } = {},
+): Array<{ id: number; subject: string }> {
+  const out: Array<{ id: number; subject: string }> = [];
+  for (let i = 0; i < count; i++) {
+    seq += 1;
+    const subject = `ZZ letter ${seq}`;
+    // Later position in the queue = older received_at (the queue is newest first).
+    const receivedAt = `2026-01-05 ${String(23 - Math.floor(i / 60)).padStart(2, "0")}:${String(59 - (i % 60)).padStart(2, "0")}:00`;
+    const id = db
+      .prepare(
+        `INSERT INTO research_articles
+           (source_id, gmail_message_id, subject, sender, raw_text, received_at, enrich_attempts)
+         VALUES (?, ?, ?, 'letters@example.test', 'ZZAA raised its outlook for the year.', ?, ?)`,
+      )
+      .run(sourceId, `g3-msg-${seq}`, subject, receivedAt, opts.attempts?.[i] ?? 0).lastInsertRowid as number;
+    out.push({ id, subject });
+  }
+  return out;
 }
 
 interface Row {
@@ -105,15 +159,24 @@ function row(db: Database.Database, id: number): Row {
     .get(id) as Row;
 }
 
-const STILL_QUEUED: Partial<Row> = {
+/** Queued and never charged an attempt. */
+const UNTOUCHED: Partial<Row> = {
   enrich_attempts: 0,
   processed_at: null,
   is_relevant: 1,
   excluded_category: null,
   excluded_reason: null,
 };
+/** Queued, with `n` attempts charged. */
+const queuedWith = (n: number): Partial<Row> => ({ ...UNTOUCHED, enrich_attempts: n });
+function expectEnriched(db: Database.Database, id: number): void {
+  const r = row(db, id);
+  expect(r.processed_at).not.toBeNull();
+  expect(r.summary).toBe(GOOD_ANALYSIS.summary);
+  expect(r.is_relevant).toBe(1);
+}
 
-describe("account-level failures leave the article queued and uncounted", () => {
+describe("an outage (every article fails account-level) never uses an attempt", () => {
   const accountLevel: Array<[AnthropicFailureName, number]> = [
     // [failure, HTTP calls the SDK makes for one enrichment call]
     ["billing400", 1],
@@ -128,123 +191,327 @@ describe("account-level failures leave the article queued and uncounted", () => 
   ];
 
   it.each(accountLevel)(
-    "%s on every pass, well past the cap: still queued, attempt count untouched",
+    "%s with one fresh article queued, well past the cap: still queued, nothing counted",
     async (name, callsPerAttempt) => {
       const { db, sourceId } = makeDb();
-      const id = insertQueued(db, sourceId);
-      respond = ANTHROPIC_FAILURES[name];
+      const [a] = queue(db, sourceId, 1);
+      respondAll(ANTHROPIC_FAILURES[name]);
 
       const passes = MAX_ENRICH_ATTEMPTS + 2;
       for (let i = 0; i < passes; i++) {
-        const result = await processUnprocessedArticles(db);
-        expect(result).toEqual({ processed: 0, failed: 1, deferred: 1 });
+        expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 1 });
       }
 
-      expect(row(db, id)).toMatchObject(STILL_QUEUED);
+      expect(row(db, a.id)).toMatchObject(UNTOUCHED);
       expect(fetchStub).toHaveBeenCalledTimes(passes * callsPerAttempt);
     },
   );
 
-  it("no network at all: still queued", async () => {
+  it.each(accountLevel)(
+    "%s with several fresh articles queued, ten passes: nothing counted, two calls per pass",
+    async (name, callsPerAttempt) => {
+      const { db, sourceId } = makeDb();
+      const articles = queue(db, sourceId, 4);
+      respondAll(ANTHROPIC_FAILURES[name]);
+
+      for (let i = 0; i < 10; i++) {
+        expect(await runPass(db)).toEqual({ processed: 0, failed: 2, deferred: 2 });
+      }
+
+      for (const a of articles) expect(row(db, a.id)).toMatchObject(UNTOUCHED);
+      expect(fetchStub).toHaveBeenCalledTimes(10 * 2 * callsPerAttempt);
+    },
+  );
+
+  it("no network at all (the SDK retries with its real back-off): still queued", async () => {
     const { db, sourceId } = makeDb();
-    const id = insertQueued(db, sourceId);
-    respond = () => {
+    const [a] = queue(db, sourceId, 1);
+    respondAll(() => {
       throw fetchFailed();
-    };
+    });
     // A failed connection has no retry-after header, so the SDK waits its
     // real 2s then 4s between tries. Only setTimeout is faked.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 
     for (let i = 0; i < MAX_ENRICH_ATTEMPTS + 1; i++) {
-      const pass = processUnprocessedArticles(db);
+      const pass = runPass(db);
       await vi.advanceTimersByTimeAsync(10_000);
       expect(await pass).toEqual({ processed: 0, failed: 1, deferred: 1 });
     }
 
-    expect(row(db, id)).toMatchObject(STILL_QUEUED);
+    expect(row(db, a.id)).toMatchObject(UNTOUCHED);
     expect(fetchStub).toHaveBeenCalledTimes((MAX_ENRICH_ATTEMPTS + 1) * 3);
   });
 
-  it("the article is enriched on the first pass after the provider comes back", async () => {
+  it.each([
+    ["a bare fetch failure with no cause", () => new TypeError("fetch failed")],
+    ["an aborted request", () => new DOMException("This operation was aborted", "AbortError")],
+    ["a timed-out request", () => new DOMException("The operation timed out", "TimeoutError")],
+  ])("%s (the SDK passes it through unwrapped): still queued", async (_label, make) => {
     const { db, sourceId } = makeDb();
-    const id = insertQueued(db, sourceId);
+    const [a] = queue(db, sourceId, 1);
+    respondAll(() => {
+      throw make();
+    });
 
-    respond = ANTHROPIC_FAILURES.billing400;
-    for (let i = 0; i < MAX_ENRICH_ATTEMPTS + 1; i++) await processUnprocessedArticles(db);
-    expect(row(db, id)).toMatchObject(STILL_QUEUED);
+    for (let i = 0; i < MAX_ENRICH_ATTEMPTS + 2; i++) {
+      expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 1 });
+    }
 
-    respond = () => anthropicMessage(JSON.stringify(GOOD_ANALYSIS));
-    const result = await processUnprocessedArticles(db);
-
-    expect(result).toEqual({ processed: 1, failed: 0, deferred: 0 });
-    const after = row(db, id);
-    expect(after.processed_at).not.toBeNull();
-    expect(after.summary).toBe(GOOD_ANALYSIS.summary);
-    expect(after.is_relevant).toBe(1);
-    expect(after.enrich_attempts).toBe(0);
+    expect(row(db, a.id)).toMatchObject(UNTOUCHED);
+    expect(warnLog.mock.calls.map((c) => c.join(" ")).join("\n")).not.toMatch(/unrecognised enrichment error/);
   });
 
-  it("an account-level failure does not erase attempts the article already used", async () => {
+  it("everything is enriched on the first pass after the provider comes back", async () => {
     const { db, sourceId } = makeDb();
-    const id = insertQueued(db, sourceId, { attempts: MAX_ENRICH_ATTEMPTS - 1 });
-    respond = ANTHROPIC_FAILURES.overloaded529;
+    const articles = queue(db, sourceId, 3);
 
-    await processUnprocessedArticles(db);
-    await processUnprocessedArticles(db);
+    respondAll(ANTHROPIC_FAILURES.billing400);
+    for (let i = 0; i < MAX_ENRICH_ATTEMPTS + 1; i++) await runPass(db);
+    for (const a of articles) expect(row(db, a.id)).toMatchObject(UNTOUCHED);
 
-    expect(row(db, id)).toMatchObject({ ...STILL_QUEUED, enrich_attempts: MAX_ENRICH_ATTEMPTS - 1 });
+    respondAll(ok);
+    expect(await runPass(db)).toEqual({ processed: 3, failed: 0, deferred: 0 });
+    for (const a of articles) {
+      expectEnriched(db, a.id);
+      expect(row(db, a.id).enrich_attempts).toBe(0);
+    }
+  });
+
+  it("an outage does not erase or add to attempts articles already used", async () => {
+    const { db, sourceId } = makeDb();
+    const [a, b] = queue(db, sourceId, 2, { attempts: [MAX_ENRICH_ATTEMPTS - 1, 1] });
+    respondAll(ANTHROPIC_FAILURES.overloaded529);
+
+    for (let i = 0; i < 4; i++) await runPass(db);
+
+    expect(row(db, a.id)).toMatchObject(queuedWith(MAX_ENRICH_ATTEMPTS - 1));
+    expect(row(db, b.id)).toMatchObject(queuedWith(1));
   });
 
   it("the log names the class and status but not the provider's message", async () => {
     const { db, sourceId } = makeDb();
-    insertQueued(db, sourceId);
-    respond = ANTHROPIC_FAILURES.billing400;
+    queue(db, sourceId, 1);
+    respondAll(ANTHROPIC_FAILURES.billing400);
 
-    await processUnprocessedArticles(db);
+    await runPass(db);
 
     const logged = errorLog.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(logged).toMatch(/account-level/);
     expect(logged).toMatch(/billing, HTTP 400, invalid_request_error/);
     expect(logged).toMatch(/not counted/);
+    expect(logged).not.toContain("credit balance");
   });
 });
 
-describe("a long outage does not hammer the provider", () => {
-  it("the pass stops at the first account-level failure: one enrichment call however many are queued", async () => {
+describe("who is charged: orderings within one pass", () => {
+  it("[account, ok]: the provider answered the next article, so the failure is charged to its article", async () => {
     const { db, sourceId } = makeDb();
-    const ids = [
-      insertQueued(db, sourceId, { receivedAt: "2026-01-05 12:00:00" }),
-      insertQueued(db, sourceId, { receivedAt: "2026-01-05 11:00:00" }),
-      insertQueued(db, sourceId, { receivedAt: "2026-01-05 10:00:00" }),
-      insertQueued(db, sourceId, { receivedAt: "2026-01-05 09:00:00" }),
-    ];
-    respond = ANTHROPIC_FAILURES.billing400;
+    const [a, b] = queue(db, sourceId, 2);
+    respondBySubject({ [a.subject]: ANTHROPIC_FAILURES.apiError500 });
 
-    const result = await processUnprocessedArticles(db);
+    expect(await runPass(db)).toEqual({ processed: 1, failed: 1, deferred: 0 });
 
-    expect(result).toEqual({ processed: 0, failed: 1, deferred: 1 });
-    expect(fetchStub).toHaveBeenCalledTimes(1);
-    for (const id of ids) expect(row(db, id)).toMatchObject(STILL_QUEUED);
+    expect(row(db, a.id)).toMatchObject(queuedWith(1));
+    expectEnriched(db, b.id);
   });
 
-  it("articles enriched before the failure keep their result; the rest wait for the next pass", async () => {
+  it("[account, account, x, x]: stop; neither is counted and the rest are not attempted", async () => {
     const { db, sourceId } = makeDb();
-    const first = insertQueued(db, sourceId, { receivedAt: "2026-01-05 12:00:00" });
-    const second = insertQueued(db, sourceId, { receivedAt: "2026-01-05 11:00:00" });
-    const third = insertQueued(db, sourceId, { receivedAt: "2026-01-05 10:00:00" });
-    let call = 0;
-    respond = () => {
-      call += 1;
-      return call === 1 ? anthropicMessage(JSON.stringify(GOOD_ANALYSIS)) : ANTHROPIC_FAILURES.billing400();
-    };
+    const [a, b, c, d] = queue(db, sourceId, 4);
+    respondBySubject({ [a.subject]: ANTHROPIC_FAILURES.billing400, [b.subject]: ANTHROPIC_FAILURES.billing400 });
 
-    const result = await processUnprocessedArticles(db);
+    expect(await runPass(db)).toEqual({ processed: 0, failed: 2, deferred: 2 });
 
-    expect(result).toEqual({ processed: 1, failed: 1, deferred: 1 });
     expect(fetchStub).toHaveBeenCalledTimes(2);
-    expect(row(db, first).processed_at).not.toBeNull();
-    expect(row(db, second)).toMatchObject(STILL_QUEUED);
-    expect(row(db, third)).toMatchObject(STILL_QUEUED);
+    for (const x of [a, b, c, d]) expect(row(db, x.id)).toMatchObject(UNTOUCHED);
+  });
+
+  it("[account, article-level]: a refusal is the provider answering, so both are charged", async () => {
+    const { db, sourceId } = makeDb();
+    const [a, b] = queue(db, sourceId, 2);
+    respondBySubject({ [a.subject]: ANTHROPIC_FAILURES.apiError500, [b.subject]: ANTHROPIC_FAILURES.refusal });
+
+    expect(await runPass(db)).toEqual({ processed: 0, failed: 2, deferred: 0 });
+
+    expect(row(db, a.id)).toMatchObject(queuedWith(1));
+    expect(row(db, b.id)).toMatchObject(queuedWith(1));
+  });
+
+  it("[ok, account, ok]: charged", async () => {
+    const { db, sourceId } = makeDb();
+    const [a, b, c] = queue(db, sourceId, 3);
+    respondBySubject({ [b.subject]: ANTHROPIC_FAILURES.permission403 });
+
+    expect(await runPass(db)).toEqual({ processed: 2, failed: 1, deferred: 0 });
+
+    expectEnriched(db, a.id);
+    expect(row(db, b.id)).toMatchObject(queuedWith(1));
+    expectEnriched(db, c.id);
+  });
+
+  it("[ok, account] with the failure LAST: charged, because the provider answered earlier in the pass", async () => {
+    const { db, sourceId } = makeDb();
+    const [a, b] = queue(db, sourceId, 2);
+    respondBySubject({ [b.subject]: ANTHROPIC_FAILURES.apiError500 });
+
+    expect(await runPass(db)).toEqual({ processed: 1, failed: 1, deferred: 0 });
+
+    expectEnriched(db, a.id);
+    expect(row(db, b.id)).toMatchObject(queuedWith(1));
+  });
+
+  it("[ok, account, account, x]: an outage that starts mid-pass stops it; neither failure is charged", async () => {
+    const { db, sourceId } = makeDb();
+    const [a, b, c, d] = queue(db, sourceId, 4);
+    respondBySubject({ [b.subject]: ANTHROPIC_FAILURES.billing400, [c.subject]: ANTHROPIC_FAILURES.billing400 });
+
+    expect(await runPass(db)).toEqual({ processed: 1, failed: 2, deferred: 2 });
+
+    expect(fetchStub).toHaveBeenCalledTimes(3);
+    expectEnriched(db, a.id);
+    for (const x of [b, c, d]) expect(row(db, x.id)).toMatchObject(UNTOUCHED);
+  });
+
+  it("[account] alone, fresh article: not charged (nothing to compare it with)", async () => {
+    const { db, sourceId } = makeDb();
+    const [a] = queue(db, sourceId, 1);
+    respondAll(ANTHROPIC_FAILURES.apiError500);
+
+    expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 1 });
+    expect(row(db, a.id)).toMatchObject(UNTOUCHED);
+  });
+
+  it("[account] alone, article that already has a counted attempt: charged", async () => {
+    const { db, sourceId } = makeDb();
+    const [a] = queue(db, sourceId, 1, { attempts: [1] });
+    respondAll(ANTHROPIC_FAILURES.apiError500);
+
+    expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 0 });
+    expect(row(db, a.id)).toMatchObject(queuedWith(2));
+  });
+
+  it("[account, unknown-with-no-status]: an error that proves nothing leaves the account failure uncharged", async () => {
+    const { db, sourceId } = makeDb();
+    const [a, b] = queue(db, sourceId, 2);
+    respondBySubject({
+      [a.subject]: ANTHROPIC_FAILURES.apiError500,
+      [b.subject]: () => {
+        throw new Error("a failure nobody has seen before");
+      },
+    });
+
+    expect(await runPass(db)).toEqual({ processed: 0, failed: 2, deferred: 1 });
+
+    expect(row(db, a.id)).toMatchObject(UNTOUCHED);
+    expect(row(db, b.id)).toMatchObject(queuedWith(1));
+  });
+
+  it("a pass cut off by its batch size: the failure in the last slot is judged by the answers before it", async () => {
+    const { db, sourceId } = makeDb();
+    const articles = queue(db, sourceId, 21);
+    const last = articles[19]; // 20th: the last article this pass takes
+    const beyond = articles[20]; // 21st: not in this pass
+    respondBySubject({ [last.subject]: ANTHROPIC_FAILURES.billing400 });
+
+    expect(await runPass(db)).toEqual({ processed: 19, failed: 1, deferred: 0 });
+
+    expect(fetchStub).toHaveBeenCalledTimes(20);
+    expect(row(db, last.id)).toMatchObject(queuedWith(1));
+    expect(row(db, beyond.id)).toMatchObject(UNTOUCHED);
+  });
+
+  it("a full batch during an outage: two calls, not twenty", async () => {
+    const { db, sourceId } = makeDb();
+    const articles = queue(db, sourceId, 25);
+    respondAll(ANTHROPIC_FAILURES.billing400);
+
+    expect(await runPass(db)).toEqual({ processed: 0, failed: 2, deferred: 2 });
+
+    expect(fetchStub).toHaveBeenCalledTimes(2);
+    for (const a of articles) expect(row(db, a.id)).toMatchObject(UNTOUCHED);
+  });
+});
+
+describe("one article that always fails does not block the queue (the reviewer's probe)", () => {
+  const poisons: Array<[string, () => Response, RegExp]> = [
+    ["a 500 for its own content", ANTHROPIC_FAILURES.apiError500, /Internal server error/],
+    ["a 403", ANTHROPIC_FAILURES.permission403, /does not have permission/],
+    [
+      "a 400 whose message contains the billing phrase",
+      ANTHROPIC_FAILURES.billing400,
+      /credit balance is too low/,
+    ],
+    ["a 429", ANTHROPIC_FAILURES.rateLimit429, /rate limit/],
+  ];
+
+  it.each(poisons)("%s: the older articles are enriched and the article is capped", async (_label, poison, text) => {
+    const { db, sourceId } = makeDb();
+    const [newer, bad, older1, older2] = queue(db, sourceId, 4);
+    respondBySubject({ [bad.subject]: poison });
+
+    // Pass 1: everything else is enriched; the bad article is charged once.
+    expect(await runPass(db)).toEqual({ processed: 3, failed: 1, deferred: 0 });
+    for (const a of [newer, older1, older2]) expectEnriched(db, a.id);
+    expect(row(db, bad.id)).toMatchObject(queuedWith(1));
+
+    // Passes 2 and 3: it is alone now, but already has a counted attempt.
+    expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 0 });
+    expect(row(db, bad.id)).toMatchObject(queuedWith(2));
+    expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 0 });
+
+    const capped = row(db, bad.id);
+    expect(capped.enrich_attempts).toBe(MAX_ENRICH_ATTEMPTS);
+    expect(capped.excluded_category).toBe("enrichment_failed");
+    expect(capped.is_relevant).toBe(0);
+    expect(capped.processed_at).not.toBeNull();
+    // The reason still says what the provider returned, and why it was counted.
+    expect(capped.excluded_reason).toMatch(/^Enrichment failed 3 times — last failure: /);
+    expect(capped.excluded_reason).toMatch(text);
+    expect(capped.excluded_reason).toContain(CHARGED_TO_ARTICLE_MARKER);
+    // ...so the repair script does not take it for an outage casualty.
+    expect(classifyStoredFailureReason(capped.excluded_reason)).toBeNull();
+
+    // Out of the queue: later passes make no call at all.
+    fetchStub.mockClear();
+    for (let i = 0; i < 7; i++) {
+      expect(await runPass(db)).toEqual({ processed: 0, failed: 0, deferred: 0 });
+    }
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it("a bad article at the tail of the queue is capped as newer mail arrives and is enriched ahead of it", async () => {
+    const { db, sourceId } = makeDb();
+    const [bad] = queue(db, sourceId, 1);
+    const subjects: Record<string, () => Response> = { [bad.subject]: ANTHROPIC_FAILURES.apiError500 };
+    respondBySubject(subjects);
+
+    // Alone and fresh: not charged, however many passes.
+    for (let i = 0; i < 4; i++) expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 1 });
+    expect(row(db, bad.id)).toMatchObject(UNTOUCHED);
+
+    // New mail arrives (newer, so it is attempted first) and is enriched.
+    db.prepare(`UPDATE research_articles SET received_at = '2026-01-01 00:00:00' WHERE id = ?`).run(bad.id);
+    const [fresh] = queue(db, sourceId, 1);
+    expect(await runPass(db)).toEqual({ processed: 1, failed: 1, deferred: 0 });
+    expectEnriched(db, fresh.id);
+    expect(row(db, bad.id)).toMatchObject(queuedWith(1));
+
+    await runPass(db);
+    await runPass(db);
+    expect(row(db, bad.id)).toMatchObject({ enrich_attempts: MAX_ENRICH_ATTEMPTS, excluded_category: "enrichment_failed" });
+  });
+
+  it("the stored message is the provider's own text", async () => {
+    const { db, sourceId } = makeDb();
+    const [bad] = queue(db, sourceId, 2);
+    respondBySubject({ [bad.subject]: ANTHROPIC_FAILURES.billing400 });
+    for (let i = 0; i < MAX_ENRICH_ATTEMPTS; i++) await runPass(db);
+
+    expect(row(db, bad.id).excluded_reason).toBe(
+      `Enrichment failed 3 times — last failure: ${CREDIT_BALANCE_MESSAGE.slice(0, 200)} ` +
+        `${CHARGED_TO_ARTICLE_MARKER} it failed alone after an earlier counted failure]`,
+    );
   });
 });
 
@@ -258,57 +525,52 @@ describe("article-level failures still count and still exclude at the cap", () =
 
   it.each(articleLevel)("%s three times: excluded as enrichment_failed", async (name, reason) => {
     const { db, sourceId } = makeDb();
-    const id = insertQueued(db, sourceId);
-    respond = ANTHROPIC_FAILURES[name];
+    const [a] = queue(db, sourceId, 1);
+    respondAll(ANTHROPIC_FAILURES[name]);
 
     for (let i = 1; i <= MAX_ENRICH_ATTEMPTS; i++) {
-      const result = await processUnprocessedArticles(db);
-      expect(result).toEqual({ processed: 0, failed: 1, deferred: 0 });
-      expect(row(db, id).enrich_attempts).toBe(i);
-      if (i < MAX_ENRICH_ATTEMPTS) expect(row(db, id)).toMatchObject({ processed_at: null, is_relevant: 1 });
+      expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 0 });
+      expect(row(db, a.id).enrich_attempts).toBe(i);
+      if (i < MAX_ENRICH_ATTEMPTS) expect(row(db, a.id)).toMatchObject({ processed_at: null, is_relevant: 1 });
     }
 
-    const after = row(db, id);
+    const after = row(db, a.id);
     expect(after.is_relevant).toBe(0);
     expect(after.excluded_category).toBe("enrichment_failed");
     expect(after.processed_at).not.toBeNull();
     expect(after.excluded_reason).toMatch(/^Enrichment failed 3 times — last failure: /);
     expect(after.excluded_reason).toMatch(reason);
+    expect(after.excluded_reason).not.toContain(CHARGED_TO_ARTICLE_MARKER);
 
     // And it is out of the queue: a fourth pass makes no call.
     fetchStub.mockClear();
-    expect(await processUnprocessedArticles(db)).toEqual({ processed: 0, failed: 0, deferred: 0 });
+    expect(await runPass(db)).toEqual({ processed: 0, failed: 0, deferred: 0 });
     expect(fetchStub).not.toHaveBeenCalled();
   });
 
   it("an article-level failure does not stop the pass: the next article is still tried", async () => {
     const { db, sourceId } = makeDb();
-    const refused = insertQueued(db, sourceId, { receivedAt: "2026-01-05 12:00:00" });
-    const fine = insertQueued(db, sourceId, { receivedAt: "2026-01-05 11:00:00" });
-    let call = 0;
-    respond = () => {
-      call += 1;
-      return call === 1 ? ANTHROPIC_FAILURES.refusal() : anthropicMessage(JSON.stringify(GOOD_ANALYSIS));
-    };
+    const [refused, fine] = queue(db, sourceId, 2);
+    respondBySubject({ [refused.subject]: ANTHROPIC_FAILURES.refusal });
 
-    expect(await processUnprocessedArticles(db)).toEqual({ processed: 1, failed: 1, deferred: 0 });
-    expect(row(db, refused).enrich_attempts).toBe(1);
-    expect(row(db, fine).processed_at).not.toBeNull();
+    expect(await runPass(db)).toEqual({ processed: 1, failed: 1, deferred: 0 });
+    expect(row(db, refused.id).enrich_attempts).toBe(1);
+    expectEnriched(db, fine.id);
   });
 
   it("an UNKNOWN error counts toward the cap, and is logged as unrecognised", async () => {
     const { db, sourceId } = makeDb();
-    const id = insertQueued(db, sourceId);
-    // Not a TypeError("fetch failed"), so the SDK passes it through unwrapped.
-    respond = () => {
+    const [a] = queue(db, sourceId, 1);
+    // Not a fetch failure, abort or timeout, so nothing recognises it.
+    respondAll(() => {
       throw new Error("a failure nobody has seen before");
-    };
+    });
 
     for (let i = 0; i < MAX_ENRICH_ATTEMPTS; i++) {
-      expect(await processUnprocessedArticles(db)).toEqual({ processed: 0, failed: 1, deferred: 0 });
+      expect(await runPass(db)).toEqual({ processed: 0, failed: 1, deferred: 0 });
     }
 
-    const after = row(db, id);
+    const after = row(db, a.id);
     expect(after.enrich_attempts).toBe(MAX_ENRICH_ATTEMPTS);
     expect(after.excluded_category).toBe("enrichment_failed");
     expect(after.processed_at).not.toBeNull();
@@ -319,59 +581,73 @@ describe("article-level failures still count and still exclude at the cap", () =
 
   it("an empty enrichment (no summary, no themes) still counts", async () => {
     const { db, sourceId } = makeDb();
-    const id = insertQueued(db, sourceId);
-    respond = () =>
-      anthropicMessage(JSON.stringify({ ...GOOD_ANALYSIS, summary: "", key_themes: [], portfolio_relevance: "" }));
+    const [a] = queue(db, sourceId, 1);
+    respondAll(() =>
+      anthropicMessage(JSON.stringify({ ...GOOD_ANALYSIS, summary: "", key_themes: [], portfolio_relevance: "" })),
+    );
 
-    for (let i = 0; i < MAX_ENRICH_ATTEMPTS; i++) await processUnprocessedArticles(db);
+    for (let i = 0; i < MAX_ENRICH_ATTEMPTS; i++) await runPass(db);
 
-    expect(row(db, id)).toMatchObject({ enrich_attempts: MAX_ENRICH_ATTEMPTS, excluded_category: "enrichment_failed" });
+    expect(row(db, a.id)).toMatchObject({ enrich_attempts: MAX_ENRICH_ATTEMPTS, excluded_category: "enrichment_failed" });
   });
 });
 
 describe("Retry and Unfilter put an excluded article back through enrichment", () => {
   async function failOut(db: Database.Database, id: number): Promise<void> {
-    respond = ANTHROPIC_FAILURES.refusal;
-    for (let i = 0; i < MAX_ENRICH_ATTEMPTS; i++) await processUnprocessedArticles(db);
+    respondAll(ANTHROPIC_FAILURES.refusal);
+    for (let i = 0; i < MAX_ENRICH_ATTEMPTS; i++) await runPass(db);
     expect(row(db, id)).toMatchObject({ excluded_category: "enrichment_failed", is_relevant: 0 });
-    respond = () => anthropicMessage(JSON.stringify(GOOD_ANALYSIS));
+    respondAll(ok);
     fetchStub.mockClear();
   }
 
   it("Retry: the next pass enriches it", async () => {
     const { db, sourceId } = makeDb();
-    const id = insertQueued(db, sourceId);
-    await failOut(db, id);
+    const [a] = queue(db, sourceId, 1);
+    await failOut(db, a.id);
 
-    expect(retryArticleEnrichment(db, id)).toEqual({ status: "requeued" });
-    expect(row(db, id)).toMatchObject(STILL_QUEUED);
+    expect(retryArticleEnrichment(db, a.id)).toEqual({ status: "requeued" });
+    expect(row(db, a.id)).toMatchObject(UNTOUCHED);
 
-    expect(await processUnprocessedArticles(db)).toEqual({ processed: 1, failed: 0, deferred: 0 });
-    expect(row(db, id)).toMatchObject({ summary: GOOD_ANALYSIS.summary, is_relevant: 1, excluded_category: null });
-    expect(row(db, id).processed_at).not.toBeNull();
+    expect(await runPass(db)).toEqual({ processed: 1, failed: 0, deferred: 0 });
+    expectEnriched(db, a.id);
+    expect(row(db, a.id).excluded_category).toBeNull();
   });
 
   it("Unfilter: the next pass enriches it (before the fix it stayed stamped and empty)", async () => {
     const { db, sourceId } = makeDb();
-    const id = insertQueued(db, sourceId);
-    await failOut(db, id);
+    const [a] = queue(db, sourceId, 1);
+    await failOut(db, a.id);
 
-    expect(unfilterArticle(db, id)).toEqual({ changed: true, requeued: true });
-    expect(row(db, id)).toMatchObject(STILL_QUEUED);
+    expect(unfilterArticle(db, a.id)).toEqual({ changed: true, requeued: true });
+    expect(row(db, a.id)).toMatchObject(UNTOUCHED);
 
-    expect(await processUnprocessedArticles(db)).toEqual({ processed: 1, failed: 0, deferred: 0 });
-    expect(row(db, id).summary).toBe(GOOD_ANALYSIS.summary);
+    expect(await runPass(db)).toEqual({ processed: 1, failed: 0, deferred: 0 });
+    expectEnriched(db, a.id);
     expect(fetchStub).toHaveBeenCalledTimes(1);
   });
 
   it("a re-queued article gets a fresh set of attempts", async () => {
     const { db, sourceId } = makeDb();
-    const id = insertQueued(db, sourceId);
-    await failOut(db, id);
-    retryArticleEnrichment(db, id);
+    const [a] = queue(db, sourceId, 1);
+    await failOut(db, a.id);
+    retryArticleEnrichment(db, a.id);
 
-    respond = ANTHROPIC_FAILURES.refusal;
-    await processUnprocessedArticles(db);
-    expect(row(db, id)).toMatchObject({ enrich_attempts: 1, processed_at: null, is_relevant: 1 });
+    respondAll(ANTHROPIC_FAILURES.refusal);
+    await runPass(db);
+    expect(row(db, a.id)).toMatchObject(queuedWith(1));
+  });
+});
+
+describe("the network guard itself", () => {
+  it("a request with no responder installed throws and is recorded", async () => {
+    const { db, sourceId } = makeDb();
+    queue(db, sourceId, 1);
+
+    await runPass(db);
+
+    expect(unstubbedRequests).toHaveLength(1);
+    expect(unstubbedRequests[0]).toMatch(/\/messages$/);
+    unstubbedRequests.length = 0; // expected here; afterEach fails any other test that leaks
   });
 });

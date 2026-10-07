@@ -193,16 +193,42 @@ export function ResearchFeedsView({
   const filteredTotal = filteredCategoryCounts.reduce((sum, c) => sum + c.count, 0);
   const filteredRemaining = Math.max(0, filteredTotal - filteredArticles.length);
 
+  // Re-read the filtered list from the server (first page, no source/search
+  // narrowing, same as the page's initial load). Returns false when the list
+  // could not be refreshed, so the caller can say so.
+  const reloadFilteredList = useCallback(async (): Promise<boolean> => {
+    try {
+      const reload = await fetch(`/api/research/articles?filtered=1&limit=${FILTERED_PAGE_SIZE}`);
+      const data = await reload.json().catch(() => null);
+      if (!reload.ok || !data?.success) return false;
+      setFilteredArticles(data.data ?? []);
+      const counts: FilteredArticleCategoryCount[] = data.categoryCounts ?? [];
+      setFilteredCategoryCounts(counts);
+      // This reload has no sourceId/search — its total is the true
+      // global count, same thing getFilteredArticleCount would return.
+      setFilteredCount(counts.reduce((sum, c) => sum + c.count, 0));
+      return true;
+    } catch {
+      // No answer from the server: the caller reports it.
+      return false;
+    }
+  }, []);
+
   // Unfilter and Retry enrichment both take a row OUT of the filtered list, so
   // they share one handler: optimistic removal, then the server's answer
-  // decides. A refusal reloads the list (the row may really have changed); a
-  // request that never arrived restores exactly what was on screen.
+  // decides. After a refusal, or a request whose outcome is unknown, the list
+  // is re-read from the server so the screen shows what is really stored.
   const releaseFilteredArticle = useCallback(async (articleId: number, action: FilteredRowAction) => {
     const copy = FILTERED_ROW_ACTION_COPY[action];
     const before = {
       articles: filteredArticles,
       count: filteredCount,
       categoryCounts: filteredCategoryCounts,
+    };
+    const restoreBefore = () => {
+      setFilteredArticles(before.articles);
+      setFilteredCount(before.count);
+      setFilteredCategoryCounts(before.categoryCounts);
     };
     // Optimistic removal — flicker would be worse than a race-loss on failure.
     const removed = filteredArticles.find((a) => a.id === articleId);
@@ -214,41 +240,51 @@ export function ResearchFeedsView({
         .map((c) => (c.category === removedCategory ? { ...c, count: Math.max(0, c.count - 1) } : c))
         .filter((c) => c.count > 0),
     );
+
+    let res: Response;
     try {
-      const res = await apiFetch(`/api/research/articles/${articleId}/${copy.endpoint}`, {
+      res = await apiFetch(`/api/research/articles/${articleId}/${copy.endpoint}`, {
         method: "POST",
       });
-      const result = await readMutationResult<{ data?: { requeued?: boolean } }>(res);
-      if (!result.ok) {
-        // Rollback: refetch the full filtered list to recover correct state —
-        // and explain, or the reappearing row looks like a glitch.
-        toast(`Couldn't ${copy.verb} the article: ${result.message} It stays in the filtered list.`, "error");
-        const reload = await fetch(`/api/research/articles?filtered=1&limit=${FILTERED_PAGE_SIZE}`);
-        const data = await reload.json();
-        if (data.success) {
-          setFilteredArticles(data.data ?? []);
-          const counts: FilteredArticleCategoryCount[] = data.categoryCounts ?? [];
-          setFilteredCategoryCounts(counts);
-          // This reload has no sourceId/search — its total is the true
-          // global count, same thing getFilteredArticleCount would return.
-          setFilteredCount(counts.reduce((sum, c) => sum + c.count, 0));
-        }
-        return;
-      }
-      if (result.data.data?.requeued) {
-        // The article has no enrichment yet, so it will not show in the feed
-        // until a sync has analysed it. Say where it went.
-        toast(REQUEUED_FOR_ENRICHMENT_NOTICE, "success");
-      }
     } catch {
-      // The request never got an answer, so nothing changed on the server:
-      // put the row back and say so.
-      setFilteredArticles(before.articles);
-      setFilteredCount(before.count);
-      setFilteredCategoryCounts(before.categoryCounts);
-      toast(`${networkFailureMessage(`${copy.verb} the article`)} It stays in the filtered list.`, "error");
+      // The request did not complete. It may have reached the server before
+      // the connection dropped, so whether the article changed is NOT known:
+      // say that, and re-read the list instead of guessing either way.
+      const reloaded = await reloadFilteredList();
+      if (reloaded) {
+        toast(
+          `The request to ${copy.verb} the article did not complete, so it may or may not have gone through. The filtered list has been reloaded from the server: if the article is still listed, try again.`,
+          "error",
+        );
+      } else {
+        restoreBefore();
+        toast(
+          `The request to ${copy.verb} the article did not complete, and the filtered list could not be reloaded either. The article may or may not have changed; the list shown may be out of date until the server is reachable again.`,
+          "error",
+        );
+      }
+      return;
     }
-  }, [toast, filteredArticles, filteredCount, filteredCategoryCounts]);
+
+    const result = await readMutationResult<{ data?: { requeued?: boolean } }>(res);
+    if (!result.ok) {
+      // The server refused and changed nothing. Explain, or the reappearing
+      // row looks like a glitch; then re-read the list.
+      const reloaded = await reloadFilteredList();
+      if (!reloaded) restoreBefore();
+      toast(
+        `Couldn't ${copy.verb} the article: ${result.message} It stays in the filtered list.` +
+          (reloaded ? "" : " The list could not be refreshed and may be out of date."),
+        "error",
+      );
+      return;
+    }
+    if (result.data.data?.requeued) {
+      // The article has no enrichment yet, so it will not show in the feed
+      // until a sync has analysed it. Say where it went.
+      toast(REQUEUED_FOR_ENRICHMENT_NOTICE, "success");
+    }
+  }, [toast, filteredArticles, filteredCount, filteredCategoryCounts, reloadFilteredList]);
 
   const handleUnfilter = useCallback(
     (articleId: number) => releaseFilteredArticle(articleId, "unfilter"),

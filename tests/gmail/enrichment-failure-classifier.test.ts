@@ -10,6 +10,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { APICallError, RetryError, NoObjectGeneratedError } from "ai";
 import {
+  CHARGED_TO_ARTICLE_MARKER,
   classifyEnrichmentError,
   classifyStoredFailureReason,
   describeEnrichmentFailure,
@@ -146,6 +147,34 @@ describe("classifyEnrichmentError: account-level", () => {
     expect(classifyEnrichmentError(dropped)).toMatchObject({ scope: "account", kind: "network" });
   });
 
+  it.each([
+    ["a bare fetch failure with no cause", () => new TypeError("fetch failed")],
+    ["an aborted request", () => new DOMException("This operation was aborted", "AbortError")],
+    ["a timed-out request", () => new DOMException("The operation timed out", "TimeoutError")],
+  ])("%s reaches us unwrapped by the SDK and is a transient network failure", async (_label, make) => {
+    const thrown = make();
+    const { error, calls } = await errorFromRealSdk(() => {
+      throw thrown;
+    });
+    // The SDK neither wraps nor retries these: the very object comes back.
+    expect(calls).toBe(1);
+    expect(error).toBe(thrown);
+    expect(APICallError.isInstance(error)).toBe(false);
+    expect(classifyEnrichmentError(error)).toEqual({
+      scope: "account",
+      kind: "network",
+      status: null,
+      errorType: null,
+    });
+  });
+
+  it("a TypeError that is not a fetch failure stays unknown", () => {
+    expect(classifyEnrichmentError(new TypeError("x is not a function"))).toMatchObject({
+      scope: "article",
+      kind: "unknown",
+    });
+  });
+
   it("a missing key is account-level, and the wording matches lib/ai/provider.ts", () => {
     const provider = readFileSync("lib/ai/provider.ts", "utf8");
     expect(provider).toContain('`ANTHROPIC_API_KEY is required for feature "${feature}" (model: ${modelId})`');
@@ -203,6 +232,20 @@ describe("classifyEnrichmentError: article-level", () => {
   it("a 413", async () => {
     const { error } = await errorFromRealSdk(ANTHROPIC_FAILURES.requestTooLarge413);
     expect(classifyEnrichmentError(error)).toMatchObject({ scope: "article", kind: "bad_request", status: 413 });
+  });
+
+  it.each([
+    ["Please go to Plans & Billing to change your plan."],
+    ["You can purchase credits in the console."],
+    ["messages.0.content: the words billing and credits appear here"],
+  ])("a 400 saying %j is NOT out of credit: only the credit-balance phrase is", async (message) => {
+    const { error } = await errorFromRealSdk(
+      () =>
+        new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message } }), {
+          status: 400,
+        }),
+    );
+    expect(classifyEnrichmentError(error)).toMatchObject({ scope: "article", kind: "bad_request" });
   });
 
   it("a 400 that only mentions billing in passing is NOT treated as out of credit", async () => {
@@ -303,7 +346,23 @@ describe("classifyStoredFailureReason: what an excluded row remembers", () => {
     expect(classifyStoredFailureReason(stored((error as Error).message))).toBeNull();
   });
 
+  it("a failure the pass charged to the article is never read as account-level", async () => {
+    const { error } = await errorFromRealSdk(ANTHROPIC_FAILURES.billing400);
+    const charged = stored(
+      `${(error as Error).message.slice(0, 200)} ${CHARGED_TO_ARTICLE_MARKER} the provider answered another article in the same pass]`,
+    );
+    expect(charged).toContain("credit balance is too low");
+    expect(classifyStoredFailureReason(charged)).toBeNull();
+  });
+
+  it("the marker tested here is the one process.ts appends", () => {
+    const src = readFileSync("lib/gmail/process.ts", "utf8");
+    expect(src).toContain("recordEnrichmentFailure(p.article.id, `${p.why} ${CHARGED_TO_ARTICLE_MARKER} ${because}]`)");
+  });
+
   it.each([
+    [stored("Please go to Plans & Billing to change your plan.")],
+    [stored("You can purchase credits in the console.")],
     [stored("empty enrichment (no summary, no themes)")],
     [stored("Failed after 2 attempts with non-retryable error: 'prompt is too long'")],
     [stored("something nobody anticipated")],

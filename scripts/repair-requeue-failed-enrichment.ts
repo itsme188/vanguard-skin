@@ -35,7 +35,14 @@
  * analyses the article, which costs one model call per row; passes take 20
  * articles at a time, newest first.
  *
- * Dry-run by default (prints counts and ids only, never subjects or text):
+ * OUTPUT. Counts, then one line per selected row: its id, the failure class
+ * and the article's TITLE (subject line), so the owner can recognise what is
+ * about to be re-queued. Titles are the owner's private reading list: the
+ * output is for the terminal only and must NOT be pasted into a committed
+ * file, an issue or a pull request (the repo is public). Sender, body and
+ * the stored reason text are never printed.
+ *
+ * Dry-run by default:
  *   npx tsx scripts/repair-requeue-failed-enrichment.ts
  * Apply (one transaction, after a VACUUM INTO backup beside the database):
  *   npx tsx scripts/repair-requeue-failed-enrichment.ts --apply
@@ -53,6 +60,8 @@ import { requeueArticlesForEnrichment } from "../lib/mutations/research-articles
 export interface RequeueCandidate {
   id: number;
   kind: StoredFailureKind;
+  /** The article's subject line. Private: terminal output only. */
+  title: string;
 }
 
 export interface RequeueWindow {
@@ -105,17 +114,17 @@ export function findRequeueCandidates(
 
   const rows = db
     .prepare(
-      `SELECT id, excluded_reason
+      `SELECT id, subject, excluded_reason
          FROM research_articles
         WHERE ${conditions.join(" AND ")}
         ORDER BY id`,
     )
-    .all(...params) as { id: number; excluded_reason: string | null }[];
+    .all(...params) as { id: number; subject: string | null; excluded_reason: string | null }[];
 
   const matched: RequeueCandidate[] = [];
   for (const row of rows) {
     const kind = classifyStoredFailureReason(row.excluded_reason);
-    if (kind) matched.push({ id: row.id, kind });
+    if (kind) matched.push({ id: row.id, kind, title: row.subject ?? "" });
   }
   return { scanned: rows.length, matched };
 }
@@ -139,7 +148,20 @@ export function repairRequeueFailedEnrichment(
   return { scanned, matched, skipped: scanned - matched.length, requeued };
 }
 
-/** The report the CLI prints: counts and ids only. */
+export const PRIVATE_OUTPUT_NOTICE =
+  "PRIVATE OUTPUT: the titles below are from your own inbox. Do not paste this into a committed file, an issue or a pull request.";
+
+/** One line of a title: control characters and newlines flattened, capped at 100 characters. */
+function oneLineTitle(title: string): string {
+  const flat = title.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  if (flat === "") return "(no title)";
+  return flat.length > 100 ? `${flat.slice(0, 99)}…` : flat;
+}
+
+/**
+ * The report the CLI prints: counts, then id, failure class and title per
+ * selected row. Never the sender, the body or the stored reason.
+ */
 export function formatRequeueReport(result: RequeueRepairResult, apply: boolean): string[] {
   const lines: string[] = [];
   lines.push(`Excluded as enrichment_failed in scope: ${result.scanned}`);
@@ -150,6 +172,15 @@ export function formatRequeueReport(result: RequeueRepairResult, apply: boolean)
   for (const m of result.matched) byKind.set(m.kind, [...(byKind.get(m.kind) ?? []), m.id]);
   for (const [kind, ids] of [...byKind.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     lines.push(`  ${kind}: ${ids.length} row(s), ids ${ids.join(", ")}`);
+  }
+
+  if (result.matched.length > 0) {
+    lines.push("");
+    lines.push(PRIVATE_OUTPUT_NOTICE);
+    for (const m of result.matched) {
+      lines.push(`  id ${m.id}  [${m.kind}]  ${oneLineTitle(m.title)}`);
+    }
+    lines.push("");
   }
 
   if (result.matched.length === 0) {

@@ -47,7 +47,7 @@
  * balance is too low ..." and the repo's other call sites record that same
  * text arriving as HTTP 400 `invalid_request_error`, the same status and type
  * as a genuinely bad request. So a 400 is told apart by its message, against
- * the narrow phrases in BILLING_PROSE. See `classifyEnrichmentError` for what
+ * the one phrase in BILLING_PROSE. See `classifyEnrichmentError` for what
  * that can get wrong.
  */
 
@@ -121,15 +121,13 @@ const ERROR_TYPE_KIND: Record<string, EnrichmentFailureKind> = {
 };
 
 /**
- * The phrases in Anthropic's out-of-credit message ("Your credit balance is
- * too low to access the Anthropic API. Please go to Plans & Billing to upgrade
- * or purchase credits."). Deliberately narrow: no bare "billing" or "credit".
+ * The one phrase matched in Anthropic's out-of-credit message ("Your credit
+ * balance is too low to access the Anthropic API. Please go to Plans & Billing
+ * to upgrade or purchase credits."). Deliberately a single specific phrase:
+ * "Plans & Billing" and "purchase credits" on their own are not matched, nor
+ * a bare "billing" or "credit".
  */
-const BILLING_PROSE: RegExp[] = [
-  /credit balance is too low/i,
-  /plans\s*(?:&|and)\s*billing/i,
-  /purchase credits/i,
-];
+const BILLING_PROSE: RegExp[] = [/credit balance is too low/i];
 
 function isBillingProse(text: string): boolean {
   return BILLING_PROSE.some((p) => p.test(text));
@@ -158,6 +156,30 @@ const NETWORK_CODES: ReadonlySet<string> = new Set([
   "UND_ERR_HEADERS_TIMEOUT",
   "UND_ERR_BODY_TIMEOUT",
 ]);
+
+/**
+ * The two messages Node's fetch uses for a request that got no response. The
+ * AI SDK wraps them into an APICallError only when the TypeError has a cause
+ * (FETCH_FAILED_ERROR_MESSAGES in @ai-sdk/provider-utils); without one the
+ * bare TypeError reaches us.
+ */
+const FETCH_FAILED_MESSAGE = /^(?:fetch failed|failed to fetch)$/i;
+
+/**
+ * The names the AI SDK's own `isAbortError` treats as an aborted or timed-out
+ * request. It rethrows these untouched, so they arrive as a DOMException (or
+ * Error) carrying just the name.
+ */
+const ABORT_NAMES: ReadonlySet<string> = new Set(["AbortError", "TimeoutError", "ResponseAborted"]);
+
+/** A request that never got a response: no connection, cut off, or timed out. */
+function isTransportFailure(err: unknown): boolean {
+  if (err == null || typeof err !== "object") return false;
+  const name = (err as { name?: unknown }).name;
+  if (typeof name === "string" && ABORT_NAMES.has(name)) return true;
+  if (err instanceof TypeError && FETCH_FAILED_MESSAGE.test(err.message)) return true;
+  return hasNetworkCode(err);
+}
 
 function hasNetworkCode(err: unknown): boolean {
   let cur: unknown = err;
@@ -251,11 +273,10 @@ function classifyApiCallError(err: Record<string | symbol, unknown>): Enrichment
  *     400 `invalid_request_error`, it will read as `bad_request` and count
  *     toward the cap again (the old behaviour). A 402 or `billing_error`
  *     would still be caught by the structured checks.
- *   - A 4xx whose provider message happens to contain one of the billing
- *     phrases for another reason would be left queued forever. The phrases
- *     are specific to the credit message and the text checked is the
- *     provider's, not the newsletter's, so this needs the provider to quote
- *     the article back in an error.
+ *   - A 4xx whose provider message happens to contain the billing phrase
+ *     for another reason reads as account-level. The enrichment pass bounds
+ *     that: an account-level failure is charged to the article anyway when
+ *     the provider answers other articles in the same pass.
  */
 export function classifyEnrichmentError(err: unknown): EnrichmentFailureClass {
   // The SDK retried and gave up: classify what it kept failing on.
@@ -282,10 +303,13 @@ export function classifyEnrichmentError(err: unknown): EnrichmentFailureClass {
     // the class would pull the gateway into every importer of this module.
     if (err.name === "AIRefusalError") return result("refusal");
     if (MISSING_CREDENTIAL.test(err.message)) return result("config");
-    // A connection failure the SDK did not wrap (fetch threw something other
-    // than its two recognised "fetch failed" messages).
-    if (hasNetworkCode(err)) return result("network");
   }
+
+  // A transport failure the SDK did not wrap: a bare "fetch failed", an
+  // aborted or timed-out request, or a socket error code. Transient and not
+  // about the article. (The enrichment pass still charges it to the article
+  // if other articles get answers in the same pass; see process.ts.)
+  if (isTransportFailure(err)) return result("network");
 
   return result("unknown");
 }
@@ -312,10 +336,19 @@ export type StoredFailureKind = "billing" | "retried_transient" | "network" | "a
 const LAST_FAILURE_MARKER = "last failure:";
 
 /**
+ * Appended by the enrichment pass to the recorded failure when an
+ * account-level-looking error was charged to the ARTICLE (the provider was
+ * answering other articles, so the fault was this article's own). A reason
+ * carrying it is never read as account-level, so the repair script does not
+ * re-queue an article that fails on its own content.
+ */
+export const CHARGED_TO_ARTICLE_MARKER = "[charged to the article:";
+
+/**
  * Classify a stored `excluded_reason`. Returns the account-level kind, or null
  * when the recorded failure is article-level or cannot be told.
  *
- *   - billing: the out-of-credit phrases (BILLING_PROSE).
+ *   - billing: the out-of-credit phrase (BILLING_PROSE).
  *   - retried_transient: the AI SDK's own "Failed after N attempts. Last
  *     error: ..." message. The SDK only reaches a later attempt when every
  *     earlier one was a retryable error (408, 409, 429, 5xx or a network
@@ -331,6 +364,7 @@ export function classifyStoredFailureReason(reason: string | null | undefined): 
   const at = reason.indexOf(LAST_FAILURE_MARKER);
   if (at === -1) return null;
   const why = reason.slice(at + LAST_FAILURE_MARKER.length).trim();
+  if (why.includes(CHARGED_TO_ARTICLE_MARKER)) return null;
 
   if (isBillingProse(why)) return "billing";
   if (/^Failed after \d+ attempts\. Last error: /.test(why)) return "retried_transient";

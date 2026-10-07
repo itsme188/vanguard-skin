@@ -15,6 +15,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
+  PRIVATE_OUTPUT_NOTICE,
   findRequeueCandidates,
   formatRequeueReport,
   parseRequeueArgs,
@@ -78,6 +79,10 @@ function insert(
     ).lastInsertRowid as number;
 }
 
+function titleOf(db: Database.Database, id: number): string {
+  return (db.prepare(`SELECT subject FROM research_articles WHERE id = ?`).get(id) as { subject: string }).subject;
+}
+
 function snapshot(db: Database.Database): unknown[] {
   return db.prepare(`SELECT * FROM research_articles ORDER BY id`).all();
 }
@@ -116,13 +121,14 @@ describe("selection", () => {
     const { scanned, matched } = findRequeueCandidates(db);
 
     expect(scanned).toBe(10);
-    expect(matched).toEqual([
+    expect(matched.map(({ id, kind }) => ({ id, kind }))).toEqual([
       { id: ids.billing, kind: "billing" },
       { id: ids.rateLimit, kind: "retried_transient" },
       { id: ids.overloaded, kind: "retried_transient" },
       { id: ids.gateway, kind: "retried_transient" },
       { id: ids.auth, kind: "auth" },
     ]);
+    for (const m of matched) expect(m.title).toBe(titleOf(db, m.id));
   });
 
   it("--since / --until narrow by received date, inclusive", () => {
@@ -221,23 +227,59 @@ describe("apply", () => {
 });
 
 describe("report and flags", () => {
-  it("prints counts and ids, never a subject, sender, reason or body", () => {
+  it("prints counts, then id, class and title per selected row, under a do-not-commit notice", () => {
     const db = makeDb();
     const ids = seed(db);
-    const dry = formatRequeueReport(repairRequeueFailedEnrichment(db, { apply: false }), false).join("\n");
+    const lines = formatRequeueReport(repairRequeueFailedEnrichment(db, { apply: false }), false);
+    const dry = lines.join("\n");
 
     expect(dry).toContain("Excluded as enrichment_failed in scope: 10");
     expect(dry).toContain("Recorded failure is account-level:      5");
     expect(dry).toContain(`billing: 1 row(s), ids ${ids.billing}`);
     expect(dry).toContain(`retried_transient: 3 row(s), ids ${ids.rateLimit}, ${ids.overloaded}, ${ids.gateway}`);
     expect(dry).toMatch(/Dry run: 5 row\(s\) would be re-queued/);
-    expect(dry).not.toMatch(/PRIVATE SUBJECT|example\.test|credit balance|ZZ body/);
+
+    // The notice comes before the first title.
+    const noticeAt = lines.indexOf(PRIVATE_OUTPUT_NOTICE);
+    expect(noticeAt).toBeGreaterThan(-1);
+    expect(PRIVATE_OUTPUT_NOTICE).toMatch(/Do not paste this into a committed file/);
+    const titleLines = lines.filter((l) => l.startsWith("  id "));
+    expect(titleLines).toEqual([
+      `  id ${ids.billing}  [billing]  ${titleOf(db, ids.billing)}`,
+      `  id ${ids.rateLimit}  [retried_transient]  ${titleOf(db, ids.rateLimit)}`,
+      `  id ${ids.overloaded}  [retried_transient]  ${titleOf(db, ids.overloaded)}`,
+      `  id ${ids.gateway}  [retried_transient]  ${titleOf(db, ids.gateway)}`,
+      `  id ${ids.auth}  [auth]  ${titleOf(db, ids.auth)}`,
+    ]);
+    expect(lines.indexOf(titleLines[0])).toBeGreaterThan(noticeAt);
+
+    // Rows left alone are not named, and no sender, reason or body is printed.
+    for (const skipped of [ids.refusal, ids.malformed, ids.tooLong, ids.emptyParse, ids.noReason, ids.offTopic]) {
+      expect(dry).not.toContain(titleOf(db, skipped));
+    }
+    expect(dry).not.toMatch(/example\.test|credit balance|Failed after|ZZ body/);
 
     const applied = formatRequeueReport(repairRequeueFailedEnrichment(db, { apply: true }), true).join("\n");
     expect(applied).toMatch(/Re-queued 5 row\(s\)/);
 
-    const again = formatRequeueReport(repairRequeueFailedEnrichment(db, { apply: true }), true).join("\n");
-    expect(again).toMatch(/Nothing to re-queue/);
+    const again = formatRequeueReport(repairRequeueFailedEnrichment(db, { apply: true }), true);
+    expect(again.join("\n")).toMatch(/Nothing to re-queue/);
+    expect(again).not.toContain(PRIVATE_OUTPUT_NOTICE);
+  });
+
+  it("a title is printed on one line: newlines and control characters flattened, long ones cut", () => {
+    const db = makeDb();
+    const id = insert(db, { reason: reasons.billing400 });
+    db.prepare(`UPDATE research_articles SET subject = ? WHERE id = ?`).run(`ZZ first line\nZZ second\u001b[31m line ${"x".repeat(200)}`, id);
+
+    const titleLine = formatRequeueReport(repairRequeueFailedEnrichment(db, { apply: false }), false).find((l) =>
+      l.startsWith(`  id ${id}  `),
+    );
+
+    expect(titleLine).toBeDefined();
+    expect(titleLine).not.toMatch(/[\u0000-\u001f]/);
+    expect(titleLine).toContain("ZZ first line ZZ second [31m line");
+    expect(titleLine!.length).toBeLessThanOrEqual(`  id ${id}  [billing]  `.length + 100);
   });
 
   it("is a dry run unless --apply is given, and refuses flags it does not know", () => {

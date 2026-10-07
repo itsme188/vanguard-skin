@@ -11,9 +11,11 @@ import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
 import { getActiveWatchlistStockSymbols } from "@/lib/queries/watchlist";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import {
+  CHARGED_TO_ARTICLE_MARKER,
   MAX_ENRICH_ATTEMPTS,
   classifyEnrichmentError,
   describeEnrichmentFailure,
+  type EnrichmentFailureClass,
 } from "@/lib/gmail/enrichment-failure";
 
 interface UnprocessedArticle {
@@ -25,6 +27,8 @@ interface UnprocessedArticle {
   source_name: string;
   processing_prompt: string | null;
   allow_off_topic: number;
+  /** Attempts already charged to the article before this pass. */
+  enrich_attempts: number;
 }
 
 interface ProcessedResult {
@@ -62,7 +66,8 @@ export interface ProcessArticlesResult {
   /**
    * Of `failed`, how many were left queued WITHOUT using an attempt because
    * the failure was account-level (billing, key, rate limit, outage, no
-   * network). 0 or 1: the pass stops at the first one.
+   * network) and nothing in the pass showed the article itself was at fault.
+   * 0, 1 or 2: a pass stops at two account-level failures in a row.
    */
   deferred: number;
 }
@@ -78,14 +83,31 @@ export interface ProcessArticlesResult {
  *     MAX_ENRICH_ATTEMPTS; at the cap the article is excluded as
  *     'enrichment_failed'.
  *   - ACCOUNT-level failure (out of credit, bad or missing key, rate limit,
- *     provider outage, no network): uses NO attempt and leaves processed_at
- *     NULL, so the article is retried by a later pass once the provider is
- *     reachable. The pass also STOPS there: the rest of the queue would fail
- *     the same way, so during an outage one pass makes one enrichment call,
- *     not twenty. What bounds the retry rate is then the pass cadence (the
- *     90-minute market-hours job, the in-app refresh debounced to once per
- *     five minutes, a manual Sync, and the two digest sends), each of which
- *     holds the research sync lock.
+ *     provider outage, no network): by itself uses NO attempt and leaves
+ *     processed_at NULL, so a later pass retries the article.
+ *
+ * An error that LOOKS account-level can still be one article's own problem (a
+ * provider that answers 500 for one particular body). The queue is newest
+ * first, so leaving such an article uncounted and stopping would block every
+ * older article behind it forever. The pass therefore decides from what
+ * happens around it:
+ *   1. Two account-level failures IN A ROW mean the provider is down for
+ *      everyone: the pass stops, neither is counted, the rest of the queue is
+ *      not attempted. An outage costs two enrichment calls per pass.
+ *   2. If the provider ANSWERS another article in the same pass (a success, or
+ *      a failure that is a real answer: refusal, unparseable output, a
+ *      rejected request), the provider was reachable, so the account-level
+ *      failure is charged to its article as a normal counted attempt. The
+ *      answer may come before or after it; rule 1 is checked first.
+ *   3. If nothing else in the pass shows either way (the article failed
+ *      alone), it is NOT counted when it has no counted attempt yet, so a
+ *      fresh article can never be excluded by an outage. If it already has a
+ *      counted attempt, the lone failure is counted, which is what finally
+ *      caps an article that fails on its own content once the queue behind it
+ *      has drained.
+ * What then bounds the call rate is the pass cadence (the 90-minute
+ * market-hours job, the in-app refresh, a manual Sync, the two digest sends),
+ * each holding the research sync lock.
  */
 export async function processUnprocessedArticles(
   db: Database.Database
@@ -94,7 +116,8 @@ export async function processUnprocessedArticles(
     .prepare(
       `SELECT a.id, a.source_id, a.subject, a.sender, a.raw_text,
               s.name as source_name, s.processing_prompt,
-              COALESCE(s.allow_off_topic, 0) as allow_off_topic
+              COALESCE(s.allow_off_topic, 0) as allow_off_topic,
+              COALESCE(a.enrich_attempts, 0) as enrich_attempts
        FROM research_articles a
        JOIN research_sources s ON a.source_id = s.id
        WHERE a.processed_at IS NULL
@@ -215,9 +238,43 @@ export async function processUnprocessedArticles(
   let failed = 0;
   let deferred = 0;
 
+  // An account-level failure whose blame is not settled yet (see the rules in
+  // the function comment). Held in an object so closures can update it.
+  interface PendingAccountFailure {
+    article: UnprocessedArticle;
+    failure: EnrichmentFailureClass;
+    /** First 200 characters of what the provider (or the SDK) reported. */
+    why: string;
+  }
+  const blame: { pending: PendingAccountFailure | null; providerAnswered: boolean } = {
+    pending: null,
+    providerAnswered: false,
+  };
+
+  /** Rule 2 / rule 3: count the pending account-level failure against its article. */
+  const chargePendingToArticle = (because: string): void => {
+    const p = blame.pending;
+    if (!p) return;
+    blame.pending = null;
+    console.error(
+      `[research] Article ${p.article.id}: account-level failure ` +
+        `(${describeEnrichmentFailure(p.failure)}) counted toward the retry cap because ${because}.`
+    );
+    // The reason keeps what the provider returned and says why it was counted.
+    recordEnrichmentFailure(p.article.id, `${p.why} ${CHARGED_TO_ARTICLE_MARKER} ${because}]`);
+  };
+
+  /** The provider gave a real answer for some article in this pass. */
+  const noteProviderAnswered = (): void => {
+    blame.providerAnswered = true;
+    chargePendingToArticle("the provider answered another article in the same pass");
+  };
+
   for (const article of articles) {
     try {
       const result = await extractWithClaude(article, holdingsContext);
+      // Any parsed reply, even an empty one, shows the provider is reachable.
+      noteProviderAnswered();
 
       // An all-defaults parse (empty summary AND empty themes) is a FAILED
       // extraction, not a successful neutral read — do not stamp
@@ -308,20 +365,27 @@ export async function processUnprocessedArticles(
       processed++;
     } catch (err) {
       const failure = classifyEnrichmentError(err);
+      const why = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
 
       if (failure.scope === "account") {
-        // Not this article's fault: no attempt used, processed_at stays NULL.
-        // Stop the pass, since every remaining article would fail the same
-        // way; the next pass starts again from the head of the queue.
-        const waiting = articles.length - articles.indexOf(article);
-        console.error(
-          `[research] Enrichment stopped by an account-level AI failure ` +
-            `(${describeEnrichmentFailure(failure)}) at article ${article.id}. ` +
-            `Attempt not counted; ${waiting} queued article(s) from this pass will be retried on the next pass.`
-        );
         failed++;
-        deferred++;
-        break;
+        if (blame.pending) {
+          // Rule 1: two in a row. The provider is down for everyone: neither
+          // article is counted and the rest of the queue is not attempted.
+          const waiting = articles.length - articles.indexOf(blame.pending.article);
+          console.error(
+            `[research] Enrichment stopped: two account-level AI failures in a row ` +
+              `(${describeEnrichmentFailure(blame.pending.failure)} at article ${blame.pending.article.id}; ` +
+              `${describeEnrichmentFailure(failure)} at article ${article.id}). ` +
+              `Attempts not counted; ${waiting} queued article(s) from this pass will be retried on the next pass.`
+          );
+          blame.pending = null;
+          deferred += 2;
+          break;
+        }
+        // First one: hold it and try the next article before deciding.
+        blame.pending = { article, failure, why };
+        continue;
       }
 
       console.error(
@@ -339,11 +403,32 @@ export async function processUnprocessedArticles(
             `If this is a provider or account fault, add it to lib/gmail/enrichment-failure.ts.`
         );
       }
-      recordEnrichmentFailure(
-        article.id,
-        err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200)
-      );
+      // A refusal, unparseable output or a rejected request is the provider
+      // answering. An unknown error proves that only if it carried an HTTP
+      // status; otherwise it settles nothing about a pending failure.
+      if (failure.kind !== "unknown" || failure.status !== null) noteProviderAnswered();
+      recordEnrichmentFailure(article.id, why);
       failed++;
+    }
+  }
+
+  // The pass ended (queue or batch exhausted) with one account-level failure
+  // still undecided: nothing was attempted after it.
+  if (blame.pending) {
+    const p = blame.pending;
+    if (blame.providerAnswered) {
+      chargePendingToArticle("the provider answered another article in the same pass");
+    } else if (p.article.enrich_attempts >= 1) {
+      chargePendingToArticle("it failed alone after an earlier counted failure");
+    } else {
+      // Rule 3: alone, and never yet shown to be at fault. Leave it queued.
+      console.error(
+        `[research] Article ${p.article.id}: account-level AI failure ` +
+          `(${describeEnrichmentFailure(p.failure)}) with nothing else in the pass to compare. ` +
+          `Attempt not counted; it will be retried on the next pass.`
+      );
+      blame.pending = null;
+      deferred++;
     }
   }
 
