@@ -28,6 +28,7 @@ import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-res
 // security_levels.thesis on an armed level.
 import { guardNarrative, resolveAcceptedThesis } from "@/lib/levels/narrative-guard";
 import { levelActionVisibility, levelReviewGuidance } from "@/lib/levels/action-visibility";
+import { lastFiredDateET } from "@/lib/levels/last-fired-date";
 // The scanner's two skip conditions. A level outside the plausibility band —
 // or one whose price has gone stale — is armed in the DB but never evaluated,
 // so this panel must warn before the save and label the row after it, using
@@ -93,10 +94,14 @@ function priceSourceLabel(src: LevelPriceSource): string {
   return PRICE_SOURCE_OPTIONS.find((o) => o.value === src)?.label ?? src;
 }
 
+/** The two refusals the reactivate route can return; both can be overridden. */
+type ArmRefusalCode = "would_fire_immediately" | "beyond_scan_range";
+
 function lastFiredCopy(l: EnrichedLevel, currency?: string | null): string {
   const price =
     l.triggered_price !== null ? formatLevelPrice(currency ?? null, l.triggered_price) : "an unrecorded price";
-  const date = l.triggered_at ? l.triggered_at.slice(0, 10) : "an unrecorded date";
+  // Eastern calendar date — triggered_at is a UTC timestamp.
+  const date = lastFiredDateET(l.triggered_at) ?? "an unrecorded date";
   return `${price} on ${date}`;
 }
 
@@ -842,7 +847,11 @@ export function LevelsPanel({
     refresh();
   }
 
-  async function handleReactivate(id: number, force = false) {
+  // `confirmed` names the refusal the user just overrode (null on the first
+  // try). It is what makes the retry a forced one, and it decides the success
+  // wording: a forced out-of-range level does NOT alert.
+  async function handleReactivate(id: number, confirmed: ArmRefusalCode | null = null) {
+    const force = confirmed !== null;
     try {
       const res = await apiFetch("/api/levels", {
       method: "PATCH",
@@ -869,9 +878,11 @@ export function LevelsPanel({
       if (result.ok) {
         if (raw?.armed === false) {
           toast("Level is active again, but the alert scanner is not watching it (it is not approved, or it has expired).", "info");
+        } else if (confirmed === "beyond_scan_range") {
+          toast("Active again, but outside the scanner's range, so it will not alert.", "info");
         } else if (alertedToday) {
           toast("Re-armed. It already alerted today, so the next alert can come tomorrow.", "success");
-        } else if (force) {
+        } else if (confirmed === "would_fire_immediately") {
           toast("Re-armed. The price is already past this level, so it will alert on the next scan.", "success");
         } else {
           toast("Level reactivated", "success");
@@ -885,7 +896,7 @@ export function LevelsPanel({
             `Price ${current} is already past this level (${effective}). ${consequence} Reactivate anyway?`
           )
         ) {
-          await handleReactivate(id, true);
+          await handleReactivate(id, "would_fire_immediately");
           return;
         }
         toast("Level left paused", "info");
@@ -895,7 +906,7 @@ export function LevelsPanel({
             `This level (${effective}) is outside the scanner's range at the current price ${current}, so every scan would skip it and it could not alert. This usually means a mis-scaled price. Reactivate anyway?`
           )
         ) {
-          await handleReactivate(id, true);
+          await handleReactivate(id, "beyond_scan_range");
           return;
         }
         toast("Level left paused", "info");
