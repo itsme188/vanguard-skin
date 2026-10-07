@@ -2,7 +2,8 @@ export const dynamic = "force-dynamic";
 
 import { db } from "@/lib/db";
 import { unrealizedGainRatio } from "@/lib/format";
-import { getSecurityDetail } from "@/lib/queries/security-detail";
+import { assetClassLabel, getSecurityDetail, transcriptPreviewText } from "@/lib/queries/security-detail";
+import { MarkdownMessage } from "../../components/MarkdownMessage";
 import { isOnWatchlist, getWatchlistItem } from "@/lib/queries/watchlist";
 import { getResearchDocumentsForSymbol } from "@/lib/queries/research-documents";
 import { ResearchDocumentsPanel } from "../../components/ResearchDocumentsPanel";
@@ -108,6 +109,13 @@ const TD_MONO = "px-4 py-2.5 text-sm text-ink font-mono tabular-nums border-b bo
 
 const TRANSCRIPTS_VISIBLE = 8;
 
+/** "read ▾" / "collapse ▴" under a clamped card — a full-height tap target. */
+const EXPANDER_CLASS =
+  "mt-1 inline-block py-1.5 text-xs font-medium text-blue hover:brightness-110 transition-colors";
+
+/** A note longer than this (or with a line break) is clamped and gets an expander. */
+const NOTE_CLAMP_CHARS = 160;
+
 /**
  * One cached row. An `edgar_8k` row is the SEC 8-K earnings press release, not
  * a call transcript, and its `summary` is only an AI desk note when the filing
@@ -142,8 +150,27 @@ function TranscriptRow({
           {kindLabel(t)}
         </span>
       </div>
+      {/* Collapsed: two lines of real prose (transcriptPreviewText skips the
+          markdown title and the operator's dial-in turn). Open: the desk note
+          rendered as markdown, or the stored excerpt as written. Native
+          <details>, so this server component needs no client state. */}
       {showAnalysis && t.summary && (
-        <p className="line-clamp-2 text-sm leading-snug text-ink-dim">{t.summary}</p>
+        <details className="group">
+          <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+            <span className="line-clamp-2 text-sm leading-snug text-ink-dim group-open:hidden">
+              {transcriptPreviewText(t.summary)}
+            </span>
+            <span className={`${EXPANDER_CLASS} group-open:hidden`}>read ▾</span>
+            <span className={`${EXPANDER_CLASS} hidden group-open:inline-block`}>collapse ▴</span>
+          </summary>
+          <div className="mt-2 text-sm leading-snug text-ink-dim">
+            {hasDeskNote(t) ? (
+              <MarkdownMessage content={t.summary} />
+            ) : (
+              <p className="whitespace-pre-wrap">{t.summary}</p>
+            )}
+          </div>
+        </details>
       )}
       {!showAnalysis && (
         <p className="text-xs italic leading-snug text-ink-faint">
@@ -211,6 +238,15 @@ export default async function SecurityDetailPage(props: {
   // or a whole account leg with no lots at all) — surfaced here rather than
   // left as an unexplained contradiction between the two sections below.
   const lotCoverageGaps = computeLotCoverageGaps(positions, openTaxLots);
+  // The other half of that reconciliation: accounts with open lots and NO
+  // position row. They get a line inside the Positions frame, so the lots
+  // table below never stands alone and unexplained.
+  const { lotsWithoutPosition, positionsWithoutBasis } = detail;
+  // Value sums every position; cost basis, gain and % sum only the ones with
+  // a known basis. When some are left out the three figures are marked "~"
+  // and a line under the table names what they leave out.
+  const totalIsPartial = positionsWithoutBasis.length > 0 && detail.totalCostBasis !== null;
+  const partialMark = totalIsPartial ? "~" : "";
 
   // Option hubs: notes are filed under the UNDERLYING (the composer has no
   // option picker). Resolve it through the existing option→underlying relation.
@@ -248,9 +284,11 @@ export default async function SecurityDetailPage(props: {
   const typeLabel = [
     security.security_type?.replace(/_/g, " "),
     security.sector,
-    security.asset_class,
+    assetClassLabel(security.asset_class),
   ]
     .filter(Boolean)
+    // "Option · Option": the asset class often repeats the type.
+    .filter((part, i, parts) => parts.findIndex((q) => q!.toLowerCase() === part!.toLowerCase()) === i)
     .join(" · ");
 
   return (
@@ -392,8 +430,9 @@ export default async function SecurityDetailPage(props: {
       <RecentAlertsPanel securityId={securityId} />
 
       {/* Positions */}
-      {positions.length > 0 && (
+      {(positions.length > 0 || lotsWithoutPosition.length > 0) && (
         <Section title="Positions">
+          {positions.length > 0 && (
           <ScrollFade>
             <table className="w-full">
               <thead>
@@ -442,21 +481,25 @@ export default async function SecurityDetailPage(props: {
                       <Shares value={positions.reduce((sum, p) => sum + p.quantity, 0)} />
                     </td>
                     <td className={`${TD_MONO} text-right text-ink-dim`}>
+                      {partialMark}
                       <Money value={detail.totalCostBasis} fallback="–" />
                     </td>
                     <td className={`${TD_MONO} text-right font-semibold`}>
                       <Money value={detail.totalValue} />
                     </td>
                     <td className={`${TD_MONO} text-right font-semibold ${gainClass(detail.totalUnrealizedGain)}`}>
+                      {detail.totalUnrealizedGain !== null && partialMark}
                       <Money value={detail.totalUnrealizedGain} fallback="–" />
                     </td>
+                    {/* Gain over GROSS basis (|long basis| + |short proceeds|)
+                        of the positions that are in the gain — a short's
+                        negative basis must never shrink the denominator. */}
                     <td className={`${TD_MONO} text-right font-semibold ${gainClass(detail.totalUnrealizedGain)}`}>
-                      {unrealizedGainRatio(detail.totalUnrealizedGain, detail.totalCostBasis) !== null ? (
-                        <Pct
-                          value={unrealizedGainRatio(detail.totalUnrealizedGain, detail.totalCostBasis)! * 100}
-                          digits={2}
-                          signed
-                        />
+                      {detail.totalGainRatio !== null ? (
+                        <>
+                          {partialMark}
+                          <Pct value={detail.totalGainRatio * 100} digits={2} signed />
+                        </>
                       ) : (
                         "–"
                       )}
@@ -466,6 +509,42 @@ export default async function SecurityDetailPage(props: {
               )}
             </table>
           </ScrollFade>
+          )}
+          {positions.length > 1 && totalIsPartial && (
+            <p className="px-5 py-3 border-t border-edge text-xs text-ink-faint">
+              ~ Total cost basis, gain and % leave out{" "}
+              {positionsWithoutBasis.map((p, i) => (
+                <span key={p.account_id}>
+                  {i > 0 && ", "}
+                  <span className="text-ink-dim">{p.account_name}</span> (<Shares value={p.quantity} />{" "}
+                  <QuantityUnit securityType={security.security_type} quantity={p.quantity} />)
+                </span>
+              ))}
+              : cost basis unknown.
+              {detail.gainCoveredValue !== null && (
+                <>
+                  {" "}They cover <Money value={detail.gainCoveredValue} /> of the{" "}
+                  <Money value={detail.totalValue} /> total value.
+                </>
+              )}
+            </p>
+          )}
+          {lotsWithoutPosition.length > 0 && (
+            <div className={`px-5 py-3 flex flex-col gap-1 ${positions.length > 0 ? "border-t border-edge" : ""}`}>
+              {lotsWithoutPosition.map((orphan) => (
+                <p key={orphan.accountId} className="text-xs text-ink-faint">
+                  <span className="text-ink-dim">{orphan.accountName}</span>: no current position, yet the
+                  ledger still holds open{" "}
+                  {orphan.shortLotCount === orphan.lotCount ? "short-sale lots" : "lots"} here:{" "}
+                  <Count value={orphan.lotCount} /> (<Shares value={orphan.quantity} />{" "}
+                  <QuantityUnit securityType={security.security_type} quantity={orphan.quantity} />).{" "}
+                  {orphan.allPendingStatement
+                    ? "The broker's live data shows the position closed; the lots stay open until the statement with the closing trade is imported."
+                    : "Either the closing trade is missing from the ledger, or Recompute (Tax Lots page) has not run since it was imported."}
+                </p>
+              ))}
+            </div>
+          )}
         </Section>
       )}
 
@@ -489,9 +568,8 @@ export default async function SecurityDetailPage(props: {
                   {" — "}
                   {gap.missingQty > 0 ? (
                     <>
-                      <Shares value={gap.missingQty} />{" "}
-                      <QuantityUnit securityType={security.security_type} quantity={gap.missingQty} />{" "}
-                      have no cost-basis history
+                      no cost-basis history for <Shares value={gap.missingQty} />{" "}
+                      <QuantityUnit securityType={security.security_type} quantity={gap.missingQty} />
                     </>
                   ) : (
                     <>
@@ -510,6 +588,22 @@ export default async function SecurityDetailPage(props: {
               {expiredOptionLotsAwaitingClose.length === 1 ? "lot is" : "lots are"} awaiting a closing entry.
             </p>
           )}
+          {openTaxLots.length === 0 ? (
+            <p className="px-5 py-4 text-sm text-ink-faint">
+              No open tax lots on record for this security
+              {lotCoverageGaps.length > 0 && (
+                <>
+                  {" "}— the position&apos;s{" "}
+                  <QuantityUnit
+                    securityType={security.security_type}
+                    quantity={lotCoverageGaps.reduce((sum, gap) => sum + gap.positionQty, 0)}
+                  />{" "}
+                  above came from a holdings snapshot with no matching purchase in the ledger
+                </>
+              )}
+              .
+            </p>
+          ) : (
           <ScrollFade>
             <table className="w-full">
               <thead>
@@ -559,6 +653,7 @@ export default async function SecurityDetailPage(props: {
               </tbody>
             </table>
           </ScrollFade>
+          )}
         </Section>
       )}
 
@@ -788,7 +883,12 @@ export default async function SecurityDetailPage(props: {
           }
         >
           <div>
-            {shownNotes.slice(0, 5).map((note, idx) => (
+            {shownNotes.slice(0, 5).map((note, idx) => {
+              // Note prose can carry portfolio-derived detail (share counts,
+              // P&L) — mask it like every other such surface. Built once so
+              // the clamped and the open copy can never differ in masking.
+              const noteBody = <PrivateText>{note.content}</PrivateText>;
+              return (
               <div
                 key={note.id}
                 className={`px-5 py-3.5 ${idx === 0 ? "" : "border-t border-edge"}`}
@@ -817,13 +917,27 @@ export default async function SecurityDetailPage(props: {
                     </span>
                   )}
                 </div>
-                <p className="line-clamp-2 text-sm leading-snug text-ink-dim">
-                  {/* Note prose can carry portfolio-derived detail (share
-                      counts, P&L) — mask it like every other such surface. */}
-                  <PrivateText>{note.content}</PrivateText>
-                </p>
+                {/* A long note is clamped to two lines and opens in place
+                    (native <details>; the clamp is the collapsed state). */}
+                {note.content.length > NOTE_CLAMP_CHARS || note.content.includes("\n") ? (
+                  <details className="group">
+                    <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+                      <span className="line-clamp-2 text-sm leading-snug text-ink-dim group-open:hidden">
+                        {noteBody}
+                      </span>
+                      <span className={`${EXPANDER_CLASS} group-open:hidden`}>read ▾</span>
+                      <span className={`${EXPANDER_CLASS} hidden group-open:inline-block`}>collapse ▴</span>
+                    </summary>
+                    <p className="mt-2 whitespace-pre-wrap text-sm leading-snug text-ink-dim">
+                      {noteBody}
+                    </p>
+                  </details>
+                ) : (
+                  <p className="text-sm leading-snug text-ink-dim">{noteBody}</p>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
         </Section>
       )}
@@ -999,7 +1113,10 @@ export default async function SecurityDetailPage(props: {
       {/* Empty state — no positions, no data */}
       {positions.length === 0 &&
         openTaxLots.length === 0 &&
+        expiredOptionLotsAwaitingClose.length === 0 &&
+        closedSales.length === 0 &&
         recentTransactions.length === 0 &&
+        relatedOptionTransactions.length === 0 &&
         shownNotes.length === 0 && (
           <div className="rounded-xl border border-dashed border-edge p-8 text-center">
             <p className="text-sm text-ink-dim">

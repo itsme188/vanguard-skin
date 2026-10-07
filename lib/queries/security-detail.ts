@@ -97,6 +97,14 @@ export interface SecurityDetailData {
   totalCostBasis: number | null;
   /** null when every constituent position's gain is unknown */
   totalUnrealizedGain: number | null;
+  /** Total gain over GROSS basis — see computePositionTotals. */
+  totalGainRatio: number | null;
+  /** Market value of the positions that are in the total gain. */
+  gainCoveredValue: number | null;
+  /** Positions left out of total cost basis, gain and %: basis unknown. */
+  positionsWithoutBasis: PositionWithoutBasis[];
+  /** Accounts with open lots and no current position — see computeLotsWithoutPosition. */
+  lotsWithoutPosition: LotsWithoutPosition[];
   openTaxLots: TaxLotWithSecurity[];
   expiredOptionLotsAwaitingClose: TaxLotWithSecurity[];
   closedSales: TaxLotSaleWithDetails[];
@@ -635,6 +643,223 @@ export function getTradeGradesBySecurity(
   return cards;
 }
 
+// ─── Hub display helpers (pure) ────────────────────────────────
+
+const ASSET_CLASS_LABELS: Record<string, string> = {
+  stk: "Equity",
+  equity: "Equity",
+  opt: "Option",
+  option: "Option",
+};
+
+/**
+ * Display label for securities.asset_class. The column holds whatever the
+ * importer wrote: IBKR's contract code ("STK", "OPT") on some rows and
+ * "equity" / "option" on others, so two like instruments were labelled two
+ * ways. A value with no mapping is shown as stored. Display only — the column
+ * is not rewritten.
+ */
+export function assetClassLabel(raw: string | null | undefined): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  return ASSET_CLASS_LABELS[value.toLowerCase()] ?? value;
+}
+
+/** "Jane Doe (Chief Executive Officer):" — a speaker turn in a call excerpt. */
+// A name word is a capital plus word characters, or a bare initial ("Q.") —
+// never a word ending in a full stop, which is the end of the sentence before.
+const SPEAKER_TAG_RE =
+  /(?:^|\s)([A-Z](?:[\w'’-]*|\.)(?: [A-Z](?:[\w'’-]*|\.)){0,3}) \([^)]{1,80}\):/g;
+
+/**
+ * Plain-text preview for a hub transcript card's collapsed state.
+ *
+ * `summary` is either an AI desk note in markdown or an extractive excerpt of
+ * the call (lib/transcripts/presentation.ts). Clamping the raw string showed
+ * "# Title **Guidance** …" for the first and the operator's dial-in
+ * instructions for the second. This drops heading lines, strips the markdown
+ * markers, and starts a call excerpt at the first speaker who is not the
+ * operator. If nothing is left, the cleaned text is returned as it stands, so
+ * a card is never blank while a summary exists.
+ */
+export function transcriptPreviewText(
+  summary: string | null | undefined,
+  maxChars: number = 400
+): string {
+  if (!summary) return "";
+  const parts: string[] = [];
+  let pendingLabel: string | null = null;
+  for (const rawLine of summary.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || /^#{1,6}\s/.test(line) || /^[-*_]{3,}$/.test(line)) continue;
+    const body = line.replace(/^(?:[-*+]|\d+\.|>)\s+/, "");
+    const text = body.replace(/\*\*|__|`/g, "").trim();
+    if (!text) continue;
+    // A line that is only a bold label ("**Guidance**") heads the next line.
+    if (/^\*\*[^*]+\*\*:?$/.test(body)) {
+      pendingLabel = text.replace(/:$/, "");
+      continue;
+    }
+    parts.push(pendingLabel ? `${pendingLabel}: ${text}` : text);
+    pendingLabel = null;
+  }
+  const cleaned = parts.join(" ").replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+
+  let preview = cleaned;
+  if (/^operator\b/i.test(cleaned)) {
+    SPEAKER_TAG_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = SPEAKER_TAG_RE.exec(cleaned)) !== null) {
+      if (/\boperator$/i.test(match[1])) continue;
+      preview = cleaned.slice(match.index).trim();
+      break;
+    }
+  }
+
+  if (preview.length <= maxChars) return preview;
+  const cut = preview.slice(0, maxChars);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+// ─── Position totals ───────────────────────────────────────────
+
+export interface PositionWithoutBasis {
+  account_id: number;
+  account_name: string;
+  quantity: number;
+}
+
+export interface PositionTotals {
+  /** Market value of every position (a short is negative). */
+  totalValue: number;
+  /** NET cost basis over the known-basis positions; null when none is known. */
+  totalCostBasis: number | null;
+  /** Gain over the positions that have one; null when none does. */
+  totalUnrealizedGain: number | null;
+  /**
+   * totalUnrealizedGain divided by GROSS basis: the sum of |cost basis| over
+   * exactly the positions that are in the gain. Null when there is no gain or
+   * that basis is zero.
+   */
+  totalGainRatio: number | null;
+  /** Market value of the positions that are in the gain; null when none is. */
+  gainCoveredValue: number | null;
+  /** Positions whose basis is unknown — left out of cost basis, gain and %. */
+  positionsWithoutBasis: PositionWithoutBasis[];
+}
+
+/**
+ * Totals for the hub's POSITIONS table. Pure.
+ *
+ * Cost basis / gain stay null when EVERY constituent is unknown — summing
+ * unknowns as $0 fabricated a "$0 cost, green $0 gain" TOTAL row on
+ * all-Plaid-sourced positions. "Unknown" includes a basis of exactly 0
+ * (hasKnownBasis, lib/compute/known-basis.ts).
+ *
+ * Gain % (2026-10-07): a short stores its sale proceeds as a NEGATIVE basis,
+ * so a long and a short net to a small basis and gain / net basis printed a
+ * percent outside both of its own rows. The denominator is the GROSS basis,
+ * and only of the positions whose gain is in the numerator, so the percent is
+ * a weighted average of the row percents (each row divides by |basis| too —
+ * unrealizedGainRatio in lib/format.ts). The sign follows the gain: a short
+ * that fell in price shows a positive percent.
+ *
+ * Value covers every position while cost basis and gain cover only the ones
+ * with a known basis. positionsWithoutBasis and gainCoveredValue let the row
+ * say so instead of printing a full value beside a partial basis unmarked.
+ */
+export function computePositionTotals(positions: SecurityPosition[]): PositionTotals {
+  const totalValue = positions.reduce((sum, p) => sum + (p.current_value ?? 0), 0);
+  const withBasis = positions.filter(hasKnownPositionBasis);
+  const totalCostBasis =
+    withBasis.length > 0 ? withBasis.reduce((sum, p) => sum + p.cost_basis!, 0) : null;
+
+  // "In the gain" = has a gain AND a known basis. The query only produces a
+  // gain for a known basis; the second test keeps the two sets identical even
+  // if a caller hands in a row that breaks that rule.
+  const inGain = positions.filter((p) => p.unrealized_gain != null && hasKnownPositionBasis(p));
+  const totalUnrealizedGain =
+    inGain.length > 0 ? inGain.reduce((sum, p) => sum + p.unrealized_gain!, 0) : null;
+  const grossBasis = inGain.reduce((sum, p) => sum + Math.abs(p.cost_basis!), 0);
+  const totalGainRatio =
+    totalUnrealizedGain !== null && grossBasis > 0 ? totalUnrealizedGain / grossBasis : null;
+  const gainCoveredValue =
+    inGain.length > 0 ? inGain.reduce((sum, p) => sum + (p.current_value ?? 0), 0) : null;
+
+  const positionsWithoutBasis = positions
+    .filter((p) => !hasKnownPositionBasis(p))
+    .map((p) => ({ account_id: p.account_id, account_name: p.account_name, quantity: p.quantity }));
+
+  return {
+    totalValue,
+    totalCostBasis,
+    totalUnrealizedGain,
+    totalGainRatio,
+    gainCoveredValue,
+    positionsWithoutBasis,
+  };
+}
+
+export interface LotsWithoutPosition {
+  accountId: number;
+  accountName: string;
+  lotCount: number;
+  /** Sum of quantity_remaining (lots store shorts as a positive quantity). */
+  quantity: number;
+  shortLotCount: number;
+  /**
+   * Every lot is "pending statement": the position is flat per live broker
+   * data and the statement carrying the closing trade is not imported yet.
+   */
+  allPendingStatement: boolean;
+}
+
+const LOT_DUST = 1e-6;
+
+/**
+ * Accounts that still carry open tax lots for this security while the
+ * positions list has no row for them (latest holding zero or absent). The hub
+ * showed those lots with no Positions section and no explanation. Pure;
+ * per-account, like computeLotCoverageGaps, which only looks at accounts that
+ * DO have a position row. Float-dust remainders are ignored.
+ */
+export function computeLotsWithoutPosition(
+  positions: Array<{ account_id: number }>,
+  openLots: Array<{
+    account_id: number;
+    account_name: string;
+    quantity_remaining: number;
+    is_short: number;
+    pending_statement: boolean;
+  }>
+): LotsWithoutPosition[] {
+  const held = new Set(positions.map((p) => p.account_id));
+  const byAccount = new Map<number, LotsWithoutPosition>();
+  for (const lot of openLots) {
+    if (held.has(lot.account_id)) continue;
+    if (Math.abs(lot.quantity_remaining) <= LOT_DUST) continue;
+    const entry = byAccount.get(lot.account_id);
+    if (!entry) {
+      byAccount.set(lot.account_id, {
+        accountId: lot.account_id,
+        accountName: lot.account_name,
+        lotCount: 1,
+        quantity: lot.quantity_remaining,
+        shortLotCount: lot.is_short ? 1 : 0,
+        allPendingStatement: lot.pending_statement,
+      });
+      continue;
+    }
+    entry.lotCount += 1;
+    entry.quantity += lot.quantity_remaining;
+    if (lot.is_short) entry.shortLotCount += 1;
+    entry.allPendingStatement = entry.allPendingStatement && lot.pending_statement;
+  }
+  return [...byAccount.values()];
+}
+
 // ─── Aggregator ────────────────────────────────────────────────
 
 /**
@@ -684,31 +909,21 @@ export function getSecurityDetail(
     limit: 10,
   });
 
-  // Aggregate position totals. Cost basis / gain stay null when EVERY
-  // constituent is unknown — summing unknowns as $0 fabricated a "$0 cost,
-  // green $0 gain" TOTAL row on all-Plaid-sourced positions. "Unknown"
-  // includes a basis of exactly 0 (hasKnownPositionBasis below): the
-  // convention lives in lib/queries/holdings.ts, whose unrealized_gain gate
-  // is NULLIF(costBasisExpr, 0) IS NOT NULL, and AllHoldingsTable's
-  // hasKnownBasis mirrors it at the render layer. Without the 0 case a
-  // position whose only stored basis is zero claimed a KNOWN $0 total cost
-  // beside an em-dash in its own row.
-  const totalValue = positions.reduce((sum, p) => sum + (p.current_value ?? 0), 0);
-  const totalCostBasis = positions.some(hasKnownPositionBasis)
-    ? positions.reduce((sum, p) => sum + (hasKnownPositionBasis(p) ? p.cost_basis! : 0), 0)
-    : null;
-  const totalUnrealizedGain = positions.some((p) => p.unrealized_gain != null)
-    ? positions.reduce((sum, p) => sum + (p.unrealized_gain ?? 0), 0)
-    : null;
+  const totals = computePositionTotals(positions);
+  const lotsWithoutPosition = computeLotsWithoutPosition(positions, openTaxLots);
 
   return {
     security,
     price,
     kpis,
     positions,
-    totalValue,
-    totalCostBasis,
-    totalUnrealizedGain,
+    totalValue: totals.totalValue,
+    totalCostBasis: totals.totalCostBasis,
+    totalUnrealizedGain: totals.totalUnrealizedGain,
+    totalGainRatio: totals.totalGainRatio,
+    gainCoveredValue: totals.gainCoveredValue,
+    positionsWithoutBasis: totals.positionsWithoutBasis,
+    lotsWithoutPosition,
     openTaxLots,
     expiredOptionLotsAwaitingClose,
     closedSales,
