@@ -11,7 +11,10 @@ import Database from "better-sqlite3";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { runMigrations } from "@/lib/db/migrate";
+import { readFileSync } from "node:fs";
 import { upsertPrint } from "@/lib/print-watch/store";
+import { getWatchStatus } from "@/lib/print-watch/watcher";
+import { anchorIndex } from "../helpers/source-anchor";
 import { LivePrintsOutsideWeek, eventDateLabel } from "@/app/dashboard/today/EarningsHubLive";
 import type { PrintStatusEntry } from "@/app/dashboard/today/hub-live/types";
 
@@ -61,6 +64,23 @@ describe("GET /api/print-watch/status — eventDate", () => {
     ]) {
       expect(entry, key).toHaveProperty(key);
     }
+  });
+});
+
+describe("eventDate comes from the status row, not a second read per print", () => {
+  it("getWatchStatus carries each print row's own event date", () => {
+    const a = seedPrint("AAA", "2026-09-10");
+    const z = seedPrint("ZZZ", "2026-09-21");
+    const rows = getWatchStatus(db);
+    expect(rows.find((r) => r.printId === a)?.eventDate).toBe("2026-09-10");
+    expect(rows.find((r) => r.printId === z)?.eventDate).toBe("2026-09-21");
+  });
+
+  it("the route passes the row's date through and never re-reads the print", () => {
+    const src = readFileSync("app/api/print-watch/status/route.ts", "utf8");
+    const handler = src.slice(anchorIndex(src, "export async function GET"));
+    expect(handler).toContain("eventDate: row.eventDate,");
+    expect(src).not.toContain("getPrintById");
   });
 });
 

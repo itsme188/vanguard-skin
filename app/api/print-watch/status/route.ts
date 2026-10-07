@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getWatchStatus } from "@/lib/print-watch/watcher";
-import { getPrintById, getSheet, listDocumentRoads, listDocuments } from "@/lib/print-watch/store";
+import { getSheet, listDocumentRoads, listDocuments } from "@/lib/print-watch/store";
 import { getLatestDoneRead, getGeneratingRead, getLastFailedAttempt, listCallouts } from "@/lib/print-watch/read-store";
 import { sanitizeProseLines } from "@/lib/print-watch/first-pass-format";
 import { evaluatePrintOutputs } from "@/lib/earnings/print-outputs";
@@ -53,7 +53,10 @@ import type { ReadRow } from "@/lib/print-watch/first-pass-types";
  *
  * `eventDate` (additive, 2026-10-07) is the print's own event date, so the
  * Hub's "Live prints outside this week" block can say which day a print
- * belongs to. Nothing else in the payload moved.
+ * belongs to. It rides on the `getWatchStatus` row (the print row is already
+ * in hand there) and is the print row's copy of the date: after a calendar
+ * date correction it lags until the watcher next reconciles the print.
+ * Nothing else in the payload moved.
  *
  * `outputs` (slice E, Task 7) is the one place that says whether this row's
  * "Print sheet" and "Send recap now" buttons are live and, when they are not,
@@ -106,10 +109,12 @@ export async function GET() {
         printId: row.printId,
         eventId: row.eventId,
         symbol: row.symbol,
-        // Additive: the day this print belongs to (YYYY-MM-DD, the print's own
-        // stored event date), so a live print outside the visible week can be
-        // placed in time. A store read only — this GET stays the pure read.
-        eventDate: getPrintById(db, row.printId)?.event_date ?? null,
+        // Additive: the day this print belongs to (YYYY-MM-DD), so a live print
+        // outside the visible week can be placed in time. `getWatchStatus`
+        // already holds the print row, so this is passed through — no second
+        // read per print on every poll. It is the print row's OWN date, which
+        // can lag a calendar date correction until the next reconciliation.
+        eventDate: row.eventDate,
         state: row.state,
         sources: row.sources,
         coverage: row.coverage,

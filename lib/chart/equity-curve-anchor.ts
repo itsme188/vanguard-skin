@@ -26,12 +26,14 @@
  * the month's shape, no multiplicative rescale) and both anchors plot exactly.
  *
  * Anchors are the monthly_snapshots rows: month-end statements AND dense live
- * TWS/Plaid snapshots. A segment longer than SHORT_SEGMENT_MAX_DAYS with fewer
- * than MIN_SEGMENT_DAILIES days strictly between the anchors is plotted from
- * the statements only, and counted in the summary so the chart can say so.
- * (Owner decision 2026-10-07: the old 30%-spread test is gone, because a large
- * deposit trips it; a run with a gap longer than SHORT_SEGMENT_MAX_DAYS between
- * its points is still drawn, but captioned as a straight-line stretch.)
+ * TWS/Plaid snapshots. A segment longer than SHORT_SEGMENT_MAX_DAYS whose
+ * dailies are too sparse (fewer than MIN_SEGMENT_DAILIES days
+ * strictly between the anchors) or internally inconsistent (max-min spread
+ * above MAX_SEGMENT_SPREAD of their mean, a sign of incomplete holdings that
+ * month) is plotted from the statements only, and counted in the summary so
+ * the chart can say so. A segment that passes both tests but has a gap longer
+ * than SHORT_SEGMENT_MAX_DAYS between its plotted points is still drawn, and
+ * captioned as a straight-line stretch.
  */
 
 export interface EquityAnchor {
@@ -62,7 +64,7 @@ export interface AnchoredCurveSummary {
   segmentsSkipped: number;
   /** Daily points plotted after the last anchor. */
   trailingDays: number;
-  /** Kept for the caption; no longer set (the spread gate was dropped 2026-10-07). */
+  /** True when dailies after the last anchor existed but failed the consistency gate. */
   trailingSkipped: boolean;
   /** Anchor-to-anchor spans behind the counts above, so a caption can scope to a date range. */
   anchoredSpans?: DateSpan[];
@@ -83,6 +85,8 @@ export interface AnchoredCurve {
 
 /** Fewer recorded days than this strictly between two anchors → statements only. */
 export const MIN_SEGMENT_DAILIES = 3;
+/** (max - min) / mean above this → the dailies are too inconsistent to use. */
+export const MAX_SEGMENT_SPREAD = 0.3;
 /**
  * Anchor spans of this many days or fewer (typically two live TWS/Plaid
  * snapshots a few days apart) are never skipped: any dailies inside are
@@ -104,6 +108,15 @@ const DAY_MS = 86_400_000;
 function dayNumber(date: string): number {
   const [y, m, d] = date.split("-").map(Number);
   return Date.UTC(y, m - 1, d) / DAY_MS;
+}
+
+function tooInconsistent(values: number[]): boolean {
+  if (values.length === 0) return false;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  if (!(mean > 0)) return true;
+  return (max - min) / mean > MAX_SEGMENT_SPREAD;
 }
 
 /**
@@ -184,7 +197,8 @@ export function anchorDailiesToStatements(
     const span = dayNumber(a1.date) - t0;
 
     if (span > SHORT_SEGMENT_MAX_DAYS) {
-      if (between.length < MIN_SEGMENT_DAILIES) {
+      const consistencySet = [...(onD0 ? [onD0] : []), ...between, ...(onD1 ? [onD1] : [])];
+      if (between.length < MIN_SEGMENT_DAILIES || tooInconsistent(consistencySet.map((d) => d.value))) {
         summary.segmentsSkipped++;
         summary.skippedSpans!.push({ from: a0.date, to: a1.date });
         continue;
@@ -225,6 +239,11 @@ function appendTrailing(
 ): void {
   const trailing = sortedDailies.filter((d) => d.date > last.date);
   if (trailing.length === 0) return;
+  const consistencySet = [...(onLast ? [onLast] : []), ...trailing];
+  if (tooInconsistent(consistencySet.map((d) => d.value))) {
+    summary.trailingSkipped = true;
+    return;
+  }
   const ref = onLast ?? lastDailyAtOrBefore(last.date, sortedDailies) ?? trailing[0];
   const gap = last.value - ref.value;
   for (const d of trailing) {

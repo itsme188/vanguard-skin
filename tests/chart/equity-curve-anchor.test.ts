@@ -220,7 +220,7 @@ describe("anchorDailiesToStatements — shape-preserving anchor correction", () 
     expect(summary.segmentsSkipped).toBe(1);
   });
 
-  it("a large swing (a deposit) no longer skips a segment: the 30% test was dropped 2026-10-07", () => {
+  it("skips a segment whose dailies swing more than 30% of their mean (incomplete extraction)", () => {
     const anchors = [A("2026-01-31", 1000), A("2026-02-28", 1000)];
     const dailies = [
       D("2026-02-05", 1000),
@@ -229,9 +229,26 @@ describe("anchorDailiesToStatements — shape-preserving anchor correction", () 
       D("2026-02-20", 990),
     ];
     const { points, summary } = anchorDailiesToStatements(anchors, dailies);
-    expect(points.filter((p) => !p.isAnchor)).toHaveLength(4);
-    expect(summary.segmentsSkipped).toBe(0);
-    expect(summary.segmentsAnchored).toBe(1);
+    expect(points.every((p) => p.isAnchor)).toBe(true);
+    expect(summary.segmentsSkipped).toBe(1);
+  });
+
+  it("skips trailing dailies that swing more than 30% of their mean, and says so", () => {
+    const anchors = [A("2026-05-31", 2000)];
+    const dailies = [D("2026-05-31", 1000), D("2026-06-01", 1000), D("2026-06-02", 400), D("2026-06-03", 990)];
+    const { points, summary } = anchorDailiesToStatements(anchors, dailies);
+    expect(points.every((p) => p.isAnchor)).toBe(true);
+    expect(summary.trailingDays).toBe(0);
+    expect(summary.trailingSkipped).toBe(true);
+  });
+
+  it("a skipped segment is never also counted as sparse", () => {
+    const anchors = [A("2026-01-31", 1000), A("2026-02-28", 1000)];
+    const dailies = [D("2026-02-02", 1000), D("2026-02-03", 400), D("2026-02-04", 1000)];
+    const { summary } = anchorDailiesToStatements(anchors, dailies);
+    expect(summary.skippedSpans).toEqual([{ from: "2026-01-31", to: "2026-02-28" }]);
+    expect(summary.sparseSpans).toEqual([]);
+    expect(summary.anchoredSpans).toEqual([]);
   });
 
   it("a run with a gap over 7 days between plotted points is recorded as sparse", () => {

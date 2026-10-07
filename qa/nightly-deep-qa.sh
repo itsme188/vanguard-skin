@@ -141,9 +141,46 @@ write_incomplete_run_log() {
 # Single EXIT trap (bash traps replace, not stack): stub run log + sandbox down + release lock + browser cleanup.
 trap 'write_incomplete_run_log; bash "$SCRIPT_DIR/sandbox.sh" down; rm -rf "$LOCK_DIR" 2>/dev/null; ab_cleanup' EXIT
 # Turn termination signals into a normal exit so the EXIT trap above always runs.
-trap 'exit 143' TERM
-trap 'exit 130' INT
-trap 'exit 129' HUP
+# The long `claude -p` runs (sweep, fixer) go through run_child: a background
+# child with its PID captured and `wait`ed, because bash defers a trap until a
+# FOREGROUND child returns and never signals it -- a TERM to this shell used to
+# leave the sweep running as an orphan against a torn-down sandbox. The signal
+# traps forward TERM to the live child and wait for it BEFORE exiting, so the
+# EXIT trap only takes the sandbox down once the child is gone. A child still
+# alive after CHILD_TERM_GRACE_SECS is killed outright: a hung child must not
+# pin the lock and the sandbox forever. bash 3.2 safe (no `wait -n`).
+CHILD_PID=""
+CHILD_TERM_GRACE_SECS=30
+run_child() {
+  "$@" &
+  CHILD_PID=$!
+  wait "$CHILD_PID"
+  local rc=$?
+  CHILD_PID=""
+  return $rc
+}
+stop_child_and_exit() {
+  local code="$1" waited=0
+  # One pass only: a second signal while the child winds down must not restart it.
+  trap '' TERM INT HUP
+  if [ -n "$CHILD_PID" ] && kill -0 "$CHILD_PID" 2>/dev/null; then
+    echo "Signal received -- forwarding TERM to child pid $CHILD_PID" >&2
+    kill -TERM "$CHILD_PID" 2>/dev/null
+    while kill -0 "$CHILD_PID" 2>/dev/null && [ "$waited" -lt "$CHILD_TERM_GRACE_SECS" ]; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+    if kill -0 "$CHILD_PID" 2>/dev/null; then
+      echo "Child pid $CHILD_PID ignored TERM for ${CHILD_TERM_GRACE_SECS}s -- sending KILL" >&2
+      kill -KILL "$CHILD_PID" 2>/dev/null
+    fi
+    wait "$CHILD_PID" 2>/dev/null
+  fi
+  exit "$code"
+}
+trap 'stop_child_and_exit 143' TERM
+trap 'stop_child_and_exit 130' INT
+trap 'stop_child_and_exit 129' HUP
 
 # --- Model selection: PROBE for the strongest CALLABLE model -----------------
 # Do NOT rely on `--model fable --fallback-model opus,sonnet`. That was the
@@ -198,7 +235,7 @@ echo "Resolved callable model: $MODEL"
 export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=21600000  # 6h
 
 SWEEP_STARTED=1
-claude -p "/qa-deep-sweep" --model "$MODEL"
+run_child claude -p "/qa-deep-sweep" --model "$MODEL"
 STATUS=$?
 [ "$STATUS" -ne 0 ] && notify_failure "/qa-deep-sweep exited $STATUS (model $MODEL)"
 
@@ -223,7 +260,7 @@ if [ "$STATUS" -eq 0 ] && [ -f "$RUN_LOG" ] && [ "$FIXER_ENABLED" = "True" ]; th
   if [ -z "$FIX_MODEL" ]; then
     notify_failure "fixer: no callable model — auto-fix chain skipped"
   else
-    claude -p "/qa-fix-findings" --model "$FIX_MODEL"
+    run_child claude -p "/qa-fix-findings" --model "$FIX_MODEL"
     FIX_STATUS=$?
     [ "$FIX_STATUS" -ne 0 ] && notify_failure "/qa-fix-findings exited $FIX_STATUS (model $FIX_MODEL)"
     FIX_LOG="$SCRIPT_DIR/findings/fix-runs/$(date +%Y-%m-%d).md"
