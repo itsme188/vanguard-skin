@@ -643,10 +643,6 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
             >
               {customLoading ? "Computing..." : "Compute Scenario"}
             </button>
-            <p className="text-xs text-ink-faint mt-2">
-              Option positions are approximated linearly (delta only), so large
-              moves are understated or overstated.
-            </p>
             {customError && (
               <p className="text-xs text-down mt-2">{customError}</p>
             )}

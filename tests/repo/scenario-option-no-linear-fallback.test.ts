@@ -32,6 +32,8 @@ describe("scenario engines reprice options and never fall back to a fixed figure
       expect(src, file).not.toMatch(/delta elasticity/i);
       expect(src, file).not.toMatch(/fallback 2\.5/i);
       expect(src, file).not.toContain("Δ·S/V");
+      expect(src, file).not.toMatch(/approximated\s+linearly/i);
+      expect(src, file).not.toMatch(/delta only/i);
     }
   });
 

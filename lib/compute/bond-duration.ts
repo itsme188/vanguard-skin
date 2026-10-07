@@ -7,17 +7,23 @@
  * marked down by the same 5-year figure, and the custom engine skipped bond
  * funds altogether while the preset moved them through equity factor buckets.
  *
- * Rules, in order:
- *   1. An individual bond with a stored duration uses it.
- *   2. Otherwise the duration is derived from the maturity date:
- *        - a Treasury bill or a stored zero coupon: years to maturity;
- *        - a coupon bond: modified duration from its stored coupon, its
- *          maturity and the yield its stored price implies.
- *   3. A bond that cannot be derived (no maturity date, no stored coupon, no
- *      usable price or yield) adds NOTHING to the rate leg and is reported as
- *      unmodelled. No coupon, yield or duration is ever assumed for a bond.
- *   4. A fixed-income FUND uses its stored duration, else a 5-year default.
- *      The default is for funds only.
+ * Rules for an individual bond, in order:
+ *   1. A maturity date in the past: matured, unmodelled (even with a stored
+ *      duration; a matured bond has no rate risk left to estimate).
+ *   2. A stored duration is used as stored.
+ *   3. No maturity date: unmodelled.
+ *   4. Zero coupon (a stored coupon of 0, or a Treasury bill by name with no
+ *      stored coupon): years to maturity.
+ *   5. Within one coupon period of maturity: one cash flow is left, so the
+ *      duration is the time to maturity. Needs neither coupon nor price.
+ *   6. A coupon bond: modified duration from its stored coupon, its maturity
+ *      and the yield its stored price implies.
+ *   7. Anything else (no stored coupon, no usable price or yield) adds
+ *      NOTHING to the rate leg and is reported as unmodelled. No coupon,
+ *      yield or duration is ever assumed for a bond.
+ *
+ * A fixed-income FUND uses its stored duration, else a 5-year default. The
+ * default is for funds only.
  *
  * Cash equivalents are not handled here: each engine keeps its own existing
  * cash treatment and never reaches this module for one. Options are not
@@ -27,14 +33,15 @@
  */
 
 import { isCashEquivalentSecurity } from "./cash-equivalents";
-import { isOptionSecurityType } from "./option-elasticity";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { isBondFundCategory, isLeveragedInverseFundCategory } from "@/lib/securities/normalize-fund-category";
 
 /** Ruled 2026-10-06: a bond FUND with no stored duration is priced at 5 years. */
 export const FUND_DEFAULT_DURATION_YEARS = 5;
 
 /** US convention: two coupons a year. The schema stores no payment frequency. */
 const COUPONS_PER_YEAR = 2;
+const MONTHS_PER_COUPON = 12 / COUPONS_PER_YEAR;
 const DAYS_PER_YEAR = 365;
 /**
  * A solved yield outside this range means the stored price or coupon is bad
@@ -48,6 +55,8 @@ export type RateDurationSource =
   | "stored"
   /** Zero-coupon instrument: years to maturity. */
   | "bill-maturity"
+  /** Coupon bond with one cash flow left: years to maturity. */
+  | "single-flow"
   /** Coupon bond: modified duration from coupon, maturity and price-implied yield. */
   | "coupon-yield"
   /** `securities.duration_years` on a fixed-income fund. */
@@ -91,21 +100,41 @@ export function rateLegForDuration(durationYears: number, rateBps: number): numb
 }
 
 /**
- * A fixed-income fund: a holding that is not an individual bond, not an
- * option and not a cash equivalent, whose sector normalizes to "Fixed
- * Income". The sector vocabulary is single-sourced through normalizeSector;
- * there is deliberately no fund-category string list here. The type is not
- * required to be a fund type because the broker labels ETFs 'Stock'.
+ * Fund-family security types, compared case-insensitively. The repo has no
+ * shared fund-family helper: lib/tws/security-type-map.ts maps both 'ETF' and
+ * 'Stock' to the broker's STK (and imports the broker SDK, which this
+ * client-safe module must not), so the two stored spellings are matched here.
+ */
+function isFundFamilyType(securityType: string | null | undefined): boolean {
+  const type = (securityType ?? "").trim().toLowerCase();
+  return type === "etf" || type === "mutual fund" || type === "mutual_fund";
+}
+
+/**
+ * A fixed-income fund (controller ruling 2026-10-07 on the owner's "bond
+ * funds get the duration estimate"):
+ *   - the security type is in the fund family (ETF / mutual fund). A Stock, a
+ *     CD or a preferred share with a Fixed Income sector is NOT a bond fund;
+ *   - it is not a cash equivalent (those keep their own treatment);
+ *   - it is not a leveraged or inverse fund. An inverse Treasury fund GAINS
+ *     when rates rise and a leveraged one moves by a multiple, so a plain
+ *     duration mark-down would be the wrong sign or the wrong size. Such a
+ *     fund gets no rate leg from this rule, and it is not an individual bond,
+ *     so it is not listed as an unmodelled bond either;
+ *   - its normalized fund category is a bond category (the one grouping in
+ *     lib/securities/normalize-fund-category.ts), or its sector normalizes
+ *     to "Fixed Income". The category test is what reaches a fund the broker
+ *     never enriched with a sector.
  */
 export function isFixedIncomeFund(sec: {
   security_type: string | null;
   sector: string | null;
   fund_category: string | null;
 }): boolean {
-  const type = (sec.security_type ?? "").trim().toLowerCase();
-  if (type === "bond" || isOptionSecurityType(type)) return false;
+  if (!isFundFamilyType(sec.security_type)) return false;
   if (isCashEquivalentSecurity(sec)) return false;
-  return normalizeSector(sec.sector) === "Fixed Income";
+  if (isLeveragedInverseFundCategory(sec.fund_category)) return false;
+  return isBondFundCategory(sec.fund_category) || normalizeSector(sec.sector) === "Fixed Income";
 }
 
 /**
@@ -118,63 +147,138 @@ export function isTreasuryBillName(name: string | null | undefined): boolean {
   return /\b(?:t-bills?|treasury\s+bills?)\b/i.test(name);
 }
 
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+function parseIsoDate(value: string): { y: number; m: number; d: number } | null {
+  const match = ISO_DATE.exec(value);
+  if (!match) return null;
+  const y = Number(match[1]);
+  const m = Number(match[2]);
+  const d = Number(match[3]);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  return { y, m, d };
+}
+
+function dayNumber(value: string): number | null {
+  const parts = parseIsoDate(value);
+  if (!parts) return null;
+  const ms = Date.UTC(parts.y, parts.m - 1, parts.d);
+  return Number.isFinite(ms) ? Math.round(ms / 86_400_000) : null;
+}
+
 /** Signed whole days from `from` to `to` (both YYYY-MM-DD); null if either is unreadable. */
 function signedDaysBetween(from: string, to: string): number | null {
-  const iso = /^\d{4}-\d{2}-\d{2}$/;
-  if (!iso.test(from) || !iso.test(to)) return null;
-  const a = Date.parse(`${from}T12:00:00Z`);
-  const b = Date.parse(`${to}T12:00:00Z`);
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
-  return Math.round((b - a) / 86_400_000);
+  const a = dayNumber(from);
+  const b = dayNumber(to);
+  return a == null || b == null ? null : b - a;
+}
+
+/**
+ * `date` moved back by whole calendar months, keeping the day of month and
+ * clamping it to the month's last day (31 August less six months is the last
+ * day of February).
+ */
+function minusMonths(date: { y: number; m: number; d: number }, months: number): string {
+  const index = date.y * 12 + (date.m - 1) - months;
+  const y = Math.floor(index / 12);
+  const m = index - y * 12; // 0-based
+  const lastDay = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  const d = Math.min(date.d, lastDay);
+  return `${String(y).padStart(4, "0")}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+/**
+ * The coupon dates still to come, earliest first: the maturity date and every
+ * six calendar months before it that falls AFTER `today` (a coupon dated
+ * today is already paid). Each date is stepped from the maturity date itself,
+ * so a month-end clamp never drifts down the schedule. Empty when the bond
+ * matures today or earlier, or a date is unreadable.
+ */
+export function remainingCouponDates(maturityDate: string, today: string): string[] {
+  const maturity = parseIsoDate(maturityDate);
+  const todayNumber = dayNumber(today);
+  if (!maturity || todayNumber == null) return [];
+  const dates: string[] = [];
+  for (let k = 0; k < 400; k++) {
+    const date = minusMonths(maturity, k * MONTHS_PER_COUPON);
+    const n = dayNumber(date);
+    if (n == null || n <= todayNumber) break;
+    dates.push(date);
+  }
+  return dates.reverse();
 }
 
 export type CouponDurationResult =
-  | { ok: true; modifiedDuration: number; macaulayDuration: number; yieldToMaturity: number }
+  | {
+      ok: true;
+      modifiedDuration: number;
+      macaulayDuration: number;
+      /** Null when one flow is left: the duration is then the time to maturity and no yield is solved. */
+      yieldToMaturity: number | null;
+      remainingFlows: number;
+    }
   | { ok: false; reason: "no-maturity" | "matured" | "no-coupon" | "no-price" | "no-yield" };
 
 /**
  * Standard modified duration of a fixed-coupon bullet bond.
  *
- * Cash flows: half the annual coupon every six months counted BACK from the
- * maturity date, plus 100 at maturity. The stored price is a clean quote, so
- * accrued interest for the running coupon period is added before solving the
- * yield that discounts those flows to that price (semiannual compounding).
- * Macaulay duration is the present-value-weighted time to each flow; modified
- * duration divides it by (1 + y/2).
+ * Cash flows: half the annual coupon on each remaining coupon date (six
+ * calendar months apart, counted BACK from the maturity date), plus 100 at
+ * maturity. With one flow left the duration is simply the time to maturity
+ * and nothing else is needed. Otherwise the stored price is taken as a clean
+ * quote, accrued interest for the running coupon period is added, and the
+ * yield that discounts the flows to that price is solved (semiannual
+ * compounding; the first flow is a fraction of a period away, measured in
+ * days over the days in the running period). Macaulay duration is the
+ * present-value-weighted time to each flow; modified duration divides it by
+ * (1 + y/2).
  *
- * Approximations, stated: semiannual coupons, time measured in days / 365,
- * coupon periods of exactly half a year.
+ * Approximations, stated: semiannual coupons; each coupon period counts as
+ * half a year.
  */
 export function couponBondModifiedDuration(input: {
   couponRatePct: number;
-  cleanPrice: number;
+  cleanPrice: number | null;
   maturityDate: string;
   today: string;
 }): CouponDurationResult {
   const days = signedDaysBetween(input.today, input.maturityDate);
   if (days == null) return { ok: false, reason: "no-maturity" };
   if (days < 0) return { ok: false, reason: "matured" };
-  if (!Number.isFinite(input.couponRatePct) || input.couponRatePct < 0) return { ok: false, reason: "no-coupon" };
-  if (!Number.isFinite(input.cleanPrice) || !(input.cleanPrice > 0)) return { ok: false, reason: "no-price" };
-  if (days === 0) return { ok: true, modifiedDuration: 0, macaulayDuration: 0, yieldToMaturity: 0 };
+  if (days === 0) return { ok: true, modifiedDuration: 0, macaulayDuration: 0, yieldToMaturity: null, remainingFlows: 0 };
 
-  const yearsToMaturity = days / DAYS_PER_YEAR;
-  const period = 1 / COUPONS_PER_YEAR;
-  const couponPerPeriod = input.couponRatePct / COUPONS_PER_YEAR;
-
-  // Flow times, nearest first is last in this list: T, T - 0.5, T - 1, ... > 0.
-  const flows: Array<{ t: number; amount: number }> = [];
-  for (let k = 0; ; k++) {
-    const t = yearsToMaturity - k * period;
-    if (!(t > 1e-9)) break;
-    flows.push({ t, amount: couponPerPeriod + (k === 0 ? 100 : 0) });
+  const dates = remainingCouponDates(input.maturityDate, input.today);
+  if (dates.length === 0) return { ok: false, reason: "no-maturity" };
+  if (dates.length === 1) {
+    // One cash flow: its timing is the whole story, so small price noise
+    // near maturity cannot make the bond unpriceable.
+    const years = days / DAYS_PER_YEAR;
+    return { ok: true, modifiedDuration: years, macaulayDuration: years, yieldToMaturity: null, remainingFlows: 1 };
   }
-  const timeToNextCoupon = flows[flows.length - 1].t;
-  const accrued = couponPerPeriod * Math.max(0, Math.min(1, (period - timeToNextCoupon) / period));
+
+  if (!Number.isFinite(input.couponRatePct) || input.couponRatePct < 0) return { ok: false, reason: "no-coupon" };
+  if (input.cleanPrice == null || !Number.isFinite(input.cleanPrice) || !(input.cleanPrice > 0)) {
+    return { ok: false, reason: "no-price" };
+  }
+
+  const couponPerPeriod = input.couponRatePct / COUPONS_PER_YEAR;
+  const maturity = parseIsoDate(input.maturityDate)!;
+  const previousCoupon = minusMonths(maturity, dates.length * MONTHS_PER_COUPON);
+  const periodDays = signedDaysBetween(previousCoupon, dates[0]);
+  const daysToNext = signedDaysBetween(input.today, dates[0]);
+  if (periodDays == null || daysToNext == null || !(periodDays > 0)) return { ok: false, reason: "no-maturity" };
+  // Fraction of a coupon period until the next coupon: 1 on a coupon date.
+  const w = Math.max(0, Math.min(1, daysToNext / periodDays));
+  const accrued = couponPerPeriod * (1 - w);
   const dirtyPrice = input.cleanPrice + accrued;
 
+  // Flow j (0-based) is w + j periods away.
+  const flows = dates.map((_, j) => ({
+    periods: w + j,
+    amount: couponPerPeriod + (j === dates.length - 1 ? 100 : 0),
+  }));
   const presentValue = (y: number) =>
-    flows.reduce((sum, f) => sum + f.amount * Math.pow(1 + y / COUPONS_PER_YEAR, -COUPONS_PER_YEAR * f.t), 0);
+    flows.reduce((sum, f) => sum + f.amount * Math.pow(1 + y / COUPONS_PER_YEAR, -f.periods), 0);
 
   // Present value falls as yield rises, so bisection brackets the yield.
   let lo = MIN_YIELD;
@@ -184,17 +288,20 @@ export function couponBondModifiedDuration(input: {
     const mid = (lo + hi) / 2;
     if (presentValue(mid) > dirtyPrice) lo = mid;
     else hi = mid;
-    if (hi - lo < 1e-12) break;
+    if (hi - lo < 1e-13) break;
   }
   const y = (lo + hi) / 2;
   const pv = presentValue(y);
   if (!Number.isFinite(pv) || !(pv > 0)) return { ok: false, reason: "no-yield" };
 
   const macaulayDuration =
-    flows.reduce((sum, f) => sum + f.t * f.amount * Math.pow(1 + y / COUPONS_PER_YEAR, -COUPONS_PER_YEAR * f.t), 0) / pv;
+    flows.reduce(
+      (sum, f) => sum + (f.periods / COUPONS_PER_YEAR) * f.amount * Math.pow(1 + y / COUPONS_PER_YEAR, -f.periods),
+      0,
+    ) / pv;
   const modifiedDuration = macaulayDuration / (1 + y / COUPONS_PER_YEAR);
   if (!Number.isFinite(modifiedDuration) || modifiedDuration < 0) return { ok: false, reason: "no-yield" };
-  return { ok: true, modifiedDuration, macaulayDuration, yieldToMaturity: y };
+  return { ok: true, modifiedDuration, macaulayDuration, yieldToMaturity: y, remainingFlows: dates.length };
 }
 
 function storedDuration(value: number | null): number | null {
@@ -227,21 +334,28 @@ export function estimateBondRateLeg(pos: RateLegInputs, rateBps: number, today: 
   });
   const unmodelled = (unmodelledReason: BondUnmodelledReason): BondRateLeg => ({ changePercent: 0, unmodelledReason });
 
-  if (stored != null) return modelled(stored, "stored");
-
   const days = pos.maturity_date ? signedDaysBetween(today, pos.maturity_date) : null;
+  // A known maturity date in the past wins over a stored duration.
+  if (days != null && days < 0) return unmodelled("matured");
+  if (stored != null) return modelled(stored, "stored");
   if (days == null) return unmodelled("no-maturity");
-  if (days < 0) return unmodelled("matured");
 
-  // Zero-coupon: one cash flow, so the duration is the time to it.
-  if (pos.coupon_rate === 0 || isTreasuryBillName(pos.security_name)) {
+  // Zero-coupon: one cash flow, so the duration is the time to it. The name
+  // decides only when no coupon is stored; a positive stored coupon on a row
+  // named like a bill is a coupon bond.
+  const coupon = pos.coupon_rate;
+  if (coupon === 0 || (coupon == null && isTreasuryBillName(pos.security_name))) {
     return modelled(days / DAYS_PER_YEAR, "bill-maturity");
   }
 
-  if (pos.coupon_rate == null || !Number.isFinite(pos.coupon_rate) || pos.coupon_rate < 0) return unmodelled("no-coupon");
-  if (pos.bond_price == null) return unmodelled("no-price");
+  // One flow left needs neither the coupon nor the price.
+  if (remainingCouponDates(pos.maturity_date!, today).length <= 1) {
+    return modelled(days / DAYS_PER_YEAR, "single-flow");
+  }
+
+  if (coupon == null || !Number.isFinite(coupon) || coupon < 0) return unmodelled("no-coupon");
   const derived = couponBondModifiedDuration({
-    couponRatePct: pos.coupon_rate,
+    couponRatePct: coupon,
     cleanPrice: pos.bond_price,
     maturityDate: pos.maturity_date!,
     today,

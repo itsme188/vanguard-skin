@@ -85,3 +85,41 @@ export function normalizeFundCategory(
 
   return trimmed;
 }
+
+/**
+ * Normalized fund_category labels that mean "this fund holds bonds" — the ONE
+ * grouping of bond-type categories (2026-10-07; none existed before). Keyed
+ * lowercase. It lists the bond labels the in-repo vocabulary can produce: the
+ * static lookup (lib/data/security-classifications.ts) and the examples the
+ * AI classification prompt names. fund_category is an OPEN vocabulary, so a
+ * bond label that is not here is simply not recognised by category; add it
+ * here, never at a call site.
+ *
+ * Deliberately absent: "Cash Equivalent" / "Money Market" (cash identity is
+ * isCashEquivalentSecurity) and every "Leveraged/Inverse" label.
+ */
+export const BOND_FUND_CATEGORIES: ReadonlySet<string> = new Set([
+  "us aggregate bond",
+  "diversified bond",
+  "us treasury",
+  "us long-term treasury",
+  "us mortgage-backed securities",
+  "us ultra-short bond",
+  "emerging markets bond",
+  "tips",
+]);
+
+/** True when the label, after normalizeFundCategory, is a bond-fund category. */
+export function isBondFundCategory(raw: string | null | undefined): boolean {
+  const normalized = normalizeFundCategory(raw);
+  return normalized != null && BOND_FUND_CATEGORIES.has(normalized.toLowerCase());
+}
+
+/**
+ * True for the leveraged / inverse family: "Leveraged/Inverse" and its
+ * qualified forms such as "Leveraged/Inverse (Commodities)".
+ */
+export function isLeveragedInverseFundCategory(raw: string | null | undefined): boolean {
+  const normalized = normalizeFundCategory(raw);
+  return normalized != null && /^leveraged\/inverse\b/i.test(normalized);
+}

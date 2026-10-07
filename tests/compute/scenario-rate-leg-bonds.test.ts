@@ -25,6 +25,10 @@ const FUND_STORED = 6;
 const CASH = 7;
 const STOCK = 8;
 const NO_COUPON = 9;
+const SHORT_BOND = 10;
+const FI_STOCK = 11;
+const INVERSE_FUND = 12;
+const NULL_SECTOR_FUND = 13;
 
 const RATE_PRESET = "rate_shock_up_25bp";
 
@@ -148,6 +152,41 @@ describe("custom rate move: individual bonds", () => {
     expect(undated.bondUnmodelledReason).toBe("no-maturity");
   });
 
+  it("a falling-rate move makes a long bond gain", () => {
+    const res = custom(-100);
+    for (const id of [BILL, NOTE, STORED, FUND_DEFAULT]) {
+      expect(rowOf(res, id).changePercent, String(id)).toBeGreaterThan(0);
+      expect(rowOf(res, id).estimatedChange, String(id)).toBeGreaterThan(0);
+    }
+    expect(rowOf(res, STORED).changePercent).toBeCloseTo(Math.exp(7 * 0.01) - 1, 10);
+  });
+
+  it("a short bond position loses dollars when rates fall and gains when they rise", () => {
+    seed(SHORT_BOND, "ZZSHORT", { name: "ZZ shorted", type: "Bond", duration: 6, price: 100, quantity: -10000 });
+    const fall = rowOf(custom(-100), SHORT_BOND);
+    expect(fall.currentValue).toBeLessThan(0);
+    expect(fall.changePercent).toBeCloseTo(Math.exp(6 * 0.01) - 1, 10);
+    expect(fall.estimatedChange).toBeLessThan(0);
+    const rise = rowOf(custom(100), SHORT_BOND);
+    expect(rise.estimatedChange).toBeGreaterThan(0);
+    expect(rise.estimatedChange).toBeCloseTo(rise.currentValue * (Math.exp(-6 * 0.01) - 1), 8);
+  });
+
+  it("a bond within a month of maturity is priced on its time to maturity despite price noise", () => {
+    seed(SHORT_BOND, "ZZNEAR", { name: "ZZ note near maturity", type: "Bond", coupon: 4, maturity: addDays(today, 30), price: 98.5, quantity: 1000 });
+    const near = rowOf(custom(200), SHORT_BOND);
+    expect(near.bondUnmodelledReason).toBeUndefined();
+    expect(near.rateDurationSource).toBe("single-flow");
+    expect(near.changePercent).toBeCloseTo(Math.exp(-(30 / 365) * 0.02) - 1, 10);
+  });
+
+  it("a matured bond with a stored duration is matured, not priced", () => {
+    seed(SHORT_BOND, "ZZPAST", { name: "ZZ matured", type: "Bond", duration: 7, maturity: addDays(today, -5), price: 100, quantity: 1000 });
+    const res = custom(200);
+    expect(rowOf(res, SHORT_BOND).changePercent).toBe(0);
+    expect(rowOf(res, SHORT_BOND).bondUnmodelledReason).toBe("matured");
+  });
+
   it("no rate move, nothing left out", () => {
     for (const res of [custom(undefined, -0.1), custom(0, -0.1)]) {
       expect(res.bondsUnmodelled).toEqual({ count: 0, valueShare: 0 });
@@ -169,6 +208,44 @@ describe("custom rate move: bond funds and cash", () => {
     const fund = rowOf(custom(200), FUND_STORED);
     expect(fund.changePercent).toBeCloseTo(Math.exp(-2 * 0.02) - 1, 10);
     expect(fund.rateDurationSource).toBe("fund-stored");
+  });
+
+  it("an ordinary bond ETF moves", () => {
+    expect(rowOf(custom(200), FUND_STORED).securityType).toBe("ETF");
+    expect(rowOf(custom(200), FUND_STORED).changePercent).toBeLessThan(0);
+  });
+
+  it("a Stock with a Fixed Income sector is not a bond fund: no rate leg, in either engine", () => {
+    seed(FI_STOCK, "ZZPREF", { name: "ZZ Preferred", type: "Stock", sector: "Fixed Income", price: 25, quantity: 100 });
+    const res = custom(200);
+    expect(rowOf(res, FI_STOCK).changePercent).toBe(0);
+    expect(rowOf(res, FI_STOCK).rateDurationSource).toBeUndefined();
+    expect(rowOf(preset(RATE_PRESET), FI_STOCK).rateDurationSource).toBeUndefined();
+  });
+
+  it("an inverse bond fund takes no rate leg from this rule and is not listed as an unmodelled bond", () => {
+    seed(INVERSE_FUND, "ZZINV", {
+      name: "ZZ Inverse Treasury ETF", type: "ETF", sector: "Fixed Income", fundCategory: "Leveraged/Inverse", price: 20, quantity: 100,
+    });
+    const res = custom(200);
+    expect(rowOf(res, INVERSE_FUND).changePercent).toBe(0);
+    expect(rowOf(res, INVERSE_FUND).rateDurationSource).toBeUndefined();
+    expect(rowOf(res, INVERSE_FUND).bondUnmodelledReason).toBeUndefined();
+    expect(res.bondsUnmodelled.count).toBe(1); // still only the undated bond
+    const fromPreset = preset(RATE_PRESET);
+    expect(rowOf(fromPreset, INVERSE_FUND).rateDurationSource).toBeUndefined();
+    expect(rowOf(fromPreset, INVERSE_FUND).bondUnmodelledReason).toBeUndefined();
+    expect(fromPreset.bondsUnmodelled.count).toBe(1);
+  });
+
+  it("a bond-category fund with no sector moves, on the custom move and on the preset alike", () => {
+    seed(NULL_SECTOR_FUND, "ZZNSF", {
+      name: "ZZ Aggregate Bond Fund", type: "Mutual Fund", sector: null, fundCategory: "US Aggregate Bond", price: 10, quantity: 500,
+    });
+    const row = rowOf(custom(200), NULL_SECTOR_FUND);
+    expect(row.changePercent).toBeCloseTo(Math.exp(-5 * 0.02) - 1, 10);
+    expect(row.rateDurationSource).toBe("fund-default");
+    expect(rowOf(preset(RATE_PRESET), NULL_SECTOR_FUND).changePercent).toBeCloseTo(rowOf(custom(25), NULL_SECTOR_FUND).changePercent, 12);
   });
 
   it("a cash-equivalent fund keeps its existing treatment, even with a Fixed Income sector", () => {
