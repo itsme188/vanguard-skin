@@ -44,6 +44,18 @@ function AccountValueLines({ cashLine }: { cashLine: AccountCashLine | null }) {
     cashLine.holdingsCount !== null &&
     cashLine.pricedCount !== null &&
     cashLine.pricedCount < cashLine.holdingsCount;
+  // Cash and the total are stated only when a snapshot on or before this
+  // date owns the cash. Otherwise the stored figure is the valuation
+  // engine's placeholder zero or a value back-stepped from a later
+  // snapshot, and the query returns null for both.
+  const showCash =
+    cashLine.cashAnchored && cashLine.cashBalance !== null && cashLine.totalValue !== null;
+  // On the snapshot's own day cash is the snapshot total minus PRICED
+  // positions, so an unpriced position's value is inside Cash and the total
+  // is the snapshot's. On a later day the cash is carried forward, and a
+  // position that had a price on the snapshot day but has none now is
+  // missing from the total instead; the note must not promise either.
+  const onSnapshotDay = cashLine.anchorDate === cashLine.valuationDate;
 
   return (
     <div data-account-value="lines" className="px-4 py-3 space-y-2 text-sm">
@@ -60,39 +72,64 @@ function AccountValueLines({ cashLine }: { cashLine: AccountCashLine | null }) {
           <p data-account-value="unpriced-note" className="mt-0.5 text-xs text-ink-dim">
             Positions with a price that day: <Count value={cashLine.pricedCount} /> of{" "}
             <Count value={cashLine.holdingsCount} />. The rest are not in the Positions figure.
+            {showCash &&
+              (onSnapshotDay
+                ? " Their value sits inside the Cash figure instead, so the split between Positions and Cash is off by it. The Account total is the broker snapshot's total and is not affected."
+                : " Their value is either inside the Cash figure or missing from the Account total, so those two figures may be off by it.")}
           </p>
         )}
-      </div>
-      <div>
-        <div className="flex items-baseline justify-between gap-3">
-          <span className="text-ink-dim">
-            Cash <span className="text-xs">({asOf})</span>
-          </span>
-          <span className="font-mono tabular-nums text-ink">
-            <Money value={cashLine.cashBalance} precise />
-          </span>
-        </div>
-        {cashLine.liveSourceCaption && (
-          <p data-account-value="live-note" className="mt-0.5 text-xs text-ink-dim">
-            {cashLine.liveSourceCaption}
-          </p>
-        )}
-        {sweepSymbols.length > 0 && (
+        {!showCash && sweepSymbols.length > 0 && (
           <p data-account-value="sweep-note" className="mt-0.5 text-xs text-ink-dim">
             Money-market funds listed above (
-            <span className="font-mono">{sweepSymbols.join(", ")}</span>) are counted in Cash,
-            not in Positions. Do not add them to the Cash figure again.
+            <span className="font-mono">{sweepSymbols.join(", ")}</span>) are treated as cash,
+            so they are not in Positions.
           </p>
         )}
       </div>
-      <div className="flex items-baseline justify-between gap-3 border-t border-edge pt-2">
-        <span className="font-medium text-ink">
-          Account total <span className="text-xs font-normal text-ink-dim">({asOf})</span>
-        </span>
-        <span className="font-mono tabular-nums font-medium text-ink">
-          <Money value={cashLine.totalValue} precise />
-        </span>
-      </div>
+      {!showCash && (
+        <p data-account-value="unanchored-note" className="text-xs text-ink-dim">
+          No broker snapshot anchors cash for{" "}
+          <span className="font-mono">{cashLine.valuationDate}</span> yet, so cash and the
+          account total are not shown.
+        </p>
+      )}
+      {showCash && (
+        <div data-account-value="cash">
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="text-ink-dim">
+              Cash <span className="text-xs">({asOf})</span>
+            </span>
+            <span className="font-mono tabular-nums text-ink">
+              <Money value={cashLine.cashBalance} precise />
+            </span>
+          </div>
+          {cashLine.liveSourceCaption && (
+            <p data-account-value="live-note" className="mt-0.5 text-xs text-ink-dim">
+              {cashLine.liveSourceCaption}
+            </p>
+          )}
+          {sweepSymbols.length > 0 && (
+            <p data-account-value="sweep-note" className="mt-0.5 text-xs text-ink-dim">
+              Money-market funds listed above (
+              <span className="font-mono">{sweepSymbols.join(", ")}</span>) are counted in Cash,
+              not in Positions. Do not add them to the Cash figure again.
+            </p>
+          )}
+        </div>
+      )}
+      {showCash && (
+        <div
+          data-account-value="total"
+          className="flex items-baseline justify-between gap-3 border-t border-edge pt-2"
+        >
+          <span className="font-medium text-ink">
+            Account total <span className="text-xs font-normal text-ink-dim">({asOf})</span>
+          </span>
+          <span className="font-mono tabular-nums font-medium text-ink">
+            <Money value={cashLine.totalValue} precise />
+          </span>
+        </div>
+      )}
     </div>
   );
 }

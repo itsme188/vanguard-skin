@@ -62,17 +62,24 @@ export interface HoldingsFooterSummary {
   /** Gain of the rows that have one (known basis AND a price); null when
    *  none does. */
   totalGain: number | null;
+  /** Cost basis of the rows that are in Gain (known basis AND a price): the
+   *  only honest base for Gain %. Equals totalCostBasis − noPriceCostBasis.
+   *  Null when no row has a gain. */
+  gainCostBasis: number | null;
   /** Rows with no cost basis (null or the stored-zero convention). They are
-   *  in Value, and in neither Cost Basis nor Gain. */
+   *  in neither Cost Basis nor Gain. */
   noBasisCount: number;
-  /** Combined market value of those rows (shorts net against longs). */
+  /** How many of those rows have a current price. Only these are in Value. */
+  noBasisPricedCount: number;
+  /** Combined market value of the PRICED no-basis rows (shorts net against
+   *  longs). Says nothing about the unpriced ones: unknown is not zero. */
   noBasisValue: number;
-  /** How many of those rows have no current price either, so they add
-   *  nothing to `noBasisValue`. */
+  /** How many of those rows have no current price either. Their value is
+   *  unknown and they are in none of the totals. */
   noBasisUnpricedCount: number;
   /** Rows with a known basis but no gain, which the query produces only
-   *  when there is no current price. They are in Cost Basis, and in neither
-   *  Value nor Gain. */
+   *  when there is no current price. They are in Cost Basis, and in none of
+   *  Value, Gain and Gain %. */
   noPriceCount: number;
   /** Combined cost basis of those rows. */
   noPriceCostBasis: number;
@@ -103,7 +110,9 @@ export function summarizeHoldingsFooter(
     totalValue: sum(rows.map((h) => h.current_value ?? 0)),
     totalCostBasis: withBasis.length === 0 ? null : sum(withBasis.map((h) => h.cost_basis!)),
     totalGain: withGain.length === 0 ? null : sum(withGain.map((h) => h.unrealized_gain!)),
+    gainCostBasis: withGain.length === 0 ? null : sum(withGain.map((h) => h.cost_basis!)),
     noBasisCount: noBasis.length,
+    noBasisPricedCount: noBasis.filter((h) => h.current_value !== null).length,
     noBasisValue: sum(noBasis.map((h) => h.current_value ?? 0)),
     noBasisUnpricedCount: noBasis.filter((h) => h.current_value === null).length,
     noPriceCount: noPrice.length,
@@ -316,8 +325,11 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                 <GainCell value={footer.totalGain} />
               </td>
               <td className="px-4 py-3 text-right">
+                {/* Over the cost basis of the rows that are IN Gain, not the
+                    Cost Basis total: a percent whose two halves cover
+                    different positions is not a figure. */}
                 <GainPercentCell
-                  value={unrealizedGainRatio(footer.totalGain, footer.totalCostBasis)}
+                  value={unrealizedGainRatio(footer.totalGain, footer.gainCostBasis)}
                 />
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
@@ -328,42 +340,54 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                 )}
               </td>
             </tr>
-            {(footer.noBasisCount > 0 || footer.noPriceCount > 0) && (
-              // Said in the row, in words: the three money columns cover
-              // different sets of positions, so Value − Cost Basis is not
-              // Gain. Wording is the same for one position or many, so Hide
-              // amounts cannot leak "exactly one" through the grammar.
-              <tr className="bg-panel/50">
-                <td colSpan={9} className="px-4 pb-3 text-xs text-ink-dim space-y-1">
-                  {footer.noBasisCount > 0 && (
-                    <p data-footer-disclosure="no-basis">
-                      Positions with no cost basis: <Count value={footer.noBasisCount} />, worth{" "}
-                      <Money value={footer.noBasisValue} precise />. They are counted in Value and
-                      left out of Cost Basis and Gain.
-                      {footer.noBasisUnpricedCount > 0 && (
-                        <>
-                          {" "}
-                          Of those, positions with no current price either, which add nothing to that
-                          figure:{" "}
-                          <Count value={footer.noBasisUnpricedCount} />.
-                        </>
-                      )}
-                    </p>
-                  )}
-                  {footer.noPriceCount > 0 && (
-                    <p data-footer-disclosure="no-price">
-                      Positions with a cost basis but no current price:{" "}
-                      <Count value={footer.noPriceCount} />, cost basis{" "}
-                      <Money value={footer.noPriceCostBasis} precise />. They are counted in Cost
-                      Basis (and so in the Gain % base) and left out of Value and Gain.
-                    </p>
-                  )}
-                </td>
-              </tr>
-            )}
           </tfoot>
         </table>
       </ScrollFade>
+      {(footer.noBasisCount > 0 || footer.noPriceCount > 0) && (
+        // Said in words, under the table and OUTSIDE the horizontal scroller
+        // so a phone reads it without scrolling sideways: the footer's money
+        // columns cover different sets of positions, so Value − Cost Basis
+        // is not Gain. The wording is the same for one position or many, so
+        // Hide amounts cannot leak "exactly one" through the grammar.
+        <div
+          data-footer-disclosures
+          className="border-t border-edge bg-panel/50 px-4 py-3 text-xs text-ink-dim space-y-1"
+        >
+          {footer.noBasisCount > 0 && (
+            <p data-footer-disclosure="no-basis">
+              Positions with no cost basis: <Count value={footer.noBasisCount} />
+              {footer.noBasisUnpricedCount === 0 ? (
+                <>
+                  , worth <Money value={footer.noBasisValue} precise />. They are counted in Value
+                  and left out of Cost Basis, Gain and Gain %.
+                </>
+              ) : footer.noBasisPricedCount === 0 ? (
+                // Unknown is not zero: no figure at all.
+                <>
+                  . None has a current price, so their value is unknown and they are in none of
+                  the totals.
+                </>
+              ) : (
+                <>
+                  . With a current price: <Count value={footer.noBasisPricedCount} />, worth{" "}
+                  <Money value={footer.noBasisValue} precise />; they are counted in Value and
+                  left out of Cost Basis, Gain and Gain %. Without a current price:{" "}
+                  <Count value={footer.noBasisUnpricedCount} />; their value is unknown and they
+                  are in none of the totals.
+                </>
+              )}
+            </p>
+          )}
+          {footer.noPriceCount > 0 && (
+            <p data-footer-disclosure="no-price">
+              Positions with a cost basis but no current price:{" "}
+              <Count value={footer.noPriceCount} />, cost basis{" "}
+              <Money value={footer.noPriceCostBasis} precise />. They are counted in Cost Basis
+              and left out of Value, Gain and Gain %.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

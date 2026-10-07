@@ -10,6 +10,11 @@ import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
  * (`total_value = holdings_value + cash_balance` is how
  * lib/compute/daily-valuation.ts writes every row).
  *
+ * Cash and the total are only returned when a snapshot on or before that
+ * day owns the cash (`cashAnchored`). Otherwise the stored cash is the
+ * engine's placeholder zero or a value back-stepped from a later snapshot,
+ * and stating it would be a guess.
+ *
  * Three things a reader of that footer has to be told, and that this query
  * supplies:
  *
@@ -48,17 +53,26 @@ export interface AccountCashLine {
   valuationDate: string;
   /** Positions at market value, US dollars. Excludes money-market sweep funds. */
   holdingsValue: number;
-  /** Cash, US dollars. Includes money-market sweep funds. */
-  cashBalance: number;
-  /** holdingsValue + cashBalance, as stored. */
-  totalValue: number;
+  /** True when a snapshot on or before `valuationDate` owns the day's cash
+   *  (`anchorDate` is set). False means the stored cash is not a figure for
+   *  this date: it is the engine's placeholder zero, or a value back-stepped
+   *  from a LATER snapshot. `cashBalance` and `totalValue` are then null so
+   *  no surface can print them as fact. */
+  cashAnchored: boolean;
+  /** Cash, US dollars. Includes money-market sweep funds. Null when
+   *  `cashAnchored` is false. */
+  cashBalance: number | null;
+  /** holdingsValue + cashBalance, as stored. Null when `cashAnchored` is
+   *  false. */
+  totalValue: number | null;
   /** Positions the engine tried to value that day (null on a legacy row). */
   holdingsCount: number | null;
   /** How many of those had a price (null on a legacy row). */
   pricedCount: number | null;
   /** The snapshot the cash figure is anchored to: the newest
-   *  `monthly_snapshots` row on or before `valuationDate` that the valuation
-   *  engine could resolve. Null when there is none. */
+   *  `monthly_snapshots` row on or before `valuationDate`, provided the
+   *  valuation engine could resolve it. Null when there is no such row or
+   *  it did not resolve. */
   anchorDate: string | null;
   /** True when that anchor is a live broker snapshot (Plaid or TWS). */
   isLiveSource: boolean;
@@ -105,34 +119,38 @@ export function getAccountCashLine(
     .get(accountId) as ValuationRow | undefined;
   if (!valuation) return null;
 
-  // The anchor that owns this day's cash: the newest snapshot on or before
-  // the valuation date. The valuation engine carries an anchor's cash
-  // forward until the next anchor, so a day AFTER a live anchor still holds
-  // that anchor's residual. The EXISTS / cash_value clause mirrors the
-  // engine's own skip rule (getCashAnchors in lib/compute/daily-valuation.ts:
-  // an anchor with no priced day in its five-day lookback and no
-  // broker-reported cash is skipped, and the previous anchor keeps owning
-  // the cash).
-  const anchor = db
+  // The anchor that owns this day's cash is the NEWEST snapshot on or before
+  // the valuation date, and only if the valuation engine could resolve it.
+  // This mirrors lib/compute/daily-valuation.ts exactly:
+  //  - an anchor's cash is carried forward until the next snapshot's date,
+  //    so a day AFTER a live anchor still holds that anchor's residual;
+  //  - an anchor resolves through a priced day in its five-day lookback, or
+  //    through broker-reported cash (getCashAnchors + anchorCashResidual);
+  //  - an anchor that does NOT resolve still ends the previous anchor's
+  //    window, and the rows from its date on keep the placeholder cash of 0.
+  //    So the previous anchor does not keep owning those days: nothing does.
+  // tests/queries/account-cash-line-engine.test.ts runs the real engine and
+  // fails if the two stop agreeing.
+  const newest = db
     .prepare(
       `SELECT ms.month_end_date,
-              CASE WHEN ${onlyLiveSnapshotsSql("ms.source")} THEN 1 ELSE 0 END AS is_live
+              CASE WHEN ${onlyLiveSnapshotsSql("ms.source")} THEN 1 ELSE 0 END AS is_live,
+              CASE WHEN ms.cash_value IS NOT NULL
+                     OR EXISTS (
+                       SELECT 1 FROM daily_valuations dv
+                       WHERE dv.account_id = ms.account_id
+                         AND dv.valuation_date <= ms.month_end_date
+                         AND dv.valuation_date >= date(ms.month_end_date, '-5 days')
+                     )
+                   THEN 1 ELSE 0 END AS resolved
        FROM monthly_snapshots ms
        WHERE ms.account_id = ?
          AND ms.month_end_date <= ?
-         AND (
-           ms.cash_value IS NOT NULL
-           OR EXISTS (
-             SELECT 1 FROM daily_valuations dv
-             WHERE dv.account_id = ms.account_id
-               AND dv.valuation_date <= ms.month_end_date
-               AND dv.valuation_date >= date(ms.month_end_date, '-5 days')
-           )
-         )
        ORDER BY ms.month_end_date DESC
        LIMIT 1`,
     )
-    .get(accountId, valuation.valuation_date) as AnchorRow | undefined;
+    .get(accountId, valuation.valuation_date) as (AnchorRow & { resolved: number }) | undefined;
+  const anchor = newest?.resolved === 1 ? newest : undefined;
 
   const held = db
     .prepare(
@@ -145,14 +163,16 @@ export function getAccountCashLine(
     )
     .all(accountId) as HeldSecurityRow[];
 
+  const cashAnchored = anchor !== undefined;
   const isLiveSource = anchor?.is_live === 1;
 
   return {
     accountId,
     valuationDate: valuation.valuation_date,
     holdingsValue: valuation.holdings_value,
-    cashBalance: valuation.cash_balance,
-    totalValue: valuation.total_value,
+    cashAnchored,
+    cashBalance: cashAnchored ? valuation.cash_balance : null,
+    totalValue: cashAnchored ? valuation.total_value : null,
     holdingsCount: valuation.holdings_count,
     pricedCount: valuation.priced_count,
     anchorDate: anchor?.month_end_date ?? null,

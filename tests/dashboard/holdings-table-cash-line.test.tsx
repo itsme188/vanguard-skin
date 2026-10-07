@@ -56,6 +56,7 @@ function cashLine(over: Partial<AccountCashLine> = {}): AccountCashLine {
     holdingsCount: 2,
     pricedCount: 2,
     anchorDate: "2026-02-28",
+    cashAnchored: true,
     isLiveSource: false,
     liveSourceCaption: null,
     cashEquivalentSymbols: [],
@@ -79,6 +80,9 @@ describe("HoldingsTable account value footer (rendered)", () => {
     const block = html.slice(anchorIndex(html, 'data-account-value="lines"'));
     expect(block).toContain("Positions at market value");
     expect(block).toContain("$7,000.00");
+    expect(block).toContain('data-account-value="cash"');
+    expect(block).toContain('data-account-value="total"');
+    expect(block).not.toContain('data-account-value="unanchored-note"');
     expect(block).toContain("Cash");
     expect(block).toContain("$3,000.00");
     expect(block).toContain("Account total");
@@ -115,12 +119,75 @@ describe("HoldingsTable account value footer (rendered)", () => {
     expect(note).toContain("not in Positions");
   });
 
-  it("says so when some positions had no price on the valuation date", () => {
-    const html = render(ROWS, cashLine({ holdingsCount: 4, pricedCount: 3 }));
-    const note = sliceBetween(html, 'data-account-value="unpriced-note"', "</p>");
-    expect(note).toMatch(/>3</);
-    expect(note).toMatch(/>4</);
-    expect(note).toContain("not in the Positions figure");
+  describe("some positions had no price on the valuation date", () => {
+    const unpriced = { holdingsCount: 4, pricedCount: 3 };
+
+    it("on the snapshot's own day: the value sits in Cash, the split is off, the total is not", () => {
+      // Cash that day is the snapshot total minus PRICED holdings, so an
+      // unpriced position's value is inside Cash and the total is untouched.
+      const html = render(ROWS, cashLine({ ...unpriced, anchorDate: "2026-03-03" }));
+      const note = sliceBetween(html, 'data-account-value="unpriced-note"', "</p>");
+      expect(note).toMatch(/>3</);
+      expect(note).toMatch(/>4</);
+      expect(note).toContain("The rest are not in the Positions figure.");
+      expect(note).toContain(
+        "Their value sits inside the Cash figure instead, so the split between Positions and Cash is off by it.",
+      );
+      expect(note).toContain(
+        "The Account total is the broker snapshot&#x27;s total and is not affected.",
+      );
+    });
+
+    it("on a later day carrying the snapshot's cash: it does not claim the total is right", () => {
+      const html = render(ROWS, cashLine({ ...unpriced, anchorDate: "2026-02-28" }));
+      const note = sliceBetween(html, 'data-account-value="unpriced-note"', "</p>");
+      expect(note).toContain("The rest are not in the Positions figure.");
+      expect(note).toContain(
+        "Their value is either inside the Cash figure or missing from the Account total, so those two figures may be off by it.",
+      );
+      expect(note).not.toContain("is not affected");
+    });
+
+    it("with no cash shown: it says only what is true of Positions", () => {
+      const html = render(
+        ROWS,
+        cashLine({ ...unpriced, anchorDate: null, cashAnchored: false, cashBalance: null, totalValue: null }),
+      );
+      const note = sliceBetween(html, 'data-account-value="unpriced-note"', "</p>");
+      expect(note).toContain("The rest are not in the Positions figure.");
+      expect(note).not.toContain("Cash");
+    });
+  });
+
+  describe("no snapshot owns the cash for the valuation date", () => {
+    const unowned = { anchorDate: null, cashAnchored: false, cashBalance: null, totalValue: null };
+
+    it("keeps Positions, prints no Cash or Account total figure, and says why in one sentence", () => {
+      const html = render(ROWS, cashLine(unowned));
+      const block = html.slice(anchorIndex(html, 'data-account-value="lines"'));
+      expect(block).toContain("Positions at market value");
+      expect(block).toContain("$7,000.00");
+      const note = sliceBetween(block, 'data-account-value="unanchored-note"', "</p>").replace(
+        /<[^>]+>/g,
+        "",
+      );
+      expect(note).toContain(
+        "No broker snapshot anchors cash for 2026-03-03 yet, so cash and the account total are not shown.",
+      );
+      expect(block).not.toContain('data-account-value="cash"');
+      expect(block).not.toContain('data-account-value="total"');
+      // Exactly one dollar figure in the block: Positions.
+      expect(block.match(/\$[\d,]+\.\d\d/g)!.length).toBe(1);
+      expect(block).not.toContain("$0.00");
+    });
+
+    it("still says a listed sweep fund is not in Positions", () => {
+      const html = render(ROWS, cashLine({ ...unowned, cashEquivalentSymbols: ["ZZSWEEP"] }));
+      const note = sliceBetween(html, 'data-account-value="sweep-note"', "</p>");
+      expect(note).toContain("ZZSWEEP");
+      expect(note).toContain("not in Positions");
+      expect(note).not.toContain("Cash figure");
+    });
   });
 
   it("explains the gap instead of rendering nothing when there is no daily valuation", () => {

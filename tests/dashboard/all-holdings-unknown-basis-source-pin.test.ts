@@ -144,9 +144,11 @@ describe("AllHoldingsTable treats a zero cost basis as unknown everywhere", () =
   it("the footer Gain % uses the abs-denominator ratio helper, not a raw divide", () => {
     const text = src();
     const footer = text.slice(anchorIndex(text, "<tfoot>"));
-    expect(footer).not.toMatch(/totalGain\s*\/\s*(footer\.)?totalCostBasis/);
+    expect(footer).not.toMatch(/totalGain\s*\/\s*(footer\.)?(total|gain)CostBasis/);
+    // The base is the cost basis of the rows that are in Gain (2026-10-07
+    // ruling), never the Cost Basis total, which also covers unpriced rows.
     expect(footer).toMatch(
-      /unrealizedGainRatio\(footer\.totalGain,\s*footer\.totalCostBasis\)/
+      /unrealizedGainRatio\(footer\.totalGain,\s*footer\.gainCostBasis\)/
     );
   });
 });

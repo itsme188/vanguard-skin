@@ -95,6 +95,8 @@ describe("getAccountCashLine", () => {
     seedValuation(accountId, "2026-03-03", 300, 700);
     // A newer, larger row on another account must never leak in.
     seedValuation(otherAccountId, "2026-03-04", 5000, 5000);
+    seedAnchor(accountId, "2026-03-02", "statement");
+    seedAnchor(otherAccountId, "2026-03-04", "statement");
 
     const line = getAccountCashLine(db, accountId);
 
@@ -104,7 +106,7 @@ describe("getAccountCashLine", () => {
     expect(line!.cashBalance).toBe(300);
     expect(line!.holdingsValue).toBe(700);
     expect(line!.totalValue).toBe(1000);
-    expect(line!.holdingsValue + line!.cashBalance).toBe(line!.totalValue);
+    expect(line!.holdingsValue + line!.cashBalance!).toBe(line!.totalValue);
 
     const other = getAccountCashLine(db, otherAccountId);
     expect(other!.valuationDate).toBe("2026-03-04");
@@ -163,19 +165,22 @@ describe("getAccountCashLine", () => {
       expect(line.isLiveSource).toBe(false);
     });
 
-    it("skips an anchor the valuation engine could not resolve (no priced day within five days, no reported cash)", () => {
+    it("names no owner when the newest anchor is one the valuation engine could not resolve", () => {
       // Statement anchor resolves through the valuation row two days earlier.
       seedValuation(accountId, "2026-02-26", 300, 700);
       seedAnchor(accountId, "2026-02-28", "statement");
       // Live anchor with no valuation row in its five-day lookback and no
-      // broker-reported cash: computeDailyValuations skips it, so the
-      // statement anchor still owns the cash carried to the latest row.
+      // broker-reported cash. The engine skips it, but it still ends the
+      // statement anchor's window: rows from its date on keep placeholder
+      // cash. So the statement anchor does NOT own the latest row.
       seedAnchor(accountId, "2026-03-20", "tws");
-      seedValuation(accountId, "2026-03-30", 300, 700);
+      seedValuation(accountId, "2026-03-30", 0, 700);
 
       const line = getAccountCashLine(db, accountId)!;
       expect(line.valuationDate).toBe("2026-03-30");
-      expect(line.anchorDate).toBe("2026-02-28");
+      expect(line.anchorDate).toBeNull();
+      expect(line.cashAnchored).toBe(false);
+      expect(line.cashBalance).toBeNull();
       expect(line.isLiveSource).toBe(false);
     });
 
@@ -185,6 +190,11 @@ describe("getAccountCashLine", () => {
       expect(line.anchorDate).toBeNull();
       expect(line.isLiveSource).toBe(false);
       expect(line.liveSourceCaption).toBeNull();
+      // No owner, so no cash and no total: positions only.
+      expect(line.cashAnchored).toBe(false);
+      expect(line.cashBalance).toBeNull();
+      expect(line.totalValue).toBeNull();
+      expect(line.holdingsValue).toBe(700);
     });
   });
 
@@ -234,6 +244,7 @@ describe("getAccountCashLine", () => {
     ).run();
     seedHolding(accountId, "ZZJPY", "2026-03-03", 100, { currency: "JPY" });
     seedValuation(accountId, "2026-03-03", 300, 700);
+    seedAnchor(accountId, "2026-03-03", "statement");
 
     const line = getAccountCashLine(db, accountId)!;
     expect(line.cashBalance).toBe(300);
