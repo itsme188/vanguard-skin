@@ -63,6 +63,7 @@ vi.mock("@/lib/compute/classify-factors", () => ({
 }));
 
 import { runAutoRefresh } from "@/lib/tws/auto-refresh";
+import { todayET } from "@/lib/calendar/date-utils";
 import { getSyncState, isSyncing } from "@/lib/tws/sync-state";
 
 /**
@@ -238,14 +239,26 @@ describe("auto-refresh — integration", () => {
     expect(mocks.enrichPendingOptionUnderlyings).not.toHaveBeenCalled();
   });
 
-  it("an underlying that has failed three lookups no longer trips the gate", async () => {
+  it("an underlying skipped for three definitive failures does not trip the gate inside its cool-off", async () => {
     const under = seedUnresolvedUnderlying();
+    // The gate has no clock seam (it reads the ET date itself), so the row is
+    // seeded as last tried on that same date. Clock-injected cool-off tests
+    // live in tests/tws/option-underlying-prices.test.ts.
     db.prepare("INSERT INTO settings (key, value) VALUES ('tws_option_underlying_lookup_failures', ?)").run(
-      JSON.stringify({ [under]: { failures: 3, lastTried: "2026-04-23" } }),
+      JSON.stringify({ [under]: { failures: 3, lastTried: todayET() } }),
     );
     await runAutoRefresh(db, "full");
     expect(mocks.enrichSecurities).not.toHaveBeenCalled();
     expect(mocks.enrichPendingOptionUnderlyings).not.toHaveBeenCalled();
+  });
+
+  it("a skipped underlying whose cool-off has passed trips the gate again", async () => {
+    const under = seedUnresolvedUnderlying();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('tws_option_underlying_lookup_failures', ?)").run(
+      JSON.stringify({ [under]: { failures: 3, lastTried: "2020-01-01" } }),
+    );
+    await runAutoRefresh(db, "full");
+    expect(mocks.enrichPendingOptionUnderlyings).toHaveBeenCalledTimes(1);
   });
 
   it("an underlying with two failed lookups still trips it", async () => {

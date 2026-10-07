@@ -174,8 +174,9 @@ export async function runAutoRefresh(
       // Not-held underlyings of held live options also need a contract id
       // before the snapshot step can price them (owner ruling 2026-10-07).
       // Counted on its own so a failure here can never skip the held rows.
-      // "Pending" leaves out a symbol that has already failed three lookups,
-      // so one that can never resolve stops tripping this gate.
+      // "Pending" leaves out a symbol skipped for repeated definitive
+      // failures (until its 30-day retry is due), so one that can never
+      // resolve stops tripping this gate.
       let unenrichedUnderlyings = 0;
       try {
         unenrichedUnderlyings = getPendingOptionUnderlyings(db, todayET()).length;

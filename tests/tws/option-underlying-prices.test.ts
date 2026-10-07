@@ -16,6 +16,8 @@ import { enrichPendingOptionUnderlyings, enrichSecurities } from "@/lib/tws/cont
 import {
   MAX_UNDERLYING_LOOKUP_FAILURES,
   UNDERLYING_LOOKUP_FAILURES_KEY,
+  UNDERLYING_LOOKUP_RETRY_AFTER_DAYS,
+  getUnderlyingLookupState,
   getLiveHeldOptionUnderlyings,
   getPendingOptionUnderlyings,
   getUnderlyingLookupFailures,
@@ -466,22 +468,140 @@ describe("underlying lookups are exact and bounded", () => {
       expect(getUnderlyingLookupFailures(db, under)).toBe(sync);
     }
     expect(MAX_UNDERLYING_LOOKUP_FAILURES).toBe(3);
-    expect(log).not.toHaveBeenCalledWith(expect.stringContaining("Skipping contract lookup for ZZU"));
 
     expect(await enrichPendingOptionUnderlyings(db, TRADING_DAY)).toEqual([]);
     expect(mock.getContractDetails).toHaveBeenCalledTimes(3);
     expect(getPendingOptionUnderlyings(db, TRADING_DAY)).toEqual([]);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("Skipping contract lookup for ZZU: 3 failed lookups"));
+    // One skip line, logged when the third failure landed, naming the retry date (30 days on).
+    const skipLines = log.mock.calls.filter((c) => String(c[0]).includes("Skipping contract lookup for ZZU"));
+    expect(skipLines).toHaveLength(1);
+    expect(String(skipLines[0][0])).toContain("3 failed lookups; next try on or after 2026-02-01");
     log.mockRestore();
     expect(conIdOf(under).ib_con_id).toBeNull();
   });
 
-  it("a thrown lookup error counts as a failure as well", async () => {
+  it("a thrown lookup (timeout, dropped connection) three times leaves the symbol eligible and counts nothing", async () => {
     const under = underlyingOnly();
-    api(new Error("lookup failed"));
-    const results = await enrichPendingOptionUnderlyings(db, TRADING_DAY);
-    expect(results[0]).toMatchObject({ enriched: false, error: "lookup failed" });
-    expect(getUnderlyingLookupFailures(db, under)).toBe(1);
+    const mock = api(new Error("Request timed out"));
+    for (let sync = 1; sync <= 3; sync++) {
+      const results = await enrichPendingOptionUnderlyings(db, TRADING_DAY);
+      expect(results[0]).toMatchObject({ enriched: false, error: "Request timed out" });
+    }
+    expect(getUnderlyingLookupFailures(db, under)).toBe(0);
+    expect(getUnderlyingLookupState(db, under, TRADING_DAY)).toBe("eligible");
+    expect(db.prepare("SELECT 1 FROM settings WHERE key = ?").get(UNDERLYING_LOOKUP_FAILURES_KEY)).toBeUndefined();
+    // Still requested on the fourth sync.
+    await enrichPendingOptionUnderlyings(db, TRADING_DAY);
+    expect(mock.getContractDetails).toHaveBeenCalledTimes(4);
+  });
+
+  it("a thrown lookup does not clear a count either", async () => {
+    const under = underlyingOnly();
+    api([]);
+    await enrichPendingOptionUnderlyings(db, TRADING_DAY);
+    await enrichPendingOptionUnderlyings(db, TRADING_DAY);
+    api(new Error("Request timed out"));
+    await enrichPendingOptionUnderlyings(db, "2026-01-05");
+    expect(getUnderlyingLookupFailures(db, under)).toBe(2);
+    // ...nor does it move the last-tried date.
+    const ledger = JSON.parse(
+      (db.prepare("SELECT value FROM settings WHERE key = ?").get(UNDERLYING_LOOKUP_FAILURES_KEY) as { value: string }).value,
+    );
+    expect(ledger[String(under)]).toEqual({ failures: 2, lastTried: TRADING_DAY });
+  });
+
+  it("a skipped symbol is still skipped on day 29 and retried once on day 31; another failure waits 30 more days", async () => {
+    expect(UNDERLYING_LOOKUP_RETRY_AFTER_DAYS).toBe(30);
+    const under = underlyingOnly();
+    const mock = api([]);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    for (let i = 0; i < 3; i++) await enrichPendingOptionUnderlyings(db, TRADING_DAY); // last tried 2026-01-02
+    expect(mock.getContractDetails).toHaveBeenCalledTimes(3);
+
+    // Day 29 (2026-01-31): skipped, no request.
+    expect(getUnderlyingLookupState(db, under, "2026-01-31")).toBe("skipped");
+    expect(await enrichPendingOptionUnderlyings(db, "2026-01-31")).toEqual([]);
+    expect(mock.getContractDetails).toHaveBeenCalledTimes(3);
+
+    // Day 31 (2026-02-02): retried once.
+    expect(getUnderlyingLookupState(db, under, "2026-02-02")).toBe("retry-due");
+    expect(await enrichPendingOptionUnderlyings(db, "2026-02-02")).toHaveLength(1);
+    expect(mock.getContractDetails).toHaveBeenCalledTimes(4);
+    expect(log.mock.calls.filter((c) => String(c[0]).includes("Retrying contract lookup for ZZU after the 30-day cool-off"))).toHaveLength(1);
+
+    // It failed again: the last-tried date moved, so the same day and the next 29 are skipped.
+    expect(getUnderlyingLookupFailures(db, under)).toBe(4);
+    expect(await enrichPendingOptionUnderlyings(db, "2026-02-02")).toEqual([]);
+    expect(await enrichPendingOptionUnderlyings(db, "2026-03-03")).toEqual([]); // day 29 of the new wait
+    expect(mock.getContractDetails).toHaveBeenCalledTimes(4);
+    expect(String(log.mock.calls.filter((c) => String(c[0]).includes("Skipping contract lookup for ZZU")).pop()![0])).toContain(
+      "next try on or after 2026-03-04",
+    );
+    expect(await enrichPendingOptionUnderlyings(db, "2026-03-04")).toHaveLength(1); // day 30
+    expect(mock.getContractDetails).toHaveBeenCalledTimes(5);
+    log.mockRestore();
+  });
+
+  it("an unreadable or future last-tried date never justifies a skip", () => {
+    const under = underlyingOnly();
+    for (const lastTried of ["", "soon", "2026-13-45x", "2030-01-01"]) {
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(
+        UNDERLYING_LOOKUP_FAILURES_KEY,
+        JSON.stringify({ [under]: { failures: 3, lastTried } }),
+      );
+      expect(getUnderlyingLookupState(db, under, TRADING_DAY), lastTried).toBe("retry-due");
+      expect(getPendingOptionUnderlyings(db, TRADING_DAY)).toHaveLength(1);
+    }
+  });
+
+  it("a retry that succeeds clears the entry, with one log line", async () => {
+    const under = underlyingOnly();
+    api([]);
+    for (let i = 0; i < 3; i++) await enrichPendingOptionUnderlyings(db, TRADING_DAY);
+    api([match(7001)]);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const results = await enrichPendingOptionUnderlyings(db, "2026-02-02");
+    expect(results[0].enriched).toBe(true);
+    expect(conIdOf(under).ib_con_id).toBe(7001);
+    expect(getUnderlyingLookupFailures(db, under)).toBe(0);
+    expect(log.mock.calls.filter((c) => String(c[0]).includes("Contract lookup for ZZU succeeded; cleared 3 recorded failure(s)"))).toHaveLength(1);
+    log.mockRestore();
+  });
+
+  it("an entry for a security that is no longer the underlying of a held live option is pruned", async () => {
+    const gone = underlyingOnly("ZZG");
+    const kept = underlyingOnly("ZZK");
+    api([]);
+    await enrichPendingOptionUnderlyings(db, TRADING_DAY);
+    expect(getUnderlyingLookupFailures(db, gone)).toBe(1);
+    expect(getUnderlyingLookupFailures(db, kept)).toBe(1);
+
+    // The ZZG option is closed: its latest holdings row is flat.
+    const goneOption = (db.prepare("SELECT id FROM securities WHERE underlying_symbol = 'ZZG'").get() as { id: number }).id;
+    hold(goneOption, 0, "2026-01-02");
+
+    getPendingOptionUnderlyings(db, "2026-01-05");
+    expect(getUnderlyingLookupFailures(db, gone)).toBe(0);
+    expect(getUnderlyingLookupFailures(db, kept)).toBe(1);
+    const ledger = JSON.parse(
+      (db.prepare("SELECT value FROM settings WHERE key = ?").get(UNDERLYING_LOOKUP_FAILURES_KEY) as { value: string }).value,
+    );
+    expect(Object.keys(ledger)).toEqual([String(kept)]);
+  });
+
+  it("an expired option's underlying is pruned too, and nothing is written when there is nothing to prune", () => {
+    const under = underlyingOnly("ZZE");
+    db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, 'unchanged')").run(
+      UNDERLYING_LOOKUP_FAILURES_KEY,
+      JSON.stringify({ [under]: { failures: 3, lastTried: "2026-01-02" } }),
+    );
+    const stamp = () =>
+      (db.prepare("SELECT updated_at FROM settings WHERE key = ?").get(UNDERLYING_LOOKUP_FAILURES_KEY) as { updated_at: string }).updated_at;
+    getPendingOptionUnderlyings(db, "2026-01-05");
+    expect(stamp()).toBe("unchanged");
+    getPendingOptionUnderlyings(db, "2099-12-31"); // the option (2099-06-19) has expired
+    expect(getUnderlyingLookupFailures(db, under)).toBe(0);
+    expect(stamp()).not.toBe("unchanged");
   });
 
   it("a success resets the count and stores the one contract", async () => {
@@ -528,7 +648,7 @@ describe("underlying lookups are exact and bounded", () => {
       JSON.stringify({ [under]: { failures: 3, lastTried: "2026-01-01" } }),
     );
     const mock = api([match(7003)]);
-    const results = await enrichSecurities(db);
+    const results = await enrichSecurities(db, undefined, { today: "2026-01-10" });
     expect(results.map((r) => r.securityId)).toEqual([held]);
     expect(mock.getContractDetails).toHaveBeenCalledTimes(1);
   });
