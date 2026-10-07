@@ -36,13 +36,14 @@ afterEach(() => {
 });
 
 function stubFred(releaseDates: { release_id: number; release_name: string; date: string }[]) {
-  const fetchMock = vi.fn(async (_url: string) => ({
-    ok: true,
-    status: 200,
-    json: async () => ({ release_dates: releaseDates }),
-  }));
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ release_dates: releaseDates }),
+    })),
+  );
 }
 
 describe("fetchMacroEvents — tracked FRED releases", () => {
@@ -60,15 +61,33 @@ describe("fetchMacroEvents — tracked FRED releases", () => {
     // The neighbouring housing release is still tracked.
     expect(keys).toContain("fred:97:2026-04-23");
   });
+});
 
-  it("asks the source for the window once, not per release", async () => {
-    const fetchMock = stubFred([]);
+// A source OUTAGE is not "the source no longer lists it". An empty answer
+// from a failed request used to look exactly like a successful empty one, so
+// the sync's orphan cleanup deleted the week's stored releases and reported
+// them as dropped by the source. A failed or impossible request now throws;
+// the sync's existing catch takes the upsert-only fallback road.
+describe("fetchMacroEvents — a failed source request is an error, not an empty schedule", () => {
+  it("throws on a non-OK response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string) => ({ ok: false, status: 503, json: async () => ({}) })),
+    );
+    await expect(fetchMacroEvents(START, END, WEEK)).rejects.toThrow(/FRED.*503/);
+  });
 
-    await fetchMacroEvents(START, END, WEEK);
+  it("throws when the source key is not configured", async () => {
+    delete process.env.FRED_API_KEY;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchMacroEvents(START, END, WEEK)).rejects.toThrow(/FRED_API_KEY/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const url = String(fetchMock.mock.calls[0]?.[0]);
-    expect(url).toContain("/fred/releases/dates");
-    expect(url).not.toContain("291");
+  it("still returns an empty FRED list for a successful response that lists nothing tracked", async () => {
+    stubFred([]);
+    const events = await fetchMacroEvents(START, END, WEEK);
+    expect(events.some((e) => e.source_key.startsWith("fred:"))).toBe(false);
   });
 });

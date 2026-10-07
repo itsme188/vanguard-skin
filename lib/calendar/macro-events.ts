@@ -203,10 +203,16 @@ async function fetchFredReleaseDates(
   startDate: string,
   endDate: string
 ): Promise<{ date: string; config: FredReleaseConfig; fredName: string }[]> {
+  // A request that FAILS (or cannot be made) must not come back as an empty
+  // schedule: the sync deletes stored releases the fresh list no longer
+  // carries, so "[]" from an outage deleted the week's FRED rows and reported
+  // them as dropped by the source. Throw instead — syncCalendarForWeek's catch
+  // takes the upsert-only built-in-calendar road, deletes nothing and reports
+  // the failure. (A SUCCESSFUL response that lists nothing still returns [];
+  // that is the source's answer, and it is acted on.)
   const apiKey = process.env.FRED_API_KEY;
   if (!apiKey) {
-    console.warn("[fetchFredReleaseDates] FRED_API_KEY not set, skipping FRED calendar");
-    return [];
+    throw new Error("FRED_API_KEY is not set, so the release schedule could not be read");
   }
 
   const url = new URL("https://api.stlouisfed.org/fred/releases/dates");
@@ -220,8 +226,7 @@ async function fetchFredReleaseDates(
 
   const response = await fetch(url.toString());
   if (!response.ok) {
-    console.warn(`[fetchFredReleaseDates] FRED API error: ${response.status}`);
-    return [];
+    throw new Error(`FRED release schedule request failed (HTTP ${response.status})`);
   }
 
   const data = (await response.json()) as { release_dates: FredReleaseDate[] };

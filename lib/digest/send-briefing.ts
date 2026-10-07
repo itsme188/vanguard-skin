@@ -163,6 +163,20 @@ export async function sendBriefingEmail(
       if (result.errors.length > 0) {
         console.warn(`[send-briefing] calendar sync (${w}) had errors: ${result.errors.join("; ")}`);
       }
+      // Nobody is watching this run, so the rows it took off (or put back on)
+      // the calendar go to the server log, one line each — public calendar
+      // titles and dates only. `?? []`: a result from an older shape has none.
+      const describe = (r: { title: string; eventDate: string; reason: string }) =>
+        `${r.title} (${r.eventDate}): ${r.reason}`;
+      for (const r of result.removed ?? []) {
+        console.info(`[send-briefing] calendar sync (${w}) removed ${describe(r)}`);
+      }
+      for (const r of result.superseded ?? []) {
+        console.info(`[send-briefing] calendar sync (${w}) hid ${describe(r)}`);
+      }
+      for (const r of result.restored ?? []) {
+        console.info(`[send-briefing] calendar sync (${w}) restored ${describe(r)}`);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[send-briefing] calendar sync (${w}) failed: ${msg}`);
