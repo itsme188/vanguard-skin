@@ -37,6 +37,18 @@ export interface TranscriptSummaryEntry {
   fetched_at: string;
   /** SEC filing URL (edgar_8k rows); render only via secFilingHref. */
   filing_url?: string | null;
+  /**
+   * How many rows match the same filters with NO row cap — the "M" of
+   * "showing N of M". Set by getTranscriptsSummary on every row it returns.
+   */
+  total_count?: number;
+  /**
+   * Comma-joined `source` of every matching row for this ticker (one per
+   * deduped quarter), counted BEFORE the row cap. A per-ticker header must
+   * count from this, never from the rows that survived the cap. Feed it to
+   * `transcriptCountLabel`; never render it.
+   */
+  ticker_sources?: string | null;
 }
 
 // ─── Query Functions ────────────────────────────────────────────
@@ -152,6 +164,11 @@ export function getTranscriptsSummary(
   // (qa:research-transcripts-list--8k-cover-pages-labelled-transcript-duplicate-quarter-cards).
   // `et.id DESC` breaks ties deterministically when the same source is
   // re-fetched under a new source_key.
+  //
+  // The two window columns (total_count, ticker_sources) are computed after
+  // the filters and BEFORE the LIMIT, so a caller can say "showing N of M"
+  // and a per-ticker header can count every quarter the app holds rather
+  // than the rows that happened to survive the cap.
   const conditions: string[] = [];
   const params: unknown[] = [];
 
@@ -211,7 +228,9 @@ export function getTranscriptsSummary(
        SELECT
          id, ticker, security_name, year, quarter, call_date, source,
          summary, guidance, risk_factors, sentiment_label, sentiment_score,
-         has_full_transcript, fetched_at, filing_url
+         has_full_transcript, fetched_at, filing_url,
+         COUNT(*) OVER () AS total_count,
+         GROUP_CONCAT(source) OVER (PARTITION BY UPPER(ticker)) AS ticker_sources
        FROM ranked
        WHERE rn = 1
        ${extraWhere}

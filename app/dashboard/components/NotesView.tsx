@@ -4,9 +4,12 @@ import { useState, useRef, useEffect, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { NoteWithContext, EarningsTimelineEntry } from "@/lib/queries/notes";
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
+import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
 import type { NoteType, NoteSentiment } from "@/lib/types";
+import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
 import { todayET } from "@/lib/calendar/date-utils";
 import { TranscriptCard, FetchTranscriptButton } from "./TranscriptCard";
+import { SymbolLink } from "./SymbolLink";
 // Group headers count calls and filings separately — an edgar_8k row on this
 // wall is an SEC 8-K press release, and the cards beside it already say so.
 import { transcriptCountLabel } from "@/lib/transcripts/presentation";
@@ -16,6 +19,7 @@ import { EmptyState } from "./EmptyState";
 import apiFetch from "@/lib/http/apiFetch";
 import { PrivateText } from "@/lib/privacy/components";
 import { describeNoteSaveFailure } from "@/lib/notes/save-failure-copy";
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 
 // ─── Props ───────────────────────────────────────────────────────
 
@@ -30,32 +34,56 @@ interface NotesViewProps {
    * filter is active.
    */
   transcriptTickers: string[];
-  securities: { id: number; symbol: string; name: string | null }[];
+  securities: PickerSecurity[];
   currentType: NoteType | null;
   currentSearch: string | null;
 }
 
+/**
+ * A row of the security list the page hands over. `security_type` is
+ * optional: when the page supplies it, the transcript fetch wall offers
+ * stocks only (a fund or an ETF never holds an earnings call).
+ */
+export interface PickerSecurity {
+  id: number;
+  symbol: string;
+  name: string | null;
+  security_type?: string | null;
+}
+
 // ─── Constants ───────────────────────────────────────────────────
 
-// "Stock Notes" is the broadened presentation of the trade_thesis note type
+// "Stock Note" is the broadened presentation of the trade_thesis note type
 // (2026-06-09 rework): position notes, thesis updates, "why I'm watching
 // this" — anything stock-specific that isn't earnings. Journal is reserved
 // for market & trading psychology. The DB value stays trade_thesis (schema
 // CHECK constraint; existing rows keep working).
+//
+// ONE label per note type (owner ruling 2026-09-02): the filter tab, the
+// composer option and the card badge all read from this map, so a note
+// saved as "Stock Note" is badged "Stock Note".
+export const NOTE_TYPE_LABELS: Record<NoteType, string> = {
+  journal: "Journal",
+  earnings: "Earnings",
+  trade_thesis: "Stock Note",
+};
+
+/** The user-facing name of a stored note_type; an unknown value is humanized. */
+export function noteTypeLabel(raw: string): string {
+  const type = coerceNoteType(raw);
+  return type ? NOTE_TYPE_LABELS[type] : raw.replace(/_/g, " ");
+}
+
 const TYPE_OPTIONS: { label: string; value: string }[] = [
   { label: "All", value: "" },
-  { label: "Journal", value: "journal" },
-  { label: "Earnings", value: "earnings" },
-  { label: "Stock Notes", value: "trade_thesis" },
+  ...NOTE_TYPES.map((value) => ({ label: NOTE_TYPE_LABELS[value], value })),
 ];
 
-const SENTIMENT_OPTIONS: { label: string; value: NoteSentiment }[] = [
-  { label: "Bullish", value: "bullish" },
-  { label: "Bearish", value: "bearish" },
-  { label: "Neutral", value: "neutral" },
-  { label: "Cautious", value: "cautious" },
-  { label: "Confident", value: "confident" },
-];
+const SENTIMENT_OPTIONS: { label: string; value: NoteSentiment }[] =
+  NOTE_SENTIMENTS.map((value) => ({
+    label: value.charAt(0).toUpperCase() + value.slice(1),
+    value,
+  }));
 
 const SENTIMENT_STYLES: Record<string, string> = {
   bullish: "bg-up/20 text-up",
@@ -65,11 +93,261 @@ const SENTIMENT_STYLES: Record<string, string> = {
   confident: "bg-blue/20 text-blue",
 };
 
+// Rows the transcript wall adds per "Load more" — the server page's own size.
+const TRANSCRIPT_PAGE_SIZE = 50;
+
 const TYPE_BORDER: Record<string, string> = {
   journal: "border-l-gold",
   earnings: "border-l-blue",
   trade_thesis: "border-l-up",
 };
+
+// ─── Pure helpers (exported for tests) ───────────────────────────
+
+/** The fields the composer collects. The note editor edits the same set. */
+export interface NoteDraft {
+  type: NoteType;
+  content: string;
+  symbol: string;
+  date: string;
+  sentiment: NoteSentiment | "";
+  tags: string;
+}
+
+/** `notes.tags` is a JSON array in a TEXT column; anything else reads as no tags. */
+export function parseNoteTags(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((t): t is string => typeof t === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function splitTags(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/** A saved note as the editor's starting draft. */
+export function draftFromNote(note: NoteWithContext): NoteDraft {
+  return {
+    type: coerceNoteType(note.note_type) ?? "journal",
+    content: note.content,
+    symbol: note.symbol ?? "",
+    date: note.event_date,
+    sentiment: coerceNoteSentiment(note.sentiment) ?? "",
+    tags: parseNoteTags(note.tags).join(", "),
+  };
+}
+
+export interface NoteUpdateBody {
+  id: number;
+  content: string;
+  event_date?: string;
+  tags: string[] | null;
+  sentiment: NoteSentiment | null;
+  note_type?: NoteType;
+  security_id?: number | null;
+}
+
+/**
+ * The PUT /api/notes body for an edit, or null when the text is empty.
+ *
+ * `note_type` and `security_id` are sent ONLY when the edit changed them, so
+ * a body-only edit can never move a note. Journal follows the composer's
+ * rule (a journal entry carries no security): switching a note TO journal
+ * clears its security, while a note that already was a journal entry keeps
+ * whatever link it has — its security control is not on screen.
+ * An emptied date is left out: the server reads that as "leave unchanged".
+ */
+export function buildNoteUpdateBody(
+  note: NoteWithContext,
+  draft: NoteDraft,
+  securities: PickerSecurity[],
+): NoteUpdateBody | null {
+  const content = draft.content.trim();
+  if (!content) return null;
+
+  const tags = splitTags(draft.tags);
+  const body: NoteUpdateBody = {
+    id: note.id,
+    content,
+    tags: tags.length > 0 ? tags : null,
+    sentiment: draft.sentiment || null,
+  };
+  if (draft.date) body.event_date = draft.date;
+
+  const typeChanged = draft.type !== note.note_type;
+  if (typeChanged) body.note_type = draft.type;
+
+  if (draft.type === "journal") {
+    if (typeChanged && note.security_id != null) body.security_id = null;
+  } else if (draft.symbol !== (note.symbol ?? "")) {
+    if (draft.symbol === "") {
+      body.security_id = null;
+    } else {
+      const match = securities.find((s) => s.symbol === draft.symbol);
+      if (match) body.security_id = match.id;
+    }
+  }
+  return body;
+}
+
+/**
+ * Which requested changes the saved row does NOT show. The editor checks the
+ * server's reply instead of assuming: a type or security change the server
+ * did not apply must be reported, never shown as saved.
+ */
+export function unappliedNoteEdits(body: NoteUpdateBody, saved: unknown): string[] {
+  const row = (saved && typeof saved === "object" ? saved : {}) as Record<string, unknown>;
+  const missing: string[] = [];
+  if (body.note_type !== undefined && row.note_type !== body.note_type) {
+    missing.push("type");
+  }
+  if (body.security_id !== undefined && (row.security_id ?? null) !== body.security_id) {
+    missing.push("security");
+  }
+  return missing;
+}
+
+// A bare 9-character CUSIP (a Treasury bill stored under its CUSIP) and a
+// raw OCC option string are identifiers, not securities a note is filed
+// under. All-digit symbols are deliberately NOT matched: Tokyo and Seoul
+// tickers are numeric.
+const CUSIP_SYMBOL_RE = /^\d{3}[0-9A-Z]{5}\d$/i;
+const OCC_SYMBOL_RE = /^[A-Z.]{1,6}\s*\d{6}[CP]\d{8}$/i;
+
+/** False for placeholder rows ("-"), bare CUSIPs and raw OCC option strings. */
+export function isSelectableNoteSecurity(symbol: string): boolean {
+  const s = symbol.trim();
+  if (!/[A-Za-z0-9]/.test(s)) return false;
+  if (CUSIP_SYMBOL_RE.test(s)) return false;
+  if (OCC_SYMBOL_RE.test(s)) return false;
+  return true;
+}
+
+/**
+ * The security picker's options. `keep` is the security a note being edited
+ * already points at: it stays selectable even when the filter would drop it,
+ * so opening the editor never silently re-files a note.
+ */
+export function notePickerSecurities(
+  securities: PickerSecurity[],
+  keep?: { id: number | null; symbol: string | null } | null,
+): PickerSecurity[] {
+  const options = securities.filter((s) => isSelectableNoteSecurity(s.symbol));
+  if (keep?.symbol && keep.id != null && !options.some((s) => s.symbol === keep.symbol)) {
+    return [{ id: keep.id, symbol: keep.symbol, name: null }, ...options];
+  }
+  return options;
+}
+
+// A US-listed ticker: starts with a letter, at most five characters, with
+// only a class separator besides letters. A placeholder "-" and a numeric
+// foreign ticker both fail: the transcript sources cannot serve either.
+const FETCHABLE_TICKER_RE = /^[A-Za-z][A-Za-z./-]{0,4}$/;
+
+/**
+ * Tickers offered a "Fetch <TICKER> Transcript" button: stocks with a real
+ * ticker and no cached transcript. A fund or an ETF holds no earnings call,
+ * so a button for one is a guaranteed dead click.
+ */
+export function transcriptFetchCandidates(
+  securities: PickerSecurity[],
+  cachedTickers: Iterable<string>,
+): string[] {
+  const cached = new Set<string>();
+  for (const t of cachedTickers) cached.add(t.toUpperCase());
+  const out = new Set<string>();
+  for (const s of securities) {
+    const sym = s.symbol.trim();
+    if (!FETCHABLE_TICKER_RE.test(sym)) continue;
+    if (s.security_type != null && s.security_type.trim().toLowerCase() !== "stock") continue;
+    if (cached.has(sym.toUpperCase())) continue;
+    out.add(sym);
+  }
+  return [...out];
+}
+
+/**
+ * The security id the server filtered by, or null. Mirrors the server's gate
+ * exactly: page.tsx parseInt()s the param and getNotesFiltered ignores a
+ * falsy security_id, so a non-numeric ?security=NVDA filters nothing.
+ */
+export function parseSecurityFilterId(
+  raw: string | number | null | undefined,
+): number | null {
+  const id = typeof raw === "number" ? raw : raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+/** The filtered security's symbol, from the rows already on the page. */
+export function resolveSecurityFilterSymbol(
+  id: number,
+  securities: PickerSecurity[],
+  notes: NoteWithContext[],
+): string | null {
+  return (
+    securities.find((s) => s.id === id)?.symbol ??
+    notes.find((n) => n.security_id === id)?.symbol ??
+    null
+  );
+}
+
+export function securityFilterChipText(symbol: string | null): string {
+  return symbol ? `Filtered: ${symbol}` : "Filtered to one security";
+}
+
+/**
+ * Empty-state copy when ONLY the security filter is active: it names the
+ * security and the chip that clears it. Null when a search is also active
+ * (the generic "no matches" copy then covers both controls) or when no
+ * security filter is on.
+ */
+export function securityFilterEmptyCopy(opts: {
+  filterActive: boolean;
+  filterSymbol: string | null;
+  searchActive: boolean;
+  earnings?: boolean;
+}): { title: string; description: string } | null {
+  if (!opts.filterActive || opts.searchActive) return null;
+  const noun = opts.earnings ? "earnings notes" : "notes";
+  return {
+    title: `No ${noun} for ${opts.filterSymbol ?? "this security"}`,
+    description: `Clear the "${securityFilterChipText(opts.filterSymbol)}" chip above to see every note.`,
+  };
+}
+
+/**
+ * The rows a per-ticker "(2 transcripts, 1 filing)" header counts. Built
+ * from the row's uncapped `ticker_sources` when the query supplied it, so a
+ * ticker whose older quarters fell below the row cap is not under-counted.
+ */
+export function tickerCountRows(rows: TranscriptSummaryEntry[]): { source: string }[] {
+  const sources = rows[0]?.ticker_sources;
+  return sources
+    ? sources.split(",").filter(Boolean).map((source) => ({ source }))
+    : rows;
+}
+
+/** Everything a note card needs to edit or delete itself. */
+interface NoteEditController {
+  editingId: number | null;
+  draft: NoteDraft | null;
+  saving: boolean;
+  securities: PickerSecurity[];
+  onStart: (note: NoteWithContext) => void;
+  onChange: (patch: Partial<NoteDraft>) => void;
+  onCancel: () => void;
+  onSave: (note: NoteWithContext) => void;
+  onDelete: (id: number) => void;
+}
 
 // ─── Main Component ──────────────────────────────────────────────
 
@@ -106,7 +384,8 @@ export function NotesView({
 
   // Edit state
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [editContent, setEditContent] = useState("");
+  const [editDraft, setEditDraft] = useState<NoteDraft | null>(null);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -168,10 +447,7 @@ export function NotesView({
       }
       if (formSentiment) body.sentiment = formSentiment;
       if (formTags.trim()) {
-        body.tags = formTags
-          .split(",")
-          .map((t) => t.trim())
-          .filter(Boolean);
+        body.tags = splitTags(formTags);
       }
 
       // Both awaits carry their own .catch so a failure is classified where
@@ -232,14 +508,17 @@ export function NotesView({
   // failure is classified where it happens, never surfaced as a raw
   // err.message ("Failed to fetch" / an unparseable body's SyntaxError).
 
-  async function handleUpdate(id: number) {
-    if (!editContent.trim()) return;
+  async function handleUpdate(note: NoteWithContext) {
+    if (!editDraft || isSavingEdit) return;
+    const body = buildNoteUpdateBody(note, editDraft, securities);
+    if (!body) return;
 
+    setIsSavingEdit(true);
     try {
       const res = await apiFetch("/api/notes", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, content: editContent.trim() }),
+        body: JSON.stringify(body),
       }).catch(() => null);
       if (!res) {
         toast(describeNoteSaveFailure({ kind: "network", action: "update" }), "error");
@@ -247,7 +526,7 @@ export function NotesView({
       }
 
       const data = (await res.json().catch(() => null)) as
-        | { success?: boolean; error?: unknown }
+        | { success?: boolean; error?: unknown; data?: unknown }
         | null;
       if (!res.ok || !data?.success) {
         toast(
@@ -263,13 +542,25 @@ export function NotesView({
       }
 
       setEditingId(null);
-      toast("Note updated", "success");
+      setEditDraft(null);
+      // Read the saved row back rather than assuming every field landed.
+      const unapplied = unappliedNoteEdits(body, data.data);
+      if (unapplied.length > 0) {
+        toast(
+          `The note was saved, but its ${unapplied.join(" and ")} did not change. The rest of your edit is in place.`,
+          "error",
+        );
+      } else {
+        toast("Note updated", "success");
+      }
       startTransition(() => {
         router.refresh();
       });
     } catch {
       // Safety net only — every await above is already guarded.
       toast(describeNoteSaveFailure({ kind: "unknown", action: "update" }), "error");
+    } finally {
+      setIsSavingEdit(false);
     }
   }
 
@@ -319,11 +610,55 @@ export function NotesView({
   // prefills the add-note dropdown.
   const securityFilterParam =
     searchParams.get("security_id") ?? searchParams.get("security");
+  const securityFilterId = parseSecurityFilterId(securityFilterParam);
+  const securityFilterSymbol =
+    securityFilterId == null
+      ? null
+      : resolveSecurityFilterSymbol(securityFilterId, securities, initialNotes);
+  const searchActive = Boolean(searchParams.get("search")?.trim());
+  const listIsFiltered = notesListIsFiltered({
+    search: searchParams.get("search"),
+    security: securityFilterParam,
+    type: searchParams.get("type"),
+  });
+  const filterEmptyCopy = securityFilterEmptyCopy({
+    filterActive: securityFilterId != null,
+    filterSymbol: securityFilterSymbol,
+    searchActive,
+    earnings: showEarningsView,
+  });
+
+  function clearSecurityFilter() {
+    startTransition(() => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("security");
+      params.delete("security_id");
+      router.push(`?${params.toString()}`);
+    });
+  }
+
+  const edit: NoteEditController = {
+    editingId,
+    draft: editDraft,
+    saving: isSavingEdit,
+    securities,
+    onStart: (note) => {
+      setEditingId(note.id);
+      setEditDraft(draftFromNote(note));
+    },
+    onChange: (patch) => setEditDraft((d) => (d ? { ...d, ...patch } : d)),
+    onCancel: () => {
+      setEditingId(null);
+      setEditDraft(null);
+    },
+    onSave: handleUpdate,
+    onDelete: handleDelete,
+  };
 
   return (
     <div className="space-y-6">
       {/* ─── Type filter pills ───────────────────────────────────── */}
-      <div className="flex items-center gap-1.5" role="group" aria-label="Note type filter">
+      <div className="flex items-center gap-1.5 flex-wrap" role="group" aria-label="Note type filter">
         {TYPE_OPTIONS.map((opt) => (
           <button
             key={opt.value}
@@ -338,127 +673,67 @@ export function NotesView({
             {opt.label}
           </button>
         ))}
+        {/* The security filter arrives by link (?security=) and has no other
+            control on this page: without this chip it is invisible and
+            cannot be cleared. */}
+        {securityFilterId != null && (
+          <button
+            type="button"
+            onClick={clearSecurityFilter}
+            className="inline-flex items-center gap-1.5 rounded-full bg-gold/20 text-gold-ink px-3 py-1.5 text-sm font-medium hover:brightness-110 transition-colors focus-ring"
+            aria-label={
+              securityFilterSymbol
+                ? `Clear filter — showing only ${securityFilterSymbol}`
+                : "Clear filter — showing only one security"
+            }
+            title="Clear filter"
+          >
+            {securityFilterChipText(securityFilterSymbol)}
+            <span aria-hidden="true">✕</span>
+          </button>
+        )}
       </div>
 
       {/* ─── Quick-add form ──────────────────────────────────────── */}
       <form onSubmit={handleCreate} className="bg-panel border border-edge rounded-xl p-4 space-y-3">
-        <div className="flex items-center gap-3 flex-wrap">
-          <select
-            value={formType}
-            onChange={(e) => {
-              const next = e.target.value as NoteType;
-              setFormType(next);
-              // Third reset point (belt-and-suspenders-and-belt): clearing
-              // formSymbol on type-switch prevents a residual ticker from
-              // an Earnings/Trade-Thesis draft from leaking into a
-              // subsequent Journal entry's hidden state. The build-time
-              // gate in handleCreate already prevents the leak from
-              // reaching the API; this just removes the latent state.
-              if (next === "journal") setFormSymbol("");
-            }}
-            className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus:outline-none focus:border-gold"
+        <NoteComposerFields
+          type={formType}
+          onTypeChange={(next) => {
+            setFormType(next);
+            // Third reset point (belt-and-suspenders-and-belt): clearing
+            // formSymbol on type-switch prevents a residual ticker from
+            // an Earnings/Trade-Thesis draft from leaking into a
+            // subsequent Journal entry's hidden state. The build-time
+            // gate in handleCreate already prevents the leak from
+            // reaching the API; this just removes the latent state.
+            if (next === "journal") setFormSymbol("");
+          }}
+          symbol={formSymbol}
+          onSymbolChange={setFormSymbol}
+          date={formDate}
+          onDateChange={setFormDate}
+          sentiment={formSentiment}
+          onSentimentChange={setFormSentiment}
+          content={formContent}
+          onContentChange={setFormContent}
+          tags={formTags}
+          onTagsChange={setFormTags}
+          securities={notePickerSecurities(securities)}
+          viaOption={searchParams.get("via") === "option"}
+          textareaRef={textareaRef}
+          tagsHintId="tags-hint"
+        >
+          {saveError && (
+            <span className="text-xs text-down">{saveError}</span>
+          )}
+          <button
+            type="submit"
+            disabled={!formContent.trim() || isSaving}
+            className="px-4 py-1.5 bg-gold text-canvas rounded-lg text-sm font-medium hover:bg-gold/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            <option value="journal">Journal</option>
-            <option value="earnings">Earnings</option>
-            <option value="trade_thesis">Stock Note</option>
-          </select>
-
-          {searchParams.get("via") === "option" && formType !== "journal" && (
-            <p className="basis-full text-xs text-ink-dim">
-              {formSymbol
-                ? `Notes on an option are filed under ${formSymbol}.`
-                : "Pick the underlying security for this option note."}
-            </p>
-          )}
-
-          {(formType === "earnings" || formType === "trade_thesis") && (
-            <select
-              value={formSymbol}
-              onChange={(e) => setFormSymbol(e.target.value)}
-              // min-w-0 + max-w-full: a <select> sizes to its longest <option>,
-              // and securities.symbol holds 80+-char prediction-market names —
-              // unconstrained it blew the Notes page to 613px at a 390px
-              // viewport (deep-QA 2026-07-28).
-              className="min-w-0 max-w-full truncate bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus:outline-none focus:border-gold"
-            >
-              <option value="">Select security...</option>
-              {securities.map((s) => (
-                <option key={s.id} value={s.symbol}>
-                  {s.symbol}
-                </option>
-              ))}
-            </select>
-          )}
-
-          <input
-            type="date"
-            value={formDate}
-            onChange={(e) => setFormDate(e.target.value)}
-            className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus:outline-none focus:border-gold"
-          />
-
-          <div className="flex gap-1">
-            {SENTIMENT_OPTIONS.map((s) => (
-              <button
-                key={s.value}
-                type="button"
-                aria-pressed={formSentiment === s.value}
-                onClick={() =>
-                  setFormSentiment(formSentiment === s.value ? "" : s.value)
-                }
-                className={`px-2 py-1 rounded text-xs font-medium transition-colors focus-ring ${
-                  formSentiment === s.value
-                    ? SENTIMENT_STYLES[s.value]
-                    : "text-ink-faint hover:text-ink-dim"
-                }`}
-              >
-                {s.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <textarea
-          ref={textareaRef}
-          value={formContent}
-          onChange={(e) => setFormContent(e.target.value)}
-          placeholder={
-            formType === "journal"
-              ? "Market & trading psychology — how you feel about the market, how you're trading..."
-              : formType === "earnings"
-                ? "Earnings call notes, guidance thoughts..."
-                : "Position notes, thesis updates, why you're watching this name..."
-          }
-          rows={3}
-          className="w-full bg-raised border border-edge rounded-lg px-3 py-2 text-sm text-ink placeholder:text-ink-faint resize-none focus:outline-none focus:border-gold"
-        />
-
-        <div className="flex items-center justify-between">
-          <div className="flex flex-col">
-            <input
-              type="text"
-              value={formTags}
-              onChange={(e) => setFormTags(e.target.value)}
-              placeholder="Tags (comma-separated)"
-              aria-describedby="tags-hint"
-              className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink placeholder:text-ink-faint w-60"
-            />
-            <span id="tags-hint" className="text-[10px] text-ink-faint mt-0.5">e.g. tech, earnings, Q4</span>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {saveError && (
-              <span className="text-xs text-down">{saveError}</span>
-            )}
-            <button
-              type="submit"
-              disabled={!formContent.trim() || isSaving}
-              className="px-4 py-1.5 bg-gold text-canvas rounded-lg text-sm font-medium hover:bg-gold/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              {isSaving ? "Saving..." : "Save Note"}
-            </button>
-          </div>
-        </div>
+            {isSaving ? "Saving..." : "Save Note"}
+          </button>
+        </NoteComposerFields>
       </form>
 
       {/* ─── Search ──────────────────────────────────────────────── */}
@@ -489,42 +764,178 @@ export function NotesView({
           transcriptSummaries={transcriptSummaries}
           transcriptTickers={transcriptTickers}
           securities={securities}
-          filtered={notesListIsFiltered({
-            search: searchParams.get("search"),
-            security: securityFilterParam,
-            type: searchParams.get("type"),
-          })}
-          editingId={editingId}
-          editContent={editContent}
-          onStartEdit={(id, content) => {
-            setEditingId(id);
-            setEditContent(content);
-          }}
-          onCancelEdit={() => setEditingId(null)}
-          onSaveEdit={handleUpdate}
-          onDelete={handleDelete}
+          filtered={listIsFiltered}
+          filterEmptyCopy={filterEmptyCopy}
+          edit={edit}
           onRefresh={() => startTransition(() => router.refresh())}
         />
       ) : (
         <NotesList
           notes={initialNotes}
-          filtered={notesListIsFiltered({
-            search: searchParams.get("search"),
-            security: securityFilterParam,
-            type: searchParams.get("type"),
-          })}
-          editingId={editingId}
-          editContent={editContent}
-          onStartEdit={(id, content) => {
-            setEditingId(id);
-            setEditContent(content);
-          }}
-          onCancelEdit={() => setEditingId(null)}
-          onSaveEdit={handleUpdate}
-          onDelete={handleDelete}
+          filtered={listIsFiltered}
+          filterEmptyCopy={filterEmptyCopy}
+          edit={edit}
         />
       )}
     </div>
+  );
+}
+
+// ─── Composer fields ─────────────────────────────────────────────
+//
+// The ONE set of note fields (type, security, date, sentiment, text, tags).
+// The quick-add form and the note editor both render it, so a field the
+// composer collects is always a field the editor can correct (owner ruling
+// 2026-09-14). `children` is the action area: Save Note for the composer,
+// Save / Cancel for the editor.
+
+function NoteComposerFields({
+  type,
+  onTypeChange,
+  symbol,
+  onSymbolChange,
+  date,
+  onDateChange,
+  sentiment,
+  onSentimentChange,
+  content,
+  onContentChange,
+  tags,
+  onTagsChange,
+  securities,
+  viaOption = false,
+  textareaRef,
+  autoFocus = false,
+  tagsHintId,
+  children,
+}: {
+  type: NoteType;
+  onTypeChange: (next: NoteType) => void;
+  symbol: string;
+  onSymbolChange: (next: string) => void;
+  date: string;
+  onDateChange: (next: string) => void;
+  sentiment: NoteSentiment | "";
+  onSentimentChange: (next: NoteSentiment | "") => void;
+  content: string;
+  onContentChange: (next: string) => void;
+  tags: string;
+  onTagsChange: (next: string) => void;
+  securities: PickerSecurity[];
+  viaOption?: boolean;
+  textareaRef?: React.Ref<HTMLTextAreaElement>;
+  autoFocus?: boolean;
+  tagsHintId: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <>
+      <div className="flex items-center gap-3 flex-wrap">
+        <select
+          value={type}
+          aria-label="Note type"
+          onChange={(e) => {
+            const next = coerceNoteType(e.target.value);
+            if (next) onTypeChange(next);
+          }}
+          className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus:outline-none focus:border-gold"
+        >
+          {NOTE_TYPES.map((value) => (
+            <option key={value} value={value}>
+              {NOTE_TYPE_LABELS[value]}
+            </option>
+          ))}
+        </select>
+
+        {viaOption && type !== "journal" && (
+          <p className="basis-full text-xs text-ink-dim">
+            {symbol
+              ? `Notes on an option are filed under ${symbol}.`
+              : "Pick the underlying security for this option note."}
+          </p>
+        )}
+
+        {(type === "earnings" || type === "trade_thesis") && (
+          <select
+            value={symbol}
+            aria-label="Security"
+            onChange={(e) => onSymbolChange(e.target.value)}
+            // min-w-0 + max-w-full: a <select> sizes to its longest <option>,
+            // and securities.symbol holds 80+-char prediction-market names —
+            // unconstrained it blew the Notes page to 613px at a 390px
+            // viewport (deep-QA 2026-07-28).
+            className="min-w-0 max-w-full truncate bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus:outline-none focus:border-gold"
+          >
+            <option value="">Select security...</option>
+            {securities.map((s) => (
+              <option key={s.id} value={s.symbol}>
+                {s.symbol}
+              </option>
+            ))}
+          </select>
+        )}
+
+        <input
+          type="date"
+          value={date}
+          aria-label="Note date"
+          onChange={(e) => onDateChange(e.target.value)}
+          className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus:outline-none focus:border-gold"
+        />
+
+        <div className="flex gap-1">
+          {SENTIMENT_OPTIONS.map((s) => (
+            <button
+              key={s.value}
+              type="button"
+              aria-pressed={sentiment === s.value}
+              onClick={() => onSentimentChange(sentiment === s.value ? "" : s.value)}
+              className={`px-2 py-1 rounded text-xs font-medium transition-colors focus-ring ${
+                sentiment === s.value
+                  ? SENTIMENT_STYLES[s.value]
+                  : "text-ink-faint hover:text-ink-dim"
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <textarea
+        ref={textareaRef}
+        value={content}
+        autoFocus={autoFocus}
+        aria-label="Note text"
+        onChange={(e) => onContentChange(e.target.value)}
+        placeholder={
+          type === "journal"
+            ? "Market & trading psychology — how you feel about the market, how you're trading..."
+            : type === "earnings"
+              ? "Earnings call notes, guidance thoughts..."
+              : "Position notes, thesis updates, why you're watching this name..."
+        }
+        rows={3}
+        className="w-full bg-raised border border-edge rounded-lg px-3 py-2 text-sm text-ink placeholder:text-ink-faint resize-none focus:outline-none focus:border-gold"
+      />
+
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex flex-col">
+          <input
+            type="text"
+            value={tags}
+            onChange={(e) => onTagsChange(e.target.value)}
+            placeholder="Tags (comma-separated)"
+            aria-label="Tags"
+            aria-describedby={tagsHintId}
+            className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink placeholder:text-ink-faint w-60"
+          />
+          <span id={tagsHintId} className="text-[10px] text-ink-faint mt-0.5">e.g. tech, earnings, Q4</span>
+        </div>
+
+        <div className="flex items-center gap-3">{children}</div>
+      </div>
+    </>
   );
 }
 
@@ -532,7 +943,7 @@ export function NotesView({
 
 // Keys on EXACTLY the params the server filtered by: ?search= and
 // ?security= / ?security_id=. A tab selection (?type=) is navigation, not a
-// user filter — a bare Stock Notes tab on an empty journal must read "No
+// user filter — a bare Stock Note tab on an empty journal must read "No
 // notes yet", not blame a search the user never typed.
 //
 // ?symbol= is the add-note prefill (it preselects the security dropdown and
@@ -561,37 +972,21 @@ export function notesListIsFiltered(params: {
   type?: string | null;
 }): boolean {
   const hasSearch = Boolean(params.search?.trim());
-  // Mirror the server's gate exactly: page.tsx parseInt()s the param and
-  // getNotesFiltered ignores a falsy security_id, so a non-numeric
-  // ?security=NVDA filters nothing and must not claim otherwise.
-  const securityId =
-    typeof params.security === "number"
-      ? params.security
-      : params.security
-        ? parseInt(params.security, 10)
-        : NaN;
-  const hasSecurity = Number.isFinite(securityId) && securityId > 0;
+  // Mirror the server's gate exactly — see parseSecurityFilterId.
+  const hasSecurity = parseSecurityFilterId(params.security) != null;
   return hasSearch || hasSecurity;
 }
 
 function NotesList({
   notes,
   filtered = false,
-  editingId,
-  editContent,
-  onStartEdit,
-  onCancelEdit,
-  onSaveEdit,
-  onDelete,
+  filterEmptyCopy = null,
+  edit,
 }: {
   notes: NoteWithContext[];
   filtered?: boolean;
-  editingId: number | null;
-  editContent: string;
-  onStartEdit: (id: number, content: string) => void;
-  onCancelEdit: () => void;
-  onSaveEdit: (id: number) => void;
-  onDelete: (id: number) => void;
+  filterEmptyCopy?: { title: string; description: string } | null;
+  edit: NoteEditController;
 }) {
   if (notes.length === 0) {
     // A filtered zero-result is not "no notes yet" — say what actually happened
@@ -599,11 +994,12 @@ function NotesList({
     return (
       <EmptyState
         icon={<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}><path d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>}
-        title={filtered ? "No matching notes" : "No notes yet"}
+        title={filterEmptyCopy?.title ?? (filtered ? "No matching notes" : "No notes yet")}
         description={
-          filtered
+          filterEmptyCopy?.description ??
+          (filtered
             ? "Nothing matches the current search or filter — clear it to see all notes."
-            : "Start writing to build your investment journal."
+            : "Start writing to build your investment journal.")
         }
       />
     );
@@ -626,16 +1022,7 @@ function NotesList({
           </h3>
           <div className="space-y-2">
             {dateNotes.map((note) => (
-              <NoteCard
-                key={note.id}
-                note={note}
-                isEditing={editingId === note.id}
-                editContent={editContent}
-                onStartEdit={onStartEdit}
-                onCancelEdit={onCancelEdit}
-                onSaveEdit={onSaveEdit}
-                onDelete={onDelete}
-              />
+              <NoteCard key={note.id} note={note} edit={edit} />
             ))}
           </div>
         </div>
@@ -652,30 +1039,66 @@ function EarningsView({
   transcriptTickers,
   securities,
   filtered = false,
-  editingId,
-  editContent,
-  onStartEdit,
-  onCancelEdit,
-  onSaveEdit,
-  onDelete,
+  filterEmptyCopy = null,
+  edit,
   onRefresh,
 }: {
   timeline: EarningsTimelineEntry[];
   transcriptSummaries: TranscriptSummaryEntry[];
   transcriptTickers: string[];
-  securities: { id: number; symbol: string; name: string | null }[];
+  securities: PickerSecurity[];
   filtered?: boolean;
-  editingId: number | null;
-  editContent: string;
-  onStartEdit: (id: number, content: string) => void;
-  onCancelEdit: () => void;
-  onSaveEdit: (id: number) => void;
-  onDelete: (id: number) => void;
+  filterEmptyCopy?: { title: string; description: string } | null;
+  edit: NoteEditController;
   onRefresh: () => void;
 }) {
+  // The server hands over a capped page of the transcript wall. "Load more"
+  // re-reads a longer page; a fresh server page (after a refresh or a new
+  // filter) always replaces it.
+  const [loadedTranscripts, setLoadedTranscripts] = useState<
+    TranscriptSummaryEntry[] | null
+  >(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+  useEffect(() => {
+    setLoadedTranscripts(null);
+    setLoadMoreError(null);
+  }, [transcriptSummaries]);
+  const shownTranscripts = loadedTranscripts ?? transcriptSummaries;
+  const transcriptTotal = shownTranscripts.reduce(
+    (max, t) => Math.max(max, t.total_count ?? 0),
+    shownTranscripts.length,
+  );
+  const transcriptsWithheld = transcriptTotal - shownTranscripts.length;
+
+  async function loadMoreTranscripts() {
+    setLoadingMore(true);
+    setLoadMoreError(null);
+    try {
+      const res = await apiFetch(
+        `/api/transcripts?limit=${shownTranscripts.length + TRANSCRIPT_PAGE_SIZE}`,
+      );
+      const result = await readMutationResult<{ data?: unknown }>(res);
+      if (!result.ok) {
+        setLoadMoreError(`Couldn't load more transcripts: ${result.message}`);
+        return;
+      }
+      const rows = result.data.data;
+      if (!Array.isArray(rows)) {
+        setLoadMoreError("Couldn't load more transcripts: the server's reply was unreadable.");
+        return;
+      }
+      setLoadedTranscripts(rows as TranscriptSummaryEntry[]);
+    } catch {
+      setLoadMoreError(networkFailureMessage("load more transcripts"));
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
   // Group transcripts by ticker for interleaving with notes
   const transcriptsByTicker = new Map<string, TranscriptSummaryEntry[]>();
-  for (const t of transcriptSummaries) {
+  for (const t of shownTranscripts) {
     if (!transcriptsByTicker.has(t.ticker)) transcriptsByTicker.set(t.ticker, []);
     transcriptsByTicker.get(t.ticker)!.push(t);
   }
@@ -696,24 +1119,24 @@ function EarningsView({
     transcriptTickers.map((t) => t.toUpperCase())
   );
   // Belt and braces: anything on the current wall is cached by definition.
-  for (const t of transcriptSummaries) {
+  for (const t of shownTranscripts) {
     tickersWithTranscripts.add(t.ticker.toUpperCase());
   }
 
-  // Portfolio tickers that don't have transcripts yet (exclude common non-stock symbols)
-  const fetchableTickers = securities
-    .map((s) => s.symbol)
-    .filter((sym) => !tickersWithTranscripts.has(sym.toUpperCase()))
-    .filter((sym) => !sym.includes(" ") && sym.length <= 5); // basic filter for stock-like symbols
+  // Stocks with a real ticker and no cached transcript — see
+  // transcriptFetchCandidates for what is left out and why.
+  const fetchableTickers = transcriptFetchCandidates(securities, tickersWithTranscripts);
 
-  if (timeline.length === 0 && transcriptSummaries.length === 0) {
+  if (timeline.length === 0 && shownTranscripts.length === 0) {
     return (
       <div className="space-y-6">
         <div className="bg-panel border border-edge rounded-xl p-8 text-center">
           <p className="text-ink-faint text-sm">
-            {filtered
-              ? "No matching notes — nothing matches the current search or filter. Clear it to see all earnings notes."
-              : "No earnings notes yet. Add notes during earnings calls to track your thoughts quarter over quarter."}
+            {filterEmptyCopy
+              ? `${filterEmptyCopy.title}. ${filterEmptyCopy.description}`
+              : filtered
+                ? "No matching notes — nothing matches the current search or filter. Clear it to see all earnings notes."
+                : "No earnings notes yet. Add notes during earnings calls to track your thoughts quarter over quarter."}
           </p>
         </div>
         {fetchableTickers.length > 0 && (
@@ -731,9 +1154,11 @@ function EarningsView({
         return (
           <div key={entry.security_id}>
             <div className="flex items-baseline gap-2 mb-3">
-              <span className="font-mono font-semibold text-ink text-sm">
-                {entry.symbol}
-              </span>
+              <SymbolLink
+                securityId={entry.security_id}
+                symbol={entry.symbol}
+                className="font-mono font-semibold text-ink text-sm"
+              />
               {entry.security_name && (
                 <span className="text-ink-faint text-xs truncate">
                   {entry.security_name}
@@ -742,7 +1167,7 @@ function EarningsView({
               <span className="text-ink-faint text-xs">
                 ({entry.notes.length} note{entry.notes.length !== 1 ? "s" : ""}
                 {tickerTranscripts.length > 0 &&
-                  `, ${transcriptCountLabel(tickerTranscripts)}`}
+                  `, ${transcriptCountLabel(tickerCountRows(tickerTranscripts))}`}
                 )
               </span>
             </div>
@@ -756,17 +1181,7 @@ function EarningsView({
               ))}
               {/* Then user notes */}
               {entry.notes.map((note) => (
-                <NoteCard
-                  key={note.id}
-                  note={note}
-                  isEditing={editingId === note.id}
-                  editContent={editContent}
-                  onStartEdit={onStartEdit}
-                  onCancelEdit={onCancelEdit}
-                  onSaveEdit={onSaveEdit}
-                  onDelete={onDelete}
-                  compact
-                />
+                <NoteCard key={note.id} note={note} edit={edit} compact />
               ))}
             </div>
           </div>
@@ -783,7 +1198,7 @@ function EarningsView({
                 {ticker}
               </span>
               <span className="text-ink-faint text-xs">
-                ({transcriptCountLabel(transcripts)})
+                ({transcriptCountLabel(tickerCountRows(transcripts))})
               </span>
             </div>
             <div className="space-y-2 pl-3 border-l-2 border-[#818CF8]/30">
@@ -797,6 +1212,37 @@ function EarningsView({
           </div>
         );
       })}
+
+      {/* The wall is a capped page: say how much of it is on screen, and
+          offer the rest. */}
+      {transcriptsWithheld > 0 && (
+        <div className="flex items-center gap-3 flex-wrap text-xs text-ink-dim">
+          <span>
+            Showing {shownTranscripts.length} of {transcriptTotal} transcripts and filings.
+          </span>
+          {filtered ? (
+            // The longer page is read unfiltered, so it cannot extend a
+            // filtered wall honestly.
+            <span>Narrow the search to bring the rest into view.</span>
+          ) : (
+            <button
+              type="button"
+              onClick={loadMoreTranscripts}
+              disabled={loadingMore}
+              className="px-3 py-1.5 rounded-lg border border-edge text-ink hover:bg-panel disabled:opacity-40 focus-ring"
+            >
+              {loadingMore
+                ? "Loading..."
+                : `Load more (${transcriptsWithheld} remaining)`}
+            </button>
+          )}
+          {loadMoreError && (
+            <span role="alert" className="text-down">
+              {loadMoreError}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Fetch transcripts for portfolio tickers without cached data */}
       {fetchableTickers.length > 0 && (
@@ -837,27 +1283,18 @@ function FetchTickersSection({
 
 function NoteCard({
   note,
-  isEditing,
-  editContent,
-  onStartEdit,
-  onCancelEdit,
-  onSaveEdit,
-  onDelete,
+  edit,
   compact = false,
 }: {
   note: NoteWithContext;
-  isEditing: boolean;
-  editContent: string;
-  onStartEdit: (id: number, content: string) => void;
-  onCancelEdit: () => void;
-  onSaveEdit: (id: number) => void;
-  onDelete: (id: number) => void;
+  edit: NoteEditController;
   compact?: boolean;
 }) {
-  const [showActions, setShowActions] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const borderClass = TYPE_BORDER[note.note_type] ?? "border-l-edge";
-  const tags: string[] = note.tags ? JSON.parse(note.tags) : [];
+  const tags = parseNoteTags(note.tags);
+  const draft = edit.editingId === note.id ? edit.draft : null;
+  const isEditing = draft !== null;
 
   return (
     <div
@@ -866,8 +1303,6 @@ function NoteCard({
           ? "border-gold/40 border-l-gold bg-gold/[0.02]"
           : `border-edge ${borderClass}`
       }`}
-      onMouseEnter={() => setShowActions(true)}
-      onMouseLeave={() => setShowActions(false)}
     >
       <ConfirmDialog
         open={showDeleteConfirm}
@@ -877,103 +1312,130 @@ function NoteCard({
         variant="danger"
         onConfirm={() => {
           setShowDeleteConfirm(false);
-          onDelete(note.id);
+          edit.onDelete(note.id);
         }}
         onCancel={() => setShowDeleteConfirm(false)}
       />
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          {/* Header: type badge + symbol + date */}
-          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-            {!compact && (
-              <span className="text-[10px] font-medium uppercase tracking-wider text-ink-faint bg-muted px-1.5 py-0.5 rounded">
-                {note.note_type.replace("_", " ")}
-              </span>
-            )}
-            {note.symbol && (
-              <span className="font-mono text-xs font-semibold text-blue">
-                {note.symbol}
-              </span>
-            )}
-            {compact && (
-              <span className="text-xs text-ink-faint">
-                {formatDate(note.event_date)}
-              </span>
-            )}
-            {note.sentiment && (
-              <span
-                className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${SENTIMENT_STYLES[note.sentiment] ?? ""}`}
-              >
-                {note.sentiment}
-              </span>
-            )}
-          </div>
-
-          {/* Content */}
-          {isEditing ? (
-            <div className="space-y-2">
-              <textarea
-                value={editContent}
-                onChange={(e) => onStartEdit(note.id, e.target.value)}
-                rows={3}
-                className="w-full bg-raised border border-edge rounded-lg px-3 py-2 text-sm text-ink resize-none focus:outline-none focus:border-gold"
-                autoFocus
-              />
-              <div className="flex gap-2">
-                <button
-                  onClick={() => onSaveEdit(note.id)}
-                  disabled={!editContent.trim()}
-                  className="px-3 py-1 bg-gold text-canvas rounded text-xs font-medium hover:bg-gold/90 disabled:opacity-40 disabled:cursor-not-allowed"
+      {draft ? (
+        // The composer's own fields, filled from this note. Opening a note
+        // to edit is an explicit reveal, so the text is shown unmasked.
+        <div className="space-y-3">
+          <NoteComposerFields
+            type={draft.type}
+            onTypeChange={(type) => edit.onChange({ type })}
+            symbol={draft.symbol}
+            onSymbolChange={(symbol) => edit.onChange({ symbol })}
+            date={draft.date}
+            onDateChange={(date) => edit.onChange({ date })}
+            sentiment={draft.sentiment}
+            onSentimentChange={(sentiment) => edit.onChange({ sentiment })}
+            content={draft.content}
+            onContentChange={(content) => edit.onChange({ content })}
+            tags={draft.tags}
+            onTagsChange={(tags) => edit.onChange({ tags })}
+            securities={notePickerSecurities(edit.securities, {
+              id: note.security_id,
+              symbol: note.symbol,
+            })}
+            autoFocus
+            tagsHintId={`tags-hint-${note.id}`}
+          >
+            <button
+              type="button"
+              onClick={() => edit.onSave(note)}
+              disabled={!draft.content.trim() || edit.saving}
+              className="px-3 py-1 bg-gold text-canvas rounded text-xs font-medium hover:bg-gold/90 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {edit.saving ? "Saving..." : "Save"}
+            </button>
+            <button
+              type="button"
+              onClick={edit.onCancel}
+              disabled={edit.saving}
+              className="px-3 py-1 text-ink-faint hover:text-ink text-xs disabled:opacity-40"
+            >
+              Cancel
+            </button>
+          </NoteComposerFields>
+        </div>
+      ) : (
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            {/* Header: type badge + symbol + date */}
+            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+              {!compact && (
+                <span className="text-[10px] font-medium uppercase tracking-wider text-ink-faint bg-muted px-1.5 py-0.5 rounded">
+                  {noteTypeLabel(note.note_type)}
+                </span>
+              )}
+              {note.symbol &&
+                (note.security_id ? (
+                  <SymbolLink
+                    securityId={note.security_id}
+                    symbol={note.symbol}
+                    className="font-mono text-xs font-semibold text-blue"
+                  />
+                ) : (
+                  <span className="font-mono text-xs font-semibold text-blue">
+                    {note.symbol}
+                  </span>
+                ))}
+              {compact && (
+                <span className="text-xs text-ink-faint">
+                  {formatDate(note.event_date)}
+                </span>
+              )}
+              {note.sentiment && (
+                <span
+                  className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${SENTIMENT_STYLES[note.sentiment] ?? ""}`}
                 >
-                  Save
-                </button>
-                <button
-                  onClick={onCancelEdit}
-                  className="px-3 py-1 text-ink-faint hover:text-ink text-xs"
-                >
-                  Cancel
-                </button>
-              </div>
+                  {note.sentiment}
+                </span>
+              )}
             </div>
-          ) : (
-            <p className="text-sm text-ink whitespace-pre-wrap">
+
+            {/* Content. [overflow-wrap:anywhere]: a long URL is one unbreakable
+                token and otherwise runs out of the card. */}
+            <p className="text-sm text-ink whitespace-pre-wrap [overflow-wrap:anywhere]">
               {/* Note prose carries share counts / P&L in the clear (e.g.
                   "sold 35 of my 50 shares at 352") — portfolio-derived, mask
-                  it like every other such surface. Edit mode below keeps the
+                  it like every other such surface. Edit mode above keeps the
                   raw value: opening a note to edit is an explicit reveal. */}
               <PrivateText>{note.content}</PrivateText>
             </p>
-          )}
 
-          {/* Tags */}
-          {tags.length > 0 && (
-            <div className="flex gap-1 mt-2">
-              {tags.map((tag) => (
-                <span
-                  key={tag}
-                  className="text-[10px] text-ink-faint bg-muted px-1.5 py-0.5 rounded"
-                >
-                  {tag}
-                </span>
-              ))}
-            </div>
-          )}
+            {/* Tags */}
+            {tags.length > 0 && (
+              <div className="flex gap-1 mt-2">
+                {tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="text-[10px] text-ink-faint bg-muted px-1.5 py-0.5 rounded"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
 
-          {/* Transaction link */}
-          {note.transaction_type && note.transaction_date && (
-            <div className="text-xs text-ink-faint mt-1.5">
-              Linked to {note.transaction_type} on {formatDate(note.transaction_date)}
-            </div>
-          )}
-        </div>
+            {/* Transaction link */}
+            {note.transaction_type && note.transaction_date && (
+              <div className="text-xs text-ink-faint mt-1.5">
+                Linked to {note.transaction_type} on {formatDate(note.transaction_date)}
+              </div>
+            )}
+          </div>
 
-        {/* Action buttons */}
-        {showActions && !isEditing && (
-          <div className="flex gap-1 shrink-0">
+          {/* Action buttons — always rendered. A hover gate left a phone with
+              no sign the controls exist; the ::after extends the tap target
+              on touch pointers only. */}
+          <div className="flex gap-1 pointer-coarse:gap-4 shrink-0">
             <button
-              onClick={() => onStartEdit(note.id, note.content)}
-              className="p-1 text-ink-faint hover:text-ink rounded transition-colors focus-ring"
+              type="button"
+              onClick={() => edit.onStart(note)}
+              className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2 p-1 text-ink-faint hover:text-ink rounded transition-colors focus-ring"
               aria-label="Edit note"
+              title="Edit note"
             >
               <svg
                 className="w-3.5 h-3.5"
@@ -987,9 +1449,11 @@ function NoteCard({
               </svg>
             </button>
             <button
+              type="button"
               onClick={() => setShowDeleteConfirm(true)}
-              className="p-1 text-ink-faint hover:text-down rounded transition-colors focus-ring"
+              className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2 p-1 text-ink-faint hover:text-down rounded transition-colors focus-ring"
               aria-label="Delete note"
+              title="Delete note"
             >
               <svg
                 className="w-3.5 h-3.5"
@@ -1002,8 +1466,8 @@ function NoteCard({
               </svg>
             </button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
