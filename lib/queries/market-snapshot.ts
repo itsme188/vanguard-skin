@@ -141,6 +141,9 @@ export function parseYahooChart(json: unknown): LiveQuote | null {
   return { price, prior, asOf };
 }
 
+/** Most Yahoo requests `fetchYahooQuotes` keeps in flight at once. */
+export const YAHOO_QUOTE_CONCURRENCY = 6;
+
 /**
  * Default live-quote fetcher — Yahoo Finance v8 chart (free, no auth), parsed
  * by `parseYahooChart`. This is a thin network adapter (the DI boundary); the
@@ -149,29 +152,50 @@ export function parseYahooChart(json: unknown): LiveQuote | null {
  */
 export const fetchYahooQuotes: QuoteFetcher = async (symbols) => {
   const out: Record<string, LiveQuote> = {};
-  await Promise.all(
-    symbols.map(async (sym) => {
+  // Fixed pool: each worker takes the next symbol until the list is empty, so
+  // at most YAHOO_QUOTE_CONCURRENCY requests are in flight (the universe is
+  // the whole book, not a top-50 slice).
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < symbols.length) {
+      const sym = symbols[next++];
       try {
         const url =
           `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}` +
           `?interval=1d&range=5d`;
         const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-        if (!res.ok) return;
+        if (!res.ok) continue;
         const quote = parseYahooChart(await res.json());
         if (quote) out[sym.toUpperCase()] = quote;
       } catch {
         /* skip this symbol */
       }
-    }),
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(YAHOO_QUOTE_CONCURRENCY, symbols.length) }, () => worker()),
   );
   return Object.keys(out).length > 0 ? out : null;
 };
+
+/**
+ * Security types Yahoo cannot price by the plain stored symbol: an option is
+ * stored under its OCC symbol and a bond under its CUSIP. They are never sent
+ * to the live fallback (their local-book rows are untouched).
+ */
+const YAHOO_UNPRICEABLE_TYPES = new Set(["option", "bond"]);
+
+function isYahooPriceableType(securityType: string | null | undefined): boolean {
+  return !YAHOO_UNPRICEABLE_TYPES.has((securityType ?? "").trim().toLowerCase());
+}
 
 interface UniverseEntry {
   symbol: string;
   name: string | null;
   kind: "benchmark" | "holding";
   position?: MarketPosition;
+  /** False for a held option or bond: never requested from the Yahoo fallback. */
+  yahooPriceable: boolean;
 }
 
 /** Distinct (benchmark + held) symbols, benchmarks first, no duplicates. */
@@ -182,7 +206,7 @@ function buildUniverse(db: Database.Database, benchmarks: string[]): UniverseEnt
     const up = symbol.toUpperCase();
     if (seen.has(up)) continue;
     seen.add(up);
-    universe.push({ symbol: up, name: null, kind: "benchmark" });
+    universe.push({ symbol: up, name: null, kind: "benchmark", yahooPriceable: true });
   }
   // Full held universe: the chat default is the 50 largest long positions,
   // which would silently leave smaller names and shorts unmeasured. A short's
@@ -194,12 +218,14 @@ function buildUniverse(db: Database.Database, benchmarks: string[]): UniverseEnt
     const up = h.symbol?.toUpperCase();
     if (!up || seen.has(up)) continue;
     const side: MarketPosition = h.quantity < 0 ? "short" : "long";
+    const yahooPriceable = isYahooPriceableType(h.security_type);
     const prior = held.get(up);
     if (prior) {
       if (prior.position !== side) prior.position = "mixed";
+      if (yahooPriceable) prior.yahooPriceable = true;
       continue;
     }
-    held.set(up, { symbol: up, name: h.security_name, kind: "holding", position: side });
+    held.set(up, { symbol: up, name: h.security_name, kind: "holding", position: side, yahooPriceable });
   }
   universe.push(...held.values());
   return universe;
@@ -295,7 +321,7 @@ export async function getMarketSnapshot(
   if (opts.fetchQuotes) {
     let quotes: Awaited<ReturnType<QuoteFetcher>> = null;
     try {
-      quotes = await opts.fetchQuotes(universe.map((u) => u.symbol));
+      quotes = await opts.fetchQuotes(universe.filter((u) => u.yahooPriceable).map((u) => u.symbol));
     } catch {
       quotes = null;
     }

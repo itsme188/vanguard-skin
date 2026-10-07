@@ -22,14 +22,18 @@ describe("Tax Lots page source pins — currency conversions and expired options
 
   it("renders the expired-option awaiting-closing-entry line with private count text", () => {
     const src = pageSrc();
-    const line = sliceBetween(src, "expiredOptionContractCount", "<TaxReportCard");
-    expect(line).toContain("<Count");
-    expect(line).toContain("expiredOptionContractCount");
+    // Anchor on the rendered line's own guard, not the first mention of the
+    // variable: sliced from its declaration, the block held the declaration
+    // of both names, so the name checks passed with the JSX deleted.
+    const line = sliceBetween(src, "{expiredOptionContractCount > 0 && (", "<TaxReportCard");
+    expect(line).toContain("<Count value={expiredOptionContractCount} />");
     expect(line).toContain('"contract"');
     expect(line).toContain('"contracts"');
-    expect(line).toContain("expiredOptionSymbols");
-    expect(line).toContain("<PrivateText");
-    expect(src).toContain("getExpiredOptionLotsAwaitingClose");
+    expect(line).toContain("awaiting a closing entry");
+    expect(line).toContain("<PrivateText>{expiredOptionSymbols.join(");
+    // The count is distinct contracts read from the shared query, not lots.
+    expect(src).toContain("getExpiredOptionLotsAwaitingClose(db)");
+    expect(src).toMatch(/const expiredOptionContractCount = expiredOptionSymbols\.length;/);
   });
 
   it("keeps portfolio-derived quantities in the new tax-lot table behind privacy components", () => {

@@ -1,7 +1,13 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { getMarketSnapshot, parseYahooChart, type QuoteFetcher } from "@/lib/queries/market-snapshot";
+import {
+  getMarketSnapshot,
+  parseYahooChart,
+  fetchYahooQuotes,
+  YAHOO_QUOTE_CONCURRENCY,
+  type QuoteFetcher,
+} from "@/lib/queries/market-snapshot";
 
 let db: Database.Database;
 
@@ -348,3 +354,94 @@ describe("getMarketSnapshot universe coverage", () => {
   });
 });
 
+
+describe("getMarketSnapshot Yahoo fallback is narrowed and bounded", () => {
+  function seedTyped(symbol: string, type: string): number {
+    return db
+      .prepare("INSERT INTO securities (symbol, name, security_type, multiplier) VALUES (?, ?, ?, 1)")
+      .run(symbol, symbol, type).lastInsertRowid as number;
+  }
+
+  it("never asks Yahoo for option or bond symbols, and still asks for every stock, ETF and fund", async () => {
+    seedFreshPair(); // SPY + GS (stock), latest local 2026-06-05
+    const acctId = seedAccount("Vanguard Taxable");
+    const typed: [string, string][] = [
+      ["AAA", "Stock"],
+      ["BBB", "ETF"],
+      ["CCCXX", "Mutual Fund"],
+      ["AAA 260619C00100000", "Option"],
+      ["AAA 260619P00100000", "OPTION"],
+      ["912800ZZ1", "Bond"],
+      ["912800ZZ2", "bond"],
+    ];
+    for (const [symbol, type] of typed) seedHolding(acctId, seedTyped(symbol, type), "2026-06-05");
+
+    let asked: string[] = [];
+    const fetchQuotes: QuoteFetcher = async (symbols) => {
+      asked = symbols;
+      return Object.fromEntries(symbols.map((s) => [s, { price: 101, prior: 100 }]));
+    };
+    const snap = await getMarketSnapshot(db, { today: "2026-06-12", fetchQuotes });
+
+    expect(snap.source).toBe("yahoo");
+    expect([...asked].sort()).toEqual(["AAA", "BBB", "CCCXX", "DIA", "GS", "QQQ", "SPY"]);
+    const shown = snap.moves.map((m) => m.symbol);
+    for (const s of ["SPY", "GS", "AAA", "BBB", "CCCXX"]) expect(shown).toContain(s);
+  });
+
+  it("keeps option and bond rows on the local path", async () => {
+    seedFreshPair();
+    const acctId = seedAccount("Vanguard Taxable");
+    const optId = seedTyped("AAA 260619C00100000", "Option");
+    seedHolding(acctId, optId, "2026-06-05");
+    seedPrice(optId, "2026-06-04", 2);
+    seedPrice(optId, "2026-06-05", 3);
+
+    const snap = await getMarketSnapshot(db, { today: "2026-06-05" });
+    expect(snap.source).toBe("local");
+    expect(snap.moves.find((m) => m.symbol === "AAA 260619C00100000")?.pct).toBeCloseTo(50, 5);
+  });
+});
+
+describe("fetchYahooQuotes concurrency", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("never has more than the fixed pool of requests in flight, and still returns every symbol", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      calls++;
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      inFlight--;
+      return {
+        ok: true,
+        json: async () => chartFixture([100, 101], { regularMarketPrice: 101, regularMarketTime: SEP24_CLOSE }),
+      };
+    });
+
+    const symbols = Array.from({ length: 40 }, (_, i) => `SYM${String(i).padStart(2, "0")}`);
+    const quotes = await fetchYahooQuotes(symbols);
+
+    expect(calls).toBe(40);
+    expect(peak).toBeLessThanOrEqual(YAHOO_QUOTE_CONCURRENCY);
+    expect(peak).toBeGreaterThan(1);
+    expect(Object.keys(quotes ?? {}).sort()).toEqual(symbols);
+  });
+
+  it("a failing symbol does not stop the others", async () => {
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.includes("BAD")) throw new Error("network");
+      return {
+        ok: true,
+        json: async () => chartFixture([100, 101], { regularMarketPrice: 101, regularMarketTime: SEP24_CLOSE }),
+      };
+    });
+    const quotes = await fetchYahooQuotes(["AAA", "BAD", "ZZZ"]);
+    expect(Object.keys(quotes ?? {}).sort()).toEqual(["AAA", "ZZZ"]);
+  });
+});

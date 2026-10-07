@@ -7,7 +7,7 @@ import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 import { isPendingStatementLot, pendingStatementKeySet } from "@/lib/queries/pending-statement";
-import { isOptionLive } from "@/lib/compute/option-expiry";
+import { isOptionLive, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCurrencyConversionSecurityType } from "@/lib/queries/tax-lots";
 
 /**
@@ -223,6 +223,11 @@ export function getHoldingsForChat(
   );
   const grossDenominatorMvExpr = includeShorts ? `ABS(${denominatorMvExpr})` : denominatorMvExpr;
 
+  // An option past its expiration day (ET) is not a holding. The purge keeps
+  // the row one grace day, so the read applies the shared cutoff itself
+  // (also normalizes legacy YYYYMMDD expirations).
+  const liveOptionSql = liveOptionExpirationSql("s", todayET());
+
   // First compute total portfolio value for position weights
   const totalRow = db
     .prepare(
@@ -242,7 +247,8 @@ export function getHoldingsForChat(
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
       WHERE ${latestHoldingsPredicate({ includeShorts })}
-      AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))`
+      AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+      AND ${liveOptionSql}`
     )
     .get() as { total: number };
 
@@ -252,6 +258,7 @@ export function getHoldingsForChat(
   const conditions: string[] = [
     latestHoldingsPredicate({ includeShorts }),
     "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+    liveOptionSql,
   ];
   const params: (string | number)[] = [];
 
@@ -581,9 +588,15 @@ export function getTaxLotsForChat(
       -- lib/compute/tax-lots.ts::isLongTermHolding): LT iff the disposition
       -- date is strictly AFTER the one-year anniversary of acquisition, not
       -- a fixed 365/366-day count. Never let this SQL diverge from that
-      -- function's definition.
-      CASE WHEN ? > date(tl.acquisition_date, '+1 year') THEN 1 ELSE 0 END AS is_long_term,
-      date(tl.acquisition_date, '+1 year', '+1 day') AS long_term_date
+      -- function's definition. The anniversary is the SAME month-day one
+      -- year on, built as a string like that function does: SQLite's
+      -- date(x, '+1 year') rolls Feb 29 forward to Mar 1, which made a
+      -- Feb-29 lot long-term one day late (Mar 2 instead of Mar 1).
+      CASE WHEN ? > (printf('%04d', CAST(substr(tl.acquisition_date, 1, 4) AS INTEGER) + 1) || substr(tl.acquisition_date, 5, 6))
+        THEN 1 ELSE 0 END AS is_long_term,
+      CASE WHEN substr(tl.acquisition_date, 6, 5) = '02-29'
+        THEN date(tl.acquisition_date, '+1 year')
+        ELSE date(tl.acquisition_date, '+1 year', '+1 day') END AS long_term_date
     FROM tax_lots tl
     JOIN accounts a ON a.id = tl.account_id
     JOIN securities s ON s.id = tl.security_id
