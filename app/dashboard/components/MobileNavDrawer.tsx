@@ -29,13 +29,23 @@ export function MobileNavDrawer() {
   const [dragX, setDragX] = useState(0); // negative = finger pulled left from start
   const touchStartXRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
+  const navRef = useRef<HTMLElement>(null);
+  const hamburgerRef = useRef<HTMLButtonElement>(null);
   const pathname = usePathname();
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  const close = useCallback(() => setOpen(false), []);
+  const close = useCallback(() => {
+    // The drawer turns aria-hidden/inert on close; if focus is still inside
+    // (the X button, a link) the browser blocks it. Hand focus to the
+    // hamburger first. A no-op when focus is elsewhere (route-change close).
+    if (navRef.current?.contains(document.activeElement)) {
+      hamburgerRef.current?.focus();
+    }
+    setOpen(false);
+  }, []);
 
   useEffect(() => {
     close();
@@ -87,6 +97,7 @@ export function MobileNavDrawer() {
         />
       )}
       <nav
+        ref={navRef}
         className={`fixed top-0 left-0 h-full w-64 z-[70] border-r border-edge shadow-2xl transform transition-transform duration-300 ease-in-out md:hidden ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
@@ -110,6 +121,7 @@ export function MobileNavDrawer() {
         role="dialog"
         aria-label="Navigation menu"
         aria-hidden={!open}
+        inert={!open}
       >
         <div
           className="flex items-center justify-between px-4 py-4 border-b border-edge"
@@ -120,7 +132,7 @@ export function MobileNavDrawer() {
           </span>
           <button
             onClick={close}
-            className="text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised"
+            className="relative text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised pointer-coarse:after:absolute pointer-coarse:after:-inset-3 pointer-coarse:after:content-['']"
             aria-label="Close navigation"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
@@ -160,8 +172,9 @@ export function MobileNavDrawer() {
   return (
     <>
       <button
+        ref={hamburgerRef}
         onClick={() => setOpen(true)}
-        className="md:hidden p-1.5 -ml-1 rounded-md text-ink-faint hover:text-ink transition-colors"
+        className="relative md:hidden p-1.5 -ml-1 rounded-md text-ink-faint hover:text-ink transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
         aria-label="Open navigation menu"
         aria-expanded={open}
       >

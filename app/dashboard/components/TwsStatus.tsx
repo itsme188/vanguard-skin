@@ -1,7 +1,7 @@
 "use client";
 
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { TwsStatus as TwsStatusType } from "@/lib/tws/types";
 import type { SyncState } from "@/lib/tws/sync-state";
 import { useStreamingQuotes } from "@/lib/hooks/useStreamingQuotes";
@@ -39,6 +39,25 @@ export function TwsStatus() {
   const [syncState, setSyncState] = useState<SyncState | null>(null);
   const [showPanel, setShowPanel] = useState(false);
   const streaming = useStreamingQuotes(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  // Escape and an outside pointerdown dismiss the panel, like the Settings
+  // modal and NotesAmbient (qa: header-tws-popover--ignores-escape-...).
+  useEffect(() => {
+    if (!showPanel) return;
+    function onPointerDown(e: PointerEvent) {
+      if (!wrapperRef.current?.contains(e.target as Node)) setShowPanel(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowPanel(false);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [showPanel]);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -77,7 +96,7 @@ export function TwsStatus() {
   const isSyncing = syncState?.status === "syncing";
 
   return (
-    <div className="relative">
+    <div className="relative" ref={wrapperRef}>
       <button
         onClick={() => setShowPanel(!showPanel)}
         className="flex items-center gap-1.5 text-[11px] text-ink-faint font-mono hover:text-ink-dim transition-colors md:max-lg:whitespace-nowrap"

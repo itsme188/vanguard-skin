@@ -10,8 +10,17 @@ interface Props {
   isActive: boolean;
 }
 
-function subviewMatches(sv: SubView, searchParams: URLSearchParams): boolean {
+// Ticks only while the user is ON the tab's own route: the default sub-views
+// declare value: null, so matching ?view= alone ticked them on Today, Accounts
+// and the security hub (qa: header-subview-menus--default-item-ticked-on-unrelated-routes).
+export function subviewMatches(
+  sv: SubView,
+  searchParams: URLSearchParams,
+  pathname: string,
+  tabHref: string,
+): boolean {
   if (!sv.matchParam) return false;
+  if (pathname !== tabHref && !pathname.startsWith(`${tabHref}/`)) return false;
   const current = searchParams.get(sv.matchParam.key);
   return current === sv.matchParam.value;
 }
@@ -58,6 +67,7 @@ export function TabDropdown({ tab, isActive }: Props) {
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const itemRefs = useRef<(HTMLAnchorElement | null)[]>([]);
   const subviews = tab.subviews ?? [];
 
@@ -94,6 +104,9 @@ export function TabDropdown({ tab, isActive }: Props) {
     }
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") {
+        // Focus is on a menu item that is about to unmount; hand it back to
+        // the ••• trigger so a keyboard user keeps their place.
+        triggerRef.current?.focus();
         close();
         return;
       }
@@ -114,6 +127,7 @@ export function TabDropdown({ tab, isActive }: Props) {
         if (item) {
           e.preventDefault();
           router.push(item.getAttribute("href") ?? tab.href);
+          triggerRef.current?.focus();
           close();
         }
       }
@@ -172,6 +186,7 @@ export function TabDropdown({ tab, isActive }: Props) {
           )}
         </Link>
         <button
+          ref={triggerRef}
           type="button"
           onClick={toggleOpen}
           aria-label={`${tab.name} sub-views`}
@@ -202,7 +217,7 @@ export function TabDropdown({ tab, isActive }: Props) {
           className="z-50 min-w-[180px] rounded-lg border border-edge-strong bg-panel shadow-xl py-1"
         >
           {subviews.map((sv, i) => {
-            const active = subviewMatches(sv, searchParams);
+            const active = subviewMatches(sv, searchParams, pathname, tab.href);
             const href = withPreservedParams(sv.href, searchParams, tab.preserveParams);
             return (
               <Link
