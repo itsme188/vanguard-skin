@@ -6,7 +6,7 @@ import { findRecipe } from "@/lib/compute/scenario-recipes";
 import { isOptionSecurityType } from "@/lib/compute/option-elasticity";
 import { VOL_MOVE_MIN, VOL_MOVE_MAX, type OptionIvSource, type OptionUnmodelledReason } from "@/lib/compute/option-reprice";
 import { FUND_DEFAULT_DURATION_YEARS, type BondUnmodelledReason } from "@/lib/compute/bond-duration";
-import { PrivateText } from "@/lib/privacy/components";
+import { Count, Pct, PrivateText } from "@/lib/privacy/components";
 import { formatCompactOptionSymbol } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -48,9 +48,9 @@ const BETA_TITLE = "Beta vs the market: 1.0 moves with the index.";
 
 // ─── Formatters ──────────────────────────────────────────────────
 
-function formatMoney(value: number): string {
+function formatMoney(value: number, opts?: { signed?: boolean }): string {
   const abs = Math.abs(value);
-  const sign = value < 0 ? "-" : value > 0 ? "+" : "";
+  const sign = opts?.signed === false ? (value < 0 ? "-" : "") : value < 0 ? "-" : value > 0 ? "+" : "";
   if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(0)}K`;
   return `${sign}$${abs.toFixed(0)}`;
@@ -77,6 +77,15 @@ const SECTORS = [
   "Communication Services", "Industrials", "Consumer Staples",
   "Energy", "Utilities", "Real Estate", "Materials",
 ];
+
+const GICS_SECTORS = new Set(SECTORS);
+
+function nonShockableBucket(pos: ScenarioResult["positionImpacts"][number]): string | null {
+  if ((pos.securityType ?? "").trim().toLowerCase() === "bond") return "Fixed Income";
+  const sector = pos.sector?.trim();
+  if (!sector || GICS_SECTORS.has(sector)) return null;
+  return sector;
+}
 
 export function ScenarioModelingCard({ scope }: { scope?: string }) {
   const [scenarios, setScenarios] = useState<ScenarioResult[] | null>(null);
@@ -111,8 +120,22 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
     const requestToken = requestTokenRef.current;
     try {
       const sectorMoves: Record<string, number> = {};
+      const seenSectors = new Set<string>();
+      const duplicateSectors = new Set<string>();
       for (const o of customSectorOverrides) {
-        if (o.sector && o.move !== 0) sectorMoves[o.sector] = o.move / 100;
+        if (!o.sector || o.move === 0) continue;
+        if (seenSectors.has(o.sector)) {
+          duplicateSectors.add(o.sector);
+          continue;
+        }
+        seenSectors.add(o.sector);
+        sectorMoves[o.sector] = o.move / 100;
+      }
+      if (duplicateSectors.size > 0) {
+        setCustomError(
+          `Remove duplicate sector overrides before computing: ${Array.from(duplicateSectors).join(", ")}.`
+        );
+        return;
       }
 
       const res = await apiFetch("/api/compute/scenarios", {
@@ -193,6 +216,11 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
   }
 
   const currentValue = scenarios[0].currentPortfolioValue;
+  const notShockableValue = scenarios[0].positionImpacts.reduce(
+    (sum, pos) => (nonShockableBucket(pos) ? sum + Math.max(pos.currentValue, 0) : sum),
+    0
+  );
+  const notShockableShare = currentValue > 0 ? notShockableValue / currentValue : 0;
 
   // Combine preset scenarios with custom result
   const allScenarios = customResult
@@ -204,16 +232,21 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-ink">Scenario Modeling</h3>
         <span className="text-xs text-ink-faint">
-          Current: <PrivateText className="font-mono text-ink">{formatMoney(currentValue)}</PrivateText>
+          Current: <PrivateText className="font-mono text-ink">{formatMoney(currentValue, { signed: false })}</PrivateText>
         </span>
       </div>
 
       <p className="text-xs text-ink-faint">
         Estimated portfolio impact under hypothetical shocks. Per-position P&amp;L is computed from
-        your factor classifications (interest_rate_sensitive, ai_exposure, tariff_exposure, etc.)
+        your factor classifications (rate sensitivity, AI exposure, tariff exposure, etc.)
         — each scenario surfaces its full methodology when expanded. Custom what-if scenarios
         use a market beta per position. Options are repriced in every scenario.
       </p>
+      {notShockableShare > 0 && (
+        <p className="text-xs text-ink-faint">
+          <Pct value={notShockableShare} digits={0} /> of the book (fixed income, Treasury, diversified) is not shockable here.
+        </p>
+      )}
 
       {/* ── Scenario cards ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -278,8 +311,14 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
 
               {/* Estimated new value */}
               <div className="mt-1 text-[10px] text-ink-faint">
-                Est. value: <PrivateText className="font-mono">{formatMoney(result.estimatedPortfolioValue)}</PrivateText>
+                Est. value: <PrivateText className="font-mono">{formatMoney(result.estimatedPortfolioValue, { signed: false })}</PrivateText>
               </div>
+              {!isExpanded && result.optionsUnmodelled.count > 0 && (
+                <div className="mt-1 text-[10px] text-ink-faint">
+                  <Count value={result.optionsUnmodelled.count} />{" "}
+                  {result.optionsUnmodelled.count === 1 ? "option" : "options"} not modelled
+                </div>
+              )}
 
               {/* ── Expanded detail ── */}
               {isExpanded && (
@@ -309,9 +348,17 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                             className="flex items-center justify-between text-xs"
                           >
                             <div className="flex items-center gap-2 min-w-0">
-                              <span className="font-mono font-medium text-ink min-w-16 truncate whitespace-nowrap">
+                              <span
+                                className="font-mono font-medium text-ink min-w-[8rem] truncate whitespace-nowrap"
+                                title={formatCompactOptionSymbol(pos.symbol)}
+                              >
                                 {formatCompactOptionSymbol(pos.symbol)}
                               </span>
+                              {pos.currentValue < 0 && (
+                                <span className="text-[10px] px-1 py-0.5 rounded border border-edge text-ink-faint uppercase shrink-0">
+                                  short
+                                </span>
+                              )}
                               {/* Recipe scenarios are factor-based \u2014 their beta
                                   is a hardcoded 1.0 for type compat, so showing
                                   it would be misleading. */}
@@ -331,7 +378,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                                 )
                               )}
                             </div>
-                            <div className="flex items-center gap-3 shrink-0">
+                            <div className="flex items-center gap-3 shrink-0 ml-2">
                               <PrivateText className="font-mono tabular-nums text-down">
                                 {formatPct(pos.changePercent)}
                               </PrivateText>
@@ -358,9 +405,17 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                             className="flex items-center justify-between text-xs"
                           >
                             <div className="flex items-center gap-2 min-w-0">
-                              <span className="font-mono font-medium text-ink min-w-16 truncate whitespace-nowrap">
+                              <span
+                                className="font-mono font-medium text-ink min-w-[8rem] truncate whitespace-nowrap"
+                                title={formatCompactOptionSymbol(pos.symbol)}
+                              >
                                 {formatCompactOptionSymbol(pos.symbol)}
                               </span>
+                              {pos.currentValue < 0 && (
+                                <span className="text-[10px] px-1 py-0.5 rounded border border-edge text-ink-faint uppercase shrink-0">
+                                  short
+                                </span>
+                              )}
                               {pos.ivSource ? (
                                 <span
                                   className="text-ink-faint text-[10px] shrink-0 whitespace-nowrap"
@@ -377,7 +432,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                                 )
                               )}
                             </div>
-                            <div className="flex items-center gap-3 shrink-0">
+                            <div className="flex items-center gap-3 shrink-0 ml-2">
                               <PrivateText className="font-mono tabular-nums text-up">
                                 {formatPct(pos.changePercent)}
                               </PrivateText>
@@ -426,7 +481,10 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                           .filter((pos) => pos.unmodelledReason)
                           .map((pos) => (
                             <div key={pos.securityId} className="flex items-center justify-between gap-3 text-xs">
-                              <span className="font-mono font-medium text-ink truncate whitespace-nowrap">
+                              <span
+                                className="font-mono font-medium text-ink truncate whitespace-nowrap min-w-[8rem]"
+                                title={formatCompactOptionSymbol(pos.symbol)}
+                              >
                                 {formatCompactOptionSymbol(pos.symbol)}
                               </span>
                               <span className="text-ink-faint shrink-0">
@@ -522,7 +580,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
             }
             setShowBuilder(!showBuilder);
           }}
-          className="text-xs text-gold-ink hover:brightness-125 transition-colors"
+          className="relative text-xs text-gold-ink hover:brightness-125 transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2"
         >
           {showBuilder ? "Hide" : "Build"} Custom Scenario{" "}
           <span aria-hidden style={{ letterSpacing: "0.1em" }}>•••</span>
@@ -596,13 +654,17 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                   Sector Overrides
                 </label>
                 <button
-                  onClick={() =>
+                  onClick={() => {
+                    const used = new Set(customSectorOverrides.map((o) => o.sector).filter(Boolean));
+                    const nextSector = SECTORS.find((sector) => !used.has(sector));
+                    if (!nextSector) return;
                     setCustomSectorOverrides([
                       ...customSectorOverrides,
-                      { sector: SECTORS[0], move: -10 },
-                    ])
-                  }
-                  className="text-[10px] text-gold-ink hover:brightness-125"
+                      { sector: nextSector, move: -10 },
+                    ]);
+                  }}
+                  disabled={new Set(customSectorOverrides.map((o) => o.sector).filter(Boolean)).size >= SECTORS.length}
+                  className="relative text-[10px] text-gold-ink hover:brightness-125 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:-inset-2"
                 >
                   + Add Sector
                 </button>
@@ -618,11 +680,14 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                     }}
                     className="bg-raised border border-edge rounded-lg px-2 py-1 text-xs text-ink flex-1 focus-ring"
                   >
-                    {SECTORS.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
+                    {SECTORS.map((s) => {
+                      const usedElsewhere = customSectorOverrides.some((other, j) => j !== i && other.sector === s);
+                      return (
+                        <option key={s} value={s} disabled={usedElsewhere}>
+                          {s}
+                        </option>
+                      );
+                    })}
                   </select>
                   <input
                     type="number"

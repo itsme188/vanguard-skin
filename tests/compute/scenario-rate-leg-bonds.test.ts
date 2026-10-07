@@ -248,11 +248,27 @@ describe("custom rate move: bond funds and cash", () => {
     expect(rowOf(preset(RATE_PRESET), NULL_SECTOR_FUND).changePercent).toBeCloseTo(rowOf(custom(25), NULL_SECTOR_FUND).changePercent, 12);
   });
 
-  it("a cash-equivalent fund keeps its existing treatment, even with a Fixed Income sector", () => {
+  it("a cash-equivalent fund has no instantaneous price P&L, even with a Fixed Income sector", () => {
     const cash = rowOf(custom(200), CASH);
-    expect(cash.changePercent).toBeCloseTo((200 / 100) * 0.002, 12);
+    expect(cash.changePercent).toBe(0);
+    expect(cash.estimatedChange).toBe(0);
     expect(cash.rateDurationSource).toBeUndefined();
     expect(cash.bondUnmodelledReason).toBeUndefined();
+  });
+
+  it("a custom scenario gives a bond fund only its rate leg, not equity beta stacked on top", () => {
+    seed(NULL_SECTOR_FUND, "ZZ100K", {
+      name: "ZZ Aggregate Bond Fund", type: "Mutual Fund", sector: null, fundCategory: "US Aggregate Bond", price: 100, quantity: 1000,
+    });
+    const fund = rowOf(custom(100, -0.10), NULL_SECTOR_FUND);
+    // Hand-worked: $100,000 position; rates +100bp; default duration 5y.
+    // Linear check for the approved rule: -5y x 1% = -5%, so -$5,000
+    // from rates and $0 from the -10% equity-market leg.
+    expect(fund.currentValue).toBeCloseTo(100_000, 8);
+    expect(fund.changePercent).toBeCloseTo(Math.exp(-5 * 0.01) - 1, 12);
+    expect(fund.estimatedChange).toBeCloseTo(100_000 * (Math.exp(-5 * 0.01) - 1), 8);
+    expect(fund.estimatedChange).toBeCloseTo(-4_877.0575, 4);
+    expect(fund.rateDurationSource).toBe("fund-default");
   });
 
   it("an equity has no rate leg", () => {

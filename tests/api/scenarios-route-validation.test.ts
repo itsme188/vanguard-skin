@@ -20,7 +20,7 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-import { POST } from "@/app/api/compute/scenarios/route";
+import { GET, POST } from "@/app/api/compute/scenarios/route";
 
 function postScenario(body: Record<string, unknown>) {
   return POST(
@@ -53,7 +53,7 @@ function postScenarioRaw(rawBody: string) {
 function createTestDb(): Database.Database {
   const db = new Database(":memory:");
   db.exec(`
-    CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+    CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL, tax_treatment TEXT);
     CREATE TABLE securities (
       id INTEGER PRIMARY KEY,
       symbol TEXT NOT NULL UNIQUE,
@@ -61,6 +61,8 @@ function createTestDb(): Database.Database {
       security_type TEXT DEFAULT 'stock',
       multiplier REAL DEFAULT 1,
       sector TEXT,
+      industry TEXT,
+      geography TEXT,
       market_cap_category TEXT,
       style TEXT,
       duration_years REAL,
@@ -78,6 +80,18 @@ function createTestDb(): Database.Database {
       security_id INTEGER PRIMARY KEY,
       as_of_date TEXT NOT NULL,
       iv_underlying REAL
+    );
+    CREATE TABLE security_factors (
+      security_id INTEGER PRIMARY KEY,
+      interest_rate_sensitive TEXT,
+      growth_vs_value TEXT,
+      cyclical TEXT,
+      international_exposure TEXT,
+      geopolitical_onshoring TEXT,
+      tariff_exposure TEXT,
+      ai_exposure TEXT,
+      crypto_adjacent TEXT,
+      regulatory_risk TEXT
     );
     CREATE TABLE fx_rates (
       currency TEXT PRIMARY KEY,
@@ -104,10 +118,36 @@ function createTestDb(): Database.Database {
   return db;
 }
 
+function seedScopeAccounts(db: Database.Database) {
+  db.exec(`
+    INSERT INTO accounts (id, name, tax_treatment) VALUES
+      (1, 'Vanguard Taxable', 'taxable'),
+      (2, 'Vanguard Trust', 'taxable'),
+      (3, 'IBKR', 'taxable');
+  `);
+  const security = db.prepare(
+    "INSERT INTO securities (id, symbol, name, security_type, sector) VALUES (?, ?, ?, 'Stock', 'Technology')"
+  );
+  const holding = db.prepare(
+    "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (?, ?, '2026-01-31', ?)"
+  );
+  const price = db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, '2026-01-31', 100)");
+  for (const [id, accountId, quantity] of [
+    [1, 1, 10],
+    [2, 2, 20],
+    [3, 3, 30],
+  ] as const) {
+    security.run(id, `ZZ${id}`, `ZZ ${id}`);
+    holding.run(accountId, id, quantity);
+    price.run(id);
+    db.prepare("INSERT INTO security_factors (security_id, ai_exposure) VALUES (?, 'High')").run(id);
+  }
+}
+
 describe("POST /api/compute/scenarios — rateMove validation", () => {
   beforeEach(() => {
-    // No scope/accountId is passed in these bodies, so resolveScopeToSingleId
-    // short-circuits before touching the db.
+    // No scope/accountId is passed in these bodies, so scope resolution
+    // short-circuits before reading accounts.
     hoisted.db = createTestDb();
   });
 
@@ -187,5 +227,30 @@ describe("POST /api/compute/scenarios — rateMove validation", () => {
       const res = await postScenario({ marketMove: -0.2, volMove: bad });
       expect(res.status, String(bad)).toBe(400);
     }
+  });
+});
+
+describe("/api/compute/scenarios — scope resolution", () => {
+  beforeEach(() => {
+    hoisted.db = createTestDb();
+    seedScopeAccounts(hoisted.db);
+  });
+
+  it("POST custom scenarios apply a multi-account scope instead of collapsing to the first account", async () => {
+    const res = await postScenario({ marketMove: -0.1, scope: "vanguard" });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.success).toBe(true);
+    expect(json.data.currentPortfolioValue).toBeCloseTo(3_000, 8);
+  });
+
+  it("GET preset scenarios apply a multi-account scope instead of collapsing to the first account", async () => {
+    const res = await GET(
+      new Request("http://localhost/api/compute/scenarios?scenario=ai_capex_pause&scope=vanguard") as never
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.success).toBe(true);
+    expect(json.data.currentPortfolioValue).toBeCloseTo(3_000, 8);
   });
 });
