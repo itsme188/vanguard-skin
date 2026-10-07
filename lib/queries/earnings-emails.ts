@@ -181,15 +181,18 @@ function createReplacementResolver(db: Database.Database) {
       WHERE event_id = ? AND phase = ?
         AND ${notLiveClaimSql("error")}`,
   );
-  const emailSentAt = (eventId: number, phase: string): string | null =>
-    (emailStmt.get(eventId, phase) as { sent_at: string } | undefined)?.sent_at ?? null;
+  const emailSentAt = (eventId: number, phase: string | null): string | null =>
+    phase == null
+      ? null
+      : ((emailStmt.get(eventId, phase) as { sent_at: string } | undefined)?.sent_at ?? null);
   const dateStmt = db.prepare(`SELECT event_date FROM calendar_events WHERE id = ?`);
   let ignoredTwins: ReturnType<typeof getEmailIgnoredManualTwins> | null = null;
 
   return function resolve(
     eventId: number,
     symbol: string,
-    phase: "preview" | "recap",
+    /** null = only the live entry is wanted, no email lookup. */
+    phase: "preview" | "recap" | null,
   ): SupersededEmailReplacement | null {
     const family = Array.from(new Set(issuerSiblings(symbol).map((s) => s.toUpperCase())));
     if (family.length === 0) return null;
@@ -248,6 +251,29 @@ function createReplacementResolver(db: Database.Database) {
       email_sent_at: emailSentAt(target.id, phase),
     };
   };
+}
+
+/**
+ * The live calendar entry that replaced a superseded earnings row, or null
+ * (the row is not superseded, is not an earnings row, or its print has no
+ * live entry). Same lookup as the archive's `replacement`; the send service
+ * uses it to tell the desk which date the print now sits on.
+ */
+export function findLiveEntryForSupersededEvent(
+  db: Database.Database,
+  eventId: number,
+): { event_id: number; event_date: string } | null {
+  const row = db
+    .prepare(
+      `SELECT symbol, event_type, COALESCE(superseded, 0) AS superseded
+         FROM calendar_events WHERE id = ?`,
+    )
+    .get(eventId) as
+    | { symbol: string | null; event_type: string | null; superseded: number }
+    | undefined;
+  if (!row || row.superseded === 0 || row.event_type !== "earnings" || !row.symbol) return null;
+  const hit = createReplacementResolver(db)(eventId, row.symbol, null);
+  return hit ? { event_id: hit.event_id, event_date: hit.event_date } : null;
 }
 
 /**

@@ -36,6 +36,7 @@ import type { CalendarEvent, EarningsTranscript } from "@/lib/types";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { applyClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { getEventById } from "@/lib/queries/calendar";
+import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
 import { zeroConsensusEpsDeltaLabel } from "@/lib/earnings/eps-delta";
 import { sendPushover, type PushoverMessage } from "@/lib/alerts/notify-pushover";
 import {
@@ -357,7 +358,7 @@ export interface EarningsEmailClaim {
    * this file stays free of raw state literals; the resolved union is
    * `"in_progress" | "already_sent" | "delivery_unknown"`, unchanged.
    */
-  reason?: typeof IN_PROGRESS | "already_sent" | typeof DELIVERY_UNKNOWN;
+  reason?: typeof IN_PROGRESS | "already_sent" | typeof DELIVERY_UNKNOWN | EmailRowRefusal;
   /** Only on a manual refire — what the row said before this claim took it. */
   prior?: "sent" | typeof SENT_BY_CLOUD | typeof DELIVERY_UNKNOWN;
   priorError?: string | null;
@@ -375,6 +376,41 @@ export interface EarningsEmailClaim {
    */
   priorProviderMessageId?: string | null;
   priorProviderResponse?: string | null;
+}
+
+/**
+ * Why a calendar row is not the row its print's email is sent for. These are
+ * facts about the CALENDAR row, not `earnings_emails.error` states.
+ *
+ *  - `superseded_event`: a reconcile replaced this entry with another entry
+ *    for the same print. Never emailed, whoever asks (controller ruling
+ *    2026-10-07 on the owner's 2026-10-06 ruling: better no email than a
+ *    wrong one).
+ *  - `ignored_manual_twin`: the LATER of two live hand-entered rows for one
+ *    company; email follows the earlier (lib/earnings/manual-twin-email.ts).
+ *    Refused on the automatic roads only, see `claimEarningsEmailSlot`.
+ */
+export type EmailRowRefusal = "superseded_event" | "ignored_manual_twin";
+
+/**
+ * The one reader of "may this calendar row be emailed right now". Every
+ * candidate finder filters these rows out when it builds its list; this is
+ * the same question asked again at the moment a slot is claimed and again
+ * just before the provider call, because a list can be minutes old by then.
+ */
+export function emailRowRefusal(
+  db: Database.Database,
+  eventId: number,
+  opts: { refuseIgnoredManualTwin: boolean },
+): EmailRowRefusal | null {
+  const row = db
+    .prepare(`SELECT COALESCE(superseded, 0) AS superseded FROM calendar_events WHERE id = ?`)
+    .get(eventId) as { superseded: number } | undefined;
+  if (row && row.superseded !== 0) return "superseded_event";
+  if (opts.refuseIgnoredManualTwin && getEmailIgnoredManualTwins(db).has(eventId)) {
+    return "ignored_manual_twin";
+  }
+  return null;
 }
 
 export function getSendRow(
@@ -404,12 +440,49 @@ export function getSendRow(
   );
 }
 
+/**
+ * Claim the (event, phase) slot — or refuse because the calendar row is not
+ * an email row any more.
+ *
+ * The row check and the claim run in ONE transaction, so a reconcile in
+ * another process cannot supersede the row between the two: either the claim
+ * sees the row already superseded and writes nothing, or the claim commits
+ * first. A refusal leaves no row behind and touches an existing row in no
+ * way (a manual refire of a delivered email on a now-superseded entry is
+ * refused before its token is minted).
+ *
+ * `refuseIgnoredManualTwin` (default true) also refuses the later of two live
+ * hand-entered rows. The send service turns it off for the two roads where a
+ * person pressed a button on that very row (`nudge`, `manual`): which of two
+ * hand-entered dates is right is the user's call, and the Hub already tells
+ * them email follows the earlier one.
+ */
 export function claimEarningsEmailSlot(
   db: Database.Database,
   eventId: number,
   phase: "preview" | "recap",
   recipient: string,
-  opts: { mode?: ClaimMode } = {},
+  opts: { mode?: ClaimMode; refuseIgnoredManualTwin?: boolean } = {},
+): EarningsEmailClaim {
+  const claim = db.transaction((): EarningsEmailClaim => {
+    const refusal = emailRowRefusal(db, eventId, {
+      refuseIgnoredManualTwin: opts.refuseIgnoredManualTwin ?? true,
+    });
+    if (refusal) return { claimed: false, mode: "fresh", reason: refusal };
+    return claimSlotUnchecked(db, eventId, phase, recipient, opts);
+  });
+  // IMMEDIATE takes the write lock before the read, so the check cannot go
+  // stale inside the transaction. Inside a caller's transaction better-sqlite3
+  // nests as a savepoint and the caller's lock already covers it.
+  return db.inTransaction ? claim() : claim.immediate();
+}
+
+function claimSlotUnchecked(
+  db: Database.Database,
+  eventId: number,
+  phase: "preview" | "recap",
+  recipient: string,
+  opts: { mode?: ClaimMode },
 ): EarningsEmailClaim {
   const mode = opts.mode ?? "automatic";
   const token = randomUUID();

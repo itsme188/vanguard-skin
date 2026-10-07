@@ -19,10 +19,10 @@
  * has a control beside it proving the same row DOES send while it is live, so
  * a refusal is the rule under test and not a broken fixture.
  *
- * WHAT THIS FILE FOUND, in one line: every FINDER refuses all three kinds of
- * row, but `sendEarningsCandidate` itself has no check, so a caller that hands
- * it a superseded event id still sends. The reproduction is the skipped block
- * at the bottom ("KNOWN DEFECT").
+ * History: this file first FOUND that only the finders refused such a row and
+ * the send service sent for any event id it was handed. The seven cases that
+ * recorded that are the "handed a superseded row directly" block below; they
+ * failed until the claim itself started re-reading the calendar row.
  *
  * Synthetic book: ZZ* tickers, round numbers, a frozen clock per case.
  */
@@ -56,7 +56,12 @@ import { findEmailCandidates } from "@/lib/calendar/enrichment-runner";
 import { findDebriefCandidates } from "@/lib/earnings/debrief";
 import { runMorningDebrief } from "@/lib/earnings/debrief-send";
 import { getExpectedRecapCluster } from "@/lib/earnings/wrap";
-import { sendEarningsCandidate, type SendMode } from "@/lib/earnings/send-service";
+import {
+  sendEarningsCandidate,
+  sendEarningsRecap,
+  type SendMode,
+} from "@/lib/earnings/send-service";
+import { claimEarningsEmailSlot, EarningsEmailError } from "@/lib/digest/send-earnings-email";
 import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
 import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
 
@@ -412,28 +417,14 @@ describe("a vendor twin hidden behind a hand-entered row", () => {
   });
 });
 
-// ── The send service itself, handed a superseded row ─────────────────────
+// ── The send service itself, handed a row that is not the email row ──────
 //
-// KNOWN DEFECT (found by this verification, 2026-10-07; not patched here
-// because lib/earnings/send-service.ts and the sweep are read-only for this
-// unit). Every finder above refuses a superseded row, but the refusal lives
-// ONLY in the finders. `sendEarningsCandidate`, `composeEarningsEmail` and
-// `claimEarningsEmailSlot` never read `calendar_events.superseded`, so any
-// caller that hands the service a superseded event id gets a real email:
-//
-//   - the sweep loop, when a row is superseded AFTER `findEmailCandidates`
-//     built its list and BEFORE that candidate's turn (each send is a 60 to
-//     180 second AI call, and a calendar sync in another process runs the
-//     reconciler in between);
-//   - POST /api/print-watch/send-recap ("send recap now", mode `nudge`):
-//     `evaluateRecapNudge` does not read `superseded` either;
-//   - POST /api/earnings/email (mode `manual`) with a superseded event id.
-//
-// The cases below state the behaviour the ruling asks for (refuse, send
-// nothing, write no audit row) and FAIL today: each one ends `sent`, with one
-// provider call and a delivered audit row on the superseded event. They are
-// skipped so the suite stays green; un-skip them with the fix.
-describe.skip("KNOWN DEFECT: sendEarningsCandidate sends for a superseded row it is handed directly", () => {
+// The finders are not the only way in: the sweep's list can be minutes old by
+// the time a candidate's turn comes, and "send recap now" and the manual
+// route never go through a finder. So the claim re-reads the calendar row in
+// its own transaction, and the service asks once more after composing.
+
+describe("sendEarningsCandidate, handed a superseded row directly", () => {
   const modes: SendMode[] = ["sweep", "nudge", "manual"];
 
   for (const mode of modes) {
@@ -464,9 +455,23 @@ describe.skip("KNOWN DEFECT: sendEarningsCandidate sends for a superseded row it
       expect(sendEmail).not.toHaveBeenCalled();
       expect(emailRows()).toEqual([]);
     });
+
+    it(`control, mode ${mode}: the same row, live, is sent`, async () => {
+      seedHeld("ZZA");
+      const id = seedEvent({ source: "finnhub", symbol: "ZZA", reported: true });
+      const sendEmail = transport();
+      const res = await sendEarningsCandidate(
+        db,
+        { eventId: id, symbol: "ZZA", phase: "recap" },
+        { mode, recipient: RECIPIENT, seams: { sendEmail } },
+      );
+      expect(res.outcome).toBe("sent");
+      expect(sendEmail).toHaveBeenCalledTimes(1);
+      expect(emailRows()).toEqual([{ event_id: id, phase: "recap", error: null }]);
+    });
   }
 
-  it("the sweep's own order: found while live, superseded before its turn, still sent", async () => {
+  it("the sweep's own order: found while live, superseded before its turn, refused with no slot left claimed", async () => {
     seedHeld("ZZA");
     const manual = seedEvent({ source: "manual", symbol: "ZZA", reported: true });
     const vendor = seedEvent({ source: "finnhub", symbol: "ZZA", eventDate: "2026-06-11", reported: true });
@@ -492,8 +497,214 @@ describe.skip("KNOWN DEFECT: sendEarningsCandidate sends for a superseded row it
       { eventId: vendor, symbol: "ZZA", phase: "recap" },
       { mode: "sweep", recipient: RECIPIENT, seams: { sendEmail } },
     );
-    expect(res.outcome).toBe("refused");
+    expect(res).toMatchObject({ outcome: "refused", code: "superseded_event", status: 409 });
     expect(sendEmail).not.toHaveBeenCalled();
-    expect(emailRows().map((r) => r.event_id)).toEqual([manual]);
+    // Only the live entry's own delivered recap exists: no claim, no audit row.
+    expect(emailRows()).toEqual([{ event_id: manual, phase: "recap", error: null }]);
   });
+
+  it("says so in plain words and names the date the print now sits on", async () => {
+    seedHeld("ZZA");
+    seedEvent({ source: "manual", symbol: "ZZA", eventDate: "2026-06-09" });
+    const old = seedEvent({ source: "finnhub", symbol: "ZZA", reported: true, superseded: 1 });
+    const res = await sendEarningsCandidate(
+      db,
+      { eventId: old, symbol: "ZZA", phase: "recap" },
+      { mode: "nudge", recipient: RECIPIENT, seams: { sendEmail: transport() } },
+    );
+    expect(res).toMatchObject({
+      outcome: "refused",
+      code: "superseded_event",
+      reason:
+        "The calendar entry this recap was for has been replaced; the current entry for ZZA reports 2026-06-09. Nothing was sent.",
+    });
+  });
+
+  it("with no live entry to name, the sentence still stands on its own", async () => {
+    seedHeld("ZZA");
+    const old = seedEvent({ source: "finnhub", symbol: "ZZA", reported: true, superseded: 1 });
+    const res = await sendEarningsCandidate(
+      db,
+      { eventId: old, symbol: "ZZA", phase: "preview" },
+      { mode: "sweep", recipient: RECIPIENT, seams: { sendEmail: transport() } },
+    );
+    expect(res).toMatchObject({
+      outcome: "refused",
+      reason: "The calendar entry this preview was for has been replaced. Nothing was sent.",
+    });
+  });
+
+  it("logs one line for a refusal", async () => {
+    seedHeld("ZZA");
+    const old = seedEvent({ source: "finnhub", symbol: "ZZA", reported: true, superseded: 1 });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await sendEarningsCandidate(
+      db,
+      { eventId: old, symbol: "ZZA", phase: "recap" },
+      { mode: "sweep", recipient: RECIPIENT, seams: { sendEmail: transport() } },
+    );
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    warn.mockRestore();
+    expect(lines).toEqual([
+      `[send-service] recap ${old} (ZZA, sweep): refused at the claim, superseded_event`,
+    ]);
+  });
+
+  it("superseded WHILE the email is being composed: refused before the wire, the claim is released", async () => {
+    seedHeld("ZZA");
+    const id = seedEvent({ source: "finnhub", symbol: "ZZA", reported: true });
+    const sendEmail = transport();
+    let claimedDuringCompose: unknown;
+    const res = await sendEarningsCandidate(
+      db,
+      { eventId: id, symbol: "ZZA", phase: "recap" },
+      {
+        mode: "sweep",
+        recipient: RECIPIENT,
+        seams: {
+          sendEmail,
+          compose: async () => {
+            claimedDuringCompose = emailRows();
+            setSuperseded(id, 1);
+            return {
+              symbol: "ZZA",
+              title: "ZZA Earnings Recap",
+              markdown: "# ZZA",
+              aiMarkdown: "body",
+              html: "<p>body</p>",
+              promptHash: "h",
+            };
+          },
+        },
+      },
+    );
+    expect(claimedDuringCompose).toEqual([{ event_id: id, phase: "recap", error: "in_progress" }]);
+    expect(res).toMatchObject({ outcome: "refused", code: "superseded_event" });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(emailRows()).toEqual([]);
+  });
+
+  it("a manual resend of a delivered email on a now-superseded entry is refused and the delivered row is untouched", async () => {
+    seedHeld("ZZA");
+    const id = seedEvent({ source: "finnhub", symbol: "ZZA", reported: true });
+    db.prepare(
+      `INSERT INTO earnings_emails
+         (event_id, phase, recipient, sent_at, ai_output_md, error, provider_message_id, provider_response)
+       VALUES (?, 'recap', ?, '2026-06-10 21:40:00', '# first', NULL, '<first@test>', '250 OK')`,
+    ).run(id, RECIPIENT);
+    setSuperseded(id, 1);
+    const before = db.prepare(`SELECT * FROM earnings_emails`).all();
+
+    const sendEmail = transport();
+    const res = await sendEarningsCandidate(
+      db,
+      { eventId: id, symbol: "ZZA", phase: "recap" },
+      { mode: "manual", recipient: RECIPIENT, seams: { sendEmail } },
+    );
+    expect(res).toMatchObject({ outcome: "refused", code: "superseded_event" });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT * FROM earnings_emails`).all()).toEqual(before);
+  });
+
+  it("the manual route's entry point raises the same sentence as a 409, without the retry code", async () => {
+    seedHeld("ZZA");
+    seedEvent({ source: "manual", symbol: "ZZA", eventDate: "2026-06-09" });
+    const old = seedEvent({ source: "finnhub", symbol: "ZZA", reported: true, superseded: 1 });
+    const err = await sendEarningsRecap(db, old, { recipient: RECIPIENT }).catch((e) => e);
+    expect(err).toBeInstanceOf(EarningsEmailError);
+    expect(err).toMatchObject({
+      status: 409,
+      message:
+        "The calendar entry this recap was for has been replaced; the current entry for ZZA reports 2026-06-09. Nothing was sent.",
+    });
+    expect((err as EarningsEmailError).code).toBeUndefined();
+    expect(emailRows()).toEqual([]);
+  });
+});
+
+describe("the slot claim itself (what the morning debrief and the retired wrap call)", () => {
+  it("refuses a superseded row and writes nothing", () => {
+    seedHeld("ZZA");
+    const id = seedEvent({ source: "finnhub", symbol: "ZZA", reported: true, superseded: 1 });
+    expect(claimEarningsEmailSlot(db, id, "recap", RECIPIENT)).toEqual({
+      claimed: false,
+      mode: "fresh",
+      reason: "superseded_event",
+    });
+    expect(claimEarningsEmailSlot(db, id, "recap", RECIPIENT, { mode: "manual" })).toMatchObject({
+      claimed: false,
+      reason: "superseded_event",
+    });
+    expect(emailRows()).toEqual([]);
+  });
+
+  it("control: claims the same row while it is live", () => {
+    seedHeld("ZZA");
+    const id = seedEvent({ source: "finnhub", symbol: "ZZA", reported: true });
+    expect(claimEarningsEmailSlot(db, id, "recap", RECIPIENT)).toMatchObject({
+      claimed: true,
+      mode: "fresh",
+    });
+    expect(emailRows()).toEqual([{ event_id: id, phase: "recap", error: "in_progress" }]);
+  });
+
+  it("works inside a caller's open transaction", () => {
+    seedHeld("ZZA");
+    const live = seedEvent({ source: "finnhub", symbol: "ZZA", reported: true });
+    const old = seedEvent({ source: "nasdaq", symbol: "ZZA", reported: true, superseded: 1 });
+    const out = db.transaction(() => [
+      claimEarningsEmailSlot(db, live, "recap", RECIPIENT).claimed,
+      claimEarningsEmailSlot(db, old, "recap", RECIPIENT).reason,
+    ])();
+    expect(out).toEqual([true, "superseded_event"]);
+  });
+
+  it("by default also refuses the later of two live hand-entered rows", () => {
+    seedHeld("ZZA");
+    const earlier = seedEvent({ source: "manual", symbol: "ZZA" });
+    const later = seedEvent({ source: "manual", symbol: "ZZA", eventDate: "2026-06-12", reported: true });
+    expect(claimEarningsEmailSlot(db, later, "recap", RECIPIENT).reason).toBe("ignored_manual_twin");
+    expect(claimEarningsEmailSlot(db, earlier, "preview", RECIPIENT).claimed).toBe(true);
+    expect(emailRows().map((r) => r.event_id)).toEqual([earlier]);
+  });
+});
+
+describe("sendEarningsCandidate, handed the later of two live hand-entered rows", () => {
+  function seedTwins(): number {
+    seedHeld("ZZA");
+    seedEvent({ source: "manual", symbol: "ZZA" });
+    return seedEvent({ source: "manual", symbol: "ZZA", eventDate: "2026-06-12", reported: true });
+  }
+
+  it("the automatic road refuses it, with its own reason and the earlier date", async () => {
+    const later = seedTwins();
+    const sendEmail = transport();
+    const res = await sendEarningsCandidate(
+      db,
+      { eventId: later, symbol: "ZZA", phase: "recap" },
+      { mode: "sweep", recipient: RECIPIENT, seams: { sendEmail } },
+    );
+    expect(res).toMatchObject({
+      outcome: "refused",
+      code: "ignored_manual_twin",
+      reason:
+        "ZZA has two hand-entered earnings entries and email follows the earlier one (reports 2026-06-10). Nothing was sent for this later entry.",
+    });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(emailRows()).toEqual([]);
+  });
+
+  for (const mode of ["nudge", "manual"] as const) {
+    it(`a person pressing send on that very row (mode ${mode}) is not blocked`, async () => {
+      const later = seedTwins();
+      const sendEmail = transport();
+      const res = await sendEarningsCandidate(
+        db,
+        { eventId: later, symbol: "ZZA", phase: "recap" },
+        { mode, recipient: RECIPIENT, seams: { sendEmail } },
+      );
+      expect(res.outcome).toBe("sent");
+      expect(sendEmail).toHaveBeenCalledTimes(1);
+    });
+  }
 });

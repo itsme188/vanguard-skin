@@ -155,6 +155,15 @@ export async function runMorningDebrief(
   const claims: FreshClaim[] = [];
   for (const candidate of unsent) {
     const claim = claimEarningsEmailSlot(db, candidate.eventId, "recap", recipient);
+    if (!claim.claimed && (claim.reason === "superseded_event" || claim.reason === "ignored_manual_twin")) {
+      // The claim re-reads the calendar row in its own transaction: an entry
+      // replaced (or made the later of two hand-entered rows) since
+      // findDebriefCandidates ran is not narrated. No row was written.
+      console.warn(
+        `[debrief] ${candidate.symbol} (event ${candidate.eventId}) dropped at the claim: ${claim.reason}`,
+      );
+      continue;
+    }
     if (!claim.claimed || claim.mode !== "fresh" || !claim.token) continue;
 
     // Symmetric cloud-marker read, mirroring the retired wrap's per-member

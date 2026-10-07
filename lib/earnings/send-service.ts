@@ -55,6 +55,8 @@ import {
   claimEarningsEmailSlot,
   composeEarningsEmail,
   EarningsEmailError,
+  emailRowRefusal,
+  type EmailRowRefusal,
   getSendRow,
   markEmailDeliveryUnknown,
   markEmailSending,
@@ -75,6 +77,8 @@ import {
   writeMacSentEarningsMarker,
 } from "@/lib/cron/earnings-marker-check";
 import { recordCloudSentAudit } from "@/lib/mutations/earnings-emails";
+import { findLiveEntryForSupersededEvent } from "@/lib/queries/earnings-emails";
+import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
 
 /**
  * The provider call's deadline. Declared in lib/digest/send-earnings-email.ts
@@ -128,8 +132,43 @@ export type SendOutcome =
       since: string;
       note?: string;
     }
-  | { outcome: "refused"; reason: string; status: number }
+  /** `code` is set when the refusal is about the CALENDAR ROW (it is not the
+   *  print's email row), as opposed to a not-ready compose. `reason` is the
+   *  sentence for the desk either way. */
+  | { outcome: "refused"; reason: string; status: number; code?: EmailRowRefusal }
   | { outcome: "failed"; reason: string; status: number };
+
+/**
+ * The refusal for a calendar row that is not its print's email row, in words
+ * the desk can act on. Names the date the print now sits on when it can be
+ * found. Symbols and dates only: public market data.
+ */
+function rowRefusalOutcome(
+  db: Database.Database,
+  candidate: SendCandidate,
+  code: EmailRowRefusal,
+  mode: SendMode,
+  when: "at the claim" | "after composing",
+): Extract<SendOutcome, { outcome: "refused" }> {
+  let reason: string;
+  if (code === "superseded_event") {
+    const live = findLiveEntryForSupersededEvent(db, candidate.eventId);
+    reason =
+      `The calendar entry this ${candidate.phase} was for has been replaced` +
+      (live ? `; the current entry for ${candidate.symbol} reports ${live.event_date}` : "") +
+      `. Nothing was sent.`;
+  } else {
+    const follows = getEmailIgnoredManualTwins(db).get(candidate.eventId);
+    reason =
+      `${candidate.symbol} has two hand-entered earnings entries and email follows the earlier one` +
+      (follows ? ` (reports ${follows.emailRowDate})` : "") +
+      `. Nothing was sent for this later entry.`;
+  }
+  console.warn(
+    `[send-service] ${candidate.phase} ${candidate.eventId} (${candidate.symbol}, ${mode}): refused ${when}, ${code}`,
+  );
+  return { outcome: "refused", reason, status: 409, code };
+}
 
 export interface ComposedSend {
   symbol: string;
@@ -576,12 +615,22 @@ export async function sendEarningsCandidate(
     }
   }
 
-  // (2) claim
+  // (2) claim. The claim itself re-reads the calendar row inside its own
+  // transaction and refuses a superseded entry in EVERY mode: the finders
+  // filter those out, but a candidate list can be minutes old, and the nudge
+  // and the manual route never went through a finder at all. The later of two
+  // hand-entered rows is refused on the automatic road only; `nudge` and
+  // `manual` are a person pressing a button on that very row.
+  const refuseIgnoredManualTwin = opts.mode === "sweep";
   const claim = claimEarningsEmailSlot(db, eventId, phase, recipient, {
     mode: opts.mode === "manual" ? "manual" : "automatic",
+    refuseIgnoredManualTwin,
   });
   if (!claim.claimed) {
     if (claim.reason === IN_PROGRESS) return { outcome: IN_PROGRESS };
+    if (claim.reason === "superseded_event" || claim.reason === "ignored_manual_twin") {
+      return rowRefusalOutcome(db, candidate, claim.reason, opts.mode, "at the claim");
+    }
     const row = getSendRow(db, eventId, phase);
     if (claim.reason === DELIVERY_UNKNOWN) {
       // A row the reaper (or an earlier attempt) already booked terminal.
@@ -645,6 +694,25 @@ export async function sendEarningsCandidate(
           : { outcome: "failed", reason: err.message, status: err.status };
       }
       return { outcome: "failed", reason: errText(err), status: 500 };
+    }
+
+    // (4b) Composing is a 60 to 180 second AI call, and a calendar sync in
+    // another process can supersede the row meanwhile. Ask again before the
+    // wire; a refusal undoes the claim exactly as a failed compose does (a
+    // fresh row is deleted, a refire's delivered row is restored).
+    const staleRow = emailRowRefusal(db, eventId, { refuseIgnoredManualTwin });
+    if (staleRow) {
+      undoMember(db, {
+        eventId,
+        phase,
+        token,
+        mode: claimMode,
+        priorError: claim.priorError,
+        priorSentAt: claim.priorSentAt,
+        priorProviderMessageId: claim.priorProviderMessageId,
+        priorProviderResponse: claim.priorProviderResponse,
+      });
+      return rowRefusalOutcome(db, candidate, staleRow, opts.mode, "after composing");
     }
 
     // (5)-(7) — the ONE lifecycle primitive, with a batch of one.
@@ -742,7 +810,13 @@ async function sendManual(
         "claim_held",
       );
     case "refused":
-      throw new EarningsEmailError(res.reason, res.status, res.status === 409 ? "not_ready" : undefined);
+      // A calendar-row refusal (the entry was replaced) is not "not ready":
+      // waiting will not change it, so it carries no retry code.
+      throw new EarningsEmailError(
+        res.reason,
+        res.status,
+        res.status === 409 && res.code == null ? "not_ready" : undefined,
+      );
     case "failed":
       throw new EarningsEmailError(res.reason, res.status);
     case DELIVERY_UNKNOWN:

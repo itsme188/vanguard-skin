@@ -62,14 +62,20 @@ function markerSpies() {
   };
 }
 
+// Each extra event is a DIFFERENT company (its symbol carries the source key).
+// Several hand-entered rows of ONE company would be the "two hand-entered
+// rows" case, where the slot claim refuses every row but the earliest
+// (lib/earnings/manual-twin-email.ts) and these batch fixtures would never
+// get their claims.
 function seedEvent(conn: Database.Database, sourceKey = "k1"): number {
+  const symbol = sourceKey === "k1" ? "XMPL" : `XMP${sourceKey.toUpperCase()}`;
   return Number(
     conn
       .prepare(
         `INSERT INTO calendar_events (source, event_type, event_date, title, symbol, source_key, actual_value)
-         VALUES ('manual','earnings','2026-09-10','XMPL earnings','XMPL',?,'EPS 1.00 / Rev 100,000,000')`,
+         VALUES ('manual','earnings','2026-09-10',?,?,?,'EPS 1.00 / Rev 100,000,000')`,
       )
-      .run(sourceKey).lastInsertRowid,
+      .run(`${symbol} earnings`, symbol, sourceKey).lastInsertRowid,
   );
 }
 
