@@ -38,6 +38,8 @@ beforeEach(() => {
 
 const CANONICAL_TXN_HEADER =
   "account,trade_date,settlement_date,type,symbol,security_name,security_type,quantity,price,amount,fees,notes";
+const CANONICAL_SNAPSHOT_HEADER =
+  "account,month_end_date,total_value,starting_value,deposits_withdrawals,dividends,interest,commissions,fees,investment_gain,twr";
 
 function importReq(
   mode: "preview" | "commit",
@@ -106,6 +108,25 @@ Vanguard Taxable,2025-06-15,,BUY,AAPL,Apple Inc,Stock,10,150.25,-1502.50,4.95,`;
     expect(fileResult.preview!.transactionCount).toBe(1);
     expect(fileResult.skippedRows).toBeUndefined();
     expect((fileResult.warnings ?? []).some((w) => w.includes("Unknown account"))).toBe(false);
+  });
+});
+
+describe("POST /api/import?mode=preview — canonical monthly snapshot validation", () => {
+  it("surfaces a percent-scale canonical twr as a skipped snapshot row", async () => {
+    const csv = `${CANONICAL_SNAPSHOT_HEADER}
+Vanguard Taxable,2026-08-31,100000,,,,,,,,5`;
+
+    const mod = await import("@/app/api/import/route");
+    const res = await mod.POST(importReq("preview", [{ name: "snapshots.csv", content: csv }]));
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ImportRouteResponse;
+    const fileResult = body.results[0];
+
+    expect(fileResult.preview!.snapshotCount).toBe(0);
+    expect(fileResult.skippedRows).toHaveLength(1);
+    expect(fileResult.skippedRows![0].category).toBe("snapshot");
+    expect(fileResult.skippedRows![0].reason).toContain("twr is a decimal");
   });
 });
 
@@ -287,4 +308,3 @@ Typo Account Q,2025-06-16,,BUY,ZZQB,Synthetic Beta Co,Stock,5,40.00,-200.00,0,`;
     expect(reconcileCloseIds()).not.toEqual(idsBefore);
   });
 });
-

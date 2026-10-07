@@ -9,6 +9,10 @@ import {
   VALID_TRANSACTION_TYPES,
 } from "@/lib/import/validate";
 import type { ParsedImportResult } from "@/lib/import/types";
+import { parseCanonicalCsv } from "@/lib/import/parsers/canonical-csv";
+import { parseIbkrActivity } from "@/lib/import/parsers/ibkr-activity";
+import fs from "node:fs";
+import path from "node:path";
 
 // ── Individual validators ───────────────────────────────────────────
 
@@ -706,6 +710,106 @@ describe("validateParsedResult: knownAccountNames option", () => {
     expect(skippedRows).toHaveLength(0);
     expect(validatedResult.transactions).toHaveLength(1);
     expect(validatedResult.warnings.some((w) => w.includes("Unknown account"))).toBe(false);
+  });
+});
+
+describe("validateParsedResult: canonical monthly snapshots", () => {
+  const header =
+    "account,month_end_date,total_value,starting_value,deposits_withdrawals,dividends,interest,commissions,fees,investment_gain,twr";
+
+  function validateSnapshotRows(rows: string) {
+    return validateParsedResult(parseCanonicalCsv(`${header}\n${rows}`, "snapshots.csv"));
+  }
+
+  it("excludes canonical snapshot rows whose decimal twr is above 100%", () => {
+    const { skippedRows, validatedResult } = validateSnapshotRows(
+      "Vanguard Taxable,2026-08-31,100000,,,,,,,,5",
+    );
+
+    expect(validatedResult.snapshots).toHaveLength(0);
+    expect(skippedRows).toHaveLength(1);
+    expect(skippedRows[0]).toMatchObject({
+      category: "snapshot",
+      index: 0,
+    });
+    expect(skippedRows[0].reason).toContain("twr is a decimal");
+    expect(skippedRows[0].reason).toContain("0.05");
+  });
+
+  it("keeps canonical decimal twr values at and inside the 100% boundary", () => {
+    const { skippedRows, validatedResult } = validateSnapshotRows(
+      [
+        "Vanguard Taxable,2026-08-31,100000,,,,,,,,0.05",
+        "Vanguard Taxable,2026-09-30,200000,,,,,,,,1",
+        "Vanguard Taxable,2026-10-31,300000,,,,,,,,-1",
+      ].join("\n"),
+    );
+
+    expect(skippedRows).toHaveLength(0);
+    expect(validatedResult.snapshots.map((s) => s.twr)).toEqual([0.05, 1, -1]);
+  });
+
+  it("excludes negative canonical decimal twr values below -100%", () => {
+    const { skippedRows, validatedResult } = validateSnapshotRows(
+      "Vanguard Taxable,2026-08-31,100000,,,,,,,,-1.5",
+    );
+
+    expect(validatedResult.snapshots).toHaveLength(0);
+    expect(skippedRows).toHaveLength(1);
+    expect(skippedRows[0].reason).toContain("twr is a decimal");
+  });
+
+  it("warns but keeps a canonical monthly snapshot whose date is not month-end", () => {
+    const { skippedRows, warnings, validatedResult } = validateSnapshotRows(
+      "Vanguard Taxable,2026-08-15,100000,,,,,,,,0.05",
+    );
+
+    expect(skippedRows).toHaveLength(0);
+    expect(validatedResult.snapshots).toHaveLength(1);
+    expect(validatedResult.snapshots[0].monthEndDate).toBe("2026-08-15");
+    expect(warnings.join("\n")).toContain("month_end_date");
+    expect(warnings.join("\n")).toContain("last calendar day");
+    expect(warnings.join("\n")).toContain("2026-08-31");
+  });
+
+  it("accepts leap-day February month-end without a warning", () => {
+    const { skippedRows, warnings, validatedResult } = validateSnapshotRows(
+      "Vanguard Taxable,2024-02-29,100000,,,,,,,,0.05",
+    );
+
+    expect(skippedRows).toHaveLength(0);
+    expect(validatedResult.snapshots).toHaveLength(1);
+    expect(warnings.join("\n")).not.toContain("month_end_date");
+  });
+
+  it("leaves null, missing, and non-numeric canonical twr behavior unchanged", () => {
+    const { skippedRows, validatedResult } = validateSnapshotRows(
+      [
+        "Vanguard Taxable,2026-08-31,100000,,,,,,,,",
+        "Vanguard Taxable,2026-09-30,200000,,,,,,,,not-a-number",
+      ].join("\n"),
+    );
+
+    expect(skippedRows).toHaveLength(0);
+    expect(validatedResult.snapshots).toHaveLength(2);
+    expect(validatedResult.snapshots.map((s) => s.twr)).toEqual([undefined, NaN]);
+  });
+
+  it("does not apply the canonical decimal twr exclusion to IBKR activity snapshots", () => {
+    const fixture = fs.readFileSync(
+      path.join(__dirname, "../fixtures/ibkr-activity-sample.csv"),
+      "utf-8",
+    );
+    const parsed = parseIbkrActivity(fixture, "IBKR 2025-01 activity.csv");
+
+    expect(parsed.snapshots[0].source).toBe("ibkr-activity");
+    expect(parsed.snapshots[0].twr).toBeGreaterThan(1);
+
+    const { skippedRows, validatedResult } = validateParsedResult(parsed);
+
+    expect(skippedRows.filter((row) => row.category === "snapshot")).toHaveLength(0);
+    expect(validatedResult.snapshots).toHaveLength(1);
+    expect(validatedResult.snapshots[0].twr).toBe(parsed.snapshots[0].twr);
   });
 });
 

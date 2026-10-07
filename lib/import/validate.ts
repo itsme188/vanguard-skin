@@ -89,6 +89,16 @@ export function isValidDate(dateStr: string): boolean {
   );
 }
 
+function canonicalMonthEndDate(dateStr: string): string {
+  const [year, month] = dateStr.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+}
+
+function isCanonicalSnapshotImport(parsed: ParsedImportResult, snapshot: ParsedSnapshot): boolean {
+  return parsed.sourceType === "canonical-csv" && snapshot.source === "canonical";
+}
+
 /**
  * Check that a quantity is finite. Negative quantities are accepted because
  * canonical-csv parser normalizes Co-Work-emitted negatives to abs (see warning
@@ -429,6 +439,24 @@ export function validateParsedResult(
         reason: `Invalid total value: ${s.totalValue}`,
       });
       skip = true;
+    }
+
+    if (!skip && isCanonicalSnapshotImport(parsed, s)) {
+      const expectedMonthEnd = canonicalMonthEndDate(s.monthEndDate);
+      if (s.monthEndDate !== expectedMonthEnd) {
+        warnings.push(
+          `Snapshot #${i + 1} (${s.accountName}): month_end_date "${s.monthEndDate}" is not the last calendar day of the month; expected "${expectedMonthEnd}"`,
+        );
+      }
+
+      if (s.twr != null && Number.isFinite(s.twr) && Math.abs(s.twr) > 1) {
+        skippedRows.push({
+          category: "snapshot",
+          index: i,
+          reason: `twr is a decimal: ${s.twr} means ${s.twr > 0 ? "+" : ""}${s.twr * 100}% for the month. Enter 0.05 for 5%.`,
+        });
+        skip = true;
+      }
     }
 
     const sAccountReason = unknownAccountReason(s.accountName);
