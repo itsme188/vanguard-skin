@@ -10,6 +10,8 @@ import {
   fetchAnchorSourceSeamDates,
 } from "@/lib/compute/flow-adjusted";
 import { normalizeMarketCapCategory } from "@/lib/securities/normalize-market-cap";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 
 // ─── Types ─────────────��────────────────────────────────────────
 
@@ -467,60 +469,147 @@ export function computeMacroFactorTilts(
  * How much of the WHOLE portfolio's exposure to a factor one security accounts
  * for. Powers Block 3 of the Security Detail Factor Profile.
  *
+ *   positionSide          "short" when the net held quantity is negative. The
+ *                         card words a short as a short ("covering adds"),
+ *                         never as a negative cut.
  *   securityContribution  this security's weighted exposure (weight_pct × mult), in pp.
+ *                         Negative for a short.
  *   bucketTotalExposure   the portfolio-wide total for that factor (== the
  *                         `exposurePct` from computeMacroFactorTilts, by shared helper).
- *   sharePct              securityContribution / bucketTotalExposure × 100 (0..100).
- *   deltaPp               first-order pp the bucket total drops if this position is
- *                         fully sold (== securityContribution; matches how exposurePct
+ *   sharePct              securityContribution / bucketTotalExposure × 100.
+ *                         NULL when the bucket total is not positive (a share
+ *                         of a zero or net-short bucket means nothing).
+ *   deltaPp               first-order pp the bucket total changes if this position is
+ *                         fully closed (== securityContribution; matches how exposurePct
  *                         is defined — ignores re-weighting of the remaining names).
+ *
+ * securityContribution / sharePct / deltaPp are ALL NULL when the held position
+ * has no value to weigh (no price row and no cost-basis fallback): the
+ * contribution is unknown, which is not the same as zero.
  */
 export interface FactorShareEntry {
   factor: FactorColumn;
   value: string;
-  securityContribution: number;
+  positionSide: "long" | "short";
+  securityContribution: number | null;
   bucketTotalExposure: number;
-  sharePct: number;
-  deltaPp: number;
+  sharePct: number | null;
+  deltaPp: number | null;
+}
+
+/**
+ * Block 3's full answer: whether THIS security is held, and its rows.
+ *
+ *   held                 a live per-(account, security) latest holdings row
+ *                        with quantity != 0 exists (a short is held; an
+ *                        expired option is not).
+ *   siblingHeldSymbols   when not held: other share classes of the same
+ *                        issuer (`issuerSiblings`) that ARE held, so the card
+ *                        can point at them instead of a bare "not held". They
+ *                        never lend their share to this security's card.
+ *   entries              [] when not held or no active factor exposure.
+ */
+export interface SecurityFactorShareView {
+  held: boolean;
+  siblingHeldSymbols: string[];
+  entries: FactorShareEntry[];
+}
+
+/**
+ * Net live quantity of one security across the scope, or null when it is not
+ * held. "Held" is the canonical per-(account, security) latest row with
+ * quantity != 0 (`latestHoldingsPredicate`, shorts included), and an option
+ * only counts through its expiration day (`liveOptionExpirationSql`).
+ */
+function liveNetQuantity(
+  db: Database.Database,
+  securityId: number,
+  accountIds?: number[]
+): number | null {
+  const accountFilter =
+    accountIds && accountIds.length > 0
+      ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
+      : "";
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(h.quantity), 0) AS qty
+       FROM holdings h
+       JOIN securities s ON s.id = h.security_id
+       WHERE h.security_id = ?
+         AND ${liveOptionExpirationSql("s")}
+         AND ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true, accountFilter })}`
+    )
+    .get(securityId, ...(accountIds ?? [])) as { n: number; qty: number };
+  return row.n > 0 ? row.qty : null;
 }
 
 /**
  * For each factor where `securityId` has an active (multiplier > 0)
  * classification, compute its share of the portfolio's exposure to that factor.
  *
- * Built on `getFactorHeatmap` — no new latest-holdings SQL, so it inherits the
- * canonical per-(account, security) CTE + options→underlying inheritance and
- * ties out with the Analysis Factor Exposure view by construction.
+ * Built on `getFactorHeatmap` — it inherits the canonical per-(account,
+ * security) CTE + options→underlying factor inheritance and ties out with the
+ * Analysis Factor Exposure view by construction.
+ *
+ * The security must be held ITSELF (see `liveNetQuantity`). The heatmap is
+ * keyed by the security's own symbol, options included, so there is no
+ * fallback to the underlying's row: that fallback gave an expired, closed
+ * contract the live underlying's share
+ * [qa:security-detail-factor-profile--portfolio-share-card-for-unheld-contract-regression-1].
  *
  * `accountIds` defaults to undefined (= whole portfolio); the Security Detail
  * page has no scope selector and the question is inherently portfolio-wide.
- * Returns [] when the security is unknown or not held in scope.
  */
-export function computeSecurityFactorShare(
+export function computeSecurityFactorShareView(
   db: Database.Database,
   securityId: number,
   accountIds?: number[]
-): FactorShareEntry[] {
+): SecurityFactorShareView {
+  const notHeld: SecurityFactorShareView = { held: false, siblingHeldSymbols: [], entries: [] };
+
   const sec = db
     .prepare(`SELECT symbol, underlying_symbol FROM securities WHERE id = ?`)
     .get(securityId) as
     | { symbol: string; underlying_symbol: string | null }
     | undefined;
-  if (!sec) return [];
+  if (!sec) return notHeld;
+
+  const norm = (s: string) => s.trim().toUpperCase();
+
+  const netQty = liveNetQuantity(db, securityId, accountIds);
+  if (netQty === null) {
+    // Share classes of one issuer (GOOG / GOOGL): name the held class. An
+    // option contract has no share-class siblings.
+    const siblingHeldSymbols: string[] = [];
+    if (!sec.underlying_symbol) {
+      const own = norm(sec.symbol);
+      const findId = db.prepare(`SELECT id, symbol FROM securities WHERE UPPER(TRIM(symbol)) = ?`);
+      for (const sibling of issuerSiblings(own)) {
+        if (norm(sibling) === own) continue;
+        const sib = findId.get(norm(sibling)) as { id: number; symbol: string } | undefined;
+        if (sib && liveNetQuantity(db, sib.id, accountIds) !== null) {
+          siblingHeldSymbols.push(sib.symbol);
+        }
+      }
+    }
+    return { ...notHeld, siblingHeldSymbols };
+  }
+
+  const held: SecurityFactorShareView = { held: true, siblingHeldSymbols: [], entries: [] };
 
   const heatmap = getFactorHeatmap(db, accountIds);
-  if (heatmap.length === 0) return [];
+  const row = heatmap.find((r) => norm(r.symbol) === norm(sec.symbol));
+  if (!row) return held;
 
-  // The heatmap is keyed by the security's OWN symbol (options included, with
-  // factors inherited from the underlying). Match own symbol first; fall back
-  // to the underlying symbol for the rare case an option isn't its own row.
-  const norm = (s: string) => s.trim().toUpperCase();
-  let row = heatmap.find((r) => norm(r.symbol) === norm(sec.symbol));
-  if (!row && sec.underlying_symbol) {
-    const underlying = sec.underlying_symbol;
-    row = heatmap.find((r) => norm(r.symbol) === norm(underlying));
-  }
-  if (!row) return [];
+  // The heatmap values a holding at its latest price, else at cost basis, else
+  // at 0. That last 0 is "no value to weigh", not a zero-value position: a
+  // priced contract worth 0.00 keeps a real 0, an unpriced one is unknown
+  // [qa:security-detail-unpriced-option-hub--no-price-yet-factor-profile-claims-0pct-share].
+  const hasPrice =
+    db.prepare(`SELECT 1 FROM prices WHERE security_id = ? LIMIT 1`).get(securityId) !== undefined;
+  const valueKnown = hasPrice || row.market_value !== 0;
+
+  const positionSide: "long" | "short" = netQty < 0 ? "short" : "long";
 
   const entries: FactorShareEntry[] = [];
   for (const factor of FACTOR_COLUMNS) {
@@ -528,16 +617,34 @@ export function computeSecurityFactorShare(
     const mult = exposureMultiplier(value);
     if (mult <= 0) continue; // skips null / "Unknown" / "No"
 
-    const securityContribution = row.weight_pct * mult;
     const bucketTotalExposure = factorExposureTotal(heatmap, factor);
+    if (!valueKnown) {
+      entries.push({
+        factor,
+        value: value as string,
+        positionSide,
+        securityContribution: null,
+        bucketTotalExposure,
+        sharePct: null,
+        deltaPp: null,
+      });
+      continue;
+    }
+
+    const securityContribution = row.weight_pct * mult;
+    // A 0 contribution is 0% of any bucket; otherwise a share needs a
+    // positive bucket total to be a meaningful ratio.
     const sharePct =
-      bucketTotalExposure > 0
-        ? (securityContribution / bucketTotalExposure) * 100
-        : 0;
+      securityContribution === 0
+        ? 0
+        : bucketTotalExposure > 0
+          ? (securityContribution / bucketTotalExposure) * 100
+          : null;
 
     entries.push({
       factor,
       value: value as string,
+      positionSide,
       securityContribution,
       bucketTotalExposure,
       sharePct,
@@ -545,7 +652,23 @@ export function computeSecurityFactorShare(
     });
   }
 
-  return entries.sort((a, b) => b.sharePct - a.sharePct);
+  // Largest share first, by magnitude (a short's shares are negative); rows
+  // with no share keep factor order at the end.
+  const magnitude = (e: FactorShareEntry) => (e.sharePct === null ? -1 : Math.abs(e.sharePct));
+  held.entries = entries.sort((a, b) => magnitude(b) - magnitude(a));
+  return held;
+}
+
+/**
+ * Rows-only form of {@link computeSecurityFactorShareView}. Returns [] when
+ * the security is unknown, not held in scope, or has no active factor.
+ */
+export function computeSecurityFactorShare(
+  db: Database.Database,
+  securityId: number,
+  accountIds?: number[]
+): FactorShareEntry[] {
+  return computeSecurityFactorShareView(db, securityId, accountIds).entries;
 }
 
 // ─── Main entry point ───────────────────��────────────────────────

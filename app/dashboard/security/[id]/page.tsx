@@ -24,7 +24,7 @@ import { HoldingPeriodBadge } from "../../components/HoldingPeriodBadge";
 import { TranscriptsRefreshButton } from "./TranscriptsRefreshButton";
 import { FactorProfileSection } from "./FactorProfileSection";
 import { tradeGradeGroupCaption } from "./trade-grade-group";
-import { computeSecurityFactorShare } from "@/lib/compute/factors";
+import { computeSecurityFactorShareView } from "@/lib/compute/factors";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { QuoteStats } from "../../components/QuoteStats";
 import { Count, Money, Pct, Shares, PrivateText, QuantityUnit } from "@/lib/privacy/components";
@@ -239,7 +239,7 @@ export default async function SecurityDetailPage(props: {
 
   // Block 3 of the Factor Profile — fast pure read over getFactorHeatmap, so
   // compute server-side and pass as a prop (no client fetch needed).
-  const factorShare = computeSecurityFactorShare(db, securityId);
+  const factorShareView = computeSecurityFactorShareView(db, securityId);
 
   // IBKR snapshot enrichment (IV / HV / 52-week range) — public market data,
   // null until a quote has been captured by the IBKR refresh.
@@ -386,7 +386,7 @@ export default async function SecurityDetailPage(props: {
           (deferred) portfolio-share contribution. Slotted below the
           hero/chart/option-contract and above the per-position detail rows
           per the P3 Slice B spec. */}
-      <FactorProfileSection securityId={securityId} factors={factors} factorShare={factorShare} />
+      <FactorProfileSection securityId={securityId} factors={factors} factorShare={factorShareView.entries} positionHeld={factorShareView.held} siblingHeldSymbols={factorShareView.siblingHeldSymbols} />
 
       {/* Alerts history for this security (auto-hides if empty). */}
       <RecentAlertsPanel securityId={securityId} />
