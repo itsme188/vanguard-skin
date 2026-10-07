@@ -20,12 +20,38 @@
  *     dedupeCrossSourceRows, neither of which is exported)
  *   - held, watchlist, or armed (getSymbolStatus — symbol-only consumer,
  *     no event id to key coveredForEvents on, so armed counts too: spec §4.1)
- *   - no cached transcript for the (ticker, filing-reporting year, quarter)
- *     derived from event_date via deriveFilingReportingQuarter — EXCEPT a
- *     cached `edgar_8k` row, which is an UPGRADE candidate (see below)
+ *   - nothing terminal is cached for the print (see "Keys and what counts as
+ *     cached" below) — a cached 8-K filing is an UPGRADE candidate instead
  *   - transcript_attempted_at is NULL or >=30 min old (pacing — compared via
  *     SQLite datetime() on both sides per repo convention, never raw string
  *     compare)
+ *
+ * Keys and what counts as cached (fiscal keying, 2026-10-07): the vendor's
+ * quarter parameter is FISCAL, so the print's key is the fiscal quarter in
+ * the Finnhub calendar entry on its earnings event (often a superseded twin
+ * beside the live row — `expectedFiscalQuarterForPrint`).
+ *   - Fiscal quarter KNOWN: the cache is checked under that key and the
+ *     vendor is asked for that key; `fetchTranscript` caches the call only
+ *     when the call itself names that quarter, and otherwise goes on to the
+ *     8-K, which it matches to the print by filing date.
+ *   - Fiscal quarter UNKNOWN: a call cannot be verified, so no vendor request
+ *     is made and a call cached under the calendar-derived key is NOT taken
+ *     as this print's call (it may be an older fiscal quarter's). Only the
+ *     8-K is fetched, and the print is done once its filing is cached.
+ * A filing counts as cached for the print when it sits under the print's key
+ * OR its filing date falls in the print's filing window
+ * (`getCachedFilingForPrint`): a filing stored before the Finnhub entry
+ * arrived is keyed by its own stated quarter or by the calendar.
+ *
+ * Vendor quota (2026-10-07): the fresh clock retries every 30 minutes for 36
+ * hours, which is right for a late 8-K and wrong for a vendor with 25
+ * requests a day. While nothing is cached the vendor is asked at most once
+ * per `VENDOR_RETRY_INTERVAL_MS` slot of the print's age (first attempt, then
+ * the first attempt after each 12-hour mark: at most 4 requests in the 36
+ * hours); the attempts in between fetch the filing only. The slot is derived
+ * from the release instant and the last attempt stamp, so it needs no new
+ * column and holds whether or not the previous answer was a rejection. Once
+ * the filing is cached the print moves to the upgrade clock below.
  *
  * Cached-EDGAR upgrade candidates (thin-8-K fix, 2026-07-19): an EDGAR 8-K
  * row is a press-release excerpt, not a call transcript — and a THIN one
@@ -71,7 +97,9 @@ import {
   fetchTranscript,
   deriveFilingReportingQuarter,
   expectedFiscalQuarterForPrint,
+  getCachedFilingForPrint,
 } from "@/lib/transcripts/fetch";
+import { isFilingRow } from "@/lib/transcripts/presentation";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
 import { getCachedTranscript } from "@/lib/queries/transcripts";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
@@ -87,6 +115,11 @@ const DEADLINE_MS = 36 * 60 * 60 * 1000; // 36h same-day-ish window from release
 const UPGRADE_PACING_MS = 24 * 60 * 60 * 1000; // cached-EDGAR upgrades: 1 AV try/day
 const UPGRADE_DEADLINE_MS = 10 * 24 * 60 * 60 * 1000; // …for up to 10 days from release
 const DEFAULT_MAX_ATTEMPTS = 2;
+// While nothing is cached for a print, ask the transcript vendor at most once
+// per this much of the print's age. The vendor posts a call hours to days
+// after it happens and allows 25 requests a day; the 8-K, not the vendor, is
+// what the 30-minute retries are for.
+export const VENDOR_RETRY_INTERVAL_MS = 12 * 60 * 60 * 1000;
 
 const SUMMARY_PROMPT_CHAR_CAP = 50_000;
 const SUMMARY_MAX_OUTPUT_TOKENS = 900;
@@ -212,6 +245,30 @@ function parseUtcStamp(stamp: string): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
+/** A Date as a SQLite datetime('now')-shaped stamp ("YYYY-MM-DD HH:MM:SS", UTC). */
+function toUtcStamp(date: Date): string {
+  return date.toISOString().replace("T", " ").slice(0, 19);
+}
+
+/**
+ * May this fresh attempt spend a vendor request? Yes on the first attempt,
+ * and afterwards only on the first attempt inside a new
+ * `VENDOR_RETRY_INTERVAL_MS` slot of the print's age.
+ */
+export function vendorRequestDue(
+  ageMs: number,
+  lastAttemptMs: number | null,
+  nowMs: number,
+): boolean {
+  if (lastAttemptMs === null) return true;
+  const ageAtLastAttempt = ageMs - (nowMs - lastAttemptMs);
+  if (ageAtLastAttempt < 0) return true;
+  return (
+    Math.floor(ageMs / VENDOR_RETRY_INTERVAL_MS) >
+    Math.floor(ageAtLastAttempt / VENDOR_RETRY_INTERVAL_MS)
+  );
+}
+
 /**
  * Collapse cross-source / dual-class duplicate rows for the same print down
  * to one survivor, so a GOOG row and a GOOGL row (or a finnhub + nasdaq row
@@ -256,7 +313,7 @@ export async function fetchSameDayTranscripts(
   // release_time is ET wall-clock.
   const today = todayET(now);
   const rangeStart = addDays(today, -(Math.ceil(UPGRADE_DEADLINE_MS / 86_400_000) + 1));
-  const pacingCutoff = new Date(nowMs - PACING_MS).toISOString().replace("T", " ").slice(0, 19);
+  const pacingCutoff = toUtcStamp(new Date(nowMs - PACING_MS));
 
   const rows = db
     .prepare(
@@ -297,31 +354,40 @@ export async function fetchSameDayTranscripts(
     return st === "held" || st === "watchlist" || st === "armed";
   });
 
-  // Classify each candidate by cache state. A cached NON-edgar transcript is
-  // terminal (real call transcript — nothing to do, no attempt). A cached
-  // edgar_8k row makes this an UPGRADE candidate: eligible on the slower
-  // 10-day/24h clock. No cache at all is a FRESH candidate on the original
-  // 36h/30-min clock.
+  // Classify each candidate by what is cached FOR THE PRINT (see the header:
+  // "Keys and what counts as cached").
+  //   - fiscal quarter known, call cached under it: terminal, no attempt.
+  //   - fiscal quarter known, only the filing cached: UPGRADE candidate on
+  //     the slower 10-day / 24h clock (the vendor may post the call later).
+  //   - fiscal quarter unknown, filing cached: terminal. No call can be
+  //     verified for this print, so there is nothing left to fetch.
+  //   - nothing cached: FRESH candidate on the 36h / 30-min clock.
   const candidates = covered.flatMap((row) => {
     const symbol = row.symbol!.toUpperCase();
     const calendarQuarter = deriveFilingReportingQuarter(row.event_date);
     const expected = expectedFiscalQuarterForPrint(db, symbol, row.event_date);
     const { year, quarter } = expected ?? calendarQuarter;
-    const cached = getCachedTranscript(db, symbol, year, quarter);
     const ageMs = ageByRow.get(row)!;
+    const lastMs = row.transcript_attempted_at
+      ? parseUtcStamp(row.transcript_attempted_at)
+      : null;
 
-    if (cached && cached.source !== "edgar_8k") return [];
-    if (!cached) {
+    const cachedAtKey = expected ? getCachedTranscript(db, symbol, year, quarter) : null;
+    if (cachedAtKey && !isFilingRow(cachedAtKey)) return [];
+    const cachedFiling = cachedAtKey ?? getCachedFilingForPrint(db, symbol, row.event_date);
+
+    let skipVendor: boolean;
+    if (!cachedFiling) {
       // Fresh: the wider SQL window means the 36h deadline moves here.
       if (ageMs > DEADLINE_MS) return [];
+      skipVendor = !expected || !vendorRequestDue(ageMs, lastMs, nowMs);
     } else {
+      if (!expected) return [];
       // Upgrade: 24h pacing (the SQL cutoff only enforced 30 min).
-      const lastMs = row.transcript_attempted_at
-        ? parseUtcStamp(row.transcript_attempted_at)
-        : null;
       if (lastMs !== null && nowMs - lastMs < UPGRADE_PACING_MS) return [];
+      skipVendor = false;
     }
-    return [{ row, symbol, year, quarter, expected, isUpgrade: !!cached }];
+    return [{ row, symbol, year, quarter, expected, skipVendor, isUpgrade: !!cachedFiling }];
   });
 
   // Fresh candidates spend the shared attempt budget first — a same-day
@@ -329,25 +395,29 @@ export async function fetchSameDayTranscripts(
   // recency order within each class.
   candidates.sort((a, b) => Number(a.isUpgrade) - Number(b.isUpgrade));
 
+  // Stamped with the sweep's own `now` (identical to datetime('now') in
+  // production) so pacing is measured on one clock.
   const stampAttempted = db.prepare(
-    `UPDATE calendar_events SET transcript_attempted_at = datetime('now') WHERE id = ?`,
+    `UPDATE calendar_events SET transcript_attempted_at = ? WHERE id = ?`,
   );
+  const attemptStamp = toUtcStamp(now);
 
   let attempted = 0;
   let fetched = 0;
 
-  for (const { row, symbol, year, quarter, expected } of candidates) {
+  for (const { row, symbol, year, quarter, expected, skipVendor } of candidates) {
     if (attempted >= maxAttempts) break;
 
     // Stamp BEFORE the fetch attempt so a hung fetchTranscript call can't
     // hot-loop the next sweep tick.
-    stampAttempted.run(row.id);
+    stampAttempted.run(attemptStamp, row.id);
     attempted += 1;
 
     try {
       const result = await fetchTranscript(db, symbol, year, quarter, {
         eventDate: row.event_date,
-        ...(expected ? { expectedFiscalQuarter: expected } : { skipAlphaVantage: true }),
+        ...(expected ? { expectedFiscalQuarter: expected } : {}),
+        ...(skipVendor ? { skipAlphaVantage: true } : {}),
       });
       // fromCache: true means a FAILED upgrade (fetchTranscript echoed the
       // cached edgar row back) — not a fetch, and re-summarizing the same

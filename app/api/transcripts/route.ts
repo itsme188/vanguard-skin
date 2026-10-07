@@ -6,7 +6,7 @@ import {
   getCachedQuarters,
 } from "@/lib/queries/transcripts";
 import type { EarningsTranscript } from "@/lib/types";
-import { fetchTranscript } from "@/lib/transcripts/fetch";
+import { fetchLatestTranscript, fetchTranscript } from "@/lib/transcripts/fetch";
 import { decodeFilingEntities } from "@/lib/apis/edgar";
 
 /**
@@ -80,6 +80,12 @@ export async function GET(request: NextRequest) {
 /**
  * POST /api/transcripts  { ticker, year?, quarter? }
  * Triggers fetch + cache pipeline for a transcript.
+ *
+ * With no year and quarter (the fetch / refresh buttons) "the latest" is the
+ * issuer's most recent earnings print, requested by its FISCAL quarter
+ * (fetchLatestTranscript, the same default the chat tool uses). A calendar
+ * quarter here fetched an older fiscal quarter's call as "the refresh" for
+ * any company whose fiscal year is not the calendar year.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -93,12 +99,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await fetchTranscript(
-      db,
-      ticker,
-      year ? parseInt(year, 10) : undefined,
-      quarter ? parseInt(quarter, 10) : undefined
-    );
+    const result =
+      !year && !quarter
+        ? await fetchLatestTranscript(db, ticker)
+        : await fetchTranscript(
+            db,
+            ticker,
+            year ? parseInt(year, 10) : undefined,
+            quarter ? parseInt(quarter, 10) : undefined
+          );
 
     if (!result) {
       return NextResponse.json(

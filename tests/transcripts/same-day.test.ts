@@ -9,7 +9,9 @@ import {
   fetchSameDayTranscripts,
   isValidDeskNote,
   looksLikeDeskNoteRefusal,
+  vendorRequestDue,
   MIN_TRANSCRIPT_CHARS_FOR_AI,
+  VENDOR_RETRY_INTERVAL_MS,
 } from "@/lib/transcripts/same-day";
 import { fetchTranscript } from "@/lib/transcripts/fetch";
 import { upsertTranscript } from "@/lib/mutations/transcripts";
@@ -113,13 +115,14 @@ function seedCachedTranscript(
   ticker: string,
   source: "edgar_8k" | "alpha_vantage" | "api_ninjas",
   transcript = "cached body",
+  opts: { callDate?: string | null; year?: number; quarter?: number } = {},
 ): void {
   upsertTranscript(db, {
     security_id: securityId,
     ticker,
-    year: 2026,
-    quarter: 2,
-    call_date: null,
+    year: opts.year ?? 2026,
+    quarter: opts.quarter ?? 2,
+    call_date: opts.callDate ?? null,
     source,
     transcript,
     summary: null,
@@ -128,9 +131,12 @@ function seedCachedTranscript(
     sentiment_score: null,
     sentiment_label: null,
     participants: null,
-    source_key: `${source}:${ticker}:2026:2`,
+    source_key: `${source}:${ticker}:${opts.year ?? 2026}:${opts.quarter ?? 2}`,
   });
 }
+
+/** The Finnhub calendar entry that makes a July print's fiscal quarter known. */
+const FINNHUB_Q2_2026 = JSON.stringify({ entry: { quarter: 2, year: 2026 } });
 
 function getAttemptedAt(eventId: number): string | null {
   const row = db
@@ -155,7 +161,8 @@ function fakeTranscript(overrides: Partial<EarningsTranscript> = {}): EarningsTr
     ticker: "JJJ",
     year: 2026,
     quarter: 2,
-    call_date: "2026-07-16",
+    // Real vendor rows carry no call date: the vendor's response has none.
+    call_date: null,
     source: "alpha_vantage",
     transcript: "Full call transcript text here.",
     summary: "extractive summary from fetchTranscript",
@@ -361,19 +368,136 @@ describe("fetchSameDayTranscripts", () => {
     expect(mockedFetch).not.toHaveBeenCalled();
   });
 
-  it("skips an event whose (ticker, year, quarter) already has a cached NON-EDGAR transcript", async () => {
+  it("skips a print whose FISCAL key already has a cached call", async () => {
     const secId = seedHeld("EEE");
     const rel = hoursAgoEt(3);
-    seedEvent({ symbol: "EEE", date: rel.date, releaseTime: rel.time });
+    seedEvent({ symbol: "EEE", date: rel.date, releaseTime: rel.time, rawJson: FINNHUB_Q2_2026 });
 
-    // deriveFilingReportingQuarter("2026-07-xx") -> { year: 2026, quarter: 2 }
-    // A real (alpha_vantage) transcript is terminal — nothing to upgrade.
+    // A real (alpha_vantage) call under the print's fiscal key is terminal.
     seedCachedTranscript(secId, "EEE", "alpha_vantage");
 
     const result = await fetchSameDayTranscripts(db, { now: NOW });
 
     expect(result).toEqual({ attempted: 0, fetched: 0 });
     expect(mockedFetch).not.toHaveBeenCalled();
+  });
+
+  it("checks the cache under the fiscal key, not the calendar key", async () => {
+    // July print, Finnhub says fiscal Q4 2026. A call cached under the
+    // calendar key (2026, 2) is an OLDER fiscal quarter's call and must not
+    // satisfy the check (the original finding).
+    const secId = seedHeld("FKY");
+    const rel = hoursAgoEt(3);
+    seedEvent({
+      symbol: "FKY",
+      date: rel.date,
+      releaseTime: rel.time,
+      rawJson: JSON.stringify({ entry: { quarter: 4, year: 2026 } }),
+    });
+    seedCachedTranscript(secId, "FKY", "alpha_vantage");
+    mockedFetch.mockResolvedValue(null);
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result.attempted).toBe(1);
+    expect(mockedFetch).toHaveBeenCalledWith(db, "FKY", 2026, 4, {
+      eventDate: rel.date,
+      expectedFiscalQuarter: { year: 2026, quarter: 4 },
+    });
+  });
+
+  it("fiscal quarter unknown: a call cached under the calendar key does not stand in for the print", async () => {
+    const secId = seedHeld("UNK");
+    const rel = hoursAgoEt(3);
+    seedEvent({ symbol: "UNK", date: rel.date, releaseTime: rel.time });
+    seedCachedTranscript(secId, "UNK", "alpha_vantage");
+    mockedFetch.mockResolvedValue(null);
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result.attempted).toBe(1);
+    expect(mockedFetch).toHaveBeenCalledWith(db, "UNK", 2026, 2, {
+      eventDate: rel.date,
+      skipAlphaVantage: true,
+    });
+  });
+
+  it("fiscal quarter unknown: the print is done once its filing is cached (found by filing date, under any key)", async () => {
+    const secId = seedHeld("UNF");
+    const rel = hoursAgoEt(3);
+    seedEvent({ symbol: "UNF", date: rel.date, releaseTime: rel.time });
+    // Keyed by the release's own stated fiscal quarter, not the calendar key.
+    seedCachedTranscript(secId, "UNF", "edgar_8k", "cached body", {
+      callDate: rel.date,
+      year: 2026,
+      quarter: 4,
+    });
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 0, fetched: 0 });
+    expect(mockedFetch).not.toHaveBeenCalled();
+  });
+
+  it("asks the vendor once per retry slot while nothing is cached: an attempt 31 minutes later is filing-only", async () => {
+    seedHeld("SLT");
+    const rel = hoursAgoEt(3);
+    const attemptedAt = new Date(NOW.getTime() - 31 * 60 * 1000)
+      .toISOString()
+      .replace("T", " ")
+      .slice(0, 19);
+    seedEvent({
+      symbol: "SLT",
+      date: rel.date,
+      releaseTime: rel.time,
+      rawJson: FINNHUB_Q2_2026,
+      transcriptAttemptedAt: attemptedAt,
+    });
+    mockedFetch.mockResolvedValue(null);
+
+    await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(mockedFetch).toHaveBeenCalledWith(db, "SLT", 2026, 2, {
+      eventDate: rel.date,
+      expectedFiscalQuarter: { year: 2026, quarter: 2 },
+      skipAlphaVantage: true,
+    });
+  });
+
+  it("asks the vendor again on the first attempt after the next retry mark", async () => {
+    seedHeld("SLU");
+    // Released 12h10m ago; last attempt 31 minutes ago (age 11h39m then).
+    const rel = hoursAgoEt(12 + 10 / 60);
+    const attemptedAt = new Date(NOW.getTime() - 31 * 60 * 1000)
+      .toISOString()
+      .replace("T", " ")
+      .slice(0, 19);
+    seedEvent({
+      symbol: "SLU",
+      date: rel.date,
+      releaseTime: rel.time,
+      rawJson: FINNHUB_Q2_2026,
+      transcriptAttemptedAt: attemptedAt,
+    });
+    mockedFetch.mockResolvedValue(null);
+
+    await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(mockedFetch).toHaveBeenCalledWith(db, "SLU", 2026, 2, {
+      eventDate: rel.date,
+      expectedFiscalQuarter: { year: 2026, quarter: 2 },
+    });
+  });
+
+  it("stamps the attempt with the sweep's own clock", async () => {
+    seedHeld("STM");
+    const rel = hoursAgoEt(3);
+    const eventId = seedEvent({ symbol: "STM", date: rel.date, releaseTime: rel.time });
+    mockedFetch.mockResolvedValue(null);
+
+    await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(getAttemptedAt(eventId)).toBe("2026-07-17 02:00:00");
   });
 
   it("caps at maxAttempts when more candidates are eligible", async () => {
@@ -444,7 +568,7 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
   it("attempts an upgrade fetch when the cached transcript is edgar_8k (never attempted)", async () => {
     const secId = seedHeld("UPA");
     const rel = hoursAgoEt(3);
-    const eventId = seedEvent({ symbol: "UPA", date: rel.date, releaseTime: rel.time });
+    const eventId = seedEvent({ symbol: "UPA", date: rel.date, releaseTime: rel.time, rawJson: FINNHUB_Q2_2026 });
     seedCachedTranscript(secId, "UPA", "edgar_8k");
     mockedFetch.mockResolvedValue({
       transcript: fakeTranscript({ ticker: "UPA", source_key: "alpha_vantage:UPA:2026:2" }),
@@ -457,7 +581,7 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
     expect(result).toEqual({ attempted: 1, fetched: 1 });
     expect(mockedFetch).toHaveBeenCalledWith(db, "UPA", 2026, 2, {
       eventDate: rel.date,
-      skipAlphaVantage: true,
+      expectedFiscalQuarter: { year: 2026, quarter: 2 },
     });
     expect(getAttemptedAt(eventId)).not.toBeNull();
   });
@@ -465,7 +589,7 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
   it("counts a failed upgrade (fromCache=true edgar echo) as attempted but not fetched, and never re-summarizes", async () => {
     const secId = seedHeld("UPB");
     const rel = hoursAgoEt(3);
-    seedEvent({ symbol: "UPB", date: rel.date, releaseTime: rel.time });
+    seedEvent({ symbol: "UPB", date: rel.date, releaseTime: rel.time, rawJson: FINNHUB_Q2_2026 });
     seedCachedTranscript(secId, "UPB", "edgar_8k");
     // fetchTranscript's internal AV upgrade found nothing → echoes the cached
     // edgar row back with fromCache: true.
@@ -487,7 +611,7 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
   it("upgrade candidates stay eligible past the 36h fresh deadline (5 days out)", async () => {
     const secId = seedHeld("UPC");
     const rel = hoursAgoEt(5 * 24);
-    seedEvent({ symbol: "UPC", date: rel.date, releaseTime: rel.time });
+    seedEvent({ symbol: "UPC", date: rel.date, releaseTime: rel.time, rawJson: FINNHUB_Q2_2026 });
     seedCachedTranscript(secId, "UPC", "edgar_8k");
     mockedFetch.mockResolvedValue({
       transcript: fakeTranscript({ ticker: "UPC", source_key: "alpha_vantage:UPC:2026:2" }),
@@ -503,7 +627,7 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
   it("upgrade candidates expire at the 10-day upgrade deadline", async () => {
     const secId = seedHeld("UPD");
     const rel = hoursAgoEt(11 * 24);
-    seedEvent({ symbol: "UPD", date: rel.date, releaseTime: rel.time });
+    seedEvent({ symbol: "UPD", date: rel.date, releaseTime: rel.time, rawJson: FINNHUB_Q2_2026 });
     seedCachedTranscript(secId, "UPD", "edgar_8k");
 
     const result = await fetchSameDayTranscripts(db, { now: NOW });
@@ -519,6 +643,7 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
       symbol: "UPE",
       date: rel.date,
       releaseTime: rel.time,
+      rawJson: FINNHUB_Q2_2026,
       transcriptAttemptedAt: hoursAgoUtcStamp(2), // 2h ago: past 30-min, inside 24h
     });
     seedCachedTranscript(secId, "UPE", "edgar_8k");
@@ -536,6 +661,7 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
       symbol: "UPF",
       date: rel.date,
       releaseTime: rel.time,
+      rawJson: FINNHUB_Q2_2026,
       transcriptAttemptedAt: hoursAgoUtcStamp(25),
     });
     seedCachedTranscript(secId, "UPF", "edgar_8k");
@@ -550,6 +676,44 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
     expect(result).toEqual({ attempted: 1, fetched: 1 });
   });
 
+  it("a filing cached for the print under ANOTHER key (stored before the Finnhub entry arrived) is an upgrade candidate, not a fresh one", async () => {
+    const secId = seedHeld("UPK");
+    const rel = hoursAgoEt(5 * 24);
+    seedEvent({
+      symbol: "UPK",
+      date: rel.date,
+      releaseTime: rel.time,
+      rawJson: JSON.stringify({ entry: { quarter: 4, year: 2026 } }),
+    });
+    // Keyed by the calendar (2026, 2); found by its filing date.
+    seedCachedTranscript(secId, "UPK", "edgar_8k", "cached body", { callDate: rel.date });
+    mockedFetch.mockResolvedValue({
+      transcript: fakeTranscript({ ticker: "UPK", source: "edgar_8k", source_key: "edgar_8k:UPK:2026:2" }),
+      fromCache: true,
+    });
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    // Five days out: a fresh candidate would have expired at 36h.
+    expect(result).toEqual({ attempted: 1, fetched: 0 });
+    expect(mockedFetch).toHaveBeenCalledWith(db, "UPK", 2026, 4, {
+      eventDate: rel.date,
+      expectedFiscalQuarter: { year: 2026, quarter: 4 },
+    });
+  });
+
+  it("a cached filing with NO known fiscal quarter is not retried: no call could be verified", async () => {
+    const secId = seedHeld("UPN");
+    const rel = hoursAgoEt(30);
+    seedEvent({ symbol: "UPN", date: rel.date, releaseTime: rel.time });
+    seedCachedTranscript(secId, "UPN", "edgar_8k", "cached body", { callDate: rel.date });
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 0, fetched: 0 });
+    expect(mockedFetch).not.toHaveBeenCalled();
+  });
+
   it("fresh candidates win the attempt budget over upgrade candidates", async () => {
     seedHeld("FRE");
     const upSec = seedHeld("UPG");
@@ -558,7 +722,7 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
     const relFresh = hoursAgoEt(3);
     const relUp = hoursAgoEt(2);
     seedEvent({ symbol: "FRE", date: relFresh.date, releaseTime: relFresh.time });
-    seedEvent({ symbol: "UPG", date: relUp.date, releaseTime: relUp.time });
+    seedEvent({ symbol: "UPG", date: relUp.date, releaseTime: relUp.time, rawJson: FINNHUB_Q2_2026 });
     seedCachedTranscript(upSec, "UPG", "edgar_8k");
     mockedFetch.mockResolvedValue(fakeFetchResult());
 
@@ -788,5 +952,28 @@ describe("isValidDeskNote / looksLikeDeskNoteRefusal (pure)", () => {
       "CSX reported second quarter results. Revenue was flat year over year and management discussed network performance.";
     expect(isValidDeskNote(extractive)).toBe(false);
     expect(looksLikeDeskNoteRefusal(extractive)).toBe(false);
+  });
+});
+
+describe("vendorRequestDue (pure)", () => {
+  const H = 60 * 60 * 1000;
+  const now = Date.parse("2026-07-17T02:00:00Z");
+
+  it("is due on the first attempt", () => {
+    expect(vendorRequestDue(3 * H, null, now)).toBe(true);
+  });
+
+  it("is not due again inside the same retry slot", () => {
+    expect(vendorRequestDue(3 * H, now - 31 * 60 * 1000, now)).toBe(false);
+    expect(vendorRequestDue(VENDOR_RETRY_INTERVAL_MS - 1, now - 11 * H, now)).toBe(false);
+  });
+
+  it("is due on the first attempt after a retry mark, and only that one", () => {
+    expect(vendorRequestDue(VENDOR_RETRY_INTERVAL_MS + 60_000, now - 31 * 60 * 1000, now)).toBe(true);
+    expect(vendorRequestDue(VENDOR_RETRY_INTERVAL_MS + 32 * 60 * 1000, now - 31 * 60 * 1000, now)).toBe(false);
+  });
+
+  it("treats a stamp from before the release as no attempt at all", () => {
+    expect(vendorRequestDue(1 * H, now - 5 * H, now)).toBe(true);
   });
 });

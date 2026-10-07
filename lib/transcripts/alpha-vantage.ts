@@ -10,13 +10,14 @@
  * This function NEVER throws — the fetch chain in fetch.ts relies on that
  * to fall through to EDGAR.
  *
- * FISCAL-QUARTER CAVEAT: Alpha Vantage's `quarter` param (YYYYQN) is the
- * company's FISCAL quarter, while the app's getMostRecentQuarter /
- * deriveFilingReportingQuarter derive CALENDAR quarters. We pass the
- * caller's year+quarter through unchanged, so non-calendar-FY tickers
- * (AAPL, ORCL, ADBE, …) may under-match. That is the safe failure mode —
- * null here, EDGAR 8-K fallback next — and mirrors the existing EDGAR
- * quarter-guard limitation documented in fetch.ts.
+ * FISCAL QUARTER: Alpha Vantage's `quarter` param (YYYYQN) is the company's
+ * FISCAL quarter, and its response carries NO call date. This client passes
+ * the caller's year+quarter through unchanged, so the caller must pass a
+ * fiscal key. Asking with a calendar quarter makes the vendor answer,
+ * correctly, with an OLDER fiscal quarter's call for any company whose fiscal
+ * year is not the calendar year. The fetch chain (lib/transcripts/fetch.ts)
+ * therefore requests a print by its Finnhub fiscal quarter and caches the
+ * answer only when the call itself names that quarter.
  */
 
 const ALPHA_VANTAGE_BASE_URL = "https://www.alphavantage.co";

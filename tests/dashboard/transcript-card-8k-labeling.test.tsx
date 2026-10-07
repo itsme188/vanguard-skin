@@ -207,7 +207,7 @@ describe("TranscriptCard — every other source keeps today's labels exactly", (
     expect(html).toContain("Test Co reported strong revenue growth this quarter.");
   });
 
-  it("renders an empty section when no guidance or risk passages were found", () => {
+  it("renders the empty-section component when no guidance or risk passages were found", () => {
     const html = renderToStaticMarkup(
       <TranscriptCard
         transcript={sampleTranscript({
@@ -218,17 +218,29 @@ describe("TranscriptCard — every other source keeps today's labels exactly", (
       />
     );
 
+    // The EmptySection component's own markup: its title, its marker and its reason.
+    expect(html).toContain("Guidance and Risk");
+    expect(html).toContain("empty ⓘ");
     expect(html).toContain("No guidance or risk passages were found in this call.");
-    expect(html).toContain("empty");
+    expect(html).not.toContain(">Guidance</summary>");
+    expect(html).not.toContain("Risk Factors");
   });
 
-  it("source: empty guidance/risk wording comes from kindLabel so filings are not called calls", () => {
+  it("source: the empty state is the EmptySection component and its noun comes from isFilingRow", () => {
     const source = fs.readFileSync(
       path.join(process.cwd(), "app/dashboard/components/TranscriptCard.tsx"),
       "utf8",
     );
-    const emptySectionRegion = sliceBetween(source, "No guidance or risk passages", "{/* Actions */}");
-    expect(emptySectionRegion).toContain("kindLabel");
-    expect(emptySectionRegion).not.toContain("No guidance or risk passages were found in this call.");
+    expect(source).toMatch(/import\s*\{\s*EmptySection\s*\}\s*from\s*["']\.\/EmptySection["']/);
+    expect(source).toMatch(
+      /import\s*\{[^}]*\bisFilingRow\b[^}]*\}\s*from\s*["']@\/lib\/transcripts\/presentation["']/,
+    );
+    const region = sliceBetween(source, "{t.guidance || t.risk_factors ? (", "{/* Actions */}");
+    const emptyBranch = region.slice(region.lastIndexOf(") : ("));
+    expect(emptyBranch).toContain("<EmptySection");
+    expect(emptyBranch).toMatch(/isFilingRow\(t\)\s*\?\s*"filing"\s*:\s*"call"/);
+    // No compare against a display label, and no hard-coded noun.
+    expect(source).not.toMatch(/kindLabel\(t\)\s*===/);
+    expect(emptyBranch).not.toContain("were found in this call.");
   });
 });

@@ -1,22 +1,24 @@
 /**
- * One-shot audit: scan `earnings_transcripts WHERE source='edgar_8k'`,
- * recompute the calendar reporting quarter from `call_date` (which the
- * EDGAR fallback set to the filing date), and flag rows whose stored
- * (year, quarter) labels disagree with the computed quarter.
+ * Report-only audit: scan `earnings_transcripts WHERE source='edgar_8k'`,
+ * recompute the CALENDAR reporting quarter from `call_date` (the filing
+ * date), and list rows whose stored (year, quarter) differs from it.
  *
- * Print-only by default — review before purging. Pass `--delete-flagged`
- * to actually remove the mismatched rows. Tickers on non-calendar fiscal
- * years (AAPL, ORCL, ADBE, etc.) will produce false-positive flags;
- * eyeball the output before deleting.
+ * READ ONLY. This script used to carry a `--delete-flagged` mode. It was
+ * removed on 2026-10-07: transcript rows are keyed by FISCAL quarter, so for
+ * a company whose fiscal year is not the calendar year a difference from the
+ * calendar quarter is the CORRECT state, and deleting "flagged" rows would
+ * delete correct ones. The list is a reading aid, not a defect list. For
+ * rows whose own text contradicts their key, use
+ * scripts/audit-transcript-keys.ts (also read-only).
  *
- * Usage: npx tsx scripts/audit-transcripts-quarter-mismatch.ts [--delete-flagged]
+ * Usage (from the repo root):
+ *   PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx scripts/audit-transcripts-quarter-mismatch.ts
  */
 import "dotenv/config";
 import Database from "better-sqlite3";
 import { deriveFilingReportingQuarter } from "@/lib/transcripts/fetch";
 
 const DB_PATH = process.env.VANGUARD_DB_PATH || "data/vanguard.db";
-const SHOULD_DELETE = process.argv.includes("--delete-flagged");
 
 interface Row {
   id: number;
@@ -27,7 +29,14 @@ interface Row {
   accession_number: string | null;
 }
 
-const db = new Database(DB_PATH);
+if (process.argv.includes("--delete-flagged")) {
+  console.error(
+    "--delete-flagged was removed: rows are keyed by fiscal quarter, so a calendar mismatch is not an error. This script only reports.",
+  );
+  process.exit(1);
+}
+
+const db = new Database(DB_PATH, { readonly: true });
 
 const rows = db
   .prepare(
@@ -39,44 +48,31 @@ const rows = db
   )
   .all() as Row[];
 
-const flagged: Array<{ row: Row; computed: { year: number; quarter: number } }> = [];
+const listed: Array<{ row: Row; computed: { year: number; quarter: number } }> = [];
 
 for (const r of rows) {
   if (!r.call_date) continue;
   const computed = deriveFilingReportingQuarter(r.call_date);
   if (computed.year !== r.year || computed.quarter !== r.quarter) {
-    flagged.push({ row: r, computed });
+    listed.push({ row: r, computed });
   }
 }
 
-console.log(`Scanned ${rows.length} edgar_8k transcripts.`);
-console.log(`${flagged.length} flagged as quarter-mismatched.\n`);
+console.log(`Scanned ${rows.length} edgar_8k rows [READ ONLY].`);
+console.log(`${listed.length} keyed differently from the calendar quarter of their filing date.\n`);
 
-if (flagged.length === 0) {
-  process.exit(0);
-}
-
-console.log("Flagged rows:");
-for (const { row, computed } of flagged) {
+for (const { row, computed } of listed) {
   console.log(
     `  id=${row.id} ${row.ticker} stored=Q${row.quarter} ${row.year} ` +
-      `computed-from-${row.call_date}=Q${computed.quarter} ${computed.year} ` +
+      `calendar-from-${row.call_date}=Q${computed.quarter} ${computed.year} ` +
       `accession=${row.accession_number}`,
   );
 }
 
-if (SHOULD_DELETE) {
-  const ids = flagged.map((f) => f.row.id);
-  const placeholders = ids.map(() => "?").join(",");
-  const result = db
-    .prepare(`DELETE FROM earnings_transcripts WHERE id IN (${placeholders})`)
-    .run(...ids);
-  console.log(`\nDeleted ${result.changes} flagged rows.`);
-} else {
+if (listed.length > 0) {
   console.log(
-    `\nDry run — pass --delete-flagged to remove these rows. ` +
-      `Eyeball first: tickers on non-calendar fiscal years will produce ` +
-      `false positives (their fiscal Q4 ≠ calendar Q4).`,
+    `\nNothing was changed. A fiscal key that differs from the calendar quarter is ` +
+      `expected for any company whose fiscal year is not the calendar year.`,
   );
 }
 

@@ -26,7 +26,25 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-import { GET } from "@/app/api/transcripts/route";
+import { GET, POST } from "@/app/api/transcripts/route";
+import { getEarningsTranscript as getAlphaVantageTranscript } from "@/lib/transcripts/alpha-vantage";
+import { getEarnings8KFilings } from "@/lib/apis/edgar";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
+
+vi.mock("@/lib/transcripts/alpha-vantage", () => ({
+  isAlphaVantageConfigured: vi.fn(() => true),
+  getEarningsTranscript: vi.fn(async () => null),
+}));
+
+vi.mock("@/lib/apis/api-ninjas", () => ({
+  isApiNinjasConfigured: vi.fn(() => false),
+  getEarningsTranscript: vi.fn(async () => null),
+}));
+
+vi.mock("@/lib/apis/edgar", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/apis/edgar")>()),
+  getEarnings8KFilings: vi.fn(async () => []),
+}));
 
 function makeRequest(url: string): NextRequest {
   return new NextRequest(`http://localhost:3099${url}`);
@@ -100,5 +118,120 @@ describe("GET /api/transcripts (cached transcript entity decoding)", () => {
       makeRequest("/api/transcripts?ticker=RBRK&year=2020&quarter=1")
     );
     expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /api/transcripts (the fetch / refresh buttons)", () => {
+  const printDate = addDays(todayET(), -1);
+
+  function post(body: unknown): NextRequest {
+    return new NextRequest("http://localhost:3099/api/transcripts", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  function seedPrint(rawJson: string | null, source = "finnhub") {
+    hoisted.db
+      .prepare(
+        `INSERT INTO calendar_events
+          (source, event_type, event_date, release_time, title, symbol, actual_value, source_key, week_of, superseded, raw_json)
+         VALUES (?, 'earnings', ?, '16:05', 'ZZR earnings', 'ZZR', 'EPS 1.00', ?, ?, 0, ?)`,
+      )
+      .run(source, printDate, `${source}:ZZR:${printDate}`, printDate, rawJson);
+  }
+
+  function call(opening: string) {
+    return {
+      transcript: `Operator (Operator): ${opening}\n\nJane Doe (CEO): Revenue rose on steady demand.`,
+      participants: [],
+      overall_sentiment: null,
+    };
+  }
+
+  beforeEach(() => {
+    hoisted.db = new Database(":memory:");
+    runMigrations(hoisted.db);
+    vi.mocked(getAlphaVantageTranscript).mockReset().mockResolvedValue(null);
+    vi.mocked(getEarnings8KFilings).mockReset().mockResolvedValue([]);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  it("with no quarter, requests the latest print's FISCAL quarter, not the calendar quarter", async () => {
+    seedPrint(JSON.stringify({ entry: { quarter: 4, year: 2026 } }));
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce(
+      call("Welcome to the ZZR fiscal fourth quarter 2026 earnings conference call."),
+    );
+
+    const res = await POST(post({ ticker: "ZZR" }));
+    const body = await res.json();
+
+    expect(getAlphaVantageTranscript).toHaveBeenCalledWith("ZZR", 2026, 4);
+    expect(res.status).toBe(200);
+    expect(body.data).toMatchObject({ year: 2026, quarter: 4, source: "alpha_vantage" });
+  });
+
+  it("does not cache an older fiscal quarter's call as the refresh; the print's 8-K is returned instead", async () => {
+    seedPrint(JSON.stringify({ entry: { quarter: 4, year: 2026 } }));
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce(
+      call("Welcome to the ZZR fiscal second quarter 2026 earnings conference call."),
+    );
+    vi.mocked(getEarnings8KFilings).mockResolvedValueOnce([
+      {
+        accessionNumber: "zzr-q4",
+        filingDate: printDate,
+        filingUrl: "https://example.test/zzr-q4",
+        pressReleaseText: "ZZR reports fiscal fourth quarter 2026 results.",
+      },
+    ]);
+
+    const res = await POST(post({ ticker: "ZZR" }));
+    const body = await res.json();
+
+    expect(body.data).toMatchObject({ year: 2026, quarter: 4, source: "edgar_8k" });
+    expect(
+      hoisted.db.prepare("SELECT source FROM earnings_transcripts").all(),
+    ).toEqual([{ source: "edgar_8k" }]);
+  });
+
+  it("returns 404 and caches nothing when the print's call is wrong and no 8-K is filed yet", async () => {
+    seedPrint(JSON.stringify({ entry: { quarter: 4, year: 2026 } }));
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce(
+      call("Welcome to the ZZR fiscal second quarter 2026 earnings conference call."),
+    );
+
+    const res = await POST(post({ ticker: "ZZR" }));
+
+    expect(res.status).toBe(404);
+    expect(
+      (hoisted.db.prepare("SELECT COUNT(*) AS c FROM earnings_transcripts").get() as { c: number }).c,
+    ).toBe(0);
+  });
+
+  it("an explicit quarter is requested as given, and a contradicting call is rejected", async () => {
+    seedPrint(JSON.stringify({ entry: { quarter: 4, year: 2026 } }));
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce(
+      call("Welcome to the ZZR fiscal second quarter 2026 earnings conference call."),
+    );
+
+    const res = await POST(post({ ticker: "ZZR", year: 2026, quarter: 3 }));
+
+    expect(getAlphaVantageTranscript).toHaveBeenCalledWith("ZZR", 2026, 3);
+    expect(res.status).toBe(404);
+    expect(
+      (hoisted.db.prepare("SELECT COUNT(*) AS c FROM earnings_transcripts").get() as { c: number }).c,
+    ).toBe(0);
+  });
+
+  it("falls back to the calendar default only when no print's fiscal quarter is known", async () => {
+    seedPrint(null, "nasdaq");
+
+    await POST(post({ ticker: "ZZR" }));
+
+    const [, year, quarter] = vi.mocked(getAlphaVantageTranscript).mock.calls[0];
+    const { getMostRecentQuarter } = await import("@/lib/transcripts/fetch");
+    expect({ year, quarter }).toEqual(getMostRecentQuarter());
   });
 });

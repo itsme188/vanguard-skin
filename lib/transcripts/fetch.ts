@@ -8,6 +8,14 @@
  *   4. Fall back to EDGAR 8-K press release
  *   5. Cache result and return
  *
+ * KEYS ARE FISCAL. The vendor's `quarter` parameter is the company's fiscal
+ * quarter, so a row is keyed by the fiscal (year, quarter) the document
+ * belongs to. A print's fiscal quarter comes from the Finnhub calendar entry
+ * stored on its earnings event (`expectedFiscalQuarterForPrint`). What ties a
+ * document to its key is written down once, at the single insert
+ * (`upsertTranscript` in lib/mutations/transcripts.ts): a call by what its
+ * own text says, a filing by its filing date. Nothing here deletes a row.
+ *
  * The Motley Fool scraper was retired from the chain 2026-06-09 (brittle —
  * broke on HTML changes; replaced by Alpha Vantage's official endpoint).
  * Cached motley_fool rows remain valid and are still served from step 1.
@@ -17,17 +25,20 @@
  */
 
 import type Database from "better-sqlite3";
-import type { EarningsTranscript, TranscriptSource } from "@/lib/types";
+import type { EarningsTranscript } from "@/lib/types";
+import { getCachedTranscript } from "@/lib/queries/transcripts";
 import {
-  getCachedTranscript,
-  getLatestCachedTranscript,
-} from "@/lib/queries/transcripts";
-import {
+  PRINT_FILING_WINDOW_DAYS,
+  TranscriptQuarterMismatchError,
+  filingDateMatchesPrint,
+  statedFiscalQuarterDetail,
   statedFiscalQuarterFromTranscript,
   transcriptQuarterMismatchReason,
   upsertTranscript,
 } from "@/lib/mutations/transcripts";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { isFilingRow } from "@/lib/transcripts/presentation";
+import { todayET } from "@/lib/calendar/date-utils";
 import {
   isApiNinjasConfigured,
   getEarningsTranscript as getApiNinjasTranscript,
@@ -36,7 +47,7 @@ import {
   isAlphaVantageConfigured,
   getEarningsTranscript as getAlphaVantageTranscript,
 } from "@/lib/transcripts/alpha-vantage";
-import { getEarnings8KFilings } from "@/lib/apis/edgar";
+import { getEarnings8KFilings, type Earnings8KFiling } from "@/lib/apis/edgar";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -45,17 +56,32 @@ export interface FetchTranscriptResult {
   fromCache: boolean;
 }
 
+export interface FiscalQuarter {
+  year: number;
+  quarter: number;
+}
+
 export interface FetchTranscriptOptions {
-  /** Earnings print date whose same-day fetch is warming this cache row. */
+  /**
+   * The earnings print this fetch is for. The 8-K is then matched to the
+   * print by its filing date.
+   */
   eventDate?: string;
-  expectedFiscalQuarter?: { year: number; quarter: number };
+  /**
+   * The print's fiscal quarter (Finnhub). It becomes the key, and a vendor
+   * call is cached only when the call itself names this quarter. With
+   * `eventDate` and no fiscal quarter, no vendor call is requested at all.
+   */
+  expectedFiscalQuarter?: FiscalQuarter;
+  /** Do not spend an Alpha Vantage request on this fetch (pacing). */
   skipAlphaVantage?: boolean;
 }
 
-export { statedFiscalQuarterFromTranscript };
+export { statedFiscalQuarterFromTranscript, PRINT_FILING_WINDOW_DAYS };
 
-// Real filing/vendor dates can differ by a few days around print time because
-// releases, calls, SEC filing acceptance and vendor posting are not simultaneous.
+// A vendor-supplied CALL date (API Ninjas only; Alpha Vantage supplies none)
+// can sit a few days from the print date: the call, the vendor's posting and
+// the calendar's date for the print are not simultaneous.
 export const TRANSCRIPT_CALL_DATE_WINDOW_DAYS = 10;
 
 // Cross-source earnings calendar rows for the same print can disagree by a
@@ -116,10 +142,8 @@ export function generateSummary(text: string): string {
  */
 export function extractGuidance(text: string): string | null {
   if (!text) return null;
-
-  const guidanceParagraphs = selectTranscriptSectionParagraphs(text, "guidance");
-
-  return guidanceParagraphs.length > 0 ? guidanceParagraphs.join("\n\n") : null;
+  const excerpts = selectTranscriptSections(text).guidance;
+  return excerpts.length > 0 ? excerpts.join("\n\n") : null;
 }
 
 /**
@@ -127,69 +151,188 @@ export function extractGuidance(text: string): string | null {
  */
 export function extractRiskFactors(text: string): string | null {
   if (!text) return null;
-
-  const guidance = new Set(selectTranscriptSectionParagraphs(text, "guidance"));
-  const riskParagraphs = selectTranscriptSectionParagraphs(text, "risk").filter(
-    (p) => !guidance.has(p),
-  );
-
-  return riskParagraphs.length > 0 ? riskParagraphs.join("\n\n") : null;
+  const excerpts = selectTranscriptSections(text).risk;
+  return excerpts.length > 0 ? excerpts.join("\n\n") : null;
 }
 
-type TranscriptSection = "guidance" | "risk";
+// ─── Guidance / risk slicer ──────────────────────────────────────
+//
+// A keyword slicer, so the sections stay approximate. What it guarantees:
+//   - only the part of the call BEFORE the question-and-answer part is read
+//     (positional, never the literal words "prepared remarks");
+//   - operator and analyst turns are never quoted;
+//   - boilerplate is removed one SENTENCE at a time (welcome, safe harbor,
+//     8-K cover wording), so real guidance sharing a paragraph with it stays;
+//   - an excerpt STARTS at the first sentence that matched, not at the top of
+//     the speaker's turn (a vendor turn is one paragraph of a thousand words,
+//     and its first 80 words are the greeting);
+//   - a question never qualifies a paragraph;
+//   - Risk never repeats a passage Guidance already shows, and that is
+//     decided BEFORE the top-N cut so a later risk passage takes the slot.
 
 const GUIDANCE_KEYWORDS =
   /\b(guidance|outlook|expect|forecast|anticipate|projects|projected|projecting|looking ahead|full[- ]year|next quarter|raising|lowering|reaffirm)\b/i;
 const RISK_KEYWORDS =
   /\b(risk|challenge|headwind|decline|pressure|uncertain|concern|difficult|disruption|tariff|impact)\b/i;
-const QUESTION_SPEAKER_RE =
-  /^(?:Analyst|Operator|Question|Q\s*[-:]|[^:\n]{1,120}\((?:[^)]*\b(?:analyst|operator)\b[^)]*)\):)/i;
-const QA_MARKER_RE =
-  /^(?:Operator:\s*)?(?:question-and-answer session|we (?:will|can) now (?:begin|open).{0,80}questions|open.{0,80}for questions)|^Q\s*[-:]/i;
-const BOILERPLATE_RE =
-  /\b(welcome to|good (?:morning|afternoon|evening).{0,80}conference call|forward-looking statements?|safe harbor|risks and uncertainties|actual results (?:may|could) differ|SEC|Form 8-K|Exhibit 99\.?1|Item 2\.02|registrant furnished|investor relations)\b/i;
+const GUIDANCE_LIMIT = 3;
+const RISK_LIMIT = 2;
+const EXCERPT_WORD_LIMIT = 80;
+// A labelled turn this short that ends in a question is someone asking one.
+const QUESTION_TURN_MAX_WORDS = 60;
+
+// "Name:" or "Name (Title):" at the start of a turn.
+const SPEAKER_PREFIX_RE =
+  /^([A-Z][A-Za-z.'’-]*(?:\s+[A-Za-z.'’&-]+){0,5})\s*(?:\(([^)\n]{1,120})\))?:\s+(?=\S)/;
+const QUESTIONER_ROLE_RE = /\b(?:analyst|operator|moderator)\b/i;
+const QUESTION_LABEL_RE = /^(?:Q|Question)\s*[-:]/i;
+// A bare section heading, e.g. a paragraph that is just "Question-and-Answer Session".
+const QA_HEADING_RE = /^(?:question[-\s]and[-\s]answer|questions?\s+and\s+answers?|Q\s*&\s*A)(?:\s+session)?[.:]?$/i;
+// "We will NOW begin the question-and-answer session": the Q&A is starting.
+// The operator's opening line ("after the remarks there will be a
+// question-and-answer session") announces it for later and is not a marker.
+const QA_STARTING_NOW_RE =
+  /\bnow\s+(?:begin|start|open|take|conduct|move|turn|go|ready\s+(?:to\s+take|for)|like\s+to\s+(?:begin|start|open|take))\b[^.!?]{0,80}\b(?:questions?|Q\s*&\s*A)\b|\b(?:first|next)\s+question\b[^.!?]{0,60}\b(?:comes?|is\s+from|will\s+come|coming)\b/i;
+const QA_LATER_RE = /\b(?:after|following|then|later|at\s+the\s+(?:end|conclusion)|will\s+be\s+(?:a|an))\b/i;
+
 const BOILERPLATE_SENTENCE_RE =
-  /\b(?:before we begin|today's remarks include|this (?:call|presentation) contains|forward-looking statements?|safe harbor|risks and uncertainties|actual results (?:may|could) differ|registrant furnished|Item 2\.02|Exhibit 99\.?1)\b/i;
+  /\b(?:welcome\s+to|good\s+(?:morning|afternoon|evening|day)|thank\s+you\s+(?:all\s+)?for\s+(?:joining|standing\s+by)|with\s+me\s+(?:today|on\s+the\s+call)|joining\s+me|turn\s+the\s+(?:call|conference)\s+over|hand\s+the\s+call\s+over|before\s+we\s+begin|today's\s+remarks\s+include|this\s+(?:call|presentation)\s+contains|forward-looking\s+statements?|safe\s+harbor|risks\s+and\s+uncertainties|actual\s+results\s+(?:may|could|might)\s+differ|undertakes?\s+no\s+obligation|SEC|Securities\s+and\s+Exchange\s+Commission|Form\s+(?:8-K|10-K|10-Q)|Exhibit\s+99\.?1?|Item\s+2\.02|registrant|investor\s+relations|webcast|replay|reconciliations?)\b/i;
 
-function normalizeParagraphs(text: string): string[] {
+interface TranscriptTurn {
+  /** "Name (Title): " or "" */
+  prefix: string;
+  speaker: string | null;
+  title: string | null;
+  body: string;
+}
+
+function splitTurns(text: string): TranscriptTurn[] {
   return text
-    .split(/\n\n+/)
+    // A blank line, or a single newline straight before a speaker label.
+    .split(/\n\s*\n+|\n(?=[A-Z][A-Za-z.'’-]*(?:[ \t]+[A-Za-z.'’&-]+){0,5}[ \t]*(?:\([^)\n]{1,120}\))?:\s)/)
     .map((p) => p.replace(/\s+/g, " ").trim())
-    .filter((p) => p.length > 30);
+    .filter((p) => p.length > 0)
+    .map((p) => {
+      const m = SPEAKER_PREFIX_RE.exec(p);
+      if (!m) return { prefix: "", speaker: null, title: null, body: p };
+      return {
+        prefix: m[0],
+        speaker: m[1].trim(),
+        title: m[2]?.trim() ?? null,
+        body: p.slice(m[0].length).trim(),
+      };
+    });
 }
 
-function truncateParagraph(p: string): string {
-  const words = p.split(/\s+/);
-  return words.length > 80 ? words.slice(0, 80).join(" ") + "..." : p;
+function isQuestionerTurn(turn: TranscriptTurn): boolean {
+  if (QUESTION_LABEL_RE.test(turn.prefix + turn.body)) return true;
+  if (turn.speaker && /^(?:operator|analyst|moderator|question)$/i.test(turn.speaker)) return true;
+  return !!turn.title && QUESTIONER_ROLE_RE.test(turn.title);
 }
 
-function isBoilerplateParagraph(p: string): boolean {
-  return BOILERPLATE_RE.test(p);
+function isAnalystTurn(turn: TranscriptTurn): boolean {
+  return (
+    (!!turn.title && /\banalyst\b/i.test(turn.title)) ||
+    (!!turn.speaker && /^analyst$/i.test(turn.speaker))
+  );
 }
 
-function stripBoilerplateSentences(p: string): string {
-  return p
-    .split(/(?<=[.!?])\s+/)
-    .filter((sentence) => !BOILERPLATE_SENTENCE_RE.test(sentence))
-    .join(" ")
-    .replace(/^(?:Investor Relations|Operator):\s*/i, "")
-    .trim();
+function splitSentences(body: string): string[] {
+  return body
+    .split(/(?<=[.!?])\s+(?=[A-Z"'(“])/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
-function preparedPool(paragraphs: string[]): string[] {
-  const firstQa = paragraphs.findIndex((p) => QA_MARKER_RE.test(p));
-  return firstQa === -1 ? paragraphs : paragraphs.slice(0, firstQa);
+/**
+ * How many leading turns make up the part of the call before questions.
+ * The marker is searched over EVERY turn, before any length filter (a bare
+ * "Question-and-answer session" heading is 27 characters).
+ */
+function turnsBeforeQuestions(turns: TranscriptTurn[]): TranscriptTurn[] {
+  for (let i = 0; i < turns.length; i += 1) {
+    const turn = turns[i];
+    // The first analyst turn, a "Q:" label, or a section heading: everything
+    // from here on is Q&A.
+    if (isAnalystTurn(turn) || QUESTION_LABEL_RE.test(turn.prefix + turn.body)) {
+      return turns.slice(0, i);
+    }
+    if (QA_HEADING_RE.test(turn.body)) return turns.slice(0, i);
+    // A short labelled turn that ends in a question, with no titles to go by.
+    if (
+      turn.speaker &&
+      !turn.title &&
+      turn.body.endsWith("?") &&
+      turn.body.split(/\s+/).length <= QUESTION_TURN_MAX_WORDS
+    ) {
+      return turns.slice(0, i);
+    }
+    // "We will now begin the question-and-answer session", "Our first
+    // question comes from ...". The sentence can close an executive's own
+    // remarks, so that turn stays in the pool.
+    const startsNow = splitSentences(turn.body).some(
+      (s) => QA_STARTING_NOW_RE.test(s) && !QA_LATER_RE.test(s),
+    );
+    if (startsNow) return turns.slice(0, i + 1);
+  }
+  return turns;
 }
 
-function selectTranscriptSectionParagraphs(text: string, section: TranscriptSection): string[] {
-  const keyword = section === "guidance" ? GUIDANCE_KEYWORDS : RISK_KEYWORDS;
-  const limit = section === "guidance" ? 3 : 2;
-  const candidates = preparedPool(normalizeParagraphs(text))
-    .filter((p) => !QUESTION_SPEAKER_RE.test(p))
-    .map(stripBoilerplateSentences)
-    .filter((p) => p.length > 30)
-    .filter((p) => keyword.test(p) && !isBoilerplateParagraph(p));
-  return candidates.slice(0, limit).map(truncateParagraph);
+interface SectionExcerpt {
+  turnIndex: number;
+  /** Sentence range [start, end) of the turn that the excerpt covers. */
+  start: number;
+  end: number;
+  text: string;
+}
+
+function selectExcerpts(
+  turns: { prefix: string; sentences: string[] }[],
+  keyword: RegExp,
+  limit: number,
+  taken: SectionExcerpt[],
+): SectionExcerpt[] {
+  const out: SectionExcerpt[] = [];
+  for (let t = 0; t < turns.length && out.length < limit; t += 1) {
+    const { prefix, sentences } = turns[t];
+    const blocked = taken.filter((x) => x.turnIndex === t);
+    const isBlocked = (i: number) => blocked.some((x) => i >= x.start && i < x.end);
+    const start = sentences.findIndex(
+      (s, i) => !isBlocked(i) && !s.endsWith("?") && keyword.test(s),
+    );
+    if (start === -1) continue;
+
+    const words: string[] = [];
+    let end = start;
+    let truncated = false;
+    for (; end < sentences.length && !isBlocked(end); end += 1) {
+      const sentenceWords = sentences[end].split(/\s+/);
+      if (words.length + sentenceWords.length > EXCERPT_WORD_LIMIT) {
+        words.push(...sentenceWords.slice(0, EXCERPT_WORD_LIMIT - words.length));
+        truncated = true;
+        end += 1;
+        break;
+      }
+      words.push(...sentenceWords);
+    }
+    // A sentence that opens with its own speaker label carries the speaker.
+    const ownLabel = SPEAKER_PREFIX_RE.test(sentences[start]);
+    const body = words.join(" ") + (truncated ? "..." : "");
+    if (body.length <= 30) continue;
+    out.push({ turnIndex: t, start, end, text: (ownLabel ? "" : prefix) + body });
+  }
+  return out;
+}
+
+function selectTranscriptSections(text: string): { guidance: string[]; risk: string[] } {
+  const pool = turnsBeforeQuestions(splitTurns(text))
+    .filter((turn) => !isQuestionerTurn(turn))
+    .map((turn) => ({
+      prefix: turn.prefix,
+      sentences: splitSentences(turn.body).filter((s) => !BOILERPLATE_SENTENCE_RE.test(s)),
+    }));
+  const guidance = selectExcerpts(pool, GUIDANCE_KEYWORDS, GUIDANCE_LIMIT, []);
+  const risk = selectExcerpts(pool, RISK_KEYWORDS, RISK_LIMIT, guidance);
+  return { guidance: guidance.map((x) => x.text), risk: risk.map((x) => x.text) };
 }
 
 function parseDateOnly(date: string): number | null {
@@ -211,7 +354,8 @@ function normalizedDate(raw: string | null | undefined): string | null {
   return parseDateOnly(date) === null ? null : date;
 }
 
-function realDateMatchesEvent(date: string | null | undefined, eventDate: string | undefined): boolean {
+/** A vendor-supplied CALL date (API Ninjas only) against the print date. */
+function callDateMatchesPrint(date: string | null | undefined, eventDate: string | undefined): boolean {
   if (!eventDate) return true;
   const normalized = normalizedDate(date);
   if (!normalized) return false;
@@ -219,37 +363,66 @@ function realDateMatchesEvent(date: string | null | undefined, eventDate: string
   return diff !== null && diff <= TRANSCRIPT_CALL_DATE_WINDOW_DAYS;
 }
 
-function parseFinnhubQuarter(rawJson: string | null): { year: number; quarter: number } | null {
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// ─── The print's fiscal quarter ──────────────────────────────────
+
+/**
+ * Finnhub's earnings-calendar entry, stored whole under `entry` in
+ * `calendar_events.raw_json`. Only real values count: quarter is 1-4 (a
+ * numeric string is accepted), year is a number from 2000 to 2099. `null`,
+ * `true`, 0 and a two-digit year are all "not stated".
+ */
+function parseFinnhubQuarter(rawJson: string | null): FiscalQuarter | null {
   if (!rawJson) return null;
   try {
-    const parsed = JSON.parse(rawJson) as { entry?: { quarter?: unknown; year?: unknown } };
-    const quarter = Number(parsed.entry?.quarter);
-    const year = Number(parsed.entry?.year);
-    if (![1, 2, 3, 4].includes(quarter) || !Number.isInteger(year)) return null;
-    return { quarter, year };
+    const parsed = JSON.parse(rawJson) as { entry?: { quarter?: unknown; year?: unknown } } | null;
+    const rawQuarter = parsed?.entry?.quarter;
+    const rawYear = parsed?.entry?.year;
+    const quarter =
+      typeof rawQuarter === "number"
+        ? rawQuarter
+        : typeof rawQuarter === "string" && /^[1-4]$/.test(rawQuarter.trim())
+          ? Number(rawQuarter.trim())
+          : NaN;
+    if (quarter !== 1 && quarter !== 2 && quarter !== 3 && quarter !== 4) return null;
+    if (typeof rawYear !== "number" || !Number.isInteger(rawYear)) return null;
+    if (rawYear < 2000 || rawYear > 2099) return null;
+    return { quarter, year: rawYear };
   } catch {
     return null;
   }
 }
 
+/**
+ * The fiscal quarter and year of an earnings print, from the Finnhub entry
+ * stored on an earnings event of the issuer family dated within
+ * `FISCAL_QUARTER_EVENT_TOLERANCE_DAYS` of the print. Superseded twins count
+ * (the live row for a print is often a Nasdaq or hand-entered row with no
+ * entry). When several rows carry an entry: a live row first, then the
+ * nearest date, then the lower id. Null when none does; never throws.
+ */
 export function expectedFiscalQuarterForPrint(
   db: Database.Database,
   symbol: string,
   eventDate: string,
-): { year: number; quarter: number } | null {
+): FiscalQuarter | null {
   const siblings = [...issuerSiblings(symbol)].map((s) => s.toUpperCase());
-  if (siblings.length === 0) return null;
+  if (siblings.length === 0 || parseDateOnly(eventDate) === null) return null;
   const placeholders = siblings.map(() => "?").join(",");
   const rows = db
     .prepare(
       `SELECT raw_json
          FROM calendar_events
-        WHERE (event_type = 'earnings' OR source = 'finnhub')
-          AND source = 'finnhub'
+        WHERE source = 'finnhub'
           AND UPPER(symbol) IN (${placeholders})
           AND raw_json IS NOT NULL
           AND ABS(julianday(event_date) - julianday(?)) <= ?
-        ORDER BY ABS(julianday(event_date) - julianday(?)) ASC, id ASC`,
+        ORDER BY COALESCE(superseded, 0) ASC,
+                 ABS(julianday(event_date) - julianday(?)) ASC,
+                 id ASC`,
     )
     .all(...siblings, eventDate, FISCAL_QUARTER_EVENT_TOLERANCE_DAYS, eventDate) as Array<{
     raw_json: string | null;
@@ -262,11 +435,64 @@ export function expectedFiscalQuarterForPrint(
   return null;
 }
 
-function transcriptMatchesKey(
-  transcript: string | null | undefined,
-  key: { ticker: string; year: number; quarter: number; source: TranscriptSource },
-): boolean {
-  return transcriptQuarterMismatchReason({ ...key, transcript }) === null;
+export interface LatestPrint extends FiscalQuarter {
+  eventDate: string;
+}
+
+/**
+ * The issuer's most recent earnings print that has happened, with its fiscal
+ * quarter. The ONE default for "the latest transcript" when a caller names no
+ * quarter (the fetch button, the chat tool). Null when there is no such print
+ * or its fiscal quarter is unknown; the caller then falls back to the
+ * calendar default.
+ */
+export function latestPrintFiscalQuarter(
+  db: Database.Database,
+  ticker: string,
+): LatestPrint | null {
+  const siblings = [...issuerSiblings(ticker)].map((s) => s.toUpperCase());
+  if (siblings.length === 0) return null;
+  const placeholders = siblings.map(() => "?").join(",");
+  const row = db
+    .prepare(
+      `SELECT symbol, event_date
+         FROM calendar_events
+        WHERE (event_type = 'earnings' OR source = 'finnhub')
+          AND COALESCE(superseded, 0) = 0
+          AND UPPER(symbol) IN (${placeholders})
+          AND actual_value IS NOT NULL
+          AND event_date <= ?
+        ORDER BY event_date DESC, id ASC
+        LIMIT 1`,
+    )
+    .get(...siblings, todayET()) as { symbol: string; event_date: string } | undefined;
+  if (!row) return null;
+  const expected = expectedFiscalQuarterForPrint(db, row.symbol, row.event_date);
+  return expected ? { ...expected, eventDate: row.event_date } : null;
+}
+
+/**
+ * The cached 8-K press release for a print, found by its FILING DATE (stored
+ * in `call_date`) whatever key it sits under. A filing cached while the
+ * print's fiscal quarter was unknown is keyed by its own stated quarter or by
+ * the calendar, so a lookup by key alone can miss it.
+ */
+export function getCachedFilingForPrint(
+  db: Database.Database,
+  ticker: string,
+  eventDate: string,
+): EarningsTranscript | null {
+  if (parseDateOnly(eventDate) === null) return null;
+  const rows = db
+    .prepare(
+      `SELECT * FROM earnings_transcripts
+        WHERE UPPER(ticker) = UPPER(?)
+          AND call_date IS NOT NULL
+          AND ABS(julianday(substr(call_date, 1, 10)) - julianday(?)) <= ?
+        ORDER BY ABS(julianday(substr(call_date, 1, 10)) - julianday(?)) ASC, id DESC`,
+    )
+    .all(ticker, eventDate, PRINT_FILING_WINDOW_DAYS, eventDate) as EarningsTranscript[];
+  return rows.find((row) => isFilingRow(row)) ?? null;
 }
 
 /**
@@ -290,19 +516,15 @@ export function getMostRecentQuarter(date: Date = new Date()): {
 }
 
 /**
- * Derive the calendar quarter being reported in an earnings 8-K from its
+ * Derive the CALENDAR quarter being reported in an earnings 8-K from its
  * filing date. Companies on calendar fiscal years file Q1 8-Ks in Apr-Jun,
  * Q2 in Jul-Sep, Q3 in Oct-Dec, and Q4 in Jan-Mar of the following year.
  *
- * **Different from `getMostRecentQuarter`** which is a defensive "what
- * quarter is being talked about as of today's date" default. This function
- * answers "what quarter does THIS specific filing report on?" — needed for
- * the EDGAR fallback to refuse caching a Q4 filing under a Q1 label when
- * the user requested Q1 and only Q4 was available.
- *
- * Limitation: tickers on non-calendar fiscal years (AAPL, ORCL, ADBE, etc.)
- * will under-match. That's the safe failure mode — the EDGAR fallback
- * returns null instead of caching mismatched content.
+ * This is a fallback key only. A company whose fiscal year is not the
+ * calendar year labels the same release differently, so the filing path
+ * never uses this to decide WHICH filing belongs to a print (the filing date
+ * does that) and uses it as the key only when neither the print's Finnhub
+ * entry nor the release itself states a fiscal quarter.
  */
 export function deriveFilingReportingQuarter(filingDate: string): {
   year: number;
@@ -330,22 +552,17 @@ function resolveSecurityId(
   return row?.id ?? null;
 }
 
-// ─── Main Fetch Pipeline ────────────────────────────────────────
+// ─── Vendor call (Alpha Vantage) ────────────────────────────────
 
 /**
- * Fetch an earnings transcript, checking cache first then external sources.
+ * Fetch + cache an Alpha Vantage transcript. Shared by the chain's vendor
+ * step and the cached-filing upgrade path.
  *
- * Fallback chain: Cache → API Ninjas → Alpha Vantage → EDGAR 8-K
- *
- * @param db Database connection
- * @param ticker Stock ticker symbol
- * @param year Earnings year (defaults to most recent quarter)
- * @param quarter Quarter 1-4 (defaults to most recent quarter)
- */
-/**
- * Fetch + cache an Alpha Vantage transcript. Shared by the chain's step 3
- * and the cached-EDGAR upgrade path. Returns null when unconfigured or when
- * AV has no transcript for the (fiscal) quarter.
+ * `rejected` is true when the vendor answered with a call that may not be
+ * stored under the requested key. With `requireStatedQuarter` (the request is
+ * for a known print) the call must itself name that fiscal quarter; a call
+ * that names another quarter, or none, is rejected. Nothing is cached and the
+ * caller goes on to the filing path.
  */
 async function tryAlphaVantage(
   db: Database.Database,
@@ -353,9 +570,9 @@ async function tryAlphaVantage(
   upperTicker: string,
   year: number,
   quarter: number,
-  options?: FetchTranscriptOptions,
+  opts: { skip?: boolean; requireStatedQuarter: boolean },
 ): Promise<{ transcript: EarningsTranscript | null; rejected: boolean }> {
-  if (options?.skipAlphaVantage || !isAlphaVantageConfigured()) return { transcript: null, rejected: false };
+  if (opts.skip || !isAlphaVantageConfigured()) return { transcript: null, rejected: false };
   const result = await getAlphaVantageTranscript(upperTicker, year, quarter);
   if (!result || !result.transcript) return { transcript: null, rejected: false };
   const mismatch = transcriptQuarterMismatchReason({
@@ -364,41 +581,242 @@ async function tryAlphaVantage(
     quarter,
     source: "alpha_vantage",
     transcript: result.transcript,
+    requireStatedQuarter: opts.requireStatedQuarter,
   });
   if (mismatch) {
     console.warn(
-      `[transcripts] rejected alpha_vantage ${upperTicker} ${year}Q${quarter}: ${mismatch}; falling through to EDGAR`,
+      `[transcripts] rejected alpha_vantage ${upperTicker} ${year}Q${quarter}: ${mismatch}; nothing cached, going on to the 8-K filing`,
     );
     return { transcript: null, rejected: true };
   }
-  return { transcript: upsertTranscript(db, {
-    security_id: securityId,
-    ticker: upperTicker,
-    year,
-    quarter,
-    call_date: null,
-    source: "alpha_vantage",
-    transcript: result.transcript,
-    summary: generateSummary(result.transcript),
-    guidance: extractGuidance(result.transcript),
-    risk_factors: extractRiskFactors(result.transcript),
-    sentiment_score: result.overall_sentiment,
-    sentiment_label:
-      result.overall_sentiment !== null
-        ? result.overall_sentiment > 0.2
-          ? "bullish"
-          : result.overall_sentiment < -0.2
-            ? "bearish"
-            : "neutral"
-        : null,
-    participants:
-      result.participants.length > 0
-        ? JSON.stringify(result.participants)
-        : null,
-    source_key: `alpha_vantage:${upperTicker}:${year}:${quarter}`,
-  }), rejected: false };
+  try {
+    const transcript = upsertTranscript(db, {
+      security_id: securityId,
+      ticker: upperTicker,
+      year,
+      quarter,
+      call_date: null,
+      source: "alpha_vantage",
+      transcript: result.transcript,
+      summary: generateSummary(result.transcript),
+      guidance: extractGuidance(result.transcript),
+      risk_factors: extractRiskFactors(result.transcript),
+      sentiment_score: result.overall_sentiment,
+      sentiment_label:
+        result.overall_sentiment !== null
+          ? result.overall_sentiment > 0.2
+            ? "bullish"
+            : result.overall_sentiment < -0.2
+              ? "bearish"
+              : "neutral"
+          : null,
+      participants:
+        result.participants.length > 0
+          ? JSON.stringify(result.participants)
+          : null,
+      source_key: `alpha_vantage:${upperTicker}:${year}:${quarter}`,
+      require_stated_quarter: opts.requireStatedQuarter,
+    });
+    return { transcript, rejected: false };
+  } catch (err) {
+    // upsertTranscript logs its own rejection; anything else is logged here.
+    if (!(err instanceof TranscriptQuarterMismatchError)) {
+      console.warn(
+        `[transcripts] could not store alpha_vantage ${upperTicker} ${year}Q${quarter}: ${errorText(err)}`,
+      );
+    }
+    return { transcript: null, rejected: true };
+  }
 }
 
+// ─── 8-K press release (EDGAR) ──────────────────────────────────
+//
+// WHICH FILING, AND UNDER WHICH KEY
+//
+// A filing has what a vendor call lacks: a real date. So the two questions
+// are answered separately.
+//
+// The request names a print (`eventDate`):
+//   WHICH  the earnings 8-K whose FILING DATE is nearest the print date,
+//          inside `PRINT_FILING_WINDOW_DAYS`. The calendar quarter of the
+//          filing date plays no part: a company whose fiscal year is offset
+//          files its "fiscal fourth quarter" release in a month the calendar
+//          calls the third quarter.
+//   KEY    1. the print's fiscal quarter from Finnhub, when known. That is
+//             the key the same-day sweep checks and asks the vendor for, so
+//             the filing and the later call land on one card.
+//          2. else the fiscal quarter the release itself states, when it
+//             states one with a year.
+//          3. else the calendar-derived key the caller asked for (the release
+//             states nothing, or a quarter with no year that agrees with it).
+//          A release that states a quarter with no year that DISAGREES with
+//          the calendar key has no usable key (the fiscal year is unknown and
+//          the calendar label is known to be wrong): nothing is stored, one
+//          line is logged.
+//
+// The request names only a key (the card's Refresh, the chat tool with an
+// explicit quarter, the upgrade script): there is no print date to match, so
+// the filing must agree with the key in its own words, or, saying nothing
+// contrary, by the calendar quarter of its filing date. It is never stored
+// under a key its text contradicts.
+
+type FilingChoice =
+  | { filing: Earnings8KFiling; key: FiscalQuarter }
+  | { reason: string };
+
+function isStrongStatement(
+  stated: ReturnType<typeof statedFiscalQuarterDetail>,
+): stated is NonNullable<ReturnType<typeof statedFiscalQuarterDetail>> {
+  return !!stated && (stated.evidence === "self" || stated.evidence === "dated");
+}
+
+function chooseFilingForPrint(
+  filings: Earnings8KFiling[],
+  printDate: string,
+  expected: FiscalQuarter | null,
+  requested: FiscalQuarter,
+): FilingChoice {
+  const inWindow = filings
+    .filter((f) => filingDateMatchesPrint(f.filingDate, printDate))
+    .map((f, index) => ({ f, index, gap: daysBetween(f.filingDate.slice(0, 10), printDate) ?? 0 }))
+    .sort((a, b) => a.gap - b.gap || a.index - b.index);
+  const filing = inWindow[0]?.f;
+  if (!filing) {
+    return {
+      reason: `no earnings 8-K filed within ${PRINT_FILING_WINDOW_DAYS} days of the ${printDate} print (${filings.length} recent checked)`,
+    };
+  }
+  if (expected) return { filing, key: expected };
+
+  const stated = statedFiscalQuarterDetail(filing.pressReleaseText);
+  if (isStrongStatement(stated)) {
+    if (stated.year !== null) return { filing, key: { year: stated.year, quarter: stated.quarter } };
+    if (stated.quarter !== requested.quarter) {
+      return {
+        reason: `the release filed ${filing.filingDate} states Q${stated.quarter} with no year, the print has no Finnhub fiscal quarter, and the calendar key Q${requested.quarter} ${requested.year} disagrees: no key to store it under`,
+      };
+    }
+  }
+  return { filing, key: requested };
+}
+
+function chooseFilingForKey(filings: Earnings8KFiling[], key: FiscalQuarter): FilingChoice {
+  const byStatement = filings.find((f) => {
+    const stated = statedFiscalQuarterDetail(f.pressReleaseText);
+    return isStrongStatement(stated) && stated.year === key.year && stated.quarter === key.quarter;
+  });
+  if (byStatement) return { filing: byStatement, key };
+
+  const byCalendar = filings.find((f) => {
+    const q = deriveFilingReportingQuarter(f.filingDate);
+    return (
+      q.year === key.year &&
+      q.quarter === key.quarter &&
+      transcriptQuarterMismatchReason({
+        ticker: "",
+        year: key.year,
+        quarter: key.quarter,
+        source: "edgar_8k",
+        transcript: f.pressReleaseText,
+      }) === null
+    );
+  });
+  if (byCalendar) return { filing: byCalendar, key };
+
+  return {
+    reason: `none of ${filings.length} recent earnings 8-Ks states Q${key.quarter} ${key.year} or was filed for it`,
+  };
+}
+
+async function fetchFiling(
+  db: Database.Database,
+  securityId: number | null,
+  upperTicker: string,
+  requested: FiscalQuarter,
+  printDate: string | null,
+  expected: FiscalQuarter | null,
+): Promise<FetchTranscriptResult | null> {
+  const label = `${upperTicker} ${requested.year}Q${requested.quarter}`;
+  let filings: Earnings8KFiling[];
+  try {
+    // Full text so cached rows carry the complete body; the chat-tool layer
+    // decides whether to hand the model an excerpt or the whole thing.
+    filings = await getEarnings8KFilings(upperTicker, { limit: 4, fullText: true });
+  } catch (err) {
+    console.warn(`[transcripts] EDGAR lookup failed for ${label}: ${errorText(err)}`);
+    return null;
+  }
+
+  const choice = printDate
+    ? chooseFilingForPrint(filings, printDate, expected, requested)
+    : chooseFilingForKey(filings, requested);
+  if ("reason" in choice) {
+    console.log(`[transcripts] no 8-K filing stored for ${label}: ${choice.reason}`);
+    return null;
+  }
+  const { filing, key } = choice;
+  const sourceKey = `edgar_8k:${filing.accessionNumber}`;
+
+  // Already cached with this exact text: nothing new to write (and no reason
+  // to overwrite an AI desk note with the extractive summary again).
+  const stored = db
+    .prepare("SELECT * FROM earnings_transcripts WHERE source_key = ?")
+    .get(sourceKey) as EarningsTranscript | undefined;
+  if (stored && stored.transcript === filing.pressReleaseText) {
+    return { transcript: stored, fromCache: true };
+  }
+
+  try {
+    const transcript = upsertTranscript(db, {
+      security_id: securityId,
+      ticker: upperTicker,
+      year: key.year,
+      quarter: key.quarter,
+      call_date: filing.filingDate,
+      source: "edgar_8k",
+      transcript: filing.pressReleaseText,
+      summary: generateSummary(filing.pressReleaseText),
+      guidance: extractGuidance(filing.pressReleaseText),
+      risk_factors: extractRiskFactors(filing.pressReleaseText),
+      sentiment_score: null,
+      sentiment_label: null,
+      participants: null,
+      accession_number: filing.accessionNumber,
+      filing_url: filing.filingUrl,
+      source_key: sourceKey,
+      print_event_date: printDate,
+    });
+    return { transcript, fromCache: false };
+  } catch (err) {
+    if (!(err instanceof TranscriptQuarterMismatchError)) {
+      console.warn(`[transcripts] could not store the 8-K filing for ${label}: ${errorText(err)}`);
+    }
+    return null;
+  }
+}
+
+// ─── Main Fetch Pipeline ────────────────────────────────────────
+
+/**
+ * Fetch an earnings transcript, checking cache first then external sources.
+ *
+ * Fallback chain: Cache → API Ninjas → Alpha Vantage → EDGAR 8-K
+ *
+ * Three kinds of request:
+ *
+ * - A print with a known fiscal quarter (`eventDate` + `expectedFiscalQuarter`):
+ *   the vendor is asked for that fiscal key and its call is cached only when
+ *   the call itself names that quarter. Every rejection goes on to the
+ *   filing, which is matched to the print by filing date.
+ * - A print whose fiscal quarter is unknown (`eventDate` alone): no call can
+ *   be verified, so no vendor is asked and no cached call is consulted. Only
+ *   the filing path runs.
+ * - An explicit (year, quarter) with no print: every source is tried and each
+ *   result must not contradict the key (see `upsertTranscript`).
+ *
+ * @param year Earnings year (defaults to the calendar-recent quarter)
+ * @param quarter Quarter 1-4 (defaults to the calendar-recent quarter)
+ */
 export async function fetchTranscript(
   db: Database.Database,
   ticker: string,
@@ -407,40 +825,54 @@ export async function fetchTranscript(
   options: FetchTranscriptOptions = {},
 ): Promise<FetchTranscriptResult | null> {
   const upperTicker = ticker.toUpperCase();
+  const printDate = options.eventDate ?? null;
+  const expected = options.expectedFiscalQuarter ?? null;
 
+  if (expected) {
+    year = expected.year;
+    quarter = expected.quarter;
+  }
   // Default to most recent quarter if not specified
   if (!year || !quarter) {
     const recent = getMostRecentQuarter();
     year = year || recent.year;
     quarter = quarter || recent.quarter;
   }
+  const requested: FiscalQuarter = { year, quarter };
+  const securityId = resolveSecurityId(db, upperTicker);
+
+  if (printDate && !expected) {
+    const cachedFiling = getCachedFilingForPrint(db, upperTicker, printDate);
+    if (cachedFiling) return { transcript: cachedFiling, fromCache: true };
+    return fetchFiling(db, securityId, upperTicker, requested, printDate, null);
+  }
+
+  const requireStatedQuarter = !!expected;
 
   // 1. Check cache
   const cached = getCachedTranscript(db, upperTicker, year, quarter);
-  if (cached) {
-    // EDGAR rows are press-release excerpts, not call transcripts. A quarter
-    // cached from EDGAR (before Alpha Vantage was configured, or while it was
-    // down) must not block the full transcript forever — try a one-shot
-    // upgrade. AV-null leaves the cached excerpt in place; the higher source
-    // priority in getCachedTranscript means a successful upgrade wins from
-    // then on.
-    if (cached.source === "edgar_8k") {
-      const upgraded = await tryAlphaVantage(
-        db,
-        cached.security_id ?? resolveSecurityId(db, upperTicker),
-        upperTicker,
-        year,
-        quarter,
-        options,
-      );
-      if (upgraded.transcript) return { transcript: upgraded.transcript, fromCache: false };
-    }
-    return { transcript: cached, fromCache: true };
-  }
+  if (cached && !isFilingRow(cached)) return { transcript: cached, fromCache: true };
 
-  // Also check if we have any cached version (different quarter)
-  // when the user doesn't specify a quarter
-  const securityId = resolveSecurityId(db, upperTicker);
+  // A filing is a press release, not a call. A quarter cached from EDGAR
+  // (before Alpha Vantage was configured, while it was down, or because the
+  // vendor had not posted the call yet) must not block the call forever: try
+  // a one-shot upgrade. A vendor miss leaves the cached filing in place; the
+  // higher source priority in getCachedTranscript means a successful upgrade
+  // wins from then on.
+  const cachedFiling =
+    cached ?? (printDate ? getCachedFilingForPrint(db, upperTicker, printDate) : null);
+  if (cachedFiling) {
+    const upgraded = await tryAlphaVantage(
+      db,
+      cachedFiling.security_id ?? securityId,
+      upperTicker,
+      year,
+      quarter,
+      { skip: options.skipAlphaVantage, requireStatedQuarter },
+    );
+    if (upgraded.transcript) return { transcript: upgraded.transcript, fromCache: false };
+    return { transcript: cachedFiling, fromCache: true };
+  }
 
   // 2. Try API Ninjas (if configured — paid tier)
   if (isApiNinjasConfigured()) {
@@ -448,18 +880,19 @@ export async function fetchTranscript(
       const result = await getApiNinjasTranscript(upperTicker, year, quarter);
       if (result && result.transcript) {
         const callDate = result.date ? result.date.slice(0, 10) : null;
-        if (!realDateMatchesEvent(callDate, options.eventDate)) {
+        const mismatch = !callDateMatchesPrint(callDate, options.eventDate)
+          ? `call date ${callDate ?? "missing"} is not within ${TRANSCRIPT_CALL_DATE_WINDOW_DAYS} days of the ${options.eventDate} print`
+          : transcriptQuarterMismatchReason({
+              ticker: upperTicker,
+              year,
+              quarter,
+              source: "api_ninjas",
+              transcript: result.transcript,
+              requireStatedQuarter,
+            });
+        if (mismatch) {
           console.warn(
-            `[transcripts] rejected api_ninjas ${upperTicker} ${year}Q${quarter}: call date ${callDate ?? "missing"} does not match print ${options.eventDate}; falling through`,
-          );
-        } else if (!transcriptMatchesKey(result.transcript, {
-          ticker: upperTicker,
-          year,
-          quarter,
-          source: "api_ninjas",
-        })) {
-          console.warn(
-            `[transcripts] rejected api_ninjas ${upperTicker} ${year}Q${quarter}: stated quarter contradicts key; falling through`,
+            `[transcripts] rejected api_ninjas ${upperTicker} ${year}Q${quarter}: ${mismatch}; nothing cached, going on to the next source`,
           );
         } else {
           const transcript = upsertTranscript(db, {
@@ -485,98 +918,136 @@ export async function fetchTranscript(
               ? JSON.stringify(result.participants)
               : null,
             source_key: `api_ninjas:${upperTicker}:${year}:${quarter}`,
+            require_stated_quarter: requireStatedQuarter,
           });
           return { transcript, fromCache: false };
         }
       }
-    } catch {
-      // Fall through to next source
-    }
-  }
-
-  // 3. Try Alpha Vantage (if configured — free tier, 25 req/day).
-  // The client passes year+quarter through as Alpha Vantage's FISCAL
-  // YYYYQN param; non-calendar-FY tickers may under-match and fall
-  // through to EDGAR (see lib/transcripts/alpha-vantage.ts header).
-  // The client never throws — null falls through to EDGAR.
-  {
-    const transcript = await tryAlphaVantage(db, securityId, upperTicker, year, quarter, options);
-    if (transcript.transcript) return { transcript: transcript.transcript, fromCache: false };
-  }
-
-  // 4. Fall back to EDGAR 8-K press release.
-  // Request full text so cached rows have the complete body; the chat-tool
-  // layer decides whether to return an excerpt or the full thing to the
-  // model. Critically: filter the returned filings against the requested
-  // (year, quarter). The previous implementation took filings[0] (most
-  // recent) regardless of which quarter it reported on — when a user
-  // requested Q1 2026 and EDGAR only had Q4 2025 cached, the Q4 8-K body
-  // would silently get cached under "year=2026, quarter=1" labels. Now we
-  // refuse the mismatch and return null so the caller knows nothing
-  // matched.
-  try {
-    const filings = await getEarnings8KFilings(upperTicker, {
-      limit: 4,
-      fullText: true,
-    });
-    const matchingFiling = filings.find((f) => {
-      const q = deriveFilingReportingQuarter(f.filingDate);
-      return q.year === year && q.quarter === quarter;
-    });
-    if (matchingFiling) {
-      if (!realDateMatchesEvent(matchingFiling.filingDate, options.eventDate)) {
+    } catch (err) {
+      if (!(err instanceof TranscriptQuarterMismatchError)) {
         console.warn(
-          `[transcripts] rejected edgar_8k ${upperTicker} ${year}Q${quarter}: filing date ${matchingFiling.filingDate} does not match print ${options.eventDate}`,
+          `[transcripts] api_ninjas failed for ${upperTicker} ${year}Q${quarter}: ${errorText(err)}; going on to the next source`,
         );
-        return null;
       }
-      const transcript = upsertTranscript(db, {
-        security_id: securityId,
-        ticker: upperTicker,
-        year,
-        quarter,
-        call_date: matchingFiling.filingDate,
-        source: "edgar_8k",
-        transcript: matchingFiling.pressReleaseText,
-        summary: generateSummary(matchingFiling.pressReleaseText),
-        guidance: extractGuidance(matchingFiling.pressReleaseText),
-        risk_factors: extractRiskFactors(matchingFiling.pressReleaseText),
-        sentiment_score: null,
-        sentiment_label: null,
-        participants: null,
-        accession_number: matchingFiling.accessionNumber,
-        filing_url: matchingFiling.filingUrl,
-        source_key: `edgar_8k:${matchingFiling.accessionNumber}`,
-      });
-      return { transcript, fromCache: false };
     }
-  } catch {
-    // All sources failed
   }
 
-  return null;
+  // 3. Try Alpha Vantage (if configured — free tier, 25 req/day). The client
+  // passes year+quarter through as Alpha Vantage's FISCAL YYYYQN param and
+  // never throws.
+  {
+    const vendor = await tryAlphaVantage(db, securityId, upperTicker, year, quarter, {
+      skip: options.skipAlphaVantage,
+      requireStatedQuarter,
+    });
+    if (vendor.transcript) return { transcript: vendor.transcript, fromCache: false };
+  }
+
+  // 4. Fall back to the EDGAR 8-K press release.
+  return fetchFiling(db, securityId, upperTicker, requested, printDate, expected);
+}
+
+/**
+ * The latest transcript when the caller names no quarter: the issuer's most
+ * recent print, requested by its FISCAL quarter and tied to its date. Falls
+ * back to the calendar default only when no print's fiscal quarter is known.
+ */
+export async function fetchLatestTranscript(
+  db: Database.Database,
+  ticker: string,
+): Promise<FetchTranscriptResult | null> {
+  const print = latestPrintFiscalQuarter(db, ticker);
+  if (!print) return fetchTranscript(db, ticker);
+  return fetchTranscript(db, ticker, print.year, print.quarter, {
+    eventDate: print.eventDate,
+    expectedFiscalQuarter: { year: print.year, quarter: print.quarter },
+  });
 }
 
 /**
  * Detect whether a cached edgar_8k entry pre-dates the full-text upgrade
  * (Theme E2 — 2026-04-22). Old caches are <=5100 chars; new ones cap at
  * 60K. If the caller asks for full text and the cached body is suspiciously
- * short, we invalidate and re-fetch so they actually get the richer body.
+ * short, the filing is fetched again and the row is replaced in place.
  */
 function isLegacyShortEdgar8k(t: EarningsTranscript): boolean {
-  if (t.source !== "edgar_8k") return false;
+  if (!isFilingRow(t)) return false;
   return !!t.transcript && t.transcript.length <= 5200;
+}
+
+/**
+ * Fetch the full text of a legacy truncated filing row and replace the row's
+ * body IN PLACE. Fetch first, replace only on success: the cached row is
+ * never removed, so a failed or rejected re-fetch leaves it exactly as it was.
+ */
+async function refreshLegacyFiling(
+  db: Database.Database,
+  row: EarningsTranscript,
+): Promise<EarningsTranscript | null> {
+  const label = `${row.ticker} ${row.year}Q${row.quarter}`;
+  let filings: Earnings8KFiling[];
+  try {
+    filings = await getEarnings8KFilings(row.ticker, { limit: 4, fullText: true });
+  } catch (err) {
+    console.warn(`[transcripts] full-text refresh failed for ${label}: ${errorText(err)}; cached row kept`);
+    return null;
+  }
+  const sameFiling = row.accession_number
+    ? filings.find((f) => f.accessionNumber === row.accession_number)
+    : undefined;
+  const choice = sameFiling
+    ? { filing: sameFiling }
+    : chooseFilingForKey(filings, { year: row.year, quarter: row.quarter });
+  if ("reason" in choice) {
+    console.log(`[transcripts] full-text refresh found nothing for ${label}: ${choice.reason}; cached row kept`);
+    return null;
+  }
+  const { filing } = choice;
+  if (filing.pressReleaseText.length <= (row.transcript?.length ?? 0)) {
+    console.log(`[transcripts] full-text refresh for ${label} returned no longer body; cached row kept`);
+    return null;
+  }
+  try {
+    return upsertTranscript(db, {
+      security_id: row.security_id,
+      ticker: row.ticker,
+      year: row.year,
+      quarter: row.quarter,
+      call_date: filing.filingDate,
+      source: row.source,
+      transcript: filing.pressReleaseText,
+      summary: generateSummary(filing.pressReleaseText),
+      guidance: extractGuidance(filing.pressReleaseText),
+      risk_factors: extractRiskFactors(filing.pressReleaseText),
+      sentiment_score: null,
+      sentiment_label: null,
+      participants: null,
+      accession_number: filing.accessionNumber,
+      filing_url: filing.filingUrl,
+      source_key: row.source_key,
+    });
+  } catch (err) {
+    if (!(err instanceof TranscriptQuarterMismatchError)) {
+      console.warn(`[transcripts] full-text refresh could not store ${label}: ${errorText(err)}; cached row kept`);
+    }
+    return null;
+  }
 }
 
 /**
  * Get transcript for the chat tool — returns structured data
  * optimized for Claude's context window.
  *
+ * With no quarter named, the default is the issuer's latest print by its
+ * fiscal quarter (`fetchLatestTranscript`), the same default the fetch
+ * button uses.
+ *
  * @param fullText when true, returns the complete transcript body in the
  *   `excerpt` field (field name kept for back-compat). Default false keeps
  *   the ~1000-word excerpt that list views rely on. If the cached entry
- *   was produced pre-E2 with the 5000-char EDGAR truncation, the cache is
- *   busted and re-fetched to actually deliver full text.
+ *   was produced pre-E2 with the 5000-char EDGAR truncation, the filing is
+ *   fetched again and the row replaced on success; when that fails the
+ *   cached short body is returned with `truncated: true`.
  */
 export async function getTranscriptForChat(
   db: Database.Database,
@@ -599,49 +1070,24 @@ export async function getTranscriptForChat(
   has_full_transcript: boolean;
   truncated: boolean;
 } | null> {
-  if (!year || !quarter) {
-    const siblings = [...issuerSiblings(ticker)].map((s) => s.toUpperCase());
-    if (siblings.length > 0) {
-      const placeholders = siblings.map(() => "?").join(",");
-      const row = db
-        .prepare(
-          `SELECT symbol, event_date
-             FROM calendar_events
-            WHERE (event_type = 'earnings' OR source = 'finnhub')
-              AND UPPER(symbol) IN (${placeholders})
-              AND actual_value IS NOT NULL
-            ORDER BY event_date DESC, id ASC
-            LIMIT 1`,
-        )
-        .get(...siblings) as { symbol: string; event_date: string } | undefined;
-      if (row) {
-        const expected = expectedFiscalQuarterForPrint(db, row.symbol, row.event_date);
-        if (expected) {
-          year = expected.year;
-          quarter = expected.quarter;
-        }
-      }
-    }
-  }
-  let result = await fetchTranscript(db, ticker, year, quarter);
+  let result =
+    !year || !quarter
+      ? await fetchLatestTranscript(db, ticker)
+      : await fetchTranscript(db, ticker, year, quarter);
   if (!result) return null;
 
   const fullText = !!options.fullText;
+  let legacyBodyKept = false;
 
   // Cache upgrade: re-fetch legacy EDGAR rows when the caller wants full text.
   if (fullText && result.fromCache && isLegacyShortEdgar8k(result.transcript)) {
-    // Invalidate by deleting the cached row, then re-fetch.
-    const t = result.transcript;
-    db.prepare("DELETE FROM earnings_transcripts WHERE id = ?").run(t.id);
-    const refreshed = await fetchTranscript(db, ticker, year, quarter);
+    const refreshed = await refreshLegacyFiling(db, result.transcript);
     if (refreshed) {
-      result = refreshed;
+      result = { transcript: refreshed, fromCache: false };
     } else {
-      // Re-fetch failed (network error, quarter-match rejection, no source).
-      // Don't surface the deleted in-memory legacy body as fresh — that
-      // would be a "full text" claim against the very content we just
-      // invalidated. Caller sees null and can decide.
-      return null;
+      // The cached row survives. Its body is the pre-E2 truncation, so it is
+      // returned flagged as truncated rather than passed off as full text.
+      legacyBodyKept = true;
     }
   }
 
@@ -652,6 +1098,7 @@ export async function getTranscriptForChat(
   if (t.transcript) {
     if (fullText) {
       excerpt = t.transcript;
+      truncated = legacyBodyKept;
     } else {
       const words = t.transcript.split(/\s+/);
       if (words.length > 1000) {

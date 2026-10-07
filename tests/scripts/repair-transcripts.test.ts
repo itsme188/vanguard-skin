@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertTranscript } from "@/lib/mutations/transcripts";
@@ -83,6 +85,7 @@ describe("audit-transcript-keys", () => {
       }),
     ]);
     expect(audit.noStatementCount).toBe(1);
+    expect(audit.contradictions[0]).toMatchObject({ source: "alpha_vantage" });
     expect(
       (db.prepare("SELECT COUNT(*) AS c FROM earnings_transcripts").get() as { c: number }).c,
     ).toBe(before);
@@ -150,5 +153,57 @@ describe("repair-transcript-sections", () => {
 
     expect(plan.rows.map((r) => r.id)).not.toContain(apiRow);
     expect(plan.changed).toBe(0);
+  });
+});
+
+describe("transcript cache writers — one insert, no deletes", () => {
+  const root = process.cwd();
+
+  function sourceFiles(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+      const rel = path.join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...sourceFiles(rel));
+      else if (/\.(ts|tsx)$/.test(entry.name)) out.push(rel);
+    }
+    return out;
+  }
+
+  const files = ["lib", "app", "scripts"].flatMap(sourceFiles);
+  const read = (rel: string) => fs.readFileSync(path.join(root, rel), "utf8");
+
+  it("upsertTranscript is the only INSERT into earnings_transcripts, so no writer can skip the key rule", () => {
+    const inserters = files.filter((f) =>
+      /INSERT\s+(?:OR\s+\w+\s+)?INTO\s+earnings_transcripts/i.test(read(f)),
+    );
+    expect(inserters).toEqual(["lib/mutations/transcripts.ts"]);
+  });
+
+  it("nothing deletes a cached transcript", () => {
+    const deleters = files.filter((f) => /DELETE\s+FROM\s+earnings_transcripts/i.test(read(f)));
+    expect(deleters).toEqual([]);
+  });
+
+  it("the calendar-quarter audit script is report-only: no delete mode, database opened read-only", () => {
+    const src = read("scripts/audit-transcripts-quarter-mismatch.ts");
+    expect(src).not.toMatch(/\bDELETE\b\s+FROM/i);
+    expect(src).not.toMatch(/\.run\(/);
+    expect(src).toMatch(/new Database\(DB_PATH,\s*\{\s*readonly:\s*true\s*\}\)/);
+    // The old flag is refused loudly instead of being silently ignored.
+    expect(src).toMatch(/--delete-flagged was removed/);
+  });
+
+  it("the key audit script opens the database read-only and has no apply mode", () => {
+    const src = read("scripts/audit-transcript-keys.ts");
+    expect(src).toMatch(/readonly:\s*true/);
+    expect(src).not.toContain("--apply");
+    expect(src).not.toMatch(/\b(?:DELETE|UPDATE|INSERT)\b\s+(?:FROM|INTO|earnings_transcripts)/i);
+  });
+
+  it("the manual upgrade script writes only through fetchTranscript", () => {
+    const src = read("scripts/upgrade-edgar-transcript.ts");
+    expect(src).toMatch(/await fetchTranscript\(db, ticker, year, quarter\)/);
+    expect(src).not.toMatch(/upsertTranscript|INSERT\s+INTO/i);
   });
 });

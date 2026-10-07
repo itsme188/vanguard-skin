@@ -214,7 +214,7 @@ export function TranscriptCard({
               <div className="mb-3">
                 <EmptySection
                   title="Guidance and Risk"
-                  reason={`No guidance or risk passages were found in this ${kindLabel(t) === "8-K filing" ? "filing" : "call"}.`}
+                  reason={`No guidance or risk passages were found in this ${isFilingRow(t) ? "filing" : "call"}.`}
                 />
               </div>
             )}
