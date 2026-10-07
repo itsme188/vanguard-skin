@@ -23,6 +23,12 @@ export async function POST(request: Request) {
   if (emailError) {
     return Response.json({ error: emailError }, { status: 400 });
   }
+  if (typeof body.sender_email === "string") {
+    const dup = findActiveDuplicate(body.sender_email, null);
+    if (dup) {
+      return Response.json({ error: duplicateMessage(dup) }, { status: 409 });
+    }
+  }
   const id = createSource(db, body);
   return Response.json({ success: true, id });
 }
@@ -54,6 +60,28 @@ function validateSenderEmail(body: {
 }
 
 /**
+ * Two ACTIVE sources on one sender address fetch and store every newsletter
+ * twice. Case-insensitive; `excludeId` skips the source being edited.
+ */
+function findActiveDuplicate(
+  email: string,
+  excludeId: number | null
+): { name: string } | undefined {
+  return db
+    .prepare(
+      `SELECT name FROM research_sources
+        WHERE is_active = 1 AND LOWER(TRIM(sender_email)) = LOWER(TRIM(?))
+          AND (? IS NULL OR id != ?)
+        LIMIT 1`
+    )
+    .get(email, excludeId, excludeId) as { name: string } | undefined;
+}
+
+function duplicateMessage(existing: { name: string }): string {
+  return `"${existing.name}" is already an active source for that sender address — a second one would fetch every newsletter twice. Deactivate it first, or edit it instead.`;
+}
+
+/**
  * PATCH /api/research/sources — Update a research source.
  * Body: { id, ...fields }
  */
@@ -67,6 +95,24 @@ export async function PATCH(request: Request) {
     const emailError = validateSenderEmail(updates);
     if (emailError) {
       return Response.json({ error: emailError }, { status: 400 });
+    }
+  }
+  // The sender address this row will hold once active: a new address, or the
+  // stored one when the patch only reactivates the source.
+  const sourceId = Number(id);
+  const current = db
+    .prepare(`SELECT sender_email, is_active FROM research_sources WHERE id = ?`)
+    .get(sourceId) as { sender_email: string | null; is_active: number } | undefined;
+  if (current && ("sender_email" in updates || "is_active" in updates)) {
+    const willBeActive =
+      "is_active" in updates ? Boolean(updates.is_active) : current.is_active === 1;
+    const email =
+      "sender_email" in updates ? updates.sender_email ?? null : current.sender_email;
+    if (willBeActive && typeof email === "string" && email.trim() !== "") {
+      const dup = findActiveDuplicate(email, sourceId);
+      if (dup) {
+        return Response.json({ error: duplicateMessage(dup) }, { status: 409 });
+      }
     }
   }
   if ("earnings_rank" in updates) {

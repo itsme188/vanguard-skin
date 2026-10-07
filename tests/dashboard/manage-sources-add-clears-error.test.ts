@@ -53,7 +53,9 @@ describe("ManageSourcesModal — no raw exception text, Escape closes", () => {
       path.join(process.cwd(), "app/dashboard/components/CommandPalette.tsx"),
       "utf8"
     );
-    expect(palette).toMatch(/e\.preventDefault\(\);\s*setOpen\(false\)/);
+    // The palette also stops propagation (2026-10-07) so an overlay underneath
+    // does not close on the same key; comments sit between the statements.
+    expect(palette).toMatch(/e\.preventDefault\(\);[\s\S]{0,400}?e\.stopPropagation\(\);\s*setOpen\(false\)/);
     expect(palette).toMatch(/addEventListener\("keydown", handleKeyDown, true\)/);
     expect(src).toMatch(/document\.addEventListener\("keydown"/);
     expect(src).toMatch(/document\.removeEventListener\("keydown"/);
