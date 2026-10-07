@@ -16,6 +16,8 @@ interface Props {
 }
 
 export type Slot = "BMO" | "AMC";
+/** The slot a freshly opened form shows. */
+export const DEFAULT_SLOT: Slot = "AMC";
 
 /**
  * Copy for a non-blocking notice shown after a successful save whose date
@@ -33,6 +35,23 @@ export function outOfWeekSaveNote(date: string, weekOf: string): string | null {
   // ACTUALLY file under (POST /api/calendar/events stores
   // week_of: mondayOf(body.event_date)), so the note points somewhere real.
   return `Saved to the week of ${mondayOf(date)} — not the week shown here.`;
+}
+
+/**
+ * The question asked before a Saturday or Sunday date is saved (owner ruling
+ * 2026-08-18: warn, never block). Null on a weekday, so a normal add is never
+ * interrupted. Asked in the form itself, before any request is sent; it is
+ * not one of the server's guards and sends no flag.
+ */
+export function weekendSaveWarning(date: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  // Noon UTC: the weekday of a calendar date, whatever the browser's zone.
+  const day = new Date(`${date}T12:00:00Z`).getUTCDay();
+  if (day !== 0 && day !== 6) return null;
+  return (
+    `${date} is a ${day === 6 ? "Saturday" : "Sunday"}. US markets are closed, and weekend ` +
+    `earnings prints are almost unheard of. Save anyway?`
+  );
 }
 
 /**
@@ -168,7 +187,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
   const [open, setOpen] = useState(false);
   const [symbol, setSymbol] = useState("");
   const [date, setDate] = useState(() => defaultDateWithinWeek(weekOf));
-  const [slot, setSlot] = useState<Slot>("AMC");
+  const [slot, setSlot] = useState<Slot>(DEFAULT_SLOT);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [outOfWeekNote, setOutOfWeekNote] = useState<string | null>(null);
@@ -183,12 +202,16 @@ export function EarningsHubAddForm({ weekOf }: Props) {
   // into the resend if the OTHER guard then fires, so the user clicks at most
   // once per warning — and never answers a warning they were not shown.
   const [acks, setAcks] = useState<GuardAcks>(NO_ACKS);
+  // The weekend question for the date now in the form, or null. Asked before
+  // the request, so it is answered before either server guard can fire.
+  const [weekendAsk, setWeekendAsk] = useState<string | null>(null);
 
   // A refusal (and any acknowledgement of it) is about the exact ticker, date
   // and slot that were checked. Changing any of them is a new question: drop
   // BOTH stored refusals and both acks, so "Add anyway" can never force-add a
   // symbol or date the server did not check.
   function resetGuards() {
+    setWeekendAsk(null);
     setSupersede(null);
     setSlotRefusal(null);
     setAcks(NO_ACKS);
@@ -201,6 +224,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
     }
     setSubmitting(true);
     setError(null);
+    setWeekendAsk(null);
     setSupersede(null);
     setSlotRefusal(null);
     setAcks(nextAcks);
@@ -233,6 +257,15 @@ export function EarningsHubAddForm({ weekOf }: Props) {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    // A weekend date is confirmed first; "Save anyway" below then sends the
+    // same plain add. Skipped with no ticker so "Symbol is required" shows.
+    const weekend = symbol.trim() ? weekendSaveWarning(date) : null;
+    if (weekend) {
+      setError(null);
+      resetGuards();
+      setWeekendAsk(weekend);
+      return;
+    }
     // A plain "Add" is a fresh question — it carries no acknowledgement.
     await save(NO_ACKS);
   }
@@ -253,9 +286,12 @@ export function EarningsHubAddForm({ weekOf }: Props) {
             // (tab left open past midnight) instead of defaulting to a
             // stale mount-time date.
             setDate(defaultDateWithinWeek(weekOf));
+            // The slot resets with the ticker and the date: a second add must
+            // not inherit the previous entry's BMO/AMC choice.
+            setSlot(DEFAULT_SLOT);
             setOpen(true);
           }}
-          className="text-[14px] font-medium text-gold-ink hover:text-gold"
+          className="relative text-[14px] font-medium text-gold-ink hover:text-gold pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
         >
           + Add ticker
         </button>
@@ -323,6 +359,29 @@ export function EarningsHubAddForm({ weekOf }: Props) {
         Cancel
       </button>
       {error && <span className="text-[11px] text-down w-full">{error}</span>}
+      {weekendAsk && (
+        <div className="w-full rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] text-gold-ink">
+          {weekendAsk}
+          <div className="mt-1.5 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => save(NO_ACKS)}
+              disabled={submitting}
+              className="px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink hover:bg-gold/10 disabled:opacity-50"
+            >
+              {submitting ? "Adding…" : "Save anyway"}
+            </button>
+            <button
+              type="button"
+              onClick={resetGuards}
+              disabled={submitting}
+              className="px-3 py-1 text-[11px] rounded text-ink-dim hover:text-ink disabled:opacity-50"
+            >
+              Change the date
+            </button>
+          </div>
+        </div>
+      )}
       {slotRefusal && (
         <div className="w-full rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] text-gold-ink">
           {slotRefusal.message}

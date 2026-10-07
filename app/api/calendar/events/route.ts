@@ -16,6 +16,7 @@ import { getSecurityIdForSymbol } from "@/lib/queries/briefing-symbols";
 import { attemptPostCommitDrain } from "@/lib/earnings/cloud-outbox";
 import { checkManualAddWouldSupersedeVendor } from "@/lib/calendar/reconcile-earnings-dates";
 import { checkManualSlotAgainstKnownTime } from "@/lib/earnings/wire-times";
+import { fixDateOrigin, liftEarningsSuppression } from "@/lib/calendar/fix-date-suppression";
 
 export const dynamic = "force-dynamic";
 
@@ -318,26 +319,65 @@ export async function PATCH(request: Request) {
  * user correction path for a mis-dated source row (NET Jul 30 vs Aug 6).
  * Sync-owned macro rows stay 403 (symbol-less; owned by their source
  * pipeline).
+ *
+ * `restoreVendorDate: true` (owner ruling 2026-09-02, option 2) is for a
+ * manual row that "Fix date" minted: that correction suppressed the vendor's
+ * original date, so removing the corrected row alone leaves the company with
+ * no earnings date and no sync to restore one. With the flag the same
+ * transaction also lifts that one suppression; the vendor's row returns on
+ * the next calendar sync. Without it the delete is unchanged. The flag is
+ * refused (400, nothing deleted) on any row that is not such a correction.
  */
 export async function DELETE(request: Request) {
-  const body = (await request.json().catch(() => ({}))) as { id?: number };
+  const body = (await request.json().catch(() => ({}))) as {
+    id?: number;
+    restoreVendorDate?: boolean;
+  };
   if (typeof body.id !== "number" || !Number.isInteger(body.id)) {
     return Response.json({ error: "Body field 'id' is required." }, { status: 400 });
   }
+  const id = body.id;
 
   const existing = db
-    .prepare("SELECT source, event_type, symbol FROM calendar_events WHERE id = ?")
-    .get(body.id) as
-    | { source: string; event_type: string; symbol: string | null }
+    .prepare("SELECT source, event_type, symbol, description FROM calendar_events WHERE id = ?")
+    .get(id) as
+    | { source: string; event_type: string; symbol: string | null; description: string | null }
     | undefined;
   if (!existing) return Response.json({ error: "Event not found." }, { status: 404 });
 
+  const vendorDate =
+    existing.event_type === "earnings" && existing.symbol ? fixDateOrigin(existing) : null;
+  const restoreTarget =
+    body.restoreVendorDate === true && vendorDate !== null && existing.symbol
+      ? { symbol: existing.symbol, eventDate: vendorDate }
+      : null;
+  if (body.restoreVendorDate === true && restoreTarget === null) {
+    return Response.json(
+      {
+        success: false,
+        error:
+          "This row is not a corrected earnings date, so there is no vendor date to restore. Nothing was removed.",
+      },
+      { status: 400 },
+    );
+  }
+
   if (existing.source === "manual") {
-    const ok = deleteCalendarEvent(db, body.id);
+    // One transaction: the suppression is lifted only if the row really went.
+    const result = db.transaction(() => {
+      const deleted = deleteCalendarEvent(db, id);
+      const lifted = deleted && restoreTarget ? liftEarningsSuppression(db, restoreTarget) : 0;
+      return { deleted, lifted };
+    })();
     // Deleting an ARMED row writes a tombstone generation (D7) — same
     // time-sensitivity as a disarm, so it gets the same post-commit push.
     await attemptPostCommitDrain(db);
-    return Response.json({ success: ok });
+    return Response.json({
+      success: result.deleted,
+      ...(restoreTarget
+        ? { vendorDate: restoreTarget.eventDate, suppressionsLifted: result.lifted }
+        : {}),
+    });
   }
 
   if (existing.event_type !== "earnings" || !existing.symbol) {
@@ -347,7 +387,7 @@ export async function DELETE(request: Request) {
     );
   }
 
-  const result = deleteAndSuppressCalendarEvent(db, body.id);
+  const result = deleteAndSuppressCalendarEvent(db, id);
   // Armed worksheets mostly sit on SYNC-sourced rows, so this branch is the
   // common tombstone path (D7) — same post-commit push as the manual branch.
   await attemptPostCommitDrain(db);

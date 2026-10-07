@@ -45,6 +45,13 @@ interface EarningsRowChipsProps {
    * that instant so it does not wait for a re-render. Null/absent = no timer.
    */
   preReleaseClearsAtMs?: number | null;
+  /**
+   * True when the row already shows reported actuals (the print happened).
+   * With no preview sent or skipped, the preview chip then reads as missed
+   * instead of promising an automatic send. The live cockpit stage says the
+   * same thing for a covered row; this covers a row the cockpit does not list.
+   */
+  printed?: boolean;
 }
 
 type Phase = "preview" | "recap";
@@ -255,6 +262,7 @@ export function EarningsRowChips({
   timeEstimateLabel = null,
   preReleaseActualTitle: preReleaseActualTitleProp = null,
   preReleaseClearsAtMs = null,
+  printed = false,
 }: EarningsRowChipsProps) {
   // The server decides pre-release; a timer clears it when the print window opens.
   const stillPreRelease = usePreReleaseActive(preReleaseActualTitleProp !== null, preReleaseClearsAtMs);
@@ -298,6 +306,22 @@ export function EarningsRowChips({
           : "Worksheet armed — prints automatically at the preview tick.",
         "success",
       );
+      if (worksheetArmed) {
+        // A disarm only clears the flag; the print row stands down on the
+        // watcher's next reconcile pass, up to a minute away. Until then the
+        // status read still lists it, and the row kept offering "expand" with
+        // live controls for a watch the desk had just switched off. Ask for
+        // the pass now (the same idempotent call the hub makes every minute);
+        // best effort, the minute timer is the backstop.
+        await apiFetch("/api/print-watch/ensure", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        }).catch(() => null);
+      }
+      // Re-read status and stage chips before the server row re-renders, so
+      // the live panel and the arm chip change together.
+      await live?.onChanged();
       router.refresh();
     } catch {
       toast("Couldn't reach the server to toggle the worksheet.", "error");
@@ -333,6 +357,11 @@ export function EarningsRowChips({
   // otherwise the user already has a path to view it (the sent ✓-chip)
   // or has explicitly muted it.
   const showGenerate = !recapSent && !recapSkipped;
+
+  // A preview that can no longer be sent: the print is over and nothing went
+  // out. The cockpit stage is the same rule the stage strip shows ("pre ✗").
+  const previewMissed =
+    !previewSent && !previewSkipped && (printed || cockpitRow?.stages.preview === "missed");
 
   // R9: the row's headline figures (RecapFigureButton cells) open the same
   // viewer this component owns — they dispatch a scoped custom event rather
@@ -426,7 +455,10 @@ export function EarningsRowChips({
       setOpenPhase("recap");
       // runEnrichmentFirst may have just captured consensus/actuals/reaction —
       // re-render the server-side hub row so it agrees with the modal instead
-      // of showing "no actuals" until a manual reload.
+      // of showing "no actuals" until a manual reload. The stage chips are
+      // client-polled, so they are re-read too (not awaited: the modal is
+      // already open and must not wait on a poll).
+      void live?.onChanged();
       router.refresh();
     } catch (err) {
       // An aborted read rejects too — that is the cancel, not a failure.
@@ -516,6 +548,7 @@ export function EarningsRowChips({
           phase="preview"
           sent={previewSent}
           skipped={previewSkipped}
+          missed={previewMissed}
           onView={() => {
             setInlineData(null);
             setOpenPhase("preview");
@@ -615,10 +648,12 @@ interface PhaseChipProps {
   phase: Phase;
   sent: boolean;
   skipped: boolean;
+  /** Preview only: the print happened and no preview went out. */
+  missed?: boolean;
   onView: () => void;
 }
 
-function PhaseChip({ eventId, phase, sent, skipped, onView }: PhaseChipProps) {
+function PhaseChip({ eventId, phase, sent, skipped, missed = false, onView }: PhaseChipProps) {
   const router = useRouter();
   const { toast } = useToast();
   const [pending, startTransition] = useTransition();
@@ -677,6 +712,19 @@ function PhaseChip({ eventId, phase, sent, skipped, onView }: PhaseChipProps) {
       >
         {label}
       </button>
+    );
+  }
+
+  if (missed) {
+    // Nothing will send and there is nothing left to skip: plain text, no
+    // skip overlay, no touch button.
+    return (
+      <span
+        className="text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap text-ink-faint bg-raised"
+        title={`${phase} email was not sent before the print; nothing will send now`}
+      >
+        ✗ {label}
+      </span>
     );
   }
 

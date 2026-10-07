@@ -133,6 +133,54 @@ export function fmtCountdown(msLeft: number): string {
  */
 const VIEWABLE = new Set(["sent", "delivery-unknown"]);
 
+/**
+ * What each three-letter stage chip means, spelled out for its tooltip and its
+ * accessible name: the strip is "pre / act / rxn / rec" with no legend. One
+ * sentence per stage and state; a state nobody has mapped yet falls back to
+ * the stage name plus the raw word, so a chip is never left unexplained.
+ */
+const STAGE_NAMES = {
+  preview: "Preview email",
+  actual: "Reported figures",
+  reaction: "Price reaction",
+  recap: "Recap email",
+} as const;
+
+const STAGE_STATE_WORDS: Record<keyof typeof STAGE_NAMES, Record<string, string>> = {
+  preview: {
+    sent: "sent",
+    "sent-by-cloud": "sent by the cloud fallback",
+    "in-flight": "sending now",
+    "delivery-unknown": "delivery unknown",
+    skipped: "skipped",
+    pending: "not sent yet",
+    missed: "not sent before the release",
+  },
+  actual: {
+    pending: "not captured yet",
+    captured: "captured",
+    implausible: "captured, but flagged as implausible against consensus",
+    blocked: "still missing after the release; click to enter them",
+  },
+  reaction: {
+    pending: "not captured yet",
+    captured: "captured",
+  },
+  recap: {
+    sent: "sent",
+    "sent-by-cloud": "sent by the cloud fallback",
+    "in-flight": "sending now",
+    "delivery-unknown": "delivery unknown",
+    skipped: "skipped",
+    waiting: "waiting for the reported figures",
+    blocked: "blocked; the reported figures are missing",
+  },
+};
+
+export function stageTitle(stage: keyof typeof STAGE_NAMES, state: string): string {
+  return `${STAGE_NAMES[stage]}: ${STAGE_STATE_WORDS[stage][state] ?? state}`;
+}
+
 export function stageChips(
   row: CockpitRowWire,
   /** Shown on the upcoming chip instead of the stored clock time — see
@@ -146,18 +194,36 @@ export function stageChips(
    * reads "act pre-release" in the warn tone instead of the green "act ✓";
    * every other state is unchanged. */
   preReleaseActualTitle: string | null = null,
-): Array<{ key: string; tone: ChipTone; text: string; title?: string; clickable: "preview" | "recap" | "actuals" | null }> {
+): Array<{ key: string; tone: ChipTone; text: string; title: string; clickable: "preview" | "recap" | "actuals" | null }> {
   const released = row.stages.released;
   const releasedChip =
     released.state === "released"
-      ? { tone: "gold" as ChipTone, text: "released" }
+      ? { tone: "gold" as ChipTone, text: "released", title: "Released: the print window has opened" }
       : released.state === "upcoming"
-        ? { tone: "neutral" as ChipTone, text: timeEstimateLabel ?? row.releaseTime ?? row.eventTime ?? "—" }
-        : { tone: "neutral" as ChipTone, text: row.eventTime ?? "time?" };
+        ? {
+            tone: "neutral" as ChipTone,
+            text: timeEstimateLabel ?? row.releaseTime ?? row.eventTime ?? "—",
+            title: timeEstimateLabel
+              ? "Release time: an estimate, not a confirmed time"
+              : "Release time (ET): not released yet",
+          }
+        : { tone: "neutral" as ChipTone, text: row.eventTime ?? "time?", title: "Release time: not known" };
   const reaction =
     row.stages.reaction.state === "captured"
       ? { tone: "up" as ChipTone, text: `rxn ✓${row.stages.reaction.source ? ` ${row.stages.reaction.source}` : ""}` }
       : { tone: "neutral" as ChipTone, text: "rxn" };
+  const reactionTitle =
+    stageTitle("reaction", row.stages.reaction.state) +
+    (row.stages.reaction.state === "captured" && row.stages.reaction.source
+      ? ` (source: ${row.stages.reaction.source})`
+      : "");
+
+  // A chip that already explains itself (delivery unknown, pre-release) keeps
+  // its own sentence; every other chip gets the stage-and-state one.
+  const titled = <T extends { title?: string }>(chip: T, fallback: string): T & { title: string } => ({
+    ...chip,
+    title: chip.title ?? fallback,
+  });
 
   const actualChip =
     preReleaseActualTitle !== null && row.stages.actual === "captured"
@@ -168,14 +234,24 @@ export function stageChips(
     { key: "released", ...releasedChip, clickable: null },
     {
       key: "preview",
-      ...withFullWord(chipFor("pre", row.stages.preview), row.stages.preview),
+      ...titled(
+        withFullWord(chipFor("pre", row.stages.preview), row.stages.preview),
+        stageTitle("preview", row.stages.preview),
+      ),
       clickable: VIEWABLE.has(row.stages.preview) ? "preview" : null,
     },
-    { key: "actual", ...actualChip, clickable: row.stages.actual === "blocked" ? "actuals" : null },
-    { key: "reaction", ...reaction, clickable: null },
+    {
+      key: "actual",
+      ...titled(actualChip, stageTitle("actual", row.stages.actual)),
+      clickable: row.stages.actual === "blocked" ? "actuals" : null,
+    },
+    { key: "reaction", ...reaction, title: reactionTitle, clickable: null },
     {
       key: "recap",
-      ...withFullWord(chipFor("rec", row.stages.recap), row.stages.recap),
+      ...titled(
+        withFullWord(chipFor("rec", row.stages.recap), row.stages.recap),
+        stageTitle("recap", row.stages.recap),
+      ),
       clickable: VIEWABLE.has(row.stages.recap) ? "recap" : null,
     },
   ];
@@ -200,13 +276,17 @@ export function StageChipStrip({
             key={c.key}
             type="button"
             title={c.title}
+            aria-label={c.title}
             onClick={() => onOpen(c.clickable!)}
             className="relative active:scale-[0.96] transition-transform after:absolute after:content-[''] after:-inset-y-2 after:-inset-x-0.5"
           >
             <Chip tone={c.tone} size="xs" className="cursor-pointer">{c.text}</Chip>
           </button>
         ) : (
-          <Chip key={c.key} tone={c.tone} size="xs" title={c.title}>{c.text}</Chip>
+          // role="img": the abbreviation is read as its full sentence.
+          <span key={c.key} role="img" aria-label={c.title} className="inline-flex">
+            <Chip tone={c.tone} size="xs" title={c.title}>{c.text}</Chip>
+          </span>
         ),
       )}
     </span>
