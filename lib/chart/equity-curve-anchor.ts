@@ -13,8 +13,15 @@
  *
  *   after the last anchor: plotted(d) = recorded(d) + (v_last - recorded(d_last))
  *
- * recorded(dX) is the daily on the anchor date, or the nearest recorded daily
- * inside the segment when none falls on it. Because the correction is
+ * recorded(dX) is the daily on the anchor date. When none falls on it (a
+ * month-end on a weekend or holiday), the START reference is the last recorded
+ * daily before the anchor, found in the full daily list and no more than
+ * MAX_REFERENCE_LOOKBACK_DAYS earlier: measuring the offset against the first
+ * trading day AFTER the anchor would bake that day's move into the offset and
+ * smear it across the month. Only when no such daily exists is the nearest
+ * in-segment daily used. (The END reference needs no lookup: every in-segment
+ * daily is on or before the end anchor, so the nearest one is already the last
+ * recorded daily at or before it.) Because the correction is
  * additive and moves linearly, a recorded dip is still a dip (no inversion of
  * the month's shape, no multiplicative rescale) and both anchors plot exactly.
  *
@@ -75,6 +82,15 @@ export const MAX_SEGMENT_SPREAD = 0.3;
  */
 export const SHORT_SEGMENT_MAX_DAYS = 7;
 
+/**
+ * How far before an anchor date the last recorded daily may sit and still be
+ * its start reference. 5 calendar days covers a weekend plus a market holiday
+ * (a Sunday month-end after a Friday holiday sits 3 days from Thursday's
+ * close; 5 leaves margin for a holiday adjoining the weekend). Older than this the daily is stale and
+ * says nothing about the anchor day, so the in-segment fallback applies.
+ */
+export const MAX_REFERENCE_LOOKBACK_DAYS = 5;
+
 const DAY_MS = 86_400_000;
 
 function dayNumber(date: string): number {
@@ -91,13 +107,31 @@ function tooInconsistent(values: number[]): boolean {
   return (max - min) / mean > MAX_SEGMENT_SPREAD;
 }
 
-/** Recorded daily on `date`, else the in-segment daily nearest to it. */
+/**
+ * Last recorded daily on or before `date` in the full sorted list, provided it
+ * is within MAX_REFERENCE_LOOKBACK_DAYS of it.
+ */
+function lastDailyAtOrBefore(date: string, sortedDailies: EquityDaily[]): EquityDaily | undefined {
+  let found: EquityDaily | undefined;
+  for (const d of sortedDailies) {
+    if (d.date > date) break;
+    found = d;
+  }
+  if (!found) return undefined;
+  return dayNumber(date) - dayNumber(found.date) <= MAX_REFERENCE_LOOKBACK_DAYS ? found : undefined;
+}
+
+/**
+ * Start reference: the last recorded daily at or before `date` (within the
+ * lookback), else the in-segment daily nearest to it.
+ */
 function referenceDaily(
   date: string,
-  onDate: EquityDaily | undefined,
+  sortedDailies: EquityDaily[],
   segment: EquityDaily[],
 ): EquityDaily | undefined {
-  if (onDate) return onDate;
+  const prior = lastDailyAtOrBefore(date, sortedDailies);
+  if (prior) return prior;
   const target = dayNumber(date);
   let best: EquityDaily | undefined;
   let bestDist = Infinity;
@@ -155,8 +189,10 @@ export function anchorDailiesToStatements(
       }
     }
 
-    const ref0 = referenceDaily(a0.date, onD0, between)!;
-    const ref1 = referenceDaily(a1.date, onD1, between)!;
+    const ref0 = referenceDaily(a0.date, sortedDailies, between)!;
+    // End reference: every daily in `between` is before a1, so the nearest one
+    // is the last at or before it -- same rule, no lookup needed.
+    const ref1 = onD1 ?? between[between.length - 1];
     const gap0 = a0.value - ref0.value;
     const gap1 = a1.value - ref1.value;
 
@@ -186,7 +222,7 @@ function appendTrailing(
     summary.trailingSkipped = true;
     return;
   }
-  const ref = onLast ?? trailing[0];
+  const ref = onLast ?? lastDailyAtOrBefore(last.date, sortedDailies) ?? trailing[0];
   const gap = last.value - ref.value;
   for (const d of trailing) {
     points.push({ date: d.date, value: d.value + gap, recordedValue: d.value, isAnchor: false });

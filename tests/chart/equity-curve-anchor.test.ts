@@ -3,6 +3,7 @@ import {
   anchorDailiesToStatements,
   equityCurveCaption,
   formatAnchoredTooltipValue,
+  MAX_REFERENCE_LOOKBACK_DAYS,
   MIN_SEGMENT_DAILIES,
   SHORT_SEGMENT_MAX_DAYS,
   type EquityAnchor,
@@ -94,18 +95,87 @@ describe("anchorDailiesToStatements — shape-preserving anchor correction", () 
     expect(mid.map((p) => p.value)).toEqual([1030, 1050, 1070]);
   });
 
-  it("uses the nearest recorded daily inside the segment when no daily falls on an anchor date", () => {
-    const anchors = [A("2026-01-01", 1000), A("2026-01-11", 1000)];
+  it("with no daily on the anchor date, the start offset is measured from the last recorded daily before it", () => {
+    const anchors = [A("2026-01-11", 1000), A("2026-01-21", 1000)];
     const dailies = [
-      D("2026-01-02", 900), // nearest to d0 -> gap 100
-      D("2026-01-06", 920),
-      D("2026-01-10", 950), // nearest to d1 -> gap 50
+      D("2026-01-09", 900), // last at or before d0 (2 days earlier) -> gap0 = 100
+      D("2026-01-12", 880), // a 20-point recorded drop on the first trading day
+      D("2026-01-16", 900),
+      D("2026-01-20", 950), // last at or before d1 -> gap1 = 50
     ];
     const mid = interior(anchorDailiesToStatements(anchors, dailies).points);
     // offset(d) = 100 + t * (50 - 100), t = days from d0 / 10
-    expect(mid[0].value).toBeCloseTo(900 + 95, 9);
-    expect(mid[1].value).toBeCloseTo(920 + 75, 9);
+    expect(mid[0].value).toBeCloseTo(880 + 95, 9);
+    expect(mid[1].value).toBeCloseTo(900 + 75, 9);
     expect(mid[2].value).toBeCloseTo(950 + 55, 9);
+    // The 20-point drop survives (less the day's 5-point share of drift).
+    expect(mid[0].value).toBeCloseTo(1000 - 20 + 0 - 5, 9);
+  });
+
+  it("weekend month-end: Monday's recorded 5-point drop is kept, not spread across the month", () => {
+    const anchors = [A("2026-05-31", 200), A("2026-06-30", 190)];
+    const dailies = [
+      D("2026-05-29", 100), // Friday, the last value at or before the Sunday anchor
+      D("2026-06-01", 95), // Monday: -5 recorded
+      D("2026-06-02", 95),
+      D("2026-06-03", 95),
+      D("2026-06-04", 95),
+      D("2026-06-29", 95),
+    ];
+    const { points } = anchorDailiesToStatements(anchors, dailies);
+    // gap0 = 200 - 100 = 100; gap1 = 190 - 95 = 95 (06-29 is the last daily at or before 06-30).
+    // Monday: offset = 100 - 5 * (1/30) -> 194.833...; the old behaviour gave 199.67.
+    const mon = points.find((p) => p.date === "2026-06-01")!;
+    expect(mon.value).toBeCloseTo(95 + 100 - 5 / 30, 9);
+    // A visible drop of ~5 from the 200 anchor (to within one day's drift share).
+    expect(Math.abs(200 - mon.value - 5)).toBeLessThanOrEqual(5 / 30 + 1e-9);
+    // Both anchors exact, every point finite.
+    expect(points[0]).toMatchObject({ date: "2026-05-31", value: 200, isAnchor: true });
+    expect(points[points.length - 1]).toMatchObject({ date: "2026-06-30", value: 190, isAnchor: true });
+    for (const p of points) expect(Number.isFinite(p.value)).toBe(true);
+  });
+
+  it("holiday month-end: a prior daily 3 calendar days before the anchor is the start reference", () => {
+    const anchors = [A("2026-08-31", 500), A("2026-09-30", 500)];
+    const dailies = [
+      D("2026-08-28", 400), // 3 days before the anchor -> gap0 = 100
+      D("2026-09-01", 380), // -20 recorded
+      D("2026-09-10", 380),
+      D("2026-09-20", 380),
+      D("2026-09-30", 400), // on the end anchor -> gap1 = 100
+    ];
+    const mid = interior(anchorDailiesToStatements(anchors, dailies).points);
+    // Constant offset 100, so every plotted day is recorded + 100 and the drop survives intact.
+    expect(mid.map((p) => p.value)).toEqual([480, 480, 480]);
+  });
+
+  it(`a prior daily older than ${MAX_REFERENCE_LOOKBACK_DAYS} calendar days is not used: falls back to the first in-segment daily`, () => {
+    const anchors = [A("2026-05-31", 200), A("2026-06-30", 200)];
+    const dailies = [
+      D("2026-05-20", 100), // 11 days before: too stale to be a reference
+      D("2026-06-01", 95), // fallback reference -> gap0 = 105
+      D("2026-06-10", 95),
+      D("2026-06-20", 95),
+      D("2026-06-30", 95), // gap1 = 105
+    ];
+    const mid = interior(anchorDailiesToStatements(anchors, dailies).points);
+    expect(mid.map((p) => p.value)).toEqual([200, 200, 200]);
+  });
+
+  it("the lookback is inclusive at the limit", () => {
+    const anchors = [A("2026-05-31", 200), A("2026-06-30", 200)];
+    const limitDay = new Date(Date.UTC(2026, 4, 31) - MAX_REFERENCE_LOOKBACK_DAYS * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const dailies = [
+      D(limitDay, 100), // exactly at the limit -> gap0 = 100
+      D("2026-06-01", 95),
+      D("2026-06-10", 95),
+      D("2026-06-20", 95),
+      D("2026-06-30", 100), // gap1 = 100
+    ];
+    const mid = interior(anchorDailiesToStatements(anchors, dailies).points);
+    expect(mid.map((p) => p.value)).toEqual([195, 195, 195]);
   });
 
   it(`(c) a segment with fewer than ${MIN_SEGMENT_DAILIES} dailies is skipped (anchors only)`, () => {
@@ -181,11 +251,19 @@ describe("anchorDailiesToStatements — shape-preserving anchor correction", () 
     expect(summary.trailingSkipped).toBe(false);
   });
 
-  it("trailing with no daily on the anchor date references the first trailing daily (no multiplicative rescale)", () => {
-    const anchors = [A("2026-05-31", 2000)];
-    const dailies = [D("2026-06-01", 1000), D("2026-06-02", 1100)];
+  it("trailing with no daily on the anchor date measures the offset from the last daily before it (Monday's move survives)", () => {
+    const anchors = [A("2026-05-31", 2000)]; // a Sunday
+    const dailies = [D("2026-05-29", 1000), D("2026-06-01", 950), D("2026-06-02", 1100)];
     const { points } = anchorDailiesToStatements(anchors, dailies);
-    // gap = 2000 - 1000 = 1000, added (a ×2 scale would give 2200 for the second day)
+    // gap = 2000 - 1000 = 1000 (Friday), added: Monday shows the 50-point drop (a first-trailing
+    // reference would have plotted 2000 and erased it; a x2 scale would give 2200 for the last day).
+    expect(points.slice(1).map((p) => p.value)).toEqual([1950, 2100]);
+  });
+
+  it("trailing with no daily within the lookback before the anchor falls back to the first trailing daily", () => {
+    const anchors = [A("2026-05-31", 2000)];
+    const dailies = [D("2026-05-10", 900), D("2026-06-01", 1000), D("2026-06-02", 1100)];
+    const { points } = anchorDailiesToStatements(anchors, dailies);
     expect(points.slice(1).map((p) => p.value)).toEqual([2000, 2100]);
   });
 
