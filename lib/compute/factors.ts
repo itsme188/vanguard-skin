@@ -20,6 +20,14 @@ export interface MarketRegression {
   trackingError: number; // annualized
   correlation: number;
   dataPoints: number;
+  /**
+   * First and last day (YYYY-MM-DD) of the aligned portfolio/benchmark
+   * series the regression ran on — the scope's own full-coverage history
+   * (no cross-account floor). Display-only: the Diagnostics card captions
+   * this window next to the risk card's common comparison window.
+   */
+  windowStart: string;
+  windowEnd: string;
 }
 
 export interface FactorTilt {
@@ -242,6 +250,8 @@ function computeMarketRegression(
     trackingError,
     correlation,
     dataPoints: n,
+    windowStart: allDates[0],
+    windowEnd: allDates[allDates.length - 1],
   };
 }
 
