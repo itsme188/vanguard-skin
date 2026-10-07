@@ -99,8 +99,13 @@ function average(values: number[]): number | null {
 }
 
 /**
- * Main entry: return one row per source_author that has fired at least
- * `minAlerts` alerts (default 1). Sorted by alerts_fired desc.
+ * Main entry: one row per source_author, sorted by alerts_fired desc.
+ *
+ * A source with at least one ARMED (auto_approved) level is always listed,
+ * fired or not: a source whose levels have never been reached is a 0% hit
+ * rate, and leaving it out made the leaderboard read as if it did not exist.
+ * `minAlerts` (default 1) only gates a source with NO armed level — one known
+ * solely through alerts on levels outside the denominator.
  */
 export function getSourcePerformance(
   db: Database.Database,
@@ -148,7 +153,7 @@ export function getSourcePerformance(
 
   const results: SourcePerformance[] = [];
   for (const [source, group] of bySource) {
-    if (group.alerts.length < minAlerts) continue;
+    if (group.levels.length === 0 && group.alerts.length < minAlerts) continue;
 
     // Hit rate = fraction of this source's armed (auto_approved) levels that
     // fired at least once. Both sides must come from the same level set:
@@ -212,7 +217,14 @@ export function getSourcePerformance(
     });
   }
 
-  results.sort((a, b) => b.alerts_fired - a.alerts_fired);
+  // Ties (notably the never-fired sources, all at 0) order by armed-level
+  // count, then name, so the list does not reshuffle between loads.
+  results.sort(
+    (a, b) =>
+      b.alerts_fired - a.alerts_fired ||
+      b.levels_created - a.levels_created ||
+      a.source_author.localeCompare(b.source_author),
+  );
   return results;
 }
 

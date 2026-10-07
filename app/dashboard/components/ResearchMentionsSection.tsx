@@ -4,9 +4,14 @@ import { useState } from "react";
 import Link from "next/link";
 import type { ResearchMention } from "@/lib/queries/research";
 import { Section } from "./Section";
+import { EmptySection } from "./EmptySection";
 import { Chip, type ChipTone } from "./Chip";
 import { NewsletterArticleFrame } from "./NewsletterArticleFrame";
-import { displayableMentionContext } from "@/lib/research/mention-context";
+import {
+  displayableMentionContext,
+  filterHubMentions,
+  mentionsHeading,
+} from "@/lib/research/mention-context";
 import { trimEmailFooter, htmlHidesStoredText, visibleTextLength } from "@/lib/gmail/sanitize";
 
 interface ArticleDetail {
@@ -19,38 +24,6 @@ interface ArticleDetail {
   source_url: string | null;
 }
 
-/**
- * A mention_context is a false-positive URL-fragment when the extractor
- * matched the ticker inside anchor-text / asset paths (e.g.
- * "net/assets/images/resources//section1."). Dropping these surfaces only
- * the mentions that actually refer to the company.
- */
-function isUrlFragmentContext(ctx: string | null): boolean {
-  if (!ctx) return false;
-  const t = ctx.trim();
-  if (/:\/\/|\/assets\/|<img|\.(png|jpg|jpeg|gif|css|svg|woff)/i.test(t)) return true;
-  if (!/\s/.test(t) && /[/_]/.test(t)) return true;
-  return false;
-}
-
-/**
- * True when the ticker appears only as a substring of a larger word in
- * the mention context / subject (e.g. "HOOD" inside "likelihood",
- * "NET" inside "internet").
- */
-function lacksWordBoundaryMatch(
-  ticker: string,
-  ctx: string | null,
-  subject: string,
-): boolean {
-  if (!ctx) return false;
-  const escaped = ticker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`\\b${escaped}\\b`, "i");
-  if (re.test(ctx)) return false;
-  if (re.test(subject)) return false;
-  return true;
-}
-
 function sentimentTone(s: string | null): ChipTone {
   if (s === "bullish" || s === "positive") return "up";
   if (s === "bearish" || s === "negative") return "down";
@@ -60,30 +33,35 @@ function sentimentTone(s: string | null): ChipTone {
 export function ResearchMentionsSection({
   ticker,
   mentions,
+  totalCount,
 }: {
   ticker: string;
   mentions: ResearchMention[];
+  /** Every processed, relevant mention on file for this security — not the
+   *  handful loaded here. Without it the heading prints no count at all. */
+  totalCount?: number | null;
 }) {
-  const filtered = mentions.filter((m) => {
-    if (isUrlFragmentContext(m.mention_context)) return false;
-    if (lacksWordBoundaryMatch(ticker, m.mention_context, m.subject)) return false;
-    return true;
-  });
+  const filtered = filterHubMentions(ticker, mentions);
 
-  if (filtered.length === 0) return null;
+  if (mentions.length === 0) return null;
+  if (filtered.length === 0) {
+    return (
+      <EmptySection
+        title="Research Mentions"
+        reason={`The latest newsletters linked to ${ticker} only matched it inside a link or a longer word, so none is shown.`}
+      />
+    );
+  }
 
-  const subtitle =
-    mentions.length > filtered.length
-      ? `${filtered.length} of ${mentions.length} — filtered`
-      : undefined;
+  const { title, subtitle } = mentionsHeading(filtered.length, totalCount);
 
   return (
     <Section
-      title={`Research Mentions · ${filtered.length}`}
+      title={title}
       subtitle={subtitle}
       action={
         <Link
-          href="/dashboard/research?view=feeds"
+          href={`/dashboard/research?view=feeds&symbol=${encodeURIComponent(ticker)}`}
           className="text-xs font-medium text-blue hover:brightness-110 transition-colors"
         >
           All feeds →

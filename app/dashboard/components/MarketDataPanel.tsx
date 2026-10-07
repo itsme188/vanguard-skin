@@ -309,20 +309,25 @@ export function MarketDataPanel({
             flex default is min-width:auto, which pins it at content size and
             either overflows past the panel's own overflow-hidden edge — a
             mid-word hard clip with no ellipsis — or, when space is too
-            tight, collapses to zero). The three parts are wrapped in one
-            child span (rather than truncate on the flex container itself)
-            because text-overflow:ellipsis only renders on a block-level
-            container whose OWN content overflows a line box — a flex
-            container's children are flex items, not inline text, so
-            ellipsis silently no-ops when applied to the flex row directly.
-            The inner pieces are inline text now, so the old gap-3 no longer
-            spaces them — ml-3 on each piece keeps the 12px separation. */}
+            tight, collapses to zero).
+
+            Each part is its own flex item, and only the company NAME gives
+            way: one truncate span around all three cut the line from the
+            right, so a long name pushed the type and sector — which this
+            strip is the only place to read — off the end. `truncate` on an
+            item works (unlike on the flex row) because the item is a block
+            whose own text overflows, and its overflow:hidden is also what
+            lets it shrink to nothing. The type keeps a token flex-shrink so
+            it ellipsizes too, but only once the name is fully gone (a phone
+            panel narrower than symbol + type). */}
         <div className="flex items-center gap-3 min-w-0">
-          <span className="truncate">
-            <span style={{ color: "#ffb84d", fontWeight: 600 }}>{symbol}</span>
-            {name && <span className="ml-3">· {name}</span>}
-            {typeLabel && <span className="ml-3" style={{ color: "#8a8a8a" }}>· {typeLabel}</span>}
-          </span>
+          <span className="shrink-0" style={{ color: "#ffb84d", fontWeight: 600 }}>{symbol}</span>
+          {name && <span className="truncate">· {name}</span>}
+          {typeLabel && (
+            <span className="truncate" style={{ color: "#8a8a8a", flexShrink: 0.001 }}>
+              · {typeLabel}
+            </span>
+          )}
         </div>
         <FreshnessStamp priceDate={priceDate} />
       </div>
