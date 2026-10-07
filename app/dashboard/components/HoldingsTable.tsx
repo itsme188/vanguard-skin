@@ -2,7 +2,8 @@ import type { HoldingWithSecurity } from "@/lib/queries/holdings";
 import { displaySecurityName } from "@/lib/format";
 import { ScrollFade } from "./ScrollFade";
 import { SymbolLink } from "./SymbolLink";
-import { Money, Shares, QuantityUnit } from "@/lib/privacy/components";
+import { Count, Money, Shares, QuantityUnit } from "@/lib/privacy/components";
+import type { AccountCashLine } from "@/lib/queries/account-cash-line";
 
 function formatOptionDescription(holding: HoldingWithSecurity): string {
   if (holding.security_type?.toLowerCase() !== "option") return "";
@@ -18,17 +19,104 @@ function formatOptionDescription(holding: HoldingWithSecurity): string {
   return [underlying, strike, type, expiry].filter(Boolean).join(" ");
 }
 
+/**
+ * Positions, cash and the account total for one account, all read from the
+ * account's latest daily valuation (lib/queries/account-cash-line.ts), so
+ * positions plus cash is the account total by construction. Cash is a line
+ * here, never a made-up holdings row.
+ *
+ * The sentences keep the same wording for one position or many, so Hide
+ * amounts cannot leak "exactly one" through the grammar.
+ */
+function AccountValueLines({ cashLine }: { cashLine: AccountCashLine | null }) {
+  if (!cashLine) {
+    return (
+      <p data-account-value="none" className="px-4 py-3 text-xs text-ink-dim">
+        No daily valuation exists for this account yet, so there is no market-value total or
+        cash balance to show here.
+      </p>
+    );
+  }
+
+  const asOf = <span className="font-mono">as of {cashLine.valuationDate}</span>;
+  const sweepSymbols = cashLine.cashEquivalentSymbols;
+  const hasUnpriced =
+    cashLine.holdingsCount !== null &&
+    cashLine.pricedCount !== null &&
+    cashLine.pricedCount < cashLine.holdingsCount;
+
+  return (
+    <div data-account-value="lines" className="px-4 py-3 space-y-2 text-sm">
+      <div>
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-ink-dim">
+            Positions at market value <span className="text-xs">({asOf})</span>
+          </span>
+          <span className="font-mono tabular-nums text-ink">
+            <Money value={cashLine.holdingsValue} precise />
+          </span>
+        </div>
+        {hasUnpriced && (
+          <p data-account-value="unpriced-note" className="mt-0.5 text-xs text-ink-dim">
+            Positions with a price that day: <Count value={cashLine.pricedCount} /> of{" "}
+            <Count value={cashLine.holdingsCount} />. The rest are not in the Positions figure.
+          </p>
+        )}
+      </div>
+      <div>
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-ink-dim">
+            Cash <span className="text-xs">({asOf})</span>
+          </span>
+          <span className="font-mono tabular-nums text-ink">
+            <Money value={cashLine.cashBalance} precise />
+          </span>
+        </div>
+        {cashLine.liveSourceCaption && (
+          <p data-account-value="live-note" className="mt-0.5 text-xs text-ink-dim">
+            {cashLine.liveSourceCaption}
+          </p>
+        )}
+        {sweepSymbols.length > 0 && (
+          <p data-account-value="sweep-note" className="mt-0.5 text-xs text-ink-dim">
+            Money-market funds listed above (
+            <span className="font-mono">{sweepSymbols.join(", ")}</span>) are counted in Cash,
+            not in Positions. Do not add them to the Cash figure again.
+          </p>
+        )}
+      </div>
+      <div className="flex items-baseline justify-between gap-3 border-t border-edge pt-2">
+        <span className="font-medium text-ink">
+          Account total <span className="text-xs font-normal text-ink-dim">({asOf})</span>
+        </span>
+        <span className="font-mono tabular-nums font-medium text-ink">
+          <Money value={cashLine.totalValue} precise />
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function HoldingsTable({
   holdings,
+  cashLine = null,
 }: {
   holdings: HoldingWithSecurity[];
+  cashLine?: AccountCashLine | null;
 }) {
   if (holdings.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed border-edge bg-panel/50 p-8 text-center">
-        <p className="text-ink-faint text-sm">
-          No holdings data. Import files to see holdings.
-        </p>
+      <div className="space-y-3">
+        <div className="rounded-xl border border-dashed border-edge bg-panel/50 p-8 text-center">
+          <p className="text-ink-faint text-sm">
+            No holdings data. Import files to see holdings.
+          </p>
+        </div>
+        {cashLine && (
+          <div className="rounded-xl border border-edge overflow-hidden bg-panel/50">
+            <AccountValueLines cashLine={cashLine} />
+          </div>
+        )}
       </div>
     );
   }
@@ -111,6 +199,9 @@ export function HoldingsTable({
           </tbody>
         </table>
         </ScrollFade>
+        <div className="border-t-2 border-edge bg-panel/50">
+          <AccountValueLines cashLine={cashLine} />
+        </div>
       </div>
     </div>
   );

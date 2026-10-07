@@ -5,6 +5,7 @@ import type { Account, MonthlySnapshot } from "@/lib/types";
 import type { HoldingWithSecurity } from "@/lib/queries/holdings";
 import type { TransactionWithSecurity } from "@/lib/queries/transactions";
 import type { DailyValuation } from "@/lib/queries/daily-valuations";
+import type { AccountCashLine } from "@/lib/queries/account-cash-line";
 import { HoldingsTable } from "./HoldingsTable";
 import { TransactionHistory } from "./TransactionHistory";
 import { EquityCurveChart } from "./EquityCurveChart";
@@ -18,6 +19,9 @@ interface AccountDetailProps {
   transactions: TransactionWithSecurity[];
   snapshots: MonthlySnapshot[];
   dailyValuations?: DailyValuation[];
+  /** Positions / cash / total from the latest daily valuation, for the
+   *  Holdings footer. */
+  cashLine?: AccountCashLine | null;
   reconciliationCheckpoints?: ReconciliationCheckpoint[];
 }
 
@@ -27,6 +31,7 @@ export function AccountDetail({
   transactions,
   snapshots,
   dailyValuations,
+  cashLine,
   reconciliationCheckpoints,
 }: AccountDetailProps) {
   // Vanguard accounts update only on statement import — the holdings table
@@ -62,7 +67,7 @@ export function AccountDetail({
         />
       )}
 
-      <HoldingsTable holdings={holdings} />
+      <HoldingsTable holdings={holdings} cashLine={cashLine ?? null} />
 
       <TransactionHistory transactions={transactions} />
 
