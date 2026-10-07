@@ -62,6 +62,34 @@ const STATUS_LABEL: Record<GivingDonation["status"], string> = {
   received: "Received",
 };
 
+/**
+ * Names ONE donation in a confirm: a year often holds several gifts of the
+ * same symbol, and on a phone the row's own cells scroll away before the
+ * action buttons come into view. Date and symbol only; the figures are drawn
+ * beside it through the privacy components (DonationIdentityLine).
+ */
+export function donationConfirmName(gd: Pick<GivingDonation, "donation">): string {
+  const d = gd.donation;
+  if (d.kind === "cash") return `the cash gift received ${d.received_date}`;
+  return `the ${d.symbol_raw ?? "stock"} donation received ${d.received_date}`;
+}
+
+/** The rest of the row's identity under a confirm's message. */
+export function DonationIdentityLine({ gd }: { gd: GivingDonation }) {
+  const d = gd.donation;
+  return (
+    <p className="text-xs text-ink-dim mt-2">
+      {gd.accountName ? <>{gd.accountName} · </> : null}
+      {d.kind === "stock" && (
+        <>
+          Qty <Shares value={d.quantity} digits={4} className="font-mono" /> ·{" "}
+        </>
+      )}
+      FMV <Money value={d.fmv_usd} className="font-mono" />
+    </p>
+  );
+}
+
 export function GivingYearSection({ year }: { year: GivingYear }) {
   const router = useRouter();
   const flow = useLedgerRecomputeFlow();
@@ -122,7 +150,7 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
         title="Unlink donation"
         message={
           unlinkTarget
-            ? `Unlink ${unlinkTarget.donation.symbol_raw ?? "this donation"}'s OUT leg? The transfer transaction returns to the unmatched pool and any lot assignments are dropped. This recomputes the entire tax-lot ledger; you will be asked to confirm that next.`
+            ? `Unlink the OUT leg of ${donationConfirmName(unlinkTarget)}? The transfer transaction returns to the unmatched pool and any lot assignments are dropped. This recomputes the entire tax-lot ledger; you will be asked to confirm that next.`
             : ""
         }
         confirmLabel="Unlink"
@@ -130,14 +158,16 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
         variant="danger"
         onConfirm={() => unlinkTarget && unlink(unlinkTarget.donation.id)}
         onCancel={() => setUnlinkTarget(null)}
-      />
+      >
+        {unlinkTarget && <DonationIdentityLine gd={unlinkTarget} />}
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={reverseTarget !== null}
         title="Mark donation reversed"
         message={
           reverseTarget
-            ? `Mark ${reverseTarget.donation.symbol_raw ?? "this donation"} as reversed? This drops any leg links and lot assignments and stamps the reversed date below. It recomputes the entire tax-lot ledger; you will be asked to confirm that next.`
+            ? `Mark ${donationConfirmName(reverseTarget)} as reversed? This drops any leg links and lot assignments and stamps the reversed date below. It recomputes the entire tax-lot ledger; you will be asked to confirm that next.`
             : ""
         }
         confirmLabel="Mark reversed"
@@ -146,6 +176,7 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
         onConfirm={() => reverseTarget && REVERSED_DATE_RE.test(reverseDate) && markReversed(reverseTarget.donation.id, reverseDate)}
         onCancel={() => setReverseTarget(null)}
       >
+        {reverseTarget && <DonationIdentityLine gd={reverseTarget} />}
         <label htmlFor="giving-reverse-date" className="block text-xs font-medium text-ink-faint mb-1.5 mt-3">
           Reversed date
         </label>
@@ -163,6 +194,7 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
         <LotAssignmentDrawer
           donationId={drawerDonation.donation.id}
           symbol={drawerDonation.donation.symbol_raw ?? "security"}
+          receivedDate={drawerDonation.donation.received_date}
           targetQuantity={drawerDonation.donation.quantity}
           onClose={() => setDrawerDonation(null)}
         />

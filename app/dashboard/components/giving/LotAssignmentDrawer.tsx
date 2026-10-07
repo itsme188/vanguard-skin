@@ -35,8 +35,80 @@ import { withLedgerAck } from "./ledger-recompute-flow";
 interface LotAssignmentDrawerProps {
   donationId: number;
   symbol: string;
+  /** The donation's received date. Several gifts of one symbol are common, so
+   *  the heading names the gift, not only the security. */
+  receivedDate?: string | null;
   targetQuantity: number | null;
   onClose: () => void;
+}
+
+// Same tolerance as EPS in lib/mutations/donation-links.ts (a server module
+// this client file must not import): the gate there refuses a quantity above
+// the lot's available quantity by more than this.
+const SHARE_EPS = 1e-9;
+
+/**
+ * Strips binary-float noise from a share quantity (a remainder computed as
+ * target minus the other lots arrives as 0.23699999999999832). Eight decimals
+ * is far below any real share precision, so no real quantity is changed.
+ */
+export function cleanShareQuantity(value: number): number {
+  if (!Number.isFinite(value)) return value;
+  return Number(value.toFixed(8));
+}
+
+/**
+ * A quantity the picker chose or the user typed: noise-free and never above
+ * what the lot had available on the donation date.
+ */
+export function clampToLot(value: number, available: number): number {
+  return Math.min(cleanShareQuantity(value), available);
+}
+
+export const OVER_ASSIGNED_MESSAGE =
+  "Save is off: a selected quantity is more than its lot had available on the donation date.";
+
+type LotCapacity = Pick<OpenLotForDonation, "acquisitionTransactionId" | "remainingAsOfDonationDate">;
+
+/**
+ * The drawer's opening state: this donation's own saved picks, noise-free.
+ * A saved quantity ABOVE the lot's available quantity is kept as saved (not
+ * quietly clamped): `overAssignedLotIds` flags it and Save stays off until
+ * the user reduces it. Cleaning alone never pushes a quantity over the lot.
+ */
+export function preloadSelections(
+  lots: Pick<OpenLotForDonation, "acquisitionTransactionId" | "remainingAsOfDonationDate" | "currentlyAssignedQuantity">[]
+): Record<number, number> {
+  const initial: Record<number, number> = {};
+  for (const lot of lots) {
+    const saved = lot.currentlyAssignedQuantity;
+    if (!(saved > 0)) continue;
+    const cleaned = cleanShareQuantity(saved);
+    const fits = saved <= lot.remainingAsOfDonationDate + SHARE_EPS;
+    const quantity = fits ? Math.min(cleaned, lot.remainingAsOfDonationDate) : cleaned;
+    if (quantity > 0) initial[lot.acquisitionTransactionId] = quantity;
+  }
+  return initial;
+}
+
+/** Lots whose selected quantity is more than the lot had available. */
+export function overAssignedLotIds(selections: Record<number, number>, lots: LotCapacity[]): number[] {
+  return lots
+    .filter((lot) => (selections[lot.acquisitionTransactionId] ?? 0) > lot.remainingAsOfDonationDate + SHARE_EPS)
+    .map((lot) => lot.acquisitionTransactionId);
+}
+
+/**
+ * Cost basis of the shares still available, for display beside "Available".
+ * `costBasis` is the WHOLE lot's; printing it beside a smaller share count
+ * overstated the per-share basis of a partly used lot. Display only: the
+ * saved basis is computed by the ledger, never from this figure.
+ */
+export function availableCostBasis(
+  lot: Pick<OpenLotForDonation, "costBasis" | "quantityAcquired" | "remainingAsOfDonationDate">
+): number | null {
+  if (!(lot.quantityAcquired > 0)) return null;
+  return (lot.costBasis * lot.remainingAsOfDonationDate) / lot.quantityAcquired;
 }
 
 interface LotsResponse {
@@ -48,6 +120,7 @@ interface LotsResponse {
 export function LotAssignmentDrawer({
   donationId,
   symbol,
+  receivedDate,
   targetQuantity,
   onClose,
 }: LotAssignmentDrawerProps) {
@@ -88,11 +161,7 @@ export function LotAssignmentDrawer({
         // still fully replaces (assignDonationLots' replace semantics);
         // the explicit "Clear assignments" button remains the only clear
         // path (Save-with-0-selected stays blocked below).
-        const initial: Record<number, number> = {};
-        for (const lot of json.data.lots) {
-          if (lot.currentlyAssignedQuantity > 0) initial[lot.acquisitionTransactionId] = lot.currentlyAssignedQuantity;
-        }
-        setSelections(initial);
+        setSelections(preloadSelections(json.data.lots));
       } catch (err) {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : "Failed to load open lots");
       }
@@ -116,10 +185,11 @@ export function LotAssignmentDrawer({
       }
       const remainingNeeded =
         targetQuantity != null ? Math.max(0, targetQuantity - totalSelected(prev)) : lot.remainingAsOfDonationDate;
-      next[lot.acquisitionTransactionId] = Math.min(
-        lot.remainingAsOfDonationDate,
-        remainingNeeded > 0 ? remainingNeeded : lot.remainingAsOfDonationDate
+      next[lot.acquisitionTransactionId] = clampToLot(
+        remainingNeeded > 0 ? remainingNeeded : lot.remainingAsOfDonationDate,
+        lot.remainingAsOfDonationDate
       );
+      if (!(next[lot.acquisitionTransactionId] > 0)) delete next[lot.acquisitionTransactionId];
       return next;
     });
   }
@@ -129,8 +199,9 @@ export function LotAssignmentDrawer({
     if (!Number.isFinite(value) || value < 0) return;
     setSelections((prev) => {
       const next = { ...prev };
-      if (value <= 0) delete next[lot.acquisitionTransactionId];
-      else next[lot.acquisitionTransactionId] = Math.min(value, lot.remainingAsOfDonationDate);
+      const quantity = clampToLot(value, lot.remainingAsOfDonationDate);
+      if (quantity <= 0) delete next[lot.acquisitionTransactionId];
+      else next[lot.acquisitionTransactionId] = quantity;
       return next;
     });
   }
@@ -139,7 +210,9 @@ export function LotAssignmentDrawer({
     if (!lots) return;
     const next: Record<number, number> = {};
     for (const lot of lots) {
-      if (lot.suggested && lot.suggestedQuantity > 0) next[lot.acquisitionTransactionId] = lot.suggestedQuantity;
+      if (!lot.suggested) continue;
+      const quantity = clampToLot(lot.suggestedQuantity, lot.remainingAsOfDonationDate);
+      if (quantity > 0) next[lot.acquisitionTransactionId] = quantity;
     }
     setSelections(next);
   }
@@ -164,6 +237,12 @@ export function LotAssignmentDrawer({
   }
 
   function handleSave() {
+    // The Save button is off in this state; this is the same rule for any
+    // other way in. The server gate would refuse it too.
+    if (overAssigned.length > 0) {
+      toast(OVER_ASSIGNED_MESSAGE, "error");
+      return;
+    }
     const assignments = Object.entries(selections)
       .filter(([, qty]) => qty > 0)
       .map(([id, qty]) => ({ acquisitionTransactionId: Number(id), quantity: qty }));
@@ -178,7 +257,8 @@ export function LotAssignmentDrawer({
     submit([], "clear");
   }
 
-  const selectedTotal = totalSelected(selections);
+  const selectedTotal = cleanShareQuantity(totalSelected(selections));
+  const overAssigned = overAssignedLotIds(selections, lots ?? []);
 
   return (
     <div
@@ -199,7 +279,10 @@ export function LotAssignmentDrawer({
         <LedgerRecomputeDialog flow={flow} />
         <header className="mb-4 flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-base font-medium text-ink">Assign lots — {symbol}</h2>
+            <h2 className="text-base font-medium text-ink">
+              Assign lots — {symbol}
+              {receivedDate ? <span className="font-mono text-sm text-ink-dim"> · received {receivedDate}</span> : null}
+            </h2>
             <p className="text-xs text-ink-faint mt-1">
               Open lots as of the donation&apos;s OUT-leg date.
               {targetQuantity != null && (
@@ -209,12 +292,13 @@ export function LotAssignmentDrawer({
                   <Shares value={selectedTotal} digits={4} /> sh
                 </>
               )}
+              {overAssigned.length > 0 && <span className="text-down"> · exceeds available</span>}
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="text-ink-faint hover:text-ink text-sm shrink-0"
+            className="relative text-ink-faint hover:text-ink text-sm shrink-0 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-4"
             aria-label="Close"
           >
             ✕
@@ -243,7 +327,9 @@ export function LotAssignmentDrawer({
             <ul className="space-y-2 mb-4">
               {lots.map((lot) => {
                 const checked = (selections[lot.acquisitionTransactionId] ?? 0) > 0;
-                const disabled = lot.remainingAsOfDonationDate <= 0;
+                // An empty lot cannot be picked, but a saved pick on one can still be unticked.
+                const disabled = lot.remainingAsOfDonationDate <= 0 && !checked;
+                const over = overAssigned.includes(lot.acquisitionTransactionId);
                 return (
                   <li key={lot.acquisitionTransactionId} className="rounded-lg border border-edge px-3 py-2">
                     <label className="flex items-start gap-2 text-sm cursor-pointer">
@@ -267,8 +353,8 @@ export function LotAssignmentDrawer({
                           )}
                         </span>
                         <span className="block text-xs text-ink-faint mt-0.5">
-                          Available <Shares value={lot.remainingAsOfDonationDate} digits={4} /> sh · Cost basis{" "}
-                          <Money value={lot.costBasis} />
+                          Available <Shares value={lot.remainingAsOfDonationDate} digits={4} /> sh · Cost basis of
+                          available <Money value={availableCostBasis(lot)} />
                         </span>
                       </span>
                     </label>
@@ -281,11 +367,21 @@ export function LotAssignmentDrawer({
                           step="any"
                           value={selections[lot.acquisitionTransactionId] ?? 0}
                           onChange={(e) => setQty(lot, e.target.value)}
-                          className="w-28 rounded-md bg-raised border border-edge px-2 py-1 text-xs text-ink font-mono"
+                          aria-invalid={over ? true : undefined}
+                          className={`w-28 rounded-md bg-raised border px-2 py-1 text-xs text-ink font-mono ${
+                            over ? "border-down" : "border-edge"
+                          }`}
                         />
                         <span className="text-xs text-ink-faint ml-1.5">
                           of <Shares value={lot.remainingAsOfDonationDate} digits={4} /> sh
                         </span>
+                        {over && (
+                          <p className="text-xs text-down mt-1">
+                            Assigned <Shares value={selections[lot.acquisitionTransactionId]} digits={4} /> sh, but
+                            only <Shares value={lot.remainingAsOfDonationDate} digits={4} /> sh of this lot were
+                            available on that date. Reduce it or pick another lot.
+                          </p>
+                        )}
                       </div>
                     )}
                   </li>
@@ -298,6 +394,7 @@ export function LotAssignmentDrawer({
         <p className="text-xs text-ink-dim pt-2 border-t border-edge">
           Saving or clearing recomputes the entire tax-lot ledger. You will be asked to confirm first.
         </p>
+        {overAssigned.length > 0 && <p className="text-xs text-down pt-2">{OVER_ASSIGNED_MESSAGE}</p>}
         <div className="flex items-center justify-between gap-2 pt-2">
           <button
             type="button"
@@ -310,7 +407,7 @@ export function LotAssignmentDrawer({
           <button
             type="button"
             onClick={handleSave}
-            disabled={flowActive || !lots || lots.length === 0}
+            disabled={flowActive || !lots || lots.length === 0 || overAssigned.length > 0}
             className="px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 disabled:opacity-50 transition-[filter,scale] active:scale-[0.96] focus-ring"
           >
             Save
