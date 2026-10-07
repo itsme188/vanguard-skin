@@ -34,7 +34,7 @@ function setupDb(): Database.Database {
       received_at TEXT, subject TEXT, sender TEXT, summary TEXT, key_themes TEXT,
       sentiment TEXT, sentiment_score REAL, mentioned_symbols TEXT,
       portfolio_relevance TEXT, processed_at TEXT, created_at TEXT,
-      source_url TEXT, is_relevant INTEGER DEFAULT 1
+      source_url TEXT, is_relevant INTEGER DEFAULT 1, excluded_category TEXT
     );
     CREATE TABLE level_alerts (id INTEGER PRIMARY KEY, level_id INTEGER, security_id INTEGER,
       triggered_at TEXT, triggered_price REAL, user_response TEXT, suggested_action TEXT);
