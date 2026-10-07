@@ -3,6 +3,7 @@ import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { todayET } from "@/lib/calendar/date-utils";
+import { parseOptionSymbol } from "@/lib/import/occ-symbol";
 
 /**
  * Deterministic guard for the newsletter D3 off-topic vote: the model has
@@ -27,17 +28,26 @@ export function getHeldSymbolSet(db: Database.Database, today: string = todayET(
   const rows = db
     .prepare(
       `SELECT DISTINCT
-              CASE WHEN LOWER(COALESCE(s.security_type, '')) = 'option'
-                   THEN s.underlying_symbol ELSE s.symbol END AS symbol
+              s.symbol AS symbol,
+              s.underlying_symbol AS underlying_symbol,
+              LOWER(COALESCE(s.security_type, '')) = 'option' AS is_option
        FROM holdings h
        JOIN securities s ON h.security_id = s.id
        WHERE ${latestHoldingsPredicate({})}
          AND ${liveOptionExpirationSql("s", today)}`
     )
-    .all() as { symbol: string | null }[];
+    .all() as { symbol: string | null; underlying_symbol: string | null; is_option: number }[];
   const held = new Set<string>();
   for (const r of rows) {
-    const symbol = (r.symbol ?? "").trim().toUpperCase();
+    let name = r.symbol ?? "";
+    if (r.is_option) {
+      name = (r.underlying_symbol ?? "").trim();
+      // Historical option rows often carry no underlying_symbol: the ticker
+      // lives only in the contract symbol. Parse it back out; a symbol that
+      // is neither option spelling parses to null and contributes nothing.
+      if (name === "") name = parseOptionSymbol((r.symbol ?? "").trim().toUpperCase())?.underlying ?? "";
+    }
+    const symbol = name.trim().toUpperCase();
     if (symbol !== "") held.add(symbol);
   }
   return held;

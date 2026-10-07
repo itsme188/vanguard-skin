@@ -64,7 +64,10 @@ describe("held-symbol-relevance", () => {
           (24,'YYY   260910C00050000','Option','YYY','2026-09-10'),
           (25,'QQQQ  261218C00050000','Option','QQQQ','2026-12-18'),
           (26,'GOOG  261218C00050000','Option','GOOG','2026-12-18'),
-          (27,'NNN   261218C00050000','Option',NULL,'2026-12-18');
+          (27,'NNN   261218C00050000','Option',NULL,'2026-12-18'),
+          (28,'MMM 261218 P 50.00','Option','','2026-12-18'),
+          (29,'LLL-NOT-A-CONTRACT','Option',NULL,'2026-12-18'),
+          (30,'KKK   260905C00050000','Option',NULL,'2026-09-05');
         INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES
           (1,10,-25,'2026-09-01'),
           (1,11,-25,'2026-08-01'),(1,11,0,'2026-09-01'),
@@ -75,7 +78,10 @@ describe("held-symbol-relevance", () => {
           (2,24,1,'2026-09-01'),
           (2,25,1,'2026-08-01'),(2,25,0,'2026-09-01'),
           (2,26,1,'2026-09-01'),
-          (2,27,1,'2026-09-01');
+          (2,27,1,'2026-09-01'),
+          (2,28,-1,'2026-09-01'),
+          (2,29,1,'2026-09-01'),
+          (2,30,1,'2026-09-01');
       `);
     }
 
@@ -129,12 +135,34 @@ describe("held-symbol-relevance", () => {
       expect(mentionsHeldSymbol(["GOOGL"], getHeldSymbolSet(db, TODAY))).toBe(true);
     });
 
-    it("an option row with no stored underlying adds nothing and does not throw", () => {
+    // Changed 2026-10-07 (review fix): option rows whose underlying_symbol is
+    // NULL exist (the ticker lives only in the contract symbol), so the
+    // underlying is parsed back out of the symbol instead of being dropped.
+    it("an option row with no stored underlying contributes the underlying parsed from its symbol", () => {
       const db = makeDb();
       seed(db);
       const held = getHeldSymbolSet(db, TODAY);
       expect(held.has("")).toBe(false);
-      expect(mentionsHeldSymbol(["NNN"], held)).toBe(false);
+      expect(mentionsHeldSymbol(["NNN"], held)).toBe(true); // OCC spelling, NULL underlying
+      expect(mentionsHeldSymbol(["MMM"], held)).toBe(true); // compact spelling, blank underlying
+      expect(held.has("NNN   261218C00050000")).toBe(false); // the contract symbol is not a name
+    });
+
+    it("a malformed option symbol with no stored underlying adds nothing and does not throw", () => {
+      const db = makeDb();
+      seed(db);
+      let held = new Set<string>();
+      expect(() => {
+        held = getHeldSymbolSet(db, TODAY);
+      }).not.toThrow();
+      expect(mentionsHeldSymbol(["LLL"], held)).toBe(false);
+      expect(held.has("LLL-NOT-A-CONTRACT")).toBe(false);
+    });
+
+    it("an expired option with no stored underlying still does not protect its underlying", () => {
+      const db = makeDb();
+      seed(db);
+      expect(mentionsHeldSymbol(["KKK"], getHeldSymbolSet(db, TODAY))).toBe(false);
     });
   });
 });

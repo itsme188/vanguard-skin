@@ -150,7 +150,7 @@ export interface AccountTaxSummary extends EngineEstimatedDisclosure {
 }
 
 /** Realized G/L is stored native per security; only USD rows may sum into USD totals. */
-const USD_ONLY = `COALESCE(s.currency, 'USD') = 'USD'`;
+export const USD_ONLY = `COALESCE(s.currency, 'USD') = 'USD'`;
 export const CURRENCY_CONVERSION_SECURITY_SQL = `LOWER(TRIM(COALESCE(s.security_type, ''))) = 'forex'`;
 
 export function isCurrencyConversionSecurityType(securityType: string | null | undefined): boolean {

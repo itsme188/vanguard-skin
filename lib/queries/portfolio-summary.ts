@@ -5,7 +5,8 @@ import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
-import { CURRENCY_CONVERSION_SECURITY_SQL } from "@/lib/queries/tax-lots";
+import { CURRENCY_CONVERSION_SECURITY_SQL, USD_ONLY } from "@/lib/queries/tax-lots";
+import { longTermDateSql } from "@/lib/queries/long-term-sql";
 import {
   isPendingStatementLot,
   pendingStatementKey,
@@ -344,14 +345,25 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   const realizedGains = db
     .prepare(
       `SELECT
-        COALESCE(SUM(realized_gain_loss), 0) AS total,
-        COALESCE(SUM(CASE WHEN is_long_term = 1 THEN realized_gain_loss ELSE 0 END), 0) AS long_term,
-        COALESCE(SUM(CASE WHEN is_long_term = 0 THEN realized_gain_loss ELSE 0 END), 0) AS short_term
+        COALESCE(SUM(CASE WHEN ${USD_ONLY} THEN realized_gain_loss ELSE 0 END), 0) AS total,
+        COALESCE(SUM(CASE WHEN ${USD_ONLY} AND is_long_term = 1 THEN realized_gain_loss ELSE 0 END), 0) AS long_term,
+        COALESCE(SUM(CASE WHEN ${USD_ONLY} AND is_long_term = 0 THEN realized_gain_loss ELSE 0 END), 0) AS short_term,
+        COALESCE(SUM(CASE WHEN NOT (${USD_ONLY}) THEN 1 ELSE 0 END), 0) AS excludedNonUsdSales
        FROM tax_lot_sales ${realizedGainsJoin}`
     )
-    .get(...realizedGainsParams) as { total: number; long_term: number; short_term: number };
+    .get(...realizedGainsParams) as {
+    total: number;
+    long_term: number;
+    short_term: number;
+    excludedNonUsdSales: number;
+  };
 
-  if (taxSummary.open_lots > 0 || realizedGains.total !== 0 || pendingSummary.lots > 0) {
+  if (
+    taxSummary.open_lots > 0 ||
+    realizedGains.total !== 0 ||
+    realizedGains.excludedNonUsdSales > 0 ||
+    pendingSummary.lots > 0
+  ) {
     lines.push("\n### Tax Summary");
     lines.push(`- Open lots: ${taxSummary.open_lots} (cost basis: ${formatUSD(taxSummary.total_cost_basis)})`);
     if (pendingSummary.lots > 0) {
@@ -359,7 +371,13 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         `- Positions closed per live data, awaiting broker statement: ${pendingSummary.positions.size} (${pendingSummary.lots} lot${pendingSummary.lots === 1 ? "" : "s"}, cost basis: ${formatUSD(pendingSummary.cost_basis)}) — not counted as open holdings or unrealized; realized gain unknown until the statement is imported`
       );
     }
-    lines.push(`- Realized gains: ${formatUSD(realizedGains.total)} (LT: ${formatUSD(realizedGains.long_term)}, ST: ${formatUSD(realizedGains.short_term)})`);
+    // Realized G/L is stored native per security, so only USD rows sum into
+    // the dollar figures — same predicate and disclosure as the Tax Lots tiles.
+    const nonUsdNote =
+      realizedGains.excludedNonUsdSales > 0
+        ? ` — USD totals exclude ${realizedGains.excludedNonUsdSales} non-USD sale${realizedGains.excludedNonUsdSales !== 1 ? "s" : ""} (native-currency figures)`
+        : "";
+    lines.push(`- Realized gains: ${formatUSD(realizedGains.total)} (LT: ${formatUSD(realizedGains.long_term)}, ST: ${formatUSD(realizedGains.short_term)})${nonUsdNote}`);
     if (conventionPending) {
       lines.push(CONVENTION_PENDING_NOTE);
     }
@@ -411,7 +429,10 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     }
   }
 
-  // Lots approaching long-term threshold (within 60 days)
+  // Lots approaching long-term threshold (within 60 days). The long-term
+  // date is the engine's calendar-anniversary rule (shared SQL, pinned to
+  // isLongTermHolding), never a fixed day count.
+  const LONG_TERM_DATE = longTermDateSql("tl.acquisition_date");
   const approachingLT = (db
     .prepare(
       `WITH latest_prices AS (
@@ -425,8 +446,8 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         s.symbol,
         a.name AS account_name,
         tl.acquisition_date,
-        date(tl.acquisition_date, '+366 days') AS long_term_date,
-        CAST(julianday(date(tl.acquisition_date, '+366 days')) - julianday(?) AS INTEGER) AS days_remaining,
+        ${LONG_TERM_DATE} AS long_term_date,
+        CAST(julianday(${LONG_TERM_DATE}) - julianday(?) AS INTEGER) AS days_remaining,
         CASE WHEN lp.close_price IS NOT NULL
           THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
                - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
@@ -439,8 +460,8 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       WHERE tl.quantity_remaining > 0
         AND NOT (${CURRENCY_CONVERSION_SECURITY_SQL})
         AND ${liveOptionExpirationSql("s", today)}
-        AND julianday(date(tl.acquisition_date, '+366 days')) > julianday(?)
-        AND julianday(date(tl.acquisition_date, '+366 days')) - julianday(?) <= 60
+        AND julianday(${LONG_TERM_DATE}) > julianday(?)
+        AND julianday(${LONG_TERM_DATE}) - julianday(?) <= 60
         ${taxLotsFilter}
       ORDER BY days_remaining ASC`
     )

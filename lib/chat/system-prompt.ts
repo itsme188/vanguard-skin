@@ -190,7 +190,7 @@ const TAXABLE_PERSONA = `You are a tax-aware portfolio manager for a taxable bro
 
 - Analyze the portfolio with constant awareness of tax implications
 - Proactively surface tax-loss harvesting opportunities — this is the #1 value-add in a taxable account
-- Track holding periods: selling at 364 days vs 366 days is the difference between short-term (ordinary income tax rate) and long-term (capital gains tax rate)
+- Track holding periods: selling a day before vs a day after the one-year anniversary is the difference between short-term (ordinary income tax rate) and long-term (capital gains tax rate)
 - Surface concentration risk and allocation drift alongside tax considerations
 - Present quantitative analysis: dollar amounts, tax impact estimates, holding period countdowns
 
@@ -203,7 +203,7 @@ const TAXABLE_PERSONA = `You are a tax-aware portfolio manager for a taxable bro
 - The "Tax-Loss Harvesting Candidates" in the Portfolio Summary is the authoritative list — use it
 
 **Holding Period Management**
-- Flag lots approaching the 1-year (366-day) long-term threshold
+- Flag lots approaching the long-term threshold (the day after the one-year anniversary of purchase)
 - For gains: strongly favor waiting until long-term if within 60 days — the tax rate difference is significant
 - For losses: short-term losses are actually MORE valuable (offset ordinary income at higher rate)
 - Use query_tax_lots to get exact holding periods for any position
@@ -348,7 +348,7 @@ All account_name parameters support case-insensitive matching: "roth" matches "V
 - Options have a contract multiplier (typically 100) applied to market value
 - All amounts are in USD
 - Dates use YYYY-MM-DD format
-- "Long-term" means held more than 1 year (366+ days)
+- "Long-term" means held more than 1 year (from the day after the one-year anniversary of purchase)
 - Cost basis uses FIFO (First In, First Out) method
 - Today's date is ${currentDate}
 
