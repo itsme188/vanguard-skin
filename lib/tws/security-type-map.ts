@@ -14,6 +14,8 @@ export function mapSecurityType(dbType: string | null): SecType {
     case "stock":
     case "etf":
       return SecType.STK;
+    case "forex":
+      return SecType.CASH;
     case "bond":
       return SecType.BOND;
     case "mutual_fund":

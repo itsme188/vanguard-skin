@@ -1,0 +1,36 @@
+import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { anchorIndex, sliceBetween } from "@/tests/helpers/source-anchor";
+
+const pageSrc = () =>
+  readFileSync(path.join(process.cwd(), "app/dashboard/tax-lots/page.tsx"), "utf8");
+const tableSrc = () =>
+  readFileSync(path.join(process.cwd(), "app/dashboard/components/TaxLotTables.tsx"), "utf8");
+
+describe("Tax Lots page source pins — currency conversions and expired options", () => {
+  it("renders a dedicated Section 988 currency-conversion block before capital open lots", () => {
+    const src = pageSrc();
+    const block = sliceBetween(src, "Currency conversions (Section 988, ordinary income)", "<OpenLotsTable");
+    expect(block).toContain("currencyConversion");
+    expect(block).toContain("TaxLotCurrencyConversionTable");
+  });
+
+  it("renders the expired-option awaiting-closing-entry line with private count text", () => {
+    const src = pageSrc();
+    const line = sliceBetween(src, "<Count value={expiredOptionLotsAwaitingClose.length}", "<TaxReportCard");
+    expect(line).toContain("<Count");
+    expect(line).toContain("expiredOptionLotsAwaitingClose");
+    expect(line).toContain("expired contracts awaiting a closing entry");
+    expect(src).toContain("getExpiredOptionLotsAwaitingClose");
+  });
+
+  it("keeps portfolio-derived quantities in the new tax-lot table behind privacy components", () => {
+    const src = tableSrc();
+    const start = anchorIndex(src, "export function TaxLotCurrencyConversionTable");
+    const block = src.slice(start, anchorIndex(src, "export function ClosedSalesTable", start));
+    expect(block).toContain("<Shares");
+    expect(block).toContain("<Money");
+    expect(block).toContain("<PrivateText");
+  });
+});

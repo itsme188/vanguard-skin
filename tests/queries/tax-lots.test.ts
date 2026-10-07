@@ -7,6 +7,7 @@ import {
   getOpenTaxLots,
   getClosedTaxLotSales,
   getTaxLotSummary,
+  getExpiredOptionLotsAwaitingClose,
 } from "@/lib/queries/tax-lots";
 
 function seedSecurity(
@@ -96,7 +97,7 @@ describe("tax-lots queries", () => {
       seedPrice(db, sec, "2025-02-28", 220);
       computeTaxLots(db);
 
-      const lots = getOpenTaxLots(db);
+      const lots = getOpenTaxLots(db, undefined, { today: "2025-02-28" });
       expect(lots).toHaveLength(1);
       expect(lots[0].symbol).toBe("VTI");
       expect(lots[0].quantity_remaining).toBe(100);
@@ -110,7 +111,7 @@ describe("tax-lots queries", () => {
       seedBuy(db, ACCOUNT_ID, sec, "2025-01-15", 50, 100);
       computeTaxLots(db);
 
-      const lots = getOpenTaxLots(db);
+      const lots = getOpenTaxLots(db, undefined, { today: "2025-02-28" });
       expect(lots).toHaveLength(1);
       expect(lots[0].current_price).toBeNull();
       expect(lots[0].current_value).toBeNull();
@@ -123,7 +124,7 @@ describe("tax-lots queries", () => {
       seedPrice(db, bond, "2025-02-28", 99);
       computeTaxLots(db);
 
-      const lots = getOpenTaxLots(db);
+      const lots = getOpenTaxLots(db, undefined, { today: "2025-02-28" });
       expect(lots).toHaveLength(1);
       // Bond current_value: 10000 * 99 / 100 = $9,900
       expect(lots[0].current_value).toBe(9900);
@@ -138,19 +139,52 @@ describe("tax-lots queries", () => {
         `INSERT INTO securities (symbol, name, security_type, multiplier, underlying_symbol, strike_price, expiration_date, option_type)
          VALUES (?, ?, 'option', 100, 'AAPL', 150, '2025-03-21', 'CALL')`
       ).run("AAPL  250321C00150000", "AAPL 150 Call");
-      const secId = (db.prepare("SELECT id FROM securities WHERE symbol = ?").get("AAPL  250321C00150000") as any).id;
+      const secId = (
+        db.prepare("SELECT id FROM securities WHERE symbol = ?").get("AAPL  250321C00150000") as { id: number }
+      ).id;
 
       seedBuy(db, ACCOUNT_ID, secId, "2025-01-15", 5, 3.5);
       seedPrice(db, secId, "2025-02-28", 5.0);
       computeTaxLots(db);
 
-      const lots = getOpenTaxLots(db);
+      const lots = getOpenTaxLots(db, undefined, { today: "2025-02-28" });
       expect(lots).toHaveLength(1);
       // current_value: 5 * 5.0 * 100 = $2,500
       expect(lots[0].current_value).toBe(2500);
       // cost: 5 * 3.5 * 100 = $1,750
       // unrealized: 2500 - 1750 = $750
       expect(lots[0].unrealized_gain).toBe(750);
+    });
+
+    it("classifies expired options, including legacy YYYYMMDD expirations, outside live open lots", () => {
+      db.prepare(
+        `INSERT INTO securities (symbol, name, security_type, multiplier, underlying_symbol, strike_price, expiration_date, option_type)
+         VALUES
+           ('ZZOPTA 260821C00050000', 'ZZOPTA Call', 'Option', 100, 'ZZOPTA', 50, '2026-08-21', 'CALL'),
+           ('ZZOPTB 260820P00040000', 'ZZOPTB Put', 'Option', 100, 'ZZOPTB', 40, '20260820', 'PUT'),
+           ('ZZOPTC 260822C00030000', 'ZZOPTC Call', 'Option', 100, 'ZZOPTC', 30, '2026-08-22', 'CALL')`
+      ).run();
+      const expiredDashed = (db.prepare("SELECT id FROM securities WHERE symbol = 'ZZOPTA 260821C00050000'").get() as { id: number }).id;
+      const expiredLegacy = (db.prepare("SELECT id FROM securities WHERE symbol = 'ZZOPTB 260820P00040000'").get() as { id: number }).id;
+      const live = (db.prepare("SELECT id FROM securities WHERE symbol = 'ZZOPTC 260822C00030000'").get() as { id: number }).id;
+
+      seedBuy(db, ACCOUNT_ID, expiredDashed, "2026-08-01", 1, 2);
+      seedBuy(db, ACCOUNT_ID, expiredLegacy, "2026-08-01", 1, 3);
+      seedBuy(db, ACCOUNT_ID, live, "2026-08-01", 1, 4);
+      seedPrice(db, expiredDashed, "2026-08-21", 9);
+      seedPrice(db, expiredLegacy, "2026-08-21", 8);
+      seedPrice(db, live, "2026-08-21", 7);
+      computeTaxLots(db);
+
+      const lots = getOpenTaxLots(db, undefined, { today: "2026-08-22" });
+      expect(lots.map((l) => l.symbol)).toEqual(["ZZOPTC 260822C00030000"]);
+
+      const awaiting = getExpiredOptionLotsAwaitingClose(db, { today: "2026-08-22" });
+      expect(awaiting.map((l) => l.symbol).sort()).toEqual([
+        "ZZOPTA 260821C00050000",
+        "ZZOPTB 260820P00040000",
+      ]);
+      expect(awaiting.every((l) => l.expired_option)).toBe(true);
     });
   });
 
@@ -284,6 +318,27 @@ describe("tax-lots queries", () => {
       expect(summary.totalClosedSales).toBe(0);
       expect(summary.totalUnrealizedGain).toBe(0);
       expect(summary.totalRealizedGain).toBe(0);
+    });
+
+    it("drops expired options from open-lot and unrealized counts while disclosing awaiting-close contracts", () => {
+      db.prepare(
+        `INSERT INTO securities (symbol, name, security_type, multiplier, underlying_symbol, strike_price, expiration_date, option_type)
+         VALUES
+           ('ZZOLD 260821C00050000', 'ZZOLD Call', 'Option', 100, 'ZZOLD', 50, '2026-08-21', 'CALL'),
+           ('ZZLIVE 260822C00050000', 'ZZLIVE Call', 'Option', 100, 'ZZLIVE', 50, '2026-08-22', 'CALL')`
+      ).run();
+      const expired = (db.prepare("SELECT id FROM securities WHERE symbol = 'ZZOLD 260821C00050000'").get() as { id: number }).id;
+      const live = (db.prepare("SELECT id FROM securities WHERE symbol = 'ZZLIVE 260822C00050000'").get() as { id: number }).id;
+      seedBuy(db, ACCOUNT_ID, expired, "2026-08-01", 1, 2);
+      seedBuy(db, ACCOUNT_ID, live, "2026-08-01", 1, 4);
+      seedPrice(db, expired, "2026-08-21", 9);
+      seedPrice(db, live, "2026-08-21", 7);
+      computeTaxLots(db);
+
+      const summary = getTaxLotSummary(db, undefined, { today: "2026-08-22" });
+      expect(summary.totalOpenLots).toBe(1);
+      expect(summary.totalUnrealizedGain).toBe(300);
+      expect(summary.expiredOptionLotsAwaitingClose).toBe(1);
     });
   });
 });

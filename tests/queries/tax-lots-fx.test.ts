@@ -7,7 +7,9 @@ import {
   getTaxLotSummary,
   getTaxLotSummaryByAccount,
   getClosedTaxLotSales,
+  isCurrencyConversionTaxLot,
 } from "@/lib/queries/tax-lots";
+import { generateForm8949CSV, generateTaxReport, generateTXF } from "@/lib/compute/tax-report";
 
 // ─── Seed helpers (mirrors tests/queries/security-detail-fx.test.ts) ──────
 
@@ -81,6 +83,21 @@ describe("tax-lots FX conversion", () => {
   });
 
   describe("getOpenTaxLots", () => {
+    it("keeps Forex lots query-visible but classifies them as Section 988 currency conversions", () => {
+      const stock = seedSecurity(db, "ZZSTOCK", { security_type: "Stock" });
+      seedTaxLot(db, ACCOUNT_ID, stock, "2026-01-02", 10, 10, 100);
+      seedPrice(db, stock, 12, TODAY);
+
+      const fx = seedSecurity(db, "ZZE.USD", { security_type: "fOrEx" });
+      seedTaxLot(db, ACCOUNT_ID, fx, "2026-01-02", 1, 25, 25);
+
+      const lots = getOpenTaxLots(db);
+      expect(lots.map((l) => l.symbol).sort()).toEqual(["ZZE.USD", "ZZSTOCK"]);
+      expect(lots.find((l) => l.symbol === "ZZE.USD")?.currency_conversion).toBe(true);
+      expect(lots.find((l) => l.symbol === "ZZSTOCK")?.currency_conversion).toBe(false);
+      expect(lots.filter(isCurrencyConversionTaxLot).map((l) => l.symbol)).toEqual(["ZZE.USD"]);
+    });
+
     it("converts a KRW lot's market value + adjusted cost basis + unrealized gain to USD, not the won phantom", () => {
       const krw = seedSecurity(db, "402340", { currency: "KRW" });
       seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 1_632_979.2, 10, 16_329_792);
@@ -156,6 +173,21 @@ describe("tax-lots FX conversion", () => {
   });
 
   describe("getTaxLotSummary", () => {
+    it("excludes Forex conversion lots from the open-lot count and unrealized tile", () => {
+      const stock = seedSecurity(db, "ZZSTOCK", { security_type: "Stock" });
+      seedTaxLot(db, ACCOUNT_ID, stock, "2026-01-02", 10, 10, 100);
+      seedPrice(db, stock, 12, TODAY);
+
+      const fx = seedSecurity(db, "ZZE.USD", { security_type: "Forex" });
+      seedTaxLot(db, ACCOUNT_ID, fx, "2026-01-02", 1, 25, 25);
+      seedPrice(db, fx, 2, TODAY);
+
+      const summary = getTaxLotSummary(db);
+      expect(summary.totalOpenLots).toBe(1);
+      expect(summary.totalUnrealizedGain).toBe(20);
+      expect(summary.currencyConversionOpenLots).toBe(1);
+    });
+
     it("aggregates a KRW lot's unrealized gain in USD, not the won phantom", () => {
       const aapl = seedSecurity(db, "AAPL", { currency: "USD" });
       seedTaxLot(db, ACCOUNT_ID, aapl, "2025-01-01", 200, 100, 20_000);
@@ -286,6 +318,26 @@ describe("tax-lots FX conversion", () => {
       expect(usdSale?.currency).toBe("USD");
       // row values stay native (never fabricate an FX vintage on tax rows)
       expect(krwSale?.realized_gain_loss).toBe(-3_980_000);
+    });
+
+    it("filingOnly excludes Forex conversion sales while the operational reader keeps them classified", () => {
+      const fx = seedSecurity(db, "ZZE.USD", { security_type: "Forex" });
+      seedSale(db, ACCOUNT_ID, fx, "2026-07-12", {
+        proceeds: 120,
+        costBasis: 100,
+        realized: 20,
+      });
+
+      const operational = getClosedTaxLotSales(db, YEAR);
+      expect(operational.find((s) => s.symbol === "ZZE.USD")?.currency_conversion).toBe(true);
+
+      const filing = getClosedTaxLotSales(db, YEAR, { filingOnly: true });
+      expect(filing.some((s) => s.symbol === "ZZE.USD")).toBe(false);
+
+      const report = generateTaxReport(db, YEAR);
+      expect(report.shortTermRows.some((r) => r.symbol === "ZZE.USD")).toBe(false);
+      expect(generateForm8949CSV(report)).not.toContain("ZZE.USD");
+      expect(generateTXF(report)).not.toContain("ZZE.USD");
     });
   });
 });

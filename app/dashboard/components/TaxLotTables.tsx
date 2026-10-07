@@ -214,6 +214,83 @@ export function OpenLotsTable({
   );
 }
 
+export function TaxLotCurrencyConversionTable({
+  lots,
+  sales,
+  showAccount = true,
+}: {
+  lots: TaxLotWithSecurity[];
+  sales: TaxLotSaleWithDetails[];
+  showAccount?: boolean;
+}) {
+  if (lots.length === 0 && sales.length === 0) {
+    return null;
+  }
+
+  return (
+    <div>
+      <h4 className="text-xs font-medium text-ink-faint mb-2">
+        Currency conversions (Section 988, ordinary income)
+        <span className="ml-1.5 text-ink-faint/60">({lots.length + sales.length})</span>
+      </h4>
+      <div className="rounded-xl border border-edge overflow-hidden">
+        <ScrollFade>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-edge bg-panel">
+                {showAccount && <th className="px-4 py-2 text-left font-medium text-ink-dim">Account</th>}
+                <th className="px-4 py-2 text-left font-medium text-ink-dim">Pair</th>
+                <th className="px-4 py-2 text-left font-medium text-ink-dim hidden md:table-cell">Date</th>
+                <th className="px-4 py-2 text-right font-medium text-ink-dim">Qty</th>
+                <th className="px-4 py-2 text-right font-medium text-ink-dim">Basis</th>
+                <th className="px-4 py-2 text-right font-medium text-ink-dim">Ordinary</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lots.map((lot) => (
+                <tr key={`lot-${lot.id}`} className="border-b border-edge last:border-0">
+                  {showAccount && <td className="px-4 py-3 text-ink-dim text-xs">{lot.account_name}</td>}
+                  <td className="px-4 py-3 font-mono font-medium text-ink">
+                    <SymbolLink securityId={lot.security_id} symbol={lot.symbol} />
+                  </td>
+                  <td className="hidden md:table-cell px-4 py-3 text-ink-faint font-mono text-xs">{lot.acquisition_date}</td>
+                  <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
+                    <Shares value={lot.quantity_remaining} digits={4} />
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
+                    <Money value={lot.adjusted_cost_basis} precise />
+                  </td>
+                  <td className="px-4 py-3 text-right text-ink-faint">
+                    <PrivateText>Awaiting ordinary-income review</PrivateText>
+                  </td>
+                </tr>
+              ))}
+              {sales.map((sale) => (
+                <tr key={`sale-${sale.id}`} className="border-b border-edge last:border-0">
+                  {showAccount && <td className="px-4 py-3 text-ink-dim text-xs">{sale.account_name}</td>}
+                  <td className="px-4 py-3 font-mono font-medium text-ink">
+                    <SymbolLink securityId={sale.security_id} symbol={sale.symbol} />
+                  </td>
+                  <td className="hidden md:table-cell px-4 py-3 text-ink-faint font-mono text-xs">{sale.sale_date}</td>
+                  <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
+                    <Shares value={sale.quantity_sold} digits={4} />
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
+                    <Money value={sale.cost_basis_allocated} precise />
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <GainCell value={sale.realized_gain_loss} currency={sale.currency} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </ScrollFade>
+      </div>
+    </div>
+  );
+}
+
 export function ClosedSalesTable({
   sales,
   showAccount = true,

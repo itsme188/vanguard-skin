@@ -289,6 +289,34 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
     );
   });
 
+  it("expired option holdings leave held-security freshness, recency and valuation universes; live and legacy-edge options stay", () => {
+    const expired = insertSecurity(db, "ZZOLD 260821C00050000", { securityType: "Option" });
+    db.prepare(`UPDATE securities SET expiration_date = '2026-08-21' WHERE id = ?`).run(expired);
+    const expiredLegacy = insertSecurity(db, "ZZLEG 260820P00040000", { securityType: "Option" });
+    db.prepare(`UPDATE securities SET expiration_date = '20260820' WHERE id = ?`).run(expiredLegacy);
+    const live = insertSecurity(db, "ZZLIVE 260822C00050000", { securityType: "Option", ibConId: 123 });
+    db.prepare(`UPDATE securities SET expiration_date = '2026-08-22' WHERE id = ?`).run(live);
+
+    insertHolding(db, 1, expired, 1, "2026-08-21", "tws-1-zzold-2026-08-21");
+    insertHolding(db, 1, expiredLegacy, 1, "2026-08-20", "tws-1-zzleg-2026-08-20");
+    insertHolding(db, 1, live, 1, "2026-08-22", "tws-1-zzlive-2026-08-22");
+    insertPrice(db, live, "2026-08-22", 5);
+    insertDailyValuation(db, 1, "2026-08-22", 1, 1);
+
+    const { priceFreshness, holdingsRecency, valuationCoverage } = getDataConfidence(
+      db,
+      new Date("2026-08-22T16:00:00Z"),
+    );
+
+    expect(priceFreshness.totalHeld).toBe(1);
+    expect(priceFreshness.stalestSymbol).toBe("ZZLIVE 260822C00050000");
+    const taxable = holdingsRecency.perAccount.find((a) => a.name === "Vanguard Taxable");
+    expect(taxable?.stalestSymbol).toBe("ZZLIVE 260822C00050000");
+    expect(taxable?.latestDate).toBe("2026-08-22");
+    expect(valuationCoverage.totalCount).toBe(1);
+    expect(valuationCoverage.pricedCount).toBe(1);
+  });
+
   it("evening ET boundary: at 2026-08-23T23:30-04:00 the staleness baseline is 2026-08-23, not -24", () => {
     const aapl = insertSecurity(db, "AAPL");
     insertHolding(db, 1, aapl, 10, "2026-08-23", "canonical:hold:TAX:AAPL:2026-08-23");

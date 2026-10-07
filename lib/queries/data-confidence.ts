@@ -9,6 +9,7 @@ import type Database from "better-sqlite3";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
 import { todayET } from "@/lib/calendar/date-utils";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { classifyHoldingSourceKey } from "@/lib/db/holding-sources";
 import { runIntegrityChecks, sortWorstFirst } from "@/lib/queries/integrity-checks";
@@ -199,11 +200,13 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
         THEN h.security_id
       END) AS pricedRecent
     FROM holdings h
+    JOIN securities s ON s.id = h.security_id
     LEFT JOIN (
       SELECT security_id, MAX(date) AS latest_date
       FROM prices GROUP BY security_id
     ) p ON p.security_id = h.security_id
     WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
+      AND ${liveOptionExpirationSql("s", today)}
   `).get(today, today) as { totalHeld: number; pricedToday: number; pricedRecent: number };
 
   // Find stalest currently-held security. A LEFT JOIN onto a pre-aggregated
@@ -222,7 +225,9 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
     JOIN (
       SELECT h.security_id, MAX(h.as_of_date) AS latest_as_of
       FROM holdings h
+      JOIN securities s2 ON s2.id = h.security_id
       WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
+        AND ${liveOptionExpirationSql("s2", today)}
       GROUP BY h.security_id
     ) agg ON agg.security_id = s.id
     LEFT JOIN (
@@ -316,6 +321,7 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
     FROM holdings h
     JOIN securities s ON s.id = h.security_id
     WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
+      AND ${liveOptionExpirationSql("s", today)}
     ORDER BY h.account_id, h.as_of_date ASC
   `).all() as { account_id: number; as_of_date: string; source_key: string | null; symbol: string }[];
 
@@ -341,7 +347,9 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   const latestRows = db.prepare(`
     SELECT h.account_id, MAX(h.as_of_date) AS latest_date
     FROM holdings h
+    JOIN securities s ON s.id = h.security_id
     WHERE ${latestHoldingsPredicate({ keyBy: "account", includeShorts: true })}
+      AND ${liveOptionExpirationSql("s", today)}
     GROUP BY h.account_id
   `).all() as { account_id: number; latest_date: string }[];
   const latestByAccount = new Map(latestRows.map(r => [r.account_id, r.latest_date]));
@@ -650,7 +658,8 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
   };
 }
 
-function scoreEnrichment(db: Database.Database): EnrichmentScore {
+function scoreEnrichment(db: Database.Database, now: Date = new Date()): EnrichmentScore {
+  const today = todayET(now);
   const rows = db.prepare(`
     SELECT
       s.id, s.symbol, s.ib_con_id,
@@ -659,6 +668,7 @@ function scoreEnrichment(db: Database.Database): EnrichmentScore {
     FROM securities s
     JOIN holdings h ON h.security_id = s.id
     WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
+      AND ${liveOptionExpirationSql("s", today)}
     GROUP BY s.id
   `).all() as { id: number; symbol: string; ib_con_id: number | null; sec_type: string; fund_category: string | null }[];
 
@@ -711,7 +721,8 @@ function scoreEnrichment(db: Database.Database): EnrichmentScore {
   return { score, detail, whyMatters, guidance, guidanceActionable, enriched: count, total, missing };
 }
 
-function scoreValuationCoverage(db: Database.Database): ValuationCoverageScore {
+function scoreValuationCoverage(db: Database.Database, now: Date = new Date()): ValuationCoverageScore {
+  const today = todayET(now);
   // Per-account latest daily_valuations row, summed across every account
   // that currently holds something (latestHoldingsPredicate) — NOT a single
   // global "latest valuation_date across all accounts" row, which silently
@@ -723,7 +734,9 @@ function scoreValuationCoverage(db: Database.Database): ValuationCoverageScore {
     WITH current_holdings AS (
       SELECT h.account_id, COUNT(DISTINCT h.security_id) AS held_count
       FROM holdings h
+      JOIN securities s ON s.id = h.security_id
       WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
+        AND ${liveOptionExpirationSql("s", today)}
       GROUP BY h.account_id
     )
     SELECT a.name AS account_name,
@@ -909,8 +922,8 @@ export function getDataConfidence(db: Database.Database, now: Date = new Date())
   const priceFreshness = scorePriceFreshness(db, now);
   const holdingsRecency = scoreHoldingsRecency(db, now);
   const cashAccuracy = scoreCashAccuracy(db, now);
-  const enrichmentCompleteness = scoreEnrichment(db);
-  const valuationCoverage = scoreValuationCoverage(db);
+  const enrichmentCompleteness = scoreEnrichment(db, now);
+  const valuationCoverage = scoreValuationCoverage(db, now);
 
   let overallScore = Math.round(
     priceFreshness.score * WEIGHTS.priceFreshness +

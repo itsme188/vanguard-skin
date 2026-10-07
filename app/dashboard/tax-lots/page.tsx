@@ -10,6 +10,8 @@ import {
   getTaxLotSummaryByAccount,
   getAvailableSaleYears,
   getTaxLotAccountNames,
+  getExpiredOptionLotsAwaitingClose,
+  isCurrencyConversionTaxLot,
 } from "@/lib/queries/tax-lots";
 import { getSecurityById } from "@/lib/queries/securities";
 import {
@@ -21,19 +23,20 @@ import {
   AccountSummaryCards,
   TaxLotStalenessNotice,
 } from "../components/TaxLotSummary";
-import { OpenLotsTable, ClosedSalesTable } from "../components/TaxLotTables";
+import { ClosedSalesTable, OpenLotsTable, TaxLotCurrencyConversionTable } from "../components/TaxLotTables";
 import { RecomputeButton } from "../components/RecomputeButton";
 import { YearSelector, AccountSelector } from "../components/YearSelector";
 import { EmptyState } from "../components/EmptyState";
 import { TaxReportCard } from "../components/TaxReportCard";
 import { resolveSelectedYear } from "./select-year";
+import { Count } from "@/lib/privacy/components";
 
 export default async function TaxLotsPage(props: {
   searchParams: Promise<{ year?: string; account?: string; security?: string }>;
 }) {
   const searchParams = await props.searchParams;
 
-  let availableYears, accountNames, summary, accountSummaries, allOpenLots, allClosedSales;
+  let availableYears, accountNames, summary, accountSummaries, allOpenLots, allClosedSales, allExpiredOptionLotsAwaitingClose;
   try {
     availableYears = getAvailableSaleYears(db);
     accountNames = getTaxLotAccountNames(db);
@@ -67,6 +70,7 @@ export default async function TaxLotsPage(props: {
     summary = getTaxLotSummary(db, selectedYear);
     accountSummaries = getTaxLotSummaryByAccount(db, selectedYear);
     allOpenLots = getOpenTaxLots(db);
+    allExpiredOptionLotsAwaitingClose = getExpiredOptionLotsAwaitingClose(db);
     allClosedSales = getClosedTaxLotSales(db, selectedYear);
   } catch {
     throw new Error("Failed to load tax lot data. The database may be unavailable.");
@@ -76,15 +80,22 @@ export default async function TaxLotsPage(props: {
   // already-loaded rows (no query change needed — TaxLotWithSecurity /
   // TaxLotSaleWithDetails already carry security_id).
   let openLots = allOpenLots;
+  let expiredOptionLotsAwaitingClose = allExpiredOptionLotsAwaitingClose;
   let closedSales = allClosedSales;
   if (selectedAccount) {
     openLots = openLots.filter((l) => l.account_name === selectedAccount);
+    expiredOptionLotsAwaitingClose = expiredOptionLotsAwaitingClose.filter((l) => l.account_name === selectedAccount);
     closedSales = closedSales.filter((s) => s.account_name === selectedAccount);
   }
   if (filterSecurityId != null) {
     openLots = openLots.filter((l) => l.security_id === filterSecurityId);
+    expiredOptionLotsAwaitingClose = expiredOptionLotsAwaitingClose.filter((l) => l.security_id === filterSecurityId);
     closedSales = closedSales.filter((s) => s.security_id === filterSecurityId);
   }
+  const currencyConversionOpenLots = openLots.filter(isCurrencyConversionTaxLot);
+  const currencyConversionClosedSales = closedSales.filter(isCurrencyConversionTaxLot);
+  const capitalOpenLots = openLots.filter((l) => !isCurrencyConversionTaxLot(l));
+  const capitalClosedSales = closedSales.filter((s) => !isCurrencyConversionTaxLot(s));
 
   const isNarrowed = Boolean(selectedAccount) || filterSecurityId != null;
 
@@ -104,14 +115,14 @@ export default async function TaxLotsPage(props: {
   // Engine-synthesized RECONCILE_CLOSE rows inside the narrowed view, for the
   // tiles' "(incl. M engine-estimated closes, +$Y)" disclosure when the
   // account-wide activeSummary can't be used.
-  const engineEstimatedRows = closedSales.filter((s) => s.is_synthetic_close);
+  const engineEstimatedRows = capitalClosedSales.filter((s) => s.is_synthetic_close);
 
   // Pending-statement lots inside the narrowed view: positions closed per
   // live data, awaiting the broker statement. The flag comes from the shared
   // read model (lib/queries/pending-statement.ts via getOpenTaxLots) — never
   // re-derived here. They leave the Unrealized tile and get their own line.
-  const pendingStatementRows = openLots.filter((l) => l.pending_statement);
-  const heldOpenLots = openLots.filter((l) => !l.pending_statement);
+  const pendingStatementRows = capitalOpenLots.filter((l) => l.pending_statement);
+  const heldOpenLots = capitalOpenLots.filter((l) => !l.pending_statement);
   const sumUsd = (rows: typeof closedSales) =>
     rows.reduce((sum, s) => sum + (s.currency === "USD" ? s.realized_gain_loss : 0), 0);
 
@@ -125,7 +136,12 @@ export default async function TaxLotsPage(props: {
   const clearFilterQuery = clearFilterParams.toString();
   const clearFilterHref = `/dashboard/tax-lots${clearFilterQuery ? `?${clearFilterQuery}` : ""}`;
 
-  const hasData = summary.totalOpenLots > 0 || summary.totalClosedSales > 0;
+  const hasData =
+    summary.totalOpenLots > 0 ||
+    summary.totalClosedSales > 0 ||
+    currencyConversionOpenLots.length > 0 ||
+    currencyConversionClosedSales.length > 0 ||
+    expiredOptionLotsAwaitingClose.length > 0;
 
   // The tiles below read STORED tax_lots / tax_lot_sales rows, which only
   // move when someone presses Recompute (QA:
@@ -186,8 +202,8 @@ export default async function TaxLotsPage(props: {
           {isNarrowed ? (
             <TaxLotSummaryCards
               summary={{
-                totalOpenLots: openLots.length,
-                totalClosedSales: activeSummary?.totalClosedSales ?? closedSales.length,
+                totalOpenLots: capitalOpenLots.length,
+                totalClosedSales: activeSummary?.totalClosedSales ?? capitalClosedSales.length,
                 totalUnrealizedGain: heldOpenLots.reduce((sum, l) => sum + (l.unrealized_gain ?? 0), 0),
                 pendingStatementPositions: new Set(
                   pendingStatementRows.map((l) => `${l.account_id}:${l.security_id}`)
@@ -195,10 +211,12 @@ export default async function TaxLotsPage(props: {
                 pendingStatementLots: pendingStatementRows.length,
                 pendingStatementBasis: pendingStatementRows.reduce((sum, l) => sum + l.adjusted_cost_basis, 0),
                 // USD totals only — non-USD sales are native figures (excluded + disclosed)
-                totalRealizedGain: activeSummary?.totalRealizedGain ?? closedSales.reduce((sum, s) => sum + (s.currency === "USD" ? s.realized_gain_loss : 0), 0),
-                longTermGain: activeSummary?.longTermGain ?? closedSales.filter(s => s.is_long_term && s.currency === "USD").reduce((sum, s) => sum + s.realized_gain_loss, 0),
-                shortTermGain: activeSummary?.shortTermGain ?? closedSales.filter(s => !s.is_long_term && s.currency === "USD").reduce((sum, s) => sum + s.realized_gain_loss, 0),
-                excludedNonUsdSales: activeSummary?.excludedNonUsdSales ?? closedSales.filter(s => s.currency !== "USD").length,
+                totalRealizedGain: activeSummary?.totalRealizedGain ?? capitalClosedSales.reduce((sum, s) => sum + (s.currency === "USD" ? s.realized_gain_loss : 0), 0),
+                longTermGain: activeSummary?.longTermGain ?? capitalClosedSales.filter(s => s.is_long_term && s.currency === "USD").reduce((sum, s) => sum + s.realized_gain_loss, 0),
+                shortTermGain: activeSummary?.shortTermGain ?? capitalClosedSales.filter(s => !s.is_long_term && s.currency === "USD").reduce((sum, s) => sum + s.realized_gain_loss, 0),
+                excludedNonUsdSales: activeSummary?.excludedNonUsdSales ?? capitalClosedSales.filter(s => s.currency !== "USD").length,
+                currencyConversionOpenLots: currencyConversionOpenLots.length,
+                expiredOptionLotsAwaitingClose: expiredOptionLotsAwaitingClose.length,
                 // "Disclose, never exclude" (QA:
                 // tax-lots--headline-tiles-include-reconcile-close-engine-rows):
                 // the filtered tiles keep their engine-estimated closes AND
@@ -228,9 +246,22 @@ export default async function TaxLotsPage(props: {
               tax-lots--account-filter-ignored-by-tax-report-card-and-exports);
               the ?security= narrowing is display-only and never scopes an
               8949 export. */}
+          {expiredOptionLotsAwaitingClose.length > 0 && (
+            <p className="text-sm text-ink-dim">
+              <Count value={expiredOptionLotsAwaitingClose.length} /> expired contracts awaiting a closing entry:{" "}
+              {expiredOptionLotsAwaitingClose.map((lot) => lot.symbol).join(", ")}
+            </p>
+          )}
           <TaxReportCard year={selectedYear} accountName={selectedAccount || undefined} />
-          <OpenLotsTable lots={openLots} showAccount={!selectedAccount} />
-          <ClosedSalesTable sales={closedSales} showAccount={!selectedAccount} />
+          <section aria-label="Currency conversions (Section 988, ordinary income)">
+            <TaxLotCurrencyConversionTable
+              lots={currencyConversionOpenLots}
+              sales={currencyConversionClosedSales}
+              showAccount={!selectedAccount}
+            />
+          </section>
+          <OpenLotsTable lots={capitalOpenLots} showAccount={!selectedAccount} />
+          <ClosedSalesTable sales={capitalClosedSales} showAccount={!selectedAccount} />
         </>
       ) : (
         <EmptyState

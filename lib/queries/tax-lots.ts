@@ -1,5 +1,8 @@
 import type Database from "better-sqlite3";
+import { SecType } from "@stoqey/ib";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { mapSecurityType } from "@/lib/tws/security-type-map";
 import {
   isPendingStatementLot,
   pendingStatementKey,
@@ -14,6 +17,8 @@ export interface TaxLotWithSecurity {
   security_id: number;
   symbol: string;
   security_name: string | null;
+  security_type: string | null;
+  expiration_date: string | null;
   acquisition_date: string;
   acquisition_price: number;
   quantity_acquired: number;
@@ -32,6 +37,8 @@ export interface TaxLotWithSecurity {
    * a "pending statement" chip) because it is still open in the ledger.
    */
   pending_statement: boolean;
+  currency_conversion: boolean;
+  expired_option: boolean;
 }
 
 export interface TaxLotSaleWithDetails {
@@ -41,6 +48,7 @@ export interface TaxLotSaleWithDetails {
   security_id: number;
   symbol: string;
   security_name: string | null;
+  security_type: string | null;
   acquisition_date: string;
   sale_date: string;
   quantity_sold: number;
@@ -64,6 +72,7 @@ export interface TaxLotSaleWithDetails {
    * hide it (finding 1, number-trust durable fixes).
    */
   is_synthetic_close: boolean;
+  currency_conversion: boolean;
 }
 
 /**
@@ -126,6 +135,10 @@ export interface TaxLotSummary extends EngineEstimatedDisclosure, PendingStateme
   shortTermGain: number;
   /** Sales on non-USD securities excluded from the USD realized totals above (never fabricate an FX vintage on tax rows). */
   excludedNonUsdSales: number;
+  /** Forex conversion lots kept in the ledger but excluded from capital open-lot counts. */
+  currencyConversionOpenLots?: number;
+  /** Expired option contracts kept open in the ledger, awaiting real broker closing entries. */
+  expiredOptionLotsAwaitingClose?: number;
 }
 
 export interface AccountTaxSummary extends EngineEstimatedDisclosure {
@@ -140,6 +153,17 @@ export interface AccountTaxSummary extends EngineEstimatedDisclosure {
 
 /** Realized G/L is stored native per security; only USD rows may sum into USD totals. */
 const USD_ONLY = `COALESCE(s.currency, 'USD') = 'USD'`;
+const CURRENCY_CONVERSION_SECURITY = `LOWER(COALESCE(s.security_type, '')) = 'forex'`;
+
+export function isCurrencyConversionSecurityType(securityType: string | null | undefined): boolean {
+  return mapSecurityType(securityType ?? null) === SecType.CASH;
+}
+
+export function isCurrencyConversionTaxLot(
+  row: Pick<TaxLotWithSecurity | TaxLotSaleWithDetails, "security_type" | "currency_conversion">
+): boolean {
+  return row.currency_conversion || isCurrencyConversionSecurityType(row.security_type);
+}
 
 /**
  * The engine-owned reconciliation close. Written exactly as
@@ -167,12 +191,22 @@ function remainingLotBasisSql(): string {
   return "(CASE WHEN tl.quantity_acquired != 0 THEN tl.cost_basis * tl.quantity_remaining / tl.quantity_acquired ELSE 0 END) * COALESCE(fx.usd_per_unit, 1)";
 }
 
-export function getOpenTaxLots(db: Database.Database, securityId?: number): TaxLotWithSecurity[] {
+export interface TaxLotReadOptions {
+  today?: string;
+}
+
+function openLotRows(
+  db: Database.Database,
+  securityId: number | undefined,
+  opts: TaxLotReadOptions | undefined,
+  extraWhere: string
+): Omit<TaxLotWithSecurity, "pending_statement" | "currency_conversion" | "expired_option">[] {
   const rows = db
     .prepare(
       `SELECT
         tl.id, tl.account_id, a.name AS account_name, tl.is_short,
         tl.security_id, s.symbol, s.name AS security_name,
+        s.security_type, s.expiration_date,
         tl.acquisition_date, tl.acquisition_price,
         tl.quantity_acquired, tl.quantity_remaining,
         tl.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis, tl.is_from_opening_snapshot,
@@ -192,15 +226,66 @@ export function getOpenTaxLots(db: Database.Database, securityId?: number): TaxL
       LEFT JOIN prices p ON p.security_id = tl.security_id
         AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = tl.security_id)
       WHERE tl.quantity_remaining > 0 AND (? IS NULL OR tl.security_id = ?)
+        ${extraWhere}
       ORDER BY a.name, s.symbol, tl.acquisition_date`
     )
-    .all(securityId ?? null, securityId ?? null) as Omit<TaxLotWithSecurity, "pending_statement">[];
+    .all(securityId ?? null, securityId ?? null) as Omit<
+    TaxLotWithSecurity,
+    "pending_statement" | "currency_conversion" | "expired_option"
+  >[];
+  return rows;
+}
+
+function decorateOpenLots(
+  db: Database.Database,
+  rows: Omit<TaxLotWithSecurity, "pending_statement" | "currency_conversion" | "expired_option">[],
+  expiredOption: boolean
+): TaxLotWithSecurity[] {
   const pendingKeys = pendingStatementKeySet(db);
   return rows.map((lot) =>
     isPendingStatementLot(pendingKeys, lot)
-      ? { ...lot, current_value: null, unrealized_gain: null, pending_statement: true }
-      : { ...lot, pending_statement: false }
+      ? {
+          ...lot,
+          current_value: null,
+          unrealized_gain: null,
+          pending_statement: true,
+          currency_conversion: isCurrencyConversionSecurityType(lot.security_type),
+          expired_option: expiredOption,
+        }
+      : {
+          ...lot,
+          pending_statement: false,
+          currency_conversion: isCurrencyConversionSecurityType(lot.security_type),
+          expired_option: expiredOption,
+        }
   );
+}
+
+export function getOpenTaxLots(
+  db: Database.Database,
+  securityId?: number,
+  opts?: TaxLotReadOptions
+): TaxLotWithSecurity[] {
+  const rows = openLotRows(
+    db,
+    securityId,
+    opts,
+    `AND ${liveOptionExpirationSql("s", opts?.today)}`
+  );
+  return decorateOpenLots(db, rows, false);
+}
+
+export function getExpiredOptionLotsAwaitingClose(
+  db: Database.Database,
+  opts?: TaxLotReadOptions & { securityId?: number }
+): TaxLotWithSecurity[] {
+  const rows = openLotRows(
+    db,
+    opts?.securityId,
+    opts,
+    `AND NOT (${liveOptionExpirationSql("s", opts?.today)})`
+  );
+  return decorateOpenLots(db, rows, true);
 }
 
 export function getClosedTaxLotSales(
@@ -210,14 +295,15 @@ export function getClosedTaxLotSales(
 ): TaxLotSaleWithDetails[] {
   const baseSql = `SELECT
         tls.id, a.name AS account_name, tl.account_id, tl.security_id, tl.is_short,
-        s.symbol, s.name AS security_name,
+        s.symbol, s.name AS security_name, s.security_type,
         tl.acquisition_date, tls.sale_date,
         tls.quantity_sold, tl.acquisition_price,
         tls.sale_price, tls.proceeds,
         tls.cost_basis_allocated, tls.realized_gain_loss,
         tls.is_long_term, tls.holding_period_days,
         COALESCE(s.currency, 'USD') AS currency,
-        (t.type = 'RECONCILE_CLOSE') AS is_synthetic_close
+        (t.type = 'RECONCILE_CLOSE') AS is_synthetic_close,
+        (${CURRENCY_CONVERSION_SECURITY}) AS currency_conversion
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN accounts a ON a.id = tl.account_id
@@ -236,20 +322,29 @@ export function getClosedTaxLotSales(
   }
   if (opts?.filingOnly) {
     conditions.push("tls.premium_rollover = 0 AND t.type != 'RECONCILE_CLOSE'");
+    conditions.push(`NOT (${CURRENCY_CONVERSION_SECURITY})`);
   }
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
   const rows = db
     .prepare(`${baseSql} ${whereClause} ORDER BY tls.sale_date DESC, s.symbol`)
     .all(...params) as Array<
-    Omit<TaxLotSaleWithDetails, "is_synthetic_close"> & { is_synthetic_close: number }
+    Omit<TaxLotSaleWithDetails, "is_synthetic_close" | "currency_conversion"> & {
+      is_synthetic_close: number;
+      currency_conversion: number;
+    }
   >;
-  return rows.map((r) => ({ ...r, is_synthetic_close: Boolean(r.is_synthetic_close) }));
+  return rows.map((r) => ({
+    ...r,
+    is_synthetic_close: Boolean(r.is_synthetic_close),
+    currency_conversion: Boolean(r.currency_conversion),
+  }));
 }
 
 export function getTaxLotSummary(
   db: Database.Database,
-  year?: number
+  year?: number,
+  opts?: TaxLotReadOptions
 ): TaxLotSummary {
   // Per (account, security, side) so pending-statement pairs can be split
   // out of the unrealized total by the shared read model — never re-derived
@@ -272,6 +367,8 @@ export function getTaxLotSummary(
       LEFT JOIN prices p ON p.security_id = tl.security_id
         AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = tl.security_id)
       WHERE tl.quantity_remaining > 0
+        AND NOT (${CURRENCY_CONVERSION_SECURITY})
+        AND ${liveOptionExpirationSql("s", opts?.today)}
       GROUP BY tl.account_id, tl.security_id, tl.is_short`
     )
     .all() as Array<{
@@ -303,6 +400,26 @@ export function getTaxLotSummary(
   }
   openLots.pendingStatementPositions = pendingPairs.size;
 
+  const currencyConversionOpenLots = (
+    db.prepare(
+      `SELECT COUNT(*) AS count
+       FROM tax_lots tl
+       JOIN securities s ON s.id = tl.security_id
+       WHERE tl.quantity_remaining > 0
+         AND ${CURRENCY_CONVERSION_SECURITY}`
+    ).get() as { count: number }
+  ).count;
+
+  const expiredOptionLotsAwaitingClose = (
+    db.prepare(
+      `SELECT COUNT(*) AS count
+       FROM tax_lots tl
+       JOIN securities s ON s.id = tl.security_id
+       WHERE tl.quantity_remaining > 0
+         AND NOT (${liveOptionExpirationSql("s", opts?.today)})`
+    ).get() as { count: number }
+  ).count;
+
   const closedSalesSql = `SELECT
         COUNT(*) AS totalClosedSales,
         COALESCE(SUM(CASE WHEN ${USD_ONLY} THEN tls.realized_gain_loss ELSE 0 END), 0) AS totalRealizedGain,
@@ -313,10 +430,11 @@ export function getTaxLotSummary(
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN securities s ON s.id = tl.security_id
-      JOIN transactions t ON t.id = tls.sale_transaction_id`;
+      JOIN transactions t ON t.id = tls.sale_transaction_id
+      WHERE NOT (${CURRENCY_CONVERSION_SECURITY})`;
 
   const closedSales = (year
-    ? db.prepare(`${closedSalesSql} WHERE tls.sale_date >= ? AND tls.sale_date <= ?`).get(`${year}-01-01`, `${year}-12-31`)
+    ? db.prepare(`${closedSalesSql} AND tls.sale_date >= ? AND tls.sale_date <= ?`).get(`${year}-01-01`, `${year}-12-31`)
     : db.prepare(closedSalesSql).get()
   ) as EngineEstimatedDisclosure & {
       totalClosedSales: number;
@@ -337,6 +455,8 @@ export function getTaxLotSummary(
     longTermGain: closedSales.longTermGain,
     shortTermGain: closedSales.shortTermGain,
     excludedNonUsdSales: closedSales.excludedNonUsdSales,
+    currencyConversionOpenLots,
+    expiredOptionLotsAwaitingClose,
     engineEstimatedSales: closedSales.engineEstimatedSales,
     engineEstimatedGain: closedSales.engineEstimatedGain,
     engineEstimatedLongTermSales: closedSales.engineEstimatedLongTermSales,
@@ -367,6 +487,7 @@ export function getTaxLotSummaryByAccount(
       JOIN securities s ON s.id = tl.security_id
       JOIN transactions t ON t.id = tls.sale_transaction_id
       WHERE tls.sale_date >= ? AND tls.sale_date <= ?
+        AND NOT (${CURRENCY_CONVERSION_SECURITY})
       GROUP BY tl.account_id
       ORDER BY a.name`
     )
