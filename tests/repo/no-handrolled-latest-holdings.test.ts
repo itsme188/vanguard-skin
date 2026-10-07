@@ -546,9 +546,9 @@ const ALLOWLIST: AllowlistEntry[] = [
   },
   {
     file: "lib/queries/data-confidence.ts",
-    anchor: "SELECT h.account_id, MAX(h.as_of_date) AS latest_date\n    FROM holdings h\n    WHERE ${latestHoldingsPredicate({ keyBy: \"account\", includeShorts: true })}",
+    anchor: "SELECT h.account_id, MAX(h.as_of_date) AS latest_date\n    FROM holdings h\n    JOIN securities s ON s.id = h.security_id\n    WHERE ${latestHoldingsPredicate({ keyBy: \"account\", includeShorts: true })}\n      AND ${liveOptionExpirationSql(\"s\", today)}",
     justification:
-      "scoreHoldingsRecency's latestByAccount map — the outer MAX(h.as_of_date) aggregates over rows already filtered to one-per-account by latestHoldingsPredicate(keyBy:'account') in the WHERE clause; it re-derives a display date from an already-correct row set rather than implementing its own latest-selection logic.",
+      "scoreHoldingsRecency's latestByAccount map (the JOIN securities exists only to drop expired option contracts via the shared liveOptionExpirationSql rule; latest-selection still comes solely from latestHoldingsPredicate) — the outer MAX(h.as_of_date) aggregates over rows already filtered to one-per-account by latestHoldingsPredicate(keyBy:'account') in the WHERE clause; it re-derives a display date from an already-correct row set rather than implementing its own latest-selection logic.",
   },
   {
     file: "lib/queries/analysis.ts",
@@ -565,9 +565,9 @@ const ALLOWLIST: AllowlistEntry[] = [
   {
     file: "lib/queries/data-confidence.ts",
     anchor:
-      "SELECT h.security_id, MAX(h.as_of_date) AS latest_as_of\n      FROM holdings h\n      WHERE ${latestHoldingsPredicate({ keyBy: \"account_security\", includeShorts: true })}",
+      "SELECT h.security_id, MAX(h.as_of_date) AS latest_as_of\n      FROM holdings h\n      JOIN securities s2 ON s2.id = h.security_id\n      WHERE ${latestHoldingsPredicate({ keyBy: \"account_security\", includeShorts: true })}\n        AND ${liveOptionExpirationSql(\"s2\", today)}",
     justification:
-      "getStaleness's `agg` subquery (stalest-held-security finder) — MAX(h.as_of_date) aggregates per security_id over rows already filtered to one row per (account, security) by latestHoldingsPredicate(keyBy:'account_security') in the WHERE clause; a freshness stat over an already-correct row set, not an independent filter (sibling of the keyBy:'account' entry above).",
+      "getStaleness's `agg` subquery (stalest-held-security finder; the JOIN securities exists only to drop expired option contracts via the shared liveOptionExpirationSql rule) — MAX(h.as_of_date) aggregates per security_id over rows already filtered to one row per (account, security) by latestHoldingsPredicate(keyBy:'account_security') in the WHERE clause; a freshness stat over an already-correct row set, not an independent filter (sibling of the keyBy:'account' entry above).",
   },
   {
     file: "lib/tws/streaming.ts",
