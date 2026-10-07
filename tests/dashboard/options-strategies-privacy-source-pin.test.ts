@@ -72,12 +72,12 @@ describe("OptionsStrategies withholds figures when a leg is unpriced", () => {
   });
 
   it("checks pricingIncomplete BEFORE the null-means-Unlimited branch in every cell", () => {
-    const cells = src.match(/\{s\.pricingIncomplete (?:\?|&&) \(\s*<span className="text-ink-faint">Premium unknown<\/span>/g) ?? [];
+    const cells = src.match(/\{s\.pricingIncomplete (?:\?|&&) \(\s*<span className="text-ink-faint">Not available<\/span>/g) ?? [];
     expect(cells.length).toBe(3);
-    expect(src).toMatch(/Premium unknown<\/span>\s*\)\s*:\s*s\.maxProfit != null/);
-    expect(src).toMatch(/Premium unknown<\/span>\s*\)\s*:\s*s\.maxLoss != null/);
+    expect(src).toMatch(/Not available<\/span>\s*\)\s*:\s*s\.maxProfit != null/);
+    expect(src).toMatch(/Not available<\/span>\s*\)\s*:\s*s\.maxLoss != null/);
     // Breakevens are [] when pricing is incomplete, so the map renders nothing.
-    expect(src).toMatch(/Premium unknown<\/span>\s*\)\}\s*\{s\.breakevens\.map/);
+    expect(src).toMatch(/Not available<\/span>\s*\)\}\s*\{s\.breakevens\.map/);
   });
 
   it("explains the missing price under the description", () => {
@@ -91,5 +91,13 @@ describe("OptionsStrategies shared helpers", () => {
     expect(src).toMatch(/import\s*\{[^}]*\bMoney\b[^}]*\}\s*from\s*["']@\/lib\/privacy\/components["']/);
     expect(src).not.toMatch(/(^|[^.\w])fetch\(/m);
     expect(src).not.toMatch(/formatDollar/);
+  });
+});
+
+describe("OptionsStrategies empty state copy", () => {
+  it("does not claim every detected strategy needs two option legs", () => {
+    expect(src).toContain("stock plus one option leg");
+    expect(src).toContain("matched multi-leg spreads");
+    expect(src).not.toContain("require ≥2 option legs");
   });
 });

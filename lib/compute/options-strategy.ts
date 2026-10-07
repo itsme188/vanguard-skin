@@ -48,11 +48,11 @@ export interface DetectedStrategy {
   breakevens: number[];
   description: string;
   /**
-   * True when any leg feeding the payoff (option OR stock) has no finite
-   * price. The structure is still reported, but maxProfit / maxLoss are null
-   * and breakevens empty — a missing price must never be modelled as a $0
-   * premium. Consumers MUST check this before reading a null maxProfit /
-   * maxLoss as "unlimited".
+   * True when any leg feeding the payoff (option OR stock) lacks a usable
+   * mark. The structure is still reported, but maxProfit / maxLoss are null
+   * and breakevens empty — missing, zero, or stale prices must never be
+   * modelled as a $0 premium. Consumers MUST check this before reading a null
+   * maxProfit / maxLoss as "unlimited".
    */
   pricingIncomplete: boolean;
 }
@@ -60,11 +60,44 @@ export interface DetectedStrategy {
 /** A strategy as the builders produce it, before the pricing gate runs. */
 type StrategyDraft = Omit<DetectedStrategy, "pricingIncomplete">;
 
-/** Every leg carries a finite price (null / undefined / NaN / Infinity fail). */
+/**
+ * Every leg carries a usable mark. Missing, non-finite, zero/negative, or
+ * option marks below intrinsic are not payoff-grade: the structure is still
+ * known, but risk figures would read as fact off stale quote data.
+ */
 function legsPriced(legs: PositionLeg[]): boolean {
-  return legs.every(
-    (l) => typeof l.currentPrice === "number" && Number.isFinite(l.currentPrice)
+  return legs.every((leg) => legHasUsableMark(leg, legs));
+}
+
+function legHasUsableMark(leg: PositionLeg, allLegs: PositionLeg[]): boolean {
+  if (
+    typeof leg.currentPrice !== "number" ||
+    !Number.isFinite(leg.currentPrice) ||
+    leg.currentPrice <= 0
+  ) {
+    return false;
+  }
+
+  if (leg.securityType !== "option" || !leg.optionType || leg.strike == null) {
+    return true;
+  }
+
+  const stock = allLegs.find(
+    (l) => l.securityType === "stock" && l.symbol === leg.underlying
   );
+  if (
+    !stock ||
+    typeof stock.currentPrice !== "number" ||
+    !Number.isFinite(stock.currentPrice)
+  ) {
+    return true;
+  }
+
+  const intrinsic =
+    leg.optionType === "PUT"
+      ? leg.strike - stock.currentPrice
+      : stock.currentPrice - leg.strike;
+  return intrinsic <= 0 || leg.currentPrice >= intrinsic;
 }
 
 /**
@@ -72,8 +105,9 @@ function legsPriced(legs: PositionLeg[]): boolean {
  * leg at `?? 0`, which turns "no price row" into a $0 premium and a
  * confident-looking max loss / breakeven (QA
  * analysis-detected-strategies--protective-put-missing-put-price-treated-as-zero-premium).
- * When any leg is unpriced the figures are withheld; fully priced strategies
- * pass through with their math untouched.
+ * Stale below-intrinsic and zero marks are equally unsafe: when any leg is not
+ * payoff-grade the figures are withheld; fully priced strategies pass through
+ * with their math untouched.
  */
 function withPricing(draft: StrategyDraft): DetectedStrategy {
   if (legsPriced(draft.legs)) return { ...draft, pricingIncomplete: false };
