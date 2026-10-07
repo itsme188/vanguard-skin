@@ -167,17 +167,38 @@ export function readPreviousRemovedEventIds(db: Database.Database): RemovedEvent
   }
 }
 
-function capNewestByEventDate<T extends { eventDate: string }>(
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Whole days between two YYYY-MM-DD dates, sign dropped. An unreadable date
+ *  ranks last (it can never be a row the cloud is about to act on). */
+function dayDistance(a: string, b: string): number {
+  const ms = Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`);
+  return Number.isFinite(ms) ? Math.abs(ms) / 86_400_000 : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Keep at most ARMED_EVENTS_MAX_ID_LIST rows, the ones NEAREST today first.
+ * The Worker only ever acts on prints around today, so when the list is over
+ * the cap a far-future id is the one to lose — keeping the latest calendar
+ * dates would let next quarter's rows crowd out yesterday's. Ties go to the
+ * later date, then the higher id, so the cut is deterministic.
+ */
+function capNearestToToday<T extends { id: number; eventDate: string }>(
   list: T[],
+  today: string,
   label: string,
-  restoreOrder: (list: T[]) => T[],
 ): T[] {
   if (list.length <= ARMED_EVENTS_MAX_ID_LIST) return list;
   const kept = [...list]
-    .sort((a, b) => b.eventDate.localeCompare(a.eventDate))
+    .sort(
+      (a, b) =>
+        dayDistance(a.eventDate, today) - dayDistance(b.eventDate, today) ||
+        b.eventDate.localeCompare(a.eventDate) ||
+        b.id - a.id,
+    )
     .slice(0, ARMED_EVENTS_MAX_ID_LIST);
   console.warn(`[armed-events] dropped ${list.length - kept.length} ${label} over cap`);
-  return restoreOrder(kept);
+  return kept.sort((a, b) => a.id - b.id);
 }
 
 /**
@@ -200,9 +221,7 @@ export function buildSupersededEventIds(
         ORDER BY id ASC`,
     )
     .all(cutoff) as Array<{ id: number; eventDate: string }>;
-  return capNewestByEventDate(rows, "superseded event ids", (kept) =>
-    kept.sort((a, b) => a.id - b.id),
-  ).map((r) => r.id);
+  return capNearestToToday(rows, opts.today, "superseded event ids").map((r) => r.id);
 }
 
 /**
@@ -224,15 +243,16 @@ export function buildRemovedEventIds(
   }
   for (const removed of opts.removedEvents ?? []) {
     if (!Number.isInteger(removed.id) || removed.id <= 0) continue;
+    // The Worker rejects the WHOLE payload on a date that is not YYYY-MM-DD,
+    // so a malformed stored date must never reach the list.
+    if (typeof removed.eventDate !== "string" || !ISO_DATE_RE.test(removed.eventDate)) continue;
     byId.set(removed.id, byId.get(removed.id) ?? { ...removed, removedAt: now });
   }
   const retained = [...byId.values()].filter((r) => {
     const fresh = nowMs - Date.parse(r.removedAt) < TOMBSTONE_RETENTION_MS;
     return r.eventDate >= cutoff || fresh;
   });
-  return capNewestByEventDate(retained, "removed event ids", (kept) =>
-    kept.sort((a, b) => a.id - b.id),
-  );
+  return capNearestToToday(retained, opts.today, "removed event ids");
 }
 
 /**

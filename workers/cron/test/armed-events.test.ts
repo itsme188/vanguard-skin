@@ -15,6 +15,7 @@ import {
   applyArmedEventsDelta,
   readArmedEventsDelta,
   isCoveredInCloud,
+  ArmedEventsValidationError,
   ARMED_EVENTS_MAX_ENTRIES,
   ARMED_EVENTS_MAX_REMOVED_IDS,
   ARMED_EVENTS_MAX_SUPERSEDED_IDS,
@@ -315,6 +316,64 @@ describe("applyArmedEventsDelta (KV read-compare-write)", () => {
         })),
       }),
     ).rejects.toThrow(/too many removed ids/);
+  });
+
+  // The handler answers 400 for this class only (the Mac then gives up on that
+  // generation), so every rejection of the BODY must carry the tag and a
+  // message a person can read — never a raw TypeError.
+  it("a null list item is a clean, tagged validation error on all three lists", async () => {
+    const { kv, store } = makeKv();
+    const cases: Array<[unknown, RegExp]> = [
+      [{ generation: 1, entries: [null] }, /every entry must be an object/],
+      [{ generation: 1, entries: ["x"] }, /every entry must be an object/],
+      [{ generation: 1, entries: [], supersededEventIds: [null] }, /positive integers/],
+      [{ generation: 1, entries: [], removedEventIds: [null] }, /removedEventIds entries must be objects/],
+      [{ generation: 1, entries: [], removedEventIds: [7] }, /removedEventIds entries must be objects/],
+      [null, /integer generation/],
+    ];
+    for (const [body, message] of cases) {
+      const err = await applyArmedEventsDelta(kv, body).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ArmedEventsValidationError);
+      expect((err as Error).message).toMatch(message);
+    }
+    expect(store.size).toBe(0);
+  });
+
+  it("a removed id needs a YYYY-MM-DD eventDate and a removedAt that parses as a date", async () => {
+    const { kv, store } = makeKv();
+    const good = { id: 5, eventDate: "2026-09-02", removedAt: "2026-09-02T20:00:00.000Z" };
+    const bad: Array<[Record<string, unknown>, RegExp]> = [
+      [{ ...good, eventDate: "2026-9-2" }, /eventDate must be YYYY-MM-DD/],
+      [{ ...good, eventDate: "2026-09-02T00:00:00Z" }, /eventDate must be YYYY-MM-DD/],
+      [{ ...good, eventDate: "next week" }, /eventDate must be YYYY-MM-DD/],
+      [{ ...good, removedAt: "yesterday-ish" }, /removedAt must be a date-time/],
+      [{ ...good, removedAt: "" }, /removedAt must be a date-time/],
+    ];
+    for (const [item, message] of bad) {
+      const err = await applyArmedEventsDelta(kv, {
+        generation: 1,
+        entries: [],
+        removedEventIds: [good, item],
+      }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ArmedEventsValidationError);
+      expect((err as Error).message).toMatch(message);
+    }
+    expect(store.size).toBe(0); // the whole POST is rejected, nothing half-applied
+    expect(
+      await applyArmedEventsDelta(kv, { generation: 1, entries: [], removedEventIds: [good] }),
+    ).toEqual({ applied: true, generation: 1 });
+  });
+
+  it("a KV failure is NOT a validation error (the handler must answer 503, not 400)", async () => {
+    const kv = {
+      get: vi.fn(async () => {
+        throw new Error("KV GET failed: 500");
+      }),
+      put: vi.fn(),
+    } as unknown as KVNamespace;
+    const err = await applyArmedEventsDelta(kv, { generation: 1, entries: [] }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(ArmedEventsValidationError);
   });
 
   it("[C-19] drops unknown keys, preserves removed/removedAt, and rejects a bad shape", async () => {

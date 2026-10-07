@@ -73,6 +73,22 @@ export const ARMED_EVENTS_MAX_SUPERSEDED_IDS = 2000;
 export const ARMED_EVENTS_MAX_REMOVED_IDS = ARMED_EVENTS_MAX_SUPERSEDED_IDS;
 export const ARMED_EVENTS_MAX_BODY_BYTES = 256 * 1024;
 
+/**
+ * The POST body itself is wrong (shape, type, count, date format). The handler
+ * answers 400 for this class ONLY — the Mac treats a 400 as "this payload will
+ * never be accepted" and moves on to a later generation. Anything else thrown
+ * from `applyArmedEventsDelta` (a KV read or write failing) is a transient
+ * fault and must surface as a 503 so the Mac retries the same row, in order.
+ */
+export class ArmedEventsValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ArmedEventsValidationError";
+  }
+}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 export interface EffectiveCalendar {
   /**
    * Snapshot calendar rows in their original order, followed by any rows the
@@ -336,12 +352,15 @@ const isRequiredRule = (rule: ArmedEventFieldRule): boolean =>
  * no field itself.
  */
 function parseEntry(raw: unknown): ArmedEventEntry {
-  const r = (raw ?? {}) as Record<string, unknown>;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ArmedEventsValidationError("armed-events: every entry must be an object");
+  }
+  const r = raw as Record<string, unknown>;
   const rules: Record<string, ArmedEventFieldRule | undefined> = ARMED_EVENT_ENTRY_FIELDS;
   const out: Record<string, unknown> = {};
   const missing = (): never => {
     const required = ARMED_EVENT_ENTRY_KEYS.filter((k) => isRequiredRule(ARMED_EVENT_ENTRY_FIELDS[k]));
-    throw new Error(`armed-events: entry missing ${required.join("/")}`);
+    throw new ArmedEventsValidationError(`armed-events: entry missing ${required.join("/")}`);
   };
   // A tombstone is declared by its flag alone; the fields that ride on it are
   // kept only when that flag is literally true.
@@ -384,16 +403,16 @@ function parseEntry(raw: unknown): ArmedEventEntry {
 function parseSupersededEventIds(raw: unknown): number[] {
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) {
-    throw new Error("armed-events: supersededEventIds must be an array");
+    throw new ArmedEventsValidationError("armed-events: supersededEventIds must be an array");
   }
   if (raw.length > ARMED_EVENTS_MAX_SUPERSEDED_IDS) {
-    throw new Error(
+    throw new ArmedEventsValidationError(
       `armed-events: too many superseded ids (${raw.length} > ${ARMED_EVENTS_MAX_SUPERSEDED_IDS})`,
     );
   }
   const ids = raw.map((id) => {
     if (!Number.isInteger(id) || id <= 0) {
-      throw new Error("armed-events: supersededEventIds must contain positive integers");
+      throw new ArmedEventsValidationError("armed-events: supersededEventIds must contain positive integers");
     }
     return id as number;
   });
@@ -406,6 +425,7 @@ function readRemovedEventIds(raw: unknown): Array<{ id: number; eventDate: strin
   const seen = new Set<number>();
   const out: Array<{ id: number; eventDate: string; removedAt: string }> = [];
   for (const item of raw) {
+    if (item === null || typeof item !== "object") continue;
     const r = item as { id?: unknown; eventDate?: unknown; removedAt?: unknown };
     if (!Number.isInteger(r.id) || (r.id as number) <= 0) continue;
     if (typeof r.eventDate !== "string" || typeof r.removedAt !== "string") continue;
@@ -423,20 +443,37 @@ function readRemovedEventIds(raw: unknown): Array<{ id: number; eventDate: strin
 function parseRemovedEventIds(raw: unknown): Array<{ id: number; eventDate: string; removedAt: string }> {
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) {
-    throw new Error("armed-events: removedEventIds must be an array");
+    throw new ArmedEventsValidationError("armed-events: removedEventIds must be an array");
   }
   if (raw.length > ARMED_EVENTS_MAX_REMOVED_IDS) {
-    throw new Error(
+    throw new ArmedEventsValidationError(
       `armed-events: too many removed ids (${raw.length} > ${ARMED_EVENTS_MAX_REMOVED_IDS})`,
     );
   }
   for (const item of raw) {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      throw new ArmedEventsValidationError("armed-events: removedEventIds entries must be objects");
+    }
     const r = item as { id?: unknown; eventDate?: unknown; removedAt?: unknown };
     if (!Number.isInteger(r.id) || (r.id as number) <= 0) {
-      throw new Error("armed-events: removedEventIds must contain positive integer ids");
+      throw new ArmedEventsValidationError(
+        "armed-events: removedEventIds must contain positive integer ids",
+      );
     }
     if (typeof r.eventDate !== "string" || typeof r.removedAt !== "string") {
-      throw new Error("armed-events: removedEventIds entries need eventDate and removedAt strings");
+      throw new ArmedEventsValidationError(
+        "armed-events: removedEventIds entries need eventDate and removedAt strings",
+      );
+    }
+    if (!ISO_DATE_RE.test(r.eventDate)) {
+      throw new ArmedEventsValidationError(
+        "armed-events: removedEventIds eventDate must be YYYY-MM-DD",
+      );
+    }
+    if (r.removedAt.length > 40 || !Number.isFinite(Date.parse(r.removedAt))) {
+      throw new ArmedEventsValidationError(
+        "armed-events: removedEventIds removedAt must be a date-time",
+      );
     }
   }
   return readRemovedEventIds(raw);
@@ -461,10 +498,10 @@ export async function applyArmedEventsDelta(
     !Number.isInteger(b.generation) ||
     !Array.isArray(b.entries)
   ) {
-    throw new Error("armed-events: body needs integer generation and entries[]");
+    throw new ArmedEventsValidationError("armed-events: body needs integer generation and entries[]");
   }
   if (b.entries.length > ARMED_EVENTS_MAX_ENTRIES) {
-    throw new Error(
+    throw new ArmedEventsValidationError(
       `armed-events: too many entries (${b.entries.length} > ${ARMED_EVENTS_MAX_ENTRIES})`,
     );
   }

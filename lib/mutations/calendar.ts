@@ -360,7 +360,17 @@ function resuppressSuppressedTuples(db: Database.Database, symbol: string): numb
 export function deleteAndSuppressCalendarEvent(
   db: Database.Database,
   id: number,
-  opts: { today?: string; handBack?: boolean } = {},
+  opts: {
+    today?: string;
+    handBack?: boolean;
+    /**
+     * `false` = the caller is deleting a BATCH inside its own transaction and
+     * will hand every removed id to `writeArmedEventsOutboxRow` itself, once,
+     * at the end (correctEarningsEventDate). Never pass it without doing that:
+     * the cloud would keep the deleted id live.
+     */
+    publishOutbox?: boolean;
+  } = {},
 ): { deleted: boolean; suppressed: { symbol: string; event_date: string; event_type: string } | null } {
   const row = db
     .prepare("SELECT symbol, event_date, event_type, source FROM calendar_events WHERE id = ?")
@@ -416,7 +426,10 @@ export function deleteAndSuppressCalendarEvent(
     // row was not armed but the merge changed an armed survivor's shape (a
     // vendor-EPS bogey landing on it); the writer is a no-op when the
     // projection is unchanged (D10), so an extra call is free.
-    if (row.event_type === "earnings" || wasArmed || mergeChanged || supersededChanged) {
+    if (
+      opts.publishOutbox !== false &&
+      (row.event_type === "earnings" || wasArmed || mergeChanged || supersededChanged)
+    ) {
       writeArmedEventsOutboxRow(db, {
         today,
         removedEvents:
@@ -714,21 +727,31 @@ export function correctEarningsEventDate(
     // later iteration then deletes, cascading them away. The cluster settles
     // on the next reconcile pass, with all the wrong rows already gone.
     const deletedIds: number[] = [];
+    const removedEvents: Array<{ id: number; eventDate: string }> = [];
     for (const row of doomedRows) {
-      deleteAndSuppressCalendarEvent(db, row.id, { handBack: false });
+      // publishOutbox:false — the removed ids are collected here and published
+      // ONCE below, not one generation per deleted row.
+      const res = deleteAndSuppressCalendarEvent(db, row.id, {
+        handBack: false,
+        publishOutbox: false,
+      });
       deletedIds.push(row.id);
+      if (res.deleted) removedEvents.push({ id: row.id, eventDate: opts.wrongDate });
     }
 
-    // [C-13] ONE outbox row for the whole correction. `anyChanged` covers the
-    // merge case — the arm now sits on newEventId, so the Worker has to hear
-    // the new projection (and the doomed ids as tombstones). [F5] The armed
+    // [C-13] ONE outbox row for the whole correction, carrying every deleted
+    // id as a removed event (the cloud's snapshot may still list them).
+    // `anyChanged` covers the merge case — the arm now sits on newEventId, so
+    // the Worker has to hear the new projection. [F5] The armed
     // check covers the two paths where the projection changes with NOTHING
     // merged: the in-place slot fix (wrongDate === correctDate, the corrected
     // row IS the only row, so there are no doomed rows) and the adopt branch.
     // Both change this armed event's release time, which is precisely what the
     // cloud fallback would act on. D10 keeps it free when nothing moved: an
     // identical projection writes no row.
-    if (anyChanged || isEventArmed(db, newEventId)) writeArmedEventsOutboxRow(db);
+    if (anyChanged || removedEvents.length > 0 || isEventArmed(db, newEventId)) {
+      writeArmedEventsOutboxRow(db, { removedEvents });
+    }
 
     return { ok: true, newEventId, deletedIds, bogeysMigrated, auditRowsMigrated };
   });
@@ -1013,6 +1036,13 @@ function deriveReleaseTime(
   return null;
 }
 
+/** An earnings row a week-level delete removed (see `deletedEarnings`). */
+export interface DeletedEarningsRow {
+  id: number;
+  eventDate: string;
+  sourceKey: string;
+}
+
 /**
  * Delete UN-enriched events for a given week + source. The sync pipeline's
  * delete-before-reinsert exists for reschedule-orphan cleanup (source_key
@@ -1056,10 +1086,19 @@ export function deleteUnenrichedEventsForWeek(
   db: Database.Database,
   weekOf: string,
   source: CalendarEventSource,
-  keepSourceKeys?: readonly string[]
+  keepSourceKeys?: readonly string[],
+  /**
+   * OUT: every EARNINGS row this call deleted, read with the delete's own
+   * predicate inside the same transaction. The caller owns publishing them to
+   * the cloud (`writeArmedEventsOutboxRow({ removedEvents })`) in the same
+   * transaction as the delete — a deleted id the 2 AM snapshot still lists
+   * stays live in the Worker until it is published. This function does not
+   * publish by itself because only the caller knows which of these rows its
+   * upsert is about to re-create under the same source_key.
+   */
+  deletedEarnings?: DeletedEarningsRow[],
 ): number {
-  const baseSql = `DELETE FROM calendar_events
-        WHERE week_of = ? AND source = ?
+  const where = `WHERE week_of = ? AND source = ?
           AND actual_value IS NULL
           AND consensus_value IS NULL
           AND reaction_snapshot IS NULL
@@ -1068,27 +1107,43 @@ export function deleteUnenrichedEventsForWeek(
           AND id NOT IN (SELECT event_id FROM earnings_emails)
           AND id NOT IN (SELECT event_id FROM earnings_email_skips)
           AND id NOT IN (SELECT event_id FROM earnings_bogeys)`;
-  if (keepSourceKeys === undefined) {
-    return db.prepare(baseSql).run(weekOf, source).changes;
-  }
-  // Stage the keep list in a temp table rather than an inline IN (...) so an
-  // arbitrarily long list can never hit SQLite's bound-variable limit.
+  const keepClause =
+    keepSourceKeys === undefined
+      ? ""
+      : `
+          AND source_key NOT IN (SELECT source_key FROM _calendar_keep_keys)`;
   const run = db.transaction(() => {
-    db.exec(
-      "CREATE TEMP TABLE IF NOT EXISTS _calendar_keep_keys (source_key TEXT PRIMARY KEY)"
-    );
-    db.exec("DELETE FROM _calendar_keep_keys");
-    const ins = db.prepare(
-      "INSERT OR IGNORE INTO _calendar_keep_keys (source_key) VALUES (?)"
-    );
-    for (const k of keepSourceKeys) ins.run(k);
+    if (keepSourceKeys !== undefined) {
+      // Stage the keep list in a temp table rather than an inline IN (...) so
+      // an arbitrarily long list can never hit SQLite's bound-variable limit.
+      db.exec(
+        "CREATE TEMP TABLE IF NOT EXISTS _calendar_keep_keys (source_key TEXT PRIMARY KEY)"
+      );
+      db.exec("DELETE FROM _calendar_keep_keys");
+      const ins = db.prepare(
+        "INSERT OR IGNORE INTO _calendar_keep_keys (source_key) VALUES (?)"
+      );
+      for (const k of keepSourceKeys) ins.run(k);
+    }
+    if (deletedEarnings) {
+      // BEFORE the delete, same predicate: these ids are about to vanish.
+      deletedEarnings.push(
+        ...(db
+          .prepare(
+            `SELECT id, event_date AS eventDate, source_key AS sourceKey
+               FROM calendar_events
+              ${where}${keepClause}
+                AND event_type = 'earnings'
+              ORDER BY id ASC`
+          )
+          .all(weekOf, source) as DeletedEarningsRow[]),
+      );
+    }
     const changes = db
-      .prepare(
-        `${baseSql}
-          AND source_key NOT IN (SELECT source_key FROM _calendar_keep_keys)`
-      )
+      .prepare(`DELETE FROM calendar_events
+        ${where}${keepClause}`)
       .run(weekOf, source).changes;
-    db.exec("DELETE FROM _calendar_keep_keys");
+    if (keepSourceKeys !== undefined) db.exec("DELETE FROM _calendar_keep_keys");
     return changes;
   });
   return run();
@@ -1104,14 +1159,23 @@ export function deleteEventsForWeek(
   weekOf: string,
   source?: CalendarEventSource
 ): number {
-  if (source) {
-    return db
+  // Any earnings row deleted here may still be listed in the cloud's nightly
+  // snapshot, so its id is published as removed in the SAME transaction as the
+  // delete. Which rows go is unchanged.
+  const run = db.transaction(() => {
+    const scope = source ? "week_of = ? AND source = ?" : "week_of = ?";
+    const args = source ? [weekOf, source] : [weekOf];
+    const removedEvents = db
       .prepare(
-        "DELETE FROM calendar_events WHERE week_of = ? AND source = ?"
+        `SELECT id, event_date AS eventDate FROM calendar_events
+          WHERE ${scope} AND event_type = 'earnings' ORDER BY id ASC`
       )
-      .run(weekOf, source).changes;
-  }
-  return db
-    .prepare("DELETE FROM calendar_events WHERE week_of = ?")
-    .run(weekOf).changes;
+      .all(...args) as Array<{ id: number; eventDate: string }>;
+    const changes = db
+      .prepare(`DELETE FROM calendar_events WHERE ${scope}`)
+      .run(...args).changes;
+    if (removedEvents.length > 0) writeArmedEventsOutboxRow(db, { removedEvents });
+    return changes;
+  });
+  return run();
 }

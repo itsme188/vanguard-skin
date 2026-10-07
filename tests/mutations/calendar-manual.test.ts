@@ -101,7 +101,7 @@ describe("deleteAndSuppressCalendarEvent → armed-events outbox", () => {
     armWorksheet(db, id); // gen 1
     const res = deleteAndSuppressCalendarEvent(db, id, { today: TODAY });
     expect(res.deleted).toBe(true);
-    expect(readArmedGeneration(db)).toBeGreaterThan(1);
+    expect(readArmedGeneration(db)).toBe(2);
     expect(latestEntries()).toEqual([
       expect.objectContaining({ eventId: id, symbol: "ACME", removed: true }),
     ]);
@@ -125,6 +125,8 @@ describe("deleteAndSuppressCalendarEvent → armed-events outbox", () => {
 
     expect(deleteCalendarEvent(db, manual, { today: TODAY })).toBe(true);
 
+    // Not an exact count: the reconciler that brings the vendor row back
+    // publishes that change itself, then the delete publishes the removed id.
     expect(readArmedGeneration(db)).toBeGreaterThan(1);
     expect(latestPayload()?.supersededEventIds).toEqual([]);
     expect(latestPayload()?.removedEventIds).toEqual([

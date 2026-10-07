@@ -288,33 +288,43 @@ describe("armed-events projection + outbox generations", () => {
     expect(payload.removedEventIds).toEqual([]);
   });
 
-  it("[L2] caps superseded and removed id lists at the Worker limit, keeping newest event dates", () => {
+  // The cap ranks by DISTANCE FROM TODAY, nearest first. Keeping the latest
+  // calendar dates instead let far-future ids crowd out yesterday's — the rows
+  // the cloud is actually about to act on.
+  it("[L2] caps superseded and removed id lists at the Worker limit, keeping the dates nearest today", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const oldDate = "2026-09-02";
-      const newDate = "2026-12-01";
-      const oldIds: number[] = [];
-      const newIds: number[] = [];
+      const today = "2026-09-02";
+      const yesterday = "2026-09-01";
+      const farFuture = "2026-12-01";
+      const farIds: number[] = [];
+      const nearIds: number[] = [];
       for (let i = 0; i < ARMED_EVENTS_MAX_ID_LIST + 2; i += 1) {
-        const id = seed(`OLD${i}`, oldDate);
-        oldIds.push(id);
+        const id = seed(`FAR${i}`, farFuture);
+        farIds.push(id);
         db.prepare(`UPDATE calendar_events SET superseded = 1 WHERE id = ?`).run(id);
       }
       for (let i = 0; i < 2; i += 1) {
-        const id = seed(`NEW${i}`, newDate);
-        newIds.push(id);
+        const id = seed(`NEAR${i}`, yesterday);
+        nearIds.push(id);
         db.prepare(`UPDATE calendar_events SET superseded = 1 WHERE id = ?`).run(id);
       }
-      const superseded = buildSupersededEventIds(db, { today: "2026-09-02" });
+      const superseded = buildSupersededEventIds(db, { today });
       expect(superseded).toHaveLength(ARMED_EVENTS_MAX_ID_LIST);
-      expect(superseded).toEqual(expect.arrayContaining(newIds));
-      expect(oldIds.filter((id) => superseded.includes(id)).length).toBeLessThan(oldIds.length);
+      expect(superseded).toEqual(expect.arrayContaining(nearIds));
+      expect(farIds.filter((id) => superseded.includes(id))).toHaveLength(
+        ARMED_EVENTS_MAX_ID_LIST - nearIds.length,
+      );
+      expect(superseded).toEqual([...superseded].sort((a, b) => a - b));
 
       db.transaction(() =>
         writeArmedEventsOutboxRow(db, {
-          today: "2026-09-02",
+          today,
           nowMs: Date.UTC(2026, 8, 2),
-          removedEvents: [...oldIds.map((id) => ({ id, eventDate: oldDate })), ...newIds.map((id) => ({ id, eventDate: newDate }))],
+          removedEvents: [
+            ...farIds.map((id) => ({ id, eventDate: farFuture })),
+            ...nearIds.map((id) => ({ id, eventDate: yesterday })),
+          ],
         }),
       ).immediate();
       const payload = JSON.parse(
@@ -326,13 +336,32 @@ describe("armed-events projection + outbox generations", () => {
       ) as { removedEventIds: Array<{ id: number }> };
       const removedIds = payload.removedEventIds.map((r) => r.id);
       expect(payload.removedEventIds).toHaveLength(ARMED_EVENTS_MAX_ID_LIST);
-      expect(removedIds).toEqual(expect.arrayContaining(newIds));
-      expect(oldIds.filter((id) => removedIds.includes(id)).length).toBeLessThan(oldIds.length);
+      expect(removedIds).toEqual(expect.arrayContaining(nearIds));
+      expect(farIds.filter((id) => removedIds.includes(id))).toHaveLength(
+        ARMED_EVENTS_MAX_ID_LIST - nearIds.length,
+      );
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("dropped 4 superseded event ids"));
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("dropped 4 removed event ids"));
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it("a removed event with a malformed date never reaches the payload (the Worker would reject it whole)", () => {
+    db.transaction(() =>
+      writeArmedEventsOutboxRow(db, {
+        today: "2026-09-02",
+        removedEvents: [
+          { id: 901, eventDate: "2026-09-02" },
+          { id: 902, eventDate: "09/02/2026" },
+        ],
+      }),
+    ).immediate();
+    const payload = JSON.parse(
+      (db.prepare(`SELECT payload_json FROM cloud_outbox`).get() as { payload_json: string })
+        .payload_json,
+    ) as { removedEventIds: Array<{ id: number }> };
+    expect(payload.removedEventIds.map((r) => r.id)).toEqual([901]);
   });
 
   it("reconcile writes an outbox row when it supersedes an unarmed earnings row", () => {

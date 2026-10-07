@@ -131,7 +131,14 @@ describe("drainCloudOutbox", () => {
     expect(
       db.prepare(`SELECT generation, sent_at IS NOT NULL AS sent, send_error FROM cloud_outbox ORDER BY generation`).all(),
     ).toEqual([
-      { generation: 1, sent: 0, send_error: "w: HTTP 400" },
+      // Closed, not left as a queue head: every payload is the full list, so
+      // generation 2 landing makes generation 1 obsolete. Left unsent it was
+      // replayed first on every later drain and blocked everything after it.
+      {
+        generation: 1,
+        sent: 1,
+        send_error: "superseded by generation 2 (never delivered; last error: w: HTTP 400)",
+      },
       { generation: 2, sent: 1, send_error: null },
     ]);
   });

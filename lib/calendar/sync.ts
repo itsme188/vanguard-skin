@@ -12,7 +12,9 @@ import {
   upsertCalendarEvents,
   deleteUnenrichedEventsForWeek,
   type CalendarEventInput,
+  type DeletedEarningsRow,
 } from "@/lib/mutations/calendar";
+import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 import { getIbApi, disconnectTws } from "@/lib/tws/client";
 import { addDays, validateWeekOf, todayET } from "@/lib/calendar/date-utils";
 
@@ -232,6 +234,54 @@ function writeAndCollectRemoved(
   return showing
     .filter((r) => stillStored.get(r.source_key) === undefined)
     .map((r) => ({ title: r.title, eventDate: r.event_date, source, reason }));
+}
+
+/**
+ * One source's orphan cleanup + upsert, in ONE transaction, publishing every
+ * earnings row the cleanup really removed.
+ *
+ * "The vendor moved the date" lands here: the old row is deleted and a row
+ * with a new id is written on the new date. The cloud's 2 AM snapshot still
+ * lists the old id, so without a `removedEvents` outbox entry the Worker could
+ * still email for a print date that no longer exists.
+ *
+ * Only TRUE removals are published. The finnhub / nasdaq cleanup deletes every
+ * unenriched row of the week and the upsert re-creates the re-listed ones
+ * under the same source_key and date (new id). Those prints still stand, so
+ * their old ids are deliberately NOT published — doing so would silence the
+ * cloud for every re-listed name on every refresh.
+ *
+ * The macro phase does not come through here: a claude_macro row is never an
+ * earnings row, so it has nothing to publish.
+ *
+ * Exported for tests.
+ */
+export function replaceWeekRowsPublishingRemovals(
+  db: Database.Database,
+  weekOf: string,
+  source: "claude_macro" | "finnhub" | "nasdaq",
+  inputs: CalendarEventInput[],
+  keepSourceKeys?: readonly string[],
+): void {
+  db.transaction(() => {
+    const deletedEarnings: DeletedEarningsRow[] = [];
+    deleteUnenrichedEventsForWeek(db, weekOf, source, keepSourceKeys, deletedEarnings);
+    upsertCalendarEvents(db, inputs);
+    if (deletedEarnings.length === 0) return;
+    // Re-listed = the same source_key is stored again ON THE SAME DATE. A key
+    // that came back on a different date is a moved print: the old id is stale.
+    const relisted = db.prepare(
+      `SELECT 1 FROM calendar_events
+        WHERE source_key = ? AND event_date = ? AND event_type = 'earnings'`,
+    );
+    const removedEvents = deletedEarnings
+      .filter((r) => relisted.get(r.sourceKey, r.eventDate) === undefined)
+      .map((r) => ({ id: r.id, eventDate: r.eventDate }));
+    // Called whenever an earnings row went, not only for a true removal: a
+    // deleted row may have been armed, and the writer is a no-op when the
+    // projection is unchanged (D10).
+    writeArmedEventsOutboxRow(db, { removedEvents });
+  })();
 }
 
 /**
@@ -498,8 +548,7 @@ export async function syncCalendarForWeek(
           finnhubNew = writeAndCountNewKeys(db, finnhubInputs, () => {
             removed.push(
               ...writeAndCollectRemoved(db, weekOf, "finnhub", finnhubReason, () => {
-                deleteUnenrichedEventsForWeek(db, weekOf, "finnhub");
-                upsertCalendarEvents(db, finnhubInputs);
+                replaceWeekRowsPublishingRemovals(db, weekOf, "finnhub", finnhubInputs);
               }),
             );
           });
@@ -555,8 +604,7 @@ export async function syncCalendarForWeek(
               "nasdaq",
               "Nasdaq did not return this date on this refresh",
               () => {
-                deleteUnenrichedEventsForWeek(db, weekOf, "nasdaq");
-                upsertCalendarEvents(db, nasdaqInputs);
+                replaceWeekRowsPublishingRemovals(db, weekOf, "nasdaq", nasdaqInputs);
               },
             ),
           );

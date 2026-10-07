@@ -169,6 +169,28 @@ describe("correctEarningsEventDate", () => {
     ]);
   });
 
+  it("[C-13] a correction that deletes two wrong rows mints exactly ONE generation", () => {
+    const wrongDate = inLiveHorizon(1);
+    const finn = seedFinnhub(db, "UNO", wrongDate, { source: "finnhub" });
+    const nas = seedFinnhub(db, "UNO", wrongDate, { source: "nasdaq", sourceKeySuffix: ":nas" });
+    const generation = () =>
+      (db.prepare(`SELECT COALESCE(MAX(generation), 0) AS g FROM cloud_outbox`).get() as { g: number }).g;
+    const before = generation();
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "UNO",
+      wrongDate,
+      correctDate: inLiveHorizon(8),
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(generation()).toBe(before + 1);
+    expect(
+      (latestPayload()?.removedEventIds as Array<{ id: number }>).map((r) => r.id).sort((a, b) => a - b),
+    ).toEqual([finn, nas].sort((a, b) => a - b));
+  });
+
   it("refuses when the wrong row has captured actuals", () => {
     const id = seedFinnhub(db, "HUN", "2026-07-30");
     db.prepare(`UPDATE calendar_events SET actual_value='EPS 1.00' WHERE id=?`).run(id);

@@ -44,7 +44,12 @@ import {
   shouldRunEarningsFallback,
 } from "./calendar-enrich";
 import { runEarningsFallback } from "./fallback-earnings";
-import { applyArmedEventsDelta, readArmedEventsDelta, ARMED_EVENTS_MAX_BODY_BYTES } from "./armed-events";
+import {
+  applyArmedEventsDelta,
+  readArmedEventsDelta,
+  ArmedEventsValidationError,
+  ARMED_EVENTS_MAX_BODY_BYTES,
+} from "./armed-events";
 import {
   getEarningsMarkerStatus,
   readEarningsMarkers,
@@ -602,10 +607,15 @@ export default {
         const r = await applyArmedEventsDelta(env.CRON_KV, body);
         return Response.json({ ok: true, ...r });
       } catch (err) {
-        return Response.json(
-          { ok: false, error: err instanceof Error ? err.message : "bad body" },
-          { status: 400 },
-        );
+        // 400 ONLY for a body that can never be accepted. The Mac drops a
+        // 400'd generation in favour of a later one, so a transient fault (a
+        // KV read or write failing) must NOT look like one: 503 makes the
+        // drain stop and retry this same row, in order.
+        if (err instanceof ArmedEventsValidationError) {
+          return Response.json({ ok: false, error: err.message }, { status: 400 });
+        }
+        console.error("[armed-events] apply failed:", err);
+        return Response.json({ ok: false, error: "temporarily unavailable" }, { status: 503 });
       }
     }
 
