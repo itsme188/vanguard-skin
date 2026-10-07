@@ -13,6 +13,7 @@ import type {
 import { Money } from "@/lib/privacy/components";
 import { formatUSDPrecise } from "@/lib/format";
 import { ScrollFade } from "./ScrollFade";
+import { SymbolLink } from "./SymbolLink";
 import { EmptySection } from "./EmptySection";
 
 interface DataHealthResponse {
@@ -141,6 +142,22 @@ export function DataHealthView() {
     (r) => r.diffPct !== null && Math.abs(r.diffPct) > 2,
   );
 
+  // "0 flags" is only a clean result when every snapshot was compared.
+  const reconCardSub = [
+    reconFlags.length > 0 ? `${reconFlags.length} snapshots >2% off` : null,
+    summary.totalReconciliationUnchecked > 0
+      ? `${summary.totalReconciliationUnchecked} not compared`
+      : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
+  const reconCardColor =
+    summary.totalReconciliationFlags > 0
+      ? "down"
+      : summary.totalReconciliationUnchecked > 0
+        ? "gold"
+        : "up";
+
   const fxFlagged = fxRateHealth.filter((r) => r.flags.length > 0);
 
   return (
@@ -183,8 +200,8 @@ export function DataHealthView() {
         <SummaryCard
           label="Recon Flags"
           value={summary.totalReconciliationFlags}
-          sub={reconFlags.length > 0 ? `${reconFlags.length} snapshots >2% off` : undefined}
-          color={summary.totalReconciliationFlags === 0 ? "up" : "down"}
+          sub={reconCardSub || undefined}
+          color={reconCardColor}
         />
         <SummaryCard
           label="FX Flags"
@@ -413,7 +430,13 @@ export function DataHealthView() {
               <tbody>
                 {discrepancies.slice(0, DISCREPANCY_ROW_LIMIT).map((d, i) => (
                   <tr key={i} className="border-b border-edge/50">
-                    <td className="px-5 py-2 font-mono text-ink">{d.symbol}</td>
+                    <td className="px-5 py-2">
+                      <SymbolLink
+                        securityId={d.securityId}
+                        symbol={d.symbol}
+                        className="text-blue font-mono"
+                      />
+                    </td>
                     <td className="px-3 py-2 text-ink-dim font-mono tabular-nums">{d.date}</td>
                     <td className="px-3 py-2 text-right text-ink-dim font-mono tabular-nums">
                       {formatUSDPrecise(d.priceA)}
@@ -495,7 +518,7 @@ export function DataHealthView() {
                             {r.diffPct.toFixed(1)}%
                           </span>
                         ) : (
-                          <span className="text-ink-faint">—</span>
+                          <span className="text-xs text-ink-faint">not compared</span>
                         )}
                       </td>
                       <td className="px-5 py-2 text-right text-xs text-ink-faint font-mono tabular-nums">
@@ -509,6 +532,13 @@ export function DataHealthView() {
               </tbody>
             </table>
           </ScrollFade>
+          {summary.totalReconciliationUnchecked > 0 && (
+            <div className="px-5 py-2 border-t border-edge text-xs text-ink-faint">
+              {summary.totalReconciliationUnchecked} of{" "}
+              {summary.totalReconciliationSnapshots} statement snapshots were
+              never compared — no computed value exists on the statement date.
+            </div>
+          )}
           {reconciliation.length > RECONCILIATION_ROW_LIMIT && (
             <div className="px-5 py-2 border-t border-edge text-xs text-ink-faint">
               Showing the {RECONCILIATION_ROW_LIMIT} newest rows —{" "}

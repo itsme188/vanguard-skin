@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { getSectorDisagreements } from "@/lib/queries/data-health";
+import { getSectorDisagreements, getSectorCheckMissingSector } from "@/lib/queries/data-health";
 
 describe("getSectorDisagreements", () => {
   let db: Database.Database;
@@ -25,11 +25,15 @@ describe("getSectorDisagreements", () => {
     expect(rows[0].impliedSector).toBe("Healthcare");
   });
 
-  it("a null sector with a sector-shaped fund_category flags too", () => {
+  it("a null sector is MISSING, not a disagreement — it leaves this list and lands in the missing-sector list", () => {
+    // Changed 2026-10-07 (QA finding
+    // data-health-sector-disagreements--null-sectors-listed-as-disagreements):
+    // this case used to expect KO in the disagreements list. A stock with no
+    // sector tag has nothing to disagree with, and the panel's remedy does
+    // not apply to it.
     db.prepare("UPDATE securities SET sector = NULL WHERE symbol='KO'").run();
-    expect(getSectorDisagreements(db).map((r) => r.symbol)).toEqual(
-      expect.arrayContaining(["KO", "VRTX"])
-    );
+    expect(getSectorDisagreements(db).map((r) => r.symbol)).toEqual(["VRTX"]);
+    expect(getSectorCheckMissingSector(db).map((r) => r.symbol)).toEqual(["KO"]);
   });
 
   it("a REIT with sector 'Financials' and fund_category '(Real Estate)' flags", () => {

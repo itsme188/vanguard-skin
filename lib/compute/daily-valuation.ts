@@ -235,10 +235,20 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
 
         let holdingsValue = 0;
         let pricedCount = 0;
+        // Reported counts only. A closed position leaves a quantity-0
+        // tombstone row on the snapshot date; it is worth zero, so it stays
+        // in the value loop and in the row-written gate below (dropping it
+        // there would change which days get a row), but it is not a holding
+        // and must not show up as one — or as an "unpriced" one — in
+        // holdings_count / priced_count.
+        let openCount = 0;
+        let pricedOpenCount = 0;
         let maxPriceStaleDays = 0;
 
         for (const holding of holdings) {
           const price = getPrice.get(holding.security_id, date, date) as PriceRow | undefined;
+          const isOpen = holding.quantity !== 0;
+          if (isOpen) openCount++;
 
           if (price) {
             holdingsValue += marketValue(
@@ -249,6 +259,7 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
               getUsdPerUnit(db, holding.currency)
             );
             pricedCount++;
+            if (isOpen) pricedOpenCount++;
 
             // Track staleness of the oldest price used in this valuation
             const priceDateMs = new Date(price.price_date).getTime();
@@ -294,8 +305,8 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
           cashBalance,
           holdingsValue,
           totalValue,
-          holdings.length,
-          pricedCount,
+          openCount,
+          pricedOpenCount,
           dataQuality
         );
 
