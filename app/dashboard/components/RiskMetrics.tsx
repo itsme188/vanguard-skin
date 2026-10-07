@@ -168,11 +168,14 @@ export function RiskMetrics({ scope }: { scope?: string }) {
     <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-6">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-ink">Risk Decomposition</h3>
-        <span className="text-xs text-ink-faint font-mono">
+        <span
+          className="text-xs text-ink-faint font-mono"
+          title="Common comparison window: every account scope is measured over the same days, so scopes compare like for like. The Market Regression card uses this scope's full history."
+        >
           {metrics.dataPoints} daily observations
           {metrics.seriesStart && metrics.seriesEnd && (
             <>
-              {" · "}
+              {" · common comparison window "}
               {formatDate(metrics.seriesStart)}
               {" → "}
               {formatDate(metrics.seriesEnd)}
