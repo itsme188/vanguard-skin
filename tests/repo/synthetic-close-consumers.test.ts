@@ -36,6 +36,10 @@ const CONSUMERS: Record<string, { role: Role; why: string }> = {
     role: "include-with-disclosure",
     why: "carries isSyntheticClose on round trips; user-trade counts drop them",
   },
+  "lib/compute/donation-recompute.ts": {
+    role: "include-with-disclosure",
+    why: "labelled 'Estimated closes' census count before and after a donation-triggered recompute",
+  },
   "lib/queries/options.ts": { role: "include-with-disclosure", why: "isSyntheticClose flag on closed sales" },
   "lib/queries/security-detail.ts": {
     role: "include-with-disclosure",

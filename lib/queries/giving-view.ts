@@ -16,8 +16,17 @@ export interface GivingYear {
   totalGiven: number;
   stockGiven: number;
   cashGiven: number;
-  /** null when any (non-reversed) stock donation in the year lacks lot assignments. */
+  /**
+   * null when any (non-reversed) stock donation in the year lacks lot
+   * assignments. Otherwise the sum over the stock donations whose basis is
+   * plausible — a row flagged `basisImplausible` is LEFT OUT (owner ruling
+   * 2026-10-06), so this can be 0 with every row left out.
+   */
   gainAvoided: number | null;
+  /** Non-reversed stock donations left out of `gainAvoided` for an implausible basis. */
+  gainAvoidedRowsLeftOut: number;
+  /** Non-reversed stock donations whose avoided gain IS in `gainAvoided`. */
+  gainAvoidedRowsCounted: number;
   donations: GivingDonation[];
 }
 
@@ -26,6 +35,13 @@ export interface GivingDonation {
   accountName: string | null;
   basis: number | null;
   gainAvoided: number | null;
+  /**
+   * True when at least one assigned lot's per-share basis is under 1% of the
+   * gift's per-share fair market value (`isDonatedLotBasisImplausible`). The
+   * row shows a "basis implausible, verify" chip and its avoided gain is left
+   * out of the year total. Always false with no lots assigned.
+   */
+  basisImplausible: boolean;
   longTermQuantity: number | null;
   shortTermQuantity: number | null;
   /** Precedence (Codex plan-review #8): reversed > unsupported (non-USD) > pending-lots
@@ -50,6 +66,52 @@ interface AssignmentRow {
   acquisition_date: string;
   quantity_acquired: number;
   cost_basis: number;
+}
+
+/** A donated lot's per-share basis below this percent of the gift's per-share
+ *  fair market value is not believable (owner ruling 2026-10-06). */
+export const DONATED_BASIS_FLOOR_PERCENT = 1;
+
+export interface DonatedLotBasisInput {
+  /** `tax_lots.cost_basis` of the assigned lot (whole lot, dollars). */
+  lotCostBasis: number | null | undefined;
+  /** `tax_lots.quantity_acquired` of the assigned lot. */
+  lotQuantityAcquired: number | null | undefined;
+  /** `donations.fmv_usd` (whole gift, dollars). */
+  donationFmvUsd: number | null | undefined;
+  /** `donations.quantity` (shares given). */
+  donationQuantity: number | null | undefined;
+}
+
+function positiveFinite(n: number | null | undefined): n is number {
+  return typeof n === "number" && Number.isFinite(n) && n > 0;
+}
+
+/**
+ * THE one plausibility predicate for a donated lot's basis — the row chip and
+ * the year total both read it (through `GivingDonation.basisImplausible`).
+ *
+ * True when the lot's per-share basis is STRICTLY under 1% of the gift's
+ * per-share fair market value. Exactly 1% is plausible.
+ *
+ * - No per-share fair market value (the gift's value or share count is
+ *   missing, zero, negative or not a number): false. There is nothing to
+ *   compare against, so nothing is flagged and nothing is divided.
+ * - No per-share basis (the lot has no shares, or its basis is not a number):
+ *   true. The view prices such a lot at zero a share, which publishes the
+ *   whole fair market value as avoided gain — the same defect the rule is for.
+ * - A zero or negative basis: true.
+ *
+ * Compared by cross-multiplication, so a share price that does not divide
+ * evenly cannot tip the boundary through a rounding error.
+ */
+export function isDonatedLotBasisImplausible(input: DonatedLotBasisInput): boolean {
+  const { lotCostBasis, lotQuantityAcquired, donationFmvUsd, donationQuantity } = input;
+  if (!positiveFinite(donationFmvUsd) || !positiveFinite(donationQuantity)) return false;
+  if (!positiveFinite(lotQuantityAcquired)) return true;
+  if (typeof lotCostBasis !== "number" || !Number.isFinite(lotCostBasis)) return true;
+  // basis/lotQty < (floor/100) × fmv/giftQty, with every divisor positive.
+  return lotCostBasis * 100 * donationQuantity < DONATED_BASIS_FLOOR_PERCENT * donationFmvUsd * lotQuantityAcquired;
 }
 
 function fetchOutLegs(db: Database.Database): Map<number, OutLegRow> {
@@ -128,6 +190,7 @@ function buildGivingDonation(
   let gainAvoided: number | null = null;
   let longTermQuantity: number | null = null;
   let shortTermQuantity: number | null = null;
+  let basisImplausible = false;
 
   if (d.kind === "stock" && outLeg != null && assignments.length > 0) {
     let basisSum = 0;
@@ -136,6 +199,18 @@ function buildGivingDonation(
     for (const a of assignments) {
       const perShare = a.quantity_acquired !== 0 ? a.cost_basis / a.quantity_acquired : 0;
       basisSum += a.quantity * perShare;
+      // Judged per LOT, not on the blended row: one penny-basis lot among
+      // ordinary ones still overstates the avoided gain by its whole value.
+      if (
+        isDonatedLotBasisImplausible({
+          lotCostBasis: a.cost_basis,
+          lotQuantityAcquired: a.quantity_acquired,
+          donationFmvUsd: d.fmv_usd,
+          donationQuantity: d.quantity,
+        })
+      ) {
+        basisImplausible = true;
+      }
       if (isLongTermHolding(a.acquisition_date, outLeg.trade_date)) lt += a.quantity;
       else st += a.quantity;
     }
@@ -153,6 +228,7 @@ function buildGivingDonation(
     accountName: outLeg?.account_name ?? null,
     basis,
     gainAvoided,
+    basisImplausible,
     longTermQuantity,
     shortTermQuantity,
     status,
@@ -200,14 +276,33 @@ export function getGivingView(db: Database.Database): {
         .reduce((sum, gd) => sum + gd.donation.fmv_usd, 0);
       const stockDonations = active.filter((gd) => gd.donation.kind === "stock");
       const anyMissingBasis = stockDonations.some((gd) => gd.basis == null);
+      // A row with an implausible basis is left out of the total (owner
+      // ruling 2026-10-06); the header says how many were. The row flag is
+      // the single source — the total never re-derives it.
+      const counted = stockDonations.filter((gd) => gd.basis != null && !gd.basisImplausible);
+      const gainAvoidedRowsLeftOut = stockDonations.filter((gd) => gd.basisImplausible).length;
       const gainAvoided = anyMissingBasis
         ? null
-        : stockDonations.reduce((sum, gd) => sum + (gd.gainAvoided ?? 0), 0);
-      return { year, totalGiven, stockGiven, cashGiven, gainAvoided, donations: yearDonations };
+        : counted.reduce((sum, gd) => sum + (gd.gainAvoided ?? 0), 0);
+      return {
+        year,
+        totalGiven,
+        stockGiven,
+        cashGiven,
+        gainAvoided,
+        gainAvoidedRowsLeftOut,
+        gainAvoidedRowsCounted: counted.length,
+        donations: yearDonations,
+      };
     });
 
   const conventionPending = !getTaxConventionState(db).recomputeCurrent;
   return { years, reconciliation, conventionPending };
+}
+
+/** True when a donation row with this id exists. */
+export function donationExists(db: Database.Database, donationId: number): boolean {
+  return db.prepare("SELECT 1 FROM donations WHERE id = ?").get(donationId) != null;
 }
 
 // ── Per-donation open-lots listing (drawer support, Task 13) ──────────────

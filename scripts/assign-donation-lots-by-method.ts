@@ -40,7 +40,11 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { getOpenLotsForDonation, DonationLotsQueryError, type OpenLotForDonation } from "@/lib/queries/giving-view";
 import { assignDonationLots, DonationLinkError } from "@/lib/mutations/donation-links";
-import { recomputeAfterDonationMutation } from "@/lib/compute/donation-recompute";
+import {
+  countAcceptedTaxYears,
+  recomputeAfterDonationMutation,
+  wholeLedgerRecomputeNotice,
+} from "@/lib/compute/donation-recompute";
 
 const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
 const MINTAX_FROM = "2025-01-01"; // donations on/after this date use MinTax
@@ -241,6 +245,8 @@ export function runAssignment(db: Database.Database, apply: boolean): { planned:
   db.prepare(`VACUUM INTO ?`).run(backupPath);
   console.log(`\nBackup: ${backupPath}`);
 
+  // Counted before the assignments below bump the tax input generation.
+  const acceptedTaxYearsBefore = countAcceptedTaxYears(db);
   let assigned = 0;
   for (const plan of plans) {
     try {
@@ -258,6 +264,7 @@ export function runAssignment(db: Database.Database, apply: boolean): { planned:
       }
     }
   }
+  console.log(`\n${wholeLedgerRecomputeNotice(acceptedTaxYearsBefore)}`);
   const recompute = recomputeAfterDonationMutation(db);
   console.log(`\nAssigned ${assigned} of ${plans.length} donation(s); recompute: ${JSON.stringify(recompute)}`);
   return { planned: plans.length, assigned, problems: problems.length };

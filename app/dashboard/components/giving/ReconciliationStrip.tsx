@@ -5,8 +5,9 @@ import { useRouter } from "next/navigation";
 import type { ReconciliationReport } from "@/lib/compute/donation-reconciliation";
 import { Chip } from "../Chip";
 import { Money, Shares } from "@/lib/privacy/components";
-import { useToast } from "../Toast";
 import apiFetch from "@/lib/http/apiFetch";
+import { LedgerRecomputeDialog, useLedgerRecomputeFlow } from "./LedgerRecomputeDialog";
+import { withLedgerAck } from "./ledger-recompute-flow";
 
 /**
  * Reconciliation strip (Task 13) — the client island for the six report
@@ -15,14 +16,15 @@ import apiFetch from "@/lib/http/apiFetch";
  * informational rows/chips; duplicate suspects + unmatched pairs collapse
  * behind a <details> (DefenseView's diagnostics idiom).
  *
- * Honest-feedback rules (carried ruling): check res.ok AND data.success;
- * when data.data.recomputed === false, surface the specific recompute-
- * failure message instead of a generic success toast; never close/advance
- * UI state before the mutation actually succeeds.
+ * Confirming a match ends in a recompute of the ENTIRE tax-lot ledger, so it
+ * goes through the disclose-and-confirm flow (owner ruling 2026-10-06,
+ * LedgerRecomputeDialog): told first, asked, progress shown, result
+ * reported. The response is read through `readMutationResult` inside that
+ * flow; the page refreshes only after a saved change's result is closed.
  */
 export function ReconciliationStrip({ report }: { report: ReconciliationReport }) {
   const router = useRouter();
-  const { toast } = useToast();
+  const flow = useLedgerRecomputeFlow();
   const [confirmingId, setConfirmingId] = useState<number | null>(null);
   // Two-step confirm for a zero-amount OUT leg: the first click arms this id
   // and shows the warning inline, the second click actually links.
@@ -36,38 +38,28 @@ export function ReconciliationStrip({ report }: { report: ReconciliationReport }
     report.duplicateSuspects.length > 0 ||
     report.unmatchedPairs.length > 0;
 
-  async function confirmMatch(donationId: number, outTransactionId: number, artifactTransactionId: number | null) {
+  function confirmMatch(donationId: number, outTransactionId: number, artifactTransactionId: number | null) {
+    if (flow.active) return;
     setArmedZeroId(null);
     setConfirmingId(donationId);
-    try {
-      const res = await apiFetch(`/api/donations/${donationId}/links`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ outTransactionId, artifactTransactionId }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        toast(`Failed to confirm match: ${json.error ?? "unknown error"}`, "error");
-        return;
-      }
-      if (json.data?.recomputed === false) {
-        toast(
-          `Saved — lot recompute failed: ${json.data.recomputeError ?? "unknown error"}. Retry from the drawer.`,
-          "error"
-        );
-      } else {
-        toast("Match confirmed", "success");
-      }
-      router.refresh();
-    } catch (err) {
-      toast(`Failed to confirm match: ${err instanceof Error ? err.message : "network error"}`, "error");
-    } finally {
-      setConfirmingId(null);
-    }
+    flow.start({
+      title: "Confirming this match",
+      send: (acknowledged) =>
+        apiFetch(`/api/donations/${donationId}/links`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(withLedgerAck({ outTransactionId, artifactTransactionId }, acknowledged)),
+        }),
+      onClosed: (saved) => {
+        setConfirmingId(null);
+        if (saved) router.refresh();
+      },
+    });
   }
 
   return (
     <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev space-y-4">
+      <LedgerRecomputeDialog flow={flow} />
       <div className="flex items-baseline justify-between">
         <h3 className="text-sm font-medium text-ink-dim">Reconciliation</h3>
         {!hasAnything && <Chip tone="up">clean</Chip>}
@@ -116,7 +108,7 @@ export function ReconciliationStrip({ report }: { report: ReconciliationReport }
                             ? setArmedZeroId(donation.id)
                             : confirmMatch(donation.id, outLeg.id, artifactLeg?.id ?? null)
                         }
-                        disabled={submitting}
+                        disabled={flow.active}
                         className="px-3 py-1.5 rounded-lg bg-gold text-canvas text-xs font-medium hover:brightness-110 disabled:opacity-50 transition-[filter,scale] active:scale-[0.96] focus-ring"
                       >
                         {submitting ? "Confirming…" : armed ? "Link anyway" : "Confirm"}

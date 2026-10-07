@@ -1,7 +1,12 @@
 import { db } from "@/lib/db";
 import { assignDonationLots, DonationLinkError } from "@/lib/mutations/donation-links";
 import { getOpenLotsForDonation, DonationLotsQueryError } from "@/lib/queries/giving-view";
-import { recomputeAfterDonationMutation } from "@/lib/compute/donation-recompute";
+import {
+  applyOrRehearse,
+  isLedgerRecomputeAcknowledged,
+  ledgerRecomputeRefusal,
+  recomputeAfterDonationMutation,
+} from "@/lib/compute/donation-recompute";
 
 /**
  * GET/POST /api/donations/:id/lots — the lot-assignment drawer (Task 13).
@@ -14,8 +19,11 @@ import { recomputeAfterDonationMutation } from "@/lib/compute/donation-recompute
  * wrapper: all invariants live in lib/mutations/donation-links.ts /
  * lib/queries/giving-view.ts.
  *
- * POST body: { assignments: [{ acquisitionTransactionId, quantity }] }.
- * An empty array clears the donation's assignments.
+ * POST body: { assignments: [{ acquisitionTransactionId, quantity }],
+ * acknowledgeLedgerRecompute: true }. An empty array clears the donation's
+ * assignments. Without the acknowledgement the POST is refused with 409
+ * `ledger_recompute_unacknowledged` and a census of the ledger (see
+ * lib/compute/donation-recompute-contract.ts); nothing is written.
  */
 
 function parseId(raw: string): number | null {
@@ -43,6 +51,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 }
 
 interface LotsBody {
+  acknowledgeLedgerRecompute?: boolean;
   assignments?: { acquisitionTransactionId: number; quantity: number }[];
 }
 
@@ -55,7 +64,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   let body: LotsBody;
   try {
-    body = (await request.json()) as LotsBody;
+    const parsed: unknown = await request.json();
+    // `null`, a number or a string is valid JSON but not a request body.
+    if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return Response.json({ success: false, error: "Invalid JSON body" }, { status: 400 });
+    }
+    body = parsed as LotsBody;
   } catch {
     return Response.json({ success: false, error: "Invalid JSON body" }, { status: 400 });
   }
@@ -63,8 +77,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return Response.json({ success: false, error: "assignments must be an array" }, { status: 400 });
   }
 
+  const assignments = body.assignments;
+  // Owner ruling 2026-10-06: this route ends in a whole-ledger recompute. An
+  // unacknowledged request is REHEARSED (run, then rolled back) so every
+  // validation error surfaces first; a clean rehearsal is answered with the
+  // confirm prompt and nothing is written.
+  const acknowledged = isLedgerRecomputeAcknowledged(body);
   try {
-    assignDonationLots(db, donationId, body.assignments);
+    applyOrRehearse(db, acknowledged, () => {
+      assignDonationLots(db, donationId, assignments);
+    });
   } catch (error) {
     if (error instanceof DonationLinkError) {
       return Response.json({ success: false, error: error.message }, { status: 400 });
@@ -72,6 +94,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const message = error instanceof Error ? error.message : "Unknown error";
     return Response.json({ success: false, error: message }, { status: 500 });
   }
+
+  if (!acknowledged) return ledgerRecomputeRefusal(db, { bumpsTaxGeneration: true });
 
   const recompute = recomputeAfterDonationMutation(db);
   return Response.json({ success: true, data: { saved: true, ...recompute } });

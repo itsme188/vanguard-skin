@@ -25,7 +25,11 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { getOpenLotsForDonation } from "@/lib/queries/giving-view";
 import { assignDonationLots } from "@/lib/mutations/donation-links";
-import { recomputeAfterDonationMutation } from "@/lib/compute/donation-recompute";
+import {
+  countAcceptedTaxYears,
+  recomputeAfterDonationMutation,
+  wholeLedgerRecomputeNotice,
+} from "@/lib/compute/donation-recompute";
 import { selectLotsMinTax } from "./assign-donation-lots-by-method";
 
 const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
@@ -36,6 +40,8 @@ function main() {
   const db = new Database(DB_PATH, { timeout: 60000 });
   db.pragma("foreign_keys = ON");
 
+  // Counted before the reassignments below bump the tax input generation.
+  const acceptedTaxYearsBefore = countAcceptedTaxYears(db);
   for (const id of DONATION_IDS) {
     const donation = db
       .prepare("SELECT id, quantity, symbol_raw FROM donations WHERE id = ?")
@@ -72,6 +78,7 @@ function main() {
   }
 
   if (apply) {
+    console.log(`\n${wholeLedgerRecomputeNotice(acceptedTaxYearsBefore)}`);
     const recompute = recomputeAfterDonationMutation(db);
     console.log(`\nRecompute: ${JSON.stringify(recompute)}`);
     const bad = (recompute.replayWarnings ?? []).filter((w) => /donation (16|17):/.test(w));

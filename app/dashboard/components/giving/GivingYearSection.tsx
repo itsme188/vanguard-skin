@@ -6,11 +6,12 @@ import type { GivingYear, GivingDonation } from "@/lib/queries/giving-view";
 import { SymbolLink } from "../SymbolLink";
 import { Chip, type ChipTone } from "../Chip";
 import { ConfirmDialog } from "../ConfirmDialog";
-import { Money, Shares } from "@/lib/privacy/components";
-import { useToast } from "../Toast";
+import { Count, Money, Shares } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
 import { todayET } from "@/lib/calendar/date-utils";
 import { LotAssignmentDrawer } from "./LotAssignmentDrawer";
+import { LedgerRecomputeDialog, useLedgerRecomputeFlow } from "./LedgerRecomputeDialog";
+import { withLedgerAck } from "./ledger-recompute-flow";
 import { ScrollFade } from "../ScrollFade";
 
 /**
@@ -22,6 +23,15 @@ import { ScrollFade } from "../ScrollFade";
  *
  * Status chip tones are a carried controller ruling: unsupported→neutral,
  * reversed→down, completed→up, received→info, pending-lots→warn.
+ *
+ * Owner rulings 2026-10-06:
+ *  - Unlink, Mark reversed and Resolve each end in a recompute of the ENTIRE
+ *    tax-lot ledger, so each goes through LedgerRecomputeDialog (told first,
+ *    asked, progress, result).
+ *  - A row whose donated lot has an implausible basis (`gd.basisImplausible`,
+ *    decided once in lib/queries/giving-view.ts) carries a "basis
+ *    implausible, verify" chip, and the year header says how many such rows
+ *    were left out of "Gain avoided".
  */
 
 // Matches the backend's own strict format check in
@@ -47,13 +57,11 @@ const STATUS_LABEL: Record<GivingDonation["status"], string> = {
 
 export function GivingYearSection({ year }: { year: GivingYear }) {
   const router = useRouter();
-  const { toast } = useToast();
+  const flow = useLedgerRecomputeFlow();
   const [drawerDonation, setDrawerDonation] = useState<GivingDonation | null>(null);
   const [unlinkTarget, setUnlinkTarget] = useState<GivingDonation | null>(null);
-  const [unlinking, setUnlinking] = useState(false);
   const [reverseTarget, setReverseTarget] = useState<GivingDonation | null>(null);
   const [reverseDate, setReverseDate] = useState("");
-  const [reversing, setReversing] = useState(false);
 
   const stockDonations = year.donations.filter((gd) => gd.donation.kind === "stock");
   const cashDonations = year.donations.filter((gd) => gd.donation.kind === "cash");
@@ -63,73 +71,55 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
     setReverseDate(todayET());
   }
 
-  async function markReversed(donationId: number, reversedDate: string) {
-    setReversing(true);
-    try {
-      const res = await apiFetch(`/api/donations/${donationId}/reverse`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reversedDate }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        toast(`Failed to mark reversed: ${json.error ?? "unknown error"}`, "error");
-        return;
-      }
-      if (json.data?.recomputed === false) {
-        toast(
-          `Saved — lot recompute failed: ${json.data.recomputeError ?? "unknown error"}. Retry from the drawer.`,
-          "error"
-        );
-      } else {
-        toast("Donation marked reversed", "success");
-      }
-      setReverseTarget(null);
-      router.refresh();
-    } catch (err) {
-      toast(`Failed to mark reversed: ${err instanceof Error ? err.message : "network error"}`, "error");
-    } finally {
-      setReversing(false);
-    }
+  // Both hand over to the recompute dialog: this first dialog says what the
+  // action does to the donation, the next one says what it does to the ledger.
+  function markReversed(donationId: number, reversedDate: string) {
+    if (flow.active) return;
+    setReverseTarget(null);
+    flow.start({
+      title: "Marking this donation reversed",
+      send: (acknowledged) =>
+        apiFetch(`/api/donations/${donationId}/reverse`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(withLedgerAck({ reversedDate }, acknowledged)),
+        }),
+      onClosed: (saved) => {
+        if (saved) router.refresh();
+      },
+    });
   }
 
-  async function unlink(donationId: number) {
-    setUnlinking(true);
-    try {
-      const res = await apiFetch(`/api/donations/${donationId}/links`, { method: "DELETE" });
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        toast(`Failed to unlink: ${json.error ?? "unknown error"}`, "error");
-        return;
-      }
-      if (json.data?.recomputed === false) {
-        toast(
-          `Saved — lot recompute failed: ${json.data.recomputeError ?? "unknown error"}. Retry from the drawer.`,
-          "error"
-        );
-      } else {
-        toast("Donation unlinked", "success");
-      }
-      setUnlinkTarget(null);
-      router.refresh();
-    } catch (err) {
-      toast(`Failed to unlink: ${err instanceof Error ? err.message : "network error"}`, "error");
-    } finally {
-      setUnlinking(false);
-    }
+  function unlink(donationId: number) {
+    if (flow.active) return;
+    setUnlinkTarget(null);
+    flow.start({
+      title: "Unlinking this donation",
+      send: (acknowledged) =>
+        apiFetch(`/api/donations/${donationId}/links`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(withLedgerAck({}, acknowledged)),
+        }),
+      onClosed: (saved) => {
+        if (saved) router.refresh();
+      },
+    });
   }
 
   return (
     <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev space-y-4">
+      <LedgerRecomputeDialog flow={flow} />
       <ConfirmDialog
         open={unlinkTarget !== null}
         title="Unlink donation"
         message={
           unlinkTarget
-            ? `Unlink ${unlinkTarget.donation.symbol_raw ?? "this donation"}'s OUT leg? The transfer transaction returns to the unmatched pool and any lot assignments are dropped.`
+            ? `Unlink ${unlinkTarget.donation.symbol_raw ?? "this donation"}'s OUT leg? The transfer transaction returns to the unmatched pool and any lot assignments are dropped. This recomputes the entire tax-lot ledger; you will be asked to confirm that next.`
             : ""
         }
-        confirmLabel={unlinking ? "Unlinking…" : "Unlink"}
+        confirmLabel="Unlink"
+        confirmDisabled={flow.active}
         variant="danger"
         onConfirm={() => unlinkTarget && unlink(unlinkTarget.donation.id)}
         onCancel={() => setUnlinkTarget(null)}
@@ -140,12 +130,12 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
         title="Mark donation reversed"
         message={
           reverseTarget
-            ? `Mark ${reverseTarget.donation.symbol_raw ?? "this donation"} as reversed? This drops any leg links and lot assignments and stamps the reversed date below.`
+            ? `Mark ${reverseTarget.donation.symbol_raw ?? "this donation"} as reversed? This drops any leg links and lot assignments and stamps the reversed date below. It recomputes the entire tax-lot ledger; you will be asked to confirm that next.`
             : ""
         }
-        confirmLabel={reversing ? "Marking…" : "Mark reversed"}
+        confirmLabel="Mark reversed"
         variant="danger"
-        confirmDisabled={reversing || !REVERSED_DATE_RE.test(reverseDate)}
+        confirmDisabled={flow.active || !REVERSED_DATE_RE.test(reverseDate)}
         onConfirm={() => reverseTarget && REVERSED_DATE_RE.test(reverseDate) && markReversed(reverseTarget.donation.id, reverseDate)}
         onCancel={() => setReverseTarget(null)}
       >
@@ -179,10 +169,20 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
           </span>
           <span className="text-ink-dim">
             Gain avoided{" "}
-            {year.gainAvoided != null ? (
-              <Money value={year.gainAvoided} className="font-mono font-medium text-up" />
-            ) : (
+            {year.gainAvoided == null ? (
               <span className="text-ink-faint italic">pending lot assignment</span>
+            ) : year.gainAvoidedRowsLeftOut > 0 && year.gainAvoidedRowsCounted === 0 ? (
+              // Every row was left out: there is no believable total to print.
+              <span className="text-ink-faint italic">not shown</span>
+            ) : (
+              <Money value={year.gainAvoided} className="font-mono font-medium text-up" />
+            )}
+            {year.gainAvoidedRowsLeftOut > 0 && (
+              <span className="text-warn">
+                {" "}
+                · rows left out for an implausible basis:{" "}
+                <Count value={year.gainAvoidedRowsLeftOut} className="font-mono font-medium" />
+              </span>
             )}
           </span>
         </div>
@@ -255,7 +255,12 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                       )}
                     </td>
                     <td className="px-3 py-2.5">
-                      <Chip tone={STATUS_TONE[gd.status]}>{STATUS_LABEL[gd.status]}</Chip>
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        <Chip tone={STATUS_TONE[gd.status]}>{STATUS_LABEL[gd.status]}</Chip>
+                        {gd.basisImplausible && !struck && (
+                          <Chip tone="warn">basis implausible, verify</Chip>
+                        )}
+                      </span>
                     </td>
                     <td className="px-3 py-2.5 text-right whitespace-nowrap">
                       {!struck && (
@@ -360,12 +365,11 @@ function ResolveSecurityControl({
   rawSymbol: string;
   onResolved: () => void;
 }) {
-  const { toast } = useToast();
+  const flow = useLedgerRecomputeFlow();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(rawSymbol === "—" ? "" : rawSymbol);
   const [results, setResults] = useState<SecuritySearchResult[]>([]);
   const [searching, setSearching] = useState(false);
-  const [submittingId, setSubmittingId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -393,34 +397,24 @@ function ResolveSecurityControl({
     };
   }, [query, open]);
 
-  async function resolve(securityId: number) {
-    setSubmittingId(securityId);
-    try {
-      const res = await apiFetch(`/api/donations/${donationId}/resolve-security`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ securityId }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        toast(`Failed to resolve symbol: ${json.error ?? "unknown error"}`, "error");
-        return;
-      }
-      if (json.data?.recomputed === false) {
-        toast(
-          `Saved — lot recompute failed: ${json.data.recomputeError ?? "unknown error"}. Retry from the drawer.`,
-          "error"
-        );
-      } else {
-        toast("Symbol resolved", "success");
-      }
-      setOpen(false);
-      onResolved();
-    } catch (err) {
-      toast(`Failed to resolve symbol: ${err instanceof Error ? err.message : "network error"}`, "error");
-    } finally {
-      setSubmittingId(null);
-    }
+  function resolve(securityId: number) {
+    if (flow.active) return;
+    flow.start({
+      title: "Resolving this symbol",
+      send: (acknowledged) =>
+        apiFetch(`/api/donations/${donationId}/resolve-security`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(withLedgerAck({ securityId }, acknowledged)),
+        }),
+      // Refresh only once the result is closed: the refresh replaces this
+      // control with the resolved symbol, which would take the dialog with it.
+      onClosed: (saved) => {
+        if (!saved) return;
+        setOpen(false);
+        onResolved();
+      },
+    });
   }
 
   if (!open) {
@@ -440,6 +434,7 @@ function ResolveSecurityControl({
 
   return (
     <div className="min-w-[220px]">
+      <LedgerRecomputeDialog flow={flow} />
       <input
         autoFocus
         value={query}
@@ -457,7 +452,7 @@ function ResolveSecurityControl({
             key={r.id}
             type="button"
             onClick={() => resolve(r.id)}
-            disabled={submittingId !== null}
+            disabled={flow.active}
             className="block w-full text-left px-2 py-1 text-xs hover:bg-raised transition-colors disabled:opacity-50 focus-ring"
           >
             <span className="font-mono text-ink">{r.title}</span> <span className="text-ink-faint">{r.subtitle}</span>

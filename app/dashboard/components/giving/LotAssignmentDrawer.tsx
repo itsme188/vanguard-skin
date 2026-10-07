@@ -7,6 +7,8 @@ import { Money, PrivateNumberInput, Shares } from "@/lib/privacy/components";
 import { Chip } from "../Chip";
 import { useToast } from "../Toast";
 import apiFetch from "@/lib/http/apiFetch";
+import { LedgerRecomputeDialog, useLedgerRecomputeFlow } from "./LedgerRecomputeDialog";
+import { withLedgerAck } from "./ledger-recompute-flow";
 
 /**
  * Lot-assignment drawer (Task 13) — skeleton copied from
@@ -19,10 +21,15 @@ import apiFetch from "@/lib/http/apiFetch";
  * "Suggest highest-gain long-term" preselects client-side from the API's
  * own `suggested`/`suggestedQuantity` flags. Save POSTs the current
  * selections (replace semantics); "Clear assignments" POSTs an empty array
- * (Codex plan-review #5). Both call the same honest-feedback handling:
- * check res.ok AND data.success; recomputed:false surfaces the specific
- * retry message instead of a generic success toast; the drawer never
- * closes before the mutation actually succeeds.
+ * (Codex plan-review #5).
+ *
+ * Both end in a recompute of the ENTIRE tax-lot ledger, so both go through
+ * the disclose-and-confirm flow (owner ruling 2026-10-06,
+ * LedgerRecomputeDialog): the first request carries no acknowledgement, the
+ * server refuses it and writes nothing, the dialog says what a recompute
+ * rebuilds and asks; only a confirmed request saves. The dialog then shows
+ * progress and what moved. The drawer closes only after a saved change's
+ * result has been read and closed.
  */
 
 interface LotAssignmentDrawerProps {
@@ -49,16 +56,19 @@ export function LotAssignmentDrawer({
   const [lots, setLots] = useState<OpenLotForDonation[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selections, setSelections] = useState<Record<number, number>>({});
-  const [saving, setSaving] = useState<"save" | "clear" | null>(null);
+  const flow = useLedgerRecomputeFlow();
+  const flowActive = flow.active;
 
   // Close on Escape — same idiom as MacroThemeReceiptDrawer/TrustStripDrawer.
+  // Not while the recompute dialog is up: closing the drawer would unmount
+  // the dialog and hide a running recompute and its result.
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !flowActive) onClose();
     }
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, [onClose]);
+  }, [onClose, flowActive]);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,34 +144,23 @@ export function LotAssignmentDrawer({
     setSelections(next);
   }
 
-  async function submit(assignments: { acquisitionTransactionId: number; quantity: number }[], mode: "save" | "clear") {
-    setSaving(mode);
-    try {
-      const res = await apiFetch(`/api/donations/${donationId}/lots`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ assignments }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        toast(`Failed to save lot assignments: ${json.error ?? "unknown error"}`, "error");
-        return;
-      }
-      if (json.data?.recomputed === false) {
-        toast(
-          `Saved — lot recompute failed: ${json.data.recomputeError ?? "unknown error"}. Retry from the drawer.`,
-          "error"
-        );
-      } else {
-        toast(mode === "clear" ? "Lot assignments cleared" : "Lot assignments saved", "success");
-      }
-      router.refresh();
-      onClose();
-    } catch (err) {
-      toast(`Failed to save lot assignments: ${err instanceof Error ? err.message : "network error"}`, "error");
-    } finally {
-      setSaving(null);
-    }
+  function submit(assignments: { acquisitionTransactionId: number; quantity: number }[], mode: "save" | "clear") {
+    // flow.start ignores a second click while a request is out or the dialog is up.
+    flow.start({
+      title: mode === "clear" ? "Clearing these lot assignments" : "Saving these lot assignments",
+      send: (acknowledged) =>
+        apiFetch(`/api/donations/${donationId}/lots`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(withLedgerAck({ assignments }, acknowledged)),
+        }),
+      // Not saved (cancelled or refused): the drawer stays open with the picks intact.
+      onClosed: (saved) => {
+        if (!saved) return;
+        router.refresh();
+        onClose();
+      },
+    });
   }
 
   function handleSave() {
@@ -184,7 +183,9 @@ export function LotAssignmentDrawer({
   return (
     <div
       className="fixed inset-0 z-[55] flex"
-      onClick={onClose}
+      onClick={() => {
+        if (!flowActive) onClose();
+      }}
       role="dialog"
       aria-label={`Assign lots for ${symbol}`}
     >
@@ -193,6 +194,9 @@ export function LotAssignmentDrawer({
         className="w-full max-w-md bg-panel border-l border-edge p-5 overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Inside the aside (which stops click propagation) so a click in the
+            dialog never reaches the backdrop's close handler. */}
+        <LedgerRecomputeDialog flow={flow} />
         <header className="mb-4 flex items-start justify-between gap-3">
           <div>
             <h2 className="text-base font-medium text-ink">Assign lots — {symbol}</h2>
@@ -291,22 +295,25 @@ export function LotAssignmentDrawer({
           </>
         )}
 
-        <div className="flex items-center justify-between gap-2 pt-2 border-t border-edge">
+        <p className="text-xs text-ink-dim pt-2 border-t border-edge">
+          Saving or clearing recomputes the entire tax-lot ledger. You will be asked to confirm first.
+        </p>
+        <div className="flex items-center justify-between gap-2 pt-2">
           <button
             type="button"
             onClick={handleClear}
-            disabled={saving !== null}
+            disabled={flowActive}
             className="px-3 py-2 rounded-lg border border-edge text-xs font-medium text-ink-dim hover:text-down hover:border-down/40 transition-colors disabled:opacity-50 focus-ring"
           >
-            {saving === "clear" ? "Clearing…" : "Clear assignments"}
+            Clear assignments
           </button>
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving !== null || !lots || lots.length === 0}
+            disabled={flowActive || !lots || lots.length === 0}
             className="px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 disabled:opacity-50 transition-[filter,scale] active:scale-[0.96] focus-ring"
           >
-            {saving === "save" ? "Saving…" : "Save"}
+            Save
           </button>
         </div>
       </aside>

@@ -108,10 +108,21 @@ function seedLinkedDonation(
   return { donationId, outTxnId };
 }
 
+/**
+ * Every mutating donation route refuses without the whole-ledger recompute
+ * acknowledgement (owner ruling 2026-10-06), so this helper adds it to every
+ * POST/DELETE body. The refusal itself is covered in
+ * tests/api/donations-recompute-ack.test.ts.
+ */
 function jsonReq(url: string, method: string, body?: unknown): NextRequest {
+  const mutating = method === "POST" || method === "DELETE";
+  const payload =
+    mutating && (body === undefined || (body !== null && typeof body === "object" && !Array.isArray(body)))
+      ? { ...((body as Record<string, unknown> | undefined) ?? {}), acknowledgeLedgerRecompute: true }
+      : body;
   return new NextRequest(url, {
     method,
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
   });
 }
 
