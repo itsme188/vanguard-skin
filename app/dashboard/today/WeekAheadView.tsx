@@ -8,9 +8,14 @@ import { earningsTimeLabel, isFredScheduleRow } from "@/lib/calendar/release-tim
 import type { EarningsDisplayTime } from "@/lib/calendar/display-earnings-time";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { epsDelta } from "@/lib/earnings/eps-delta";
-import { EnrichmentRowSummary } from "../components/calendar/EnrichmentChips";
+import {
+  EnrichmentDisclosure,
+  EnrichmentRowSummary,
+  PreReleaseActualChips,
+} from "../components/calendar/EnrichmentChips";
 import { EarningsConflictMarker } from "../components/calendar/EarningsConflictMarker";
-import { Chip } from "../components/Chip";
+import { EarningsDeleteButton } from "./EarningsDeleteButton";
+import { preReleaseClearsAtMs } from "./pre-release-clear";
 import {
   isPreReleaseActual,
   preReleaseActualChipText,
@@ -23,6 +28,7 @@ import {
 // forbids it), and never import a value from reaction-snapshot.ts (pulls
 // in @stoqey/ib) into anything that could end up in a client bundle.
 import {
+  isUsableReactionLeg,
   parseReactionSnapshot,
   snapshotCoversEventDate,
 } from "@/lib/calendar/reaction-snapshot-core";
@@ -37,6 +43,13 @@ interface WeekAheadViewProps {
 }
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"] as const;
+// The grid stays Mon-Fri (owner ruling 2026-08-18). A Saturday or Sunday row
+// is still part of the week the header names: it is counted there and listed
+// in one line under the grid, so this view and the Earnings Hub agree.
+const WEEKEND_DAYS = [
+  { label: "Sat", offset: 5 },
+  { label: "Sun", offset: 6 },
+] as const;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function fmtDayLabel(iso: string): string {
@@ -138,23 +151,26 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
     todayIso,
     currentMonday,
   );
+  const eventsOn = (date: string) =>
+    events
+      .filter((e) => e.event_date === date)
+      .sort((a, b) => {
+        const aTime = a.release_time ?? a.event_time ?? "99:99";
+        const bTime = b.release_time ?? b.event_time ?? "99:99";
+        return aTime.localeCompare(bTime);
+      });
   const days = WEEKDAYS.map((label, idx) => {
     const date = addDays(weekOf, idx);
-    return {
-      label,
-      date,
-      isToday: date === todayIso,
-      events: events
-        .filter((e) => e.event_date === date)
-        .sort((a, b) => {
-          const aTime = a.release_time ?? a.event_time ?? "99:99";
-          const bTime = b.release_time ?? b.event_time ?? "99:99";
-          return aTime.localeCompare(bTime);
-        }),
-    };
+    return { label, date, isToday: date === todayIso, events: eventsOn(date) };
   });
+  const weekendDays = WEEKEND_DAYS.map(({ label, offset }) => {
+    const date = addDays(weekOf, offset);
+    return { label, date, events: eventsOn(date) };
+  }).filter((d) => d.events.length > 0);
 
-  const totalEvents = days.reduce((sum, d) => sum + d.events.length, 0);
+  const totalEvents =
+    days.reduce((sum, d) => sum + d.events.length, 0) +
+    weekendDays.reduce((sum, d) => sum + d.events.length, 0);
   const macroNotLoaded = macroScheduleNotLoaded(events, weekOf, todayIso);
 
   // Prev/next chevrons — plain links (server component), each week is a URL
@@ -219,9 +235,89 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
               <DayCard key={day.date} day={day} todayIso={todayIso} />
             ))}
           </div>
+          {weekendDays.length > 0 && <WeekendNote days={weekendDays} />}
         </div>
       )}
     </div>
+  );
+}
+
+/** The label a card prints as its time — display only (see EventRow). */
+function eventTimeLabel(event: DisplayedEvent): string | null {
+  return event.display_time?.label ?? earningsTimeLabel(event);
+}
+
+/**
+ * Whether the week view offers a remove control on a row. Only a hand-entered
+ * earnings row: "+ Add ticker" can land one in another week, where the Hub
+ * (current week only) never shows it, so this view was the one place it could
+ * be seen and it could not be removed there. Vendor rows keep their remove
+ * flow on the Hub.
+ */
+export function weekAheadRemovable(event: Pick<CalendarEvent, "source" | "event_type">): boolean {
+  return event.source === "manual" && event.event_type === "earnings";
+}
+
+/** The remove control for a hand-entered row; nothing for any other row. */
+function RemoveRow({ event }: { event: DisplayedEvent }) {
+  if (!weekAheadRemovable(event)) return null;
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[11px] text-ink-faint">
+      added by hand
+      <EarningsDeleteButton eventId={event.id} symbol={event.symbol ?? null} source={event.source} />
+    </span>
+  );
+}
+
+/**
+ * Weekend events, one line under the Mon-Fri grid. Same rule as a card for
+ * what is clickable: the symbol links only when the security resolves.
+ */
+function WeekendNote({
+  days,
+}: {
+  days: { label: string; date: string; events: DisplayedEvent[] }[];
+}) {
+  return (
+    <p className="text-[13px] text-ink-dim flex flex-wrap items-baseline gap-x-2 gap-y-1">
+      <span className="text-ink-faint">Outside the Mon–Fri grid:</span>
+      {days.flatMap((day) =>
+        day.events.map((e) => {
+          const time = eventTimeLabel(e);
+          const name = e.symbol ?? e.title;
+          return (
+            <span key={e.id} className="inline-flex flex-wrap items-baseline gap-x-1.5 min-w-0">
+              <span className="font-mono text-[11px] text-ink-faint">
+                {day.label} {fmtDayLabel(day.date)}
+                {time ? ` · ${time}` : ""}
+              </span>
+              {e.security_id ? (
+                <Link
+                  href={`/dashboard/security/${e.security_id}`}
+                  className="font-mono font-medium text-ink hover:text-gold"
+                  title={e.title ?? undefined}
+                >
+                  {name}
+                </Link>
+              ) : (
+                <span
+                  className={e.symbol ? "font-mono font-medium text-ink" : "text-ink"}
+                  title={e.symbol ? (e.title ?? undefined) : undefined}
+                >
+                  {name}
+                </span>
+              )}
+              <EarningsConflictMarker
+                dateStatus={e.date_status}
+                dateConflictWith={e.date_conflict_with}
+                wrap
+              />
+              <RemoveRow event={e} />
+            </span>
+          );
+        }),
+      )}
+    </p>
   );
 }
 
@@ -366,11 +462,11 @@ export function actualChipClass(
     >,
   now: Date = new Date(),
 ): string {
-  if (event.event_type !== "earnings") return CHIP_TONE_NEUTRAL;
   // Owner ruling 2026-10-06 (display-only): an actual saved before the
   // print's own window opened is never colored as a beat/miss — faint italic
   // until the window opens (the card adds the "pre-release" chip beside it).
   if (
+    event.event_type === "earnings" &&
     event.event_date &&
     isPreReleaseActual(
       {
@@ -386,6 +482,19 @@ export function actualChipClass(
   ) {
     return PRE_RELEASE_ACTUAL_CHIP_CLASS;
   }
+  return settledActualChipClass(event);
+}
+
+/**
+ * The actual chip's tone once the print window is open: beat / miss / neutral,
+ * with no pre-release check. actualChipClass falls through to this; the
+ * pre-release chip's timer switches to it when the window opens.
+ */
+export function settledActualChipClass(
+  event: Pick<CalendarEvent, "event_type" | "consensus_estimate" | "actual_value"> &
+    Partial<Pick<CalendarEvent, "consensus_value" | "manual_actuals_at">>,
+): string {
+  if (event.event_type !== "earnings") return CHIP_TONE_NEUTRAL;
   const consensus = effectiveConsensus(event);
   // Same plausibility gate as eventFigureDisplays: today the chip only
   // renders when actualDisplay is non-null (already gated), but the helper
@@ -419,6 +528,43 @@ export function releasedFigureGates(
   };
 }
 
+/** Layout classes of the "actual …" chip — the JSX literal in EventRow must match. */
+const ACTUAL_CHIP_LAYOUT = "text-[11px] font-mono rounded px-1.5 py-0.5 ml-auto max-w-full break-words";
+
+/**
+ * The card's own classes. The hover cue is added only for a card that does
+ * something when clicked (a link to the security hub, or the reaction-detail
+ * disclosure), so a static card never looks clickable. The link/disclosure
+ * wrappers in EventRow read the same flags.
+ */
+export function eventCardClass(interactive: boolean): string {
+  const base = "rounded-lg bg-raised border border-edge p-3";
+  return interactive ? `${base} hover:border-edge-strong transition-colors` : base;
+}
+
+/**
+ * Whether a card opens the full reaction detail (owner ruling 2026-08-30):
+ * an enriched macro row — released, enriched, with a snapshot measured on its
+ * own date (releasedFigureGates) that holds at least one usable leg. Earnings
+ * rows and linked rows are not disclosures: a linked card already goes to the
+ * security hub.
+ */
+export function macroCardExpandable(
+  event: Pick<
+    CalendarEvent,
+    "event_type" | "security_id" | "event_date" | "enriched_at" | "reaction_snapshot"
+  >,
+  todayIso: string,
+): boolean {
+  if (event.event_type === "earnings" || event.security_id) return false;
+  if (!releasedFigureGates(event, todayIso).showReaction) return false;
+  const snap = parseReactionSnapshot(event.reaction_snapshot ?? null);
+  if (!snap) return false;
+  return [snap.symbol, snap.spy, snap.qqq, snap.tlt, snap.sector].some((leg) =>
+    isUsableReactionLeg(leg),
+  );
+}
+
 function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string }) {
   // "time unknown" for an earnings row with no clock time — never a blank and
   // never a default (user ruling 2026-10-05). Single-sourced with Today's
@@ -426,7 +572,7 @@ function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string
   // display_time (attached by the page) replaces a slot-less vendor row's
   // stored default with the company's usual time, or "time unknown" (user
   // ruling 2026-10-06). Display only — sorting above still uses the stored time.
-  const time = event.display_time?.label ?? earningsTimeLabel(event);
+  const time = eventTimeLabel(event);
   const symbol = event.symbol ?? null;
   const { consensusDisplay, actualDisplay: rawActualDisplay } = eventFigureDisplays(event);
   const { released, showReaction } = releasedFigureGates(event, todayIso);
@@ -435,8 +581,13 @@ function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string
   // print's own BMO/AMC window opened is shown muted under a "pre-release"
   // chip, never colored as a beat/miss. Reverts once the window opens.
   const preRelease = !!actualDisplay && isPreReleaseActual(event);
-  const inner = (
-    <div className="rounded-lg bg-raised border border-edge p-3 hover:border-edge-strong transition-colors">
+  // One decision each for "is a link" and "is a disclosure"; the card's hover
+  // cue and the wrappers below both read them.
+  const linked = !!event.security_id;
+  const expandable = macroCardExpandable(event, todayIso);
+  const cardClass = eventCardClass(linked || expandable);
+  const body = (
+    <>
       <div className="flex items-center gap-2 mb-1.5 flex-wrap">
         {time && (
           <span className="text-[11px] font-mono text-ink-faint tabular-nums min-w-0 break-words">{time}</span>
@@ -461,6 +612,7 @@ function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string
         <EarningsConflictMarker
           dateStatus={event.date_status}
           dateConflictWith={event.date_conflict_with}
+          wrap
         />
         {/* The row flex-wraps, so a long actual value drops to its own
             line — never clipped to "actual…". Day columns can be as
@@ -474,17 +626,27 @@ function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string
             prints, street EPS/Rev) — they reveal nothing about the
             user's holdings, so they render unmasked per the
             privacy-masks-portfolio-only rule (B16 sibling). */}
-        {actualDisplay && (
-          <span
-            className={`text-[11px] font-mono rounded px-1.5 py-0.5 ml-auto max-w-full break-words ${actualChipClass(event)}`}
-          >
-            actual {actualDisplay}
-          </span>
-        )}
-        {preRelease && (
-          <Chip tone="warn" size="xs" title={PRE_RELEASE_ACTUAL_TITLE} className="max-w-full">
-            {preReleaseActualChipText(event.manual_actuals_at)}
-          </Chip>
+        {/* A pre-release row goes through a small client component: one
+            timer, set for the moment the print window opens, clears the chip
+            and gives the figure its beat/miss tone without a reload. */}
+        {preRelease && actualDisplay ? (
+          <PreReleaseActualChips
+            actualDisplay={actualDisplay}
+            preReleaseClass={`${ACTUAL_CHIP_LAYOUT} ${actualChipClass(event)}`}
+            settledClass={`${ACTUAL_CHIP_LAYOUT} ${settledActualChipClass(event)}`}
+            chipText={preReleaseActualChipText(event.manual_actuals_at)}
+            chipTitle={PRE_RELEASE_ACTUAL_TITLE}
+            initiallyPreRelease
+            clearsAtMs={preReleaseClearsAtMs(event)}
+          />
+        ) : (
+          actualDisplay && (
+            <span
+              className={`text-[11px] font-mono rounded px-1.5 py-0.5 ml-auto max-w-full break-words ${actualChipClass(event)}`}
+            >
+              actual {actualDisplay}
+            </span>
+          )
         )}
       </div>
       <p
@@ -506,7 +668,7 @@ function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string
           past weeks surface their reactions here. Earnings rows lead with the
           reporter's own move; macro rows show SPY/QQQ. */}
       {showReaction && event.reaction_snapshot && (
-        <div className="mt-1.5">
+        <div className="mt-1.5 min-w-0 max-w-full">
           <EnrichmentRowSummary
             actual={null}
             snapshotRaw={event.reaction_snapshot}
@@ -514,20 +676,46 @@ function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string
           />
         </div>
       )}
-    </div>
+    </>
   );
+  // The remove control sits under the card, never inside the link.
+  const removeRow = weekAheadRemovable(event) ? (
+    <div className="mt-1 flex justify-end">
+      <RemoveRow event={event} />
+    </div>
+  ) : null;
 
-  if (event.security_id) {
+  if (linked) {
     return (
       <li>
         <Link
           href={`/dashboard/security/${event.security_id}`}
           className="block group"
         >
-          {inner}
+          <div className={cardClass}>{body}</div>
         </Link>
+        {removeRow}
       </li>
     );
   }
-  return <li>{inner}</li>;
+  if (expandable) {
+    return (
+      <li>
+        <EnrichmentDisclosure
+          className={cardClass}
+          actual={actualDisplay}
+          snapshotRaw={event.reaction_snapshot}
+          enrichedAt={event.enriched_at}
+        >
+          {body}
+        </EnrichmentDisclosure>
+      </li>
+    );
+  }
+  return (
+    <li>
+      <div className={cardClass}>{body}</div>
+      {removeRow}
+    </li>
+  );
 }

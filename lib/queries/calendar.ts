@@ -313,6 +313,30 @@ export function getEarningsForWeekDeduped(
 }
 
 /**
+ * One card per earnings print for the week-ahead grid. Takes the rows of
+ * getEventsByWeek and drops an earnings row that is not the twin the Earnings
+ * Hub shows. The Hub reads getEarningsForWeekDeduped, so a hand-entered row
+ * with a live vendor twin showed as one Hub row but two week cards (and an
+ * inflated header count). Asking the Hub's query which ids survive — instead
+ * of repeating its ordering here — keeps one rule for which twin wins.
+ *
+ * Only earnings rows that carry a symbol are collapsed: the Hub's partition
+ * key is (symbol, date, type), so symbol-less rows have no print identity and
+ * all stay. A filter, so whatever the caller attached to a row (display_time)
+ * is kept. getEventsByWeek itself is unchanged (the weekly briefing reads it).
+ */
+export function dedupeWeekEarnings<T extends CalendarEvent>(
+  db: Database.Database,
+  weekOf: string,
+  events: T[],
+): T[] {
+  const keptEarnings = new Set(getEarningsForWeekDeduped(db, weekOf).map((e) => e.id));
+  return events.filter(
+    (e) => e.event_type !== "earnings" || !e.symbol || keptEarnings.has(e.id),
+  );
+}
+
+/**
  * Count earnings rows whose Finnhub × Nasdaq dates disagree and await the
  * user's IBKR-definitive confirmation, in the [today, today+14] window. Powers
  * the NotificationBell nudge. Excludes superseded + already-resolved rows.

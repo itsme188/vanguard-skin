@@ -36,6 +36,13 @@ export interface EarningsConflictMarkerProps {
   dateStatus: CalendarEvent["date_status"];
   dateConflictWith: CalendarEvent["date_conflict_with"];
   className?: string;
+  /**
+   * Let the chip wrap inside a narrow parent instead of holding one line.
+   * The week-ahead day columns can be ~96px wide with the chat rail open,
+   * where a one-line "⚠ Finnhub says Oct 14" ran into the next column. The
+   * security hub's roomy row keeps the one-line default.
+   */
+  wrap?: boolean;
 }
 
 /**
@@ -58,6 +65,7 @@ export function EarningsConflictMarker({
   dateStatus,
   dateConflictWith,
   className = "",
+  wrap = false,
 }: EarningsConflictMarkerProps) {
   if (dateStatus !== "conflict") return null;
 
@@ -71,7 +79,12 @@ export function EarningsConflictMarker({
       : "Sources disagree on the earnings date. Confirm on Today → Earnings Hub.";
 
   return (
-    <Chip tone="gold" size="xs" title={sentence} className={`whitespace-nowrap ${className}`}>
+    <Chip
+      tone="gold"
+      size="xs"
+      title={sentence}
+      className={`${wrap ? "max-w-full min-w-0 break-words" : "whitespace-nowrap"} ${className}`}
+    >
       ⚠ {detail}
     </Chip>
   );
