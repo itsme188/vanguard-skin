@@ -11,6 +11,8 @@ import type {
 } from "@/lib/queries/research";
 import { trimEmailFooter, htmlHidesStoredText } from "@/lib/gmail/sanitize";
 import { sanitizeModelSummary, sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
+import { Chip } from "./Chip";
+import { ScrollFade } from "./ScrollFade";
 import { ManageSourcesModal } from "./ManageSourcesModal";
 import { NewsletterArticleFrame } from "./NewsletterArticleFrame";
 import { SendDigestPanel } from "./SendDigestPanel";
@@ -44,6 +46,9 @@ interface Props {
 /** Matches the server's default `limit` for the filtered=1 endpoint. */
 const FILTERED_PAGE_SIZE = 100;
 
+/** Matches the server's default `limit` for the main feed; Load more adds one page. */
+const FEED_PAGE_SIZE = 50;
+
 // ── Sentiment helpers ────────────────────────────────────────────────
 
 const sentimentColors: Record<string, string> = {
@@ -71,12 +76,31 @@ function SentimentBadge({ sentiment }: { sentiment: string | null }) {
 
 // ── Pills ────────────────────────────────────────────────────────────
 
+/** How many symbol pills a collapsed card shows before "+N more". */
+const COLLAPSED_SYMBOL_LIMIT = 6;
+
+/**
+ * The symbols a card renders and how many it holds back. An expanded card
+ * shows every symbol, so "+N more" always resolves by opening the card.
+ */
+export function visibleSymbols(
+  symbols: string[],
+  showAll: boolean,
+): { shown: string[]; hidden: number } {
+  if (showAll) return { shown: symbols, hidden: 0 };
+  const shown = symbols.slice(0, COLLAPSED_SYMBOL_LIMIT);
+  return { shown, hidden: symbols.length - shown.length };
+}
+
 function SymbolPills({
   symbolsJson,
   symbolMap,
+  showAll = false,
 }: {
   symbolsJson: string | null;
   symbolMap: Record<string, number>;
+  /** True on an expanded card: render the whole list. */
+  showAll?: boolean;
 }) {
   if (!symbolsJson) return null;
   let symbols: string[];
@@ -86,10 +110,11 @@ function SymbolPills({
     symbols = parsed;
   } catch { return null; }
   if (symbols.length === 0) return null;
+  const { shown, hidden } = visibleSymbols(symbols, showAll);
 
   return (
     <div className="flex flex-wrap gap-1.5">
-      {symbols.slice(0, 6).map((s) => {
+      {shown.map((s) => {
         const secId = symbolMap[s];
         return secId ? (
           <Link
@@ -110,8 +135,10 @@ function SymbolPills({
           </span>
         );
       })}
-      {symbols.length > 6 && (
-        <span className="text-xs text-ink-faint">+{symbols.length - 6} more</span>
+      {hidden > 0 && (
+        <span className="text-xs text-ink-faint" title="Open the article to see every symbol">
+          +{hidden} more
+        </span>
       )}
     </div>
   );
@@ -138,15 +165,71 @@ function ThemePills({ themesJson }: { themesJson: string | null }) {
 }
 
 /**
- * A source is selectable in the filter dropdown/fallback logic when it's
- * active AND has at least one article — an inactive or empty source would
- * be a dead-end filter choice. Shared between the dropdown options list and
- * handleSourcesChanged's "is the current filter still valid" check so the
- * two never drift.
+ * A source is selectable in the filter dropdown/fallback logic when it owns
+ * at least one article the feed can show (processed). Whether the source is
+ * still ACTIVE does not matter: deactivating stops future fetching, but its
+ * articles stay in the feed, so they must stay reachable through the filter.
+ * Shared between the dropdown options list and handleSourcesChanged's "is the
+ * current filter still valid" check so the two never drift.
  */
-function isSelectableSource(s: ResearchSource): boolean {
-  return Boolean(s.is_active) && Boolean(s.article_count) && (s.article_count ?? 0) > 0;
+export function isSelectableSource(s: ResearchSource): boolean {
+  return (s.processed_article_count ?? 0) > 0;
 }
+
+/** Dropdown text for a source: its feed count, and "(inactive)" when it no longer syncs. */
+export function sourceOptionLabel(s: ResearchSource): string {
+  const count = (s.processed_article_count ?? 0).toLocaleString("en-US");
+  return `${s.name} (${count})${s.is_active ? "" : " (inactive)"}`;
+}
+
+/**
+ * How many articles the main feed holds for the current source selection,
+ * from the per-source feed counts (same predicate as the list: processed
+ * only). Not known under a text search, where the caller passes no total.
+ */
+export function feedTotalForSource(sources: ResearchSource[], sourceId: number | null): number {
+  return sources
+    .filter((s) => sourceId === null || s.id === sourceId)
+    .reduce((sum, s) => sum + (s.processed_article_count ?? 0), 0);
+}
+
+/**
+ * The line above the main feed: how much of the set is on screen, and which
+ * search the list reflects. `total` is null when it is not known (a search).
+ * `hasMore` says whether Load more would fetch older articles.
+ */
+export function describeFeedWindow(input: {
+  shown: number;
+  total: number | null;
+  pageLimit: number;
+  search: string;
+}): { text: string; hasMore: boolean } {
+  const { shown, total, pageLimit, search } = input;
+  const n = shown.toLocaleString("en-US");
+  if (search) {
+    // The list was cut at the page limit, so older matches may exist.
+    const hasMore = shown >= pageLimit;
+    return {
+      text: hasMore
+        ? `Showing the newest ${n} matches for "${search}"`
+        : `${n} match${shown === 1 ? "" : "es"} for "${search}"`,
+      hasMore,
+    };
+  }
+  // A count read before the latest sync can trail the list; never print N of fewer-than-N.
+  const all = Math.max(total ?? shown, shown);
+  const hasMore = shown < all;
+  return {
+    text: hasMore
+      ? `Showing the newest ${n} of ${all.toLocaleString("en-US")} articles`
+      : `${n} article${shown === 1 ? "" : "s"}`,
+    hasMore,
+  };
+}
+
+/** Shown while the search box holds a single character (the search needs two). */
+export const SEARCH_TOO_SHORT_HINT =
+  "Type at least 2 characters to search. The list below has not changed.";
 
 // ── Main view ────────────────────────────────────────────────────────
 
@@ -164,6 +247,11 @@ export function ResearchFeedsView({
   const [currentSources, setCurrentSources] = useState(sources);
   const [sourceFilter, setSourceFilter] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  // The search the main list on screen was actually fetched with. It trails
+  // `searchQuery` while the box holds one character or a fetch failed.
+  const [appliedSearch, setAppliedSearch] = useState("");
+  const [articleLimit, setArticleLimit] = useState(FEED_PAGE_SIZE);
+  const [loadingMoreArticles, setLoadingMoreArticles] = useState(false);
   // `syncing` is the MANUAL sync only — it gates the button. The background
   // auto-sync uses `bgSyncing` so it can never make the button inert.
   const [syncing, setSyncing] = useState(false);
@@ -283,7 +371,19 @@ export function ResearchFeedsView({
       // The article has no enrichment yet, so it will not show in the feed
       // until a sync has analysed it. Say where it went.
       toast(REQUEUED_FOR_ENRICHMENT_NOTICE, "success");
+      // Its card (if loaded) is no longer a processed article.
+      setArticles((prev) => prev.filter((a) => a.id !== articleId));
+      return;
     }
+    // Unfiltered as it is. Say where the article is now: a row the AI never
+    // analysed is in neither list until a sync processes it, and without
+    // this message it simply vanishes.
+    const outcome = describeUnfilterOutcome(removed?.processed_at ?? null);
+    toast(outcome.text, outcome.tone);
+    // Its card in All articles (if loaded) drops the Filtered marker now.
+    setArticles((prev) =>
+      prev.map((a) => (a.id === articleId ? { ...a, is_relevant: 1, excluded_category: null } : a)),
+    );
   }, [toast, filteredArticles, filteredCount, filteredCategoryCounts, reloadFilteredList]);
 
   const handleUnfilter = useCallback(
@@ -352,13 +452,17 @@ export function ResearchFeedsView({
   }, [viewMode, searchQuery, sourceFilter]);
 
   const refreshArticles = useCallback(
-    async (overrides?: { sourceId?: number | null; search?: string }) => {
+    async (overrides?: { sourceId?: number | null; search?: string; limit?: number }) => {
       const params = new URLSearchParams();
       const sid = overrides?.sourceId !== undefined ? overrides.sourceId : sourceFilter;
-      const q = overrides?.search !== undefined ? overrides.search : searchQuery;
+      // Never send a one-character search: the box may hold one while the
+      // list still reflects the last search that ran.
+      const typed = overrides?.search !== undefined ? overrides.search : searchQuery;
+      const q = typed.length === 1 ? appliedSearch : typed;
+      const limit = overrides?.limit ?? articleLimit;
       if (sid) params.set("sourceId", String(sid));
       if (q) params.set("search", q);
-      params.set("limit", "50");
+      params.set("limit", String(limit));
 
       const res = await fetch(`/api/research/articles?${params}`);
       const data = await res.json();
@@ -369,9 +473,23 @@ export function ResearchFeedsView({
       }
       setArticles(data.data);
       if (data.symbolMap) setSymbolMap(data.symbolMap);
+      setAppliedSearch(q);
+      setArticleLimit(limit);
     },
-    [sourceFilter, searchQuery]
+    [sourceFilter, searchQuery, appliedSearch, articleLimit]
   );
+
+  // Re-read the per-source feed counts (the "N of M" total and the dropdown
+  // counts) after a sync added articles. A failure keeps the counts on screen.
+  const refreshSourceCounts = useCallback(async () => {
+    try {
+      const res = await fetch("/api/research/sources");
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success) setCurrentSources(data.data);
+    } catch {
+      // Counts stay as they were; describeFeedWindow never prints N of fewer-than-N.
+    }
+  }, []);
 
   // Auto-sync on mount + on app refocus after 10+ min idle. Debounced
   // to once per 5 min across the whole session via localStorage.
@@ -422,6 +540,7 @@ export function ResearchFeedsView({
       refreshArticles().catch((err) =>
         console.warn("[research] background article refresh failed:", err)
       );
+      void refreshSourceCounts();
     },
   });
 
@@ -485,6 +604,7 @@ export function ResearchFeedsView({
       }
 
       await refreshArticles();
+      void refreshSourceCounts();
     } catch {
       setSyncFeedback(errorFeedback(networkFailureMessage("sync articles")));
     } finally {
@@ -493,14 +613,14 @@ export function ResearchFeedsView({
       // Progress text fades; an error stays until the next sync attempt.
       setTimeout(() => setSyncFeedback((prev) => (shouldAutoDismiss(prev) ? null : prev)), 5000);
     }
-  }, [refreshArticles]);
+  }, [refreshArticles, refreshSourceCounts]);
 
   const handleFilterChange = useCallback(
     async (id: number | null) => {
       setSourceFilter(id);
       setExpandedId(null);
       try {
-        await refreshArticles({ sourceId: id });
+        await refreshArticles({ sourceId: id, limit: FEED_PAGE_SIZE });
       } catch {
         // The list still shows the PREVIOUS filter's articles — say so, or
         // the dropdown looks broken-but-silent.
@@ -516,13 +636,26 @@ export function ResearchFeedsView({
       if (query.length > 0 && query.length < 2) return;
       setExpandedId(null);
       try {
-        await refreshArticles({ search: query });
+        await refreshArticles({ search: query, limit: FEED_PAGE_SIZE });
       } catch {
         toast("Search failed — the list below is unchanged.", "error");
       }
     },
     [refreshArticles, toast]
   );
+
+  const handleLoadMoreArticles = useCallback(async () => {
+    setLoadingMoreArticles(true);
+    try {
+      // The route takes a limit and no offset, so one more page = the same
+      // window re-read one page longer (newest first, so nothing shifts).
+      await refreshArticles({ limit: articleLimit + FEED_PAGE_SIZE });
+    } catch {
+      toast("Couldn't load more articles. The list below is unchanged; try again.", "error");
+    } finally {
+      setLoadingMoreArticles(false);
+    }
+  }, [refreshArticles, articleLimit, toast]);
 
   const handleSourcesChanged = useCallback(async () => {
     try {
@@ -543,7 +676,7 @@ export function ResearchFeedsView({
         sourceFilter === null || fresh.some((s) => s.id === sourceFilter && isSelectableSource(s));
       if (!filterStillSelectable) {
         setSourceFilter(null);
-        await refreshArticles({ sourceId: null });
+        await refreshArticles({ sourceId: null, limit: FEED_PAGE_SIZE });
       } else {
         await refreshArticles();
       }
@@ -581,6 +714,13 @@ export function ResearchFeedsView({
     }
   }, [expandedId, toast]);
 
+  const feedWindow = describeFeedWindow({
+    shown: articles.length,
+    total: appliedSearch ? null : feedTotalForSource(currentSources, sourceFilter),
+    pageLimit: articleLimit,
+    search: appliedSearch,
+  });
+
   return (
     <div className="space-y-5">
       {/* Controls bar — single source dropdown (native select) on every
@@ -600,7 +740,7 @@ export function ResearchFeedsView({
             .filter(isSelectableSource)
             .map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name} ({s.article_count})
+                {sourceOptionLabel(s)}
               </option>
             ))}
         </select>
@@ -613,8 +753,13 @@ export function ResearchFeedsView({
             container's own scroll boundary with zero trailing space, reading
             as clipped. Small trailing padding gives it breathing room without
             touching the row's appearance at desktop (>=1280, no scroll) or
-            phone (<768, unaffected band). */}
-        <div className="flex items-center gap-2 overflow-x-auto scrollbar-none md:max-lg:pr-4">
+            phone (<768, unaffected band).
+            ScrollFade: with the chat rail open at 1280 the row is wider than
+            its column, and a hidden scrollbar alone gave no sign that "Email"
+            was cut off. whitespace-nowrap keeps "Sync Feeds" on one line
+            instead of wrapping taller than its siblings. */}
+        <ScrollFade className="min-w-0 [--scroll-fade-color:var(--color-canvas)]" scrollerClassName="scrollbar-none">
+        <div className="flex items-center gap-2 whitespace-nowrap md:max-lg:pr-4">
           {/* Search: full input on desktop, icon toggle on mobile */}
           <input
             type="text"
@@ -638,6 +783,8 @@ export function ResearchFeedsView({
           </button>
           <button
             onClick={() => setManageOpen(true)}
+            title="Manage sources"
+            aria-label="Manage sources"
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -689,6 +836,7 @@ export function ResearchFeedsView({
             <span className="hidden sm:inline">Email</span>
           </button>
         </div>
+        </ScrollFade>
       </div>
 
       {/* Sync feedback — directly under the controls bar, NOT further down
@@ -766,6 +914,14 @@ export function ResearchFeedsView({
       {/* Send digest panel */}
       {sendOpen && <SendDigestPanel onClose={() => setSendOpen(false)} />}
 
+      {/* A one-character search does not run (too noisy), so the list below
+          still shows the previous result. Say so, or box and list disagree. */}
+      {searchQuery.length === 1 && (
+        <p role="status" className="max-w-3xl mx-auto text-xs text-ink-dim">
+          {SEARCH_TOO_SHORT_HINT}
+        </p>
+      )}
+
       {/* Articles — reader layout */}
       {viewMode === "filtered" ? (
         <>
@@ -811,19 +967,35 @@ export function ResearchFeedsView({
           </p>
         </div>
       ) : (
-        <div className="max-w-3xl mx-auto divide-y divide-edge/50">
-          {articles.map((article) => (
-            <ArticleCard
-              key={article.id}
-              article={article}
-              symbolMap={symbolMap}
-              expanded={expandedId === article.id}
-              expandedText={expandedId === article.id ? expandedText : null}
-              expandedHtml={expandedId === article.id ? expandedHtml : null}
-              loading={expandedId === article.id && loadingExpand}
-              onToggle={() => handleExpand(article.id)}
-            />
-          ))}
+        <div className="max-w-3xl mx-auto">
+          {/* How much of the set is on screen, and which search it reflects. */}
+          <p className="text-xs text-ink-dim mb-4">{feedWindow.text}</p>
+          <div className="divide-y divide-edge/50">
+            {articles.map((article) => (
+              <ArticleCard
+                key={article.id}
+                article={article}
+                symbolMap={symbolMap}
+                expanded={expandedId === article.id}
+                expandedText={expandedId === article.id ? expandedText : null}
+                expandedHtml={expandedId === article.id ? expandedHtml : null}
+                loading={expandedId === article.id && loadingExpand}
+                onToggle={() => handleExpand(article.id)}
+              />
+            ))}
+          </div>
+          {feedWindow.hasMore && (
+            <div className="flex justify-center pt-4">
+              <button
+                type="button"
+                onClick={handleLoadMoreArticles}
+                disabled={loadingMoreArticles}
+                className="px-4 py-2 rounded-md text-xs font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors disabled:opacity-50"
+              >
+                {loadingMoreArticles ? "Loading…" : "Load more"}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -866,23 +1038,46 @@ function ArticleCard({
   // homepage so there's always a way out to the source even when inline text
   // isn't available (U5). source_url can be null for some rows.
   const originalUrl = article.source_url ?? article.website_url;
+  const cardRef = useRef<HTMLElement | null>(null);
+  // Collapsing a long article shrinks the page under the reader. Bring the
+  // card they just closed back to the top of the view, or they land several
+  // unrelated cards further down.
+  const collapse = () => {
+    onToggle();
+    requestAnimationFrame(() => {
+      const el = cardRef.current;
+      if (el && el.getBoundingClientRect().top < 0) el.scrollIntoView({ block: "start" });
+    });
+  };
+  const filteredMarker = filteredMarkerText(article);
 
   return (
     // break-words (overflow-wrap, inherited): AI summaries/relevance lines can
     // contain long unbreakable tokens (e.g. "AAPL/AMZN/META/MSFT/GOOG/CRWD" —
     // slashes are not break opportunities) which otherwise push the whole page
     // into horizontal scroll at mobile widths.
-    <article className={`py-6 first:pt-0 break-words ${expanded ? "" : "cursor-pointer group"}`}>
+    <article
+      ref={cardRef}
+      className={`py-6 first:pt-0 break-words scroll-mt-20 ${expanded ? "" : "cursor-pointer group"}`}
+    >
       {/* Collapsed view — click to expand */}
       <div onClick={expanded ? undefined : onToggle}>
-        {/* Meta line */}
-        <div className="flex items-center gap-2.5 mb-2">
+        {/* Meta line. flex-wrap: the Filtered marker can be long on a phone. */}
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 mb-2">
           <span className="text-xs font-semibold text-gold-ink uppercase tracking-wider">
             {article.source_name}
           </span>
           <span className="text-ink-faint">·</span>
           <time className="text-xs text-ink-faint">{dateStr}</time>
           <SentimentBadge sentiment={article.sentiment} />
+          {/* A filtered article stays in this list (owner ruling) but is
+              marked, with the same reason text the Filtered tab uses. Always
+              visible: no hover, so it reads the same on touch. */}
+          {filteredMarker && (
+            <Chip tone="warn" size="xs" title="This article is in the Filtered tab and is left out of digests">
+              {filteredMarker}
+            </Chip>
+          )}
           {originalUrl && (
             <a
               href={originalUrl}
@@ -895,11 +1090,35 @@ function ArticleCard({
               Open original ↗
             </a>
           )}
+          {/* Top Collapse: the bottom one can be several screens away. */}
+          {expanded && (
+            <button
+              type="button"
+              onClick={collapse}
+              className={`text-xs text-ink-dim hover:text-ink transition-colors ${originalUrl ? "" : "ml-auto"}`}
+            >
+              Collapse
+            </button>
+          )}
         </div>
 
-        {/* Headline — reader-app scale (~21px / line-height tight) */}
+        {/* Headline — reader-app scale (~21px / line-height tight). The title
+            is a real button: it opens and closes the card from the keyboard
+            (Enter/Space) and stays clickable while expanded. stopPropagation:
+            the collapsed wrapper also toggles, and two toggles cancel out. */}
         <h3 className={`text-xl font-semibold leading-snug text-ink mb-2 ${expanded ? "" : "group-hover:text-gold transition-colors"}`}>
-          {article.subject}
+          <button
+            type="button"
+            aria-expanded={expanded}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (expanded) collapse();
+              else onToggle();
+            }}
+            className="text-left cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold"
+          >
+            {article.subject}
+          </button>
         </h3>
 
         {/* AI Summary — reader-app body (17px / 1.7 line-height). Sanitized
@@ -920,7 +1139,7 @@ function ArticleCard({
 
         {/* Tags row */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 mt-3">
-          <SymbolPills symbolsJson={article.mentioned_symbols} symbolMap={symbolMap} />
+          <SymbolPills symbolsJson={article.mentioned_symbols} symbolMap={symbolMap} showAll={expanded} />
           <ThemePills themesJson={article.key_themes} />
         </div>
       </div>
@@ -970,7 +1189,8 @@ function ArticleCard({
             )}
           </div>
           <button
-            onClick={onToggle}
+            type="button"
+            onClick={collapse}
             className="mt-4 text-sm text-ink-faint hover:text-ink transition-colors"
           >
             Collapse
@@ -1010,6 +1230,40 @@ function humanizeCategory(category: string): string {
  */
 export function resolveFilteredCategoryLabel(category: string): string {
   return FILTERED_CATEGORY_LABEL[category] ?? humanizeCategory(category);
+}
+
+/**
+ * Marker text for an All-articles card whose article is filtered
+ * (is_relevant = 0), or null for a normal article. The reason is the SAME
+ * label the Filtered tab's section header prints, through the one label
+ * table above, with the same "other" fallback for a missing category.
+ */
+export function filteredMarkerText(article: {
+  is_relevant?: number | null;
+  excluded_category?: string | null;
+}): string | null {
+  if (article.is_relevant !== 0) return null;
+  return `Filtered: ${resolveFilteredCategoryLabel(article.excluded_category || "other")}`;
+}
+
+/**
+ * What to tell the user after an Unfilter that did not re-queue the article.
+ * An article the AI never analysed (processed_at NULL: the pre-AI rows) is in
+ * NEITHER list afterwards: the main feed lists processed articles only. An
+ * analysed article is already in All articles and just loses its marker.
+ */
+export function describeUnfilterOutcome(processedAt: string | null): {
+  text: string;
+  tone: "success" | "info";
+} {
+  if (processedAt == null) {
+    return {
+      text:
+        "Unfiltered. This article has not been analysed by AI yet, so it is not in All articles either. It will appear there after the next feed sync has analysed it (click Sync Feeds to run one now).",
+      tone: "info",
+    };
+  }
+  return { text: "Unfiltered. The article is back in All articles and in the digest stream.", tone: "success" };
 }
 
 /**
