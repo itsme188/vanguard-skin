@@ -68,6 +68,22 @@ export function getActiveWatchlist(db: Database.Database): WatchlistItem[] {
 }
 
 /**
+ * Active watchlist security ids, newest first — the seed order for the
+ * Charts tab's Watchlist grid. `added_date` is a date with no time, so the
+ * row id breaks same-day ties and the grid order stays stable.
+ */
+export function getActiveWatchlistSecurityIds(db: Database.Database): number[] {
+  const rows = db
+    .prepare(
+      `SELECT security_id FROM watchlist
+        WHERE is_active = 1
+        ORDER BY added_date DESC, id DESC`,
+    )
+    .all() as { security_id: number }[];
+  return rows.map((r) => r.security_id);
+}
+
+/**
  * Check if a security is on the active watchlist.
  */
 export function isOnWatchlist(

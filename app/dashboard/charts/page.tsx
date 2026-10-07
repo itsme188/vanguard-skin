@@ -5,8 +5,12 @@ import {
   getChartableSecurities,
   getDefaultChartSecurityId,
   getLatestPrice,
+  getLatestPriceNative,
 } from "@/lib/queries/ohlcv";
-import { ChartsView } from "../components/ChartsView";
+import { getSecurityById } from "@/lib/queries/securities";
+import { getActiveWatchlistSecurityIds } from "@/lib/queries/watchlist";
+import { ChartsView, type UnavailableChartRequest } from "../components/ChartsView";
+import { classifyChartRequest } from "./last-symbol";
 
 interface PageProps {
   searchParams: Promise<{ id?: string }>;
@@ -48,16 +52,48 @@ export default async function ChartsPage({ searchParams }: PageProps) {
       ? securities.find((s) => s.id === selectedId) ?? defaultSecurity
       : defaultSecurity;
 
+  // An ?id= that is present but not chartable (no IB contract id, a mutual
+  // fund, or no such security) is SAID, never swapped for the default: the
+  // view starts with nothing selected and names the security instead. The
+  // default above still feeds the picker and the Watchlist grid.
+  const request = classifyChartRequest(
+    params.id,
+    securities.map((s) => s.id),
+  );
+  let unavailableRequest: UnavailableChartRequest | null = null;
+  if (request.kind === "unavailable") {
+    const asked = request.id != null ? getSecurityById(db, request.id) : null;
+    unavailableRequest = asked
+      ? {
+          securityId: asked.id,
+          symbol: asked.symbol,
+          reason:
+            asked.ib_con_id == null ? "no_contract" : "mutual_fund",
+        }
+      : { securityId: null, symbol: null, reason: "not_found" };
+  }
+
   const latestPrice = initialSecurity
     ? getLatestPrice(db, initialSecurity.id)
     : null;
+  // Same prices row, unconverted — the frame the chart's axis and badge use.
+  const latestPriceNative = initialSecurity
+    ? getLatestPriceNative(db, initialSecurity.id)
+    : null;
+
+  // Watchlist mode seeds its panels from the watchlist table, in this order.
+  const watchlistSecurityIds = getActiveWatchlistSecurityIds(db);
 
   return (
     <ChartsView
       securities={securities}
       initialSecurity={initialSecurity ?? null}
       initialPrice={latestPrice}
+      initialPriceNative={latestPriceNative?.close_price ?? null}
       hasExplicitId={hasExplicitId}
+      arrivedSecurityId={request.kind === "chartable" ? request.id : null}
+      unavailableRequest={unavailableRequest}
+      watchlistSecurityIds={watchlistSecurityIds}
     />
   );
 }

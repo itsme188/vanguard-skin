@@ -73,3 +73,33 @@ export function writeLastChartSymbolId(
     /* a per-viewer convenience, never load-bearing — a blocked store is fine */
   }
 }
+
+/**
+ * What the `?id=` on a Charts URL asks for.
+ *
+ *   none        — a bare visit (or a blank `?id=`): the landing precedence
+ *                 above picks the chart.
+ *   chartable   — the id is on the chartable list. This is an ARRIVAL at a
+ *                 chart (a symbol link, a ticker jump, the picker's own URL
+ *                 round-trip) and is what gets recorded as last viewed.
+ *   unavailable — an id was asked for and cannot be charted. The page says
+ *                 so; it never swaps in a different security silently, and
+ *                 nothing is recorded. `id` is null when the value is not a
+ *                 positive number at all.
+ */
+export type ChartRequest =
+  | { kind: "none" }
+  | { kind: "chartable"; id: number }
+  | { kind: "unavailable"; id: number | null };
+
+export function classifyChartRequest(
+  rawId: string | undefined,
+  chartableIds: readonly number[],
+): ChartRequest {
+  if (rawId === undefined || rawId === "") return { kind: "none" };
+  const id = parseInt(rawId, 10);
+  if (isNaN(id) || id <= 0) return { kind: "unavailable", id: null };
+  return chartableIds.includes(id)
+    ? { kind: "chartable", id }
+    : { kind: "unavailable", id };
+}

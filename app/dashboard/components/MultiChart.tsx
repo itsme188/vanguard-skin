@@ -23,36 +23,60 @@ interface PanelState {
   securityId: number | null;
 }
 
+/**
+ * Seed for the Watchlist grid: the security the user was just looking at
+ * (when there is one), then the active watchlist in watchlist order. No
+ * security is seeded twice, a watchlist name the picker cannot chart is
+ * skipped, and leftover panels stay EMPTY — a mode named "Watchlist" never
+ * fills itself with names that are not on the watchlist.
+ */
+export function seedWatchlistPanels(
+  initialSecurityId: number | null,
+  watchlistIds: readonly number[],
+  chartableIds: readonly number[],
+  panelCount = 4,
+): (number | null)[] {
+  const chartable = new Set(chartableIds);
+  const used = new Set<number>();
+  const seeded: (number | null)[] = [];
+  for (const id of [initialSecurityId, ...watchlistIds]) {
+    if (seeded.length >= panelCount) break;
+    if (id == null || used.has(id) || !chartable.has(id)) continue;
+    used.add(id);
+    seeded.push(id);
+  }
+  while (seeded.length < panelCount) seeded.push(null);
+  return seeded;
+}
+
+/** What an unseeded panel says, given how many names the watchlist holds. */
+export function emptyPanelCopy(watchlistCount: number): string {
+  return watchlistCount === 0
+    ? "Your watchlist is empty. Pick a security above."
+    : "No more watchlist names. Pick a security above.";
+}
+
 export function MultiChart({
   securities,
   initialSecurityId,
+  watchlistIds,
 }: {
   securities: ChartableSecurity[];
   initialSecurityId: number | null;
+  /** Active watchlist security ids, in watchlist order. */
+  watchlistIds: number[];
 }) {
   const [layout, setLayout] = useState<LayoutKey>("1");
   const panelCount = layout === "1" ? 1 : layout === "2" ? 2 : 4;
 
-  // Initialize panels — first panel gets the initial security, rest get sequential picks
-  const [panels, setPanels] = useState<PanelState[]>(() => {
-    // Prefer stocks/ETFs over bonds/treasuries for default panel securities
-    const stocks = securities.filter(
-      (s) => s.security_type?.toLowerCase() === "stock" || s.security_type?.toLowerCase() === "etf",
-    );
-    const initial: PanelState[] = [];
-    for (let i = 0; i < 4; i++) {
-      if (i === 0 && initialSecurityId) {
-        initial.push({ securityId: initialSecurityId });
-      } else if (stocks[i]) {
-        initial.push({ securityId: stocks[i].id });
-      } else if (securities[i]) {
-        initial.push({ securityId: securities[i].id });
-      } else {
-        initial.push({ securityId: null });
-      }
-    }
-    return initial;
-  });
+  // Initialize panels from the watchlist (see seedWatchlistPanels).
+  const [panels, setPanels] = useState<PanelState[]>(() =>
+    seedWatchlistPanels(
+      initialSecurityId,
+      watchlistIds,
+      securities.map((s) => s.id),
+    ).map((securityId) => ({ securityId })),
+  );
 
   const handlePanelSecurityChange = useCallback(
     (panelIndex: number, secId: number) => {
@@ -119,18 +143,26 @@ export function MultiChart({
           return (
             <div
               key={i}
-              className={`rounded-xl border border-edge bg-panel overflow-hidden ${chartHeight}`}
+              className={`rounded-xl border border-edge bg-panel overflow-hidden min-w-0 ${chartHeight}`}
             >
               {/* Per-panel security picker */}
-              <div className="flex items-center gap-2 px-3 py-1.5 border-b border-edge bg-raised/50">
+              {/* min-w-0 down the chain + a capped picker: in a 170px phone
+                  tile the picker used to run past the tile edge and push the
+                  name fully outside, where overflow-hidden painted nothing. */}
+              <div className="flex items-center gap-2 px-3 py-1.5 border-b border-edge bg-raised/50 min-w-0">
                 <select
                   value={panel.securityId ?? ""}
                   onChange={(e) =>
                     handlePanelSecurityChange(i, Number(e.target.value))
                   }
                   className="bg-transparent border-none text-xs font-mono text-ink
-                    focus:outline-none focus:ring-0 cursor-pointer"
+                    focus:outline-none focus:ring-0 cursor-pointer min-w-0 max-w-[60%] truncate"
                 >
+                  {panel.securityId == null && (
+                    <option value="" disabled>
+                      Select
+                    </option>
+                  )}
                   {securities.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.symbol}
@@ -138,7 +170,10 @@ export function MultiChart({
                   ))}
                 </select>
                 {sec && (
-                  <span className="text-xs text-ink-faint truncate">
+                  <span
+                    className="text-xs text-ink-faint truncate min-w-0 flex-1"
+                    title={sec.name ?? undefined}
+                  >
                     {sec.name}
                   </span>
                 )}
@@ -156,8 +191,8 @@ export function MultiChart({
                     compact
                   />
                 ) : (
-                  <div className="flex items-center justify-center h-full text-ink-faint text-sm">
-                    Select a security
+                  <div className="flex items-center justify-center h-full px-3 text-center text-ink-faint text-sm">
+                    {emptyPanelCopy(watchlistIds.length)}
                   </div>
                 )}
               </div>
