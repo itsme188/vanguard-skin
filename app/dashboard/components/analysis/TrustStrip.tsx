@@ -4,6 +4,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import type { AnalysisTrustState } from "@/lib/queries/analysis-trust-state";
 import { TrustStripDrawer, type DrawerPanel } from "./TrustStripDrawer";
 import { PrivateText } from "@/lib/privacy/components";
+import { formatEnrichedAtET } from "@/lib/format";
 
 type Tone = "good" | "warn" | "bad" | "neutral";
 
@@ -154,10 +155,17 @@ export function TrustStrip({ scope }: TrustStripProps) {
           active={activePanel === "factorCoverage"}
         />
         <Cell
-          label="Last classify"
+          // The date is the newest change to any security's factor ratings —
+          // not a "classification run": the sector Auto-Classify button on
+          // Diagnostics writes no factor rating and never moves it.
+          label="Factors updated"
           value={formatRelative(lastClassification)}
           tone={classifyTone}
-          hint={lastClassification ?? "No classification run yet"}
+          hint={
+            lastClassification
+              ? `Factor ratings last changed ${formatEnrichedAtET(lastClassification)}`
+              : "No security has factor ratings yet"
+          }
           onClick={() => togglePanel("lastClassify")}
           active={activePanel === "lastClassify"}
         />
@@ -193,7 +201,7 @@ export function TrustStrip({ scope }: TrustStripProps) {
               : <PrivateText>{`${bondDuration.withDuration}/${bondDuration.totalBonds}`}</PrivateText>
           }
           tone={bondCovTone}
-          hint="Held bonds with duration_years populated"
+          hint="Held bonds that have a duration figure"
           onClick={() => togglePanel("bondDuration")}
           active={activePanel === "bondDuration"}
         />

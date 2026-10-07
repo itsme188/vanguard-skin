@@ -48,7 +48,19 @@ export interface AnalysisTrustState {
   crossCheckedThru: string | null; // populated by Slice D; renamed from performanceReconciledThru (Task 13)
   perAccountReconciliation: PerAccountReconciliation[];
   stalePrices: { count: number; symbols: string[] };
-  bondDuration: { totalBonds: number; withDuration: number };
+  bondDuration: {
+    totalBonds: number;
+    withDuration: number;
+    /** The held bonds with no duration yet, by symbol — one row per security,
+     *  the same grain as the two counts (missing.length = totalBonds − withDuration). */
+    missing: MissingDurationBond[];
+  };
+}
+
+export interface MissingDurationBond {
+  securityId: number;
+  symbol: string;
+  name: string | null;
 }
 
 const STALE_PRICE_DAYS = 4;
@@ -245,6 +257,26 @@ export function getAnalysisTrustState(
     )
     .get(...params) as { total_bonds: number; with_duration: number };
 
+  // Same CTE and bond predicate as the counts above, so the list can never
+  // disagree with the n/N it explains.
+  const missingDurationBonds = db
+    .prepare(
+      `
+    WITH latest AS (
+      SELECT h.security_id FROM holdings h
+      WHERE ${latestHoldingsPredicate({ accountFilter })}
+      GROUP BY h.security_id
+    )
+    SELECT s.id AS securityId, s.symbol, s.name
+    FROM latest l
+    JOIN securities s ON s.id = l.security_id
+    WHERE LOWER(s.security_type) = 'bond'
+      AND s.duration_years IS NULL
+    ORDER BY s.symbol
+  `
+    )
+    .all(...params) as MissingDurationBond[];
+
   // ── Independent Dietz cross-check ────────────────────────────────────
   // Semantic for the rollup field `crossCheckedThru`: "all accounts have an
   // unbroken chain of statement-vs-independent-Dietz agreement at least
@@ -339,6 +371,7 @@ export function getAnalysisTrustState(
     bondDuration: {
       totalBonds: bondRow.total_bonds,
       withDuration: bondRow.with_duration,
+      missing: missingDurationBonds,
     },
   };
 }

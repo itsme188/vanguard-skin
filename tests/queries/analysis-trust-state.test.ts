@@ -124,6 +124,61 @@ describe("getAnalysisTrustState", () => {
     expect(state.bondDuration.withDuration).toBe(1);
   });
 
+  // qa:analysis-trust-strip--bond-duration-drawer-names-no-bonds — the drawer
+  // said "These bonds" with nothing to point at. The payload now names them.
+  it("names the held bonds that have no duration, sorted, and only those", () => {
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, duration_years) VALUES
+         (10, 'ZZZBOND', 'Zeta Corp Note', 'Bond', NULL),
+         (11, 'AAABOND', 'Alpha Corp Note', 'bond', NULL),
+         (12, 'MMMBOND', 'Mid Corp Note', 'Bond', 4),
+         (13, 'UNHELD', 'Unheld Note', 'Bond', NULL),
+         (14, 'AAA', 'Alpha Stock', 'Stock', NULL)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES
+         (1, 10, '2026-04-30', 1, 'vg-1'),
+         (1, 11, '2026-04-30', 1, 'vg-2'),
+         (2, 11, '2026-04-30', 1, 'vg-2b'),
+         (1, 12, '2026-04-30', 1, 'vg-3'),
+         (1, 14, '2026-04-30', 1, 'vg-4')`,
+    ).run();
+
+    const state = getAnalysisTrustState(db);
+    expect(state.bondDuration.totalBonds).toBe(3);
+    expect(state.bondDuration.withDuration).toBe(1);
+    // A bond held in two accounts is one row, like the count beside it.
+    expect(state.bondDuration.missing).toEqual([
+      { securityId: 11, symbol: "AAABOND", name: "Alpha Corp Note" },
+      { securityId: 10, symbol: "ZZZBOND", name: "Zeta Corp Note" },
+    ]);
+    expect(state.bondDuration.missing.length).toBe(
+      state.bondDuration.totalBonds - state.bondDuration.withDuration,
+    );
+  });
+
+  it("scopes the missing-duration bond list to the requested accounts", () => {
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, duration_years) VALUES
+         (10, 'AAABOND', 'Alpha Corp Note', 'Bond', NULL),
+         (11, 'ZZZBOND', 'Zeta Corp Note', 'Bond', NULL)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES
+         (1, 10, '2026-04-30', 1, 'vg-1'),
+         (3, 11, '2026-04-30', 1, 'ib-1')`,
+    ).run();
+
+    const state = getAnalysisTrustState(db, [3]);
+    expect(state.bondDuration.missing.map((b) => b.symbol)).toEqual(["ZZZBOND"]);
+  });
+
+  it("returns an empty missing list when every held bond has a duration", () => {
+    db.prepare(`INSERT INTO securities (id, symbol, security_type, duration_years) VALUES (10, 'AAABOND', 'Bond', 2)`).run();
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 10, '2026-04-30', 1, 'vg-1')`).run();
+    expect(getAnalysisTrustState(db).bondDuration.missing).toEqual([]);
+  });
+
   // ─── Independent Dietz cross-check chain (Task 13) ────────────────────
 
   it("CHAIN START: with exactly 2 statement months, the walk starts (and can succeed) at the 2nd — the 1st is never itself walked", () => {
