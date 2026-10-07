@@ -19,16 +19,44 @@ import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 //   3. both sources agree → confirmed
 //   4. both future, dates differ → conflict (Nasdaq provisional, awaits the user)
 //   5. only one source → single
+//
+// One exemption to "exactly one row per event" (owner ruling 2026-10-06): two
+// HAND-ENTERED rows for one name are never resolved against each other — both
+// stay visible and the user deletes one. See `keptManualTwins`. Every row a
+// pass does hide is reported in `ReconcileResult.superseded`.
 
 const GATHER_BACK_DAYS = 21;
 const GATHER_FWD_DAYS = 30;
 const CLUSTER_PROXIMITY_DAYS = 14;
+
+/**
+ * One earnings row a reconcile pass newly hid (`superseded` 0 → 1), with a
+ * short domain-language reason. Symbol, title and date are public calendar
+ * data, so the refresh outcome line may name them.
+ */
+export interface SupersededEarningsRow {
+  eventId: number;
+  sourceKey: string;
+  symbol: string | null;
+  title: string;
+  eventDate: string;
+  /** The pipeline that owns the hidden row: 'finnhub' | 'nasdaq' | 'manual' | … */
+  source: string;
+  reason: string;
+}
 
 export interface ReconcileResult {
   confirmed: number;
   conflict: number;
   single: number;
   userConfirmed: number;
+  /**
+   * Rows THIS pass hid that were showing before it (owner ruling 2026-10-06:
+   * any row a sync supersedes is named in the refresh outcome line). A row
+   * already hidden before the pass is not repeated, so a second pass over the
+   * same book reports nothing.
+   */
+  superseded: SupersededEarningsRow[];
 }
 
 interface EarningsRow {
@@ -361,6 +389,60 @@ function resolveCluster(rows: EarningsRow[], today: string): Resolution {
   return { canonicalId: only.id, status: "single", conflictWith: null };
 }
 
+/**
+ * Hand-entered rows that stay visible BESIDE the cluster's canonical row
+ * (owner ruling 2026-10-06, qa:dashboard-today-earningshub-refresh-from-
+ * finnhub-refresh-silently-supersedes-a-user-added-earnings-row-the-hub).
+ *
+ * Rung 1 of `resolveCluster` picks ONE locked canonical per cluster, so two
+ * dates the user typed for one name used to collapse to the earlier one: the
+ * later row went `superseded = 1` with no message and its actual was folded
+ * onto a different date's row. Choosing between two dates the user typed is
+ * the user's call, never the reconciler's — so when the canonical is itself
+ * hand-entered, every OTHER hand-entered row in the cluster is kept: not
+ * superseded, not folded, nothing carried between them. The user deletes one.
+ *
+ * "Hand-entered" is `source = 'manual'` only ("+ Add ticker", a confirmed
+ * date, a date correction — all mint that source). A VENDOR row the user
+ * confirmed in place is not hand-entered: it competes with a manual row
+ * exactly as before, and the vendor rows of the cluster are still superseded
+ * against the canonical exactly as before.
+ */
+function keptManualTwins(cluster: EarningsRow[], res: Resolution): EarningsRow[] {
+  const canonical = cluster.find((r) => r.id === res.canonicalId);
+  if (!canonical || canonical.source !== "manual") return [];
+  return cluster.filter((r) => r.id !== res.canonicalId && r.source === "manual");
+}
+
+/** Vendor pipeline names as a person would say them. */
+const VENDOR_DISPLAY_NAMES: Record<string, string> = {
+  finnhub: "Finnhub",
+  nasdaq: "Nasdaq",
+  wsh: "Wall Street Horizon",
+};
+
+function vendorDisplayName(source: string): string {
+  return VENDOR_DISPLAY_NAMES[source.toLowerCase()] ?? source;
+}
+
+/** Why `loser` stops showing once `canonical` takes its cluster. */
+function supersedeReason(loser: EarningsRow, canonical: EarningsRow, res: Resolution): string {
+  if (canonical.source === "manual") {
+    return `the date you entered (${canonical.event_date}) takes its place`;
+  }
+  if (res.status === "user_confirmed") {
+    return `the date you confirmed (${canonical.event_date}) takes its place`;
+  }
+  const vendor = vendorDisplayName(canonical.source);
+  if (canonical.event_date === loser.event_date) {
+    return `same event as the ${vendor} row for that date`;
+  }
+  if (res.status === "conflict") {
+    return `${vendor} lists ${canonical.event_date} instead; that date shows until you confirm one`;
+  }
+  return `${vendor} lists ${canonical.event_date} instead`;
+}
+
 /** Child audit rows moved by one repoint hop. */
 export interface RepointCounts {
   bogeys: number;
@@ -571,9 +653,11 @@ export function repointDependentsBeforeDelete(
   // audit goes with the NEAREST resulting print.
   const canonicals = clusterByProximity(survivors)
     .flatMap((group) => splitReportedFromManualCluster(group, opts.today).groups)
-    .map((sub) => {
+    .flatMap((sub) => {
       const res = resolveCluster(sub, opts.today);
-      return sub.find((r) => r.id === res.canonicalId)!;
+      // Hand-entered twins stay visible beside the canonical, so each is a
+      // row the doomed one's audit could land on.
+      return [sub.find((r) => r.id === res.canonicalId)!, ...keptManualTwins(sub, res)];
     });
   const target = canonicals.sort(
     (a, b) =>
@@ -604,17 +688,6 @@ export interface VendorSupersessionCheck {
   message: string | null;
 }
 
-/** Vendor pipeline names as a person would say them. */
-const VENDOR_DISPLAY_NAMES: Record<string, string> = {
-  finnhub: "Finnhub",
-  nasdaq: "Nasdaq",
-  wsh: "Wall Street Horizon",
-};
-
-function vendorDisplayName(source: string): string {
-  return VENDOR_DISPLAY_NAMES[source.toLowerCase()] ?? source;
-}
-
 /** The id the hypothetical row carries during the dry run. Sorts LAST among
  *  same-date rows, matching where a freshly INSERTed row's rowid puts it in the
  *  reconciler's `ORDER BY event_date ASC` gather. */
@@ -626,7 +699,9 @@ function canonicalIdsFor(familyRows: EarningsRow[], today: string): Set<number> 
   const canonical = new Set<number>();
   for (const proximityCluster of clusterByProximity(familyRows)) {
     for (const cluster of splitReportedFromManualCluster(proximityCluster, today).groups) {
-      canonical.add(resolveCluster(cluster, today).canonicalId);
+      const res = resolveCluster(cluster, today);
+      canonical.add(res.canonicalId);
+      for (const twin of keptManualTwins(cluster, res)) canonical.add(twin.id);
     }
   }
   return canonical;
@@ -909,14 +984,18 @@ export function reconcileEarningsDates(
   const start = addDaysUTC(today, -GATHER_BACK_DAYS);
   const end = addDaysUTC(today, GATHER_FWD_DAYS);
 
+  // `was_superseded`, `title` and `source_key` are read for reporting only —
+  // no resolution step looks at them.
+  type PassRow = EarningsRow & { was_superseded: number; title: string; source_key: string };
   const rows = db
     .prepare(
-      `SELECT ${EARNINGS_ROW_COLUMNS}
+      `SELECT ${EARNINGS_ROW_COLUMNS},
+              COALESCE(superseded, 0) AS was_superseded, title, source_key
        FROM calendar_events
        WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
        ORDER BY event_date ASC`,
     )
-    .all(start, end) as EarningsRow[];
+    .all(start, end) as PassRow[];
 
   const scopedFamilies =
     opts.symbols && opts.symbols.length > 0
@@ -924,7 +1003,7 @@ export function reconcileEarningsDates(
       : null;
 
   // Group by issuer family, then proximity-cluster within each family.
-  const byFamily = new Map<string, EarningsRow[]>();
+  const byFamily = new Map<string, PassRow[]>();
   for (const r of rows) {
     const key = familyKey(r.symbol);
     if (scopedFamilies && !scopedFamilies.has(key)) continue;
@@ -978,7 +1057,14 @@ export function reconcileEarningsDates(
 
   const foldIntoCanonical = createTwinFolder(db);
 
-  const result: ReconcileResult = { confirmed: 0, conflict: 0, single: 0, userConfirmed: 0 };
+  const result: ReconcileResult = {
+    confirmed: 0,
+    conflict: 0,
+    single: 0,
+    userConfirmed: 0,
+    superseded: [],
+  };
+  const passRowById = new Map(rows.map((r) => [r.id, r]));
   // [C-13] One outbox row per reconcile transaction, only when the merge
   // actually moved something. Already-superseded donors revisited on later
   // syncs report changed:false and write nothing, so the pass stays idempotent
@@ -992,13 +1078,39 @@ export function reconcileEarningsDates(
       for (const cluster of split.groups) {
         const res = resolveCluster(cluster, today);
         setCanonical.run(res.status, res.conflictWith, res.canonicalId);
-        const canonicalEventDate = cluster.find((r) => r.id === res.canonicalId)!.event_date;
+        const canonicalRow = cluster.find((r) => r.id === res.canonicalId)!;
+        const canonicalEventDate = canonicalRow.event_date;
+        // Hand-entered twins of a hand-entered canonical stay visible beside
+        // it: same locked status, never folded (see keptManualTwins).
+        const keptTwins = keptManualTwins(cluster, res);
+        const keptIds = new Set(keptTwins.map((r) => r.id));
+        for (const twin of keptTwins) {
+          setCanonical.run("user_confirmed", null, twin.id);
+          result.userConfirmed++;
+          // A twin an earlier pass had hidden comes back. Its arm and audit
+          // rows were merged onto the canonical then and stay there; the
+          // outbox writer is a no-op when the armed projection is unchanged
+          // (D10), so asking is free and never wrong.
+          if (passRowById.get(twin.id)?.was_superseded) anyChanged = true;
+        }
         // Freshest-enriched donor first: with several superseded rows, the
         // first non-NULL value per column wins (COALESCE), so order matters.
         const superseded = cluster
-          .filter((r) => r.id !== res.canonicalId)
+          .filter((r) => r.id !== res.canonicalId && !keptIds.has(r.id))
           .sort((a, b) => (b.enriched_at ?? "").localeCompare(a.enriched_at ?? ""));
         for (const r of superseded) {
+          const pre = passRowById.get(r.id);
+          if (pre && !pre.was_superseded) {
+            result.superseded.push({
+              eventId: r.id,
+              sourceKey: pre.source_key,
+              symbol: r.symbol,
+              title: pre.title,
+              eventDate: r.event_date,
+              source: r.source,
+              reason: supersedeReason(r, canonicalRow, res),
+            });
+          }
           // Fold FIRST, then accumulate: `anyChanged ||= fold(...)` would
           // short-circuit and skip the fold (pre-refactor the same shape
           // skipped mergeEarningsEventState for every donor after the first

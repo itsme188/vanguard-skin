@@ -183,6 +183,140 @@ describe("buildSyncOutcome — the outcome line the button keeps visible after a
   });
 });
 
+// Owner rulings 2026-10-06
+// [qa:today-earningshub-refresh--deletes-scheduled-macro-release-never-recreated]
+// [qa:dashboard-today-earningshub-refresh-from-finnhub-refresh-silently-supersedes-a-user-added-earnings-row-the-hub]:
+// a refresh that takes a row off the calendar NAMES it and says why. Deleted
+// rows arrive in `removed`, hidden (superseded) rows in `superseded`; titles
+// and dates are public calendar data. Synthetic names throughout.
+describe("buildSyncOutcome — names the rows a refresh removed or hid", () => {
+  const removedOne = {
+    title: "Test Release Two",
+    eventDate: "2026-04-22",
+    source: "claude_macro",
+    reason: "no longer on the release schedule the source publishes",
+  };
+  const hiddenOne = {
+    title: "ZZA Earnings",
+    eventDate: "2026-04-23",
+    source: "finnhub",
+    reason: "Nasdaq lists 2026-04-24 instead; that date shows until you confirm one",
+  };
+
+  it("names a removed row by title, date and reason on the visible line", () => {
+    expect(
+      buildSyncOutcome({ newEvents: 0, refreshedEvents: 2, errors: [], removed: [removedOne] }),
+    ).toEqual({
+      text:
+        "Refreshed — 2 updated, 1 removed · Removed Test Release Two (2026-04-22)" +
+        " — no longer on the release schedule the source publishes",
+    });
+  });
+
+  it("names a hidden row by title, date and reason on the visible line", () => {
+    expect(
+      buildSyncOutcome({ newEvents: 0, refreshedEvents: 2, errors: [], superseded: [hiddenOne] }),
+    ).toEqual({
+      text:
+        "Refreshed — 2 updated, 1 hidden · Hidden ZZA Earnings (2026-04-23)" +
+        " — Nasdaq lists 2026-04-24 instead; that date shows until you confirm one",
+    });
+  });
+
+  it('never says "no changes" when the only change was a removal', () => {
+    const outcome = buildSyncOutcome({
+      newEvents: 0,
+      refreshedEvents: 0,
+      errors: [],
+      removed: [removedOne],
+    });
+    expect(outcome.text).not.toContain("no changes");
+    expect(outcome.text.startsWith("Refreshed — 1 removed · Removed Test Release Two")).toBe(true);
+  });
+
+  it("shows the first row of each kind inline, counts the rest, and lists every row in the detail", () => {
+    const removedTwo = { ...removedOne, title: "Test Release Three", eventDate: "2026-04-23" };
+    const outcome = buildSyncOutcome({
+      newEvents: 1,
+      refreshedEvents: 0,
+      errors: [],
+      removed: [removedOne, removedTwo],
+      superseded: [hiddenOne],
+    });
+    expect(outcome.text).toBe(
+      "Refreshed — 1 new, 2 removed, 1 hidden" +
+        " · Removed Test Release Two (2026-04-22) — no longer on the release schedule the source publishes (+1 more)" +
+        " · Hidden ZZA Earnings (2026-04-23) — Nasdaq lists 2026-04-24 instead; that date shows until you confirm one",
+    );
+    expect(outcome.changes).toEqual([
+      "Removed Test Release Two (2026-04-22) — no longer on the release schedule the source publishes",
+      "Removed Test Release Three (2026-04-23) — no longer on the release schedule the source publishes",
+      "Hidden ZZA Earnings (2026-04-23) — Nasdaq lists 2026-04-24 instead; that date shows until you confirm one",
+    ]);
+    expect(outcome.title).toBeUndefined();
+  });
+
+  it("keeps removed rows, skipped legs and errors apart", () => {
+    const outcome = buildSyncOutcome({
+      newEvents: 0,
+      refreshedEvents: 0,
+      errors: ["macro: Claude request failed"],
+      skipped: ["Company events skipped — TWS not connected"],
+      removed: [removedOne],
+    });
+    expect(outcome.text).toBe(
+      "Refreshed — 1 removed" +
+        " · Removed Test Release Two (2026-04-22) — no longer on the release schedule the source publishes" +
+        " · Company events skipped — TWS not connected" +
+        " · macro: Claude request failed",
+    );
+    expect(outcome.title).toBe("macro: Claude request failed");
+  });
+
+  it("ignores a malformed list from a stale server rather than throwing", () => {
+    expect(
+      buildSyncOutcome({
+        newEvents: 1,
+        refreshedEvents: 0,
+        errors: [],
+        removed: "nope",
+        superseded: null,
+      } as never),
+    ).toEqual({ text: "Refreshed — 1 new" });
+  });
+});
+
+describe("EarningsHubRefreshButton source — the outcome line carries removed and hidden rows", () => {
+  const src = readFileSync("app/dashboard/today/EarningsHubRefreshButton.tsx", "utf8");
+
+  it("reads both lists off the complete frame", () => {
+    const iface = src.slice(
+      anchorIndex(src, "interface SyncCompleteData"),
+      anchorIndex(src, "export interface SyncOutcome"),
+    );
+    expect(iface).toContain("removed?:");
+    expect(iface).toContain("superseded?:");
+  });
+
+  it("renders every named row inside the tap-to-expand detail, not behind a hover", () => {
+    const block = src.slice(
+      anchorIndex(src, "{!progress && outcome && ("),
+      anchorIndex(src, "{error && "),
+    );
+    expect(block).toContain("outcome.changes");
+    expect(block).toContain("<details");
+    expect(block).not.toMatch(/title=\{/);
+  });
+
+  it("explains a failed request through the shared mutation reader, never a raw status or exception", () => {
+    expect(src).toContain('from "@/lib/ui/mutation-result"');
+    expect(src).toContain("readMutationResult(res)");
+    expect(src).toContain('networkFailureMessage("refresh the calendar")');
+    expect(src).not.toContain("setError(`HTTP ${res.status}`)");
+    expect(src).not.toMatch(/setError\(err instanceof Error \? err\.message/);
+  });
+});
+
 describe("EarningsHubRefreshButton source — frame parsing and outcome lifecycle", () => {
   const src = readFileSync("app/dashboard/today/EarningsHubRefreshButton.tsx", "utf8");
 
@@ -243,12 +377,12 @@ describe("EarningsHubRefreshButton source — frame parsing and outcome lifecycl
     expect(src).not.toMatch(/title=\{outcome\.title\}/);
   });
 
-  it("renders the errors as a click-to-expand <details>, keyed on outcome.title", () => {
+  it("renders the errors as a click-to-expand <details>, keyed on outcome.title (or the named-rows list)", () => {
     const block = src.slice(
       anchorIndex(src, "{!progress && outcome && ("),
       anchorIndex(src, "{error && "),
     );
-    expect(block).toMatch(/outcome\.title\s*\?/);
+    expect(block).toMatch(/outcome\.title \|\| outcome\.changes\s*\?/);
     expect(block).toContain("<details");
     expect(block).toContain("<summary");
     expect(block).toContain("{outcome.text}");

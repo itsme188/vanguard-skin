@@ -75,6 +75,33 @@ export interface SyncCalendarResult {
    * rendered "Refreshed — 1 new" with no hint anything was skipped.
    */
   skipped: string[];
+  /**
+   * Rows that were showing before this refresh and that it DELETED, each with
+   * a short reason (owner ruling 2026-10-06, ledger finding
+   * `today-earningshub-refresh--deletes-scheduled-macro-release-never-recreated`:
+   * a scheduled macro release was cleaned up as an orphan and the button said
+   * nothing). Read off what each source's cleanup actually removed — see
+   * `writeAndCollectRemoved`. Titles and dates are public calendar data.
+   */
+  removed: CalendarRowChange[];
+  /**
+   * Earnings rows that were showing when this refresh started and that it HID
+   * (superseded) — still stored, no longer on any calendar surface (owner
+   * ruling 2026-10-06, ledger finding `dashboard-today-earningshub-refresh-
+   * from-finnhub-refresh-silently-supersedes-a-user-added-earnings-row-the-hub`).
+   */
+  superseded: CalendarRowChange[];
+}
+
+/** One row a refresh took off the calendar, in words the desk can read. */
+export interface CalendarRowChange {
+  title: string;
+  /** YYYY-MM-DD. */
+  eventDate: string;
+  /** The pipeline that owned the row: 'claude_macro' | 'finnhub' | 'nasdaq' | 'manual' | … */
+  source: string;
+  /** Short, domain-language, no trailing period. */
+  reason: string;
 }
 
 export class SyncCalendarValidationError extends Error {
@@ -168,6 +195,40 @@ function writeAndCountNewKeys(
 }
 
 /**
+ * Run one source's cleanup-then-write step and return the rows it REMOVED:
+ * rows of that source and week that were showing before the step and whose
+ * source_key is gone after it.
+ *
+ * Reporting only — the step itself is unchanged. It is a before/after diff of
+ * the table rather than a prediction of what the delete will do, so it can
+ * never name a row the delete's protections kept (released rows, rows with an
+ * email / skip / bogey / probe stamp), and a row deleted and re-minted under
+ * the same source_key is correctly NOT a removal. Rows already hidden
+ * (`superseded`) are left out: the desk was not looking at them.
+ */
+function writeAndCollectRemoved(
+  db: Database.Database,
+  weekOf: string,
+  source: "claude_macro" | "finnhub" | "nasdaq",
+  reason: string,
+  write: () => void,
+): CalendarRowChange[] {
+  const showing = db
+    .prepare(
+      `SELECT source_key, title, event_date FROM calendar_events
+        WHERE week_of = ? AND source = ? AND COALESCE(superseded, 0) = 0
+        ORDER BY event_date ASC, id ASC`,
+    )
+    .all(weekOf, source) as { source_key: string; title: string; event_date: string }[];
+  write();
+  if (showing.length === 0) return [];
+  const stillStored = db.prepare("SELECT 1 FROM calendar_events WHERE source_key = ?");
+  return showing
+    .filter((r) => stillStored.get(r.source_key) === undefined)
+    .map((r) => ({ title: r.title, eventDate: r.event_date, source, reason }));
+}
+
+/**
  * Write the hardcoded macro rows (FOMC + ISM/UMich/Conference Board) for a
  * week when the full macro fetch failed. Upsert only — idempotent on
  * source_key, never deletes, never calls a network or an AI.
@@ -229,6 +290,25 @@ export async function syncCalendarForWeek(
   const send = opts.onProgress ?? (() => {});
   const errors: string[] = [];
   const skipped: string[] = [];
+  const removed: CalendarRowChange[] = [];
+  let superseded: CalendarRowChange[] = [];
+
+  // Earnings rows on screen as the refresh starts, by source_key (the vendor
+  // steps delete and re-mint rows, so ids do not survive the run). The
+  // reconcile step below reports every row its pass hid; only the ones in
+  // this set were visible to the desk beforehand. A hidden twin that is
+  // re-minted and hidden again, or a duplicate that arrives and is hidden
+  // inside this same run, was never on screen and is not named.
+  const showingAtStart = new Set(
+    (
+      db
+        .prepare(
+          `SELECT source_key FROM calendar_events
+            WHERE event_type = 'earnings' AND COALESCE(superseded, 0) = 0`,
+        )
+        .all() as { source_key: string }[]
+    ).map((r) => r.source_key),
+  );
 
   let wshEvents = 0;
   let wshNew = 0;
@@ -300,13 +380,23 @@ export async function syncCalendarForWeek(
         // previous_value this fetch omits. Enriched rows are historical
         // records of releases that happened and are never deleted.
         macroNew = writeAndCountNewKeys(db, macroInputs, () => {
-          deleteUnenrichedEventsForWeek(
-            db,
-            weekOf,
-            "claude_macro",
-            macroInputs.map((e) => e.source_key),
+          removed.push(
+            ...writeAndCollectRemoved(
+              db,
+              weekOf,
+              "claude_macro",
+              "no longer on the release schedule the source publishes",
+              () => {
+                deleteUnenrichedEventsForWeek(
+                  db,
+                  weekOf,
+                  "claude_macro",
+                  macroInputs.map((e) => e.source_key),
+                );
+                upsertCalendarEvents(db, macroInputs);
+              },
+            ),
           );
-          upsertCalendarEvents(db, macroInputs);
         });
       }
       macroEvents = macroInputs.length;
@@ -392,9 +482,19 @@ export async function syncCalendarForWeek(
         if (finnhubInputs.length > 0) {
           // Same enrichment-preserving cleanup as the macro phase — an enriched
           // earnings row also anchors earnings_emails dedup rows (CASCADE).
+          // A partial scan deletes rows for names it never asked about, so
+          // the reason must not claim the vendor dropped the date.
+          const finnhubReason =
+            finnhubFailures.length > 0
+              ? "Finnhub did not return this date on this refresh (some symbols were not scanned)"
+              : "Finnhub did not return this date on this refresh";
           finnhubNew = writeAndCountNewKeys(db, finnhubInputs, () => {
-            deleteUnenrichedEventsForWeek(db, weekOf, "finnhub");
-            upsertCalendarEvents(db, finnhubInputs);
+            removed.push(
+              ...writeAndCollectRemoved(db, weekOf, "finnhub", finnhubReason, () => {
+                deleteUnenrichedEventsForWeek(db, weekOf, "finnhub");
+                upsertCalendarEvents(db, finnhubInputs);
+              }),
+            );
           });
         }
         finnhubEvents = finnhubInputs.length;
@@ -441,8 +541,18 @@ export async function syncCalendarForWeek(
       );
       if (nasdaqInputs.length > 0) {
         nasdaqNew = writeAndCountNewKeys(db, nasdaqInputs, () => {
-          deleteUnenrichedEventsForWeek(db, weekOf, "nasdaq");
-          upsertCalendarEvents(db, nasdaqInputs);
+          removed.push(
+            ...writeAndCollectRemoved(
+              db,
+              weekOf,
+              "nasdaq",
+              "Nasdaq did not return this date on this refresh",
+              () => {
+                deleteUnenrichedEventsForWeek(db, weekOf, "nasdaq");
+                upsertCalendarEvents(db, nasdaqInputs);
+              },
+            ),
+          );
         });
       }
       nasdaqEvents = nasdaqInputs.length;
@@ -462,6 +572,14 @@ export async function syncCalendarForWeek(
   // every reader shows exactly one row per reporting event. Pure DB work.
   try {
     const rec = reconcileEarningsDates(db, { today: todayET() });
+    superseded = rec.superseded
+      .filter((r) => showingAtStart.has(r.sourceKey))
+      .map((r) => ({
+        title: r.title,
+        eventDate: r.eventDate,
+        source: r.source,
+        reason: r.reason,
+      }));
     send({
       phase: "reconcile_done",
       message: `Earnings dates reconciled: ${rec.confirmed} confirmed, ${rec.conflict} conflict, ${rec.single} single, ${rec.userConfirmed} you-confirmed`,
@@ -491,5 +609,7 @@ export async function syncCalendarForWeek(
     refreshedEvents: totalSaved - newEvents,
     errors,
     skipped,
+    removed,
+    superseded,
   };
 }

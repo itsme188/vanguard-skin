@@ -29,6 +29,15 @@ interface FredReleaseConfig {
 // IMPORTANT: IDs below are verified against FRED /releases on 2026-04-18.
 // Do NOT edit without re-verifying — a wrong ID silently mislabels events
 // (see memory/feedback_verify_external_truth.md for the incident).
+//
+// Existing Home Sales (release 291) was REMOVED on 2026-10-07 (owner ruling
+// 2026-10-06): the source stopped publishing release dates for it, so a row
+// cleaned up as an orphan could never be re-created. It is deliberately not
+// replaced by a hand-maintained schedule. Do not re-add the id without the
+// owner's say-so and a fresh check that `releases/dates` lists it again. Rows
+// already stored for it are untouched: an enriched one stays as history, and
+// an un-enriched one is removed (and named in the refresh outcome) the next
+// time its week is refreshed.
 const TRACKED_RELEASES: FredReleaseConfig[] = [
   // ── High impact ─────────────────────────────────────────
   //   reportingLag: 1 = prior month, 2 = two months prior,
@@ -45,7 +54,6 @@ const TRACKED_RELEASES: FredReleaseConfig[] = [
   { releaseId: 9,   eventType: "retail_sales", defaultImpact: "medium", shortName: "Retail Sales",                    reportingLag: 1,           expectedNameKeywords: ["Retail"] },
   { releaseId: 46,  eventType: "cpi",          defaultImpact: "medium", shortName: "Producer Price Index",            reportingLag: 1,           expectedNameKeywords: ["Producer Price"] },
   { releaseId: 27,  eventType: "housing",      defaultImpact: "medium", shortName: "Housing Starts",                  reportingLag: 1,           expectedNameKeywords: ["New Residential Construction"] },
-  { releaseId: 291, eventType: "housing",      defaultImpact: "medium", shortName: "Existing Home Sales",             reportingLag: 1,           expectedNameKeywords: ["Existing Home Sales"] },
   { releaseId: 97,  eventType: "housing",      defaultImpact: "medium", shortName: "New Home Sales",                  reportingLag: 1,           expectedNameKeywords: ["New Residential Sales"] },
   { releaseId: 13,  eventType: "other_macro",  defaultImpact: "medium", shortName: "Industrial Production",           reportingLag: 1,           expectedNameKeywords: ["Industrial Production"] },
   { releaseId: 95,  eventType: "other_macro",  defaultImpact: "medium", shortName: "Durable Goods Orders",            reportingLag: 1,           expectedNameKeywords: ["Manufacturer", "M3"] },

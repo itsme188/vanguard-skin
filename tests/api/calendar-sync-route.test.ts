@@ -122,6 +122,45 @@ describe("POST /api/calendar/sync — complete frame carries per-phase errors", 
     expect(frame.data.weekOf).toBe("2026-09-07");
   });
 
+  // Owner rulings 2026-10-06: the refresh names every row it removed or hid.
+  it("passes the removed and superseded row lists through into the complete frame", async () => {
+    const removed = [
+      {
+        title: "Test Release Two",
+        eventDate: "2026-09-09",
+        source: "claude_macro",
+        reason: "no longer on the release schedule the source publishes",
+      },
+    ];
+    const superseded = [
+      {
+        title: "ZZA Earnings",
+        eventDate: "2026-09-10",
+        source: "finnhub",
+        reason: "the date you entered (2026-09-09) takes its place",
+      },
+    ];
+    hoisted.syncCalendarForWeek.mockResolvedValueOnce({ ...baseResult, removed, superseded });
+
+    const mod = await import("@/app/api/calendar/sync/route");
+    const res = await mod.POST(syncRequest({ weekOf: "2026-09-07" }));
+    const frame = completeFrame(await drainSse(res));
+
+    expect(frame.data.removed).toEqual(removed);
+    expect(frame.data.superseded).toEqual(superseded);
+  });
+
+  it("carries empty removed and superseded lists on a clean run — the fields are never omitted", async () => {
+    hoisted.syncCalendarForWeek.mockResolvedValueOnce({ ...baseResult, removed: [], superseded: [] });
+
+    const mod = await import("@/app/api/calendar/sync/route");
+    const res = await mod.POST(syncRequest({ weekOf: "2026-09-07" }));
+    const frame = completeFrame(await drainSse(res));
+
+    expect(frame.data.removed).toEqual([]);
+    expect(frame.data.superseded).toEqual([]);
+  });
+
   it("still carries an empty errors array on a clean run — the field is never omitted", async () => {
     hoisted.syncCalendarForWeek.mockResolvedValueOnce({ ...baseResult });
 
