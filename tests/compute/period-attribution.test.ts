@@ -143,6 +143,26 @@ describe("computePeriodAttribution", () => {
     const benchReturns = [0.01, -0.005, 0.008, 0.002, -0.003, 0.006, 0.001, -0.004, 0.009];
     const portReturns = benchReturns.map((b) => 1.2 * b + 0.002);
 
+    it("decomposedReturn is the daily-series return the two parts add up to, with its pair count", () => {
+      seedSeries({ accountId: 2, benchReturns, portReturns });
+      const r = computePeriodAttribution(db, 2, day(0), day(9), "SPY");
+      expect(r.decomposedReturn).not.toBeNull();
+      // Nine daily pairs from ten seeded days.
+      expect(r.decomposedReturn!.observations).toBe(9);
+      expect(r.decomposedReturn!.portfolioReturn).toBeCloseTo(compound(portReturns), 10);
+      expect(r.betaVsAlpha.betaContribution + r.betaVsAlpha.alphaContribution).toBeCloseTo(
+        r.decomposedReturn!.portfolioReturn,
+        12,
+      );
+    });
+
+    it("decomposedReturn stays flow-adjusted: a withdrawal is not a return", () => {
+      seedSeries({ accountId: 2, benchReturns, portReturns, flows: { 4: -20000 } });
+      const r = computePeriodAttribution(db, 2, day(0), day(9), "SPY");
+      expect(r.decomposedReturn!.observations).toBe(9);
+      expect(r.decomposedReturn!.portfolioReturn).toBeCloseTo(compound(portReturns), 8);
+    });
+
     it("alpha is portfolio return minus beta×benchmark — never the negation of beta", () => {
       // Live-DB condition for the 2026-06-10 bug: NO holdings/prices rows exist
       // at the period start (account 2 has none seeded), so per-position
@@ -209,6 +229,7 @@ describe("computePeriodAttribution", () => {
     expect(r.sectorContribution).toEqual([]);
     expect(r.betaVsAlpha).toEqual({ betaContribution: 0, alphaContribution: 0 });
     expect(r.betaWindow).toBeNull();
+    expect(r.decomposedReturn).toBeNull();
   });
 
   describe("multi-account scopes (never collapse to accountIds[0])", () => {

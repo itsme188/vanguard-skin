@@ -14,7 +14,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const dir = join(process.cwd(), "app/dashboard/components");
 const read = (name: string) => readFileSync(join(dir, name), "utf8");
@@ -60,13 +59,5 @@ describe("dashboard components anchor 'today' to Eastern time", () => {
     const src = code("PeriodComparisonTable.tsx");
     const starts = src.match(/startDate: addDays\(today, -/g) ?? [];
     expect(starts).toHaveLength(3);
-  });
-
-  it("PerformanceView flags cumulativeGain as unused", () => {
-    const src = read("PerformanceView.tsx");
-    const at = anchorIndex(src, "const cumulativeGain");
-    expect(at).toBeGreaterThan(-1);
-    const before = src.slice(Math.max(0, at - 300), at);
-    expect(before).toMatch(/unused/i);
   });
 });

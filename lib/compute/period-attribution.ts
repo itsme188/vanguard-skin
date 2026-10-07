@@ -57,6 +57,15 @@ export interface PeriodAttribution {
    * requested period start; the card captions it via dataWindowNotice.
    */
   betaWindow: { start: string; end: string } | null;
+  /**
+   * What betaVsAlpha decomposes: the flow-adjusted return compounded over the
+   * regression's aligned daily pairs, and how many pairs there were. Beta
+   * contribution + alpha equals portfolioReturn by construction. It is NOT
+   * the TWR headline (chained from monthly snapshots over its own window),
+   * so the card states this figure rather than leaving the parts to be
+   * summed against the TWR tile. Null when no regression ran.
+   */
+  decomposedReturn: { portfolioReturn: number; observations: number } | null;
 }
 
 // ─── Local beta regression ────────────────────────────────────────────────────
@@ -71,6 +80,7 @@ function computeBetaForPeriod(
   beta: number;
   benchmarkReturn: number;
   portfolioReturn: number;
+  observations: number;
   windowStart: string;
   windowEnd: string;
 } | null {
@@ -159,7 +169,7 @@ function computeBetaForPeriod(
   const portfolioReturn = aligned.reduce((p, r) => p * (1 + r.portReturn), 1) - 1;
   const benchmarkReturn = aligned.reduce((p, r) => p * (1 + r.benchReturn), 1) - 1;
 
-  return { beta, benchmarkReturn, portfolioReturn, windowStart, windowEnd };
+  return { beta, benchmarkReturn, portfolioReturn, observations: aligned.length, windowStart, windowEnd };
 }
 
 // ─── Per-position contributions ───────────────────────────────────────────────
@@ -268,11 +278,13 @@ export function computePeriodAttribution(
   let betaContribution = 0;
   let alphaContribution = 0;
   let betaWindow: PeriodAttribution["betaWindow"] = null;
+  let decomposedReturn: PeriodAttribution["decomposedReturn"] = null;
   const reg = computeBetaForPeriod(db, accountIds, benchmarkSymbol, startDate, endDate);
   if (reg) {
     betaContribution = reg.beta * reg.benchmarkReturn;
     alphaContribution = reg.portfolioReturn - betaContribution;
     betaWindow = { start: reg.windowStart, end: reg.windowEnd };
+    decomposedReturn = { portfolioReturn: reg.portfolioReturn, observations: reg.observations };
   }
 
   return {
@@ -281,5 +293,6 @@ export function computePeriodAttribution(
     sectorContribution,
     betaVsAlpha: { betaContribution, alphaContribution },
     betaWindow,
+    decomposedReturn,
   };
 }
