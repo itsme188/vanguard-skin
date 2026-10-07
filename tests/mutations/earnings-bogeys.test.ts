@@ -351,7 +351,10 @@ describe("upsertBogey preserveExisting (newsletter re-scan)", () => {
     expect(after.uploaded_at).toBe("2026-01-01 00:00:00");
   });
 
-  it("preserve mode with no existing row and no content at all still inserts (nothing to protect)", () => {
+  // Owner ruling 2026-08-12 (qa: all-empty-newsletter-bogey-counts-as-coverage):
+  // an all-empty row is never stored. This used to assert the opposite
+  // ("still inserts — nothing to protect").
+  it("preserve mode with no existing row and no content at all stores nothing", () => {
     const r = upsertBogey(db, {
       event_id: 1,
       source: "newsletter",
@@ -360,9 +363,10 @@ describe("upsertBogey preserveExisting (newsletter re-scan)", () => {
       preserveExisting: true,
     });
 
-    expect(r.created).toBe(true);
-    expect(r.skipped).toBeFalsy();
-    expect(getBogeysForEvent(db, 1)).toHaveLength(1);
+    expect(r.created).toBe(false);
+    expect(r.skipped).toBe(true);
+    expect(r.id).toBe(0);
+    expect(getBogeysForEvent(db, 1)).toHaveLength(0);
   });
 });
 

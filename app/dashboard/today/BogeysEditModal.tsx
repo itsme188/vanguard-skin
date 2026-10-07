@@ -12,10 +12,12 @@ import apiFetch from "@/lib/http/apiFetch";
 import {
   isUuidV4,
   parseExtraMetrics,
+  extraMetricUnitToContractUnit,
   MAX_LABEL,
   MAX_DEFINITION,
   type ExtraMetricSpec,
 } from "@/lib/print-watch/extra-metrics";
+import { formatValue } from "@/lib/print-watch/first-pass-format";
 
 /**
  * Mirrors `lib/print-watch/recompile.ts::RecompileReport`, the shape POST/DELETE
@@ -160,6 +162,121 @@ function needsAcknowledgement(report: RecompileReport): boolean {
   );
 }
 
+/**
+ * Does a stored bogey row hold anything at all? (owner ruling 2026-08-12:
+ * an all-empty row is not coverage, so it is neither listed nor counted.)
+ *
+ * A client copy of `bogeyHasContent` in lib/mutations/earnings-bogeys.ts,
+ * which this file cannot import (that module reaches the sqlite driver).
+ * tests/dashboard/bogeys-edit-modal-empty-rows.test.ts runs both over the
+ * same rows, one content column at a time, so the copies cannot drift.
+ */
+export function bogeyCardHasContent(b: {
+  eps_consensus?: number | null;
+  eps_whisper?: number | null;
+  revenue_consensus_usd?: number | null;
+  revenue_whisper_usd?: number | null;
+  expected_move_pct?: number | null;
+  eps_consensus_vendor?: number | null;
+  segment_breakdown_json?: string | null;
+  guidance_notes?: string | null;
+  notes?: string | null;
+  extra_metrics_json?: string | null;
+}): boolean {
+  const num = (v: number | null | undefined) => typeof v === "number" && Number.isFinite(v);
+  const text = (v: string | null | undefined) =>
+    typeof v === "string" && !["", "[]", "{}"].includes(v.trim());
+  return (
+    num(b.eps_consensus) ||
+    num(b.eps_whisper) ||
+    num(b.revenue_consensus_usd) ||
+    num(b.revenue_whisper_usd) ||
+    num(b.expected_move_pct) ||
+    num(b.eps_consensus_vendor) ||
+    text(b.segment_breakdown_json) ||
+    text(b.guidance_notes) ||
+    text(b.notes) ||
+    text(b.extra_metrics_json)
+  );
+}
+
+export const NOTHING_TO_SAVE = "Nothing to save — enter at least one bogey, guidance or note.";
+
+export interface ManualBogeyValues {
+  eps_consensus: number | null;
+  eps_whisper: number | null;
+  revenue_consensus_usd: number | null;
+  revenue_whisper_usd: number | null;
+  expected_move_pct: number | null;
+  guidance_notes: string | null;
+  notes: string | null;
+}
+
+/**
+ * Reads the manual-bogeys form. A field that is typed but cannot be read is
+ * an ERROR naming that field, never "no value" — dropping it stored a row
+ * with none of the numbers the desk typed (qa: unparseable-values-silently-
+ * dropped). `empty` is true when no figure, guidance or note was entered
+ * (extra metric rows are judged by the caller, which holds them).
+ */
+export function parseManualBogeyForm(form: {
+  eps_consensus: string;
+  eps_whisper: string;
+  revenue_consensus: string;
+  revenue_whisper: string;
+  expected_move: string;
+  guidance_notes: string;
+  notes: string;
+}): { values: ManualBogeyValues; error: string | null; empty: boolean } {
+  const values: ManualBogeyValues = {
+    eps_consensus: null,
+    eps_whisper: null,
+    revenue_consensus_usd: null,
+    revenue_whisper_usd: null,
+    expected_move_pct: null,
+    guidance_notes: form.guidance_notes.trim() || null,
+    notes: form.notes.trim() || null,
+  };
+  let error: string | null = null;
+  const money = (
+    raw: string,
+    key: "eps_consensus" | "eps_whisper" | "revenue_consensus_usd" | "revenue_whisper_usd",
+    label: string,
+    example: string,
+  ) => {
+    if (!raw.trim()) return;
+    const n = parseLargeUSD(raw);
+    if (n == null) error ??= `${label} must be a number (e.g. ${example}).`;
+    else values[key] = n;
+  };
+  money(form.eps_consensus, "eps_consensus", "EPS consensus", "0.46");
+  money(form.eps_whisper, "eps_whisper", "EPS whisper", "0.50");
+  money(form.revenue_consensus, "revenue_consensus_usd", "Revenue consensus", "3.85B or 3850000000");
+  money(form.revenue_whisper, "revenue_whisper_usd", "Revenue whisper", "3.90B or 3900000000");
+  if (form.expected_move.trim()) {
+    const pct = coercePercent(form.expected_move);
+    if (pct == null) error ??= "Expected move must be a percent above zero (e.g. 6 or ±6%).";
+    else values.expected_move_pct = pct;
+  }
+  const empty = Object.values(values).every((v) => v == null);
+  return { values, error, empty };
+}
+
+/**
+ * One stored extra metric as the card shows it: the label, then the figures
+ * through the live sheet's own formatter, e.g. "Net new ARR $300.0M · whisper
+ * $310.0M". A metric with no figure yet says so instead of showing a bare
+ * label (qa: saved-extra-metric-never-shown-on-existing-bogey-card).
+ */
+export function formatExtraMetricLine(spec: ExtraMetricSpec): string {
+  const unit = extraMetricUnitToContractUnit(spec.unit);
+  const has = (v: number | null | undefined): v is number => typeof v === "number" && Number.isFinite(v);
+  const parts: string[] = [];
+  if (has(spec.consensus)) parts.push(formatValue(spec.consensus, unit));
+  if (has(spec.whisper)) parts.push(`whisper ${formatValue(spec.whisper, unit)}`);
+  return parts.length > 0 ? `${spec.label} ${parts.join(" · ")}` : `${spec.label} — no bogey yet`;
+}
+
 /** What GET /api/earnings/bogeys adds to each stored row: its specs already
  *  parsed, so the editor can preserve ids instead of re-minting them. */
 type BogeyWithSpecs = EarningsBogey & {
@@ -193,6 +310,10 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
   const [clearingActuals, setClearingActuals] = useState(false);
   const [clearedActualsMsg, setClearedActualsMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The REPORTED ACTUALS form's own message, shown beside its own buttons.
+   *  It used to share `error`, which renders at the foot of the manual-bogeys
+   *  form — a screen away, reading as that form's failure. */
+  const [actualsError, setActualsError] = useState<string | null>(null);
   const [extraRows, setExtraRows] = useState<ExtraRow[]>([]);
   const [extraErrors, setExtraErrors] = useState<string[]>([]);
   const [conflicts, setConflicts] = useState<ExtraMetricConflict[]>([]);
@@ -226,6 +347,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     if (!open) return;
     let cancelled = false;
     setError(null);
+    setActualsError(null);
     setForm(EMPTY);
     setActuals(EMPTY_ACTUALS);
     setActualsEnrichedAt(null);
@@ -459,17 +581,11 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
         );
         return;
       }
-      const eps_consensus = form.eps_consensus.trim() ? parseLargeUSD(form.eps_consensus) : null;
-      const eps_whisper = form.eps_whisper.trim() ? parseLargeUSD(form.eps_whisper) : null;
-      const revenue_consensus_usd = form.revenue_consensus.trim()
-        ? parseLargeUSD(form.revenue_consensus)
-        : null;
-      const revenue_whisper_usd = form.revenue_whisper.trim()
-        ? parseLargeUSD(form.revenue_whisper)
-        : null;
-      const expected_move_pct = form.expected_move.trim()
-        ? coercePercent(form.expected_move)
-        : null;
+      const parsed = parseManualBogeyForm(form);
+      if (parsed.error) {
+        setError(parsed.error);
+        return;
+      }
 
       // The server re-validates with this same parser — the client check is a
       // fast, identical refusal, never the only one.
@@ -481,19 +597,28 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
       }
       setExtraErrors([]);
 
+      // Nothing typed at all: say so and send nothing. The server refuses the
+      // same body, so this is the fast twin of that refusal, not the only one.
+      if (parsed.empty && extra_metrics_json === null) {
+        const label = form.source_label.trim();
+        const storedHere = existing.some(
+          (b) => b.source === "manual" && (b.source_label ?? "").trim() === label,
+        );
+        setError(
+          storedHere
+            ? `${NOTHING_TO_SAVE} To remove the stored sheet, use its delete link above.`
+            : NOTHING_TO_SAVE,
+        );
+        return;
+      }
+
       const res = await apiFetch("/api/earnings/bogeys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           event_id: eventId,
           source_label: form.source_label.trim() || null,
-          eps_consensus,
-          eps_whisper,
-          revenue_consensus_usd,
-          revenue_whisper_usd,
-          expected_move_pct,
-          guidance_notes: form.guidance_notes.trim() || null,
-          notes: form.notes.trim() || null,
+          ...parsed.values,
           extra_metrics_json,
         }),
       });
@@ -536,14 +661,14 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
   // refuses a future-dated release with 409 code 'pre_print' otherwise).
   async function submitActuals(force: boolean) {
     setSavingActuals(true);
-    setError(null);
+    setActualsError(null);
     try {
       const { eps_actual, revenue_actual_usd, error: validationError } = parseActualsInput(
         actuals.eps_actual,
         actuals.revenue_actual,
       );
       if (validationError) {
-        setError(validationError);
+        setActualsError(validationError);
         return;
       }
       const res = await apiFetch("/api/earnings/actuals", {
@@ -570,16 +695,16 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
             await submitActuals(true);
             return;
           }
-          setError(data.error ?? "Save cancelled — release time is still in the future.");
+          setActualsError(data.error ?? "Save cancelled — release time is still in the future.");
           return;
         }
-        setError(data.error ?? `Server returned ${res.status}`);
+        setActualsError(data.error ?? `Server returned ${res.status}`);
         return;
       }
       router.refresh();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
+      setActualsError(err instanceof Error ? err.message : "Network error");
     } finally {
       setSavingActuals(false);
     }
@@ -606,7 +731,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     );
     if (!confirmed) return;
     setClearingActuals(true);
-    setError(null);
+    setActualsError(null);
     setClearedActualsMsg(null);
     try {
       const res = await apiFetch("/api/earnings/actuals", {
@@ -620,7 +745,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
         success?: boolean;
       } | null;
       if (!res.ok || !data?.success) {
-        setError(data?.error ?? `Clear failed: server returned ${res.status}.`);
+        setActualsError(data?.error ?? `Clear failed: server returned ${res.status}.`);
         return;
       }
       setActuals(EMPTY_ACTUALS);
@@ -631,7 +756,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
       );
       router.refresh();
     } catch {
-      setError("Clear failed: could not reach the server.");
+      setActualsError("Clear failed: could not reach the server.");
     } finally {
       setClearingActuals(false);
     }
@@ -664,6 +789,12 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
 
   if (!open || typeof document === "undefined") return null;
 
+  // An all-empty stored row is not a bogey: it is neither listed nor counted.
+  // (New ones are refused at save; scripts/repair-empty-bogeys.ts removes the
+  // ones stored before that.)
+  const shown = existing.filter(bogeyCardHasContent);
+  const hiddenEmpty = existing.length - shown.length;
+
   return createPortal(
     <div
       className="fixed inset-0 z-[100] overflow-y-auto overscroll-contain"
@@ -693,7 +824,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
         <div className="px-5 py-4 space-y-5">
           {/* Existing bogeys — render an explicit empty state so users
               don't mistake the modal for partially loaded. */}
-          {existing.length === 0 ? (
+          {shown.length === 0 ? (
             <section>
               <h3 className="text-[11px] uppercase tracking-widest text-ink-dim mb-2">
                 Existing bogeys
@@ -701,14 +832,24 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
               <p className="text-[12px] text-ink-faint italic">
                 None yet. Use the manual-entry form below or the multi-symbol PDF upload on the Today page to add bogeys for this event.
               </p>
+              {hiddenEmpty > 0 && (
+                <p className="text-[12px] text-ink-faint mt-1">
+                  {plural(hiddenEmpty, "stored row")} with no figures or notes {hiddenEmpty === 1 ? "is" : "are"} not counted.
+                </p>
+              )}
             </section>
           ) : (
             <section>
               <h3 className="text-[11px] uppercase tracking-widest text-ink-dim mb-2">
-                Existing bogeys ({existing.length})
+                Existing bogeys ({shown.length})
               </h3>
+              {hiddenEmpty > 0 && (
+                <p className="text-[12px] text-ink-faint mb-2">
+                  {plural(hiddenEmpty, "stored row")} with no figures or notes {hiddenEmpty === 1 ? "is" : "are"} not counted.
+                </p>
+              )}
               <ul className="space-y-2">
-                {existing.map((b) => (
+                {shown.map((b) => (
                   <li
                     key={b.id}
                     className="rounded border border-edge bg-raised/40 px-3 py-2 text-[13px]"
@@ -720,7 +861,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                       <button
                         type="button"
                         onClick={() => remove(b.id)}
-                        className="text-[11px] text-ink-faint hover:text-down"
+                        className="relative text-[11px] text-ink-faint hover:text-down pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
                       >
                         delete
                       </button>
@@ -732,6 +873,18 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                       <div className="text-[12px] text-ink-dim mt-1 font-mono">
                         {formatBogeyFieldLine(b)}
                       </div>
+                    )}
+                    {/* The desk's extra metric lines — without these a sheet
+                        holding only extra metrics renders as a bare label. */}
+                    {(b.extraMetrics ?? []).map((sp) => (
+                      <div key={sp.id} className="text-[12px] text-ink-dim mt-1 font-mono">
+                        {formatExtraMetricLine(sp)}
+                      </div>
+                    ))}
+                    {(b.extraMetricErrors ?? []).length > 0 && (
+                      <p className="text-[12px] text-down mt-1">
+                        This sheet&rsquo;s extra metrics could not be read.
+                      </p>
                     )}
                     {b.guidance_notes && (
                       <p className="text-[12px] text-ink-faint mt-1 italic">{b.guidance_notes}</p>
@@ -790,6 +943,9 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                 />
               </Field>
             </div>
+            {actualsError && (
+              <p role="alert" className="text-[12px] text-down">{actualsError}</p>
+            )}
             <div className="flex items-center justify-end gap-2">
               {actualsManualAt && (
                 <button

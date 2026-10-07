@@ -49,6 +49,7 @@ import { BogeysEditButton } from "./BogeysEditButton";
 import { getSkippedPhasesForEvents } from "@/lib/queries/earnings-skips";
 import { getWorksheetFlagsForEvents } from "@/lib/queries/earnings-worksheet-flags";
 import { getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
+import { bogeyHasContentSql } from "@/lib/mutations/earnings-bogeys";
 import { statusChipClass, statusChipLabel } from "./status-chip";
 import { Chip } from "../components/Chip";
 import {
@@ -155,7 +156,8 @@ export function EarningsHub() {
     const rows = db
       .prepare(
         `SELECT DISTINCT event_id FROM earnings_bogeys
-          WHERE event_id IN (${events.map(() => "?").join(",")})`,
+          WHERE event_id IN (${events.map(() => "?").join(",")})
+            AND ${bogeyHasContentSql()}`,
       )
       .all(...events.map((e) => e.id)) as { event_id: number }[];
     for (const r of rows) bogeysSet.add(r.event_id);
