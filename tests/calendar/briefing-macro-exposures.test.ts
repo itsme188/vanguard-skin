@@ -56,91 +56,91 @@ function makeMacro(
 
 describe("buildMacroExposures", () => {
   it("includes ZZIND under ISM Manufacturing — the user-reported bug", () => {
-    // The original bug: §6 ISM Mfg listed XPO, NSC, CSX, PRIM, PWR, CLH,
-    // GFL — "basically every industrial in the book" — but silently
+    // The original bug: §6 ISM Mfg listed every other industrial in the
+    // book ("basically every industrial in the book") but silently
     // dropped ZZIND (sector="Industrials", industry="Metal Fabricate/Hardware").
-    const xpo = seedSec("XPO", "Industrials", "Transportation");
+    const ztrn = seedSec("ZZTRN", "Industrials", "Transportation");
     const xmtr = seedSec("ZZIND", "Industrials", "Metal Fabricate/Hardware");
-    const csx = seedSec("CSX", "Industrials", "Transportation");
-    seedHolding(xpo, 100);
-    seedHolding(xmtr, 100);
-    seedHolding(csx, 50);
+    const csx = seedSec("ZZRAIL", "Industrials", "Transportation");
+    seedHolding(ztrn, 30);
+    seedHolding(xmtr, 20);
+    seedHolding(csx, 10);
 
     // Add a non-industrial holding to verify it's filtered out
-    const aapl = seedSec("AAPL", "Technology", "Computers");
-    seedHolding(aapl, 100);
+    const aapl = seedSec("ZZTECH", "Technology", "Computers");
+    seedHolding(aapl, 40);
 
     const out = buildMacroExposures(db, [makeMacro(1, "pmi", "April ISM Manufacturing")]);
     const exp = out.get(1);
 
     expect(exp).toBeDefined();
     expect(exp!.symbols).toContain("ZZIND");
-    expect(exp!.symbols).toContain("XPO");
-    expect(exp!.symbols).toContain("CSX");
-    expect(exp!.symbols).not.toContain("AAPL");
+    expect(exp!.symbols).toContain("ZZTRN");
+    expect(exp!.symbols).toContain("ZZRAIL");
+    expect(exp!.symbols).not.toContain("ZZTECH");
     expect(exp!.basis).toMatch(/Industrials/);
   });
 
   it("differentiates ISM Services from ISM Manufacturing", () => {
     const xmtr = seedSec("ZZIND", "Industrials");
-    const ko = seedSec("KO", "Consumer Staples", "Beverages");
-    seedHolding(xmtr, 100);
-    seedHolding(ko, 100);
+    const ko = seedSec("ZZSTP", "Consumer Staples", "Beverages");
+    seedHolding(xmtr, 20);
+    seedHolding(ko, 20);
 
     const out = buildMacroExposures(db, [makeMacro(1, "pmi", "April ISM Services")]);
     const exp = out.get(1);
-    expect(exp!.symbols).toContain("KO");
+    expect(exp!.symbols).toContain("ZZSTP");
     expect(exp!.symbols).not.toContain("ZZIND");
   });
 
   it("FOMC maps to Financials + Real Estate sectors", () => {
     const krc = seedSec("ZZREIT", "Real Estate", "REITS");
-    const bac = seedSec("BAC", "Financials", "Banks");
-    const aapl = seedSec("AAPL", "Technology");
-    seedHolding(krc, 100);
-    seedHolding(bac, 100);
-    seedHolding(aapl, 100);
+    const bac = seedSec("ZZBANK", "Financials", "Banks");
+    const aapl = seedSec("ZZTECH", "Technology");
+    seedHolding(krc, 30);
+    seedHolding(bac, 20);
+    seedHolding(aapl, 40);
 
     const out = buildMacroExposures(db, [makeMacro(1, "fomc", "FOMC Rate Decision")]);
     const exp = out.get(1);
     expect(exp!.symbols).toContain("ZZREIT");
-    expect(exp!.symbols).toContain("BAC");
-    expect(exp!.symbols).not.toContain("AAPL");
+    expect(exp!.symbols).toContain("ZZBANK");
+    expect(exp!.symbols).not.toContain("ZZTECH");
   });
 
   it("GDP returns broad equity (all sectors)", () => {
-    const aapl = seedSec("AAPL", "Technology");
-    const bac = seedSec("BAC", "Financials");
+    const aapl = seedSec("ZZTECH", "Technology");
+    const bac = seedSec("ZZBANK", "Financials");
     const xmtr = seedSec("ZZIND", "Industrials");
-    seedHolding(aapl, 100);
-    seedHolding(bac, 100);
-    seedHolding(xmtr, 100);
+    seedHolding(aapl, 40);
+    seedHolding(bac, 20);
+    seedHolding(xmtr, 20);
 
     const out = buildMacroExposures(db, [makeMacro(1, "gdp", "Q1 Advance GDP")]);
     const exp = out.get(1);
-    expect(exp!.symbols).toEqual(expect.arrayContaining(["AAPL", "BAC", "ZZIND"]));
+    expect(exp!.symbols).toEqual(expect.arrayContaining(["ZZTECH", "ZZBANK", "ZZIND"]));
   });
 
   it("Consumer Confidence (other_macro) maps to Consumer sectors", () => {
-    const ko = seedSec("KO", "Consumer Staples");
-    const hd = seedSec("HD", "Consumer Discretionary", "Retail");
-    const aapl = seedSec("AAPL", "Technology");
-    seedHolding(ko, 100);
-    seedHolding(hd, 50);
-    seedHolding(aapl, 100);
+    const ko = seedSec("ZZSTP", "Consumer Staples");
+    const hd = seedSec("ZZRET", "Consumer Discretionary", "Retail");
+    const aapl = seedSec("ZZTECH", "Technology");
+    seedHolding(ko, 20);
+    seedHolding(hd, 30);
+    seedHolding(aapl, 40);
 
     const out = buildMacroExposures(db, [
       makeMacro(1, "other_macro", "April Consumer Confidence"),
     ]);
     const exp = out.get(1);
-    expect(exp!.symbols).toContain("KO");
-    expect(exp!.symbols).toContain("HD");
-    expect(exp!.symbols).not.toContain("AAPL");
+    expect(exp!.symbols).toContain("ZZSTP");
+    expect(exp!.symbols).toContain("ZZRET");
+    expect(exp!.symbols).not.toContain("ZZTECH");
   });
 
   it("returns no entry for unmapped event types (earnings, unknown other_macro)", () => {
     const xmtr = seedSec("ZZIND", "Industrials");
-    seedHolding(xmtr, 100);
+    seedHolding(xmtr, 20);
 
     const earnings = {
       id: 1,
@@ -168,8 +168,8 @@ describe("buildMacroExposures", () => {
 
   it("only the latest as_of_date per account counts (no double-count)", () => {
     const xmtr = seedSec("ZZIND", "Industrials");
-    seedHolding(xmtr, 100, "2026-04-20");
-    seedHolding(xmtr, 100, "2026-04-27");
+    seedHolding(xmtr, 20, "2026-04-20");
+    seedHolding(xmtr, 20, "2026-04-27");
 
     const out = buildMacroExposures(db, [makeMacro(1, "pmi", "ISM Manufacturing")]);
     const exp = out.get(1);
@@ -186,27 +186,27 @@ describe("buildMacroExposures", () => {
 
   it("keeps a statement-lag sector name when a newer row exists for another security in the same account", () => {
     const xmtr = seedSec("ZZIND", "Industrials");
-    seedHolding(xmtr, 100, "2026-03-31"); // monthly statement row
-    const csx = seedSec("CSX", "Industrials");
-    seedHolding(csx, 50, "2026-04-27"); // newer daily row, same account
+    seedHolding(xmtr, 20, "2026-03-31"); // monthly statement row
+    const csx = seedSec("ZZRAIL", "Industrials");
+    seedHolding(csx, 10, "2026-04-27"); // newer daily row, same account
 
     const out = buildMacroExposures(db, [makeMacro(1, "pmi", "ISM Manufacturing")]);
     const exp = out.get(1);
     expect(exp).toBeDefined();
     expect(exp!.symbols).toContain("ZZIND");
-    expect(exp!.symbols).toContain("CSX");
+    expect(exp!.symbols).toContain("ZZRAIL");
   });
 
   it("hides a sector name whose latest row is a quantity=0 tombstone", () => {
     const xmtr = seedSec("ZZIND", "Industrials");
-    seedHolding(xmtr, 100, "2026-03-31");
+    seedHolding(xmtr, 20, "2026-03-31");
     seedHolding(xmtr, 0, "2026-04-27"); // closed-position tombstone
-    const csx = seedSec("CSX", "Industrials");
-    seedHolding(csx, 50, "2026-04-27");
+    const csx = seedSec("ZZRAIL", "Industrials");
+    seedHolding(csx, 10, "2026-04-27");
 
     const out = buildMacroExposures(db, [makeMacro(1, "pmi", "ISM Manufacturing")]);
     const exp = out.get(1);
-    expect(exp!.symbols).toEqual(["CSX"]);
+    expect(exp!.symbols).toEqual(["ZZRAIL"]);
   });
 
   it("still excludes shorts from sector exposure (long-only rule preserved)", () => {
@@ -214,18 +214,18 @@ describe("buildMacroExposures", () => {
     // short must not read as a same-direction sector bet. The rule now lives
     // in latestHoldingsPredicate({ includeShorts: false }).
     const xmtr = seedSec("ZZIND", "Industrials");
-    seedHolding(xmtr, -100, "2026-03-31"); // short, statement-date row
-    const csx = seedSec("CSX", "Industrials");
-    seedHolding(csx, 50, "2026-04-27");
+    seedHolding(xmtr, -30, "2026-03-31"); // short, statement-date row
+    const csx = seedSec("ZZRAIL", "Industrials");
+    seedHolding(csx, 10, "2026-04-27");
 
     const out = buildMacroExposures(db, [makeMacro(1, "pmi", "ISM Manufacturing")]);
     const exp = out.get(1);
-    expect(exp!.symbols).toEqual(["CSX"]);
+    expect(exp!.symbols).toEqual(["ZZRAIL"]);
   });
 });
 
 describe("§6 prompt directive — exposure-list verbatim rule", () => {
-  // Regression: 4/27 live regen showed Opus dropping ZZIND+PRIM+CLH+GFL from
+  // Regression: 4/27 live regen showed Opus dropping ZZIND and three other names from
   // ISM Manufacturing despite the f02517c HARD RULE directive. 5/03 escalated
   // to TS-rendered "REQUIRED §6 cluster" pasted verbatim — directive now
   // points to that field. This test guards against a future edit that softens
