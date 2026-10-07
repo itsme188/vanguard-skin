@@ -593,9 +593,13 @@ describe("every Giving mutation is sent through the recompute flow", () => {
 describe("GivingYearSection: implausible basis", () => {
   const src = read("GivingYearSection.tsx");
 
-  it("the row chip reads the one server-side flag", () => {
-    const chip = sliceBetween(src, "{gd.basisImplausible && !struck && (", ")}");
-    expect(chip).toContain('<Chip tone="warn">basis implausible, verify</Chip>');
+  it("the row chips read the server-side lot states", () => {
+    // Since 2026-10-07 each flagged lot draws its own chip through
+    // LotBasisControl (pinned in giving-lot-basis-control.test.tsx).
+    const lots = sliceBetween(src, "{!struck &&", "</td>");
+    expect(lots).toContain("gd.flaggedLots.map((lot) => (");
+    expect(lots).toContain("<LotBasisControl");
+    expect(read("lot-basis-actions.ts")).toContain('implausible: "basis implausible, verify"');
     // The screen never re-derives the rule.
     expect(src).not.toContain("isDonatedLotBasisImplausible");
     expect(src).not.toMatch(/0\.01|\* 100/);

@@ -11,7 +11,9 @@ export const ARTIFACT_NOTE_SUFFIX = " [routing artifact of DAF donation; exclude
 
 const EPS = 1e-9;
 
-const LOT_CREATING_TYPES = new Set(["buy", "reinvestment", "buy_to_open", "sell_to_open", "transfer_in"]);
+/** Transaction types that open a lot (compared lower-cased). Also read by
+ *  lib/mutations/lot-basis-verifications.ts, so the two never disagree. */
+export const LOT_CREATING_TYPES = new Set(["buy", "reinvestment", "buy_to_open", "sell_to_open", "transfer_in"]);
 
 interface TransactionRow {
   id: number;

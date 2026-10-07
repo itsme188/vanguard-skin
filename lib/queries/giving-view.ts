@@ -20,7 +20,8 @@ export interface GivingYear {
    * null when any (non-reversed) stock donation in the year lacks lot
    * assignments. Otherwise the sum over the stock donations whose basis is
    * plausible — a row flagged `basisImplausible` is LEFT OUT (owner ruling
-   * 2026-10-06), so this can be 0 with every row left out.
+   * 2026-10-06), so this can be 0 with every row left out. A row whose
+   * flagged lots are all marked "basis verified" is not flagged and counts.
    */
   gainAvoided: number | null;
   /** Non-reversed stock donations left out of `gainAvoided` for an implausible basis. */
@@ -36,12 +37,19 @@ export interface GivingDonation {
   basis: number | null;
   gainAvoided: number | null;
   /**
-   * True when at least one assigned lot's per-share basis is under 1% of the
-   * gift's per-share fair market value (`isDonatedLotBasisImplausible`). The
-   * row shows a "basis implausible, verify" chip and its avoided gain is left
-   * out of the year total. Always false with no lots assigned.
+   * THE left-out rule for a gift row: true when at least one assigned lot's
+   * basis state (`donatedLotBasisState`) is `implausible` or `verified-stale`.
+   * Such a row's avoided gain is left out of the year total. A row whose
+   * flagged lots are all `verified` is false here and counts exactly as if
+   * it had never been flagged. Always false with no lots assigned.
    */
   basisImplausible: boolean;
+  /**
+   * The assigned lots whose basis trips the 1% rule, in assignment order,
+   * each with its state. A `plausible` lot is never listed, marker or not.
+   * The page draws one chip and one control per entry.
+   */
+  flaggedLots: GivingFlaggedLot[];
   longTermQuantity: number | null;
   shortTermQuantity: number | null;
   /** Precedence (Codex plan-review #8): reversed > unsupported (non-USD) > pending-lots
@@ -50,6 +58,27 @@ export interface GivingDonation {
   needsLots: boolean;
   linked: boolean;
   symbolResolved: boolean;
+}
+
+/**
+ * A donated lot's basis, as the Giving page treats it:
+ *  - `plausible`: the 1% rule does not fire. Any marker is ignored.
+ *  - `implausible`: the rule fires and nobody has verified the lot.
+ *  - `verified`: the rule fires, the owner marked the lot's basis verified,
+ *    and the acquisition row still says what it said then.
+ *  - `verified-stale`: the rule fires and a marker exists, but the row's
+ *    amount or quantity has changed since. Treated like `implausible`.
+ */
+export type DonatedLotBasisState = "plausible" | "implausible" | "verified" | "verified-stale";
+
+export interface GivingFlaggedLot {
+  acquisitionTransactionId: number;
+  acquisitionDate: string;
+  state: Exclude<DonatedLotBasisState, "plausible">;
+  /** What the owner checked the basis against; null with no marker. */
+  sourceNote: string | null;
+  /** When the marker was written (`datetime('now')`, UTC); null with no marker. */
+  verifiedAt: string | null;
 }
 
 interface OutLegRow {
@@ -66,6 +95,15 @@ interface AssignmentRow {
   acquisition_date: string;
   quantity_acquired: number;
   cost_basis: number;
+  /** The acquisition transaction's stored amount and quantity, as of now. */
+  txn_amount: number | null;
+  txn_quantity: number | null;
+  /** 1 when a `lot_basis_verifications` row exists for the acquisition transaction. */
+  has_verification: number;
+  verified_amount: number | null;
+  verified_quantity: number | null;
+  source_note: string | null;
+  verified_at: string | null;
 }
 
 /** A donated lot's per-share basis below this percent of the gift's per-share
@@ -88,8 +126,9 @@ function positiveFinite(n: number | null | undefined): n is number {
 }
 
 /**
- * THE one plausibility predicate for a donated lot's basis — the row chip and
- * the year total both read it (through `GivingDonation.basisImplausible`).
+ * THE one plausibility predicate for a donated lot's basis. Its only caller
+ * is `donatedLotBasisState` below, which adds the "basis verified" marker;
+ * the row chips and the year total read that state, never this directly.
  *
  * True when the lot's per-share basis is STRICTLY under 1% of the gift's
  * per-share fair market value. Exactly 1% is plausible.
@@ -114,6 +153,52 @@ export function isDonatedLotBasisImplausible(input: DonatedLotBasisInput): boole
   return lotCostBasis * 100 * donationQuantity < DONATED_BASIS_FLOOR_PERCENT * donationFmvUsd * lotQuantityAcquired;
 }
 
+/** Share-count tolerance, the same one lib/mutations/donation-links.ts uses. */
+const QUANTITY_EPS = 1e-9;
+
+function sameCents(a: number | null | undefined, b: number | null | undefined): boolean {
+  if (a == null || b == null) return a == null && b == null;
+  return Math.round(a * 100) === Math.round(b * 100);
+}
+
+function sameQuantity(a: number | null | undefined, b: number | null | undefined): boolean {
+  if (a == null || b == null) return a == null && b == null;
+  return Math.abs(a - b) <= QUANTITY_EPS;
+}
+
+export interface DonatedLotBasisStateInput extends DonatedLotBasisInput {
+  /** The acquisition transaction's `amount` and `quantity` as stored now. */
+  currentAmount: number | null | undefined;
+  currentQuantity: number | null | undefined;
+  /** The lot's `lot_basis_verifications` snapshot, or null when it has no marker. */
+  verification: { verifiedAmount: number | null; verifiedQuantity: number | null } | null;
+}
+
+/**
+ * THE one reader of a donated lot's basis state (owner request 2026-10-07).
+ * The row chips, the row's left-out flag, the year total and the year's
+ * left-out count all come from here.
+ *
+ * A marker only ever matters on a lot the 1% rule flags. It is stale when the
+ * acquisition row's amount (compared in cents) or quantity (compared with the
+ * share tolerance) is no longer what was verified; a missing figure equals a
+ * missing figure and differs from any number.
+ */
+export function donatedLotBasisState(input: DonatedLotBasisStateInput): DonatedLotBasisState {
+  if (!isDonatedLotBasisImplausible(input)) return "plausible";
+  const { verification } = input;
+  if (verification == null) return "implausible";
+  const unchanged =
+    sameCents(verification.verifiedAmount, input.currentAmount) &&
+    sameQuantity(verification.verifiedQuantity, input.currentQuantity);
+  return unchanged ? "verified" : "verified-stale";
+}
+
+/** True for the two states that keep a gift row out of "Gain avoided". */
+function leavesRowOut(state: DonatedLotBasisState): boolean {
+  return state === "implausible" || state === "verified-stale";
+}
+
 function fetchOutLegs(db: Database.Database): Map<number, OutLegRow> {
   const rows = db
     .prepare(
@@ -131,15 +216,24 @@ function fetchOutLegs(db: Database.Database): Map<number, OutLegRow> {
 /** Assigned lots joined to their tax_lots row (acquisition basis) — used for
  * both the basis/gain math and the LT/ST split. Assumes the 1:1
  * acquisition_transaction_id -> tax_lots relationship the engine itself
- * relies on (assignDonationLots' own lot lookup uses .get(), not .all()). */
+ * relies on (assignDonationLots' own lot lookup uses .get(), not .all()).
+ * Each row also carries the acquisition transaction's current amount and
+ * quantity and its "basis verified" marker, if any (LEFT JOINs: neither can
+ * drop an assignment from the basis math). */
 function fetchAssignmentsByDonation(db: Database.Database): Map<number, AssignmentRow[]> {
   const rows = db
     .prepare(
       `SELECT dl.donation_id AS donation_id, dl.acquisition_transaction_id AS acquisition_transaction_id,
               dl.quantity AS quantity, tl.acquisition_date AS acquisition_date,
-              tl.quantity_acquired AS quantity_acquired, tl.cost_basis AS cost_basis
+              tl.quantity_acquired AS quantity_acquired, tl.cost_basis AS cost_basis,
+              t.amount AS txn_amount, t.quantity AS txn_quantity,
+              v.id IS NOT NULL AS has_verification,
+              v.verified_amount AS verified_amount, v.verified_quantity AS verified_quantity,
+              v.source_note AS source_note, v.verified_at AS verified_at
          FROM donation_lots dl
          JOIN tax_lots tl ON tl.acquisition_transaction_id = dl.acquisition_transaction_id
+         LEFT JOIN transactions t ON t.id = dl.acquisition_transaction_id
+         LEFT JOIN lot_basis_verifications v ON v.acquisition_transaction_id = dl.acquisition_transaction_id
         ORDER BY dl.donation_id, dl.id`
     )
     .all() as AssignmentRow[];
@@ -191,6 +285,7 @@ function buildGivingDonation(
   let longTermQuantity: number | null = null;
   let shortTermQuantity: number | null = null;
   let basisImplausible = false;
+  const flaggedLots: GivingFlaggedLot[] = [];
 
   if (d.kind === "stock" && outLeg != null && assignments.length > 0) {
     let basisSum = 0;
@@ -201,16 +296,29 @@ function buildGivingDonation(
       basisSum += a.quantity * perShare;
       // Judged per LOT, not on the blended row: one penny-basis lot among
       // ordinary ones still overstates the avoided gain by its whole value.
-      if (
-        isDonatedLotBasisImplausible({
-          lotCostBasis: a.cost_basis,
-          lotQuantityAcquired: a.quantity_acquired,
-          donationFmvUsd: d.fmv_usd,
-          donationQuantity: d.quantity,
-        })
-      ) {
-        basisImplausible = true;
+      const hasMarker = a.has_verification === 1;
+      const state = donatedLotBasisState({
+        lotCostBasis: a.cost_basis,
+        lotQuantityAcquired: a.quantity_acquired,
+        donationFmvUsd: d.fmv_usd,
+        donationQuantity: d.quantity,
+        currentAmount: a.txn_amount,
+        currentQuantity: a.txn_quantity,
+        verification: hasMarker
+          ? { verifiedAmount: a.verified_amount, verifiedQuantity: a.verified_quantity }
+          : null,
+      });
+      if (state !== "plausible") {
+        flaggedLots.push({
+          acquisitionTransactionId: a.acquisition_transaction_id,
+          acquisitionDate: a.acquisition_date,
+          state,
+          sourceNote: hasMarker ? a.source_note : null,
+          verifiedAt: hasMarker ? a.verified_at : null,
+        });
       }
+      // One unverified (or stale) lot leaves the whole row out.
+      if (leavesRowOut(state)) basisImplausible = true;
       if (isLongTermHolding(a.acquisition_date, outLeg.trade_date)) lt += a.quantity;
       else st += a.quantity;
     }
@@ -229,6 +337,7 @@ function buildGivingDonation(
     basis,
     gainAvoided,
     basisImplausible,
+    flaggedLots,
     longTermQuantity,
     shortTermQuantity,
     status,
@@ -278,7 +387,8 @@ export function getGivingView(db: Database.Database): {
       const anyMissingBasis = stockDonations.some((gd) => gd.basis == null);
       // A row with an implausible basis is left out of the total (owner
       // ruling 2026-10-06); the header says how many were. The row flag is
-      // the single source — the total never re-derives it.
+      // the single source — the total never re-derives it. A row whose
+      // flagged lots are all marked verified is not flagged (2026-10-07).
       const counted = stockDonations.filter((gd) => gd.basis != null && !gd.basisImplausible);
       const gainAvoidedRowsLeftOut = stockDonations.filter((gd) => gd.basisImplausible).length;
       const gainAvoided = anyMissingBasis

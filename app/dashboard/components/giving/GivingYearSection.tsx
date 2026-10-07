@@ -13,6 +13,7 @@ import { LotAssignmentDrawer } from "./LotAssignmentDrawer";
 import { LedgerRecomputeDialog, useLedgerRecomputeFlow } from "./LedgerRecomputeDialog";
 import { withLedgerAck } from "./ledger-recompute-flow";
 import { ScrollFade } from "../ScrollFade";
+import { LotBasisControl } from "./LotBasisControl";
 
 /**
  * One year's giving ledger (Task 13) — stock donations table + a visually
@@ -28,10 +29,16 @@ import { ScrollFade } from "../ScrollFade";
  *  - Unlink, Mark reversed and Resolve each end in a recompute of the ENTIRE
  *    tax-lot ledger, so each goes through LedgerRecomputeDialog (told first,
  *    asked, progress, result).
- *  - A row whose donated lot has an implausible basis (`gd.basisImplausible`,
- *    decided once in lib/queries/giving-view.ts) carries a "basis
- *    implausible, verify" chip, and the year header says how many such rows
- *    were left out of "Gain avoided".
+ *  - A row whose donated lot has an implausible basis (decided once in
+ *    lib/queries/giving-view.ts) carries a "basis implausible, verify" chip,
+ *    and the year header says how many such rows were left out of "Gain
+ *    avoided".
+ *
+ * Owner request 2026-10-07: each flagged lot (`gd.flaggedLots`) is drawn by
+ * LotBasisControl, which can mark its basis verified against a source or undo
+ * that. A row whose flagged lots are all verified is counted again, so the
+ * header's left-out line drops and disappears at zero. Those two actions are
+ * NOT ledger mutations and do not go through LedgerRecomputeDialog.
  */
 
 // Matches the backend's own strict format check in
@@ -255,12 +262,17 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                       )}
                     </td>
                     <td className="px-3 py-2.5">
-                      <span className="flex flex-wrap items-center gap-1.5">
-                        <Chip tone={STATUS_TONE[gd.status]}>{STATUS_LABEL[gd.status]}</Chip>
-                        {gd.basisImplausible && !struck && (
-                          <Chip tone="warn">basis implausible, verify</Chip>
-                        )}
-                      </span>
+                      <Chip tone={STATUS_TONE[gd.status]}>{STATUS_LABEL[gd.status]}</Chip>
+                      {/* One chip and one control per lot whose basis trips the
+                          1% rule; the state of each is decided on the server. */}
+                      {!struck &&
+                        gd.flaggedLots.map((lot) => (
+                          <LotBasisControl
+                            key={lot.acquisitionTransactionId}
+                            lot={lot}
+                            symbol={d.symbol_raw ?? "this security"}
+                          />
+                        ))}
                     </td>
                     <td className="px-3 py-2.5 text-right whitespace-nowrap">
                       {!struck && (
