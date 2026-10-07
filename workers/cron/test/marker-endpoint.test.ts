@@ -270,6 +270,7 @@ describe("POST /internal/armed-events", () => {
     expect(JSON.parse(store.get("armed-events")!)).toEqual({
       generation: 4,
       entries: [entry(77, "ACME", "2026-09-02")],
+      supersededEventIds: [],
     });
   });
 
@@ -381,7 +382,12 @@ describe("GET /internal/armed-events", () => {
     const res = await get();
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toMatch(/application\/json/);
-    expect(await res.json()).toEqual({ ok: true, generation: 0, entries: [] });
+    expect(await res.json()).toEqual({
+      ok: true,
+      generation: 0,
+      entries: [],
+      supersededEventIds: [],
+    });
   });
 
   it("returns the stored generation and entry after a POST", async () => {
@@ -393,6 +399,7 @@ describe("GET /internal/armed-events", () => {
       ok: true,
       generation: 4,
       entries: [entry(77, "ACME", "2026-09-02")],
+      supersededEventIds: [],
     });
   });
 

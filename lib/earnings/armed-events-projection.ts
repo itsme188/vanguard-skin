@@ -26,7 +26,7 @@ export const ARMED_EVENTS_KIND = "armed-events";
  * for nothing. This is what stops the payload growing without bound as
  * never-disarmed worksheets accumulate.
  */
-const LIVE_LOOKBACK_DAYS = 14;
+export const LIVE_LOOKBACK_DAYS = 14;
 /** Tombstones are carried while event_date >= today - TOMBSTONE_LOOKBACK_DAYS (D7). */
 const TOMBSTONE_LOOKBACK_DAYS = 2;
 /** ...and, independently, while the removal itself is younger than this (D7). */
@@ -53,6 +53,7 @@ export interface ArmedEventProjection {
 export interface ArmedEventsPayload {
   generation: number;
   entries: ArmedEventProjection[];
+  supersededEventIds: number[];
 }
 
 /** The exact key set the projection may carry — asserted by the data-flow
@@ -111,6 +112,47 @@ export function readPreviousArmedEntries(db: Database.Database): ArmedEventProje
   } catch {
     return [];
   }
+}
+
+/** Superseded ids from the newest payload. Older two-key payloads read as []. */
+export function readPreviousSupersededEventIds(db: Database.Database): number[] {
+  const row = db
+    .prepare(
+      `SELECT payload_json FROM cloud_outbox WHERE kind = ? ORDER BY generation DESC LIMIT 1`,
+    )
+    .get(ARMED_EVENTS_KIND) as { payload_json: string } | undefined;
+  if (!row) return [];
+  try {
+    const parsed = JSON.parse(row.payload_json) as { supersededEventIds?: unknown };
+    return Array.isArray(parsed.supersededEventIds)
+      ? parsed.supersededEventIds.filter((id): id is number => Number.isInteger(id))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Earnings rows the Worker must treat as replaced even when they are not armed.
+ * The window is intentionally lower-bounded only so the payload cannot grow
+ * without limit, while a future replacement still reaches the cloud.
+ */
+export function buildSupersededEventIds(
+  db: Database.Database,
+  opts: { today: string },
+): number[] {
+  const cutoff = addDays(opts.today, -LIVE_LOOKBACK_DAYS);
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT id
+         FROM calendar_events
+        WHERE event_type = 'earnings'
+          AND COALESCE(superseded, 0) <> 0
+          AND event_date >= ?
+        ORDER BY id ASC`,
+    )
+    .all(cutoff) as Array<{ id: number }>;
+  return rows.map((r) => r.id);
 }
 
 /**
@@ -180,4 +222,8 @@ export function sameProjection(a: ArmedEventProjection[], b: ArmedEventProjectio
       }),
     );
   return norm(a) === norm(b);
+}
+
+export function sameSupersededEventIds(a: number[], b: number[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }

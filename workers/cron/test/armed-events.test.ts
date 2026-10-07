@@ -16,6 +16,7 @@ import {
   readArmedEventsDelta,
   isCoveredInCloud,
   ARMED_EVENTS_MAX_ENTRIES,
+  ARMED_EVENTS_MAX_SUPERSEDED_IDS,
 } from "../src/armed-events";
 import type { Snapshot, ArmedEventEntry } from "../src/state";
 
@@ -231,12 +232,49 @@ describe("applyArmedEventsDelta (KV read-compare-write)", () => {
     expect(JSON.parse(store.get("armed-events")!)).toEqual({
       generation: 5,
       entries: [entry(77, "ACME", "2026-09-02")],
+      supersededEventIds: [],
     });
     await expect(applyArmedEventsDelta(kv, { generation: "x" })).rejects.toThrow(/generation/);
     expect(await readArmedEventsDelta(kv)).toEqual({
       generation: 5,
       entries: [entry(77, "ACME", "2026-09-02")],
+      supersededEventIds: [],
     });
+  });
+
+  it("strictly parses superseded ids, dedupes ascending, and accepts old two-key payloads", async () => {
+    const { kv, store } = makeKv();
+    await applyArmedEventsDelta(kv, {
+      generation: 1,
+      entries: [],
+      supersededEventIds: [9, 2, 9],
+    });
+    expect(JSON.parse(store.get("armed-events")!)).toEqual({
+      generation: 1,
+      entries: [],
+      supersededEventIds: [2, 9],
+    });
+
+    store.set("armed-events", JSON.stringify({ generation: 2, entries: [] }));
+    expect(await readArmedEventsDelta(kv)).toEqual({
+      generation: 2,
+      entries: [],
+      supersededEventIds: [],
+    });
+
+    await expect(
+      applyArmedEventsDelta(kv, { generation: 3, entries: [], supersededEventIds: "2" }),
+    ).rejects.toThrow(/supersededEventIds/);
+    await expect(
+      applyArmedEventsDelta(kv, { generation: 3, entries: [], supersededEventIds: [0] }),
+    ).rejects.toThrow(/positive integers/);
+    await expect(
+      applyArmedEventsDelta(kv, {
+        generation: 3,
+        entries: [],
+        supersededEventIds: Array.from({ length: ARMED_EVENTS_MAX_SUPERSEDED_IDS + 1 }, (_, i) => i + 1),
+      }),
+    ).rejects.toThrow(/too many superseded ids/);
   });
 
   it("[C-19] drops unknown keys, preserves removed/removedAt, and rejects a bad shape", async () => {
@@ -425,5 +463,37 @@ describe("projection merge — snapshot-only fields survive", () => {
       { generation: 4, entries: [entry(1, "HELDCO", "2026-09-03")] },
     );
     expect(eff.events.find((e) => e.id === 1)!.superseded).toBe(1);
+  });
+
+  it("a newer delta marks existing rows superseded one-way and removes them from armed ids", () => {
+    const eff = effectiveCalendarEvents(
+      richSnapshot({
+        armedEvents: [entry(1, "HELDCO", "2026-09-03")],
+      }),
+      {
+        generation: 4,
+        entries: [entry(2, "MISS", "2026-09-03")],
+        supersededEventIds: [1, 999],
+      },
+    );
+    expect(eff.events.find((e) => e.id === 1)!.superseded).toBe(1);
+    expect(eff.events.some((e) => e.id === 999)).toBe(false);
+    expect(eff.armedEventIds.has(1)).toBe(false);
+    expect(eff.armedEventIds.has(2)).toBe(true);
+  });
+
+  it("ignores superseded ids from stale deltas and degraded snapshots", () => {
+    const newerSnapshot = effectiveCalendarEvents(richSnapshot(), {
+      generation: 3,
+      entries: [],
+      supersededEventIds: [1],
+    });
+    expect(newerSnapshot.events.find((e) => e.id === 1)!.superseded).toBe(0);
+
+    const degraded = effectiveCalendarEvents(
+      richSnapshot({ schemaVersion: 10, armedGeneration: undefined } as Partial<Snapshot>),
+      { generation: 9, entries: [], supersededEventIds: [1] },
+    );
+    expect(degraded.events.find((e) => e.id === 1)!.superseded).toBe(0);
   });
 });

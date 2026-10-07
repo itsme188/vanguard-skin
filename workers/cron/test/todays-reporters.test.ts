@@ -312,6 +312,38 @@ describe("armed chip (effective calendar)", () => {
     expect(block).toContain("| WATCHCO | wl |");
   });
 
+  it("omits a snapshot reporter marked superseded by a newer delta", () => {
+    const snapshot = makeSnapshot({
+      schemaVersion: 11,
+      armedGeneration: 3,
+      armedEvents: [],
+      calendarEvents: [makeEvent({ id: 1, symbol: "HELDCO" })] as never,
+      heldSymbols: ["HELDCO"],
+    });
+    const block = buildTodaysReportersBlock(snapshot, TODAY, {
+      generation: 4,
+      entries: [],
+      supersededEventIds: [1],
+    });
+    expect(block).toBeNull();
+  });
+
+  it("keeps a snapshot reporter when the superseded-id delta is not newer", () => {
+    const snapshot = makeSnapshot({
+      schemaVersion: 11,
+      armedGeneration: 4,
+      armedEvents: [],
+      calendarEvents: [makeEvent({ id: 1, symbol: "HELDCO" })] as never,
+      heldSymbols: ["HELDCO"],
+    });
+    const block = buildTodaysReportersBlock(snapshot, TODAY, {
+      generation: 4,
+      entries: [],
+      supersededEventIds: [1],
+    })!;
+    expect(block).toContain("| HELDCO | held |");
+  });
+
   it("a pre-v11 snapshot ignores the delta entirely (today's behaviour, unchanged)", () => {
     const snapshot = makeSnapshot({
       calendarEvents: [makeEvent({ id: 1, symbol: "HELDCO" })] as never,

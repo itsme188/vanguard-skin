@@ -7,9 +7,12 @@ import { spawn } from "node:child_process";
 import { runMigrations } from "@/lib/db/migrate";
 import { armWorksheet, disarmWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 import { deleteCalendarEvent } from "@/lib/mutations/calendar";
+import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
 import {
   ARMED_EVENT_PROJECTION_KEYS,
+  buildSupersededEventIds,
   buildArmedEventsEntries,
+  LIVE_LOOKBACK_DAYS,
   readArmedGeneration,
 } from "@/lib/earnings/armed-events-projection";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
@@ -122,6 +125,30 @@ describe("armed-events projection + outbox generations", () => {
     ).toEqual(["ACME", "GAMMA"]);
   });
 
+  it("projects superseded earnings ids inside the same 14-day lower-bound window", () => {
+    const edge = seed("EDGE", "2026-08-19"); // today - 14
+    const stale = seed("STALE", "2026-08-18"); // today - 15
+    const future = seed("FUTR", "2026-12-01"); // no upper bound
+    const macro = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol, superseded)
+           VALUES ('manual','fed','2026-09-02','Synthetic macro','macro:one',NULL,1)`,
+        )
+        .run().lastInsertRowid,
+    );
+    db.prepare(`UPDATE calendar_events SET superseded = 1 WHERE id IN (?, ?, ?)`).run(
+      edge,
+      stale,
+      future,
+    );
+
+    expect(LIVE_LOOKBACK_DAYS).toBe(14);
+    expect(buildSupersededEventIds(db, { today: "2026-09-02" })).toEqual([edge, future]);
+    expect(buildSupersededEventIds(db, { today: "2026-09-02" })).not.toContain(stale);
+    expect(buildSupersededEventIds(db, { today: "2026-09-02" })).not.toContain(macro);
+  });
+
   it("[R23] an event that ages past the horizon leaves NO tombstone behind", () => {
     const a = seed("ACME", "2026-08-20");
     armWorksheet(db, a); // gen 1, today's real ET date is irrelevant: entries carry the event
@@ -183,6 +210,55 @@ describe("armed-events projection + outbox generations", () => {
     db.prepare(`UPDATE calendar_events SET release_time = '16:30' WHERE id = ?`).run(a);
     expect(write()).toEqual({ generation: 2, written: true });
     expect(() => writeArmedEventsOutboxRow(db)).toThrow(/inside a transaction/);
+  });
+
+  it("[D10] the superseded id list participates in the no-op rule", () => {
+    const a = seed("ACME", "2026-09-02");
+    const write = () =>
+      db.transaction(() => writeArmedEventsOutboxRow(db, { today: "2026-09-02" })).immediate();
+
+    expect(write()).toEqual({ generation: 0, written: false });
+    db.prepare(`UPDATE calendar_events SET superseded = 1 WHERE id = ?`).run(a);
+    expect(write()).toEqual({ generation: 1, written: true });
+    expect(write()).toEqual({ generation: 1, written: false });
+
+    const payload = JSON.parse(
+      (
+        db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as {
+          payload_json: string;
+        }
+      ).payload_json,
+    ) as { generation: number; entries: unknown[]; supersededEventIds: number[] };
+    expect(Object.keys(payload)).toEqual(["generation", "entries", "supersededEventIds"]);
+    expect(payload.supersededEventIds).toEqual([a]);
+
+    db.prepare(`UPDATE calendar_events SET superseded = 0 WHERE id = ?`).run(a);
+    expect(write()).toEqual({ generation: 2, written: true });
+  });
+
+  it("reconcile writes an outbox row when it supersedes an unarmed earnings row", () => {
+    const a = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, event_time, title, source_key, symbol)
+           VALUES ('finnhub','earnings','2026-09-02','AMC','ACME earnings','finnhub:ACME:2026-09-02','ACME')`,
+        )
+        .run().lastInsertRowid,
+    );
+    const b = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, event_time, title, source_key, symbol)
+           VALUES ('nasdaq','earnings','2026-09-02','AMC','ACME earnings','nasdaq:ACME:2026-09-02','ACME')`,
+        )
+        .run().lastInsertRowid,
+    );
+
+    reconcileEarningsDates(db, { today: "2026-09-02", symbols: ["ACME"] });
+
+    expect(readArmedGeneration(db)).toBe(1);
+    expect(buildSupersededEventIds(db, { today: "2026-09-02" })).toEqual([b]);
+    expect(a).not.toBe(b);
   });
 });
 

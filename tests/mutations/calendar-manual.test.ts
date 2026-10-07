@@ -4,9 +4,11 @@ import { runMigrations } from "@/lib/db/migrate";
 import {
   insertCalendarEvent,
   updateCalendarEvent,
+  deleteCalendarEvent,
   deleteAndSuppressCalendarEvent,
 } from "@/lib/mutations/calendar";
 import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
+import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 import { readArmedGeneration } from "@/lib/earnings/armed-events-projection";
 import { todayET, addDays, getCurrentMonday } from "@/lib/calendar/date-utils";
 
@@ -40,6 +42,13 @@ const latestEntries = () => {
     .prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`)
     .get() as { payload_json: string } | undefined;
   return row ? (JSON.parse(row.payload_json).entries as Array<Record<string, unknown>>) : [];
+};
+
+const latestPayload = () => {
+  const row = db
+    .prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`)
+    .get() as { payload_json: string } | undefined;
+  return row ? (JSON.parse(row.payload_json) as Record<string, unknown>) : null;
 };
 
 describe("manual calendar event mutations → armed-events outbox", () => {
@@ -102,5 +111,18 @@ describe("deleteAndSuppressCalendarEvent → armed-events outbox", () => {
     const id = seedSync("BETA", TOMORROW);
     expect(deleteAndSuppressCalendarEvent(db, id, { today: TODAY }).deleted).toBe(true);
     expect(readArmedGeneration(db)).toBe(0);
+  });
+
+  it("deleting an UNARMED manual event writes a row when it restores a superseded vendor row", () => {
+    const vendor = seedSync("REST", TOMORROW);
+    const manual = addManual("REST", TODAY);
+    db.prepare(`UPDATE calendar_events SET superseded = 1 WHERE id = ?`).run(vendor);
+    db.transaction(() => writeArmedEventsOutboxRow(db, { today: TODAY })).immediate();
+    expect(latestPayload()?.supersededEventIds).toEqual([vendor]);
+
+    expect(deleteCalendarEvent(db, manual, { today: TODAY })).toBe(true);
+
+    expect(readArmedGeneration(db)).toBe(2);
+    expect(latestPayload()?.supersededEventIds).toEqual([]);
   });
 });

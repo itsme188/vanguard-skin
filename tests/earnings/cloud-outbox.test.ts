@@ -60,6 +60,7 @@ describe("drainCloudOutbox", () => {
     expect(calls[0].body).toEqual({
       generation: 1,
       entries: [expect.objectContaining({ symbol: "ACME" })],
+      supersededEventIds: [],
     });
     expect(db.prepare(`SELECT sent_at IS NOT NULL AS sent FROM cloud_outbox`).get()).toEqual({
       sent: 1,

@@ -295,6 +295,7 @@ export interface ArmedEventEntry {
 export interface ArmedEventsDelta {
   generation: number;
   entries: ArmedEventEntry[];
+  supersededEventIds: number[];
 }
 
 export interface Snapshot {

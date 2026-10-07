@@ -16,9 +16,12 @@ import { todayET } from "@/lib/calendar/date-utils";
 import {
   ARMED_EVENTS_KIND,
   buildArmedEventsEntries,
+  buildSupersededEventIds,
   readArmedGeneration,
   readPreviousArmedEntries,
+  readPreviousSupersededEventIds,
   sameProjection,
+  sameSupersededEventIds,
   type ArmedEventsPayload,
 } from "./armed-events-projection";
 
@@ -42,19 +45,24 @@ export function writeArmedEventsOutboxRow(
     throw new Error("writeArmedEventsOutboxRow must run inside a transaction");
   }
   const current = readArmedGeneration(db);
+  const today = opts.today ?? todayET();
   const entries = buildArmedEventsEntries(db, {
-    today: opts.today ?? todayET(),
+    today,
     nowMs: opts.nowMs,
   });
+  const supersededEventIds = buildSupersededEventIds(db, { today });
   // Read the previous entries through the projection's GUARDED reader: a
   // truncated payload must be treated as "no previous entries", never thrown
   // from inside armWorksheet's transaction, or one corrupt row would wedge
   // every future arm/disarm/edit.
-  if (sameProjection(readPreviousArmedEntries(db), entries)) {
+  if (
+    sameProjection(readPreviousArmedEntries(db), entries) &&
+    sameSupersededEventIds(readPreviousSupersededEventIds(db), supersededEventIds)
+  ) {
     return { generation: current, written: false };
   }
   const generation = current + 1;
-  const payload: ArmedEventsPayload = { generation, entries };
+  const payload: ArmedEventsPayload = { generation, entries, supersededEventIds };
   db.prepare(`INSERT INTO cloud_outbox (kind, generation, payload_json) VALUES (?, ?, ?)`).run(
     ARMED_EVENTS_KIND,
     generation,

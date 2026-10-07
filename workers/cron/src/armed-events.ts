@@ -69,6 +69,7 @@ export const ARMED_EVENT_ENTRY_KEYS = [
 
 /** Hard caps on what one POST may carry (see applyArmedEventsDelta, [C-19]). */
 export const ARMED_EVENTS_MAX_ENTRIES = 500;
+export const ARMED_EVENTS_MAX_SUPERSEDED_IDS = 2000;
 export const ARMED_EVENTS_MAX_BODY_BYTES = 256 * 1024;
 
 export interface EffectiveCalendar {
@@ -206,6 +207,12 @@ export function effectiveCalendarEvents(
       armed.add(e.eventId);
       upsert(e);
     }
+    for (const id of delta.supersededEventIds ?? []) {
+      const existing = byId.get(id);
+      if (!existing) continue;
+      byId.set(id, { ...existing, superseded: 1 });
+      armed.delete(id);
+    }
   }
 
   const events = [
@@ -243,9 +250,21 @@ export async function readArmedEventsDelta(kv: KVNamespace): Promise<ArmedEvents
   const raw = await kv.get(ARMED_EVENTS_KV_KEY);
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as { generation?: unknown; entries?: unknown };
+    const parsed = JSON.parse(raw) as {
+      generation?: unknown;
+      entries?: unknown;
+      supersededEventIds?: unknown;
+    };
     if (typeof parsed.generation !== "number" || !Array.isArray(parsed.entries)) return null;
-    return { generation: parsed.generation, entries: parsed.entries as ArmedEventEntry[] };
+    const supersededEventIds =
+      parsed.supersededEventIds === undefined || !Array.isArray(parsed.supersededEventIds)
+        ? []
+        : parsed.supersededEventIds.filter((id): id is number => Number.isInteger(id) && id > 0);
+    return {
+      generation: parsed.generation,
+      entries: parsed.entries as ArmedEventEntry[],
+      supersededEventIds,
+    };
   } catch {
     return null;
   }
@@ -358,6 +377,25 @@ function parseEntry(raw: unknown): ArmedEventEntry {
   return out as unknown as ArmedEventEntry;
 }
 
+function parseSupersededEventIds(raw: unknown): number[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error("armed-events: supersededEventIds must be an array");
+  }
+  if (raw.length > ARMED_EVENTS_MAX_SUPERSEDED_IDS) {
+    throw new Error(
+      `armed-events: too many superseded ids (${raw.length} > ${ARMED_EVENTS_MAX_SUPERSEDED_IDS})`,
+    );
+  }
+  const ids = raw.map((id) => {
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new Error("armed-events: supersededEventIds must contain positive integers");
+    }
+    return id as number;
+  });
+  return [...new Set(ids)].sort((a, b) => a - b);
+}
+
 /**
  * Read-compare-write: applies only when `body.generation` is strictly greater
  * than the generation already stored. A replayed or out-of-order POST is a
@@ -367,7 +405,7 @@ export async function applyArmedEventsDelta(
   kv: KVNamespace,
   body: unknown,
 ): Promise<{ applied: boolean; generation: number }> {
-  const b = body as { generation?: unknown; entries?: unknown } | null;
+  const b = body as { generation?: unknown; entries?: unknown; supersededEventIds?: unknown } | null;
   if (
     !b ||
     typeof b.generation !== "number" ||
@@ -382,9 +420,13 @@ export async function applyArmedEventsDelta(
     );
   }
   const entries = b.entries.map(parseEntry);
+  const supersededEventIds = parseSupersededEventIds(b.supersededEventIds);
   const current = await readArmedEventsDelta(kv);
   const held = current?.generation ?? 0;
   if (b.generation <= held) return { applied: false, generation: held };
-  await kv.put(ARMED_EVENTS_KV_KEY, JSON.stringify({ generation: b.generation, entries }));
+  await kv.put(
+    ARMED_EVENTS_KV_KEY,
+    JSON.stringify({ generation: b.generation, entries, supersededEventIds }),
+  );
   return { applied: true, generation: b.generation };
 }

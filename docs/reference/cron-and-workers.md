@@ -287,13 +287,11 @@ cover BMO previews + AMC recaps. Plan: `~/.claude/plans/okay-let-s-see-if-joyful
   `formatCombinedExposurePresence` in the Worker `presence-position.ts` mirror).
 - Snapshot **v8** adds `watchlistSymbols` (see §8).
 
-**Known limitation: an entry replaced after the snapshot (2026-10-07).** The Worker's scan
-(`findCandidatesFromSnapshot` in `workers/cron/src/fallback-earnings.ts`) skips a superseded entry,
-but it reads that flag from the nightly snapshot plus the armed-events delta, and nothing re-checks
-it at send time. An entry the Mac replaces after the snapshot is still live to the Worker until the
-next snapshot, so the Worker can send a recap for it when the Mac is asleep or offline. The Mac's
-own refusal (see `docs/reference/earnings-pipeline.md` §7) writes no marker. The two candidate
-fixes are an owner question in `docs/plans/TODO.md` (second wave of 2026-10-07).
+**Replaced entries after the snapshot (2026-10-07).** The armed-events payload also carries
+`supersededEventIds` for replaced earnings rows in the same 14-day lookback window; a newer KV
+delta marks matching snapshot rows superseded one-way, removes them from `armedEventIds`, and keeps
+Worker preview / recap / wrap / today's-reporters paths quiet for those entries after the Mac
+outbox drains.
 
 ## 12. Tier 4a — cloud level scan + Pushover (2026-05-11)
 
@@ -392,7 +390,8 @@ every Worker fallback, so a Mac asleep before the print produced nothing.
 - `eps_consensus_vendor` on each `earningsBogeys` row (deviation D1 — the vendor EPS never enters
   `eps_consensus`; every surface labels it "vendor, basis unspecified").
 
-**KV key + endpoints.** The delta lives under KV key `armed-events` = `{ generation, entries }`.
+**KV key + endpoints.** The delta lives under KV key `armed-events` =
+`{ generation, entries, supersededEventIds }`.
 Deviation D2: **the Mac never writes KV.** Its outbox drain POSTs the full payload to the Worker,
 exactly like every other Mac↔Worker marker:
 
@@ -425,7 +424,10 @@ single collection every Worker earnings consumer reads — never the raw snapsho
    inference, and the enrichment/recap gates read `enriched_at` / `actual_value` /
    `reaction_snapshot`. An event with NO snapshot row at all is synthesised whole — safe precisely
    because there is nothing to overwrite;
-5. **degraded-v10**: a snapshot below v11 (or a v11 one with no watermark) ignores the delta and
+5. only when that KV delta is newer than the snapshot, `supersededEventIds` marks existing
+   effective rows superseded and removes them from the armed set; it never clears superseded, never
+   deletes a row, and never synthesises a missing id;
+6. **degraded-v10**: a snapshot below v11 (or a v11 one with no watermark) ignores the delta and
    returns exactly today's behaviour — snapshot rows only, nothing armed. Cloud coverage falls back
    to held + watchlist.
 
@@ -436,9 +438,11 @@ Date windowing stays each consumer's own job.
 **Live horizon: 14 days (R23).** The Mac projection publishes live entries only for armed events
 dated `>= today − 14`. An event that ages past the horizon simply drops out of the list — it is
 NOT tombstoned, because it is still armed (a tombstone says "no longer armed", and would then be
-re-carried for 48 hours for nothing). The sweep-tick reconcile writes the first post-horizon
-generation naturally, since the entries differ. Nothing in the cloud selects an event that old, so
-the only effect is that the payload stops growing as never-disarmed worksheets accumulate.
+re-carried for 48 hours for nothing). The same lower-bound-only window limits
+`supersededEventIds` for earnings rows; the sweep-tick reconcile writes the first post-horizon
+generation naturally, since the payload differs. Nothing in the cloud selects an event that old, so
+the only effect is that the payload stops growing as never-disarmed worksheets and replaced ids
+accumulate.
 
 **Mac↔Worker coverage asymmetry — accepted.** The Mac's armed leg is CLUSTER-aware (R11: an event
 is covered when it, or any unsuperseded same-symbol/same-date earnings row, carries a worksheet
@@ -517,4 +521,3 @@ aws4fetch S3 GET (`Last-Modified`). See `memory/reference_r2_snapshot_debugging.
 ## 13. Manual-twin email rule mirror (2026-10-07)
 
 `workers/cron/src/manual-twin-email.ts` is a byte-for-byte copy of `lib/earnings/manual-twin-email.ts` (parity test in `workers/cron/test`). The Worker's fallback scan and wrap cluster apply it exactly as the Mac's finders do: among live hand-entered earnings rows of one issuer family within a chained 14-day window, only the earliest-dated row is an email candidate. Deploy the Worker together with the Mac whenever this rule changes.
-
