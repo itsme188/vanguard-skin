@@ -177,7 +177,7 @@ describe("computeMomentumPulse", () => {
     expect(result!.status).toBe("sell_off");
     expect(result!.trigger).toBe("1d");
     // Subtitle leads with the 1-day move and carries the disagreeing 30d trend.
-    expect(result!.reason).toContain("today");
+    expect(result!.reason).toContain("on the latest session");
     expect(result!.reason).toContain("30d trend still");
   });
 
@@ -210,7 +210,7 @@ describe("computeMomentumPulse", () => {
     expect(result!.spreads.mtum_vs_spy.return30d).toBeLessThan(0.01);
     expect(result!.status).toBe("leading");
     expect(result!.trigger).toBe("1d");
-    expect(result!.reason).toContain("today");
+    expect(result!.reason).toContain("on the latest session");
   });
 
   it("returns null when one of the four series is missing", () => {
