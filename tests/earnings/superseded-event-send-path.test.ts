@@ -708,3 +708,128 @@ describe("sendEarningsCandidate, handed the later of two live hand-entered rows"
     });
   }
 });
+
+// ── The morning debrief: one stapled email for several names ─────────────
+
+describe("runMorningDebrief: a member replaced while the debrief is being composed", () => {
+  const TICK_1 = new Date("2026-06-11T11:50:00Z"); // 07:50 ET
+  const TICK_2 = new Date("2026-06-11T12:05:00Z"); // 08:05 ET, same window
+
+  it("sends nothing, leaves no row, and the next run sends for the live members and the replacing entry", async () => {
+    seedHeld("ZZA");
+    seedHeld("ZZB");
+    const a = seedEvent({ source: "finnhub", symbol: "ZZA", reported: true });
+    const b = seedEvent({ source: "finnhub", symbol: "ZZB", reported: true });
+    // The entry that will replace ZZB's: already on the calendar, superseded for now.
+    const bLive = seedEvent({ source: "nasdaq", symbol: "ZZB", reported: true, superseded: 1 });
+
+    const sendEmail = transport();
+    let rowsDuringCompose: unknown;
+    const first = await runMorningDebrief(db, {
+      now: TICK_1,
+      recipient: RECIPIENT,
+      generate: async () => {
+        rowsDuringCompose = emailRows();
+        // Another process reconciles: ZZB's entry is replaced by its twin.
+        setSuperseded(b, 1);
+        setSuperseded(bLive, 0);
+        return "## What changed overnight\n\n- synthetic";
+      },
+      seams: { sendEmail },
+    });
+
+    expect(rowsDuringCompose).toEqual([
+      { event_id: a, phase: "recap", error: "in_progress" },
+      { event_id: b, phase: "recap", error: "in_progress" },
+    ]);
+    expect(first).toEqual({ sent: false, covered: [], skippedReason: "member-replaced" });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(emailRows()).toEqual([]);
+
+    const second = await runMorningDebrief(db, {
+      now: TICK_2,
+      recipient: RECIPIENT,
+      generate: async () => "## What changed overnight\n\n- synthetic",
+      seams: { sendEmail },
+    });
+    expect(second).toMatchObject({ sent: true, covered: ["ZZA", "ZZB"] });
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    // Delivered rows sit on the live entries only; nothing on the replaced one.
+    expect(emailRows()).toEqual([
+      { event_id: a, phase: "recap", error: null },
+      { event_id: bLive, phase: "recap", error: null },
+    ]);
+  });
+
+  it("with no replacing entry, the next run sends for the remaining live member only", async () => {
+    seedHeld("ZZA");
+    seedHeld("ZZB");
+    const a = seedEvent({ source: "finnhub", symbol: "ZZA", reported: true });
+    const b = seedEvent({ source: "finnhub", symbol: "ZZB", reported: true });
+    const sendEmail = transport();
+    const first = await runMorningDebrief(db, {
+      now: TICK_1,
+      recipient: RECIPIENT,
+      generate: async () => {
+        setSuperseded(b, 1);
+        return "## What changed overnight\n\n- synthetic";
+      },
+      seams: { sendEmail },
+    });
+    expect(first.skippedReason).toBe("member-replaced");
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(emailRows()).toEqual([]);
+
+    const second = await runMorningDebrief(db, {
+      now: TICK_2,
+      recipient: RECIPIENT,
+      generate: async () => "## What changed overnight\n\n- synthetic",
+      seams: { sendEmail },
+    });
+    expect(second).toMatchObject({ sent: true, covered: ["ZZA"] });
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(emailRows()).toEqual([{ event_id: a, phase: "recap", error: null }]);
+  });
+
+  it("logs one line naming the replaced member", async () => {
+    seedHeld("ZZA");
+    const a = seedEvent({ source: "finnhub", symbol: "ZZA", reported: true });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await runMorningDebrief(db, {
+      now: TICK_1,
+      recipient: RECIPIENT,
+      generate: async () => {
+        setSuperseded(a, 1);
+        return "## x";
+      },
+      seams: { sendEmail: transport() },
+    });
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    warn.mockRestore();
+    expect(lines).toEqual([
+      `[debrief] nothing sent: ZZA (event ${a}) was replaced on the calendar while the debrief was being composed; released 1 claim(s), the next run rebuilds the batch`,
+    ]);
+  });
+
+  it("control: nothing replaced, the same two-member debrief is sent once and stamps the day", async () => {
+    seedHeld("ZZA");
+    seedHeld("ZZB");
+    seedEvent({ source: "finnhub", symbol: "ZZA", reported: true });
+    seedEvent({ source: "finnhub", symbol: "ZZB", reported: true });
+    const sendEmail = transport();
+    const opts = {
+      recipient: RECIPIENT,
+      generate: async () => "## What changed overnight\n\n- synthetic",
+      seams: { sendEmail },
+    };
+    expect(await runMorningDebrief(db, { now: TICK_1, ...opts })).toMatchObject({
+      sent: true,
+      covered: ["ZZA", "ZZB"],
+    });
+    expect(await runMorningDebrief(db, { now: TICK_2, ...opts })).toMatchObject({
+      sent: false,
+      skippedReason: "already-ran-today",
+    });
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+});

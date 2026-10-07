@@ -471,9 +471,15 @@ export function claimEarningsEmailSlot(
     if (refusal) return { claimed: false, mode: "fresh", reason: refusal };
     return claimSlotUnchecked(db, eventId, phase, recipient, opts);
   });
-  // IMMEDIATE takes the write lock before the read, so the check cannot go
-  // stale inside the transaction. Inside a caller's transaction better-sqlite3
-  // nests as a savepoint and the caller's lock already covers it.
+  // Called on its own (every production caller), this is the claim's OWN
+  // immediate transaction: the write lock is taken before the row is read, so
+  // no other process can supersede the row between the check and the insert.
+  // Called inside a caller's open transaction, better-sqlite3 runs it as a
+  // savepoint and no new lock is taken here. If that outer transaction is a
+  // deferred one whose read snapshot is already stale (another process has
+  // committed since), the insert cannot upgrade to a write lock and throws
+  // SQLITE_BUSY rather than inserting on stale information; a caller that
+  // wraps this must open its transaction with .immediate().
   return db.inTransaction ? claim() : claim.immediate();
 }
 

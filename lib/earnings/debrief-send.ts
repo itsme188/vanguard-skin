@@ -59,6 +59,7 @@ import {
 } from "@/lib/earnings/debrief";
 import {
   claimEarningsEmailSlot,
+  emailRowRefusal,
   releaseEarningsEmailClaim,
 } from "@/lib/digest/send-earnings-email";
 import { checkEarningsCloudMarker } from "@/lib/cron/earnings-marker-check";
@@ -87,7 +88,10 @@ export interface DebriefResult {
     | "already-ran-today"
     | "no-candidates"
     | "no-recipient"
-    | "claims-conflict";
+    | "claims-conflict"
+    /** A claimed member's calendar entry was replaced while the email was
+     *  being composed. Nothing was sent; the next tick rebuilds the batch. */
+    | "member-replaced";
 }
 
 interface FreshClaim {
@@ -145,6 +149,7 @@ export async function runMorningDebrief(
   // Stamp BEFORE compose: one debrief ATTEMPT per ET day even if everything
   // below throws — the next 15-min sweep tick must not retry into the digest
   // window.
+  const priorRunDay = getDebriefLastRunDay(db);
   setDebriefLastRunDay(db, today);
 
   // Claim every candidate's recap slot BEFORE composing anything. Anything that
@@ -200,6 +205,32 @@ export async function runMorningDebrief(
     const generate = opts.generate ?? defaultGenerate;
     const rawAiText = await generate(prompt);
     const aiMarkdown = stripModelPreamble(rawAiText);
+
+    // Composing takes about a minute, and a calendar sync in another process
+    // can replace a member's entry meanwhile. Ask the claim's own question
+    // again for every member before anything goes on the wire. The email is
+    // ONE stapled message that already narrates every member, so a single
+    // replaced member means the whole message is stale: send nothing, release
+    // every fresh claim, and let the next run rebuild the batch from a fresh
+    // candidate scan (which drops the replaced entry and picks up the entry
+    // that replaced it, if that one qualifies).
+    const replaced = claims.filter(
+      (c) => emailRowRefusal(db, c.candidate.eventId, { refuseIgnoredManualTwin: true }) != null,
+    );
+    if (replaced.length > 0) {
+      releaseFreshClaims(db, claims);
+      // No email went out and nothing failed, so this was not the day's one
+      // attempt: put the day key back so the next tick inside the window
+      // tries again instead of waiting for tomorrow.
+      restoreDebriefLastRunDay(db, priorRunDay);
+      console.warn(
+        `[debrief] nothing sent: ${replaced
+          .map((c) => `${c.candidate.symbol} (event ${c.candidate.eventId})`)
+          .join(", ")} was replaced on the calendar while the debrief was being composed; ` +
+          `released ${claims.length} claim(s), the next run rebuilds the batch`,
+      );
+      return { sent: false, covered: [], skippedReason: "member-replaced" };
+    }
     const markdown = assembleDebriefMarkdown(aiMarkdown, sections, alreadyRecapped);
 
     const title = `Earnings Debrief — ${formatDebriefDateLabel(now)}`;
@@ -342,6 +373,19 @@ function getDebriefLastRunDay(db: Database.Database): string | null {
     return row?.value ?? null;
   } catch {
     return null; // settings table absent (minimal test DBs)
+  }
+}
+
+/** Put the day key back to what it was before this run stamped it. */
+function restoreDebriefLastRunDay(db: Database.Database, prior: string | null): void {
+  if (prior != null) {
+    setDebriefLastRunDay(db, prior);
+    return;
+  }
+  try {
+    db.prepare(`DELETE FROM settings WHERE key = ?`).run(DEBRIEF_LAST_RUN_SETTINGS_KEY);
+  } catch {
+    // settings table absent (minimal test DBs) — best-effort, never throw
   }
 }
 
