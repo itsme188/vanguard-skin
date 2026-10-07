@@ -26,6 +26,7 @@ import {
   OPTION_SECTOR_SOURCE_AI,
 } from "@/lib/securities/classify-option-sectors";
 import { getAllocationByDimension } from "@/lib/queries/analysis";
+import { getOptionExposureMap } from "@/lib/compute/exposure";
 
 const EXPIRY = "2099-01-15"; // fixed far-future date: never read the real clock
 let db: Database.Database;
@@ -56,7 +57,7 @@ function seedSecurity(
 function seedOption(
   symbol: string,
   underlying: string,
-  opts: { sector?: string | null; sectorSource?: string | null; held?: boolean; strike?: number } = {},
+  opts: { sector?: string | null; sectorSource?: string | null; held?: boolean; strike?: number; verifiedAt?: string } = {},
 ): number {
   const id = db
     .prepare(
@@ -65,6 +66,7 @@ function seedOption(
     )
     .run(symbol, symbol, opts.sector ?? null, opts.sectorSource ?? null, underlying, opts.strike ?? 90, EXPIRY)
     .lastInsertRowid as number;
+  if (opts.verifiedAt) db.prepare("UPDATE securities SET sector_verified_at = ? WHERE id = ?").run(opts.verifiedAt, id);
   if (opts.held !== false) seedHolding(id, 1);
   return id;
 }
@@ -116,7 +118,7 @@ describe("classifyOptionSectors: an option takes its underlying's sector", () =>
     const res = await classifyOptionSectors(db);
 
     expect(generateTextMock).not.toHaveBeenCalled();
-    expect(res).toEqual({ classified: 1, inherited: 1, errors: [] });
+    expect(res).toEqual({ classified: 1, inherited: 1, resynced: 0, errors: [] });
     expect(row(opt)).toEqual({
       sector: "Diversified",
       sector_source: OPTION_SECTOR_SOURCE_INHERITED,
@@ -131,7 +133,7 @@ describe("classifyOptionSectors: an option takes its underlying's sector", () =>
     const res = await classifyOptionSectors(db);
 
     expect(askedTickers()).toEqual(["ZZNO"]);
-    expect(res).toEqual({ classified: 1, inherited: 0, errors: [] });
+    expect(res).toEqual({ classified: 1, inherited: 0, resynced: 0, errors: [] });
     expect(row(opt)).toMatchObject({ sector: "Energy", sector_source: OPTION_SECTOR_SOURCE_AI });
   });
 
@@ -190,15 +192,15 @@ describe("classifyOptionSectors: an option takes its underlying's sector", () =>
   it("the exactly matching underlying wins over a sibling, and a sectorless exact match falls through to the sibling", () => {
     const goog = seedSecurity("GOOG", "Stock", "Communication Services");
     const googl = seedSecurity("GOOGL", "Stock", "Technology");
-    expect(resolveUnderlyingSector(db, "GOOGL")).toEqual({ securityId: googl, sector: "Technology" });
+    expect(resolveUnderlyingSector(db, "GOOGL")).toEqual({ securityId: googl, symbol: "GOOGL", sector: "Technology" });
     db.prepare("UPDATE securities SET sector = NULL WHERE id = ?").run(googl);
-    expect(resolveUnderlyingSector(db, "googl")).toEqual({ securityId: goog, sector: "Communication Services" });
+    expect(resolveUnderlyingSector(db, "googl")).toEqual({ securityId: goog, symbol: "GOOG", sector: "Communication Services" });
   });
 
   it("the underlying is matched case-insensitively and ignoring padding, and never against another option row", () => {
     const etf = seedSecurity("ZZIX", "ETF", "Diversified");
     seedOption("ZZOP", "ZZIX", { sector: "Technology", held: false }); // an option whose symbol is a bare ticker
-    expect(resolveUnderlyingSector(db, " zzix ")).toEqual({ securityId: etf, sector: "Diversified" });
+    expect(resolveUnderlyingSector(db, " zzix ")).toEqual({ securityId: etf, symbol: "ZZIX", sector: "Diversified" });
     expect(resolveUnderlyingSector(db, "ZZOP")).toBeNull();
     expect(resolveUnderlyingSector(db, "")).toBeNull();
     expect(resolveUnderlyingSector(db, "ZZNO")).toBeNull();
@@ -215,23 +217,46 @@ describe("classifyOptionSectors: an option takes its underlying's sector", () =>
     const res = await classifyOptionSectors(db);
 
     expect(askedTickers()).toEqual(["ZZNO"]); // the known underlying is never sent
-    expect(res).toEqual({ classified: 4, inherited: 2, errors: [] });
+    expect(res).toEqual({ classified: 4, inherited: 2, resynced: 0, errors: [] });
     expect([row(a).sector, row(b).sector]).toEqual(["Diversified", "Diversified"]);
     expect([row(c).sector, row(d).sector]).toEqual(["Energy", "Energy"]);
   });
 
-  it("never overwrites a sector already stored on an option row, whatever its source", async () => {
+  it("never overwrites a deliberate or unstamped sector on an option row: every provenance value", async () => {
     seedSecurity("ZZIX", "ETF", "Diversified");
-    const manual = seedOption("ZZIX  990115C00090000", "ZZIX", { sector: "Energy", sectorSource: "csv_import" });
-    const legacy = seedOption("ZZIX  990115C00095000", "ZZIX", { sector: "Technology", strike: 95 });
-    const blank = seedOption("ZZIX  990115C00100000", "ZZIX", { strike: 100 });
+    const protectedRows: Array<[number, string | null]> = [];
+    let strike = 100;
+    for (const source of ["csv_import", "gics_verified", "tws_bloomberg", "something_new", null]) {
+      strike += 5;
+      protectedRows.push([
+        seedOption(`ZZIX  990115C00${strike}000`, "ZZIX", { sector: "Energy", sectorSource: source, strike }),
+        source,
+      ]);
+    }
+    // A derived stamp is still protected once the row carries a verification stamp.
+    const verifiedAi = seedOption("ZZIX  990115C00200000", "ZZIX", {
+      sector: "Energy", sectorSource: OPTION_SECTOR_SOURCE_AI, verifiedAt: "2026-07-28 12:00:00", strike: 200,
+    });
+    const verifiedInherited = seedOption("ZZIX  990115C00205000", "ZZIX", {
+      sector: "Energy", sectorSource: OPTION_SECTOR_SOURCE_INHERITED, verifiedAt: "2026-07-28 12:00:00", strike: 205,
+    });
+    // The two derived values, unverified, ARE maintained; a blank is filled.
+    const ai = seedOption("ZZIX  990115C00210000", "ZZIX", { sector: "Energy", sectorSource: OPTION_SECTOR_SOURCE_AI, strike: 210 });
+    const inh = seedOption("ZZIX  990115C00215000", "ZZIX", { sector: "Energy", sectorSource: OPTION_SECTOR_SOURCE_INHERITED, strike: 215 });
+    const blank = seedOption("ZZIX  990115C00220000", "ZZIX", { strike: 220 });
 
     const res = await classifyOptionSectors(db);
 
-    expect(res.inherited).toBe(1);
-    expect(row(manual)).toMatchObject({ sector: "Energy", sector_source: "csv_import" });
-    expect(row(legacy)).toMatchObject({ sector: "Technology", sector_source: null });
-    expect(row(blank).sector).toBe("Diversified");
+    expect(generateTextMock).not.toHaveBeenCalled();
+    expect(res).toEqual({ classified: 3, inherited: 1, resynced: 2, errors: [] });
+    for (const [id, source] of protectedRows) {
+      expect(row(id)).toEqual({ sector: "Energy", sector_source: source, sector_verified_at: null });
+    }
+    expect(row(verifiedAi)).toMatchObject({ sector: "Energy", sector_source: OPTION_SECTOR_SOURCE_AI });
+    expect(row(verifiedInherited)).toMatchObject({ sector: "Energy", sector_source: OPTION_SECTOR_SOURCE_INHERITED });
+    for (const id of [ai, inh, blank]) {
+      expect(row(id)).toEqual({ sector: "Diversified", sector_source: OPTION_SECTOR_SOURCE_INHERITED, sector_verified_at: null });
+    }
   });
 
   it("inheriting still happens when the AI fails for the unknown underlyings", async () => {
@@ -271,8 +296,125 @@ describe("classifyOptionSectors: an option takes its underlying's sector", () =>
     await classifyOptionSectors(db);
 
     expect(getUnsectoredOptionUnderlyings(db)).toEqual([]);
-    expect(await classifyOptionSectors(db)).toEqual({ classified: 0, inherited: 0, errors: [] });
+    expect(await classifyOptionSectors(db)).toEqual({ classified: 0, inherited: 0, resynced: 0, errors: [] });
     expect(generateTextMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("classifyOptionSectors: a stored derived sector follows its underlying", () => {
+  it("a new option sectored by the AI is corrected, with no AI call, once its underlying gets a sector", async () => {
+    aiReplies({ ZZNW: "Technology" });
+    const opt = seedOption("ZZNW  990115C00090000", "ZZNW");
+
+    // Run 1: the underlying has no row yet, so the AI is asked.
+    expect(await classifyOptionSectors(db)).toEqual({ classified: 1, inherited: 0, resynced: 0, errors: [] });
+    expect(row(opt)).toMatchObject({ sector: "Technology", sector_source: OPTION_SECTOR_SOURCE_AI });
+    expect(getUnsectoredOptionUnderlyings(db)).toEqual([]);
+
+    // The underlying's row arrives without a sector: still nothing to do.
+    const under = seedSecurity("ZZNW", "Stock", null);
+    expect(getUnsectoredOptionUnderlyings(db)).toEqual([]);
+
+    // It is then sectored: the pre-check fires and the next run follows it.
+    db.prepare("UPDATE securities SET sector = 'Financials' WHERE id = ?").run(under);
+    generateTextMock.mockClear();
+    expect(getUnsectoredOptionUnderlyings(db)).toEqual(["ZZNW"]);
+    expect(await classifyOptionSectors(db)).toEqual({ classified: 1, inherited: 0, resynced: 1, errors: [] });
+    expect(generateTextMock).not.toHaveBeenCalled();
+    expect(row(opt)).toEqual({
+      sector: "Financials",
+      sector_source: OPTION_SECTOR_SOURCE_INHERITED,
+      sector_verified_at: null,
+    });
+
+    // And a further run is a no-op.
+    expect(getUnsectoredOptionUnderlyings(db)).toEqual([]);
+    expect(await classifyOptionSectors(db)).toEqual({ classified: 0, inherited: 0, resynced: 0, errors: [] });
+    expect(generateTextMock).not.toHaveBeenCalled();
+  });
+
+  it("when the underlying's sector changes, the next run follows it (vendor spelling normalized)", async () => {
+    const etf = seedSecurity("ZZIX", "ETF", "Diversified");
+    const opt = seedOption("ZZIX  990115C00090000", "ZZIX");
+    await classifyOptionSectors(db);
+    expect(row(opt).sector).toBe("Diversified");
+
+    db.prepare("UPDATE securities SET sector = 'Health Care' WHERE id = ?").run(etf);
+
+    expect(getUnsectoredOptionUnderlyings(db)).toEqual(["ZZIX"]);
+    expect(await classifyOptionSectors(db)).toEqual({ classified: 1, inherited: 0, resynced: 1, errors: [] });
+    expect(row(opt)).toMatchObject({ sector: "Healthcare", sector_source: OPTION_SECTOR_SOURCE_INHERITED });
+    expect(getUnsectoredOptionUnderlyings(db)).toEqual([]);
+    expect(generateTextMock).not.toHaveBeenCalled();
+  });
+
+  it("an underlying that loses its sector, or whose sector becomes unnormalizable, does not blank or change the option", async () => {
+    const etf = seedSecurity("ZZIX", "ETF", "Diversified");
+    const opt = seedOption("ZZIX  990115C00090000", "ZZIX");
+    await classifyOptionSectors(db);
+
+    for (const lost of [null, "", "Communications"]) {
+      db.prepare("UPDATE securities SET sector = ? WHERE id = ?").run(lost, etf);
+      expect(getUnsectoredOptionUnderlyings(db)).toEqual([]);
+      expect(await classifyOptionSectors(db)).toEqual({ classified: 0, inherited: 0, resynced: 0, errors: [] });
+      expect(row(opt)).toMatchObject({ sector: "Diversified", sector_source: OPTION_SECTOR_SOURCE_INHERITED });
+    }
+    db.prepare("DELETE FROM securities WHERE id = ?").run(etf);
+    expect(getUnsectoredOptionUnderlyings(db)).toEqual([]);
+    expect(row(opt).sector).toBe("Diversified");
+    expect(generateTextMock).not.toHaveBeenCalled();
+  });
+
+  it("the pre-check ignores a stale row that is protected, verified or unstamped", () => {
+    seedSecurity("ZZIX", "ETF", "Diversified");
+    let strike = 100;
+    for (const source of ["csv_import", "gics_verified", "tws_bloomberg", "something_new", null]) {
+      strike += 5;
+      seedOption(`ZZIX  990115C00${strike}000`, "ZZIX", { sector: "Energy", sectorSource: source, strike });
+    }
+    seedOption("ZZIX  990115C00200000", "ZZIX", {
+      sector: "Energy", sectorSource: OPTION_SECTOR_SOURCE_INHERITED, verifiedAt: "2026-07-28 12:00:00", strike: 200,
+    });
+    expect(getUnsectoredOptionUnderlyings(db)).toEqual([]);
+  });
+
+  it("held drives the work list; every option row on a listed underlying is written, held or not", async () => {
+    seedSecurity("ZZIX", "ETF", "Diversified");
+    seedSecurity("ZZOT", "ETF", "Fixed Income");
+    // Not held, stale, and no held option on ZZOT needs work: not visited.
+    const lonely = seedOption("ZZOT  990115C00090000", "ZZOT", {
+      sector: "Energy", sectorSource: OPTION_SECTOR_SOURCE_AI, held: false,
+    });
+    expect(getUnsectoredOptionUnderlyings(db)).toEqual([]);
+    expect((await classifyOptionSectors(db)).classified).toBe(0);
+    expect(row(lonely).sector).toBe("Energy");
+
+    // A held stale option on ZZIX puts ZZIX on the list; its not-held sibling
+    // rows (stale and blank) are written with it.
+    const heldStale = seedOption("ZZIX  990115C00090000", "ZZIX", { sector: "Energy", sectorSource: OPTION_SECTOR_SOURCE_AI });
+    const unheldStale = seedOption("ZZIX  990115C00095000", "ZZIX", {
+      sector: "Energy", sectorSource: OPTION_SECTOR_SOURCE_INHERITED, held: false, strike: 95,
+    });
+    const unheldBlank = seedOption("ZZIX  990115C00100000", "ZZIX", { held: false, strike: 100 });
+
+    expect(getUnsectoredOptionUnderlyings(db)).toEqual(["ZZIX"]);
+    expect(await classifyOptionSectors(db)).toEqual({ classified: 3, inherited: 1, resynced: 2, errors: [] });
+    for (const id of [heldStale, unheldStale, unheldBlank]) expect(row(id).sector).toBe("Diversified");
+    expect(row(lonely).sector).toBe("Energy");
+    expect(generateTextMock).not.toHaveBeenCalled();
+  });
+
+  it("a resync through a share-class sibling, alongside an unknown underlying that still needs the AI", async () => {
+    aiReplies({ ZZNO: "Energy" });
+    seedSecurity("GOOG", "Stock", "Communication Services");
+    const stale = seedOption("GOOGL 990115C00090000", "GOOGL", { sector: "Technology", sectorSource: OPTION_SECTOR_SOURCE_AI });
+    const unknown = seedOption("ZZNO  990115C00090000", "ZZNO");
+
+    expect(getUnsectoredOptionUnderlyings(db)).toEqual(["ZZNO", "GOOGL"]); // blanks first
+    expect(await classifyOptionSectors(db)).toEqual({ classified: 2, inherited: 0, resynced: 1, errors: [] });
+    expect(askedTickers()).toEqual(["ZZNO"]);
+    expect(row(stale)).toMatchObject({ sector: "Communication Services", sector_source: OPTION_SECTOR_SOURCE_INHERITED });
+    expect(row(unknown)).toMatchObject({ sector: "Energy", sector_source: OPTION_SECTOR_SOURCE_AI });
   });
 });
 
@@ -294,13 +436,25 @@ describe("sector breakdown after classification", () => {
     const diversified = rows.find((r) => r.group_name === "Diversified")!;
     const technology = rows.find((r) => r.group_name === "Technology")!;
 
+    // The call's delta exposure, from the single-source exposure engine:
+    // one contract on a 100-priced fund is at most 10,000 of notional.
+    const callExposure = getOptionExposureMap(db).get(call)!;
+    expect(callExposure).toBeGreaterThan(5_000);
+    expect(callExposure).toBeLessThanOrEqual(10_000);
+
+    // Book: 1,000 fund + 1,000 stock + 2,000 premium = 4,000.
     // Technology holds only its stock: exposure equals market value.
     expect(technology.total_market_value).toBeCloseTo(1_000);
+    expect(technology.percentage).toBeCloseTo(25);
     expect(technology.net_exposure).toBeCloseTo(1_000);
-    // Diversified holds the fund plus the call's premium, and the call's
-    // (positive, long-call) exposure on top of the fund's own.
+    expect(technology.exposure_pct).toBeCloseTo(25);
+    expect(technology.position_count).toBe(1);
+    // Diversified holds the fund plus the call's premium, and exactly the
+    // fund's own exposure plus the call's.
     expect(diversified.total_market_value).toBeCloseTo(3_000);
-    expect(diversified.net_exposure).toBeGreaterThan(1_000);
+    expect(diversified.percentage).toBeCloseTo(75);
+    expect(diversified.net_exposure).toBeCloseTo(1_000 + callExposure);
+    expect(diversified.exposure_pct).toBeCloseTo(((1_000 + callExposure) * 100) / 4_000);
     expect(diversified.position_count).toBe(2);
     expect(rows.map((r) => r.group_name).sort()).toEqual(["Diversified", "Technology"]);
   });

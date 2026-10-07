@@ -6,10 +6,13 @@ import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 
 export interface OptionSectorResult {
-  /** Option rows given a sector this run (inherited + AI). */
+  /** Option rows written this run (inherited + resynced + AI). */
   classified: number;
-  /** Of `classified`, the rows that took their underlying's stored sector (no AI). */
+  /** Of `classified`, blank rows that took their underlying's stored sector (no AI). */
   inherited: number;
+  /** Of `classified`, rows whose stored DERIVED sector no longer matched their
+   *  underlying's and were brought back in line (no AI). */
+  resynced: number;
   errors: string[];
 }
 
@@ -20,32 +23,90 @@ export interface OptionSectorResult {
  *    underlying's stored sector.
  *  - `ai_classify` (the existing value for an AI-assigned sector): the
  *    underlying was unknown or had no sector, so the AI was asked.
- * Both mean "derived, safe to re-derive". Any other non-null source on an
- * option row (`csv_import`, `gics_verified`, `tws_bloomberg`) was put there by
- * an import, the verification sweep or the broker and is never overwritten here.
+ * Both mean "derived, safe to re-derive": a row carrying one of them (and no
+ * `sector_verified_at` stamp) is a MAINTAINED value that follows its
+ * underlying on every run. Any other source on an option row (`csv_import`,
+ * `gics_verified`, `tws_bloomberg`, an unrecognized value) was put there by an
+ * import, the verification sweep or the broker and is never overwritten here.
+ * An unstamped (NULL source) non-blank sector is never overwritten here
+ * either: its origin is unknown, so it is scripts/repair-option-sectors.ts's
+ * business, where the owner sees a dry run first.
  */
 export const OPTION_SECTOR_SOURCE_INHERITED = "underlying_inherited";
 export const OPTION_SECTOR_SOURCE_AI = "ai_classify";
 
-/** Distinct underlying tickers of held options that still have a blank sector. */
+/** SQL: option row `alias` carries a derived sector this module maintains. */
+function maintainedOptionSectorSql(alias: string): string {
+  const p = alias === "" ? "" : `${alias}.`;
+  return `${p}sector_source IN ('${OPTION_SECTOR_SOURCE_INHERITED}', '${OPTION_SECTOR_SOURCE_AI}')
+         AND ${p}sector_verified_at IS NULL
+         AND ${p}sector IS NOT NULL AND TRIM(${p}sector) != ''`;
+}
+
+/**
+ * The pre-check both callers use to decide whether `classifyOptionSectors` has
+ * work: distinct underlying tickers (upper-case, trimmed) of HELD options that
+ *   1. still have a blank sector, or
+ *   2. carry a maintained derived sector that no longer equals their
+ *      underlying's stored sector (the underlying was sectored after the
+ *      option, or its sector changed).
+ * Blank-sector underlyings come first. The name is historical.
+ */
 export function getUnsectoredOptionUnderlyings(db: Database.Database): string[] {
-  const rows = db
-    .prepare(
-      `SELECT DISTINCT UPPER(TRIM(s.underlying_symbol)) AS u
-       FROM holdings h
+  return optionSectorWork(db).map((w) => w.underlying);
+}
+
+interface OptionSectorWork {
+  underlying: string;
+  /** A held option on it has a blank sector. */
+  blank: boolean;
+  /** The underlying's usable stored sector, or null (unknown / no sector). */
+  resolved: UnderlyingSector | null;
+}
+
+function optionSectorWork(db: Database.Database): OptionSectorWork[] {
+  const held = `FROM holdings h
        JOIN securities s ON s.id = h.security_id
        WHERE ${latestHoldingsPredicate({})}
          AND LOWER(s.security_type) = 'option'
-         AND (s.sector IS NULL OR TRIM(s.sector) = '')
-         AND s.underlying_symbol IS NOT NULL AND TRIM(s.underlying_symbol) != ''`
+         AND s.underlying_symbol IS NOT NULL AND TRIM(s.underlying_symbol) != ''`;
+  const blanks = db
+    .prepare(
+      `SELECT DISTINCT UPPER(TRIM(s.underlying_symbol)) AS u ${held}
+         AND (s.sector IS NULL OR TRIM(s.sector) = '')`
     )
     .all() as Array<{ u: string }>;
-  return rows.map((r) => r.u);
+  const maintained = db
+    .prepare(
+      `SELECT DISTINCT UPPER(TRIM(s.underlying_symbol)) AS u, s.sector AS sector ${held}
+         AND ${maintainedOptionSectorSql("s")}`
+    )
+    .all() as Array<{ u: string; sector: string }>;
+
+  const work = new Map<string, OptionSectorWork>();
+  for (const { u } of blanks) {
+    work.set(u, { underlying: u, blank: true, resolved: resolveUnderlyingSector(db, u) });
+  }
+  const cache = new Map<string, UnderlyingSector | null>();
+  for (const { u, sector } of maintained) {
+    if (work.has(u)) continue;
+    if (!cache.has(u)) cache.set(u, resolveUnderlyingSector(db, u));
+    const resolved = cache.get(u) ?? null;
+    // An underlying that is unknown or has lost its sector proves nothing
+    // about the stored value: the option keeps it.
+    if (resolved && resolved.sector !== sector) {
+      work.set(u, { underlying: u, blank: false, resolved });
+    }
+  }
+  return [...work.values()];
 }
 
 export interface UnderlyingSector {
   /** The non-option security row the sector was read from. */
   securityId: number;
+  /** That row's symbol as stored (may be a share-class sibling of the option's
+   *  named underlying). */
+  symbol: string;
   /** That row's stored sector after `normalizeSector` (GICS-11, or the
    *  pass-through fund labels "Diversified" / "Fixed Income"). */
   sector: string;
@@ -74,14 +135,14 @@ export function resolveUnderlyingSector(
     if (!candidates.includes(s)) candidates.push(s);
   }
   const find = db.prepare(
-    `SELECT id, sector FROM securities
+    `SELECT id, symbol, sector FROM securities
      WHERE UPPER(symbol) = ? AND LOWER(COALESCE(security_type, '')) != 'option'
      ORDER BY id`
   );
   for (const symbol of candidates) {
-    for (const row of find.all(symbol) as Array<{ id: number; sector: string | null }>) {
+    for (const row of find.all(symbol) as Array<{ id: number; symbol: string; sector: string | null }>) {
       const sector = normalizeSector(row.sector);
-      if (sector) return { securityId: row.id, sector };
+      if (sector) return { securityId: row.id, symbol: row.symbol, sector };
     }
   }
   return null;
@@ -104,35 +165,58 @@ For sector/thematic ETFs use the dominant GICS sector (SMH/IGV/SOXX/HACK->Techno
  * underlying that is unknown or has no usable sector; for those only a
  * canonical GICS-11 value is written and junk is dropped.
  *
- * Idempotent: it only ever fills a blank sector, so a sector already on an
- * option row (from an import, the verification sweep, the broker, or an
- * earlier run) is never overwritten. Rows stored wrong before this ruling are
- * the business of scripts/repair-option-sectors.ts.
+ * The stored value is a MAINTAINED derived value: a sector this module wrote
+ * earlier (stamped `underlying_inherited` or `ai_classify`, no verification
+ * stamp) is rewritten, with no AI call, when the underlying's usable stored
+ * sector differs from it. That covers a new option that reached the AI before
+ * its underlying had a row or a sector, and an underlying that is later
+ * reclassified. An underlying that is unknown or has lost its sector never
+ * blanks or changes the option.
+ *
+ * Never overwritten: a non-blank sector stamped by an import, the verification
+ * sweep or the broker, one with an unrecognized or missing source, or any row
+ * with a `sector_verified_at` stamp. Unstamped rows stored wrong before this
+ * ruling are the business of scripts/repair-option-sectors.ts.
+ *
+ * Held vs not held (one rule for all three writes): the WORK LIST is driven by
+ * held options only (`getUnsectoredOptionUnderlyings`); for an underlying on
+ * that list, every option row naming it is written, held or not. An underlying
+ * with no held option that needs work is not visited.
+ *
+ * Idempotent: a second run finds no work.
  */
 export async function classifyOptionSectors(db: Database.Database): Promise<OptionSectorResult> {
-  const underlyings = getUnsectoredOptionUnderlyings(db);
-  if (underlyings.length === 0) return { classified: 0, inherited: 0, errors: [] };
+  const work = optionSectorWork(db);
+  if (work.length === 0) return { classified: 0, inherited: 0, resynced: 0, errors: [] };
 
   const writeSector = db.prepare(
     `UPDATE securities SET sector = ?, sector_source = ?
      WHERE LOWER(security_type) = 'option' AND UPPER(TRIM(underlying_symbol)) = ?
        AND (sector IS NULL OR TRIM(sector) = '')`
   );
+  const resyncSector = db.prepare(
+    `UPDATE securities SET sector = ?, sector_source = '${OPTION_SECTOR_SOURCE_INHERITED}'
+     WHERE LOWER(security_type) = 'option' AND UPPER(TRIM(underlying_symbol)) = ?
+       AND ${maintainedOptionSectorSql("")}
+       AND sector != ?`
+  );
 
   // Known underlyings first: no AI call, and nothing the AI does later can
-  // undo it (the write only fills blanks).
+  // undo it (the AI write only fills blanks).
   let inherited = 0;
+  let resynced = 0;
   const needAi: string[] = [];
-  for (const underlying of underlyings) {
-    const resolved = resolveUnderlyingSector(db, underlying);
+  for (const { underlying, resolved } of work) {
     if (!resolved) {
+      // Only a blank-sector option puts an unresolved underlying on the list.
       needAi.push(underlying);
       continue;
     }
+    resynced += resyncSector.run(resolved.sector, underlying, resolved.sector).changes;
     inherited += writeSector.run(resolved.sector, OPTION_SECTOR_SOURCE_INHERITED, underlying).changes;
   }
 
-  let classified = inherited;
+  let classified = inherited + resynced;
   const errors: string[] = [];
   const BATCH = 30;
   for (let i = 0; i < needAi.length; i += BATCH) {
@@ -170,5 +254,5 @@ export async function classifyOptionSectors(db: Database.Database): Promise<Opti
       errors.push(`Batch ${i / BATCH + 1}: ${err instanceof Error ? err.message : "unknown"}`);
     }
   }
-  return { classified, inherited, errors };
+  return { classified, inherited, resynced, errors };
 }

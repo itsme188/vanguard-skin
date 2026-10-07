@@ -20,7 +20,7 @@ import { classifyOptionSectors, getUnsectoredOptionUnderlyings } from "@/lib/sec
 function makeDb() {
   const db = new Database(":memory:");
   db.exec(`
-    CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT, security_type TEXT, sector TEXT, sector_source TEXT, underlying_symbol TEXT);
+    CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT, security_type TEXT, sector TEXT, sector_source TEXT, sector_verified_at TEXT, underlying_symbol TEXT);
     CREATE TABLE holdings (id INTEGER PRIMARY KEY, account_id INTEGER, security_id INTEGER, quantity REAL, as_of_date TEXT);
   `);
   // Two held CRWD options (blank sector), one already-sectored option (should be ignored).

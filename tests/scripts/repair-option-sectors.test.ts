@@ -11,6 +11,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { planOptionSectorRepair, runOptionSectorRepair, formatPlan } from "@/scripts/repair-option-sectors";
 import { getAllocationByDimension } from "@/lib/queries/analysis";
+import { getOptionExposureMap } from "@/lib/compute/exposure";
 
 const EXPIRY = "2099-01-15";
 let db: Database.Database;
@@ -71,7 +72,9 @@ describe("repair-option-sectors", () => {
     expect(plan.changes).toEqual([
       {
         optionId: opt,
+        optionSymbol: "ZZIX  990115C00090000",
         underlyingId: etf,
+        underlyingSymbol: "ZZIX",
         fromSector: "Technology",
         toSector: "Diversified",
         fromSource: null,
@@ -122,27 +125,61 @@ describe("repair-option-sectors", () => {
     expect(row(right)).toMatchObject({ sector: "Diversified", sector_source: null });
   });
 
-  it("never overwrites a sector an import, the verification sweep or the broker put on the option row", () => {
+  it("every provenance value: deliberate and verified rows are skipped with the reason, derived rows are reset", () => {
     seedSecurity("ZZIX", "ETF", "Diversified");
     const csv = seedOption("ZZIX  990115C00090000", "ZZIX", "Energy", { source: "csv_import" });
     const verified = seedOption("ZZIX  990115C00095000", "ZZIX", "Energy", { source: "gics_verified" });
-    const stamped = seedOption("ZZIX  990115C00100000", "ZZIX", "Energy", { verifiedAt: "2026-07-28 12:00:00" });
-    const broker = seedOption("ZZIX  990115C00105000", "ZZIX", "Energy", { source: "tws_bloomberg" });
-    const unknownSource = seedOption("ZZIX  990115C00110000", "ZZIX", "Energy", { source: "something_new" });
-    const before = snapshot();
+    const broker = seedOption("ZZIX  990115C00100000", "ZZIX", "Energy", { source: "tws_bloomberg" });
+    const unknownSource = seedOption("ZZIX  990115C00105000", "ZZIX", "Energy", { source: "something_new" });
+    const stampedOnly = seedOption("ZZIX  990115C00110000", "ZZIX", "Energy", { verifiedAt: "2026-07-28 12:00:00" });
+    const stampedAi = seedOption("ZZIX  990115C00115000", "ZZIX", "Energy", {
+      source: "ai_classify", verifiedAt: "2026-07-28 12:00:00",
+    });
+    const ai = seedOption("ZZIX  990115C00120000", "ZZIX", "Energy", { source: "ai_classify" });
+    const inherited = seedOption("ZZIX  990115C00125000", "ZZIX", "Energy", { source: "underlying_inherited" });
+    const unstamped = seedOption("ZZIX  990115C00130000", "ZZIX", "Energy");
+    const protectedIds = [csv, verified, broker, unknownSource, stampedOnly, stampedAi];
+    const beforeProtected = protectedIds.map(row);
 
     const { plan, written } = runOptionSectorRepair(db, { apply: true });
 
-    expect(written).toBe(0);
-    expect(plan.changes).toEqual([]);
-    expect(plan.skippedProtected).toEqual([
-      { optionId: csv, source: "csv_import" },
-      { optionId: verified, source: "gics_verified" },
-      { optionId: stamped, source: "sector_verified_at" },
-      { optionId: broker, source: "tws_bloomberg" },
-      { optionId: unknownSource, source: "something_new" },
+    expect(written).toBe(3);
+    expect(plan.changes.map((c) => c.optionId)).toEqual([ai, inherited, unstamped]);
+    expect(plan.skippedProtected.map((s) => [s.optionId, s.reason, s.source])).toEqual([
+      [csv, "deliberate_source", "csv_import"],
+      [verified, "deliberate_source", "gics_verified"],
+      [broker, "deliberate_source", "tws_bloomberg"],
+      [unknownSource, "deliberate_source", "something_new"],
+      [stampedOnly, "verified_stamp", null],
+      [stampedAi, "verified_stamp", "ai_classify"],
     ]);
+    expect(plan.skippedProtected[0]).toMatchObject({ optionSymbol: "ZZIX  990115C00090000", underlyingSymbol: "ZZIX" });
+    expect(protectedIds.map(row)).toEqual(beforeProtected);
+    for (const id of [ai, inherited, unstamped]) {
+      expect(row(id)).toEqual({ sector: "Diversified", sector_source: "underlying_inherited", sector_verified_at: null });
+    }
+  });
+
+  it("a failure part-way through an apply leaves no row changed", () => {
+    seedSecurity("ZZIX", "ETF", "Diversified");
+    const first = seedOption("ZZIX  990115C00090000", "ZZIX", "Technology");
+    const second = seedOption("ZZIX  990115C00095000", "ZZIX", "Technology");
+    const third = seedOption("ZZIX  990115C00100000", "ZZIX", "Technology");
+    // The database itself refuses the SECOND row's update, after the first was written.
+    db.exec(
+      `CREATE TRIGGER refuse_second BEFORE UPDATE ON securities WHEN OLD.id = ${second}
+       BEGIN SELECT RAISE(ABORT, 'refused for the test'); END`,
+    );
+    const before = snapshot();
+
+    expect(() => runOptionSectorRepair(db, { apply: true })).toThrow(/refused for the test/);
+
     expect(snapshot()).toEqual(before);
+    for (const id of [first, second, third]) expect(row(id)).toMatchObject({ sector: "Technology", sector_source: null });
+
+    // With the obstacle gone the same run completes.
+    db.exec("DROP TRIGGER refuse_second");
+    expect(runOptionSectorRepair(db, { apply: true }).written).toBe(3);
   });
 
   it("--include-broker also resets a broker-stamped option sector, and still nothing else", () => {
@@ -206,18 +243,25 @@ describe("repair-option-sectors", () => {
     expect(row(stock).sector).toBe("Technology");
   });
 
-  it("the printed plan names ids, sectors and counts but no symbol", () => {
+  it("the printed plan names each contract and its underlying, and says why a row was skipped", () => {
+    seedSecurity("GOOG", "Stock", "Communication Services");
     seedSecurity("ZZIX", "ETF", "Diversified");
-    const opt = seedOption("ZZIX  990115C00090000", "ZZIX", "Technology");
-    seedOption("ZZIX  990115C00095000", "ZZIX", "Energy", { source: "csv_import" });
+    const opt = seedOption("GOOGL 990115C00090000", "GOOGL", "Technology");
+    const csv = seedOption("ZZIX  990115C00095000", "ZZIX", "Energy", { source: "csv_import" });
+    const broker = seedOption("ZZIX  990115C00100000", "ZZIX", "Energy", { source: "tws_bloomberg" });
+    const stamped = seedOption("ZZIX  990115C00105000", "ZZIX", "Energy", { verifiedAt: "2026-07-28 12:00:00" });
 
-    const text = formatPlan(planOptionSectorRepair(db, {})).join("\n");
+    const lines = formatPlan(planOptionSectorRepair(db, {}));
+    const line = (needle: string) => lines.find((l) => l.includes(needle))!;
 
-    expect(text).toContain(`option id ${opt}`);
-    expect(text).toContain('"Technology" -> "Diversified"');
-    expect(text).toMatch(/would change:\s+1\b/);
-    expect(text).toMatch(/csv_import/);
-    expect(text).not.toContain("ZZIX");
+    expect(lines).toContain("would change: 1");
+    // The option's own symbol, and the sibling row the sector really comes from.
+    expect(line(`option id ${opt} `)).toContain("[GOOGL 990115C00090000]");
+    expect(line(`option id ${opt} `)).toContain('"Technology" -> "Communication Services"');
+    expect(line(`option id ${opt} `)).toMatch(/underlying id \d+ \[GOOG\]\)/);
+    expect(line(`option id ${csv} `)).toMatch(/\[ZZIX {2}990115C00095000\] on \[ZZIX\]: skipped because its sector was set deliberately \(source "csv_import"\)/);
+    expect(line(`option id ${broker} `)).toMatch(/stamped by the broker sync .*--include-broker/);
+    expect(line(`option id ${stamped} `)).toMatch(/skipped because it carries a sector verification stamp \(source <none>\)/);
   });
 
   it("after the repair the sector breakdown counts the option in its underlying's bucket", () => {
@@ -230,22 +274,28 @@ describe("repair-option-sectors", () => {
     };
     hold(seedSecurity("ZZIX", "ETF", "Diversified"), 10, 100); // 1,000
     hold(seedSecurity("ZZTK", "Stock", "Technology"), 10, 100); // 1,000
-    hold(seedOption("ZZIX  990115C00090000", "ZZIX", "Technology"), 1, 20); // 2,000 premium
+    const call = seedOption("ZZIX  990115C00090000", "ZZIX", "Technology");
+    hold(call, 1, 20); // 2,000 premium
 
     const bucket = (name: string) => getAllocationByDimension(db, "sector").find((r) => r.group_name === name)!;
 
     // Before: the stored sector puts the call's premium and exposure in Technology.
+    const callExposure = getOptionExposureMap(db).get(call)!;
+    expect(callExposure).toBeGreaterThan(5_000); // one contract on a 100-priced fund:
+    expect(callExposure).toBeLessThanOrEqual(10_000); // at most 10,000 of notional
     expect(bucket("Technology").total_market_value).toBeCloseTo(3_000);
-    expect(bucket("Technology").net_exposure).toBeGreaterThan(1_000);
+    expect(bucket("Technology").net_exposure).toBeCloseTo(1_000 + callExposure);
+    expect(bucket("Diversified").total_market_value).toBeCloseTo(1_000);
     expect(bucket("Diversified").net_exposure).toBeCloseTo(1_000);
-    const callExposure = bucket("Technology").net_exposure - 1_000;
 
     runOptionSectorRepair(db, { apply: true });
 
     // After: the same exposure, moved whole into the fund's bucket.
     expect(bucket("Technology").total_market_value).toBeCloseTo(1_000);
+    expect(bucket("Technology").percentage).toBeCloseTo(25);
     expect(bucket("Technology").net_exposure).toBeCloseTo(1_000);
     expect(bucket("Diversified").total_market_value).toBeCloseTo(3_000);
+    expect(bucket("Diversified").percentage).toBeCloseTo(75);
     expect(bucket("Diversified").net_exposure).toBeCloseTo(1_000 + callExposure);
   });
 });

@@ -37,8 +37,10 @@
  * copy (`sqlite3 data/vanguard.db "VACUUM INTO '/tmp/rehearsal.db'"`) before
  * it is ever pointed at the live file.
  *
- * The output names security ids, sector labels, source labels and counts. It
- * prints no symbol, quantity or dollar figure.
+ * The output names each row's security id, the option's symbol and its
+ * underlying's symbol (so the owner can recognise the contract), sector and
+ * source labels, and counts. It prints no quantity, price or dollar figure.
+ * It runs on the owner's machine; do not paste its output into a committed file.
  */
 
 import path from "node:path";
@@ -58,10 +60,19 @@ export interface RepairOptionSectorsOptions {
   includeBroker?: boolean;
 }
 
+export type SkipReason =
+  /** `sector_source` says an import, the verification sweep or the broker set it. */
+  | "deliberate_source"
+  /** The row carries a `sector_verified_at` stamp. */
+  | "verified_stamp";
+
 export interface OptionSectorChange {
   optionId: number;
+  optionSymbol: string;
   /** The security row the sector is inherited from. */
   underlyingId: number;
+  /** That row's symbol (may be a share-class sibling of the named underlying). */
+  underlyingSymbol: string;
   fromSector: string | null;
   toSector: string;
   fromSource: string | null;
@@ -75,7 +86,14 @@ export interface OptionSectorRepairPlan {
   /** Stored sector already equals the underlying's. */
   alreadyCorrect: number;
   /** Differs from the underlying, but the stored sector was set deliberately. */
-  skippedProtected: Array<{ optionId: number; source: string }>;
+  skippedProtected: Array<{
+    optionId: number;
+    optionSymbol: string;
+    underlyingSymbol: string;
+    reason: SkipReason;
+    /** The stored `sector_source`, or null when the row is unstamped. */
+    source: string | null;
+  }>;
   /** Underlying unknown, or known with no usable sector: left alone. */
   underlyingWithoutSector: number;
   /** The option row names no underlying: left alone. */
@@ -96,13 +114,14 @@ export function planOptionSectorRepair(
 
   const options = db
     .prepare(
-      `SELECT id, sector, sector_source, sector_verified_at, underlying_symbol
+      `SELECT id, symbol, sector, sector_source, sector_verified_at, underlying_symbol
          FROM securities
         WHERE LOWER(security_type) = 'option'
         ORDER BY id`,
     )
     .all() as Array<{
       id: number;
+      symbol: string;
       sector: string | null;
       sector_source: string | null;
       sector_verified_at: string | null;
@@ -137,19 +156,29 @@ export function planOptionSectorRepair(
     const hasSector = option.sector != null && option.sector.trim() !== "";
     // A blank sector holds nothing deliberate to preserve.
     if (hasSector) {
-      if (source != null && !derivedSources.has(source)) {
-        plan.skippedProtected.push({ optionId: option.id, source });
-        continue;
-      }
-      if (option.sector_verified_at != null) {
-        plan.skippedProtected.push({ optionId: option.id, source: source ?? "sector_verified_at" });
+      const reason: SkipReason | null =
+        source != null && !derivedSources.has(source)
+          ? "deliberate_source"
+          : option.sector_verified_at != null
+            ? "verified_stamp"
+            : null;
+      if (reason) {
+        plan.skippedProtected.push({
+          optionId: option.id,
+          optionSymbol: option.symbol,
+          underlyingSymbol: underlying.symbol,
+          reason,
+          source,
+        });
         continue;
       }
     }
 
     plan.changes.push({
       optionId: option.id,
+      optionSymbol: option.symbol,
       underlyingId: underlying.securityId,
+      underlyingSymbol: underlying.symbol,
       fromSector: option.sector,
       toSector: underlying.sector,
       fromSource: option.sector_source,
@@ -196,7 +225,7 @@ function label(value: string | null): string {
   return value == null || value.trim() === "" ? "<none>" : `"${value}"`;
 }
 
-/** Ids, sector labels, source labels and counts. Never a symbol or a figure. */
+/** Ids, symbols, sector labels, source labels and counts. Never a figure. */
 export function formatPlan(plan: OptionSectorRepairPlan, applied = false): string[] {
   const lines: string[] = [];
   const verb = applied ? "changed" : "would change";
@@ -212,16 +241,22 @@ export function formatPlan(plan: OptionSectorRepairPlan, applied = false): strin
     lines.push(`Rows ${applied ? "changed" : "that would change"} (sector, then source):`);
     for (const c of plan.changes) {
       lines.push(
-        `  option id ${c.optionId}: ${label(c.fromSector)} -> "${c.toSector}"; ` +
-          `source ${label(c.fromSource)} -> "${c.toSource}" (underlying id ${c.underlyingId})`,
+        `  option id ${c.optionId} [${c.optionSymbol}]: ${label(c.fromSector)} -> "${c.toSector}"; ` +
+          `source ${label(c.fromSource)} -> "${c.toSource}" (underlying id ${c.underlyingId} [${c.underlyingSymbol}])`,
       );
     }
   }
   if (plan.skippedProtected.length > 0) {
     lines.push("");
-    lines.push("Skipped (stored sector differs from the underlying, but was set deliberately):");
+    lines.push("Skipped (stored sector differs from the underlying's, but is not this script's to change):");
     for (const s of plan.skippedProtected) {
-      lines.push(`  option id ${s.optionId}: source ${s.source}`);
+      const why =
+        s.reason === "deliberate_source"
+          ? s.source === BROKER_SOURCE
+            ? `its sector was stamped by the broker sync (source "${s.source}"); --include-broker would reset it`
+            : `its sector was set deliberately (source "${s.source}")`
+          : `it carries a sector verification stamp (source ${label(s.source)})`;
+      lines.push(`  option id ${s.optionId} [${s.optionSymbol}] on [${s.underlyingSymbol}]: skipped because ${why}`);
     }
   }
   return lines;
