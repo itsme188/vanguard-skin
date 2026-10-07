@@ -19,9 +19,12 @@ import { usePrivateFormatter } from "@/lib/privacy/components";
 import { formatUSD } from "@/lib/format";
 import {
   anchorDailiesToStatements,
+  equityCurveGranularity,
   equityCurveRangeCaption,
+  equityCurveYAxis,
   formatAnchoredTooltipValue,
   type AnchoredCurveSummary,
+  type EquityCurveGranularity,
 } from "@/lib/chart/equity-curve-anchor";
 
 // Hex colors are intentionally hardcoded here — these must stay visible in both
@@ -31,6 +34,25 @@ const ACCOUNT_COLORS: Record<string, string> = {
   "Vanguard Taxable": "#C9A44E",
   "Vanguard Roth IRA": "#60A5FA",
   IBKR: "#34D399",
+};
+
+// Selected state of the range pills and the Split toggle. Plain gold-ink on
+// the gold tint is 4.3:1 on the light panel, under the 4.5:1 floor for 11px
+// text; the light theme darkens it, the dark theme keeps the plain token.
+// Pinned by tests/dashboard/equity-curve-range-pill.test.ts.
+const ACTIVE_PILL =
+  "bg-gold/20 text-[color:color-mix(in_srgb,var(--gold-ink)_80%,black)] [[data-theme=dark]_&]:text-gold-ink";
+
+// Resolution badge: describes the range on screen, not the whole history.
+const GRANULARITY_LABEL: Record<EquityCurveGranularity, string> = {
+  daily: "Daily",
+  monthly: "Monthly",
+  mixed: "Mixed",
+};
+const GRANULARITY_TITLE: Record<EquityCurveGranularity, string> = {
+  daily: "This range has a value for every trading day.",
+  monthly: "This range is plotted from statement dates only.",
+  mixed: "Daily values cover only part of this range; the rest is plotted from statement or snapshot dates.",
 };
 
 // ─── Date Range Periods ─────────────────────────────────────────
@@ -288,6 +310,16 @@ export function EquityCurveChart({
   const data = filterByRange(rawData, selectedRange);
   const color = ACCOUNT_COLORS[accountName] ?? "#C9A44E";
   const hasCashData = hasDaily && data.some((d) => (d.cash ?? 0) > 0);
+  // Badge and tooltip date follow the points in the selected range: one daily
+  // row anywhere used to label four years of month-end points "Daily".
+  const granularity = equityCurveGranularity(data.map((d) => d.date));
+  // The value axis frames the selected range (a zero-based axis flattened a
+  // month's move into a few pixels). Split mode also plots holdings and cash.
+  const yAxis = equityCurveYAxis(
+    data.flatMap((d) =>
+      showLines && hasCashData ? [d.total, d.holdings ?? d.total, d.cash ?? d.total] : [d.total]
+    )
+  );
 
   // Day-level ticks for intra-year ranges — the month-year formatter repeated
   // "Jun 26" for every daily tick on 1M/3M/6M/YTD (deep-QA finding). The
@@ -310,16 +342,19 @@ export function EquityCurveChart({
     );
   }
 
-  const dateFormatter = hasDaily ? formatDateFull : formatDate;
+  const dateFormatter = granularity === "monthly" ? formatDate : formatDateFull;
 
   return (
     <div className="rounded-xl border border-edge bg-panel p-5">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <h3 className="text-sm font-medium text-ink-dim">Equity Curve</h3>
-          {hasDaily && (
-            <span className="text-[10px] text-ink-faint bg-raised px-1.5 py-0.5 rounded">
-              Daily
+          {granularity && (
+            <span
+              title={GRANULARITY_TITLE[granularity]}
+              className="text-[10px] text-ink-faint bg-raised px-1.5 py-0.5 rounded"
+            >
+              {GRANULARITY_LABEL[granularity]}
             </span>
           )}
         </div>
@@ -329,9 +364,10 @@ export function EquityCurveChart({
           {hasCashData && (
             <button
               onClick={() => setShowLines((v) => !v)}
+              aria-pressed={showLines}
               className={`text-[11px] font-medium px-2 py-1 rounded transition-colors ${
                 showLines
-                  ? "bg-gold/20 text-gold-ink"
+                  ? ACTIVE_PILL
                   : "text-ink-faint hover:text-ink hover:bg-raised"
               }`}
             >
@@ -345,9 +381,10 @@ export function EquityCurveChart({
               <button
                 key={range.label}
                 onClick={() => setSelectedRange(i)}
+                aria-pressed={i === selectedRange}
                 className={`px-2 py-1 rounded text-[11px] font-medium transition-colors ${
                   i === selectedRange
-                    ? "bg-gold/20 text-gold-ink"
+                    ? ACTIVE_PILL
                     : "text-ink-faint hover:text-ink hover:bg-raised"
                 }`}
               >
@@ -382,6 +419,8 @@ export function EquityCurveChart({
                 tickLine={false}
               />
               <YAxis
+                domain={yAxis?.domain}
+                ticks={yAxis?.ticks}
                 tickFormatter={currencyTickFormatter}
                 stroke="#4E5668"
                 tick={{ fontSize: 11 }}
@@ -482,6 +521,8 @@ export function EquityCurveChart({
                 tickLine={false}
               />
               <YAxis
+                domain={yAxis?.domain}
+                ticks={yAxis?.ticks}
                 tickFormatter={currencyTickFormatter}
                 stroke="#4E5668"
                 tick={{ fontSize: 11 }}

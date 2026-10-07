@@ -329,3 +329,67 @@ export function formatAnchoredTooltipValue(
   }
   return `${fmt(value)} · recorded ${fmt(recordedValue)}`;
 }
+
+export interface EquityCurveYAxis {
+  domain: [number, number];
+  ticks: number[];
+}
+
+function niceStep(raw: number): number {
+  const pow = 10 ** Math.floor(Math.log10(raw));
+  const f = raw / pow;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * pow;
+}
+
+/**
+ * Value axis that frames the plotted window: the data's own low and high with
+ * a tenth of the range as padding on each side, widened to round tick values.
+ * An axis that starts at zero squeezes a month's move into a few pixels.
+ *
+ * The step is never finer than the axis label can state exactly (two decimals
+ * of a million or of a thousand), so no gridline is mislabelled. A series
+ * that is never negative is never padded below zero. Null when there is no
+ * finite value (the caller leaves the chart's default axis in place).
+ */
+export function equityCurveYAxis(values: number[], targetTicks = 5): EquityCurveYAxis | null {
+  const finite = values.filter((v) => Number.isFinite(v));
+  if (finite.length === 0) return null;
+  const min = Math.min(...finite);
+  const max = Math.max(...finite);
+  const range = max - min;
+  const pad = range > 0 ? range * 0.1 : Math.abs(max) * 0.05 || 1;
+  const lo0 = min >= 0 ? Math.max(0, min - pad) : min - pad;
+  const hi0 = max + pad;
+
+  const top = Math.max(Math.abs(min), Math.abs(max));
+  const finest = top >= 1_000_000 ? 10_000 : top >= 1_000 ? 10 : 1;
+  const step = Math.max(niceStep((hi0 - lo0) / Math.max(1, targetTicks - 1)), finest);
+
+  const loSteps = Math.floor(lo0 / step);
+  let hiSteps = Math.ceil(hi0 / step);
+  if (hiSteps === loSteps) hiSteps++;
+  const ticks: number[] = [];
+  for (let k = loSteps; k <= hiSteps; k++) ticks.push(k * step);
+  return { domain: [ticks[0], ticks[ticks.length - 1]], ticks };
+}
+
+export type EquityCurveGranularity = "daily" | "monthly" | "mixed";
+
+/**
+ * What the plotted window is made of, from the spacing of its points: every
+ * point within SHORT_SEGMENT_MAX_DAYS of the one before it is "daily", none is
+ * "monthly" (statement dates only), a blend is "mixed". `dates` must be
+ * sorted ascending. Null with fewer than two points.
+ */
+export function equityCurveGranularity(dates: string[]): EquityCurveGranularity | null {
+  if (dates.length < 2) return null;
+  let close = 0;
+  let far = 0;
+  for (let i = 1; i < dates.length; i++) {
+    if (dayNumber(dates[i]) - dayNumber(dates[i - 1]) <= SHORT_SEGMENT_MAX_DAYS) close++;
+    else far++;
+  }
+  if (far === 0) return "daily";
+  if (close === 0) return "monthly";
+  return "mixed";
+}
