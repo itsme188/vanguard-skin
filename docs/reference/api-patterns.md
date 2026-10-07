@@ -740,6 +740,7 @@ never a 500 for a saved write.
   `DELETE` — unlink (restores a demoted artifact leg's `is_external_flow` + strips the note suffix).
 - `POST /api/donations/[id]/lots` — replace lot assignments (`{assignments:[{acquisitionTransactionId,
   quantity}]}`, empty array clears); reject-not-clamp invariants live in `assignDonationLots`.
+- `POST` / `DELETE /api/donations/lots/[acquisitionTransactionId]/basis-verified` — mark (`{sourceNote}`) or clear the "basis verified" marker on a flagged donated lot. No ledger-recompute acknowledgement: it changes no tax input. 409 while the ledger waits on a recompute or when no donation draws on the lot.
 - `POST /api/donations/[id]/reverse` — `{reversedDate}` strict `YYYY-MM-DD`; sets `reversed_date`,
   unlinks + unassigns, excludes from totals.
 - `POST /api/donations/[id]/resolve-security` — `{securityId}`; only when `security_id` IS NULL (else 409);

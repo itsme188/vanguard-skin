@@ -551,3 +551,25 @@ Data and docs only; no code changed. Real figures are in the gate reports in the
 - **First comparison of the app's open lots against a broker lot report (Taxable, about 120 positions):** roughly seven in ten match on quantity and cost to the cent, about two in ten on quantity only, a few differ in quantity, and a few exist on one side only. The causes are listed as follow-ups in the TODO.
 - **After-commit state:** all three accounts equal their statements; no negative daily valuations; the statement-return audit reports FAIL only on five old months (2023 to early 2025) that predate this session; September rows land in the same bands as August (not comparable / insufficient).
 
+## 2026-10-07 — Giving: a donated lot's basis can be marked verified
+
+**Why.** The under-1% rule flagged several gifts drawn from lots whose very small basis turned out to be correct (confirmed against the fund's final partnership tax form: its property-distribution line equals the stored lots' total). The flag was right to ask; there was no way to record the answer, so those gifts stayed out of "Gain avoided".
+
+**Owner decision (2026-10-07).** Add a per-lot "basis verified" marker with a source note. The owner approved the design and the migration text before the build.
+
+**What was built.**
+- Table `lot_basis_verifications` (migration 095), keyed by the lot's acquisition transaction, with a required source note and a snapshot of the lot's cost basis and quantity acquired at the moment of verification.
+- One reader, `donatedLotBasisState` (`lib/queries/giving-view.ts`), returns `plausible`, `implausible`, `verified` or `verified-stale`. The row chip, the row's left-out flag, the year total and the left-out count all come from it. A gift row is left out when any of its lots is `implausible` or `verified-stale`.
+- The marker is a claim about specific figures. If the lot's cost basis or quantity acquired later differs from the snapshot (a repair, a price or fee change, an option-premium rollover, a split), it reads `verified-stale`, the row is left out again, and the owner verifies again.
+- Marking and undoing change no tax input and trigger no recompute, so these two routes need no ledger-recompute acknowledgement. Marking is refused while the ledger waits on a recompute.
+- Mutations in `lib/mutations/lot-basis-verifications.ts`; routes `POST` and `DELETE /api/donations/lots/[acquisitionTransactionId]/basis-verified`.
+
+**Controller choices for the owner to confirm.**
+- One marker covers every gift, past and future, drawn from that lot.
+- A split makes the marker stale (quantity acquired changes); it costs one re-mark and errs safe.
+- The source note is masked in privacy mode.
+- An import-batch undo that removes the purchase row removes the marker; a later restore brings the lot back unverified.
+- A marker survives a gift being unassigned and applies again on reassignment if the snapshot still matches.
+
+**Review.** Independent review that ran the code found the first build snapshotted the purchase row's amount, not the lot's basis, so a real basis change could leave the marker in place. That came from the controller's brief, not the builder. Fixed and re-reviewed; browser-checked on a sandbox copy.
+
