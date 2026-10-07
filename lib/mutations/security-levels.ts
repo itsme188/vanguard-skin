@@ -271,12 +271,28 @@ export function triggerLevel(
 
 // ─── Alert mutations ───────────────────────────────────────────────
 
+/**
+ * Record the user's response to a fired alert.
+ *
+ * A restore to 'pending' with no note KEEPS the stored note: the alert goes
+ * back to the inbox for a fresh decision, and the note logged with the first
+ * response is still the user's own record of what they did. Every other
+ * response writes the note it is given, a missing one included.
+ */
 export function respondToAlert(
   db: Database.Database,
   id: number,
   response: AlertResponse,
   note?: string
 ): void {
+  if (response === "pending" && note == null) {
+    db.prepare(
+      `UPDATE level_alerts
+       SET user_response = 'pending', user_response_at = datetime('now')
+       WHERE id = ?`
+    ).run(id);
+    return;
+  }
   db.prepare(
     `UPDATE level_alerts
      SET user_response = ?, user_response_at = datetime('now'),
