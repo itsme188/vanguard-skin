@@ -235,6 +235,38 @@ narrowings silently dropped real exposure.
 
 **Never add an earnings send path that bypasses it.**
 
+### A replaced calendar entry is refused at the claim and again after compose (2026-10-07)
+
+The candidate finders already skip a row with `calendar_events.superseded` set. The send path now
+checks too, because a reconcile in another process can replace an entry between the finder and the
+send (each send holds a 60 to 180 second AI call).
+
+- **One check:** `lib/digest/send-earnings-email.ts::emailRowRefusal(db, eventId, { refuseIgnoredManualTwin })`.
+  It returns `"superseded_event"`, `"ignored_manual_twin"` (the later of two live hand-entered rows)
+  or null. These are facts about the calendar row, not `earnings_emails.error` states.
+- **Inside the claim:** `claimEarningsEmailSlot` runs the check and the claim in one immediate
+  transaction (a savepoint when the caller already holds one; a wrapping caller must use
+  `.immediate()`). A refusal returns `{ claimed: false, reason }` and writes nothing. Every claimer
+  goes through it: the send service, the morning debrief and the retired wrap.
+- **After compose:** `sendEarningsCandidate` (`lib/earnings/send-service.ts`) asks again before the
+  provider call. On a refusal there the claim is undone the way a failed compose undoes it.
+- **Outcome:** `{ outcome: "refused", status: 409, code, reason }`, where `code` is one of the two
+  refusal codes. The reason sentence names the current entry's date when one is found
+  (`findLiveEntryForSupersededEvent`, `lib/queries/earnings-emails.ts`). The sweep books it as a
+  skip and continues.
+- **The later hand-entered row** is refused only when `mode === "sweep"` and in the debrief. The
+  two manual modes (`nudge`, `manual`) may still send it.
+- **Morning debrief:** a replaced member is dropped at the claim. After `generate` and before
+  delivery, `runMorningDebrief` re-checks every claimed member with `emailRowRefusal`. If any is
+  refused it sends nothing, releases all claims, restores the day key and returns
+  `skippedReason: "member-replaced"`, so the next tick inside the morning window retries.
+- **Archive:** `SentEarningsEmail` carries `event_superseded` and `replacement`. The shared
+  `app/dashboard/components/SupersededEmailNote.tsx` renders the chip and the same-kind link on the
+  Emails view and the security page. The link is found by the reconciler's 14-day cluster rule
+  (`SUPERSEDED_TWIN_CLUSTER_DAYS`, pinned to the reconciler's constant by a test).
+- **Known limitation:** the Worker fallback does not re-check at send time. See
+  `docs/reference/cron-and-workers.md` §11.
+
 ### Already-reported preview guard (2026-07-23, IMAX case)
 
 Before the marker dance, every PREVIEW candidate passes a two-layer check — row `actual_value`

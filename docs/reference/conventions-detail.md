@@ -226,6 +226,16 @@ stay per-unit prices, untouched.
 
 Spec: `docs/superpowers/specs/2026-08-23-number-trust-durable-fixes-design.md` (WS1).
 
+### Giving: acknowledged recompute and the implausible-basis rule (2026-10-07)
+
+- **Every donation write that recomputes the tax-lot ledger needs an acknowledgement.** The five handlers under `app/api/donations/[id]/` (lots POST, links POST and DELETE, reverse POST, resolve-security POST) read `acknowledgeLedgerRecompute` from the JSON body; only the literal boolean `true` counts (`isLedgerRecomputeAcknowledged`). Without it the handler runs its change through `applyOrRehearse` (`lib/compute/donation-recompute.ts`), which executes the real mutation inside a transaction that always rolls back, so validation errors come first. It then answers HTTP 409 with `code: "ledger_recompute_unacknowledged"` from `ledgerRecomputeRefusal`. Nothing is written, including the tax input generation.
+- **The refusal body** carries `data.ledger` (`closedSales`, `openLots`, `engineCloses`, from `getLedgerCensus`) and `data.acceptedTaxYearsAffected` (`countAcceptedTaxYears`, read through `getTaxConventionState`; always 0 for resolve-security, which does not move the tax input generation). Tell this 409 apart from the older "already linked" and "already resolved" 409s by `code`, never by status. A refusal body without `acceptedTaxYearsAffected` is malformed; the client fails plainly and never assumes zero.
+- **The result** of `recomputeAfterDonationMutation` carries a `ledger` report: before and after counts, sale rows added or removed, and `openLotsChanged` (open lots whose quantity or basis moved). The dialog says "Nothing moved" only when all of these are unchanged.
+- **Shared names live in `lib/compute/donation-recompute-contract.ts`** (the field name, the code, the types and the body readers). It imports nothing, so the browser never bundles the tax-lot engine. The screen flow is `app/dashboard/components/giving/ledger-recompute-flow.ts` plus `LedgerRecomputeDialog.tsx`.
+- **The recompute cannot be cancelled once it starts** and reports no progress: `computeTaxLots` is synchronous inside one transaction. Cancel works at the confirm step only.
+- **One predicate decides an implausible basis:** `isDonatedLotBasisImplausible` (`lib/queries/giving-view.ts`). True when the lot's basis per share is strictly under 1% of the gift's fair market value per share; exactly 1% is plausible; a gift with no usable value or share count is never flagged; a lot with no shares, a non-numeric basis, or a zero or negative basis is flagged. The row flag and the year total both read `GivingDonation.basisImplausible`; never re-derive the rule. A gift is left out of Gain avoided when any one of its lots is flagged, and `GivingYear.gainAvoidedRowsLeftOut` feeds the header.
+- **Repair:** `scripts/repair-donated-lot-basis.ts` (config from gitignored `data/repair-configs/`, `REPAIR_DB_PATH` and `REPAIR_CONFIG_PATH` overrides, dry run by default). It updates the lot's acquisition transaction in place and never recomputes. It refuses a lot with sales against it unless the config row carries `acknowledgeSalesAffected: true`, and a lot on or after the account's first monthly snapshot unless it carries `acknowledgeValuedHistory: true`.
+
 ### Security type casing
 
 The DB stores capitalized types (`Bond`/`Stock`/`ETF`/`Option`/`Mutual Fund`); always compare
@@ -258,6 +268,16 @@ it whenever rolling up positions across share classes; never symbol-string-equal
 `lib/import/validate.ts` runs before commit — it validates dates, quantities, prices, transaction
 types, AND financial sanity (`isGarbageSymbol()` rejects timestamps, commas, >30 chars, purely
 numeric). Bad rows are excluded with warnings.
+
+**Canonical monthly-snapshot return check (2026-10-07).** A monthly snapshot row from the canonical
+file whose `twr` (the whole-account monthly return, stored as a decimal) is finite and above 1 in
+absolute value is excluded through the existing skipped-row list, with a reason that names the
+decimal convention. Exactly 1 and -1 import. A `month_end_date` that is not the last calendar day
+of its month (computed in UTC, leap years included) adds a warning and the row still imports. The
+gate is canonical-only: it needs `parsed.sourceType === "canonical-csv"` AND
+`snapshot.source === "canonical"`. Rows from the `ibkr-activity` parser store the return as a
+percent by design and must never reach this check. This is the one owner-approved change inside the
+import pipeline; it lives in the validation step only.
 
 ### Derived-price repair precedent (per-contract option prices)
 
@@ -611,9 +631,10 @@ live-verified damage table.
 preserves the raw vendor string into `industry` only when empty (`COALESCE(NULLIF(industry,''), ?)`).
 
 **Never bucket on a raw `sector` string** (the portfolio was Bloomberg-tagged, the benchmark GICS →
-garbage gaps). Option sectors derive from the underlying; options on non-held underlyings get
-sectored by `lib/securities/classify-option-sectors.ts::classifyOptionSectors` (Claude, strict
-GICS-11 guard).
+garbage gaps). Option sectors derive from the underlying: an option row stores a maintained copy of
+its underlying's sector, and the AI (Claude, strict GICS-11 guard) is asked only when the underlying
+is unknown or has no usable sector. See "Option sectors are a maintained copy of the underlying's"
+below.
 
 **Any map keyed on sector names must use the canonical GICS-11 spellings**: `SECTOR_TO_ETF` in
 `lib/calendar/reaction-snapshot.ts` + the Worker mirror `reaction-matcher.ts` were keyed "Health
@@ -630,7 +651,8 @@ Shipped 2026-06-09; see `memory/project_analysis_classification_backbone.md`.
 `docs/superpowers/specs/2026-07-28-sector-tag-verification-design.md`)**
 
 - `securities.sector_source` (`tws_bloomberg` / `ai_classify` / `csv_import` / `gics_verified` —
-  stamped CASE-guarded at the three write sites) + `sector_verified_at` (owned SOLELY by the sweep).
+  stamped CASE-guarded at the three write sites; option rows also take `underlying_inherited`
+  since 2026-10-07, written only by `classifyOptionSectors` and `scripts/repair-option-sectors.ts`) + `sector_verified_at` (owned SOLELY by the sweep).
 - `scripts/verify-sector-tags.ts` (lib: `lib/securities/verify-sector-tags.ts`, feature key
   `sectorVerification` → `$frontier` + `web_search`) is the repair + standing resolution tool:
   dry-run default, `--apply`, named symbols re-verify. It stamps verified rows **EVEN when
@@ -688,6 +710,34 @@ options" lives there).
 
 Pre-fix, 16.8% of the portfolio sat in one `'Options'` `fund_category` bucket and tech exposure read
 14.1% instead of ~29%. Test: `tests/queries/analysis-option-lookthrough.test.ts`.
+
+### Option sectors are a maintained copy of the underlying's (2026-10-07)
+
+No sector reader inherits at read time: the sector breakdown, its drill-down, the factor tilts and
+cash-deploy all read the option row's own stored `sector`. So the copy is stored, in
+`lib/securities/classify-option-sectors.ts::classifyOptionSectors`, on every classify run:
+
+- **Fill.** A held option with a blank sector takes its underlying's stored sector, stamped
+  `sector_source = 'underlying_inherited'` (`OPTION_SECTOR_SOURCE_INHERITED`). No AI call.
+- **Resync.** An option row stamped `underlying_inherited` or `ai_classify`, with no
+  `sector_verified_at`, whose underlying now resolves to a different usable sector, is rewritten to
+  that sector and stamped `underlying_inherited`. No AI call.
+- **AI last.** Only an underlying that is unknown, or has no sector `normalizeSector` accepts, goes
+  to the AI. Those rows are stamped `ai_classify`.
+- **Resolution** is `resolveUnderlyingSector`: the named symbol first, then its `issuerSiblings` in
+  family order; the first non-option row with a usable sector wins. Fund labels such as
+  `Diversified` and `Fixed Income` count as usable.
+- **Protected provenance is never overwritten:** `csv_import`, `gics_verified`, `tws_bloomberg`, any
+  unrecognized value, any row with `sector_verified_at`, and an unstamped non-blank sector.
+- **Held options drive the work list** (`getUnsectoredOptionUnderlyings`; the name is historical).
+  For an underlying on the list every option row naming it is written, held or not.
+- The result carries `inherited` and `resynced`; `classified` is the total written.
+- **Repair:** `scripts/repair-option-sectors.ts` (`REPAIR_DB_PATH` override, dry run by default,
+  `--apply`) covers all option rows. It also resets an unstamped row, and resets a `tws_bloomberg`
+  row only with `--include-broker`. Its output names symbols; never paste it into a committed file.
+
+Known trade-off: a fund with cached look-through weights is spread across sectors while its option
+sits whole in the fund's stored bucket.
 
 ### Factor classification covers option underlyings + shorts (2026-06-09 `2d80eed`)
 
@@ -810,6 +860,52 @@ ratio, sector coverage at 0.5pp, standalone-bet ids) so ordinary dollar/price dr
 other surfaces fingerprint the exact prompt input. `GET` is **read-only**: it compares and returns
 `drifted` (NULL = drifted) but never regenerates — regeneration only happens on the explicit `POST`
 (a paid model call must stay an explicit action, never a side effect of a cache read).
+
+### Newsletter enrichment failures: account-level versus article-level (2026-10-07)
+
+`lib/gmail/enrichment-failure.ts::classifyEnrichmentError` sorts every enrichment error into one of
+two scopes. It reads the AI SDK's structured fields (error type, HTTP status, finish reason), not
+message text, except for one exact out-of-credit phrase and the repo's own missing-key message.
+
+- **Article-level** (uses one of the article's `MAX_ENRICH_ATTEMPTS`, which is 3): an empty parse, a
+  refusal, unparseable output, a rejected request (HTTP 400, 413, 422), and anything unrecognised.
+  An unknown error is counted and logged, so a new error shape cannot retry forever.
+- **Account-level** (`ACCOUNT_KINDS`): out of credit, a rejected or missing API key (HTTP 401, 403),
+  a rate limit, an outage (HTTP 408 and 5xx), and a network failure.
+
+`lib/gmail/process.ts::processUnprocessedArticles` judges an account-level failure by the rest of
+the same pass. The four rules, in the order its header comment gives them:
+
+1. Two account-level failures in a row stop the pass. Neither is counted and the rest of the queue
+   is not attempted.
+2. The failure is counted against its article when the provider answers another article in the
+   same pass, before or after it (rule 1 is checked first). An answer is a success, an empty parse,
+   a refusal, unparseable output, a rejected request, or an unknown error that carried an HTTP
+   status.
+3. A rate limit is counted only when a LATER article in the pass gets an answer.
+4. Otherwise (alone in the pass, or last with nothing proving it) it is never counted, whatever
+   attempts the article already has.
+
+Rule 2 exists because the queue is newest first: an article the provider always fails would
+otherwise block everything older. An account-level failure that is not counted leaves
+`processed_at` NULL. The result carries `deferred` (0, 1 or 2) beside `processed` and `failed`.
+
+**Marker text.** A failure counted under rule 2 is stored as the provider's text followed by
+`[counted against this article: the provider answered another article in the same pass]`
+(`COUNTED_AGAINST_ARTICLE_MARKER`). `classifyStoredFailureReason` returns null for a reason that
+carries the marker, so the repair script leaves such a row alone.
+
+**Retry and Unfilter** (`lib/mutations/research-articles.ts`). `retryArticleEnrichment` re-queues
+an `enrichment_failed` row only (statuses `requeued`, `not_found`, `not_failed`); the route is
+`POST /api/research/articles/[id]/retry-enrichment` (404 and 409 for the two refusals).
+`unfilterArticle` returns `{ changed, requeued }` and, for an `enrichment_failed` row, also clears
+`processed_at` and resets `enrich_attempts`. Unfilter does not re-queue an off-topic row: it is
+already enriched. On the Filtered tab a failed row shows Retry enrichment in place of Unfilter.
+
+**Repair:** `scripts/repair-requeue-failed-enrichment.ts` (`REPAIR_DB_PATH` override, dry run by
+default, `--apply`, optional `--since` / `--until`). It selects failed rows whose stored reason
+records an account-level failure. Its output prints article titles; never paste it into a
+committed file.
 
 ---
 
@@ -1143,8 +1239,34 @@ null; the UI renders "insufficient history". `findCrossedLevels` already does th
 
 Triggering flips `is_active=0` (primary dedup) + inserts an alert; `hasAlertToday` is the secondary
 net for re-activation. `triggerLevel` returns a discriminated union
-(`{ deduped: true, reason: "already_alerted_today" }`) so the UI surfaces it. Reactivate clears
-`triggered_at` + flips `is_active=1`.
+(`{ deduped: true, reason: "already_alerted_today" }`) so the UI surfaces it. Reactivate flips
+`is_active=1` and KEEPS `triggered_at` / `triggered_price` as the last-fired record (2026-10-07); a
+later fire overwrites them. Nothing may treat a non-null `triggered_at` as "do not fire": the
+scanner decides from `is_active`, the review whitelist and `hasAlertToday`.
+
+### Arm guard and action visibility: single owners (2026-10-07)
+
+- **One arm guard.** `lib/alerts/arm-guard.ts::evaluateArmGuard` is called by both
+  `approveLevelGuarded` (`lib/alerts/approve.ts`) and `reactivateLevel`
+  (`lib/mutations/security-levels.ts`). It resolves the
+  price the way `findCrossedLevels` does and evaluates the condition through
+  `checkLevelTriggerState`. Two refusals, both overridable with `force: true`:
+  `would_fire_immediately` and `beyond_scan_range`. `PATCH /api/levels` answers 409 with `code`,
+  `currentPrice` and `effectivePrice`. A forced arm of a crossed level stamps `armed_crossed_at`
+  (`ARMED_CROSSED_AT_SET_SQL`); a clean arm clears it. Never write a second copy of the trigger
+  condition or the refusal rules.
+- **A level the scanner ignores skips the guard.** `reactivateLevel` does a trial write in a
+  transaction and asks `isLevelInArmedUniverse` (`lib/queries/security-levels.ts`). A rejected,
+  pending or expired level becomes active with `armed: false` and no 409.
+- **One action-visibility helper.** `lib/levels/action-visibility.ts::levelActionVisibility`: Pause
+  shows on an active, approved row only; Reactivate shows on every inactive row. The panel uses the
+  helper's result with no extra condition.
+- **Last-fired date is Eastern:** `lib/levels/last-fired-date.ts::lastFiredDateET`. The label is
+  always "Last fired at <price> on <date>".
+- **Alerted-today is a server fact.** The reactivate result and each `GET /api/levels` row carry
+  `alertedToday` / `alerted_today` from `hasAlertToday`; the panel never computes its own date.
+- The Worker level scan does not read `triggered_at`; `tests/alerts/level-scan-reactivated-parity.test.ts`
+  runs the Mac scanner and the Worker scan on one re-armed fixture.
 
 ### Levels scan filter
 

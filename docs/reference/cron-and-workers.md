@@ -287,6 +287,14 @@ cover BMO previews + AMC recaps. Plan: `~/.claude/plans/okay-let-s-see-if-joyful
   `formatCombinedExposurePresence` in the Worker `presence-position.ts` mirror).
 - Snapshot **v8** adds `watchlistSymbols` (see §8).
 
+**Known limitation: an entry replaced after the snapshot (2026-10-07).** The Worker's scan
+(`findCandidatesFromSnapshot` in `workers/cron/src/fallback-earnings.ts`) skips a superseded entry,
+but it reads that flag from the nightly snapshot plus the armed-events delta, and nothing re-checks
+it at send time. An entry the Mac replaces after the snapshot is still live to the Worker until the
+next snapshot, so the Worker can send a recap for it when the Mac is asleep or offline. The Mac's
+own refusal (see `docs/reference/earnings-pipeline.md` §7) writes no marker. The two candidate
+fixes are an owner question in `docs/plans/TODO.md` (second wave of 2026-10-07).
+
 ## 12. Tier 4a — cloud level scan + Pushover (2026-05-11)
 
 `workers/cron/src/pushover.ts` is the Worker analogue of the Mac push module.
