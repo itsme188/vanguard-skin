@@ -57,6 +57,12 @@ export interface ReconcileResult {
    * same book reports nothing.
    */
   superseded: SupersededEarningsRow[];
+  /**
+   * Hand-entered rows THIS pass brought back beside a hand-entered twin (they
+   * were hidden before it). Only a row dated today or later is ever restored
+   * — see the revival guard on `keptManualTwins`.
+   */
+  restored: SupersededEarningsRow[];
 }
 
 interface EarningsRow {
@@ -87,6 +93,12 @@ interface EarningsRow {
    * otherwise.
    */
   print_evidence?: number | null;
+  /**
+   * 1 when the row was already hidden BEFORE this resolution ran. Read by the
+   * revival guard (`keptManualTwins`) and by the pass's reporting; no rung of
+   * `resolveCluster` looks at it. Absent on the dry run's hypothetical row.
+   */
+  superseded?: number | null;
 }
 
 function addDaysUTC(date: string, days: number): string {
@@ -157,7 +169,8 @@ const PRINT_EVIDENCE_SQL = `(
 /** The columns every resolution step reads. Shared by both gather queries. */
 const EARNINGS_ROW_COLUMNS = `id, source, symbol, event_date, raw_json, actual_value, date_status,
         consensus_estimate, consensus_value, reaction_snapshot, enriched_at,
-        manual_actuals_at, created_at, ${PRINT_EVIDENCE_SQL} AS print_evidence`;
+        manual_actuals_at, created_at, ${PRINT_EVIDENCE_SQL} AS print_evidence,
+        COALESCE(superseded, 0) AS superseded`;
 
 /**
  * Greedy proximity clustering of ONE issuer family's rows (already sorted by
@@ -407,11 +420,24 @@ function resolveCluster(rows: EarningsRow[], today: string): Resolution {
  * confirmed in place is not hand-entered: it competes with a manual row
  * exactly as before, and the vendor rows of the cluster are still superseded
  * against the canonical exactly as before.
+ *
+ * REVIVAL GUARD (owner ruling 2026-10-07): a twin an earlier pass had already
+ * hidden comes back ONLY when its date is `today` (US Eastern — every caller
+ * passes `todayET()`) or later. A hidden twin dated in the past stays hidden
+ * and keeps resolving exactly as it did before this rule existed, so a
+ * finished print is never re-opened (a revived past row carrying an actual
+ * has no recap of its own and would read as unsent). A past-dated twin that
+ * was never hidden is not touched by the guard — it stays visible.
  */
-function keptManualTwins(cluster: EarningsRow[], res: Resolution): EarningsRow[] {
+function keptManualTwins(cluster: EarningsRow[], res: Resolution, today: string): EarningsRow[] {
   const canonical = cluster.find((r) => r.id === res.canonicalId);
   if (!canonical || canonical.source !== "manual") return [];
-  return cluster.filter((r) => r.id !== res.canonicalId && r.source === "manual");
+  return cluster.filter(
+    (r) =>
+      r.id !== res.canonicalId &&
+      r.source === "manual" &&
+      !(r.superseded && r.event_date < today),
+  );
 }
 
 /** Vendor pipeline names as a person would say them. */
@@ -657,7 +683,10 @@ export function repointDependentsBeforeDelete(
       const res = resolveCluster(sub, opts.today);
       // Hand-entered twins stay visible beside the canonical, so each is a
       // row the doomed one's audit could land on.
-      return [sub.find((r) => r.id === res.canonicalId)!, ...keptManualTwins(sub, res)];
+      return [
+        sub.find((r) => r.id === res.canonicalId)!,
+        ...keptManualTwins(sub, res, opts.today),
+      ];
     });
   const target = canonicals.sort(
     (a, b) =>
@@ -701,7 +730,7 @@ function canonicalIdsFor(familyRows: EarningsRow[], today: string): Set<number> 
     for (const cluster of splitReportedFromManualCluster(proximityCluster, today).groups) {
       const res = resolveCluster(cluster, today);
       canonical.add(res.canonicalId);
-      for (const twin of keptManualTwins(cluster, res)) canonical.add(twin.id);
+      for (const twin of keptManualTwins(cluster, res, today)) canonical.add(twin.id);
     }
   }
   return canonical;
@@ -799,7 +828,7 @@ export function checkManualAddWouldSupersedeVendor(
   const familyRows = (
     db
       .prepare(
-        `SELECT ${EARNINGS_ROW_COLUMNS}, COALESCE(superseded, 0) AS superseded
+        `SELECT ${EARNINGS_ROW_COLUMNS}
            FROM calendar_events
           WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
           ORDER BY event_date ASC`,
@@ -822,6 +851,7 @@ export function checkManualAddWouldSupersedeVendor(
     enriched_at: null,
     manual_actuals_at: null,
     print_evidence: 0,
+    superseded: 0,
     // Typed right now: `created_at` would be datetime('now'), so against any
     // print at or before `today` this hypothetical row reads as a post-print
     // correction — exactly what the user is doing when they type a date a day
@@ -984,13 +1014,12 @@ export function reconcileEarningsDates(
   const start = addDaysUTC(today, -GATHER_BACK_DAYS);
   const end = addDaysUTC(today, GATHER_FWD_DAYS);
 
-  // `was_superseded`, `title` and `source_key` are read for reporting only —
-  // no resolution step looks at them.
-  type PassRow = EarningsRow & { was_superseded: number; title: string; source_key: string };
+  // `title` and `source_key` are read for reporting only — no resolution step
+  // looks at them.
+  type PassRow = EarningsRow & { title: string; source_key: string };
   const rows = db
     .prepare(
-      `SELECT ${EARNINGS_ROW_COLUMNS},
-              COALESCE(superseded, 0) AS was_superseded, title, source_key
+      `SELECT ${EARNINGS_ROW_COLUMNS}, title, source_key
        FROM calendar_events
        WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
        ORDER BY event_date ASC`,
@@ -1063,6 +1092,7 @@ export function reconcileEarningsDates(
     single: 0,
     userConfirmed: 0,
     superseded: [],
+    restored: [],
   };
   const passRowById = new Map(rows.map((r) => [r.id, r]));
   // [C-13] One outbox row per reconcile transaction, only when the merge
@@ -1082,16 +1112,29 @@ export function reconcileEarningsDates(
         const canonicalEventDate = canonicalRow.event_date;
         // Hand-entered twins of a hand-entered canonical stay visible beside
         // it: same locked status, never folded (see keptManualTwins).
-        const keptTwins = keptManualTwins(cluster, res);
+        const keptTwins = keptManualTwins(cluster, res, today);
         const keptIds = new Set(keptTwins.map((r) => r.id));
         for (const twin of keptTwins) {
           setCanonical.run("user_confirmed", null, twin.id);
           result.userConfirmed++;
-          // A twin an earlier pass had hidden comes back. Its arm and audit
+          // A twin an earlier pass had hidden comes back (today or later
+          // only — the guard is inside keptManualTwins). Its arm and audit
           // rows were merged onto the canonical then and stay there; the
           // outbox writer is a no-op when the armed projection is unchanged
           // (D10), so asking is free and never wrong.
-          if (passRowById.get(twin.id)?.was_superseded) anyChanged = true;
+          const preTwin = passRowById.get(twin.id);
+          if (preTwin?.superseded) {
+            anyChanged = true;
+            result.restored.push({
+              eventId: twin.id,
+              sourceKey: preTwin.source_key,
+              symbol: twin.symbol,
+              title: preTwin.title,
+              eventDate: twin.event_date,
+              source: twin.source,
+              reason: `your entry now shows beside the one on ${canonicalEventDate}; delete one of the two`,
+            });
+          }
         }
         // Freshest-enriched donor first: with several superseded rows, the
         // first non-NULL value per column wins (COALESCE), so order matters.
@@ -1100,7 +1143,7 @@ export function reconcileEarningsDates(
           .sort((a, b) => (b.enriched_at ?? "").localeCompare(a.enriched_at ?? ""));
         for (const r of superseded) {
           const pre = passRowById.get(r.id);
-          if (pre && !pre.was_superseded) {
+          if (pre && !pre.superseded) {
             result.superseded.push({
               eventId: r.id,
               sourceKey: pre.source_key,

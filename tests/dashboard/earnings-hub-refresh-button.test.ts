@@ -256,6 +256,28 @@ describe("buildSyncOutcome — names the rows a refresh removed or hid", () => {
     expect(outcome.title).toBeUndefined();
   });
 
+  it("names a restored row by title, date and reason on the visible line", () => {
+    expect(
+      buildSyncOutcome({
+        newEvents: 0,
+        refreshedEvents: 2,
+        errors: [],
+        restored: [
+          {
+            title: "ZZA earnings",
+            eventDate: "2026-04-24",
+            source: "manual",
+            reason: "your entry now shows beside the one on 2026-04-23; delete one of the two",
+          },
+        ],
+      }),
+    ).toEqual({
+      text:
+        "Refreshed — 2 updated, 1 restored · Restored ZZA earnings (2026-04-24)" +
+        " — your entry now shows beside the one on 2026-04-23; delete one of the two",
+    });
+  });
+
   it("keeps removed rows, skipped legs and errors apart", () => {
     const outcome = buildSyncOutcome({
       newEvents: 0,
@@ -289,23 +311,21 @@ describe("buildSyncOutcome — names the rows a refresh removed or hid", () => {
 describe("EarningsHubRefreshButton source — the outcome line carries removed and hidden rows", () => {
   const src = readFileSync("app/dashboard/today/EarningsHubRefreshButton.tsx", "utf8");
 
-  it("reads both lists off the complete frame", () => {
-    const iface = src.slice(
-      anchorIndex(src, "interface SyncCompleteData"),
-      anchorIndex(src, "export interface SyncOutcome"),
-    );
-    expect(iface).toContain("removed?:");
-    expect(iface).toContain("superseded?:");
-  });
-
   it("renders every named row inside the tap-to-expand detail, not behind a hover", () => {
     const block = src.slice(
       anchorIndex(src, "{!progress && outcome && ("),
       anchorIndex(src, "{error && "),
     );
-    expect(block).toContain("outcome.changes");
+    expect(block).toContain("outcome.changes.map((line, index) =>");
+    expect(block).toContain("<li key={index}>{line}</li>");
     expect(block).toContain("<details");
     expect(block).not.toMatch(/title=\{/);
+  });
+
+  it("caps the named-rows list height and scrolls it, so a long list cannot push the toolbar around", () => {
+    const list = src.slice(anchorIndex(src, "{outcome.changes && ("), anchorIndex(src, "{outcome.title && ("));
+    expect(list).toContain("max-h-40");
+    expect(list).toContain("overflow-y-auto");
   });
 
   it("explains a failed request through the shared mutation reader, never a raw status or exception", () => {

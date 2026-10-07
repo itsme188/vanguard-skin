@@ -34,6 +34,8 @@ interface SyncCompleteData {
   removed?: SyncRowChange[];
   /** Earnings rows the refresh HID (superseded) that were showing before it. */
   superseded?: SyncRowChange[];
+  /** Hand-entered earnings rows the refresh brought BACK beside a twin. */
+  restored?: SyncRowChange[];
 }
 
 /** One row a refresh took off the calendar — mirrors `CalendarRowChange` in
@@ -41,6 +43,8 @@ interface SyncCompleteData {
 interface SyncRowChange {
   title: string;
   eventDate: string;
+  /** The pipeline that owned the row; carried on the frame, not shown. */
+  source?: string;
   reason: string;
 }
 
@@ -66,7 +70,7 @@ function rowChanges(value: unknown): SyncRowChange[] {
   );
 }
 
-function describeRowChange(verb: "Removed" | "Hidden", row: SyncRowChange): string {
+function describeRowChange(verb: "Removed" | "Hidden" | "Restored", row: SyncRowChange): string {
   return `${verb} ${row.title} (${row.eventDate}) — ${row.reason}`;
 }
 
@@ -118,7 +122,8 @@ function summarizeError(message: string): string {
  *
  * A row the refresh took off the calendar is NAMED, with the reason (owner
  * rulings 2026-10-06): "Removed" for a row the cleanup deleted, "Hidden" for
- * an earnings row another date superseded (still stored, no longer shown).
+ * an earnings row another date superseded (still stored, no longer shown),
+ * "Restored" for a hand-entered row brought back beside its hand-entered twin.
  * Each kind is counted beside new/updated, its first row is spelled out on
  * the line, and when there are more the full list goes in `changes` (the
  * tap-to-expand detail). A run whose only effect was a removal never reads
@@ -132,23 +137,26 @@ export function buildSyncOutcome(data: SyncCompleteData): SyncOutcome {
 
   const removed = rowChanges(data.removed);
   const hidden = rowChanges(data.superseded);
+  const restored = rowChanges(data.restored);
 
   const parts: string[] = [];
   if (newEvents > 0) parts.push(`${newEvents} new`);
   if (refreshedEvents > 0) parts.push(`${refreshedEvents} updated`);
   if (removed.length > 0) parts.push(`${removed.length} removed`);
   if (hidden.length > 0) parts.push(`${hidden.length} hidden`);
+  if (restored.length > 0) parts.push(`${restored.length} restored`);
   let text = parts.length > 0 ? `Refreshed — ${parts.join(", ")}` : "Refreshed — no changes";
 
   const removedLines = removed.map((r) => describeRowChange("Removed", r));
   const hiddenLines = hidden.map((r) => describeRowChange("Hidden", r));
-  for (const lines of [removedLines, hiddenLines]) {
+  const restoredLines = restored.map((r) => describeRowChange("Restored", r));
+  for (const lines of [removedLines, hiddenLines, restoredLines]) {
     if (lines.length === 0) continue;
     text += ` · ${lines[0]}${lines.length > 1 ? ` (+${lines.length - 1} more)` : ""}`;
   }
   const changes =
-    removedLines.length > 1 || hiddenLines.length > 1
-      ? [...removedLines, ...hiddenLines]
+    removedLines.length > 1 || hiddenLines.length > 1 || restoredLines.length > 1
+      ? [...removedLines, ...hiddenLines, ...restoredLines]
       : undefined;
 
   for (const entry of skipped) {
@@ -280,11 +288,13 @@ export function EarningsHubRefreshButton({ weekOf }: Props) {
               {outcome.text} <span aria-hidden="true">▾</span>
             </summary>
             {outcome.changes && (
-              // Every row the refresh removed or hid, one per line — public
-              // calendar titles and dates, so no privacy wrapper.
-              <ul className="mt-1 space-y-0.5">
-                {outcome.changes.map((line) => (
-                  <li key={line}>{line}</li>
+              // Every row the refresh removed, hid or restored, one per line
+              // — public calendar titles and dates, so no privacy wrapper.
+              // Capped and scrollable: a long list must not push the toolbar
+              // around. Index key: two rows can produce the same line.
+              <ul className="mt-1 space-y-0.5 max-h-40 overflow-y-auto">
+                {outcome.changes.map((line, index) => (
+                  <li key={index}>{line}</li>
                 ))}
               </ul>
             )}

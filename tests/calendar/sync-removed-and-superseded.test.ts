@@ -50,7 +50,7 @@ import { syncCalendarForWeek } from "@/lib/calendar/sync";
 import { fetchMacroEvents } from "@/lib/calendar/macro-events";
 import { fetchFinnhubEarningsForSymbols } from "@/lib/calendar/finnhub";
 import { fetchNasdaqEarningsForSymbols } from "@/lib/calendar/nasdaq";
-import { addDays, getCurrentMonday } from "@/lib/calendar/date-utils";
+import { addDays, getCurrentMonday, todayET } from "@/lib/calendar/date-utils";
 
 const WEEK = getCurrentMonday();
 const day = (offset: number) => addDays(WEEK, offset);
@@ -262,6 +262,39 @@ describe("syncCalendarForWeek — names the rows it hid", () => {
       .prepare("SELECT source FROM calendar_events WHERE superseded = 1")
       .all() as { source: string }[];
     expect(hidden.map((r) => r.source)).toEqual(["nasdaq"]);
+  });
+
+  it("names a hidden hand-entered twin it restores; a past-dated one stays hidden and unnamed", async () => {
+    const insert = db.prepare(
+      `INSERT INTO calendar_events
+         (source, event_type, event_date, title, symbol, source_key, week_of, superseded)
+       VALUES ('manual', 'earnings', ?, ?, ?, ?, ?, ?)`,
+    );
+    const today = todayET();
+    const row = (symbol: string, date: string, superseded: number) =>
+      insert.run(date, `${symbol} earnings`, symbol, `manual:${symbol}:${date}:earnings`, WEEK, superseded);
+    // ZZA: the hidden twin is dated tomorrow, so it comes back.
+    row("ZZA", today, 0);
+    row("ZZA", addDays(today, 1), 1);
+    // ZZB: the hidden twin is dated in the past, so it stays hidden.
+    row("ZZB", addDays(today, -3), 0);
+    row("ZZB", addDays(today, -2), 1);
+    vi.mocked(fetchFinnhubEarningsForSymbols).mockResolvedValueOnce([]);
+
+    const result = await syncCalendarForWeek(db, WEEK);
+
+    expect(result.restored).toEqual([
+      {
+        title: "ZZA earnings",
+        eventDate: addDays(today, 1),
+        source: "manual",
+        reason: `your entry now shows beside the one on ${today}; delete one of the two`,
+      },
+    ]);
+    const hidden = db
+      .prepare("SELECT symbol, event_date FROM calendar_events WHERE superseded = 1")
+      .all() as { symbol: string; event_date: string }[];
+    expect(hidden).toEqual([{ symbol: "ZZB", event_date: addDays(today, -2) }]);
   });
 
   it("keeps two hand-entered rows for one name through a refresh and reports neither", async () => {

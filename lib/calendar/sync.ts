@@ -91,6 +91,12 @@ export interface SyncCalendarResult {
    * from-finnhub-refresh-silently-supersedes-a-user-added-earnings-row-the-hub`).
    */
   superseded: CalendarRowChange[];
+  /**
+   * Hand-entered earnings rows this refresh brought BACK beside a
+   * hand-entered twin (owner ruling 2026-10-07). Only rows dated today or
+   * later are ever restored.
+   */
+  restored: CalendarRowChange[];
 }
 
 /** One row a refresh took off the calendar, in words the desk can read. */
@@ -292,6 +298,7 @@ export async function syncCalendarForWeek(
   const skipped: string[] = [];
   const removed: CalendarRowChange[] = [];
   let superseded: CalendarRowChange[] = [];
+  let restored: CalendarRowChange[] = [];
 
   // Earnings rows on screen as the refresh starts, by source_key (the vendor
   // steps delete and re-mint rows, so ids do not survive the run). The
@@ -580,6 +587,14 @@ export async function syncCalendarForWeek(
         source: r.source,
         reason: r.reason,
       }));
+    // No "showing at start" filter: a restored row was hidden by definition,
+    // and hand-entered rows are never deleted and re-minted by a vendor step.
+    restored = rec.restored.map((r) => ({
+      title: r.title,
+      eventDate: r.eventDate,
+      source: r.source,
+      reason: r.reason,
+    }));
     send({
       phase: "reconcile_done",
       message: `Earnings dates reconciled: ${rec.confirmed} confirmed, ${rec.conflict} conflict, ${rec.single} single, ${rec.userConfirmed} you-confirmed`,
@@ -611,5 +626,6 @@ export async function syncCalendarForWeek(
     skipped,
     removed,
     superseded,
+    restored,
   };
 }

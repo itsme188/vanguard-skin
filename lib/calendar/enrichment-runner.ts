@@ -24,6 +24,7 @@ import { sendEarningsPrintPush } from "@/lib/alerts/print-push";
 import { getLiveReadThroughsForReporter } from "@/lib/alerts/read-through-push";
 import { getSymbolStatus, coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
 import {
   getEarningsSettings,
   shouldSendEarningsEmail,
@@ -771,7 +772,14 @@ export function findEmailCandidates(
       inWindowPreviews.push(row);
     }
   }
-  const previewCandidates = dedupeCrossSourceRows(inWindowPreviews);
+  // Two live hand-entered rows for one company: email follows the EARLIER
+  // date and the later row is ignored by every finder (owner ruling
+  // 2026-10-07; rule in lib/earnings/manual-twin-email.ts, mirrored on the
+  // Worker). Read once for the three scans below.
+  const ignoredManualTwins = getEmailIgnoredManualTwins(db);
+  const notIgnoredTwin = (row: { id: number }): boolean => !ignoredManualTwins.has(row.id);
+
+  const previewCandidates = dedupeCrossSourceRows(inWindowPreviews.filter(notIgnoredTwin));
 
   // ── Recap candidates ────────────────────────────────────────────
   // Gate: actual_value MUST be populated. enriched_at gets set the moment
@@ -802,7 +810,7 @@ export function findEmailCandidates(
           AND es.id IS NULL`,
     )
     .all(recapCutoff) as RecapCandidateRow[];
-  const recapCandidates = dedupeCrossSourceRows(recapRows);
+  const recapCandidates = dedupeCrossSourceRows(recapRows.filter(notIgnoredTwin));
 
   // ── Read-through reporter recap scan (feedback #3) ──────────────
   // Pure read-through reporters (NOT held/watchlist — those take the AI
@@ -833,7 +841,7 @@ export function findEmailCandidates(
           AND es.id IS NULL`,
     )
     .all(yesterdayStr, todayStr) as RecapCandidateRow[];
-  const reporterCandidates = dedupeCrossSourceRows(reporterScanRows);
+  const reporterCandidates = dedupeCrossSourceRows(reporterScanRows.filter(notIgnoredTwin));
 
   // ── Coverage (spec §4.1): held/watchlist family OR the event itself is armed ──
   const allCandidates = [...previewCandidates, ...recapCandidates, ...reporterCandidates];

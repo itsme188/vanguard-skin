@@ -107,7 +107,7 @@ describe("reconcileEarningsDates — two hand-entered rows for one name", () => 
     expect(row(thu).superseded).toBe(0);
   });
 
-  it("brings back a hand-entered row an earlier pass had hidden behind its hand-entered twin", () => {
+  it("brings back a hidden hand-entered twin dated today or later, and reports it as restored", () => {
     const wed = seed({ source: "manual", symbol: "ZZA", date: "2026-06-10", dateStatus: "user_confirmed" });
     const thu = seed({ source: "manual", symbol: "ZZA", date: "2026-06-11", superseded: 1 });
 
@@ -116,6 +116,59 @@ describe("reconcileEarningsDates — two hand-entered rows for one name", () => 
     expect(row(wed).superseded).toBe(0);
     expect(row(thu).superseded).toBe(0);
     expect(result.superseded).toEqual([]);
+    expect(result.restored).toEqual([
+      {
+        eventId: thu,
+        sourceKey: "manual:ZZA:2026-06-11",
+        symbol: "ZZA",
+        title: "ZZA earnings",
+        eventDate: "2026-06-11",
+        source: "manual",
+        reason: "your entry now shows beside the one on 2026-06-10; delete one of the two",
+      },
+    ]);
+    // Reported once: the next pass finds it already showing.
+    expect(reconcileEarningsDates(db, { today: TODAY }).restored).toEqual([]);
+  });
+
+  it("brings back a hidden hand-entered twin dated today", () => {
+    seed({ source: "manual", symbol: "ZZA", date: "2026-06-05", dateStatus: "user_confirmed" });
+    const today = seed({ source: "manual", symbol: "ZZA", date: TODAY, superseded: 1 });
+
+    const result = reconcileEarningsDates(db, { today: TODAY });
+
+    expect(row(today).superseded).toBe(0);
+    expect(result.restored.map((r) => r.eventId)).toEqual([today]);
+  });
+
+  it("leaves a hidden hand-entered twin dated in the past hidden — a finished print is never re-opened", () => {
+    const earlier = seed({ source: "manual", symbol: "ZZA", date: "2026-06-03", dateStatus: "user_confirmed" });
+    const past = seed({
+      source: "manual",
+      symbol: "ZZA",
+      date: "2026-06-05",
+      superseded: 1,
+      actualValue: "EPS 1.00",
+    });
+
+    const result = reconcileEarningsDates(db, { today: TODAY });
+
+    expect(row(earlier).superseded).toBe(0);
+    expect(row(past).superseded).toBe(1);
+    expect(result.restored).toEqual([]);
+    expect(result.superseded).toEqual([]);
+  });
+
+  it("does not hide a hand-entered twin dated in the past that was never hidden", () => {
+    const earlier = seed({ source: "manual", symbol: "ZZA", date: "2026-06-03" });
+    const past = seed({ source: "manual", symbol: "ZZA", date: "2026-06-05" });
+
+    const result = reconcileEarningsDates(db, { today: TODAY });
+
+    expect(row(earlier).superseded).toBe(0);
+    expect(row(past).superseded).toBe(0);
+    expect(result.superseded).toEqual([]);
+    expect(result.restored).toEqual([]);
   });
 
   it("still supersedes the vendor rows around two hand-entered rows, and names them", () => {

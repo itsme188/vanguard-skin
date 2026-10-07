@@ -140,7 +140,20 @@ describe("POST /api/calendar/sync — complete frame carries per-phase errors", 
         reason: "the date you entered (2026-09-09) takes its place",
       },
     ];
-    hoisted.syncCalendarForWeek.mockResolvedValueOnce({ ...baseResult, removed, superseded });
+    const restored = [
+      {
+        title: "ZZB earnings",
+        eventDate: "2026-09-11",
+        source: "manual",
+        reason: "your entry now shows beside the one on 2026-09-10; delete one of the two",
+      },
+    ];
+    hoisted.syncCalendarForWeek.mockResolvedValueOnce({
+      ...baseResult,
+      removed,
+      superseded,
+      restored,
+    });
 
     const mod = await import("@/app/api/calendar/sync/route");
     const res = await mod.POST(syncRequest({ weekOf: "2026-09-07" }));
@@ -148,6 +161,7 @@ describe("POST /api/calendar/sync — complete frame carries per-phase errors", 
 
     expect(frame.data.removed).toEqual(removed);
     expect(frame.data.superseded).toEqual(superseded);
+    expect(frame.data.restored).toEqual(restored);
   });
 
   it("carries empty removed and superseded lists on a clean run — the fields are never omitted", async () => {
