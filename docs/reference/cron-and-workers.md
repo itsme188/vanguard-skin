@@ -505,3 +505,8 @@ Any NEW fallback path must track + bubble errors — a bare `catch { console.war
 
 **Verify-cloud gotcha**: `wrangler r2 object get --pipe` **CACHES** — confirm freshness via a raw
 aws4fetch S3 GET (`Last-Modified`). See `memory/reference_r2_snapshot_debugging.md`.
+
+## 13. Manual-twin email rule mirror (2026-10-07)
+
+`workers/cron/src/manual-twin-email.ts` is a byte-for-byte copy of `lib/earnings/manual-twin-email.ts` (parity test in `workers/cron/test`). The Worker's fallback scan and wrap cluster apply it exactly as the Mac's finders do: among live hand-entered earnings rows of one issuer family within a chained 14-day window, only the earliest-dated row is an email candidate. Deploy the Worker together with the Mac whenever this rule changes.
+

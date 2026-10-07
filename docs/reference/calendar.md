@@ -150,6 +150,11 @@ upsert (claude_macro / finnhub / nasdaq).
   `source_key`s as `keepSourceKeys`, so only true orphans (rows the fetch no longer lists) are
   deleted; a re-listed row is refreshed in place and keeps its id. The finnhub and nasdaq calls
   still pass no keep list (follow-up in `docs/plans/TODO.md`).
+- **A refresh names what it removed, hid or restored (2026-10-07).** `SyncCalendarResult` carries `removed`, `superseded` and `restored` lists, each row with a short reason, computed as a before/after diff around each source's delete-then-upsert; the Hub's refresh outcome prints them and the weekly sync logs them. Only rows that were showing before the refresh are named.
+- **A source outage is an error, not an empty list (2026-10-07).** `fetchFredReleaseDates` throws on a non-OK response or a missing key; the sync's catch takes the upsert-only fallback, reports `macro:` in errors and deletes nothing. A SUCCESSFUL response that omits a stored release still removes it and names it.
+- **Existing Home Sales (FRED release 291) is no longer tracked (user ruling 2026-10-06).** FRED publishes no dates for it. `RELEASE_ID_TO_SERIES[291]` stays on both sides of the Mac/Worker pair so rows already stored can still be enriched.
+- **Two hand-entered earnings rows for one company both stay (user ruling 2026-10-06).** The reconciler never supersedes a `source = 'manual'` row against another manual row; vendor-vs-vendor and manual-vs-vendor are unchanged. A hidden hand-entered twin is brought back only when it is dated today (Eastern) or later.
+- **For email, the earlier date counts (user ruling 2026-10-07).** `lib/earnings/manual-twin-email.ts` (mirrored byte-for-byte at `workers/cron/src/manual-twin-email.ts`, parity-pinned) picks, among LIVE manual rows of one issuer family within a chained 14-day window, the earliest date (tie: lower id). The preview, recap, read-through, debrief and wrap finders and the Worker's fallback scan all apply it; the Hub marks the later row. Pushes at print and the digest and briefing event lists still use both rows.
 - **Stored estimates are sticky (user ruling 2026-10-06).** `upsertCalendarEvents` writes
   `consensus_estimate` and `previous_value` as `COALESCE(incoming, stored)` for EVERY source. A
   fresh list that omits an estimate never blanks the stored one; a non-null incoming value still

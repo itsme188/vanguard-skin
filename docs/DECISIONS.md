@@ -455,3 +455,22 @@ Spec: `docs/superpowers/specs/2026-10-06-scenario-option-repricing-design.md`.
 - **Equity curve landed with a review fix.** Where no daily value exists on a statement date (a weekend or holiday month-end), the start offset is measured from the last value recorded at or before that date, within five calendar days. The fixer's version measured it from the first trading day after the statement, which erased that day's move and spread it across the month, the smoothing the ruling removed.
 - **Left for the owner:** what makes a month "too incomplete to plot" (the ruling named the idea, not a threshold), and the pre-release state of a hand-entered actual on a row with no time slot.
 
+## 2026-10-07 — Ruled builds, first wave (rate leg, holdings footers, calendar refresh, sync inputs)
+
+**Owner rulings made during the wave**
+- **Bond coupons: broker first, the stored name as backstop.** A name that does not parse cleanly leaves the bond not modelled; the source is shown. In practice the name is the only working source: the broker source is built but left unwired until a contract-details request by contract id is proven on a real session.
+- **Two hand-entered rows for one company: for email the earlier date counts.** The later row is ignored for email and marked in the Hub. Considered: holding all email until resolved; the later date; refusing the second row.
+
+**Controller rulings (for the owner to confirm or reverse)**
+- **Bond funds means funds.** The duration rule applies to fund-family types only, never to leveraged or inverse funds (an inverse Treasury fund gains on a rate rise), and reaches a fund by its bond fund category when it has no sector. Cost if wrong: a bond ETF the broker still types as a stock gets no rate leg until the sync retypes it.
+- **A bond in its last coupon period is modelled without a coupon.** With one payment left its duration is the time to maturity. Rests on coupons being paid at most twice a year; a monthly-pay bond with five months left is overstated by about 0.15 years.
+- **Gain % divides by the cost basis of the positions that are in Gain.** A percent over two different sets of positions is not a true figure. Value, Cost Basis and Gain keep their definitions.
+- **Cash is not printed when no resolvable snapshot owns it.** The footer says so instead of printing a placeholder zero.
+- **Underlying lookups: exactly one match, three definitive failures then a 30-day retry.** A timeout does not count.
+- **A past-dated hidden hand-entered row is never revived**, so a finished print is not re-opened.
+
+**Found, not changed (owner questions filed in the TODO)**
+- The valuation engine sets cash to a placeholder zero after a snapshot it cannot resolve, until the next resolvable one.
+- The custom scenario engine gives a bond fund a market sensitivity of 1.0, and the new rate leg now stacks on it.
+- With two hand-entered rows, a print on the later date gets no recap until the earlier row is deleted; the 14-day window chains; pushes and digest lists still use both rows.
+
