@@ -14,6 +14,7 @@ import {
 import { normalizeAccountIds } from "@/lib/compute/factors";
 import { buildFlowAdjustedIndex, fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
 import { addDays, calendarDaysBetween, todayET } from "@/lib/calendar/date-utils";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 
 // Drop per-position return pairs whose dates straddle a multi-week hole. The
 // prices table mixes sparse month-end statement anchors with dense daily TWS
@@ -168,6 +169,8 @@ export interface PositionRisk {
   riskContribution: number | null; // marginal contribution to portfolio vol
   correlationWithPortfolio: number | null;
   dataPoints: number;
+  /** Display only: a cash-equivalent fund has no price movement to measure. */
+  cashEquivalent: boolean;
 }
 
 export interface CorrelationEntry {
@@ -634,6 +637,7 @@ export function computePositionRisk(
          s.symbol,
          s.name AS security_name,
          s.security_type,
+         s.fund_category,
          ${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS market_value
        FROM latest_holdings lh
        JOIN securities s ON s.id = lh.security_id
@@ -649,6 +653,7 @@ export function computePositionRisk(
     symbol: string;
     security_name: string | null;
     security_type: string | null;
+    fund_category: string | null;
     market_value: number;
   }[];
 
@@ -827,6 +832,7 @@ export function computePositionRisk(
         riskContribution: null,
         correlationWithPortfolio: null,
         dataPoints: secReturns?.returns.length ?? 0,
+        cashEquivalent: isCashEquivalentSecurity(p),
       };
     }
 
@@ -861,6 +867,7 @@ export function computePositionRisk(
       riskContribution,
       correlationWithPortfolio: corr,
       dataPoints: secReturns.returns.length,
+      cashEquivalent: isCashEquivalentSecurity(p),
     };
   });
 

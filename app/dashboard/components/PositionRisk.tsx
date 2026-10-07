@@ -59,6 +59,106 @@ function corrBg(corr: number): string {
   return "rgba(52, 211, 153, 0.1)";
 }
 
+// ─── Blank reasons ───────────────────────────────────────────────
+
+/**
+ * A risk row as this card reads it. `cashEquivalent` is published by
+ * computePositionRisk from isCashEquivalentSecurity; it is optional here so
+ * a response without it degrades to the "insufficient data" reason below
+ * rather than to a guess. This card never infers cash from a symbol or name.
+ */
+type RiskRow = PositionRisk & { cashEquivalent?: boolean };
+
+export interface RiskBlank {
+  kind: "cash-equivalent" | "insufficient-data";
+  /** Short text shown in the cell itself (readable on touch). */
+  label: string;
+  /** The cause, shown beside the label where there is room and as a title. */
+  detail: string;
+}
+
+function insufficient(detail: string): RiskBlank {
+  return { kind: "insufficient-data", label: "insufficient data", detail };
+}
+
+/**
+ * Why a row has no risk figures at all, or null when it has them.
+ *
+ * A cash equivalent (a constant-price money-market fund) has no price
+ * movement to measure, so the blank is the answer and is labelled as such.
+ * Any other row is blank because its price history is too thin for the
+ * engine's minimum; the row says so and gives the count it found. Nothing is
+ * computed or defaulted here.
+ *
+ * Exported for unit testing.
+ */
+export function riskRowBlank(pos: RiskRow): RiskBlank | null {
+  const anyBlank =
+    pos.annualizedVol == null ||
+    pos.correlationWithPortfolio == null ||
+    pos.riskContribution == null;
+  if (pos.cashEquivalent && anyBlank) {
+    return {
+      kind: "cash-equivalent",
+      label: "cash equivalent, no market risk",
+      detail: "A cash fund holds a constant price, so there is no price movement to measure.",
+    };
+  }
+  if (pos.annualizedVol != null) return null;
+  if (pos.dataPoints <= 0) {
+    return insufficient("no usable daily price history in the past year");
+  }
+  return insufficient(
+    `only ${pos.dataPoints} usable daily ${pos.dataPoints === 1 ? "return" : "returns"} in the past year`
+  );
+}
+
+/** Why "Corr w/ Port" is blank on a row that has a volatility. Exported for unit testing. */
+export function correlationBlank(pos: RiskRow): RiskBlank | null {
+  if (pos.correlationWithPortfolio != null) return null;
+  return insufficient("too few trading days in common with the top-10 basket");
+}
+
+/** Why "Risk Contrib" is blank on a row that has a volatility. Exported for unit testing. */
+export function riskContributionBlank(
+  pos: RiskRow,
+  portfolioVol: number | null
+): RiskBlank | null {
+  if (pos.riskContribution != null) return null;
+  const upstream = correlationBlank(pos);
+  if (upstream) return upstream;
+  return insufficient(
+    portfolioVol == null
+      ? "the top-10 basket volatility could not be computed"
+      : "the top-10 basket volatility is zero"
+  );
+}
+
+/** A pair of positions with no entry in the pairwise matrix. */
+export const PAIR_BLANK: RiskBlank = insufficient(
+  "too few trading days in common between the two price histories"
+);
+
+/**
+ * The visible marker for a blank. The label is real text (not hover-only);
+ * `showDetail` also prints the cause where the cell is wide enough.
+ */
+function BlankMarker({
+  blank,
+  showDetail = false,
+}: {
+  blank: RiskBlank | null;
+  showDetail?: boolean;
+}) {
+  if (!blank) return null;
+  return (
+    <span className="text-xs text-ink-dim" title={blank.detail}>
+      {blank.label}
+      {showDetail && blank.kind === "insufficient-data" ? ` · ${blank.detail}` : ""}
+    </span>
+  );
+}
+
 // ─── Component ───────────────────────────────────────────────────
 
 export function PositionRiskCard({ scope }: { scope?: string }) {
@@ -145,7 +245,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
           <button
             type="button"
             onClick={() => setDrillFilter({ kind: "risk", topN: 10 })}
-            className="text-xs text-gold-ink hover:underline focus-ring rounded px-1"
+            className="relative text-xs text-gold-ink hover:underline focus-ring rounded px-1 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3.5 pointer-coarse:after:-inset-x-1"
             aria-label="Open top 10 by risk in drill-down panel"
           >
             View top 10 by risk →
@@ -168,7 +268,9 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
             </tr>
           </thead>
           <tbody>
-            {sorted.map((pos) => (
+            {sorted.map((pos) => {
+              const rowBlank = riskRowBlank(pos);
+              return (
               <tr key={pos.securityId} className="border-b border-edge/30 last:border-0">
                 <td className="py-2 pr-4">
                   <div className="font-mono font-medium text-ink">{pos.symbol}</div>
@@ -181,6 +283,15 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
                 <td className="text-right py-2 px-3 font-mono tabular-nums text-ink-dim">
                   <Pct value={pos.weight != null ? pos.weight * 100 : null} digits={1} />
                 </td>
+                {rowBlank ? (
+                  // The three risk cells share one reason, so they merge
+                  // into one cell that states it. The row stays in the
+                  // table so the weights still match the allocation views.
+                  <td colSpan={3} className="text-right py-2 pl-3">
+                    <BlankMarker blank={rowBlank} showDetail />
+                  </td>
+                ) : (
+                <>
                 <td className="text-right py-2 px-3 font-mono tabular-nums text-ink">
                   <Pct value={pos.annualizedVol != null ? pos.annualizedVol * 100 : null} digits={1} />
                 </td>
@@ -204,7 +315,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
                       </span>
                     )
                   ) : (
-                    <span className="text-ink-faint">{"\u2014"}</span>
+                    <BlankMarker blank={correlationBlank(pos)} />
                   )}
                 </td>
                 <td className="text-right py-2 pl-3">
@@ -249,11 +360,16 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
                       />
                     </div>
                   ) : (
-                    <span className="text-ink-faint">{"\u2014"}</span>
+                    <span className="text-ink-faint">
+                      <BlankMarker blank={riskContributionBlank(pos, data.portfolioVol)} />
+                    </span>
                   )}
                 </td>
+                </>
+                )}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </ScrollFade>
@@ -301,8 +417,24 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
                       const corr = corrMap.get(`${rowSym}:${colSym}`);
                       if (corr === undefined) {
                         return (
-                          <td key={colSym} className="px-1.5 py-0.5 text-center text-ink-faint">
-                            {"\u2014"}
+                          <td key={colSym} className="px-1.5 py-0.5 text-center leading-tight">
+                            <BlankMarker blank={PAIR_BLANK} />
+                          </td>
+                        );
+                      }
+                      if (isPrivate) {
+                        // Which pairs move together is read off this
+                        // holder's own top positions, so the value masks
+                        // like the table above. The background and the
+                        // title both encode the magnitude, so neither is
+                        // rendered.
+                        return (
+                          <td
+                            key={colSym}
+                            className="px-1.5 py-0.5 text-center font-mono tabular-nums text-ink-dim"
+                            style={{ background: "rgba(148, 163, 184, 0.05)" }}
+                          >
+                            <PrivateText>{null}</PrivateText>
                           </td>
                         );
                       }
