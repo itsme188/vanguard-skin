@@ -16,7 +16,7 @@ const emptyFactors = Object.fromEntries(
 describe("WhatIfCalculator input and privacy behavior", () => {
   it("uses PrivateNumberInput for editable dollar figures", () => {
     expect(src).toContain("PrivateNumberInput");
-    expect(src).not.toMatch(/<input[^>]+type="number"[^>]+dollarAmount/s);
+    expect(src).not.toMatch(/<input[^>]+type="number"[^>]+dollarAmount/);
   });
 
   it("submits from the dollar amount field on Enter", () => {

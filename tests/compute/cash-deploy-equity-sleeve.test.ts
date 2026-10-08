@@ -308,6 +308,7 @@ describe("diversified fund fallback in equity-sleeve gaps", () => {
     expect(isBenchmarkLikeBroadUsIndexFund({
       symbol: "SPY",
       security_type: "ETF",
+      sector: null,
       fund_category: "US Large Cap Equity",
       geography: "US",
       market_cap_category: "Large Cap",
@@ -344,6 +345,7 @@ describe("diversified fund fallback in equity-sleeve gaps", () => {
     expect(isBenchmarkLikeBroadUsIndexFund({
       symbol: "INTL",
       security_type: "ETF",
+      sector: null,
       fund_category: "International Equity",
       geography: "International Developed",
       market_cap_category: "Multi-Cap",

@@ -162,6 +162,8 @@ describe("summarizeHoldingsFooter", () => {
         (r): SecurityPosition => ({
           account_id: r.account_id,
           account_name: r.account_name,
+          security_type: "Stock",
+          multiplier: 1,
           quantity: r.quantity,
           cost_basis: r.cost_basis,
           current_price: r.current_price,
