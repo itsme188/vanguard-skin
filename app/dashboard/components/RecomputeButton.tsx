@@ -66,15 +66,14 @@ export function RecomputeButton({
           <div className="mt-2 space-y-1">
             {summary.years.map((year) => (
               <div key={year.taxYear} className="grid grid-cols-1 gap-1 border-t border-edge/60 pt-2 first:border-t-0 first:pt-0">
-                <div className="font-mono text-ink">{year.taxYear}</div>
+                <div className="font-mono text-ink">{year.taxYear} (year of sale)</div>
                 <div>
                   Realized: <Money value={year.realizedGainBefore} /> →{" "}
                   <Money value={year.realizedGainAfter} />
                 </div>
                 <div>
-                  Lots opened <Count value={year.lotsOpened} />, closed{" "}
-                  <Count value={year.lotsClosed} />, changed{" "}
-                  <Count value={year.lotsChanged} />
+                  Lot sales added <Count value={year.lotSalesAdded} />, removed{" "}
+                  <Count value={year.lotSalesRemoved} />
                 </div>
                 <div>
                   Engine closes added <Count value={year.engineClosesAdded} />, removed{" "}
@@ -82,6 +81,17 @@ export function RecomputeButton({
                 </div>
               </div>
             ))}
+            <div className="grid grid-cols-1 gap-1 border-t border-edge/60 pt-2 first:border-t-0 first:pt-0">
+              <div className="text-ink">Open lots (not sold, so in no tax year)</div>
+              <div>
+                Count: <Count value={summary.openLots.before} /> →{" "}
+                <Count value={summary.openLots.after} />
+              </div>
+              <div>
+                New or changed <Count value={summary.openLots.added} />, gone or changed{" "}
+                <Count value={summary.openLots.removed} />
+              </div>
+            </div>
           </div>
         </div>
       )}

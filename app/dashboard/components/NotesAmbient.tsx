@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
 import { describeNoteSaveFailure } from "@/lib/notes/save-failure-copy";
 
-const STORAGE_KEY = "vgs:notes-ambient";
+// The one spelling of the key. NotesDraftRecovery.tsx imports it.
+export const AMBIENT_NOTES_STORAGE_KEY = "vgs:notes-ambient";
 const SAVE_DEBOUNCE_MS = 400;
 
 type SaveState = "idle" | "saving" | "saved" | "error";
@@ -16,6 +17,36 @@ const XL_MIN_WIDTH = 1280;
 /** The ambient panel yields to the chat whenever the chat overlays the page. */
 export function shouldDismissForChat(chatOpen: boolean, viewportWidth: number): boolean {
   return chatOpen && viewportWidth < XL_MIN_WIDTH;
+}
+
+/**
+ * Whether the debounce should write `draft`. Text that storage already holds
+ * is never written again: the mount-time pass used to store back what it had
+ * just read, which undid a Discard made on the Notes page inside the
+ * debounce window.
+ */
+export function shouldPersistDraft(draft: string, lastStored: string): boolean {
+  return draft !== lastStored;
+}
+
+/**
+ * The draft to show when the overlay opens. `stored` is what storage holds
+ * now ("" for nothing, null when it cannot be read). The overlay follows
+ * storage only when it has nothing of its own to lose, that is when what it
+ * holds is what it last read or wrote. A pending debounce or a failed write
+ * leaves `memory` different from `lastStored`, and then `memory` wins.
+ */
+export function draftToShowOnOpen(memory: string, lastStored: string, stored: string | null): string {
+  return stored != null && memory === lastStored ? stored : memory;
+}
+
+/** What storage holds now: "" for nothing, null when it cannot be read. */
+function readStoredDraft(): string | null {
+  try {
+    return localStorage.getItem(AMBIENT_NOTES_STORAGE_KEY) ?? "";
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -39,7 +70,7 @@ export function NotesAmbient() {
   const [draft, setDraft] = useState<string>(() => {
     if (typeof window === "undefined") return "";
     try {
-      return localStorage.getItem(STORAGE_KEY) ?? "";
+      return localStorage.getItem(AMBIENT_NOTES_STORAGE_KEY) ?? "";
     } catch {
       // localStorage unavailable (private browsing) — ambient mode degrades
       // gracefully to in-memory state for this session.
@@ -50,6 +81,9 @@ export function NotesAmbient() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // What this component last read from or wrote to storage. Starts as the
+  // mount-time read (the initial `draft`).
+  const lastStored = useRef<string>(draft);
   const router = useRouter();
 
   // Debounced persist. Each keystroke resets the timer; we write once the
@@ -57,10 +91,12 @@ export function NotesAmbient() {
   // letter while still feeling instant.
   useEffect(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    if (!shouldPersistDraft(draft, lastStored.current)) return;
     saveTimer.current = setTimeout(() => {
       try {
-        if (draft.length === 0) localStorage.removeItem(STORAGE_KEY);
-        else localStorage.setItem(STORAGE_KEY, draft);
+        if (draft.length === 0) localStorage.removeItem(AMBIENT_NOTES_STORAGE_KEY);
+        else localStorage.setItem(AMBIENT_NOTES_STORAGE_KEY, draft);
+        lastStored.current = draft;
       } catch {
         // ignore
       }
@@ -77,6 +113,18 @@ export function NotesAmbient() {
       const isToggle = (e.metaKey || e.ctrlKey) && e.key === ";";
       if (isToggle) {
         e.preventDefault();
+        if (!open) {
+          // Opening: storage may have changed while the panel was closed
+          // (the Notes-page recovery row discarded the draft, the composer
+          // saved it, another tab wrote one). Follow it unless this panel
+          // holds an edit storage does not have yet.
+          const stored = readStoredDraft();
+          const next = draftToShowOnOpen(draft, lastStored.current, stored);
+          if (next !== draft) {
+            lastStored.current = next;
+            setDraft(next);
+          }
+        }
         setOpen((o) => !o);
         return;
       }
@@ -89,7 +137,7 @@ export function NotesAmbient() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open]);
+  }, [open, draft]);
 
   // One overlay at a time: when the chat opens below the xl breakpoint it
   // covers the page (z-50), and this panel (z-60) would sit over its
@@ -163,7 +211,8 @@ export function NotesAmbient() {
       // Clear the draft locally + in storage on a successful materialization.
       setDraft("");
       try {
-        localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(AMBIENT_NOTES_STORAGE_KEY);
+        lastStored.current = "";
       } catch {
         // ignore
       }
@@ -185,7 +234,8 @@ export function NotesAmbient() {
     setDraft("");
     clearStickyError();
     try {
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(AMBIENT_NOTES_STORAGE_KEY);
+      lastStored.current = "";
     } catch {
       // ignore
     }

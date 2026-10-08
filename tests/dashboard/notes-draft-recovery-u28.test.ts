@@ -49,17 +49,18 @@ const blockedStorage = {
 
 describe("storage key — one literal, shared with the overlay", () => {
   it("is the exact key NotesAmbient writes", () => {
-    // NotesAmbient does not export its key. If its literal changes, this
-    // fails and the recovery row must follow.
-    anchorIndex(ambientSrc, `const STORAGE_KEY = "${AMBIENT_NOTES_STORAGE_KEY}";`);
+    // NotesAmbient exports its key and the recovery row imports it, so the
+    // two cannot drift.
+    anchorIndex(ambientSrc, `export const AMBIENT_NOTES_STORAGE_KEY = "${AMBIENT_NOTES_STORAGE_KEY}";`);
+    anchorIndex(rowSrc, 'import { AMBIENT_NOTES_STORAGE_KEY } from "./NotesAmbient";');
   });
 
-  it("the row file spells the literal once", () => {
-    expect(rowSrc.split(`"${AMBIENT_NOTES_STORAGE_KEY}"`).length - 1).toBe(1);
+  it("the row file never spells the literal itself", () => {
+    expect(rowSrc.split(`"${AMBIENT_NOTES_STORAGE_KEY}"`).length - 1).toBe(0);
   });
 
   it("the overlay still stores the draft as the plain text (no wrapper, no date)", () => {
-    anchorIndex(ambientSrc, "localStorage.setItem(STORAGE_KEY, draft)");
+    anchorIndex(ambientSrc, "localStorage.setItem(AMBIENT_NOTES_STORAGE_KEY, draft)");
   });
 });
 

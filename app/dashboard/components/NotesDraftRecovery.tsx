@@ -21,11 +21,11 @@
 import { useState, useSyncExternalStore } from "react";
 import { PrivateText } from "@/lib/privacy/components";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { AMBIENT_NOTES_STORAGE_KEY } from "./NotesAmbient";
 
-// The key NotesAmbient.tsx writes. That file does not export its constant;
-// tests/dashboard/notes-draft-recovery-u28.test.ts fails if the two drift.
+// The key NotesAmbient.tsx writes, imported from it so the two cannot drift.
 // The stored value is the draft's plain text (no wrapper object, no date).
-export const AMBIENT_NOTES_STORAGE_KEY = "vgs:notes-ambient";
+export { AMBIENT_NOTES_STORAGE_KEY };
 
 type DraftStorage = Pick<Storage, "getItem" | "removeItem">;
 

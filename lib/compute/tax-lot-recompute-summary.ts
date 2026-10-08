@@ -1,24 +1,47 @@
 import type Database from "better-sqlite3";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 
+/**
+ * One row per TAX YEAR, and a tax year is always the year of the sale (the
+ * year the gain is taxed). Every figure in a row is on that one basis:
+ * realized gain by `tax_lot_sales.sale_date`, lot sales by the same date,
+ * engine closes by their trade date. A lot bought in one year and sold in the
+ * next appears only under the sale year.
+ */
 export interface TaxLotRecomputeYearSummary {
   taxYear: number;
   realizedGainBefore: number;
   realizedGainAfter: number;
-  lotsOpened: number;
-  lotsClosed: number;
-  lotsChanged: number;
+  /** Sale-to-lot matches (`tax_lot_sales` rows) dated in this year that the recompute adds. */
+  lotSalesAdded: number;
+  /** Sale-to-lot matches dated in this year that the recompute removes. */
+  lotSalesRemoved: number;
   engineClosesAdded: number;
   engineClosesRemoved: number;
 }
 
+/**
+ * Lots still open (`quantity_remaining > 0`). An open lot has not been sold,
+ * so it belongs to no tax year and is reported outside the year rows. A lot
+ * whose remaining quantity or basis changes counts once in `added` and once
+ * in `removed`.
+ */
+export interface TaxLotRecomputeOpenLotSummary {
+  before: number;
+  after: number;
+  added: number;
+  removed: number;
+}
+
 export interface TaxLotRecomputeSummary {
   years: TaxLotRecomputeYearSummary[];
+  openLots: TaxLotRecomputeOpenLotSummary;
 }
 
 interface LedgerSnapshot {
   realizedByYear: Map<number, number>;
-  lotsByYear: Map<number, Map<string, number>>;
+  lotSalesByYear: Map<number, Map<string, number>>;
+  openLots: Map<string, number>;
   engineClosesByYear: Map<number, Map<string, number>>;
 }
 
@@ -58,41 +81,78 @@ function byYearMap(parent: Map<number, Map<string, number>>, year: number): Map<
 }
 
 function snapshotLedger(db: Database.Database): LedgerSnapshot {
-  const realizedRows = db
+  // Realized gain and lot sales share one read, so a year row can never mix
+  // the sale year with the purchase year. The key carries no sale transaction
+  // id: an engine close is deleted and re-minted under a new id on every
+  // recompute, which would report an unchanged sale as removed and added.
+  const saleRows = db
     .prepare(
-      `SELECT sale_date, realized_gain_loss
-       FROM tax_lot_sales`
+      `SELECT tls.sale_date, tls.realized_gain_loss, tls.quantity_sold, tls.proceeds,
+              tls.cost_basis_allocated, tl.acquisition_transaction_id, tl.account_id,
+              tl.security_id, tl.acquisition_date, tl.is_short
+       FROM tax_lot_sales tls
+       JOIN tax_lots tl ON tl.id = tls.tax_lot_id`
     )
-    .all() as { sale_date: string; realized_gain_loss: number }[];
+    .all() as Array<{
+      sale_date: string;
+      realized_gain_loss: number;
+      quantity_sold: number;
+      proceeds: number;
+      cost_basis_allocated: number;
+      acquisition_transaction_id: number | null;
+      account_id: number;
+      security_id: number;
+      acquisition_date: string;
+      is_short: number;
+    }>;
   const realizedByYear = new Map<number, number>();
-  for (const row of realizedRows) {
+  const lotSalesByYear = new Map<number, Map<string, number>>();
+  for (const row of saleRows) {
     const year = yearOf(row.sale_date);
     if (year == null) continue;
     realizedByYear.set(year, (realizedByYear.get(year) ?? 0) + row.realized_gain_loss);
+    addKey(
+      byYearMap(lotSalesByYear, year),
+      [
+        row.acquisition_transaction_id ?? "none",
+        row.account_id,
+        row.security_id,
+        row.acquisition_date,
+        row.sale_date,
+        micros(row.quantity_sold),
+        cents(row.proceeds),
+        cents(row.cost_basis_allocated),
+        row.is_short,
+      ].join("|")
+    );
   }
 
-  const lotRows = db
+  const openLotRows = db
     .prepare(
-      `SELECT tl.acquisition_transaction_id, tl.acquisition_date, tl.quantity_acquired,
-              tl.quantity_remaining, tl.cost_basis, tl.is_short
-       FROM tax_lots tl`
+      `SELECT tl.acquisition_transaction_id, tl.account_id, tl.security_id, tl.acquisition_date,
+              tl.quantity_acquired, tl.quantity_remaining, tl.cost_basis, tl.is_short
+       FROM tax_lots tl
+       WHERE tl.quantity_remaining > 0`
     )
     .all() as Array<{
       acquisition_transaction_id: number | null;
+      account_id: number;
+      security_id: number;
       acquisition_date: string;
       quantity_acquired: number;
       quantity_remaining: number;
       cost_basis: number;
       is_short: number;
     }>;
-  const lotsByYear = new Map<number, Map<string, number>>();
-  for (const lot of lotRows) {
-    const year = yearOf(lot.acquisition_date);
-    if (year == null) continue;
+  const openLots = new Map<string, number>();
+  for (const lot of openLotRows) {
     addKey(
-      byYearMap(lotsByYear, year),
+      openLots,
       [
         lot.acquisition_transaction_id ?? "none",
+        lot.account_id,
+        lot.security_id,
+        lot.acquisition_date,
         micros(lot.quantity_acquired),
         micros(lot.quantity_remaining),
         cents(lot.cost_basis),
@@ -134,15 +194,21 @@ function snapshotLedger(db: Database.Database): LedgerSnapshot {
     );
   }
 
-  return { realizedByYear, lotsByYear, engineClosesByYear };
+  return { realizedByYear, lotSalesByYear, openLots, engineClosesByYear };
+}
+
+function total(map: Map<string, number>): number {
+  let n = 0;
+  for (const count of map.values()) n += count;
+  return n;
 }
 
 function summarize(before: LedgerSnapshot, after: LedgerSnapshot): TaxLotRecomputeSummary {
   const years = new Set<number>([
     ...before.realizedByYear.keys(),
     ...after.realizedByYear.keys(),
-    ...before.lotsByYear.keys(),
-    ...after.lotsByYear.keys(),
+    ...before.lotSalesByYear.keys(),
+    ...after.lotSalesByYear.keys(),
     ...before.engineClosesByYear.keys(),
     ...after.engineClosesByYear.keys(),
   ]);
@@ -151,23 +217,26 @@ function summarize(before: LedgerSnapshot, after: LedgerSnapshot): TaxLotRecompu
     years: Array.from(years)
       .sort((a, b) => b - a)
       .map((taxYear) => {
-        const beforeLots = before.lotsByYear.get(taxYear) ?? new Map();
-        const afterLots = after.lotsByYear.get(taxYear) ?? new Map();
+        const beforeSales = before.lotSalesByYear.get(taxYear) ?? new Map();
+        const afterSales = after.lotSalesByYear.get(taxYear) ?? new Map();
         const beforeCloses = before.engineClosesByYear.get(taxYear) ?? new Map();
         const afterCloses = after.engineClosesByYear.get(taxYear) ?? new Map();
-        const lotsOpened = unmatched(afterLots, beforeLots);
-        const lotsClosed = unmatched(beforeLots, afterLots);
         return {
           taxYear,
           realizedGainBefore: (before.realizedByYear.get(taxYear) ?? 0),
           realizedGainAfter: (after.realizedByYear.get(taxYear) ?? 0),
-          lotsOpened,
-          lotsClosed,
-          lotsChanged: Math.max(lotsOpened, lotsClosed),
+          lotSalesAdded: unmatched(afterSales, beforeSales),
+          lotSalesRemoved: unmatched(beforeSales, afterSales),
           engineClosesAdded: unmatched(afterCloses, beforeCloses),
           engineClosesRemoved: unmatched(beforeCloses, afterCloses),
         };
       }),
+    openLots: {
+      before: total(before.openLots),
+      after: total(after.openLots),
+      added: unmatched(after.openLots, before.openLots),
+      removed: unmatched(before.openLots, after.openLots),
+    },
   };
 }
 

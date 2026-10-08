@@ -14,7 +14,13 @@ describe("tax lots recompute refresh wiring", () => {
   it("renders recompute preview figures through privacy components", () => {
     expect(button).toMatch(/import \{[^}]*Count[^}]*Money[^}]*\} from "@\/lib\/privacy\/components"/);
     expect(button).toContain("<Money value={year.realizedGainBefore}");
-    expect(button).toContain("<Count value={year.lotsOpened}");
+    // Year rows are on the sale-year basis; open lots sit outside any year.
+    expect(button).toContain("<Count value={year.lotSalesAdded}");
+    expect(button).toContain("<Count value={year.lotSalesRemoved}");
+    expect(button).toContain("<Count value={summary.openLots.before}");
+    expect(button).toContain("<Count value={summary.openLots.after}");
+    expect(button).not.toContain("year.lotsOpened");
+    expect(button).not.toContain("year.lotsClosed");
   });
 
   it("passes the signal to TaxReportCard and refetches when it fires", () => {

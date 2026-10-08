@@ -48,6 +48,7 @@ type ConnectState =
   | { kind: "opening" }
   | { kind: "syncing" }
   | { kind: "success"; message: string }
+  | { kind: "cancelled"; message: string }
   | { kind: "error"; message: string };
 
 // Persisted across the Vanguard OAuth redirect: the Link token to resume
@@ -188,7 +189,8 @@ export default function PlaidLinkPage() {
       if (cancelled) return;
       localStorage.removeItem(LINK_STORAGE_KEY);
       if (!err) {
-        setState({ kind: "error", message: "Link closed before connecting — nothing was changed." });
+        // The owner closed Link themselves: a cancellation, not a failure.
+        setState({ kind: "cancelled", message: "Link closed before connecting — nothing was changed." });
         return;
       }
       setState({
@@ -300,6 +302,17 @@ export default function PlaidLinkPage() {
         {state.kind === "success" && (
           <>
             <p className="text-sm text-up">{state.message}</p>
+            <a
+              href="/dashboard/today"
+              className="inline-block text-sm text-gold-ink hover:text-gold/80 underline"
+            >
+              Back to Portfolio Desk
+            </a>
+          </>
+        )}
+        {state.kind === "cancelled" && (
+          <>
+            <p className="text-sm text-ink-dim">{state.message}</p>
             <a
               href="/dashboard/today"
               className="inline-block text-sm text-gold-ink hover:text-gold/80 underline"
