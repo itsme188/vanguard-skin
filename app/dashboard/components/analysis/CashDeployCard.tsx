@@ -55,7 +55,13 @@ export function CashDeployCard({ scope }: Props) {
         <input
           type="number"
           value={cash || ""}
-          onChange={(e) => setCash(Number(e.target.value) || 0)}
+          onChange={(e) => {
+            setCash(Number(e.target.value) || 0);
+            setError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void run();
+          }}
           placeholder="Amount to deploy"
           // md:max-xl:w-44 (finding #10) — the base w-32 (128px) truncates its
           // own placeholder in the portrait-tablet band, where this card is
@@ -129,7 +135,7 @@ export function CashDeployCard({ scope }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {result.gaps.slice(0, 8).map((g) => (
+                  {result.gaps.map((g) => (
                     <tr key={g.sector} className="border-t border-edge/30">
                       <td className="py-1 text-ink">{g.sector}</td>
                       <td className="text-right py-1 font-mono text-ink-dim">
