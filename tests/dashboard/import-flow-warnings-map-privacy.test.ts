@@ -12,6 +12,12 @@
  * test) and asserts every `warnings.map((w, j)` render site wraps its item
  * in <PrivateText>, so privacy mode can mask it like every other
  * portfolio-derived surface.
+ *
+ * 2026-10-07 (QA import-preview--privacy-masks-entire-warning-sentence):
+ * masking the whole sentence hid the symbol, date and reason too. Each site
+ * now renders through <FigureMaskedText>, which hands only the figures to
+ * <PrivateText> (behaviour pinned in import-flow-a29-b29.test.ts). The pin
+ * below keeps its purpose: no site prints a raw warning.
  */
 
 import { describe, it, expect } from "vitest";
@@ -39,15 +45,22 @@ describe("ImportFlow warnings.map(...) render sites mask under privacy mode", ()
     expect(siteLineIndexes.length).toBeGreaterThan(0);
   });
 
-  it("every warnings.map((w, j) render site wraps {w} in <PrivateText>", () => {
+  it("every warnings.map((w, j) render site renders {w} through <FigureMaskedText>", () => {
     for (const idx of siteLineIndexes) {
       const window = lines.slice(idx, idx + 5).join("\n");
-      expect(window).toMatch(/<PrivateText>\s*\{w\}\s*<\/PrivateText>/);
+      expect(window).toMatch(/<FigureMaskedText text=\{w\} \/>/);
     }
   });
 
   it("does not render a bare unwrapped {w} anywhere in the component", () => {
-    const bareW = /(?<!<PrivateText>\s*)\{w\}(?!\s*<\/PrivateText>)/;
+    const bareW = /(?<!<FigureMaskedText text=)\{w\}/;
     expect(bareW.test(source)).toBe(false);
+  });
+
+  it("<FigureMaskedText> masks its figures through <PrivateText>", () => {
+    const start = source.indexOf("function FigureMaskedText");
+    expect(start).toBeGreaterThan(-1);
+    const body = source.slice(start, source.indexOf("type ReplayResult", start));
+    expect(body).toMatch(/s\.masked \? <PrivateText key=\{i\}>\{s\.text\}<\/PrivateText> : s\.text/);
   });
 });
