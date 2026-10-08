@@ -563,19 +563,46 @@ export function suggestAllocation(
     if (gapBasisTotal > 0) matchingGap.residualGapPp += (allocation / gapBasisTotal) * 100;
   }
 
-  for (let i = picks.length - 1; i >= 0 && cashRemainingCents > 0; i--) {
-    const pick = picks[i];
-    const extra = cashRemainingCents / 100;
-    pick.allocationDollars += extra;
-    pick.exposureDelta = computeExposureDelta(db, scope, accountIds, [
-      { symbol: pick.symbol, action: "buy", dollarAmount: pick.allocationDollars },
+  const picksBySymbol = new Map(picks.map((pick) => [pick.symbol, pick]));
+  for (const candidate of ranked) {
+    if (cashRemainingCents <= 0) break;
+    const isHeldFallback = candidate.rationale.startsWith("Held name pick:");
+    if (excludedSleeve === null && !isHeldFallback) continue;
+    const existingPick = picksBySymbol.get(candidate.symbol);
+    const currentAllocationCents = Math.round((existingPick?.allocationDollars ?? 0) * 100);
+    const capacityCents = Math.max(
+      0,
+      Math.round(perNameCap * 100) - currentAllocationCents
+    );
+    const allocationCents = Math.min(cashRemainingCents, capacityCents);
+    if (allocationCents <= 0) continue;
+    const allocation = allocationCents / 100;
+    const newAllocation = (existingPick?.allocationDollars ?? 0) + allocation;
+    const exposureDelta = computeExposureDelta(db, scope, accountIds, [
+      { symbol: candidate.symbol, action: "buy", dollarAmount: newAllocation },
     ]);
-    const matchingGap = gaps.find((g) => g.sector === pick.sectorTarget);
-    if (matchingGap) {
-      matchingGap.residualDollarGap -= extra;
-      if (gapBasisTotal > 0) matchingGap.residualGapPp += (extra / gapBasisTotal) * 100;
+    if (existingPick) {
+      existingPick.allocationDollars = newAllocation;
+      existingPick.exposureDelta = exposureDelta;
+    } else {
+      const pick: CashDeployPick = {
+        symbol: candidate.symbol,
+        securityId: candidate.securityId,
+        sectorTarget: candidate.sectorTarget,
+        allocationDollars: allocation,
+        gapClosureScore: candidate.score,
+        rationale: candidate.rationale,
+        exposureDelta,
+      };
+      picks.push(pick);
+      picksBySymbol.set(pick.symbol, pick);
     }
-    cashRemainingCents = 0;
+    const matchingGap = gaps.find((g) => g.sector === candidate.sectorTarget);
+    if (matchingGap) {
+      matchingGap.residualDollarGap -= allocation;
+      if (gapBasisTotal > 0) matchingGap.residualGapPp += (allocation / gapBasisTotal) * 100;
+    }
+    cashRemainingCents -= allocationCents;
   }
 
   const totalAllocated = picks.reduce((s, p) => s + p.allocationDollars, 0);
@@ -585,7 +612,7 @@ export function suggestAllocation(
       "Couldn't match watchlist names to any benchmark gaps. Consider adding tickers in underweight sectors."
     );
   } else if (cashRemaining > 0.01) {
-    notes.push(`${formatLargeUSD(cashRemaining)} unallocated — no remaining underweight matches.`);
+    notes.push(`${formatLargeUSD(cashRemaining)} unallocated — no remaining underweight matches or per-name capacity.`);
   }
 
   return {

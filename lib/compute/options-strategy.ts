@@ -9,6 +9,7 @@
  */
 
 import { todayET } from "@/lib/calendar/date-utils";
+import { normalizeOptionExpiration } from "@/lib/compute/option-expiry";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -196,9 +197,8 @@ function withPricing(
  */
 function normalizeExpiration(expiry?: string): string | null {
   if (!expiry) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) return expiry;
-  const compact = /^(\d{4})(\d{2})(\d{2})$/.exec(expiry);
-  return compact ? `${compact[1]}-${compact[2]}-${compact[3]}` : null;
+  const normalized = normalizeOptionExpiration(expiry);
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : null;
 }
 
 export interface DetectStrategiesOptions {
@@ -357,24 +357,28 @@ function detectCoveredStrategies(
   const putsByProtection = [...longPuts].sort((a, b) => {
     const strikeDiff = (b.strike ?? 0) - (a.strike ?? 0);
     if (strikeDiff !== 0) return strikeDiff;
-    return (a.expiration ?? "").localeCompare(b.expiration ?? "");
+    return (normalizeExpiration(a.expiration) ?? "").localeCompare(normalizeExpiration(b.expiration) ?? "");
   });
-  for (const put of putsByProtection) {
+  for (let i = 0; i < putsByProtection.length; i++) {
+    const put = putsByProtection[i];
     const strike = put.strike!;
     const stockCost = stock.currentPrice ?? 0;
     const putCost = put.currentPrice ?? 0;
     const contracts = put.quantity;
-    const shares = remainingShares;
-    if (shares <= 0) {
+    if (remainingShares <= 0) {
       strategies.push(createLongPut(underlyingOf(stock), put));
       continue;
     }
+    const putCapacityShares = contracts * (put.multiplier || 100);
+    const isLastPut = i === putsByProtection.length - 1;
+    const shares = isLastPut ? remainingShares : Math.min(remainingShares, putCapacityShares);
     const hedgeContracts = Math.min(
       contracts,
       Math.ceil(shares / (put.multiplier || 100))
     );
     const standaloneContracts = contracts - hedgeContracts;
     const hedgePut = { ...put, quantity: hedgeContracts };
+    const stockLeg = { ...stock, quantity: shares };
     // Puts beyond the share count are outright long puts — their downside is
     // capped at their own premium, not the (price - strike) share loss. Only
     // the covered shares carry that leg of the worst case; shares BEYOND what
@@ -428,13 +432,13 @@ function detectCoveredStrategies(
       name: `Protective Put: ${stock.symbol} ${formatStrike(strike)} Put`,
       underlying: stock.symbol,
       expiration: put.expiration,
-      legs: [stock, hedgePut],
+      legs: [stockLeg, hedgePut],
       maxProfit: null, // unlimited upside
       maxLoss,
       breakevens: [breakeven],
       description: `Long ${shares} shares + long ${hedgeContracts} ${formatExpiry(put.expiration)} ${formatStrike(strike)} ${putWord}${coverageNote}`,
     });
-    remainingShares = Math.max(0, remainingShares - coveredShares);
+    remainingShares = Math.max(0, remainingShares - shares);
     if (standaloneContracts > 0) {
       strategies.push(createLongPut(underlyingOf(stock), { ...put, quantity: standaloneContracts }));
     }

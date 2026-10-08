@@ -35,6 +35,8 @@ type Field =
 // cell — this table's stored-zero-is-unknown em-dash needs the same
 // guidance, not a silent dash with no explanation.
 export const NO_COST_BASIS_TOOLTIP = "Import a Vanguard cost basis CSV to populate";
+export const GROSS_GAIN_PERCENT_TOOLTIP =
+  "Gain % uses gross cost basis (absolute long basis plus short proceeds) when a short is present.";
 
 // A stored name that already describes a contract: it carries a date, or the
 // word call / put beside a number (a strike). A company or fund name does
@@ -172,6 +174,8 @@ export interface HoldingsFooterSummary {
   /** Gross cost basis of the rows that are in Gain (known basis AND a price):
    *  the only honest base for Gain %. Null when no row has a gain. */
   gainCostBasis: number | null;
+  /** At least one row in Gain is short, so Gain % is over gross basis. */
+  gainHasShort: boolean;
   /** Rows with no cost basis (null or the stored-zero convention). They are
    *  in neither Cost Basis nor Gain. */
   noBasisCount: number;
@@ -217,6 +221,7 @@ export function summarizeHoldingsFooter(
     totalCostBasis: withBasis.length === 0 ? null : sum(withBasis.map((h) => h.cost_basis!)),
     totalGain: gain.totalGain,
     gainCostBasis: gain.grossBasis,
+    gainHasShort: gain.rows.some((h) => h.cost_basis! < 0),
     noBasisCount: noBasis.length,
     noBasisPricedCount: noBasis.filter((h) => h.current_value !== null).length,
     noBasisValue: sum(noBasis.map((h) => h.current_value ?? 0)),
@@ -451,7 +456,10 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
               <td className="px-4 py-3 text-right">
                 <GainCell value={footer.totalGain} />
               </td>
-              <td className="px-4 py-3 text-right">
+              <td
+                className="px-4 py-3 text-right"
+                title={footer.gainHasShort ? GROSS_GAIN_PERCENT_TOOLTIP : undefined}
+              >
                 {/* Over the cost basis of the rows that are IN Gain, not the
                     Cost Basis total: a percent whose two halves cover
                     different positions is not a figure. */}

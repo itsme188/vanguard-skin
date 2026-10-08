@@ -178,6 +178,15 @@ describe("summarizeHoldingsFooter", () => {
     expect(hub.totalGainRatio).toBeCloseTo(450 / 1600, 10);
     expect(footer.totalGain! / footer.gainCostBasis!).toBeCloseTo(hub.totalGainRatio!, 10);
   });
+
+  it("marks when the footer Gain % is over gross basis because a short is present", () => {
+    const s = summarizeHoldingsFooter([
+      row("ZZLNG", { cost: 1000, value: 1250 }),
+      row("ZZSHR", { cost: -600, value: -400 }),
+    ]);
+    expect(s.gainHasShort).toBe(true);
+    expect(s.gainCostBasis).toBe(1600);
+  });
 });
 
 describe("AllHoldingsTable footer (rendered)", () => {
@@ -226,6 +235,15 @@ describe("AllHoldingsTable footer (rendered)", () => {
     expect(footer).not.toContain("+5.00%");
     // Cost Basis keeps covering both positions.
     expect(footer).toContain("$10,000.00");
+  });
+
+  it("adds a title to the footer Gain % cell when a short makes the denominator gross basis", () => {
+    const footer = footerOf(
+      render([row("ZZLNG", { cost: 1000, value: 1250 }), row("ZZSHR", { cost: -600, value: -400 })]),
+    );
+    expect(footer).toContain(
+      'title="Gain % uses gross cost basis (absolute long basis plus short proceeds) when a short is present."',
+    );
   });
 
   it("when some no-basis positions have no price: values only the priced ones, calls the rest unknown", () => {
@@ -297,7 +315,11 @@ describe("AllHoldingsTable footer (source)", () => {
   });
 
   it("has no tilde marker, title or hover cursor left in the footer or the sentences", () => {
-    for (const part of [footerSrc(), disclosureSrc()]) {
+    const footerWithoutGrossBasisTitle = footerSrc().replace(
+      "title={footer.gainHasShort ? GROSS_GAIN_PERCENT_TOOLTIP : undefined}",
+      "",
+    );
+    for (const part of [footerWithoutGrossBasisTitle, disclosureSrc()]) {
       expect(part).not.toContain("~");
       expect(part).not.toContain("title=");
       expect(part).not.toContain("cursor-help");
@@ -324,6 +346,18 @@ describe("AllHoldingsTable footer (source)", () => {
   it("the footer Gain % divides by the cost basis of the rows in Gain", () => {
     expect(footerSrc()).toMatch(/unrealizedGainRatio\(footer\.totalGain,\s*footer\.gainCostBasis\)/);
     expect(footerSrc()).not.toMatch(/unrealizedGainRatio\(footer\.totalGain,\s*footer\.totalCostBasis\)/);
+  });
+
+  it("the security hub uses the same gross-basis title on its total Gain % cell", () => {
+    const page = readFileSync("app/dashboard/security/[id]/page.tsx", "utf8");
+    expect(page).toContain(
+      "Gain % uses gross cost basis (absolute long basis plus short proceeds) when a short is present.",
+    );
+    const totalRow = page.slice(
+      anchorIndex(page, '<span className="font-mono uppercase font-semibold text-xs tracking-wider">Total</span>'),
+      anchorIndex(page, "</tfoot>"),
+    );
+    expect(totalRow).toContain("title={totalGainHasShort ? GROSS_GAIN_PERCENT_TOOLTIP : undefined}");
   });
 
   it("the disclosure text is readable (not the faint tone) at its small size", () => {

@@ -158,4 +158,21 @@ describe("daily valuation — closed (quantity 0) rows are not counted as holdin
     expect(row!.priced_count).toBe(0);
     expect(row!.holdings_value).toBe(0);
   });
+
+  it("an old tombstone price does not stale the day when every open row is freshly priced", () => {
+    const aaa = seedSecurity(db, "AAA");
+    const closed = seedSecurity(db, "ZZZ");
+    seedHolding(db, aaa, 10, DAY);
+    seedHolding(db, closed, 0, DAY);
+    seedPrice(db, aaa, DAY, 100);
+    seedPrice(db, closed, "2026-02-20", 30);
+
+    computeDailyValuations(db);
+    const row = valuation(db, DAY)!;
+
+    expect(row.holdings_count).toBe(1);
+    expect(row.priced_count).toBe(1);
+    expect(row.holdings_value).toBe(1_000);
+    expect(row.data_quality).toBe("live");
+  });
 });

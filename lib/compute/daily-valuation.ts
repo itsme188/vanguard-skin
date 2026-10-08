@@ -265,7 +265,7 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
             const priceDateMs = new Date(price.price_date).getTime();
             const valDateMs = new Date(date).getTime();
             const staleDays = Math.floor((valDateMs - priceDateMs) / 86_400_000);
-            if (staleDays > maxPriceStaleDays) maxPriceStaleDays = staleDays;
+            if (isOpen && staleDays > maxPriceStaleDays) maxPriceStaleDays = staleDays;
           }
         }
 

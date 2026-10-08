@@ -482,6 +482,55 @@ describe("detectStrategies", () => {
       expect(strategies[0].description).toContain("2 puts hedge 200 sh of 300 held");
       expect(strategies[0].description).toContain("100 sh unhedged");
     });
+
+    it("splits 150 shares across two protective-put cards without double-counting the 50-share stub", () => {
+      const strategies = detectStrategies([
+        stock("QDUAL", 150, 50),
+        option("QDUAL", "PUT", 55, 1, { price: 6 }),
+        option("QDUAL", "PUT", 45, 1, { price: 1 }),
+      ]);
+
+      const hedges = strategies.filter((s) => s.type === "protective_put");
+      expect(hedges).toHaveLength(2);
+      expect(hedges.map((s) => s.legs[0].quantity)).toEqual([100, 50]);
+      expect(hedges.reduce((sum, s) => sum + s.legs[0].quantity, 0)).toBe(150);
+      expect(hedges[0].description).toContain("Long 100 shares");
+      expect(hedges[0].description).not.toContain("unhedged");
+      expect(hedges[0].maxLoss).toBeCloseTo(100, 2);
+      expect(hedges[1].description).toContain("Long 50 shares");
+      expect(hedges[1].description).toContain("1 put cover 100 sh vs 50 held");
+      expect(hedges[1].maxLoss).toBeCloseTo(350, 2);
+    });
+
+    it("reports the remaining unhedged shares once on the last protective-put card", () => {
+      const strategies = detectStrategies([
+        stock("QTAIL", 300, 50),
+        option("QTAIL", "PUT", 55, 1, { price: 6 }),
+        option("QTAIL", "PUT", 45, 1, { price: 1 }),
+      ]);
+
+      const hedges = strategies.filter((s) => s.type === "protective_put");
+      expect(hedges).toHaveLength(2);
+      expect(hedges.map((s) => s.legs[0].quantity)).toEqual([100, 200]);
+      expect(hedges.reduce((sum, s) => sum + s.legs[0].quantity, 0)).toBe(300);
+      expect(hedges[0].description).not.toContain("unhedged");
+      expect(hedges[0].maxLoss).toBeCloseTo(100, 2);
+      expect(hedges[1].description).toContain("1 put hedge 100 sh of 200 held");
+      expect(hedges[1].description).toContain("100 sh unhedged");
+      expect(hedges[1].maxLoss).toBeCloseTo(5600, 2);
+    });
+
+    it("uses normalized expiries when same-strike puts need an expiry tie-break", () => {
+      const strategies = detectStrategies([
+        stock("QDATE", 100, 50),
+        option("QDATE", "PUT", 45, 1, { expiry: "20260116", price: 1 }),
+        option("QDATE", "PUT", 45, 1, { expiry: "2026-12-18", price: 1 }),
+      ], { today: "2026-01-01" });
+
+      expect(strategies.map((s) => s.type)).toEqual(["protective_put", "long_put"]);
+      expect(strategies[0].expiration).toBe("20260116");
+      expect(strategies[1].expiration).toBe("2026-12-18");
+    });
   });
 
   it("separates strategies by underlying", () => {

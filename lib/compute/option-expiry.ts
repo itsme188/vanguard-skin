@@ -71,7 +71,7 @@ export function liveOptionExpirationSql(alias = "s", today: string = todayET()):
 const COMPACT_DATE_PATTERN = /^(\d{4})(\d{2})(\d{2})$/;
 
 /** Dashed form of a stored expiration: `YYYYMMDD` is rebuilt, anything else passes through. */
-function dashedExpiration(expirationDate: string): string {
+export function normalizeOptionExpiration(expirationDate: string): string {
   const compact = COMPACT_DATE_PATTERN.exec(expirationDate);
   return compact ? `${compact[1]}-${compact[2]}-${compact[3]}` : expirationDate;
 }
@@ -87,7 +87,7 @@ export function isOptionLive(
   today: string = todayET()
 ): boolean {
   if (!expirationDate) return true;
-  return dashedExpiration(expirationDate) >= today;
+  return normalizeOptionExpiration(expirationDate) >= today;
 }
 
 /**

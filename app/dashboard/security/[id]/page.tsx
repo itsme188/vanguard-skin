@@ -42,6 +42,9 @@ import { EarningsConflictMarker } from "../../components/calendar/EarningsConfli
 // slot-less earnings row. app/** is an allowed importer.
 import { displayEarningsTime } from "@/lib/calendar/display-earnings-time";
 
+const GROSS_GAIN_PERCENT_TOOLTIP =
+  "Gain % uses gross cost basis (absolute long basis plus short proceeds) when a short is present.";
+
 function gainClass(value: number | null): string {
   if (value == null) return "text-ink-dim";
   return value >= 0 ? "text-up" : "text-down";
@@ -256,6 +259,7 @@ export default async function SecurityDetailPage(props: {
   // and a line under the table names what they leave out.
   const totalIsPartial = positionsWithoutBasis.length > 0 && detail.totalCostBasis !== null;
   const partialMark = totalIsPartial ? "~" : "";
+  const totalGainHasShort = positions.some((p) => p.unrealized_gain !== null && (p.cost_basis ?? 0) < 0);
 
   // Option hubs: notes are filed under the UNDERLYING (the composer has no
   // option picker). Resolve it through the existing option→underlying relation.
@@ -518,7 +522,10 @@ export default async function SecurityDetailPage(props: {
                     {/* Gain over GROSS basis (|long basis| + |short proceeds|)
                         of the positions that are in the gain — a short's
                         negative basis must never shrink the denominator. */}
-                    <td className={`${TD_MONO} text-right font-semibold ${gainClass(detail.totalUnrealizedGain)}`}>
+                    <td
+                      className={`${TD_MONO} text-right font-semibold ${gainClass(detail.totalUnrealizedGain)}`}
+                      title={totalGainHasShort ? GROSS_GAIN_PERCENT_TOOLTIP : undefined}
+                    >
                       {detail.totalGainRatio !== null ? (
                         <>
                           {partialMark}
