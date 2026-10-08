@@ -87,6 +87,7 @@ export const TRANSCRIPT_CALL_DATE_WINDOW_DAYS = 10;
 // Cross-source earnings calendar rows for the same print can disagree by a
 // day or two; include nearby superseded Finnhub twins when resolving fiscal Q.
 export const FISCAL_QUARTER_EVENT_TOLERANCE_DAYS = 3;
+export const ALPHA_VANTAGE_DAILY_REQUEST_LIMIT = 25;
 
 // ─── Summary Generation ─────────────────────────────────────────
 
@@ -367,6 +368,34 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function vendorQuotaKey(vendor: "alpha_vantage", day: string): string {
+  return `transcript_vendor_requests:${vendor}:${day}`;
+}
+
+function readVendorRequestCount(db: Database.Database, vendor: "alpha_vantage", day: string): number {
+  const row = db
+    .prepare("SELECT value FROM settings WHERE key = ?")
+    .get(vendorQuotaKey(vendor, day)) as { value: string | null } | undefined;
+  const parsed = Number(row?.value ?? "0");
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+function trySpendVendorRequest(
+  db: Database.Database,
+  vendor: "alpha_vantage",
+  day: string,
+  limit: number,
+): boolean {
+  const key = vendorQuotaKey(vendor, day);
+  const spent = readVendorRequestCount(db, vendor, day);
+  if (spent >= limit) return false;
+  db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  ).run(key, String(spent + 1));
+  return true;
+}
+
 // ─── The print's fiscal quarter ──────────────────────────────────
 
 /**
@@ -573,6 +602,13 @@ async function tryAlphaVantage(
   opts: { skip?: boolean; requireStatedQuarter: boolean },
 ): Promise<{ transcript: EarningsTranscript | null; rejected: boolean }> {
   if (opts.skip || !isAlphaVantageConfigured()) return { transcript: null, rejected: false };
+  const quotaDay = todayET();
+  if (!trySpendVendorRequest(db, "alpha_vantage", quotaDay, ALPHA_VANTAGE_DAILY_REQUEST_LIMIT)) {
+    console.warn(
+      `[transcripts] alpha_vantage daily request limit reached for ${quotaDay}; skipping ${upperTicker} ${year}Q${quarter}`,
+    );
+    return { transcript: null, rejected: false };
+  }
   const result = await getAlphaVantageTranscript(upperTicker, year, quarter);
   if (!result || !result.transcript) return { transcript: null, rejected: false };
   const mismatch = transcriptQuarterMismatchReason({

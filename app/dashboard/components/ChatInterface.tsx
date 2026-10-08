@@ -104,7 +104,7 @@ function CopyButton({ message }: { message: UIMessage }) {
   return (
     <button
       onClick={handleCopy}
-      className="mt-2 text-[10px] text-ink-faint hover:text-ink-dim transition-colors focus-ring"
+      className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2 mt-2 text-[10px] text-ink-faint hover:text-ink-dim transition-colors focus-ring"
       aria-label="Copy message"
     >
       {copied ? "Copied!" : "Copy"}
@@ -218,10 +218,16 @@ function ConversationHistory({
   const displayTitle = currentConv?.title ?? "Current conversation";
 
   return (
-    <div className="relative min-w-0" ref={dropdownRef}>
+    /* md:relative, not relative: at phone width the menu anchors to the fixed
+       header row instead (that row is `relative`), so a 256px menu opening
+       beside a long scope pill cannot run off the right edge of a 390px
+       screen. */
+    <div className="md:relative min-w-0" ref={dropdownRef}>
+      {/* No `truncate` on the button itself: its overflow:hidden would clip
+          the pointer-coarse ::after touch extension. The inner span truncates. */}
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 text-xs text-ink-dim hover:text-ink transition-colors max-w-[min(200px,100%)] truncate"
+        className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-1 flex items-center gap-1.5 text-xs text-ink-dim hover:text-ink transition-colors max-w-[min(200px,100%)] min-w-0"
         title={isPrivate ? "Current conversation" : displayTitle}
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
@@ -231,7 +237,7 @@ function ConversationHistory({
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 mt-1 w-64 bg-panel border border-edge rounded-lg shadow-xl z-50 py-1 max-h-72 overflow-y-auto">
+        <div className="absolute top-full left-0 max-md:left-4 mt-1 w-64 bg-panel border border-edge rounded-lg shadow-xl z-50 py-1 max-h-72 overflow-y-auto">
           <button
             onClick={() => { onNew(); setOpen(false); }}
             className="w-full text-left px-3 py-2 text-xs text-gold-ink hover:bg-raised transition-colors flex items-center gap-2"
@@ -288,6 +294,64 @@ function ConversationHistory({
         </div>
       )}
     </div>
+  );
+}
+
+// ─── Conversation controls (scope pill · picker · New Conversation) ──
+//
+// Rendered twice by ChatInterface with the same props: in the fixed header row
+// at phone width, and at the top of the transcript from md up. Presentational
+// only — every handler is the parent's. Module-level on purpose: a component
+// defined inside ChatInterface would remount on each of its renders.
+function ConversationControls({
+  scopeLabel,
+  conversations,
+  currentId,
+  onSelect,
+  onNew,
+  onDelete,
+}: {
+  scopeLabel: string;
+  conversations: ChatConversation[];
+  currentId: number | null;
+  onSelect: (conv: ChatConversation) => void;
+  onNew: () => void;
+  onDelete: (conv: ChatConversation) => void;
+}) {
+  return (
+    <>
+      {/* min-w-0 on the left group + the picker root: without it the
+          flex-child min-width:auto floor keeps the group at its content
+          width (scope pill + 200px title) and the long-title case
+          overpaints the New Conversation button at 390px viewports. */}
+      <div className="flex items-center gap-2 min-w-0">
+        <span
+          className="px-3 py-1 rounded-full text-[11px] border shrink-0"
+          style={{
+            background: "rgba(201,164,78,0.15)",
+            borderColor: "rgba(201,164,78,0.3)",
+            color: "#c9a44e",
+          }}
+        >
+          {scopeLabel}
+        </span>
+        {conversations.length > 0 && (
+          <ConversationHistory
+            conversations={conversations}
+            currentId={currentId}
+            onSelect={onSelect}
+            onNew={onNew}
+            onDelete={onDelete}
+          />
+        )}
+      </div>
+      <button
+        onClick={onNew}
+        className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-1 text-xs text-ink-faint hover:text-ink-dim transition-colors focus-ring shrink-0"
+      >
+        New Conversation
+      </button>
+    </>
   );
 }
 
@@ -516,47 +580,48 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   }
 
   return (
-    <div className="flex flex-col h-[calc(100dvh-12rem)]">
+    <div className="flex flex-col h-[calc(100dvh-12rem)] md:h-full">
+      {/* md:h-full (on the root above): from md up the drawer / rail gives
+          this a definite height (ChatDrawer's h-[calc(100%-49px)] wrapper),
+          so fill it — the viewport calc left a blank band under the composer.
+          Below md the calc stays: it is what keeps the composer above the
+          bottom nav. */}
+      {/* Fixed conversation header (phone width): outside the transcript
+          scroller, so the scope pill, the picker and New Conversation stay
+          under the drawer's title bar however long the conversation is.
+          `relative` anchors the picker's menu to this row (see
+          ConversationHistory). */}
+      {isLocked && (
+        <div className="md:hidden relative shrink-0 flex items-center justify-between gap-2 px-4 py-3 mb-3 border-b border-edge">
+          <ConversationControls
+            scopeLabel={scopeLabel}
+            conversations={conversations}
+            currentId={conversationId}
+            onSelect={loadConversation}
+            onNew={handleNewConversation}
+            onDelete={handleDeleteConversation}
+          />
+        </div>
+      )}
+
       {/* Messages area */}
       <div
         className="flex-1 overflow-y-auto space-y-4 pb-4"
         aria-live="polite"
         aria-label="Chat messages"
       >
-        {/* Conversation header (shown when conversation is active) */}
+        {/* Conversation header (shown when conversation is active) — from md
+            up it stays at the top of the transcript, as before. */}
         {isLocked && (
-          /* min-w-0 on the left group + the picker root: without it the
-             flex-child min-width:auto floor keeps the group at its content
-             width (scope pill + 200px title) and the long-title case
-             overpaints the New Conversation button at 390px viewports. */
-          <div className="flex items-center justify-between gap-2 pb-3 mb-3 border-b border-edge">
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className="px-3 py-1 rounded-full text-[11px] border shrink-0"
-                style={{
-                  background: "rgba(201,164,78,0.15)",
-                  borderColor: "rgba(201,164,78,0.3)",
-                  color: "#c9a44e",
-                }}
-              >
-                {scopeLabel}
-              </span>
-              {conversations.length > 0 && (
-                <ConversationHistory
-                  conversations={conversations}
-                  currentId={conversationId}
-                  onSelect={loadConversation}
-                  onNew={handleNewConversation}
-                  onDelete={handleDeleteConversation}
-                />
-              )}
-            </div>
-            <button
-              onClick={handleNewConversation}
-              className="text-xs text-ink-faint hover:text-ink-dim transition-colors focus-ring shrink-0"
-            >
-              New Conversation
-            </button>
+          <div className="hidden md:flex items-center justify-between gap-2 pb-3 mb-3 border-b border-edge">
+            <ConversationControls
+              scopeLabel={scopeLabel}
+              conversations={conversations}
+              currentId={conversationId}
+              onSelect={loadConversation}
+              onNew={handleNewConversation}
+              onDelete={handleDeleteConversation}
+            />
           </div>
         )}
 
@@ -689,8 +754,10 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input area */}
-      <div className="border-t border-edge pt-4">
+      {/* Input area — max-md:px-4 gives the composer the drawer's 16px inset
+          on a phone (Send used to touch the screen edge); the border-t still
+          spans the full width, like the header's border-b. */}
+      <div className="border-t border-edge pt-4 max-md:px-4">
         <form onSubmit={handleSubmit} className="flex gap-3">
           <textarea
             ref={inputRef}

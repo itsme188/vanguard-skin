@@ -6,6 +6,7 @@ import {
   summarizeHoldingsFooter,
   type AllHoldingsRow,
 } from "@/app/dashboard/components/AllHoldingsTable";
+import { computePositionTotals, type SecurityPosition } from "@/lib/queries/security-detail";
 import { PrivacyProvider } from "@/lib/privacy/context";
 import { anchorIndex, sliceBetween } from "@/tests/helpers/source-anchor";
 
@@ -151,6 +152,43 @@ describe("summarizeHoldingsFooter", () => {
     expect(s.totalGain).toBeNull();
     expect(s.totalValue).toBe(700);
   });
+
+  it("uses gross known basis for long and short gain percent, matching the security hub", () => {
+    const long = row("ZZLNG", { cost: 1000, value: 1250 }); // +250 / 1000 = +25.00%
+    const short = row("ZZSHR", { cost: -600, value: -400 }); // +200 / 600 = +33.33%
+    const footer = summarizeHoldingsFooter([long, short]);
+    const hub = computePositionTotals(
+      [long, short].map(
+        (r): SecurityPosition => ({
+          account_id: r.account_id,
+          account_name: r.account_name,
+          security_type: "Stock",
+          multiplier: 1,
+          quantity: r.quantity,
+          cost_basis: r.cost_basis,
+          current_price: r.current_price,
+          current_value: r.current_value,
+          unrealized_gain: r.unrealized_gain,
+          as_of_date: r.as_of_date,
+        }),
+      ),
+    );
+
+    expect(footer.gainCostBasis).toBe(1600);
+    expect(footer.totalGain).toBe(450);
+    expect(footer.totalGain! / footer.gainCostBasis!).toBeCloseTo(450 / 1600, 10);
+    expect(hub.totalGainRatio).toBeCloseTo(450 / 1600, 10);
+    expect(footer.totalGain! / footer.gainCostBasis!).toBeCloseTo(hub.totalGainRatio!, 10);
+  });
+
+  it("marks when the footer Gain % is over gross basis because a short is present", () => {
+    const s = summarizeHoldingsFooter([
+      row("ZZLNG", { cost: 1000, value: 1250 }),
+      row("ZZSHR", { cost: -600, value: -400 }),
+    ]);
+    expect(s.gainHasShort).toBe(true);
+    expect(s.gainCostBasis).toBe(1600);
+  });
 });
 
 describe("AllHoldingsTable footer (rendered)", () => {
@@ -199,6 +237,15 @@ describe("AllHoldingsTable footer (rendered)", () => {
     expect(footer).not.toContain("+5.00%");
     // Cost Basis keeps covering both positions.
     expect(footer).toContain("$10,000.00");
+  });
+
+  it("adds a title to the footer Gain % cell when a short makes the denominator gross basis", () => {
+    const footer = footerOf(
+      render([row("ZZLNG", { cost: 1000, value: 1250 }), row("ZZSHR", { cost: -600, value: -400 })]),
+    );
+    expect(footer).toContain(
+      'title="Gain % uses gross cost basis (absolute long basis plus short proceeds) when a short is present."',
+    );
   });
 
   it("when some no-basis positions have no price: values only the priced ones, calls the rest unknown", () => {
@@ -270,7 +317,11 @@ describe("AllHoldingsTable footer (source)", () => {
   });
 
   it("has no tilde marker, title or hover cursor left in the footer or the sentences", () => {
-    for (const part of [footerSrc(), disclosureSrc()]) {
+    const footerWithoutGrossBasisTitle = footerSrc().replace(
+      "title={footer.gainHasShort ? GROSS_GAIN_PERCENT_TOOLTIP : undefined}",
+      "",
+    );
+    for (const part of [footerWithoutGrossBasisTitle, disclosureSrc()]) {
       expect(part).not.toContain("~");
       expect(part).not.toContain("title=");
       expect(part).not.toContain("cursor-help");
@@ -297,6 +348,18 @@ describe("AllHoldingsTable footer (source)", () => {
   it("the footer Gain % divides by the cost basis of the rows in Gain", () => {
     expect(footerSrc()).toMatch(/unrealizedGainRatio\(footer\.totalGain,\s*footer\.gainCostBasis\)/);
     expect(footerSrc()).not.toMatch(/unrealizedGainRatio\(footer\.totalGain,\s*footer\.totalCostBasis\)/);
+  });
+
+  it("the security hub uses the same gross-basis title on its total Gain % cell", () => {
+    const page = readFileSync("app/dashboard/security/[id]/page.tsx", "utf8");
+    expect(page).toContain(
+      "Gain % uses gross cost basis (absolute long basis plus short proceeds) when a short is present.",
+    );
+    const totalRow = page.slice(
+      anchorIndex(page, '<span className="font-mono uppercase font-semibold text-xs tracking-wider">Total</span>'),
+      anchorIndex(page, "</tfoot>"),
+    );
+    expect(totalRow).toContain("title={totalGainHasShort ? GROSS_GAIN_PERCENT_TOOLTIP : undefined}");
   });
 
   it("the disclosure text is readable (not the faint tone) at its small size", () => {

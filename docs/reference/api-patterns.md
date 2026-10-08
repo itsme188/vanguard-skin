@@ -16,6 +16,7 @@ parameter, env var, table, helper, date, and rationale from the original CLAUDE.
 
 ## Table of contents
 
+- [Expected guard refusals (409)](#expected-guard-refusals-409)
 - [Import & compute](#import--compute)
 - [Chat](#chat)
 - [TWS / IBKR](#tws--ibkr)
@@ -37,6 +38,19 @@ parameter, env var, table, helper, date, and rationale from the original CLAUDE.
 
 ---
 - Print watch (live print v2)
+
+## Expected guard refusals (409)
+
+A guard that refuses an action the user can still choose answers **409 with nothing written** and
+an inline message beside the control. These are designed outcomes, not failures:
+`POST /api/earnings/release-time` `slot_mismatch` (without `force`); `POST /api/earnings/actuals`
+`pre_print` (the caller offers `force`); `POST /api/earnings/correct-date` refusals;
+`POST /api/reconciliation` `checkpoint_exists`; `POST /api/research/documents` on a duplicate
+upload; `POST` / `PATCH /api/calendar/events` `would_supersede_vendor`. The browser logs
+"Failed to load resource" for any non-2xx response, so each of these leaves a console line; the QA
+sweep should not file them as console errors.
+
+---
 
 ## Import & compute
 
@@ -569,7 +583,7 @@ Archive listing of every completed earnings email send, newest-first
   "no local copy" + the live-rebuilt scoreboard), lazy-fetched on tab activation.
 - Companion surfaces: Security Detail "Earnings Emails" section (`SecurityEarningsEmails` — the name
   `EarningsEmailsSection` is the Settings panel; rendered only when the issuer family has ≥1 sent
-  email, server-queried directly) + EarningsHub header "All sent →" link.
+  email, server-queried directly) + EarningsHub header "Email archive →" link.
 - Spec: `docs/superpowers/specs/2026-07-28-earnings-email-archive-design.md`.
 
 ### `GET /api/earnings/conflicts`

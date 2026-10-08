@@ -19,6 +19,9 @@ import { EmptySection } from "../components/EmptySection";
 import { Count } from "@/lib/privacy/components";
 import { PlaidSyncButton } from "../components/PlaidSyncButton";
 
+// Browser-tab title (qa:page-head--same-tab-title-every-route-...).
+export const metadata = { title: "Accounts" };
+
 export default async function AccountsPage(props: {
   searchParams: Promise<{ id?: string; txnsSort?: string; txnsDir?: string }>;
 }) {

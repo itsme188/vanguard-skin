@@ -8,12 +8,11 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 // file -> justification
-const ALLOWLIST: Record<string, string> = {
-  // Chat markdown tables render inside the chat rail's own prose container;
-  // the table element is spread from react-markdown props and ScrollFade's
-  // fade overlay would not align with the bubble's rounded padding.
-  "app/dashboard/components/MarkdownMessage.tsx": "chat bubble markdown table",
-};
+// Empty since 2026-10-07: the chat markdown table (MarkdownMessage.tsx) was the
+// one entry, and a wide answer table clipped its last column with no cue
+// (qa: mobile-chat--answer-table-clips-last-column-no-scrollfade-regression-1).
+// It now uses <ScrollFade> like every other table.
+const ALLOWLIST: Record<string, string> = {};
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {

@@ -39,7 +39,9 @@ export interface ExposureFlag {
 
 export interface DroppedLeg {
   symbol: string;
-  reason: "unknown_symbol" | "not_held" | "invalid_amount";
+  reason: "unknown_symbol" | "not_held" | "invalid_amount" | "clamped_sell";
+  requestedDollars?: number;
+  appliedDollars?: number;
 }
 
 export interface ExposureDelta {
@@ -321,6 +323,12 @@ function applyLegs(
       // untouched: a buy covers (and may cross into long), a sell adds to
       // the short — never zero an existing short via the clamp.
       if (leg.action === "sell" && prevQuantity > 0 && h.quantity < 0) {
+        dropped.push({
+          symbol: upper,
+          reason: "clamped_sell",
+          requestedDollars: leg.dollarAmount,
+          appliedDollars: h.marketValue,
+        });
         h.quantity = 0;
       }
       h.marketValue = marketValue(h.quantity, h.price, h.securityType, h.multiplier, usdPerUnit);

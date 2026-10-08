@@ -50,6 +50,12 @@ interface TodayPageProps {
   searchParams: Promise<{ view?: string; weekOf?: string }>;
 }
 
+// Browser-tab title (qa:page-head--same-tab-title-every-route-...).
+export async function generateMetadata({ searchParams }: TodayPageProps) {
+  const { view } = await searchParams;
+  return { title: view === "week-ahead" ? "Today · Week Ahead" : "Today" };
+}
+
 export default async function TodayPage({ searchParams }: TodayPageProps) {
   const { view, weekOf: weekOfParam } = await searchParams;
 

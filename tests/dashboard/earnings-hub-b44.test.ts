@@ -145,7 +145,7 @@ describe("+ Add ticker", () => {
 
   it("the opener carries the pointer-coarse hit extension", () => {
     expect(opener).toContain("pointer-coarse:after:absolute");
-    expect(opener).toContain("pointer-coarse:after:-inset-y-2");
+    expect(opener).toContain("pointer-coarse:after:-inset-y-3");
   });
 });
 

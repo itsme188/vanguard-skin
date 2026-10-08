@@ -32,10 +32,20 @@ export function rangeMarker(
 
 export function QuoteStats({
   quote,
+  range,
   currentPrice,
   usdPerUnit = 1,
 }: {
   quote: SecurityQuote | null;
+  /**
+   * The page's one 52-week range — getWeek52Range
+   * (lib/queries/security-detail.ts), the same freshness-arbitrated object the
+   * stats strip prints. Pass it wherever the strip is on the page too: the
+   * stored quote alone can lag the cached bars, which printed two different
+   * ranges on one page. `null` = no range to show. Left out entirely, the
+   * quote's own range is used (a caller with no strip beside it).
+   */
+  range?: { low: number; high: number; asOf: string } | null;
   currentPrice: number | null;
   /**
    * FX factor for foreign-currency securities (1 for USD). Quote fields and
@@ -46,7 +56,15 @@ export function QuoteStats({
   usdPerUnit?: number;
 }) {
   if (!quote) return null;
-  const { iv_underlying, hv_30d, week52_high, week52_low, dividend_yield } = quote;
+  const { iv_underlying, hv_30d, dividend_yield } = quote;
+  const shownRange =
+    range !== undefined
+      ? range
+      : quote.week52_high != null && quote.week52_low != null
+        ? { low: quote.week52_low, high: quote.week52_high, asOf: quote.as_of_date }
+        : null;
+  const week52_low = shownRange?.low ?? null;
+  const week52_high = shownRange?.high ?? null;
   const hasRange = week52_high != null && week52_low != null && week52_high > week52_low;
   const hasVol = iv_underlying != null || hv_30d != null;
   if (!hasRange && !hasVol && dividend_yield == null) return null;
@@ -58,7 +76,12 @@ export function QuoteStats({
       {hasRange && (
         <div className="min-w-[200px] flex-1">
           <div className="mb-1 flex items-baseline justify-between text-[11px] font-mono">
-            <span className="text-ink-faint uppercase tracking-wider">52-wk range</span>
+            <span
+              className="text-ink-faint uppercase tracking-wider"
+              title={shownRange ? `as of ${shownRange.asOf}` : undefined}
+            >
+              52-wk range
+            </span>
             {currentPrice != null && (
               <span className="text-ink-dim">{formatUSDPrecise(currentPrice * usdPerUnit)}</span>
             )}
@@ -91,7 +114,7 @@ export function QuoteStats({
           </div>
           {marker?.outside && (
             <div className="mt-1 text-[11px] font-mono text-ink-dim">
-              Price is {marker.outside} the cached range · range as of {quote.as_of_date}
+              Price is {marker.outside} the cached range · range as of {shownRange?.asOf}
             </div>
           )}
         </div>

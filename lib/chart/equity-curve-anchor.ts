@@ -393,3 +393,154 @@ export function equityCurveGranularity(dates: string[]): EquityCurveGranularity 
   if (close === 0) return "monthly";
   return "mixed";
 }
+
+// ─── Time axis ──────────────────────────────────────────────────
+//
+// The chart's horizontal axis is elapsed time, not point index: a series that
+// is monthly for years and daily for months would otherwise give each recent
+// day the width of a whole early month. Dates are plain YYYY-MM-DD, so every
+// conversion and every label is done at UTC midnight -- a browser west of UTC
+// must never show the previous day.
+
+/** YYYY-MM-DD → epoch milliseconds at UTC midnight. NaN for anything else. */
+export function isoDateToEpochMs(date: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!m) return NaN;
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+/** Epoch milliseconds → the YYYY-MM-DD it falls on in UTC. */
+export function epochMsToIsoDate(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * Chart rows with their horizontal position `t` (epoch ms), ordered by real
+ * date. A numeric axis draws the line in row order, so the order is set here
+ * and not left to the caller. No row is added: a stretch with no stored point
+ * stays the straight segment between its two neighbours. A row whose date is
+ * not YYYY-MM-DD has no position and is left out.
+ */
+export function toTimeSeries<T extends { date: string }>(rows: T[]): (T & { t: number })[] {
+  return rows
+    .map((r) => ({ ...r, t: isoDateToEpochMs(r.date) }))
+    .filter((r) => Number.isFinite(r.t))
+    .sort((a, b) => a.t - b.t);
+}
+
+export type EquityCurveTickUnit = "week" | "half-month" | "month" | "quarter" | "year";
+
+export interface EquityCurveTimeTicks {
+  /** Epoch ms, ascending, all inside [start, end]. */
+  ticks: number[];
+  unit: EquityCurveTickUnit;
+}
+
+/** Longest range (in days) each tick step serves; beyond the last, yearly. */
+export const TICK_BAND_MAX_DAYS = {
+  week: 45,
+  "half-month": 200,
+  month: 550, // about 18 months
+  quarter: 1830, // about 5 years
+} as const;
+
+/** Most yearly ticks drawn; a longer history steps by whole years. */
+export const MAX_YEAR_TICKS = 12;
+
+/**
+ * Calendar-aligned axis ticks for the plotted range, with the step chosen from
+ * the range length so labels never overprint: fixed days of the month (1, 8,
+ * 15, 22) up to 45 days, the 1st and 15th up to 200 days, month starts up to
+ * about 18 months, quarter starts up to about 5 years, 1 January beyond (every
+ * Nth year past MAX_YEAR_TICKS). Ticks are calendar dates, not data points, so
+ * they do not slide as the window moves. When no calendar tick falls inside
+ * the range, its two ends are the ticks.
+ */
+export function equityCurveTimeTicks(startMs: number, endMs: number): EquityCurveTimeTicks {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+    return { ticks: [], unit: "month" };
+  }
+  const days = (endMs - startMs) / DAY_MS;
+  const unit: EquityCurveTickUnit =
+    days <= TICK_BAND_MAX_DAYS.week
+      ? "week"
+      : days <= TICK_BAND_MAX_DAYS["half-month"]
+        ? "half-month"
+        : days <= TICK_BAND_MAX_DAYS.month
+          ? "month"
+          : days <= TICK_BAND_MAX_DAYS.quarter
+            ? "quarter"
+            : "year";
+
+  const start = new Date(startMs);
+  const end = new Date(endMs);
+  const y0 = start.getUTCFullYear();
+  const y1 = end.getUTCFullYear();
+  const yearStep = unit === "year" ? Math.max(1, Math.ceil((y1 - y0 + 1) / MAX_YEAR_TICKS)) : 1;
+  const monthsOfYear =
+    unit === "year" ? [0] : unit === "quarter" ? [0, 3, 6, 9] : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+  const daysOfMonth = unit === "week" ? [1, 8, 15, 22] : unit === "half-month" ? [1, 15] : [1];
+
+  const ticks: number[] = [];
+  for (let y = y0; y <= y1; y++) {
+    if (unit === "year" && y % yearStep !== 0) continue;
+    for (const m of monthsOfYear) {
+      for (const d of daysOfMonth) {
+        const t = Date.UTC(y, m, d);
+        if (t >= startMs && t <= endMs) ticks.push(t);
+      }
+    }
+  }
+  if (ticks.length === 0) return { ticks: startMs === endMs ? [startMs] : [startMs, endMs], unit };
+  return { ticks, unit };
+}
+
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+export type EquityCurveDateStyle = "day" | "month-year" | "full" | "year";
+
+/**
+ * A plotted date as text, always read in UTC: "Jun 5" (day), "Jun 26"
+ * (month-year), "Jun 5, 2026" (full), "2026" (year).
+ */
+export function formatEquityCurveDate(ms: number, style: EquityCurveDateStyle): string {
+  if (!Number.isFinite(ms)) return "";
+  const d = new Date(ms);
+  if (style === "year") return String(d.getUTCFullYear());
+  if (style === "day") return `${SHORT_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+  return d.toLocaleDateString(
+    "en-US",
+    style === "month-year"
+      ? { month: "short", year: "2-digit", timeZone: "UTC" }
+      : { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" },
+  );
+}
+
+/**
+ * Axis tick label for a tick step: a day of the month below monthly steps,
+ * month and two-digit year for month and quarter starts, the year for yearly.
+ */
+export function formatEquityCurveTick(ms: number, unit: EquityCurveTickUnit): string {
+  return formatEquityCurveDate(
+    ms,
+    unit === "year" ? "year" : unit === "month" || unit === "quarter" ? "month-year" : "day",
+  );
+}
+
+/**
+ * The date (YYYY-MM-DD) a tooltip is showing. The hovered point's own `date`
+ * is the key, so the tooltip names the same date as the stored row whatever
+ * the axis does; the axis label (epoch ms, or a Date from a time scale) is the
+ * fallback. Null when neither yields a date.
+ */
+export function equityCurveTooltipDate(label: unknown, payload?: unknown): string | null {
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const date = (item as { payload?: { date?: unknown } } | null | undefined)?.payload?.date;
+      if (typeof date === "string" && Number.isFinite(isoDateToEpochMs(date))) return date;
+    }
+  }
+  if (typeof label === "string" && Number.isFinite(isoDateToEpochMs(label))) return label;
+  const ms = label instanceof Date ? label.getTime() : typeof label === "number" ? label : Number.NaN;
+  return Number.isFinite(ms) ? epochMsToIsoDate(ms) : null;
+}

@@ -41,6 +41,14 @@ interface PageProps {
   }>;
 }
 
+// Browser-tab title (qa:page-head--same-tab-title-every-route-...).
+export async function generateMetadata({ searchParams }: PageProps) {
+  const { view } = await searchParams;
+  if (view === "feeds") return { title: "Research · Feeds" };
+  if (view === "documents") return { title: "Research · Documents" };
+  return { title: "Research" };
+}
+
 export default async function ResearchPage({ searchParams }: PageProps) {
   const params = await searchParams;
 

@@ -270,6 +270,30 @@ function isClaimPlausible(
   return Math.abs(claimedMagnitude - Math.abs(chipPctSigned)) <= DISTANCE_TOLERANCE_PP + 1e-9;
 }
 
+// "within 0.5% of current level", "within 2% of the current price" — a
+// proximity claim: no above/below word, so neither pattern above reads it. The
+// live sentence said "within 0.5% of current level" beside a +12.1% chip
+// (ledger finding security-detail-suggested-levels--stale-narrative-price-and-
+// direction-contradiction-regression-1). Only a phrase tied to the CURRENT
+// price counts: "three touches within 1% of each other" describes how tight
+// the cluster is and is left alone (fail open).
+const PROXIMITY_CLAIM_RE =
+  /\bwithin\s+(?:about\s+|roughly\s+|approximately\s+|just\s+|only\s+)?(\d[\d,]*(?:\.\d+)?)\s*%\s+of\s+(?:the\s+|its\s+|today's\s+)?(?:current|present|spot|latest|last)\b/gi;
+
+/**
+ * Upper bounds the prose puts on the distance between the price and the level
+ * ("within N% of current …"), in percent. Exported for direct unit testing.
+ */
+export function extractProximityClaims(narrative: string): Array<{ raw: string; withinPct: number }> {
+  const claims: Array<{ raw: string; withinPct: number }> = [];
+  if (!narrative) return claims;
+  for (const m of narrative.matchAll(PROXIMITY_CLAIM_RE)) {
+    const withinPct = Number(m[1].replace(/,/g, ""));
+    if (Number.isFinite(withinPct)) claims.push({ raw: m[0].trim(), withinPct });
+  }
+  return claims;
+}
+
 /**
  * Check every numeric claim in `narrative` against the chip's distance
  * between `currentPrice` and `levelPrice`. A narrative with zero
@@ -305,6 +329,15 @@ export function checkNarrativePlausibility(
       continue;
     }
     if (!isClaimPlausible(claim, chipPctSigned, currentPrice)) {
+      return {
+        plausible: false,
+        reason: `claim "${claim.raw}" contradicts the chip's distance ${chipPctSigned.toFixed(1)}%`,
+      };
+    }
+  }
+  // A proximity claim is a ceiling on the chip's figure, to the same rounding.
+  for (const claim of extractProximityClaims(narrative)) {
+    if (Math.abs(chipPctSigned) > claim.withinPct + DISTANCE_TOLERANCE_PP + 1e-9) {
       return {
         plausible: false,
         reason: `claim "${claim.raw}" contradicts the chip's distance ${chipPctSigned.toFixed(1)}%`,

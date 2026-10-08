@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useState } from "react";
-import { Money, Pct } from "@/lib/privacy/components";
+import { Money, Pct, PrivateNumberInput } from "@/lib/privacy/components";
 import { rendersAsZero } from "@/lib/format";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import type { ExposureDelta, HypotheticalLeg } from "@/lib/compute/exposure-delta";
@@ -35,6 +35,7 @@ export function WhatIfCalculator({ scope }: Props) {
 
   function updateLeg(id: string, patch: Partial<LegInput>) {
     setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+    setError(null);
   }
 
   function removeLeg(id: string) {
@@ -105,11 +106,13 @@ export function WhatIfCalculator({ scope }: Props) {
               className="bg-canvas border border-edge rounded px-2 py-1.5 text-sm font-mono text-ink w-24 focus-ring"
             />
             <span className="text-sm text-ink-faint">$</span>
-            <input
-              type="number"
+            <PrivateNumberInput
               placeholder="0"
               value={leg.dollarAmount || ""}
               onChange={(e) => updateLeg(leg.id, { dollarAmount: Number(e.target.value) || 0 })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void run();
+              }}
               className="bg-canvas border border-edge rounded px-2 py-1.5 text-sm font-mono text-ink w-28 focus-ring"
             />
             <button
@@ -148,12 +151,13 @@ export function WhatIfCalculator({ scope }: Props) {
             <div className="space-y-1">
               {delta.droppedLegs.map((d) => (
                 <p key={d.symbol + d.reason} className="text-xs text-down">
-                  ⚠ {d.symbol}{" "}
-                  {d.reason === "unknown_symbol"
-                    ? "isn't a known security — leg ignored"
-                    : d.reason === "invalid_amount"
-                      ? "needs a positive dollar amount — leg ignored (use Buy/Sell for direction)"
-                      : "isn't held in this scope — sell leg ignored"}
+                  ⚠ {droppedLegMessage(d)}
+                  {d.reason === "clamped_sell" && (
+                    <>
+                      {" "}Requested <Money value={d.requestedDollars} />; applied{" "}
+                      <Money value={d.appliedDollars} />.
+                    </>
+                  )}
                 </p>
               ))}
             </div>
@@ -181,7 +185,7 @@ interface Row {
   label: string;
   before: string | React.ReactNode;
   after: string | React.ReactNode;
-  diff?: string;
+  diff?: string | React.ReactNode;
   indent?: boolean;
 }
 
@@ -190,7 +194,18 @@ interface Section {
   rows: Row[];
 }
 
-function buildHeadlineRows(delta: ExposureDelta): Row[] {
+export function droppedLegMessage(d: NonNullable<ExposureDelta["droppedLegs"]>[number]): string {
+  if (d.reason === "unknown_symbol") return `${d.symbol} isn't a known security — leg ignored`;
+  if (d.reason === "invalid_amount") {
+    return `${d.symbol} needs a positive dollar amount — leg ignored (use Buy/Sell for direction)`;
+  }
+  if (d.reason === "clamped_sell") return `${d.symbol} sell leg capped at the held position.`;
+  return `${d.symbol} isn't held in this scope — sell leg ignored`;
+}
+
+export function buildHeadlineRows(delta: ExposureDelta): Row[] {
+  const beforeBeta = Number(delta.before.beta.toFixed(2));
+  const afterBeta = Number(delta.after.beta.toFixed(2));
   return [
     {
       // exposure-delta.ts's snapshot() sums HOLDINGS market value only
@@ -202,13 +217,13 @@ function buildHeadlineRows(delta: ExposureDelta): Row[] {
       label: "Total Value (holdings only — excludes account cash)",
       before: <Money value={delta.before.totalValue} />,
       after: <Money value={delta.after.totalValue} />,
-      diff: formatDeltaUsd(delta.after.totalValue - delta.before.totalValue),
+      diff: <Money value={delta.after.totalValue - delta.before.totalValue} signed />,
     },
     {
       label: "Portfolio Beta",
-      before: delta.before.beta.toFixed(2),
-      after: delta.after.beta.toFixed(2),
-      diff: signed(delta.after.beta - delta.before.beta, 2),
+      before: beforeBeta.toFixed(2),
+      after: afterBeta.toFixed(2),
+      diff: signed(afterBeta - beforeBeta, 2),
     },
   ];
 }

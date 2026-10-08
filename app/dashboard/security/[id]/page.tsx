@@ -29,7 +29,8 @@ import { computeSecurityFactorShareView } from "@/lib/compute/factors";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { QuoteStats } from "../../components/QuoteStats";
 import { Count, Money, Pct, Shares, PrivateText, QuantityUnit } from "@/lib/privacy/components";
-import { computeLotCoverageGaps } from "@/lib/compute/lot-coverage";
+import { computeLotCoverageGaps, computeLotSignMismatches } from "@/lib/compute/lot-coverage";
+import { getTranscriptsForSecurity } from "@/lib/queries/transcripts";
 import { daysToExpiry, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import type { EarningsTranscript } from "@/lib/types";
 import { resolveOptionUnderlying } from "@/lib/queries/securities";
@@ -40,6 +41,9 @@ import { EarningsConflictMarker } from "../../components/calendar/EarningsConfli
 // DISPLAY ONLY (user ruling 2026-10-06): the usual time / "time unknown" for a
 // slot-less earnings row. app/** is an allowed importer.
 import { displayEarningsTime } from "@/lib/calendar/display-earnings-time";
+
+const GROSS_GAIN_PERCENT_TOOLTIP =
+  "Gain % uses gross cost basis (absolute long basis plus short proceeds) when a short is present.";
 
 function gainClass(value: number | null): string {
   if (value == null) return "text-ink-dim";
@@ -212,6 +216,11 @@ const ACTION_LINK_CLASS =
 const ACTION_BUTTON_CLASS =
   "px-3 py-1.5 rounded-lg border border-edge text-xs font-medium text-ink hover:bg-raised transition-colors";
 
+// Browser-tab title (qa:page-head--same-tab-title-every-route-...).
+// No symbol here on purpose: a tab title is readable over the shoulder even
+// in privacy mode.
+export const metadata = { title: "Security" };
+
 export default async function SecurityDetailPage(props: {
   params: Promise<{ id: string }>;
 }) {
@@ -230,7 +239,7 @@ export default async function SecurityDetailPage(props: {
 
   if (!detail) notFound();
 
-  const { security, price, kpis, positions, openTaxLots, expiredOptionLotsAwaitingClose, closedSales, closedSalesTotal, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, researchMentions } = detail;
+  const { security, price, kpis, positions, openTaxLots, expiredOptionLotsAwaitingClose, closedSales, closedSalesTotal, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, tradeGradesExcluded, researchMentions, researchMentionsTotal } = detail;
 
   // Per-account reconciliation: a position's quantity should equal the sum of
   // that account's open tax lots. Statement import and computeTaxLots are
@@ -241,12 +250,16 @@ export default async function SecurityDetailPage(props: {
   // The other half of that reconciliation: accounts with open lots and NO
   // position row. They get a line inside the Positions frame, so the lots
   // table below never stands alone and unexplained.
-  const { lotsWithoutPosition, positionsWithoutBasis } = detail;
+  const { lotsWithoutPosition, positionsWithoutBasis, unknownBasisLotNotes, expiredOptionSnapshotRows } = detail;
+  // A short position over long open lots: the coverage check skips shorts, so
+  // the contradiction is named on its own line above the lots table.
+  const lotSignMismatches = computeLotSignMismatches(positions, openTaxLots);
   // Value sums every position; cost basis, gain and % sum only the ones with
   // a known basis. When some are left out the three figures are marked "~"
   // and a line under the table names what they leave out.
   const totalIsPartial = positionsWithoutBasis.length > 0 && detail.totalCostBasis !== null;
   const partialMark = totalIsPartial ? "~" : "";
+  const totalGainHasShort = positions.some((p) => p.unrealized_gain !== null && (p.cost_basis ?? 0) < 0);
 
   // Option hubs: notes are filed under the UNDERLYING (the composer has no
   // option picker). Resolve it through the existing option→underlying relation.
@@ -260,6 +273,15 @@ export default async function SecurityDetailPage(props: {
       b.event_date.localeCompare(a.event_date) ||
       String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")),
   );
+  // An option contract has no earnings calls. Its hub shows the UNDERLYING's
+  // transcripts and points the refresh at the underlying's symbol, so the
+  // fetch (and its cache) is the one the underlying's own hub uses.
+  const shownTranscripts = isOptionHub
+    ? optionUnderlying
+      ? getTranscriptsForSecurity(db, optionUnderlying.id)
+      : []
+    : transcripts;
+  const transcriptSymbol = isOptionHub ? optionUnderlying?.symbol ?? null : security.symbol;
   const noteComposerHref = isOptionHub
     ? optionUnderlying
       ? `/dashboard/research?view=notes&type=trade_thesis&symbol=${encodeURIComponent(optionUnderlying.symbol)}&security=${optionUnderlying.id}&via=option`
@@ -344,7 +366,13 @@ export default async function SecurityDetailPage(props: {
       </div>
 
       {/* IBKR market-data snapshot strip — 52wk range + IV/HV (public data) */}
-      <QuoteStats quote={quote} currentPrice={price?.close_price ?? null} usdPerUnit={detail.usdPerUnit} />
+      <QuoteStats
+        quote={quote}
+        // The same range object the stats strip above prints (kpis.week52*).
+        range={detail.week52}
+        currentPrice={price?.close_price ?? null}
+        usdPerUnit={detail.usdPerUnit}
+      />
 
       {/* Watchlist price targets */}
       {watched && watchlistItem && (watchlistItem.price_target_low || watchlistItem.price_target_high) && (
@@ -494,7 +522,10 @@ export default async function SecurityDetailPage(props: {
                     {/* Gain over GROSS basis (|long basis| + |short proceeds|)
                         of the positions that are in the gain — a short's
                         negative basis must never shrink the denominator. */}
-                    <td className={`${TD_MONO} text-right font-semibold ${gainClass(detail.totalUnrealizedGain)}`}>
+                    <td
+                      className={`${TD_MONO} text-right font-semibold ${gainClass(detail.totalUnrealizedGain)}`}
+                      title={totalGainHasShort ? GROSS_GAIN_PERCENT_TOOLTIP : undefined}
+                    >
                       {detail.totalGainRatio !== null ? (
                         <>
                           {partialMark}
@@ -528,6 +559,21 @@ export default async function SecurityDetailPage(props: {
                 </>
               )}
             </p>
+          )}
+          {unknownBasisLotNotes.length > 0 && (
+            <div className="px-5 py-3 border-t border-edge flex flex-col gap-1">
+              {unknownBasisLotNotes.map((note) => (
+                <p key={note.accountId} className="text-xs text-ink-faint">
+                  <span className="text-ink-dim">{note.accountName}</span>: cost basis and gain are unknown
+                  here because the holdings row carries no cost basis. The open{" "}
+                  {note.lotCount === 1 ? "lot" : "lots"} below{" "}
+                  {note.lotCount === 1 ? "carries" : "carry"} <Money value={note.lotCostBasis} /> for{" "}
+                  <Shares value={note.lotQty} />{" "}
+                  <QuantityUnit securityType={security.security_type} quantity={note.lotQty} />; this row
+                  does not use that figure.
+                </p>
+              ))}
+            </div>
           )}
           {lotsWithoutPosition.length > 0 && (
             <div className={`px-5 py-3 flex flex-col gap-1 ${positions.length > 0 ? "border-t border-edge" : ""}`}>
@@ -578,6 +624,20 @@ export default async function SecurityDetailPage(props: {
                       in lots than the position shows
                     </>
                   )}
+                </p>
+              ))}
+            </div>
+          )}
+          {lotSignMismatches.length > 0 && (
+            <div className="px-5 py-3 border-b border-edge flex flex-col gap-1">
+              {lotSignMismatches.map((m) => (
+                <p key={m.accountId} className="text-xs text-ink-faint">
+                  <span className="text-ink-dim">{m.accountName}</span>: the position is short{" "}
+                  <Shares value={Math.abs(m.positionQty)} />{" "}
+                  <QuantityUnit securityType={security.security_type} quantity={m.positionQty} />, yet the
+                  ledger holds <Shares value={m.longLotQty} /> long in <Count value={m.longLotCount} /> open{" "}
+                  {m.longLotCount === 1 ? "lot" : "lots"}. The two are not reconciled, so the position&apos;s
+                  gain above and the lots&apos; gain below cannot both be right.
                 </p>
               ))}
             </div>
@@ -724,7 +784,7 @@ export default async function SecurityDetailPage(props: {
       )}
 
       {/* Trade Grades (from AI reviews) */}
-      {tradeGrades.length > 0 && (
+      {(tradeGrades.length > 0 || tradeGradesExcluded > 0) && (
         <Section
           title={`AI Trade Grades · ${tradeGrades.length}`}
           action={
@@ -733,12 +793,21 @@ export default async function SecurityDetailPage(props: {
             </Link>
           }
         >
+          {/* A stored trip dated entry-after-exit is a pairing artefact: it is
+              left out of the cards and counted here instead. */}
+          {tradeGradesExcluded > 0 && (
+            <p className="px-5 py-3 text-xs text-ink-dim">
+              <Count value={tradeGradesExcluded} />{" "}
+              {tradeGradesExcluded === 1 ? "trip" : "trips"} excluded — pairing under review
+            </p>
+          )}
           {tradeGrades.some((grade) => grade.pairings_stale) && (
             <p className="mb-3 text-xs text-gold-ink">
               Some saved grades use outdated or unresolved trade pairings. Dates, metrics and
               assessments may be wrong; resolve the lot history and regenerate those reviews.
             </p>
           )}
+          {tradeGrades.length > 0 && (
           <ScrollFade>
             <table className="w-full">
               <thead>
@@ -777,6 +846,7 @@ export default async function SecurityDetailPage(props: {
               </tbody>
             </table>
           </ScrollFade>
+          )}
           {(() => {
             const visible = tradeGrades.filter(
               (tg) => tg.assessment || tg.what_went_well || tg.what_went_wrong
@@ -950,7 +1020,11 @@ export default async function SecurityDetailPage(props: {
 
       {/* Research Mentions — client component handles filtering URL-fragment
           false positives, inline expansion, and click-through to article. */}
-      <ResearchMentionsSection ticker={security.symbol} mentions={researchMentions} />
+      <ResearchMentionsSection
+        ticker={security.symbol}
+        mentions={researchMentions}
+        totalCount={researchMentionsTotal}
+      />
 
 
       {/* Upcoming Events */}
@@ -976,6 +1050,16 @@ export default async function SecurityDetailPage(props: {
                   dateConflictWith={event.date_conflict_with}
                   className="flex-shrink-0"
                 />
+                {event.date_status === "user_confirmed" && (
+                  <Chip
+                    tone="neutral"
+                    size="xs"
+                    title="You confirmed this date by hand. A vendor calendar does not move it."
+                    className="flex-shrink-0"
+                  >
+                    confirmed
+                  </Chip>
+                )}
                 <span className="truncate text-sm text-ink">{event.title}</span>
                 {event.event_type === "earnings" && (
                   <span className="ml-auto flex-shrink-0 font-mono text-[11px] text-ink-faint">
@@ -1090,15 +1174,31 @@ export default async function SecurityDetailPage(props: {
           are cached, a native `<details>` reveals the rest. */}
       <Section
         title={
-          transcripts.length > 0
-            ? `Earnings Transcripts & Filings · ${transcripts.length}`
+          shownTranscripts.length > 0
+            ? `Earnings Transcripts & Filings · ${shownTranscripts.length}`
             : "Earnings Transcripts & Filings"
         }
-        action={<TranscriptsRefreshButton ticker={security.symbol} />}
+        subtitle={
+          isOptionHub && optionUnderlying ? (
+            <>
+              for{" "}
+              <Link href={`/dashboard/security/${optionUnderlying.id}`} className="text-gold hover:underline">
+                {optionUnderlying.symbol}
+              </Link>
+              , the underlying
+            </>
+          ) : undefined
+        }
+        action={transcriptSymbol ? <TranscriptsRefreshButton ticker={transcriptSymbol} /> : undefined}
       >
-        {transcripts.length === 0 ? (
+        {transcriptSymbol === null ? (
+          <p className="px-5 py-5 text-sm text-ink-dim leading-relaxed">
+            An option contract has no earnings calls of its own, and its underlying is not a security
+            in this book, so there is nothing to fetch here.
+          </p>
+        ) : shownTranscripts.length === 0 ? (
           <div className="px-5 py-5 text-sm text-ink-dim leading-relaxed">
-            <p>No earnings transcripts cached for {security.symbol}.</p>
+            <p>No earnings transcripts cached for {transcriptSymbol}.</p>
             <p className="mt-2 text-xs text-ink-faint">
               Click <span className="text-ink-dim">↻ refresh</span> to fetch the most recent
               quarter. Sources tried in order: API Ninjas (paid) → Motley Fool → SEC EDGAR 8-K
@@ -1106,12 +1206,36 @@ export default async function SecurityDetailPage(props: {
             </p>
           </div>
         ) : (
-          <TranscriptList transcripts={transcripts} />
+          <TranscriptList transcripts={shownTranscripts} />
         )}
       </Section>
 
+      {/* An expired contract the latest holdings snapshot still lists. No
+          reader counts it as held; say so, and say what clears the row,
+          instead of the import call to action below. */}
+      {expiredOptionSnapshotRows.length > 0 && (
+        <div className="rounded-xl border border-dashed border-edge p-6">
+          <p className="text-sm text-ink-dim">
+            {security.symbol} expired{security.expiration_date ? ` on ${security.expiration_date}` : ""} and
+            is awaiting a statement. The latest holdings snapshot still lists it, but an expired contract
+            is not counted as a held position. The row clears when the statement that records the expiry is
+            imported.
+          </p>
+          <ul className="mt-2 flex flex-col gap-1">
+            {expiredOptionSnapshotRows.map((row) => (
+              <li key={row.account_id} className="text-xs text-ink-faint">
+                <span className="text-ink-dim">{row.account_name}</span>: <Shares value={row.quantity} />{" "}
+                <QuantityUnit securityType={security.security_type} quantity={row.quantity} /> on the{" "}
+                {row.as_of_date} snapshot
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Empty state — no positions, no data */}
-      {positions.length === 0 &&
+      {expiredOptionSnapshotRows.length === 0 &&
+        positions.length === 0 &&
         openTaxLots.length === 0 &&
         expiredOptionLotsAwaitingClose.length === 0 &&
         closedSales.length === 0 &&

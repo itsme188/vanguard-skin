@@ -17,6 +17,9 @@ interface PageProps {
   searchParams: Promise<{ id?: string }>;
 }
 
+// Browser-tab title (qa:page-head--same-tab-title-every-route-...).
+export const metadata = { title: "Charts" };
+
 export default async function ChartsPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const hasExplicitId = params.id !== undefined;

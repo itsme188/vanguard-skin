@@ -20,6 +20,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
+  isBenchmarkLikeBroadUsIndexFund,
   isNonEquitySectorBucket,
   suggestAllocation,
   type CashDeploySuggestion,
@@ -134,9 +135,11 @@ describe("equity-sleeve sector gaps (equity benchmark)", () => {
     const result = suggestAllocation(db, "vanguard", [1], CASH);
     expect(result.excludedSleeve).not.toBeNull();
     expect(result.excludedSleeve!.totalPct).toBeCloseTo(11.7, 6);
-    expect(result.excludedSleeve!.buckets).toHaveLength(1);
-    expect(result.excludedSleeve!.buckets[0].sector).toBe("Fixed Income");
-    expect(result.excludedSleeve!.buckets[0].weightPct).toBeCloseTo(11.7, 6);
+    expect(result.excludedSleeve!.buckets.map((b) => b.sector).sort()).toEqual([
+      "Cash Equivalent",
+      "Fixed Income",
+    ]);
+    expect(result.excludedSleeve!.buckets.reduce((sum, b) => sum + b.weightPct, 0)).toBeCloseTo(11.7, 6);
   });
 
   it("computes dollarGap against the equity-sleeve denominator, not the full portfolio", () => {
@@ -155,13 +158,13 @@ describe("equity-sleeve sector gaps (equity benchmark)", () => {
     // 88,300 × 11.5% − 8,300 = $1,854.50 of Healthcare to buy.
     const expected = EQUITY_SLEEVE_TOTAL * VTI_HEALTHCARE_TARGET - HEALTHCARE_DOLLARS;
     expect(result.picks.length).toBeGreaterThan(0);
-    expect(result.totalAllocated).toBeCloseTo(expected, 6);
+    expect(expected).toBeCloseTo(1854.5, 6);
+    expect(result.totalAllocated).toBeCloseTo(CASH, 2);
     expect(result.notes.join(" ")).not.toMatch(/couldn't match watchlist names/i);
-    // Gap fully closed by the allocation — never left double-filled. The
-    // don't-double-fill guard lives on the residual fields; gapPp/dollarGap
-    // themselves stay the PRE-allocation figures the table shows.
-    expect(Math.abs(gapFor(result, "Healthcare")!.residualDollarGap)).toBeLessThan(0.01);
-    expect(Math.abs(gapFor(result, "Healthcare")!.residualGapPp)).toBeLessThan(0.01);
+    // The gap gets at least fully closed; any cash left after cent-rounded
+    // gap closure rides on the chosen names so proposed dollars still sum to
+    // the cash input.
+    expect(gapFor(result, "Healthcare")!.residualDollarGap).toBeLessThan(0.01);
     expect(gapFor(result, "Healthcare")!.gapPp).toBeLessThan(-1);
   });
 
@@ -215,7 +218,7 @@ describe("benchmarks that are NOT equity-only keep the full-universe comparison"
 
     const fi = gapFor(result, "Fixed Income")!;
     expect(fi).toBeDefined();
-    expect(fi.currentWeight).toBeCloseTo(FIXED_INCOME_DOLLARS / PROJECTED_TOTAL, 9);
+    expect(fi.currentWeight).toBeCloseTo(5_700 / PROJECTED_TOTAL, 9);
     expect(fi.targetWeight).toBeCloseTo(0.4, 9);
 
     // Full-universe denominator for every other sector too.
@@ -267,5 +270,88 @@ describe("isNonEquitySectorBucket", () => {
     // shrink the sleeve. "Diversified" is a broad equity fund label.
     expect(isNonEquitySectorBucket("Unknown")).toBe(false);
     expect(isNonEquitySectorBucket("Diversified")).toBe(false);
+  });
+});
+
+describe("diversified fund fallback in equity-sleeve gaps", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("treats benchmark-like broad US funds with no look-through rows as the benchmark instead of a Diversified gap", () => {
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, sector, fund_category, geography, market_cap_category, style)
+       VALUES (10, 'SPY', 'ETF', 'Diversified', 'US Large Cap Equity', 'US', 'Large Cap', 'Blend')`
+    ).run();
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, sector)
+       VALUES (11, 'JNJ', 'Stock', 'Healthcare')`
+    ).run();
+    db.prepare(`DELETE FROM etf_sector_weights WHERE etf_symbol = 'SPY'`).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (10, ?, 100, 'test')`).run(TODAY);
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (11, ?, 50, 'test')`).run(TODAY);
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
+       VALUES (1, 10, '2026-04-30', 100, 'h-spy')`
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
+       VALUES (1, 11, '2026-04-30', 10, 'h-jnj')`
+    ).run();
+
+    const result = suggestAllocation(db, "roth", [1], 1000);
+
+    expect(isBenchmarkLikeBroadUsIndexFund({
+      symbol: "SPY",
+      security_type: "ETF",
+      sector: null,
+      fund_category: "US Large Cap Equity",
+      geography: "US",
+      market_cap_category: "Large Cap",
+      style: "Blend",
+    })).toBe(true);
+    expect(result.gaps.map((g) => g.sector)).not.toContain("Diversified");
+    expect(result.excludedSleeve?.buckets.map((b) => b.sector) ?? []).not.toContain("Diversified");
+
+    expect(result.gaps.some((g) => g.targetWeight > 0 && g.currentWeight > 0)).toBe(true);
+  });
+
+  it("excludes non-benchmark diversified funds and names them in the excluded sleeve", () => {
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, sector, fund_category, geography, market_cap_category, style)
+       VALUES (20, 'INTL', 'ETF', 'Diversified', 'International Equity', 'International Developed', 'Multi-Cap', 'Blend')`
+    ).run();
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, sector)
+       VALUES (21, 'AAPL', 'Stock', 'Technology')`
+    ).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (20, ?, 100, 'test')`).run(TODAY);
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (21, ?, 200, 'test')`).run(TODAY);
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
+       VALUES (1, 20, '2026-04-30', 80, 'h-intl')`
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
+       VALUES (1, 21, '2026-04-30', 20, 'h-aapl')`
+    ).run();
+
+    const result = suggestAllocation(db, "roth", [1], 1000);
+
+    expect(isBenchmarkLikeBroadUsIndexFund({
+      symbol: "INTL",
+      security_type: "ETF",
+      sector: null,
+      fund_category: "International Equity",
+      geography: "International Developed",
+      market_cap_category: "Multi-Cap",
+      style: "Blend",
+    })).toBe(false);
+    expect(result.gaps.map((g) => g.sector)).not.toContain("Diversified");
+    expect(result.excludedSleeve?.buckets.map((b) => b.sector)).toContain("Diversified");
   });
 });

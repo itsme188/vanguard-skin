@@ -30,7 +30,8 @@ export function OpenChatButton() {
       <span className="text-[13px] font-medium text-gold-ink flex-1 text-left">
         Ask Claude about your portfolio
       </span>
-      <span className="text-[11px] font-mono text-gold/70">Cmd+J</span>
+      {/* Keyboard hint — meaningless on touch, hidden there */}
+      <span className="pointer-coarse:hidden text-[11px] font-mono text-gold/70">Cmd+J</span>
     </button>
   );
 }

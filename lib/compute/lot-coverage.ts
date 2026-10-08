@@ -79,3 +79,52 @@ export function computeLotCoverageGaps(
   }
   return gaps;
 }
+
+export interface LotSignMismatch {
+  accountId: number;
+  accountName: string;
+  /** The position quantity as reported: negative (short). */
+  positionQty: number;
+  /** Sum of quantity_remaining across this account's LONG open lots. */
+  longLotQty: number;
+  longLotCount: number;
+}
+
+/**
+ * A SHORT position sitting over LONG open lots in the same account. The
+ * coverage check above skips shorts, so this pair used to print with no note:
+ * a short position with a loss, and directly below it long lots with a gain.
+ * The two sources contradict each other (a sign error in a live holdings feed
+ * is the usual cause); this does not say which one is right. Per account,
+ * like computeLotCoverageGaps. Short lots are the expected lots under a short
+ * position and are not counted.
+ */
+export function computeLotSignMismatches(
+  positions: LotCoveragePositionInput[],
+  openLots: Array<LotCoverageLotInput & { is_short?: number | boolean | null }>
+): LotSignMismatch[] {
+  const longByAccount = new Map<number, { qty: number; count: number }>();
+  for (const lot of openLots) {
+    if (lot.is_short) continue;
+    if (Math.abs(lot.quantity_remaining) <= EPSILON) continue;
+    const entry = longByAccount.get(lot.account_id) ?? { qty: 0, count: 0 };
+    entry.qty += lot.quantity_remaining;
+    entry.count += 1;
+    longByAccount.set(lot.account_id, entry);
+  }
+
+  const mismatches: LotSignMismatch[] = [];
+  for (const position of positions) {
+    if (position.quantity >= 0) continue;
+    const long = longByAccount.get(position.account_id);
+    if (!long) continue;
+    mismatches.push({
+      accountId: position.account_id,
+      accountName: position.account_name,
+      positionQty: position.quantity,
+      longLotQty: long.qty,
+      longLotCount: long.count,
+    });
+  }
+  return mismatches;
+}

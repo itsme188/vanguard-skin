@@ -64,6 +64,14 @@ describe("computeExposureDelta", () => {
     const jnj = result.after.topConcentrations.find((c) => c.symbol === "JNJ");
     expect(jnj).toBeUndefined(); // position zeroed
     expect(result.after.totalValue).toBeLessThan(result.before.totalValue);
+    expect(result.droppedLegs).toEqual([
+      {
+        symbol: "JNJ",
+        reason: "clamped_sell",
+        requestedDollars: 9999999,
+        appliedDollars: 3000,
+      },
+    ]);
   });
 
   it("handles a mixed multi-leg basket", () => {

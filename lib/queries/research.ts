@@ -230,6 +230,18 @@ export function getSymbolSecurityMap(
   return map;
 }
 
+/**
+ * FROM/WHERE of a security's research mentions: processed, relevant articles
+ * linked to the security. One bound parameter (the security id). The list and
+ * its count are both built from this fragment so they can never disagree.
+ */
+export const ARTICLES_FOR_SECURITY_FROM_WHERE_SQL = `
+       FROM research_article_securities ras
+       JOIN research_articles a ON ras.article_id = a.id
+       JOIN research_sources s ON a.source_id = s.id
+       WHERE ras.security_id = ? AND a.processed_at IS NOT NULL
+         AND COALESCE(a.is_relevant, 1) = 1`;
+
 export function getArticlesForSecurity(
   db: Database.Database,
   securityId: number,
@@ -239,15 +251,22 @@ export function getArticlesForSecurity(
     .prepare(
       `SELECT ras.article_id, s.name as source_name, a.subject, a.received_at,
               a.summary, a.sentiment, ras.mention_context, ras.sentiment as mention_sentiment
-       FROM research_article_securities ras
-       JOIN research_articles a ON ras.article_id = a.id
-       JOIN research_sources s ON a.source_id = s.id
-       WHERE ras.security_id = ? AND a.processed_at IS NOT NULL
-         AND COALESCE(a.is_relevant, 1) = 1
+       ${ARTICLES_FOR_SECURITY_FROM_WHERE_SQL}
        ORDER BY a.received_at DESC
        LIMIT ?`
     )
     .all(securityId, limit) as ResearchMention[];
+}
+
+/** How many mentions getArticlesForSecurity would return with no LIMIT. */
+export function countArticlesForSecurity(
+  db: Database.Database,
+  securityId: number
+): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) AS n ${ARTICLES_FOR_SECURITY_FROM_WHERE_SQL}`)
+    .get(securityId) as { n: number };
+  return row.n;
 }
 
 export function getResearchSources(

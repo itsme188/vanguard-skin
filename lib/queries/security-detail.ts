@@ -25,7 +25,11 @@ import { getSecurityById } from "@/lib/queries/securities";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import { getTranscriptsForSecurity } from "@/lib/queries/transcripts";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
-import { getArticlesForSecurity, type ResearchMention } from "@/lib/queries/research";
+import {
+  countArticlesForSecurity,
+  getArticlesForSecurity,
+  type ResearchMention,
+} from "@/lib/queries/research";
 import { getLatestDailyBar, get52WeekRange, getOhlcvBars } from "@/lib/queries/ohlcv";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
@@ -35,6 +39,7 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 // One predicate for the row cells and the TOTAL row: a basis of NULL or
 // exactly 0 is unknown.
 import { hasKnownBasis as hasKnownPositionBasis } from "@/lib/compute/known-basis";
+import { computeAggregateGainRatio } from "@/lib/compute/gain-ratio";
 
 // ─── Result types ──────────────────────────────────────────────
 
@@ -91,6 +96,12 @@ export interface SecurityDetailData {
   security: Security;
   price: SecurityPriceInfo | null;
   kpis: SecurityKpis | null;
+  /**
+   * The page's one 52-week range (getWeek52Range). The same object feeds
+   * `kpis.week52*`; it is carried on its own because `kpis` is null for a
+   * security with no daily bars, where a quote-only range still exists.
+   */
+  week52: Week52Range | null;
   positions: SecurityPosition[];
   totalValue: number;
   /** null when every constituent position's cost basis is unknown */
@@ -105,6 +116,10 @@ export interface SecurityDetailData {
   positionsWithoutBasis: PositionWithoutBasis[];
   /** Accounts with open lots and no current position — see computeLotsWithoutPosition. */
   lotsWithoutPosition: LotsWithoutPosition[];
+  /** What the open lots carry for each unknown-basis position — see computeUnknownBasisLotNotes. */
+  unknownBasisLotNotes: UnknownBasisLotNote[];
+  /** Expired contract still on the latest holdings snapshot — see getExpiredOptionSnapshotRows. */
+  expiredOptionSnapshotRows: ExpiredOptionSnapshotRow[];
   openTaxLots: TaxLotWithSecurity[];
   expiredOptionLotsAwaitingClose: TaxLotWithSecurity[];
   closedSales: TaxLotSaleWithDetails[];
@@ -117,10 +132,20 @@ export interface SecurityDetailData {
   factors: SecurityFactor | null;
   transcripts: EarningsTranscript[];
   tradeGrades: TradeGradeEntry[];
+  /**
+   * Stored round trips left out of `tradeGrades` because their entry date is
+   * after their exit date (a pairing artefact, not a trade that happened).
+   */
+  tradeGradesExcluded: number;
   researchMentions: ResearchMention[];
   /**
+   * Every processed, relevant mention on file for this security, not just the
+   * handful in `researchMentions`. Null when the count could not be read.
+   */
+  researchMentionsTotal: number | null;
+  /**
    * USD per unit of the security's native currency (1 for USD/unknown).
-   * `price` and `kpis` stay NATIVE — the chart price-line and ATR/52wk
+   * `price`, `kpis` and `week52` stay NATIVE — the chart price-line and ATR/52wk
    * ratios need native units — so $-display sites multiply by this factor
    * at render time (MarketDataPanel / QuoteStats).
    */
@@ -452,27 +477,11 @@ export function getKpisForSecurity(
   const latest = getLatestDailyBar(db, securityId);
   if (!latest) return null;
 
-  const range = get52WeekRange(db, securityId);
-
-  // 52-week range: fresher source wins. get52WeekRange anchors its trailing
-  // window to the latest BAR date, so months-stale bars back-shift the window
-  // and re-include lows/highs that rolled out of the true 52-week window
-  // (HOOD showed a 15-month-old low while QuoteStats' IBKR quote was right).
-  // The quote goes stale as a whole but never shifts its window.
-  const quote = getSecurityQuote(db, securityId);
-  let week52High = range?.high ?? null;
-  let week52Low = range?.low ?? null;
-  let week52AsOf = range?.endDate ?? null;
-  if (
-    quote &&
-    quote.week52_high != null &&
-    quote.week52_low != null &&
-    (range == null || quote.as_of_date >= range.endDate)
-  ) {
-    week52High = quote.week52_high;
-    week52Low = quote.week52_low;
-    week52AsOf = quote.as_of_date;
-  }
+  // One arbitrated 52-week range for the whole page — see getWeek52Range.
+  const week52 = getWeek52Range(db, securityId);
+  const week52High = week52?.high ?? null;
+  const week52Low = week52?.low ?? null;
+  const week52AsOf = week52?.asOf ?? null;
 
   // ATR needs consecutive bars with prev-close. 30 is enough for a stable
   // Wilder-smoothed 14-period ATR and cheap to read.
@@ -512,6 +521,44 @@ export function getKpisForSecurity(
   };
 }
 
+export interface Week52Range {
+  high: number;
+  low: number;
+  /** As-of date of the source that won (latest priced bar, or the quote). */
+  asOf: string;
+}
+
+/**
+ * THE 52-week range for a security: one value object for every module on the
+ * hub (the stats strip through getKpisForSecurity, and QuoteStats). The two
+ * used to read different sources — the strip took this arbitration, QuoteStats
+ * took the stored quote alone — and printed two lows and two highs on one page
+ * wherever the cached bars were fresher than the quote.
+ *
+ * Fresher source wins. get52WeekRange anchors its trailing window to the
+ * latest BAR date, so months-stale bars back-shift the window and re-include
+ * lows/highs that rolled out of the true 52-week window (HOOD showed a
+ * 15-month-old low while the IBKR quote was right). The quote goes stale as a
+ * whole but never shifts its window, so it wins only when it is at least as
+ * fresh as the bars — or when there are no usable bars at all.
+ *
+ * Native currency, like the bars and the quote. Null when neither source has
+ * a range.
+ */
+export function getWeek52Range(db: Database.Database, securityId: number): Week52Range | null {
+  const range = get52WeekRange(db, securityId);
+  const quote = getSecurityQuote(db, securityId);
+  if (
+    quote &&
+    quote.week52_high != null &&
+    quote.week52_low != null &&
+    (range == null || quote.as_of_date >= range.endDate)
+  ) {
+    return { high: quote.week52_high, low: quote.week52_low, asOf: quote.as_of_date };
+  }
+  return range ? { high: range.high, low: range.low, asOf: range.endDate } : null;
+}
+
 /**
  * Row shape read from trade_roundtrips before grouping. `entry_cost` never
  * leaves this module — it is only the weight for the blended return.
@@ -529,6 +576,12 @@ interface TradeGradeRow {
   what_went_well: string | null;
   what_went_wrong: string | null;
   review_period: string;
+}
+
+export interface TradeGradesResult {
+  cards: TradeGradeEntry[];
+  /** Stored round trips dropped because entry_date > exit_date. */
+  excludedReversed: number;
 }
 
 /**
@@ -566,12 +619,18 @@ interface TradeGradeRow {
  *
  * ORDER BY exit_date DESC / LIMIT 10 semantics are preserved but applied AFTER
  * grouping: 10 cards, newest exit first.
+ *
+ * A stored row whose entry DATE is after its exit DATE is a pairing artefact
+ * (the two legs were matched backwards), so it is left out of the cards and
+ * counted in `excludedReversed`. The test is on the dates, never on
+ * `holding_days < 0`: a legacy stored short can carry a negative day count
+ * with its dates in order. Stored rows and AI prose are never rewritten.
  */
-export function getTradeGradesBySecurity(
+export function getTradeGradesWithExclusions(
   db: Database.Database,
   securityId: number
-): TradeGradeEntry[] {
-  const rows = db
+): TradeGradesResult {
+  const allRows = db
     .prepare(
       `SELECT
         tr.review_id, tr.grade, tr.entry_date, tr.exit_date,
@@ -584,6 +643,13 @@ export function getTradeGradesBySecurity(
       ORDER BY tr.exit_date DESC, tr.id ASC`
     )
     .all(securityId) as TradeGradeRow[];
+
+  // Compare the calendar dates only, so a stored timestamp on one side cannot
+  // make a same-day trip look reversed.
+  const rows = allRows.filter(
+    (row) => !(row.entry_date.slice(0, 10) > row.exit_date.slice(0, 10))
+  );
+  const excludedReversed = allRows.length - rows.length;
 
   const staleReviews = getStaleTradeReviewIds(db, rows.map((row) => row.review_id));
 
@@ -640,7 +706,15 @@ export function getTradeGradesBySecurity(
     cards.push(entry);
     if (cards.length === 10) break;
   }
-  return cards;
+  return { cards, excludedReversed };
+}
+
+/** The cards alone, for callers that do not show the excluded count. */
+export function getTradeGradesBySecurity(
+  db: Database.Database,
+  securityId: number
+): TradeGradeEntry[] {
+  return getTradeGradesWithExclusions(db, securityId).cards;
 }
 
 // ─── Hub display helpers (pure) ────────────────────────────────
@@ -779,12 +853,10 @@ export function computePositionTotals(positions: SecurityPosition[]): PositionTo
   // "In the gain" = has a gain AND a known basis. The query only produces a
   // gain for a known basis; the second test keeps the two sets identical even
   // if a caller hands in a row that breaks that rule.
-  const inGain = positions.filter((p) => p.unrealized_gain != null && hasKnownPositionBasis(p));
-  const totalUnrealizedGain =
-    inGain.length > 0 ? inGain.reduce((sum, p) => sum + p.unrealized_gain!, 0) : null;
-  const grossBasis = inGain.reduce((sum, p) => sum + Math.abs(p.cost_basis!), 0);
-  const totalGainRatio =
-    totalUnrealizedGain !== null && grossBasis > 0 ? totalUnrealizedGain / grossBasis : null;
+  const gain = computeAggregateGainRatio(positions);
+  const inGain = gain.rows;
+  const totalUnrealizedGain = gain.totalGain;
+  const totalGainRatio = gain.ratio;
   const gainCoveredValue =
     inGain.length > 0 ? inGain.reduce((sum, p) => sum + (p.current_value ?? 0), 0) : null;
 
@@ -860,6 +932,95 @@ export function computeLotsWithoutPosition(
   return [...byAccount.values()];
 }
 
+export interface UnknownBasisLotNote {
+  accountId: number;
+  accountName: string;
+  /** The position quantity whose basis the holdings row does not carry. */
+  positionQty: number;
+  lotCount: number;
+  /** Sum of quantity_remaining over this account's same-side open lots. */
+  lotQty: number;
+  /** Sum of those lots' cost basis, as the lots table prints it. */
+  lotCostBasis: number;
+}
+
+/**
+ * For each position whose basis is unknown, what the open lots of the same
+ * account carry. The POSITIONS row printed a dash for basis and gain while
+ * the lots table below it printed both, with nothing tying the two together.
+ * The lot figures are only QUOTED: the position row does not adopt them (a
+ * carryover lot can itself be suspect). Pure.
+ *
+ * Only same-side lots count — long lots for a long position, short-sale lots
+ * for a short one. An account with none gets no note.
+ */
+export function computeUnknownBasisLotNotes(
+  positionsWithoutBasis: PositionWithoutBasis[],
+  openLots: Array<{
+    account_id: number;
+    quantity_remaining: number;
+    is_short: number;
+    adjusted_cost_basis: number | null;
+  }>
+): UnknownBasisLotNote[] {
+  const notes: UnknownBasisLotNote[] = [];
+  for (const position of positionsWithoutBasis) {
+    const wantShort = position.quantity < 0;
+    const lots = openLots.filter(
+      (lot) =>
+        lot.account_id === position.account_id &&
+        !!lot.is_short === wantShort &&
+        Math.abs(lot.quantity_remaining) > LOT_DUST &&
+        lot.adjusted_cost_basis != null
+    );
+    if (lots.length === 0) continue;
+    notes.push({
+      accountId: position.account_id,
+      accountName: position.account_name,
+      positionQty: position.quantity,
+      lotCount: lots.length,
+      lotQty: lots.reduce((sum, lot) => sum + lot.quantity_remaining, 0),
+      lotCostBasis: lots.reduce((sum, lot) => sum + (lot.adjusted_cost_basis ?? 0), 0),
+    });
+  }
+  return notes;
+}
+
+export interface ExpiredOptionSnapshotRow {
+  account_id: number;
+  account_name: string;
+  quantity: number;
+  as_of_date: string;
+}
+
+/**
+ * An option contract PAST its expiration that the latest holdings snapshot
+ * still lists (non-zero quantity). Every position reader drops such a row
+ * (liveOptionExpirationSql), so the hub showed no position at all and told
+ * the user to import holdings for a contract the broker still reported. This
+ * is the complement of the filter in getHoldingsBySecurity: the same latest
+ * row per account, kept only when the contract is no longer live. Empty for
+ * a non-option and for a live contract.
+ */
+export function getExpiredOptionSnapshotRows(
+  db: Database.Database,
+  securityId: number
+): ExpiredOptionSnapshotRow[] {
+  return db
+    .prepare(
+      `SELECT h.account_id, a.name AS account_name, h.quantity, h.as_of_date
+       FROM holdings h
+       JOIN accounts a ON a.id = h.account_id
+       JOIN securities s ON s.id = h.security_id
+       WHERE h.security_id = ?
+         AND ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
+         AND LOWER(COALESCE(s.security_type, '')) = 'option'
+         AND NOT ${liveOptionExpirationSql("s")}
+       ORDER BY a.name`
+    )
+    .all(securityId) as ExpiredOptionSnapshotRow[];
+}
+
 // ─── Aggregator ────────────────────────────────────────────────
 
 /**
@@ -891,12 +1052,15 @@ export function getSecurityDetail(
   const notes = getNotesForSecurity(db, securityId);
   const factors = getFactorsForSecurity(db, securityId);
   const transcripts = getTranscriptsForSecurity(db, securityId);
-  const tradeGrades = getTradeGradesBySecurity(db, securityId);
+  const { cards: tradeGrades, excludedReversed: tradeGradesExcluded } =
+    getTradeGradesWithExclusions(db, securityId);
 
   // Research feed mentions
   let researchMentions: ResearchMention[] = [];
+  let researchMentionsTotal: number | null = null;
   try {
     researchMentions = getArticlesForSecurity(db, securityId, 5);
+    researchMentionsTotal = countArticlesForSecurity(db, securityId);
   } catch {
     // Table may not exist yet (pre-migration 019)
   }
@@ -916,6 +1080,7 @@ export function getSecurityDetail(
     security,
     price,
     kpis,
+    week52: getWeek52Range(db, securityId),
     positions,
     totalValue: totals.totalValue,
     totalCostBasis: totals.totalCostBasis,
@@ -924,6 +1089,8 @@ export function getSecurityDetail(
     gainCoveredValue: totals.gainCoveredValue,
     positionsWithoutBasis: totals.positionsWithoutBasis,
     lotsWithoutPosition,
+    unknownBasisLotNotes: computeUnknownBasisLotNotes(totals.positionsWithoutBasis, openTaxLots),
+    expiredOptionSnapshotRows: getExpiredOptionSnapshotRows(db, securityId),
     openTaxLots,
     expiredOptionLotsAwaitingClose,
     closedSales,
@@ -935,7 +1102,9 @@ export function getSecurityDetail(
     factors,
     transcripts,
     tradeGrades,
+    tradeGradesExcluded,
     researchMentions,
+    researchMentionsTotal,
     usdPerUnit: getUsdPerUnit(db, security.currency ?? "USD"),
   };
 }

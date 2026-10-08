@@ -21,6 +21,19 @@ interface DigestStatus {
   } | null;
 }
 
+// The API's refusal tells an API caller to pass an override flag. This panel
+// has no such control, so the sentence is replaced with where the list lives.
+const OVERRIDE_HINT = /\s*Pass override: true to send anyway\.?/;
+
+export function sendRefusalCopy(message: string, emailType: EmailType): string {
+  if (!OVERRIDE_HINT.test(message)) return message;
+  const label = emailType === "digest" ? "Morning Digest" : "Sunday Briefing";
+  return message.replace(
+    OVERRIDE_HINT,
+    ` This panel can only send to the configured recipients (Settings → Email Recipients → ${label}).`,
+  );
+}
+
 export function SendDigestPanel({ onClose }: { onClose: () => void }) {
   const [status, setStatus] = useState<DigestStatus | null>(null);
   const [emailType, setEmailType] = useState<EmailType>("digest");
@@ -80,7 +93,7 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
           // Update status
           setStatus((s) => s ? { ...s, lastDigestSentAt: new Date().toISOString() } : s);
         } else {
-          setResult({ success: false, message: `Couldn't send the digest: ${r.message}` });
+          setResult({ success: false, message: `Couldn't send the digest: ${sendRefusalCopy(r.message, "digest")}` });
         }
       } else {
         // Weekly briefing
@@ -104,7 +117,7 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
           setResult({ success: true, message: `Sent to ${r.data.sentTo}` });
           setStatus((s) => s ? { ...s, lastBriefingSentAt: new Date().toISOString() } : s);
         } else {
-          setResult({ success: false, message: `Couldn't send the briefing: ${r.message}` });
+          setResult({ success: false, message: `Couldn't send the briefing: ${sendRefusalCopy(r.message, "briefing")}` });
         }
       }
     } catch {
@@ -113,6 +126,10 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
       setSending(false);
     }
   }, [emailType, recipient, digestMode, sinceDate, briefingMode, weekOfDate]);
+
+  // A status line describes the send it came from. Changing the email type or
+  // its window makes it stale, so every such control clears it.
+  const clearResult = () => setResult(null);
 
   const lastSent = emailType === "digest" ? status?.lastDigestSentAt : status?.lastBriefingSentAt;
 
@@ -134,7 +151,7 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
       {/* Type toggle */}
       <div className="flex gap-1 rounded-md bg-raised p-0.5">
         <button
-          onClick={() => setEmailType("digest")}
+          onClick={() => { clearResult(); setEmailType("digest"); }}
           className={`flex-1 px-3 py-1 rounded text-xs font-medium transition-colors ${
             emailType === "digest" ? "bg-panel text-ink shadow-sm" : "text-ink-dim hover:text-ink"
           }`}
@@ -142,7 +159,7 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
           Daily Digest
         </button>
         <button
-          onClick={() => setEmailType("briefing")}
+          onClick={() => { clearResult(); setEmailType("briefing"); }}
           className={`flex-1 px-3 py-1 rounded text-xs font-medium transition-colors ${
             emailType === "briefing" ? "bg-panel text-ink shadow-sm" : "text-ink-dim hover:text-ink"
           }`}
@@ -165,7 +182,7 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
         <div className="flex flex-col gap-2">
           <select
             value={digestMode}
-            onChange={(e) => setDigestMode(e.target.value as DigestMode)}
+            onChange={(e) => { clearResult(); setDigestMode(e.target.value as DigestMode); }}
             className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink"
           >
             <option value="today">Today&apos;s articles</option>
@@ -178,7 +195,7 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
             <input
               type="date"
               value={sinceDate}
-              onChange={(e) => setSinceDate(e.target.value)}
+              onChange={(e) => { clearResult(); setSinceDate(e.target.value); }}
               className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink"
             />
           )}
@@ -187,7 +204,7 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
         <div className="flex flex-col gap-2">
           <select
             value={briefingMode}
-            onChange={(e) => setBriefingMode(e.target.value as BriefingMode)}
+            onChange={(e) => { clearResult(); setBriefingMode(e.target.value as BriefingMode); }}
             className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink"
           >
             <option value="this_week">This week</option>
@@ -198,7 +215,7 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
             <input
               type="date"
               value={weekOfDate}
-              onChange={(e) => setWeekOfDate(e.target.value)}
+              onChange={(e) => { clearResult(); setWeekOfDate(e.target.value); }}
               className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink"
             />
           )}

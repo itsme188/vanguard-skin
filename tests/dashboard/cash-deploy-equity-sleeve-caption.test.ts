@@ -13,13 +13,14 @@ import { equitySleeveCaptionLead } from "@/lib/compute/cash-deploy";
 describe("equitySleeveCaptionLead", () => {
   it("names the benchmark and what the sleeve excludes", () => {
     expect(equitySleeveCaptionLead("VTI")).toBe(
-      "Sector gaps vs VTI are measured on the equity sleeve — VTI holds no fixed income or cash, so those are excluded from current weights, which are shares of the equity sleeve plus the cash being deployed:"
+      "Sector gaps vs VTI are measured on the equity sleeve — VTI holds no fixed income, cash, or non-comparable diversified funds, so those are excluded from current weights, which are shares of the equity sleeve plus the cash being deployed:"
     );
   });
 
   it("carries whichever benchmark the scope resolved to", () => {
     expect(equitySleeveCaptionLead("QQQ")).toContain("vs QQQ");
     expect(equitySleeveCaptionLead("QQQ")).toContain("QQQ holds no fixed income");
+    expect(equitySleeveCaptionLead("QQQ")).toContain("non-comparable diversified funds");
   });
 });
 

@@ -11,6 +11,7 @@ import {
   LEVEL_PLAUSIBILITY_MAX_DISTANCE,
   LEVEL_PRICE_MAX_AGE_DAYS,
   isLevelBeyondScanRange,
+  isLevelConditionMet,
   levelPriceIsFreshSql,
 } from "@/lib/levels/scan-range";
 import { lastFiredDateET } from "@/lib/levels/last-fired-date";
@@ -272,10 +273,8 @@ export function checkLevelTriggerState(
     return { hit: false, effectivePrice: effective, beyondScanRange: true };
   }
 
-  const goingDown = ["support", "entry", "scale_in", "stop"].includes(level.level_type);
-  const hit = goingDown
-    ? currentPrice <= effective
-    : currentPrice >= effective; // resistance, exit
+  // The direction rule has one home: isLevelConditionMet (lib/levels/scan-range.ts).
+  const hit = isLevelConditionMet(level.level_type, effective, currentPrice);
   return { hit, effectivePrice: effective, beyondScanRange: false };
 }
 

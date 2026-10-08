@@ -30,9 +30,10 @@ import { EmptyState } from "../components/EmptyState";
 import { TaxReportCard } from "../components/TaxReportCard";
 import { resolveSelectedYear } from "./select-year";
 import { Count, PrivateText } from "@/lib/privacy/components";
+import { SECURITY_FILTER_CHIP_CAPTION } from "@/lib/compute/tax-report";
 
 export default async function TaxLotsPage(props: {
-  searchParams: Promise<{ year?: string; account?: string; security?: string }>;
+  searchParams: Promise<{ year?: string; account?: string; security?: string; pending?: string }>;
 }) {
   const searchParams = await props.searchParams;
 
@@ -125,6 +126,26 @@ export default async function TaxLotsPage(props: {
   // re-derived here. They leave the Unrealized tile and get their own line.
   const pendingStatementRows = capitalOpenLots.filter((l) => l.pending_statement);
   const heldOpenLots = capitalOpenLots.filter((l) => !l.pending_statement);
+
+  // ?pending=1 narrows the Open Lots TABLE to those lots (QA:
+  // mobile-tax-lots-pending-statement--explanation-hover-only-banner-names-no-positions):
+  // on a phone they are otherwise scattered through hundreds of rows. The
+  // tiles and the summary line above keep describing the whole scope. With
+  // nothing pending the param is ignored, so the table never empties out.
+  const pendingOnly = searchParams.pending === "1" && pendingStatementRows.length > 0;
+  const pendingFilterParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(searchParams)) {
+    if (key !== "pending" && typeof value === "string") pendingFilterParams.set(key, value);
+  }
+  if (!pendingOnly) pendingFilterParams.set("pending", "1");
+  const pendingFilterQuery = pendingFilterParams.toString();
+  const pendingFilter =
+    pendingStatementRows.length > 0
+      ? {
+          href: `/dashboard/tax-lots${pendingFilterQuery ? `?${pendingFilterQuery}` : ""}`,
+          active: pendingOnly,
+        }
+      : undefined;
   const sumUsd = (rows: typeof closedSales) =>
     rows.reduce((sum, s) => sum + (s.currency === "USD" ? s.realized_gain_loss : 0), 0);
 
@@ -169,7 +190,11 @@ export default async function TaxLotsPage(props: {
           {hasData && staleness.stale && (
             <TaxLotStalenessNotice marker={staleness} className="max-w-md" />
           )}
-          <RecomputeButton endpoint="/api/compute/tax-lots" label="Recompute" />
+          <RecomputeButton
+            endpoint="/api/compute/tax-lots"
+            label="Recompute"
+            completionEventName="tax-lots:recomputed"
+          />
         </div>
       </div>
 
@@ -195,6 +220,8 @@ export default async function TaxLotsPage(props: {
               Filtered: {filterSecurity.symbol}
               <span aria-hidden="true">✕</span>
             </Link>
+            {/* The filter is half-applied by design; say which half. */}
+            <span className="text-xs text-ink-dim">{SECURITY_FILTER_CHIP_CAPTION}</span>
           </>
         )}
       </div>
@@ -233,10 +260,11 @@ export default async function TaxLotsPage(props: {
                 engineEstimatedShortTermGain: activeSummary?.engineEstimatedShortTermGain ?? sumUsd(engineEstimatedRows.filter(s => !s.is_long_term)),
               }}
               year={selectedYear}
+              pendingFilter={pendingFilter}
             />
           ) : (
             <>
-              <TaxLotSummaryCards summary={summary} year={selectedYear} />
+              <TaxLotSummaryCards summary={summary} year={selectedYear} pendingFilter={pendingFilter} />
               {accountSummaries.length > 1 && (
                 <AccountSummaryCards accounts={accountSummaries} year={selectedYear} />
               )}
@@ -255,7 +283,12 @@ export default async function TaxLotsPage(props: {
               <PrivateText>{expiredOptionSymbols.join(", ")}</PrivateText>
             </p>
           )}
-          <TaxReportCard year={selectedYear} accountName={selectedAccount || undefined} />
+          <TaxReportCard
+            year={selectedYear}
+            accountName={selectedAccount || undefined}
+            refreshEventName="tax-lots:recomputed"
+            unappliedSecuritySymbol={filterSecurity?.symbol}
+          />
           <section aria-label="Currency conversions (Section 988, ordinary income)">
             <TaxLotCurrencyConversionTable
               lots={currencyConversionOpenLots}
@@ -263,7 +296,11 @@ export default async function TaxLotsPage(props: {
               showAccount={!selectedAccount}
             />
           </section>
-          <OpenLotsTable lots={capitalOpenLots} showAccount={!selectedAccount} />
+          <OpenLotsTable
+            lots={pendingOnly ? pendingStatementRows : capitalOpenLots}
+            showAccount={!selectedAccount}
+            pendingOnly={pendingOnly}
+          />
           <ClosedSalesTable sales={capitalClosedSales} showAccount={!selectedAccount} />
         </>
       ) : (

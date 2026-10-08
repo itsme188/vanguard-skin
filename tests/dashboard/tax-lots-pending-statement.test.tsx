@@ -72,15 +72,20 @@ describe("shared copy", () => {
 describe("PendingStatementLine (summary disclosure)", () => {
   it("names the count and the basis, and says the lots are out of Unrealized", () => {
     const html = renderToStaticMarkup(<PendingStatementLine positions={2} basis={1100} />);
-    expect(html).toContain("<span>2</span> positions closed per live data —");
+    expect(html).toContain("Positions closed per live data: <span>2</span> —");
     expect(html).toContain("awaiting statement");
     expect(html).toContain("$1,100");
     expect(html).toContain("excluded from Unrealized");
   });
 
-  it("singular for one position", () => {
-    const html = renderToStaticMarkup(<PendingStatementLine positions={1} basis={10} />);
-    expect(html).toContain("<span>1</span> position closed per live data");
+  it("the noun does not change with the count (a masked count must not leak one-vs-many)", () => {
+    const one = renderToStaticMarkup(<PendingStatementLine positions={1} basis={10} />);
+    expect(one).toContain("Positions closed per live data: <span>1</span>");
+    privacyState.isPrivate = true;
+    const maskedOne = renderToStaticMarkup(<PendingStatementLine positions={1} basis={10} />);
+    const maskedMany = renderToStaticMarkup(<PendingStatementLine positions={7} basis={10} />);
+    privacyState.isPrivate = false;
+    expect(maskedOne).toBe(maskedMany);
   });
 
   it("renders nothing when no position is pending", () => {
@@ -90,7 +95,7 @@ describe("PendingStatementLine (summary disclosure)", () => {
   it("privacy mode masks the count and the basis, keeping the prose", () => {
     privacyState.isPrivate = true;
     const html = renderToStaticMarkup(<PendingStatementLine positions={2} basis={1100} />);
-    expect(html).toContain(`<span>${MASK}</span> positions closed per live data`);
+    expect(html).toContain(`Positions closed per live data: <span>${MASK}</span>`);
     expect(html).not.toContain("1,100");
     expect(html).not.toMatch(/>2</);
   });
@@ -102,7 +107,7 @@ describe("PendingStatementLine (summary disclosure)", () => {
         year={2026}
       />
     );
-    expect(html).toContain("<span>3</span> positions closed per live data");
+    expect(html).toContain("Positions closed per live data: <span>3</span>");
     const none = renderToStaticMarkup(<TaxLotSummaryCards summary={summary()} year={2026} />);
     expect(none).not.toContain("closed per live data");
   });

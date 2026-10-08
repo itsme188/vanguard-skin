@@ -3,6 +3,7 @@
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
+import { ScrollFade } from "./ScrollFade";
 
 const components: Components = {
   p({ node, ...props }) {
@@ -76,9 +77,11 @@ const components: Components = {
   },
   table({ node, ...props }) {
     return (
-      <div className="overflow-x-auto mb-3">
+      // ScrollFade, not a bare overflow div: a wide answer table otherwise
+      // cuts its last column mid-figure with no cue that it scrolls.
+      <ScrollFade className="mb-3">
         <table className="w-full border-collapse text-xs" {...props} />
-      </div>
+      </ScrollFade>
     );
   },
   thead({ node, ...props }) {

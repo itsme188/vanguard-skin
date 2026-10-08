@@ -71,8 +71,8 @@ describe("AllHoldingsTable treats a zero cost basis as unknown everywhere", () =
   it("a total with no contributing row is null (unknown), never a zero", () => {
     const text = src();
     expect(text).toMatch(/totalCostBasis:\s*withBasis\.length === 0 \? null/);
-    expect(text).toMatch(/withGain\s*=\s*rows\.filter\(\(h\)\s*=>\s*h\.unrealized_gain\s*!==\s*null\)/);
-    expect(text).toMatch(/totalGain:\s*withGain\.length === 0 \? null/);
+    expect(text).toContain("const gain = computeAggregateGainRatio(rows)");
+    expect(text).toContain("totalGain: gain.totalGain");
   });
 
   it("the footer cost cell renders the unknown placeholder for a null total", () => {
@@ -114,7 +114,11 @@ describe("AllHoldingsTable treats a zero cost basis as unknown everywhere", () =
     const footer = text.slice(anchorIndex(text, "<tfoot>"));
     expect(footer).toContain("Positions with no cost basis");
     expect(footer).toContain("Positions with a cost basis but no current price");
-    expect(footer).not.toContain("title=");
+    const withoutGrossBasisTitle = footer.replace(
+      "title={footer.gainHasShort ? GROSS_GAIN_PERCENT_TOOLTIP : undefined}",
+      ""
+    );
+    expect(withoutGrossBasisTitle).not.toContain("title=");
     expect(text).not.toContain("missingGainTooltip");
   });
 

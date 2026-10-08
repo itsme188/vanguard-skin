@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import apiFetch from "@/lib/http/apiFetch";
 import { EMAIL_FRAME_SANDBOX, withExternalLinkTarget } from "@/lib/email/archive-srcdoc";
@@ -14,6 +14,31 @@ interface DigestPreviewResponse {
   structuredHtml: string | null;
   bySourceHtml: string | null;
   byCompanyHtml: string | null;
+  /**
+   * Set by POST when the AI synthesis failed during THIS preview and the
+   * Structured layout is the per-source fallback. Absent/null = no fallback.
+   */
+  synthesisFallback?: string | null;
+}
+
+/**
+ * Where the layout lands when the Structured generation finishes. A reader who
+ * chose a tab keeps it — Structured only becomes available. Without a choice
+ * the modal moves to Structured (the layout the email sends).
+ */
+export function layoutAfterGeneration(
+  current: Layout,
+  userPicked: boolean,
+  structuredReady: boolean,
+): Layout {
+  if (!structuredReady) return current;
+  return userPicked ? current : "structured";
+}
+
+/** The empty state names the window that was evaluated. */
+export function emptyWindowMessage(since: string | null | undefined): string {
+  if (!since) return "No articles or alerts in the selected window.";
+  return `No articles or alerts since ${formatSince(since)}.`;
 }
 
 interface DigestEmailViewerProps {
@@ -39,13 +64,23 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
   // (#35 task 5: GET is a side-effect-free read of the two deterministic
   // renderings). genLoading covers the extra POST round-trip.
   const [genLoading, setGenLoading] = useState(false);
+  const [genFailed, setGenFailed] = useState(false);
   const [layout, setLayout] = useState<Layout>("structured");
+  // True once the reader clicks a layout tab; the generation finishing must
+  // not move them off it. A ref: the POST continuation reads the latest value.
+  const userPickedLayout = useRef(false);
+  const pickLayout = (next: Layout) => {
+    userPickedLayout.current = true;
+    setLayout(next);
+  };
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setLoading(true);
     setGenLoading(false);
+    setGenFailed(false);
+    userPickedLayout.current = false;
     setError(null);
     setData(null);
 
@@ -63,8 +98,10 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
         const getData = (await getRes.json()) as DigestPreviewResponse;
         if (cancelled) return;
         setData(getData);
-        if (getData.bySourceHtml) setLayout("by_source");
-        else if (getData.byCompanyHtml) setLayout("by_company");
+        if (!userPickedLayout.current) {
+          if (getData.bySourceHtml) setLayout("by_source");
+          else if (getData.byCompanyHtml) setLayout("by_company");
+        }
         setLoading(false);
 
         // 2) POST — generate the structured (synthesis) layout. Routed through
@@ -73,11 +110,17 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
         //    GET can miss).
         setGenLoading(true);
         const postRes = await apiFetch(url, { method: "POST" });
-        if (!postRes.ok) return; // keep the deterministic views; structured stays unavailable
+        if (!postRes.ok) {
+          // keep the deterministic views; structured stays unavailable
+          if (!cancelled) setGenFailed(true);
+          return;
+        }
         const postData = (await postRes.json()) as DigestPreviewResponse;
         if (cancelled) return;
         setData(postData);
-        if (postData.structuredHtml) setLayout("structured");
+        setLayout((current) =>
+          layoutAfterGeneration(current, userPickedLayout.current, Boolean(postData.structuredHtml)),
+        );
       } catch (err: unknown) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load digest.");
       } finally {
@@ -109,6 +152,8 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
     : layout === "by_source" ? data?.bySourceHtml
     : data?.byCompanyHtml;
   const otherAvailable = Boolean(data?.structuredHtml || data?.bySourceHtml || data?.byCompanyHtml);
+  // The POST is one AI call that can take about a minute; say so while it runs.
+  const structuredGenerating = genLoading && !data?.structuredHtml;
 
   return createPortal(
     <div
@@ -140,19 +185,27 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
             <div className="flex rounded-md border border-edge overflow-hidden text-[11px]">
               <button
                 type="button"
-                onClick={() => setLayout("structured")}
-                disabled={!data?.structuredHtml}
-                className={`px-2.5 py-1 ${
+                onClick={() => pickLayout("structured")}
+                disabled={!data?.structuredHtml && !structuredGenerating}
+                aria-busy={structuredGenerating}
+                aria-label={structuredGenerating ? "Structured (generating)" : undefined}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 ${
                   layout === "structured"
                     ? "bg-gold/15 text-gold-ink"
                     : "text-ink-dim hover:bg-raised disabled:opacity-40"
                 }`}
               >
+                {structuredGenerating && (
+                  <span
+                    aria-hidden="true"
+                    className="w-2.5 h-2.5 border-2 border-current border-t-transparent rounded-full animate-spin"
+                  />
+                )}
                 Structured
               </button>
               <button
                 type="button"
-                onClick={() => setLayout("by_source")}
+                onClick={() => pickLayout("by_source")}
                 disabled={!data?.bySourceHtml}
                 className={`px-2.5 py-1 border-l border-edge ${
                   layout === "by_source"
@@ -164,7 +217,7 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
               </button>
               <button
                 type="button"
-                onClick={() => setLayout("by_company")}
+                onClick={() => pickLayout("by_company")}
                 disabled={!data?.byCompanyHtml}
                 className={`px-2.5 py-1 border-l border-edge ${
                   layout === "by_company"
@@ -194,7 +247,22 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
           )}
           {data?.empty && (
             <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
-              No articles or alerts in the selected window.
+              {emptyWindowMessage(data.since)}
+            </div>
+          )}
+          {data && !data.empty && structuredGenerating && layout !== "structured" && (
+            <div role="status" className="px-5 py-2 text-[12px] text-ink-dim border-b border-edge">
+              Generating the Structured view (one AI call, about a minute). It opens on its tab when ready.
+            </div>
+          )}
+          {data && !data.empty && genFailed && !data.structuredHtml && (
+            <div role="status" className="px-5 py-2 text-[12px] text-warn border-b border-edge">
+              The Structured view could not be generated this time. The other layouts are unaffected.
+            </div>
+          )}
+          {data && !data.empty && layout === "structured" && data.structuredHtml && data.synthesisFallback && (
+            <div role="status" className="px-5 py-2 text-[12px] text-warn border-b border-edge">
+              AI synthesis was unavailable for this preview, so this is the per-source fallback layout.
             </div>
           )}
           {data && !data.empty && activeHtml && (
@@ -208,7 +276,7 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
           )}
           {data && !data.empty && !activeHtml && layout === "structured" && genLoading && (
             <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
-              Generating structured view…
+              Generating structured view (one AI call, about a minute)…
             </div>
           )}
           {data && !data.empty && !activeHtml && !(layout === "structured" && genLoading) && (
@@ -217,7 +285,7 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
               {otherAvailable && (
                 <button
                   type="button"
-                  onClick={() => setLayout(layout === "structured" ? "by_source" : layout === "by_source" ? "by_company" : "structured")}
+                  onClick={() => pickLayout(layout === "structured" ? "by_source" : layout === "by_source" ? "by_company" : "structured")}
                   className="block mx-auto mt-3 text-[12px] text-gold-ink hover:text-gold/80"
                 >
                   Switch to the other view →
@@ -232,11 +300,25 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
   );
 }
 
-function formatSince(iso: string): string {
+export function formatSince(iso: string): string {
   if (!iso) return "—";
-  // Accept either YYYY-MM-DD or full ISO. Render as compact local-date string.
-  const dateOnly = iso.length <= 10 ? iso : iso.slice(0, 10);
-  const d = new Date(`${dateOnly}T00:00:00`);
-  if (isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  // A bare YYYY-MM-DD is a calendar date: render it as written.
+  if (iso.length <= 10) {
+    const d = new Date(`${iso}T00:00:00`);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  }
+  // A full timestamp (the last-sent marker) is an instant: show its Eastern
+  // date AND time. A date alone hides why same-day articles are outside it.
+  const t = new Date(iso);
+  if (isNaN(t.getTime())) return iso;
+  const text = t.toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `${text} ET`;
 }

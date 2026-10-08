@@ -21,6 +21,8 @@ import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { marketValue } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { formatLargeUSD } from "@/lib/format";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
 
 export type CashDeployMode = "benchmark" | "factor_balance" | "heuristic";
 
@@ -108,6 +110,51 @@ export function isNonEquitySectorBucket(sector: string): boolean {
   return NON_EQUITY_SECTOR_BUCKETS.has(sector.trim().toLowerCase());
 }
 
+function isExcludedEquitySleeveBucket(sector: string): boolean {
+  const bucket = sector.trim().toLowerCase();
+  return isNonEquitySectorBucket(sector) || bucket === "diversified";
+}
+
+interface HoldingForSector {
+  symbol: string;
+  security_type: string | null;
+  sector: string | null;
+  fund_category: string | null;
+  geography: string | null;
+  market_cap_category: string | null;
+  style: string | null;
+}
+
+const BROAD_US_INDEX_SYMBOLS = new Set([
+  "SPY",
+  "VOO",
+  "IVV",
+  "VTI",
+  "ITOT",
+  "VFIAX",
+  "QQQ",
+]);
+
+function normalized(value: string | null | undefined): string {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+export function isBenchmarkLikeBroadUsIndexFund(sec: HoldingForSector): boolean {
+  const type = normalized(sec.security_type);
+  if (type !== "etf" && type !== "mutual fund") return false;
+  if (issuerSiblings(sec.symbol).some((symbol) => BROAD_US_INDEX_SYMBOLS.has(symbol.toUpperCase()))) {
+    return true;
+  }
+  const category = normalized(sec.fund_category);
+  const geography = normalized(sec.geography);
+  const marketCap = normalized(sec.market_cap_category);
+  const style = normalized(sec.style);
+  const broadUsCategory = category === "us total market equity" || category === "us large cap equity";
+  const broadCap = marketCap === "" || marketCap.includes("large") || marketCap.includes("multi");
+  const blendStyle = style === "" || style === "blend";
+  return broadUsCategory && geography === "us" && broadCap && blendStyle;
+}
+
 /**
  * An equity benchmark is one whose composition carries NO weight in any
  * fixed-income / cash bucket (VTI, SPY, QQQ, DIA all qualify). A blended
@@ -126,11 +173,13 @@ function isEquityOnlyBenchmark(benchmarkMap: Map<string, number>): boolean {
 interface CurrentHoldingSummary {
   totalValue: number;
   sectorValue: Map<string, number>;
+  heldCandidates: WatchlistCandidate[];
 }
 
 function loadCurrentHoldings(
   db: Database.Database,
-  accountIds: number[] | undefined
+  accountIds: number[] | undefined,
+  benchmarkMap: Map<string, number>
 ): CurrentHoldingSummary {
   const accountFilter = accountIds?.length
     ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
@@ -152,9 +201,15 @@ function loadCurrentHoldings(
         ) lp ON p.security_id = lp.security_id AND p.date = lp.max_date
       )
       SELECT
+        s.id AS security_id,
         s.symbol,
+        s.name,
         s.security_type,
         s.sector,
+        s.fund_category,
+        s.geography,
+        s.market_cap_category,
+        s.style,
         s.currency,
         COALESCE(s.multiplier, 1) AS multiplier,
         SUM(lh.quantity) AS quantity,
@@ -167,9 +222,15 @@ function loadCurrentHoldings(
     `
     )
     .all(...params) as Array<{
+      security_id: number;
       symbol: string;
+      name: string | null;
       security_type: string | null;
       sector: string | null;
+      fund_category: string | null;
+      geography: string | null;
+      market_cap_category: string | null;
+      style: string | null;
       currency: string | null;
       multiplier: number;
       quantity: number;
@@ -178,17 +239,34 @@ function loadCurrentHoldings(
 
   const etfWeights = getEtfSectorWeights(db);
   const sectorValue = new Map<string, number>();
+  const heldCandidatesBySymbol = new Map<string, WatchlistCandidate>();
   let totalValue = 0;
   for (const r of rows) {
     const mv = marketValue(r.quantity, r.price, r.security_type, r.multiplier, getUsdPerUnit(db, r.currency));
     if (mv <= 0) continue;
     totalValue += mv;
-    for (const part of explodeHoldingBySector(r.symbol, r.security_type, mv, etfWeights, r.sector)) {
+    const cashEquivalent = isCashEquivalentSecurity({
+      security_type: r.security_type,
+      fund_category: r.fund_category,
+    });
+    const parts = cashEquivalent
+      ? [{ sector: "Cash Equivalent", value: mv }]
+      : benchmarkSectorParts(r, mv, etfWeights, benchmarkMap);
+    for (const part of parts) {
       sectorValue.set(part.sector, (sectorValue.get(part.sector) ?? 0) + part.value);
+    }
+    const primarySector = parts.length === 1 ? parts[0].sector : r.sector;
+    if (!cashEquivalent && primarySector && !isExcludedEquitySleeveBucket(primarySector)) {
+      heldCandidatesBySymbol.set(r.symbol, {
+        symbol: r.symbol,
+        securityId: r.security_id,
+        sector: primarySector,
+        thesis: r.name ? `Held name: ${r.name}` : "Held name",
+      });
     }
   }
 
-  return { totalValue, sectorValue };
+  return { totalValue, sectorValue, heldCandidates: Array.from(heldCandidatesBySymbol.values()) };
 }
 
 interface WatchlistCandidate {
@@ -196,6 +274,20 @@ interface WatchlistCandidate {
   securityId: number;
   sector: string | null;
   thesis: string | null;
+}
+
+function benchmarkSectorParts(
+  r: HoldingForSector,
+  marketValue: number,
+  etfWeights: Map<string, Array<{ sector: string; weight_pct: number }>>,
+  benchmarkMap: Map<string, number>
+): Array<{ sector: string; value: number }> {
+  const parts = explodeHoldingBySector(r.symbol, r.security_type, marketValue, etfWeights, r.sector);
+  const onlyDiversified = parts.length === 1 && normalized(parts[0].sector) === "diversified";
+  if (!onlyDiversified || benchmarkMap.size === 0 || !isBenchmarkLikeBroadUsIndexFund(r)) return parts;
+  return Array.from(benchmarkMap.entries())
+    .filter(([, weight]) => weight > 0)
+    .map(([sector, weight]) => ({ sector, value: marketValue * weight }));
 }
 
 function loadWatchlistCandidates(
@@ -258,7 +350,7 @@ function computeSectorGaps(
   let excludedDollars = 0;
   if (equityOnly) {
     for (const [sector, value] of current.sectorValue) {
-      if (!isNonEquitySectorBucket(sector) || value <= 0) continue;
+      if (!isExcludedEquitySleeveBucket(sector) || value <= 0) continue;
       excludedDollars += value;
       excludedBuckets.push({
         sector,
@@ -288,7 +380,7 @@ function computeSectorGaps(
     // can never close is not an actionable gap. Buckets the index genuinely
     // holds at 0% (a GICS sector outside the index, e.g. QQQ's Financials)
     // stay, because cash CAN close those.
-    if (equityOnly && isNonEquitySectorBucket(sector)) continue;
+    if (equityOnly && isExcludedEquitySleeveBucket(sector)) continue;
 
     const currentDollars = current.sectorValue.get(sector) ?? 0;
     const currentWeight = gapBasisTotal > 0 ? currentDollars / gapBasisTotal : 0;
@@ -321,7 +413,7 @@ function computeSectorGaps(
  * component renders them through `<Pct>` rather than baking them in here.
  */
 export function equitySleeveCaptionLead(benchmarkSymbol: string): string {
-  return `Sector gaps vs ${benchmarkSymbol} are measured on the equity sleeve — ${benchmarkSymbol} holds no fixed income or cash, so those are excluded from current weights, which are shares of the equity sleeve plus the cash being deployed:`;
+  return `Sector gaps vs ${benchmarkSymbol} are measured on the equity sleeve — ${benchmarkSymbol} holds no fixed income, cash, or non-comparable diversified funds, so those are excluded from current weights, which are shares of the equity sleeve plus the cash being deployed:`;
 }
 
 
@@ -343,7 +435,7 @@ export function suggestAllocation(
 ): CashDeploySuggestion {
   const benchmarkSymbol = getDefaultBenchmark(scope);
   const benchmarkMap = getBenchmarkSectorMap(db, benchmarkSymbol);
-  const current = loadCurrentHoldings(db, accountIds);
+  const current = loadCurrentHoldings(db, accountIds, benchmarkMap);
   const watchlist = loadWatchlistCandidates(db, scope);
   const notes: string[] = [];
 
@@ -382,7 +474,7 @@ export function suggestAllocation(
   const gaps = applyThemeAwareBoost(rawGaps, opts.activeThemes ?? []);
 
   // Rank watchlist candidates by boosted gap closure score
-  const ranked = watchlist
+  const rankedWatchlist = watchlist
     .map((c) => {
       const sector = c.sector ?? "Unknown";
       const matchingGap = gaps.find((g) => g.sector === sector && g.gapPp < 0);
@@ -393,6 +485,20 @@ export function suggestAllocation(
     })
     .filter((x): x is WatchlistCandidate & { score: number; sectorTarget: string; rationale: string } => x !== null)
     .sort((a, b) => b.score - a.score);
+  const watchlistSymbols = new Set(rankedWatchlist.map((c) => c.symbol));
+  const heldFallback = current.heldCandidates
+    .filter((c) => !watchlistSymbols.has(c.symbol))
+    .map((c) => {
+      const sector = c.sector ?? "Unknown";
+      const matchingGap = gaps.find((g) => g.sector === sector && g.gapPp < 0);
+      if (!matchingGap) return null;
+      const score = matchingGap.gapClosureScore * 0.9;
+      const rationale = `Held name pick: underweight ${sector} by ${matchingGap.gapPp.toFixed(1)}pp vs benchmark`;
+      return { ...c, score, sectorTarget: sector, rationale };
+    })
+    .filter((x): x is WatchlistCandidate & { score: number; sectorTarget: string; rationale: string } => x !== null)
+    .sort((a, b) => b.score - a.score);
+  const ranked = [...rankedWatchlist, ...heldFallback];
 
   // Per-name cap: don't allocate more than top1_max × projected total to any
   // single position. Reads construction_caps_<scope> from settings.
@@ -415,15 +521,20 @@ export function suggestAllocation(
   const perNameCap = projectedTotal * top1Cap;
 
   const picks: CashDeployPick[] = [];
-  let cashRemaining = cashAmount;
+  let cashRemainingCents = Math.round(cashAmount * 100);
 
   for (const candidate of ranked) {
-    if (cashRemaining <= 0) break;
+    if (cashRemainingCents <= 0) break;
     const matchingGap = gaps.find((g) => g.sector === candidate.sectorTarget && g.residualGapPp < 0);
     if (!matchingGap) continue;
     const dollarGap = Math.abs(matchingGap.residualDollarGap);
-    const allocation = Math.min(cashRemaining, dollarGap, perNameCap);
-    if (allocation <= 0) continue;
+    const allocationCents = Math.min(
+      cashRemainingCents,
+      Math.max(0, Math.round(dollarGap * 100)),
+      Math.max(0, Math.round(perNameCap * 100))
+    );
+    if (allocationCents <= 0) continue;
+    const allocation = allocationCents / 100;
 
     const exposureDelta = computeExposureDelta(db, scope, accountIds, [
       { symbol: candidate.symbol, action: "buy", dollarAmount: allocation },
@@ -439,7 +550,7 @@ export function suggestAllocation(
       exposureDelta,
     });
 
-    cashRemaining -= allocation;
+    cashRemainingCents -= allocationCents;
     // Reduce the RESIDUAL gap so subsequent candidates targeting the same
     // sector don't double-fill. gapPp/dollarGap (what the table and the
     // rationale string show) never change after computeSectorGaps returns.
@@ -452,13 +563,56 @@ export function suggestAllocation(
     if (gapBasisTotal > 0) matchingGap.residualGapPp += (allocation / gapBasisTotal) * 100;
   }
 
+  const picksBySymbol = new Map(picks.map((pick) => [pick.symbol, pick]));
+  for (const candidate of ranked) {
+    if (cashRemainingCents <= 0) break;
+    const isHeldFallback = candidate.rationale.startsWith("Held name pick:");
+    if (excludedSleeve === null && !isHeldFallback) continue;
+    const existingPick = picksBySymbol.get(candidate.symbol);
+    const currentAllocationCents = Math.round((existingPick?.allocationDollars ?? 0) * 100);
+    const capacityCents = Math.max(
+      0,
+      Math.round(perNameCap * 100) - currentAllocationCents
+    );
+    const allocationCents = Math.min(cashRemainingCents, capacityCents);
+    if (allocationCents <= 0) continue;
+    const allocation = allocationCents / 100;
+    const newAllocation = (existingPick?.allocationDollars ?? 0) + allocation;
+    const exposureDelta = computeExposureDelta(db, scope, accountIds, [
+      { symbol: candidate.symbol, action: "buy", dollarAmount: newAllocation },
+    ]);
+    if (existingPick) {
+      existingPick.allocationDollars = newAllocation;
+      existingPick.exposureDelta = exposureDelta;
+    } else {
+      const pick: CashDeployPick = {
+        symbol: candidate.symbol,
+        securityId: candidate.securityId,
+        sectorTarget: candidate.sectorTarget,
+        allocationDollars: allocation,
+        gapClosureScore: candidate.score,
+        rationale: candidate.rationale,
+        exposureDelta,
+      };
+      picks.push(pick);
+      picksBySymbol.set(pick.symbol, pick);
+    }
+    const matchingGap = gaps.find((g) => g.sector === candidate.sectorTarget);
+    if (matchingGap) {
+      matchingGap.residualDollarGap -= allocation;
+      if (gapBasisTotal > 0) matchingGap.residualGapPp += (allocation / gapBasisTotal) * 100;
+    }
+    cashRemainingCents -= allocationCents;
+  }
+
   const totalAllocated = picks.reduce((s, p) => s + p.allocationDollars, 0);
+  const cashRemaining = Math.round((cashAmount - totalAllocated) * 100) / 100;
   if (cashRemaining > 0.01 && picks.length === 0) {
     notes.push(
       "Couldn't match watchlist names to any benchmark gaps. Consider adding tickers in underweight sectors."
     );
   } else if (cashRemaining > 0.01) {
-    notes.push(`${formatLargeUSD(cashRemaining)} unallocated — no remaining underweight matches.`);
+    notes.push(`${formatLargeUSD(cashRemaining)} unallocated — no remaining underweight matches or per-name capacity.`);
   }
 
   return {

@@ -19,6 +19,35 @@ function resolveSince(request: NextRequest): string {
   );
 }
 
+// The composer's own fallback telemetry (a ring buffer in `settings`, written
+// by generateDigestSinceAdaptive when the AI synthesis fails). The composer
+// returns only markdown, so the preview learns of a fallback by reading this
+// row before and after the call. Read-only here; the sent email is untouched.
+const FALLBACK_RING_KEY = "synthesis_fallbacks_last_30d";
+
+function readFallbackRing(): string | null {
+  try {
+    const row = db
+      .prepare("SELECT value FROM settings WHERE key = ?")
+      .get(FALLBACK_RING_KEY) as { value: string } | undefined;
+    return row?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The reason of a fallback recorded between the two reads, else null. */
+function fallbackRecordedBetween(before: string | null, after: string | null): string | null {
+  if (after === null || after === before) return null;
+  try {
+    const ring: unknown = JSON.parse(after);
+    const last = Array.isArray(ring) ? (ring[ring.length - 1] as { reason?: unknown }) : null;
+    return typeof last?.reason === "string" && last.reason ? last.reason : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 /**
  * GET /api/digest/preview?since=YYYY-MM-DD
  *
@@ -70,10 +99,12 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const since = resolveSince(request);
 
+  const ringBefore = readFallbackRing();
   const structuredMd = await generateDigestSinceAdaptive(db, since, {
     includeAnomalies: false,
     edition: "morning",
   });
+  const synthesisFallback = fallbackRecordedBetween(ringBefore, readFallbackRing());
   const bySourceMd = generateDigestSince(db, since);
   const byCompanyMd = generateDigestByCompanySince(db, since);
 
@@ -93,6 +124,7 @@ export async function POST(request: NextRequest) {
     since,
     empty: false,
     structuredHtml: structuredMd ? briefingToHtml(structuredMd, TITLE) : null,
+    synthesisFallback: structuredMd ? synthesisFallback : null,
     bySourceHtml: bySourceMd ? briefingToHtml(bySourceMd, TITLE) : null,
     byCompanyHtml: byCompanyMd ? briefingToHtml(byCompanyMd, TITLE) : null,
   });

@@ -1,14 +1,19 @@
 import { db } from "@/lib/db";
-import { refreshVanguardHoldingsFromPlaid } from "@/lib/plaid/refresh";
+import {
+  refreshVanguardHoldingsFromPlaid,
+  plaidRefreshBlocker,
+  plaidSyncUnavailableMessage,
+} from "@/lib/plaid/refresh";
 
 export async function POST() {
   try {
     const result = await refreshVanguardHoldingsFromPlaid(db, { force: true });
     if (result === null) {
+      // The refresh returns null for four different causes; name the one
+      // that applies instead of listing two guesses.
       return Response.json({
         success: false,
-        error:
-          "Plaid is not connected — open Settings → Vanguard Live (Plaid) to connect, or a sync is already running.",
+        error: plaidSyncUnavailableMessage(plaidRefreshBlocker(db)),
       });
     }
     return Response.json({ success: true, ...result });
