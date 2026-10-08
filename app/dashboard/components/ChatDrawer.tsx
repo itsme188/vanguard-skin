@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useEffect, useCallback } from "react";
+import { Suspense, useState, useEffect, useCallback, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { ChatInterface } from "./ChatInterface";
 import { useIsMobile } from "@/lib/hooks/useIsMobile";
@@ -35,6 +35,28 @@ function ChatDrawerInner() {
   const isMobile = useIsMobile();
   const isLargeDesktop = useIsLargeDesktop();
   const pathname = usePathname();
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // The slide transition is armed only once the current layout mode has been
+  // on screen for two frames. The first client render is always the 768px+
+  // drawer (both media hooks start false), so at phone width the classes swap
+  // from "off the right edge" to "off the bottom" one render later — with the
+  // transition always on, the closed panel swept across the page on every
+  // load. Same for a resize across a breakpoint. Open/close slides within one
+  // mode are unaffected.
+  const layoutMode = isMobile ? "mobile" : isLargeDesktop ? "rail" : "drawer";
+  const [settledMode, setSettledMode] = useState<string | null>(null);
+  useEffect(() => {
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => setSettledMode(layoutMode));
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [layoutMode]);
+  const slideArmed = settledMode === layoutMode;
 
   // Read collapse state once on mount. The anti-FOUC script in app/layout.tsx
   // already wrote the data attribute, so the first paint is correct — this
@@ -122,6 +144,35 @@ function ChatDrawerInner() {
     }
   }, []);
 
+  // Close the phone overlay / the 768–1279px drawer. Same rule as collapseRail
+  // above: the panel turns aria-hidden + inert on close, so if focus is inside
+  // it (the Close button that was just tapped, the composer on Escape) it must
+  // LEAVE first — Chromium otherwise logs "Blocked aria-hidden on an element
+  // because its descendant retained focus". Focus goes to the control that
+  // re-opens chat (bottom-nav Chat on a phone, the header toggle on desktop),
+  // else <main>. A close with focus already outside (backdrop click, route
+  // change) moves nothing.
+  const releaseFocus = useCallback(() => {
+    const panel = panelRef.current;
+    const active = document.activeElement;
+    if (!panel || !active || !panel.contains(active)) return;
+    const opener = [
+      'button[aria-label="Open chat"]',
+      'button[aria-label="Toggle chat assistant"]',
+    ]
+      .map((sel) => document.querySelector<HTMLElement>(sel))
+      .find((el) => el !== null && el.offsetParent !== null);
+    const main = document.querySelector<HTMLElement>("main");
+    if (!opener && main && !main.hasAttribute("tabindex")) main.setAttribute("tabindex", "-1");
+    // preventScroll: closing chat must not move the page under it.
+    (opener ?? main)?.focus({ preventScroll: true });
+  }, []);
+
+  const closeDrawer = useCallback(() => {
+    releaseFocus();
+    setOpen(false);
+  }, [releaseFocus]);
+
   const toggle = useCallback(() => {
     if (isLargeDesktop) {
       // On large desktop, the toggle flips collapsed state. When expanding,
@@ -138,8 +189,23 @@ function ChatDrawerInner() {
       });
       return;
     }
-    setOpen((v) => !v);
-  }, [isLargeDesktop]);
+    if (open) {
+      closeDrawer();
+      return;
+    }
+    setOpen(true);
+    // Move focus INTO the dialog once it has slid in (it is inert until the
+    // open render). On a phone that is the panel itself — focusing the
+    // composer would raise the keyboard over the conversation list on every
+    // bottom-nav tap; on the drawer it is the composer, as on the rail.
+    setTimeout(() => {
+      if (isMobile) {
+        panelRef.current?.focus({ preventScroll: true });
+      } else {
+        window.dispatchEvent(new CustomEvent("focus-chat-input"));
+      }
+    }, 220);
+  }, [isLargeDesktop, isMobile, open, closeDrawer]);
 
   // open-chat: an OPEN-ONLY entry point (never closes), unlike `toggle` above.
   // Used by CTAs that are unambiguously asking to open chat — e.g. the
@@ -190,12 +256,12 @@ function ChatDrawerInner() {
         toggle();
       }
       if (e.key === "Escape" && open && !isLargeDesktop) {
-        setOpen(false);
+        closeDrawer();
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [open, isLargeDesktop, toggle]);
+  }, [open, isLargeDesktop, toggle, closeDrawer]);
 
   // toggle-mobile-chat from MobileBottomNav + ChatToggleButton.
   useEffect(() => {
@@ -233,7 +299,7 @@ function ChatDrawerInner() {
       {open && !isMobile && !isLargeDesktop && (
         <div
           className="fixed inset-0 bg-black/30 z-40 backdrop-blur-sm"
-          onClick={() => setOpen(false)}
+          onClick={closeDrawer}
           aria-hidden="true"
         />
       )}
@@ -245,10 +311,15 @@ function ChatDrawerInner() {
           ever absent (e.g. the isMobile branch, which renders `undefined`
           and relies on `inset-0` sizing instead). */}
       <div
-        className={`fixed z-50 bg-canvas transform transition-transform duration-300 ease-in-out max-w-[100vw] ${panelClass}`}
+        ref={panelRef}
+        /* tabIndex -1: the phone overlay takes focus itself on open (see
+           toggle); outline-none because that focus is programmatic only. */
+        tabIndex={-1}
+        className={`fixed z-50 bg-canvas transform ${slideArmed ? "transition-transform duration-300 ease-in-out" : ""} max-w-[100vw] outline-none ${panelClass}`}
         style={!isMobile ? { width: `${chatPanelWidthPx(expanded)}px`, maxWidth: "90vw" } : undefined}
         role={isLargeDesktop ? "complementary" : "dialog"}
         aria-label="Chat assistant"
+        aria-modal={isMobile ? true : undefined}
         aria-hidden={!railVisible}
         /* The panel is never unmounted (that would drop the conversation) and
            hides by sliding off-screen with a transform — which removes it from
@@ -271,7 +342,7 @@ function ChatDrawerInner() {
           <div className="flex items-center gap-2">
             {isMobile ? (
               <button
-                onClick={() => setOpen(false)}
+                onClick={closeDrawer}
                 className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2 text-ink-dim hover:text-ink transition-colors p-1 -ml-1 rounded-md"
                 aria-label="Close chat"
               >
@@ -379,7 +450,7 @@ function ChatDrawerInner() {
             {/* Close button — drawer mode only (768–1279px). */}
             {!isLargeDesktop && (
               <button
-                onClick={() => setOpen(false)}
+                onClick={closeDrawer}
                 className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised"
                 aria-label="Close chat"
               >
