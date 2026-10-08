@@ -256,6 +256,13 @@ function ChatDrawerInner() {
         toggle();
       }
       if (e.key === "Escape" && open && !isLargeDesktop) {
+        // Only the topmost overlay reacts to Escape. Another overlay may have
+        // claimed the key already, and a native dialog open over the chat
+        // (the conversation-delete confirmation) takes this Escape for itself:
+        // it is still open while the keydown is dispatched.
+        if (e.defaultPrevented) return;
+        if (document.querySelector("dialog[open]")) return;
+        if (e.target instanceof Element && e.target.closest("dialog[open]")) return;
         closeDrawer();
       }
     }

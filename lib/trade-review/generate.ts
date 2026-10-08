@@ -668,11 +668,50 @@ export function priceCoverageReachesExit(
 }
 
 /**
+ * How far back the longest daily-bar request this path makes ("2 Y") is sure
+ * to reach, in calendar days. Two calendar years are never shorter than this.
+ */
+export const MAX_BACKFILL_LOOKBACK_DAYS = 730;
+
+function daysBetween(from: string, to: string): number {
+  return Math.round(
+    (new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) /
+      (24 * 3600 * 1000)
+  );
+}
+
+/**
+ * Can a request reach this trade window at all? The historical-data call is
+ * made with an empty end date-time, so every request ends today
+ * (`fetchHistoricalPrices` / `fetchBenchmarkPrices` in lib/tws) and reaches
+ * back two years at most. A window that ended before that can never be
+ * covered: asking again on every generation is a wasted broker request.
+ */
+export function isBackfillWindowFetchable(exitDate: string, today: string): boolean {
+  return daysBetween(exitDate, today) <= MAX_BACKFILL_LOOKBACK_DAYS;
+}
+
+/**
+ * The smallest request, ending today, that reaches back to `startDate`. IB
+ * takes a day count up to 365; a longer duration must be asked in years, and
+ * 2 years is the longest this path asks for.
+ */
+export function backfillDurationStr(startDate: string, today: string): string {
+  const days = Math.max(30, daysBetween(startDate, today) + 10);
+  return days > 365 ? "2 Y" : `${days} D`;
+}
+
+/**
  * Check price coverage for trade securities and SPY benchmark.
  * If TWS is connected and data is insufficient, fetch from TWS.
  * Silently skips if TWS is not available — review proceeds with whatever data exists.
+ *
+ * Bound: in one call a security is asked for at most once, and a security
+ * whose trade window no request can reach (`isBackfillWindowFetchable`) is
+ * never asked for — on this run or any later one. Such a trade is graded
+ * without a price range.
  */
-async function backfillPriceData(
+export async function backfillPriceData(
   db: Database.Database,
   groupedTrades: GroupedTrade[],
   onProgress?: (msg: string) => void
@@ -684,13 +723,29 @@ async function backfillPriceData(
     return;
   }
 
+  const today = todayET();
+
   // Determine the overall date range across all trades
   let overallStart = "9999-12-31";
   let overallEnd = "0000-01-01";
 
-  // Identify securities that need price data
-  const securitiesToFetch: number[] = [];
+  // Securities that need price data, each with the earliest entry among its
+  // trades that need it (the request reaches back to that date).
+  const fetchStartBySecurity = new Map<number, string>();
+  const unfetchableSymbols = new Set<string>();
   const seen = new Set<number>();
+
+  // Decide fetchability first: an unreachable window is never enqueued.
+  const enqueue = (trade: GroupedTrade): void => {
+    if (!isBackfillWindowFetchable(trade.exitDate, today)) {
+      unfetchableSymbols.add(trade.symbol);
+      return;
+    }
+    const start = fetchStartBySecurity.get(trade.securityId);
+    if (!start || trade.earliestEntryDate < start) {
+      fetchStartBySecurity.set(trade.securityId, trade.earliestEntryDate);
+    }
+  };
 
   for (const trade of groupedTrades) {
     if (trade.earliestEntryDate < overallStart) overallStart = trade.earliestEntryDate;
@@ -710,16 +765,22 @@ async function backfillPriceData(
     );
 
     if (priceCount < MIN_PRICE_POINTS) {
-      securitiesToFetch.push(trade.securityId);
+      enqueue(trade);
     }
   }
   // Enough points is not enough: a security is also fetched when any of its
   // trades has a history that stops short of the exit.
   for (const trade of groupedTrades) {
-    if (securitiesToFetch.includes(trade.securityId)) continue;
     if (!priceCoverageReachesExit(db, trade.securityId, trade.earliestEntryDate, trade.exitDate)) {
-      securitiesToFetch.push(trade.securityId);
+      enqueue(trade);
     }
+  }
+  const securitiesToFetch = [...fetchStartBySecurity.keys()];
+
+  if (unfetchableSymbols.size > 0) {
+    onProgress?.(
+      `Price history for ${[...unfetchableSymbols].join(", ")} is older than TWS can supply — graded without a price range`
+    );
   }
 
   // Check SPY benchmark coverage
@@ -754,6 +815,10 @@ async function backfillPriceData(
       }
     }
   }
+  // Same rule as the securities: a period no request can reach is not asked for.
+  if (needBenchmark && !isBackfillWindowFetchable(overallEnd, today)) {
+    needBenchmark = false;
+  }
 
   if (securitiesToFetch.length === 0 && !needBenchmark) {
     onProgress?.("Price data sufficient — skipping TWS fetch");
@@ -763,7 +828,8 @@ async function backfillPriceData(
   // Compute duration string from date range (cap at 2Y — IB's max for daily bars).
   // The fetch ends today, so the window is measured back from today to the
   // earliest entry — the length of the trade period alone would stop short of
-  // an older period's start.
+  // an older period's start. This one is the SPY benchmark's window (the whole
+  // period); each security gets its own, below.
   const daysNeeded = Math.ceil(
     (new Date(todayET()).getTime() - new Date(overallStart).getTime()) /
       (24 * 3600 * 1000)
@@ -780,13 +846,22 @@ async function backfillPriceData(
       .join(", ");
     onProgress?.(`Fetching price history for ${symbols} from TWS...`);
 
-    try {
-      await fetchHistoricalPrices(db, {
-        securityIds: securitiesToFetch,
-        durationStr,
-      });
-    } catch {
-      // Non-critical — continue with whatever data exists
+    // One request per security, each no longer than its own window needs.
+    // Securities that share a duration go in one call.
+    const idsByDuration = new Map<string, number[]>();
+    for (const [securityId, start] of fetchStartBySecurity) {
+      const duration = backfillDurationStr(start, today);
+      idsByDuration.set(duration, [...(idsByDuration.get(duration) ?? []), securityId]);
+    }
+    for (const [duration, securityIds] of idsByDuration) {
+      try {
+        await fetchHistoricalPrices(db, {
+          securityIds,
+          durationStr: duration,
+        });
+      } catch {
+        // Non-critical — continue with whatever data exists
+      }
     }
   }
 
