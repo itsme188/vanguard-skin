@@ -6,6 +6,7 @@ import {
   summarizeHoldingsFooter,
   type AllHoldingsRow,
 } from "@/app/dashboard/components/AllHoldingsTable";
+import { computePositionTotals, type SecurityPosition } from "@/lib/queries/security-detail";
 import { PrivacyProvider } from "@/lib/privacy/context";
 import { anchorIndex, sliceBetween } from "@/tests/helpers/source-anchor";
 
@@ -150,6 +151,32 @@ describe("summarizeHoldingsFooter", () => {
     expect(s.totalCostBasis).toBeNull();
     expect(s.totalGain).toBeNull();
     expect(s.totalValue).toBe(700);
+  });
+
+  it("uses gross known basis for long and short gain percent, matching the security hub", () => {
+    const long = row("ZZLNG", { cost: 1000, value: 1250 }); // +250 / 1000 = +25.00%
+    const short = row("ZZSHR", { cost: -600, value: -400 }); // +200 / 600 = +33.33%
+    const footer = summarizeHoldingsFooter([long, short]);
+    const hub = computePositionTotals(
+      [long, short].map(
+        (r): SecurityPosition => ({
+          account_id: r.account_id,
+          account_name: r.account_name,
+          quantity: r.quantity,
+          cost_basis: r.cost_basis,
+          current_price: r.current_price,
+          current_value: r.current_value,
+          unrealized_gain: r.unrealized_gain,
+          as_of_date: r.as_of_date,
+        }),
+      ),
+    );
+
+    expect(footer.gainCostBasis).toBe(1600);
+    expect(footer.totalGain).toBe(450);
+    expect(footer.totalGain! / footer.gainCostBasis!).toBeCloseTo(450 / 1600, 10);
+    expect(hub.totalGainRatio).toBeCloseTo(450 / 1600, 10);
+    expect(footer.totalGain! / footer.gainCostBasis!).toBeCloseTo(hub.totalGainRatio!, 10);
   });
 });
 

@@ -35,6 +35,7 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 // One predicate for the row cells and the TOTAL row: a basis of NULL or
 // exactly 0 is unknown.
 import { hasKnownBasis as hasKnownPositionBasis } from "@/lib/compute/known-basis";
+import { computeAggregateGainRatio } from "@/lib/compute/gain-ratio";
 
 // ─── Result types ──────────────────────────────────────────────
 
@@ -811,12 +812,10 @@ export function computePositionTotals(positions: SecurityPosition[]): PositionTo
   // "In the gain" = has a gain AND a known basis. The query only produces a
   // gain for a known basis; the second test keeps the two sets identical even
   // if a caller hands in a row that breaks that rule.
-  const inGain = positions.filter((p) => p.unrealized_gain != null && hasKnownPositionBasis(p));
-  const totalUnrealizedGain =
-    inGain.length > 0 ? inGain.reduce((sum, p) => sum + p.unrealized_gain!, 0) : null;
-  const grossBasis = inGain.reduce((sum, p) => sum + Math.abs(p.cost_basis!), 0);
-  const totalGainRatio =
-    totalUnrealizedGain !== null && grossBasis > 0 ? totalUnrealizedGain / grossBasis : null;
+  const gain = computeAggregateGainRatio(positions);
+  const inGain = gain.rows;
+  const totalUnrealizedGain = gain.totalGain;
+  const totalGainRatio = gain.ratio;
   const gainCoveredValue =
     inGain.length > 0 ? inGain.reduce((sum, p) => sum + (p.current_value ?? 0), 0) : null;
 

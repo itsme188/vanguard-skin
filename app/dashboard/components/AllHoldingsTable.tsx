@@ -9,6 +9,7 @@ import { Chip } from "./Chip";
 import { Count, Money, Pct, QuantityUnit, Shares } from "@/lib/privacy/components";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 import { hasKnownBasis } from "@/lib/compute/known-basis";
+import { computeAggregateGainRatio } from "@/lib/compute/gain-ratio";
 import { parseOptionSymbol } from "@/lib/import/occ-symbol";
 import type { AllHoldingsRow } from "@/lib/queries/holdings";
 
@@ -168,9 +169,8 @@ export interface HoldingsFooterSummary {
   /** Gain of the rows that have one (known basis AND a price); null when
    *  none does. */
   totalGain: number | null;
-  /** Cost basis of the rows that are in Gain (known basis AND a price): the
-   *  only honest base for Gain %. Equals totalCostBasis − noPriceCostBasis.
-   *  Null when no row has a gain. */
+  /** Gross cost basis of the rows that are in Gain (known basis AND a price):
+   *  the only honest base for Gain %. Null when no row has a gain. */
   gainCostBasis: number | null;
   /** Rows with no cost basis (null or the stored-zero convention). They are
    *  in neither Cost Basis nor Gain. */
@@ -209,14 +209,14 @@ export function summarizeHoldingsFooter(
 
   const withBasis = rows.filter(hasKnownBasis);
   const noBasis = rows.filter((h) => !hasKnownBasis(h));
-  const withGain = rows.filter((h) => h.unrealized_gain !== null);
+  const gain = computeAggregateGainRatio(rows);
   const noPrice = withBasis.filter((h) => h.unrealized_gain === null);
 
   return {
     totalValue: sum(rows.map((h) => h.current_value ?? 0)),
     totalCostBasis: withBasis.length === 0 ? null : sum(withBasis.map((h) => h.cost_basis!)),
-    totalGain: withGain.length === 0 ? null : sum(withGain.map((h) => h.unrealized_gain!)),
-    gainCostBasis: withGain.length === 0 ? null : sum(withGain.map((h) => h.cost_basis!)),
+    totalGain: gain.totalGain,
+    gainCostBasis: gain.grossBasis,
     noBasisCount: noBasis.length,
     noBasisPricedCount: noBasis.filter((h) => h.current_value !== null).length,
     noBasisValue: sum(noBasis.map((h) => h.current_value ?? 0)),
