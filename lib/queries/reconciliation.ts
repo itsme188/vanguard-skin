@@ -1,5 +1,13 @@
 import type Database from "better-sqlite3";
 import { todayET } from "@/lib/calendar/date-utils";
+import {
+  RECON_FLOOR_DOLLARS,
+  RECON_MATCH_TOLERANCE,
+  RECON_NEUTRAL_PCT,
+  RECON_RED_PCT,
+  reconciliationBand,
+  type ReconciliationBand,
+} from "@/lib/compute/reconciliation-tolerance";
 
 export interface ReconciliationCheckpoint {
   id: number;
@@ -254,47 +262,52 @@ export function checkpointFormBlocker(
   return null;
 }
 
-/** Statement vs computed: under one cent is a match, under $100 is close. */
-export const CHECKPOINT_MATCH_TOLERANCE = 0.01;
-export const CHECKPOINT_CLOSE_TOLERANCE = 100;
+/** Kept for importers; the bands themselves live in lib/compute/reconciliation-tolerance.ts. */
+export const CHECKPOINT_MATCH_TOLERANCE = RECON_MATCH_TOLERANCE;
+export const CHECKPOINT_CLOSE_TOLERANCE = RECON_FLOOR_DOLLARS;
 
 export interface CheckpointDifferenceBand {
-  band: "match" | "close" | "off";
+  band: ReconciliationBand;
   glyph: string;
   label: string;
 }
 
-const DIFFERENCE_BANDS: Record<CheckpointDifferenceBand["band"], CheckpointDifferenceBand> = {
+const pct = (share: number) => `${(share * 100).toFixed(1)}%`;
+
+const DIFFERENCE_BANDS: Record<ReconciliationBand, CheckpointDifferenceBand> = {
   match: {
     band: "match",
     glyph: "\u2713",
     label: "Matches the computed value to the cent",
   },
+  within: {
+    band: "within",
+    glyph: "\u2248",
+    label: `Within tolerance: under ${pct(RECON_NEUTRAL_PCT)} of the statement value`,
+  },
   close: {
     band: "close",
     glyph: "~",
-    label: `Close: within $${CHECKPOINT_CLOSE_TOLERANCE} of the computed value`,
+    label: `Close: ${pct(RECON_NEUTRAL_PCT)} to ${pct(RECON_RED_PCT)} of the statement value, or under $${RECON_FLOOR_DOLLARS}`,
   },
   off: {
     band: "off",
     glyph: "!",
-    label: `Off: $${CHECKPOINT_CLOSE_TOLERANCE} or more from the computed value`,
+    label: `Off: more than $${RECON_FLOOR_DOLLARS} and more than ${pct(RECON_RED_PCT)} of the statement value`,
   },
 };
 
 /** The Difference chip's band, glyph and plain-words meaning (null = no computed value). */
 export function checkpointDifferenceBand(
-  difference: number | null
+  difference: number | null,
+  statementValue: number,
 ): CheckpointDifferenceBand | null {
-  if (difference === null) return null;
-  const abs = Math.abs(difference);
-  if (abs < CHECKPOINT_MATCH_TOLERANCE) return DIFFERENCE_BANDS.match;
-  if (abs < CHECKPOINT_CLOSE_TOLERANCE) return DIFFERENCE_BANDS.close;
-  return DIFFERENCE_BANDS.off;
+  const band = reconciliationBand(difference, statementValue);
+  return band === null ? null : DIFFERENCE_BANDS[band];
 }
 
-/** One line under the table explaining the three Difference glyphs. */
-export const CHECKPOINT_DIFFERENCE_LEGEND = (["match", "close", "off"] as const)
+/** One line under the table explaining the Difference glyphs. */
+export const CHECKPOINT_DIFFERENCE_LEGEND = (["match", "within", "close", "off"] as const)
   .map((b) => `${DIFFERENCE_BANDS[b].glyph} ${DIFFERENCE_BANDS[b].label}`)
   .join(" \u00b7 ");
 

@@ -277,7 +277,7 @@ export function ReconciliationTable({
             </thead>
             <tbody>
               {checkpoints.map((cp) => {
-                const band = checkpointDifferenceBand(cp.difference);
+                const band = checkpointDifferenceBand(cp.difference, cp.statement_value);
 
                 return (
                   <tr
@@ -299,9 +299,11 @@ export function ReconciliationTable({
                           className={`font-mono font-medium tabular-nums text-xs px-2 py-0.5 rounded inline-flex items-center gap-1 ${
                             band.band === "match"
                               ? "bg-up/20 text-up"
-                              : band.band === "close"
-                                ? "bg-gold/20 text-gold-ink"
-                                : "bg-down/20 text-down"
+                              : band.band === "within"
+                                ? "bg-panel text-ink-dim"
+                                : band.band === "close"
+                                  ? "bg-gold/20 text-gold-ink"
+                                  : "bg-down/20 text-down"
                           }`}
                         >
                           <span aria-hidden="true">{band.glyph}</span>

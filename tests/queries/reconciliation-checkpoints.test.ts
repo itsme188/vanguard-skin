@@ -229,19 +229,19 @@ describe("checkpointFormBlocker", () => {
 
 describe("checkpointDifferenceBand", () => {
   it("has no band without a computed difference", () => {
-    expect(checkpointDifferenceBand(null)).toBeNull();
+    expect(checkpointDifferenceBand(null, 100_000)).toBeNull();
   });
 
-  it("bands by absolute difference and says what each glyph means", () => {
-    expect(checkpointDifferenceBand(0)).toMatchObject({ band: "match", glyph: "✓" });
-    expect(checkpointDifferenceBand(-0.004)).toMatchObject({ band: "match" });
-    expect(checkpointDifferenceBand(0.01)).toMatchObject({ band: "close", glyph: "~" });
-    expect(checkpointDifferenceBand(-99.99)).toMatchObject({ band: "close" });
-    expect(checkpointDifferenceBand(100)).toMatchObject({ band: "off", glyph: "!" });
-    expect(checkpointDifferenceBand(-5000)).toMatchObject({ band: "off" });
-    for (const d of [0, 50, 500]) {
-      expect(checkpointDifferenceBand(d)?.label.length).toBeGreaterThan(10);
+  it("bands by share of the statement value and says what each glyph means", () => {
+    expect(checkpointDifferenceBand(0, 100_000)).toMatchObject({ band: "match", glyph: "\u2713" });
+    expect(checkpointDifferenceBand(-0.004, 100_000)).toMatchObject({ band: "match" });
+    expect(checkpointDifferenceBand(50, 100_000)).toMatchObject({ band: "within", glyph: "\u2248" });
+    expect(checkpointDifferenceBand(-300, 100_000)).toMatchObject({ band: "close", glyph: "~" });
+    expect(checkpointDifferenceBand(600, 100_000)).toMatchObject({ band: "off", glyph: "!" });
+    for (const d of [0, 50, 300, 600]) {
+      expect(checkpointDifferenceBand(d, 100_000)?.label.length).toBeGreaterThan(10);
     }
-    expect(checkpointDifferenceBand(50)?.label).toContain("$100");
+    expect(checkpointDifferenceBand(600, 100_000)?.label).toContain("$100");
+    expect(checkpointDifferenceBand(600, 100_000)?.label).toContain("0.5%");
   });
 });
