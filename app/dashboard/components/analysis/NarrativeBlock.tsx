@@ -16,6 +16,15 @@ interface Props {
 
 const MS_PER_MINUTE = 60 * 1000;
 
+// Each of these controls starts one AI generation. At 16px tall they were the
+// smallest paid tap targets on a phone; the pointer-coarse ::after widens the
+// hit area on touch only, with no visual change (same idiom as the Macro
+// card's "View sources" / "Try again").
+const TOUCH_HIT_AREA =
+  "relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-3.5";
+// What a press does and what it costs, for every control that regenerates.
+const REGENERATE_TITLE = "Regenerates this narrative with one AI call";
+
 /**
  * Age of the cached prose in plain relative language ("3 days ago"). Used only
  * in the drift banner, where "how stale is this" is the point — the neutral
@@ -200,7 +209,8 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
           onClick={() => handleRefresh("footer")}
           disabled={refreshing}
           aria-label="Try generating the narrative again"
-          className="font-medium underline decoration-dotted underline-offset-2 hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed"
+          title={REGENERATE_TITLE}
+          className={`${TOUCH_HIT_AREA} font-medium underline decoration-dotted underline-offset-2 hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed`}
         >
           {refreshing ? "Refreshing…" : "Try again"}
         </button>
@@ -234,7 +244,8 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
             onClick={() => handleRefresh("banner")}
             disabled={refreshing}
             aria-label="Refresh narrative now"
-            className="text-xs text-warn font-medium underline decoration-dotted underline-offset-2 hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed"
+            title={REGENERATE_TITLE}
+            className={`${TOUCH_HIT_AREA} text-xs text-warn font-medium underline decoration-dotted underline-offset-2 hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed`}
           >
             {refreshing ? "Refreshing…" : "Refresh to regenerate"}
           </button>
@@ -263,7 +274,8 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
           onClick={() => handleRefresh("footer")}
           disabled={refreshing}
           aria-label="Refresh narrative"
-          className="text-xs text-ink-dim underline decoration-dotted underline-offset-2 hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed"
+          title={REGENERATE_TITLE}
+          className={`${TOUCH_HIT_AREA} text-xs text-ink-dim underline decoration-dotted underline-offset-2 hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed`}
         >
           {refreshing ? "Refreshing…" : "Refresh"}
         </button>

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { MacroThemeReceiptDrawer } from "./MacroThemeReceiptDrawer";
 import apiFetch from "@/lib/http/apiFetch";
+import { Pct } from "@/lib/privacy/components";
 import {
   describeRefreshFailure,
   isExpectedRefreshState,
@@ -15,6 +16,9 @@ interface MacroTheme {
   direction: "risk-on" | "risk-off" | "neutral";
   summary: string;
   exposure_bucket: "low" | "moderate" | "high" | "very-high";
+  /** 0-100. Absent on a theme cached before the figure was stored. */
+  exposure_pct?: number;
+  exposure_rank?: "highest" | "lowest" | null;
   top_contributors: Array<{ symbol: string; weight: number }>;
 }
 
@@ -23,7 +27,7 @@ interface ApiResponse {
   themes?: MacroTheme[] | null;
   sourceSummary?: {
     articles: Array<{ id: number; title: string }>;
-    events: Array<{ id: number; symbol: string | null; event_date: string }>;
+    events: Array<{ id: number; symbol: string | null; event_date: string; title?: string; event_type?: string }>;
     alerts: Array<{ id: number; symbol: string }>;
   } | null;
   underThreshold?: boolean;
@@ -62,17 +66,30 @@ function directionColor(d: MacroTheme["direction"]) {
   return "var(--ink-faint, #94a3b8)";
 }
 
-function exposurePillClass(b: MacroTheme["exposure_bucket"]) {
-  switch (b) {
-    case "very-high":
-      return "bg-amber/30 text-amber border-amber/40";
-    case "high":
-      return "bg-amber/20 text-amber border-amber/30";
-    case "moderate":
-      return "bg-edge/40 text-ink-dim border-edge";
-    case "low":
-      return "bg-edge/20 text-ink-faint border-edge/40";
-  }
+// The pill is coloured by the theme's place among THIS WEEK's themes, not by
+// an absolute bucket: every factor tilt on a diversified book cleared the top
+// bucket, so all five cards read "very-high" (owner ruling, QA finding
+// analysis-macro-themes--exposure-badge-always-very-high).
+export function exposurePillClass(rank: MacroTheme["exposure_rank"]) {
+  if (rank === "highest") return "bg-amber/20 text-amber border-amber/30";
+  if (rank === "lowest") return "bg-edge/20 text-ink-faint border-edge/40";
+  return "bg-edge/40 text-ink-dim border-edge";
+}
+
+/** The relative marker beside the percentage, or null when there is none. */
+export function exposureRankLabel(rank: MacroTheme["exposure_rank"]): string | null {
+  if (rank === "highest") return "highest this week";
+  if (rank === "lowest") return "lowest this week";
+  return null;
+}
+
+/**
+ * A theme cached before the percentage was stored has no figure to show. The
+ * old bucket word is not a fallback (it is the thing the ruling dropped), so
+ * such a theme renders no pill until the week's themes are next generated.
+ */
+export function hasExposureFigure(t: Pick<MacroTheme, "exposure_pct">): boolean {
+  return typeof t.exposure_pct === "number" && Number.isFinite(t.exposure_pct);
 }
 
 export function MacroOverlayCard({ scope }: { scope: string }) {
@@ -189,11 +206,15 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
                   style={{ backgroundColor: directionColor(t.direction) }}
                 />
                 <h4 className="text-sm font-medium text-ink flex-1">{t.name}</h4>
-                <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded border ${exposurePillClass(t.exposure_bucket)} uppercase tracking-wide`}
-                >
-                  your exposure: {t.exposure_bucket}
-                </span>
+                {hasExposureFigure(t) && (
+                  <span
+                    className={`text-[10px] px-1.5 py-0.5 rounded border ${exposurePillClass(t.exposure_rank)} uppercase tracking-wide`}
+                    title="Value-weighted share of this scope's holdings exposed to this theme's factor, scaled by how strongly each holding is tagged"
+                  >
+                    your exposure: <Pct value={t.exposure_pct} digits={0} />
+                    {exposureRankLabel(t.exposure_rank) && ` · ${exposureRankLabel(t.exposure_rank)}`}
+                  </span>
+                )}
               </div>
               <p className="text-xs text-ink-dim mt-1 ml-4">{t.summary}</p>
               <div className="mt-2 ml-4 flex items-center gap-3 text-[11px]">

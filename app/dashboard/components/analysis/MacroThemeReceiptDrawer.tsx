@@ -21,8 +21,31 @@ interface Theme {
 
 interface SourceSummary {
   articles: Array<{ id: number; title: string }>;
-  events: Array<{ id: number; symbol: string | null; event_date: string }>;
+  // title / event_type are absent on a summary cached before they were stored.
+  events: Array<{ id: number; symbol: string | null; event_date: string; title?: string; event_type?: string }>;
   alerts: Array<{ id: number; symbol: string }>;
+}
+
+/**
+ * What to call a cited calendar event. The event's own name first — a macro
+ * release has no symbol, so "symbol or the word macro" left most rows reading
+ * a bare "macro" (QA finding
+ * analysis-macro-sources--generic-links-unlabeled-events). A name that does
+ * not already carry the ticker gets it as a prefix. Older cached summaries
+ * have no name: fall back to the symbol, then the event type, and only then
+ * to a plain "Unnamed event".
+ */
+export function macroEventLabel(e: SourceSummary["events"][number]): string {
+  const title = typeof e.title === "string" ? e.title.trim() : "";
+  const symbol = typeof e.symbol === "string" ? e.symbol.trim() : "";
+  if (title) {
+    return symbol && !title.toUpperCase().includes(symbol.toUpperCase())
+      ? `${symbol} · ${title}`
+      : title;
+  }
+  if (symbol) return symbol;
+  const type = typeof e.event_type === "string" ? e.event_type.trim() : "";
+  return type ? type.replace(/_/g, " ") : "Unnamed event";
 }
 
 export function MacroThemeReceiptDrawer({
@@ -105,7 +128,7 @@ export function MacroThemeReceiptDrawer({
             <ul className="space-y-1.5">
               {sourceSummary.events.map((e) => (
                 <li key={e.id} className="text-xs text-ink-dim">
-                  {e.symbol ?? "macro"} · {e.event_date}
+                  {macroEventLabel(e)} · {e.event_date}
                 </li>
               ))}
             </ul>
