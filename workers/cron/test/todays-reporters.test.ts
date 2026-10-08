@@ -348,6 +348,24 @@ describe("armed chip (effective calendar)", () => {
     expect(block).toContain("| WATCHCO | held |");
   });
 
+  it("a re-listed, armed print is ONE reporters line; an unarmed re-listing keeps today's line", () => {
+    const key = `finnhub:HELDCO:${TODAY}`;
+    const snapshot = makeSnapshot({
+      schemaVersion: 11,
+      armedGeneration: 3,
+      armedEvents: [],
+      calendarEvents: [makeEvent({ id: 10, symbol: "HELDCO", source_key: key })] as never,
+      heldSymbols: ["HELDCO"],
+    });
+    const relisted = { ...armedEntry(20, "HELDCO"), sourceKey: key, source: "finnhub" };
+    const eff = buildTodaysReportersBlock(snapshot, TODAY, { generation: 4, entries: [relisted] })!;
+    expect(eff.split("\n").filter((l) => l.includes("| HELDCO |"))).toHaveLength(1);
+
+    const unarmed = buildTodaysReportersBlock(snapshot, TODAY, { generation: 4, entries: [] })!;
+    expect(unarmed).toBe(buildTodaysReportersBlock(snapshot, TODAY)!);
+    expect(unarmed).toContain("| HELDCO | held |");
+  });
+
   it("keeps a snapshot reporter when the superseded-id delta is not newer", () => {
     const snapshot = makeSnapshot({
       schemaVersion: 11,

@@ -231,6 +231,7 @@ export function effectiveCalendarEvents(
       byId.set(id, { ...existing, superseded: 1 });
       armed.delete(id);
     }
+    supersedeRelistedSnapshotRows(delta, snapshotEvents, byId, armed);
   }
 
   const events = [
@@ -241,6 +242,63 @@ export function effectiveCalendarEvents(
       .sort((a, b) => a.event_date.localeCompare(b.event_date) || a.id - b.id),
   ];
   return { events, armedEventIds: armed, source };
+}
+
+/**
+ * One print, one live row. The vendor sync deletes and re-creates an
+ * unenriched earnings row, so a re-listed print has a NEW id on the Mac while
+ * the 2am snapshot still holds the OLD id — and the Mac deliberately does not
+ * publish a same-key, same-date re-listing as removed (an unarmed name must
+ * not be silenced). Once the new row is ARMED it arrives here as a delta
+ * entry, and an id-keyed merge alone would leave both rows live: two previews,
+ * two recaps for one print.
+ *
+ * So: for every LIVE delta entry, a snapshot row with a different id but the
+ * same `source_key` AND the same `event_date` is marked superseded and loses
+ * its armed mark. Same one-way marking as the id lists: never delete, never
+ * clear, never synthesize. Deliberately narrow —
+ *   - never on symbol alone, and never for an empty/missing source_key;
+ *   - a tombstoned entry, or one the delta itself lists as replaced/removed,
+ *     supersedes nothing (never silence both rows);
+ *   - a snapshot row that is itself a live delta entry is left alone (the Mac
+ *     says both are armed; that is not this rule's call to make).
+ * A re-listed name that is NOT armed has no delta entry and keeps exactly the
+ * cloud behaviour it had: its old snapshot row stays live.
+ */
+function supersedeRelistedSnapshotRows(
+  delta: ArmedEventsDelta,
+  snapshotEvents: CalendarEventRow[],
+  byId: Map<number, CalendarEventRow>,
+  armed: Set<number>,
+): void {
+  // The list is ordered: a later tombstone un-does an earlier live entry.
+  const live = new Map<number, ArmedEventEntry>();
+  for (const e of delta.entries) {
+    if (e.removed) live.delete(e.eventId);
+    else live.set(e.eventId, e);
+  }
+  const printKey = (sourceKey: unknown, eventDate: unknown): string | null =>
+    typeof sourceKey === "string" && sourceKey.trim() !== "" && typeof eventDate === "string"
+      ? JSON.stringify([sourceKey, eventDate])
+      : null;
+  const liveByPrint = new Map<string, number[]>();
+  for (const e of live.values()) {
+    if (byId.get(e.eventId)?.superseded) continue;
+    const key = printKey(e.sourceKey, e.eventDate);
+    if (key == null) continue;
+    liveByPrint.set(key, [...(liveByPrint.get(key) ?? []), e.eventId]);
+  }
+  if (liveByPrint.size === 0) return;
+  for (const s of snapshotEvents) {
+    if (live.has(s.id)) continue;
+    const row = byId.get(s.id);
+    if (!row) continue;
+    const key = printKey(row.source_key, row.event_date);
+    if (key == null) continue;
+    if (!(liveByPrint.get(key) ?? []).some((id) => id !== s.id)) continue;
+    byId.set(s.id, { ...row, superseded: 1 });
+    armed.delete(s.id);
+  }
 }
 
 /**
@@ -265,8 +323,20 @@ export function isCoveredInCloud(
 /** The stored delta, or null when absent/corrupt — a bad KV value must never
  *  throw a whole cron tick, it just means "no delta". */
 export async function readArmedEventsDelta(kv: KVNamespace): Promise<ArmedEventsDelta | null> {
+  return (await readStoredArmedEvents(kv)).delta;
+}
+
+/**
+ * The stored delta plus whether the record carries the id lists at all. A
+ * build from before the id lists existed stored `{ generation, entries }` and
+ * nothing else; every build since writes both list keys, empty or not. The
+ * difference matters to exactly one caller — `applyArmedEventsDelta`.
+ */
+async function readStoredArmedEvents(
+  kv: KVNamespace,
+): Promise<{ delta: ArmedEventsDelta | null; hasIdLists: boolean }> {
   const raw = await kv.get(ARMED_EVENTS_KV_KEY);
-  if (!raw) return null;
+  if (!raw) return { delta: null, hasIdLists: false };
   try {
     const parsed = JSON.parse(raw) as {
       generation?: unknown;
@@ -274,19 +344,24 @@ export async function readArmedEventsDelta(kv: KVNamespace): Promise<ArmedEvents
       supersededEventIds?: unknown;
       removedEventIds?: unknown;
     };
-    if (typeof parsed.generation !== "number" || !Array.isArray(parsed.entries)) return null;
+    if (typeof parsed.generation !== "number" || !Array.isArray(parsed.entries)) {
+      return { delta: null, hasIdLists: false };
+    }
     const supersededEventIds =
       parsed.supersededEventIds === undefined || !Array.isArray(parsed.supersededEventIds)
         ? []
         : parsed.supersededEventIds.filter((id): id is number => Number.isInteger(id) && id > 0);
     return {
-      generation: parsed.generation,
-      entries: parsed.entries as ArmedEventEntry[],
-      supersededEventIds,
-      removedEventIds: readRemovedEventIds(parsed.removedEventIds),
+      delta: {
+        generation: parsed.generation,
+        entries: parsed.entries as ArmedEventEntry[],
+        supersededEventIds,
+        removedEventIds: readRemovedEventIds(parsed.removedEventIds),
+      },
+      hasIdLists: parsed.supersededEventIds !== undefined || parsed.removedEventIds !== undefined,
     };
   } catch {
-    return null;
+    return { delta: null, hasIdLists: false };
   }
 }
 
@@ -480,14 +555,49 @@ function parseRemovedEventIds(raw: unknown): Array<{ id: number; eventDate: stri
 }
 
 /**
+ * What the Worker HOLDS for the generation it reports: how many replaced ids
+ * and how many removed ids are in the stored record (after this side's own
+ * dedupe). This is the capability acknowledgement the Mac's drain requires
+ * before it marks a row that carries ids as delivered — a build from before
+ * the id lists answered `applied:true` and stored neither list, and the Mac
+ * could not tell (see lib/earnings/cloud-outbox.ts).
+ */
+export interface ArmedEventsAccepted {
+  supersededEventIds: number;
+  removedEventIds: number;
+}
+
+export interface ArmedEventsApplyResult {
+  applied: boolean;
+  generation: number;
+  accepted: ArmedEventsAccepted;
+}
+
+const acceptedOf = (d: {
+  supersededEventIds?: unknown[];
+  removedEventIds?: unknown[];
+} | null): ArmedEventsAccepted => ({
+  supersededEventIds: d?.supersededEventIds?.length ?? 0,
+  removedEventIds: d?.removedEventIds?.length ?? 0,
+});
+
+/**
  * Read-compare-write: applies only when `body.generation` is strictly greater
  * than the generation already stored. A replayed or out-of-order POST is a
- * no-op that reports the generation that stands.
+ * no-op that reports the generation that stands — and, either way, `accepted`
+ * counts the id lists in the record that now stands.
+ *
+ * ONE exception to "strictly greater": the stored record was written by a
+ * build from before the id lists (it has neither list key) and the body is
+ * that SAME generation carrying ids. The old build took the POST and dropped
+ * the lists, so the generation it holds is incomplete; the same generation
+ * completes it. Never for a lower generation, never when the body has no ids,
+ * and never once the record carries the list keys.
  */
 export async function applyArmedEventsDelta(
   kv: KVNamespace,
   body: unknown,
-): Promise<{ applied: boolean; generation: number }> {
+): Promise<ArmedEventsApplyResult> {
   const b =
     body as
       | { generation?: unknown; entries?: unknown; supersededEventIds?: unknown; removedEventIds?: unknown }
@@ -508,12 +618,17 @@ export async function applyArmedEventsDelta(
   const entries = b.entries.map(parseEntry);
   const supersededEventIds = parseSupersededEventIds(b.supersededEventIds);
   const removedEventIds = parseRemovedEventIds(b.removedEventIds);
-  const current = await readArmedEventsDelta(kv);
+  const { delta: current, hasIdLists } = await readStoredArmedEvents(kv);
   const held = current?.generation ?? 0;
-  if (b.generation <= held) return { applied: false, generation: held };
-  await kv.put(
-    ARMED_EVENTS_KV_KEY,
-    JSON.stringify({ generation: b.generation, entries, supersededEventIds, removedEventIds }),
-  );
-  return { applied: true, generation: b.generation };
+  const completesOldBuildRecord =
+    current != null &&
+    !hasIdLists &&
+    b.generation === held &&
+    supersededEventIds.length + removedEventIds.length > 0;
+  if (b.generation <= held && !completesOldBuildRecord) {
+    return { applied: false, generation: held, accepted: acceptedOf(current) };
+  }
+  const stored = { generation: b.generation, entries, supersededEventIds, removedEventIds };
+  await kv.put(ARMED_EVENTS_KV_KEY, JSON.stringify(stored));
+  return { applied: true, generation: b.generation, accepted: acceptedOf(stored) };
 }

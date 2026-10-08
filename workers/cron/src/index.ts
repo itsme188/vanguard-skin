@@ -592,7 +592,9 @@ export default {
     // The Mac's cloud-outbox drain posts the FULL armed-events projection here
     // whenever an arm/disarm changes it (deviation D2: the Mac never writes KV
     // directly). Read-compare-write on the generation makes a replayed or
-    // out-of-order POST a harmless no-op — see armed-events.ts.
+    // out-of-order POST a harmless no-op — see armed-events.ts. The reply
+    // carries `accepted` (how many replaced / removed ids the stored record
+    // holds): the Mac marks a row that carries ids delivered only on that.
     if (request.method === "POST" && url.pathname === "/internal/armed-events") {
       if (Number(request.headers.get("content-length") ?? 0) > ARMED_EVENTS_MAX_BODY_BYTES) {
         return Response.json({ ok: false, error: "payload too large" }, { status: 413 });

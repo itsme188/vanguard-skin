@@ -266,7 +266,7 @@ describe("POST /internal/armed-events", () => {
   it("applies a payload and reports the generation", async () => {
     const res = await post({ generation: 4, entries: [entry(77, "ACME", "2026-09-02")] });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, applied: true, generation: 4 });
+    expect(await res.json()).toEqual({ ok: true, applied: true, generation: 4, accepted: { supersededEventIds: 0, removedEventIds: 0 } });
     expect(JSON.parse(store.get("armed-events")!)).toEqual({
       generation: 4,
       entries: [entry(77, "ACME", "2026-09-02")],
@@ -279,7 +279,7 @@ describe("POST /internal/armed-events", () => {
     await post({ generation: 4, entries: [entry(77, "ACME", "2026-09-02")] });
     const replay = await post({ generation: 4, entries: [] });
     expect(replay.status).toBe(200);
-    expect(await replay.json()).toEqual({ ok: true, applied: false, generation: 4 });
+    expect(await replay.json()).toEqual({ ok: true, applied: false, generation: 4, accepted: { supersededEventIds: 0, removedEventIds: 0 } });
     // The stored payload is untouched — a replay never empties the list.
     expect(JSON.parse(store.get("armed-events")!).entries).toHaveLength(1);
   });

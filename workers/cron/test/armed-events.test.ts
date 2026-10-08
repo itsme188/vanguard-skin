@@ -216,21 +216,24 @@ describe("applyArmedEventsDelta (KV read-compare-write)", () => {
     expect(await applyArmedEventsDelta(kv, { generation: 2, entries: [] })).toEqual({
       applied: true,
       generation: 2,
+      accepted: { supersededEventIds: 0, removedEventIds: 0 },
     });
     expect(await applyArmedEventsDelta(kv, { generation: 2, entries: [] })).toEqual({
       applied: false,
       generation: 2,
+      accepted: { supersededEventIds: 0, removedEventIds: 0 },
     });
     expect(await applyArmedEventsDelta(kv, { generation: 1, entries: [] })).toEqual({
       applied: false,
       generation: 2,
+      accepted: { supersededEventIds: 0, removedEventIds: 0 },
     });
     expect(
       await applyArmedEventsDelta(kv, {
         generation: 5,
         entries: [entry(77, "ACME", "2026-09-02")],
       }),
-    ).toEqual({ applied: true, generation: 5 });
+    ).toEqual({ applied: true, generation: 5, accepted: { supersededEventIds: 0, removedEventIds: 0 } });
     expect(JSON.parse(store.get("armed-events")!)).toEqual({
       generation: 5,
       entries: [entry(77, "ACME", "2026-09-02")],
@@ -361,7 +364,11 @@ describe("applyArmedEventsDelta (KV read-compare-write)", () => {
     expect(store.size).toBe(0); // the whole POST is rejected, nothing half-applied
     expect(
       await applyArmedEventsDelta(kv, { generation: 1, entries: [], removedEventIds: [good] }),
-    ).toEqual({ applied: true, generation: 1 });
+    ).toEqual({
+      applied: true,
+      generation: 1,
+      accepted: { supersededEventIds: 0, removedEventIds: 1 },
+    });
   });
 
   it("a KV failure is NOT a validation error (the handler must answer 503, not 400)", async () => {
@@ -613,5 +620,229 @@ describe("projection merge — snapshot-only fields survive", () => {
       { generation: 9, entries: [], supersededEventIds: [1] },
     );
     expect(degraded.events.find((e) => e.id === 1)!.superseded).toBe(0);
+  });
+});
+
+// FIX-W2 (R1): the reply states what the Worker actually holds, so the Mac can
+// tell a Worker that stored its replaced/removed id lists from an old build
+// that accepted the POST and dropped them.
+describe("applyArmedEventsDelta acknowledges the id lists it stored", () => {
+  const removed = (id: number) => ({
+    id,
+    eventDate: "2026-09-03",
+    removedAt: "2026-09-02T20:00:00.000Z",
+  });
+
+  it("an applied generation reports the counts it persisted (after its own dedupe)", async () => {
+    const { kv } = makeKv();
+    expect(
+      await applyArmedEventsDelta(kv, {
+        generation: 1,
+        entries: [],
+        supersededEventIds: [9, 2, 9],
+        removedEventIds: [removed(4)],
+      }),
+    ).toEqual({
+      applied: true,
+      generation: 1,
+      accepted: { supersededEventIds: 2, removedEventIds: 1 },
+    });
+  });
+
+  it("a replayed generation reports the counts of the record that stands, not of the body", async () => {
+    const { kv } = makeKv();
+    await applyArmedEventsDelta(kv, { generation: 5, entries: [], supersededEventIds: [1, 2, 3] });
+    expect(
+      await applyArmedEventsDelta(kv, { generation: 4, entries: [], removedEventIds: [removed(4)] }),
+    ).toEqual({
+      applied: false,
+      generation: 5,
+      accepted: { supersededEventIds: 3, removedEventIds: 0 },
+    });
+  });
+
+  it("a record an OLD build stored without the id lists is completed by the same generation", async () => {
+    const { kv, store } = makeKv();
+    // What the pre-id-list Worker wrote: two keys only.
+    store.set("armed-events", JSON.stringify({ generation: 7, entries: [] }));
+    expect(
+      await applyArmedEventsDelta(kv, {
+        generation: 7,
+        entries: [entry(77, "ACME", "2026-09-02")],
+        supersededEventIds: [3],
+        removedEventIds: [removed(4)],
+      }),
+    ).toEqual({
+      applied: true,
+      generation: 7,
+      accepted: { supersededEventIds: 1, removedEventIds: 1 },
+    });
+    expect(JSON.parse(store.get("armed-events")!)).toEqual({
+      generation: 7,
+      entries: [entry(77, "ACME", "2026-09-02")],
+      supersededEventIds: [3],
+      removedEventIds: [removed(4)],
+    });
+    // Once complete it is an ordinary held generation again: equal is refused.
+    expect(
+      await applyArmedEventsDelta(kv, { generation: 7, entries: [], supersededEventIds: [8, 9] }),
+    ).toEqual({
+      applied: false,
+      generation: 7,
+      accepted: { supersededEventIds: 1, removedEventIds: 1 },
+    });
+  });
+
+  it("the old-build completion never applies to a LOWER generation, or to a body with no ids", async () => {
+    const { kv, store } = makeKv();
+    const legacy = JSON.stringify({ generation: 7, entries: [] });
+    store.set("armed-events", legacy);
+    expect(
+      await applyArmedEventsDelta(kv, { generation: 6, entries: [], supersededEventIds: [3] }),
+    ).toEqual({
+      applied: false,
+      generation: 7,
+      accepted: { supersededEventIds: 0, removedEventIds: 0 },
+    });
+    expect(await applyArmedEventsDelta(kv, { generation: 7, entries: [] })).toEqual({
+      applied: false,
+      generation: 7,
+      accepted: { supersededEventIds: 0, removedEventIds: 0 },
+    });
+    expect(store.get("armed-events")).toBe(legacy);
+  });
+});
+
+// FIX-W2 (R2): the vendor sync deletes and re-creates an unenriched earnings
+// row, so a re-listed print has a NEW id while the 2am snapshot still holds the
+// OLD one. Once the new row is armed the delta must not add a second live row
+// for the same print.
+describe("a re-listed print: one (source_key, event_date) is live at most once", () => {
+  const KEY = "finnhub:HELDCO:2026-09-03";
+  const row = (id: number, over: Record<string, unknown> = {}) => ({
+    id,
+    source: "finnhub",
+    source_key: KEY,
+    event_type: "earnings",
+    event_date: "2026-09-03",
+    event_time: "AMC",
+    title: "HELDCO earnings",
+    description: null,
+    security_id: null,
+    symbol: "HELDCO",
+    expected_impact: null,
+    consensus_estimate: null,
+    previous_value: null,
+    raw_json: null,
+    superseded: 0,
+    ...over,
+  });
+  const relisted = (events: unknown[], over: Partial<Snapshot> = {}) =>
+    snap({ calendarEvents: events as unknown as Snapshot["calendarEvents"], ...over });
+  const armedNew = (over: Partial<ArmedEventEntry> = {}) =>
+    entry(20, "HELDCO", "2026-09-03", { sourceKey: KEY, source: "finnhub", ...over });
+  const supersededOf = (eff: ReturnType<typeof effectiveCalendarEvents>, id: number) =>
+    eff.events.find((e) => e.id === id)!.superseded;
+
+  it("the snapshot's old row is marked superseded; the delta's row stays live and armed", () => {
+    const eff = effectiveCalendarEvents(relisted([row(10)]), { generation: 4, entries: [armedNew()] });
+    expect(eff.events.map((e) => e.id)).toEqual([10, 20]);
+    expect(supersededOf(eff, 10)).toBe(1);
+    expect(supersededOf(eff, 20)).toBe(0);
+    expect(eff.armedEventIds.has(20)).toBe(true);
+    expect(eff.armedEventIds.has(10)).toBe(false);
+  });
+
+  it("an old row the snapshot itself had armed loses its armed mark with it", () => {
+    const eff = effectiveCalendarEvents(
+      relisted([row(10)], { armedEvents: [entry(10, "HELDCO", "2026-09-03", { sourceKey: KEY })] }),
+      { generation: 4, entries: [armedNew()] },
+    );
+    expect(supersededOf(eff, 10)).toBe(1);
+    expect([...eff.armedEventIds]).toEqual([20]);
+  });
+
+  it("CONTROL: a different date, or a different source_key, leaves both rows live", () => {
+    const otherDate = effectiveCalendarEvents(relisted([row(10, { event_date: "2026-09-04" })]), {
+      generation: 4,
+      entries: [armedNew()],
+    });
+    expect(supersededOf(otherDate, 10)).toBe(0);
+    expect(supersededOf(otherDate, 20)).toBe(0);
+
+    const otherKey = effectiveCalendarEvents(
+      relisted([row(10, { source_key: "nasdaq:HELDCO:2026-09-03" })]),
+      { generation: 4, entries: [armedNew()] },
+    );
+    expect(supersededOf(otherKey, 10)).toBe(0);
+    expect(supersededOf(otherKey, 20)).toBe(0);
+  });
+
+  it("the same symbol alone is never enough, and an empty or missing source_key never matches", () => {
+    for (const blank of [null, "", undefined]) {
+      const eff = effectiveCalendarEvents(relisted([row(10, { source_key: blank })]), {
+        generation: 4,
+        entries: [armedNew({ sourceKey: "" })],
+      });
+      expect(supersededOf(eff, 10)).toBe(0);
+      expect(supersededOf(eff, 20)).toBe(0);
+    }
+  });
+
+  it("an unarmed re-listing (no delta entry for the new row) leaves the old row live", () => {
+    const eff = effectiveCalendarEvents(relisted([row(10)]), {
+      generation: 4,
+      entries: [entry(77, "ACME", "2026-09-03")],
+    });
+    expect(supersededOf(eff, 10)).toBe(0);
+    expect(eff.events.some((e) => e.id === 20)).toBe(false);
+  });
+
+  it("a tombstoned new row supersedes nothing", () => {
+    const eff = effectiveCalendarEvents(relisted([row(10)]), {
+      generation: 4,
+      entries: [armedNew({ removed: true, removedAt: "2026-09-02T20:00:00.000Z" })],
+    });
+    expect(supersededOf(eff, 10)).toBe(0);
+    expect(eff.events.some((e) => e.id === 20)).toBe(false);
+  });
+
+  it("a new row the delta itself lists as replaced supersedes nothing (never silence both)", () => {
+    const eff = effectiveCalendarEvents(relisted([row(10)]), {
+      generation: 4,
+      entries: [armedNew()],
+      supersededEventIds: [20],
+    });
+    expect(supersededOf(eff, 10)).toBe(0);
+    expect(supersededOf(eff, 20)).toBe(1);
+  });
+
+  it("two rows that are BOTH live delta entries are left alone", () => {
+    const eff = effectiveCalendarEvents(relisted([row(10)]), {
+      generation: 4,
+      entries: [entry(10, "HELDCO", "2026-09-03", { sourceKey: KEY, source: "finnhub" }), armedNew()],
+    });
+    expect(supersededOf(eff, 10)).toBe(0);
+    expect(supersededOf(eff, 20)).toBe(0);
+  });
+
+  it("the older-generation and degraded paths are unchanged", () => {
+    const stale = effectiveCalendarEvents(relisted([row(10)]), { generation: 3, entries: [armedNew()] });
+    expect(stale.source).toBe("snapshot");
+    expect(supersededOf(stale, 10)).toBe(0);
+    expect(stale.events.some((e) => e.id === 20)).toBe(false);
+
+    const degraded = effectiveCalendarEvents(
+      relisted([row(10)], { schemaVersion: 10, armedGeneration: undefined } as Partial<Snapshot>),
+      { generation: 9, entries: [armedNew()] },
+    );
+    expect(degraded.source).toBe("degraded-v10");
+    expect(supersededOf(degraded, 10)).toBe(0);
+  });
+
+  it("a snapshot's own armed list never triggers it — only a newer delta does", () => {
+    const eff = effectiveCalendarEvents(relisted([row(10)], { armedEvents: [armedNew()] }), null);
+    expect(supersededOf(eff, 10)).toBe(0);
+    expect(supersededOf(eff, 20)).toBe(0);
   });
 });
