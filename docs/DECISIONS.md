@@ -780,3 +780,46 @@ The owner ruled in session on the questions queued by the 2026-10-07 sprint (the
 
 **Not ruled today**
 - The 28 findings Codex called a direction change (grouped in the to-do); the owner chose to rule on these next, before any build.
+
+## 2026-10-08 — Owner rulings on the findings Codex called a direction change
+
+The owner ruled in session on the direction findings from the sprint's second-opinion round. Each bullet names the finding in words; the QA ledger rows carry the detail. Direction-only. Nothing below is built yet. The ledger rows are not yet stamped: the build plan decides which go to the nightly fixer and which are session builds, so the two do not collide.
+
+**Calendar and macro**
+- **Two vendors, one print: a real slot beats a default time.** The duplicate check keeps the row that carries an explicit before-open or after-close slot; a vendor's hour-unknown default never outranks it. It corrects itself on the next sync; no row is edited in place.
+- **Macro actual on a different basis from its consensus: same-basis rule and a size check.** The lookup must return the actual on the consensus basis; an actual more than ten times both consensus and prior is refused and stored empty with a reason. The one bad row is re-enriched by the owner.
+- **One month named twice on macro cards: name the reference month from FRED's observation period,** not from the release date minus a fixed lag.
+- **Week-ahead "time unknown": widen the display-only estimate's evidence.** It may also read the earnings history table (still two agreeing prints) and use the hidden same-day twin as a tie-breaker. Never stored; the 2026-10-05 display-only ruling stands.
+
+**Accounts**
+- **Reconciliation difference chip: relative tolerance with a floor.** Red above the larger of the flat floor or half a percent of the statement value; amber between a tenth and half a percent; neutral below. One shared helper holds the bands.
+- **Checkpoint "Computed" with no valuation on the exact date: nearest prior day, with the source date shown.**
+
+**Analysis**
+- **Sector rows held only through funds: the drill-down lists the contributing funds with their slice,** using the same split as the breakdown; the Positions column counts every contributing security. This applies the 2026-09-02 ruling (one attribution rule, one unit for every count).
+- **Defense, hedge or bet: a long call with delta of 0.80 or more counts as a share-equivalent core holding;** a put against it is a hedge in every scope. A remaining put and call on one underlying net into one row. The standalone-bets and most-exposed findings are one build.
+- **Significant Moves follows the scope selector; the email is unchanged.** The compute takes the selected accounts and its default stays what the email and the Worker use today.
+- **Significant Moves day pair: completed sessions only, with disclosure.** A row dated today is ignored until the regular session has closed; the card prints the two days compared and the number of names evaluated. The rule is shared with the market snapshot and Today, and the email follows it.
+- **A macro theme that inverts its source: direction check and the excerpt.** A theme whose stated direction contradicts its cited article's summary is dropped before caching, and each theme shows its cited sentence. Build it with the input-ranking ruling above.
+- **Performance periods: the view opens on year to date, and one year becomes a true twelve months ending at the last statement anchor.**
+- **Geography: keep the vendor buckets and define the three catch-alls in their labels.** No country vocabulary is built. The owner chose this over the recommendation.
+- **Analysis scope: remembered for the session only.** A fresh launch still opens on the ruled default.
+- **Holdings confidence score: weight by value.** The score reflects how much of the book's value is stale; the popover keeps naming the rows.
+
+**Earnings email**
+- **Recap scoreboard actuals: the worksheet or parsed adjusted figure leads, with the vendor figure as a footnote;** with no worksheet figure, the vendor figure shows with a basis label. Mac and Worker change together.
+- **Archived recap rebuilt from current data: label now, store later.** The viewer stamps the scoreboard "refreshed after send" whenever its data is newer than the send time. Storing the sent scoreboard needs a migration, shown to the owner first.
+- **Recap prose quoting a later price: no web search for a reaction.** With no reaction snapshot the recap says the reaction is not captured yet.
+
+**Today and chat**
+- **A position opened today: it contributes close minus cost basis, and is left out when it has no cost basis;** the line marks it as opened today. The chat movers and adds to an existing position follow the same rule.
+- **Chat movers, a symbol held long and short: one row per side,** each with its own account and effect.
+- **Chat total against the Portfolio strip: chat reads the strip's total** and reports that one date, with a footnote on each account's freshness.
+- **An armed Hub row after its print: a read-only record** (window-closed header, the accepted figures, the output buttons), after confirming why the panel had no print to show.
+
+**Research**
+- **Feeds articles with empty enrichment: fix the cause, guard the render, then repair.** The cloud write path queues such an article for enrichment; a card with no enrichment never shows a sentiment chip; a rehearsed one-time repair re-enriches the stored rows (paid calls).
+
+**Not ruled**
+- The levels "show inactive" finding: the two Codex passes disagree on whether it is already fixed. It needs a look on screen first.
+- About 29 lower-priority findings still wait on a decision (`qa/findings/DECISIONS-PENDING.md`).
