@@ -661,14 +661,16 @@ describe("applyArmedEventsDelta acknowledges the id lists it stored", () => {
     });
   });
 
-  it("a record an OLD build stored without the id lists is completed by the same generation", async () => {
+  it("a record an OLD build stored without the id lists is completed by the same generation with IDENTICAL entries", async () => {
     const { kv, store } = makeKv();
+    const heldEntries = [entry(77, "ACME", "2026-09-02"), entry(78, "ZZZ", "2026-09-03")];
     // What the pre-id-list Worker wrote: two keys only.
-    store.set("armed-events", JSON.stringify({ generation: 7, entries: [] }));
+    store.set("armed-events", JSON.stringify({ generation: 7, entries: heldEntries }));
     expect(
       await applyArmedEventsDelta(kv, {
         generation: 7,
-        entries: [entry(77, "ACME", "2026-09-02")],
+        // Same entries; key order differs, which is the one thing ignored.
+        entries: heldEntries.map((e) => Object.fromEntries(Object.entries(e).reverse())),
         supersededEventIds: [3],
         removedEventIds: [removed(4)],
       }),
@@ -679,17 +681,110 @@ describe("applyArmedEventsDelta acknowledges the id lists it stored", () => {
     });
     expect(JSON.parse(store.get("armed-events")!)).toEqual({
       generation: 7,
-      entries: [entry(77, "ACME", "2026-09-02")],
+      entries: heldEntries,
       supersededEventIds: [3],
       removedEventIds: [removed(4)],
     });
     // Once complete it is an ordinary held generation again: equal is refused.
+    const completed = store.get("armed-events");
     expect(
-      await applyArmedEventsDelta(kv, { generation: 7, entries: [], supersededEventIds: [8, 9] }),
+      await applyArmedEventsDelta(kv, {
+        generation: 7,
+        entries: heldEntries,
+        supersededEventIds: [8, 9],
+      }),
     ).toEqual({
       applied: false,
       generation: 7,
       accepted: { supersededEventIds: 1, removedEventIds: 1 },
+    });
+    expect(store.get("armed-events")).toBe(completed);
+  });
+
+  it("a same-generation body with DIFFERENT entries never changes the held record (restored database)", async () => {
+    const heldEntries = [entry(77, "ACME", "2026-09-02"), entry(78, "ZZZ", "2026-09-03")];
+    const different: Array<[string, unknown[]]> = [
+      ["other event", [entry(99, "OTHER", "2026-09-02"), heldEntries[1]]],
+      ["one field differs", [heldEntries[0], entry(78, "ZZZ", "2026-09-03", { releaseTime: "07:00" })]],
+      ["null vs value", [heldEntries[0], entry(78, "ZZZ", "2026-09-03", { securityId: 5 })]],
+      ["reordered", [heldEntries[1], heldEntries[0]]],
+      ["one fewer", [heldEntries[0]]],
+      ["one more", [...heldEntries, entry(79, "AAA", "2026-09-04")]],
+      ["none", []],
+      [
+        "tombstoned",
+        [heldEntries[0], entry(78, "ZZZ", "2026-09-03", { removed: true, removedAt: "2026-09-02T20:00:00.000Z" })],
+      ],
+    ];
+    for (const [label, entries] of different) {
+      const { kv, store } = makeKv();
+      const legacy = JSON.stringify({ generation: 7, entries: heldEntries });
+      store.set("armed-events", legacy);
+      expect(
+        await applyArmedEventsDelta(kv, {
+          generation: 7,
+          entries,
+          supersededEventIds: [3],
+          removedEventIds: [removed(4)],
+        }),
+        label,
+      ).toEqual({
+        applied: false,
+        generation: 7,
+        accepted: { supersededEventIds: 0, removedEventIds: 0 },
+      });
+      expect(store.get("armed-events"), label).toBe(legacy);
+    }
+  });
+
+  it("a record that already has EITHER list key is never completed, identical entries or not", async () => {
+    const heldEntries = [entry(77, "ACME", "2026-09-02")];
+    for (const lists of [
+      { supersededEventIds: [] },
+      { removedEventIds: [] },
+      { supersededEventIds: [], removedEventIds: [] },
+    ]) {
+      const { kv, store } = makeKv();
+      const before = JSON.stringify({ generation: 7, entries: heldEntries, ...lists });
+      store.set("armed-events", before);
+      expect(
+        await applyArmedEventsDelta(kv, {
+          generation: 7,
+          entries: heldEntries,
+          supersededEventIds: [3],
+          removedEventIds: [removed(4)],
+        }),
+      ).toEqual({
+        applied: false,
+        generation: 7,
+        accepted: { supersededEventIds: 0, removedEventIds: 0 },
+      });
+      expect(store.get("armed-events")).toBe(before);
+    }
+  });
+
+  it("a HIGHER generation still replaces an old-build record, entries and all", async () => {
+    const { kv, store } = makeKv();
+    store.set(
+      "armed-events",
+      JSON.stringify({ generation: 7, entries: [entry(77, "ACME", "2026-09-02")] }),
+    );
+    expect(
+      await applyArmedEventsDelta(kv, {
+        generation: 8,
+        entries: [entry(99, "OTHER", "2026-09-02")],
+        supersededEventIds: [3],
+      }),
+    ).toEqual({
+      applied: true,
+      generation: 8,
+      accepted: { supersededEventIds: 1, removedEventIds: 0 },
+    });
+    expect(JSON.parse(store.get("armed-events")!)).toEqual({
+      generation: 8,
+      entries: [entry(99, "OTHER", "2026-09-02")],
+      supersededEventIds: [3],
+      removedEventIds: [],
     });
   });
 

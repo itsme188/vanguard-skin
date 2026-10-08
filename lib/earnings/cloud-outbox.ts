@@ -206,12 +206,15 @@ function payloadIdListCounts(payloadJson: string): {
   supersededEventIds: number;
   removedEventIds: number;
 } {
-  let parsed: { supersededEventIds?: unknown; removedEventIds?: unknown } | null = null;
-  try {
-    parsed = JSON.parse(payloadJson) as typeof parsed;
-  } catch {
-    parsed = null;
-  }
+  type IdLists = { supersededEventIds?: unknown; removedEventIds?: unknown };
+  const readLists = (): IdLists | null => {
+    try {
+      return JSON.parse(payloadJson) as IdLists | null;
+    } catch {
+      return null;
+    }
+  };
+  const parsed = readLists();
   const supersededRaw: unknown = parsed?.supersededEventIds;
   const removedRaw: unknown = parsed?.removedEventIds;
   const superseded: unknown[] = Array.isArray(supersededRaw) ? supersededRaw : [];

@@ -41,7 +41,7 @@ interface Lists {
 }
 
 /** One full-list payload at the next generation carrying the given id lists. */
-function mint(lists: Lists = {}): number {
+function mint(lists: Lists = {}, entries: unknown[] = []): number {
   const g =
     (db.prepare(`SELECT COALESCE(MAX(generation), 0) AS g FROM cloud_outbox`).get() as { g: number })
       .g + 1;
@@ -50,7 +50,7 @@ function mint(lists: Lists = {}): number {
     g,
     JSON.stringify({
       generation: g,
-      entries: [],
+      entries,
       supersededEventIds: lists.supersededEventIds ?? [],
       removedEventIds: lists.removedEventIds ?? [],
     }),
@@ -115,6 +115,21 @@ const rows = () =>
       `SELECT generation, sent_at IS NOT NULL AS sent, send_error FROM cloud_outbox ORDER BY generation`,
     )
     .all() as Array<{ generation: number; sent: number; send_error: string | null }>;
+
+/** A synthetic armed entry in the projection's wire shape. */
+const armed = (eventId: number, symbol: string) => ({
+  eventId,
+  symbol,
+  eventDate: "2026-09-03",
+  eventTime: "AMC",
+  releaseTime: "16:15",
+  sourceKey: `manual:${symbol}:2026-09-03:earnings`,
+  source: "manual",
+  consensusValue: null,
+  expectedImpact: null,
+  securityId: null,
+  epsConsensusVendor: null,
+});
 
 const NOT_ACKED =
   "w: worker did not acknowledge the replaced/removed id lists; deploy the Worker";
@@ -186,6 +201,47 @@ describe("drain — a row that carries ids is delivered only on the Worker's ack
       supersededEventIds: [11, 12],
       removedEventIds: [removed(13)],
     });
+  });
+
+  it("the upgraded Worker completes a record that HAS entries, and leaves those entries as stored", async () => {
+    const cloud = makeCloud("old");
+    mint({ supersededEventIds: [11] }, [armed(21, "AAA"), armed(22, "ZZZ")]);
+    await cloud.drain();
+    expect(cloud.stored()).toEqual({ generation: 1, entries: [armed(21, "AAA"), armed(22, "ZZZ")] });
+
+    cloud.upgrade();
+    expect(await cloud.drain()).toEqual({ sent: 1, failed: 0, skipped: null });
+    expect(cloud.stored()).toEqual({
+      generation: 1,
+      entries: [armed(21, "AAA"), armed(22, "ZZZ")],
+      supersededEventIds: [11],
+      removedEventIds: [],
+    });
+  });
+
+  it("a RESTORED database at the same generation with different entries: nothing in the cloud changes, the row stays undelivered, the drain stops", async () => {
+    const cloud = makeCloud("old");
+    mint({ supersededEventIds: [11] }, [armed(21, "AAA")]);
+    await cloud.drain();
+    const held = { generation: 1, entries: [armed(21, "AAA")] };
+    expect(cloud.stored()).toEqual(held);
+
+    // The restore: the same generation number now names a different list.
+    db.prepare(`DELETE FROM cloud_outbox`).run();
+    mint({ supersededEventIds: [11] }, [armed(31, "BBB")]);
+    mint();
+    cloud.upgrade();
+    expect(await cloud.drain()).toEqual({ sent: 0, failed: 1, skipped: null });
+    expect(cloud.posted).toEqual([1, 1]); // generation 2 never went out
+    expect(cloud.stored()).toEqual(held);
+    expect(rows()).toEqual([
+      { generation: 1, sent: 0, send_error: NOT_ACKED },
+      { generation: 2, sent: 0, send_error: null },
+    ]);
+    // And it stays that way on every later drain.
+    expect(await cloud.drain()).toEqual({ sent: 0, failed: 1, skipped: null });
+    expect(cloud.stored()).toEqual(held);
+    expect(rows().map((r) => r.sent)).toEqual([0, 0]);
   });
 
   it("the queue behind an unacknowledged row drains in order once the Worker is upgraded", async () => {

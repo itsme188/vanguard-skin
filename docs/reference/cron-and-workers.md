@@ -410,6 +410,10 @@ exactly like every other Mac↔Worker marker:
   it or already held it. One exception to "strictly greater": a record a pre-id-list build stored
   (`{ generation, entries }`, neither list key) is completed by the SAME generation when that body
   carries ids — never by a lower generation, never by a body with no ids.
+  It completes only when the body's entries are identical to the stored entries (same order, every
+  allowlisted key equal) and it only adds the two lists — it never replaces the stored entries; a
+  same-generation body with different entries (a restored Mac database) changes nothing and is
+  answered `applied:false` with zero counts.
 - `GET /internal/armed-events` — read-only twin, same auth, no side effects. Returns the stored
   generation and entries (0 / `[]` when absent or corrupt). It exists for the sandbox end-to-end
   and the post-deploy check.
