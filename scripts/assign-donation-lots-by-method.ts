@@ -32,7 +32,7 @@
  *
  * Usage:
  *   npx tsx scripts/assign-donation-lots-by-method.ts           # dry-run (default)
- *   npx tsx scripts/assign-donation-lots-by-method.ts --apply   # write
+ *   REPAIR_DB_PATH=/tmp/rehearsal.db npx tsx scripts/assign-donation-lots-by-method.ts --apply --acknowledge-repair
  */
 
 import fs from "node:fs";
@@ -46,9 +46,10 @@ import {
   wholeLedgerRecomputeNotice,
 } from "@/lib/compute/donation-recompute";
 
-const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
+const DB_PATH = process.env.REPAIR_DB_PATH ?? path.join(process.cwd(), "data", "vanguard.db");
 const MINTAX_FROM = "2025-01-01"; // donations on/after this date use MinTax
 const ZERO_EPS = 0.005; // |gain per share| below half a cent counts as Vanguard's "zero gain or loss"
+const ACK_FLAG = "--acknowledge-repair";
 
 export type DisposalMethod = "fifo" | "mintax";
 
@@ -170,6 +171,7 @@ export function runAssignment(db: Database.Database, apply: boolean): { planned:
 
   const plans: { donation: DonationTarget; method: DisposalMethod; picks: LotPick[] }[] = [];
   const problems: string[] = [];
+  const plannedConsumption = new Map<number, number>();
 
   const sellsBeforeStmt = db.prepare(
     `SELECT COUNT(*) AS n FROM transactions t
@@ -191,6 +193,13 @@ export function runAssignment(db: Database.Database, apply: boolean): { planned:
       }
       throw err;
     }
+    lots = lots.map((lot) => ({
+      ...lot,
+      remainingAsOfDonationDate: Math.max(
+        0,
+        lot.remainingAsOfDonationDate - (plannedConsumption.get(lot.acquisitionTransactionId) ?? 0),
+      ),
+    }));
 
     const result = method === "fifo" ? selectLotsFifo(lots, donation.quantity) : selectLotsMinTax(lots, donation.quantity);
     if ("unrankable" in result) {
@@ -205,7 +214,23 @@ export function runAssignment(db: Database.Database, apply: boolean): { planned:
     }
 
     const divergentSells = (sellsBeforeStmt.get(donation.id, donation.out_date) as { n: number }).n;
+    let capacityOk = true;
+    for (const p of result.picks) {
+      const lot = lots.find((l) => l.acquisitionTransactionId === p.acquisitionTransactionId);
+      if (!lot || p.quantity - lot.remainingAsOfDonationDate > 1e-9) {
+        problems.push(`donation ${donation.id} (${donation.symbol}): planned lot ${p.acquisitionTransactionId} exceeds gift-date capacity — not assigned`);
+        capacityOk = false;
+      }
+    }
+    if (!capacityOk) continue;
+
     plans.push({ donation, method, picks: result.picks });
+    for (const p of result.picks) {
+      plannedConsumption.set(
+        p.acquisitionTransactionId,
+        (plannedConsumption.get(p.acquisitionTransactionId) ?? 0) + p.quantity,
+      );
+    }
 
     console.log(
       `\ndonation ${donation.id} — ${donation.symbol} ${donation.quantity} sh on ${donation.out_date} [${method.toUpperCase()}]` +
@@ -272,6 +297,9 @@ export function runAssignment(db: Database.Database, apply: boolean): { planned:
 
 function main() {
   const apply = process.argv.includes("--apply");
+  if (apply && !process.argv.includes(ACK_FLAG)) {
+    throw new Error(`Refusing to write without ${ACK_FLAG}. Dry-run is the default; rehearse on a REPAIR_DB_PATH copy first.`);
+  }
   const db = new Database(DB_PATH, { timeout: 60000 });
   db.pragma("foreign_keys = ON");
   runAssignment(db, apply);

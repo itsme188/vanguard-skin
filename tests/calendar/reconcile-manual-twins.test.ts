@@ -84,8 +84,9 @@ describe("reconcileEarningsDates — two hand-entered rows for one name", () => 
 
     expect(row(wed).superseded).toBe(0);
     expect(row(thu).superseded).toBe(0);
-    expect(row(wed).date_status).toBe("user_confirmed");
-    expect(row(thu).date_status).toBe("user_confirmed");
+    // Neither was confirmed, so the pass stamps neither (ruling 2026-09-14).
+    expect(row(wed).date_status).toBeNull();
+    expect(row(thu).date_status).toBeNull();
     expect(result.superseded).toEqual([]);
   });
 
@@ -218,9 +219,11 @@ describe("reconcileEarningsDates — hand-entered vs vendor is unchanged", () =>
     const result = reconcileEarningsDates(db, { today: TODAY });
 
     expect(row(manual).superseded).toBe(0);
-    expect(row(manual).date_status).toBe("user_confirmed");
+    // Locked by its source; never confirmed, so no stamp (ruling 2026-09-14).
+    expect(row(manual).date_status).toBeNull();
     expect(row(vendor).superseded).toBe(1);
-    expect(result.userConfirmed).toBe(1);
+    expect(result.userConfirmed).toBe(0);
+    expect(result.handEntered).toBe(1);
     expect(result.superseded).toEqual([
       {
         eventId: vendor,

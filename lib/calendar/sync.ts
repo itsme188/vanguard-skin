@@ -645,7 +645,10 @@ export async function syncCalendarForWeek(
     }));
     send({
       phase: "reconcile_done",
-      message: `Earnings dates reconciled: ${rec.confirmed} confirmed, ${rec.conflict} conflict, ${rec.single} single, ${rec.userConfirmed} you-confirmed`,
+      // Each count is a date status the pass left on a showing row. "locked to
+      // a date you entered" rows get NO status written (owner ruling
+      // 2026-09-14: only the confirm-date route records a confirmation).
+      message: `Earnings dates reconciled: ${rec.confirmed} confirmed, ${rec.conflict} conflict, ${rec.single} single, ${rec.userConfirmed} you-confirmed, ${rec.handEntered} locked to a date you entered (not marked confirmed)`,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

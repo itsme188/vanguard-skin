@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { BarSizeSetting, SecType } from "@stoqey/ib";
 import { getIbApi } from "./client";
 import { RateLimiter } from "./rate-limiter";
+import { PRICED_BAR_SQL } from "@/lib/queries/ohlcv";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -213,29 +214,44 @@ export async function fetchBenchmarkPrices(
 
       let fallbackInserted = 0;
       if (secRow) {
-        // Try ohlcv_bars first (chart cache), then prices table (valuation prices)
-        let fallbackBars = db.prepare(
-          `SELECT bar_date AS date, close AS close_price FROM ohlcv_bars
-           WHERE security_id = ? AND bar_size = '1 day' AND close > 0
-           ORDER BY bar_date`
-        ).all(secRow.id) as { date: string; close_price: number }[];
+        const hasPricedBars = (
+          db
+            .prepare(
+              `SELECT 1 AS ok FROM ohlcv_bars
+               WHERE security_id = ? AND bar_size = '1 day' AND ${PRICED_BAR_SQL}
+               LIMIT 1`
+            )
+            .get(secRow.id) as { ok: number } | undefined
+        ) != null;
 
-        if (fallbackBars.length === 0) {
-          fallbackBars = db.prepare(
-            `SELECT date, close_price FROM prices
-             WHERE security_id = ? AND close_price > 0
-             ORDER BY date`
-          ).all(secRow.id) as { date: string; close_price: number }[];
-        }
+        // Choose the cache family first. If this benchmark has any priced
+        // chart bars, never splice in statement-basis prices just because
+        // every bar date is already present in benchmark_prices.
+        const fallbackBars = hasPricedBars
+          ? (db
+              .prepare(
+                `SELECT bar_date AS date, close AS close_price FROM ohlcv_bars
+                 WHERE security_id = ? AND bar_size = '1 day' AND ${PRICED_BAR_SQL}
+                 ORDER BY bar_date`
+              )
+              .all(secRow.id) as { date: string; close_price: number }[])
+          : (db.prepare(
+              `SELECT p.date, p.close_price
+               FROM prices p
+               WHERE p.security_id = ? AND p.close_price > 0
+               ORDER BY date`
+            ).all(secRow.id) as { date: string; close_price: number }[]);
 
         if (fallbackBars.length > 0) {
+          const fallbackDates = new Set<string>();
           const tx = db.transaction(() => {
             for (const bar of fallbackBars) {
               upsert.run(symbol, bar.date, bar.close_price);
-              fallbackInserted++;
+              fallbackDates.add(bar.date);
             }
           });
           tx();
+          fallbackInserted = fallbackDates.size;
         }
       }
 

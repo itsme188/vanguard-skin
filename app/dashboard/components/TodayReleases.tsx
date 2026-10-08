@@ -140,6 +140,16 @@ export function slotAwareTitle(
   );
 }
 
+/**
+ * Rows the block does not list. `total` is the caller's count of releases
+ * matching the same query the list was cut from; absent or not a whole
+ * number, nothing is claimed.
+ */
+export function hiddenReleaseCount(total: number | null | undefined, shown: number): number {
+  if (total == null || !Number.isInteger(total)) return 0;
+  return Math.max(0, total - shown);
+}
+
 /** event_date is an ET market date (YYYY-MM-DD) → "Wed Jun 10". */
 function fmtDate(event_date: string): string {
   const [y, m, d] = event_date.split("-").map(Number);
@@ -154,11 +164,15 @@ function fmtDate(event_date: string): string {
 export function TodayReleases({
   releases,
   mode = "today",
+  totalCount,
 }: {
   releases: DisplayedEvent[];
   mode?: "today" | "upcoming";
+  /** How many releases the list was cut from; more than shown adds "+N more". */
+  totalCount?: number | null;
 }) {
   const upcoming = mode === "upcoming";
+  const hidden = hiddenReleaseCount(totalCount, releases.length);
   const todayIso = todayET();
   // A pre-release chip is decided from the clock at render. One timer, set for
   // the soonest print window to open, bumps `tick` so the rows re-evaluate and
@@ -290,6 +304,16 @@ export function TodayReleases({
           );
         })}
       </ul>
+      {hidden > 0 && (
+        <div className="pt-2">
+          <Link
+            href="/dashboard/calendar"
+            className="text-[12px] font-mono text-ink-dim hover:text-ink underline underline-offset-2 relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2"
+          >
+            +{hidden} more on the calendar &rarr;
+          </Link>
+        </div>
+      )}
     </section>
   );
 }

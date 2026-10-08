@@ -433,7 +433,10 @@ export function EarningsHub() {
         </div>
         <EarningsHubDateCorrectionNote weekOf={weekOf} />
         <div className="flex items-center justify-start gap-2 pt-1">
-          <BogeysUploadButton weekOf={weekOf} />
+          <BogeysUploadButton
+            weekOf={weekOf}
+            shownEvents={events.map((e) => ({ id: e.id, symbol: e.symbol, eventDate: e.event_date }))}
+          />
         </div>
       </div>
     </section>
@@ -526,17 +529,17 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
             <PreReleaseChip manualActualsAt={event.manual_actuals_at ?? null} />
           </span>
         )}
-        {event.date_status && (
-          <span className="block mt-0.5">
-            <EarningsDateChip
-              symbol={event.symbol ?? ""}
-              eventDate={event.event_date}
-              releaseTime={event.release_time}
-              dateStatus={event.date_status}
-              dateConflictWith={event.date_conflict_with}
-            />
-          </span>
-        )}
+        {/* The chip decides whether it renders (a hand-entered row with no
+            date status still gets one) and brings its own wrapper. */}
+        <EarningsDateChip
+          symbol={event.symbol ?? ""}
+          eventDate={event.event_date}
+          releaseTime={event.release_time}
+          dateStatus={event.date_status}
+          dateConflictWith={event.date_conflict_with}
+          source={event.source}
+          wrapperClassName="block mt-0.5"
+        />
       </span>
       {consensusMissing ? (
         <span
@@ -711,15 +714,14 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           {statusChipLabel(event.status)}
         </span>
         {preRelease && <PreReleaseChip manualActualsAt={event.manual_actuals_at ?? null} />}
-        {event.date_status && (
-          <EarningsDateChip
-            symbol={event.symbol ?? ""}
-            eventDate={event.event_date}
-            releaseTime={event.release_time}
-            dateStatus={event.date_status}
-            dateConflictWith={event.date_conflict_with}
-          />
-        )}
+        <EarningsDateChip
+          symbol={event.symbol ?? ""}
+          eventDate={event.event_date}
+          releaseTime={event.release_time}
+          dateStatus={event.date_status}
+          dateConflictWith={event.date_conflict_with}
+          source={event.source}
+        />
         <span className="font-mono ml-auto text-ink-faint" style={{ fontSize: "11px" }}>
           {slot}
           <SlotTimeFlag event={event} />

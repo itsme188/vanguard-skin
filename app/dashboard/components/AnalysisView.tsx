@@ -57,7 +57,12 @@ const CLASSIFICATION_ORDER: AllocationDimension[] = [
 const FACTOR_ORDER: FactorColumn[] = [...FACTOR_COLUMNS];
 
 function getDimensionLabel(dim: AllocationDimension): string {
-  return CLASSIFICATION_LABELS[dim] ?? FACTOR_LABELS[dim as FactorColumn] ?? dim;
+  // No label on file: read the stored key as words, never print it raw.
+  return (
+    CLASSIFICATION_LABELS[dim] ??
+    FACTOR_LABELS[dim as FactorColumn] ??
+    dim.replace(/[_-]+/g, " ")
+  );
 }
 
 const SCOPE_OPTIONS = [

@@ -33,6 +33,37 @@ const BADGE_LABEL: Record<HedgeBadge, string> = {
   deep_itm: "deep ITM",
 };
 
+/**
+ * Plain wording for the Hedge book's "Protects" cell. A paired hedge carries
+ * its underlying's name; a proxy hedge carries a route description from
+ * lib/compute/hedging.ts (`sector: <name> <pct>% / …`, `geography: <region>`,
+ * `book (β=…)`). Each route gets a phrase here, and a route this map does not
+ * know reads as words, so the cell never prints a `key: value` pair.
+ */
+export function protectsLabel(protects: string): string {
+  const book = /^book\s*\((.*)\)$/.exec(protects);
+  if (book) return `Whole portfolio (${book[1]})`;
+  const route = /^([a-z][a-z_]*):\s*(.*)$/.exec(protects);
+  if (!route) return protects;
+  const [, kind, detail] = route;
+  if (kind === "geography") {
+    return detail === "" || detail === "Unknown"
+      ? "Equities with no region on file (broad)"
+      : `${detail} equities (broad)`;
+  }
+  if (kind === "sector") {
+    return detail
+      .split(" / ")
+      .map((part) => {
+        const share = /^(.*\S)\s+(-?\d+%)$/.exec(part.trim());
+        return share ? `${share[1]} sector (${share[2]})` : `${part.trim()} sector`;
+      })
+      .join(", ");
+  }
+  const words = kind.replace(/_+/g, " ");
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}: ${detail}`;
+}
+
 interface DefenseTablesProps {
   rankedExposures: RankedExposure[];
   hedgeScores: HedgeScore[];
@@ -175,7 +206,7 @@ function HedgeBookTable({ hedgeScores }: { hedgeScores: HedgeScore[] }) {
                   <td className="py-2 pr-3 text-ink">
                     <SymbolLink securityId={row.securityId} symbol={row.symbol} />
                   </td>
-                  <td className="py-2 px-2 text-ink-dim">{row.protects}</td>
+                  <td className="py-2 px-2 text-ink-dim">{protectsLabel(row.protects)}</td>
                   <td className="text-right py-2 px-2 font-mono tabular-nums">
                     <Money value={row.protectedNotional} />
                   </td>

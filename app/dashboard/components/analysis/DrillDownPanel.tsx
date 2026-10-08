@@ -26,6 +26,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Money, Pct } from "@/lib/privacy/components";
+import { usePrivacy } from "@/lib/privacy/context";
 import { ScrollFade } from "../ScrollFade";
 import { SortableHeader } from "../SortableHeader";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
@@ -62,6 +63,7 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isRisk = filter?.kind === "risk";
+  const { isPrivate } = usePrivacy();
   // The risk drawer arrives already ranked by risk contribution (the server
   // owns that ordering, see lib/queries/drill-down.ts). Defaulting it to
   // "marketValue" re-sorted the list by size in the browser, so a panel
@@ -137,7 +139,7 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
 
   if (!open) return null;
 
-  const title = titleFor(filter, rows.length);
+  const title = titleFor(filter, rows.length, isPrivate);
 
   return (
     <>
@@ -330,9 +332,20 @@ function factorOrDash(v: string | undefined): string {
   return v && v.length > 0 ? v : "—";
 }
 
-function titleFor(filter: DrillDownFilter | null, count: number): string {
+/**
+ * The panel title (also its accessible name). The holdings count is a
+ * portfolio figure: under Hide amounts it is masked, and the noun stays
+ * plural so it cannot reveal that the count is exactly one.
+ */
+export function titleFor(
+  filter: DrillDownFilter | null,
+  count: number,
+  isPrivate = false
+): string {
   if (!filter) return "Drill-down";
-  const suffix = `· ${count} holding${count === 1 ? "" : "s"}`;
+  const suffix = isPrivate
+    ? "· ••• holdings"
+    : `· ${count} holding${count === 1 ? "" : "s"}`;
   if (filter.kind === "classification") {
     return `${prettifyDimension(filter.dimension)}: ${filter.bucket} ${suffix}`;
   }
@@ -350,7 +363,7 @@ function titleFor(filter: DrillDownFilter | null, count: number): string {
   return `Top ${filter.topN ?? 10} by risk contribution ${suffix}`;
 }
 
-function prettifyDimension(dim: string): string {
+export function prettifyDimension(dim: string): string {
   switch (dim) {
     case "sector":
       return "Sector";
@@ -366,8 +379,11 @@ function prettifyDimension(dim: string): string {
       return "Asset Class";
     case "security_type":
       return "Security Type";
-    default:
-      return dim;
+    default: {
+      // No label on file: read the stored key as words, never print it raw.
+      const words = dim.replace(/[_-]+/g, " ").trim();
+      return words.charAt(0).toUpperCase() + words.slice(1);
+    }
   }
 }
 

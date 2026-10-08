@@ -18,7 +18,7 @@
  *
  * Usage:
  *   npx tsx scripts/reassign-clamped-donations.ts           # dry-run (default)
- *   npx tsx scripts/reassign-clamped-donations.ts --apply   # write
+ *   REPAIR_DB_PATH=/tmp/rehearsal.db npx tsx scripts/reassign-clamped-donations.ts --apply --acknowledge-repair
  */
 
 import path from "node:path";
@@ -32,11 +32,15 @@ import {
 } from "@/lib/compute/donation-recompute";
 import { selectLotsMinTax } from "./assign-donation-lots-by-method";
 
-const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
+const DB_PATH = process.env.REPAIR_DB_PATH ?? path.join(process.cwd(), "data", "vanguard.db");
 const DONATION_IDS = [17, 16]; // chronological: 06-22 before 06-25
+const ACK_FLAG = "--acknowledge-repair";
 
 function main() {
   const apply = process.argv.includes("--apply");
+  if (apply && !process.argv.includes(ACK_FLAG)) {
+    throw new Error(`Refusing to write without ${ACK_FLAG}. Dry-run is the default; rehearse on a REPAIR_DB_PATH copy first.`);
+  }
   const db = new Database(DB_PATH, { timeout: 60000 });
   db.pragma("foreign_keys = ON");
 

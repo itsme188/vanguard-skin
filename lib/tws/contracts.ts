@@ -6,6 +6,7 @@ import { mapSecurityType, shouldRetypeAsEtf } from "./security-type-map";
 import type { EnrichResult } from "./types";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { todayET } from "@/lib/calendar/date-utils";
+import { cashEquivalentSecurityTypeSql } from "@/lib/compute/cash-equivalents";
 import {
   UNDERLYING_LOOKUP_RETRY_AFTER_DAYS,
   clearUnderlyingLookupFailures,
@@ -145,7 +146,8 @@ export async function enrichSecurities(
          JOIN holdings h ON h.security_id = s.id
          WHERE (s.ib_con_id IS NULL OR s.name IS NULL OR s.name = s.symbol)
            AND s.symbol NOT LIKE 'CUSIP:%'
-           AND LOWER(s.security_type) NOT IN ('cash', 'money_market', 'money market')
+           AND LOWER(COALESCE(s.security_type, '')) != 'cash'
+           AND NOT ${cashEquivalentSecurityTypeSql("s")}
            AND (
              -- Stocks, ETFs, bonds, mutual funds: simple symbols (no spaces)
              (LOWER(s.security_type) NOT IN ('option') AND s.symbol NOT LIKE '% %')

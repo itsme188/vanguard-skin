@@ -107,7 +107,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
   // "today" must be the ET day regardless of server/Mac local TZ or UTC), and
   // it applies the dual-class security_id fallback so a row whose stored
   // security_id is NULL still links to its security hub.
-  const { releases, mode: releasesMode } = getTodayReleases(db);
+  const { releases, mode: releasesMode, totalCount: releasesTotal } = getTodayReleases(db);
 
   // ── Portfolio totals for the hero (Overview absorption — IA Phase 3) ──
   const portfolio = getPortfolioTotals(db);
@@ -196,7 +196,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
       {/* ── Today's releases (full width — the momentum tile moved to
               Analysis · Diagnostics, spec §4.6) ── */}
       {releases.length > 0 ? (
-        <TodayReleases releases={releases} mode={releasesMode} />
+        <TodayReleases releases={releases} mode={releasesMode} totalCount={releasesTotal} />
       ) : (
         <section className="rounded-xl bg-panel p-4">
           <h2 className="text-sm font-medium text-ink">Releases</h2>

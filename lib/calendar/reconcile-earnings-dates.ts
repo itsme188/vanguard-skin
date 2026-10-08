@@ -15,6 +15,9 @@ import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 //
 // Resolution priority (see docs/superpowers/specs/2026-06-08-earnings-date-crosscheck-design.md):
 //   1. a user_confirmed / manual row → locked canonical (never reverted)
+//      (a hand-entered row locks by its SOURCE; the pass never writes
+//      `user_confirmed` on a row that does not already carry it — see
+//      `lockedStatusFor`)
 //   2. a past date WITH reported actuals → it demonstrably happened, wins silently
 //   3. both sources agree → confirmed
 //   4. both future, dates differ → conflict (Nasdaq provisional, awaits the user)
@@ -49,7 +52,14 @@ export interface ReconcileResult {
   confirmed: number;
   conflict: number;
   single: number;
+  /** Locked rows that carry a confirmation the confirm-date route wrote. */
   userConfirmed: number;
+  /**
+   * Locked hand-entered rows with NO confirmation on file. The pass leaves
+   * their `date_status` empty (owner ruling 2026-09-14: a sync never asserts
+   * a human confirmation).
+   */
+  handEntered: number;
   /**
    * Rows THIS pass hid that were showing before it (owner ruling 2026-10-06:
    * any row a sync supersedes is named in the refresh outcome line). A row
@@ -438,6 +448,26 @@ function keptManualTwins(cluster: EarningsRow[], res: Resolution, today: string)
       r.source === "manual" &&
       !(r.superseded && r.event_date < today),
   );
+}
+
+/**
+ * The `date_status` a LOCKED row (rung 1 of `resolveCluster`, or a kept
+ * hand-entered twin) is left with (owner ruling 2026-09-14,
+ * qa:today-earningshub-refresh--stamps-user-confirmed-on-every-manual-row).
+ *
+ * `user_confirmed` records that a person confirmed the date, and only the
+ * confirm-date route (lib/mutations/confirm-earnings-date.ts) may write it.
+ * The pass used to stamp it on every hand-entered row in the window, so one
+ * refresh made every "+ Add ticker" row read "You confirmed this date". It now
+ * KEEPS the stamp on a row that already carries it and writes none otherwise.
+ *
+ * The lock itself does not depend on the stamp: `isManualRow` and rung 1 read
+ * `source = 'manual'`, so an unstamped hand-entered row still wins its cluster
+ * on every pass. `row` must be the row as gathered BEFORE the pass wrote
+ * anything.
+ */
+function lockedStatusFor(row: EarningsRow): "user_confirmed" | null {
+  return row.date_status === "user_confirmed" ? "user_confirmed" : null;
 }
 
 /** Vendor pipeline names as a person would say them. */
@@ -932,8 +962,17 @@ export type TwinDonor = Pick<
  * cue to write one armed-events outbox row.
  */
 export function createTwinFolder(db: Database.Database) {
+  // A hand-entered row keeps a real confirmation while hidden: the pass no
+  // longer re-stamps a restored twin (see lockedStatusFor), so clearing it
+  // here would lose a confirmation the person made. Its lock reads
+  // `source = 'manual'` either way; every other row's status is cleared.
   const setSuperseded = db.prepare(
-    "UPDATE calendar_events SET superseded = 1, date_status = NULL, date_conflict_with = NULL WHERE id = ?",
+    `UPDATE calendar_events
+        SET superseded = 1,
+            date_status = CASE WHEN source = 'manual' AND date_status = 'user_confirmed'
+                               THEN 'user_confirmed' ELSE NULL END,
+            date_conflict_with = NULL
+      WHERE id = ?`,
   );
   // Supersession is data-preserving (QA 2026-07-02: confirming a conflicted
   // date orphaned consensus, user-entered actuals, sent-email audit rows,
@@ -1091,6 +1130,7 @@ export function reconcileEarningsDates(
     conflict: 0,
     single: 0,
     userConfirmed: 0,
+    handEntered: 0,
     superseded: [],
     restored: [],
   };
@@ -1107,8 +1147,12 @@ export function reconcileEarningsDates(
       const split = splitReportedFromManualCluster(proximityCluster, today);
       for (const cluster of split.groups) {
         const res = resolveCluster(cluster, today);
-        setCanonical.run(res.status, res.conflictWith, res.canonicalId);
         const canonicalRow = cluster.find((r) => r.id === res.canonicalId)!;
+        // A locked cluster keeps whatever confirmation its canonical row
+        // already carried; the pass never adds one (see lockedStatusFor).
+        const canonicalStatus =
+          res.status === "user_confirmed" ? lockedStatusFor(canonicalRow) : res.status;
+        setCanonical.run(canonicalStatus, res.conflictWith, res.canonicalId);
         const canonicalEventDate = canonicalRow.event_date;
         const preCanonical = passRowById.get(res.canonicalId);
         if (preCanonical?.superseded) anyChanged = true;
@@ -1117,8 +1161,10 @@ export function reconcileEarningsDates(
         const keptTwins = keptManualTwins(cluster, res, today);
         const keptIds = new Set(keptTwins.map((r) => r.id));
         for (const twin of keptTwins) {
-          setCanonical.run("user_confirmed", null, twin.id);
-          result.userConfirmed++;
+          const twinStatus = lockedStatusFor(twin);
+          setCanonical.run(twinStatus, null, twin.id);
+          if (twinStatus) result.userConfirmed++;
+          else result.handEntered++;
           // A twin an earlier pass had hidden comes back (today or later
           // only — the guard is inside keptManualTwins). Its arm and audit
           // rows were merged onto the canonical then and stay there; the
@@ -1167,7 +1213,8 @@ export function reconcileEarningsDates(
         if (res.status === "confirmed") result.confirmed++;
         else if (res.status === "conflict") result.conflict++;
         else if (res.status === "single") result.single++;
-        else result.userConfirmed++;
+        else if (canonicalStatus) result.userConfirmed++;
+        else result.handEntered++;
       }
       // LAST for this proximity cluster: the phantom is canonical inside its
       // own group, so its group's carryEnrichment has already run and could

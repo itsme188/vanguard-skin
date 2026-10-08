@@ -156,6 +156,12 @@ export interface ChartableSecurity {
 const CHARTABLE_PREDICATE_SQL = `s.ib_con_id IS NOT NULL
     AND (s.security_type IS NULL OR LOWER(s.security_type) NOT IN ('mutual_fund', 'mutual fund'))`;
 
+// If the newest usable daily bar is this much older than the latest price row
+// used to rank the holding, the chart default treats the security as uncovered.
+// A month tolerates holidays and a stale TWS session without letting ancient
+// chart history win merely because it has one old bar.
+export const DEFAULT_CHART_MAX_BAR_AGE_DAYS = 31;
+
 /**
  * Get all securities that have an IB contract ID (chartable via TWS).
  * Excludes mutual funds (no TWS trade data).
@@ -205,19 +211,18 @@ export function getChartableSecurities(
  * added HERE only, never to `CHARTABLE_PREDICATE_SQL`, so
  * `getChartableSecurities` (the picker) still lists them.
  *
- * BAR COVERAGE OUTRANKS VALUE (2026-09-12, QA finding
+ * FRESH BAR COVERAGE OUTRANKS VALUE (2026-09-12, QA finding
  * charts-landing--default-rank-ignores-bar-coverage-opens-empty-chart;
- * tightened 2026-09-13 by the landing review of PR #78): ranking by value alone can land on a held position
- * with ZERO cached bars in `ohlcv_bars`, opening the chart on an empty "No
- * cached price history — connect TWS to load bars" screen even when a
- * smaller held position already has bars ready to render. `has_bars` is
- * therefore the PRIMARY sort key and value the tiebreaker: `ORDER BY
- * has_bars DESC, value DESC`. This is a preference, not an exclusion — when
- * no held candidate has bars, ranking degrades to the old value-only order
- * rather than returning null, so the landing still shows something the
- * picker can display.
+ * tightened 2026-09-13 by the landing review of PR #78, then tightened again
+ * 2026-10-07 for bar age): ranking by value alone can land on a held position
+ * with ZERO or ancient cached bars in `ohlcv_bars`, opening the chart on an
+ * empty or stale-looking default. `has_fresh_bars` is therefore the PRIMARY
+ * sort key and value the tiebreaker: `ORDER BY has_fresh_bars DESC, value
+ * DESC`. This is a preference, not an exclusion — when no held candidate has
+ * fresh bars, ranking degrades to the old value-only order rather than
+ * returning null, so the landing still shows something the picker can display.
  *
- * `has_bars` applies the SAME two filters as the chart reader
+ * `has_fresh_bars` applies the SAME two filters as the chart reader
  * (`getOhlcvBars`, always called with `bar_size = '1 day'` for the landing
  * request — see app/api/tws/chart/route.ts): `bar_size = '1 day'` AND
  * `PRICED_BAR_SQL`. A row that fails either filter is exactly a row
@@ -225,7 +230,9 @@ export function getChartableSecurities(
  * the chart on a security that then renders "No cached price history" —
  * the opposite of what this gate exists to prevent. A security whose only
  * bars are intraday (`'1 hour'`, etc.) or legacy zero-priced rows is
- * therefore treated the same as a security with no bars at all.
+ * therefore treated the same as a security with no bars at all. The newest
+ * qualifying bar must also be within DEFAULT_CHART_MAX_BAR_AGE_DAYS of the
+ * latest price row used for the value ranking.
  *
  * Returns null when nothing is held (or nothing held is chartable/priced)
  * — callers fall back to the old alphabetical-first behavior.
@@ -234,37 +241,59 @@ export function getDefaultChartSecurityId(
   db: Database.Database,
 ): number | null {
   const marketValueExpr = adjustedMarketValueSQL(
-    "h.quantity",
-    "p.close_price",
-    "s.security_type",
-    "COALESCE(s.multiplier, 1)",
-    "COALESCE(fx.usd_per_unit, 1)",
+    "c.quantity",
+    "c.close_price",
+    "c.security_type",
+    "c.multiplier",
+    "c.usd_per_unit",
   );
-
   const row = db
     .prepare(
-      `SELECT h.security_id AS id,
+      `WITH candidates AS (
+         SELECT h.security_id AS id,
+                h.quantity,
+                s.security_type,
+                COALESCE(s.multiplier, 1) AS multiplier,
+                COALESCE(fx.usd_per_unit, 1) AS usd_per_unit,
+                p.close_price,
+                p.date AS price_date
+           FROM holdings h
+           JOIN securities s ON s.id = h.security_id
+           LEFT JOIN prices p ON p.security_id = h.security_id
+             AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = h.security_id)
+           LEFT JOIN fx_rates fx ON fx.currency = s.currency
+          WHERE ${latestHoldingsPredicate({ keyBy: "account_security" })}
+            AND ${CHARTABLE_PREDICATE_SQL}
+            AND LOWER(COALESCE(s.security_type, '')) != 'option'
+            AND p.close_price IS NOT NULL
+       ),
+       book_latest AS (
+         SELECT MAX(price_date) AS latest_price_date FROM candidates
+       )
+       SELECT c.id AS id,
               SUM(ABS(${marketValueExpr})) AS value,
               MAX(CASE WHEN EXISTS (
                 SELECT 1 FROM ohlcv_bars b
-                WHERE b.security_id = h.security_id
+                WHERE b.security_id = c.id
+                  AND b.bar_size = '1 day'
+                  AND ${PRICED_BAR_SQL}
+                  AND b.bar_date >= date(book_latest.latest_price_date, '-' || ? || ' days')
+              ) THEN 1 ELSE 0 END) AS has_fresh_bars,
+              -- When no holding has fresh bars, one with any priced bar still
+              -- draws a chart; a larger holding with none would open empty.
+              MAX(CASE WHEN EXISTS (
+                SELECT 1 FROM ohlcv_bars b
+                WHERE b.security_id = c.id
                   AND b.bar_size = '1 day'
                   AND ${PRICED_BAR_SQL}
               ) THEN 1 ELSE 0 END) AS has_bars
-       FROM holdings h
-       JOIN securities s ON s.id = h.security_id
-       LEFT JOIN prices p ON p.security_id = h.security_id
-         AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = h.security_id)
-       LEFT JOIN fx_rates fx ON fx.currency = s.currency
-       WHERE ${latestHoldingsPredicate({ keyBy: "account_security" })}
-         AND ${CHARTABLE_PREDICATE_SQL}
-         AND LOWER(COALESCE(s.security_type, '')) != 'option'
-         AND p.close_price IS NOT NULL
-       GROUP BY h.security_id
-       ORDER BY has_bars DESC, value DESC
+         FROM candidates c
+         CROSS JOIN book_latest
+        GROUP BY c.id
+       ORDER BY has_fresh_bars DESC, has_bars DESC, value DESC
        LIMIT 1`,
     )
-    .get() as { id: number; value: number; has_bars: number } | undefined;
+    .get(DEFAULT_CHART_MAX_BAR_AGE_DAYS) as { id: number; value: number; has_fresh_bars: number } | undefined;
 
   return row?.id ?? null;
 }

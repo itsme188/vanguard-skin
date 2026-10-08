@@ -101,18 +101,21 @@ export default function LineRow({
           )}
         </td>
         <td className="py-2 pr-3 align-top font-mono tabular-nums">
-          <PrivateText className="text-ink-dim">
-            {line.expected
-              ? [
-                  formatContractRange(line.contract, line.expected.value, line.expected.value_high),
-                  line.expected.whisper !== null
-                    ? `whisper ${formatContractValue(line.contract, line.expected.whisper)}`
-                    : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")
-              : "—"}
-          </PrivateText>
+          {line.expected ? (
+            <PrivateText className="text-ink-dim">
+              {[
+                formatContractRange(line.contract, line.expected.value, line.expected.value_high),
+                line.expected.whisper !== null
+                  ? `whisper ${formatContractValue(line.contract, line.expected.whisper)}`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </PrivateText>
+          ) : (
+            // An empty cell is structure, not a figure: never masked.
+            <span className="text-ink-dim">—</span>
+          )}
         </td>
         <td className="py-2 pr-3 align-top font-mono tabular-nums text-ink">
           {formatContractRange(line.contract, line.value, line.value_high)}
