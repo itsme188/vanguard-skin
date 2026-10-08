@@ -21,8 +21,14 @@ import {
   anchorDailiesToStatements,
   equityCurveGranularity,
   equityCurveRangeCaption,
+  equityCurveTimeTicks,
+  equityCurveTooltipDate,
   equityCurveYAxis,
   formatAnchoredTooltipValue,
+  formatEquityCurveDate,
+  formatEquityCurveTick,
+  isoDateToEpochMs,
+  toTimeSeries,
   type AnchoredCurveSummary,
   type EquityCurveGranularity,
 } from "@/lib/chart/equity-curve-anchor";
@@ -89,42 +95,14 @@ function trimZeros(fixed: string): string {
   return fixed.replace(/\.?0+$/, "");
 }
 
+// The horizontal axis is elapsed time (epoch ms at UTC midnight), so every
+// date label is formatted in UTC by `formatEquityCurveDate`.
 function formatDate(date: string): string {
-  const d = new Date(date + "T00:00:00");
-  return d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+  return formatEquityCurveDate(isoDateToEpochMs(date), "month-year");
 }
 
 function formatDateFull(date: string): string {
-  const d = new Date(date + "T00:00:00");
-  return d.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
-/**
- * One tick per calendar month (the first data point of each month), thinned
- * to at most `maxTicks` by even stepping. Used for the "All" range where
- * Recharts' evenly-spaced auto ticks land several times inside the dense
- * daily-data stretch and the month-year formatter then repeats itself.
- */
-function monthStartTicks<T extends { date: string }>(
-  data: T[],
-  maxTicks = 12
-): string[] {
-  const seen = new Set<string>();
-  const ticks: string[] = [];
-  for (const d of data) {
-    const monthKey = d.date.slice(0, 7);
-    if (!seen.has(monthKey)) {
-      seen.add(monthKey);
-      ticks.push(d.date);
-    }
-  }
-  if (ticks.length <= maxTicks) return ticks;
-  const step = Math.ceil(ticks.length / maxTicks);
-  return ticks.filter((_, i) => i % step === 0);
+  return formatEquityCurveDate(isoDateToEpochMs(date), "full");
 }
 
 // ─── Data filtering ─────────────────────────────────────────────
@@ -196,12 +174,7 @@ export interface PerformanceCurveData {
 }
 
 function shortDate(iso: string): string {
-  const [, m, d] = iso.split("-");
-  const months = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-  ];
-  return `${months[parseInt(m, 10) - 1]} ${parseInt(d, 10)}`;
+  return formatEquityCurveDate(isoDateToEpochMs(iso), "day");
 }
 
 export function PerformanceCurveChart({
@@ -213,6 +186,10 @@ export function PerformanceCurveChart({
 }) {
   // Portfolio values are portfolio-derived — mask under privacy mode
   const fmt = usePrivateFormatter((v: number) => `${v.toFixed(1)}`);
+
+  // Time axis: each row is placed at its date, in date order.
+  const series = toTimeSeries(data);
+  const xAxisTime = equityCurveTimeTicks(series[0]?.t, series[series.length - 1]?.t);
 
   if (data.length === 0) {
     return (
@@ -229,10 +206,14 @@ export function PerformanceCurveChart({
         <span className="text-ink-faint font-normal">(indexed to 100)</span>
       </h3>
       <ResponsiveContainer width="100%" height={280}>
-        <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+        <LineChart data={series} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
           <XAxis
-            dataKey="date"
-            tickFormatter={shortDate}
+            dataKey="t"
+            type="number"
+            scale="time"
+            domain={["dataMin", "dataMax"]}
+            ticks={xAxisTime.ticks}
+            tickFormatter={(t: number) => formatEquityCurveTick(t, xAxisTime.unit)}
             minTickGap={40}
             tick={{ fontSize: 11, fill: "var(--ink-faint)" }}
           />
@@ -246,8 +227,7 @@ export function PerformanceCurveChart({
               fmt(Number(value)),
               String(name ?? ""),
             ]}
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            labelFormatter={(label: any) => shortDate(String(label))}
+            labelFormatter={(label, payload) => shortDate(equityCurveTooltipDate(label, payload) ?? "")}
             contentStyle={{
               background: "var(--panel)",
               border: "1px solid var(--edge)",
@@ -307,7 +287,9 @@ export function EquityCurveChart({
   const hasDaily = dailyValuations && dailyValuations.length > 0;
   const anchorCaption = equityCurveRangeCaption(anchorSummary, rangeCutoffIso(selectedRange));
 
-  const data = filterByRange(rawData, selectedRange);
+  // Range filter on the real dates, then each point gets its position on the
+  // time axis, in date order.
+  const data = toTimeSeries(filterByRange(rawData, selectedRange));
   const color = ACCOUNT_COLORS[accountName] ?? "#C9A44E";
   const hasCashData = hasDaily && data.some((d) => (d.cash ?? 0) > 0);
   // Badge and tooltip date follow the points in the selected range: one daily
@@ -321,15 +303,12 @@ export function EquityCurveChart({
     )
   );
 
-  // Day-level ticks for intra-year ranges — the month-year formatter repeated
-  // "Jun 26" for every daily tick on 1M/3M/6M/YTD (deep-QA finding). The
-  // multi-year "All" range keeps month-year but needs EXPLICIT month-start
-  // ticks: evenly-spaced auto-ticks cluster inside the dense daily stretch
-  // (sparse monthly anchors early, daily bars recent), emitting "Apr 26" ×3
-  // (deep-QA 2026-07-07). One tick per month, thinned to ≤12.
-  const isAllRange = DATE_RANGES[selectedRange].label === "All";
-  const xTickFormatter = isAllRange ? formatDate : shortDate;
-  const xTicks = isAllRange ? monthStartTicks(data) : undefined;
+  // Calendar ticks sized to the range on screen (week days of the month on
+  // 1M, month starts on a year, quarter or year starts on a long history), so
+  // a label never repeats and ticks never crowd where the points are dense.
+  const xAxisTime = equityCurveTimeTicks(data[0]?.t, data[data.length - 1]?.t);
+  const xTickFormatter = (t: number) => formatEquityCurveTick(t, xAxisTime.unit);
+  const xTicks = xAxisTime.ticks;
 
   if (rawData.length === 0) {
     return (
@@ -409,7 +388,10 @@ export function EquityCurveChart({
                 vertical={false}
               />
               <XAxis
-                dataKey="date"
+                dataKey="t"
+                type="number"
+                scale="time"
+                domain={["dataMin", "dataMax"]}
                 tickFormatter={xTickFormatter}
                 ticks={xTicks}
                 minTickGap={40}
@@ -436,7 +418,7 @@ export function EquityCurveChart({
                   color: "#E2E6F0",
                   fontSize: 12,
                 }}
-                labelFormatter={(label) => dateFormatter(String(label))}
+                labelFormatter={(label, payload) => dateFormatter(equityCurveTooltipDate(label, payload) ?? "")}
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 formatter={(value: any, name: any, item: any) => [
                   String(name) === "total"
@@ -511,7 +493,10 @@ export function EquityCurveChart({
                 vertical={false}
               />
               <XAxis
-                dataKey="date"
+                dataKey="t"
+                type="number"
+                scale="time"
+                domain={["dataMin", "dataMax"]}
                 tickFormatter={xTickFormatter}
                 ticks={xTicks}
                 minTickGap={40}
@@ -538,7 +523,7 @@ export function EquityCurveChart({
                   color: "#E2E6F0",
                   fontSize: 12,
                 }}
-                labelFormatter={(label) => dateFormatter(String(label))}
+                labelFormatter={(label, payload) => dateFormatter(equityCurveTooltipDate(label, payload) ?? "")}
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 formatter={(value: any, _name: any, item: any) => [
                   formatAnchoredTooltipValue(
