@@ -136,3 +136,33 @@ describe("earnings prompt prose rules — attribution + section style", () => {
   });
 });
 
+describe("recap prompt — no reaction is captured yet", () => {
+  it("tells the model the reaction is not captured and not to search for it", () => {
+    const prompt = renderRecapPrompt(makeRecapContext());
+    expect(prompt).toContain("Reaction snapshot not yet captured.");
+    expect(prompt).toMatch(/Do NOT use web_search to find a price or a move/);
+    expect(prompt).not.toContain("If you can determine after-hours / immediate reaction from web_search");
+  });
+
+  it("the reaction section and the position section do not ask for a price it does not have", () => {
+    const prompt = renderRecapPrompt(makeRecapContext());
+    expect(prompt).toMatch(/## The reaction\\?`\*\* — when no reaction snapshot is given above, write one line/);
+    expect(prompt).not.toContain("at the reaction-snapshot price?");
+  });
+
+  it("still allows web_search for guidance and sell-side notes", () => {
+    const prompt = renderRecapPrompt(makeRecapContext());
+    expect(prompt).toMatch(/Use web_search aggressively/);
+    expect(prompt).toMatch(/web_search for analyst notes/);
+  });
+
+  it("with a snapshot, the prompt prints it and keeps the reaction section", () => {
+    const prompt = renderRecapPrompt({
+      ...makeRecapContext(),
+      reactionSnapshotMarkdown: "AAPL +1.2% vs SPY +0.1%",
+    });
+    expect(prompt).toContain("## Market reaction (T+2h, captured automatically)");
+    expect(prompt).toContain("AAPL +1.2% vs SPY +0.1%");
+    expect(prompt).not.toContain("Reaction snapshot not yet captured.");
+  });
+});

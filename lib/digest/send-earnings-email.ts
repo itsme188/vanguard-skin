@@ -2054,7 +2054,7 @@ export function renderRecapPrompt(ctx: RecapContext): string {
 
   const reactionBlock = ctx.reactionSnapshotMarkdown
     ? `\n## Market reaction (T+2h, captured automatically)\n${ctx.reactionSnapshotMarkdown}\n`
-    : `\n## Market reaction\nReaction snapshot not yet captured. If you can determine after-hours / immediate reaction from web_search, cite it; otherwise note the gap.\n`;
+    : `\n## Market reaction\nReaction snapshot not yet captured. Say so in one line. Do NOT use web_search to find a price or a move, and do not quote an after-hours price from any source: a later price would post-date this email.\n`;
 
   const positionsBlock = renderPositionsBlock(ctx);
   const userNotesBlock = renderUserNotesBlock(ctx);
@@ -2111,7 +2111,7 @@ Rows: every segment, KPI, and guidance line ${ctx.symbol} reported — fill from
 
 **Sheet-bogey attribution:** a deterministic "## Sheet bogeys — by source" table is rendered by the system ABOVE your output, directly under the scoreboard — do NOT re-list its rows. In YOUR line-by-line table, when a row's Consensus / Prior number comes from a user-uploaded sheet, cite the source label in-cell — \`4.42 (TMTB w)\` — and when sources disagree on a metric, show both and never merge or average them: \`$4.34B TMTB / $4.40B FundaAI\`.
 
-2. **\`## The reaction\`** — stock move vs. SPY/QQQ/sector. If a transcript or call quotes are available via web_search, lead with the one or two quotes that explain the move. If not, note "transcript not yet posted — recap will update if a follow-up runs."
+2. **\`## The reaction\`** — when no reaction snapshot is given above, write one line: "Reaction not yet captured." and nothing else in this section. When a snapshot is given: stock move vs. SPY/QQQ/sector from that snapshot only; if a transcript or call quotes are available via web_search, lead with the one or two quotes that explain the move, and if not, note "transcript not yet posted — recap will update if a follow-up runs."
 
 3. **\`## Guidance\`** — **MANDATORY section.** Public companies almost always update guidance with their print: full-year (FY26) revenue, EPS, margin, capex; next-quarter (Q2) revenue and EPS; sometimes segment-level guides (e.g., "Cloud revenue growth"). **Use web_search aggressively** if the press release context above doesn't contain it — search for \`"${ctx.symbol}" guidance Q2\` or \`"${ctx.symbol}" full year outlook ${new Date().getFullYear()}\`. Structure the section as:
    - **Full year:** prior guide → new guide, change in $ or pp, what it implies (raise/maintain/cut)
@@ -2121,7 +2121,7 @@ Rows: every segment, KPI, and guidance line ${ctx.symbol} reported — fill from
 
 4. **\`## Sell-side first takes\`** — web_search for analyst notes published in the last few hours. Quote the headline, flag price-target changes, name the firm. If nothing is out yet, say so.
 
-5. **\`## Position implications\`** — given the user's combined position (use §Positions verbatim), what does the print mean for each disclosed direction at the reaction-snapshot price? Reason qualitatively and in percentage terms only — never estimate or invent share counts, contract counts, or dollar exposure. Any hedging / IV-crush dynamics for option holdings? Should the thesis change?
+5. **\`## Position implications\`** — given the user's combined position (use §Positions verbatim), what does the print mean for each disclosed direction (at the reaction-snapshot price when one is given above; otherwise on the reported figures alone)? Reason qualitatively and in percentage terms only — never estimate or invent share counts, contract counts, or dollar exposure. Any hedging / IV-crush dynamics for option holdings? Should the thesis change?
 
 6. **\`## Sources\`** — newsletter articles cited + web URLs.
 
