@@ -244,7 +244,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
       </p>
       {notShockableShare > 0 && (
         <p className="text-xs text-ink-faint">
-          <Pct value={notShockableShare} digits={0} /> of the book (fixed income, Treasury, diversified) is not shockable here.
+          <Pct value={notShockableShare * 100} digits={0} /> of the book (fixed income, Treasury, diversified) cannot be given a sector override; the rate and market shocks still apply to it.
         </p>
       )}
 

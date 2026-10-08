@@ -19,9 +19,10 @@ describe("ScenarioModeling QA pins", () => {
 
   it("adds the ruled non-GICS shockability note through Pct", () => {
     anchorIndex(src, "nonShockableBucket");
-    anchorIndex(src, "<Pct value={notShockableShare} digits={0} />");
+    // Pct takes percent units: the 0-1 share is scaled, or 25% prints as "0%".
+    anchorIndex(src, "<Pct value={notShockableShare * 100} digits={0} />");
     anchorIndex(src, "fixed income, Treasury, diversified");
-    anchorIndex(src, "is not shockable here");
+    anchorIndex(src, "cannot be given a sector override");
   });
 
   it("prevents duplicate sector overrides and shows a visible warning if one reaches compute", () => {
