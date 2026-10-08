@@ -7,6 +7,7 @@ import type {
   ParsedDonation,
 } from "./types";
 import { validateCorporateActionInput } from "@/lib/compute/corporate-actions";
+import { todayET } from "@/lib/calendar/date-utils";
 
 // ── Known transaction types ─────────────────────────────────────────
 
@@ -150,7 +151,35 @@ export interface ValidationReport {
   validatedResult: ParsedImportResult;
 }
 
+/** Optional numeric snapshot fields paired with their CSV column names. */
+const SNAPSHOT_OPTIONAL_NUMERIC_FIELDS: ReadonlyArray<
+  readonly [
+    "twr" | "startingValue" | "depositsWithdrawals" | "dividends" | "interest" | "commissions" | "fees" | "investmentGain",
+    string,
+  ]
+> = [
+  ["twr", "twr"],
+  ["startingValue", "starting_value"],
+  ["depositsWithdrawals", "deposits_withdrawals"],
+  ["dividends", "dividends"],
+  ["interest", "interest"],
+  ["commissions", "commissions"],
+  ["fees", "fees"],
+  ["investmentGain", "investment_gain"],
+];
+
 // ── Main validator ──────────────────────────────────────────────────
+
+/**
+ * Range check for a date that already passed `isValidDate`. Both strings are
+ * YYYY-MM-DD, so a string compare is a date compare. Returns a phrase for a
+ * warning, or null when the date is plausible.
+ */
+function dateRangeWarning(dateStr: string, today: string): string | null {
+  if (dateStr > today) return `is in the future (after today ${today})`;
+  if (dateStr < "1970-01-01") return "is before 1970-01-01";
+  return null;
+}
 
 export interface ValidateParsedResultOptions {
   /**
@@ -164,6 +193,8 @@ export interface ValidateParsedResultOptions {
    * callers/tests) to leave account-name checking off entirely.
    */
   knownAccountNames?: string[];
+  /** YYYY-MM-DD used as "today" for date-range warnings. Defaults to `todayET()`. */
+  today?: string;
 }
 
 /**
@@ -177,6 +208,7 @@ export function validateParsedResult(
 ): ValidationReport {
   const skippedRows: SkippedRow[] = [];
   const warnings: string[] = [];
+  const today = opts?.today ?? todayET();
 
   // ── Account-name resolution (opt-in; preview + commit) ──────────────────
   const knownAccountNamesSet = opts?.knownAccountNames
@@ -219,6 +251,13 @@ export function validateParsedResult(
         symbol: txn.symbol,
       });
       skip = true;
+    } else {
+      const msg = dateRangeWarning(txn.tradeDate, today);
+      if (msg) {
+        warnings.push(
+          `Transaction #${i + 1} (${txn.symbol ?? "no symbol"}): trade date "${txn.tradeDate}" ${msg} — importing as-is`,
+        );
+      }
     }
 
     if (txn.settlementDate && !isValidDate(txn.settlementDate)) {
@@ -316,6 +355,13 @@ export function validateParsedResult(
         symbol: h.symbol,
       });
       skip = true;
+    } else {
+      const msg = dateRangeWarning(h.asOfDate, today);
+      if (msg) {
+        warnings.push(
+          `Holding #${i + 1} (${h.symbol}): as-of date "${h.asOfDate}" ${msg} — importing as-is`,
+        );
+      }
     }
 
     if (!Number.isFinite(h.quantity)) {
@@ -332,6 +378,21 @@ export function validateParsedResult(
       warnings.push(
         `Holding #${i + 1} (${h.symbol}): zero quantity — may be a closed position`,
       );
+    }
+
+    // Optional figures: a present-but-unparseable cell reaches here as NaN.
+    // Non-critical, so clear it and keep the row.
+    if (h.costBasis != null && !Number.isFinite(h.costBasis)) {
+      warnings.push(
+        `Holding #${i + 1} (${h.symbol}): non-numeric cost_basis — cleared`,
+      );
+      h.costBasis = undefined;
+    }
+    if (h.marketValue != null && !Number.isFinite(h.marketValue)) {
+      warnings.push(
+        `Holding #${i + 1} (${h.symbol}): non-numeric market_value — cleared`,
+      );
+      h.marketValue = undefined;
     }
 
     const hAccountReason = unknownAccountReason(h.accountName);
@@ -400,6 +461,13 @@ export function validateParsedResult(
         symbol: p.symbol,
       });
       skip = true;
+    } else {
+      const msg = dateRangeWarning(p.date, today);
+      if (msg) {
+        warnings.push(
+          `Price #${i + 1} (${p.symbol}): date "${p.date}" ${msg} — importing as-is`,
+        );
+      }
     }
 
     if (!isValidPrice(p.closePrice)) {
@@ -430,6 +498,13 @@ export function validateParsedResult(
         reason: `Invalid month-end date: "${s.monthEndDate}"`,
       });
       skip = true;
+    } else {
+      const msg = dateRangeWarning(s.monthEndDate, today);
+      if (msg) {
+        warnings.push(
+          `Snapshot #${i + 1} (${s.accountName}): month_end_date "${s.monthEndDate}" ${msg} — importing as-is`,
+        );
+      }
     }
 
     if (!Number.isFinite(s.totalValue)) {
@@ -439,6 +514,20 @@ export function validateParsedResult(
         reason: `Invalid total value: ${s.totalValue}`,
       });
       skip = true;
+    }
+
+    // Optional figures: present-but-unparseable cells arrive as NaN. Exclude
+    // the row by column name rather than let a garbage figure commit.
+    for (const [field, column] of SNAPSHOT_OPTIONAL_NUMERIC_FIELDS) {
+      const value = s[field];
+      if (value != null && !Number.isFinite(value)) {
+        skippedRows.push({
+          category: "snapshot",
+          index: i,
+          reason: `Invalid ${column}: not a number (check for comma separators or non-numeric text)`,
+        });
+        skip = true;
+      }
     }
 
     if (!skip && isCanonicalSnapshotImport(parsed, s)) {

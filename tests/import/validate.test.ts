@@ -798,7 +798,7 @@ describe("validateParsedResult: canonical monthly snapshots", () => {
     expect(warnings.join("\n")).not.toContain("month_end_date");
   });
 
-  it("leaves null, missing, and non-numeric canonical twr behavior unchanged", () => {
+  it("keeps a blank canonical twr and excludes a non-numeric one by name", () => {
     const { skippedRows, validatedResult } = validateSnapshotRows(
       [
         "Vanguard Taxable,2026-08-31,100000,,,,,,,,",
@@ -806,9 +806,11 @@ describe("validateParsedResult: canonical monthly snapshots", () => {
       ].join("\n"),
     );
 
-    expect(skippedRows).toHaveLength(0);
-    expect(validatedResult.snapshots).toHaveLength(2);
-    expect(validatedResult.snapshots.map((s) => s.twr)).toEqual([undefined, NaN]);
+    expect(skippedRows).toHaveLength(1);
+    expect(skippedRows[0].index).toBe(1);
+    expect(skippedRows[0].reason).toContain("Invalid twr");
+    expect(validatedResult.snapshots).toHaveLength(1);
+    expect(validatedResult.snapshots[0].twr).toBeUndefined();
   });
 
   it("does not apply the canonical decimal twr exclusion to IBKR activity snapshots", () => {
@@ -865,5 +867,126 @@ describe("validateParsedResult: present-but-unparseable price and fees", () => {
     );
     expect(skippedRows).toHaveLength(0);
     expect(validatedResult.transactions).toHaveLength(1);
+  });
+});
+
+describe("validateParsedResult: holdings cost basis and market value", () => {
+  const header =
+    "account,as_of_date,symbol,security_name,security_type,quantity,cost_basis,market_value";
+
+  it("warns on and clears a non-numeric cost_basis or market_value, keeping the row", () => {
+    const csv = [
+      header,
+      "IBKR,2025-06-30,AAA,A Inc,Stock,10,not-a-number,1000",
+      "IBKR,2025-06-30,BBB,B Inc,Stock,10,900,also-garbage",
+      "IBKR,2025-06-30,CCC,C Inc,Stock,10,900,1000",
+    ].join("\n");
+    const { skippedRows, warnings, validatedResult } = validateParsedResult(
+      parseCanonicalCsv(csv, "holdings.csv"),
+    );
+    expect(skippedRows).toHaveLength(0);
+    expect(validatedResult.holdings).toHaveLength(3);
+    const [a, b, c] = validatedResult.holdings;
+    expect(a.costBasis).toBeUndefined();
+    expect(a.marketValue).toBe(1000);
+    expect(b.costBasis).toBe(900);
+    expect(b.marketValue).toBeUndefined();
+    expect(c.costBasis).toBe(900);
+    expect(c.marketValue).toBe(1000);
+    expect(warnings.filter((w) => w.includes("(AAA)") && w.includes("cost_basis"))).toHaveLength(1);
+    expect(warnings.filter((w) => w.includes("(BBB)") && w.includes("market_value"))).toHaveLength(1);
+    expect(warnings.filter((w) => w.includes("(CCC)"))).toHaveLength(0);
+  });
+});
+
+describe("validateParsedResult: snapshot optional numeric cells", () => {
+  const header =
+    "account,month_end_date,total_value,starting_value,deposits_withdrawals,dividends,interest,commissions,fees,investment_gain,twr";
+
+  it("excludes a snapshot whose optional figure is present but unparseable, by name", () => {
+    const rows = [
+      "Vanguard Taxable,2026-01-31,100000,,,,,,,,5%",
+      "Vanguard Taxable,2026-02-28,100000,,,,,,,,abc",
+      "Vanguard Taxable,2026-03-31,100000,,,,,,,,5.0",
+      "Vanguard Taxable,2026-04-30,100000,,,12.5,,,,,0.05",
+      "Vanguard Taxable,2026-05-31,100000,,,n/a,,,,,",
+    ].join("\n");
+    const { skippedRows, validatedResult } = validateParsedResult(
+      parseCanonicalCsv(`${header}\n${rows}`, "snapshots.csv"),
+    );
+    expect(skippedRows).toHaveLength(4);
+    expect(skippedRows.map((r) => r.index)).toEqual([0, 1, 2, 4]);
+    expect(skippedRows[0].reason).toContain("Invalid twr");
+    expect(skippedRows[1].reason).toContain("Invalid twr");
+    expect(skippedRows[2].reason).toContain("twr is a decimal");
+    expect(skippedRows[3].reason).toContain("Invalid dividends");
+    expect(validatedResult.snapshots).toHaveLength(1);
+    expect(validatedResult.snapshots[0].monthEndDate).toBe("2026-04-30");
+    expect(validatedResult.snapshots[0].dividends).toBe(12.5);
+  });
+});
+
+describe("validateParsedResult: date range warnings", () => {
+  const today = "2026-10-08";
+  const txn = (tradeDate: string, n: number) => ({
+    accountName: "IBKR",
+    tradeDate,
+    type: "BUY",
+    symbol: "AAA",
+    quantity: 1,
+    amount: 10,
+    sourceKey: `test:range:${n}`,
+  });
+
+  it("warns, without excluding, on future and pre-1970 trade dates", () => {
+    const { skippedRows, warnings, validatedResult } = validateParsedResult(
+      makeParsedResult({
+        transactions: [txn("2030-01-01", 1), txn("1899-01-01", 2), txn("2026-10-08", 3), txn("1970-01-01", 4)],
+      }),
+      { today },
+    );
+    expect(skippedRows).toHaveLength(0);
+    expect(validatedResult.transactions).toHaveLength(4);
+    expect(warnings).toHaveLength(2);
+    expect(warnings.filter((w) => w.includes("2030-01-01") && w.includes("in the future"))).toHaveLength(1);
+    expect(warnings.filter((w) => w.includes("1899-01-01") && w.includes("before 1970-01-01"))).toHaveLength(1);
+  });
+
+  it("warns on a future holdings as-of date", () => {
+    const { warnings, validatedResult } = validateParsedResult(
+      makeParsedResult({
+        holdings: [{ accountName: "IBKR", symbol: "AAA", quantity: 1, asOfDate: "2030-01-31", sourceKey: "h1" }],
+      }),
+      { today },
+    );
+    expect(validatedResult.holdings).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("as-of date");
+    expect(warnings[0]).toContain("in the future");
+  });
+
+  it("warns on a future snapshot month-end date", () => {
+    const { warnings, validatedResult } = validateParsedResult(
+      makeParsedResult({
+        snapshots: [{ accountName: "IBKR", monthEndDate: "2030-01-31", totalValue: 1000, source: "ibkr-activity" }],
+      }),
+      { today },
+    );
+    expect(validatedResult.snapshots).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("month_end_date");
+    expect(warnings[0]).toContain("in the future");
+  });
+
+  it("warns on a future price date", () => {
+    const { warnings, validatedResult } = validateParsedResult(
+      makeParsedResult({
+        prices: [{ symbol: "AAA", date: "2030-01-31", closePrice: 10, source: "canonical" }],
+      }),
+      { today },
+    );
+    expect(validatedResult.prices).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("Price #1 (AAA)");
   });
 });

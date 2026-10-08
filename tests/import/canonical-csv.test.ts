@@ -666,3 +666,25 @@ describe("canonical CSV strict numeric cells (typo'd digits are not read as a pr
     expect(result.transactions[0].pricePerShare).toBe(-12.3);
   });
 });
+
+describe("canonical CSV within-file duplicate transaction rows", () => {
+  const header =
+    "account,trade_date,settlement_date,type,symbol,security_name,security_type,quantity,price,amount,fees,notes";
+  const buyA = "IBKR,2025-06-15,,BUY,AAPL,Apple Inc,Stock,10,150,1500,0,";
+  const buyB = "IBKR,2025-06-16,,BUY,MSFT,Microsoft,Stock,5,300,1500,0,";
+
+  it("keeps both copies with a :#2 suffix and warns once", () => {
+    const result = parseCanonicalCsv(`${header}\n${buyA}\n${buyA}`, "txn.csv");
+    expect(result.transactions).toHaveLength(2);
+    expect(result.transactions[1].sourceKey.endsWith(":#2")).toBe(true);
+    const dupWarnings = result.warnings.filter((w) => /2 rows share the same/.test(w));
+    expect(dupWarnings).toHaveLength(1);
+    expect(dupWarnings[0]).toContain("AAPL 2025-06-15 BUY");
+  });
+
+  it("does not warn for two different rows", () => {
+    const result = parseCanonicalCsv(`${header}\n${buyA}\n${buyB}`, "txn.csv");
+    expect(result.transactions).toHaveLength(2);
+    expect(result.warnings.filter((w) => /rows share the same/.test(w))).toHaveLength(0);
+  });
+});
