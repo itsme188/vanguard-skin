@@ -5,7 +5,7 @@ import {
   applyClusterManualActuals,
   withClusterManualActuals,
 } from "@/lib/queries/manual-actuals-cluster";
-import { addDays, todayET } from "@/lib/calendar/date-utils";
+import { addDays, mondayOf, todayET } from "@/lib/calendar/date-utils";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 // Display only (user ruling 2026-10-06): the label a person reads for a
 // slot-less vendor earnings row. It never filters or orders rows here.
@@ -192,7 +192,7 @@ export function getEventsByWeek(
 export function getTodayReleases(
   db: Database.Database,
   today: string = todayET(),
-): { releases: WithDisplayTime<CalendarEvent>[]; mode: "today" | "upcoming" } {
+): { releases: WithDisplayTime<CalendarEvent>[]; mode: "today" | "upcoming"; totalCount: number } {
   const todayReleases = db
     .prepare(
       `SELECT * FROM calendar_events
@@ -233,9 +233,28 @@ export function getTodayReleases(
   // `display_time` is what the block PRINTS as the time. Selection and
   // ordering above still run on the stored release_time — a slot-less row
   // keeps its stored 16:15 position even when its label reads "time unknown".
+  // How many releases the same predicate finds through the end of the last
+  // listed row's week (Sunday) — the block's "+N more" is this minus the rows
+  // listed. Today mode lists every row, so nothing is hidden.
+  let totalCount = releases.length;
+  if (todayReleases.length === 0 && releases.length > 0) {
+    const weekEnd = addDays(mondayOf(releases[releases.length - 1].event_date), 6);
+    totalCount = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calendar_events
+           WHERE event_date > ? AND event_date <= ?
+             AND release_time IS NOT NULL
+             AND COALESCE(superseded, 0) = 0`,
+        )
+        .get(today, weekEnd) as { n: number }
+    ).n;
+  }
+
   return {
     releases: withDisplayTimes(db, releases),
     mode: todayReleases.length > 0 ? "today" : "upcoming",
+    totalCount,
   };
 }
 

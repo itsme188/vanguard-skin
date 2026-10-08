@@ -4,8 +4,17 @@ import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
 
+/** One earnings row the hub has on screen. */
+export interface ShownEvent {
+  id: number;
+  symbol: string | null;
+  eventDate: string;
+}
+
 interface Props {
   weekOf: string;
+  /** The rows the hub shows, so a match that landed elsewhere can say so. */
+  shownEvents?: ShownEvent[];
 }
 
 export interface UploadResponse {
@@ -14,12 +23,14 @@ export interface UploadResponse {
   eventsUnmatched?: string[];
   r2Key?: string | null;
   /** `bogeyId` 0 = matched, but the sheet had no figure for it and nothing was
-   *  stored. `eventDate` is shown when the route supplies it. */
+   *  stored. `eventDate` is shown when the route supplies it. `offWeek` is set
+   *  here, by `locateInShownWeek`, never by the route. */
   results?: Array<{
     symbol: string;
     eventId: number | null;
     bogeyId?: number;
     eventDate?: string | null;
+    offWeek?: boolean;
   }>;
   error?: string;
 }
@@ -54,9 +65,11 @@ export function describeUploadOutcome(result: UploadResponse, fileName: string):
     { text: `${result.eventsMatched ?? 0}/${extracted} matched`, tone: "plain" },
   ];
   const matched = (result.results ?? []).filter((r) => r.eventId != null);
-  const name = (r: { symbol: string; eventDate?: string | null }) => {
-    const day = shortDate(r.eventDate);
-    return day ? `${r.symbol} (${day})` : r.symbol;
+  const name = (r: { symbol: string; eventDate?: string | null; offWeek?: boolean }) => {
+    const detail = [shortDate(r.eventDate), r.offWeek ? "outside the week shown" : null]
+      .filter(Boolean)
+      .join(", ");
+    return detail ? `${r.symbol} (${detail})` : r.symbol;
   };
   const stored = matched.filter((r) => r.bogeyId !== 0);
   const empty = matched.filter((r) => r.bogeyId === 0);
@@ -76,6 +89,28 @@ export function describeUploadOutcome(result: UploadResponse, fileName: string):
 }
 
 /**
+ * Marks where each match landed relative to the rows the hub shows (qa:
+ * match-success-unnamed-off-week-invisible). The route matches a wider window
+ * than the hub renders, so a match can land on a row that is not on screen and
+ * the page looks unchanged. A row is found by id, then by symbol (the hub
+ * folds twin rows, so the id on screen can differ); a found row lends its
+ * date when the route sent none. With no rows handed in, nothing is claimed.
+ */
+export function locateInShownWeek(result: UploadResponse, shownEvents?: ShownEvent[]): UploadResponse {
+  if (!shownEvents || !result.results) return result;
+  return {
+    ...result,
+    results: result.results.map((r) => {
+      if (r.eventId == null) return r;
+      const shown = shownEvents.find(
+        (e) => e.id === r.eventId || (!!e.symbol && e.symbol.toUpperCase() === r.symbol.toUpperCase()),
+      );
+      return { ...r, eventDate: r.eventDate ?? shown?.eventDate ?? null, offWeek: !shown };
+    }),
+  };
+}
+
+/**
  * Drop-zone / file-picker for multi-symbol earnings bogeys PDFs or
  * screenshots (e.g., TMT Breakout's weekly preview page, or a phone
  * screenshot of a bogeys table). Posts to
@@ -86,7 +121,7 @@ export function describeUploadOutcome(result: UploadResponse, fileName: string):
  *
  * Renders inline summary on success: "Matched 4 of 5 symbols (TER unmatched)".
  */
-export function BogeysUploadButton({ weekOf }: Props) {
+export function BogeysUploadButton({ weekOf, shownEvents }: Props) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -111,7 +146,7 @@ export function BogeysUploadButton({ weekOf }: Props) {
         setError(data.error ?? `Server returned ${res.status}`);
         return;
       }
-      setResult({ data, fileName: file.name });
+      setResult({ data: locateInShownWeek(data, shownEvents), fileName: file.name });
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");

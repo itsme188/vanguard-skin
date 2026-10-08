@@ -433,7 +433,10 @@ export function EarningsHub() {
         </div>
         <EarningsHubDateCorrectionNote weekOf={weekOf} />
         <div className="flex items-center justify-start gap-2 pt-1">
-          <BogeysUploadButton weekOf={weekOf} />
+          <BogeysUploadButton
+            weekOf={weekOf}
+            shownEvents={events.map((e) => ({ id: e.id, symbol: e.symbol, eventDate: e.event_date }))}
+          />
         </div>
       </div>
     </section>
