@@ -7,6 +7,7 @@ import type {
   ParsedDonation,
 } from "./types";
 import { validateCorporateActionInput } from "@/lib/compute/corporate-actions";
+import { todayET } from "@/lib/calendar/date-utils";
 
 // ── Known transaction types ─────────────────────────────────────────
 
@@ -169,6 +170,17 @@ const SNAPSHOT_OPTIONAL_NUMERIC_FIELDS: ReadonlyArray<
 
 // ── Main validator ──────────────────────────────────────────────────
 
+/**
+ * Range check for a date that already passed `isValidDate`. Both strings are
+ * YYYY-MM-DD, so a string compare is a date compare. Returns a phrase for a
+ * warning, or null when the date is plausible.
+ */
+function dateRangeWarning(dateStr: string, today: string): string | null {
+  if (dateStr > today) return `is in the future (after today ${today})`;
+  if (dateStr < "1970-01-01") return "is before 1970-01-01";
+  return null;
+}
+
 export interface ValidateParsedResultOptions {
   /**
    * Every account name that can currently be resolved by the commit path's
@@ -181,6 +193,8 @@ export interface ValidateParsedResultOptions {
    * callers/tests) to leave account-name checking off entirely.
    */
   knownAccountNames?: string[];
+  /** YYYY-MM-DD used as "today" for date-range warnings. Defaults to `todayET()`. */
+  today?: string;
 }
 
 /**
@@ -194,6 +208,7 @@ export function validateParsedResult(
 ): ValidationReport {
   const skippedRows: SkippedRow[] = [];
   const warnings: string[] = [];
+  const today = opts?.today ?? todayET();
 
   // ── Account-name resolution (opt-in; preview + commit) ──────────────────
   const knownAccountNamesSet = opts?.knownAccountNames
@@ -236,6 +251,13 @@ export function validateParsedResult(
         symbol: txn.symbol,
       });
       skip = true;
+    } else {
+      const msg = dateRangeWarning(txn.tradeDate, today);
+      if (msg) {
+        warnings.push(
+          `Transaction #${i + 1} (${txn.symbol ?? "no symbol"}): trade date "${txn.tradeDate}" ${msg} — importing as-is`,
+        );
+      }
     }
 
     if (txn.settlementDate && !isValidDate(txn.settlementDate)) {
@@ -333,6 +355,13 @@ export function validateParsedResult(
         symbol: h.symbol,
       });
       skip = true;
+    } else {
+      const msg = dateRangeWarning(h.asOfDate, today);
+      if (msg) {
+        warnings.push(
+          `Holding #${i + 1} (${h.symbol}): as-of date "${h.asOfDate}" ${msg} — importing as-is`,
+        );
+      }
     }
 
     if (!Number.isFinite(h.quantity)) {
@@ -432,6 +461,13 @@ export function validateParsedResult(
         symbol: p.symbol,
       });
       skip = true;
+    } else {
+      const msg = dateRangeWarning(p.date, today);
+      if (msg) {
+        warnings.push(
+          `Price #${i + 1} (${p.symbol}): date "${p.date}" ${msg} — importing as-is`,
+        );
+      }
     }
 
     if (!isValidPrice(p.closePrice)) {
@@ -462,6 +498,13 @@ export function validateParsedResult(
         reason: `Invalid month-end date: "${s.monthEndDate}"`,
       });
       skip = true;
+    } else {
+      const msg = dateRangeWarning(s.monthEndDate, today);
+      if (msg) {
+        warnings.push(
+          `Snapshot #${i + 1} (${s.accountName}): month_end_date "${s.monthEndDate}" ${msg} — importing as-is`,
+        );
+      }
     }
 
     if (!Number.isFinite(s.totalValue)) {

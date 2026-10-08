@@ -925,3 +925,68 @@ describe("validateParsedResult: snapshot optional numeric cells", () => {
     expect(validatedResult.snapshots[0].dividends).toBe(12.5);
   });
 });
+
+describe("validateParsedResult: date range warnings", () => {
+  const today = "2026-10-08";
+  const txn = (tradeDate: string, n: number) => ({
+    accountName: "IBKR",
+    tradeDate,
+    type: "BUY",
+    symbol: "AAA",
+    quantity: 1,
+    amount: 10,
+    sourceKey: `test:range:${n}`,
+  });
+
+  it("warns, without excluding, on future and pre-1970 trade dates", () => {
+    const { skippedRows, warnings, validatedResult } = validateParsedResult(
+      makeParsedResult({
+        transactions: [txn("2030-01-01", 1), txn("1899-01-01", 2), txn("2026-10-08", 3), txn("1970-01-01", 4)],
+      }),
+      { today },
+    );
+    expect(skippedRows).toHaveLength(0);
+    expect(validatedResult.transactions).toHaveLength(4);
+    expect(warnings).toHaveLength(2);
+    expect(warnings.filter((w) => w.includes("2030-01-01") && w.includes("in the future"))).toHaveLength(1);
+    expect(warnings.filter((w) => w.includes("1899-01-01") && w.includes("before 1970-01-01"))).toHaveLength(1);
+  });
+
+  it("warns on a future holdings as-of date", () => {
+    const { warnings, validatedResult } = validateParsedResult(
+      makeParsedResult({
+        holdings: [{ accountName: "IBKR", symbol: "AAA", quantity: 1, asOfDate: "2030-01-31", sourceKey: "h1" }],
+      }),
+      { today },
+    );
+    expect(validatedResult.holdings).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("as-of date");
+    expect(warnings[0]).toContain("in the future");
+  });
+
+  it("warns on a future snapshot month-end date", () => {
+    const { warnings, validatedResult } = validateParsedResult(
+      makeParsedResult({
+        snapshots: [{ accountName: "IBKR", monthEndDate: "2030-01-31", totalValue: 1000, source: "ibkr-activity" }],
+      }),
+      { today },
+    );
+    expect(validatedResult.snapshots).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("month_end_date");
+    expect(warnings[0]).toContain("in the future");
+  });
+
+  it("warns on a future price date", () => {
+    const { warnings, validatedResult } = validateParsedResult(
+      makeParsedResult({
+        prices: [{ symbol: "AAA", date: "2030-01-31", closePrice: 10, source: "canonical" }],
+      }),
+      { today },
+    );
+    expect(validatedResult.prices).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("Price #1 (AAA)");
+  });
+});
