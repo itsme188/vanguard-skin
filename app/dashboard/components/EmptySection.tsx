@@ -13,10 +13,14 @@
  * is *expected* but data is thin.
  */
 
+import type { ReactNode } from "react";
+
 interface EmptySectionProps {
   title: string;
-  reason: string;
-  hint?: string;
+  /** A sentence, or a node (a link, a privacy component) inside one. */
+  reason: ReactNode;
+  /** Same; only a plain-text hint also becomes the "empty" badge's tooltip. */
+  hint?: ReactNode;
 }
 
 export function EmptySection({ title, reason, hint }: EmptySectionProps) {
@@ -26,7 +30,7 @@ export function EmptySection({ title, reason, hint }: EmptySectionProps) {
         <h3 className="text-sm font-medium text-ink">{title}</h3>
         <span
           className="text-[11px] uppercase tracking-widest text-ink-faint cursor-help"
-          title={hint ?? "This section needs more data to render."}
+          title={typeof hint === "string" ? hint : "This section needs more data to render."}
         >
           empty ⓘ
         </span>

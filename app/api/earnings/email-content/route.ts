@@ -10,6 +10,10 @@ import { sendStateFor, sentByFor } from "@/lib/earnings/email-states";
 import { getEventById } from "@/lib/queries/calendar";
 import { parseDbTimestamp } from "@/lib/calendar/date-utils";
 import { repairCitationLineBreaks } from "@/lib/earnings/repair-citation-linebreaks";
+import {
+  isUsableReactionLeg,
+  parseReactionSnapshot,
+} from "@/lib/calendar/reaction-snapshot-core";
 
 export const dynamic = "force-dynamic";
 
@@ -35,7 +39,33 @@ export const dynamic = "force-dynamic";
  * near-empty email), or "delivery-unknown" (we put a message on the wire and
  * never learned the outcome — the prose IS here and IS shown, with the
  * caveat). `sentBy` stays for its existing callers.
+ *
+ * `reactionLegAt` (recap only) is the instant the scoreboard's reaction legs
+ * were measured at, so the viewer can say when the scoreboard carries a
+ * reaction the sent email could not have had.
  */
+
+/**
+ * The UTC instant the recap scoreboard's reaction legs were measured at: the
+ * stored snapshot's release instant plus its window (the capture takes the bar
+ * nearest that target). Read from `reaction_snapshot` as stored — no capture
+ * wall-clock time is kept anywhere, so this is the price's as-of time, not
+ * when the capture job ran. Null unless the scoreboard shows a usable leg
+ * (stock / SPY / QQQ) and both parts are readable.
+ */
+function reactionLegInstant(reactionSnapshot: string | null): string | null {
+  const snap = parseReactionSnapshot(reactionSnapshot);
+  if (!snap || typeof snap !== "object") return null;
+  if (![snap.symbol, snap.spy, snap.qqq].some((leg) => isUsableReactionLeg(leg))) return null;
+  const t0 = typeof snap.t0_utc === "string" ? new Date(snap.t0_utc).getTime() : NaN;
+  const windowMin: unknown = snap.window_min ?? 120;
+  if (!Number.isFinite(t0) || typeof windowMin !== "number" || !Number.isFinite(windowMin)) {
+    return null;
+  }
+  const at = new Date(t0 + windowMin * 60_000);
+  return isNaN(at.getTime()) ? null : at.toISOString();
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const eventIdRaw = url.searchParams.get("eventId");
@@ -122,6 +152,7 @@ export async function GET(request: Request) {
     // delivered copy. That is correct and intended; `deliveryState` is what
     // tells the reader which body they are looking at.
     deliveryState: sendStateFor(audit.error),
+    reactionLegAt: phase === "recap" ? reactionLegInstant(event.reaction_snapshot) : null,
     fullHtml,
   });
 }

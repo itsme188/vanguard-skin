@@ -7,7 +7,7 @@ import {
 import { saveBogeyWithRecompile } from "@/lib/mutations/earnings-bogeys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { addDays } from "@/lib/calendar/date-utils";
-import { buildBogeyEventMap } from "@/lib/queries/bogey-event-match";
+import { buildBogeyEventMatchMap } from "@/lib/queries/bogey-event-match";
 import { buildStatementKey, uploadStatementPdf } from "@/lib/storage/r2";
 
 export const dynamic = "force-dynamic";
@@ -31,33 +31,39 @@ const MAX_PDF_BYTES = 32 * 1024 * 1024;
  *   3. Fan out: for each extracted symbol, look up matching earnings
  *      events in [weekOf-3d, weekOf+10d] (issuer-family aware), insert
  *      one earnings_bogeys row per match.
- *   4. Return a summary the UI can show.
+ *   4. Return a summary the UI can show. Each matched result carries the
+ *      event's own `eventDate`, and `eventSymbol` when the event is filed
+ *      under a share-class sibling of the uploaded symbol — the window is
+ *      wider than the week on screen, so the id alone cannot name the print.
+ *
+ * The body is flat with a `success` flag (`{success:true, …summary}` /
+ * `{success:false, error}`), which is the shape `readMutationResult` reads.
  */
 export async function POST(request: Request) {
   const form = await request.formData().catch(() => null);
   if (!form) {
-    return Response.json({ error: "Expected multipart/form-data body." }, { status: 400 });
+    return Response.json({ success: false, error: "Expected multipart/form-data body." }, { status: 400 });
   }
 
   const file = form.get("file");
   if (!(file instanceof File)) {
-    return Response.json({ error: "Form field 'file' must be a file." }, { status: 400 });
+    return Response.json({ success: false, error: "Form field 'file' must be a file." }, { status: 400 });
   }
   const mediaType = resolveBogeysUploadMediaType(file.name, file.type);
   if (!mediaType) {
     return Response.json(
-      { error: "Only PDF or image files (PNG, JPEG, WebP, GIF) are accepted. iPhone photos in HEIC need converting first — screenshots are PNG and work directly." },
+      { success: false, error: "Only PDF or image files (PNG, JPEG, WebP, GIF) are accepted. iPhone photos in HEIC need converting first — screenshots are PNG and work directly." },
       { status: 400 },
     );
   }
   if (file.size > MAX_PDF_BYTES) {
-    return Response.json({ error: "File exceeds 32 MB." }, { status: 400 });
+    return Response.json({ success: false, error: "File exceeds 32 MB." }, { status: 400 });
   }
 
   const weekOf = form.get("weekOf");
   if (typeof weekOf !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(weekOf)) {
     return Response.json(
-      { error: "Form field 'weekOf' must be YYYY-MM-DD." },
+      { success: false, error: "Form field 'weekOf' must be YYYY-MM-DD." },
       { status: 400 },
     );
   }
@@ -88,13 +94,14 @@ export async function POST(request: Request) {
     extraction = await extractBogeysFromUpload(buffer, mediaType);
   } catch (err) {
     if (err instanceof BogeysExtractionError) {
-      return Response.json({ error: err.message }, { status: err.status });
+      return Response.json({ success: false, error: err.message }, { status: err.status });
     }
     // Parse-shaped failures (non-JSON model output, no text block) carry no
     // upstream payload — their messages are safe and useful to show.
     console.error("Bogeys extraction failed:", err);
     return Response.json(
       {
+        success: false,
         error: `Bogeys extraction failed: ${err instanceof Error ? err.message : String(err)}`,
       },
       { status: 502 },
@@ -106,22 +113,26 @@ export async function POST(request: Request) {
   // makes the sheet invisible on every surface while claiming a match.
   const startDate = addDays(weekOf, -3);
   const endDate = addDays(weekOf, 10);
-  const eventBySymbol = buildBogeyEventMap(db, startDate, endDate);
+  const eventBySymbol = buildBogeyEventMatchMap(db, startDate, endDate);
 
-  const results: Array<{ symbol: string; eventId: number | null; bogeyId?: number }> = [];
+  const results: Array<{
+    symbol: string;
+    eventId: number | null;
+    bogeyId?: number;
+    eventDate?: string;
+    eventSymbol?: string;
+  }> = [];
 
   for (const bogey of extraction.bogeys) {
     const family = issuerSiblings(bogey.symbol);
-    let matchedEventId: number | null = null;
+    let matched: ReturnType<typeof eventBySymbol.get>;
     for (const sym of family) {
-      const id = eventBySymbol.get(sym.toUpperCase());
-      if (id != null) {
-        matchedEventId = id;
-        break;
-      }
+      matched = eventBySymbol.get(sym.toUpperCase());
+      if (matched) break;
     }
+    const matchedEventId = matched?.eventId ?? null;
 
-    if (matchedEventId == null) {
+    if (!matched || matchedEventId == null) {
       results.push({ symbol: bogey.symbol, eventId: null });
       continue;
     }
@@ -143,10 +154,20 @@ export async function POST(request: Request) {
       notes: bogey.notes,
       ai_extraction_model: extraction.modelId,
     });
-    results.push({ symbol: bogey.symbol, eventId: matchedEventId, bogeyId: upsert.id });
+    results.push({
+      symbol: bogey.symbol,
+      eventId: matchedEventId,
+      bogeyId: upsert.id,
+      eventDate: matched.eventDate,
+      // Only when the event is filed under a sibling share class.
+      ...(matched.symbol.toUpperCase() !== bogey.symbol.toUpperCase()
+        ? { eventSymbol: matched.symbol }
+        : {}),
+    });
   }
 
   return Response.json({
+    success: true,
     symbolsExtracted: extraction.bogeys.length,
     eventsMatched: results.filter((r) => r.eventId != null).length,
     eventsUnmatched: results.filter((r) => r.eventId == null).map((r) => r.symbol),

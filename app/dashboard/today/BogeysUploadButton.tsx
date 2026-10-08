@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 
 /** One earnings row the hub has on screen. */
 export interface ShownEvent {
@@ -23,14 +24,19 @@ export interface UploadResponse {
   eventsUnmatched?: string[];
   r2Key?: string | null;
   /** `bogeyId` 0 = matched, but the sheet had no figure for it and nothing was
-   *  stored. `eventDate` is shown when the route supplies it. `offWeek` is set
-   *  here, by `locateInShownWeek`, never by the route. */
+   *  stored. `eventDate` is the matched event's own date and `eventSymbol` its
+   *  own symbol when that is a share-class sibling of the uploaded one; both
+   *  come from the route. `offWeek` and `weekFromServer` are set here, never
+   *  by the route: by `placeByServerDate` (exact, from the route's date) or,
+   *  for a response with no date, by the `locateInShownWeek` guess. */
   results?: Array<{
     symbol: string;
     eventId: number | null;
     bogeyId?: number;
     eventDate?: string | null;
+    eventSymbol?: string | null;
     offWeek?: boolean;
+    weekFromServer?: boolean;
   }>;
   error?: string;
 }
@@ -65,8 +71,15 @@ export function describeUploadOutcome(result: UploadResponse, fileName: string):
     { text: `${result.eventsMatched ?? 0}/${extracted} matched`, tone: "plain" },
   ];
   const matched = (result.results ?? []).filter((r) => r.eventId != null);
-  const name = (r: { symbol: string; eventDate?: string | null; offWeek?: boolean }) => {
-    const detail = [shortDate(r.eventDate), r.offWeek ? "not in the week shown under that symbol" : null]
+  const name = (r: NonNullable<UploadResponse["results"]>[number]) => {
+    // A week verdict from the server's date is a fact; one guessed from the
+    // rows on screen only knows that no row carries that symbol.
+    const offWeek = !r.offWeek
+      ? null
+      : r.weekFromServer
+        ? "not in the week shown"
+        : "not in the week shown under that symbol";
+    const detail = [r.eventSymbol ? `matched ${r.eventSymbol}` : null, shortDate(r.eventDate), offWeek]
       .filter(Boolean)
       .join(", ");
     return detail ? `${r.symbol} (${detail})` : r.symbol;
@@ -88,13 +101,44 @@ export function describeUploadOutcome(result: UploadResponse, fileName: string):
   return lines;
 }
 
+const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** Calendar-day number of a `YYYY-MM-DD` string (UTC, so no timezone moves it). */
+function dayNumber(iso: string | null | undefined): number | null {
+  const m = ISO_DAY.exec(iso ?? "");
+  if (!m) return null;
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return Number.isNaN(ms) ? null : Math.round(ms / 86_400_000);
+}
+
 /**
- * Marks where each match landed relative to the rows the hub shows (qa:
+ * Says whether each match is in the week the hub shows, from the matched
+ * event's own date as the route returned it: the week is `weekOf` (a Monday)
+ * through the following Sunday. A result with no readable date, or an
+ * unreadable `weekOf`, is left without a verdict.
+ */
+export function placeByServerDate(result: UploadResponse, weekOf: string): UploadResponse {
+  const monday = dayNumber(weekOf);
+  if (monday == null || !result.results) return result;
+  return {
+    ...result,
+    results: result.results.map((r) => {
+      const day = r.eventId == null ? null : dayNumber(r.eventDate);
+      if (day == null) return r;
+      return { ...r, offWeek: day < monday || day > monday + 6, weekFromServer: true };
+    }),
+  };
+}
+
+/**
+ * Fallback for a response that carries no event date: marks where each match
+ * landed relative to the rows the hub shows (qa:
  * match-success-unnamed-off-week-invisible). The route matches a wider window
  * than the hub renders, so a match can land on a row that is not on screen and
  * the page looks unchanged. A row is found by id, then by symbol (the hub
  * folds twin rows, so the id on screen can differ); a found row lends its
- * date when the route sent none. With no rows handed in, nothing is claimed.
+ * date. With no rows handed in, nothing is claimed. A result the route dated
+ * is never guessed at (`placeByServerDate` owns it).
  */
 export function locateInShownWeek(result: UploadResponse, shownEvents?: ShownEvent[]): UploadResponse {
   if (!shownEvents || !result.results) return result;
@@ -102,6 +146,7 @@ export function locateInShownWeek(result: UploadResponse, shownEvents?: ShownEve
     ...result,
     results: result.results.map((r) => {
       if (r.eventId == null) return r;
+      if (r.weekFromServer || shortDate(r.eventDate)) return r;
       const shown = shownEvents.find(
         (e) => e.id === r.eventId || (!!e.symbol && e.symbol.toUpperCase() === r.symbol.toUpperCase()),
       );
@@ -141,15 +186,17 @@ export function BogeysUploadButton({ weekOf, shownEvents }: Props) {
         method: "POST",
         body: fd,
       });
-      const data = (await res.json()) as UploadResponse;
-      if (!res.ok) {
-        setError(data.error ?? `Server returned ${res.status}`);
+      const r = await readMutationResult<UploadResponse>(res);
+      if (!r.ok) {
+        setError(r.message);
         return;
       }
+      const data = placeByServerDate(r.data, weekOf);
       setResult({ data: locateInShownWeek(data, shownEvents), fileName: file.name });
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
+      console.error("Bogeys upload failed:", err);
+      setError(networkFailureMessage("upload that file"));
     } finally {
       setUploading(false);
     }
