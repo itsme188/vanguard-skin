@@ -830,11 +830,9 @@ export async function backfillPriceData(
   // earliest entry — the length of the trade period alone would stop short of
   // an older period's start. This one is the SPY benchmark's window (the whole
   // period); each security gets its own, below.
-  const daysNeeded = Math.ceil(
-    (new Date(todayET()).getTime() - new Date(overallStart).getTime()) /
-      (24 * 3600 * 1000)
-  );
-  const durationStr = daysNeeded > 365 ? "2 Y" : `${Math.max(30, daysNeeded + 10)} D`;
+  // backfillDurationStr asks in years once the padded day count passes 365
+  // (IB refuses a longer duration in days).
+  const durationStr = backfillDurationStr(overallStart, todayET());
 
   // Fetch security prices
   if (securitiesToFetch.length > 0) {

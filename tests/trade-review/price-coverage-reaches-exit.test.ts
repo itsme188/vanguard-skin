@@ -109,8 +109,8 @@ describe("the generator uses the check in both places (source pin)", () => {
   });
 
   it("the fetch window is measured back from today, not from the period's end", () => {
-    const duration = sliceBetween(src, "// Compute duration string from date range", "const durationStr");
-    expect(duration).toMatch(/new Date\(todayET\(\)\)\.getTime\(\) - new Date\(overallStart\)\.getTime\(\)/);
+    const duration = sliceBetween(src, "// Compute duration string from date range", "// Fetch security prices");
+    expect(duration).toMatch(/const durationStr = backfillDurationStr\(overallStart, todayET\(\)\)/);
   });
 
   it("a trade whose history stops short is graded without a price range", () => {

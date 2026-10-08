@@ -184,7 +184,7 @@ export function PendingStatementLine({
   return (
     <div className="text-xs text-ink-faint mt-2">
       <p>
-        <Count value={positions} /> position{positions !== 1 ? "s" : ""} closed per live data —
+        Positions closed per live data: <Count value={positions} /> —
         awaiting statement (<Money value={basis} /> cost basis, excluded from Unrealized).{" "}
         {PENDING_STATEMENT_EXPLANATION}
       </p>

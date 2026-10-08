@@ -194,3 +194,16 @@ describe("the fetchability rule", () => {
     expect(backfillDurationStr("2020-01-01", "2026-10-07")).toBe("2 Y");
   });
 });
+
+describe("benchmark window obeys the same duration rule", () => {
+  it("a start 356 to 365 days back is asked in years, never as more than 365 days", () => {
+    const today = "2026-10-07";
+    for (let back = 350; back <= 370; back++) {
+      const start = new Date(Date.UTC(2026, 9, 7) - back * 86_400_000).toISOString().slice(0, 10);
+      const d = backfillDurationStr(start, today);
+      const m = /^(\d+) D$/.exec(d);
+      if (m) expect(Number(m[1])).toBeLessThanOrEqual(365);
+      else expect(d).toBe("2 Y");
+    }
+  });
+});
