@@ -41,6 +41,7 @@ import { computeDailyValuations } from "../compute/daily-valuation";
 import { runLevelScanCycle } from "../alerts/scan-cycle";
 import { getPendingOptionUnderlyings } from "./option-underlyings";
 import { todayET } from "../calendar/date-utils";
+import { cashEquivalentSecurityTypeSql } from "../compute/cash-equivalents";
 
 export type RefreshLevel = "full" | "quick";
 
@@ -168,7 +169,8 @@ export async function runAutoRefresh(
           `SELECT COUNT(*) AS cnt FROM securities s
            JOIN holdings h ON h.security_id = s.id AND h.quantity > 0
            WHERE s.ib_con_id IS NULL
-             AND LOWER(COALESCE(s.security_type, '')) NOT IN ('bond', 'money_market')`,
+             AND LOWER(COALESCE(s.security_type, '')) != 'bond'
+             AND NOT ${cashEquivalentSecurityTypeSql("s")}`,
         )
         .get() as { cnt: number };
       // Not-held underlyings of held live options also need a contract id

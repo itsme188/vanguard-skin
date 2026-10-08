@@ -5,6 +5,7 @@ import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
+import { cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -255,7 +256,8 @@ export function getDataGaps(db: Database.Database): DataGaps {
       JOIN holdings h ON h.security_id = s.id AND ${latestHoldingsPredicate()}
       WHERE ${liveOptionExpirationSql("s")}
         AND NOT EXISTS (SELECT 1 FROM transactions t WHERE t.security_id = s.id)
-        AND LOWER(COALESCE(s.security_type, '')) NOT IN ('cash', 'money_market', 'money market')
+        AND LOWER(COALESCE(s.security_type, '')) != 'cash'
+        AND NOT ${cashEquivalentSecuritySql("s")}
         AND s.symbol NOT LIKE 'CUSIP:%'
       ORDER BY s.symbol
       `,

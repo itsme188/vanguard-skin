@@ -52,3 +52,23 @@ export function isCashEquivalentSecurity(sec: {
   const category = sec.fund_category?.trim().toLowerCase();
   return category === "cash equivalent" || category === "money market";
 }
+
+const SQL_TRIM_CHARS = "char(9)||char(10)||char(13)||' '||char(160)";
+
+function normalizedSql(expr: string): string {
+  return `LOWER(TRIM(COALESCE(${expr}, ''), ${SQL_TRIM_CHARS}))`;
+}
+
+/** Type-only signal for live TWS sync paths that must not trust AI-assigned fund_category. */
+export function cashEquivalentSecurityTypeSql(alias = "s"): string {
+  return `${normalizedSql(`${alias}.security_type`)} IN ('money_market', 'money market')`;
+}
+
+/**
+ * SQL twin of isCashEquivalentSecurity. Assumes a securities row aliased by
+ * `alias` and keeps the exact same case-insensitive, exact-match vocabulary.
+ */
+export function cashEquivalentSecuritySql(alias = "s"): string {
+  return `(${cashEquivalentSecurityTypeSql(alias)}
+    OR ${normalizedSql(`${alias}.fund_category`)} IN ('cash equivalent', 'money market'))`;
+}

@@ -10,6 +10,7 @@ import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors"
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { parseBatchReply, runClassifyBatches, UnusableBatchReplyError } from "@/lib/compute/classify-batch";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 
 export interface FactorClassifyResult {
   classified: number;
@@ -74,7 +75,7 @@ Return ONLY a JSON array. No markdown fences. Each element:
 
 // Security types to skip (they don't need factor classification)
 const SKIP_TYPES = new Set([
-  "bond", "money_market", "money market", "forex", "forecast contracts by forecastex",
+  "bond", "forex", "forecast contracts by forecastex",
 ]);
 
 /**
@@ -96,7 +97,7 @@ export async function classifyFactors(
   // - Not an option (options inherit from underlying at query time)
   const unclassified = db
     .prepare(
-      `SELECT DISTINCT s.id, s.symbol, s.name, s.security_type
+      `SELECT DISTINCT s.id, s.symbol, s.name, s.security_type, s.fund_category
        FROM securities s
        JOIN holdings h ON h.security_id = s.id AND h.quantity != 0
        LEFT JOIN security_factors sf ON sf.security_id = s.id
@@ -110,6 +111,7 @@ export async function classifyFactors(
       symbol: string;
       name: string | null;
       security_type: string | null;
+      fund_category: string | null;
     }>;
 
   // Underlyings of currently-held, unexpired options. Options never get their
@@ -153,7 +155,7 @@ export async function classifyFactors(
     }
     if (seenIds.has(id)) continue; // already a direct candidate (held stock that's also an underlying)
     seenIds.add(id);
-    unclassified.push({ id, symbol: u.symbol, name: u.name, security_type: u.security_type });
+    unclassified.push({ id, symbol: u.symbol, name: u.name, security_type: u.security_type, fund_category: null });
   }
 
   // Set simple defaults for bonds, money market, etc.
@@ -182,7 +184,10 @@ export async function classifyFactors(
   `);
 
   for (const sec of unclassified) {
-    if (sec.security_type && SKIP_TYPES.has(sec.security_type.toLowerCase())) {
+    if (
+      (sec.security_type && SKIP_TYPES.has(sec.security_type.toLowerCase())) ||
+      isCashEquivalentSecurity(sec)
+    ) {
       // Set defaults for bonds, money market, etc.
       const isBond = sec.security_type?.toLowerCase() === "bond";
       upsertFactor.run(

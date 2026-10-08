@@ -8,6 +8,7 @@
 import type Database from "better-sqlite3";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
+import { cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -98,7 +99,8 @@ export function reconcileCostBasis(
        JOIN accounts a ON a.id = h.account_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE ${latestHoldingsPredicate({ includeShorts: true, accountFilter })}
-         AND LOWER(s.security_type) NOT IN ('mutual fund', 'money market', 'fund', 'money_market')
+         AND LOWER(COALESCE(s.security_type, '')) NOT IN ('mutual fund', 'fund')
+         AND NOT ${cashEquivalentSecuritySql("s")}
        ORDER BY a.name, s.symbol`
     )
     .all(...params) as Array<{
