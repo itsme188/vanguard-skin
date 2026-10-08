@@ -35,7 +35,8 @@ export type StrategyType =
   | "strangle"
   | "iron_condor"
   | "naked_call"
-  | "naked_put";
+  | "naked_put"
+  | "long_put";
 
 export interface DetectedStrategy {
   type: StrategyType;
@@ -280,6 +281,7 @@ function detectCoveredStrategies(
 ): StrategyDraft[] {
   const strategies: StrategyDraft[] = [];
   const shares = stock.quantity;
+  let remainingShares = stock.quantity;
 
   // Covered Call: long stock + short call
   const shortCalls = options.filter(
@@ -352,19 +354,35 @@ function detectCoveredStrategies(
   const longPuts = options.filter(
     (o) => o.optionType === "PUT" && o.quantity > 0
   );
-  for (const put of longPuts) {
+  const putsByProtection = [...longPuts].sort((a, b) => {
+    const strikeDiff = (b.strike ?? 0) - (a.strike ?? 0);
+    if (strikeDiff !== 0) return strikeDiff;
+    return (a.expiration ?? "").localeCompare(b.expiration ?? "");
+  });
+  for (const put of putsByProtection) {
     const strike = put.strike!;
     const stockCost = stock.currentPrice ?? 0;
     const putCost = put.currentPrice ?? 0;
     const contracts = put.quantity;
+    const shares = remainingShares;
+    if (shares <= 0) {
+      strategies.push(createLongPut(underlyingOf(stock), put));
+      continue;
+    }
+    const hedgeContracts = Math.min(
+      contracts,
+      Math.ceil(shares / (put.multiplier || 100))
+    );
+    const standaloneContracts = contracts - hedgeContracts;
+    const hedgePut = { ...put, quantity: hedgeContracts };
     // Puts beyond the share count are outright long puts — their downside is
     // capped at their own premium, not the (price - strike) share loss. Only
     // the covered shares carry that leg of the worst case; shares BEYOND what
     // the puts cover are unhedged long stock and carry their full cost down.
-    const putSharesCovered = put.multiplier * contracts;
+    const putSharesCovered = hedgePut.multiplier * hedgeContracts;
     const coveredShares = Math.min(shares, putSharesCovered);
     const uncoveredShares = Math.max(0, shares - putSharesCovered);
-    const totalPremium = putCost * put.multiplier * contracts;
+    const totalPremium = putCost * hedgePut.multiplier * hedgeContracts;
     const overHedged = putSharesCovered > shares;
 
     // The expiry payoff is piecewise linear with its only kink at the strike,
@@ -398,11 +416,11 @@ function detectCoveredStrategies(
 
     // Name the unhedged shares explicitly: a hedge that covers only part of
     // the position must never read like a fully protected one.
-    const putWord = `put${contracts > 1 ? "s" : ""}`;
+    const putWord = `put${hedgeContracts > 1 ? "s" : ""}`;
     const coverageNote = overHedged
-      ? ` (${contracts} ${putWord} cover ${putSharesCovered} sh vs ${shares} held)`
+      ? ` (${hedgeContracts} ${putWord} cover ${putSharesCovered} sh vs ${shares} held)`
       : uncoveredShares > 0
-        ? ` (${contracts} ${putWord} hedge ${coveredShares} sh of ${shares} held — ${uncoveredShares} sh unhedged)`
+        ? ` (${hedgeContracts} ${putWord} hedge ${coveredShares} sh of ${shares} held — ${uncoveredShares} sh unhedged)`
         : "";
 
     strategies.push({
@@ -410,12 +428,16 @@ function detectCoveredStrategies(
       name: `Protective Put: ${stock.symbol} ${formatStrike(strike)} Put`,
       underlying: stock.symbol,
       expiration: put.expiration,
-      legs: [stock, put],
+      legs: [stock, hedgePut],
       maxProfit: null, // unlimited upside
       maxLoss,
       breakevens: [breakeven],
-      description: `Long ${shares} shares + long ${contracts} ${formatExpiry(put.expiration)} ${formatStrike(strike)} ${putWord}${coverageNote}`,
+      description: `Long ${shares} shares + long ${hedgeContracts} ${formatExpiry(put.expiration)} ${formatStrike(strike)} ${putWord}${coverageNote}`,
     });
+    remainingShares = Math.max(0, remainingShares - coveredShares);
+    if (standaloneContracts > 0) {
+      strategies.push(createLongPut(underlyingOf(stock), { ...put, quantity: standaloneContracts }));
+    }
   }
 
   return strategies;
@@ -749,6 +771,28 @@ function createNakedOption(
       : [opt.strike! - premium / (opt.multiplier * Math.abs(opt.quantity))],
     description: `Short ${Math.abs(opt.quantity)} ${formatExpiry(opt.expiration)} ${formatStrike(opt.strike!)} ${isCall ? "call" : "put"}${Math.abs(opt.quantity) > 1 ? "s" : ""}`,
   };
+}
+
+function createLongPut(underlying: string, opt: PositionLeg): StrategyDraft {
+  const contracts = Math.abs(opt.quantity);
+  const premium = (opt.currentPrice ?? 0) * opt.multiplier * contracts;
+  const size = opt.multiplier * contracts;
+
+  return {
+    type: "long_put",
+    name: `Long Put: ${underlying} ${formatStrike(opt.strike!)}`,
+    underlying,
+    expiration: opt.expiration,
+    legs: [opt],
+    maxProfit: opt.strike! * size - premium,
+    maxLoss: premium,
+    breakevens: [opt.strike! - premium / size],
+    description: `Long ${contracts} ${formatExpiry(opt.expiration)} ${formatStrike(opt.strike!)} put${contracts !== 1 ? "s" : ""} (no shares left to hedge)`,
+  };
+}
+
+function underlyingOf(stock: PositionLeg): string {
+  return stock.underlying || stock.symbol;
 }
 
 // ─── Formatting Helpers ─────────────────────────────────────────

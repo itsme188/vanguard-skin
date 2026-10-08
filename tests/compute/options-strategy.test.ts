@@ -344,15 +344,21 @@ describe("detectStrategies", () => {
         option("QAAA", "PUT", 72, 5, { price: 0.07 }),
       ];
       const strategies = detectStrategies(positions);
-      expect(strategies.length).toBe(1);
-      const pp = strategies[0];
+      expect(strategies.map((s) => s.type)).toEqual(["protective_put", "long_put"]);
+      const pp = strategies.find((s) => s.type === "protective_put")!;
       expect(pp.type).toBe("protective_put");
-      // (82.67 - 72) * 250 covered shares + 0.07 * 100 * 5 premium
-      expect(pp.maxLoss).toBeCloseTo(2702.5, 2);
+      // 3 contracts are enough to hedge 250 shares; the remaining 2 puts are
+      // standalone long puts, so their premium is not double-counted here.
+      // (82.67 - 72) * 250 covered shares + 0.07 * 100 * 3 premium
+      expect(pp.maxLoss).toBeCloseTo(2688.5, 2);
       expect(pp.maxProfit).toBeNull();
-      // breakeven spreads the total premium over the covered shares: 82.67 + 35/250
-      expect(pp.breakevens[0]).toBeCloseTo(82.81, 2);
-      expect(pp.description).toContain("cover 500 sh vs 250 held");
+      // breakeven spreads the hedging premium over the covered shares: 82.67 + 21/250
+      expect(pp.breakevens[0]).toBeCloseTo(82.754, 3);
+      expect(pp.description).toContain("3 puts cover 300 sh vs 250 held");
+
+      const standalone = strategies.find((s) => s.type === "long_put")!;
+      expect(standalone.description).toContain("Long 2");
+      expect(standalone.maxLoss).toBeCloseTo(14, 2);
     });
 
     it("fully covered: puts cover exactly the held shares", () => {
@@ -416,10 +422,12 @@ describe("detectStrategies", () => {
         option("QAAA", "PUT", 90, 5, { price: 8 }),
       ];
       const strategies = detectStrategies(positions);
-      const pp = strategies[0];
-      // (82.67 - 90) * 250 covered shares + 8 * 100 * 5 premium = 2167.5
-      expect(pp.maxLoss).toBeCloseTo(2167.5, 2);
-      expect(pp.description).toContain("cover 500 sh vs 250 held");
+      const pp = strategies.find((s) => s.type === "protective_put")!;
+      // (82.67 - 90) * 250 covered shares + 8 * 100 * 3 hedging contracts = 567.5
+      expect(pp.maxLoss).toBeCloseTo(567.5, 2);
+      expect(pp.description).toContain("3 puts cover 300 sh vs 250 held");
+      const standalone = strategies.find((s) => s.type === "long_put")!;
+      expect(standalone.maxLoss).toBeCloseTo(1600, 2);
     });
 
     it("max loss never goes negative when a stale mark prices the put below intrinsic", () => {
@@ -444,6 +452,35 @@ describe("detectStrategies", () => {
       expect(pp.pricingIncomplete).toBe(true);
       expect(pp.maxLoss).toBeNull();
       expect(pp.breakevens).toEqual([]);
+    });
+  });
+
+  describe("protective put share consumption", () => {
+    it("allocates one 100-share lot to the highest-strike put and leaves the second as a long put", () => {
+      const strategies = detectStrategies([
+        stock("QHEDG", 100, 50),
+        option("QHEDG", "PUT", 45, 1, { price: 1 }),
+        option("QHEDG", "PUT", 55, 1, { price: 2 }),
+      ]);
+
+      expect(strategies.map((s) => s.type)).toEqual(["protective_put", "long_put"]);
+      const hedge = strategies[0];
+      expect(hedge.name).toContain("$55");
+      expect(hedge.description).toContain("Long 100 shares + long 1");
+      expect(strategies[1].name).toContain("$45");
+      expect(strategies[1].description).toContain("no shares left to hedge");
+    });
+
+    it("with 300 shares and 2 puts, hedges 200 shares and says 100 remain unhedged", () => {
+      const strategies = detectStrategies([
+        stock("QPART", 300, 50),
+        option("QPART", "PUT", 45, 2, { price: 1 }),
+      ]);
+
+      expect(strategies).toHaveLength(1);
+      expect(strategies[0].type).toBe("protective_put");
+      expect(strategies[0].description).toContain("2 puts hedge 200 sh of 300 held");
+      expect(strategies[0].description).toContain("100 sh unhedged");
     });
   });
 
