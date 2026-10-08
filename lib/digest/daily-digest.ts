@@ -120,7 +120,7 @@ export function setLastBriefingSentAt(db: Database.Database, isoDate: string): v
  * Generate a markdown digest from research articles received since a given date.
  * Returns null if no processed articles are available.
  */
-const DIGEST_ARTICLE_CAP = 30;
+export const DIGEST_ARTICLE_CAP = 30;
 
 export function generateDigestSince(db: Database.Database, sinceDate: string): string | null {
   const windowFilter = {
@@ -270,7 +270,7 @@ function parseJsonArray(json: string | null): string[] {
 const SYNTHESIS_MIN_ARTICLES = 5;
 
 /** Newest-N fetch cap for the adaptive composer (disclosed in the count line). */
-const ADAPTIVE_ARTICLE_CAP = 40;
+export const ADAPTIVE_ARTICLE_CAP = 40;
 
 /**
  * Persist a fallback event to a 30-entry ring buffer in the `settings` table.

@@ -3,20 +3,18 @@ import { db } from "@/lib/db";
 import {
   generateDigestSince,
   generateDigestSinceAdaptive,
-  getLastDigestSentAt,
 } from "@/lib/digest/daily-digest";
+import { resolveDigestSince, defaultDigestSince } from "@/lib/digest/digest-window";
 import { generateDigestByCompanySince } from "@/lib/digest/group-by-company";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 
 const TITLE = "Daily Research Digest";
 
+// The sender's own window rule, so the preview shows what a send would cover.
 function resolveSince(request: NextRequest): string {
   const sinceParam = new URL(request.url).searchParams.get("since");
   if (sinceParam) return sinceParam;
-  const lastSent = getLastDigestSentAt(db);
-  return (
-    lastSent ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-  );
+  return resolveDigestSince(db, { mode: "since_last" }) ?? defaultDigestSince();
 }
 
 // The composer's own fallback telemetry (a ring buffer in `settings`, written

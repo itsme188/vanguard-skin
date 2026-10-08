@@ -80,6 +80,9 @@ export const FACTOR_SHOCK_SENSITIVITIES: Record<FactorColumn, BucketMultipliers>
     // tier as High in FACTOR_SORT_RANK (lib/factors.ts), and leaving it
     // unmapped scored those names 0 — the "foreign ADR takes 0.0% in USD
     // strength +5%" half of the 2026-09-03 QA finding.
+    // Owner ruling 2026-10-08: this score is pinned equal to High. Relabelling
+    // new classifications to "Very High" is HELD, because that would move
+    // scenario figures; tests/compute/scenario-recipes.test.ts guards it.
     International: 1.00,
   },
   geopolitical_onshoring: {

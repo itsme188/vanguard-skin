@@ -49,7 +49,16 @@ import {
 const DB_PATH = process.env.REPAIR_DB_PATH ?? path.join(process.cwd(), "data", "vanguard.db");
 const MINTAX_FROM = "2025-01-01"; // donations on/after this date use MinTax
 const ZERO_EPS = 0.005; // |gain per share| below half a cent counts as Vanguard's "zero gain or loss"
-const ACK_FLAG = "--acknowledge-repair";
+export const ACK_FLAG = "--acknowledge-repair";
+
+/** Refuses a write that was not acknowledged. Dry-run (apply = false) always passes. */
+export function assertWriteAcknowledged(argv: string[], apply: boolean): void {
+  if (apply && !argv.includes(ACK_FLAG)) {
+    throw new Error(
+      `Refusing to write without ${ACK_FLAG}. Dry-run is the default; rehearse on a REPAIR_DB_PATH copy first.`,
+    );
+  }
+}
 
 export type DisposalMethod = "fifo" | "mintax";
 
@@ -142,7 +151,8 @@ interface DonationTarget {
 }
 
 /**
- * The script's whole work, importable (used by scripts/finish-donations.ts):
+ * The script's whole work, importable. A caller must check the acknowledgement
+ * itself (assertWriteAcknowledged); a repo test fails on a caller that does not:
  * plan (and with apply=true, write + recompute) lot assignments for every
  * confirmed, unreversed, lot-less stock donation. Returns counts for the
  * caller's summary. Takes a VACUUM INTO backup itself before writing.
@@ -297,9 +307,7 @@ export function runAssignment(db: Database.Database, apply: boolean): { planned:
 
 function main() {
   const apply = process.argv.includes("--apply");
-  if (apply && !process.argv.includes(ACK_FLAG)) {
-    throw new Error(`Refusing to write without ${ACK_FLAG}. Dry-run is the default; rehearse on a REPAIR_DB_PATH copy first.`);
-  }
+  assertWriteAcknowledged(process.argv, apply);
   const db = new Database(DB_PATH, { timeout: 60000 });
   db.pragma("foreign_keys = ON");
   runAssignment(db, apply);

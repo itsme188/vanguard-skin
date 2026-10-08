@@ -15,6 +15,7 @@ import {
   parseArgs,
 } from "@/scripts/repair-manual-feed-earnings-pairs";
 import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
+import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 
 let db: Database.Database;
 
@@ -274,5 +275,21 @@ describe("repair-manual-feed-earnings-pairs", () => {
     expect(text).toContain(`nasdaq row ${feed} would be hidden`);
     expect(text).not.toContain("7.77");
     expect(text).not.toContain("8.88");
+  });
+
+  it("reports no outbox row when the armed projection did not change", () => {
+    seed({ source: "manual", symbol: "ZZQ", date: OLD });
+    seed({ source: "nasdaq", symbol: "ZZQ", date: OLD });
+    // Settle the baseline first, so the repair's own call is the no-op case.
+    db.transaction(() => writeArmedEventsOutboxRow(db, { today: TODAY }))();
+    const before = (db.prepare("SELECT COUNT(*) AS n FROM cloud_outbox").get() as { n: number }).n;
+
+    const result = runManualFeedPairRepair(db, { apply: true, acknowledgeRepair: true, today: TODAY });
+
+    const after = (db.prepare("SELECT COUNT(*) AS n FROM cloud_outbox").get() as { n: number }).n;
+    expect(result.hidden).toBe(1);
+    expect(after).toBe(before);
+    expect(result.outboxWritten).toBe(false);
+    expect(formatPlan(result).join("\n")).not.toContain("outbox row was written");
   });
 });

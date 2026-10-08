@@ -227,10 +227,9 @@ export function runManualFeedPairRepair(
     let outboxWritten = false;
     // Hiding a feed row can change the armed projection's superseded ids even
     // when the fold moved nothing; the writer is a no-op when the projection
-    // is unchanged, so ask whenever a row was hidden.
+    // is unchanged, so ask whenever a row was hidden and report what it did.
     if (anyMerged || hidden > 0) {
-      writeArmedEventsOutboxRow(db, { today });
-      outboxWritten = true;
+      outboxWritten = writeArmedEventsOutboxRow(db, { today }).written;
     }
     return { plan, applied: true, hidden, outboxWritten };
   })();

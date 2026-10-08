@@ -26,6 +26,35 @@ function toCascadeEventTime(time: string | null | undefined): string {
   return time?.trim().toLowerCase() === "bmo" ? "BMO" : "AMC";
 }
 
+const CLOCK_RE = /^(\d{1,2}):\d{2}$/;
+/** The stored time a slot gets when nothing better is known; never "typed". */
+const SLOT_DEFAULT_TIME = { BMO: "08:00", AMC: "16:15" } as const;
+
+/** The slot a stored clock time falls in: before noon is BMO, otherwise AMC. */
+function slotOfClock(time: string | null | undefined): "BMO" | "AMC" | null {
+  const m = time ? CLOCK_RE.exec(time) : null;
+  if (!m) return null;
+  return Number(m[1]) < 12 ? "BMO" : "AMC";
+}
+
+/**
+ * The clock time a user typed on an existing row, or null. Two stored shapes:
+ * a clock in `event_time` (sent through the API), or a slot word in
+ * `event_time` with a clock in `release_time` that is not that slot's default
+ * (the Hub's add form sends the slot; the time editor writes the clock).
+ */
+function typedTimeOf(
+  row: { event_time: string | null; release_time: string | null } | undefined,
+): { eventTime: string | null; releaseTime: string } | null {
+  if (!row) return null;
+  if (row.event_time && CLOCK_RE.test(row.event_time)) {
+    return { eventTime: row.event_time, releaseTime: row.release_time ?? row.event_time };
+  }
+  const slot = slotOfClock(row.release_time);
+  if (!slot || !row.release_time || row.release_time === SLOT_DEFAULT_TIME[slot]) return null;
+  return { eventTime: row.event_time ? row.event_time.trim().toUpperCase() : null, releaseTime: row.release_time };
+}
+
 /**
  * Record a user-confirmed earnings date as the authoritative, locked value.
  *
@@ -76,11 +105,28 @@ export function confirmEarningsDate(
   db.transaction(() => {
     const before = db
       .prepare(
-        `SELECT COALESCE(superseded, 0) AS superseded
+        `SELECT COALESCE(superseded, 0) AS superseded, event_time, release_time
            FROM calendar_events
           WHERE source_key = ?`,
       )
-      .get(sourceKey) as { superseded: number } | undefined;
+      .get(sourceKey) as
+      | { superseded: number; event_time: string | null; release_time: string | null }
+      | undefined;
+
+    // A clock time the user typed on this row survives a confirm that picks the
+    // same slot, or that names no time at all. Picking the other slot is a
+    // deliberate change of time.
+    const typed = typedTimeOf(before);
+    const pickedSlot = cascadeEventTime === "BMO" || cascadeEventTime === "AMC" ? cascadeEventTime : null;
+    const keepTyped =
+      typed !== null &&
+      (input.confirmedTime == null || (pickedSlot !== null && slotOfClock(typed.releaseTime) === pickedSlot));
+    const eventTimeToStore = keepTyped
+      ? typed.eventTime
+      : input.confirmedTime == null
+        ? null
+        : cascadeEventTime;
+    const releaseTimeToStore = keepTyped ? typed.releaseTime : releaseTime;
 
     db.prepare(
       `INSERT INTO calendar_events
@@ -96,8 +142,8 @@ export function confirmEarningsDate(
          superseded = 0`,
     ).run(
       input.confirmedDate,
-      input.confirmedTime ?? null,
-      releaseTime,
+      eventTimeToStore,
+      releaseTimeToStore,
       `${symbol} earnings`,
       symbol,
       securityId,

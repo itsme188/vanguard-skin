@@ -97,6 +97,18 @@ describe("sendDigestEmail window boundaries", () => {
     await sendDigestEmail(db, { mode: "since_last" });
     expect(adaptiveSince.calls).toEqual(["2026-03-08"]);
   });
+
+  it("mode 'since_date' with no date falls back to the ET yesterday", async () => {
+    const { sendDigestEmail } = await import("@/lib/digest/send-digest");
+    await sendDigestEmail(db, { mode: "since_date" });
+    expect(adaptiveSince.calls).toEqual(["2026-03-08"]);
+  });
+
+  it("no mode at all falls back to the ET yesterday", async () => {
+    const { sendDigestEmail } = await import("@/lib/digest/send-digest");
+    await sendDigestEmail(db, {});
+    expect(adaptiveSince.calls).toEqual(["2026-03-08"]);
+  });
 });
 
 describe("synthesis fallback ring date stamp", () => {

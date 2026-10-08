@@ -289,7 +289,7 @@ export function renderDigestByCompany(
  * returns the by-company rendering. Returns null when no articles AND no
  * alerts (matches the existing behavior).
  */
-const BY_COMPANY_ARTICLE_CAP = 30;
+export const BY_COMPANY_ARTICLE_CAP = 30;
 
 export function generateDigestByCompanySince(
   db: Database.Database,

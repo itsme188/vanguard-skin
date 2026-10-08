@@ -336,7 +336,7 @@ function RemoveRow({ event }: { event: DisplayedEvent }) {
   if (!weekAheadRemovable(event)) return null;
   return (
     <span className="inline-flex items-center gap-1.5 text-[11px] text-ink-faint">
-      added by hand
+      Entered by you
       <EarningsDeleteButton eventId={event.id} symbol={event.symbol ?? null} source={event.source} />
     </span>
   );
