@@ -295,7 +295,7 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
           // entirely Phase 2's inferred cash, which is an estimate.
           allHoldingsAreCashEquivalents ? "estimated" :
           holdingsAgeDays > 0 ? "estimated" :
-          pricedCount === holdings.length && maxPriceStaleDays <= 1 ? "live" :
+          pricedOpenCount === openCount && maxPriceStaleDays <= 1 ? "live" :
           maxPriceStaleDays <= 3 ? "recent" :
           "estimated";
 

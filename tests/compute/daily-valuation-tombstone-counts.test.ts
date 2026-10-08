@@ -109,6 +109,7 @@ describe("daily valuation — closed (quantity 0) rows are not counted as holdin
     expect(row.holdings_count).toBe(1);
     expect(row.priced_count).toBe(1);
     expect(row.holdings_value).toBe(1_000);
+    expect(row.data_quality).toBe("live");
   });
 
   it("a genuinely unpriced OPEN position still counts as held and not priced", () => {
@@ -123,6 +124,7 @@ describe("daily valuation — closed (quantity 0) rows are not counted as holdin
 
     expect(row.holdings_count).toBe(2);
     expect(row.priced_count).toBe(1);
+    expect(row.data_quality).not.toBe("live");
   });
 
   it("a short position (negative quantity) is counted", () => {
