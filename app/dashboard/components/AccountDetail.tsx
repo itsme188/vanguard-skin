@@ -60,7 +60,7 @@ export function AccountDetail({
   return (
     <div className="space-y-6">
       {snapshot && (
-        <div className="flex items-center justify-end -mb-3">
+        <div className="flex items-center justify-end">
           <SnapshotAge
             asOfDate={snapshot.newest}
             oldestAsOfDate={snapshot.oldest}
