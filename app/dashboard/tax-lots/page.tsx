@@ -169,7 +169,11 @@ export default async function TaxLotsPage(props: {
           {hasData && staleness.stale && (
             <TaxLotStalenessNotice marker={staleness} className="max-w-md" />
           )}
-          <RecomputeButton endpoint="/api/compute/tax-lots" label="Recompute" />
+          <RecomputeButton
+            endpoint="/api/compute/tax-lots"
+            label="Recompute"
+            completionEventName="tax-lots:recomputed"
+          />
         </div>
       </div>
 
@@ -255,7 +259,11 @@ export default async function TaxLotsPage(props: {
               <PrivateText>{expiredOptionSymbols.join(", ")}</PrivateText>
             </p>
           )}
-          <TaxReportCard year={selectedYear} accountName={selectedAccount || undefined} />
+          <TaxReportCard
+            year={selectedYear}
+            accountName={selectedAccount || undefined}
+            refreshEventName="tax-lots:recomputed"
+          />
           <section aria-label="Currency conversions (Section 988, ordinary income)">
             <TaxLotCurrencyConversionTable
               lots={currencyConversionOpenLots}

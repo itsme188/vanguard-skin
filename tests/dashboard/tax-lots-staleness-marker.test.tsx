@@ -145,7 +145,7 @@ describe("tax lots page wiring", () => {
 
   it("keeps the notice adjacent to the Recompute button", () => {
     const noticeAt = anchorIndex(src, "<TaxLotStalenessNotice");
-    const buttonAt = anchorIndex(src, '<RecomputeButton endpoint="/api/compute/tax-lots"');
+    const buttonAt = anchorIndex(src, "<RecomputeButton", noticeAt);
     expect(noticeAt).toBeGreaterThan(-1);
     expect(buttonAt).toBeGreaterThan(noticeAt);
     // Same JSX block — nothing but the notice sits between them.

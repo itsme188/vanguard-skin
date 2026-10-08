@@ -222,16 +222,19 @@ export function washSalesCaption(
 export function TaxReportCard({
   year,
   accountName,
+  refreshEventName,
 }: {
   year: number;
   /** Tax Lots ?account= filter. Undefined/empty = all accounts. */
   accountName?: string;
+  refreshEventName?: string;
 }) {
   const [report, setReport] = useState<TaxReportSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
   const [downloadingTxf, setDownloadingTxf] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // Same query string for the card fetch and both downloads — the card can
   // never display one account's totals while handing over another's file.
@@ -277,7 +280,14 @@ export function TaxReportCard({
     return () => {
       guard.cancel();
     };
-  }, [year, accountParam]);
+  }, [year, accountParam, refreshKey]);
+
+  useEffect(() => {
+    if (!refreshEventName) return;
+    const refresh = () => setRefreshKey((key) => key + 1);
+    window.addEventListener(refreshEventName, refresh);
+    return () => window.removeEventListener(refreshEventName, refresh);
+  }, [refreshEventName]);
 
   async function handleDownload(format: "csv" | "txf") {
     if (!report) return;

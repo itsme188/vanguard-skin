@@ -107,9 +107,9 @@ describe("TaxReportCard scope wiring (source pin)", () => {
     // the success callback (before any setReport/setError), and cancelled
     // from the effect's cleanup.
     const effectMatch = src.match(
-      /useEffect\(\(\) => \{([\s\S]*?)\n {2}\}, \[year, accountParam\]\);/
+      /useEffect\(\(\) => \{([\s\S]*?)\n {2}\}, \[year, accountParam, refreshKey\]\);/
     );
-    expect(effectMatch, "expected the [year, accountParam] fetch effect to be present").not.toBeNull();
+    expect(effectMatch, "expected the [year, accountParam, refreshKey] fetch effect to be present").not.toBeNull();
     const effectBody = effectMatch![1];
 
     // Guard created before the fetch call — no window where a resolution
