@@ -140,6 +140,11 @@ export function parseCanonicalCsv(
   // so :cents can't separate them) get a stable disambiguating suffix instead
   // of one being silently dropped by INSERT OR IGNORE.
   const txnKeyCounts = new Map<string, number>();
+  // First-seen symbol/date/type per base key, for the within-file duplicate warning.
+  const txnKeyFirstSeen = new Map<
+    string,
+    { symbol: string; date: string; type: string }
+  >();
 
   for (const err of parsed.errors) {
     errors.push(`CSV parse error at row ${err.row}: ${err.message}`);
@@ -220,6 +225,13 @@ export function parseCanonicalCsv(
         // ":#N" suffix. Order-stable within a file, so re-import remains a no-op.
         const seen = (txnKeyCounts.get(baseSourceKey) ?? 0) + 1;
         txnKeyCounts.set(baseSourceKey, seen);
+        if (seen === 1) {
+          txnKeyFirstSeen.set(baseSourceKey, {
+            symbol,
+            date: tradeDateTrimmed,
+            type,
+          });
+        }
         const sourceKey =
           seen === 1 ? baseSourceKey : `${baseSourceKey}:#${seen}`;
         transactions.push({
@@ -381,6 +393,15 @@ export function parseCanonicalCsv(
         });
         break;
       }
+    }
+  }
+
+  for (const [baseKey, count] of txnKeyCounts) {
+    if (count > 1) {
+      const first = txnKeyFirstSeen.get(baseKey);
+      warnings.push(
+        `${count} rows share the same account, symbol, date, type and amount (${first?.symbol} ${first?.date} ${first?.type}); importing all ${count} as separate transactions`
+      );
     }
   }
 
