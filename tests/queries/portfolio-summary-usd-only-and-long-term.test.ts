@@ -61,7 +61,7 @@ function realizedLine(summary: string): string {
 describe("chat summary realized gains are USD-only", () => {
   it("sums only the USD sale and discloses the one non-USD sale", () => {
     seedClosedLot(seedSecurity("AAA", "USD"), 300, true);
-    // Native-currency gain: adding it to dollars would print $70,300.
+    // Native-currency gain: adding it to dollars would print a huge fake USD total.
     seedClosedLot(seedSecurity("ZZZ", "JPY"), 70000, true);
 
     const line = realizedLine(getPortfolioSummaryForChat(db));

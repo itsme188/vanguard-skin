@@ -16,6 +16,7 @@ import {
   classifyEnrichmentError,
   describeEnrichmentFailure,
   type EnrichmentFailureClass,
+  type EnrichmentFailureKind,
 } from "@/lib/gmail/enrichment-failure";
 
 interface UnprocessedArticle {
@@ -85,6 +86,24 @@ export interface ProcessArticlesResult {
    * 0, 1 or 2: a pass stops at two account-level failures in a row.
    */
   deferred: number;
+  /** First account-level failure kind seen in this pass, when there was one. */
+  firstAccountFailureKind?: EnrichmentFailureKind;
+}
+
+function processArticlesResult(
+  processed: number,
+  failed: number,
+  deferred: number,
+  firstAccountFailureKind: EnrichmentFailureKind | null,
+): ProcessArticlesResult {
+  const result: ProcessArticlesResult = { processed, failed, deferred };
+  if (firstAccountFailureKind) {
+    Object.defineProperty(result, "firstAccountFailureKind", {
+      value: firstAccountFailureKind,
+      enumerable: false,
+    });
+  }
+  return result;
 }
 
 /**
@@ -131,7 +150,7 @@ export async function processUnprocessedArticles(
     )
     .all() as UnprocessedArticle[];
 
-  if (articles.length === 0) return { processed: 0, failed: 0, deferred: 0 };
+  if (articles.length === 0) return processArticlesResult(0, 0, 0, null);
 
   // Get current holdings for portfolio context. Latest is keyed per-(account,
   // security) via latestHoldingsPredicate (default keyBy/includeShorts:
@@ -240,6 +259,7 @@ export async function processUnprocessedArticles(
   let processed = 0;
   let failed = 0;
   let deferred = 0;
+  let firstAccountFailureKind: EnrichmentFailureKind | null = null;
 
   // An account-level failure whose blame is not settled yet (see the rules in
   // the function comment). Held in an object so closures can update it.
@@ -382,6 +402,9 @@ export async function processUnprocessedArticles(
               `${describeEnrichmentFailure(failure)} at article ${article.id}). ` +
               `Attempts not counted; ${waiting} queued article(s) from this pass will be retried on the next pass.`
           );
+          // The cause to report is the one the pass stopped on (a deferred
+          // failure), not an earlier one that was charged to its article.
+          firstAccountFailureKind ??= blame.pending.failure.kind;
           blame.pending = null;
           deferred += 2;
           break;
@@ -429,12 +452,13 @@ export async function processUnprocessedArticles(
           `(${describeEnrichmentFailure(p.failure)}) with nothing in the pass to show the article is at fault. ` +
           `Attempt not counted; it will be retried on the next pass.`
       );
+      firstAccountFailureKind ??= p.failure.kind;
       blame.pending = null;
       deferred++;
     }
   }
 
-  return { processed, failed, deferred };
+  return processArticlesResult(processed, failed, deferred, firstAccountFailureKind);
 }
 
 // ── Claude extraction ───────────────────────────────────────────────
@@ -547,4 +571,3 @@ VOICE: the summary and portfolio_relevance fields are read directly by the portf
     is_portfolio_relevant: object.is_portfolio_relevant !== false,
   };
 }
-

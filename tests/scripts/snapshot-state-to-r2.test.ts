@@ -1,18 +1,14 @@
 /**
  * Tests for snapshot-state-to-r2.ts — verifies schemaVersion 3 fields.
  *
- * We test `buildSnapshot` by exporting it; to avoid the R2/file-system
- * side-effects in main() we import only the pure builder logic via a
- * helper that re-creates it against an in-memory DB.
- *
- * NOTE: The script is a CLI entry-point and doesn't export `buildSnapshot`
- * directly. We replicate the query logic here rather than restructuring the
- * script. This keeps the test lightweight and the script simple.
+ * We import the pure query seam directly. The script's direct-run guard keeps
+ * R2/file-system side effects out of module imports.
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
+import { getVanguardHoldingsForSnapshot } from "@/scripts/snapshot-state-to-r2";
 
 function createTestDb(): Database.Database {
   const db = new Database(":memory:");
@@ -22,39 +18,13 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-// ── inline helpers that mirror snapshot-state-to-r2.ts exactly ──────────────
+// ── inline helpers for the small v3 fixture snapshot ────────────────────────
 
 function getSettingValue(db: Database.Database, key: string): string | null {
   const row = db
     .prepare("SELECT value FROM settings WHERE key = ?")
     .get(key) as { value: string } | undefined;
   return row?.value ?? null;
-}
-
-function getVanguardHoldingsForSnapshot(
-  db: Database.Database
-): Array<{ symbol: string; securityId: number; accountId: number }> {
-  return db
-    .prepare(
-      `SELECT s.symbol, h.security_id AS securityId, h.account_id AS accountId
-         FROM holdings h
-         JOIN securities s ON s.id = h.security_id
-         JOIN accounts a ON a.id = h.account_id
-        WHERE h.quantity > 0
-          AND LOWER(a.name) LIKE '%vanguard%'
-          AND LOWER(a.name) NOT LIKE '%roth%'
-          AND LOWER(COALESCE(s.security_type, '')) IN ('stock', 'common stock', 'etf', 'mutual fund')
-          AND s.symbol IS NOT NULL
-          AND s.symbol != ''
-          AND h.as_of_date = (
-            SELECT MAX(h2.as_of_date)
-              FROM holdings h2
-             WHERE h2.account_id = h.account_id
-               AND h2.security_id = h.security_id
-          )
-        ORDER BY s.symbol`
-    )
-    .all() as Array<{ symbol: string; securityId: number; accountId: number }>;
 }
 
 function getSecurityBetas(

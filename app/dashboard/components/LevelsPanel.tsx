@@ -27,7 +27,11 @@ import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-res
 // sentence the card would have hidden. Owner rulings built 2026-10-07; see
 // lib/levels/narrative-guard.ts.
 import { composeLevelNarrative, resolveAcceptedThesis } from "@/lib/levels/narrative-guard";
-import { levelActionVisibility, levelReviewGuidance } from "@/lib/levels/action-visibility";
+import {
+  levelActionVisibility,
+  levelNotWatchedExplanation,
+  levelReviewGuidance,
+} from "@/lib/levels/action-visibility";
 import { lastFiredDateET } from "@/lib/levels/last-fired-date";
 // The scanner's two skip conditions. A level outside the plausibility band —
 // or one whose price has gone stale — is armed in the DB but never evaluated,
@@ -79,6 +83,9 @@ type EnrichedLevel = SecurityLevel & {
    *  dedupe day. Stamped by GET /api/levels from the scanner's own check, so
    *  the panel never derives "today" from the browser's local date. */
   alerted_today?: boolean;
+  /** True when the scanner's own armed-universe predicate currently includes
+   *  this row. False for active approved rows that are expired. */
+  scanner_watching?: boolean;
 };
 
 const PRICE_SOURCE_OPTIONS: Array<{ value: LevelPriceSource; label: string }> = [
@@ -102,7 +109,9 @@ function priceSourceLabel(src: LevelPriceSource): string {
 export type LevelRowStatus = "armed" | "triggered" | "pending_review" | "rejected" | "inactive";
 
 export function levelRowStatus(
-  level: Pick<SecurityLevel, "is_active" | "review_status" | "triggered_at">,
+  level: Pick<SecurityLevel, "is_active" | "review_status" | "triggered_at"> & {
+    scanner_watching?: boolean;
+  },
 ): LevelRowStatus {
   const { showPause, unarmedReview, showRequeue } = levelActionVisibility(level);
   if (showPause) return "armed";
@@ -138,7 +147,11 @@ const HIDDEN_STATUS_LABEL: Array<[LevelRowStatus, string]> = [
 /** What the default (armed-only) view leaves out, named by status — e.g.
  *  "3 not shown: 1 pending review, 2 rejected". Null when nothing is hidden. */
 export function hiddenLevelsSummary(
-  allLevels: Array<Pick<SecurityLevel, "is_active" | "review_status" | "triggered_at">>,
+  allLevels: Array<
+    Pick<SecurityLevel, "is_active" | "review_status" | "triggered_at"> & {
+      scanner_watching?: boolean;
+    }
+  >,
 ): string | null {
   const counts = new Map<LevelRowStatus, number>();
   for (const l of allLevels) {
@@ -1719,6 +1732,7 @@ export function LevelsPanel({
                 // row gets — do not add conditions on top of its result here.
                 const { unarmedReview, showPause, showReactivate, showRequeue } =
                   levelActionVisibility(l);
+                const notWatchedExplanation = levelNotWatchedExplanation(l);
                 const meta = levelRowMeta(l, today);
                 const pendingReview = levelRowStatus(l) === "pending_review";
                 return (
@@ -1921,6 +1935,20 @@ export function LevelsPanel({
                           </span>
                         )}
                       </div>
+                      {notWatchedExplanation && (
+                        <p
+                          style={{
+                            marginTop: "6px",
+                            fontFamily: "var(--font-mono), monospace",
+                            fontSize: "11px",
+                            letterSpacing: "0.14em",
+                            textTransform: "uppercase",
+                            color: "#f59e0b",
+                          }}
+                        >
+                          {notWatchedExplanation}
+                        </p>
+                      )}
                       {meta.length > 0 && (
                         <p
                           style={{
@@ -2119,6 +2147,7 @@ export function LevelsPanel({
               const inactive = l.is_active === 0 && !lastFired;
               // Single owner, as in the embedded rows above.
               const { showPause, showReactivate, showRequeue } = levelActionVisibility(l);
+              const notWatchedExplanation = levelNotWatchedExplanation(l);
               const meta = levelRowMeta(l, today);
               const pendingReview = levelRowStatus(l) === "pending_review";
               return (
@@ -2205,6 +2234,9 @@ export function LevelsPanel({
                 </div>
                 {meta.length > 0 && (
                   <p className="text-[11px] text-ink-faint mt-0.5">{meta.join(" · ")}</p>
+                )}
+                {notWatchedExplanation && (
+                  <p className="text-[11px] text-warn mt-0.5">{notWatchedExplanation}</p>
                 )}
                 {(l.thesis || l.source_author) && (
                   <p className="text-[11px] text-ink-faint mt-0.5">

@@ -4,6 +4,7 @@ import {
   getLevelsForSecurity,
   getActiveLevels,
   getLevelById,
+  isLevelInArmedUniverse,
   getScanPriceStalenessBySecurity,
   getLatestScanPriceForSecurity,
   getLevelIdsAlertedToday,
@@ -60,6 +61,11 @@ export async function GET(request: NextRequest) {
       // dedupes on), so the panel never has to guess "today" from the
       // browser's local date.
       alerted_today: alertedToday.has(l.id),
+      // The scanner's own armed-universe predicate: active + auto-approved +
+      // not expired under its current date rule. Exposing the fact lets the
+      // panel avoid offering Pause for an active approved row the scanner is
+      // no longer watching, without reimplementing expiry on the client.
+      scanner_watching: isLevelInArmedUniverse(db, l.id),
     }));
     // Note: resolveLevelPrice return type already narrows to `number | null`.
 

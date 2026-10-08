@@ -17,6 +17,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { NextRequest } from "next/server";
 import { upsertLevel } from "@/lib/mutations/security-levels";
+import { isLevelInArmedUniverse } from "@/lib/queries/security-levels";
 
 const hoisted = vi.hoisted(() => ({
   db: null as unknown as Database.Database,
@@ -63,6 +64,7 @@ async function getLevels(securityId: number) {
       price: number;
       price_date: string | null;
       price_is_stale: boolean;
+      scanner_watching: boolean;
     }>;
   };
   expect(body.success).toBe(true);
@@ -96,6 +98,38 @@ describe("GET /api/levels — scan price freshness", () => {
     const [level] = await getLevels(secId);
     expect(level.price_is_stale).toBe(false);
     expect(level.price_date).toBeNull();
+  });
+});
+
+describe("GET /api/levels — scanner armed-universe stamp", () => {
+  it("matches the scanner predicate for an active approved expired row", async () => {
+    const secId = seedSecurity("EXPIREDQA");
+    const id = upsertLevel(hoisted.db, {
+      security_id: secId,
+      level_type: "support",
+      price: 90,
+      expires_at: "2000-01-01",
+    });
+
+    const [level] = await getLevels(secId);
+    expect(level.id).toBe(id);
+    expect(level.scanner_watching).toBe(isLevelInArmedUniverse(hoisted.db, id));
+    expect(level.scanner_watching).toBe(false);
+  });
+
+  it("matches the scanner predicate for an active approved live row", async () => {
+    const secId = seedSecurity("LIVEQA");
+    const id = upsertLevel(hoisted.db, {
+      security_id: secId,
+      level_type: "support",
+      price: 90,
+      expires_at: null,
+    });
+
+    const [level] = await getLevels(secId);
+    expect(level.id).toBe(id);
+    expect(level.scanner_watching).toBe(isLevelInArmedUniverse(hoisted.db, id));
+    expect(level.scanner_watching).toBe(true);
   });
 });
 

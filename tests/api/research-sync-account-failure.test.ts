@@ -3,16 +3,19 @@
  * an ACCOUNT-level failure (out of credit, bad key, rate limit, outage, no
  * connection: lib/gmail/enrichment-failure.ts decides), the stream says so in
  * plain words. The route only reads what processUnprocessedArticles returns
- * (`deferred`); it does not classify anything itself.
+ * (`deferred` + firstAccountFailureKind); it does not classify anything
+ * itself.
  *
  * Same mocking shape as tests/api/routes.test.ts. All counts are invented.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { __resetResearchSyncLockForTests } from "@/lib/research/sync-lock";
+import type { ProcessArticlesResult } from "@/lib/gmail/process";
+import type { EnrichmentFailureKind } from "@/lib/gmail/enrichment-failure";
 
 const hoisted = vi.hoisted(() => ({
-  processUnprocessedArticles: vi.fn(async (): Promise<Record<string, number>> => ({ processed: 0, failed: 0, deferred: 0 })),
+  processUnprocessedArticles: vi.fn(async (): Promise<ProcessArticlesResult> => ({ processed: 0, failed: 0, deferred: 0 })),
 }));
 
 vi.mock("@/lib/db", () => ({ db: {} }));
@@ -70,33 +73,69 @@ beforeEach(() => {
 });
 
 describe("POST /api/research/sync: account-level AI failure", () => {
-  it("a pass that stopped on two account-level failures names the AI account, not the articles", async () => {
+  it.each([
+    ["billing", "out of credit"],
+    ["auth", "bad or missing"],
+    ["config", "bad or missing"],
+    ["rate_limit", "rate limited"],
+    ["outage", "provider outage"],
+    ["network", "cannot connect"],
+  ] as Array<[EnrichmentFailureKind, string]>)(
+    "a pass that stopped on %s names the specific AI account cause, not the articles",
+    async (kind, phrase) => {
+      hoisted.processUnprocessedArticles.mockResolvedValue({
+        processed: 0,
+        failed: 2,
+        deferred: 2,
+        firstAccountFailureKind: kind,
+      });
+
+      const events = await runSync();
+      const done = processDone(events);
+
+      expect(done).toMatchObject({
+        processed: 0,
+        failed: 2,
+        deferred: 2,
+        accountFailureKind: kind,
+        stoppedOnAccountFailure: true,
+      });
+      const message = done.accountFailureMessage as string;
+      expect(message).toMatch(/stopped early/);
+      expect(message).toContain(phrase);
+      expect(message).toMatch(/Nothing is wrong with the articles/);
+      expect(message).toMatch(/next sync/);
+      // The closing event carries it too: the client's last line is the one that stays on screen.
+      expect(complete(events).accountFailureMessage).toBe(message);
+    },
+  );
+
+  it("a stopped pass with no named cause still gets a plain default message", async () => {
     hoisted.processUnprocessedArticles.mockResolvedValue({ processed: 0, failed: 2, deferred: 2 });
-
-    const events = await runSync();
-    const done = processDone(events);
-
-    expect(done).toMatchObject({ processed: 0, failed: 2, deferred: 2, stoppedOnAccountFailure: true });
-    const message = done.accountFailureMessage as string;
-    expect(message).toMatch(/stopped early/);
-    expect(message).toMatch(/AI service/);
-    expect(message).toMatch(/out of credit/);
-    expect(message).toMatch(/API key/);
-    expect(message).toMatch(/connect/);
-    expect(message).toMatch(/Nothing is wrong with the articles/);
-    expect(message).toMatch(/next sync/);
-    // The closing event carries it too: the client's last line is the one that stays on screen.
-    expect(complete(events).accountFailureMessage).toBe(message);
-  });
-
-  it("one deferred article is reported without claiming the pass stopped", async () => {
-    hoisted.processUnprocessedArticles.mockResolvedValue({ processed: 0, failed: 1, deferred: 1 });
 
     const done = processDone(await runSync());
 
-    expect(done).toMatchObject({ deferred: 1, stoppedOnAccountFailure: false });
+    expect(done.stoppedOnAccountFailure).toBe(true);
+    const message = done.accountFailureMessage as string;
+    expect(message).toMatch(/stopped early/);
+    expect(message).toMatch(/refused the request or could not be reached/);
+    expect(message).toMatch(/Nothing is wrong with the articles/);
+  });
+
+  it("one deferred article is reported without claiming the pass stopped", async () => {
+    hoisted.processUnprocessedArticles.mockResolvedValue({
+      processed: 0,
+      failed: 1,
+      deferred: 1,
+      firstAccountFailureKind: "billing",
+    });
+
+    const done = processDone(await runSync());
+
+    expect(done).toMatchObject({ deferred: 1, accountFailureKind: "billing", stoppedOnAccountFailure: false });
     expect(done.accountFailureMessage).toMatch(/^1 article was not analysed/);
     expect(done.accountFailureMessage).not.toMatch(/stopped early/);
+    expect(done.accountFailureMessage).toMatch(/out of credit/);
     expect(done.accountFailureMessage).toMatch(/Nothing is wrong with the article\b/);
   });
 

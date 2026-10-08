@@ -282,7 +282,7 @@ function getSettingValue(db: Database.Database, key: string): string | null {
  * Mutual Fund — the set the evening digest cares about. Uses latest
  * as_of_date per (account, security) to avoid stale holdings surfacing.
  */
-function getVanguardHoldingsForSnapshot(
+export function getVanguardHoldingsForSnapshot(
   db: Database.Database
 ): Array<{ symbol: string; securityId: number; accountId: number }> {
   const rows = db

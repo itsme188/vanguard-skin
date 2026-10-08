@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { levelActionVisibility, levelReviewGuidance } from "@/lib/levels/action-visibility";
+import {
+  levelActionVisibility,
+  levelNotWatchedExplanation,
+  levelReviewGuidance,
+} from "@/lib/levels/action-visibility";
 
 // Codex advisory #49: a prior change hid Pause/Deactivate for every "unarmed
 // review" row (is_active=1, review_status != 'auto_approved'), leaving
@@ -9,13 +13,34 @@ import { levelActionVisibility, levelReviewGuidance } from "@/lib/levels/action-
 
 describe("levelActionVisibility", () => {
   it("active + auto_approved: Pause visible, Reactivate/Re-queue hidden", () => {
-    const v = levelActionVisibility({ is_active: 1, review_status: "auto_approved" });
+    const v = levelActionVisibility({
+      is_active: 1,
+      review_status: "auto_approved",
+      scanner_watching: true,
+    });
     expect(v).toEqual({
       unarmedReview: false,
       showPause: true,
       showReactivate: false,
       showRequeue: false,
     });
+  });
+
+  it("active + auto_approved + expired: Pause hidden because the scanner no longer watches it", () => {
+    const input = { is_active: 1, review_status: "auto_approved" as const, scanner_watching: false };
+    expect(levelActionVisibility(input)).toEqual({
+      unarmedReview: false,
+      showPause: false,
+      showReactivate: false,
+      showRequeue: false,
+    });
+    expect(levelNotWatchedExplanation(input)).toBe("Expired — no longer watched");
+  });
+
+  it("active + auto_approved + live: Pause remains visible and no explanation renders", () => {
+    const input = { is_active: 1, review_status: "auto_approved" as const, scanner_watching: true };
+    expect(levelActionVisibility(input).showPause).toBe(true);
+    expect(levelNotWatchedExplanation(input)).toBeNull();
   });
 
   // 2026-10-07 ruling (reactivate finding, sibling fix): Pause is offered only
@@ -70,6 +95,22 @@ describe("levelActionVisibility", () => {
       showReactivate: true,
       showRequeue: false,
     });
+  });
+
+  it("paused rows do not show the expired not-watched explanation", () => {
+    const input = { is_active: 0, review_status: "auto_approved" as const, scanner_watching: false };
+    expect(levelActionVisibility(input).showReactivate).toBe(true);
+    expect(levelNotWatchedExplanation(input)).toBeNull();
+  });
+
+  it("pending review rows keep their review action path, not the expired explanation", () => {
+    const input = { is_active: 1, review_status: "pending_review" as const, scanner_watching: false };
+    expect(levelActionVisibility(input)).toMatchObject({
+      unarmedReview: true,
+      showPause: false,
+      showReactivate: false,
+    });
+    expect(levelNotWatchedExplanation(input)).toBeNull();
   });
 
   it("Pause and Reactivate are never offered together, and every inactive row can be reactivated", () => {

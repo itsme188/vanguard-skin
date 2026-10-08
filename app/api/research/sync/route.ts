@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
 import { fetchNewArticles, backfillArticleHtml, backfillSourceUrls } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
+import type { EnrichmentFailureKind } from "@/lib/gmail/enrichment-failure";
 import { extractLevelsFromNewArticles } from "@/lib/alerts/extract-newsletter-levels";
 import { extractBogeysFromNewArticles } from "@/lib/earnings/extract-newsletter-bogeys";
 import {
@@ -38,31 +39,47 @@ function runnerFromRequest(req: Request): SyncRunner {
 /**
  * Plain-words notice for articles the AI pass left queued because of an
  * ACCOUNT-level failure, or null when there were none. Reads only
- * `ProcessArticlesResult.deferred` (lib/gmail/process.ts): the number of
- * failures the pass judged account-level and did not count against an
- * article. 2 means the pass stopped at two such failures in a row.
- *
- * The pass does not return WHICH account-level cause it saw (credit, key,
- * rate limit, outage, no connection), so the notice lists them rather than
- * naming one. The exact cause is in the server log.
+ * `ProcessArticlesResult.deferred` and `firstAccountFailureKind`
+ * (lib/gmail/process.ts): the number of failures the pass judged
+ * account-level and did not count against an article, plus the first cause it
+ * saw. 2 means the pass stopped at two such failures in a row.
  */
-function accountFailureNotice(deferred: number): { stopped: boolean; message: string } | null {
+function accountFailureLabel(kind: EnrichmentFailureKind | null): string {
+  switch (kind) {
+    case "billing":
+      return "the AI account is out of credit";
+    case "auth":
+    case "config":
+      return "the AI API key is bad or missing";
+    case "rate_limit":
+      return "the AI provider is rate limited";
+    case "outage":
+      return "there is an AI provider outage";
+    case "network":
+      return "this Mac cannot connect to the AI provider";
+    default:
+      return "the AI service refused the request or could not be reached";
+  }
+}
+
+function accountFailureNotice(
+  deferred: number,
+  kind: EnrichmentFailureKind | null,
+): { stopped: boolean; message: string } | null {
   if (!(deferred > 0)) return null;
-  const causes =
-    "the AI service refused the request or could not be reached (for example the AI account is out of credit, " +
-    "the API key is wrong, the service is busy, or this Mac cannot connect to it)";
+  const cause = accountFailureLabel(kind);
   if (deferred >= 2) {
     return {
       stopped: true,
       message:
-        `AI analysis stopped early: ${causes}. Nothing is wrong with the articles. ` +
+        `AI analysis stopped early: ${cause}. Nothing is wrong with the articles. ` +
         `They stay queued and will be tried again on the next sync.`,
     };
   }
   return {
     stopped: false,
     message:
-      `1 article was not analysed: ${causes}. Nothing is wrong with the article. ` +
+      `1 article was not analysed: ${cause}. Nothing is wrong with the article. ` +
       `It stays queued and will be tried again on the next sync.`,
   };
 }
@@ -162,7 +179,9 @@ export async function POST(req: Request) {
             send({ phase: "process", status: "started" });
             const processResult = await processUnprocessedArticles(db);
             const deferred = processResult.deferred ?? 0;
-            const notice = accountFailureNotice(deferred);
+            const accountFailureKind =
+              deferred > 0 ? (processResult.firstAccountFailureKind ?? null) : null;
+            const notice = accountFailureNotice(deferred, accountFailureKind);
             accountFailureMessage = notice?.message ?? null;
             send({
               phase: "process",
@@ -172,6 +191,7 @@ export async function POST(req: Request) {
               // Of `failed`: left queued, attempt not counted, because the
               // failure was the AI account's or the connection's.
               deferred,
+              accountFailureKind,
               stoppedOnAccountFailure: notice?.stopped ?? false,
               accountFailureMessage,
             });
