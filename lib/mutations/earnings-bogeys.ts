@@ -101,14 +101,58 @@ ${CONTENT_COLUMNS.map(
        uploaded_at = datetime('now'),
        ai_extraction_model = excluded.ai_extraction_model`;
 
-function hasAnyContent(input: UpsertBogeyInput): boolean {
-  return CONTENT_COLUMNS.some((c) => input[c] != null);
+/** The content columns that hold text (prose or JSON). The rest are numbers. */
+const TEXT_CONTENT_COLUMNS: ReadonlySet<string> = new Set([
+  "segment_breakdown_json",
+  "guidance_notes",
+  "notes",
+  "extra_metrics_json",
+]);
+
+/** A JSON container with nothing in it carries no figure and no prose. */
+const EMPTY_TEXT_VALUES = ["", "[]", "{}"];
+
+/**
+ * THE one answer to "does this bogey row hold anything?" (owner ruling
+ * 2026-08-12, finding all-empty-newsletter-bogey-counts-as-coverage). A row
+ * with every content column empty is not coverage: it must not be stored, and
+ * a stored one must not count on any surface. A number counts when it is a
+ * finite number (0 is a real consensus); text counts when it is not blank and
+ * not an empty JSON container.
+ *
+ * Structural, so a stored row, a write input and a wire row all satisfy it.
+ */
+export function bogeyHasContent(
+  row: Partial<Record<(typeof CONTENT_COLUMNS)[number], unknown>>,
+): boolean {
+  return CONTENT_COLUMNS.some((c) => {
+    const v = row[c];
+    if (v == null) return false;
+    if (typeof v === "string") return !EMPTY_TEXT_VALUES.includes(v.trim());
+    return typeof v !== "number" || Number.isFinite(v);
+  });
+}
+
+/**
+ * The same rule as a SQL predicate, for readers that count or select bogey
+ * rows (`alias` is the table alias, "" for none). Kept beside
+ * `bogeyHasContent` so the two cannot drift; tests/mutations/
+ * earnings-bogeys-empty-rows.test.ts runs both over the same rows.
+ */
+export function bogeyHasContentSql(alias = ""): string {
+  const p = alias ? `${alias}.` : "";
+  const emptyList = EMPTY_TEXT_VALUES.map((v) => `'${v}'`).join(", ");
+  return `(${CONTENT_COLUMNS.map((c) =>
+    TEXT_CONTENT_COLUMNS.has(c)
+      ? `TRIM(COALESCE(${p}${c}, '')) NOT IN (${emptyList})`
+      : `${p}${c} IS NOT NULL`,
+  ).join(" OR ")})`;
 }
 
 /**
  * A blank/whitespace-only string is "no content" — same as null. Without
  * this, a parser or caller that hands back `notes: ""` counts as content
- * (2026-08-28: `!= null` treats "" as present), so `hasAnyContent` advances
+ * (2026-08-28: `!= null` treats "" as present), so the has-content check advances
  * provenance on a genuinely-empty re-scan, and — because OVERWRITE_SQL binds
  * the raw value and PRESERVE_SQL's COALESCE only skips actual NULLs — the
  * blank string gets written over a real stored value instead of preserving
@@ -122,9 +166,13 @@ function normalizeTextContent(value: string | null | undefined): string | null {
 
 /** Named so the route and the tests can talk about it. */
 export interface UpsertBogeyResult {
+  /** The stored row's id. 0 when nothing was stored and no row exists (an
+   *  all-empty write with nothing to update): real ids start at 1. */
   id: number;
   created: boolean;
   skipped?: boolean;
+  /** An all-empty full overwrite removed the row it would have blanked. */
+  deleted?: boolean;
 }
 
 /**
@@ -139,6 +187,15 @@ export interface UpsertBogeyResult {
  * entirely. Bumping uploaded_at / research_article_id there would make the
  * preserved OLD numbers look freshly sourced to the newest-first readers in
  * lib/queries/earnings-bogeys.ts.
+ *
+ * An all-empty row is never stored (owner ruling 2026-08-12): every surface
+ * that asks "does this event have bogeys?" would count it as coverage.
+ *   - no row yet           -> nothing is inserted (`skipped`, id 0);
+ *   - preserve mode, a row -> the row is left alone (`skipped`, as above);
+ *   - overwrite mode, a row -> the row is left alone too (`skipped`). An
+ *     empty write most often means "nothing was extracted this time" (a PDF
+ *     re-upload under the same label), and that must never erase figures
+ *     already on file. A row is removed only through deleteBogey.
  */
 export function upsertBogey(
   db: Database.Database,
@@ -166,7 +223,8 @@ export function upsertBogey(
       normalized.source_label ?? null,
     ) as { id: number } | undefined;
 
-  if (normalized.preserveExisting && before && !hasAnyContent(normalized)) {
+  if (!bogeyHasContent(normalized)) {
+    if (!before) return { id: 0, created: false, skipped: true };
     return { id: before.id, created: false, skipped: true };
   }
 

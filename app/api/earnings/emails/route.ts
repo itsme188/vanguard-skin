@@ -12,9 +12,12 @@ export const dynamic = "force-dynamic";
  * Each row also says whether its calendar entry was later replaced
  * (`event_superseded`) and, when it was, where the live entry's email is
  * (`replacement`). That is a per-row decoration: `count` is the list's own
- * length, so the number and the rows cannot disagree. There is no separate
- * count-only query on this route; if one is ever added it must reuse
- * getSentEarningsEmails' predicate and limit.
+ * length, so the number and the rows cannot disagree.
+ *
+ * `?countOnly=true` answers with the count and no rows, for the tab badge. It
+ * runs the SAME getSentEarningsEmails call (same predicate, same symbol
+ * filter, same limit) and reports that list's length, so the badge and the
+ * tab can never disagree. Do not replace it with a separate COUNT query.
  * Spec: docs/superpowers/specs/2026-07-28-earnings-email-archive-design.md
  */
 export async function GET(request: Request) {
@@ -25,6 +28,9 @@ export async function GET(request: Request) {
     const limit =
       Number.isInteger(limitRaw) && limitRaw > 0 ? limitRaw : undefined;
     const emails = getSentEarningsEmails(db, { symbol, limit });
+    if (url.searchParams.get("countOnly") === "true") {
+      return Response.json({ success: true, count: emails.length });
+    }
     return Response.json({ success: true, count: emails.length, emails });
   } catch {
     return Response.json({ success: false, count: 0, emails: [] });

@@ -9,6 +9,8 @@ import type {
 import { DIETZ_CONSISTENT_BP, type DietzBand } from "@/lib/compute/dietz";
 import { PrivateText, Pct, Count } from "@/lib/privacy/components";
 import { Chip, type ChipTone } from "@/app/dashboard/components/Chip";
+import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
+import { formatEnrichedAtET } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
 
 export type DrawerPanel =
@@ -123,17 +125,54 @@ function FactorCoverageContent({
 }
 
 function LastClassifyContent({ state }: { state: AnalysisTrustState }) {
+  // The newest change to any security's factor ratings, in any account
+  // (stored UTC — shown as Eastern time). It is NOT "the last time a
+  // classify button was pressed": the sector Auto-Classify run writes no
+  // factor rating, and a factor run with nothing new to rate writes nothing.
   const ts = state.lastClassification;
   return (
     <div className="space-y-3">
       <p className="text-sm text-ink">
         {ts
-          ? `Most recent classification run: ${ts}`
-          : "No classification has been run yet."}
+          ? `Factor ratings last changed: ${formatEnrichedAtET(ts)}`
+          : "No security has factor ratings yet."}
       </p>
       <p className="text-xs text-ink-faint">
-        Factor data is updated when you run AI classification via the Factor Coverage cell or the Classify button in AnalysisView.
+        This is the last time any security, in any account, had factor ratings added or changed.
       </p>
+      <p className="text-xs text-ink-faint">
+        To rate securities that have none: open the Factor coverage box on this strip and click &ldquo;Classify N missing&rdquo; (shown when something is missing), or go to Analysis &rarr; Diagnostics &rarr; Factor Exposure and click &ldquo;Auto-Classify Factors&rdquo;. Importing a factor file on the Import tab also moves this date.
+      </p>
+      <p className="text-xs text-ink-faint">
+        The &ldquo;Auto-Classify&rdquo; button on Diagnostics &rarr; Classification fills in category, size, style and sector tags, not factor ratings, so it does not move this date. A factor run that finds nothing new to rate does not move it either.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The strip cell's text for the two price counts. They stay two counts: a
+ * stale price is old, a never-priced holding has no price at all, and adding
+ * them would change what "stale" has always meant on this strip.
+ */
+export function stalePricesSummary(staleCount: number, neverPricedCount: number): string {
+  if (staleCount === 0 && neverPricedCount === 0) return "All fresh";
+  if (neverPricedCount === 0) return `${staleCount} stale`;
+  if (staleCount === 0) return `${neverPricedCount} never priced`;
+  return `${staleCount} stale · ${neverPricedCount} never priced`;
+}
+
+function SymbolChips({ symbols }: { symbols: string[] }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {symbols.map((sym) => (
+        <span
+          key={sym}
+          className="px-2 py-0.5 rounded bg-raised border border-edge text-xs font-mono text-ink-dim"
+        >
+          {sym}
+        </span>
+      ))}
     </div>
   );
 }
@@ -147,7 +186,7 @@ function StalePricesContent({
 }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
-  const { stalePrices } = state;
+  const { stalePrices, neverPriced } = state;
 
   async function handleRefresh() {
     setBusy(true);
@@ -178,28 +217,39 @@ function StalePricesContent({
 
   return (
     <div className="space-y-4">
-      {stalePrices.count === 0 ? (
+      {stalePrices.count === 0 && neverPriced.count === 0 ? (
         <p className="text-sm text-up">All prices are fresh (within 4 days).</p>
       ) : (
         <>
-          <div className="flex items-baseline gap-2">
-            <span className="text-2xl font-bold text-down">
-              <PrivateText>{String(stalePrices.count)}</PrivateText>
-            </span>
-            <span className="text-sm text-ink-faint">
-              {stalePrices.count === 1 ? "security" : "securities"} with prices older than 4 days
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {stalePrices.symbols.map((sym) => (
-              <span
-                key={sym}
-                className="px-2 py-0.5 rounded bg-raised border border-edge text-xs font-mono text-ink-dim"
-              >
-                {sym}
-              </span>
-            ))}
-          </div>
+          {/* Never priced first: a holding with no price at all is the
+              strongest case of a price not to trust. Its own count — never
+              folded into the stale count below. */}
+          {neverPriced.count > 0 && (
+            <section className="space-y-2" aria-label="Never priced">
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold text-down">
+                  <PrivateText>{String(neverPriced.count)}</PrivateText>
+                </span>
+                <span className="text-sm text-ink-faint">
+                  never priced — held {neverPriced.count === 1 ? "security" : "securities"} with no price on record
+                </span>
+              </div>
+              <SymbolChips symbols={neverPriced.symbols} />
+            </section>
+          )}
+          {stalePrices.count > 0 && (
+            <section className="space-y-2" aria-label="Stale prices">
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold text-down">
+                  <PrivateText>{String(stalePrices.count)}</PrivateText>
+                </span>
+                <span className="text-sm text-ink-faint">
+                  {stalePrices.count === 1 ? "security" : "securities"} with prices older than 4 days
+                </span>
+              </div>
+              <SymbolChips symbols={stalePrices.symbols} />
+            </section>
+          )}
           <button
             onClick={handleRefresh}
             disabled={busy}
@@ -475,12 +525,33 @@ function BondDurationContent({ state }: { state: AnalysisTrustState }) {
             </span>
             <span className="text-sm text-ink-faint">bonds with duration data</span>
           </div>
-          {bondDuration.withDuration < bondDuration.totalBonds && (
-            <p className="text-xs text-ink-faint">
-              Duration is derived from each bond&apos;s maturity date. These
-              bonds are waiting on that derivation, which runs as a
-              maintenance step rather than on import.
-            </p>
+          {bondDuration.missing.length > 0 && (
+            <>
+              <div>
+                <p className="text-xs font-medium text-ink-faint uppercase tracking-wide mb-2">
+                  No duration yet
+                </p>
+                <ul className="space-y-1.5">
+                  {bondDuration.missing.map((bond) => (
+                    <li key={bond.securityId} className="flex items-baseline gap-2 text-xs min-w-0">
+                      <SymbolLink
+                        securityId={bond.securityId}
+                        symbol={bond.symbol}
+                        className="font-mono text-ink-dim shrink-0"
+                      />
+                      {bond.name && (
+                        <span className="text-ink-faint truncate">{bond.name}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <p className="text-xs text-ink-faint">
+                Duration is worked out from each bond&apos;s maturity date. The
+                bonds listed above are still waiting for that. It runs as a
+                maintenance step, not when a statement is imported.
+              </p>
+            </>
           )}
         </>
       )}
@@ -492,7 +563,7 @@ function BondDurationContent({ state }: { state: AnalysisTrustState }) {
 
 const PANEL_TITLES: Record<DrawerPanel, string> = {
   factorCoverage: "Factor Coverage",
-  lastClassify: "Last Classification",
+  lastClassify: "Factor Ratings Last Updated",
   performance: "Performance Cross-Check",
   stalePrices: "Stale Prices",
   bondDuration: "Bond Duration Coverage",

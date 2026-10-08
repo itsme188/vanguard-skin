@@ -3,7 +3,14 @@
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import type { ReconciliationCheckpoint } from "@/lib/queries/reconciliation";
+import {
+  CHECKPOINT_DIFFERENCE_LEGEND,
+  checkpointDifferenceBand,
+  checkpointFormBlocker,
+  parseCheckpointConflict,
+  type ExistingCheckpointSummary,
+  type ReconciliationCheckpoint,
+} from "@/lib/queries/reconciliation";
 import { useToast } from "./Toast";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
@@ -35,17 +42,21 @@ export function ReconciliationTable({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
+  // The saved checkpoint a refused save would replace; set only by a 409.
+  const [replaceTarget, setReplaceTarget] = useState<ExistingCheckpointSummary | null>(null);
 
-  const isFormValid =
-    formData.accountId !== "" &&
-    formData.checkpointDate !== "" &&
-    formData.statementValue !== "" &&
-    !isNaN(parseFloat(formData.statementValue)) &&
-    parseFloat(formData.statementValue) > 0;
+  const formBlocker = checkpointFormBlocker(formData);
+  const isFormValid = formBlocker === null;
 
-  async function handleSubmit(e: React.FormEvent) {
+  function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    void saveCheckpoint();
+  }
+
+  // `replaceCheckpointId` is sent only after the user confirmed replacing that row.
+  async function saveCheckpoint(replaceCheckpointId?: number) {
     if (!isFormValid) return;
+    setReplaceTarget(null);
     setIsSubmitting(true);
     try {
       const res = await apiFetch("/api/reconciliation", {
@@ -56,14 +67,23 @@ export function ReconciliationTable({
           checkpointDate: formData.checkpointDate,
           statementValue: parseFloat(formData.statementValue),
           notes: formData.notes || undefined,
+          ...(replaceCheckpointId !== undefined ? { replaceCheckpointId } : {}),
         }),
       });
+      const conflict =
+        res.status === 409
+          ? parseCheckpointConflict(await res.clone().json().catch(() => null))
+          : null;
       const result = await readMutationResult(res);
-      if (result.ok) {
+      if (conflict) {
+        // Nothing was written: keep the form filled and ask before replacing.
+        setError(null);
+        setReplaceTarget(conflict);
+      } else if (result.ok) {
         setShowForm(false);
         setFormData({ accountId: accounts[0]?.id?.toString() ?? "", checkpointDate: "", statementValue: "", notes: "" });
         setError(null);
-        toast("Checkpoint saved", "success");
+        toast(replaceCheckpointId !== undefined ? "Checkpoint replaced" : "Checkpoint saved", "success");
         router.refresh();
       } else {
         setError(`Couldn't save the checkpoint: ${result.message}`);
@@ -103,6 +123,36 @@ export function ReconciliationTable({
         onConfirm={() => deleteTarget !== null && handleDelete(deleteTarget)}
         onCancel={() => setDeleteTarget(null)}
       />
+      <ConfirmDialog
+        open={replaceTarget !== null}
+        title="Replace the saved checkpoint?"
+        message={
+          replaceTarget
+            ? `A checkpoint is already saved for ${replaceTarget.account_name} on ${replaceTarget.checkpoint_date}. Nothing has been changed yet. Replacing it overwrites its statement value and its note with what you just entered. This cannot be undone. Cancel to keep it and pick another date.`
+            : ""
+        }
+        confirmLabel="Replace"
+        variant="danger"
+        onConfirm={() => replaceTarget !== null && saveCheckpoint(replaceTarget.id)}
+        onCancel={() => setReplaceTarget(null)}
+      >
+        {replaceTarget && (
+          <dl className="mt-3 rounded-lg border border-edge bg-raised px-3 py-2 text-xs space-y-1">
+            <div className="flex justify-between gap-3">
+              <dt className="text-ink-dim">Saved statement value</dt>
+              <dd className="font-mono tabular-nums text-ink">
+                <Money value={replaceTarget.statement_value} precise />
+              </dd>
+            </div>
+            <div>
+              <dt className="text-ink-dim">Saved note</dt>
+              <dd className="text-ink whitespace-normal break-words">
+                {replaceTarget.notes ?? "No note"}
+              </dd>
+            </div>
+          </dl>
+        )}
+      </ConfirmDialog>
 
       {error && (
         <div role="alert" className="rounded-lg bg-down-tint border border-down/30 px-4 py-2 text-sm text-down flex items-center justify-between">
@@ -186,11 +236,17 @@ export function ReconciliationTable({
               />
             </div>
           </div>
-          <div className="flex justify-end">
+          <div className="flex items-center justify-end gap-3">
+            {formBlocker && (
+              <p id="recon-save-blocker" className="text-xs text-ink-dim">
+                {formBlocker}
+              </p>
+            )}
             <button
               type="submit"
               disabled={isSubmitting || !isFormValid}
-              title={!isFormValid ? "Fill in all required fields" : undefined}
+              title={formBlocker ?? undefined}
+              aria-describedby={formBlocker ? "recon-save-blocker" : undefined}
               className="px-5 py-2 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed focus-ring"
             >
               {isSubmitting ? "Saving..." : "Save Checkpoint"}
@@ -216,9 +272,7 @@ export function ReconciliationTable({
             </thead>
             <tbody>
               {checkpoints.map((cp) => {
-                const diffAbs = cp.difference !== null ? Math.abs(cp.difference) : null;
-                const isMatch = diffAbs !== null && diffAbs < 0.01;
-                const isClose = diffAbs !== null && diffAbs < 100;
+                const band = checkpointDifferenceBand(cp.difference);
 
                 return (
                   <tr
@@ -234,24 +288,29 @@ export function ReconciliationTable({
                       <Money value={cp.computed_value} precise />
                     </td>
                     <td className="px-4 py-3 text-right">
-                      {cp.difference !== null ? (
+                      {band !== null ? (
                         <span
+                          title={band.label}
                           className={`font-mono font-medium tabular-nums text-xs px-2 py-0.5 rounded inline-flex items-center gap-1 ${
-                            isMatch
+                            band.band === "match"
                               ? "bg-up/20 text-up"
-                              : isClose
+                              : band.band === "close"
                                 ? "bg-gold/20 text-gold-ink"
                                 : "bg-down/20 text-down"
                           }`}
                         >
-                          <span aria-hidden="true">{isMatch ? "\u2713" : isClose ? "~" : "!"}</span>
+                          <span aria-hidden="true">{band.glyph}</span>
+                          <span className="sr-only">{band.label}: </span>
                           <Money value={cp.difference} precise signed />
                         </span>
                       ) : (
                         <span className="text-ink-faint text-xs">&mdash;</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-ink-faint text-xs truncate max-w-[150px]">
+                    <td
+                      title={cp.notes ?? undefined}
+                      className="px-4 py-3 text-ink-faint text-xs whitespace-normal break-words min-w-[150px] max-w-[320px]"
+                    >
                       {cp.notes ?? "\u2014"}
                     </td>
                     <td className="px-4 py-3 text-right">
@@ -269,6 +328,9 @@ export function ReconciliationTable({
             </tbody>
           </table>
           </ScrollFade>
+          <p className="border-t border-edge px-4 py-2 text-xs text-ink-dim">
+            Difference: {CHECKPOINT_DIFFERENCE_LEGEND}
+          </p>
         </div>
       ) : (
         !showForm && (

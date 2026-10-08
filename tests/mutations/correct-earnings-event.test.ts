@@ -26,6 +26,13 @@ beforeEach(() => {
   runMigrations(db);
 });
 
+const latestPayload = () => {
+  const row = db
+    .prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`)
+    .get() as { payload_json: string } | undefined;
+  return row ? (JSON.parse(row.payload_json) as Record<string, unknown>) : null;
+};
+
 // helper: seed a finnhub earnings row
 function seedFinnhub(
   db: Database.Database,
@@ -139,6 +146,49 @@ describe("correctEarningsEventDate", () => {
         .get() as { c: number }
     ).c;
     expect(afterCount).toBe(0);
+  });
+
+  it("[M2] publishes every deleted wrong-row id in the newest payload", () => {
+    const wrongDate = inLiveHorizon(1);
+    const correctDate = inLiveHorizon(8);
+    const finn = seedFinnhub(db, "DUO", wrongDate, { source: "finnhub" });
+    const nas = seedFinnhub(db, "DUO", wrongDate, { source: "nasdaq", sourceKeySuffix: ":nas" });
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "DUO",
+      wrongDate,
+      correctDate,
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.deletedIds?.sort((a, b) => a - b)).toEqual([finn, nas].sort((a, b) => a - b));
+    expect(latestPayload()?.removedEventIds).toEqual([
+      { id: finn, eventDate: wrongDate, removedAt: expect.any(String) },
+      { id: nas, eventDate: wrongDate, removedAt: expect.any(String) },
+    ]);
+  });
+
+  it("[C-13] a correction that deletes two wrong rows mints exactly ONE generation", () => {
+    const wrongDate = inLiveHorizon(1);
+    const finn = seedFinnhub(db, "UNO", wrongDate, { source: "finnhub" });
+    const nas = seedFinnhub(db, "UNO", wrongDate, { source: "nasdaq", sourceKeySuffix: ":nas" });
+    const generation = () =>
+      (db.prepare(`SELECT COALESCE(MAX(generation), 0) AS g FROM cloud_outbox`).get() as { g: number }).g;
+    const before = generation();
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "UNO",
+      wrongDate,
+      correctDate: inLiveHorizon(8),
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(generation()).toBe(before + 1);
+    expect(
+      (latestPayload()?.removedEventIds as Array<{ id: number }>).map((r) => r.id).sort((a, b) => a - b),
+    ).toEqual([finn, nas].sort((a, b) => a - b));
   });
 
   it("refuses when the wrong row has captured actuals", () => {

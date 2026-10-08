@@ -39,10 +39,36 @@ function fmtShort(d: string): string {
   });
 }
 
-interface ReleaseTimeState {
+export interface ReleaseTimeState {
   resolved: { time: string; source: string } | null;
   override: { source: string; release_time: string } | null;
 }
+
+/** The time the "Reports at" line shows: the resolved time, else the row's own. */
+export function reportsAtTime(rt: ReleaseTimeState | null, releaseTime: string | null): string | null {
+  return rt?.resolved?.time ?? releaseTime ?? null;
+}
+
+/**
+ * What the override time input holds. `edited` is what the user typed, or
+ * null when they have not typed since the last load or save. Untouched, the
+ * input FOLLOWS the standing override, else the very time the "Reports at"
+ * line shows, so the two cannot disagree. It used to be seeded once from the
+ * row's release time, which after a Clear was still the pre-refresh value: the
+ * line read the fallback while the input kept the cleared time, one Save away
+ * from re-applying it.
+ */
+export function releaseTimeInputValue(
+  edited: string | null,
+  rt: ReleaseTimeState | null,
+  releaseTime: string | null,
+): string {
+  return edited ?? rt?.override?.release_time ?? reportsAtTime(rt, releaseTime) ?? "";
+}
+
+/** The pointer-coarse hit extension the hub chrome carries on its small buttons. */
+const TOUCH_EXTENSION =
+  "relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5";
 
 /**
  * "Reports at" wire-time editor (spec 2026-08-04, Task 5; hoisted for Task 4
@@ -71,7 +97,7 @@ function ReleaseTimeEditor({
     <div className="mt-2 pt-1.5 border-t border-edge">
       <p className="text-[11px] text-ink mb-1">
         Reports at{" "}
-        <span className="font-mono">{rt?.resolved?.time ?? releaseTime ?? "—"}</span>
+        <span className="font-mono">{reportsAtTime(rt, releaseTime) ?? "—"}</span>
         {rt?.resolved && <span className="text-ink-faint"> · {rt.resolved.source}</span>}
       </p>
       <div className="flex items-center gap-1">
@@ -86,7 +112,7 @@ function ReleaseTimeEditor({
           type="button"
           disabled={rtSaving || !rtEdit}
           onClick={() => onSave(rtEdit)}
-          className="text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 disabled:opacity-40 whitespace-nowrap"
+          className={`${TOUCH_EXTENSION} text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 disabled:opacity-40 whitespace-nowrap`}
         >
           Save
         </button>
@@ -150,7 +176,8 @@ export function EarningsDateChip({
   // "Reports at" wire-time editor (spec 2026-08-04, Task 5): standing
   // per-symbol release-time override, fetched lazily on popover open.
   const [rt, setRt] = useState<ReleaseTimeState | null>(null);
-  const [rtEdit, setRtEdit] = useState("");
+  // null = not typed in since the last load/save: the input follows the shown time.
+  const [rtEdited, setRtEdited] = useState<string | null>(null);
   const [rtSaving, setRtSaving] = useState(false);
   const [rtMsg, setRtMsg] = useState<string | null>(null);
 
@@ -251,6 +278,7 @@ export function EarningsDateChip({
   }, [open]);
 
   const slotParam = releaseTime && releaseTime < "12:00" ? "bmo" : "amc";
+  const rtEdit = releaseTimeInputValue(rtEdited, rt, releaseTime);
 
   async function loadReleaseTime() {
     // Every popover open starts message-clean — otherwise a stale
@@ -264,7 +292,7 @@ export function EarningsDateChip({
       const body = await res.json().catch(() => null);
       if (body?.success) {
         setRt(body.data);
-        setRtEdit(body.data.override?.release_time ?? body.data.resolved?.time ?? releaseTime ?? "");
+        setRtEdited(null);
       }
     } catch {
       /* popover shows the stored releaseTime fallback */
@@ -428,7 +456,7 @@ export function EarningsDateChip({
               rt={rt}
               releaseTime={releaseTime}
               rtEdit={rtEdit}
-              onRtEditChange={setRtEdit}
+              onRtEditChange={setRtEdited}
               rtSaving={rtSaving}
               rtMsg={rtMsg}
               onSave={saveReleaseTime}
@@ -460,10 +488,15 @@ export function EarningsDateChip({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol, confirmedDate: date, confirmedTime: time }),
       });
-      if (!res.ok) {
+      // The route answers { success, data } / { success: false, error }: a 2xx
+      // without success: true is still a failure.
+      const body = (await res.json().catch(() => null)) as {
+        success?: boolean;
+        error?: string;
+      } | null;
+      if (!res.ok || body?.success !== true) {
         // Keep the popover open — closing on a rejected confirm makes the
         // chip look resolved when the conflict is still live.
-        const body = await res.json().catch(() => null);
         setConfirmError(`Confirm failed: ${body?.error ?? `server returned ${res.status}`}.`);
         return;
       }
@@ -549,7 +582,7 @@ export function EarningsDateChip({
                 type="button"
                 disabled={submitting || !customDate || isPast(customDate)}
                 onClick={() => customDate && confirm(customDate, customTime)}
-                className="text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 disabled:opacity-40"
+                className={`${TOUCH_EXTENSION} ml-1 text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 disabled:opacity-40`}
               >
                 ok
               </button>
@@ -559,7 +592,7 @@ export function EarningsDateChip({
             rt={rt}
             releaseTime={releaseTime}
             rtEdit={rtEdit}
-            onRtEditChange={setRtEdit}
+            onRtEditChange={setRtEdited}
             rtSaving={rtSaving}
             rtMsg={rtMsg}
             onSave={saveReleaseTime}

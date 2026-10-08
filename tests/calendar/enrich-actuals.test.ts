@@ -12,6 +12,7 @@ import {
   parseSourceKey,
   fetchActualForEvent,
   fetchFredSeriesLatest,
+  monthsBetweenDates,
   formatFredValue,
   RELEASE_ID_TO_SERIES,
   probeFinnhubActualExists,
@@ -170,6 +171,44 @@ describe("fetchFredSeriesLatest — priorYear selection", () => {
 
     const result = await fetchFredSeriesLatest("PPIACO", "2026-06-11", "2026-06-11");
     expect(result?.priorYearValue).toBe(260.491); // 2025-06, the nearest in-window row
+  });
+
+  it("counts months on the calendar date as written, not the machine's local date", async () => {
+    // "2025-06-01" parses as UTC midnight; read with local getters west of
+    // UTC it is still May 31, so a first-of-month row slid back a month while
+    // a later-in-month latest row did not, and 11 months back read as 12.
+    // Synthetic values.
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        observations: [
+          { date: "2026-05-02", value: "120" },
+          { date: "2026-04-01", value: "119" },
+          { date: "2025-06-01", value: "111" },
+          { date: "2025-05-01", value: "110" },
+        ],
+      }),
+    });
+
+    const result = await fetchFredSeriesLatest("ZZTEST", "2026-06-11", "2026-06-11");
+    expect(result?.priorYearValue).toBe(110); // 2025-05, twelve months back
+  });
+});
+
+describe("monthsBetweenDates", () => {
+  it("is the calendar-month difference of two YYYY-MM-DD dates", () => {
+    expect(monthsBetweenDates("2025-05-01", "2026-05-01")).toBe(12);
+    expect(monthsBetweenDates("2025-06-01", "2026-05-01")).toBe(11);
+    expect(monthsBetweenDates("2026-05-01", "2026-05-31")).toBe(0);
+    expect(monthsBetweenDates("2026-05-01", "2025-05-01")).toBe(-12);
+  });
+
+  it("month-end and month-start dates fall in their own month in every time zone", () => {
+    // Local getters west of UTC put 03-01 in February; east of UTC a
+    // timestamped parse could push 01-31 into February.
+    expect(monthsBetweenDates("2025-03-01", "2026-03-31")).toBe(12);
+    expect(monthsBetweenDates("2025-01-31", "2026-03-01")).toBe(14);
+    expect(monthsBetweenDates("2025-12-31", "2026-01-01")).toBe(1);
   });
 });
 

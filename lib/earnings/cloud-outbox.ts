@@ -7,18 +7,27 @@
  * generation the Mac does not.
  *
  * Sender: a drain posts unsent rows to the Worker in generation order and
- * stops at the first failure, so the Worker never sees N+1 before N. The
- * Worker ignores a generation <= the one it holds (Task 8), which makes a
- * retry of an already-applied row harmless.
+ * stops at the first transport failure (5xx, network, timeout). The Worker
+ * ignores a generation <= the one it holds (Task 8), which makes a retry of an
+ * already-applied row harmless. Every payload is the full list, so a row the
+ * Worker rejected (400) or one below a delivered generation is closed rather
+ * than replayed — see `drainCloudOutbox`. A row that carries replaced / removed
+ * event ids is delivered only when the Worker's reply says it stored them.
  */
 import type Database from "better-sqlite3";
 import { todayET } from "@/lib/calendar/date-utils";
 import {
   ARMED_EVENTS_KIND,
   buildArmedEventsEntries,
+  buildRemovedEventIds,
+  buildSupersededEventIds,
   readArmedGeneration,
   readPreviousArmedEntries,
+  readPreviousRemovedEventIds,
+  readPreviousSupersededEventIds,
   sameProjection,
+  sameRemovedEventIds,
+  sameSupersededEventIds,
   type ArmedEventsPayload,
 } from "./armed-events-projection";
 
@@ -36,25 +45,36 @@ const DEFAULT_POST_COMMIT_CAP_MS = 2000;
  */
 export function writeArmedEventsOutboxRow(
   db: Database.Database,
-  opts: { today?: string; nowMs?: number } = {},
+  opts: { today?: string; nowMs?: number; removedEvents?: Array<{ id: number; eventDate: string }> } = {},
 ): { generation: number; written: boolean } {
   if (!db.inTransaction) {
     throw new Error("writeArmedEventsOutboxRow must run inside a transaction");
   }
   const current = readArmedGeneration(db);
+  const today = opts.today ?? todayET();
   const entries = buildArmedEventsEntries(db, {
-    today: opts.today ?? todayET(),
+    today,
     nowMs: opts.nowMs,
+  });
+  const supersededEventIds = buildSupersededEventIds(db, { today });
+  const removedEventIds = buildRemovedEventIds(db, {
+    today,
+    nowMs: opts.nowMs,
+    removedEvents: opts.removedEvents,
   });
   // Read the previous entries through the projection's GUARDED reader: a
   // truncated payload must be treated as "no previous entries", never thrown
   // from inside armWorksheet's transaction, or one corrupt row would wedge
   // every future arm/disarm/edit.
-  if (sameProjection(readPreviousArmedEntries(db), entries)) {
+  if (
+    sameProjection(readPreviousArmedEntries(db), entries) &&
+    sameSupersededEventIds(readPreviousSupersededEventIds(db), supersededEventIds) &&
+    sameRemovedEventIds(readPreviousRemovedEventIds(db), removedEventIds)
+  ) {
     return { generation: current, written: false };
   }
   const generation = current + 1;
-  const payload: ArmedEventsPayload = { generation, entries };
+  const payload: ArmedEventsPayload = { generation, entries, supersededEventIds, removedEventIds };
   db.prepare(`INSERT INTO cloud_outbox (kind, generation, payload_json) VALUES (?, ?, ?)`).run(
     ARMED_EVENTS_KIND,
     generation,
@@ -176,6 +196,64 @@ export interface OutboxDrainResult {
 interface ArmedEventsAck {
   applied?: unknown;
   generation?: unknown;
+  /** What the Worker holds for `generation`: counts of the two id lists. */
+  accepted?: unknown;
+}
+
+/** Distinct ids a payload carries in each top-level list — the same dedupe the
+ *  Worker applies before it stores them. An unreadable payload carries none. */
+function payloadIdListCounts(payloadJson: string): {
+  supersededEventIds: number;
+  removedEventIds: number;
+} {
+  type IdLists = { supersededEventIds?: unknown; removedEventIds?: unknown };
+  const readLists = (): IdLists | null => {
+    try {
+      return JSON.parse(payloadJson) as IdLists | null;
+    } catch {
+      return null;
+    }
+  };
+  const parsed = readLists();
+  const supersededRaw: unknown = parsed?.supersededEventIds;
+  const removedRaw: unknown = parsed?.removedEventIds;
+  const superseded: unknown[] = Array.isArray(supersededRaw) ? supersededRaw : [];
+  const removed: unknown[] = Array.isArray(removedRaw) ? removedRaw : [];
+  return {
+    supersededEventIds: new Set(superseded).size,
+    removedEventIds: new Set(
+      removed.map((r) => (r !== null && typeof r === "object" ? (r as { id?: unknown }).id : r)),
+    ).size,
+  };
+}
+
+/**
+ * Did the Worker store this row's replaced / removed id lists?
+ *
+ * A Worker build from before the id lists accepts the POST, stores the entries
+ * only, and answers `applied:true` — and D10 never re-sends an unchanged list,
+ * so marking that row delivered would lose the ids until the list next
+ * changed. So a row that carries ids is delivered ONLY when the reply carries
+ * `accepted` for this same generation with counts equal to what was sent. A
+ * row with no ids in either list needs no acknowledgement: there is nothing
+ * for an old Worker to drop.
+ */
+function idListsAcknowledged(
+  row: { generation: number; payload_json: string },
+  ack: ArmedEventsAck | null,
+): boolean {
+  const sent = payloadIdListCounts(row.payload_json);
+  if (sent.supersededEventIds === 0 && sent.removedEventIds === 0) return true;
+  if (ack == null || ack.generation !== row.generation) return false;
+  const accepted = ack.accepted as
+    | { supersededEventIds?: unknown; removedEventIds?: unknown }
+    | null
+    | undefined;
+  if (accepted == null || typeof accepted !== "object") return false;
+  return (
+    accepted.supersededEventIds === sent.supersededEventIds &&
+    accepted.removedEventIds === sent.removedEventIds
+  );
 }
 
 /** Host (with port) of the Worker URL — never its credentials, never the secret.
@@ -188,8 +266,33 @@ function targetHost(workerUrl: string): string {
   }
 }
 
-/** Drains unsent rows in generation order via POST /internal/armed-events;
- *  marks sent_at on 2xx; stops at the first failure. */
+/**
+ * Drains unsent rows in generation order via POST /internal/armed-events and
+ * marks `sent_at` on 2xx.
+ *
+ * THE OUTPUT THIS PROTECTS: once the network is up the Worker ends up holding
+ * the Mac's NEWEST generation, whichever older generations failed and however.
+ * Every payload is the FULL list, so an older generation carries nothing the
+ * newest does not. Five rules follow from that:
+ *
+ *   - an unsent row below the highest generation already delivered is obsolete:
+ *     it is never posted, it is CLOSED (`sent_at` set, `send_error` =
+ *     "superseded by generation N");
+ *   - a row the Worker rejects (HTTP 400) does not stop the drain. It is closed
+ *     the same way as soon as a later generation is delivered; while it is the
+ *     newest it stays unsent and is retried once per drain (the rejection may
+ *     be a transient Worker fault);
+ *   - a 5xx, a network error or a timeout stops the drain: retry later, in
+ *     order;
+ *   - the restored-database refusal fires only when the Worker holds a
+ *     generation above this Mac's own MAX(generation). A lower-or-equal answer
+ *     to an old row is an ordinary replay;
+ *   - a row that carries replaced / removed event ids is delivered only when
+ *     the reply acknowledges them (`idListsAcknowledged`). Without that the row
+ *     stays unsent and the drain stops, exactly like a 5xx: nothing is closed
+ *     and nothing later goes out, so "delivered" always means the Worker holds
+ *     the whole payload — which is what makes closing the rows below it safe.
+ */
 export function drainCloudOutbox(
   db: Database.Database,
   deps: OutboxSenderDeps = {},
@@ -197,6 +300,42 @@ export function drainCloudOutbox(
   const next = drainChain.catch(() => {}).then(() => drainCloudOutboxUnlocked(db, deps));
   drainChain = next;
   return next;
+}
+
+/** Highest generation the Worker is known to hold from this Mac: a row is
+ *  stamped `sent_at` only when it was delivered WHOLE (its id lists
+ *  acknowledged, or none to acknowledge), or when a HIGHER generation was (a
+ *  closed row), so the maximum is always a fully delivered one. */
+function readHighestDeliveredGeneration(db: Database.Database): number {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(MAX(generation), 0) AS g FROM cloud_outbox
+        WHERE kind = ? AND sent_at IS NOT NULL`,
+    )
+    .get(ARMED_EVENTS_KIND) as { g: number };
+  return row.g;
+}
+
+/**
+ * Close every unsent row below `delivered`: the Worker already holds a newer
+ * full list, so posting these could change nothing. The note keeps the last
+ * real error (if any) so the row still says why it never went out itself.
+ * Returns the number of rows closed.
+ */
+function closeSupersededOutboxRows(db: Database.Database, delivered: number): number {
+  if (delivered <= 0) return 0;
+  return db
+    .prepare(
+      `UPDATE cloud_outbox
+          SET sent_at = datetime('now'),
+              send_error = substr(
+                'superseded by generation ' || CAST(? AS INTEGER) ||
+                CASE WHEN send_error IS NULL OR send_error LIKE 'superseded by generation %' THEN ''
+                     ELSE ' (never delivered; last error: ' || send_error || ')' END,
+                1, 200)
+        WHERE kind = ? AND sent_at IS NULL AND generation < ?`,
+    )
+    .run(delivered, ARMED_EVENTS_KIND, delivered).changes;
 }
 
 async function drainCloudOutboxUnlocked(
@@ -217,6 +356,10 @@ async function drainCloudOutboxUnlocked(
   } catch (err) {
     console.warn("[cloud-outbox] prune of sent rows failed:", err);
   }
+  // Obsolete rows first: anything unsent below a generation the Worker already
+  // took is never posted (this is also what clears a queue head left behind by
+  // an earlier rejected generation).
+  closeSupersededOutboxRows(db, readHighestDeliveredGeneration(db));
   const rows = db
     .prepare(
       `SELECT id, generation, payload_json FROM cloud_outbox
@@ -224,6 +367,22 @@ async function drainCloudOutboxUnlocked(
     )
     .all(ARMED_EVENTS_KIND) as Array<{ id: number; generation: number; payload_json: string }>;
   let sent = 0;
+  let failed = 0;
+  // Highest generation delivered by THIS drain; rows it rejected below that
+  // are closed on the way out, whichever way the drain ends.
+  let deliveredNow = 0;
+  const finish = (result: OutboxDrainResult): OutboxDrainResult => {
+    closeSupersededOutboxRows(db, deliveredNow);
+    return result;
+  };
+  // Only ever called for a row the Worker holds whole (see idListsAcknowledged).
+  const markDelivered = (row: { id: number; generation: number }) => {
+    db.prepare(
+      `UPDATE cloud_outbox SET sent_at = datetime('now'), send_error = NULL WHERE id = ?`,
+    ).run(row.id);
+    deliveredNow = Math.max(deliveredNow, row.generation);
+    sent += 1;
+  };
   for (const row of rows) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -234,15 +393,28 @@ async function drainCloudOutboxUnlocked(
         body: row.payload_json,
         signal: controller.signal,
       });
+      if (res.status === 400) {
+        // The Worker refused THIS payload. Record it and move on: a later
+        // generation is a complete list of its own and must still go out. The
+        // row stays unsent (it is retried next drain while it is the newest)
+        // and is closed by `finish` once anything newer lands.
+        db.prepare(`UPDATE cloud_outbox SET send_error = ? WHERE id = ?`).run(
+          `${host}: HTTP 400`.slice(0, 200),
+          row.id,
+        );
+        failed += 1;
+        continue;
+      }
       if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}`);
       // [F2] The restored-DB wedge. A Mac whose DB came back from a backup
       // restarts its generation counter below the one KV holds, so every POST
       // is refused as a stale replay and the cloud silently stops hearing about
       // arms. `applied:false` alone is NOT that — it is also the correct reply
-      // to a legitimate re-send — so only a generation STRICTLY GREATER than
-      // the one we just posted proves the Worker holds state this Mac never
-      // produced. Anything else (equal/lower generation, a body that isn't
-      // JSON, a 2xx with no body) stays an ordinary success: the status is the
+      // to a legitimate re-send, and to an OLD row replayed after a newer one
+      // landed — so only a generation STRICTLY GREATER than this Mac's own
+      // MAX(generation) proves the Worker holds state this Mac never produced.
+      // Anything else (a generation this Mac did mint, a body that isn't JSON,
+      // a 2xx with no body) stays an ordinary success: the status is the
       // contract, this parse is a diagnostic on top of it.
       let ack: ArmedEventsAck | null = null;
       try {
@@ -254,7 +426,7 @@ async function drainCloudOutboxUnlocked(
         ack != null &&
         ack.applied === false &&
         typeof ack.generation === "number" &&
-        ack.generation > row.generation
+        ack.generation > readArmedGeneration(db)
       ) {
         db.prepare(`UPDATE cloud_outbox SET send_error = ? WHERE id = ?`).run(
           `${host}: worker holds generation ${ack.generation} > local ${row.generation} — KV key armed-events needs a reset`.slice(
@@ -268,12 +440,41 @@ async function drainCloudOutboxUnlocked(
         );
         // Same in-order rule as a transport failure: nothing later goes out
         // while the Worker is refusing this one.
-        return { sent, failed: 1, skipped: null };
+        failed += 1;
+        return finish({ sent, failed, skipped: null });
       }
-      db.prepare(
-        `UPDATE cloud_outbox SET sent_at = datetime('now'), send_error = NULL WHERE id = ?`,
-      ).run(row.id);
-      sent += 1;
+      if (
+        ack != null &&
+        ack.applied === false &&
+        typeof ack.generation === "number" &&
+        ack.generation > row.generation
+      ) {
+        // An old row replayed after the Worker took something newer that this
+        // Mac did mint. Not a failure and not a delivery of THIS row: leave it
+        // for `finish` to close once the newer generation is confirmed, and
+        // keep going so that newer generation is posted now.
+        continue;
+      }
+      if (!idListsAcknowledged(row, ack)) {
+        // A Worker that took the POST but did not say it stored the id lists
+        // (a build from before them). Not delivered: D10 would never re-send
+        // this unchanged list. Stop in order, like a transport failure — the
+        // same row goes out again on the next drain and lands once the Worker
+        // is deployed.
+        db.prepare(`UPDATE cloud_outbox SET send_error = ? WHERE id = ?`).run(
+          `${host}: worker did not acknowledge the replaced/removed id lists; deploy the Worker`.slice(
+            0,
+            200,
+          ),
+          row.id,
+        );
+        console.warn(
+          `[cloud-outbox] ${host} did not acknowledge the id lists of generation ${row.generation} — deploy the Worker (see docs/reference/cron-and-workers.md §15)`,
+        );
+        failed += 1;
+        return finish({ sent, failed, skipped: null });
+      }
+      markDelivered(row);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // Name the target: an unadorned "fetch failed" says nothing about WHICH
@@ -283,10 +484,11 @@ async function drainCloudOutboxUnlocked(
         row.id,
       );
       // In-order delivery: never send N+1 before N landed.
-      return { sent, failed: 1, skipped: null };
+      failed += 1;
+      return finish({ sent, failed, skipped: null });
     } finally {
       clearTimeout(timer);
     }
   }
-  return { sent, failed: 0, skipped: null };
+  return finish({ sent, failed, skipped: null });
 }

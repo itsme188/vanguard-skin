@@ -28,6 +28,7 @@ import { SignificantMovesCard } from "../components/SignificantMovesCard";
 import { MomentumPulse } from "../components/MomentumPulse";
 import { computeMomentumPulse } from "@/lib/compute/momentum-spread";
 import Link from "next/link";
+import type { Metadata } from "next";
 
 interface PageProps {
   searchParams: Promise<{
@@ -46,7 +47,9 @@ const CLASSIFICATION_DIMENSIONS: AllocationDimension[] = [
 
 const FACTOR_DIMENSIONS: AllocationDimension[] = [...FACTOR_COLUMNS];
 
-const ALL_DIMENSIONS = [...CLASSIFICATION_DIMENSIONS, ...FACTOR_DIMENSIONS];
+// The label lib/queries/analysis.ts gives a holding with no stored credit
+// rating (its credit_rating bucket expression). Any other bucket is a rating.
+const UNRATED_BUCKET = "Unrated";
 
 const VALID_SCOPES = ["vanguard", "ibkr", "roth", "all"] as const;
 type AccountScope = (typeof VALID_SCOPES)[number];
@@ -96,6 +99,37 @@ function resolveAccountIds(scope: AccountScope): number[] | undefined {
   return undefined;
 }
 
+// Header "Tax Lots" link. The tax-lots page filters by ?account=<account
+// name>; carry it when the scope on screen is exactly ONE account, so the
+// button never silently widens the user to all accounts. A scope of several
+// accounts (or "all") keeps the bare link: the tax-lots page has no
+// multi-account filter to carry it into.
+function taxLotsHref(scope: AccountScope): string {
+  const ids = resolveAccountIds(scope);
+  if (!ids || ids.length !== 1) return "/dashboard/tax-lots";
+  const row = db.prepare("SELECT name FROM accounts WHERE id = ?").get(ids[0]) as
+    | { name: string }
+    | undefined;
+  return row
+    ? `/dashboard/tax-lots?account=${encodeURIComponent(row.name)}`
+    : "/dashboard/tax-lots";
+}
+
+const VIEW_TITLES: Record<string, string> = {
+  workspace: "Analysis",
+  diagnostics: "Analysis · Diagnostics",
+  performance: "Analysis · Performance",
+  "trade-reviews": "Analysis · Trade Reviews",
+  defense: "Analysis · Defense",
+  giving: "Analysis · Giving",
+};
+
+// Per-sub-view tab title (qa:page-head--same-tab-title-every-route-...).
+export async function generateMetadata({ searchParams }: PageProps): Promise<Metadata> {
+  const { view } = resolveAnalysisView(await searchParams);
+  return { title: VIEW_TITLES[view] ?? "Analysis" };
+}
+
 export default async function AnalysisPage({ searchParams }: PageProps) {
   const params = await searchParams;
 
@@ -109,7 +143,17 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
       .prepare("SELECT id, name FROM accounts ORDER BY name")
       .all() as { id: number; name: string }[];
     const ibkr = accounts.find((a) => a.name.toLowerCase().includes("ibkr"));
-    const defaultAccountId = ibkr?.id ?? accounts[0]?.id ?? null;
+    // The sub-view menu carries ?scope= here like every other sub-view, so a
+    // Roth or Vanguard arrival preselects that account. The view reviews ONE
+    // account at a time (it has its own account select), so a scope of several
+    // accounts preselects the first by name. No scope, "all" or an unknown
+    // scope keeps the IBKR default.
+    const scopedIds =
+      VALID_SCOPES.includes(params.scope as AccountScope) && params.scope !== "all"
+        ? resolveAccountIds(params.scope as AccountScope)
+        : undefined;
+    const scoped = scopedIds ? accounts.find((a) => scopedIds.includes(a.id)) : undefined;
+    const defaultAccountId = scoped?.id ?? ibkr?.id ?? accounts[0]?.id ?? null;
     const reviews = defaultAccountId ? getTradeReviews(db, defaultAccountId) : [];
     const reviewPeriods = defaultAccountId
       ? getAvailableReviewPeriods(db, defaultAccountId)
@@ -121,7 +165,7 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
           <div>
             <h2 className="text-lg font-medium text-ink">Trade Reviews</h2>
             <p className="text-sm text-ink-faint mt-0.5">
-              Monthly AI trade analysis — relocated from Research in Phase 5.
+              Monthly AI trade analysis.
             </p>
           </div>
           <AnalysisViewToggle currentView="trade-reviews" scope={params.scope} />
@@ -204,7 +248,7 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
               Diagnostics ↓
             </Link>
             <Link
-              href="/dashboard/tax-lots"
+              href={taxLotsHref(scope)}
               className="px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink hover:border-ink-faint transition-colors"
             >
               Tax Lots
@@ -275,15 +319,46 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
   const defaultDimension: AllocationDimension =
     mode === "factors" ? "tariff_exposure" : "fund_category";
 
-  const dimension: AllocationDimension =
-    ALL_DIMENSIONS.includes(params.dimension as AllocationDimension)
-      ? (params.dimension as AllocationDimension)
-      : defaultDimension;
+  // A dimension is valid only for the mode on screen: a factor key under
+  // Classification (or the reverse) used to render with no pill selected.
+  const modeDimensions: readonly string[] =
+    mode === "factors" ? FACTOR_DIMENSIONS : CLASSIFICATION_DIMENSIONS;
+  const requested = params.dimension;
 
   let accountIds, allocation, exposureSummary, concentration, coverage, dataCoverage, factorHeatmap, factorCoverage;
+  let creditRatingAvailable = true;
+  let dimension: AllocationDimension = defaultDimension;
+  let dimensionNotice: string | null = null;
   try {
     accountIds = resolveAccountIds(scope);
-    allocation = getAllocationByDimension(db, dimension, accountIds);
+
+    // Credit Rating is offered only while some holding in scope carries a
+    // rating. With none stored the breakdown is a single "Unrated 100%"
+    // bucket over a book whose bonds are Treasuries (owner ruling, option 3:
+    // hide it rather than assert that). Factor mode never offers it.
+    const creditRows =
+      mode === "factors" ? [] : getAllocationByDimension(db, "credit_rating", accountIds);
+    creditRatingAvailable = creditRows.some((r) => r.group_name !== UNRATED_BUCKET);
+
+    // An unknown ?dimension= (a stale or hand-edited link) falls back to the
+    // mode's default AND says so: the fallback used to render under the bad
+    // URL with nothing to show the requested breakdown does not exist.
+    const hiddenCreditRating =
+      mode !== "factors" && requested === "credit_rating" && !creditRatingAvailable;
+    if (requested && modeDimensions.includes(requested) && !hiddenCreditRating) {
+      dimension = requested as AllocationDimension;
+    } else if (hiddenCreditRating) {
+      dimensionNotice =
+        "No holding in this scope carries a credit rating, so that breakdown is hidden. Showing the default breakdown instead.";
+    } else if (requested) {
+      dimensionNotice =
+        "That link asked for a breakdown this view does not have. Showing the default breakdown instead.";
+    }
+
+    allocation =
+      dimension === "credit_rating"
+        ? creditRows
+        : getAllocationByDimension(db, dimension, accountIds);
     exposureSummary = getPortfolioExposureSummary(db, accountIds);
     concentration = getConcentrationMetrics(db, accountIds);
     coverage = getClassificationCoverage(db, accountIds);
@@ -314,7 +389,7 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
             ← Workspace
           </Link>
           <Link
-            href="/dashboard/tax-lots"
+            href={taxLotsHref(scope)}
             className="px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink hover:border-ink-faint transition-colors"
           >
             Tax Lots
@@ -335,6 +410,12 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
 
       <TrustStrip scope={scope} />
 
+      {dimensionNotice && (
+        <p role="status" className="text-sm text-ink-dim">
+          {dimensionNotice}
+        </p>
+      )}
+
       <AnalysisView
         allocation={allocation}
         exposureSummary={exposureSummary}
@@ -346,6 +427,7 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
         currentMode={mode}
         factorHeatmap={factorHeatmap}
         factorCoverage={factorCoverage}
+        creditRatingAvailable={creditRatingAvailable}
       />
 
       <IncomeYieldSection scope={scope} />

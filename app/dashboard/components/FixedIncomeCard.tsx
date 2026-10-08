@@ -34,6 +34,20 @@ interface FixedIncomeData {
 }
 
 /**
+ * Does any bond in the card carry a credit rating? While none does, the
+ * Credit Quality readout could only say "Unrated: 100%" — over a sleeve of
+ * US Treasuries that reads as a statement about the bonds, when it is only
+ * a statement about missing data. Owner ruling (option 3): hide the readout
+ * until a rating is stored
+ * [qa:analysis-credit-rating--single-unrated-bucket-treasuries-unrated-regression-1].
+ */
+export function hasRatedBond(
+  bonds: ReadonlyArray<{ creditRating: string | null }>,
+): boolean {
+  return bonds.some((b) => b.creditRating != null && b.creditRating.trim() !== "");
+}
+
+/**
  * Fixed Income Exposure card — shows bond allocation, weighted average duration,
  * credit quality breakdown, and individual bond positions.
  * Only renders if portfolio has bond positions.
@@ -143,8 +157,8 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
         />
       </div>
 
-      {/* Credit quality breakdown */}
-      {data.creditBreakdown.length > 0 && (
+      {/* Credit quality breakdown — only once some bond carries a rating */}
+      {hasRatedBond(data.bonds) && data.creditBreakdown.length > 0 && (
         <div>
           <h4 className="text-[10px] text-ink-faint uppercase tracking-wider mb-2">
             Credit Quality

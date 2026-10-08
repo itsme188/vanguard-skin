@@ -31,6 +31,7 @@ function createTestDb(): Database.Database {
       geography TEXT,
       classification_source TEXT,
       underlying_symbol TEXT,
+      expiration_date TEXT,
       maturity_date TEXT,
       currency TEXT NOT NULL DEFAULT 'USD'
     );

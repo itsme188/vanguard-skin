@@ -30,7 +30,7 @@ function createRiskTestDb(): Database.Database {
     CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
     CREATE TABLE securities (
       id INTEGER PRIMARY KEY, symbol TEXT NOT NULL UNIQUE, name TEXT,
-      security_type TEXT DEFAULT 'stock', multiplier REAL DEFAULT 1,
+      security_type TEXT DEFAULT 'stock', multiplier REAL DEFAULT 1, expiration_date TEXT,
       maturity_date TEXT,
       currency TEXT NOT NULL DEFAULT 'USD'
     );
@@ -59,7 +59,7 @@ function createFactorsTestDb(): Database.Database {
     CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
     CREATE TABLE securities (
       id INTEGER PRIMARY KEY, symbol TEXT NOT NULL UNIQUE, name TEXT,
-      security_type TEXT DEFAULT 'stock', multiplier REAL DEFAULT 1,
+      security_type TEXT DEFAULT 'stock', multiplier REAL DEFAULT 1, expiration_date TEXT,
       sector TEXT, fund_category TEXT, market_cap_category TEXT, style TEXT,
       geography TEXT, classification_source TEXT, underlying_symbol TEXT,
       maturity_date TEXT, currency TEXT NOT NULL DEFAULT 'USD'

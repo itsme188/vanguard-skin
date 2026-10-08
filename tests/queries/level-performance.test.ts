@@ -82,7 +82,10 @@ describe("getSourcePerformance", () => {
     runMigrations(db);
   });
 
-  it("returns empty array when no alerts fired", () => {
+  // qa: levels-performance--omits-sources-with-armed-levels-zero-alerts —
+  // this used to expect [] (the source vanished). A source with an armed
+  // level that has never fired is a 0% hit rate, not an absent source.
+  it("lists a source with an armed level and no fired alert at 0 alerts / 0%", () => {
     seedSecurity(db, 1, "AAPL");
     insertLevel(db, {
       id: 1,
@@ -91,7 +94,46 @@ describe("getSourcePerformance", () => {
       source_author: "Me",
       price: 150,
     });
+    const rows = getSourcePerformance(db, { minAlerts: 1 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      source_author: "Me",
+      alerts_fired: 0,
+      levels_created: 1,
+      hit_rate: 0,
+      responses: { acted: 0, ignored: 0, dismissed: 0, pending: 0 },
+      pnl_acted_30d: null,
+      pnl_acted_vs_ignored_30d: null,
+    });
+  });
+
+  it("returns empty array when there is no armed level and no alert", () => {
+    seedSecurity(db, 1, "AAPL");
+    insertLevel(db, { id: 1, securityId: 1, source: "newsletter", source_author: "Never Armed", price: 150 });
+    db.prepare("UPDATE security_levels SET review_status = 'rejected' WHERE id = 1").run();
     expect(getSourcePerformance(db)).toEqual([]);
+  });
+
+  it("ranks never-fired sources after fired ones, by armed-level count then name", () => {
+    seedSecurity(db, 1, "AAPL");
+    insertLevel(db, { id: 1, securityId: 1, source: "newsletter", source_author: "Zed Quiet", price: 150 });
+    insertLevel(db, { id: 2, securityId: 1, source: "newsletter", source_author: "Abe Quiet", price: 151 });
+    insertLevel(db, { id: 3, securityId: 1, source: "newsletter", source_author: "Two Quiet", price: 152 });
+    insertLevel(db, { id: 4, securityId: 1, source: "newsletter", source_author: "Two Quiet", price: 153 });
+    insertLevel(db, { id: 5, securityId: 1, source: "newsletter", source_author: "Fired", price: 154 });
+    insertAlert(db, {
+      levelId: 5,
+      securityId: 1,
+      triggeredAt: "2026-07-01 14:00:00",
+      triggeredPrice: 154,
+      response: "pending",
+    });
+    expect(getSourcePerformance(db).map((r) => r.source_author)).toEqual([
+      "Fired",
+      "Two Quiet",
+      "Abe Quiet",
+      "Zed Quiet",
+    ]);
   });
 
   it("computes hit_rate and response counts per source", () => {

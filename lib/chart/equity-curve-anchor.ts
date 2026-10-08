@@ -31,7 +31,9 @@
  * strictly between the anchors) or internally inconsistent (max-min spread
  * above MAX_SEGMENT_SPREAD of their mean, a sign of incomplete holdings that
  * month) is plotted from the statements only, and counted in the summary so
- * the chart can say so.
+ * the chart can say so. A segment that passes both tests but has a gap longer
+ * than SHORT_SEGMENT_MAX_DAYS between its plotted points is still drawn, and
+ * captioned as a straight-line stretch.
  */
 
 export interface EquityAnchor {
@@ -64,6 +66,16 @@ export interface AnchoredCurveSummary {
   trailingDays: number;
   /** True when dailies after the last anchor existed but failed the consistency gate. */
   trailingSkipped: boolean;
+  /** Anchor-to-anchor spans behind the counts above, so a caption can scope to a date range. */
+  anchoredSpans?: DateSpan[];
+  skippedSpans?: DateSpan[];
+  /** Anchored spans with a gap longer than SHORT_SEGMENT_MAX_DAYS between points. */
+  sparseSpans?: DateSpan[];
+}
+
+export interface DateSpan {
+  from: string;
+  to: string;
 }
 
 export interface AnchoredCurve {
@@ -160,6 +172,9 @@ export function anchorDailiesToStatements(
     segmentsSkipped: 0,
     trailingDays: 0,
     trailingSkipped: false,
+    anchoredSpans: [],
+    skippedSpans: [],
+    sparseSpans: [],
   };
   const points: AnchoredPoint[] = [];
 
@@ -185,8 +200,14 @@ export function anchorDailiesToStatements(
       const consistencySet = [...(onD0 ? [onD0] : []), ...between, ...(onD1 ? [onD1] : [])];
       if (between.length < MIN_SEGMENT_DAILIES || tooInconsistent(consistencySet.map((d) => d.value))) {
         summary.segmentsSkipped++;
+        summary.skippedSpans!.push({ from: a0.date, to: a1.date });
         continue;
       }
+      // Gaps between the points that are actually plotted (the anchors plus the dailies).
+      const days = [a0.date, ...between.map((d) => d.date), a1.date].map(dayNumber);
+      let widest = 0;
+      for (let k = 1; k < days.length; k++) widest = Math.max(widest, days[k] - days[k - 1]);
+      if (widest > SHORT_SEGMENT_MAX_DAYS) summary.sparseSpans!.push({ from: a0.date, to: a1.date });
     }
 
     const ref0 = referenceDaily(a0.date, sortedDailies, between)!;
@@ -202,6 +223,7 @@ export function anchorDailiesToStatements(
       points.push({ date: d.date, value: d.value + offset, recordedValue: d.value, isAnchor: false });
     }
     summary.segmentsAnchored++;
+    summary.anchoredSpans!.push({ from: a0.date, to: a1.date });
   }
 
   points.sort((a, b) => a.date.localeCompare(b.date));
@@ -231,7 +253,10 @@ function appendTrailing(
 }
 
 /** The small caption under the chart; null when no daily data is in play. */
-export function equityCurveCaption(summary: AnchoredCurveSummary): string | null {
+export function equityCurveCaption(
+  summary: AnchoredCurveSummary,
+  opts: { skippedUnit?: "month" | "stretch"; sparseStretches?: number } = {},
+): string | null {
   const anchoredAny = summary.segmentsAnchored > 0 || summary.trailingDays > 0;
   const parts: string[] = [];
   if (anchoredAny) {
@@ -243,12 +268,50 @@ export function equityCurveCaption(summary: AnchoredCurveSummary): string | null
   }
   if (summary.segmentsSkipped > 0) {
     const n = summary.segmentsSkipped;
-    parts.push(`${n} ${n === 1 ? "month" : "months"} plotted from statements only`);
+    const unit = opts.skippedUnit ?? "month";
+    const noun = unit === "month" ? (n === 1 ? "month" : "months") : n === 1 ? "stretch" : "stretches";
+    parts.push(`${n} ${noun} plotted from statements only`);
+  }
+  const sparse = opts.sparseStretches ?? 0;
+  if (sparse > 0) {
+    parts.push(`${sparse} ${sparse === 1 ? "stretch" : "stretches"} with gaps drawn as straight lines`);
   }
   if (summary.trailingSkipped) {
     parts.push("days after the last statement not plotted");
   }
   return parts.join(" · ");
+}
+
+function spanDays(s: DateSpan): number {
+  return dayNumber(s.to) - dayNumber(s.from);
+}
+
+/**
+ * The caption scoped to the selected chart range. `rangeStart` is the first
+ * date the chart shows (null = all history); a span counts when it ends on or
+ * after it. A skipped span is called a "month" only when every one is about a
+ * month long, otherwise a "stretch". Summaries without span detail fall back
+ * to the whole-history counts.
+ */
+export function equityCurveRangeCaption(
+  summary: AnchoredCurveSummary,
+  rangeStart: string | null,
+): string | null {
+  if (!summary.anchoredSpans || !summary.skippedSpans) return equityCurveCaption(summary);
+  const inRange = (s: DateSpan) => rangeStart === null || s.to >= rangeStart;
+  const anchored = summary.anchoredSpans.filter(inRange);
+  const skipped = summary.skippedSpans.filter(inRange);
+  const sparse = (summary.sparseSpans ?? []).filter(inRange);
+  const allMonthLong = skipped.length > 0 && skipped.every((s) => spanDays(s) >= 28 && spanDays(s) <= 31);
+  return equityCurveCaption(
+    {
+      ...summary,
+      segmentsAnchored: anchored.length,
+      segmentsSkipped: skipped.length,
+      trailingDays: summary.trailingDays,
+    },
+    { skippedUnit: allMonthLong ? "month" : "stretch", sparseStretches: sparse.length },
+  );
 }
 
 /**
@@ -265,4 +328,68 @@ export function formatAnchoredTooltipValue(
     return fmt(value);
   }
   return `${fmt(value)} · recorded ${fmt(recordedValue)}`;
+}
+
+export interface EquityCurveYAxis {
+  domain: [number, number];
+  ticks: number[];
+}
+
+function niceStep(raw: number): number {
+  const pow = 10 ** Math.floor(Math.log10(raw));
+  const f = raw / pow;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * pow;
+}
+
+/**
+ * Value axis that frames the plotted window: the data's own low and high with
+ * a tenth of the range as padding on each side, widened to round tick values.
+ * An axis that starts at zero squeezes a month's move into a few pixels.
+ *
+ * The step is never finer than the axis label can state exactly (two decimals
+ * of a million or of a thousand), so no gridline is mislabelled. A series
+ * that is never negative is never padded below zero. Null when there is no
+ * finite value (the caller leaves the chart's default axis in place).
+ */
+export function equityCurveYAxis(values: number[], targetTicks = 5): EquityCurveYAxis | null {
+  const finite = values.filter((v) => Number.isFinite(v));
+  if (finite.length === 0) return null;
+  const min = Math.min(...finite);
+  const max = Math.max(...finite);
+  const range = max - min;
+  const pad = range > 0 ? range * 0.1 : Math.abs(max) * 0.05 || 1;
+  const lo0 = min >= 0 ? Math.max(0, min - pad) : min - pad;
+  const hi0 = max + pad;
+
+  const top = Math.max(Math.abs(min), Math.abs(max));
+  const finest = top >= 1_000_000 ? 10_000 : top >= 1_000 ? 10 : 1;
+  const step = Math.max(niceStep((hi0 - lo0) / Math.max(1, targetTicks - 1)), finest);
+
+  const loSteps = Math.floor(lo0 / step);
+  let hiSteps = Math.ceil(hi0 / step);
+  if (hiSteps === loSteps) hiSteps++;
+  const ticks: number[] = [];
+  for (let k = loSteps; k <= hiSteps; k++) ticks.push(k * step);
+  return { domain: [ticks[0], ticks[ticks.length - 1]], ticks };
+}
+
+export type EquityCurveGranularity = "daily" | "monthly" | "mixed";
+
+/**
+ * What the plotted window is made of, from the spacing of its points: every
+ * point within SHORT_SEGMENT_MAX_DAYS of the one before it is "daily", none is
+ * "monthly" (statement dates only), a blend is "mixed". `dates` must be
+ * sorted ascending. Null with fewer than two points.
+ */
+export function equityCurveGranularity(dates: string[]): EquityCurveGranularity | null {
+  if (dates.length < 2) return null;
+  let close = 0;
+  let far = 0;
+  for (let i = 1; i < dates.length; i++) {
+    if (dayNumber(dates[i]) - dayNumber(dates[i - 1]) <= SHORT_SEGMENT_MAX_DAYS) close++;
+    else far++;
+  }
+  if (far === 0) return "daily";
+  if (close === 0) return "monthly";
+  return "mixed";
 }

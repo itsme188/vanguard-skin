@@ -69,21 +69,21 @@ function makeEvent(id: number, symbol: string): CalendarEvent {
 
 describe("buildCombinedPositionsForEvents", () => {
   it("rolls up GOOG common into GOOGL earnings — the user-reported bug", () => {
-    // The original bug: briefing ranked AMZN as "largest combined exposure"
+    // The original bug: briefing ranked AAA as "largest combined exposure"
     // for the week because GOOG common (Class C) didn't get linked to GOOGL
     // earnings (Class A ticker). issuerSiblings normalizes the family.
     const goog = seedStock("GOOG", "Alphabet Inc Cl C");
-    seedHolding(goog, 1, 12.5);
+    seedHolding(goog, 1, 7.5);
     const googlLeap = seedOption(
-      "GOOGL 270115C00200000",
+      "GOOGL 270115C00210000",
       "GOOGL",
-      200,
+      210,
       "2027-01-15",
     );
     seedHolding(googlLeap, 1, 1);
 
     const currentPrices = new Map([
-      ["GOOG", { close: 300, date: "2026-04-27" }],
+      ["GOOG", { close: 250, date: "2026-04-27" }],
     ]);
 
     const out = buildCombinedPositionsForEvents(
@@ -99,15 +99,15 @@ describe("buildCombinedPositionsForEvents", () => {
     expect(cp!.stockPositions).toHaveLength(1);
     expect(cp!.stockPositions[0]).toMatchObject({
       symbol: "GOOG",
-      quantity: 12.5,
+      quantity: 7.5,
       account: "Vanguard Taxable",
-      latestClose: 300,
+      latestClose: 250,
     });
     expect(cp!.optionPositions).toHaveLength(1);
     expect(cp!.optionPositions[0]).toMatchObject({
-      occSymbol: "GOOGL 270115C00200000",
+      occSymbol: "GOOGL 270115C00210000",
       underlying: "GOOGL",
-      strike: 200,
+      strike: 210,
       optionType: "CALL",
       quantity: 1,
       account: "Vanguard Taxable",
@@ -115,41 +115,41 @@ describe("buildCombinedPositionsForEvents", () => {
   });
 
   it("returns no entry for events whose issuer family has zero positions", () => {
-    seedStock("AAPL");
-    // No AAPL holdings seeded.
+    seedStock("ZZZ");
+    // No ZZZ holdings seeded.
     const out = buildCombinedPositionsForEvents(
       db,
-      [makeEvent(1, "AAPL")],
+      [makeEvent(1, "ZZZ")],
       new Map(),
     );
     expect(out.has(1)).toBe(false);
   });
 
   it("matches single-class issuers without an entry in the family map", () => {
-    const aapl = seedStock("AAPL");
-    seedHolding(aapl, 1, 100);
+    const aapl = seedStock("ZZZ");
+    seedHolding(aapl, 1, 40);
     const out = buildCombinedPositionsForEvents(
       db,
-      [makeEvent(1, "AAPL")],
-      new Map([["AAPL", { close: 150, date: "2026-04-27" }]]),
+      [makeEvent(1, "ZZZ")],
+      new Map([["ZZZ", { close: 70, date: "2026-04-27" }]]),
     );
     const cp = out.get(1);
     expect(cp).toBeDefined();
-    expect(cp!.family).toEqual(["AAPL"]);
-    expect(cp!.stockPositions[0].quantity).toBe(100);
+    expect(cp!.family).toEqual(["ZZZ"]);
+    expect(cp!.stockPositions[0].quantity).toBe(40);
   });
 
   it("includes options on any sibling underlying", () => {
     // User holds a GOOG option; event is for GOOGL.
     const goog = seedStock("GOOG");
     seedHolding(goog, 1, 0); // zero stock holding — only the option matters
-    const googCall = seedOption("GOOG  260320C00200000", "GOOG", 200, "2026-03-20");
-    seedHolding(googCall, 1, 2);
+    const googCall = seedOption("GOOG  260320C00210000", "GOOG", 210, "2026-03-20");
+    seedHolding(googCall, 1, 3);
 
     const out = buildCombinedPositionsForEvents(
       db,
       [makeEvent(1, "GOOGL")],
-      new Map([["GOOG", { close: 300, date: "2026-04-27" }]]),
+      new Map([["GOOG", { close: 250, date: "2026-04-27" }]]),
     );
     const cp = out.get(1);
     expect(cp).toBeDefined();
@@ -159,7 +159,7 @@ describe("buildCombinedPositionsForEvents", () => {
 
   it("returns latestClose=null when the price isn't available", () => {
     const goog = seedStock("GOOG");
-    seedHolding(goog, 1, 12.5);
+    seedHolding(goog, 1, 7.5);
     const out = buildCombinedPositionsForEvents(
       db,
       [makeEvent(1, "GOOGL")],
@@ -176,8 +176,8 @@ describe("buildCombinedPositionsForEvents", () => {
       event_type: "earnings",
       event_date: "2026-04-29",
       title: "Nameless earnings",
-      symbol: "AAPL",
-      source_key: "finnhub:AAPL:2026-04-29",
+      symbol: "ZZZ",
+      source_key: "finnhub:ZZZ:2026-04-29",
     } as CalendarEvent;
 
     const noSymbolEvent: CalendarEvent = {
@@ -206,9 +206,9 @@ describe("buildCombinedPositionsForEvents", () => {
 
   it("keeps a statement-lag stock leg when a newer row exists for another security in the same account", () => {
     const goog = seedStock("GOOG", "Alphabet Inc Cl C");
-    seedHolding(goog, 1, 12.5, "2026-03-31"); // monthly statement row
-    const vti = seedStock("VTI");
-    seedHolding(vti, 1, 100, "2026-04-27"); // newer daily row, same account
+    seedHolding(goog, 1, 7.5, "2026-03-31"); // monthly statement row
+    const vti = seedStock("ZZFUND");
+    seedHolding(vti, 1, 60, "2026-04-27"); // newer daily row, same account
 
     const out = buildCombinedPositionsForEvents(
       db,
@@ -218,19 +218,19 @@ describe("buildCombinedPositionsForEvents", () => {
     const cp = out.get(1);
     expect(cp).toBeDefined();
     expect(cp!.stockPositions).toHaveLength(1);
-    expect(cp!.stockPositions[0]).toMatchObject({ symbol: "GOOG", quantity: 12.5 });
+    expect(cp!.stockPositions[0]).toMatchObject({ symbol: "GOOG", quantity: 7.5 });
   });
 
   it("keeps a statement-lag option leg when a newer row exists for another security in the same account", () => {
     const googlLeap = seedOption(
-      "GOOGL 270115C00200000",
+      "GOOGL 270115C00210000",
       "GOOGL",
-      200,
+      210,
       "2027-01-15",
     );
     seedHolding(googlLeap, 1, 1, "2026-03-31"); // monthly statement row
-    const vti = seedStock("VTI");
-    seedHolding(vti, 1, 100, "2026-04-27"); // newer daily row, same account
+    const vti = seedStock("ZZFUND");
+    seedHolding(vti, 1, 60, "2026-04-27"); // newer daily row, same account
 
     const out = buildCombinedPositionsForEvents(
       db,
@@ -250,10 +250,10 @@ describe("buildCombinedPositionsForEvents", () => {
     // A tombstone IS the latest row for its (account, security) pair, so
     // per-pair keying must not resurrect the older non-zero row.
     const goog = seedStock("GOOG");
-    seedHolding(goog, 1, 12.5, "2026-03-31");
+    seedHolding(goog, 1, 7.5, "2026-03-31");
     seedHolding(goog, 1, 0, "2026-04-27");
-    const googCall = seedOption("GOOG  260320C00200000", "GOOG", 200, "2026-03-20");
-    seedHolding(googCall, 1, 2, "2026-03-31");
+    const googCall = seedOption("GOOG  260320C00210000", "GOOG", 210, "2026-03-20");
+    seedHolding(googCall, 1, 3, "2026-03-31");
     seedHolding(googCall, 1, 0, "2026-04-27");
 
     const out = buildCombinedPositionsForEvents(
@@ -273,13 +273,13 @@ describe("formatCombinedPosition", () => {
     const cp: CombinedPosition = {
       family: ["GOOG", "GOOGL"],
       stockPositions: [
-        { symbol: "GOOG", quantity: 12.5, account: "Vanguard", latestClose: 300 },
+        { symbol: "GOOG", quantity: 7.5, account: "Vanguard", latestClose: 250 },
       ],
       optionPositions: [
         {
-          occSymbol: "GOOGL 270115C00200000",
+          occSymbol: "GOOGL 270115C00210000",
           underlying: "GOOGL",
-          strike: 200,
+          strike: 210,
           expiry: "2027-01-15",
           optionType: "CALL",
           quantity: 1,
@@ -289,73 +289,73 @@ describe("formatCombinedPosition", () => {
     };
     const out = formatCombinedPosition(cp);
     expect(out).toContain("long GOOG (Vanguard)");
-    expect(out).not.toContain("12.5"); // fractional share count = fingerprint
+    expect(out).not.toContain("7.5"); // fractional share count = fingerprint
     expect(out).not.toContain("sh ");
     expect(out).not.toContain("mkt val");
     expect(out).not.toMatch(/\$\d{1,3}(,\d{3})+/); // no comma-grouped $ values
-    expect(out).toContain("long GOOGL $200 calls exp 2027-01-15 (Vanguard)");
+    expect(out).toContain("long GOOGL $210 calls exp 2027-01-15 (Vanguard)");
     expect(out).toContain(" + ");
   });
 
   it("stock lines carry no digits at all", () => {
     const cp: CombinedPosition = {
-      family: ["AMZN"],
+      family: ["AAA"],
       stockPositions: [
-        { symbol: "AMZN", quantity: 100, account: "Vanguard", latestClose: 200 },
+        { symbol: "AAA", quantity: 40, account: "Vanguard", latestClose: 90 },
       ],
       optionPositions: [],
     };
     const out = formatCombinedPosition(cp);
-    expect(out).toBe("long AMZN (Vanguard)");
+    expect(out).toBe("long AAA (Vanguard)");
     expect(out).not.toMatch(/\d/);
   });
 
   it("renders SHORT stock with direction only", () => {
     const cp: CombinedPosition = {
-      family: ["META"],
+      family: ["BBB"],
       stockPositions: [
-        { symbol: "META", quantity: -100, account: "IBKR", latestClose: 400 },
+        { symbol: "BBB", quantity: -60, account: "IBKR", latestClose: 125 },
       ],
       optionPositions: [],
     };
     const out = formatCombinedPosition(cp);
-    expect(out).toBe("short META (IBKR)");
-    expect(out).not.toContain("100");
+    expect(out).toBe("short BBB (IBKR)");
+    expect(out).not.toContain("60");
   });
 
   it("renders SHORT options without a contract count", () => {
     const cp: CombinedPosition = {
-      family: ["MSFT"],
+      family: ["CCC"],
       stockPositions: [],
       optionPositions: [
         {
-          occSymbol: "MSFT 260516C00400000",
-          underlying: "MSFT",
-          strike: 400,
+          occSymbol: "CCC  260516C00055000",
+          underlying: "CCC",
+          strike: 55,
           expiry: "2026-05-16",
           optionType: "CALL",
-          quantity: -3,
+          quantity: -7,
           account: "IBKR",
         },
       ],
     };
     const out = formatCombinedPosition(cp);
-    expect(out).toBe("short MSFT $400 calls exp 2026-05-16 (IBKR)");
-    expect(out).not.toContain("3 short");
+    expect(out).toBe("short CCC $55 calls exp 2026-05-16 (IBKR)");
+    expect(out).not.toContain("7 short");
   });
 
   it("does not emit mkt val even when latestClose is populated (privacy boundary)", () => {
     const cp: CombinedPosition = {
-      family: ["XYZ"],
+      family: ["DDD"],
       stockPositions: [
-        { symbol: "XYZ", quantity: 10, account: "IBKR", latestClose: 9999.5 },
+        { symbol: "DDD", quantity: 15, account: "IBKR", latestClose: 7777.5 },
       ],
       optionPositions: [],
     };
     const out = formatCombinedPosition(cp);
-    expect(out).toBe("long XYZ (IBKR)");
+    expect(out).toBe("long DDD (IBKR)");
     expect(out).not.toContain("mkt val");
-    expect(out).not.toContain("$9,999");
-    expect(out).not.toContain("$99,995");
+    expect(out).not.toContain("$7,777");
+    expect(out).not.toContain("$116,662");
   });
 });

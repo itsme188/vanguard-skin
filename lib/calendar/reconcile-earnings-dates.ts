@@ -1110,6 +1110,8 @@ export function reconcileEarningsDates(
         setCanonical.run(res.status, res.conflictWith, res.canonicalId);
         const canonicalRow = cluster.find((r) => r.id === res.canonicalId)!;
         const canonicalEventDate = canonicalRow.event_date;
+        const preCanonical = passRowById.get(res.canonicalId);
+        if (preCanonical?.superseded) anyChanged = true;
         // Hand-entered twins of a hand-entered canonical stay visible beside
         // it: same locked status, never folded (see keptManualTwins).
         const keptTwins = keptManualTwins(cluster, res, today);
@@ -1144,6 +1146,7 @@ export function reconcileEarningsDates(
         for (const r of superseded) {
           const pre = passRowById.get(r.id);
           if (pre && !pre.superseded) {
+            anyChanged = true;
             result.superseded.push({
               eventId: r.id,
               sourceKey: pre.source_key,

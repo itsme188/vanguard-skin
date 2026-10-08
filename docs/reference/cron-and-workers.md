@@ -287,13 +287,12 @@ cover BMO previews + AMC recaps. Plan: `~/.claude/plans/okay-let-s-see-if-joyful
   `formatCombinedExposurePresence` in the Worker `presence-position.ts` mirror).
 - Snapshot **v8** adds `watchlistSymbols` (see §8).
 
-**Known limitation: an entry replaced after the snapshot (2026-10-07).** The Worker's scan
-(`findCandidatesFromSnapshot` in `workers/cron/src/fallback-earnings.ts`) skips a superseded entry,
-but it reads that flag from the nightly snapshot plus the armed-events delta, and nothing re-checks
-it at send time. An entry the Mac replaces after the snapshot is still live to the Worker until the
-next snapshot, so the Worker can send a recap for it when the Mac is asleep or offline. The Mac's
-own refusal (see `docs/reference/earnings-pipeline.md` §7) writes no marker. The two candidate
-fixes are an owner question in `docs/plans/TODO.md` (second wave of 2026-10-07).
+**Replaced and deleted entries after the snapshot (2026-10-07).** The armed-events payload also
+carries `supersededEventIds` for replaced earnings rows and `removedEventIds` entries
+(`{ id, eventDate, removedAt }`) for earnings rows deleted on the Mac; a newer KV delta marks
+matching snapshot rows superseded one-way, removes them from `armedEventIds`, and keeps Worker
+preview / recap / wrap / today's-reporters paths quiet for those entries after the Mac outbox
+drains.
 
 ## 12. Tier 4a — cloud level scan + Pushover (2026-05-11)
 
@@ -392,7 +391,8 @@ every Worker fallback, so a Mac asleep before the print produced nothing.
 - `eps_consensus_vendor` on each `earningsBogeys` row (deviation D1 — the vendor EPS never enters
   `eps_consensus`; every surface labels it "vendor, basis unspecified").
 
-**KV key + endpoints.** The delta lives under KV key `armed-events` = `{ generation, entries }`.
+**KV key + endpoints.** The delta lives under KV key `armed-events` =
+`{ generation, entries, supersededEventIds, removedEventIds }`.
 Deviation D2: **the Mac never writes KV.** Its outbox drain POSTs the full payload to the Worker,
 exactly like every other Mac↔Worker marker:
 
@@ -400,9 +400,20 @@ exactly like every other Mac↔Worker marker:
   gate: a missing or mismatched `X-Cron-Secret` is **401** before any handler runs. The handler
   does the read-compare-write and applies **only when `generation` is strictly greater** than the
   stored one, so a replayed or out-of-order POST returns `{ applied: false, generation: <stored> }`
-  rather than regressing the key. A body over the size cap is 413; a malformed body is 400; entries
-  are parsed through a strict allowlist that DROPS unknown keys, so the Worker can never persist
-  (or render) prose the data-flow contract excludes.
+  rather than regressing the key. A body over the size cap is 413; a malformed body is **400** (a
+  payload that can never be accepted); a KV read or write failing is **503** (transient — retry the
+  same row); entries are parsed through a strict allowlist that DROPS unknown keys, so the Worker
+  can never persist (or render) prose the data-flow contract excludes.
+  **Acknowledgement (2026-10-07):** every 200 reply also carries
+  `accepted: { supersededEventIds: <count>, removedEventIds: <count> }` — the id lists in the record
+  the Worker now HOLDS for the generation it names (after its own dedupe), whether it just applied
+  it or already held it. One exception to "strictly greater": a record a pre-id-list build stored
+  (`{ generation, entries }`, neither list key) is completed by the SAME generation when that body
+  carries ids — never by a lower generation, never by a body with no ids.
+  It completes only when the body's entries are identical to the stored entries (same order, every
+  allowlisted key equal) and it only adds the two lists — it never replaces the stored entries; a
+  same-generation body with different entries (a restored Mac database) changes nothing and is
+  answered `applied:false` with zero counts.
 - `GET /internal/armed-events` — read-only twin, same auth, no side effects. Returns the stored
   generation and entries (0 / `[]` when absent or corrupt). It exists for the sandbox end-to-end
   and the post-deploy check.
@@ -425,7 +436,17 @@ single collection every Worker earnings consumer reads — never the raw snapsho
    inference, and the enrichment/recap gates read `enriched_at` / `actual_value` /
    `reaction_snapshot`. An event with NO snapshot row at all is synthesised whole — safe precisely
    because there is nothing to overwrite;
-5. **degraded-v10**: a snapshot below v11 (or a v11 one with no watermark) ignores the delta and
+5. only when that KV delta is newer than the snapshot, `supersededEventIds` and
+   `removedEventIds[].id` mark existing effective rows superseded and remove them from the armed
+   set; they never clear superseded, never delete a row, and never synthesise a missing id;
+6. **one print, one live row (2026-10-07):** in that same newer-delta case, a snapshot row whose
+   `source_key` AND `event_date` equal those of a LIVE delta entry with a different id is marked
+   superseded the same one-way way. This is the re-listed print: the vendor sync re-created the row
+   under a new id, the snapshot still holds the old id, and the new row was then armed. Never on
+   symbol alone, never for an empty `source_key`; a tombstoned entry, or one the delta itself lists
+   as replaced/removed, supersedes nothing; a snapshot row that is itself a live delta entry is left
+   alone. A re-listed name that is NOT armed has no delta entry, so its old snapshot row stays live;
+7. **degraded-v10**: a snapshot below v11 (or a v11 one with no watermark) ignores the delta and
    returns exactly today's behaviour — snapshot rows only, nothing armed. Cloud coverage falls back
    to held + watchlist.
 
@@ -436,9 +457,14 @@ Date windowing stays each consumer's own job.
 **Live horizon: 14 days (R23).** The Mac projection publishes live entries only for armed events
 dated `>= today − 14`. An event that ages past the horizon simply drops out of the list — it is
 NOT tombstoned, because it is still armed (a tombstone says "no longer armed", and would then be
-re-carried for 48 hours for nothing). The sweep-tick reconcile writes the first post-horizon
-generation naturally, since the entries differ. Nothing in the cloud selects an event that old, so
-the only effect is that the payload stops growing as never-disarmed worksheets accumulate.
+re-carried for 48 hours for nothing). The same lower-bound-only window limits
+`supersededEventIds` for earnings rows. `removedEventIds` are retained while `eventDate >= today −
+14` OR their `removedAt` stamp is younger than 48 hours, then drop out. Both id lists are capped at
+the Worker's 2,000-id limit by keeping the event dates NEAREST today first; the Mac logs one warning with
+only the dropped count. The sweep-tick reconcile writes the first post-horizon generation
+naturally, since the payload differs. Nothing in the cloud selects an event that old, so the only
+effect is that the payload stops growing as never-disarmed worksheets, replaced ids, and deleted ids
+accumulate.
 
 **Mac↔Worker coverage asymmetry — accepted.** The Mac's armed leg is CLUSTER-aware (R11: an event
 is covered when it, or any unsuperseded same-symbol/same-date earnings row, carries a worksheet
@@ -454,10 +480,38 @@ than the one just posted. That is the restored-DB wedge below, and the drain wri
 needs a reset"` and stops, instead of looping silently forever. Every `send_error` is host-prefixed
 (host and port only, never the secret) so the row names the target it could not reach.
 
+**Drain rules (`drainCloudOutbox`, 2026-10-07).** Every payload is the full list, so:
+
+- a row that carries replaced / removed ids is marked delivered ONLY when the reply's `accepted`
+  counts (for that same generation) equal what the payload sent; a payload with no ids in either
+  list needs no acknowledgement. Otherwise the row stays unsent with `send_error` =
+  `"<host>: worker did not acknowledge the replaced/removed id lists; deploy the Worker"` and the
+  drain STOPS in order, like a 5xx — nothing is closed, nothing later goes out. Once the Worker is
+  deployed the same row delivers on the next drain;
+- an unsent row below the highest ACKNOWLEDGED delivered generation is closed without a POST
+  (`sent_at` set, `send_error` = `"superseded by generation N"`);
+- **400** does not stop the drain: the row stays unsent (retried once per drain while it is the
+  newest) and is closed as soon as a later generation is delivered. **5xx / 503**, a network error
+  or a timeout stops the drain and the same row is retried, in order.
+
+**What the sync publishes as removed.** A vendor-sync delete of an earnings row publishes its id in
+`removedEventIds` — EXCEPT a re-listing (the same `source_key` stored again on the same date under
+a new id), which is not a removal; rule 6 above covers that print once the new row is armed.
+
 **Parity tests.** The projection key SET is pinned across the two sides
 (`ARMED_EVENT_PROJECTION_KEYS` ⇄ `ARMED_EVENT_ENTRY_KEYS`) because the Worker's parser drops
 unlisted keys silently; the `armed` status chip is pinned between `lib/digest/todays-reporters.ts`
 and its Worker mirror. Change both sides in the same commit (§14).
+
+**Deploy order for id-list payload changes.** Deploy the Worker FIRST. An old Worker drops the id
+lists and still answers `applied:true`; the acknowledgement rule above keeps the Mac from believing
+it (the row waits, and everything behind it waits with it), so a Mac-first deploy delays every
+later arm reaching the cloud until the Worker is deployed.
+
+**Accepted silence after a post-snapshot replacement.** Marking is one-way and never synthesises a
+row. Owner-approved 2026-10-07: if a company is replaced by a NEW unarmed row after the 2 AM
+snapshot, the cloud sends no preview/recap until the next snapshot rather than risking a wrong
+email.
 
 **Operational note — a restored Mac DB wedges the key.** Generations come from the local
 `cloud_outbox`. Restore the Mac DB from a backup and the counter restarts lower than the one KV
@@ -517,4 +571,3 @@ aws4fetch S3 GET (`Last-Modified`). See `memory/reference_r2_snapshot_debugging.
 ## 13. Manual-twin email rule mirror (2026-10-07)
 
 `workers/cron/src/manual-twin-email.ts` is a byte-for-byte copy of `lib/earnings/manual-twin-email.ts` (parity test in `workers/cron/test`). The Worker's fallback scan and wrap cluster apply it exactly as the Mac's finders do: among live hand-entered earnings rows of one issuer family within a chained 14-day window, only the earliest-dated row is an email candidate. Deploy the Worker together with the Mac whenever this rule changes.
-

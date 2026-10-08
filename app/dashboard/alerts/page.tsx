@@ -25,11 +25,15 @@ import { suggestOutcomeMessage } from "@/lib/alerts/suggest-message";
 import {
   BEYOND_SCAN_RANGE_EXPLANATION,
   BEYOND_SCAN_RANGE_LABEL,
+  CONDITION_ALREADY_MET_EXPLANATION,
+  CONDITION_ALREADY_MET_LABEL,
   LEVEL_PRICE_MAX_AGE_DAYS,
   STALE_PRICE_EXPLANATION,
   STALE_PRICE_LABEL,
   isLevelBeyondScanRange,
+  isLevelConditionMet,
   moveNeededPct,
+  moveNeededView,
   scanRangeDistancePct,
 } from "@/lib/levels/scan-range";
 import { useToast } from "../components/Toast";
@@ -47,6 +51,7 @@ import {
 } from "../components/SupersededEmailNote";
 import { EarningsEmailViewer } from "../components/EarningsEmailViewer";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import {
   FILTER_OPTIONS,
   parseAlertsViewParam,
@@ -231,6 +236,39 @@ function distancePct(level: number, current: number | null): number | null {
   return scanRangeDistancePct(level, current);
 }
 
+/**
+ * The alert list as it should look the moment "Restore to pending" is
+ * clicked, before the server answers. On an archive tab (Acted / Ignored /
+ * Dismissed) the row leaves the list; on All it stays and reads pending.
+ * Pure so the caller can keep the previous list and put it back on failure.
+ */
+export function alertsAfterRestore<
+  T extends { id: number; user_response: AlertResponse },
+>(alerts: T[], id: number, filter: StreamFilter): T[] {
+  if (filter === "acted" || filter === "ignored" || filter === "dismissed") {
+    return alerts.filter((a) => a.id !== id);
+  }
+  return alerts.map((a) => (a.id === id ? { ...a, user_response: "pending" } : a));
+}
+
+/** The `?symbol=` scope as the lists compare it: trimmed, upper-case, or null. */
+export function parseSymbolScope(raw: string | null | undefined): string | null {
+  const symbol = (raw ?? "").trim().toUpperCase();
+  return symbol ? symbol : null;
+}
+
+/**
+ * Whether a row belongs to the `?symbol=` scope. No scope matches every row.
+ * The match is the whole symbol, case-insensitive: "AA" never matches "AAPL".
+ */
+export function matchesSymbolScope(
+  rowSymbol: string | null | undefined,
+  scope: string | null,
+): boolean {
+  if (!scope) return true;
+  return (rowSymbol ?? "").trim().toUpperCase() === scope;
+}
+
 type StreamItem =
   | { kind: "alert"; recencyAt: string; alert: EnrichedAlert }
   | { kind: "review"; recencyAt: string; level: PendingLevel };
@@ -260,6 +298,11 @@ function AlertsPageInner() {
   const viewParam = searchParams.get("view");
   const initialFilter: StreamFilter = parseAlertsViewParam(viewParam);
 
+  // `?symbol=X` (links from a security's page) narrows the lists on screen to
+  // that symbol. The URL is the only place it lives: the chip's clear button
+  // removes the param. It never changes a fetch, a badge or a mutation.
+  const symbolScope = parseSymbolScope(searchParams.get("symbol"));
+
   const [filter, setFilter] = useState<StreamFilter>(initialFilter);
   const [alerts, setAlerts] = useState<EnrichedAlert[]>([]);
   const [reviewLevels, setReviewLevels] = useState<PendingLevel[]>([]);
@@ -267,6 +310,9 @@ function AlertsPageInner() {
   const [conflicts, setConflicts] = useState<EarningsDateConflict[]>([]);
   const [sentEmails, setSentEmails] = useState<SentEarningsEmail[]>([]);
   const [emailsLoaded, setEmailsLoaded] = useState(false);
+  // The Emails badge count. The archive ROWS still load lazily on first visit
+  // (below); only this number is fetched with the other pill counts.
+  const [emailCount, setEmailCount] = useState(0);
   const [pendingAlertCount, setPendingAlertCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [detecting, setDetecting] = useState(false);
@@ -300,6 +346,13 @@ function AlertsPageInner() {
 
   // When the user toggles a filter pill we drop ?view=review from the URL
   // (it was only meaningful as an entry hint).
+  function clearSymbolScope() {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("symbol");
+    const qs = params.toString();
+    router.replace(qs ? `?${qs}` : "?");
+  }
+
   function selectFilter(next: StreamFilter) {
     setFilter(next);
     if (searchParams.get("view")) {
@@ -328,12 +381,18 @@ function AlertsPageInner() {
       // Armed levels + date conflicts are fetched every refresh so their
       // pill badges stay live regardless of which filter is active (the
       // conflicts badge must agree with the NotificationBell count).
-      const [alertsRes, reviewRes, armedRes, conflictsRes] = await Promise.all([
-        fetch(alertsUrl),
-        fetch("/api/levels/review"),
-        fetch("/api/levels/armed"),
-        fetch("/api/earnings/conflicts"),
-      ]);
+      // The Emails badge count rides along too (count only, no rows). Its
+      // failure must not take the other pills down, so it resolves to null.
+      const [alertsRes, reviewRes, armedRes, conflictsRes, emailCountJson] =
+        await Promise.all([
+          fetch(alertsUrl),
+          fetch("/api/levels/review"),
+          fetch("/api/levels/armed"),
+          fetch("/api/earnings/conflicts"),
+          fetch("/api/earnings/emails?countOnly=true")
+            .then((r) => r.json())
+            .catch(() => null),
+        ]);
       const [alertsJson, reviewJson, armedJson, conflictsJson] = await Promise.all([
         alertsRes.json(),
         reviewRes.json(),
@@ -353,6 +412,9 @@ function AlertsPageInner() {
       }
       if (conflictsJson?.success) {
         setConflicts((conflictsJson.conflicts ?? []) as EarningsDateConflict[]);
+      }
+      if (emailCountJson?.success && typeof emailCountJson.count === "number") {
+        setEmailCount(emailCountJson.count);
       }
     } finally {
       setLoading(false);
@@ -401,6 +463,37 @@ function AlertsPageInner() {
       toast("Failed to update alert", "error");
     }
     refresh();
+  }
+
+  // Undo for an Acted / Ignored / Dismissed alert: back to the Pending inbox
+  // for a fresh decision. The row moves at once; if the write fails the list
+  // is put back exactly as it was and the reason is shown.
+  async function restoreToPending(id: number) {
+    const before = alerts;
+    setAlerts((prev) => alertsAfterRestore(prev, id, filter));
+    const failed = (message: string) => {
+      setAlerts(before);
+      toast(`Alert not restored. ${message}`, "error");
+    };
+    let res: Response;
+    try {
+      res = await apiFetch("/api/alerts", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, response: "pending" }),
+      });
+    } catch {
+      failed(networkFailureMessage("restore that alert"));
+      return;
+    }
+    const result = await readMutationResult(res);
+    if (!result.ok) {
+      failed(result.message);
+      return;
+    }
+    toast("Alert restored to pending", "info");
+    window.dispatchEvent(new CustomEvent("alerts-updated"));
+    await refresh();
   }
 
   function clearForceConfirm(id: number) {
@@ -715,28 +808,25 @@ function AlertsPageInner() {
     }
   }
 
-  async function runSuggest(alertId?: number, opts?: { silent?: boolean }) {
+  // Suggestions are a paid model call, so they are requested ONLY by a click:
+  // "Suggest all" here, or "Get suggestion" on one row (suggestOne). Nothing
+  // on this page asks for one on load or on refresh.
+  async function runSuggest() {
     setSuggesting(true);
-    if (!opts?.silent) setActionStatus(null);
+    setActionStatus(null);
     try {
       const res = await apiFetch("/api/alerts/suggest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(alertId ? { alertId } : {}),
+        body: JSON.stringify({}),
       });
       const json = await res.json();
-      // The page-load auto-fill path is fire-and-forget: no banner on success
-      // OR failure — only a user-clicked Suggest all reports its outcome.
-      if (opts?.silent) {
-        await refresh();
-        return;
-      }
-      if (json.success && !alertId) {
+      if (json.success) {
         const { generated, failed } = json as { generated?: number; failed?: number };
         if (generated !== undefined) {
           setActionStatus(suggestOutcomeMessage(generated, failed));
         }
-      } else if (!json.success) {
+      } else {
         setActionStatus(
           `Suggestion failed: ${json.error ?? `server returned ${res.status}`}. Existing suggestions are unaffected.`
         );
@@ -747,17 +837,25 @@ function AlertsPageInner() {
     }
   }
 
-  // Auto-fill suggestions for any pending alerts that don't have one yet —
-  // fire-and-forget, runs once per visit. Stays silent if the API errors.
-  useEffect(() => {
-    const needsSuggestion = alerts.some(
-      (a) => a.user_response === "pending" && !a.suggested_action
-    );
-    if (needsSuggestion && !suggesting) {
-      runSuggest(undefined, { silent: true });
+  // One alert's suggestion, asked for from its own row. Resolves to null on
+  // success (the refreshed row then carries the text) or to the reason it
+  // failed, which the row shows next to a Retry button.
+  async function suggestOne(alertId: number): Promise<string | null> {
+    let res: Response;
+    try {
+      res = await apiFetch("/api/alerts/suggest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alertId }),
+      });
+    } catch {
+      return networkFailureMessage("get a suggestion");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [alerts.length]);
+    const result = await readMutationResult(res);
+    if (!result.ok) return result.message;
+    await refresh();
+    return null;
+  }
 
   // Build the stream of items for the current filter.
   const streamItems = useMemo<StreamItem[]>(() => {
@@ -781,8 +879,26 @@ function AlertsPageInner() {
     return items;
   }, [filter, alerts, reviewLevels]);
 
+  // The same stream narrowed to `?symbol=`. Display only: every count badge
+  // and "Approve all" keep reading the full lists above.
+  const scopedItems = useMemo<StreamItem[]>(
+    () =>
+      streamItems.filter((it) =>
+        matchesSymbolScope(it.kind === "alert" ? it.alert.symbol : it.level.symbol, symbolScope),
+      ),
+    [streamItems, symbolScope],
+  );
+  const scopedArmedLevels = useMemo(
+    () => armedLevels.filter((l) => matchesSymbolScope(l.symbol, symbolScope)),
+    [armedLevels, symbolScope],
+  );
+  const scopedConflicts = useMemo(
+    () => conflicts.filter((c) => matchesSymbolScope(c.symbol, symbolScope)),
+    [conflicts, symbolScope],
+  );
+
   const sortedItems = useMemo<StreamItem[]>(() => {
-    if (!sort.field) return streamItems;
+    if (!sort.field) return scopedItems;
     const field = sort.field;
     const getValue = (it: StreamItem): unknown => {
       if (field === "recency") return it.recencyAt;
@@ -804,8 +920,8 @@ function AlertsPageInner() {
       }
       return null;
     };
-    return [...streamItems].sort((a, b) => compareValues(getValue(a), getValue(b), sort.dir));
-  }, [streamItems, sort]);
+    return [...scopedItems].sort((a, b) => compareValues(getValue(a), getValue(b), sort.dir));
+  }, [scopedItems, sort]);
 
   const reviewCount = reviewLevels.length;
   const armedCount = armedLevels.length;
@@ -816,6 +932,19 @@ function AlertsPageInner() {
   const isConflicts = filter === "conflicts";
   const isEmails = filter === "emails";
   const totalPending = pendingAlertCount + reviewCount;
+  // What the open tab holds before and after the symbol scope, for the chip.
+  const tabTotal = isArmed ? armedLevels.length : isConflicts ? conflicts.length : streamItems.length;
+  const tabShown = isArmed
+    ? scopedArmedLevels.length
+    : isConflicts
+      ? scopedConflicts.length
+      : scopedItems.length;
+  const scopedEmpty = symbolScope ? (
+    <p className="text-[11px] text-ink-dim py-6 text-center">
+      Nothing on this tab is for {symbolScope}. Clear the symbol filter above to see everything
+      here.
+    </p>
+  ) : null;
 
   return (
     <div className="space-y-5">
@@ -872,8 +1001,12 @@ function AlertsPageInner() {
                       ? armedCount
                       : opt.value === "conflicts"
                         ? conflictCount
-                        : opt.value === "emails" && emailsLoaded
-                          ? sentEmails.length
+                        : opt.value === "emails"
+                          ? // Once the rows are loaded the badge counts them,
+                            // so the number and the list cannot disagree.
+                            emailsLoaded
+                            ? sentEmails.length
+                            : emailCount
                           : 0;
               return (
                 <button
@@ -936,11 +1069,41 @@ function AlertsPageInner() {
           <span>{actionStatus}</span>
           <button
             onClick={() => setActionStatus(null)}
-            className="text-ink-faint hover:text-ink text-xs"
+            className="relative text-ink-faint hover:text-ink text-xs pointer-coarse:p-2 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
             aria-label="Dismiss status"
           >
             ×
           </button>
+        </div>
+      )}
+
+      {symbolScope && (
+        <div
+          role="status"
+          className="flex items-center gap-2 flex-wrap text-[11px] text-ink-dim"
+        >
+          <Chip tone="info" size="sm">
+            Symbol: {symbolScope}
+            <button
+              type="button"
+              onClick={clearSymbolScope}
+              aria-label={`Clear the ${symbolScope} symbol filter`}
+              className="relative ml-1.5 hover:brightness-125 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2.5"
+            >
+              ×
+            </button>
+          </Chip>
+          {isEmails ? (
+            <span>
+              The Emails tab is not narrowed by this filter. Use its own symbol box below.
+            </span>
+          ) : loading && tabTotal === 0 ? null : (
+            <span>
+              Showing <Count value={tabShown} /> of <Count value={tabTotal} /> on this tab. The
+              tab counts above still count every symbol
+              {reviewCount > 0 ? ", and Approve all still approves every pending level" : ""}.
+            </span>
+          )}
         </div>
       )}
 
@@ -961,25 +1124,33 @@ function AlertsPageInner() {
           <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
         ) : conflicts.length === 0 ? (
           <EmptyState filter={filter} />
+        ) : scopedConflicts.length === 0 ? (
+          scopedEmpty
         ) : (
-          <ConflictsList conflicts={conflicts} onConfirmed={refresh} />
+          <ConflictsList conflicts={scopedConflicts} onConfirmed={refresh} />
         )
       ) : isArmed ? (
         loading && armedLevels.length === 0 ? (
           <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
         ) : armedLevels.length === 0 ? (
           <EmptyState filter={filter} />
+        ) : scopedArmedLevels.length === 0 ? (
+          scopedEmpty
         ) : (
-          <ArmedLevelsList levels={armedLevels} />
+          <ArmedLevelsList levels={scopedArmedLevels} />
         )
       ) : loading && sortedItems.length === 0 ? (
         <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
-      ) : sortedItems.length === 0 ? (
+      ) : streamItems.length === 0 ? (
         <EmptyState filter={filter} />
+      ) : sortedItems.length === 0 ? (
+        scopedEmpty
       ) : isPending ? (
         <SplitPendingStream
           items={sortedItems}
           onRespond={respond}
+          onRestore={restoreToPending}
+          onSuggest={suggestOne}
           onDecideReview={decideReview}
           forceConfirm={forceConfirm}
           onCancelConfirm={cancelForceConfirm}
@@ -1004,7 +1175,13 @@ function AlertsPageInner() {
         <ul className="space-y-2">
           {sortedItems.map((it) =>
             it.kind === "alert" ? (
-              <AlertRow key={`a-${it.alert.id}`} alert={it.alert} onRespond={respond} />
+              <AlertRow
+                key={`a-${it.alert.id}`}
+                alert={it.alert}
+                onRespond={respond}
+                onRestore={restoreToPending}
+                onSuggest={suggestOne}
+              />
             ) : (
               <ReviewRow
                 key={`r-${it.level.id}`}
@@ -1062,10 +1239,11 @@ function EmptyState({ filter }: { filter: StreamFilter }) {
   if (filter === "conflicts") {
     return (
       <div className="rounded-xl border border-edge bg-panel p-10 text-center">
-        <p className="text-sm text-ink-dim">No date conflicts.</p>
+        <p className="text-sm text-ink-dim">No date conflicts in the next 14 days.</p>
         <p className="text-[11px] text-ink-faint mt-2">
-          Every upcoming earnings date agrees across Finnhub and Nasdaq. When they disagree,
-          the rows show up here for you to confirm against IBKR.
+          Every earnings date in the next 14 days agrees across Finnhub and Nasdaq. This tab
+          does not look further out: a disagreement on a later date shows up here, for you to
+          confirm against IBKR, once it is within 14 days.
         </p>
       </div>
     );
@@ -1309,6 +1487,17 @@ function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
   // The scanner's other skip condition: the "Now" price below is weeks old, so
   // the distance chip is describing a stale market and no scan will act on it.
   const stalePrice = l.price_is_stale === true;
+  // The level's condition already holds at the price shown, so there is no
+  // move left to advertise. Only claimed for a row the scanner will actually
+  // evaluate (both skip flags are the server's own), and only against a
+  // resolved threshold, never an MA level's creation snapshot.
+  const thresholdForMet = isStatic ? l.price : l.effective_price;
+  const alreadyMet =
+    !beyondScanRange &&
+    !stalePrice &&
+    l.current_price !== null &&
+    thresholdForMet !== null &&
+    isLevelConditionMet(l.level_type, thresholdForMet, l.current_price);
 
   return (
     <li className="py-2.5 px-3 flex items-start gap-3">
@@ -1349,18 +1538,28 @@ function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
               {l.direction}
             </span>
           )}
-          {moveNeededLabel && (
+          {alreadyMet ? (
             <Chip
               size="xs"
-              tone={near ? "warn" : "neutral"}
-              title={
-                vsLevelLabel
-                  ? `Move needed, measured from the current price (matches the security page). The scanner's own guard band measures distance from the level price instead: ${vsLevelLabel}.`
-                  : undefined
-              }
+              tone="warn"
+              title="The price shown is already on the trigger side of this level, so there is no move left to make. It fires on the next scan unless it already alerted today."
             >
-              {moveNeededLabel}
+              {CONDITION_ALREADY_MET_LABEL}
             </Chip>
+          ) : (
+            moveNeededLabel && (
+              <Chip
+                size="xs"
+                tone={near ? "warn" : "neutral"}
+                title={
+                  vsLevelLabel
+                    ? `Move needed, measured from the current price (matches the security page). The scanner's own guard band measures distance from the level price instead: ${vsLevelLabel}.`
+                    : undefined
+                }
+              >
+                {moveNeededLabel}
+              </Chip>
+            )
           )}
           {vsLevelLabel && (
             <span
@@ -1415,12 +1614,16 @@ function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
 function SplitPendingStream({
   items,
   onRespond,
+  onRestore,
+  onSuggest,
   onDecideReview,
   forceConfirm,
   onCancelConfirm,
 }: {
   items: StreamItem[];
   onRespond: (id: number, response: AlertResponse, note?: string) => void;
+  onRestore: (id: number) => void;
+  onSuggest: (id: number) => Promise<string | null>;
   onDecideReview: (id: number, status: LevelReviewStatus, force?: boolean) => void;
   forceConfirm: ForceConfirmMap;
   onCancelConfirm: (id: number) => void;
@@ -1446,7 +1649,13 @@ function SplitPendingStream({
           <ul className="space-y-2">
             {today.map((it) =>
               it.kind === "alert" ? (
-                <AlertRow key={`a-${it.alert.id}`} alert={it.alert} onRespond={onRespond} />
+                <AlertRow
+                  key={`a-${it.alert.id}`}
+                  alert={it.alert}
+                  onRespond={onRespond}
+                  onRestore={onRestore}
+                  onSuggest={onSuggest}
+                />
               ) : (
                 <ReviewRow
                   key={`r-${it.level.id}`}
@@ -1469,7 +1678,13 @@ function SplitPendingStream({
           <ul className="space-y-2">
             {older.map((it) =>
               it.kind === "alert" ? (
-                <AlertRow key={`a-${it.alert.id}`} alert={it.alert} onRespond={onRespond} />
+                <AlertRow
+                  key={`a-${it.alert.id}`}
+                  alert={it.alert}
+                  onRespond={onRespond}
+                  onRestore={onRestore}
+                  onSuggest={onSuggest}
+                />
               ) : (
                 <ReviewRow
                   key={`r-${it.level.id}`}
@@ -1582,12 +1797,44 @@ function ReviewGroupedByAuthor({
 function AlertRow({
   alert,
   onRespond,
+  onRestore,
+  onSuggest,
 }: {
   alert: EnrichedAlert;
   onRespond: (id: number, response: AlertResponse, note?: string) => void;
+  /** Return an Acted / Ignored / Dismissed alert to the Pending inbox. */
+  onRestore: (id: number) => void;
+  /** Ask for this one alert's AI suggestion. Null = stored; a string = why not. */
+  onSuggest: (id: number) => Promise<string | null>;
 }) {
+  // A restored alert keeps the note logged with its first response, so the
+  // form starts from it: logging again does not silently drop it.
+  const keptNote = alert.user_response_note ?? "";
   const [noteOpen, setNoteOpen] = useState(false);
-  const [note, setNote] = useState("");
+  const [note, setNote] = useState(keptNote);
+  const [suggestBusy, setSuggestBusy] = useState(false);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+
+  function submitNote() {
+    onRespond(alert.id, "acted", note || undefined);
+    setNoteOpen(false);
+    setNote("");
+  }
+
+  function cancelNote() {
+    setNoteOpen(false);
+    setNote(keptNote);
+  }
+
+  async function askSuggestion() {
+    setSuggestBusy(true);
+    setSuggestError(null);
+    try {
+      setSuggestError(await onSuggest(alert.id));
+    } finally {
+      setSuggestBusy(false);
+    }
+  }
 
   const when = new Date(alert.triggered_at).toLocaleString("en-US", {
     month: "short",
@@ -1610,6 +1857,11 @@ function AlertRow({
   const threshold = alertThresholdView(alert);
 
   const isPending = alert.user_response === "pending";
+  // No suggestion is stored (never asked for, or the request failed: the two
+  // cannot be told apart, and one button covers both). Offered where a
+  // suggestion can still inform a decision: pending and ignored alerts.
+  const canAskSuggestion =
+    !alert.suggested_action && (isPending || alert.user_response === "ignored");
   const responseLabel: Record<AlertResponse, { label: string; color: string }> = {
     pending: { label: "Pending", color: "text-gold-ink" },
     acted: { label: "Acted", color: "text-emerald-400" },
@@ -1704,7 +1956,25 @@ function AlertRow({
             </div>
           )}
 
-          {!isPending && alert.user_response_note && (
+          {canAskSuggestion && (
+            <div className="mt-2 flex items-center gap-2 flex-wrap text-[11px] text-ink-dim">
+              <span>
+                {suggestError
+                  ? `Suggestion unavailable. ${suggestError}`
+                  : "No suggestion stored for this alert."}
+              </span>
+              <button
+                onClick={askSuggestion}
+                disabled={suggestBusy}
+                className="relative px-2 py-0.5 rounded border border-edge text-ink-dim hover:text-ink disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+                title="Asks the AI model for a recommendation on this one alert. Nothing is requested until you click."
+              >
+                {suggestBusy ? "Thinking..." : suggestError ? "Retry" : "Get suggestion"}
+              </button>
+            </div>
+          )}
+
+          {alert.user_response_note && (
             <p className="text-[11px] text-ink-faint italic mt-2">
               {/* Trade notes carry share counts / execution prices — portfolio-derived */}
               Note: <PrivateText>{alert.user_response_note}</PrivateText>
@@ -1736,9 +2006,18 @@ function AlertRow({
               </button>
             </>
           ) : (
-            <span className={`text-[11px] ${responseLabel[alert.user_response].color}`}>
-              {responseLabel[alert.user_response].label}
-            </span>
+            <>
+              <span className={`text-[11px] ${responseLabel[alert.user_response].color}`}>
+                {responseLabel[alert.user_response].label}
+              </span>
+              <button
+                onClick={() => onRestore(alert.id)}
+                className="relative px-2.5 py-1 text-[11px] rounded border border-edge text-ink-dim hover:text-ink pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+                title="Return this alert to the Pending inbox for a fresh decision. Its note is kept."
+              >
+                Restore to pending
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -1750,24 +2029,29 @@ function AlertRow({
             onChange={(e) => setNote(e.target.value)}
             placeholder="e.g. Bought 50 shares at $175.20"
             className="flex-1 bg-canvas border border-edge rounded px-2 py-1 text-xs"
+            // Enter logs the note (the same handler as the Log button) and
+            // Escape cancels. Enter that only confirms an IME composition
+            // is left alone.
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                submitNote();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                cancelNote();
+              }
+            }}
             autoFocus
           />
           <button
-            onClick={() => {
-              onRespond(alert.id, "acted", note || undefined);
-              setNoteOpen(false);
-              setNote("");
-            }}
+            onClick={submitNote}
             className="px-3 py-1 text-[11px] rounded bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30"
           >
             Log
           </button>
           <button
-            onClick={() => {
-              setNoteOpen(false);
-              setNote("");
-            }}
-            className="text-ink-faint hover:text-ink text-xs"
+            onClick={cancelNote}
+            className="relative text-ink-faint hover:text-ink text-xs pointer-coarse:p-2 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
           >
             Cancel
           </button>
@@ -1802,7 +2086,21 @@ function ReviewRow({
   // (QA finding alerts-review--distance-pct-wrong-denominator-and-sign-all-rows).
   // Both helpers return percent here (not the API's fraction).
   const distVal = distancePct(level.price, level.current_price);
-  const moveNeeded = moveNeededPct(level.current_price, level.price);
+  // moveNeededView also says whether the level's condition ALREADY holds at
+  // this price, by the same direction rule and band the Approve guard runs
+  // (checkLevelTriggerState; parity-pinned in
+  // tests/levels/move-needed-view.test.ts). A row that says "18% move needed"
+  // and then refuses Approve as "already past this level" contradicts itself.
+  const moveView = moveNeededView(
+    level.level_type,
+    level.current_price,
+    level.price,
+    level.security_type,
+  );
+  const moveNeeded = moveView?.pct ?? null;
+  // Static levels only: an MA level is judged against its live MA, which is
+  // resolved server-side and is not on this row.
+  const alreadyMet = level.price_source === "static" && moveView?.alreadyMet === true;
   const nearReview = moveNeeded !== null && Math.abs(moveNeeded) <= 2;
   // Pre-decision disclosure: a mis-scaled extracted level (SPX prices on SPY)
   // used to look like any other pending row and approve silently into coverage
@@ -1846,18 +2144,24 @@ function ReviewRow({
                 {formatPriceSourceLabel(level.price_source)}
               </span>
             )}
-            {moveNeeded !== null && (
-              <Chip
-                size="xs"
-                tone={nearReview ? "warn" : "neutral"}
-                title={
-                  distVal !== null
-                    ? `Move needed, measured from the current price (matches the security page). The scanner's own guard band measures distance from the level price instead: ${formatPercent(Math.abs(distVal), 1)} vs level.`
-                    : undefined
-                }
-              >
-                {formatPercent(moveNeeded)} move needed
+            {alreadyMet ? (
+              <Chip size="xs" tone="warn" title={CONDITION_ALREADY_MET_EXPLANATION}>
+                {CONDITION_ALREADY_MET_LABEL}
               </Chip>
+            ) : (
+              moveNeeded !== null && (
+                <Chip
+                  size="xs"
+                  tone={nearReview ? "warn" : "neutral"}
+                  title={
+                    distVal !== null
+                      ? `Move needed, measured from the current price (matches the security page). The scanner's own guard band measures distance from the level price instead: ${formatPercent(Math.abs(distVal), 1)} vs level.`
+                      : undefined
+                  }
+                >
+                  {formatPercent(moveNeeded)} move needed
+                </Chip>
+              )
             )}
             {distVal !== null && (
               <span

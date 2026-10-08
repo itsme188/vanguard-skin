@@ -150,11 +150,6 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   const totalReturnPct = twrResult?.totalReturn ?? null;
   const annualizedTwr = twrResult?.annualizedReturn ?? null;
   const xirrAnnualized = xirrResult?.xirr ?? null;
-  // Unused (dead code) — no caller reads cumulativeGain; kept pending the TODO "document or delete" ruling.
-  const cumulativeGain =
-    xirrResult && xirrResult.totalInvested > 0
-      ? xirrResult.currentValue + xirrResult.totalWithdrawn - xirrResult.totalInvested
-      : null;
 
   // ── Reconciliation strip ────────────────────────────────────────
   // Use latest month-end we have for the scope's primary account
@@ -323,8 +318,10 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
           {/* Cross-check disclosure strip — the detailed per-month banding
               (consistent / investigate / not_comparable / insufficient)
               lives in the trust drawer (TrustStripDrawer's Performance
-              panel); this strip is a lightweight pointer there, not a
-              duplicate of the band logic. divergenceBp is a portfolio-
+              panel), which is on the Workspace view and NOT on this one; this
+              strip is a lightweight pointer there, not a duplicate of the
+              band logic, so its copy names the Workspace view and the strip
+              cell that opens the drawer. divergenceBp is a portfolio-
               derived return figure, so it's masked through <Pct> like
               statementTwr/dietzReturn are everywhere else — never a raw
               unmasked bp span (see TrustStripDrawer for why it's shown at
@@ -341,11 +338,11 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                 {reconciliation.band === "consistent" ? (
                   <>
                     Independently cross-checked (Modified Dietz) through{" "}
-                    <strong className="text-ink">{reconciliation.monthEndDate}</strong> — bands shown per month in the trust drawer.
+                    <strong className="text-ink">{reconciliation.monthEndDate}</strong> — bands shown per month in the trust drawer on the Workspace view (open its “Cross-checked (Modified Dietz)” cell).
                   </>
                 ) : (
                   <>
-                    Latest independent check for <strong className="text-ink">{reconciliation.monthEndDate}</strong>: {BAND_LABEL[reconciliation.band]} — bands shown per month in the trust drawer.
+                    Latest independent check for <strong className="text-ink">{reconciliation.monthEndDate}</strong>: {BAND_LABEL[reconciliation.band]} — bands shown per month in the trust drawer on the Workspace view (open its “Cross-checked (Modified Dietz)” cell).
                   </>
                 )}
               </span>
@@ -368,7 +365,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                 subNode={
                   annualizedTwr !== null ? (
                     <>
-                      ≈ <Pct value={annualizedTwr * 100} digits={0} signed /> annualized
+                      ≈ <Pct value={annualizedTwr * 100} digits={2} signed /> annualized
                     </>
                   ) : null
                 }
@@ -540,13 +537,51 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                 // longest selectable period regardless of the selection.
                 // Computed from the curve's own rows — the same scope
                 // coverage the risk caption above now reports.
-                const notice = dataWindowNotice(
-                  startDate,
-                  equityCurveData[0]?.date ?? null,
-                  equityCurveData[equityCurveData.length - 1]?.date ?? null,
-                );
-                return notice ? (
-                  <p className="text-xs text-ink-faint -mt-2">{notice}</p>
+                // The two windows can still differ honestly: the risk tiles
+                // read every daily valuation, the curve plots only the days
+                // that ALSO have a benchmark close (buildEquityCurveData), so
+                // it can open later or stop earlier. The caption therefore
+                // names its metric, and when its window is not the risk
+                // tiles' window it says why and names theirs — never two
+                // identically worded captions with different dates.
+                const curveStart = equityCurveData[0]?.date ?? null;
+                const curveEnd = equityCurveData[equityCurveData.length - 1]?.date ?? null;
+                const notice = dataWindowNotice(startDate, curveStart, curveEnd);
+                const riskStart = riskResult?.seriesStart ?? null;
+                const riskEnd = riskResult?.seriesEnd ?? null;
+                const curveWindowDiffers =
+                  riskStart !== null &&
+                  riskEnd !== null &&
+                  (riskStart !== curveStart || riskEnd !== curveEnd);
+                // The END side: the curve keeps every daily point the book
+                // has, so it can run past the Period window card's End (the
+                // last month-end anchor the TWR chain reaches). Say so rather
+                // than leave two end dates for one window on the same page.
+                const windowEnd = twrResult?.endDate ?? null;
+                const runsPastWindow = curveEnd !== null && windowEnd !== null && curveEnd > windowEnd;
+                return notice || runsPastWindow ? (
+                  <p className="text-xs text-ink-faint -mt-2">
+                    {notice && (
+                      <>
+                        Equity curve: {notice.charAt(0).toLowerCase() + notice.slice(1)}
+                        {curveWindowDiffers && (
+                          <>
+                            . It plots only days that also have a {BENCHMARK_SYMBOL} close; the daily
+                            valuations behind Max drawdown &amp; Sharpe run {fmtDate(riskStart ?? undefined)} –{" "}
+                            {fmtDate(riskEnd ?? undefined)}
+                          </>
+                        )}
+                      </>
+                    )}
+                    {runsPastWindow && (
+                      <>
+                        {notice ? ". The " : "Equity curve: the "}
+                        daily history runs to {fmtDate(curveEnd ?? undefined)}, past the Period
+                        window’s {fmtDate(windowEnd ?? undefined)} month-end anchor — the TWR above
+                        stops at that anchor
+                      </>
+                    )}
+                  </p>
                 ) : null;
               })()}
             </>

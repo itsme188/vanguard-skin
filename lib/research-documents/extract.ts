@@ -79,13 +79,78 @@ export class ResearchPdfTooLargeError extends Error {
   }
 }
 
+/**
+ * `upstream` = the AI service failed or refused the request (a gateway-class
+ * failure). `unusable_output` = the service answered, but with nothing this
+ * document can be built from; that is a fact about the file, not an outage.
+ */
+export type ResearchPdfExtractionErrorKind = "upstream" | "unusable_output";
+
 export class ResearchPdfExtractionError extends Error {
   public readonly rawSnippet: string;
-  constructor(message: string, rawSnippet: string) {
+  public readonly kind: ResearchPdfExtractionErrorKind;
+  constructor(
+    message: string,
+    rawSnippet: string,
+    kind: ResearchPdfExtractionErrorKind = "upstream",
+  ) {
     super(message);
     this.name = "ResearchPdfExtractionError";
     this.rawSnippet = rawSnippet;
+    this.kind = kind;
   }
+}
+
+/**
+ * Shown when the model answers with no text at all (a scanned or image-only
+ * PDF, or one with no readable content). User-facing: no internal term, and
+ * no snippet goes with it (the "output" is an empty list).
+ */
+export const RESEARCH_PDF_NO_READABLE_OUTPUT_MESSAGE =
+  "Claude could not read this PDF: it returned no summary. Try a text-based report rather than a scanned or image-only file.";
+
+/**
+ * Shown when the model, asked to copy a document out, answers with a refusal
+ * instead of the text. No snippet goes with it: the "output" is the refusal.
+ */
+export const RESEARCH_FULL_TEXT_REFUSED_MESSAGE =
+  "Claude declined to copy out the full text of this document, so no full text was stored.";
+
+/**
+ * Stored as the body when a forwarded PDF's full text was refused: the
+ * document and its summary are kept, and the full-text panel says why it is
+ * empty instead of showing the refusal.
+ */
+export const RESEARCH_FULL_TEXT_REFUSED_PLACEHOLDER =
+  "[Full text not stored: Claude declined to copy this document out. The summary and key points are unaffected.]";
+
+// A refusal opens with a first-person "cannot" and, in the same breath, names
+// the copying it will not do. Both must hold, and the opening must be the
+// start of the answer: a real document may say either thing somewhere.
+const REFUSAL_OPENING_WINDOW = 60;
+const REFUSAL_REASON_WINDOW = 250;
+const REFUSAL_INABILITY_RE =
+  /\bI(?:['\u2019]m| am)? (?:not able to|unable to|cannot|can['\u2019]t|can not|won['\u2019]t be able to|will not be able to)\b/i;
+const REFUSAL_COPY_TERM_RE =
+  /\b(?:reproduc\w*|transcri\w*|verbatim|copyright\w*|(?:full|complete|entire)\s+(?:verbatim\s+)?(?:text|article|document|report|body|content|transcript))\b/i;
+
+/**
+ * True when text returned as a document's body is the model declining to
+ * copy the document out ("I'm not able to reproduce the complete verbatim
+ * text of this article..."). Stored as the body, that answer was shown as the
+ * document's full text and indexed for chat search.
+ *
+ * Checks the model's OUTPUT only. Deliberately narrow: a wrongly flagged
+ * real document loses its full text, so first-person prose alone ("I cannot
+ * recommend the shares") and a copyright notice alone both pass.
+ */
+export function isRefusalShapedExtraction(text: string): boolean {
+  const opening = text.replace(/^\s*```(?:[a-z]+)?\s*/i, "").trimStart();
+  const match = REFUSAL_INABILITY_RE.exec(opening.slice(0, REFUSAL_OPENING_WINDOW + 40));
+  if (!match || match.index > REFUSAL_OPENING_WINDOW) return false;
+  return REFUSAL_COPY_TERM_RE.test(
+    opening.slice(match.index, match.index + REFUSAL_REASON_WINDOW),
+  );
 }
 
 // ─── Prompts ─────────────────────────────────────────────────────
@@ -190,6 +255,15 @@ export async function extractResearchRawText(
       raw.slice(0, 200),
     );
   }
+  if (isRefusalShapedExtraction(unfenced)) {
+    // The upload route marks the document's full text as failed; the
+    // metadata call is separate and its summary stands.
+    throw new ResearchPdfExtractionError(
+      RESEARCH_FULL_TEXT_REFUSED_MESSAGE,
+      "",
+      "unusable_output",
+    );
+  }
   return unfenced;
 }
 
@@ -202,7 +276,18 @@ export async function extractResearchPdf(
 ): Promise<ExtractedResearchDocument> {
   const [metadata, rawText] = await Promise.all([
     extractResearchMetadata(pdfBytes),
-    extractResearchRawText(pdfBytes),
+    // This caller has no "full text failed" state to fall back on, and a
+    // refused body must not cost the whole document: keep the metadata and
+    // say plainly why there is no full text.
+    extractResearchRawText(pdfBytes).catch((err) => {
+      if (
+        err instanceof ResearchPdfExtractionError &&
+        err.message === RESEARCH_FULL_TEXT_REFUSED_MESSAGE
+      ) {
+        return RESEARCH_FULL_TEXT_REFUSED_PLACEHOLDER;
+      }
+      throw err;
+    }),
   ]);
   return { ...metadata, raw_text: rawText };
 }
@@ -265,9 +350,17 @@ async function callClaudeWithPdf(
   }
   const textBlock = response.content.find((b) => b.type === "text");
   if (!textBlock || textBlock.type !== "text") {
+    // QA: research-documents-upload--500-renders-raw-anthropic-envelope-regression-1.
+    // The old copy ("...contained no text block" + a "[]" snippet) was an
+    // internal diagnostic rendered verbatim under the drop zone.
+    console.error(
+      "Research PDF extraction: model returned no text block; content types:",
+      response.content.map((b) => b.type),
+    );
     throw new ResearchPdfExtractionError(
-      "Claude response contained no text block",
-      JSON.stringify(response.content).slice(0, 200),
+      RESEARCH_PDF_NO_READABLE_OUTPUT_MESSAGE,
+      "",
+      "unusable_output",
     );
   }
   return textBlock.text;
@@ -294,6 +387,7 @@ export function parseMetadataResponse(
     throw new ResearchPdfExtractionError(
       "Metadata response was not valid JSON.",
       jsonText.slice(0, 500),
+      "unusable_output",
     );
   }
   return normalizeMetadata(parsed, modelId);
@@ -321,15 +415,26 @@ const SENTIMENTS: ResearchDocumentSentiment[] = [
   "mixed",
 ];
 
+/** Longest tag kept, in characters (after normalization). */
+export const RESEARCH_TAG_MAX_LENGTH = 40;
+/** Most tags one document carries. */
+export const RESEARCH_TAG_MAX_COUNT = 15;
+
 /**
- * Normalize free-text tags: lowercase, trim, strip weird chars, dedupe, cap
- * per-tag length + collection size. Accepts an array or a single string.
- * Exported for the mutation layer to reuse on user-edited tags.
+ * Normalize free-text tags: split comma-separated entries, lowercase, trim,
+ * strip weird chars, dedupe, cap per-tag length + collection size. Accepts an
+ * array of strings. Exported for the mutation layer to reuse on user-edited
+ * tags.
+ *
+ * The comma split runs BEFORE the character whitelist: the whitelist turns a
+ * comma into a space, so "alpha, beta" used to be stored as the single tag
+ * "alpha beta".
  */
 export function normalizeTags(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   const cleaned = raw
     .filter((t): t is string => typeof t === "string")
+    .flatMap((t) => t.split(","))
     .map((t) =>
       t
         .toLowerCase()
@@ -337,7 +442,7 @@ export function normalizeTags(raw: unknown): string[] {
         .replace(/\s+/g, " ")
         .trim(),
     )
-    .filter((t) => t.length > 0 && t.length <= 40);
+    .filter((t) => t.length > 0 && t.length <= RESEARCH_TAG_MAX_LENGTH);
   const seen = new Set<string>();
   const out: string[] = [];
   for (const t of cleaned) {
@@ -345,7 +450,7 @@ export function normalizeTags(raw: unknown): string[] {
       seen.add(t);
       out.push(t);
     }
-    if (out.length >= 15) break;
+    if (out.length >= RESEARCH_TAG_MAX_COUNT) break;
   }
   return out;
 }
@@ -483,6 +588,15 @@ export function parseClaudeResponse(
     throw new ResearchPdfExtractionError(
       "raw_text was empty after the delimiter — nothing to index.",
       raw.slice(Math.max(0, beginIdx - 100), beginIdx + 200),
+    );
+  }
+  if (isRefusalShapedExtraction(rawText)) {
+    // Thrown, not stored: for a forwarded link the inbox then fetches the
+    // page itself and keeps that text (lib/research-inbox/ingest.ts).
+    throw new ResearchPdfExtractionError(
+      RESEARCH_FULL_TEXT_REFUSED_MESSAGE,
+      "",
+      "unusable_output",
     );
   }
 

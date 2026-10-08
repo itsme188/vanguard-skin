@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import type { LevelAlert, AlertResponse } from "@/lib/types";
 import { formatUSDPrecise } from "@/lib/format";
 import { Section } from "./Section";
@@ -83,6 +84,24 @@ export function AlertPriceRow({
 }
 
 /**
+ * Where the section's link goes: the Alerts inbox, opened on the tab that
+ * holds these rows. A crossing still awaiting a response can only be answered
+ * there, so any pending row sends the link to Pending; otherwise to All.
+ */
+export function alertsInboxLink(
+  alerts: ReadonlyArray<{ user_response: AlertResponse }>,
+  symbol: string | null,
+): { href: string; label: string } {
+  const pending = alerts.filter((a) => a.user_response === "pending").length;
+  const params = new URLSearchParams({ view: pending > 0 ? "pending" : "all" });
+  if (symbol) params.set("symbol", symbol);
+  return {
+    href: `/dashboard/alerts?${params.toString()}`,
+    label: pending > 0 ? "Respond in Alerts →" : "All alerts →",
+  };
+}
+
+/**
  * Per-security alerts history. Renders below LevelsPanel on the Security
  * Detail page so the user sees how past level crossings played out —
  * provides context when deciding whether a current level is worth taking
@@ -113,10 +132,20 @@ export function RecentAlertsPanel({ securityId }: { securityId: number }) {
   if (loading) return null; // Don't show skeleton — keep page quiet.
   if (alerts.length === 0) return null; // Hide the section entirely when there's no history.
 
+  const inbox = alertsInboxLink(alerts, alerts.find((a) => a.symbol)?.symbol ?? null);
+
   return (
     <Section
       title="Recent Alerts"
       subtitle={`Last ${alerts.length} level crossing${alerts.length === 1 ? "" : "s"} · past responses as context`}
+      action={
+        <Link
+          href={inbox.href}
+          className="text-xs font-medium text-blue hover:brightness-110 transition-colors"
+        >
+          {inbox.label}
+        </Link>
+      }
     >
       <div>
         {alerts.map((a, idx) => {

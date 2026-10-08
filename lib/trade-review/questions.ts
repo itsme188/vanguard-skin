@@ -96,6 +96,50 @@ export const QUESTIONS_SCHEMA = jsonSchema<QuestionsResult>({
   required: ["questions"],
 });
 
+function formatQty(qty: number): string {
+  return qty >= 1 ? qty.toFixed(0) : qty.toPrecision(3);
+}
+
+/**
+ * One line per trade for the question step. It carries the same facts the
+ * full review prompt gets — direction, entry date(s), FIFO holding period and
+ * whether the close was a trim or a full exit — so a question can never call
+ * a trim "sold all" or say the holding period is not shown
+ * (qa:analysis-trade-reviews--context-question-says-sold-all-of-position-still-held).
+ * Direction comes from the lots' broker evidence (`isShort`), never inferred.
+ * Pure function — no DB access.
+ */
+export function buildQuestionTradeTable(
+  groupedTrades: GroupedTrade[],
+  marketContexts: TradeMarketContext[]
+): string {
+  return groupedTrades
+    .map((t, i) => {
+      const sign = t.realizedPnl >= 0 ? "+" : "";
+      const ctx = marketContexts[i];
+      const hasMarketData = ctx?.stockContext !== null;
+      const opened =
+        t.earliestEntryDate === t.latestEntryDate
+          ? t.earliestEntryDate
+          : `${t.earliestEntryDate} to ${t.latestEntryDate}`;
+      const action = t.isShort
+        ? `short — sold to open ${opened}, bought to cover ${t.exitDate}`
+        : `long — bought ${opened}, sold ${t.exitDate}`;
+      const hold =
+        t.lots.length > 1 && t.minHoldingDays !== t.maxHoldingDays
+          ? `FIFO holding period ${t.minHoldingDays}–${t.maxHoldingDays} days`
+          : `FIFO holding period ${t.maxHoldingDays} days`;
+      const rp = ctx?.remainingPosition ?? null;
+      const position = !rp
+        ? "remaining position not known"
+        : rp.isTrim
+          ? `TRIM — closed ${formatQty(rp.soldShares)}, ${formatQty(rp.remainingShares)} still held (${(rp.retainedPct * 100).toFixed(0)}% of position kept)`
+          : "FULL EXIT — nothing left";
+      return `${i + 1}. ${t.symbol} (${action}): ${sign}$${t.realizedPnl.toFixed(0)} (${sign}${t.returnPct.toFixed(1)}%), ${formatQty(t.totalQuantity)} shares, ${t.lots.length} lot(s), ${hold}, ${position}${hasMarketData ? "" : " [no price history]"}`;
+    })
+    .join("\n");
+}
+
 /**
  * Generate clarifying questions about trades where context is unclear.
  * Uses Sonnet for cost efficiency (~$0.01 per call).
@@ -109,13 +153,7 @@ export async function generateQuestions(
 ): Promise<TradeQuestion[]> {
   if (groupedTrades.length === 0) return [];
 
-  const tradeTable = groupedTrades
-    .map((t, i) => {
-      const sign = t.realizedPnl >= 0 ? "+" : "";
-      const hasMarketData = marketContexts[i]?.stockContext !== null;
-      return `${i + 1}. ${t.symbol}: sold ${t.exitDate}, ${sign}$${t.realizedPnl.toFixed(0)} (${sign}${t.returnPct.toFixed(1)}%), ${t.totalQuantity >= 1 ? t.totalQuantity.toFixed(0) : t.totalQuantity.toPrecision(3)} shares, ${t.lots.length} lot(s)${hasMarketData ? "" : " [no price history]"}`;
-    })
-    .join("\n");
+  const tradeTable = buildQuestionTradeTable(groupedTrades, marketContexts);
 
   const prompt = `You are reviewing ${summary.totalTrades} trade(s) for a monthly review.
 
@@ -133,6 +171,11 @@ Do NOT ask about trades where:
 - The account profile already explains the behavior (e.g., long holds in a Roth IRA)
 - The outcome is so clear-cut that intent doesn't change the assessment
 - You'd be asking a generic question like "what was your thesis?" for every trade
+
+Use only the facts on each trade's line:
+- The holding period and entry date(s) are shown. Never say they are missing. The holding period is FIFO (oldest matched lot to the close), so for an actively traded name it can be longer than the trader's own sense of the position.
+- A trade marked TRIM closed part of a position that is still held. Never describe it as selling all of the position. Only a trade marked FULL EXIT closed the whole position.
+- A short trade was sold to open and bought to cover.
 
 Keep questions concise and specific. One question per trade maximum.`;
 

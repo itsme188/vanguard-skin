@@ -3,6 +3,7 @@ import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbo
 import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
 import { addDays, mondayOf, MAX_EARNINGS_DAYS_AHEAD } from "@/lib/calendar/date-utils";
 import { resolveEarningsReleaseTime } from "@/lib/earnings/wire-times";
+import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 
 export interface ConfirmEarningsDateInput {
   symbol: string;
@@ -72,34 +73,45 @@ export function confirmEarningsDate(
     }) ?? (cascadeEventTime === "BMO" ? "08:00" : "16:15");
   const sourceKey = `manual:${symbol}:${input.confirmedDate}:earnings`;
 
-  db.prepare(
-    `INSERT INTO calendar_events
-       (source, event_type, event_date, event_time, release_time, title, symbol,
-        security_id, source_key, week_of, date_status, superseded)
-     VALUES ('manual', 'earnings', ?, ?, ?, ?, ?, ?, ?, ?, 'user_confirmed', 0)
-     ON CONFLICT(source_key) DO UPDATE SET
-       event_date = excluded.event_date,
-       event_time = excluded.event_time,
-       release_time = excluded.release_time,
-       security_id = excluded.security_id,
-       date_status = 'user_confirmed',
-       superseded = 0`,
-  ).run(
-    input.confirmedDate,
-    input.confirmedTime ?? null,
-    releaseTime,
-    `${symbol} earnings`,
-    symbol,
-    securityId,
-    sourceKey,
-    mondayOf(input.confirmedDate),
-  );
+  db.transaction(() => {
+    const before = db
+      .prepare(
+        `SELECT COALESCE(superseded, 0) AS superseded
+           FROM calendar_events
+          WHERE source_key = ?`,
+      )
+      .get(sourceKey) as { superseded: number } | undefined;
 
-  // Reconcile so the cluster's sync rows are superseded around the locked date.
-  // Scoped to the confirmed issuer's family: a whole-book pass here folded
-  // OTHER symbols' manual sibling rows whenever they carried a user_confirmed
-  // row (QA 2026-09-26 — confirming NKE hid two MU rows with no message).
-  reconcileEarningsDates(db, { today: input.today, symbols: [symbol] });
+    db.prepare(
+      `INSERT INTO calendar_events
+         (source, event_type, event_date, event_time, release_time, title, symbol,
+          security_id, source_key, week_of, date_status, superseded)
+       VALUES ('manual', 'earnings', ?, ?, ?, ?, ?, ?, ?, ?, 'user_confirmed', 0)
+       ON CONFLICT(source_key) DO UPDATE SET
+         event_date = excluded.event_date,
+         event_time = excluded.event_time,
+         release_time = excluded.release_time,
+         security_id = excluded.security_id,
+         date_status = 'user_confirmed',
+         superseded = 0`,
+    ).run(
+      input.confirmedDate,
+      input.confirmedTime ?? null,
+      releaseTime,
+      `${symbol} earnings`,
+      symbol,
+      securityId,
+      sourceKey,
+      mondayOf(input.confirmedDate),
+    );
+
+    // Reconcile so the cluster's sync rows are superseded around the locked date.
+    // Scoped to the confirmed issuer's family: a whole-book pass here folded
+    // OTHER symbols' manual sibling rows whenever they carried a user_confirmed
+    // row (QA 2026-09-26 — confirming NKE hid two MU rows with no message).
+    reconcileEarningsDates(db, { today: input.today, symbols: [symbol] });
+    if (before?.superseded) writeArmedEventsOutboxRow(db, { today: input.today });
+  })();
 
   return { ok: true };
 }

@@ -17,7 +17,7 @@ function createTestDb(): Database.Database {
       id INTEGER PRIMARY KEY,
       symbol TEXT NOT NULL UNIQUE,
       name TEXT,
-      security_type TEXT DEFAULT 'stock',
+      security_type TEXT DEFAULT 'stock', expiration_date TEXT,
       multiplier REAL DEFAULT 1,
       sector TEXT,
       market_cap_category TEXT,

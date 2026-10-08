@@ -312,6 +312,76 @@ describe("armed chip (effective calendar)", () => {
     expect(block).toContain("| WATCHCO | wl |");
   });
 
+  it("omits a snapshot reporter marked superseded by a newer delta", () => {
+    const snapshot = makeSnapshot({
+      schemaVersion: 11,
+      armedGeneration: 3,
+      armedEvents: [],
+      calendarEvents: [makeEvent({ id: 1, symbol: "HELDCO" })] as never,
+      heldSymbols: ["HELDCO"],
+    });
+    const block = buildTodaysReportersBlock(snapshot, TODAY, {
+      generation: 4,
+      entries: [],
+      supersededEventIds: [1],
+    });
+    expect(block).toBeNull();
+  });
+
+  it("[M2] omits a snapshot reporter marked removed by a newer delta; control still renders", () => {
+    const snapshot = makeSnapshot({
+      schemaVersion: 11,
+      armedGeneration: 3,
+      armedEvents: [],
+      calendarEvents: [
+        makeEvent({ id: 1, symbol: "HELDCO" }),
+        makeEvent({ id: 2, symbol: "WATCHCO" }),
+      ] as never,
+      heldSymbols: ["HELDCO", "WATCHCO"],
+    });
+    const block = buildTodaysReportersBlock(snapshot, TODAY, {
+      generation: 4,
+      entries: [],
+      removedEventIds: [{ id: 1, eventDate: TODAY, removedAt: "2026-09-02T12:00:00.000Z" }],
+    })!;
+    expect(block).not.toContain("HELDCO");
+    expect(block).toContain("| WATCHCO | held |");
+  });
+
+  it("a re-listed, armed print is ONE reporters line; an unarmed re-listing keeps today's line", () => {
+    const key = `finnhub:HELDCO:${TODAY}`;
+    const snapshot = makeSnapshot({
+      schemaVersion: 11,
+      armedGeneration: 3,
+      armedEvents: [],
+      calendarEvents: [makeEvent({ id: 10, symbol: "HELDCO", source_key: key })] as never,
+      heldSymbols: ["HELDCO"],
+    });
+    const relisted = { ...armedEntry(20, "HELDCO"), sourceKey: key, source: "finnhub" };
+    const eff = buildTodaysReportersBlock(snapshot, TODAY, { generation: 4, entries: [relisted] })!;
+    expect(eff.split("\n").filter((l) => l.includes("| HELDCO |"))).toHaveLength(1);
+
+    const unarmed = buildTodaysReportersBlock(snapshot, TODAY, { generation: 4, entries: [] })!;
+    expect(unarmed).toBe(buildTodaysReportersBlock(snapshot, TODAY)!);
+    expect(unarmed).toContain("| HELDCO | held |");
+  });
+
+  it("keeps a snapshot reporter when the superseded-id delta is not newer", () => {
+    const snapshot = makeSnapshot({
+      schemaVersion: 11,
+      armedGeneration: 4,
+      armedEvents: [],
+      calendarEvents: [makeEvent({ id: 1, symbol: "HELDCO" })] as never,
+      heldSymbols: ["HELDCO"],
+    });
+    const block = buildTodaysReportersBlock(snapshot, TODAY, {
+      generation: 4,
+      entries: [],
+      supersededEventIds: [1],
+    })!;
+    expect(block).toContain("| HELDCO | held |");
+  });
+
   it("a pre-v11 snapshot ignores the delta entirely (today's behaviour, unchanged)", () => {
     const snapshot = makeSnapshot({
       calendarEvents: [makeEvent({ id: 1, symbol: "HELDCO" })] as never,

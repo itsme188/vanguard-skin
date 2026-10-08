@@ -125,7 +125,7 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
         >
           <div className="flex flex-col min-w-0 flex-1">
             <h2
-              className="text-sm font-medium text-ink truncate whitespace-nowrap!"
+              className="text-sm font-medium text-ink"
               title="Morning Research Digest"
             >
               Morning Research Digest

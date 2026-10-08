@@ -85,6 +85,15 @@ const CONTENT_PATTERNS: RegExp[] = [
 
 const MAX_UPSTREAM_TEXT = 160;
 
+/**
+ * Anthropic prefixes content errors with the request parameter path
+ * ("messages.0.content.0.pdf.source.base64.data: The PDF specified was not
+ * valid."). That path is API plumbing, not something to show a user.
+ */
+export function stripParameterPath(text: string): string {
+  return text.trim().replace(/^[A-Za-z_][\w-]*(?:\.[\w-]+)+:\s+/, "");
+}
+
 function truncate(text: string, maxLength: number): string {
   const trimmed = text.trim();
   if (trimmed.length <= maxLength) return trimmed;
@@ -164,7 +173,7 @@ function classify(
       return {
         kind: "content",
         status,
-        userMessage: `The AI service couldn't process this file: ${truncate(text, MAX_UPSTREAM_TEXT)}`,
+        userMessage: `The AI service couldn't process this file: ${truncate(stripParameterPath(text), MAX_UPSTREAM_TEXT)}`,
       };
     }
     // No well-formed message to pattern-match (and nothing safe to quote) —

@@ -54,3 +54,82 @@ describe("TrustStripDrawer bond-duration-coverage copy (2026-09-06 correction)",
     expect(block).toContain("maintenance step");
   });
 });
+
+// ─── 2026-10-07: owner-language copy, ET stamps, named bonds ────────────────
+// qa:analysis-trust-drawers--developer-instructions-script-paths-component-names
+// qa:analysis-trust-strip--last-classify-stale-after-run
+// qa:analysis-trust-strip--bond-duration-drawer-names-no-bonds
+// qa:analysis-trust-strip--last-classify-drawer-utc-contradicts-chip-regression-1
+
+const STRIP_PATH = "app/dashboard/components/analysis/TrustStrip.tsx";
+
+/** Body of one top-level function in the drawer file. */
+function extractFunction(src: string, name: string): string {
+  const start = anchorIndex(src, `function ${name}`);
+  const nextPlain = src.indexOf("\nfunction ", start + 1);
+  const nextExported = src.indexOf("\nexport function ", start + 1);
+  const nextConst = src.indexOf("\nconst ", start + 1);
+  const candidates = [nextPlain, nextExported, nextConst].filter((i) => i !== -1);
+  expect(candidates.length).toBeGreaterThan(0);
+  return src.slice(start, Math.min(...candidates));
+}
+
+describe("Trust strip: the factor-ratings date cell says what it measures", () => {
+  const drawer = readFileSync(SRC_PATH, "utf8");
+  const strip = readFileSync(STRIP_PATH, "utf8");
+  const block = extractFunction(drawer, "LastClassifyContent");
+
+  it("names no React component or source file", () => {
+    expect(block).not.toContain("AnalysisView");
+    expect(block).not.toMatch(/\.tsx?\b/);
+    expect(block).not.toMatch(/scripts\//);
+  });
+
+  it("names the two buttons that do move the date, as the owner sees them", () => {
+    // The drawer button on this strip and the Diagnostics card button.
+    anchorIndex(block, "Classify N missing");
+    anchorIndex(block, "Auto-Classify Factors");
+    anchorIndex(block, "Factor Exposure");
+  });
+
+  it("says the sector Auto-Classify button does not move the date", () => {
+    // The date is MAX(security_factors.updated_at); the sector run on
+    // Diagnostics > Classification never writes that table.
+    anchorIndex(block, "does not move this date");
+    anchorIndex(block, "Classification");
+  });
+
+  it("does not call the date a classification run, in the cell or the drawer", () => {
+    expect(block).not.toContain("classification run");
+    expect(strip).not.toContain('label="Last classify"');
+    expect(drawer).not.toContain('lastClassify: "Last Classification"');
+    anchorIndex(strip, 'label="Factors updated"');
+  });
+
+  it("prints the stored UTC stamp as Eastern time with a zone label, in the drawer and the cell tooltip", () => {
+    anchorIndex(block, "formatEnrichedAtET(ts)");
+    expect(block).not.toMatch(/\$\{ts\}/);
+    anchorIndex(strip, "formatEnrichedAtET(lastClassification)");
+    expect(strip).not.toContain("hint={lastClassification ??");
+  });
+});
+
+describe("Trust strip: bond-duration copy names the bonds and no database column", () => {
+  const drawer = readFileSync(SRC_PATH, "utf8");
+  const strip = readFileSync(STRIP_PATH, "utf8");
+  const block = extractBondDurationContent(drawer);
+
+  it("lists the bonds that have no duration, each linked to its page", () => {
+    anchorIndex(block, "bondDuration.missing.map");
+    anchorIndex(block, "<SymbolLink");
+  });
+
+  it("no longer says 'These bonds' with nothing to point at", () => {
+    expect(block).not.toContain("These\n");
+    expect(block).not.toMatch(/These\s+bonds/);
+  });
+
+  it("the cell tooltip names no database column", () => {
+    expect(strip).not.toContain("duration_years");
+  });
+});

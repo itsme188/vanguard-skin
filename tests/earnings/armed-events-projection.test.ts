@@ -7,10 +7,14 @@ import { spawn } from "node:child_process";
 import { runMigrations } from "@/lib/db/migrate";
 import { armWorksheet, disarmWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 import { deleteCalendarEvent } from "@/lib/mutations/calendar";
+import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
 import {
   ARMED_EVENT_PROJECTION_KEYS,
+  buildSupersededEventIds,
   buildArmedEventsEntries,
+  LIVE_LOOKBACK_DAYS,
   readArmedGeneration,
+  ARMED_EVENTS_MAX_ID_LIST,
 } from "@/lib/earnings/armed-events-projection";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 
@@ -122,6 +126,30 @@ describe("armed-events projection + outbox generations", () => {
     ).toEqual(["ACME", "GAMMA"]);
   });
 
+  it("projects superseded earnings ids inside the same 14-day lower-bound window", () => {
+    const edge = seed("EDGE", "2026-08-19"); // today - 14
+    const stale = seed("STALE", "2026-08-18"); // today - 15
+    const future = seed("FUTR", "2026-12-01"); // no upper bound
+    const macro = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol, superseded)
+           VALUES ('manual','fed','2026-09-02','Synthetic macro','macro:one',NULL,1)`,
+        )
+        .run().lastInsertRowid,
+    );
+    db.prepare(`UPDATE calendar_events SET superseded = 1 WHERE id IN (?, ?, ?)`).run(
+      edge,
+      stale,
+      future,
+    );
+
+    expect(LIVE_LOOKBACK_DAYS).toBe(14);
+    expect(buildSupersededEventIds(db, { today: "2026-09-02" })).toEqual([edge, future]);
+    expect(buildSupersededEventIds(db, { today: "2026-09-02" })).not.toContain(stale);
+    expect(buildSupersededEventIds(db, { today: "2026-09-02" })).not.toContain(macro);
+  });
+
   it("[R23] an event that ages past the horizon leaves NO tombstone behind", () => {
     const a = seed("ACME", "2026-08-20");
     armWorksheet(db, a); // gen 1, today's real ET date is irrelevant: entries carry the event
@@ -168,10 +196,21 @@ describe("armed-events projection + outbox generations", () => {
     expect(last.entries).toEqual([expect.objectContaining({ eventId: a, removed: true })]);
   });
 
-  it("[C-7] deleting an UNARMED manual event writes no outbox row", () => {
+  it("[M2] deleting an UNARMED manual event publishes its removed id", () => {
     const a = seed("ACME", "2026-09-02");
     deleteCalendarEvent(db, a, { today: "2026-09-02" });
-    expect(readArmedGeneration(db)).toBe(0);
+    expect(readArmedGeneration(db)).toBe(1);
+    const last = JSON.parse(
+      (
+        db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as {
+          payload_json: string;
+        }
+      ).payload_json,
+    );
+    expect(last.entries).toEqual([]);
+    expect(last.removedEventIds).toEqual([
+      { id: a, eventDate: "2026-09-02", removedAt: expect.any(String) },
+    ]);
   });
 
   it("[D10] an unchanged projection writes no row; a changed one gets the next generation", () => {
@@ -183,6 +222,171 @@ describe("armed-events projection + outbox generations", () => {
     db.prepare(`UPDATE calendar_events SET release_time = '16:30' WHERE id = ?`).run(a);
     expect(write()).toEqual({ generation: 2, written: true });
     expect(() => writeArmedEventsOutboxRow(db)).toThrow(/inside a transaction/);
+  });
+
+  it("[D10] the superseded id list participates in the no-op rule", () => {
+    const a = seed("ACME", "2026-09-02");
+    const write = () =>
+      db.transaction(() => writeArmedEventsOutboxRow(db, { today: "2026-09-02" })).immediate();
+
+    expect(write()).toEqual({ generation: 0, written: false });
+    db.prepare(`UPDATE calendar_events SET superseded = 1 WHERE id = ?`).run(a);
+    expect(write()).toEqual({ generation: 1, written: true });
+    expect(write()).toEqual({ generation: 1, written: false });
+
+    const payload = JSON.parse(
+      (
+        db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as {
+          payload_json: string;
+        }
+      ).payload_json,
+    ) as { generation: number; entries: unknown[]; supersededEventIds: number[]; removedEventIds: unknown[] };
+    expect(Object.keys(payload)).toEqual([
+      "generation",
+      "entries",
+      "supersededEventIds",
+      "removedEventIds",
+    ]);
+    expect(payload.supersededEventIds).toEqual([a]);
+    expect(payload.removedEventIds).toEqual([]);
+
+    db.prepare(`UPDATE calendar_events SET superseded = 0 WHERE id = ?`).run(a);
+    expect(write()).toEqual({ generation: 2, written: true });
+  });
+
+  it("[M2] removed ids participate in D10 and age out on the 14-day / 48-hour rule", () => {
+    const a = seed("ACME", "2026-09-02");
+    const removedAt = Date.UTC(2026, 8, 2, 20);
+    const write = (today: string, nowMs: number, removedEvents?: Array<{ id: number; eventDate: string }>) =>
+      db.transaction(() => writeArmedEventsOutboxRow(db, { today, nowMs, removedEvents })).immediate();
+
+    db.prepare(`DELETE FROM calendar_events WHERE id = ?`).run(a);
+    expect(write("2026-09-02", removedAt, [{ id: a, eventDate: "2026-09-02" }])).toEqual({
+      generation: 1,
+      written: true,
+    });
+    expect(write("2026-09-02", removedAt + 1)).toEqual({ generation: 1, written: false });
+    expect(write("2026-09-16", removedAt + 49 * 3_600_000)).toEqual({
+      generation: 1,
+      written: false,
+    });
+    expect(write("2026-09-17", removedAt + 47 * 3_600_000)).toEqual({
+      generation: 1,
+      written: false,
+    });
+    expect(write("2026-09-17", removedAt + 49 * 3_600_000)).toEqual({
+      generation: 2,
+      written: true,
+    });
+    const payload = JSON.parse(
+      (
+        db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as {
+          payload_json: string;
+        }
+      ).payload_json,
+    ) as { removedEventIds: unknown[] };
+    expect(payload.removedEventIds).toEqual([]);
+  });
+
+  // The cap ranks by DISTANCE FROM TODAY, nearest first. Keeping the latest
+  // calendar dates instead let far-future ids crowd out yesterday's — the rows
+  // the cloud is actually about to act on.
+  it("[L2] caps superseded and removed id lists at the Worker limit, keeping the dates nearest today", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const today = "2026-09-02";
+      const yesterday = "2026-09-01";
+      const farFuture = "2026-12-01";
+      const farIds: number[] = [];
+      const nearIds: number[] = [];
+      for (let i = 0; i < ARMED_EVENTS_MAX_ID_LIST + 2; i += 1) {
+        const id = seed(`FAR${i}`, farFuture);
+        farIds.push(id);
+        db.prepare(`UPDATE calendar_events SET superseded = 1 WHERE id = ?`).run(id);
+      }
+      for (let i = 0; i < 2; i += 1) {
+        const id = seed(`NEAR${i}`, yesterday);
+        nearIds.push(id);
+        db.prepare(`UPDATE calendar_events SET superseded = 1 WHERE id = ?`).run(id);
+      }
+      const superseded = buildSupersededEventIds(db, { today });
+      expect(superseded).toHaveLength(ARMED_EVENTS_MAX_ID_LIST);
+      expect(superseded).toEqual(expect.arrayContaining(nearIds));
+      expect(farIds.filter((id) => superseded.includes(id))).toHaveLength(
+        ARMED_EVENTS_MAX_ID_LIST - nearIds.length,
+      );
+      expect(superseded).toEqual([...superseded].sort((a, b) => a - b));
+
+      db.transaction(() =>
+        writeArmedEventsOutboxRow(db, {
+          today,
+          nowMs: Date.UTC(2026, 8, 2),
+          removedEvents: [
+            ...farIds.map((id) => ({ id, eventDate: farFuture })),
+            ...nearIds.map((id) => ({ id, eventDate: yesterday })),
+          ],
+        }),
+      ).immediate();
+      const payload = JSON.parse(
+        (
+          db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as {
+            payload_json: string;
+          }
+        ).payload_json,
+      ) as { removedEventIds: Array<{ id: number }> };
+      const removedIds = payload.removedEventIds.map((r) => r.id);
+      expect(payload.removedEventIds).toHaveLength(ARMED_EVENTS_MAX_ID_LIST);
+      expect(removedIds).toEqual(expect.arrayContaining(nearIds));
+      expect(farIds.filter((id) => removedIds.includes(id))).toHaveLength(
+        ARMED_EVENTS_MAX_ID_LIST - nearIds.length,
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("dropped 4 superseded event ids"));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("dropped 4 removed event ids"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("a removed event with a malformed date never reaches the payload (the Worker would reject it whole)", () => {
+    db.transaction(() =>
+      writeArmedEventsOutboxRow(db, {
+        today: "2026-09-02",
+        removedEvents: [
+          { id: 901, eventDate: "2026-09-02" },
+          { id: 902, eventDate: "09/02/2026" },
+        ],
+      }),
+    ).immediate();
+    const payload = JSON.parse(
+      (db.prepare(`SELECT payload_json FROM cloud_outbox`).get() as { payload_json: string })
+        .payload_json,
+    ) as { removedEventIds: Array<{ id: number }> };
+    expect(payload.removedEventIds.map((r) => r.id)).toEqual([901]);
+  });
+
+  it("reconcile writes an outbox row when it supersedes an unarmed earnings row", () => {
+    const a = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, event_time, title, source_key, symbol)
+           VALUES ('finnhub','earnings','2026-09-02','AMC','ACME earnings','finnhub:ACME:2026-09-02','ACME')`,
+        )
+        .run().lastInsertRowid,
+    );
+    const b = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, event_time, title, source_key, symbol)
+           VALUES ('nasdaq','earnings','2026-09-02','AMC','ACME earnings','nasdaq:ACME:2026-09-02','ACME')`,
+        )
+        .run().lastInsertRowid,
+    );
+
+    reconcileEarningsDates(db, { today: "2026-09-02", symbols: ["ACME"] });
+
+    expect(readArmedGeneration(db)).toBe(1);
+    expect(buildSupersededEventIds(db, { today: "2026-09-02" })).toEqual([b]);
+    expect(a).not.toBe(b);
   });
 });
 

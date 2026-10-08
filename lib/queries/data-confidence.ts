@@ -27,11 +27,31 @@ import {
 
 // ── Types ────────────────────────────────────────────────────────────
 
+/** One run of popover copy. A plain string is generic wording that stays
+ *  readable under Hide amounts; `{ private }` is a run taken from the
+ *  portfolio (a held-security count, a ticker list, a dollar amount) that
+ *  the popover masks. Account names and dates are public, as they are on
+ *  Data Health. Where singular/plural wording would give a count away, the
+ *  words that change sit inside the private run. */
+export type CopyPart = string | { private: string };
+
+/** The plain string for a list of runs — every `*Parts` field flattens to
+ *  exactly its plain-string twin. */
+export function copyText(parts: CopyPart[]): string {
+  return parts.map(p => (typeof p === "string" ? p : p.private)).join("");
+}
+
+const priv = (value: string | number): CopyPart => ({ private: String(value) });
+
 export interface DimensionScore {
   score: number; // 0-100
   detail: string; // human-readable summary
+  /** `detail` as public/private runs. Absent → the popover masks the whole string. */
+  detailParts?: CopyPart[];
   whyMatters: string; // static per-dimension explanation
   guidance: string; // conditional on score — reassurance when high, action when low
+  /** `guidance` as public/private runs (see `detailParts`). */
+  guidanceParts?: CopyPart[];
   /** Whether `guidance` names something to do (true) vs pure reassurance
    *  (false) — the SAME predicate that chose the guidance text above, never
    *  a re-derivation from `score`. Drives the popover's guidance text color
@@ -73,6 +93,14 @@ export interface HoldingsRecencyScore extends DimensionScore {
      *  figure (qa:header-dataconfidence--holdings-date-is-oldest-position-
      *  not-latest). Scoring is unchanged — still based on `date`/`daysOld`. */
     latestDate: string | null;
+    /** Held positions in this account. */
+    heldCount: number;
+    /** Positions more than a day old, oldest first — what the stale-holdings
+     *  action names, so it never calls a whole account N days old over a
+     *  few carried rows (qa:header-dataconfidence--actions-row-claims-
+     *  account-121d-old-for-2-of-134-positions-regression-2). Display only;
+     *  scoring still reads `daysOld`. */
+    stalePositions: { symbol: string; date: string }[];
   }[];
 }
 
@@ -133,7 +161,11 @@ export interface ValuationCoverageScore extends DimensionScore {
 export interface DataAction {
   severity: "critical" | "warning" | "info";
   message: string;
+  /** `message` as public/private runs (see DimensionScore.detailParts). */
+  messageParts?: CopyPart[];
   fix: string;
+  /** `fix` as public/private runs. */
+  fixParts?: CopyPart[];
   autoFixable: boolean;
   apiEndpoint?: string;
   apiBody?: Record<string, unknown>;
@@ -159,6 +191,10 @@ export interface DataConfidence {
    *  cap line names the largest drift, not the lowest (account, security)
    *  key. */
   capReason: string | null;
+  /** How many critical hits are position-to-tax-lot drift. Above zero, the
+   *  popover offers the Tax Lots route (it used to offer it only while the
+   *  scan had NOT run). Display only — the cap itself is unchanged. */
+  lotDriftCriticalCount: number;
 }
 
 // ── Dimension weights ────────────────────────────────────────────────
@@ -246,8 +282,10 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
     return {
       score: 100,
       detail: "No holdings to price",
+      detailParts: ["No holdings to price"],
       whyMatters,
       guidance: "Import holdings to get started.",
+      guidanceParts: ["Import holdings to get started."],
       guidanceActionable: false,
       pricedToday: 0,
       pricedRecent: 0,
@@ -261,11 +299,12 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
   const freshPct = pricedRecent / totalHeld;
   const score = Math.round(freshPct * 100);
 
-  const detail = pricedToday === totalHeld
-    ? `All ${totalHeld} securities priced today`
+  const detailParts: CopyPart[] = pricedToday === totalHeld
+    ? ["All ", priv(totalHeld), " securities priced today"]
     : pricedRecent === totalHeld
-      ? `All ${totalHeld} securities priced within ${RECENT_PRICE_WINDOW_DAYS} days`
-      : `${pricedRecent}/${totalHeld} securities have recent prices`;
+      ? ["All ", priv(totalHeld), ` securities priced within ${RECENT_PRICE_WINDOW_DAYS} days`]
+      : [priv(`${pricedRecent}/${totalHeld}`), " securities have recent prices"];
+  const detail = copyText(detailParts);
 
   // Guidance is derived from pricedRecent/totalHeld — the SAME counts the
   // detail line above uses — never from the score alone
@@ -273,18 +312,24 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
   // score like 98 can still mean "1 of 40 stale"; the reassurance sentence
   // may only appear when the count says nothing is missing.
   const staleCount = totalHeld - pricedRecent;
-  const guidance =
+  const guidanceParts: CopyPart[] =
     pricedRecent === totalHeld
-      ? "Prices are fresh — nothing to do."
+      ? ["Prices are fresh — nothing to do."]
       : score >= 50
-        ? `${staleCount} of ${totalHeld} held securities ${staleCount === 1 ? "has" : "have"} no recent price — run Quick Refresh, or connect TWS for live quotes.`
-        : "Open TWS and run Quick Refresh — many holdings have stale prices.";
+        ? [
+            priv(`${staleCount} of ${totalHeld} held securities ${staleCount === 1 ? "has" : "have"}`),
+            " no recent price — run Quick Refresh, or connect TWS for live quotes.",
+          ]
+        : ["Open TWS and run Quick Refresh — many holdings have stale prices."];
+  const guidance = copyText(guidanceParts);
 
   return {
     score,
     detail,
+    detailParts,
     whyMatters,
     guidance,
+    guidanceParts,
     // Same predicate the guidance ternary above branches on: actionable
     // whenever pricedRecent < totalHeld, regardless of the score bucket.
     guidanceActionable: pricedRecent !== totalHeld,
@@ -329,6 +374,18 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
     number,
     { as_of_date: string; source_key: string | null; symbol: string }
   >();
+  // Per account: how many positions are held, and which are more than a day
+  // old (rows arrive oldest-first). Feeds the stale-holdings action only.
+  const heldCountByAccount = new Map<number, number>();
+  const staleByAccount = new Map<number, { symbol: string; date: string }[]>();
+  for (const r of holdingRows) {
+    heldCountByAccount.set(r.account_id, (heldCountByAccount.get(r.account_id) ?? 0) + 1);
+    if (Math.round((Date.parse(today) - Date.parse(r.as_of_date)) / 86_400_000) > 1) {
+      const list = staleByAccount.get(r.account_id) ?? [];
+      list.push({ symbol: r.symbol, date: r.as_of_date });
+      staleByAccount.set(r.account_id, list);
+    }
+  }
   for (const r of holdingRows) {
     if (!worstByAccount.has(r.account_id)) {
       worstByAccount.set(r.account_id, {
@@ -366,6 +423,8 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
       daysOld,
       stalestSymbol: worst?.symbol ?? null,
       latestDate: latestByAccount.get(a.id) ?? null,
+      heldCount: heldCountByAccount.get(a.id) ?? 0,
+      stalePositions: staleByAccount.get(a.id) ?? [],
     };
   });
 
@@ -376,8 +435,10 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
     return {
       score: 100,
       detail: "No accounts",
+      detailParts: ["No accounts"],
       whyMatters,
       guidance: "Add an account to get started.",
+      guidanceParts: ["Add an account to get started."],
       guidanceActionable: false,
       perAccount: [],
     };
@@ -396,16 +457,18 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   // named and labeled so this line can never read as contradicting Data
   // Health's own "Last holdings <date>" (which quotes the LATEST date, not
   // the stalest position this dimension scores on).
-  const parts = perAccount
-    .filter(a => a.date)
-    .map(a => {
-      // Always the literal ET date — a relative word ("today") goes stale
-      // inside a cached popover.
-      const stalestDateLabel = a.date;
-      const stalestLabel = a.stalestSymbol ? `${a.stalestSymbol} ${stalestDateLabel}` : stalestDateLabel;
-      return `${a.name}: latest: ${a.latestDate ?? "—"} · stalest position: ${stalestLabel}`;
-    });
-  const detail = parts.join(", ") || "No holdings imported";
+  const detailParts: CopyPart[] = [];
+  for (const a of perAccount.filter(acct => acct.date)) {
+    // Always the literal ET date — a relative word ("today") goes stale
+    // inside a cached popover.
+    const stalestDateLabel = a.date;
+    if (detailParts.length > 0) detailParts.push(", ");
+    detailParts.push(`${a.name}: latest: ${a.latestDate ?? "—"} · stalest position: `);
+    if (a.stalestSymbol) detailParts.push(priv(a.stalestSymbol), ` ${stalestDateLabel}`);
+    else detailParts.push(`${stalestDateLabel}`);
+  }
+  if (detailParts.length === 0) detailParts.push("No holdings imported");
+  const detail = copyText(detailParts);
 
   // Names the specific stalest position so the prescribed action is
   // actionable ("refresh X"), not just a generic "import a statement".
@@ -413,9 +476,9 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
     (worst, a) => ((a.daysOld ?? -1) > (worst?.daysOld ?? -1) ? a : worst),
     null
   );
-  const worstPositionLabel = worstAccount?.stalestSymbol
-    ? `${worstAccount.stalestSymbol} in ${worstAccount.name}`
-    : (worstAccount?.name ?? "the affected account");
+  const worstPositionLabel: CopyPart[] = worstAccount?.stalestSymbol
+    ? [priv(worstAccount.stalestSymbol), ` in ${worstAccount.name}`]
+    : [worstAccount?.name ?? "the affected account"];
 
   // Guidance is derived from worstDays — the SAME weakest-link figure the
   // score buckets on — never from the score bucket alone
@@ -424,18 +487,19 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   // 7-day-stale worst position could still read "current across accounts."
   // "Current" now requires the same <=1-day bar the detail line's
   // "today"/"yesterday" labels use.
-  const guidance =
+  const guidanceParts: CopyPart[] =
     worstDays <= 1
-      ? "Holdings are current across accounts."
+      ? ["Holdings are current across accounts."]
       : score >= 50
-        ? `Refresh ${worstPositionLabel} — import the latest monthly statement (Vanguard) or sync TWS (IBKR).`
-        : `Holdings are weeks+ old — refresh ${worstPositionLabel} now (import latest statements or reconnect TWS).`;
+        ? ["Refresh ", ...worstPositionLabel, " — import the latest monthly statement (Vanguard) or sync TWS (IBKR)."]
+        : ["Holdings are weeks+ old — refresh ", ...worstPositionLabel, " now (import latest statements or reconnect TWS)."];
+  const guidance = copyText(guidanceParts);
 
   // Same predicate the guidance ternary above branches on: actionable
   // whenever the weakest-link account is more than 1 day stale.
   const guidanceActionable = worstDays > 1;
 
-  return { score, detail, whyMatters, guidance, guidanceActionable, perAccount };
+  return { score, detail, detailParts, whyMatters, guidance, guidanceParts, guidanceActionable, perAccount };
 }
 
 // sortWorstFirst is imported from lib/queries/integrity-checks.ts (single
@@ -571,8 +635,10 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
     return {
       score: 0,
       detail: "No statement snapshots for cash inference",
+      detailParts: ["No statement snapshots for cash inference"],
       whyMatters,
       guidance: "Import a monthly statement to establish a cash anchor.",
+      guidanceParts: ["Import a monthly statement to establish a cash anchor."],
       guidanceActionable: true,
       latestAnchorDate: null,
       daysSinceAnchor: null,
@@ -589,9 +655,13 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
   else if (days <= 60) score = 40;
   else score = 10;
 
-  let detail = days <= 7
-    ? `Cash anchor from ${row.latest_date} (${days}d ago)`
-    : `Cash inferred from ${row.latest_date} (${days}d old — may be inaccurate)`;
+  // The anchor date and its age are public; only a dollar amount appended
+  // below is a private run.
+  const detailParts: CopyPart[] = [
+    days <= 7
+      ? `Cash anchor from ${row.latest_date} (${days}d ago)`
+      : `Cash inferred from ${row.latest_date} (${days}d old — may be inaccurate)`,
+  ];
 
   let guidance =
     score >= 85
@@ -619,13 +689,21 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
     const amountStr = formatCashDeltaLikeMoney(unexplainedFlow.residual);
 
     if (unexplainedFlow.classification === "external-flow-candidate") {
-      detail += `; unexplained external-flow-shaped cash delta of ${amountStr} on ${unexplainedFlow.date} in ${unexplainedFlow.accountName} — not matched to any transaction`;
+      detailParts.push(
+        "; unexplained external-flow-shaped cash delta of ",
+        priv(amountStr),
+        ` on ${unexplainedFlow.date} in ${unexplainedFlow.accountName} — not matched to any transaction`,
+      );
       guidance =
         `${unexplainedFlow.accountName}'s ${unexplainedFlow.date} cash movement isn't explained by any recorded ` +
         `transaction and total_value moved with it — it's likely inflating volatility/drawdown/Sharpe. Review ` +
         `scripts/repair-missing-external-flows.ts (dry-run) to see the proposed fix.`;
     } else {
-      detail += `; internal cash/holdings shift (valuation-source misattribution) of ${amountStr} on ${unexplainedFlow.date} in ${unexplainedFlow.accountName}`;
+      detailParts.push(
+        "; internal cash/holdings shift (valuation-source misattribution) of ",
+        priv(amountStr),
+        ` on ${unexplainedFlow.date} in ${unexplainedFlow.accountName}`,
+      );
       guidance =
         `${unexplainedFlow.accountName}'s ${unexplainedFlow.date} cash figure jumped but total_value moved smoothly — ` +
         `the cash/holdings split looks misattributed by the valuation source (not a missing external flow, so the ` +
@@ -638,7 +716,11 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
     // "actionable" text — it names something worth checking, not reassurance.
     guidanceActionable = true;
     const amountStr = formatCashDeltaLikeMoney(timingResidual.amount);
-    detail += `; cash delta of ${amountStr} on ${timingResidual.date} in ${timingResidual.accountName} is a live-snapshot timing residual (intraday broker total vs close-priced holdings) — not treated as an external flow`;
+    detailParts.push(
+      "; cash delta of ",
+      priv(amountStr),
+      ` on ${timingResidual.date} in ${timingResidual.accountName} is a live-snapshot timing residual (intraday broker total vs close-priced holdings) — not treated as an external flow`,
+    );
     guidance =
       `Live-snapshot (Plaid/TWS) days infer cash as snapshot-total minus holdings value; the residual usually moves ` +
       `with measurement timing, not money. A genuine flow in this window would confirm on the next statement import ` +
@@ -647,9 +729,12 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
 
   return {
     score,
-    detail,
+    detail: copyText(detailParts),
+    detailParts,
     whyMatters,
     guidance,
+    // Cash guidance names accounts and dates only — never an amount.
+    guidanceParts: [guidance],
     guidanceActionable,
     latestAnchorDate: row.latest_date,
     daysSinceAnchor: days,
@@ -688,8 +773,10 @@ function scoreEnrichment(db: Database.Database, now: Date = new Date()): Enrichm
     return {
       score: 100,
       detail: "No securities need enrichment",
+      detailParts: ["No securities need enrichment"],
       whyMatters,
       guidance: "Nothing to enrich.",
+      guidanceParts: ["Nothing to enrich."],
       guidanceActionable: false,
       enriched: 0,
       total: 0,
@@ -698,27 +785,34 @@ function scoreEnrichment(db: Database.Database, now: Date = new Date()): Enrichm
   }
 
   const score = Math.round((count / total) * 100);
-  const detail = count === total
-    ? `All ${total} securities enriched`
-    : `${count}/${total} enriched — ${missing.length} missing conId`;
+  const detailParts: CopyPart[] = count === total
+    ? ["All ", priv(total), " securities enriched"]
+    : [priv(`${count}/${total}`), " enriched — ", priv(missing.length), " missing conId"];
+  const detail = copyText(detailParts);
 
   // Guidance is derived from missing.length — the SAME count the detail line
   // uses — never from the score alone
   // (qa:header-dataconfidence--guidance-contradicts-detail-and-actions). The
   // old `score >= 95` threshold let a single missing conId out of 20+ still
   // read as "all enrichable securities have contract IDs."
-  const guidance =
+  const guidanceParts: CopyPart[] =
     missing.length === 0
-      ? "All enrichable securities have contract IDs."
-      : missing.length === 1
-        ? "1 security is missing a TWS contract ID — click Enrich (requires TWS running)."
-        : `${missing.length} securities are missing TWS contract IDs — click Enrich (requires TWS running).`;
+      ? ["All enrichable securities have contract IDs."]
+      : [
+          priv(
+            missing.length === 1
+              ? "1 security is missing a TWS contract ID"
+              : `${missing.length} securities are missing TWS contract IDs`
+          ),
+          " — click Enrich (requires TWS running).",
+        ];
+  const guidance = copyText(guidanceParts);
 
   // Same predicate the guidance ternary above branches on: actionable
   // whenever anything is still missing a conId.
   const guidanceActionable = missing.length > 0;
 
-  return { score, detail, whyMatters, guidance, guidanceActionable, enriched: count, total, missing };
+  return { score, detail, detailParts, whyMatters, guidance, guidanceParts, guidanceActionable, enriched: count, total, missing };
 }
 
 function scoreValuationCoverage(db: Database.Database, now: Date = new Date()): ValuationCoverageScore {
@@ -785,8 +879,10 @@ function scoreValuationCoverage(db: Database.Database, now: Date = new Date()): 
     return {
       score: 0,
       detail: "No daily valuations computed",
+      detailParts: ["No daily valuations computed"],
       whyMatters,
       guidance: "Run Quick Refresh to compute today's valuation.",
+      guidanceParts: ["Run Quick Refresh to compute today's valuation."],
       guidanceActionable: true,
       pricedCount: 0,
       totalCount: 0,
@@ -795,29 +891,63 @@ function scoreValuationCoverage(db: Database.Database, now: Date = new Date()): 
   }
 
   const score = Math.round((priced / total) * 100);
-  const detail = priced === total
-    ? `All ${total} holdings in latest valuation`
-    : `${priced}/${total} holdings priced in latest valuation`;
+  const detailParts: CopyPart[] = priced === total
+    ? ["All ", priv(total), " holdings in latest valuation"]
+    : [priv(`${priced}/${total}`), " holdings priced in latest valuation"];
+  const detail = copyText(detailParts);
 
   // Guidance is derived from priced/total — the SAME counts the detail line
   // uses — never from the score alone
   // (qa:header-dataconfidence--guidance-contradicts-detail-and-actions).
   const unpriced = total - priced;
-  const guidance =
+  const unpricedRun = priv(`${unpriced} holding${unpriced === 1 ? "" : "s"}`);
+  const guidanceParts: CopyPart[] =
     priced === total
-      ? "Full coverage in the latest valuation."
+      ? ["Full coverage in the latest valuation."]
       : score >= 50
-        ? `Run Quick Refresh to price the remaining ${unpriced} holding${unpriced === 1 ? "" : "s"}.`
-        : `${unpriced} holding${unpriced === 1 ? "" : "s"} unpriced — Quick Refresh, then enrich any still missing.`;
+        ? ["Run Quick Refresh to price the remaining ", unpricedRun, "."]
+        : [unpricedRun, " unpriced — Quick Refresh, then enrich any still missing."];
+  const guidance = copyText(guidanceParts);
 
   // Same predicate the guidance ternary above branches on: actionable
   // whenever anything is still unpriced in the latest valuation.
   const guidanceActionable = priced !== total;
 
-  return { score, detail, whyMatters, guidance, guidanceActionable, pricedCount: priced, totalCount: total, perAccountAsOf };
+  return { score, detail, detailParts, whyMatters, guidance, guidanceParts, guidanceActionable, pricedCount: priced, totalCount: total, perAccountAsOf };
 }
 
 // ── Actions ──────────────────────────────────────────────────────────
+
+/** How many lagging tickers the stale-holdings action spells out per account. */
+const STALE_POSITIONS_NAMED = 3;
+
+/**
+ * One account's clause in the stale-holdings action. The account-level
+ * "holdings are N days old" is only true when every position shares that one
+ * date. Otherwise the claim is about the lagging positions: it counts them,
+ * names the first few, dates the oldest and says the rest are current — the
+ * same story the Holdings detail line tells (latest vs stalest position).
+ */
+function staleHoldingsClaim(a: HoldingsRecencyScore["perAccount"][number]): CopyPart[] {
+  const stale = a.stalePositions;
+  const oneDate = stale.length > 0 && stale.every(p => p.date === stale[0].date);
+  if (stale.length === 0 || (stale.length === a.heldCount && oneDate)) {
+    return [`${a.name}${a.source ? ` (${a.source})` : ""} holdings are ${a.daysOld ?? "?"} days old`];
+  }
+  const named = stale.slice(0, STALE_POSITIONS_NAMED).map(p => p.symbol).join(", ");
+  const more = stale.length > STALE_POSITIONS_NAMED ? ` +${stale.length - STALE_POSITIONS_NAMED} more` : "";
+  const parts: CopyPart[] = [
+    `${a.name}: `,
+    priv(`${stale.length} of ${a.heldCount} positions ${stale.length === 1 ? "is" : "are"}`),
+    " more than a day old — ",
+    priv(`${named}${more}`),
+    `, ${stale.length === 1 ? "dated" : "oldest dated"} ${a.date} (${a.daysOld ?? "?"} days${a.source ? `, ${a.source}` : ""})`,
+  ];
+  if (stale.length < a.heldCount) {
+    parts.push(`; the rest are current${a.latestDate ? ` (latest ${a.latestDate})` : ""}`);
+  }
+  return parts;
+}
 
 function deriveActions(
   price: PriceFreshnessScore,
@@ -827,6 +957,13 @@ function deriveActions(
   valuation: ValuationCoverageScore,
 ): DataAction[] {
   const actions: DataAction[] = [];
+  // Every action is written as runs; the plain strings are their flattening.
+  const push = (
+    a: Omit<DataAction, "message" | "fix" | "messageParts" | "fixParts"> & {
+      messageParts: CopyPart[];
+      fixParts: CopyPart[];
+    }
+  ) => actions.push({ ...a, message: copyText(a.messageParts), fix: copyText(a.fixParts) });
 
   // Price freshness — fires exactly when the Prices guidance above names a
   // gap (pricedRecent < totalHeld), the SAME count basis, never the score
@@ -835,12 +972,15 @@ function deriveActions(
   // gate, so the guidance named "1 of 40 ... has no recent price" while the
   // Actions list stayed empty.
   if (price.totalHeld > 0 && price.pricedRecent < price.totalHeld) {
-    actions.push({
+    push({
       severity: price.score < 30 ? "critical" : "warning",
       // Same basis as the Prices dimension detail/score: totalHeld -
       // pricedRecent, NOT totalHeld - pricedToday (see RECENT_PRICE_WINDOW_DAYS).
-      message: `${price.totalHeld - price.pricedRecent} ${price.totalHeld - price.pricedRecent === 1 ? "security has" : "securities have"} no price from the last ${RECENT_PRICE_WINDOW_DAYS} days`,
-      fix: "Run Quick Refresh to update all prices (~2 min)",
+      messageParts: [
+        priv(`${price.totalHeld - price.pricedRecent} ${price.totalHeld - price.pricedRecent === 1 ? "security has" : "securities have"}`),
+        ` no price from the last ${RECENT_PRICE_WINDOW_DAYS} days`,
+      ],
+      fixParts: ["Run Quick Refresh to update all prices (~2 min)"],
       autoFixable: true,
       apiEndpoint: "/api/tws/auto-refresh",
       apiBody: { level: "quick" },
@@ -849,10 +989,16 @@ function deriveActions(
 
   // Enrichment
   if (enrichment.missing.length > 0) {
-    actions.push({
+    push({
       severity: enrichment.missing.length > 5 ? "warning" : "info",
-      message: `${enrichment.missing.length} ${enrichment.missing.length === 1 ? "security" : "securities"} missing TWS contract data`,
-      fix: `Enrich to enable price fetching: ${enrichment.missing.slice(0, 3).join(", ")}${enrichment.missing.length > 3 ? "..." : ""}`,
+      messageParts: [
+        priv(`${enrichment.missing.length} ${enrichment.missing.length === 1 ? "security" : "securities"}`),
+        " missing TWS contract data",
+      ],
+      fixParts: [
+        "Enrich to enable price fetching: ",
+        priv(`${enrichment.missing.slice(0, 3).join(", ")}${enrichment.missing.length > 3 ? "..." : ""}`),
+      ],
       autoFixable: true,
       apiEndpoint: "/api/tws/enrich",
     });
@@ -861,10 +1007,10 @@ function deriveActions(
   // Cash accuracy — same predicate as the cash guidance text (the popover
   // must not name something to do without an action row for it).
   if (cash.guidanceActionable) {
-    actions.push({
+    push({
       severity: "warning",
-      message: `Cash inferred from ${cash.daysSinceAnchor ?? "?"}d-old snapshot`,
-      fix: "Import latest monthly statement to update cash anchor",
+      messageParts: [`Cash inferred from ${cash.daysSinceAnchor ?? "?"}d-old snapshot`],
+      fixParts: ["Import latest monthly statement to update cash anchor"],
       autoFixable: false,
     });
   }
@@ -876,12 +1022,15 @@ function deriveActions(
     ? holdings.perAccount.filter(a => (a.daysOld ?? 999) > 1)
     : [];
   if (staleAccounts.length > 0) {
-    actions.push({
+    const messageParts: CopyPart[] = [];
+    for (const a of staleAccounts) {
+      if (messageParts.length > 0) messageParts.push("; ");
+      messageParts.push(...staleHoldingsClaim(a));
+    }
+    push({
       severity: "warning",
-      message: `${staleAccounts
-        .map(a => `${a.name}${a.source ? ` (${a.source})` : ""} holdings are ${a.daysOld ?? "?"} days old`)
-        .join("; ")}`,
-      fix: "Import latest statement or sync IBKR positions",
+      messageParts,
+      fixParts: ["Import latest statement or sync IBKR positions"],
       autoFixable: false,
     });
   }
@@ -890,10 +1039,10 @@ function deriveActions(
   // (pricedCount < totalCount), not the score alone (see Price freshness
   // note above for the class of bug this closes).
   if (valuation.totalCount > 0 && valuation.pricedCount < valuation.totalCount) {
-    actions.push({
+    push({
       severity: "warning",
-      message: `Only ${valuation.pricedCount}/${valuation.totalCount} holdings in latest valuation`,
-      fix: "Refresh prices to improve valuation coverage",
+      messageParts: ["Only ", priv(`${valuation.pricedCount}/${valuation.totalCount}`), " holdings in latest valuation"],
+      fixParts: ["Refresh prices to improve valuation coverage"],
       autoFixable: true,
       apiEndpoint: "/api/tws/auto-refresh",
       apiBody: { level: "quick" },
@@ -902,10 +1051,10 @@ function deriveActions(
 
   // No data at all
   if (price.totalHeld === 0) {
-    actions.push({
+    push({
       severity: "critical",
-      message: "No holdings data found",
-      fix: "Import files to get started",
+      messageParts: ["No holdings data found"],
+      fixParts: ["Import files to get started"],
       autoFixable: false,
     });
   }
@@ -978,5 +1127,8 @@ export function getDataConfidence(db: Database.Database, now: Date = new Date())
     actions,
     integrity,
     capReason,
+    // Lot-drift hits are keyed `lot-drift:<account>:<security>` by
+    // runIntegrityChecks (the hit carries no typed kind for them).
+    lotDriftCriticalCount: integrity.critical.filter(h => h.key.startsWith("lot-drift:")).length,
   };
 }

@@ -3,7 +3,9 @@
 import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
-import { PrivateText } from "@/lib/privacy/components";
+import { Count, PrivateText } from "@/lib/privacy/components";
+import { usePrivacy } from "@/lib/privacy/context";
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 
 interface SkippedRow {
   category: string;
@@ -81,6 +83,43 @@ interface CommitResult {
   skippedRows?: SkippedRow[];
 }
 
+interface ExcludedRowGroup {
+  category: string;
+  index: number;
+  symbol?: string;
+  reasons: string[];
+}
+
+/**
+ * The server lists one `skippedRows` entry per FAILED CHECK, so a row with two
+ * bad cells arrives twice. A row is (record kind, index); every reason stays
+ * listed under its row, in the order the server sent it.
+ */
+export function groupExcludedRows(rows: SkippedRow[] | undefined): ExcludedRowGroup[] {
+  const groups = new Map<string, ExcludedRowGroup>();
+  for (const row of rows ?? []) {
+    const key = `${row.category}:${row.index}`;
+    const group = groups.get(key);
+    if (group) {
+      group.reasons.push(row.reason);
+      if (!group.symbol && row.symbol) group.symbol = row.symbol;
+    } else {
+      groups.set(key, {
+        category: row.category,
+        index: row.index,
+        ...(row.symbol ? { symbol: row.symbol } : {}),
+        reasons: [row.reason],
+      });
+    }
+  }
+  return [...groups.values()];
+}
+
+/** Rows excluded, not checks failed (see `groupExcludedRows`). */
+export function countExcludedRows(rows: SkippedRow[] | undefined): number {
+  return groupExcludedRows(rows).length;
+}
+
 /**
  * Excluded-row list, shared by the preview ("will be excluded") and the done
  * panel ("excluded"). Top-level, not nested in ImportFlow, so it never
@@ -95,26 +134,72 @@ function SkippedRowsDetails({
   summary: string;
   open?: boolean;
 }) {
+  const groups = groupExcludedRows(rows);
   return (
     <details open={open} className="mt-3 rounded-lg border border-gold/20 bg-gold/5">
       <summary className="px-3 py-2 text-xs font-medium text-gold-ink cursor-pointer hover:bg-gold/10 transition-colors">
         {summary}
       </summary>
       <div className="px-3 pb-2 space-y-1">
-        {rows.slice(0, 20).map((row, j) => (
+        {groups.slice(0, 20).map((row, j) => (
           <p key={j} className="text-xs text-ink-dim font-mono">
             <span className="text-gold/70">{row.category}[{row.index}]</span>
             {row.symbol && <span className="text-ink-faint"> {row.symbol}</span>}
-            {" — "}{row.reason}
+            {" — "}{row.reasons.join("; ")}
           </p>
         ))}
-        {rows.length > 20 && (
+        {groups.length > 20 && (
           <p className="text-xs text-ink-faint">
-            ...and {rows.length - 20} more
+            ...and {groups.length - 20} more
           </p>
         )}
       </div>
     </details>
+  );
+}
+
+interface FigureSegment {
+  text: string;
+  masked: boolean;
+}
+
+// Scanned left to right, first alternative wins at each position:
+//   1. a letter-led word (a symbol such as AAA or ZZZ1 keeps its digits),
+//   2. a calendar date or month (YYYY-MM-DD / YYYY-MM),
+//   3. any other run of digits, with grouping, decimals and a trailing % —
+//      the only alternative that masks,
+//   4. one character of anything else (spaces, signs, "$", punctuation).
+// So a digit reaches the screen only inside a letter-led word or a date.
+const FIGURE_TOKEN =
+  /([A-Za-z][A-Za-z0-9]*)|((?:19|20)\d{2}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?(?![\d-]))|(\d+(?:,\d{3})*(?:\.\d+)?%?)|([\s\S])/g;
+
+/**
+ * Splits an import warning into visible text and figures to mask. Import
+ * warnings quote the user's own amounts and quantities, but the symbol, date,
+ * transaction type and the reason the row changed are what the user needs to
+ * decide whether to commit — so only the figures mask (QA 2026-09-04).
+ * Row counts mask too: a count and a quantity look the same, and hiding one
+ * too many is the safe side.
+ */
+export function maskFigureSegments(text: string): FigureSegment[] {
+  const segments: FigureSegment[] = [];
+  for (const match of text.matchAll(FIGURE_TOKEN)) {
+    const masked = match[3] !== undefined;
+    const last = segments[segments.length - 1];
+    if (!masked && last && !last.masked) last.text += match[0];
+    else segments.push({ text: match[0], masked });
+  }
+  return segments;
+}
+
+/** A warning sentence with only its figures behind the privacy mask. */
+function FigureMaskedText({ text }: { text: string }) {
+  return (
+    <>
+      {maskFigureSegments(text).map((s, i) =>
+        s.masked ? <PrivateText key={i}>{s.text}</PrivateText> : s.text,
+      )}
+    </>
   );
 }
 
@@ -123,13 +208,94 @@ type ReplayResult = {
   warnings: string[];
 } | null;
 
-type ImportState =
+// `reviewableCount` (round trips) rides on every period the commit response
+// returns (`ReviewPeriod`, lib/compute/trade-roundtrips.ts). Optional here so
+// a response without it shows no count instead of a wrong one.
+interface NewTradePeriod {
+  periodStart: string;
+  periodEnd: string;
+  tradeCount: number;
+  reviewableCount?: number;
+}
+
+/** The step of Detect → Parse → Preview → Confirm → Commit that failed. */
+type ImportPhase = "preview" | "commit";
+
+export type ImportState =
   | { status: "idle" }
   | { status: "parsing" }
   | { status: "preview"; results: PreviewResult[] }
   | { status: "importing" }
-  | { status: "done"; results: CommitResult[]; replay?: ReplayResult; newTradePeriods?: { periodStart: string; periodEnd: string; tradeCount: number }[]; reconciliationFlags?: { accountName: string; snapshotDate: string; diffPct: number }[] }
-  | { status: "error"; message: string };
+  | { status: "done"; results: CommitResult[]; replay?: ReplayResult; newTradePeriods?: NewTradePeriod[]; reconciliationFlags?: { accountName: string; snapshotDate: string; diffPct: number }[] }
+  | { status: "error"; message: string; phase: ImportPhase };
+
+interface FlowTransition {
+  next: ImportState;
+  /** The request to (re-)send with the files already selected, if any. */
+  request: ImportPhase | null;
+  /** True when the file selection is dropped. */
+  clearFiles: boolean;
+}
+
+/**
+ * "Try Again" on the failure panel (ruled 2026-09-14): re-send the SAME files
+ * to the step that failed. Only with nothing left to re-send does it fall back
+ * to the empty drop zone. Outside the error state it does nothing.
+ */
+export function retryTransition(state: ImportState, fileCount: number): FlowTransition {
+  if (state.status !== "error") return { next: state, request: null, clearFiles: false };
+  if (fileCount === 0) return startOverTransition();
+  return state.phase === "commit"
+    ? { next: { status: "importing" }, request: "commit", clearFiles: false }
+    : { next: { status: "parsing" }, request: "preview", clearFiles: false };
+}
+
+/** "Start over" / Cancel / Import More: empty drop zone, selection dropped. */
+export function startOverTransition(): FlowTransition {
+  return { next: { status: "idle" }, request: null, clearFiles: true };
+}
+
+// Only successfully-parsed files are importable. An "Unknown file format"
+// preview with an enabled Import button is a contradictory affordance
+// (QA 2026-07-12, third recurrence) — gate the action on parse success.
+// A file that parses but contains zero records is equally un-importable:
+// committing it only creates an empty import_batches row (the 0-record
+// rows in Import History that invite a pointless 95s Undo).
+// Securities are by-products of the other rows: when rows were excluded
+// and ONLY securities remain, the file has nothing real to import, so the
+// security count alone must not keep the button enabled.
+const previewRecordCount = (
+  p: NonNullable<PreviewResult["preview"]>,
+  onlySecuritiesLeftIsEmpty: boolean,
+) =>
+  p.transactionCount + (onlySecuritiesLeftIsEmpty ? 0 : p.securityCount) + p.holdingCount + p.priceCount + p.snapshotCount + p.corporateActions.count + (p.donations?.count ?? 0);
+
+/** One predicate for the Import button's count and each card's marker. */
+export function isImportablePreview(r: PreviewResult): boolean {
+  if (!r.success || !r.preview) return false;
+  return previewRecordCount(r.preview, (r.skippedRows?.length ?? 0) > 0) > 0;
+}
+
+export function importButtonLabel(importableCount: number, fileCount: number): string {
+  const noun = (n: number) => `file${n !== 1 ? "s" : ""}`;
+  return importableCount > 0 && importableCount < fileCount
+    ? `Import ${importableCount} of ${fileCount} ${noun(fileCount)}`
+    : `Import ${importableCount} ${noun(importableCount)}`;
+}
+
+/**
+ * Round trips awaiting review across the months the commit reported — the
+ * unit Trade Reviews counts in. Null when any period lacks the count.
+ */
+export function sumReviewableRoundTrips(periods: NewTradePeriod[]): number | null {
+  if (periods.length === 0) return null;
+  let total = 0;
+  for (const p of periods) {
+    if (typeof p.reviewableCount !== "number" || !Number.isFinite(p.reviewableCount)) return null;
+    total += p.reviewableCount;
+  }
+  return total;
+}
 
 export function ImportFlow() {
   const router = useRouter();
@@ -137,11 +303,9 @@ export function ImportFlow() {
   const [state, setState] = useState<ImportState>({ status: "idle" });
   const [isDragOver, setIsDragOver] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
+  const { isPrivate } = usePrivacy();
 
-  const handleFiles = useCallback(async (selectedFiles: File[]) => {
-    if (selectedFiles.length === 0) return;
-
-    setFiles(selectedFiles);
+  const runPreview = useCallback(async (selectedFiles: File[]) => {
     setState({ status: "parsing" });
 
     try {
@@ -153,71 +317,83 @@ export function ImportFlow() {
         body: formData,
       });
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: `Server error (${res.status})` }));
-        setState({ status: "error", message: err.error ?? `Preview failed (${res.status})` });
+      const r = await readMutationResult<{ results?: PreviewResult[] }>(res);
+      if (!r.ok) {
+        setState({ status: "error", message: r.message, phase: "preview" });
+        return;
+      }
+      if (!Array.isArray(r.data.results)) {
+        setState({ status: "error", message: "The server returned no preview for those files.", phase: "preview" });
         return;
       }
 
-      const data = await res.json();
-
-      if (!data.success) {
-        setState({ status: "error", message: data.error });
-        return;
-      }
-
-      setState({ status: "preview", results: data.results });
-    } catch (err) {
-      setState({
-        status: "error",
-        message:
-          err instanceof Error ? err.message : "Failed to parse files",
-      });
+      setState({ status: "preview", results: r.data.results });
+    } catch {
+      setState({ status: "error", message: networkFailureMessage("read those files"), phase: "preview" });
     }
   }, []);
 
-  const handleImport = useCallback(async () => {
+  const runCommit = useCallback(async (selectedFiles: File[]) => {
     setState({ status: "importing" });
 
     try {
       const formData = new FormData();
-      files.forEach((f) => formData.append("files", f));
+      selectedFiles.forEach((f) => formData.append("files", f));
 
       const res = await apiFetch("/api/import?mode=commit", {
         method: "POST",
         body: formData,
       });
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: `Server error (${res.status})` }));
-        setState({ status: "error", message: err.error ?? `Import failed (${res.status})` });
+      const r = await readMutationResult<{
+        results?: CommitResult[];
+        replay?: ReplayResult;
+        newTradePeriods?: NewTradePeriod[];
+        reconciliationFlags?: { accountName: string; snapshotDate: string; diffPct: number }[];
+      }>(res);
+      if (!r.ok) {
+        setState({ status: "error", message: r.message, phase: "commit" });
+        return;
+      }
+      if (!Array.isArray(r.data.results)) {
+        setState({ status: "error", message: "The server did not report what was imported. Check Import History before trying again.", phase: "commit" });
         return;
       }
 
-      const data = await res.json();
-
-      if (!data.success) {
-        setState({ status: "error", message: data.error });
-        return;
-      }
-
-      setState({ status: "done", results: data.results, replay: data.replay, newTradePeriods: data.newTradePeriods, reconciliationFlags: data.reconciliationFlags });
+      setState({ status: "done", results: r.data.results, replay: r.data.replay, newTradePeriods: r.data.newTradePeriods, reconciliationFlags: r.data.reconciliationFlags });
       router.refresh();
-    } catch (err) {
-      setState({
-        status: "error",
-        message:
-          err instanceof Error ? err.message : "Failed to import files",
-      });
+    } catch {
+      setState({ status: "error", message: networkFailureMessage("import those files"), phase: "commit" });
     }
-  }, [files, router]);
+  }, [router]);
+
+  const handleFiles = useCallback(async (selectedFiles: File[]) => {
+    if (selectedFiles.length === 0) return;
+
+    setFiles(selectedFiles);
+    await runPreview(selectedFiles);
+  }, [runPreview]);
+
+  const handleImport = useCallback(() => runCommit(files), [files, runCommit]);
 
   const reset = useCallback(() => {
-    setState({ status: "idle" });
+    setState(startOverTransition().next);
     setFiles([]);
     setIsDragOver(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
+
+  // Try Again: re-send the same files to the step that failed.
+  const handleRetry = useCallback(() => {
+    const t = retryTransition(state, files.length);
+    if (t.clearFiles) {
+      reset();
+      return;
+    }
+    setState(t.next);
+    if (t.request === "preview") void runPreview(files);
+    else if (t.request === "commit") void runCommit(files);
+  }, [state, files, reset, runPreview, runCommit]);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -315,24 +491,10 @@ export function ImportFlow() {
 
   // Preview — show parsed results
   if (state.status === "preview") {
-    // Only successfully-parsed files are importable. An "Unknown file format"
-    // preview with an enabled Import button is a contradictory affordance
-    // (QA 2026-07-12, third recurrence) — gate the action on parse success.
-    // A file that parses but contains zero records is equally un-importable:
-    // committing it only creates an empty import_batches row (the 0-record
-    // rows in Import History that invite a pointless 95s Undo).
-    // Securities are by-products of the other rows: when rows were excluded
-    // and ONLY securities remain, the file has nothing real to import, so the
-    // security count alone must not keep the button enabled.
-    const previewRecordCount = (
-      p: NonNullable<(typeof state.results)[number]["preview"]>,
-      onlySecuritiesLeftIsEmpty: boolean,
-    ) =>
-      p.transactionCount + (onlySecuritiesLeftIsEmpty ? 0 : p.securityCount) + p.holdingCount + p.priceCount + p.snapshotCount + p.corporateActions.count + (p.donations?.count ?? 0);
+    // See isImportablePreview: the button count and each card's "Nothing to
+    // import" marker read the one predicate.
     const parsedResults = state.results.filter((r) => r.success && r.preview);
-    const importableCount = parsedResults.filter(
-      (r) => previewRecordCount(r.preview!, (r.skippedRows?.length ?? 0) > 0) > 0
-    ).length;
+    const importableCount = state.results.filter(isImportablePreview).length;
     const parsedButEmptyCount = parsedResults.length - importableCount;
     return (
       <div className="rounded-xl border border-edge bg-panel p-5 space-y-4">
@@ -368,12 +530,19 @@ export function ImportFlow() {
                 )}
                 {(result.skippedRows?.length ?? 0) > 0 && (
                   <span className="text-xs px-2 py-0.5 rounded-full bg-gold/15 text-gold-ink font-medium">
-                    {result.skippedRows!.length} skipped
+                    {countExcludedRows(result.skippedRows)} skipped
                   </span>
                 )}
                 {(result.warnings?.length ?? 0) > 0 && !(result.skippedRows?.length) && (
                   <span className="text-xs px-2 py-0.5 rounded-full bg-gold/20 text-gold-ink font-medium">
                     {result.warnings!.length} warning{result.warnings!.length !== 1 ? "s" : ""}
+                  </span>
+                )}
+                {/* Parsed, but no record would be written — the file the
+                    Import button's "N of M" leaves out. */}
+                {result.success && result.preview && !isImportablePreview(result) && (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-raised text-ink-dim font-medium whitespace-nowrap">
+                    Nothing to import
                   </span>
                 )}
               </div>
@@ -500,7 +669,7 @@ export function ImportFlow() {
               {result.skippedRows && result.skippedRows.length > 0 && (
                 <SkippedRowsDetails
                   rows={result.skippedRows}
-                  summary={`${result.skippedRows.length} row${result.skippedRows.length !== 1 ? "s" : ""} will be excluded (invalid data)`}
+                  summary={`${countExcludedRows(result.skippedRows)} row${countExcludedRows(result.skippedRows) !== 1 ? "s" : ""} will be excluded (invalid data)`}
                 />
               )}
 
@@ -513,7 +682,7 @@ export function ImportFlow() {
                   <div className="mt-1 space-y-0.5">
                     {result.warnings.map((w, j) => (
                       <p key={j} className="text-xs text-gold/80">
-                        <PrivateText>{w}</PrivateText>
+                        <FigureMaskedText text={w} />
                       </p>
                     ))}
                   </div>
@@ -529,7 +698,7 @@ export function ImportFlow() {
             disabled={importableCount === 0}
             className="px-5 py-2.5 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100 disabled:active:scale-100"
           >
-            Import {importableCount} file{importableCount !== 1 ? "s" : ""}
+            {importButtonLabel(importableCount, state.results.length)}
           </button>
           {importableCount === 0 && (
             <span className="text-xs text-ink-faint">
@@ -573,6 +742,8 @@ export function ImportFlow() {
     const nothingImported =
       state.results.some(excludedOnly) &&
       state.results.every((r) => r.batchId === null);
+    // Round trips, the unit Trade Reviews counts in — never closing legs.
+    const roundTrips = sumReviewableRoundTrips(state.newTradePeriods ?? []);
     return (
       <div className="rounded-xl border border-edge bg-panel p-5 space-y-4">
         <div className="flex items-center gap-3">
@@ -609,8 +780,8 @@ export function ImportFlow() {
                 </div>
                 {result.committed && excludedOnly(result) ? (
                   <span className="text-xs font-mono text-gold-ink tabular-nums">
-                    Nothing imported — {result.skippedRows?.length ?? 0} row
-                    {(result.skippedRows?.length ?? 0) !== 1 ? "s" : ""} excluded
+                    Nothing imported — {countExcludedRows(result.skippedRows)} row
+                    {countExcludedRows(result.skippedRows) !== 1 ? "s" : ""} excluded
                   </span>
                 ) : result.committed && (
                   <span className="text-xs font-mono text-ink-dim tabular-nums">
@@ -639,7 +810,7 @@ export function ImportFlow() {
               {result.skippedRows && result.skippedRows.length > 0 && (
                 <SkippedRowsDetails
                   rows={result.skippedRows}
-                  summary={`${result.skippedRows.length} row${result.skippedRows.length !== 1 ? "s" : ""} excluded (invalid data)`}
+                  summary={`${countExcludedRows(result.skippedRows)} row${countExcludedRows(result.skippedRows) !== 1 ? "s" : ""} excluded (invalid data)`}
                   open={excludedOnly(result)}
                 />
               )}
@@ -654,7 +825,7 @@ export function ImportFlow() {
                   <div className="mt-1 space-y-0.5">
                     {result.warnings.map((w, j) => (
                       <p key={j} className="text-xs text-gold-ink">
-                        <PrivateText>{w}</PrivateText>
+                        <FigureMaskedText text={w} />
                       </p>
                     ))}
                   </div>
@@ -675,7 +846,7 @@ export function ImportFlow() {
             <div className="mt-1 space-y-0.5">
               {state.replay.warnings.map((w, j) => (
                 <p key={j} className="text-xs text-gold-ink">
-                  <PrivateText>{w}</PrivateText>
+                  <FigureMaskedText text={w} />
                 </p>
               ))}
             </div>
@@ -697,7 +868,16 @@ export function ImportFlow() {
             <span className="text-gold-ink font-medium">Trade reviews available</span>
             {" — "}
             {state.newTradePeriods.length} month{state.newTradePeriods.length > 1 ? "s" : ""} with{" "}
-            {state.newTradePeriods.reduce((s, p) => s + p.tradeCount, 0)} unreviewed trades.
+            {roundTrips !== null && roundTrips > 0 ? (
+              <>
+                <Count value={roundTrips} />{" "}
+                {/* Same rule as roundTripNoun (TradeReviewView): the noun
+                    must not give away a masked count of one. */}
+                {roundTrips === 1 && !isPrivate ? "round trip" : "round trips"} to review.
+              </>
+            ) : (
+              "closed trades to review."
+            )}
             <span className="text-gold-ink ml-1">View →</span>
           </a>
         )}
@@ -735,17 +915,33 @@ export function ImportFlow() {
         <h3 className="text-lg font-medium text-ink">Import Failed</h3>
       </div>
       <p className="text-sm text-ink-dim mb-2">
-        {(state as { status: "error"; message: string }).message}
+        {state.message}
       </p>
       <p className="text-xs text-ink-faint mb-4">
-        Supported formats: Vanguard PDFs, IBKR CSVs, Vanguard CSVs, Canonical CSVs (see format guide below)
+        Supported formats: Vanguard PDFs, IBKR activity and holdings CSVs, Vanguard holdings, export and cost basis CSVs, Canonical CSVs, monthly values CSVs, factor CSVs, DAF contribution CSVs (see format guide below)
       </p>
-      <button
-        onClick={reset}
-        className="px-5 py-2.5 rounded-lg border border-edge text-ink-dim text-sm hover:bg-raised transition-colors focus-ring"
-      >
-        Try Again
-      </button>
+      {/* Try Again re-sends the same files to the step that failed; Start
+          over is the control that clears the selection. */}
+      {files.length > 0 && (
+        <p className="text-xs text-ink-faint mb-4">
+          Try Again {state.phase === "commit" ? "re-sends the import for" : "re-reads"}{" "}
+          {files.length === 1 ? files[0].name : `the same ${files.length} files`}.
+        </p>
+      )}
+      <div className="flex flex-wrap gap-3">
+        <button
+          onClick={handleRetry}
+          className="px-5 py-2.5 rounded-lg border border-edge text-ink-dim text-sm hover:bg-raised transition-colors focus-ring"
+        >
+          Try Again
+        </button>
+        <button
+          onClick={reset}
+          className="px-5 py-2.5 rounded-lg border border-edge text-ink-dim text-sm hover:bg-raised transition-colors focus-ring"
+        >
+          Start over
+        </button>
+      </div>
     </div>
   );
 }

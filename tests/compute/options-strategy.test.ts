@@ -126,6 +126,35 @@ describe("detectStrategies", () => {
     expect(strategies[0].maxProfit).toBeCloseTo(1300, 0); // spread*100 - debit: 20*100-700
   });
 
+  it("computes covered-call, protective-put, and vertical-spread risk figures to the cent", () => {
+    const [coveredCall] = detectStrategies([
+      stock("CCA", 100, 50),
+      option("CCA", "CALL", 55, -1, { price: 1.25 }),
+    ]);
+    expect(coveredCall.type).toBe("covered_call");
+    expect(coveredCall.maxProfit).toBeCloseTo(625, 2);
+    expect(coveredCall.maxLoss).toBeCloseTo(4875, 2);
+    expect(coveredCall.breakevens[0]).toBeCloseTo(48.75, 2);
+
+    const [protectivePut] = detectStrategies([
+      stock("PPA", 100, 50),
+      option("PPA", "PUT", 45, 1, { price: 1.2 }),
+    ]);
+    expect(protectivePut.type).toBe("protective_put");
+    expect(protectivePut.maxProfit).toBeNull();
+    expect(protectivePut.maxLoss).toBeCloseTo(620, 2);
+    expect(protectivePut.breakevens[0]).toBeCloseTo(51.2, 2);
+
+    const [verticalSpread] = detectStrategies([
+      option("VSA", "CALL", 50, 1, { price: 4.3 }),
+      option("VSA", "CALL", 55, -1, { price: 1.1 }),
+    ]);
+    expect(verticalSpread.type).toBe("bull_call_spread");
+    expect(verticalSpread.maxProfit).toBeCloseTo(180, 2);
+    expect(verticalSpread.maxLoss).toBeCloseTo(320, 2);
+    expect(verticalSpread.breakevens[0]).toBeCloseTo(53.2, 2);
+  });
+
   it("detects a bear put spread", () => {
     const positions = [
       option("SPY", "PUT", 500, 1, { price: 15 }),
@@ -400,8 +429,21 @@ describe("detectStrategies", () => {
       ];
       const strategies = detectStrategies(positions);
       const pp = strategies[0];
-      // (80 - 90) * 100 + 500 = -500 -> floored at 0
-      expect(pp.maxLoss).toBe(0);
+      expect(pp.pricingIncomplete).toBe(true);
+      expect(pp.maxLoss).toBeNull();
+      expect(pp.breakevens).toEqual([]);
+    });
+
+    it("a zero option mark withholds payoff figures instead of reporting zero loss", () => {
+      const positions = [
+        stock("QAAA", 100, 80),
+        option("QAAA", "PUT", 70, 1, { price: 0 }),
+      ];
+      const pp = detectStrategies(positions)[0];
+      expect(pp.type).toBe("protective_put");
+      expect(pp.pricingIncomplete).toBe(true);
+      expect(pp.maxLoss).toBeNull();
+      expect(pp.breakevens).toEqual([]);
     });
   });
 

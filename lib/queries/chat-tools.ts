@@ -7,8 +7,9 @@ import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 import { isPendingStatementLot, pendingStatementKeySet } from "@/lib/queries/pending-statement";
-import { isOptionLive } from "@/lib/compute/option-expiry";
+import { isOptionLive, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCurrencyConversionSecurityType } from "@/lib/queries/tax-lots";
+import { isLongTermSql, longTermDateSql } from "@/lib/queries/long-term-sql";
 
 /**
  * Chat sector-FILTER-only alias, on top of normalizeSector. normalizeSector
@@ -49,12 +50,12 @@ export interface HoldingsFilters {
   sort_by?: "market_value" | "unrealized_gain" | "position_weight" | "symbol";
   limit?: number;
   /**
-   * Opt-in shorts inclusion (default false — every existing consumer, incl.
-   * the query_holdings chat tool and the market-snapshot universe, stays on
-   * the long-book predicate and long-book denominator unchanged). Only
-   * lib/chat/ibkr-context.ts passes `true`, because its shortPositions /
-   * longShortSummary section can only ever populate from a `!= 0` row set.
-   * See the position_weight_pct comment below for the gross-exposure
+   * Opt-in shorts inclusion (default false: a bare call stays on the
+   * long-book predicate and long-book denominator). The query_holdings chat
+   * tool, lib/chat/ibkr-context.ts and the market-snapshot universe all pass
+   * `true` — a short is a holding, and none of them can report one from a
+   * `> 0` row set. Rows then carry SIGNED quantity / market_value (negative =
+   * short). See the position_weight_pct comment below for the gross-exposure
    * convention this flips on.
    */
   includeShorts?: boolean;
@@ -223,6 +224,11 @@ export function getHoldingsForChat(
   );
   const grossDenominatorMvExpr = includeShorts ? `ABS(${denominatorMvExpr})` : denominatorMvExpr;
 
+  // An option past its expiration day (ET) is not a holding. The purge keeps
+  // the row one grace day, so the read applies the shared cutoff itself
+  // (also normalizes legacy YYYYMMDD expirations).
+  const liveOptionSql = liveOptionExpirationSql("s", todayET());
+
   // First compute total portfolio value for position weights
   const totalRow = db
     .prepare(
@@ -242,7 +248,8 @@ export function getHoldingsForChat(
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
       WHERE ${latestHoldingsPredicate({ includeShorts })}
-      AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))`
+      AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+      AND ${liveOptionSql}`
     )
     .get() as { total: number };
 
@@ -252,6 +259,7 @@ export function getHoldingsForChat(
   const conditions: string[] = [
     latestHoldingsPredicate({ includeShorts }),
     "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+    liveOptionSql,
   ];
   const params: (string | number)[] = [];
 
@@ -272,10 +280,17 @@ export function getHoldingsForChat(
     params.push(normalizeSectorFilter(sector));
   }
 
+  // Ranked by the expression itself: selecting it as a column leaked an
+  // internal sort key into every returned row and the tool JSON. The account
+  // name completes the tie-break, so two accounts holding the same symbol at
+  // the same exposure always come back in the same order.
+  const grossExposureSort = `CASE WHEN lp.close_price IS NOT NULL
+        THEN ABS(${denominatorMvExpr})
+        ELSE 0 END DESC, s.symbol ASC, a.name ASC`;
   const sortMap: Record<string, string> = {
-    market_value: "market_value DESC",
+    market_value: includeShorts ? grossExposureSort : "market_value DESC",
     unrealized_gain: "unrealized_gain DESC",
-    position_weight: "market_value DESC",
+    position_weight: includeShorts ? grossExposureSort : "market_value DESC",
     symbol: "s.symbol ASC",
   };
 
@@ -581,9 +596,12 @@ export function getTaxLotsForChat(
       -- lib/compute/tax-lots.ts::isLongTermHolding): LT iff the disposition
       -- date is strictly AFTER the one-year anniversary of acquisition, not
       -- a fixed 365/366-day count. Never let this SQL diverge from that
-      -- function's definition.
-      CASE WHEN ? > date(tl.acquisition_date, '+1 year') THEN 1 ELSE 0 END AS is_long_term,
-      date(tl.acquisition_date, '+1 year', '+1 day') AS long_term_date
+      -- function's definition. The anniversary is the SAME month-day one
+      -- year on, built as a string like that function does: SQLite's
+      -- date(x, '+1 year') rolls Feb 29 forward to Mar 1, which made a
+      -- Feb-29 lot long-term one day late (Mar 2 instead of Mar 1).
+      ${isLongTermSql("tl.acquisition_date")} AS is_long_term,
+      ${longTermDateSql("tl.acquisition_date")} AS long_term_date
     FROM tax_lots tl
     JOIN accounts a ON a.id = tl.account_id
     JOIN securities s ON s.id = tl.security_id

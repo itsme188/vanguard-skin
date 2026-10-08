@@ -317,8 +317,18 @@ export function interpretAlpha(
   };
 }
 
-/** Regression R² (0-1). */
+/**
+ * Regression R² (0-1). Shares the alpha/beta tiers: below LOW_R2_THRESHOLD
+ * the tile that owns the number says the fit is too weak to read, the same
+ * verdict as the noise banner and the "not interpretable" alpha/beta lines.
+ */
 export function interpretR2(r2: number): Interpretation {
+  if (r2 < LOW_R2_THRESHOLD) {
+    return {
+      text: "Too weak to read — the benchmark explains almost none of the variance; beta and alpha are not interpretable at this R².",
+      tone: "neutral",
+    };
+  }
   if (r2 > 0.8) {
     return {
       text: "Tight fit — the benchmark explains most of the variance, so the beta and alpha readings are reliable.",
@@ -478,6 +488,10 @@ export function interpretProtectionRatio(ratio: number | null): Interpretation {
  * TWR vs XIRR spread (both annualized fractions). XIRR above TWR means
  * cash-flow timing helped; below means it hurt. Returns null when either
  * leg is unavailable.
+ *
+ * Every sentence names the annualized basis: the Performance card shows the
+ * PERIOD-TOTAL TWR as its headline beside the annualized MWR, so a bare
+ * "lags" read as a claim about those two figures and contradicted them.
  */
 export function interpretTwrVsXirr(
   twr: number | null,
@@ -487,18 +501,18 @@ export function interpretTwrVsXirr(
   const spread = xirr - twr;
   if (Math.abs(spread) < 0.01) {
     return {
-      text: "Money-weighted ≈ time-weighted — cash-flow timing has been roughly a wash.",
+      text: "On an annualized basis, money-weighted ≈ time-weighted — cash-flow timing has been roughly a wash.",
       tone: "neutral",
     };
   }
   if (spread > 0) {
     return {
-      text: "Money-weighted leads time-weighted — contribution timing added value on top of the strategy.",
+      text: "On an annualized basis, money-weighted leads time-weighted — contribution timing added value on top of the strategy.",
       tone: "good",
     };
   }
   return {
-    text: "Money-weighted lags time-weighted — cash tended to arrive ahead of weak stretches; timing detracted.",
+    text: "On an annualized basis, money-weighted lags time-weighted — cash tended to arrive ahead of weak stretches; timing detracted.",
     tone: "bad",
   };
 }

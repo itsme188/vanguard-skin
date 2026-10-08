@@ -30,6 +30,7 @@ import { decorateCockpitIntel } from "@/lib/queries/earnings-intel";
 import { getCurrentMonday, addDays, mondayOf, todayET, formatWeekRange } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
+import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { epsDelta, deltaToneClass } from "@/lib/earnings/eps-delta";
 import type { CalendarEvent } from "@/lib/types";
@@ -41,6 +42,7 @@ import { EarningsHubRefreshButton } from "./EarningsHubRefreshButton";
 import { EarningsRowChips } from "./EarningsRowChips";
 import EarningsHubLive, { LivePrintSlot } from "./EarningsHubLive";
 import { EarningsDeleteButton } from "./EarningsDeleteButton";
+import { fixDateOrigin } from "@/lib/calendar/fix-date-suppression";
 import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
 import { emailFollowsEarlierCopy } from "./email-follows-earlier-copy";
 import { EarningsDateChip } from "./EarningsDateChip";
@@ -49,8 +51,10 @@ import { BogeysEditButton } from "./BogeysEditButton";
 import { getSkippedPhasesForEvents } from "@/lib/queries/earnings-skips";
 import { getWorksheetFlagsForEvents } from "@/lib/queries/earnings-worksheet-flags";
 import { getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
+import { bogeyHasContentSql } from "@/lib/mutations/earnings-bogeys";
 import { statusChipClass, statusChipLabel } from "./status-chip";
 import { Chip } from "../components/Chip";
+import { preReleaseClearsAtMs } from "./pre-release-clear";
 import {
   isPreReleaseActual,
   preReleaseActualChipText,
@@ -94,8 +98,28 @@ function fmtSlot(
 ): string {
   if (display.label && display.kind !== "stored") return display.label;
   const t = (eventTime ?? "").trim().toUpperCase();
-  if (releaseTime) return `${t || "—"} · ${releaseTime}`;
+  // A clock time with no slot shows alone: a dash in the slot position read
+  // as "unknown" beside a time that already settles it.
+  if (releaseTime) return t ? `${t} · ${releaseTime}` : releaseTime;
   return t || "TBD";
+}
+
+/**
+ * The WHEN cell of one row. Vendor rows carry no event_time: their BMO/AMC
+ * slot is the vendor hour in raw_json, which deriveEarningsSlot reads (the
+ * same resolver the pre-print floor and the date popover use). Without it the
+ * cell printed a dash where the rest of the page said AMC.
+ */
+export function whenCell(row: {
+  event_time: string | null;
+  release_time: string | null;
+  raw_json: string | null;
+  display_time: EarningsDisplayTime;
+}): string {
+  const event = row.event_time?.trim()
+    ? row
+    : { ...row, event_time: deriveEarningsSlot(row)?.toUpperCase() ?? null };
+  return fmtSlot(event.event_time, event.release_time, event.display_time);
 }
 
 /** The estimate/unknown label for the chips, or null when the time is the stored one. */
@@ -136,6 +160,13 @@ export function earningsHubEmptyStateCopy(weekOf: string, todayIso: string): str
   return `No earnings events for the week of ${formatWeekRange(weekOf)}.`;
 }
 
+// On a weekend the hub already shows NEXT week (getCurrentMonday rolls
+// forward), which the week-ahead navigator heads "Week ahead"; "this week"
+// there means the week containing today. One definition for both surfaces.
+export function earningsHubHeading(weekOf: string, todayIso: string): string {
+  return weekOf === mondayOf(todayIso) ? "Earnings This Week" : "Earnings Week Ahead";
+}
+
 export function EarningsHub() {
   const weekOf = getCurrentMonday();
   const weekEnd = addDays(weekOf, 6);
@@ -155,7 +186,8 @@ export function EarningsHub() {
     const rows = db
       .prepare(
         `SELECT DISTINCT event_id FROM earnings_bogeys
-          WHERE event_id IN (${events.map(() => "?").join(",")})`,
+          WHERE event_id IN (${events.map(() => "?").join(",")})
+            AND ${bogeyHasContentSql()}`,
       )
       .all(...events.map((e) => e.id)) as { event_id: number }[];
     for (const r of rows) bogeysSet.add(r.event_id);
@@ -214,13 +246,16 @@ export function EarningsHub() {
             className="font-mono uppercase font-semibold text-ink"
             style={{ fontSize: "12px", letterSpacing: "0.2em" }}
           >
-            Earnings This Week
+            {earningsHubHeading(weekOf, todayET())}
           </h2>
           <span
             className="font-mono text-ink-faint"
             style={{ fontSize: "11px", letterSpacing: "0.1em" }}
           >
-            {weekOf} → {weekEnd}
+            {/* Each date is its own no-wrap run, so a narrow header can only
+                break at the arrow, never inside a date. */}
+            <span className="whitespace-nowrap">{weekOf}</span> →{" "}
+            <span className="whitespace-nowrap">{weekEnd}</span>
           </span>
         </div>
         <div className="flex items-baseline gap-2 font-mono" style={{ fontSize: "11px" }}>
@@ -379,7 +414,7 @@ function EmailFollowsEarlierNote({
 }
 
 function DesktopRow({ event }: { event: EnrichedRow }) {
-  const slot = fmtSlot(event.event_time, event.release_time, event.display_time);
+  const slot = whenCell(event);
   const consensus = effectiveConsensus(event);
   const cons = formatFinnhubFigure(consensus);
   const isPostRelease = !!event.enriched_at && !!event.actual_value;
@@ -498,6 +533,8 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           worksheetPrinted={event.worksheetPrinted}
           timeEstimateLabel={estimateLabel(event.display_time)}
           preReleaseActualTitle={preRelease ? PRE_RELEASE_ACTUAL_TITLE : null}
+          preReleaseClearsAtMs={preRelease ? preReleaseClearsAtMs(event) : null}
+          printed={isPostRelease && !isPreReleaseActual(event)}
         />
         {/* Manual rows delete directly; sync rows delete-with-suppression
             (stays removed across syncs — the wrong-date correction path). */}
@@ -505,6 +542,7 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           eventId={event.id}
           symbol={event.symbol}
           source={event.source}
+          vendorDate={fixDateOrigin(event)}
         />
       </span>
       {/* Spans every column, so it sits on its own line under the row. */}
@@ -564,7 +602,7 @@ function PreReleaseChip({ manualActualsAt }: { manualActualsAt: string | null })
 }
 
 function MobileCard({ event }: { event: EnrichedRow }) {
-  const slot = fmtSlot(event.event_time, event.release_time, event.display_time);
+  const slot = whenCell(event);
   const consensus = effectiveConsensus(event);
   const cons = formatFinnhubFigure(consensus);
   const isPostRelease = !!event.enriched_at && !!event.actual_value;
@@ -684,12 +722,15 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           worksheetPrinted={event.worksheetPrinted}
           timeEstimateLabel={estimateLabel(event.display_time)}
           preReleaseActualTitle={preRelease ? PRE_RELEASE_ACTUAL_TITLE : null}
+          preReleaseClearsAtMs={preRelease ? preReleaseClearsAtMs(event) : null}
+          printed={isPostRelease && !isPreReleaseActual(event)}
         />
         {/* Manual rows delete directly; sync rows delete-with-suppression. */}
         <EarningsDeleteButton
           eventId={event.id}
           symbol={event.symbol}
           source={event.source}
+          vendorDate={fixDateOrigin(event)}
         />
       </div>
       <EmailFollowsEarlierNote

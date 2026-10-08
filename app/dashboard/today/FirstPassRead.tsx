@@ -145,7 +145,7 @@ export default function FirstPassRead({ eventId, read, activeRead, lastAttempt =
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-[11px] font-mono uppercase text-ink-faint whitespace-nowrap!" style={{ letterSpacing: "0.14em" }}>First-pass read</h3>
         <span className="text-[11px] font-mono text-ink-faint">{readStatusLabel(read, activeRead, lastAttempt)}</span>
-        <button type="button" className="text-[11px] font-mono underline text-ink-dim disabled:opacity-50" disabled={busy !== null || activeRead !== null} onClick={regenerate}>
+        <button type="button" className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3.5 pointer-coarse:after:-inset-x-2 text-[11px] font-mono underline text-ink-dim disabled:opacity-50" disabled={busy !== null || activeRead !== null} onClick={regenerate}>
           {busy === "read" ? "requesting…" : "regenerate"}
         </button>
       </div>

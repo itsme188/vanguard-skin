@@ -8,13 +8,71 @@ interface Props {
   weekOf: string;
 }
 
-interface UploadResponse {
+export interface UploadResponse {
   symbolsExtracted?: number;
   eventsMatched?: number;
   eventsUnmatched?: string[];
   r2Key?: string | null;
-  results?: Array<{ symbol: string; eventId: number | null }>;
+  /** `bogeyId` 0 = matched, but the sheet had no figure for it and nothing was
+   *  stored. `eventDate` is shown when the route supplies it. */
+  results?: Array<{
+    symbol: string;
+    eventId: number | null;
+    bogeyId?: number;
+    eventDate?: string | null;
+  }>;
   error?: string;
+}
+
+export interface UploadOutcomeLine {
+  text: string;
+  tone: "plain" | "warn";
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "2026-09-07" -> "Sep 7". Read off the string, so no timezone can move it. */
+function shortDate(iso: string | null | undefined): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso ?? "");
+  if (!m) return null;
+  const month = MONTHS[Number(m[2]) - 1];
+  return month ? `${month} ${Number(m[3])}` : null;
+}
+
+/**
+ * What the upload did, in words (qa: upload match-success-unnamed and
+ * bare-zero-matched). A bare "1/1 matched" names nothing the user can check,
+ * and "0/0 matched" does not say whether anything was read at all. Pure, so
+ * it is tested directly (the repo has no DOM harness).
+ */
+export function describeUploadOutcome(result: UploadResponse, fileName: string): UploadOutcomeLine[] {
+  const extracted = result.symbolsExtracted ?? 0;
+  if (extracted === 0) {
+    return [{ text: `No tickers found in ${fileName} — nothing was stored.`, tone: "warn" }];
+  }
+  const lines: UploadOutcomeLine[] = [
+    { text: `${result.eventsMatched ?? 0}/${extracted} matched`, tone: "plain" },
+  ];
+  const matched = (result.results ?? []).filter((r) => r.eventId != null);
+  const name = (r: { symbol: string; eventDate?: string | null }) => {
+    const day = shortDate(r.eventDate);
+    return day ? `${r.symbol} (${day})` : r.symbol;
+  };
+  const stored = matched.filter((r) => r.bogeyId !== 0);
+  const empty = matched.filter((r) => r.bogeyId === 0);
+  if (stored.length > 0) {
+    lines.push({ text: `bogeys saved for ${stored.map(name).join(", ")}`, tone: "plain" });
+  }
+  if (empty.length > 0) {
+    lines.push({
+      text: `no figures found for ${empty.map(name).join(", ")} — nothing stored`,
+      tone: "warn",
+    });
+  }
+  if (result.eventsUnmatched && result.eventsUnmatched.length > 0) {
+    lines.push({ text: `${result.eventsUnmatched.join(", ")} unmatched`, tone: "warn" });
+  }
+  return lines;
 }
 
 /**
@@ -32,7 +90,7 @@ export function BogeysUploadButton({ weekOf }: Props) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
-  const [result, setResult] = useState<UploadResponse | null>(null);
+  const [result, setResult] = useState<{ data: UploadResponse; fileName: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function handleFile(file: File) {
@@ -53,7 +111,7 @@ export function BogeysUploadButton({ weekOf }: Props) {
         setError(data.error ?? `Server returned ${res.status}`);
         return;
       }
-      setResult(data);
+      setResult({ data, fileName: file.name });
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
@@ -66,9 +124,14 @@ export function BogeysUploadButton({ weekOf }: Props) {
     <div className="flex flex-wrap items-center gap-2 text-[14px]">
       <button
         type="button"
-        onClick={() => fileInputRef.current?.click()}
+        onClick={() => {
+          // Re-opening the chooser is a fresh attempt: a rejection from the
+          // last file no longer describes anything (qa: error never clears).
+          setError(null);
+          fileInputRef.current?.click();
+        }}
         disabled={uploading}
-        className="text-gold-ink hover:text-gold/80 font-medium disabled:opacity-50"
+        className="text-gold-ink hover:text-gold/80 font-medium disabled:opacity-50 relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2"
       >
         {uploading ? "Uploading…" : "+ Upload bogeys PDF/screenshot"}
       </button>
@@ -80,22 +143,34 @@ export function BogeysUploadButton({ weekOf }: Props) {
         onChange={(e) => {
           const f = e.target.files?.[0];
           if (f) handleFile(f);
+          else setError(null);
           // Reset so re-selecting the same file still triggers onChange.
           e.target.value = "";
         }}
       />
       {result && (
         <span className="text-[11px] font-mono text-ink-faint">
-          {result.eventsMatched}/{result.symbolsExtracted} matched
-          {result.eventsUnmatched && result.eventsUnmatched.length > 0 && (
-            <span className="text-down">
-              {" "}
-              · {result.eventsUnmatched.join(", ")} unmatched
+          {describeUploadOutcome(result.data, result.fileName).map((line, i) => (
+            <span key={line.text} className={line.tone === "warn" ? "text-down" : undefined}>
+              {i > 0 ? " · " : ""}
+              {line.text}
             </span>
-          )}
+          ))}
         </span>
       )}
-      {error && <span className="text-[11px] text-down">{error}</span>}
+      {error && (
+        <span role="alert" className="text-[11px] text-down">
+          {error}{" "}
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            aria-label="Dismiss this message"
+            className="relative text-ink-faint hover:text-ink pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
+          >
+            ✕
+          </button>
+        </span>
+      )}
     </div>
   );
 }

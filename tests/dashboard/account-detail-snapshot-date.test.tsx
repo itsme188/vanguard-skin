@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { AccountDetail } from "@/app/dashboard/components/AccountDetail";
 import { PrivacyProvider } from "@/lib/privacy/context";
 import type { Account } from "@/lib/types";
-import type { HoldingWithSecurity } from "@/lib/queries/holdings";
+import type { AccountHoldingRow } from "@/lib/queries/holdings";
 
 // getHoldingsByAccount's default read keys "latest" per (account, security)
 // — not a single account-wide date — and orders the rows by SYMBOL, not by
@@ -28,7 +28,7 @@ function vanguardAccount(): Account {
   return { id: 1, name: "Vanguard Taxable" };
 }
 
-function sampleHolding(overrides: Partial<HoldingWithSecurity>): HoldingWithSecurity {
+function sampleHolding(overrides: Partial<AccountHoldingRow>): AccountHoldingRow {
   return {
     id: 1,
     account_id: 1,
@@ -47,11 +47,15 @@ function sampleHolding(overrides: Partial<HoldingWithSecurity>): HoldingWithSecu
     expiration_date: null,
     option_type: null,
     multiplier: 1,
+    fund_category: null,
+    current_price: 120,
+    current_value: 1200,
+    unrealized_gain: 200,
     ...overrides,
   };
 }
 
-function renderAccountDetail(holdings: HoldingWithSecurity[]) {
+function renderAccountDetail(holdings: AccountHoldingRow[]) {
   return renderToStaticMarkup(
     <PrivacyProvider>
       <AccountDetail
@@ -76,7 +80,20 @@ describe("AccountDetail snapshot-age date (mixed-date holdings rows)", () => {
     const html = renderAccountDetail(holdings);
     expect(html).toContain("Snapshot");
     expect(html).toContain("Aug 28"); // SnapshotAge's short-date rendering of the newest date
-    expect(html).not.toContain("Snapshot · Jul 31");
+    // Ruling 2026-09-14 (QA accounts-header--snapshot-chip-single-date-while-
+    // cash-and-bond-rows-11-days-older): mixed rows show the RANGE, so the
+    // older date now appears as the range start. This line used to assert
+    // the older date was absent after "Snapshot · "; the bug it guarded
+    // (age and tone read off the OLD row) is pinned below instead.
+    expect(html).toContain("Snapshot · Jul 31 – Aug 28");
+    const newestOnly = renderAccountDetail([
+      sampleHolding({ id: 2, symbol: "ZZZ", as_of_date: "2026-08-28" }),
+    ]);
+    const tone = (markup: string) => /class="text-\[11px\] font-mono ([^"]+)"/.exec(markup)![1];
+    const age = (markup: string) => / · (?:newest )?(\d+d ago|today)</.exec(markup)![1];
+    // Age and tone still follow the newest row, not the old bond.
+    expect(tone(html)).toBe(tone(newestOnly));
+    expect(age(html)).toBe(age(newestOnly));
   });
 
   it("still works when the newest date happens to sort first alphabetically too", () => {

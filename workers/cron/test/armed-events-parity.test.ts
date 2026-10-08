@@ -34,6 +34,8 @@ import { readFileSync } from "node:fs";
 import {
   ARMED_EVENT_ENTRY_FIELDS,
   ARMED_EVENT_ENTRY_KEYS,
+  ARMED_EVENTS_MAX_REMOVED_IDS,
+  ARMED_EVENTS_MAX_SUPERSEDED_IDS,
   applyArmedEventsDelta,
   readArmedEventsDelta,
 } from "../src/armed-events";
@@ -63,6 +65,12 @@ const macKeys = extractKeyList(
   macSource,
   /export const ARMED_EVENT_PROJECTION_KEYS = (\[[\s\S]*?\n\]) as const;/,
   "the Mac's ARMED_EVENT_PROJECTION_KEYS",
+);
+const macLookback = Number(
+  /export const LIVE_LOOKBACK_DAYS = (\d+);/.exec(macSource)?.[1] ?? Number.NaN,
+);
+const macIdListCap = Number(
+  /export const ARMED_EVENTS_MAX_ID_LIST = (\d+);/.exec(macSource)?.[1] ?? Number.NaN,
 );
 
 /**
@@ -127,6 +135,40 @@ describe("armed-events projection parity (Mac ↔ Worker)", () => {
 
   it("the Worker parser's allowlist equals the Mac's projection key set", () => {
     expect([...ARMED_EVENT_ENTRY_KEYS].sort()).toEqual([...macKeys].sort());
+  });
+
+  it("pins the top-level removed/superseded id fields, shared cap, and 14-day lookback", async () => {
+    expect(macSource).toContain("supersededEventIds");
+    expect(macSource).toContain("removedEventIds");
+    expect(macLookback).toBe(14);
+    expect(macIdListCap).toBe(2000);
+    expect(ARMED_EVENTS_MAX_SUPERSEDED_IDS).toBe(2000);
+    expect(ARMED_EVENTS_MAX_REMOVED_IDS).toBe(macIdListCap);
+
+    const store = new Map<string, string>();
+    const kv = {
+      get: vi.fn(async (k: string) => store.get(k) ?? null),
+      put: vi.fn(async (k: string, v: string) => {
+        store.set(k, v);
+      }),
+      delete: vi.fn(),
+      list: vi.fn(async () => ({ keys: [] })),
+    } as unknown as KVNamespace;
+
+    const macPayloadFixture = {
+      generation: 1,
+      entries: [],
+      supersededEventIds: [42, 7, 42],
+      removedEventIds: [
+        { id: 9, eventDate: "2026-09-02", removedAt: "2026-09-02T20:00:00.000Z" },
+        { id: 9, eventDate: "2026-09-02", removedAt: "2026-09-02T20:00:00.000Z" },
+      ],
+    };
+    await applyArmedEventsDelta(kv, macPayloadFixture);
+    expect((await readArmedEventsDelta(kv))!.supersededEventIds).toEqual([7, 42]);
+    expect((await readArmedEventsDelta(kv))!.removedEventIds).toEqual([
+      { id: 9, eventDate: "2026-09-02", removedAt: "2026-09-02T20:00:00.000Z" },
+    ]);
   });
 
   it("the Worker's ArmedEventEntry interface declares exactly those fields", () => {

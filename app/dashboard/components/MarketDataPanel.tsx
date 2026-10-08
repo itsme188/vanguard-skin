@@ -5,26 +5,174 @@ import type { CSSProperties } from "react";
 import { SecurityChart } from "./SecurityChart";
 import { LevelsPanel } from "./LevelsPanel";
 import { KpiCell } from "./TerminalSection";
-import { Money, Pct, Count } from "@/lib/privacy/components";
+import { formatUSDPrecise, formatPercent, formatNumber, rendersAsZero } from "@/lib/format";
+import { todayET, nowET, addDays } from "@/lib/calendar/date-utils";
+import { isMarketClosed } from "@/lib/calendar/market-holidays";
 import type { SecurityKpis } from "@/lib/queries/security-detail";
 
 /**
- * Live clock — conveys "this panel is streaming, not static." Updates every
- * second, shows HH:MM:SS local. Rendered client-side only so SSR doesn't emit
- * stale time text.
+ * Everything this panel prints is PUBLIC market data (quote, day change,
+ * open / range / volume / ATR): anyone can look it up and it reveals nothing
+ * about the user's holdings, so it stays visible under Hide amounts and uses
+ * plain formatters — the same rule QuoteStats follows for the 52-week range
+ * lower on the page. Sign is decided after rounding (never "+$0.00").
  */
-function LiveClock() {
-  const [t, setT] = useState<Date | null>(null);
+export function formatPublicUSD(
+  value: number,
+  opts: { bare?: boolean; signed?: boolean } = {}
+): string {
+  const formatted = formatUSDPrecise(Math.abs(value));
+  const numeric = opts.bare ? formatted.replace(/^\$/, "") : formatted;
+  const sign = rendersAsZero(numeric) ? "" : value < 0 ? "−" : opts.signed ? "+" : "";
+  return `${sign}${numeric}`;
+}
+
+export function formatPublicPct(value: number, digits = 1, signed = false): string {
+  const formatted = formatPercent(Math.abs(value), digits);
+  const sign = rendersAsZero(formatted) ? "" : value < 0 ? "−" : signed ? "+" : "";
+  return `${sign}${formatted}`;
+}
+
+/** Regular US session, ET wall clock (HH:MM, lexically comparable). */
+const SESSION_OPEN_ET = "09:30";
+const SESSION_CLOSE_ET = "16:00";
+
+/** The last date strictly before `date` on which the market was open. */
+function previousTradingDay(date: string): string {
+  let d = addDays(date, -1);
+  let guard = 0;
+  while (isMarketClosed(d) && guard++ < 14) d = addDays(d, -1);
+  return d;
+}
+
+/**
+ * How current the price shown in the hero is.
+ *  - "live":    the price is dated today (ET) and the regular session is open.
+ *  - "closed":  the price is the newest one a closed market can have — the
+ *               last session's close on a weekend / holiday / before the open,
+ *               or today's price after the close.
+ *  - "stale":   a session has opened since the price was stored.
+ *  - "none":    no price at all.
+ *  - "unknown": the clock is not known yet (server render) — claim nothing.
+ *
+ * Decided ONLY from the price's own date (`prices.date`, a YYYY-MM-DD day —
+ * the table carries no time of day) against the ET clock and the shared
+ * market calendar. Connection state is deliberately not an input: a price
+ * from June is stale whether or not TWS is connected.
+ */
+export type PriceFreshness = "live" | "closed" | "stale" | "none" | "unknown";
+
+export function priceFreshness(priceDate: string | null, now: Date | null): PriceFreshness {
+  if (priceDate == null) return "none";
+  if (now == null) return "unknown";
+  const today = todayET(now);
+  const clock = nowET(now);
+  const tradingDay = !isMarketClosed(today);
+  // The newest session that has started: today once the bell has rung on a
+  // trading day, otherwise the previous trading day.
+  const newestSession =
+    tradingDay && clock >= SESSION_OPEN_ET ? today : previousTradingDay(today);
+  if (priceDate < newestSession) return "stale";
+  const sessionOpen = tradingDay && clock >= SESSION_OPEN_ET && clock < SESSION_CLOSE_ET;
+  return sessionOpen && priceDate === today ? "live" : "closed";
+}
+
+/**
+ * Caption under the hero change. The change is the shown price minus the
+ * previous STORED price row, so it is "Today" only when the shown price is
+ * dated today (ET) — and, when the caller knows the previous row's date, only
+ * when that row is the prior session (the prices table has gaps; a three-day
+ * move is not today's move). Otherwise it names the comparison.
+ */
+export function changeCaption(
+  priceDate: string | null,
+  prevPriceDate: string | null,
+  now: Date | null
+): string {
+  const fallback = prevPriceDate != null ? `vs ${prevPriceDate}` : "vs prior close";
+  if (priceDate == null || now == null) return fallback;
+  if (priceDate !== todayET(now)) return fallback;
+  if (prevPriceDate != null && prevPriceDate !== previousTradingDay(priceDate)) return fallback;
+  return "Today";
+}
+
+/** Ticking clock, null until mounted so SSR never emits a stale instant. */
+function useNow(intervalMs: number): Date | null {
+  const [now, setNow] = useState<Date | null>(null);
   useEffect(() => {
-    setT(new Date());
-    const id = setInterval(() => setT(new Date()), 1000);
-    return () => clearInterval(id);
-  }, []);
-  if (!t) return null;
-  const hh = t.getHours().toString().padStart(2, "0");
-  const mm = t.getMinutes().toString().padStart(2, "0");
-  const ss = t.getSeconds().toString().padStart(2, "0");
-  return <span>{hh}:{mm}:{ss} ET</span>;
+    const tick = () => setNow(new Date());
+    // First tick is deferred a task so the effect body itself sets no state.
+    const first = setTimeout(tick, 0);
+    const id = setInterval(tick, intervalMs);
+    return () => {
+      clearTimeout(first);
+      clearInterval(id);
+    };
+  }, [intervalMs]);
+  return now;
+}
+
+const ET_CLOCK = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+
+const FRESHNESS_LABEL: Record<PriceFreshness, string | null> = {
+  live: "live",
+  closed: "market closed",
+  stale: "stale",
+  none: "no price",
+  unknown: null,
+};
+
+/**
+ * Right side of the command strip: a freshness pill driven by the price's
+ * own date, the price's as-of date, and the current ET wall clock. The clock
+ * is labelled "now" because it is the time of day, NOT the time of the price
+ * (the two used to read as one stamp: "as of 2026-06-11 · 06:20:48 ET").
+ */
+function FreshnessStamp({ priceDate }: { priceDate: string | null }) {
+  const now = useNow(1000);
+  const state = priceFreshness(priceDate, now);
+  const label = FRESHNESS_LABEL[state];
+  // Green only while live; amber for a price a session has passed by; the
+  // strip's own dim grey otherwise.
+  const color = state === "live" ? "#22c55e" : state === "stale" ? "#ffb84d" : "#8a8a8a";
+  return (
+    <div className="flex items-center gap-2 shrink-0">
+      {label && (
+        <>
+          <span
+            className="inline-block w-1.5 h-1.5 rounded-full"
+            style={{
+              background: color,
+              ...(state === "live" && {
+                boxShadow: "0 0 6px #22c55e",
+                animation: "pulse 1.6s ease-in-out infinite",
+              }),
+            }}
+          />
+          <span style={{ color }}>{label}</span>
+        </>
+      )}
+      {priceDate && <span>{label ? "· " : ""}as of {priceDate}</span>}
+      {now && <span>· now {ET_CLOCK.format(now)} ET</span>}
+    </div>
+  );
+}
+
+function ChangeCaption({
+  priceDate,
+  prevPriceDate,
+}: {
+  priceDate: string | null;
+  prevPriceDate: string | null;
+}) {
+  const now = useNow(60_000);
+  return <>{changeCaption(priceDate, prevPriceDate, now)}</>;
 }
 
 interface Props {
@@ -36,6 +184,13 @@ interface Props {
   priceChange: number | null;
   priceChangePct: number | null;
   priceDate: string | null;
+  /**
+   * Date of the previous stored price row the change is measured against.
+   * Optional: when supplied the caption names it ("vs 2026-06-10") and only
+   * says "Today" for a one-session move; without it a stale price reads
+   * "vs prior close".
+   */
+  prevPriceDate?: string | null;
   kpis: SecurityKpis | null;
   /**
    * FX factor for foreign-currency securities (1 for USD). Price + KPI props
@@ -75,10 +230,7 @@ export function isBarsStaleVsPrice(
   return barsAsOfDate < priceAsOfDate;
 }
 
-/**
- * Compact volume label: 12.3M / 4.7K / 812. Privacy-aware via the <Count>
- * wrapper around the numeric piece.
- */
+/** Compact volume label: 12.3M / 4.7K / 812. */
 function formatVolumeValue(v: number | null): { num: number; suffix: string } | null {
   if (v == null) return null;
   if (v >= 1e9) return { num: v / 1e9, suffix: "B" };
@@ -105,6 +257,7 @@ export function MarketDataPanel({
   priceChange,
   priceChangePct,
   priceDate,
+  prevPriceDate = null,
   kpis,
   usdPerUnit = 1,
   currency = null,
@@ -156,39 +309,35 @@ export function MarketDataPanel({
             flex default is min-width:auto, which pins it at content size and
             either overflows past the panel's own overflow-hidden edge — a
             mid-word hard clip with no ellipsis — or, when space is too
-            tight, collapses to zero). The three parts are wrapped in one
-            child span (rather than truncate on the flex container itself)
-            because text-overflow:ellipsis only renders on a block-level
-            container whose OWN content overflows a line box — a flex
-            container's children are flex items, not inline text, so
-            ellipsis silently no-ops when applied to the flex row directly.
-            The inner pieces are inline text now, so the old gap-3 no longer
-            spaces them — ml-3 on each piece keeps the 12px separation. */}
+            tight, collapses to zero).
+
+            Each part is its own flex item, and only the company NAME gives
+            way: one truncate span around all three cut the line from the
+            right, so a long name pushed the type and sector — which this
+            strip is the only place to read — off the end. `truncate` on an
+            item works (unlike on the flex row) because the item is a block
+            whose own text overflows, and its overflow:hidden is also what
+            lets it shrink to nothing. The type keeps a token flex-shrink so
+            it ellipsizes too, but only once the name is fully gone (a phone
+            panel narrower than symbol + type). */}
         <div className="flex items-center gap-3 min-w-0">
-          <span className="truncate">
-            <span style={{ color: "#ffb84d", fontWeight: 600 }}>{symbol}</span>
-            {name && <span className="ml-3">· {name}</span>}
-            {typeLabel && <span className="ml-3" style={{ color: "#8a8a8a" }}>· {typeLabel}</span>}
-          </span>
+          <span className="shrink-0" style={{ color: "#ffb84d", fontWeight: 600 }}>{symbol}</span>
+          {name && <span className="truncate">· {name}</span>}
+          {typeLabel && (
+            <span className="truncate" style={{ color: "#8a8a8a", flexShrink: 0.001 }}>
+              · {typeLabel}
+            </span>
+          )}
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <span
-            className="inline-block w-1.5 h-1.5 rounded-full"
-            style={{
-              background: "#22c55e",
-              boxShadow: "0 0 6px #22c55e",
-              animation: "pulse 1.6s ease-in-out infinite",
-            }}
-          />
-          <span style={{ color: "#22c55e" }}>live</span>
-          {priceDate && <span>· as of {priceDate}</span>}
-          <span>· <LiveClock /></span>
-        </div>
+        <FreshnessStamp priceDate={priceDate} />
       </div>
 
-      {/* Hero header: symbol + big price + signed change */}
+      {/* Hero header: symbol + big price + signed change. Symbol and price
+          scale down with the viewport: at a fixed 3rem each, a 6-character
+          ticker plus the price overran a 350px phone panel and the section's
+          overflow-hidden cut the last digit and the whole change column. */}
       <div
-        className="grid gap-6 px-6 py-6 items-center"
+        className="grid gap-3 sm:gap-6 px-6 py-6 items-center"
         style={{
           gridTemplateColumns: "auto 1fr",
           borderBottom: "1px solid #1f1f1f",
@@ -199,7 +348,7 @@ export function MarketDataPanel({
             style={{
               color: "#ffffff",
               fontWeight: 700,
-              fontSize: "3rem",
+              fontSize: "clamp(1.75rem, 8vw, 3rem)",
               lineHeight: 1,
               letterSpacing: "-0.03em",
               fontVariantNumeric: "tabular-nums",
@@ -224,11 +373,15 @@ export function MarketDataPanel({
 
         {currentPrice != null && (
           <div className="flex items-baseline justify-end gap-5 flex-wrap">
+            {/* whitespace-nowrap: the "$" and the number are one unit. Without
+                it a long name squeezed this block to the number's exact width
+                and the "$" wrapped onto a line of its own above the price. */}
             <div
+              className="whitespace-nowrap"
               style={{
                 color: "#ffb84d",
                 fontWeight: 700,
-                fontSize: "clamp(3rem, 7vw, 5rem)",
+                fontSize: "clamp(2rem, 7vw, 5rem)",
                 lineHeight: 1,
                 letterSpacing: "-0.02em",
                 fontVariantNumeric: "tabular-nums",
@@ -247,7 +400,7 @@ export function MarketDataPanel({
               >
                 $
               </span>
-              <Money value={currentPrice * usdPerUnit} precise bare />
+              {formatPublicUSD(currentPrice * usdPerUnit, { bare: true })}
             </div>
 
             {priceChange != null && priceChangePct != null && (
@@ -260,7 +413,7 @@ export function MarketDataPanel({
                     fontVariantNumeric: "tabular-nums",
                   }}
                 >
-                  <Money value={priceChange * usdPerUnit} precise signed />
+                  {formatPublicUSD(priceChange * usdPerUnit, { signed: true })}
                 </div>
                 <div
                   style={{
@@ -269,7 +422,7 @@ export function MarketDataPanel({
                     fontVariantNumeric: "tabular-nums",
                   }}
                 >
-                  <Pct value={priceChangePct} digits={2} signed />
+                  {formatPublicPct(priceChangePct, 2, true)}
                 </div>
                 <div
                   style={{
@@ -280,7 +433,7 @@ export function MarketDataPanel({
                     marginTop: "0.35rem",
                   }}
                 >
-                  Today
+                  <ChangeCaption priceDate={priceDate} prevPriceDate={prevPriceDate} />
                 </div>
               </div>
             )}
@@ -318,7 +471,7 @@ export function MarketDataPanel({
               kpis.open != null ? (
                 <>
                   <span style={{ color: "#555", marginRight: "0.08em" }}>$</span>
-                  <Money value={kpis.open * usdPerUnit} precise bare />
+                  {formatPublicUSD(kpis.open * usdPerUnit, { bare: true })}
                 </>
               ) : (
                 "—"
@@ -333,7 +486,7 @@ export function MarketDataPanel({
             value={
               kpis.dayLow != null && kpis.dayHigh != null ? (
                 <>
-                  <Money value={kpis.dayLow * usdPerUnit} precise /> – <Money value={kpis.dayHigh * usdPerUnit} precise />
+                  {formatPublicUSD(kpis.dayLow * usdPerUnit)} – {formatPublicUSD(kpis.dayHigh * usdPerUnit)}
                 </>
               ) : (
                 "—"
@@ -346,7 +499,7 @@ export function MarketDataPanel({
             value={
               kpis.week52Low != null && kpis.week52High != null ? (
                 <>
-                  <Money value={kpis.week52Low * usdPerUnit} precise /> – <Money value={kpis.week52High * usdPerUnit} precise />
+                  {formatPublicUSD(kpis.week52Low * usdPerUnit)} – {formatPublicUSD(kpis.week52High * usdPerUnit)}
                 </>
               ) : (
                 "—"
@@ -364,7 +517,7 @@ export function MarketDataPanel({
             value={
               vol != null ? (
                 <>
-                  <Count value={vol.suffix ? Math.round(vol.num * 10) / 10 : Math.round(vol.num)} />
+                  {formatNumber(vol.suffix ? Math.round(vol.num * 10) / 10 : Math.round(vol.num))}
                   {vol.suffix && <span style={{ color: "#8a8a8a" }}>{vol.suffix}</span>}
                 </>
               ) : (
@@ -379,7 +532,7 @@ export function MarketDataPanel({
               kpis.atr14 != null ? (
                 <>
                   <span style={{ color: "#555", marginRight: "0.08em" }}>$</span>
-                  <Money value={kpis.atr14 * usdPerUnit} precise bare />
+                  {formatPublicUSD(kpis.atr14 * usdPerUnit, { bare: true })}
                 </>
               ) : (
                 "—"
@@ -392,7 +545,7 @@ export function MarketDataPanel({
               barsStale
                 ? barsAsOfCaption
                 : kpis.atr14 != null && currentPrice != null && currentPrice > 0
-                  ? <Pct value={(kpis.atr14 / currentPrice) * 100} digits={2} />
+                  ? formatPublicPct((kpis.atr14 / currentPrice) * 100, 2)
                   : undefined
             }
           />

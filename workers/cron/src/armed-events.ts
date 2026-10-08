@@ -69,7 +69,25 @@ export const ARMED_EVENT_ENTRY_KEYS = [
 
 /** Hard caps on what one POST may carry (see applyArmedEventsDelta, [C-19]). */
 export const ARMED_EVENTS_MAX_ENTRIES = 500;
+export const ARMED_EVENTS_MAX_SUPERSEDED_IDS = 2000;
+export const ARMED_EVENTS_MAX_REMOVED_IDS = ARMED_EVENTS_MAX_SUPERSEDED_IDS;
 export const ARMED_EVENTS_MAX_BODY_BYTES = 256 * 1024;
+
+/**
+ * The POST body itself is wrong (shape, type, count, date format). The handler
+ * answers 400 for this class ONLY — the Mac treats a 400 as "this payload will
+ * never be accepted" and moves on to a later generation. Anything else thrown
+ * from `applyArmedEventsDelta` (a KV read or write failing) is a transient
+ * fault and must surface as a 503 so the Mac retries the same row, in order.
+ */
+export class ArmedEventsValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ArmedEventsValidationError";
+  }
+}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface EffectiveCalendar {
   /**
@@ -206,6 +224,14 @@ export function effectiveCalendarEvents(
       armed.add(e.eventId);
       upsert(e);
     }
+    const removedIds = (delta.removedEventIds ?? []).map((r) => r.id);
+    for (const id of [...(delta.supersededEventIds ?? []), ...removedIds]) {
+      const existing = byId.get(id);
+      if (!existing) continue;
+      byId.set(id, { ...existing, superseded: 1 });
+      armed.delete(id);
+    }
+    supersedeRelistedSnapshotRows(delta, snapshotEvents, byId, armed);
   }
 
   const events = [
@@ -216,6 +242,63 @@ export function effectiveCalendarEvents(
       .sort((a, b) => a.event_date.localeCompare(b.event_date) || a.id - b.id),
   ];
   return { events, armedEventIds: armed, source };
+}
+
+/**
+ * One print, one live row. The vendor sync deletes and re-creates an
+ * unenriched earnings row, so a re-listed print has a NEW id on the Mac while
+ * the 2am snapshot still holds the OLD id — and the Mac deliberately does not
+ * publish a same-key, same-date re-listing as removed (an unarmed name must
+ * not be silenced). Once the new row is ARMED it arrives here as a delta
+ * entry, and an id-keyed merge alone would leave both rows live: two previews,
+ * two recaps for one print.
+ *
+ * So: for every LIVE delta entry, a snapshot row with a different id but the
+ * same `source_key` AND the same `event_date` is marked superseded and loses
+ * its armed mark. Same one-way marking as the id lists: never delete, never
+ * clear, never synthesize. Deliberately narrow —
+ *   - never on symbol alone, and never for an empty/missing source_key;
+ *   - a tombstoned entry, or one the delta itself lists as replaced/removed,
+ *     supersedes nothing (never silence both rows);
+ *   - a snapshot row that is itself a live delta entry is left alone (the Mac
+ *     says both are armed; that is not this rule's call to make).
+ * A re-listed name that is NOT armed has no delta entry and keeps exactly the
+ * cloud behaviour it had: its old snapshot row stays live.
+ */
+function supersedeRelistedSnapshotRows(
+  delta: ArmedEventsDelta,
+  snapshotEvents: CalendarEventRow[],
+  byId: Map<number, CalendarEventRow>,
+  armed: Set<number>,
+): void {
+  // The list is ordered: a later tombstone un-does an earlier live entry.
+  const live = new Map<number, ArmedEventEntry>();
+  for (const e of delta.entries) {
+    if (e.removed) live.delete(e.eventId);
+    else live.set(e.eventId, e);
+  }
+  const printKey = (sourceKey: unknown, eventDate: unknown): string | null =>
+    typeof sourceKey === "string" && sourceKey.trim() !== "" && typeof eventDate === "string"
+      ? JSON.stringify([sourceKey, eventDate])
+      : null;
+  const liveByPrint = new Map<string, number[]>();
+  for (const e of live.values()) {
+    if (byId.get(e.eventId)?.superseded) continue;
+    const key = printKey(e.sourceKey, e.eventDate);
+    if (key == null) continue;
+    liveByPrint.set(key, [...(liveByPrint.get(key) ?? []), e.eventId]);
+  }
+  if (liveByPrint.size === 0) return;
+  for (const s of snapshotEvents) {
+    if (live.has(s.id)) continue;
+    const row = byId.get(s.id);
+    if (!row) continue;
+    const key = printKey(row.source_key, row.event_date);
+    if (key == null) continue;
+    if (!(liveByPrint.get(key) ?? []).some((id) => id !== s.id)) continue;
+    byId.set(s.id, { ...row, superseded: 1 });
+    armed.delete(s.id);
+  }
 }
 
 /**
@@ -240,14 +323,45 @@ export function isCoveredInCloud(
 /** The stored delta, or null when absent/corrupt — a bad KV value must never
  *  throw a whole cron tick, it just means "no delta". */
 export async function readArmedEventsDelta(kv: KVNamespace): Promise<ArmedEventsDelta | null> {
+  return (await readStoredArmedEvents(kv)).delta;
+}
+
+/**
+ * The stored delta plus whether the record carries the id lists at all. A
+ * build from before the id lists existed stored `{ generation, entries }` and
+ * nothing else; every build since writes both list keys, empty or not. The
+ * difference matters to exactly one caller — `applyArmedEventsDelta`.
+ */
+async function readStoredArmedEvents(
+  kv: KVNamespace,
+): Promise<{ delta: ArmedEventsDelta | null; hasIdLists: boolean }> {
   const raw = await kv.get(ARMED_EVENTS_KV_KEY);
-  if (!raw) return null;
+  if (!raw) return { delta: null, hasIdLists: false };
   try {
-    const parsed = JSON.parse(raw) as { generation?: unknown; entries?: unknown };
-    if (typeof parsed.generation !== "number" || !Array.isArray(parsed.entries)) return null;
-    return { generation: parsed.generation, entries: parsed.entries as ArmedEventEntry[] };
+    const parsed = JSON.parse(raw) as {
+      generation?: unknown;
+      entries?: unknown;
+      supersededEventIds?: unknown;
+      removedEventIds?: unknown;
+    };
+    if (typeof parsed.generation !== "number" || !Array.isArray(parsed.entries)) {
+      return { delta: null, hasIdLists: false };
+    }
+    const supersededEventIds =
+      parsed.supersededEventIds === undefined || !Array.isArray(parsed.supersededEventIds)
+        ? []
+        : parsed.supersededEventIds.filter((id): id is number => Number.isInteger(id) && id > 0);
+    return {
+      delta: {
+        generation: parsed.generation,
+        entries: parsed.entries as ArmedEventEntry[],
+        supersededEventIds,
+        removedEventIds: readRemovedEventIds(parsed.removedEventIds),
+      },
+      hasIdLists: parsed.supersededEventIds !== undefined || parsed.removedEventIds !== undefined,
+    };
   } catch {
-    return null;
+    return { delta: null, hasIdLists: false };
   }
 }
 
@@ -313,12 +427,15 @@ const isRequiredRule = (rule: ArmedEventFieldRule): boolean =>
  * no field itself.
  */
 function parseEntry(raw: unknown): ArmedEventEntry {
-  const r = (raw ?? {}) as Record<string, unknown>;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ArmedEventsValidationError("armed-events: every entry must be an object");
+  }
+  const r = raw as Record<string, unknown>;
   const rules: Record<string, ArmedEventFieldRule | undefined> = ARMED_EVENT_ENTRY_FIELDS;
   const out: Record<string, unknown> = {};
   const missing = (): never => {
     const required = ARMED_EVENT_ENTRY_KEYS.filter((k) => isRequiredRule(ARMED_EVENT_ENTRY_FIELDS[k]));
-    throw new Error(`armed-events: entry missing ${required.join("/")}`);
+    throw new ArmedEventsValidationError(`armed-events: entry missing ${required.join("/")}`);
   };
   // A tombstone is declared by its flag alone; the fields that ride on it are
   // kept only when that flag is literally true.
@@ -358,33 +475,196 @@ function parseEntry(raw: unknown): ArmedEventEntry {
   return out as unknown as ArmedEventEntry;
 }
 
+function parseSupersededEventIds(raw: unknown): number[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new ArmedEventsValidationError("armed-events: supersededEventIds must be an array");
+  }
+  if (raw.length > ARMED_EVENTS_MAX_SUPERSEDED_IDS) {
+    throw new ArmedEventsValidationError(
+      `armed-events: too many superseded ids (${raw.length} > ${ARMED_EVENTS_MAX_SUPERSEDED_IDS})`,
+    );
+  }
+  const ids = raw.map((id) => {
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new ArmedEventsValidationError("armed-events: supersededEventIds must contain positive integers");
+    }
+    return id as number;
+  });
+  return [...new Set(ids)].sort((a, b) => a - b);
+}
+
+function readRemovedEventIds(raw: unknown): Array<{ id: number; eventDate: string; removedAt: string }> {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<number>();
+  const out: Array<{ id: number; eventDate: string; removedAt: string }> = [];
+  for (const item of raw) {
+    if (item === null || typeof item !== "object") continue;
+    const r = item as { id?: unknown; eventDate?: unknown; removedAt?: unknown };
+    if (!Number.isInteger(r.id) || (r.id as number) <= 0) continue;
+    if (typeof r.eventDate !== "string" || typeof r.removedAt !== "string") continue;
+    if (seen.has(r.id as number)) continue;
+    seen.add(r.id as number);
+    out.push({
+      id: r.id as number,
+      eventDate: r.eventDate.slice(0, 10),
+      removedAt: r.removedAt.slice(0, 40),
+    });
+  }
+  return out.sort((a, b) => a.id - b.id);
+}
+
+function parseRemovedEventIds(raw: unknown): Array<{ id: number; eventDate: string; removedAt: string }> {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new ArmedEventsValidationError("armed-events: removedEventIds must be an array");
+  }
+  if (raw.length > ARMED_EVENTS_MAX_REMOVED_IDS) {
+    throw new ArmedEventsValidationError(
+      `armed-events: too many removed ids (${raw.length} > ${ARMED_EVENTS_MAX_REMOVED_IDS})`,
+    );
+  }
+  for (const item of raw) {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      throw new ArmedEventsValidationError("armed-events: removedEventIds entries must be objects");
+    }
+    const r = item as { id?: unknown; eventDate?: unknown; removedAt?: unknown };
+    if (!Number.isInteger(r.id) || (r.id as number) <= 0) {
+      throw new ArmedEventsValidationError(
+        "armed-events: removedEventIds must contain positive integer ids",
+      );
+    }
+    if (typeof r.eventDate !== "string" || typeof r.removedAt !== "string") {
+      throw new ArmedEventsValidationError(
+        "armed-events: removedEventIds entries need eventDate and removedAt strings",
+      );
+    }
+    if (!ISO_DATE_RE.test(r.eventDate)) {
+      throw new ArmedEventsValidationError(
+        "armed-events: removedEventIds eventDate must be YYYY-MM-DD",
+      );
+    }
+    if (r.removedAt.length > 40 || !Number.isFinite(Date.parse(r.removedAt))) {
+      throw new ArmedEventsValidationError(
+        "armed-events: removedEventIds removedAt must be a date-time",
+      );
+    }
+  }
+  return readRemovedEventIds(raw);
+}
+
+/**
+ * What the Worker HOLDS for the generation it reports: how many replaced ids
+ * and how many removed ids are in the stored record (after this side's own
+ * dedupe). This is the capability acknowledgement the Mac's drain requires
+ * before it marks a row that carries ids as delivered — a build from before
+ * the id lists answered `applied:true` and stored neither list, and the Mac
+ * could not tell (see lib/earnings/cloud-outbox.ts).
+ */
+export interface ArmedEventsAccepted {
+  supersededEventIds: number;
+  removedEventIds: number;
+}
+
+export interface ArmedEventsApplyResult {
+  applied: boolean;
+  generation: number;
+  accepted: ArmedEventsAccepted;
+}
+
+const acceptedOf = (d: {
+  supersededEventIds?: unknown[];
+  removedEventIds?: unknown[];
+} | null): ArmedEventsAccepted => ({
+  supersededEventIds: d?.supersededEventIds?.length ?? 0,
+  removedEventIds: d?.removedEventIds?.length ?? 0,
+});
+
+/**
+ * Are the stored entries the same record as the body's parsed entries? Same
+ * length, same order, and every allowlisted key strictly equal (an absent key
+ * equals only an absent key). Key order is the one thing ignored. The stored
+ * side is read as it lies in KV, unparsed, so a stored value the parser would
+ * have rewritten counts as a difference.
+ */
+function sameEntries(stored: readonly unknown[], parsed: readonly ArmedEventEntry[]): boolean {
+  if (stored.length !== parsed.length) return false;
+  return parsed.every((entry, i) => {
+    const held = stored[i];
+    if (held === null || typeof held !== "object" || Array.isArray(held)) return false;
+    const a = held as Record<string, unknown>;
+    const b = entry as unknown as Record<string, unknown>;
+    return ARMED_EVENT_ENTRY_KEYS.every((key) => a[key] === b[key]);
+  });
+}
+
 /**
  * Read-compare-write: applies only when `body.generation` is strictly greater
  * than the generation already stored. A replayed or out-of-order POST is a
- * no-op that reports the generation that stands.
+ * no-op that reports the generation that stands — and, either way, `accepted`
+ * counts the id lists in the record that now stands.
+ *
+ * ONE exception to "strictly greater": the stored record was written by a
+ * build from before the id lists (it has neither list key) and the body is
+ * that SAME generation carrying ids. The old build took the POST and dropped
+ * the lists, so the generation it holds is incomplete; the same generation
+ * completes it — by ADDING the two lists to the record. The stored `entries`
+ * are never replaced: the lists are added only when the body's entries equal
+ * the stored ones (`sameEntries`), which is what proves the body is the same
+ * record. A restored Mac database can reach the same generation number with
+ * different content; that body changes nothing and is answered like any
+ * already-held generation (accepted counts zero), so the Mac keeps the row
+ * undelivered. Never for a lower generation, never when the body has no ids,
+ * and never once the record carries the list keys.
  */
 export async function applyArmedEventsDelta(
   kv: KVNamespace,
   body: unknown,
-): Promise<{ applied: boolean; generation: number }> {
-  const b = body as { generation?: unknown; entries?: unknown } | null;
+): Promise<ArmedEventsApplyResult> {
+  const b =
+    body as
+      | { generation?: unknown; entries?: unknown; supersededEventIds?: unknown; removedEventIds?: unknown }
+      | null;
   if (
     !b ||
     typeof b.generation !== "number" ||
     !Number.isInteger(b.generation) ||
     !Array.isArray(b.entries)
   ) {
-    throw new Error("armed-events: body needs integer generation and entries[]");
+    throw new ArmedEventsValidationError("armed-events: body needs integer generation and entries[]");
   }
   if (b.entries.length > ARMED_EVENTS_MAX_ENTRIES) {
-    throw new Error(
+    throw new ArmedEventsValidationError(
       `armed-events: too many entries (${b.entries.length} > ${ARMED_EVENTS_MAX_ENTRIES})`,
     );
   }
   const entries = b.entries.map(parseEntry);
-  const current = await readArmedEventsDelta(kv);
+  const supersededEventIds = parseSupersededEventIds(b.supersededEventIds);
+  const removedEventIds = parseRemovedEventIds(b.removedEventIds);
+  const { delta: current, hasIdLists } = await readStoredArmedEvents(kv);
   const held = current?.generation ?? 0;
-  if (b.generation <= held) return { applied: false, generation: held };
-  await kv.put(ARMED_EVENTS_KV_KEY, JSON.stringify({ generation: b.generation, entries }));
-  return { applied: true, generation: b.generation };
+  if (b.generation <= held) {
+    const completesOldBuildRecord =
+      current != null &&
+      !hasIdLists &&
+      b.generation === held &&
+      supersededEventIds.length + removedEventIds.length > 0 &&
+      sameEntries(current.entries, entries);
+    if (!completesOldBuildRecord) {
+      return { applied: false, generation: held, accepted: acceptedOf(current) };
+    }
+    // The stored entries are written back exactly as they stand.
+    const completed = {
+      generation: held,
+      entries: current.entries,
+      supersededEventIds,
+      removedEventIds,
+    };
+    await kv.put(ARMED_EVENTS_KV_KEY, JSON.stringify(completed));
+    return { applied: true, generation: held, accepted: acceptedOf(completed) };
+  }
+  const stored = { generation: b.generation, entries, supersededEventIds, removedEventIds };
+  await kv.put(ARMED_EVENTS_KV_KEY, JSON.stringify(stored));
+  return { applied: true, generation: b.generation, accepted: acceptedOf(stored) };
 }

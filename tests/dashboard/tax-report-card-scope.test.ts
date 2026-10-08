@@ -6,6 +6,8 @@ import {
   resolveDownloadFilename,
   resolveTaxReportCardStatus,
   createFetchGuard,
+  TAX_REPORT_EMPTY_COPY,
+  engineEstimatedExcludedCopy,
 } from "@/app/dashboard/components/TaxReportCard";
 
 /**
@@ -165,6 +167,36 @@ describe("TaxReportCard scope wiring (source pin)", () => {
 
     expect(src).toMatch(/taxReportCardTitle\(report\.year,\s*scopeAccountName\)/);
     expect(src).not.toMatch(/taxReportCardTitle\(year,/);
+  });
+
+  it("renders an explicit empty state for a zero-sale scoped report instead of returning null", () => {
+    expect(TAX_REPORT_EMPTY_COPY).toContain("No taxable sales");
+    expect(src).not.toMatch(/if \(totalSales === 0\) return null/);
+    expect(src).toContain("{totalSales === 0 && (");
+    expect(src).toContain("{TAX_REPORT_EMPTY_COPY}");
+  });
+
+  it("discloses engine-estimated reconciliation closes only when the scope has some, with the count", () => {
+    for (const n of [1, 3]) {
+      expect(engineEstimatedExcludedCopy(n)).toContain("engine-estimated");
+      expect(engineEstimatedExcludedCopy(n)).toContain("economic realized tiles");
+    }
+    expect(engineEstimatedExcludedCopy(1)).toContain("close is left out");
+    expect(engineEstimatedExcludedCopy(3)).toContain("closes are left out");
+    // Shown only above zero, and the count is the report's own field (never a
+    // second query in the component), masked through <Count>.
+    expect(src).toContain("const excludedEngineCloses = report.excludedEngineCloses ?? 0;");
+    expect(src).toMatch(
+      /\{excludedEngineCloses > 0 && \(\s*<p[^>]*>\s*<Count value=\{excludedEngineCloses\} \/> \{engineEstimatedExcludedCopy\(excludedEngineCloses\)\}/
+    );
+  });
+
+  it("masks portfolio-derived report counts through Count under privacy mode", () => {
+    expect(src).toContain("import { Count, PrivateText }");
+    expect(src).toMatch(/<Count value=\{report\.shortTermRows\?\.length \?\? 0\}/);
+    expect(src).toMatch(/<Count value=\{report\.longTermRows\?\.length \?\? 0\}/);
+    expect(src).toMatch(/<Count value=\{totalSales\}/);
+    expect(src).toMatch(/<Count value=\{report\.washSaleWarnings\.length\}/);
   });
 });
 

@@ -1497,6 +1497,139 @@ describe("EOD earnings wrap (suppress-only, 2026-08-02)", () => {
     expect(wrapSkipsOf(result).map((d) => d.eventId).sort()).toEqual([1, 2, 3]);
   });
 
+  it("a newer superseded-id delta excludes that event from the wrap cluster", async () => {
+    const now = new Date("2026-06-15T20:00:00Z"); // 16:00 ET
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+    ];
+    const snap = wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"]) as unknown as Record<string, unknown>;
+    snap.schemaVersion = 11;
+    snap.armedGeneration = 1;
+    snap.armedEvents = [];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      "armed-events",
+      JSON.stringify({ generation: 2, entries: [], supersededEventIds: [1] }),
+    );
+
+    const result = await runEarningsFallback(env, { now });
+
+    expect(wrapSkipsOf(result).map((d) => d.eventId)).toEqual([]);
+    expect(result.details.some((d) => d.eventId === 1)).toBe(false);
+    expect(sendEmail).toHaveBeenCalledTimes(2);
+  });
+
+  it("[M2] a newer removed-id delta excludes that event from the wrap cluster", async () => {
+    const now = new Date("2026-06-15T20:00:00Z"); // 16:00 ET
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+    ];
+    const snap = wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"]) as unknown as Record<string, unknown>;
+    snap.schemaVersion = 11;
+    snap.armedGeneration = 1;
+    snap.armedEvents = [];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      "armed-events",
+      JSON.stringify({
+        generation: 2,
+        entries: [],
+        removedEventIds: [{ id: 1, eventDate: EVENT_DATE, removedAt: "2026-06-15T12:00:00.000Z" }],
+      }),
+    );
+
+    const result = await runEarningsFallback(env, { now });
+
+    expect(wrapSkipsOf(result).map((d) => d.eventId)).toEqual([]);
+    expect(result.details.some((d) => d.eventId === 1)).toBe(false);
+    expect(sendEmail).toHaveBeenCalledTimes(2);
+  });
+
+  // FIX-W2 (R2): a re-listed print has a NEW id on the Mac while the snapshot
+  // still holds the OLD one. Once the new row is armed, the print must reach
+  // the candidate scan and the wrap cluster exactly once.
+  const relistedEntry = (eventId: number, symbol: string, eventDate = EVENT_DATE) => ({
+    eventId,
+    symbol,
+    eventDate,
+    eventTime: "AMC",
+    releaseTime: "16:00",
+    sourceKey: `finnhub:${symbol}:${EVENT_DATE}`,
+    source: "finnhub",
+    consensusValue: null,
+    expectedImpact: "high",
+    securityId: null,
+    epsConsensusVendor: null,
+  });
+
+  async function runRelisted(
+    events: Record<string, unknown>[],
+    held: string[],
+    entries: unknown[],
+    now: Date,
+  ) {
+    const snap = wrapSnapshot(events, held) as unknown as Record<string, unknown>;
+    snap.schemaVersion = 11;
+    snap.armedGeneration = 1;
+    snap.armedEvents = [];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+    const env = makeEnv();
+    await env.CRON_KV.put("armed-events", JSON.stringify({ generation: 2, entries }));
+    return runEarningsFallback(env, { now });
+  }
+
+  it("a re-listed, armed print yields ONE preview candidate (the delta's row), not two", async () => {
+    const now = new Date(composeReleaseInstant(EVENT_DATE, "16:00")!.getTime() - 110 * 60_000);
+    const result = await runRelisted(
+      [wrapEvent({ id: 10, symbol: "AAPL" })],
+      ["AAPL"],
+      [relistedEntry(20, "AAPL")],
+      now,
+    );
+    expect(result.details.map((d) => [d.eventId, d.phase])).toEqual([[20, "preview"]]);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("CONTROL: the armed row on a DIFFERENT date leaves the snapshot row's preview alone", async () => {
+    const now = new Date(composeReleaseInstant(EVENT_DATE, "16:00")!.getTime() - 110 * 60_000);
+    const result = await runRelisted(
+      [wrapEvent({ id: 10, symbol: "AAPL" })],
+      ["AAPL"],
+      [relistedEntry(20, "AAPL", "2026-06-22")],
+      now,
+    );
+    expect(result.details.map((d) => [d.eventId, d.phase])).toEqual([[10, "preview"]]);
+  });
+
+  it("an UNARMED re-listing (no delta entry) keeps the snapshot row's preview exactly as today", async () => {
+    const now = new Date(composeReleaseInstant(EVENT_DATE, "16:00")!.getTime() - 110 * 60_000);
+    const result = await runRelisted([wrapEvent({ id: 10, symbol: "AAPL" })], ["AAPL"], [], now);
+    expect(result.details.map((d) => [d.eventId, d.phase])).toEqual([[10, "preview"]]);
+  });
+
+  it("a re-listed, armed print is ONE wrap member, and it is the live row", async () => {
+    const events = [
+      wrapEvent({ id: 10, symbol: "AAPL", actual: READY_ACTUAL }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: READY_ACTUAL }),
+    ];
+    const result = await runRelisted(
+      events,
+      ["AAPL", "MSFT", "NVDA"],
+      [relistedEntry(20, "AAPL")],
+      EVENING_NOW,
+    );
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(wrapSkipsOf(result).map((d) => d.eventId).sort((a, b) => a - b)).toEqual([2, 3, 20]);
+    expect(result.details.some((d) => d.eventId === 10)).toBe(false);
+  });
+
   it("past the old staple deadline still sends nothing (the staple is retired)", async () => {
     const events = [
       wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL, enriched_at: "2026-06-15 23:30:00" }),
@@ -1886,5 +2019,92 @@ describe("armed-as-covered (snapshot v11 + KV delta)", () => {
     const result = await runEarningsFallback(env, { now: previewWindowNow() });
 
     expect(result.details.some((d) => d.eventId === 77)).toBe(false);
+  });
+
+  it("a newer superseded-id delta suppresses a preview candidate from the snapshot", async () => {
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      "armed-events",
+      JSON.stringify({ generation: 9, entries: [], supersededEventIds: [1] }),
+    );
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(v11Snapshot());
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.details.some((d) => d.eventId === 1 && d.phase === "preview")).toBe(false);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("[M2] a newer removed-id delta suppresses a preview candidate from the snapshot; control still sends", async () => {
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      "armed-events",
+      JSON.stringify({
+        generation: 9,
+        entries: [armedEntry(77, "ACME")],
+        removedEventIds: [{ id: 1, eventDate: EVENT_DATE, removedAt: "2026-06-15T12:00:00.000Z" }],
+      }),
+    );
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(v11Snapshot());
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.details.some((d) => d.eventId === 1 && d.phase === "preview")).toBe(false);
+    expect(result.details.some((d) => d.eventId === 77 && d.phase === "preview")).toBe(true);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("a newer superseded-id delta suppresses a recap candidate from the snapshot", async () => {
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      "armed-events",
+      JSON.stringify({ generation: 9, entries: [], supersededEventIds: [1] }),
+    );
+    const snap = v11Snapshot() as unknown as { calendarEvents: Array<Record<string, unknown>> };
+    snap.calendarEvents[0].release_time = "13:00";
+    snap.calendarEvents[0].enriched_at = "2026-06-15 17:30:00";
+    snap.calendarEvents[0].actual_value = "EPS 1.60";
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+    const release = composeReleaseInstant(EVENT_DATE, "13:00")!;
+
+    const result = await runEarningsFallback(env, { now: new Date(release.getTime() + 150 * 60_000) });
+
+    expect(result.details.some((d) => d.eventId === 1 && d.phase === "recap")).toBe(false);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("[M2] a newer removed-id delta suppresses a recap candidate from the snapshot", async () => {
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      "armed-events",
+      JSON.stringify({
+        generation: 9,
+        entries: [],
+        removedEventIds: [{ id: 1, eventDate: EVENT_DATE, removedAt: "2026-06-15T12:00:00.000Z" }],
+      }),
+    );
+    const snap = v11Snapshot() as unknown as {
+      calendarEvents: Array<Record<string, unknown>>;
+      heldSymbols: string[];
+    };
+    snap.calendarEvents[0].release_time = "13:00";
+    snap.calendarEvents[0].enriched_at = "2026-06-15 17:30:00";
+    snap.calendarEvents[0].actual_value = "EPS 1.60";
+    snap.calendarEvents.push({
+      ...snap.calendarEvents[0],
+      id: 2,
+      symbol: "MSFT",
+      source_key: `finnhub:MSFT:${EVENT_DATE}`,
+      title: "MSFT earnings",
+    });
+    snap.heldSymbols = ["AAPL", "MSFT"];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+    const release = composeReleaseInstant(EVENT_DATE, "13:00")!;
+
+    const result = await runEarningsFallback(env, { now: new Date(release.getTime() + 150 * 60_000) });
+
+    expect(result.details.some((d) => d.eventId === 1 && d.phase === "recap")).toBe(false);
+    expect(result.details.some((d) => d.eventId === 2 && d.phase === "recap")).toBe(true);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
   });
 });

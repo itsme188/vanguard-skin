@@ -19,6 +19,13 @@ export interface ResearchArticle {
   created_at: string;
   source_url: string | null;
   website_url: string | null;
+  /**
+   * 0 = filtered out of the digest stream (it also sits in the Filtered tab).
+   * Only `getRecentArticles` selects these two, so the Feeds card can mark a
+   * filtered article; other readers of this type leave them undefined.
+   */
+  is_relevant?: number | null;
+  excluded_category?: string | null;
 }
 
 export interface ResearchSource {
@@ -40,6 +47,12 @@ export interface ResearchSource {
   earnings_note: string | null;
   created_at: string;
   article_count?: number;
+  /**
+   * Articles of this source the Feeds list can show (processed_at set). Same
+   * predicate as `countRecentArticles(db, { sourceId, processedOnly: true })`,
+   * so the source filter's count and the list it opens agree.
+   */
+  processed_article_count?: number;
 }
 
 export interface ResearchMention {
@@ -159,7 +172,7 @@ export function getRecentArticles(
               a.received_at, a.subject, a.sender, a.summary, a.key_themes,
               a.sentiment, a.sentiment_score, a.mentioned_symbols,
               a.portfolio_relevance, a.processed_at, a.created_at,
-              a.source_url, s.website_url
+              a.source_url, s.website_url, a.is_relevant, a.excluded_category
        FROM research_articles a
        JOIN research_sources s ON a.source_id = s.id
        ${where}
@@ -243,7 +256,9 @@ export function getResearchSources(
   return db
     .prepare(
       `SELECT s.*,
-              (SELECT COUNT(*) FROM research_articles WHERE source_id = s.id) as article_count
+              (SELECT COUNT(*) FROM research_articles WHERE source_id = s.id) as article_count,
+              (SELECT COUNT(*) FROM research_articles
+                WHERE source_id = s.id AND processed_at IS NOT NULL) as processed_article_count
        FROM research_sources s
        ORDER BY s.name`
     )

@@ -4,7 +4,7 @@ import { computeAllScenarios, computeScenario, PRESET_SCENARIOS, type ScenarioDe
 import { matchScenariosToThemes, SCENARIO_RECIPES } from "@/lib/compute/scenario-recipes";
 import { getCachedMacroThemes } from "@/lib/queries/analysis-macro-themes";
 import { mondayOf } from "@/lib/calendar/date-utils";
-import { resolveScopeToSingleId } from "@/lib/queries/accounts";
+import { resolveScope } from "@/lib/queries/accounts";
 import { VOL_MOVE_MIN, VOL_MOVE_MAX } from "@/lib/compute/option-reprice";
 
 export async function GET(request: NextRequest) {
@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const accountIdParam = searchParams.get("accountId");
     const scope = searchParams.get("scope");
-    const accountId = accountIdParam ? Number(accountIdParam) : resolveScopeToSingleId(db, scope);
+    const accountIds = accountIdParam ? [Number(accountIdParam)] : resolveScope(db, scope);
     const scenarioId = searchParams.get("scenario");
 
     if (scenarioId) {
@@ -24,12 +24,12 @@ export async function GET(request: NextRequest) {
           { status: 400 }
         );
       }
-      const result = computeScenario(db, scenario, { accountId });
+      const result = computeScenario(db, scenario, { accountIds });
       return NextResponse.json({ success: true, data: result });
     }
 
     // All scenarios — decorate with "live now" reason from cached macro themes
-    const results = computeAllScenarios(db, { accountId });
+    const results = computeAllScenarios(db, { accountIds });
     const weekOf = mondayOf(new Date().toISOString().slice(0, 10));
     const cached = getCachedMacroThemes(db, scope ?? "all", weekOf);
     const activeThemes = cached ? (JSON.parse(cached.themesJson) as Array<{ name: string; factor_label: string; direction: string }>) : [];
@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
     };
     // Match the GET path's scope resolution so a custom scenario is baselined
     // to the same account set as the preset cards it renders next to.
-    const accountId = bodyAccountId ?? resolveScopeToSingleId(db, scope ?? null);
+    const accountIds = bodyAccountId != null ? [bodyAccountId] : resolveScope(db, scope ?? null);
 
     if (marketMove == null || typeof marketMove !== "number") {
       return NextResponse.json(
@@ -126,7 +126,7 @@ export async function POST(request: NextRequest) {
       sectorMoves: hasSectorMoves ? sectorMoves : undefined,
     };
 
-    const result = computeScenario(db, scenario, { accountId });
+    const result = computeScenario(db, scenario, { accountIds });
     return NextResponse.json({ success: true, data: result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

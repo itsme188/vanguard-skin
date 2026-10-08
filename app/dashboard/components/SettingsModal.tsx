@@ -54,6 +54,15 @@ const SECTIONS = [
     ],
   },
   {
+    // Gmail OAuth reads newsletters IN. Outbound mail stays Resend (above).
+    title: "Gmail Newsletters (inbound, Google OAuth)",
+    fields: [
+      { key: "googleClientId", label: "Google OAuth Client ID", sensitive: false },
+      { key: "googleClientSecret", label: "Google OAuth Client Secret", sensitive: true },
+      { key: "googleRefreshToken", label: "Google OAuth Refresh Token", sensitive: true },
+    ],
+  },
+  {
     title: "EDGAR",
     fields: [
       { key: "edgarContactEmail", label: "Contact Email", sensitive: false },
@@ -234,7 +243,7 @@ export function SettingsModal() {
       {/* Gear button in header */}
       <button
         onClick={() => setOpen(true)}
-        className="relative text-ink-faint hover:text-ink-dim transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
+        className="relative text-ink-faint hover:text-ink-dim transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-3.5 pointer-coarse:after:content-['']"
         title="Settings"
         aria-label="Settings"
       >

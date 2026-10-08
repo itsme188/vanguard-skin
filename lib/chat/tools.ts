@@ -102,7 +102,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_holdings",
     description:
-      "Query current holdings with optional filters. Returns detailed position data including cost basis, market value, unrealized gain/loss, position weight, sector, asset class, and maturity info for bonds. Automatically excludes matured bonds and zero-quantity positions. Use when the user asks about specific positions, accounts, asset classes, sectors, or portfolio composition.",
+      "Query current holdings with optional filters. Returns detailed position data including cost basis, market value, unrealized gain/loss, position weight, sector, asset class, and maturity info for bonds. Includes SHORT positions: quantity and market_value are signed (negative = short), each row carries position_side ('long' or 'short'), and position_weight_pct is each position's share of GROSS exposure (always positive; longs and shorts together sum to 100%). Automatically excludes matured bonds, expired options and zero-quantity positions. Use when the user asks about specific positions, accounts, asset classes, sectors, or portfolio composition.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -945,6 +945,9 @@ export async function executeTool(
 
     switch (toolName) {
       case "query_holdings":
+        // Stays an ARRAY: annotateToolResult only inspects holdings when the
+        // raw result is one. Each row names its side so the sign of quantity
+        // and market_value is never left to inference.
         rawResult = getHoldingsForChat(db, {
           account_name: accountName,
           symbol: input.symbol as string | undefined,
@@ -952,7 +955,15 @@ export async function executeTool(
           sector: input.sector as string | undefined,
           sort_by: input.sort_by as "market_value" | "unrealized_gain" | "position_weight" | "symbol" | undefined,
           limit: input.limit as number | undefined,
-        });
+          // Shorts are holdings. Without this the tool returned the long book
+          // only and the model never saw a short position. Quantities and
+          // values come back SIGNED (negative = short) — the tool description
+          // says so.
+          includeShorts: true,
+        }).map((h) => ({
+          ...h,
+          position_side: h.quantity < 0 ? ("short" as const) : ("long" as const),
+        }));
         break;
 
       case "query_price_history":
@@ -1423,23 +1434,49 @@ export async function executeTool(
         // positions at all the zeros ARE the truth, so they stand.
         const noGreeksCoverage =
           greeks.totalPositions > 0 && greeks.computedPositions === 0;
+        // totalPositions counts LIVE contracts only. A book holding nothing
+        // but expired contracts therefore has totalPositions 0, and its four
+        // zero totals are again untouched initializers, not a flat exposure:
+        // null them and say why.
+        const expiredOnly =
+          greeks.totalPositions === 0 && greeks.expiredPositions > 0;
         const partialGreeksCoverage =
           !noGreeksCoverage && greeks.computedPositions < greeks.totalPositions;
-        const greeksNote = noGreeksCoverage
-          ? "no position could be priced"
-          : partialGreeksCoverage
-            ? `greeks solved for ${greeks.computedPositions} of ${greeks.totalPositions} positions`
+        const greeksNoteParts: string[] = [];
+        if (expiredOnly) {
+          greeksNoteParts.push(
+            `no live option positions: ${greeks.expiredPositions} expired contract${greeks.expiredPositions === 1 ? "" : "s"} excluded, so there are no Greeks to report`
+          );
+        } else if (noGreeksCoverage) {
+          greeksNoteParts.push("no position could be priced");
+        } else if (partialGreeksCoverage) {
+          greeksNoteParts.push(
+            `greeks solved for ${greeks.computedPositions} of ${greeks.totalPositions} positions`
+          );
+        }
+        const greeksNote =
+          greeksNoteParts.length > 0 ? greeksNoteParts.join("; ") : null;
+        // Kept apart from `note` (which is about COVERAGE): a fallback-vol
+        // position is priced, so the totals stand, but its Greeks rest on a
+        // volatility that was not solved from the contract's own price.
+        const volatilityNote =
+          greeks.fallbackVolPositions > 0
+            ? `${greeks.fallbackVolPositions} of the ${greeks.computedPositions} priced position${greeks.computedPositions === 1 ? "" : "s"} used a fallback volatility, not one solved from the contract's own price`
             : null;
+        const withholdTotals = noGreeksCoverage || expiredOnly;
 
         rawResult = {
           portfolio: {
-            totalDelta: noGreeksCoverage ? null : greeks.totalDelta,
-            totalGamma: noGreeksCoverage ? null : greeks.totalGamma,
-            totalTheta: noGreeksCoverage ? null : greeks.totalTheta,
-            totalVega: noGreeksCoverage ? null : greeks.totalVega,
+            totalDelta: withholdTotals ? null : greeks.totalDelta,
+            totalGamma: withholdTotals ? null : greeks.totalGamma,
+            totalTheta: withholdTotals ? null : greeks.totalTheta,
+            totalVega: withholdTotals ? null : greeks.totalVega,
             computedPositions: greeks.computedPositions,
             totalPositions: greeks.totalPositions,
+            fallbackVolPositions: greeks.fallbackVolPositions,
+            expiredPositions: greeks.expiredPositions,
             note: greeksNote,
+            volatilityNote,
           },
           positions: positions.map((p) => ({
             symbol: p.symbol,
@@ -1467,6 +1504,9 @@ export async function executeTool(
             description: s.description,
             // null maxProfit/maxLoss means "unlimited" ONLY when this is false.
             pricingIncomplete: s.pricingIncomplete,
+            // Why the figures are withheld: missing_price / zero_mark /
+            // below_intrinsic (an option marked below its exercise value).
+            pricingIncompleteReason: s.pricingIncompleteReason,
           })),
           positionCount: positions.length,
           strategyCount: strategies.length,

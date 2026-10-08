@@ -2,6 +2,28 @@
 
 import { useState, useEffect } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { todayET } from "@/lib/calendar/date-utils";
+
+// Per-tab, per-ET-day dismissal. Component state alone lost it on every
+// client navigation (the banner remounts); sessionStorage keeps it for the
+// tab and the date value expires it the next day.
+const DISMISS_KEY = "vgs:digest-banner-dismissed";
+
+function isDismissedToday(): boolean {
+  try {
+    return window.sessionStorage.getItem(DISMISS_KEY) === todayET();
+  } catch {
+    return false;
+  }
+}
+
+function rememberDismissal(): void {
+  try {
+    window.sessionStorage.setItem(DISMISS_KEY, todayET());
+  } catch {
+    // blocked store: dismissal lasts until the next navigation, nothing breaks
+  }
+}
 
 // Mirrors com.vanguard-skin.daily-digest.plist — Mon-Fri 8:45 AM local.
 const DIGEST_HOUR = 8;
@@ -31,12 +53,17 @@ export function DigestCatchup() {
     // Only check on weekdays
     const day = new Date().getDay();
     if (day === 0 || day === 6) return;
+    if (isDismissedToday()) return;
 
     // Check once on mount, then poll every 5 min, and also re-check when
     // the window regains focus. Needed because the 8:45 launchd cron sends
     // the digest via curl — without polling, a dashboard that was already
     // open at 8:44 AM would keep nagging forever.
     const checkStatus = () => {
+      if (isDismissedToday()) {
+        setShow(false);
+        return;
+      }
       const now = new Date();
       const scheduled = new Date();
       scheduled.setHours(DIGEST_HOUR, DIGEST_MINUTE, 0, 0);
@@ -113,7 +140,15 @@ export function DigestCatchup() {
       } else if (data.skipped) {
         // Already handled elsewhere (cloud fallback / concurrent cron) —
         // explain rather than vanish, then dismiss.
-        setSendError("Skipped — a digest for this window was already sent (cloud fallback or concurrent cron).");
+        // Show the server's own reason (e.g. an empty window) rather than
+        // guessing "already sent". Nothing can be sent for this window, so
+        // dismiss for the day instead of re-nagging on every poll.
+        setSendError(
+          typeof data.reason === "string" && data.reason
+            ? `Nothing was sent — ${data.reason.charAt(0).toLowerCase()}${data.reason.slice(1)}.`
+            : "Nothing was sent — the server skipped this window.",
+        );
+        rememberDismissal();
         setTimeout(() => setShow(false), 6000);
       } else {
         // Keep the banner up — silently hiding it makes a failed send look successful.
@@ -150,7 +185,10 @@ export function DigestCatchup() {
           </button>
         )}
         <button
-          onClick={() => setShow(false)}
+          onClick={() => {
+            rememberDismissal();
+            setShow(false);
+          }}
           aria-label="Dismiss digest reminder"
           title="Dismiss"
           className="relative text-ink-faint hover:text-ink pointer-coarse:p-2 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"

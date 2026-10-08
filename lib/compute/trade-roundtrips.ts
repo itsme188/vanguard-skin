@@ -76,11 +76,15 @@ export interface ReviewPeriod {
   /** Total closed-trade count for the period (every distinct SELL transaction). */
   tradeCount: number;
   /**
-   * Subset of `tradeCount` whose FIFO lot coverage is ≥`MIN_LOT_COVERAGE`
-   * (the threshold `generateTradeReview` applies before the AI sees anything).
-   * Trades below the threshold represent positions that span the import-history
-   * boundary and have incomplete cost basis. When `reviewableCount < tradeCount`,
-   * the dropdown should surface the gap so users know what to expect.
+   * ROUND TRIPS in the period: the number a review generated now would
+   * report as its trade count. Counted by `countReviewRoundTrips` — the same
+   * grouping, engine-close exclusion and `MIN_LOT_COVERAGE` filter
+   * `prepareTradeReview` applies before the AI sees anything — so the month
+   * picker and a freshly generated review card can never disagree on the unit
+   * (owner ruling 2026-08-19: both surfaces count round trips, no leg counts).
+   * Closes below the coverage threshold span the import-history boundary and
+   * have incomplete cost basis; when `reviewableCount < tradeCount` the picker
+   * says the history is partial.
    */
   reviewableCount: number;
 }
@@ -307,16 +311,17 @@ export function getAvailableReviewPeriods(db: Database.Database, accountId: numb
 }
 
 /**
- * Use the same broker-aware close quantity as getRoundTrips / grouped coverage.
+ * Months that have at least one real (non-engine) close, with two counts:
+ * `tradeCount` = every distinct closing transaction, `reviewableCount` = round
+ * trips, counted through the review generator's own pipeline (see
+ * `countReviewRoundTrips`) rather than a second SQL copy of its coverage rule.
  * Engine-owned RECONCILE_CLOSE sales are not user trades and are never counted;
  * a month whose only sales are synthetic closes is not offered for review.
- * A sale with no sale transaction (legacy row) still counts as a real sale.
  */
 function reviewPeriods(db: Database.Database, accountId: number | undefined, onlyNew: boolean): ReviewPeriod[] {
-  const rows = db.prepare(`SELECT tls.sale_transaction_id,
+  const rows = db.prepare(`SELECT tls.sale_transaction_id, tl.account_id,
       strftime('%Y-%m-01', tls.sale_date) AS period_start,
-      date(tls.sale_date, 'start of month', '+1 month', '-1 day') AS period_end,
-      SUM(tls.quantity_sold) AS matched_qty, MAX(ABS(t.quantity)) AS actual_qty, t.notes
+      date(tls.sale_date, 'start of month', '+1 month', '-1 day') AS period_end
     FROM tax_lot_sales tls JOIN tax_lots tl ON tl.id=tls.tax_lot_id
     LEFT JOIN transactions t ON t.id=tls.sale_transaction_id
     WHERE (? IS NULL OR tl.account_id=?) AND tl.acquisition_date<=tls.sale_date
@@ -325,18 +330,35 @@ function reviewPeriods(db: Database.Database, accountId: number | undefined, onl
         WHERE tr.account_id=tl.account_id AND tr.period_start=strftime('%Y-%m-01',tls.sale_date)))
     GROUP BY COALESCE(tls.sale_transaction_id, 'sale:' || tls.id)
     ORDER BY period_start DESC`).all(accountId ?? null, accountId ?? null, Number(onlyNew)) as Array<{
-      period_start: string; period_end: string; matched_qty: number; actual_qty: number | null; notes: string | null;
+      account_id: number; period_start: string; period_end: string;
     }>;
   const periods = new Map<string, ReviewPeriod>();
+  // (account, month) pairs the query offered — with `onlyNew`, an account
+  // that already reviewed a month must not add that month's round trips.
+  const offered = new Set<string>();
+  const accountIds = new Set<number>();
   for (const row of rows) {
     const period = periods.get(row.period_start) ?? {
       periodStart: row.period_start, periodEnd: row.period_end, tradeCount: 0, reviewableCount: 0,
     };
-    const evidence = readIbkrTradeDirection(row.notes);
-    const actualQty = evidence?.open && evidence.close ? row.matched_qty : row.actual_qty;
     period.tradeCount++;
-    if (!actualQty || row.matched_qty / actualQty >= MIN_LOT_COVERAGE) period.reviewableCount++;
     periods.set(row.period_start, period);
+    offered.add(`${row.account_id}|${row.period_start}`);
+    accountIds.add(row.account_id);
+  }
+  for (const id of accountIds) {
+    const byMonth = new Map<string, RoundTrip[]>();
+    for (const rt of getRoundTrips(db, id, "0000-01-01", "9999-12-31")) {
+      const periodStart = `${rt.exitDate.slice(0, 7)}-01`;
+      if (!offered.has(`${id}|${periodStart}`)) continue;
+      const month = byMonth.get(periodStart) ?? [];
+      month.push(rt);
+      byMonth.set(periodStart, month);
+    }
+    for (const [periodStart, month] of byMonth) {
+      const period = periods.get(periodStart);
+      if (period) period.reviewableCount += countReviewRoundTrips(month);
+    }
   }
   return [...periods.values()];
 }
@@ -442,6 +464,18 @@ export function filterFullyCoveredTrades(
   grouped: GroupedTrade[]
 ): GroupedTrade[] {
   return grouped.filter((g) => g.lotCoverage >= MIN_LOT_COVERAGE);
+}
+
+/**
+ * How many round trips a review of these lot-level rows covers: one per
+ * closing transaction, the user's own closes only, with enough matched lot
+ * history to grade. This is the pipeline `prepareTradeReview` runs, and the
+ * one count the Trade Reviews month picker and review card both show.
+ * Pure function — no DB access.
+ */
+export function countReviewRoundTrips(roundTrips: RoundTrip[]): number {
+  const { userTrades } = partitionSyntheticCloses(computeGroupedTrades(roundTrips));
+  return filterFullyCoveredTrades(userTrades).length;
 }
 
 /**

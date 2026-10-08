@@ -29,6 +29,9 @@
  */
 
 :root {
+  /* Native date/select controls + scrollbars follow the theme */
+  color-scheme: light;
+
   /* Surfaces — Amber: warm-cream canvas, pure-white cards lift via shadow */
   --canvas: #fafaf3;
   --panel: #ffffff;
@@ -101,6 +104,8 @@
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;
+
   /* Surfaces — soft black, NOT pure #000 (eye-strain reduction) */
   --canvas: #0a0a0a;
   --panel: #0d0d0d;

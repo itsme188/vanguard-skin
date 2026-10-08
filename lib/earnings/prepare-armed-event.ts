@@ -280,11 +280,23 @@ export async function runPrepareSteps(
     // again — INCLUDING a row that had reached the attempt cap, which is the whole
     // point of doing this before the cap check below.
     // [C-11] Never clears a LIVE claim: a fresh 'claimed' row is left for its worker to finish.
-    if (r.input_fingerprint != null && r.input_fingerprint !== fp) {
+    //
+    // A SPENT row that never stored a fingerprint (every attempt died in the
+    // fingerprint itself, or with its owner) has nothing to drift FROM, so without
+    // this it could never revive even once the fingerprint is readable again. For a
+    // capped, not-done row only, "no fingerprint on file" counts as drift. The reset
+    // writes the real fingerprint in the same statement (COALESCE leaves an existing
+    // one alone, so ordinary drift is unchanged) — that is the bound: the row is
+    // revived ONCE, and a second revival needs a real change of inputs. A `done`
+    // row with no fingerprint is finished work and is never re-run on this rule.
+    const spentWithoutFingerprint =
+      r.input_fingerprint == null && r.status !== "done" && r.attempts >= PREPARE_MAX_ATTEMPTS;
+    if ((r.input_fingerprint != null && r.input_fingerprint !== fp) || spentWithoutFingerprint) {
       const reset = db.prepare(
-        `UPDATE earnings_prepare_steps SET status = 'pending', attempts = 0, last_error = NULL, claim_token = NULL, claimed_at = NULL, updated_at = datetime('now')
+        `UPDATE earnings_prepare_steps SET status = 'pending', attempts = 0, last_error = NULL, claim_token = NULL, claimed_at = NULL, updated_at = datetime('now'),
+                input_fingerprint = COALESCE(input_fingerprint, ?)
           WHERE event_id = ? AND step = ? AND NOT (status = 'claimed' AND datetime(claimed_at) >= datetime(?))`,
-      ).run(r.event_id, r.step, staleBefore).changes;
+      ).run(fp, r.event_id, r.step, staleBefore).changes;
       if (reset === 0) { report.skipped += 1; continue; }
       r.status = "pending"; r.attempts = 0;
     }

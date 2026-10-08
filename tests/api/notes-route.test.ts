@@ -166,3 +166,83 @@ describe("updateNote — undefined-skip seam the PUT coercion relies on", () => 
     expect(updated!.event_date).toBe("");
   });
 });
+
+describe("PUT /api/notes — note_type and security_id persistence", () => {
+  async function put(body: unknown) {
+    const { PUT } = await import("@/app/api/notes/route");
+    const res = await PUT(putReq(body));
+    return { status: res.status, json: (await res.json()) as Envelope };
+  }
+  function seedSecurity(symbol: string): number {
+    return Number(
+      hoisted.db
+        .prepare("INSERT INTO securities (symbol, name, security_type) VALUES (?, ?, 'Stock')")
+        .run(symbol, symbol).lastInsertRowid
+    );
+  }
+  function row(id: number) {
+    return hoisted.db.prepare("SELECT note_type, security_id FROM notes WHERE id = ?").get(id) as {
+      note_type: string;
+      security_id: number | null;
+    };
+  }
+
+  it("changes the type only", async () => {
+    const aaa = seedSecurity("AAA");
+    const n = createNote(hoisted.db, { note_type: "journal", content: "x", event_date: "2026-01-02", security_id: aaa });
+    const r = await put({ id: n.id, note_type: "trade_thesis" });
+    expect(r.status).toBe(200);
+    expect(row(n.id)).toEqual({ note_type: "trade_thesis", security_id: aaa });
+  });
+
+  it("changes the security only", async () => {
+    const aaa = seedSecurity("AAA");
+    const zzz = seedSecurity("ZZZ");
+    const n = createNote(hoisted.db, { note_type: "journal", content: "x", event_date: "2026-01-02", security_id: aaa });
+    const r = await put({ id: n.id, security_id: zzz });
+    expect(r.status).toBe(200);
+    expect(row(n.id)).toEqual({ note_type: "journal", security_id: zzz });
+  });
+
+  it("clears the security with null", async () => {
+    const aaa = seedSecurity("AAA");
+    const n = createNote(hoisted.db, { note_type: "journal", content: "x", event_date: "2026-01-02", security_id: aaa });
+    const r = await put({ id: n.id, security_id: null });
+    expect(r.status).toBe(200);
+    expect(row(n.id).security_id).toBeNull();
+  });
+
+  it("rejects an invalid type with 400 and writes nothing", async () => {
+    const aaa = seedSecurity("AAA");
+    const n = createNote(hoisted.db, { note_type: "journal", content: "x", event_date: "2026-01-02", security_id: aaa });
+    const r = await put({ id: n.id, content: "changed", note_type: "bogus" });
+    expect(r.status).toBe(400);
+    expect(r.json.success).toBe(false);
+    expect(row(n.id)).toEqual({ note_type: "journal", security_id: aaa });
+    expect(hoisted.db.prepare("SELECT content FROM notes WHERE id = ?").get(n.id)).toEqual({ content: "x" });
+  });
+
+  it("rejects a malformed security_id with 400", async () => {
+    const n = createNote(hoisted.db, { note_type: "journal", content: "x", event_date: "2026-01-02" });
+    for (const bad of [0, -3, 1.5, "7"]) {
+      const r = await put({ id: n.id, security_id: bad });
+      expect(r.status).toBe(400);
+    }
+  });
+
+  it("answers 404 for an unknown security and writes nothing", async () => {
+    const n = createNote(hoisted.db, { note_type: "journal", content: "x", event_date: "2026-01-02" });
+    const r = await put({ id: n.id, content: "changed", security_id: 99999 });
+    expect(r.status).toBe(404);
+    expect(row(n.id)).toEqual({ note_type: "journal", security_id: null });
+    expect(hoisted.db.prepare("SELECT content FROM notes WHERE id = ?").get(n.id)).toEqual({ content: "x" });
+  });
+
+  it("leaves both untouched when neither key is sent", async () => {
+    const aaa = seedSecurity("AAA");
+    const n = createNote(hoisted.db, { note_type: "earnings", content: "x", event_date: "2026-01-02", security_id: aaa });
+    const r = await put({ id: n.id, content: "edited" });
+    expect(r.status).toBe(200);
+    expect(row(n.id)).toEqual({ note_type: "earnings", security_id: aaa });
+  });
+});

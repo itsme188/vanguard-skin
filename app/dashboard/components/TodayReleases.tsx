@@ -1,17 +1,20 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { CalendarEvent } from "@/lib/types";
 import { SymbolLink } from "./SymbolLink";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
-import { todayET } from "@/lib/calendar/date-utils";
-import { earningsTimeLabel } from "@/lib/calendar/release-times";
+import { nowET, todayET } from "@/lib/calendar/date-utils";
+import { earningsTimeLabel, formatClockTime12 } from "@/lib/calendar/release-times";
+import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 // Type only — the module reads the database, so no value may cross into this
 // client bundle.
 import type { EarningsDisplayTime } from "@/lib/calendar/display-earnings-time";
 import { EnrichmentRowSummary } from "./calendar/EnrichmentChips";
 import { Chip } from "./Chip";
+import { preReleaseClearsAtMs } from "../today/pre-release-clear";
 import {
   isPreReleaseActual,
   preReleaseActualChipText,
@@ -93,6 +96,50 @@ export function preReleaseEstimateText(consensus: string | null): string {
   return compact ? `Est: ${compact}` : "Pending release";
 }
 
+/**
+ * The "nothing to show yet" sub-label. `preReleaseEstimateText` is time-blind:
+ * a row whose own scheduled time has already passed would still read "Pending
+ * release". When the estimate text is that placeholder and the row's displayed
+ * ET clock time is behind us, say "Released H:MM AM · awaiting data" instead.
+ * Rows whose time is only an estimate ("usual") or unknown never claim a
+ * release: nothing trustworthy says the print has happened.
+ */
+export function pendingOrReleasedText(
+  event: Pick<CalendarEvent, "event_date" | "release_time">,
+  consensus: string | null,
+  displayKind: EarningsDisplayTime["kind"] | undefined,
+  now: Date = new Date(),
+): string {
+  const text = preReleaseEstimateText(consensus);
+  if (text !== "Pending release") return text;
+  if (displayKind === "usual" || displayKind === "unknown") return text;
+  const clock = formatClockTime12(event.release_time);
+  if (!clock || !event.release_time || !/^\d{1,2}:\d{2}/.test(event.release_time)) return text;
+  const today = todayET(now);
+  const past =
+    event.event_date < today ||
+    (event.event_date === today && event.release_time.slice(0, 5).padStart(5, "0") <= nowET(now));
+  return past ? `Released ${clock} \u00b7 awaiting data` : text;
+}
+
+/**
+ * Manual earnings rows are titled "<SYM> earnings (Manual entry)", which names
+ * the source instead of the slot. When the row's own slot is known, print it the
+ * way the vendor rows do. Display only; the stored title is never rewritten.
+ */
+export function slotAwareTitle(
+  event: Pick<CalendarEvent, "title" | "event_time" | "raw_json" | "event_type">,
+): string | null {
+  const title = event.title;
+  if (!title || event.event_type !== "earnings" || !/\(Manual entry\)\s*$/.test(title)) return title;
+  const slot = deriveEarningsSlot({ event_time: event.event_time, raw_json: event.raw_json });
+  if (!slot) return title;
+  return title.replace(
+    /\(Manual entry\)\s*$/,
+    slot === "bmo" ? "(Before Market Open)" : "(After Market Close)",
+  );
+}
+
 /** event_date is an ET market date (YYYY-MM-DD) → "Wed Jun 10". */
 function fmtDate(event_date: string): string {
   const [y, m, d] = event_date.split("-").map(Number);
@@ -113,6 +160,31 @@ export function TodayReleases({
 }) {
   const upcoming = mode === "upcoming";
   const todayIso = todayET();
+  // A pre-release chip is decided from the clock at render. One timer, set for
+  // the soonest print window to open, bumps `tick` so the rows re-evaluate and
+  // the chip clears without a reload; the effect re-arms for the next one.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const now = new Date();
+    let next: number | null = null;
+    for (const r of releases) {
+      const at = preReleaseClearsAtMs(r, now);
+      if (at !== null && (next === null || at < next)) next = at;
+      // A "Pending release" row flips to "Released" at its own clock time.
+      if (r.event_date === todayET(now) && r.release_time && /^\d{2}:\d{2}/.test(r.release_time)) {
+        const [rh, rm] = r.release_time.split(":").map(Number);
+        const [nh, nm] = nowET(now).split(":").map(Number);
+        const mins = rh * 60 + rm - (nh * 60 + nm);
+        if (mins > 0) {
+          const flipAt = now.getTime() + mins * 60_000 - now.getSeconds() * 1000 - now.getMilliseconds() + 500;
+          if (next === null || flipAt < next) next = flipAt;
+        }
+      }
+    }
+    if (next === null) return;
+    const id = setTimeout(() => setTick((t) => t + 1), Math.max(0, next - Date.now()));
+    return () => clearTimeout(id);
+  }, [releases, tick]);
   return (
     <section className="rounded-xl bg-panel p-4">
       <div className="mb-2 flex items-baseline justify-between">
@@ -121,7 +193,7 @@ export function TodayReleases({
         </h2>
         <Link
           href="/dashboard/calendar"
-          className="text-[11px] text-ink-faint hover:text-ink font-mono"
+          className="text-[11px] text-ink-faint hover:text-ink font-mono relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3.5 pointer-coarse:after:-inset-x-2"
         >
           calendar &rarr;
         </Link>
@@ -155,15 +227,16 @@ export function TodayReleases({
           // Earnings titles already begin with the ticker ("NKE earnings (AMC)").
           // When the symbol pill is shown, drop that leading prefix so we don't
           // render "NKE NKE earnings (AMC)".
+          const slotTitle = slotAwareTitle(event);
           const displayTitle =
-            showPill && event.symbol && event.title?.startsWith(`${event.symbol} `)
-              ? event.title.slice(event.symbol.length + 1)
-              : event.title;
+            showPill && event.symbol && slotTitle?.startsWith(`${event.symbol} `)
+              ? slotTitle.slice(event.symbol.length + 1)
+              : slotTitle;
           return (
             <li key={event.id} className="px-4 py-2 space-y-1">
               <div className="flex items-baseline justify-between gap-2">
                 <span
-                  className="text-[14px] text-ink font-medium min-w-0 truncate"
+                  className="text-[14px] text-ink font-medium min-w-0 line-clamp-2 break-words md:truncate md:line-clamp-none"
                   title={event.title ?? undefined}
                 >
                   {showPill && (
@@ -205,7 +278,11 @@ export function TodayReleases({
                   />
                 ) : (
                   <span className="text-ink-faint">
-                    {preReleaseEstimateText(effectiveConsensus(event))}
+                    {pendingOrReleasedText(
+                      event,
+                      effectiveConsensus(event),
+                      event.display_time?.kind,
+                    )}
                   </span>
                 )}
               </div>

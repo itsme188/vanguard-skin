@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { searchResearchDocuments } from "@/lib/queries/research-documents";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { todayET } from "@/lib/calendar/date-utils";
 
 export type SearchResultType =
   | "security"
@@ -40,6 +42,7 @@ export async function GET(request: NextRequest) {
          WHERE symbol LIKE ? OR name LIKE ?
          ORDER BY
            CASE WHEN symbol LIKE ? THEN 0 ELSE 1 END,
+           CASE WHEN ${liveOptionExpirationSql("securities", todayET())} THEN 0 ELSE 1 END,
            symbol
          LIMIT 8`
       )
@@ -89,7 +92,7 @@ export async function GET(request: NextRequest) {
     for (const n of notes) {
       const typeLabel =
         n.note_type === "trade_thesis"
-          ? "Trade Thesis"
+          ? "Stock Note"
           : n.note_type === "earnings"
             ? "Earnings"
             : "Journal";

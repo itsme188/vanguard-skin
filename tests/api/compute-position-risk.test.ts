@@ -31,6 +31,7 @@ function fakeResult(overrides: Partial<PositionRiskResult> = {}): PositionRiskRe
         riskContribution: 0.18,
         correlationWithPortfolio: 0.82,
         dataPoints: 252,
+        cashEquivalent: false,
       },
     ],
     correlations: [],
@@ -60,6 +61,7 @@ describe("GET /api/compute/position-risk", () => {
               riskContribution: 0.16,
               correlationWithPortfolio: 0.80,
               dataPoints: 245,
+              cashEquivalent: false,
             },
           ],
         })

@@ -113,6 +113,54 @@ describe("getAnalysisTrustState", () => {
     expect(state.stalePrices.symbols).toEqual(["MSFT"]);
   });
 
+  // QA finding analysis-trust-strip-stale-prices--drawer-omits-never-priced-held-options
+  describe("never-priced holdings", () => {
+    function seed() {
+      db.prepare(`INSERT INTO securities (id, symbol, security_type) VALUES
+        (10, 'AAA', 'Stock'), (11, 'BBB', 'Stock'), (12, 'ZZZ 270115P00300000', 'Option'), (13, 'CCC', 'Stock'), (14, 'DDD', 'Stock')`).run();
+      db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES
+        (1, 10, '2026-04-30', 100, 'vg-1'),
+        (1, 11, '2026-04-30', 50, 'vg-2'),
+        (1, 12, '2026-04-30', 2, 'vg-3'),
+        (3, 13, '2026-04-30', 5, 'ib-1'),
+        (1, 14, '2026-04-30', 0, 'vg-4')`).run();
+      const today = new Date().toISOString().slice(0, 10);
+      const stale = new Date(); stale.setDate(stale.getDate() - 7);
+      db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (10, ?, 195, 'tws')`).run(today);
+      db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (11, ?, 410, 'tws')`).run(stale.toISOString().slice(0, 10));
+    }
+
+    it("lists a held security with no price row, apart from the stale list", () => {
+      seed();
+      const state = getAnalysisTrustState(db);
+      // The option and CCC have no price row. DDD has none either but its
+      // latest quantity is 0 — not held.
+      expect(state.neverPriced).toEqual({ count: 2, symbols: ["CCC", "ZZZ 270115P00300000"] });
+      // The stale count keeps its meaning: old prices only.
+      expect(state.stalePrices).toEqual({ count: 1, symbols: ["BBB"] });
+    });
+
+    it("the two lists never share a symbol", () => {
+      seed();
+      const state = getAnalysisTrustState(db);
+      expect(state.neverPriced.symbols.filter((s) => state.stalePrices.symbols.includes(s))).toEqual([]);
+    });
+
+    it("respects the account scope", () => {
+      seed();
+      expect(getAnalysisTrustState(db, [1]).neverPriced.symbols).toEqual(["ZZZ 270115P00300000"]);
+      expect(getAnalysisTrustState(db, [3]).neverPriced.symbols).toEqual(["CCC"]);
+    });
+
+    it("is empty when every holding has a price, however old", () => {
+      seed();
+      db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (12, '2020-01-02', 1, 'tws'), (13, '2020-01-02', 1, 'tws')`).run();
+      const state = getAnalysisTrustState(db);
+      expect(state.neverPriced).toEqual({ count: 0, symbols: [] });
+      expect(state.stalePrices.symbols).toEqual(["BBB", "CCC", "ZZZ 270115P00300000"]);
+    });
+  });
+
   it("reports bond duration coverage (held bonds with non-null duration_years)", () => {
     db.prepare(`INSERT INTO securities (id, symbol, security_type, duration_years) VALUES (10, 'BOND1', 'Bond', 5.5), (11, 'BOND2', 'Bond', NULL)`).run();
     db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
@@ -122,6 +170,61 @@ describe("getAnalysisTrustState", () => {
     const state = getAnalysisTrustState(db);
     expect(state.bondDuration.totalBonds).toBe(2);
     expect(state.bondDuration.withDuration).toBe(1);
+  });
+
+  // qa:analysis-trust-strip--bond-duration-drawer-names-no-bonds — the drawer
+  // said "These bonds" with nothing to point at. The payload now names them.
+  it("names the held bonds that have no duration, sorted, and only those", () => {
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, duration_years) VALUES
+         (10, 'ZZZBOND', 'Zeta Corp Note', 'Bond', NULL),
+         (11, 'AAABOND', 'Alpha Corp Note', 'bond', NULL),
+         (12, 'MMMBOND', 'Mid Corp Note', 'Bond', 4),
+         (13, 'UNHELD', 'Unheld Note', 'Bond', NULL),
+         (14, 'AAA', 'Alpha Stock', 'Stock', NULL)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES
+         (1, 10, '2026-04-30', 1, 'vg-1'),
+         (1, 11, '2026-04-30', 1, 'vg-2'),
+         (2, 11, '2026-04-30', 1, 'vg-2b'),
+         (1, 12, '2026-04-30', 1, 'vg-3'),
+         (1, 14, '2026-04-30', 1, 'vg-4')`,
+    ).run();
+
+    const state = getAnalysisTrustState(db);
+    expect(state.bondDuration.totalBonds).toBe(3);
+    expect(state.bondDuration.withDuration).toBe(1);
+    // A bond held in two accounts is one row, like the count beside it.
+    expect(state.bondDuration.missing).toEqual([
+      { securityId: 11, symbol: "AAABOND", name: "Alpha Corp Note" },
+      { securityId: 10, symbol: "ZZZBOND", name: "Zeta Corp Note" },
+    ]);
+    expect(state.bondDuration.missing.length).toBe(
+      state.bondDuration.totalBonds - state.bondDuration.withDuration,
+    );
+  });
+
+  it("scopes the missing-duration bond list to the requested accounts", () => {
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, duration_years) VALUES
+         (10, 'AAABOND', 'Alpha Corp Note', 'Bond', NULL),
+         (11, 'ZZZBOND', 'Zeta Corp Note', 'Bond', NULL)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES
+         (1, 10, '2026-04-30', 1, 'vg-1'),
+         (3, 11, '2026-04-30', 1, 'ib-1')`,
+    ).run();
+
+    const state = getAnalysisTrustState(db, [3]);
+    expect(state.bondDuration.missing.map((b) => b.symbol)).toEqual(["ZZZBOND"]);
+  });
+
+  it("returns an empty missing list when every held bond has a duration", () => {
+    db.prepare(`INSERT INTO securities (id, symbol, security_type, duration_years) VALUES (10, 'AAABOND', 'Bond', 2)`).run();
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 10, '2026-04-30', 1, 'vg-1')`).run();
+    expect(getAnalysisTrustState(db).bondDuration.missing).toEqual([]);
   });
 
   // ─── Independent Dietz cross-check chain (Task 13) ────────────────────

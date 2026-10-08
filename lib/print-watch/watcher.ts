@@ -236,6 +236,10 @@ export interface WatchStatusRow {
    *  POST /drop both key on this, not printId. */
   eventId: number;
   symbol: string;
+  /** The print row's OWN event date (YYYY-MM-DD) — a copy taken when the print
+   *  was last reconciled, so it can lag a calendar date correction until the
+   *  next sweep (see `currentEventDates`). */
+  eventDate: string;
   state: PrintWatchState;
   /** Per-source last outcome, plain short strings for the panel's ladder. */
   sources: Record<string, string>;
@@ -1058,6 +1062,7 @@ export function getWatchStatus(db: Database.Database): WatchStatusRow[] {
       printId: print.id,
       eventId: print.event_id,
       symbol: print.symbol,
+      eventDate: print.event_date,
       state: print.state,
       sources,
       coverage: status?.coverage ?? [],

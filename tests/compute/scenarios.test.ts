@@ -399,3 +399,86 @@ describe("FX conversion (Task 9a — scenario market value)", () => {
     expect(result.currentPortfolioValue).toBeCloseTo(2_080 + expectedKrwUsd, 2);
   });
 });
+
+describe("multi-account scenario scopes", () => {
+  function seedThreeAccountBook(db: Database.Database) {
+    db.exec(`
+      INSERT INTO accounts (id, name) VALUES
+        (1, 'Vanguard Taxable'),
+        (2, 'Vanguard Trust'),
+        (3, 'IBKR');
+    `);
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, sector, currency) VALUES (1, 'AAA', 'AAA Corp', 'Stock', 'Technology', 'USD')"
+    ).run();
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, sector, currency) VALUES (2, 'BBB', 'BBB Corp', 'Stock', 'Industrials', 'USD')"
+    ).run();
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, duration_years, currency) VALUES (3, 'ZZBOND', 'ZZ Bond', 'Bond', 5, 'USD')"
+    ).run();
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, sector, underlying_symbol, strike_price, expiration_date, option_type, multiplier, currency) VALUES (4, 'AAA  990115C00150000', 'AAA call', 'Option', 'Technology', 'ZZMISS', 150, '2099-01-15', 'call', 100, 'USD')"
+    ).run();
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, sector, currency) VALUES (5, 'FXCO', 'Foreign Co', 'Stock', 'Healthcare', 'EUR')"
+    ).run();
+    const holding = db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (?, ?, '2026-01-31', ?)"
+    );
+    holding.run(1, 1, 10);
+    holding.run(2, 1, 20);
+    holding.run(3, 2, 5);
+    holding.run(1, 3, 10_000);
+    holding.run(1, 4, 1);
+    holding.run(2, 5, 10);
+    const price = db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, '2026-01-31', ?)");
+    price.run(1, 100);
+    price.run(2, 200);
+    price.run(3, 100);
+    price.run(4, 5);
+    price.run(5, 50);
+    db.prepare("INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('EUR', 1.2, '2026-01-31', 'test')").run();
+  }
+
+  const linearShock = {
+    id: "custom-linear",
+    name: "Custom",
+    description: "test",
+    category: "custom" as const,
+    marketMove: -0.10,
+  };
+
+  it("all selected accounts start at the sum of the single-account starting values, including shared stocks and FX", () => {
+    const db = createTestDb();
+    seedThreeAccountBook(db);
+
+    const singles = [1, 2, 3].map((accountId) => computeScenario(db, linearShock, { accountId }));
+    const all = computeScenario(db, linearShock, { accountIds: [1, 2, 3] });
+
+    expect(all.currentPortfolioValue).toBeCloseTo(
+      singles.reduce((sum, result) => sum + result.currentPortfolioValue, 0),
+      8
+    );
+    expect(all.currentPortfolioValue).toBeCloseTo(15_100, 8);
+  });
+
+  it("all selected accounts P&L equals the sum of the single-account P&Ls for a linear shock, and unmodelled options union", () => {
+    const db = createTestDb();
+    seedThreeAccountBook(db);
+
+    const singles = [1, 2, 3].map((accountId) => computeScenario(db, linearShock, { accountId }));
+    const all = computeScenario(db, linearShock, { accountIds: [1, 2, 3] });
+
+    expect(all.estimatedChange).toBeCloseTo(
+      singles.reduce((sum, result) => sum + result.estimatedChange, 0),
+      8
+    );
+    expect(all.optionsUnmodelled.count).toBe(
+      singles.reduce((sum, result) => sum + result.optionsUnmodelled.count, 0)
+    );
+    expect(all.positionImpacts.find((p) => p.symbol === "AAA  990115C00150000")?.unmodelledReason).toBe(
+      "no-underlying-price"
+    );
+  });
+});

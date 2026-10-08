@@ -4,6 +4,8 @@ import { runMigrations } from "@/lib/db/migrate";
 import { confirmEarningsDate } from "@/lib/mutations/confirm-earnings-date";
 import { addDays } from "@/lib/calendar/date-utils";
 import { upsertSymbolReleaseTime } from "@/lib/earnings/wire-times";
+import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
+import { readArmedGeneration } from "@/lib/earnings/armed-events-projection";
 
 let db: Database.Database;
 
@@ -69,6 +71,36 @@ describe("confirmEarningsDate", () => {
     const rows = db.prepare("SELECT release_time FROM calendar_events WHERE source='manual' AND symbol='NVDA'").all() as { release_time: string }[];
     expect(rows).toHaveLength(1);
     expect(rows[0].release_time).toBe("08:00"); // bmo on the re-confirm
+  });
+
+  it("[L3] un-hiding an existing manual row mints an armed-events generation", () => {
+    seedSync("finnhub", "2026-06-11");
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: "2026-06-12", confirmedTime: "amc", today: "2026-06-08" });
+    const manual = db
+      .prepare(`SELECT id FROM calendar_events WHERE source = 'manual' AND symbol = 'NVDA'`)
+      .get() as { id: number };
+
+    db.prepare(`UPDATE calendar_events SET superseded = 1 WHERE id = ?`).run(manual.id);
+    db.transaction(() => writeArmedEventsOutboxRow(db, { today: "2026-06-08" })).immediate();
+    const beforeGeneration = readArmedGeneration(db);
+
+    const res = confirmEarningsDate(db, {
+      symbol: "NVDA",
+      confirmedDate: "2026-06-12",
+      confirmedTime: "amc",
+      today: "2026-06-08",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(readArmedGeneration(db)).toBe(beforeGeneration + 1);
+    const payload = JSON.parse(
+      (
+        db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as {
+          payload_json: string;
+        }
+      ).payload_json,
+    ) as { supersededEventIds: number[] };
+    expect(payload.supersededEventIds).not.toContain(manual.id);
   });
 
   it("routes through the release-time cascade: a standing user override wins over the BMO/AMC default", () => {

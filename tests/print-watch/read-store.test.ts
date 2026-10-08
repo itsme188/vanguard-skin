@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertPrint } from "@/lib/print-watch/store";
 import {
-  claimRead, heartbeatRead, finalizeReadDone, finalizeReadFailed, markReadSuperseded, getLatestDoneRead, getActiveRead, listReads,
+  claimRead, heartbeatRead, finalizeReadDone, finalizeReadFailed, markReadSuperseded, getLatestDoneRead, listReads,
   canScheduleRead, listCallouts, acceptCallout, revokeCalloutsForIneligibleDocs, READ_HEARTBEAT_STALE_MS, READ_RETRY_BACKOFF_MS,
   getGeneratingRead, getLastFailedAttempt, cappedAttempt,
   type VerifiedCalloutInput,
@@ -50,7 +50,7 @@ describe("claimRead", () => {
     expect(canScheduleRead(db, printId, "fp1", T0 + 2 * READ_HEARTBEAT_STALE_MS + 3)).toBe(true);
     expect(finalizeReadDone(db, { readId: a.row.id, token: a.token, facts: [], prose: PROSE, callouts: [], nowMs: T0 })).toEqual({ ok: false, reason: "claim_lost" });
     expect(finalizeReadFailed(db, { readId: b.row.id, token: b.token, error: "boom", errorCode: "model_error", nowMs: T0, retryable: true })).toBe(true);
-    expect(getActiveRead(db, printId)).toMatchObject({ status: "failed", error_code: "model_error", next_retry_at: new Date(T0 + READ_RETRY_BACKOFF_MS).toISOString() });
+    expect(getLastFailedAttempt(db, printId)!.row).toMatchObject({ id: b.row.id, status: "failed", error_code: "model_error", next_retry_at: new Date(T0 + READ_RETRY_BACKOFF_MS).toISOString() });
   });
   it("a failed row inside its backoff is 'backoff'; after it, a new nonce is claimed; the third failure is the cap", () => {
     const a = claim("fp1"); if (a.kind !== "claimed") throw new Error();
@@ -93,7 +93,7 @@ describe("claimRead", () => {
   it("a non-retryable failure (model_drift) schedules no retry", () => {
     const a = claim("fp1"); if (a.kind !== "claimed") throw new Error();
     finalizeReadFailed(db, { readId: a.row.id, token: a.token, error: "drift", errorCode: "model_drift", nowMs: T0, retryable: false });
-    expect(getActiveRead(db, printId)?.next_retry_at).toBeNull();
+    expect(getLastFailedAttempt(db, printId)!.row.next_retry_at).toBeNull();
     expect(canScheduleRead(db, printId, "fp1", T0 + 999_999)).toBe(false);
   });
   it("done_exists for a done fingerprint; regenerate allocates the next nonce; the done read stays the page's read while the new one generates", () => {
@@ -104,7 +104,7 @@ describe("claimRead", () => {
     const r = claim("fp1", T0, { regenerate: true }); if (r.kind !== "claimed") throw new Error();
     expect(r.row.nonce).toBe(1);
     expect(getLatestDoneRead(db, printId)?.id).toBe(a.row.id);
-    expect(getActiveRead(db, printId)?.id).toBe(r.row.id);
+    expect(getGeneratingRead(db, printId)?.id).toBe(r.row.id);
   });
   it("finalizeReadDone supersedes older generating rows in the same transaction; markReadSuperseded is token-guarded", () => {
     const old = claim("fp-old", T0); const neu = claim("fp-new", T0 + 10);
@@ -114,7 +114,8 @@ describe("claimRead", () => {
     const x = claim("fp-x", T0 + 30); if (x.kind !== "claimed") throw new Error();
     expect(markReadSuperseded(db, x.row.id, "wrong")).toBe(false);
     expect(markReadSuperseded(db, x.row.id, x.token)).toBe(true);
-    expect(getActiveRead(db, printId)).toBeNull();
+    expect(listReads(db, printId).at(-1)).toMatchObject({ id: x.row.id, status: "superseded" });
+    expect(getGeneratingRead(db, printId)).toBeNull();
   });
   it("heartbeatRead is token-guarded", () => {
     const a = claim("fp1"); if (a.kind !== "claimed") throw new Error();

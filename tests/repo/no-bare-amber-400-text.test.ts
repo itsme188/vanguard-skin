@@ -19,7 +19,12 @@ export function hasBareAmber(line: string): boolean {
   }
   return false;
 }
-const ROOT = path.resolve(__dirname, "../../app");
+const REPO = path.resolve(__dirname, "../..");
+// UI classes live in app/ and in JSX components under lib/ (e.g. lib/privacy).
+const SCAN_ROOTS = ["app", "lib"].map((d) => path.join(REPO, d));
+// Files with a pre-existing bare amber class: "pre-existing, sprint 2026-10-07".
+// None found when the scan was widened to lib/; add entries here with that note.
+const ALLOWLIST: string[] = [];
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -52,14 +57,15 @@ describe("bare-amber regex self-test", () => {
 });
 
 describe("no bare text-amber-300/400/500", () => {
-  it("uses text-warn instead of a bare text-amber-300/400/500 in app/**/*.tsx", () => {
+  it("uses text-warn instead of a bare text-amber-300/400/500 in app/**/*.tsx and lib/**/*.tsx", () => {
     const offenders: string[] = [];
-        for (const file of walk(ROOT)) {
+    for (const file of SCAN_ROOTS.flatMap((r) => walk(r))) {
+      if (ALLOWLIST.includes(path.relative(REPO, file))) continue;
       fs.readFileSync(file, "utf8")
         .split("\n")
         .forEach((line, i) => {
           if (hasBareAmber(line)) {
-            offenders.push(`${path.relative(ROOT, file)}:${i + 1}: ${line.trim()}`);
+            offenders.push(`${path.relative(REPO, file)}:${i + 1}: ${line.trim()}`);
           }
         });
     }

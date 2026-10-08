@@ -464,6 +464,47 @@ export function ManageSourcesModal({
     }
   }, [manualName, manualEmail, onSourcesChanged]);
 
+  // Focus: move into the dialog on open, keep Tab inside it, and give focus
+  // back to whatever opened it on close (otherwise Tab+Enter behind the
+  // backdrop activates the page underneath).
+  const panelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const opener = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+    const onTab = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || pendingDeleteIdRef.current !== null) return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const focusable = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || active === panel)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      } else if (!panel.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onTab);
+    return () => {
+      document.removeEventListener("keydown", onTab);
+      opener?.focus?.();
+    };
+  }, [open]);
+  const pendingDeleteIdRef = useRef<number | null>(null);
+  pendingDeleteIdRef.current = pendingDeleteId;
+
   // Escape closes the modal (same document-level pattern as
   // EarningsEmailViewer) — but while the delete confirmation is up, Escape
   // dismisses only that.
@@ -478,6 +519,12 @@ export function ManageSourcesModal({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, onClose, pendingDeleteId]);
 
+  const pendingDeleteSource =
+    pendingDeleteId !== null ? sources.find((s) => s.id === pendingDeleteId) : undefined;
+  const pendingDeleteLabel = pendingDeleteSource
+    ? `"${pendingDeleteSource.name}"${pendingDeleteSource.sender_email ? ` (${pendingDeleteSource.sender_email})` : ""}`
+    : "this newsletter source";
+
   if (!open) return null;
 
   return (
@@ -491,7 +538,14 @@ export function ManageSourcesModal({
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm pointer-events-none" />
 
       {/* Modal */}
-      <div className="relative z-10 w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-xl border border-edge bg-panel shadow-2xl">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Manage Sources"
+        tabIndex={-1}
+        className="relative z-10 w-full max-w-lg focus:outline-none max-h-[85vh] overflow-y-auto rounded-xl border border-edge bg-panel shadow-2xl"
+      >
         {/* Header */}
         <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3.5 border-b border-edge bg-panel/95 backdrop-blur-sm rounded-t-xl">
           <h2 className="text-sm font-medium text-ink">Manage Sources</h2>
@@ -624,7 +678,10 @@ export function ManageSourcesModal({
                             {s.name}
                           </div>
                           {s.sender_email ? (
-                            <div className="text-xs text-ink-faint font-mono truncate">
+                            <div
+                              className="text-xs text-ink-faint font-mono truncate"
+                              title={s.sender_email}
+                            >
                               {s.sender_email}
                             </div>
                           ) : (
@@ -642,6 +699,8 @@ export function ManageSourcesModal({
                           {/* Off-topic filter exemption (migration 055 allow_off_topic) */}
                           <button
                             onClick={() => handleToggleOffTopic(s.id, s.allow_off_topic ?? 0)}
+                            aria-pressed={s.allow_off_topic === 1}
+                            aria-label={`${s.name}: off-topic articles ${s.allow_off_topic === 1 ? "allowed" : "blocked"}`}
                             className={`text-[10px] font-medium px-1.5 py-0.5 rounded border transition-colors ${
                               s.allow_off_topic === 1
                                 ? "border-gold/40 text-gold-ink bg-gold/10"
@@ -653,7 +712,7 @@ export function ManageSourcesModal({
                                 : "Off-topic exemption OFF — articles the AI votes not portfolio-relevant are excluded from digests (visible under Research → Feeds → Filtered). Click to keep everything from this source."
                             }
                           >
-                            off-topic OK
+                            {s.allow_off_topic === 1 ? "off-topic OK" : "off-topic blocked"}
                           </button>
                           {/* Earnings hierarchy (migration 068) — only offered
                               while unranked; ranked sources are edited above. */}
@@ -670,7 +729,19 @@ export function ManageSourcesModal({
                           )}
                           {/* Toggle */}
                           <button
+                            type="button"
                             onClick={() => handleToggle(s.id, s.is_active)}
+                            aria-pressed={Boolean(s.is_active)}
+                            aria-label={
+                              s.is_active
+                                ? `${s.name}: source active — click to deactivate`
+                                : `${s.name}: source inactive — click to activate`
+                            }
+                            title={
+                              s.is_active
+                                ? "Source active — click to deactivate"
+                                : "Source inactive — click to activate"
+                            }
                             className={`relative w-9 h-5 rounded-full transition-colors ${
                               s.is_active ? "bg-gold" : "bg-muted"
                             }`}
@@ -702,11 +773,16 @@ export function ManageSourcesModal({
                             disabled={hasArticles}
                             aria-disabled={hasArticles}
                             title={deleteTitle}
-                            className={
+                            aria-label={
+                              hasArticles
+                                ? `Delete ${s.name} (unavailable — it has articles)`
+                                : `Delete ${s.name}`
+                            }
+                            className={`relative pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-[''] ${
                               hasArticles
                                 ? "text-ink-faint/40 cursor-not-allowed"
                                 : "text-ink-faint hover:text-down transition-colors"
-                            }
+                            }`}
                           >
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
@@ -859,7 +935,10 @@ export function ManageSourcesModal({
                             <div className="text-sm font-medium text-ink">
                               {sender.name}
                             </div>
-                            <div className="text-xs text-ink-faint font-mono truncate">
+                            <div
+                              className="text-xs text-ink-faint font-mono truncate"
+                              title={sender.email}
+                            >
                               {sender.email}
                             </div>
                             <div className="text-xs text-ink-faint mt-0.5 truncate">
@@ -895,8 +974,8 @@ export function ManageSourcesModal({
       </div>
       <ConfirmDialog
         open={pendingDeleteId !== null}
-        title="Delete source"
-        message="Are you sure you want to remove this newsletter source? This cannot be undone."
+        title={pendingDeleteSource ? `Delete "${pendingDeleteSource.name}"?` : "Delete source"}
+        message={`Are you sure you want to remove ${pendingDeleteLabel}? This cannot be undone.`}
         confirmLabel="Delete"
         variant="danger"
         onConfirm={() => {

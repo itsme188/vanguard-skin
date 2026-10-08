@@ -22,6 +22,7 @@ import {
 } from "./option-reprice";
 import {
   estimateBondRateLeg,
+  isFixedIncomeFund,
   summarizeUnmodelledBonds,
   type BondRateLeg,
   type BondUnmodelledReason,
@@ -126,7 +127,7 @@ export const PRESET_SCENARIOS: ScenarioDefinition[] = SCENARIO_RECIPES.map(
 export function computeScenario(
   db: Database.Database,
   scenario: ScenarioDefinition,
-  options?: { accountId?: number }
+  options?: { accountId?: number; accountIds?: number[] }
 ): ScenarioResult {
   // Factor-anchored recipes shipped in P2 — dispatch when scenario.id matches
   // a recipe. Custom scenarios from POST /api/compute/scenarios still flow
@@ -134,8 +135,11 @@ export function computeScenario(
   const recipe = findRecipe(scenario.id);
   if (recipe) return computeRecipeScenario(db, recipe, options);
 
-  const accountFilter = options?.accountId ? "AND h.account_id = ?" : "";
-  const accountParams: number[] = options?.accountId ? [options.accountId] : [];
+  const accountIds = options?.accountIds ?? (options?.accountId ? [options.accountId] : undefined);
+  const accountFilter = accountIds?.length
+    ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
+    : "";
+  const accountParams: number[] = accountIds?.length ? [...accountIds] : [];
 
   // 1. Get current positions with latest prices and classification
   const positions = db
@@ -234,6 +238,7 @@ ${OPTION_PRICING_JOINS_SQL}
       security_type: pos.security_type,
       fund_category: pos.fund_category,
     });
+    const isBondFund = isFixedIncomeFund(pos);
     // An option is a claim on its underlying, so its beta is the UNDERLYING's
     // beta (leverage is applied separately, below, by signed elasticity).
     const beta = estimateBeta(
@@ -241,7 +246,7 @@ ${OPTION_PRICING_JOINS_SQL}
       pos.sector,
       pos.style,
       pos.market_cap_category,
-      isCashEquivalent
+      isCashEquivalent || isBondFund
     );
 
     // QA fix (2026-08-18): legs compose ADDITIVELY — changePercent =
@@ -281,9 +286,9 @@ ${OPTION_PRICING_JOINS_SQL}
     let bondLeg: BondRateLeg | null = null;
     if (rateBps != null) {
       if (isCashEquivalent) {
-        // Cash equivalents benefit slightly from higher rates (existing
-        // treatment, keyed on the shared fund_category-driven predicate).
-        rateLeg = (rateBps / 100) * 0.002;
+        // A constant-NAV cash fund's yield changes with rates, not its
+        // instantaneous price P&L.
+        rateLeg = 0;
       } else if (!isOption) {
         bondLeg = estimateBondRateLeg(pos, rateBps, runToday);
         rateLeg = bondLeg?.changePercent ?? 0;
@@ -381,7 +386,7 @@ ${OPTION_PRICING_JOINS_SQL}
  */
 export function computeAllScenarios(
   db: Database.Database,
-  options?: { accountId?: number }
+  options?: { accountId?: number; accountIds?: number[] }
 ): ScenarioResult[] {
   return PRESET_SCENARIOS.map((scenario) => computeScenario(db, scenario, options));
 }

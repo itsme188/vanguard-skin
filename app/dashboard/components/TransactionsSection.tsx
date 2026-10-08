@@ -62,6 +62,26 @@ export function sortSecurityTransactions(
   });
 }
 
+/**
+ * What each type chip returns under the active account filter. The Options
+ * chip used to print the all-account count while an account was selected, so
+ * it promised more rows than the click delivered. Same account predicate as
+ * the row filter below.
+ */
+export function countTransactionScopes(
+  rows: SecurityDetailTransaction[],
+  account: string,
+): { all: number; stocks: number; options: number } {
+  let stocks = 0;
+  let options = 0;
+  for (const t of rows) {
+    if (account !== "All" && t.account_name !== account) continue;
+    if (isOptionTxn(t)) options += 1;
+    else stocks += 1;
+  }
+  return { all: stocks + options, stocks, options };
+}
+
 function typeTone(type: string): ChipTone {
   if (type.startsWith("BUY")) return "up";
   if (type.startsWith("SELL")) return "down";
@@ -105,6 +125,8 @@ export function TransactionsSection({
     });
     return sortSecurityTransactions(base, sort.field, sort.dir);
   }, [all, account, typeScope, sort]);
+
+  const scopeCounts = useMemo(() => countTransactionScopes(all, account), [all, account]);
 
   if (all.length === 0) return null;
 
@@ -151,12 +173,12 @@ export function TransactionsSection({
                 onClick={() => setTypeScope("all")}
               />
               <FilterPill
-                label="Stocks"
+                label={`Stocks (${scopeCounts.stocks})`}
                 active={typeScope === "stocks"}
                 onClick={() => setTypeScope("stocks")}
               />
               <FilterPill
-                label={`Options (${optionTransactions.length})`}
+                label={`Options (${scopeCounts.options})`}
                 active={typeScope === "options"}
                 onClick={() => setTypeScope("options")}
               />
@@ -227,7 +249,10 @@ export function TransactionsSection({
                     <td className={`${TD_CLASS} hidden md:table-cell text-ink-dim`}>
                       {t.account_name}
                     </td>
-                    <td className={TD_CLASS}>
+                    {/* nowrap: the table scrolls sideways, so a squeezed
+                        phone column must not break "CALL $115 · date" over
+                        five lines. */}
+                    <td className={`${TD_CLASS} whitespace-nowrap`}>
                       {isOpt ? (
                         <OptionLabel txn={t} />
                       ) : (
@@ -301,7 +326,7 @@ function OptionLabel({ txn }: { txn: SecurityDetailTransaction }) {
 
   const tone: ChipTone = type === "CALL" ? "up" : type === "PUT" ? "down" : "neutral";
   return (
-    <div className="flex items-center gap-2 flex-wrap">
+    <div className="flex items-center gap-2 whitespace-nowrap">
       {type && (
         <Chip tone={tone} size="xs" uppercase>
           {type}

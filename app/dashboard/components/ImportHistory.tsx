@@ -58,7 +58,7 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
     const when = formatDate(batch.created_at);
     if (
       !confirm(
-        `Undo import "${name}" (${label}, ${when})? This will delete all records from this batch and recompute tax lots. A recovery snapshot is saved first, so the batch can be restored if needed.`,
+        `Undo import "${name}" (${label}, ${when})? This will delete all records from this batch and recompute tax lots. A recovery snapshot is saved first, in the "undo-recovery" folder beside the database. There is no Restore button in the app: restoring a batch means running scripts/restore-import-batch.ts from a terminal in the project folder.`,
       )
     )
       return;
@@ -113,6 +113,7 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
                 <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
                   File
                 </th>
+                <th className="w-16 px-4 py-2.5 text-left text-ink-faint font-medium text-xs">Undo</th>
                 <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
                   Type
                 </th>
@@ -122,7 +123,6 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
                 <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
                   Date
                 </th>
-                <th className="w-16" />
               </tr>
             </thead>
             <tbody>
@@ -132,25 +132,14 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
                   className="border-b border-edge last:border-0 hover:bg-panel/50 transition-colors"
                 >
                   <td className="px-4 py-3 text-ink" title={batch.filename ?? undefined}>
-                    {batch.filename ?? "—"}
+                    <div className="truncate max-w-[14rem] md:max-w-[26rem]">{batch.filename ?? "—"}</div>
                     {batch.summary && (
-                      <div className="text-xs text-ink-faint truncate max-w-[26rem]" title={batch.summary}>
+                      <div className="text-xs text-ink-faint truncate max-w-[14rem] md:max-w-[26rem]" title={batch.summary}>
                         {batch.summary}
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    <span className="text-xs px-2 py-0.5 rounded bg-blue/20 text-blue font-mono font-medium">
-                      {SOURCE_LABELS[batch.source_type] ?? batch.source_type}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono text-ink-dim tabular-nums">
-                    {batch.record_count}
-                  </td>
-                  <td className="px-4 py-3 text-ink-dim text-xs whitespace-nowrap">
-                    {formatDate(batch.created_at)}
-                  </td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-3 text-left">
                     <button
                       onClick={() => handleUndo(batch)}
                       disabled={undoingId === batch.id}
@@ -162,6 +151,17 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
                         "Undo"
                       )}
                     </button>
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <span className="text-xs px-2 py-0.5 rounded bg-blue/20 text-blue font-mono font-medium">
+                      {SOURCE_LABELS[batch.source_type] ?? batch.source_type}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono text-ink-dim tabular-nums">
+                    {batch.record_count}
+                  </td>
+                  <td className="px-4 py-3 text-ink-dim text-xs whitespace-nowrap">
+                    {formatDate(batch.created_at)}
                   </td>
                 </tr>
               ))}

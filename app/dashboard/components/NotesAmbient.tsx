@@ -10,6 +10,14 @@ const SAVE_DEBOUNCE_MS = 400;
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
+// Tailwind `xl` — where the chat becomes a persistent side rail.
+const XL_MIN_WIDTH = 1280;
+
+/** The ambient panel yields to the chat whenever the chat overlays the page. */
+export function shouldDismissForChat(chatOpen: boolean, viewportWidth: number): boolean {
+  return chatOpen && viewportWidth < XL_MIN_WIDTH;
+}
+
 /**
  * Ambient notes overlay — fixed bottom-right panel toggled by Cmd+;.
  * Drafts persist to localStorage on every keystroke (debounced) so tab
@@ -72,7 +80,9 @@ export function NotesAmbient() {
         setOpen((o) => !o);
         return;
       }
-      if (e.key === "Escape" && open) {
+      // A topmost overlay (the Cmd+K palette) claims Escape with
+      // preventDefault + stopPropagation; honour that if it ever reaches us.
+      if (e.key === "Escape" && open && !e.defaultPrevented) {
         e.preventDefault();
         setOpen(false);
       }
@@ -80,6 +90,20 @@ export function NotesAmbient() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [open]);
+
+  // One overlay at a time: when the chat opens below the xl breakpoint it
+  // covers the page (z-50), and this panel (z-60) would sit over its
+  // composer and Send button. ChatDrawer broadcasts "chat-state-change";
+  // dismiss the panel then. At xl the chat is a side rail and this panel is
+  // offset beside it, so both can stay. The draft is untouched.
+  useEffect(() => {
+    const onChatState = (e: Event) => {
+      const chatOpen = (e as CustomEvent<{ open?: boolean }>).detail?.open === true;
+      if (shouldDismissForChat(chatOpen, window.innerWidth)) setOpen(false);
+    };
+    window.addEventListener("chat-state-change", onChatState);
+    return () => window.removeEventListener("chat-state-change", onChatState);
+  }, []);
 
   // Auto-focus the textarea when the panel opens.
   useEffect(() => {

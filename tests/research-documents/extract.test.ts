@@ -5,7 +5,11 @@ import {
   parseClaudeResponse,
   parseMetadataResponse,
   extractResearchMetadata,
+  normalizeTags,
   ResearchPdfExtractionError,
+  RESEARCH_PDF_NO_READABLE_OUTPUT_MESSAGE,
+  RESEARCH_TAG_MAX_LENGTH,
+  RESEARCH_TAG_MAX_COUNT,
 } from "@/lib/research-documents/extract";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 
@@ -294,13 +298,64 @@ describe("extractResearchMetadata upstream error mapping", () => {
     expect(err.message.toLowerCase()).toContain("overloaded");
   });
 
-  it("still surfaces a genuine parse failure (no text block) as before", async () => {
+  // QA: research-documents-upload--500-renders-raw-anthropic-envelope-regression-1.
+  // This case used to pin the internal diagnostic "Claude response contained
+  // no text block" (with the snippet "[]"), which the upload zone rendered
+  // verbatim. The model answering with no text is a fact about the file: the
+  // message is a plain sentence, carries no snippet, and is not an outage.
+  it("turns a model answer with no text into a plain sentence with no snippet", async () => {
     vi.mocked(getRawAnthropicClient).mockReturnValue({
       messages: { stream: () => ({ finalMessage: () => Promise.resolve({ content: [] }) }) },
     } as never);
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const err = await extractResearchMetadata(new Uint8Array([1, 2, 3])).catch((e) => e);
+    quiet.mockRestore();
     expect(err).toBeInstanceOf(ResearchPdfExtractionError);
-    expect(err.message).toMatch(/no text block/i);
+    expect(err.message).toBe(RESEARCH_PDF_NO_READABLE_OUTPUT_MESSAGE);
+    expect(err.message).not.toMatch(/text block|model output|[\[\]{}]/i);
+    expect(err.rawSnippet).toBe("");
+    expect(err.kind).toBe("unusable_output");
+  });
+
+  it("keeps an upstream failure classed as upstream", async () => {
+    const rawPayload = {
+      type: "error",
+      error: { type: "overloaded_error", message: "Overloaded" },
+      request_id: "req_011CdSYNTHETIC",
+    };
+    mockStreamRejecting(
+      new APIError(529, rawPayload, `529 ${JSON.stringify(rawPayload)}`, new Headers()),
+    );
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    const err = await extractResearchMetadata(new Uint8Array([1, 2, 3])).catch((e) => e);
+    quiet.mockRestore();
+    expect(err.kind).toBe("upstream");
+  });
+});
+
+describe("normalizeTags comma handling and limits", () => {
+  it("splits a comma-separated entry into separate tags", () => {
+    expect(normalizeTags(["qa-alpha, qa-beta"])).toEqual(["qa-alpha", "qa-beta"]);
+    expect(normalizeTags(["one,two", "three"])).toEqual(["one", "two", "three"]);
+  });
+
+  it("drops the empty pieces a stray comma leaves", () => {
+    expect(normalizeTags([",alpha,, ,"])).toEqual(["alpha"]);
+  });
+
+  it("dedupes across split pieces", () => {
+    expect(normalizeTags(["alpha, beta", "Beta"])).toEqual(["alpha", "beta"]);
+  });
+
+  it("applies the length limit per piece, not to the whole entry", () => {
+    const long = "x".repeat(RESEARCH_TAG_MAX_LENGTH + 1);
+    const fits = "y".repeat(RESEARCH_TAG_MAX_LENGTH);
+    expect(normalizeTags([`${long}, ${fits}, short`])).toEqual([fits, "short"]);
+  });
+
+  it("keeps at most the tag cap", () => {
+    const many = Array.from({ length: RESEARCH_TAG_MAX_COUNT + 5 }, (_, i) => `t${i}`);
+    expect(normalizeTags([many.join(",")])).toHaveLength(RESEARCH_TAG_MAX_COUNT);
   });
 });

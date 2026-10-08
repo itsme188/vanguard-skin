@@ -2,12 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getNotesFiltered, getSecurityIdBySymbol } from "@/lib/queries/notes";
 import { createNote, updateNote, deleteNote } from "@/lib/mutations/notes";
-import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
+import { NOTE_TYPES, NOTE_SENTIMENTS, type NoteType } from "@/lib/types";
 import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
 import { todayET } from "@/lib/calendar/date-utils";
 
 const VALID_TYPES = NOTE_TYPES;
 const VALID_SENTIMENTS = NOTE_SENTIMENTS;
+
+// The Earnings tab files notes under per-security headers, so an earnings
+// note with no security would be saved and then shown nowhere on that tab.
+const EARNINGS_NEEDS_SECURITY = "An earnings note needs a security. Pick one, then save.";
 
 export async function GET(request: NextRequest) {
   try {
@@ -82,6 +86,13 @@ export async function POST(request: NextRequest) {
       resolvedSecurityId = getSecurityIdBySymbol(db, symbol);
     }
 
+    if (note_type === "earnings" && !resolvedSecurityId) {
+      return NextResponse.json(
+        { success: false, error: EARNINGS_NEEDS_SECURITY },
+        { status: 400 }
+      );
+    }
+
     const note = createNote(db, {
       note_type,
       content,
@@ -108,7 +119,7 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     const body = await request.json();
-    const { id, content, event_date, tags, sentiment } = body;
+    const { id, content, event_date, tags, sentiment, note_type, security_id } = body;
 
     if (!id) {
       return NextResponse.json(
@@ -124,9 +135,65 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    // note_type / security_id: an absent key leaves the column alone;
+    // security_id null clears the link. Validate before anything is written.
+    let noteType: NoteType | undefined;
+    if (note_type !== undefined) {
+      noteType = coerceNoteType(typeof note_type === "string" ? note_type : null);
+      if (!noteType) {
+        return NextResponse.json(
+          { success: false, error: `Invalid note_type. Must be one of: ${VALID_TYPES.join(", ")}` },
+          { status: 400 }
+        );
+      }
+    }
+    if (security_id !== undefined && security_id !== null) {
+      if (typeof security_id !== "number" || !Number.isInteger(security_id) || security_id <= 0) {
+        return NextResponse.json(
+          { success: false, error: "Invalid security_id. Must be null or a positive integer" },
+          { status: 400 }
+        );
+      }
+      const exists = db.prepare("SELECT 1 FROM securities WHERE id = ?").get(security_id);
+      if (!exists) {
+        return NextResponse.json(
+          { success: false, error: "Security not found" },
+          { status: 404 }
+        );
+      }
+    }
+
+    // An edit may not move a note INTO "earnings, no security". An older
+    // row already in that state keeps an editable text (nothing it sends
+    // changes either column), and may still be moved out of it.
+    if (noteType !== undefined || security_id !== undefined) {
+      const current = db
+        .prepare("SELECT note_type, security_id FROM notes WHERE id = ?")
+        .get(id) as { note_type: string; security_id: number | null } | undefined;
+      if (current) {
+        const nextType = noteType ?? current.note_type;
+        const nextSecurityId = security_id !== undefined ? security_id : current.security_id;
+        const changed =
+          nextType !== current.note_type || nextSecurityId !== current.security_id;
+        if (changed && nextType === "earnings" && nextSecurityId == null) {
+          return NextResponse.json(
+            { success: false, error: EARNINGS_NEEDS_SECURITY },
+            { status: 400 }
+          );
+        }
+      }
+    }
+
     // || undefined: an empty-string event_date must mean "leave unchanged",
     // never overwrite a real date with "" (same header-corruption class as POST).
-    const note = updateNote(db, id, { content, event_date: event_date || undefined, tags, sentiment });
+    const note = updateNote(db, id, {
+      content,
+      event_date: event_date || undefined,
+      tags,
+      sentiment,
+      note_type: noteType,
+      security_id,
+    });
     if (!note) {
       return NextResponse.json(
         { success: false, error: "Note not found" },

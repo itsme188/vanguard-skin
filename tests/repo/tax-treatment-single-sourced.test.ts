@@ -85,9 +85,11 @@ describe("TaxReportCard retirement branch", () => {
     "utf-8"
   );
 
-  it("renders the retirement notice BEFORE the no-sales bail", () => {
+  // The no-sales case used to bail with `return null`; since 2026-10-07 it
+  // renders an empty state instead, so the pin anchors on that branch.
+  it("renders the retirement notice BEFORE the no-sales empty state", () => {
     const retirementBranch = anchorIndex(source, "if (report.retirementAccount)");
-    const noSalesBail = anchorIndex(source, "if (totalSales === 0) return null;");
+    const noSalesBail = anchorIndex(source, "{totalSales === 0 && (");
     expect(retirementBranch).toBeGreaterThan(-1);
     expect(noSalesBail).toBeGreaterThan(-1);
     expect(retirementBranch).toBeLessThan(noSalesBail);

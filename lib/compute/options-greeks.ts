@@ -16,6 +16,15 @@ import { todayET, nowET } from "@/lib/calendar/date-utils";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { normalizeAccountIds } from "@/lib/compute/factors";
+import { isOptionLive } from "@/lib/compute/option-expiry";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
+
+/**
+ * The blind volatility the Greeks are computed at when neither the contract's
+ * own price nor the underlying's broker snapshot yields one. Exported so the
+ * card can NAME the assumption beside the row instead of hardcoding it.
+ */
+export const DEFAULT_FALLBACK_VOL = 0.3;
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -30,6 +39,9 @@ export interface OptionGreeks {
   //   "ibkr"     — underlying IV from the cached IBKR snapshot (no option price)
   //   "default"  — blind 30% fallback (iv left null; neither source available)
   ivSource?: "computed" | "ibkr" | "default";
+  // The volatility the four Greeks above were actually computed at. Equals
+  // `iv` for "computed"/"ibkr"; DEFAULT_FALLBACK_VOL for "default" (iv null).
+  volUsed?: number;
 }
 
 export interface PositionGreeks {
@@ -42,6 +54,10 @@ export interface PositionGreeks {
   quantity: number; // signed: positive = long, negative = short
   multiplier: number;
   underlyingPrice: number;
+  // Set ONLY when the underlying's own symbol carries no close and the price
+  // above was taken from an issuer sibling (a GOOGL contract priced off the
+  // held GOOG class). Names that sibling so the card can say so.
+  underlyingPriceSource?: string;
   optionPrice: number | null;
   daysToExpiry: number;
   // A regular-hours listed option is live through the 16:00 ET close on its
@@ -66,7 +82,22 @@ export interface PortfolioGreeks {
   positions: PositionGreeks[];
   diagnostics: GreeksDiagnostic[];
   computedPositions: number; // count of positions whose greeks !== null
-  totalPositions: number; // total option positions considered (rows.length)
+  // LIVE option positions only — an expired contract is not something the
+  // Greeks could ever cover, so it is not in the coverage denominator. The
+  // counts below partition it exactly:
+  //   (computedPositions - fallbackVolPositions)  priced on the contract's own vol
+  // + fallbackVolPositions                        priced on a fallback vol
+  // + unpricedPositions                           not priced
+  // = totalPositions
+  totalPositions: number;
+  // Subset of computedPositions whose vol was NOT solved from the contract's
+  // own price (ivSource "ibkr" or "default"). They feed the totals.
+  fallbackVolPositions: number;
+  // Live positions with greeks === null (no underlying price).
+  unpricedPositions: number;
+  // Expired rows still sitting in holdings. Listed in `positions` and
+  // `diagnostics` (reason "expired"), counted in none of the above.
+  expiredPositions: number;
 }
 
 // ─── Math: Cumulative Normal Distribution ───────────────────────
@@ -451,6 +482,46 @@ export function computePortfolioGreeks(
     )
     .all(...params) as OptionHoldingRow[];
 
+  // Row order was whatever SQLite's scan returned. Nearest expiry first, then
+  // underlying / strike / type / symbol, so the order is deterministic and a
+  // reader scanning for "what expires this week" starts at the top.
+  const daysByRow = new Map<OptionHoldingRow, number>();
+  for (const row of rows) daysByRow.set(row, daysBetween(today, row.expiration_date));
+  rows.sort((a, b) =>
+    compareGreeksDefaultOrder(
+      { daysToExpiry: daysByRow.get(a) as number, underlying: a.underlying_symbol, strike: a.strike_price, optionType: a.option_type, symbol: a.symbol },
+      { daysToExpiry: daysByRow.get(b) as number, underlying: b.underlying_symbol, strike: b.strike_price, optionType: b.option_type, symbol: b.symbol },
+    ),
+  );
+
+  // Share classes roll up by issuer (GOOG / GOOGL): when the contract's own
+  // underlying symbol carries no close, use an issuer sibling's and SAY so on
+  // the position — never symbol-string-equal, never a silent substitution.
+  const siblingClose = db.prepare(
+    `SELECT p.close_price FROM prices p
+     JOIN securities su ON su.id = p.security_id
+     WHERE UPPER(su.symbol) = ? AND p.close_price > 0
+     ORDER BY p.date DESC LIMIT 1`,
+  );
+  const siblingPriceByUnderlying = new Map<string, { symbol: string; price: number } | null>();
+  const resolveSiblingPrice = (underlying: string): { symbol: string; price: number } | null => {
+    const key = underlying.toUpperCase();
+    const cached = siblingPriceByUnderlying.get(key);
+    if (cached !== undefined) return cached;
+    let found: { symbol: string; price: number } | null = null;
+    for (const sibling of issuerSiblings(underlying)) {
+      const sib = sibling.toUpperCase();
+      if (sib === key) continue;
+      const hit = siblingClose.get(sib) as { close_price: number } | undefined;
+      if (hit) {
+        found = { symbol: sib, price: hit.close_price };
+        break;
+      }
+    }
+    siblingPriceByUnderlying.set(key, found);
+    return found;
+  };
+
   const positions: PositionGreeks[] = [];
   const diagnostics: GreeksDiagnostic[] = [];
   let totalDelta = 0;
@@ -458,17 +529,33 @@ export function computePortfolioGreeks(
   let totalTheta = 0;
   let totalVega = 0;
   let computedPositions = 0;
+  let fallbackVolPositions = 0;
+  let unpricedPositions = 0;
+  let expiredPositions = 0;
 
   for (const row of rows) {
-    const daysToExpiry = daysBetween(today, row.expiration_date);
+    const daysToExpiry = daysByRow.get(row) as number;
     const optType = row.option_type.toUpperCase() as "CALL" | "PUT";
-    const S = row.underlying_price;
+    let S = row.underlying_price;
+    let underlyingPriceSource: string | undefined;
+    if (!S || S <= 0) {
+      const sibling = resolveSiblingPrice(row.underlying_symbol);
+      if (sibling) {
+        S = sibling.price;
+        underlyingPriceSource = sibling.symbol;
+      }
+    }
 
     // A listed equity/ETF option is live until the 16:00 ET close on its
     // expiry date — that's the day gamma/theta matter most. daysToExpiry===0
     // must NOT mean expired while the market is still open; only the close
     // does. See isExpiredAsOf/yearsToExpiry below for the single-source rule.
-    const expired = isExpiredAsOf(row.expiration_date, today, now);
+    // isOptionLive is the shared day-level cutoff (it also reads a legacy
+    // compact YYYYMMDD expiration correctly); isExpiredAsOf adds the finer
+    // same-day 16:00 ET close.
+    const expired =
+      !isOptionLive(row.expiration_date, today) ||
+      isExpiredAsOf(row.expiration_date, today, now);
     const T = expired ? 0 : yearsToExpiry(row.expiration_date, today, now);
 
     const position: PositionGreeks = {
@@ -481,11 +568,27 @@ export function computePortfolioGreeks(
       quantity: row.quantity,
       multiplier: row.multiplier,
       underlyingPrice: S ?? 0,
+      ...(underlyingPriceSource ? { underlyingPriceSource } : {}),
       optionPrice: row.option_price,
       daysToExpiry,
       expired,
       greeks: null,
     };
+
+    // Expired is decided FIRST: an expired contract is outside the coverage
+    // denominator whatever else is missing, so it must never be filed as a
+    // live position that "could not be priced".
+    if (expired) {
+      diagnostics.push({
+        symbol: row.symbol,
+        underlying: row.underlying_symbol,
+        reason: "expired",
+        daysToExpiry,
+      });
+      expiredPositions++;
+      positions.push(position);
+      continue;
+    }
 
     if (!S || S <= 0) {
       diagnostics.push({
@@ -494,17 +597,7 @@ export function computePortfolioGreeks(
         reason: "no_underlying_price",
         daysToExpiry,
       });
-      positions.push(position);
-      continue;
-    }
-
-    if (expired) {
-      diagnostics.push({
-        symbol: row.symbol,
-        underlying: row.underlying_symbol,
-        reason: "expired",
-        daysToExpiry,
-      });
+      unpricedPositions++;
       positions.push(position);
       continue;
     }
@@ -514,7 +607,7 @@ export function computePortfolioGreeks(
     //   2. the underlying's cached IBKR snapshot IV ("ibkr") — when no option price
     //   3. a blind 30% default ("default") — neither source available
     let iv: number | null = null;
-    let sigmaForGreeks = 0.3;
+    let sigmaForGreeks = DEFAULT_FALLBACK_VOL;
     let ivSource: "computed" | "ibkr" | "default" = "default";
     const hasOptionPrice = !!row.option_price && row.option_price > 0;
 
@@ -544,7 +637,9 @@ export function computePortfolioGreeks(
         reason: hasOptionPrice ? "missing_iv" : "missing_option_price",
         daysToExpiry,
       });
-      // sigmaForGreeks stays at 0.3 — Greeks still computed, iv stays null.
+      // sigmaForGreeks stays at DEFAULT_FALLBACK_VOL — Greeks still computed,
+      // iv stays null. The row is PRICED (it feeds the totals below) and is
+      // counted in fallbackVolPositions, never as "could not compute".
     }
 
     const d = delta(S, row.strike_price, T, r, sigmaForGreeks, optType);
@@ -557,8 +652,9 @@ export function computePortfolioGreeks(
         : theta(S, row.strike_price, T, r, sigmaForGreeks, optType);
     const v = vega(S, row.strike_price, T, r, sigmaForGreeks);
 
-    position.greeks = { delta: d, gamma: g, theta: th, vega: v, iv, ivSource };
+    position.greeks = { delta: d, gamma: g, theta: th, vega: v, iv, ivSource, volUsed: sigmaForGreeks };
     computedPositions++;
+    if (ivSource !== "computed") fallbackVolPositions++;
 
     // Aggregate to portfolio level
     // Multiply by quantity (signed) and multiplier for dollar-equivalent exposure
@@ -579,8 +675,32 @@ export function computePortfolioGreeks(
     positions,
     diagnostics,
     computedPositions,
-    totalPositions: rows.length,
+    totalPositions: rows.length - expiredPositions,
+    fallbackVolPositions,
+    unpricedPositions,
+    expiredPositions,
   };
+}
+
+/**
+ * Default display order for option positions: nearest expiry first, then
+ * underlying, strike, type and symbol as tie-breaks. Ordering is by the
+ * day count, never by comparing expiration strings.
+ */
+export function compareGreeksDefaultOrder(
+  a: { daysToExpiry: number; underlying: string; strike: number; optionType: string; symbol: string },
+  b: { daysToExpiry: number; underlying: string; strike: number; optionType: string; symbol: string },
+): number {
+  const aDays = Number.isFinite(a.daysToExpiry);
+  const bDays = Number.isFinite(b.daysToExpiry);
+  if (aDays !== bDays) return aDays ? -1 : 1; // an unreadable expiry sorts last
+  if (aDays && a.daysToExpiry !== b.daysToExpiry) return a.daysToExpiry - b.daysToExpiry;
+  const byUnderlying = a.underlying.localeCompare(b.underlying);
+  if (byUnderlying !== 0) return byUnderlying;
+  if (a.strike !== b.strike) return a.strike - b.strike;
+  const byType = a.optionType.toUpperCase().localeCompare(b.optionType.toUpperCase());
+  if (byType !== 0) return byType;
+  return a.symbol.localeCompare(b.symbol);
 }
 
 // ─── Helpers ────────────────────────────────────────────────────

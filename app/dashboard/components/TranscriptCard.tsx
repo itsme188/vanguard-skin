@@ -1,7 +1,7 @@
 "use client";
 
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
 import apiFetch from "@/lib/http/apiFetch";
 import {
@@ -12,6 +12,7 @@ import {
   sourceLabel,
 } from "@/lib/transcripts/presentation";
 import { EmptySection } from "./EmptySection";
+import { MarkdownMessage } from "./MarkdownMessage";
 
 const SOURCE_BADGE_CLASSES: Record<string, string> = {
   edgar_8k: "bg-gold/20 text-gold-ink",
@@ -33,6 +34,30 @@ function formatDate(dateStr: string): string {
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
   ];
   return `${months[parseInt(month, 10) - 1]} ${parseInt(day, 10)}, ${year}`;
+}
+
+const SUMMARY_COLLAPSED_CHARS = 300;
+
+/**
+ * The first `limit` characters of a markdown summary, cut so the preview
+ * still renders cleanly: back to a word boundary, never inside a "**bold**"
+ * pair, and never ending on a bare heading or list marker. A plain character
+ * cut leaves an unmatched "**", which markdown prints as literal asterisks.
+ * A summary within the limit is returned unchanged.
+ */
+export function collapseSummaryMarkdown(summary: string, limit: number): string {
+  if (summary.length <= limit) return summary;
+  let cut = summary.slice(0, limit);
+  // Back to the last whitespace, so no word (or marker) is split.
+  const lastBreak = cut.search(/\s\S*$/);
+  if (lastBreak > 0) cut = cut.slice(0, lastBreak);
+  // An odd number of "**" means the cut landed inside a bold run.
+  if ((cut.match(/\*\*/g)?.length ?? 0) % 2 === 1) {
+    cut = cut.slice(0, cut.lastIndexOf("**"));
+  }
+  // Drop a trailing marker that has lost its text ("#", "##", "-", "*").
+  cut = cut.replace(/(?:^|\n)[ \t]*(?:#{1,6}|[-*+])?[ \t]*$/, "").trimEnd();
+  return `${cut}…`;
 }
 
 interface TranscriptCardProps {
@@ -86,21 +111,42 @@ export function TranscriptCard({
 
   // Shared between the call branch and the filing desk-note branch so the
   // expand/collapse affordance behaves identically on both.
+  //
+  // The summary is markdown by prompt design (a desk note's "# Title" and
+  // "**Guidance**" labels), so it renders as markdown. The collapsed state
+  // cuts at a markdown-safe point — see collapseSummaryMarkdown.
+  const summaryIsLong = (t.summary?.length ?? 0) > SUMMARY_COLLAPSED_CHARS;
   const summaryBody = t.summary ? (
-    <p className="text-sm text-ink-dim leading-relaxed mb-3">
-      {t.summary.length > 300 && !expanded
-        ? t.summary.slice(0, 300) + "..."
-        : t.summary}
-      {t.summary.length > 300 && (
+    <div className="text-sm text-ink-dim leading-relaxed mb-3">
+      <MarkdownMessage
+        content={
+          summaryIsLong && !expanded
+            ? collapseSummaryMarkdown(t.summary, SUMMARY_COLLAPSED_CHARS)
+            : t.summary
+        }
+      />
+      {summaryIsLong && (
         <button
           onClick={() => setExpanded(!expanded)}
-          className="ml-1 text-xs text-gold-ink hover:text-gold/80"
+          aria-expanded={expanded}
+          className="mt-1 text-xs text-gold-ink hover:text-gold/80"
         >
           {expanded ? "Show less" : "Read more"}
         </button>
       )}
-    </p>
+    </div>
   ) : null;
+
+  // Escape closes the viewer, as it does every other modal on this tab. The
+  // listener lives only while the viewer is open.
+  useEffect(() => {
+    if (!showFullTranscript) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowFullTranscript(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showFullTranscript]);
 
   async function loadFullTranscript() {
     if (fullText) {
@@ -273,7 +319,8 @@ export function TranscriptCard({
               </div>
               <button
                 onClick={() => setShowFullTranscript(false)}
-                aria-label="Close transcript"
+                aria-label={isFiling ? "Close filing" : "Close transcript"}
+                title="Close (Esc)"
                 className="text-ink-faint hover:text-ink p-1"
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

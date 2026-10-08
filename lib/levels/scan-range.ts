@@ -88,6 +88,72 @@ export function moveNeededPct(
   return ((levelPrice - currentPrice) / currentPrice) * 100;
 }
 
+/**
+ * Level types whose condition holds when price is AT OR BELOW the level.
+ * Every other type (resistance, exit) holds at or above it.
+ */
+export const DOWNWARD_TRIGGER_LEVEL_TYPES: readonly string[] = [
+  "support",
+  "entry",
+  "scale_in",
+  "stop",
+];
+
+/**
+ * The direction test on its own: does `currentPrice` sit on the trigger side
+ * of `effectivePrice` for this level type? Pure, so a client row can ask the
+ * same question the scanner asks.
+ *
+ * This is the rule inside checkLevelTriggerState
+ * (lib/queries/security-levels.ts). tests/levels/move-needed-view.test.ts
+ * runs both over every level type and both sides of the level and fails if
+ * they ever disagree.
+ */
+export function isLevelConditionMet(
+  levelType: string,
+  effectivePrice: number,
+  currentPrice: number,
+): boolean {
+  return DOWNWARD_TRIGGER_LEVEL_TYPES.includes(levelType)
+    ? currentPrice <= effectivePrice
+    : currentPrice >= effectivePrice;
+}
+
+/**
+ * What a row should say about the distance to a level: the move still needed
+ * (moveNeededPct), and whether the level's condition ALREADY holds at the
+ * price shown. When it does there is no move left to make, and arming would
+ * be refused as "already past this level", so a row must not advertise a
+ * percentage to go.
+ *
+ * `alreadyMet` is false for a level outside the scan range: the scanner never
+ * evaluates it, and the arm guard refuses it for that reason instead (the
+ * same order checkLevelTriggerState uses).
+ *
+ * Null when either price is missing or spot is 0.
+ */
+export function moveNeededView(
+  levelType: string,
+  currentPrice: number | null | undefined,
+  levelPrice: number | null | undefined,
+  securityType?: string | null,
+): { pct: number; alreadyMet: boolean } | null {
+  const pct = moveNeededPct(currentPrice, levelPrice);
+  if (pct === null || currentPrice == null || levelPrice == null) return null;
+  const alreadyMet =
+    !isLevelBeyondScanRange(levelPrice, currentPrice, securityType) &&
+    isLevelConditionMet(levelType, levelPrice, currentPrice);
+  return { pct, alreadyMet };
+}
+
+/** Chip copy for a level whose condition already holds at the price shown. */
+export const CONDITION_ALREADY_MET_LABEL = "already past level";
+
+export const CONDITION_ALREADY_MET_EXPLANATION =
+  "The price shown is already on the trigger side of this level, so there is " +
+  "no move left to make. If that price is current, the level fires on the " +
+  "next scan once armed, and Approve asks before arming it.";
+
 /** Chip / warning copy, so every surface words the disclosure identically. */
 export const BEYOND_SCAN_RANGE_LABEL = "outside scan range";
 

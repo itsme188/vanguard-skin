@@ -6,7 +6,7 @@
  */
 
 import type Database from "better-sqlite3";
-import { addDays, todayET } from "@/lib/calendar/date-utils";
+import { todayET } from "@/lib/calendar/date-utils";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { isTaxConventionPending } from "@/lib/compute/tax-convention";
@@ -40,18 +40,6 @@ export interface OptionsByUnderlying {
   underlyingPrice: number | null;
   positions: OptionPosition[];
   totalDelta?: number;
-}
-
-export interface ExpiringOption {
-  securityId: number;
-  symbol: string;
-  underlying: string;
-  optionType: "CALL" | "PUT";
-  strike: number;
-  expiration: string;
-  daysToExpiry: number;
-  quantity: number;
-  accountName: string;
 }
 
 export interface ClosedOptionTrade {
@@ -253,66 +241,6 @@ export function getOptionsByUnderlying(
 }
 
 /**
- * Get options expiring within N days.
- */
-export function getExpiringOptions(
-  db: Database.Database,
-  daysAhead: number = 30,
-  accountId?: number,
-  today: string = todayET()
-): ExpiringOption[] {
-  const cutoff = addDays(today, daysAhead);
-
-  const accountFilter = accountId ? "AND h.account_id = ?" : "";
-  const params: (string | string | number)[] = [today, cutoff];
-  if (accountId) params.push(accountId);
-
-  const rows = db
-    .prepare(
-      `SELECT
-        s.id AS security_id,
-        s.symbol,
-        s.underlying_symbol,
-        s.option_type,
-        s.strike_price,
-        s.expiration_date,
-        h.quantity,
-        a.name AS account_name
-       FROM holdings h
-       JOIN securities s ON s.id = h.security_id
-       JOIN accounts a ON a.id = h.account_id
-       WHERE LOWER(s.security_type) = 'option'
-         AND s.expiration_date >= ?
-         AND s.expiration_date <= ?
-         AND ${latestHoldingsPredicate({ accountFilter: "" })}
-         ${accountFilter}
-       ORDER BY s.expiration_date, s.underlying_symbol`
-    )
-    .all(...params) as Array<{
-    security_id: number;
-    symbol: string;
-    underlying_symbol: string;
-    option_type: string;
-    strike_price: number;
-    expiration_date: string;
-    quantity: number;
-    account_name: string;
-  }>;
-
-  return rows.map((r) => ({
-    securityId: r.security_id,
-    symbol: r.symbol,
-    underlying: r.underlying_symbol,
-    optionType: r.option_type.toUpperCase() as "CALL" | "PUT",
-    strike: r.strike_price,
-    expiration: r.expiration_date,
-    daysToExpiry: daysBetween(today, r.expiration_date),
-    quantity: r.quantity,
-    accountName: r.account_name,
-  }));
-}
-
-/**
  * Get options P&L: open positions (unrealized) + closed trades (realized).
  */
 export function getOptionsPnL(
@@ -417,12 +345,4 @@ export function getStockLegsForStrategyDetection(
          ${accountFilter}`
     )
     .all(...(accountId ? [accountId] : [])) as StockLegRow[];
-}
-
-// ─── Helpers ────────────────────────────────────────────────────
-
-function daysBetween(dateA: string, dateB: string): number {
-  const a = new Date(dateA + "T00:00:00Z");
-  const b = new Date(dateB + "T00:00:00Z");
-  return Math.round((b.getTime() - a.getTime()) / (1000 * 60 * 60 * 24));
 }

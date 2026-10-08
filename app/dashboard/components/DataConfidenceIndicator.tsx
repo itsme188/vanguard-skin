@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import type { DataConfidence, DataAction, DimensionScore } from "@/lib/queries/data-confidence";
+import type { DataConfidence, DataAction, DimensionScore, CopyPart } from "@/lib/queries/data-confidence";
 import type { IntegrityHit } from "@/lib/queries/integrity-checks";
 import { PrivateText, Money, Count } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
@@ -39,6 +39,7 @@ export function DataConfidenceIndicator() {
   const [anchor, setAnchor] = useState<"left" | "right">("right");
   const popoverRef = useRef<HTMLDivElement>(null);
   const popoverContentRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   // Ref mirrors `confidence` so the fetch callback can read the latest value
   // without depending on it (which would invalidate the callback on every state
   // change and cause a render/poll loop — previously fired ~300k requests/hr).
@@ -100,16 +101,32 @@ export function DataConfidenceIndicator() {
     return () => clearInterval(interval);
   }, [fetchConfidence, syncing, error]);
 
-  // Close popover on outside click
+  // Escape and an outside press close the popover, like the TWS panel beside
+  // it (qa:header-dataconfidence--popover-ignores-escape-blocks-heading-
+  // regression-1). pointerdown, not mousedown: a touch on plain page text
+  // fires no mouse event on iOS, so the popover stayed open over the page.
   useEffect(() => {
     if (!showPopover) return;
-    function handleClick(e: MouseEvent) {
+    function handlePress(e: PointerEvent) {
       if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
         setShowPopover(false);
       }
     }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
+    function handleKey(e: KeyboardEvent) {
+      // An overlay on top (the Cmd+K palette) may already have claimed the key.
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      // Claim it, so one Escape closes only this popover and not the notes
+      // panel underneath as well.
+      e.preventDefault();
+      setShowPopover(false);
+      triggerRef.current?.focus();
+    }
+    document.addEventListener("pointerdown", handlePress);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("pointerdown", handlePress);
+      document.removeEventListener("keydown", handleKey);
+    };
   }, [showPopover]);
 
   // Pick which edge the popover hangs off of, based on available viewport
@@ -172,11 +189,15 @@ export function DataConfidenceIndicator() {
   }
 
   const verificationIncomplete = !confidence.integrity.lotDriftChecked;
+  // The scan ran and found a position that disagrees with its tax lots by
+  // enough to cap the score. An unchecked scan keeps its own block above.
+  const lotDriftCapped = !verificationIncomplete && confidence.lotDriftCriticalCount > 0;
   const config = LEVEL_CONFIG[confidence.overallLevel];
 
   return (
     <div className="relative" ref={popoverRef}>
       <button
+        ref={triggerRef}
         onClick={() => setShowPopover(!showPopover)}
         className={`relative flex items-center gap-2 text-[11px] font-mono transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-[''] ${
           confidence.capReason ? "text-down hover:text-down/80" : "text-ink-faint hover:text-ink-dim"
@@ -210,7 +231,9 @@ export function DataConfidenceIndicator() {
                 Data Freshness: {confidence.overallScore}%
               </h3>
               {confidence.capReason && (
-                <Chip tone="down" size="xs" uppercase>Capped</Chip>
+                // Ink on the red tint: text-down at 11px on bg-down/20 was
+                // under 4.5:1 in both themes.
+                <Chip tone="down" size="xs" uppercase className="text-ink!">Capped</Chip>
               )}
             </div>
             <Link
@@ -229,7 +252,11 @@ export function DataConfidenceIndicator() {
           {confidence.capReason && (
             <div className="flex items-start gap-2 rounded-lg border border-down/40 bg-down/20 px-2.5 py-2">
               <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-down shrink-0" aria-hidden="true" />
-              <p className="text-[11px] font-medium text-down leading-snug">
+              {/* Ink, not text-down: red 11px text on the red tint was under
+                  4.5:1. The dot and border carry the colour. The lead-in is
+                  fixed wording, so it stays readable under Hide amounts. */}
+              <p className="text-[11px] font-medium text-ink leading-snug">
+                Capped by an integrity check:{" "}
                 <PrivateText>{confidence.capReason}</PrivateText>
               </p>
             </div>
@@ -239,6 +266,19 @@ export function DataConfidenceIndicator() {
             <div className="rounded-lg border border-gold/40 bg-gold/10 px-2.5 py-2 text-[11px] leading-snug text-ink-dim">
               <p className="font-medium">Verification incomplete</p>
               <p>Positions have not been checked against current tax lots. Tax inputs changed or the lots have not been recomputed; a skipped check does not mean they agree.</p>
+              <Link href="/dashboard/tax-lots" className="text-blue hover:underline" onClick={() => setShowPopover(false)}>
+                Review Tax Lots
+              </Link>
+            </div>
+          )}
+
+          {lotDriftCapped && (
+            <div className="rounded-lg border border-down/40 px-2.5 py-2 text-[11px] leading-snug text-ink-dim">
+              <p className="font-medium">Positions and tax lots disagree</p>
+              <p>
+                At least one position does not match its open tax lots, and that caps the score.
+                The critical hits below name each one.
+              </p>
               <Link href="/dashboard/tax-lots" className="text-blue hover:underline" onClick={() => setShowPopover(false)}>
                 Review Tax Lots
               </Link>
@@ -273,9 +313,11 @@ export function DataConfidenceIndicator() {
               external flow (see TimingResidualNote in data-confidence.ts). */}
           {confidence.cashAccuracy.timingResidual && (
             <p className="text-[9px] text-ink-faint pt-1">
-              <PrivateText>{`Cash delta of `}</PrivateText>
+              {/* Only the amount is a portfolio figure; the date, account
+                  name and explanation stay readable under Hide amounts. */}
+              Cash delta of{" "}
               <Money value={confidence.cashAccuracy.timingResidual.amount} />
-              <PrivateText>{` on ${confidence.cashAccuracy.timingResidual.date} in ${confidence.cashAccuracy.timingResidual.accountName} is a live-snapshot timing residual — not treated as an external flow.`}</PrivateText>
+              {` on ${confidence.cashAccuracy.timingResidual.date} in ${confidence.cashAccuracy.timingResidual.accountName} is a live-snapshot timing residual — not treated as an external flow.`}
             </p>
           )}
 
@@ -332,9 +374,31 @@ export function DataConfidenceIndicator() {
   );
 }
 
+/**
+ * Popover copy as runs (CopyPart, lib/queries/data-confidence.ts): generic
+ * wording renders plain, portfolio-derived runs (held counts, tickers, dollar
+ * amounts) render through <PrivateText>. Hide amounts used to mask each whole
+ * sentence, leaving a wall of bullets beside a live Fix button
+ * (qa:header-dataconfidence--privacy-mode-overmasks-guidance-counts-and-fix-
+ * button-label). A caller with no runs must mask the whole string instead.
+ */
+function CopyRuns({ parts }: { parts: CopyPart[] }) {
+  return (
+    <>
+      {parts.map((part, i) =>
+        typeof part === "string" ? (
+          <span key={i}>{part}</span>
+        ) : (
+          <PrivateText key={i}>{part.private}</PrivateText>
+        ),
+      )}
+    </>
+  );
+}
+
 function DimensionBar({ label, dim }: { label: string; dim: DimensionScore }) {
   const [expanded, setExpanded] = useState(false);
-  const { score, detail, whyMatters, guidance, guidanceActionable } = dim;
+  const { score, detail, detailParts, whyMatters, guidance, guidanceParts, guidanceActionable } = dim;
   const barColor =
     score >= 80 ? "bg-up" :
     score >= 50 ? "bg-gold" :
@@ -367,12 +431,13 @@ function DimensionBar({ label, dim }: { label: string; dim: DimensionScore }) {
           style={{ width: `${score}%` }}
         />
       </div>
-      {/* detail is composed from the user's own accounts/dates/dollar deltas
-          (e.g. an unexplained cash delta with the account name and amount) —
-          portfolio-derived, so it must mask in privacy mode like <Money>/
-          <PrivateText> everywhere else. whyMatters is fixed per-dimension
+      {/* detail mixes fixed wording with the user's own counts, tickers and
+          dollar deltas: only those runs mask in privacy mode (CopyRuns). With
+          no runs the whole string masks. whyMatters is fixed per-dimension
           copy (never data-driven) so it stays plain. */}
-      <p className="text-[9px] text-ink-faint"><PrivateText>{detail}</PrivateText></p>
+      <p className="text-[9px] text-ink-faint">
+        {detailParts ? <CopyRuns parts={detailParts} /> : <PrivateText>{detail}</PrivateText>}
+      </p>
       {expanded && (
         <div className="pt-1 pl-3 space-y-1 border-l border-edge ml-0.5">
           <p className="text-[9px] text-ink-dim leading-snug">
@@ -381,7 +446,7 @@ function DimensionBar({ label, dim }: { label: string; dim: DimensionScore }) {
           </p>
           <p className={`text-[9px] leading-snug ${guidanceColor}`}>
             <span className="text-ink-faint">What to do: </span>
-            <PrivateText>{guidance}</PrivateText>
+            {guidanceParts ? <CopyRuns parts={guidanceParts} /> : <PrivateText>{guidance}</PrivateText>}
           </p>
         </div>
       )}
@@ -475,12 +540,17 @@ function ActionRow({
         {action.severity === "critical" ? "●" : action.severity === "warning" ? "◐" : "○"}
       </span>
       <div className="flex-1 min-w-0">
-        {/* message/fix are composed from the user's own held-security counts,
-            tickers, and account names (getDataActions in
-            lib/queries/data-confidence.ts) — portfolio-derived, so they mask
-            like detail/guidance in DimensionBar above. */}
-        <p className="text-ink-dim"><PrivateText>{action.message}</PrivateText></p>
-        <p className="text-ink-faint"><PrivateText>{action.fix}</PrivateText></p>
+        {/* message/fix mix fixed wording with the user's own held-security
+            counts and tickers (deriveActions in lib/queries/data-confidence.ts):
+            those runs mask like detail/guidance in DimensionBar above, and the
+            sentence around them stays readable so the Fix button keeps its
+            label. With no runs the whole string masks. */}
+        <p className="text-ink-dim">
+          {action.messageParts ? <CopyRuns parts={action.messageParts} /> : <PrivateText>{action.message}</PrivateText>}
+        </p>
+        <p className="text-ink-faint">
+          {action.fixParts ? <CopyRuns parts={action.fixParts} /> : <PrivateText>{action.fix}</PrivateText>}
+        </p>
       </div>
       {action.autoFixable && (
         <button

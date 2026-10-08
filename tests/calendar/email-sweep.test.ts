@@ -1412,6 +1412,46 @@ describe("armed-events outbox reconcile (R8)", () => {
     ).toBe(1);
   });
 
+  it("reconciles superseded-id drift and writes only once when the 14-day window rolls", async () => {
+    const id = Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, title, source_key, symbol, superseded)
+           VALUES ('finnhub','earnings','2026-08-19','AMC','16:15','EDGE earnings','finnhub:EDGE:2026-08-19','EDGE',1)`,
+        )
+        .run().lastInsertRowid,
+    );
+
+    await runEarningsEmailSweep(db, { now: NOW });
+    expect(readArmedGeneration(db)).toBe(1);
+    let payload = JSON.parse(
+      (
+        db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as {
+          payload_json: string;
+        }
+      ).payload_json,
+    ) as { supersededEventIds: number[] };
+    expect(payload.supersededEventIds).toEqual([id]);
+
+    await runEarningsEmailSweep(db, { now: NOW });
+    expect(readArmedGeneration(db)).toBe(1);
+
+    vi.mocked(calendarDates.todayET).mockReturnValue("2026-09-03");
+    await runEarningsEmailSweep(db, { now: new Date("2026-09-03T12:00:00Z") });
+    expect(readArmedGeneration(db)).toBe(2);
+    payload = JSON.parse(
+      (
+        db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as {
+          payload_json: string;
+        }
+      ).payload_json,
+    ) as { supersededEventIds: number[] };
+    expect(payload.supersededEventIds).toEqual([]);
+
+    await runEarningsEmailSweep(db, { now: new Date("2026-09-03T12:15:00Z") });
+    expect(readArmedGeneration(db)).toBe(2);
+  });
+
   it("a failing reconcile warns but never aborts the sweep", async () => {
     seedArmedWithoutOutbox("ACME");
     db.exec(`DROP TABLE cloud_outbox`);

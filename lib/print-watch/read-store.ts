@@ -258,10 +258,10 @@ export function finalizeReadFailed(
       const attempts = totalAttempts(db, row.print_id, row.fingerprint);
       const capped = attempts >= READ_MAX_ATTEMPTS;
       const retry = args.retryable && !capped ? iso(args.nowMs + READ_RETRY_BACKOFF_MS) : null;
-      const error =
-        capped && args.retryable
-          ? `${ATTEMPT_CAP_PREFIX} (${attempts}/${READ_MAX_ATTEMPTS}): ${args.error}`
-          : args.error;
+      // The prefix marks "this attempt was the last one the cap allows", whether
+      // or not the failure itself was retryable — a non-retryable failure on the
+      // capping attempt has given up just the same, and the label must say so.
+      const error = capped ? `${ATTEMPT_CAP_PREFIX} (${attempts}/${READ_MAX_ATTEMPTS}): ${args.error}` : args.error;
       return (
         db
           .prepare(
@@ -296,16 +296,6 @@ export function getLatestDoneRead(db: Database.Database, printId: number): ReadR
       | ReadRow
       | undefined) ?? null
   );
-}
-
-/** #15: what the page shows BESIDE the done read — the newest row when it is
- *  still working or has failed (and therefore newer than any done row). */
-export function getActiveRead(db: Database.Database, printId: number): ReadRow | null {
-  const newest = db.prepare(`SELECT * FROM print_watch_reads WHERE print_id = ? ORDER BY id DESC LIMIT 1`).get(printId) as
-    | ReadRow
-    | undefined;
-  if (!newest || (newest.status !== "generating" && newest.status !== "failed")) return null;
-  return newest;
 }
 
 export function listReads(db: Database.Database, printId: number): ReadRow[] {

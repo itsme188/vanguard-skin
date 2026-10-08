@@ -23,7 +23,7 @@ import { FixedIncomeCard } from "./FixedIncomeCard";
 import { OptionsGreeksCard } from "./OptionsGreeksCard";
 import { OptionsStrategies } from "./OptionsStrategies";
 import { ExpirationCalendar } from "./ExpirationCalendar";
-import { Pct, PrivateText } from "@/lib/privacy/components";
+import { Count, Money, Pct, PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import { FactorModeCard } from "./analysis/FactorModeCard";
 import { ClassificationCard } from "./analysis/ClassificationCard";
@@ -104,6 +104,76 @@ function getSliceColor(index: number, groupName: string): string {
   return CHART_COLORS[index % CHART_COLORS.length];
 }
 
+// ─── Long-only donut ─────────────────────────────────────────────
+// A pie cannot draw a negative slice: fed a net-short bucket it draws the
+// magnitude as an ordinary wedge and mis-sizes every other slice. Owner
+// ruling 2026-08-31 (option 1): the donut draws the LONG book only and a
+// caption under it discloses the excluded net short
+// [qa:analysis-allocation-donut--shorts-rendered-as-positive-slices].
+
+export interface DonutBook {
+  /** Buckets with a positive value, in the order given — the only slices. */
+  longRows: AllocationEntry[];
+  /** Sum of the slices: the denominator every slice is a share of. */
+  longTotal: number;
+  /** Sum of the net-short buckets — zero or negative. */
+  shortTotal: number;
+  /** Sum over EVERY bucket: what the Breakdown table adds up to. */
+  netTotal: number;
+  shortCount: number;
+  hasShorts: boolean;
+}
+
+export function splitAllocationForDonut(allocation: AllocationEntry[]): DonutBook {
+  const longRows = allocation.filter((r) => r.total_market_value > 0);
+  const shortRows = allocation.filter((r) => r.total_market_value < 0);
+  return {
+    longRows,
+    longTotal: longRows.reduce((s, r) => s + r.total_market_value, 0),
+    shortTotal: shortRows.reduce((s, r) => s + r.total_market_value, 0),
+    netTotal: allocation.reduce((s, r) => s + r.total_market_value, 0),
+    shortCount: shortRows.length,
+    hasShorts: shortRows.length > 0,
+  };
+}
+
+/** The slices the donut draws: the long book, rolled up past MAX_SLICES. */
+export function donutChartData(book: DonutBook): AllocationEntry[] {
+  return bucketAllocation(book.longRows);
+}
+
+/**
+ * Legend-dot colour for each Breakdown row that has a slice, keyed by bucket
+ * name and indexed over the LONG rows (the same index the pie colours by), so
+ * a short row can never shift a long row onto another slice's colour. A row
+ * with no entry is not in the chart.
+ */
+export function donutSliceColorByGroup(book: DonutBook): Map<string, string> {
+  const colors = new Map<string, string>();
+  const rolledUp = book.longRows.length > MAX_SLICES;
+  book.longRows.forEach((r, i) => {
+    colors.set(
+      r.group_name,
+      !rolledUp || i < MAX_SLICES - 1 ? CHART_COLORS[i % CHART_COLORS.length] : OTHER_COLOR,
+    );
+  });
+  return colors;
+}
+
+/**
+ * The dimension pills to offer. Credit Rating is offered only while some
+ * holding in scope carries a rating: with none stored, the breakdown is one
+ * "Unrated 100%" bucket laid over a book whose bonds are Treasuries (owner
+ * ruling, option 3: hide it rather than assert that)
+ * [qa:analysis-credit-rating--single-unrated-bucket-treasuries-unrated-regression-1].
+ */
+export function visibleDimensionPills<T extends string>(
+  pills: readonly T[],
+  creditRatingAvailable: boolean,
+): T[] {
+  return pills.filter((dim) => dim !== "credit_rating" || creditRatingAvailable);
+}
+
 // ─── Props ───────────────────────────────────────────────────────
 
 export type AnalysisMode = "classification" | "factors";
@@ -119,9 +189,52 @@ interface AnalysisViewProps {
   currentMode: AnalysisMode;
   factorHeatmap?: FactorHeatmapRow[];
   factorCoverage?: FactorCoverage;
+  /** False while no holding in scope carries a credit rating — hides the pill. */
+  creditRatingAvailable?: boolean;
 }
 
 // ─── Component ───────────────────────────────────────────────────
+
+/** What the coverage banner's percentage is a percentage OF. */
+export function coveragePercentBasis(
+  coverage: Pick<AnalysisDataCoverage, "cashExcluded" | "unknownCashAccounts">
+): string {
+  if (!coverage.cashExcluded) return "of the snapshot value";
+  return coverage.unknownCashAccounts.length > 0
+    ? "of the snapshot value, outside cash where the snapshot states it"
+    : "of the snapshot value outside cash";
+}
+
+/**
+ * The sentences after the coverage banner's figures. The banner never says
+ * the gap IS missing holdings when cash could explain it: an account measured
+ * outside cash says so, and an account whose snapshot states no cash balance
+ * is named, with "may be cash" rather than a guess.
+ */
+export function coverageBannerNotes(
+  coverage: Pick<AnalysisDataCoverage, "cashExcluded" | "unknownCashAccounts" | "missingAccounts">
+): string[] {
+  const notes: string[] = [];
+  if (coverage.cashExcluded) {
+    notes.push(
+      "Where a snapshot states its cash balance, cash and cash-equivalent funds are left out of both figures."
+    );
+  }
+  if (coverage.unknownCashAccounts.length > 0) {
+    notes.push(
+      `${coverage.unknownCashAccounts.join(", ")}: the latest snapshot does not state a cash balance, so the whole account value is counted and part of the gap may be cash, not missing holdings.`
+    );
+  }
+  if (coverage.missingAccounts.length > 0) {
+    notes.push(`${coverage.missingAccounts.join(", ")}: no holdings on file.`);
+  }
+  notes.push(
+    coverage.unknownCashAccounts.length > 0
+      ? "If the gap is not cash, import holdings files or re-import statements."
+      : "Import holdings files or re-import statements to close the gap."
+  );
+  return notes;
+}
 
 export function AnalysisView({
   allocation,
@@ -134,6 +247,7 @@ export function AnalysisView({
   currentMode,
   factorHeatmap,
   factorCoverage,
+  creditRatingAvailable = true,
 }: AnalysisViewProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -190,22 +304,25 @@ export function AnalysisView({
     router.push(`/dashboard/analysis?${params.toString()}`);
   }
 
-  const chartData = bucketAllocation(allocation);
-  const totalValue = allocation.reduce((s, r) => s + r.total_market_value, 0);
+  const donutBook = splitAllocationForDonut(allocation);
+  const chartData = donutChartData(donutBook);
+  const sliceColors = donutSliceColorByGroup(donutBook);
 
-  const dimensionPills = isFactorMode ? FACTOR_ORDER : CLASSIFICATION_ORDER;
+  const dimensionPills: AllocationDimension[] = isFactorMode
+    ? FACTOR_ORDER
+    : visibleDimensionPills(CLASSIFICATION_ORDER, creditRatingAvailable);
 
   return (
     <div className="space-y-6">
       {/* Data coverage warning */}
       {dataCoverage.coveragePct < 90 && (
         <div role="alert" className="bg-gold/5 border border-gold/20 rounded-lg px-4 py-3 text-sm text-gold-ink">
-          Analysis covers <PrivateText>{formatMoney(dataCoverage.holdingsTotal)}</PrivateText> of{" "}
-          <PrivateText>{formatMoney(dataCoverage.snapshotTotal)}</PrivateText> (<PrivateText>{dataCoverage.coveragePct}%</PrivateText> of portfolio).
-          {dataCoverage.missingAccounts.length > 0 && (
-            <> {dataCoverage.missingAccounts.join(", ")} missing holdings data.</>
-          )}
-          {" "}Import holdings files or re-import statements for complete analysis.
+          Holdings on file add up to <PrivateText>{formatMoney(dataCoverage.holdingsTotal)}</PrivateText> against{" "}
+          <PrivateText>{formatMoney(dataCoverage.snapshotTotal)}</PrivateText> in the latest account snapshots (<PrivateText>{dataCoverage.coveragePct}%</PrivateText>{" "}
+          {coveragePercentBasis(dataCoverage)}).
+          {coverageBannerNotes(dataCoverage).map((note) => (
+            <span key={note}> {note}</span>
+          ))}
         </div>
       )}
 
@@ -322,44 +439,59 @@ export function AnalysisView({
                   ))}
                 </Pie>
                 <Tooltip
-                  formatter={(value) => [formatMoney(Number(value)), "Value"]}
+                  // `name` is the slice's own bucket (the Pie's nameKey) —
+                  // passing it through names every arc, "Other (N)" included.
+                  formatter={(value, name) => [<Money key="v" value={Number(value)} />, name]}
                   contentStyle={{
-                    backgroundColor: "#0F1219",
-                    border: "1px solid #1E2533",
+                    backgroundColor: "var(--color-panel)",
+                    border: "1px solid var(--color-edge)",
                     borderRadius: "8px",
-                    color: "#E5E7EB",
+                    color: "var(--color-ink)",
                   }}
-                  itemStyle={{ color: "#E5E7EB" }}
+                  itemStyle={{ color: "var(--color-ink)" }}
                 />
                 <text
                   x="50%"
                   y="47%"
                   textAnchor="middle"
                   dominantBaseline="central"
-                  fill="#8891A6"
+                  fill="var(--color-ink-faint)"
                   fontSize={12}
                 >
-                  Total
+                  {donutBook.hasShorts ? "Long" : "Total"}
                 </text>
                 <text
                   x="50%"
                   y="55%"
                   textAnchor="middle"
                   dominantBaseline="central"
-                  fill="#E2E6F0"
+                  fill="var(--color-ink)"
                   fontSize={18}
                   fontWeight={600}
                   fontFamily="var(--font-geist-mono), monospace"
                 >
-                  {isPrivate ? "•••" : formatMoney(totalValue)}
+                  {isPrivate ? "•••" : formatMoney(donutBook.longTotal)}
                 </text>
               </PieChart>
             </ResponsiveContainer>
+          ) : donutBook.hasShorts ? (
+            <div className="h-[360px] flex items-center justify-center text-ink-faint text-sm">
+              No long exposure to chart: every row in this breakdown is net short.
+            </div>
           ) : (
             <div className="h-[360px] flex items-center justify-center text-ink-faint text-sm">
               No allocation data available.{" "}
               {isFactorMode ? "Import a factor CSV or run auto-classify." : "Run classification first."}
             </div>
+          )}
+          {donutBook.hasShorts && (
+            <p className="mt-3 text-xs text-ink-dim">
+              Long-only chart: each slice is a share of the{" "}
+              <Money value={donutBook.longTotal} /> long book. Shorts excluded:{" "}
+              <Money value={donutBook.shortTotal} /> (net{" "}
+              <Money value={donutBook.netTotal} />). A hollow dot in the Breakdown
+              marks a row with no slice.
+            </p>
           )}
         </div>
 
@@ -405,7 +537,7 @@ export function AnalysisView({
                 </tr>
               </thead>
               <tbody>
-                {allocation.map((row, i) => {
+                {allocation.map((row) => {
                   // "Other (N)" is only ever minted by bucketAllocation() for
                   // the pie's chartData, never present in the raw allocation
                   // rows the table iterates — this guard is kept anyway so
@@ -414,6 +546,9 @@ export function AnalysisView({
                   // pie's per-slice gate exactly.
                   const rowIsDrillable =
                     currentDimensionIsDrillable && !row.group_name.startsWith("Other (");
+                  // No entry = the row has no slice (a net-short or flat
+                  // bucket): it gets a hollow dot, never a slice's colour.
+                  const sliceColor = sliceColors.get(row.group_name);
                   return (
                   <tr
                     key={row.group_name}
@@ -429,13 +564,26 @@ export function AnalysisView({
                   >
                     <td className="py-2 pr-4 flex items-center gap-2">
                       <span
-                        className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: i < MAX_SLICES - 1 || allocation.length <= MAX_SLICES
-                          ? CHART_COLORS[i % CHART_COLORS.length]
-                          : OTHER_COLOR
-                        }}
+                        className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+                          sliceColor ? "" : "border border-ink-faint"
+                        }`}
+                        style={sliceColor ? { backgroundColor: sliceColor } : undefined}
                       />
-                      <span className="text-ink">{row.group_name}</span>
+                      {/* A real button inside the cell makes the drill-down
+                          reachable by Tab and Enter/Space while the row keeps
+                          its table semantics. The click bubbles to the row's
+                          own handler, so there is one drill path. */}
+                      {rowIsDrillable ? (
+                        <button
+                          type="button"
+                          aria-label={`Drill down into ${row.group_name}`}
+                          className="text-ink text-left rounded cursor-pointer focus-ring"
+                        >
+                          {row.group_name}
+                        </button>
+                      ) : (
+                        <span className="text-ink">{row.group_name}</span>
+                      )}
                     </td>
                     <td className="text-right py-2 pr-4 font-mono text-ink-dim">
                       <PrivateText>{formatMoney(row.total_market_value)}</PrivateText>
@@ -451,7 +599,7 @@ export function AnalysisView({
                       <Pct value={row.exposure_pct} digits={1} />
                     </td>
                     <td className="text-right py-2 font-mono text-ink-faint">
-                      {row.position_count}
+                      <Count value={row.position_count} />
                     </td>
                   </tr>
                   );

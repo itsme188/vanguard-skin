@@ -4,6 +4,10 @@ import { useState, useEffect } from "react";
 import { Money, PrivateText } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
 import { EmptySection } from "./EmptySection";
+import {
+  pricingIncompleteNote,
+  type PricingIncompleteReason,
+} from "@/lib/compute/options-strategy";
 
 interface Strategy {
   type: string;
@@ -14,8 +18,10 @@ interface Strategy {
   maxLoss: number | null;
   breakevens: number[];
   description: string;
-  /** A leg has no price: payoff figures are withheld (null here is NOT "unlimited"). */
+  /** A leg has no usable mark: payoff figures are withheld (null here is NOT "unlimited"). */
   pricingIncomplete?: boolean;
+  /** Why: missing price, zero mark, or an option marked below intrinsic value. */
+  pricingIncompleteReason?: PricingIncompleteReason | null;
 }
 
 /**
@@ -44,8 +50,8 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
     return (
       <EmptySection
         title="Detected Strategies"
-        reason="No multi-leg option strategies detected."
-        hint="Strategies (covered calls, vertical spreads, iron condors, etc.) require ≥2 option legs on the same underlying. Single-leg trades show in the Options Greeks card above."
+        reason="No recognized options strategy detected."
+        hint="The detector recognizes covered calls and protective puts from stock plus one option leg, and matched multi-leg spreads from offsetting option legs. Unmatched or all-long option legs remain in the Options Greeks card above."
       />
     );
   }
@@ -79,7 +85,7 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
             </p>
             {s.pricingIncomplete && (
               <p className="text-xs text-ink-faint mt-1">
-                One or more legs have no price yet — refresh prices to compute the payoff.
+                {pricingIncompleteNote(s.pricingIncompleteReason)}
               </p>
             )}
 
@@ -88,7 +94,7 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
                 <p className="text-[10px] text-ink-faint uppercase">Max Profit</p>
                 <p className="text-xs font-mono text-up">
                   {s.pricingIncomplete ? (
-                    <span className="text-ink-faint">Premium unknown</span>
+                    <span className="text-ink-faint">Not available</span>
                   ) : s.maxProfit != null ? (
                     <Money value={s.maxProfit} />
                   ) : (
@@ -100,7 +106,7 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
                 <p className="text-[10px] text-ink-faint uppercase">Max Loss</p>
                 <p className="text-xs font-mono text-down">
                   {s.pricingIncomplete ? (
-                    <span className="text-ink-faint">Premium unknown</span>
+                    <span className="text-ink-faint">Not available</span>
                   ) : s.maxLoss != null ? (
                     <Money value={s.maxLoss} />
                   ) : (
@@ -112,9 +118,9 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
                 <p className="text-[10px] text-ink-faint uppercase">Breakeven{s.breakevens.length > 1 ? "s" : ""}</p>
                 <p className="text-xs font-mono text-ink-dim">
                   {s.pricingIncomplete && (
-                    <span className="text-ink-faint">Premium unknown</span>
+                    <span className="text-ink-faint">Not available</span>
                   )}
-                  {s.breakevens.map((b) => `$${b.toFixed(0)}`).join(" / ")}
+                  {s.breakevens.map((b) => `$${b.toFixed(2)}`).join(" / ")}
                 </p>
               </div>
             </div>

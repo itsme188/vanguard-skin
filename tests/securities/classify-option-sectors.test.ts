@@ -22,6 +22,7 @@ function makeDb() {
   db.exec(`
     CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT, security_type TEXT, sector TEXT, sector_source TEXT, sector_verified_at TEXT, underlying_symbol TEXT);
     CREATE TABLE holdings (id INTEGER PRIMARY KEY, account_id INTEGER, security_id INTEGER, quantity REAL, as_of_date TEXT);
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')));
   `);
   // Two held CRWD options (blank sector), one already-sectored option (should be ignored).
   db.prepare("INSERT INTO securities (id,symbol,security_type,sector,underlying_symbol) VALUES (1,'CRWD  270319C00470000','Option',NULL,'CRWD')").run();

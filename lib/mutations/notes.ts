@@ -12,6 +12,9 @@ export interface CreateNoteParams {
 }
 
 export interface UpdateNoteParams {
+  note_type?: NoteType;
+  /** Absent = leave alone; null = clear the link. */
+  security_id?: number | null;
   content?: string;
   event_date?: string;
   tags?: string[] | null;
@@ -50,8 +53,16 @@ export function updateNote(
   params: UpdateNoteParams
 ): Note | null {
   const sets: string[] = [];
-  const values: (string | null)[] = [];
+  const values: (string | number | null)[] = [];
 
+  if (params.note_type !== undefined) {
+    sets.push("note_type = ?");
+    values.push(params.note_type);
+  }
+  if (params.security_id !== undefined) {
+    sets.push("security_id = ?");
+    values.push(params.security_id);
+  }
   if (params.content !== undefined) {
     sets.push("content = ?");
     values.push(params.content);

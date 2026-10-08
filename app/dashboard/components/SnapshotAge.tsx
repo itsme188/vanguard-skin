@@ -1,9 +1,37 @@
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import {
+  LIVE_HOLDING_SOURCE_PREFIXES,
+  classifyHoldingSourceKey,
+  isPlaidSourcedHolding,
+} from "@/lib/db/holding-sources";
+
+/** Where the newest holdings rows came from. "unknown" asserts nothing. */
+export type SnapshotSource = "statement" | "plaid" | "tws" | "unknown";
+
+/** One sleeve of the account and the as-of dates its rows carry. */
+export interface SnapshotSleeve {
+  label: string;
+  oldest: string;
+  newest: string;
+}
+
 interface SnapshotAgeProps {
+  /** Newest as-of date among the holdings rows. Age and tone are read from it. */
   asOfDate: string | null;
   /**
-   * Source label rendered before the date — typically "Snapshot" for
-   * statement-based accounts (Vanguard) or "Vanguard" when rendered
-   * in a header that also surfaces IBKR / aggregate freshness.
+   * Oldest as-of date among the rows, when the account's rows are mixed
+   * (cash funds and bonds restate only on the monthly statement). The chip
+   * then shows the range instead of claiming one date for every row.
+   */
+  oldestAsOfDate?: string | null;
+  /** Provenance of the newest rows; decides the sentence in the title. */
+  source?: SnapshotSource;
+  /** Per-sleeve dates for the title (cash funds, bonds, other positions). */
+  sleeves?: SnapshotSleeve[];
+  /**
+   * Source label rendered before the date — typically "Snapshot" on the
+   * Accounts page or "Vanguard" when rendered in a header that also
+   * surfaces IBKR / aggregate freshness.
    */
   label?: string;
   /**
@@ -56,18 +84,134 @@ const TONE_CLASS: Record<SnapshotAgeMeta["tone"], string> = {
   warn: "text-down/80",
 };
 
-export function SnapshotAge({ asOfDate, label = "Snapshot", alwaysShow = false }: SnapshotAgeProps) {
+/**
+ * Provenance of one holdings row, from its source_key class. The prefix
+ * lists live in lib/db/holding-sources.ts; nothing is matched by hand here.
+ * An unrecognized or missing key is "unknown", never a guessed source.
+ */
+export function snapshotSourceFromKey(sourceKey: string | null | undefined): SnapshotSource {
+  if (!sourceKey) return "unknown";
+  if (classifyHoldingSourceKey(sourceKey) === "statement") return "statement";
+  if (isPlaidSourcedHolding(sourceKey)) return "plaid";
+  if (LIVE_HOLDING_SOURCE_PREFIXES.some((prefix) => sourceKey.startsWith(prefix))) return "tws";
+  return "unknown";
+}
+
+export interface SnapshotSummary {
+  newest: string;
+  oldest: string;
+  source: SnapshotSource;
+  sleeves: SnapshotSleeve[];
+}
+
+/**
+ * The dates and provenance behind the snapshot chip, from the holdings rows
+ * on screen. Holdings are "latest" per (account, security), so one account
+ * can carry several as-of dates at once; the chip must not stamp the newest
+ * one on rows that are older. Dates are YYYY-MM-DD, so a string compare
+ * orders them. Returns null for no rows.
+ */
+export function summarizeSnapshot(
+  rows: {
+    as_of_date: string;
+    source_key?: string | null;
+    security_type: string | null;
+    fund_category?: string | null;
+  }[],
+): SnapshotSummary | null {
+  if (rows.length === 0) return null;
+  const range = (subset: typeof rows) => ({
+    oldest: subset.reduce((d, r) => (r.as_of_date < d ? r.as_of_date : d), subset[0].as_of_date),
+    newest: subset.reduce((d, r) => (r.as_of_date > d ? r.as_of_date : d), subset[0].as_of_date),
+  });
+  const { oldest, newest } = range(rows);
+
+  const isCash = (r: (typeof rows)[number]) =>
+    isCashEquivalentSecurity({
+      security_type: r.security_type,
+      fund_category: r.fund_category ?? null,
+    });
+  const isBond = (r: (typeof rows)[number]) => r.security_type?.trim().toLowerCase() === "bond";
+  const sleeves: SnapshotSleeve[] = [
+    { label: "Cash funds", subset: rows.filter(isCash) },
+    { label: "Bonds", subset: rows.filter((r) => !isCash(r) && isBond(r)) },
+    { label: "Other positions", subset: rows.filter((r) => !isCash(r) && !isBond(r)) },
+  ]
+    .filter((s) => s.subset.length > 0)
+    .map((s) => ({ label: s.label, ...range(s.subset) }));
+
+  // The source of the NEWEST rows only; if they disagree, assert nothing.
+  const newestSources = new Set(
+    rows.filter((r) => r.as_of_date === newest).map((r) => snapshotSourceFromKey(r.source_key)),
+  );
+  const source = newestSources.size === 1 ? [...newestSources][0] : "unknown";
+
+  return { newest, oldest, source, sleeves };
+}
+
+const SOURCE_SENTENCE: Record<SnapshotSource, string> = {
+  statement: "come from the last imported statement.",
+  plaid: "come from the daily Plaid sync; a statement import replaces them at month-end.",
+  tws: "come from the last broker sync.",
+  unknown: "",
+};
+
+/**
+ * The chip's hover title. It names the source only when the caller knows it,
+ * and lists each sleeve's own date when the account's rows are mixed.
+ */
+export function buildSnapshotTitle({
+  asOfDate,
+  oldestAsOfDate = null,
+  source = "unknown",
+  sleeves = [],
+}: {
+  asOfDate: string;
+  oldestAsOfDate?: string | null;
+  source?: SnapshotSource;
+  sleeves?: SnapshotSleeve[];
+}): string {
+  const mixed = oldestAsOfDate !== null && oldestAsOfDate < asOfDate;
+  const parts = [
+    mixed ? `Holdings as of ${oldestAsOfDate} to ${asOfDate}.` : `Holdings as of ${asOfDate}.`,
+  ];
+  if (mixed) {
+    for (const sleeve of sleeves) {
+      const dates =
+        sleeve.oldest === sleeve.newest ? sleeve.newest : `${sleeve.oldest} to ${sleeve.newest}`;
+      parts.push(`${sleeve.label}: ${dates}.`);
+    }
+  }
+  if (source !== "unknown") {
+    parts.push(`${mixed ? "The newest rows" : "These figures"} ${SOURCE_SENTENCE[source]}`);
+  }
+  return parts.join(" ");
+}
+
+export function SnapshotAge({
+  asOfDate,
+  oldestAsOfDate = null,
+  source = "unknown",
+  sleeves = [],
+  label = "Snapshot",
+  alwaysShow = false,
+}: SnapshotAgeProps) {
   if (!asOfDate) return null;
   const meta = computeSnapshotAgeMeta(asOfDate);
   if (!alwaysShow && meta.ageDays <= 1) return null;
+  // Set only when the rows are mixed: the chip then shows the range.
+  const rangeStart =
+    oldestAsOfDate !== null && oldestAsOfDate < asOfDate ? oldestAsOfDate : null;
 
   return (
     <span
       className={`text-[11px] font-mono ${TONE_CLASS[meta.tone]}`}
-      title={`Holdings as of ${asOfDate}. Vanguard accounts update only on statement import; cash and positions reflect the last imported statement.`}
+      title={buildSnapshotTitle({ asOfDate, oldestAsOfDate, source, sleeves })}
     >
       {meta.glyph}
-      {label} · {fmtShortDate(asOfDate)} · {meta.ageLabel}
+      {rangeStart !== null
+        ? `${label} · ${fmtShortDate(rangeStart)} – ${fmtShortDate(asOfDate)} · newest ${meta.ageLabel}`
+        : `${label} · ${fmtShortDate(asOfDate)} · ${meta.ageLabel}`}
     </span>
   );
 }

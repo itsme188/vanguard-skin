@@ -48,9 +48,9 @@ function functionBody(src: string, declaration: string, endMarker: string): stri
 const documentRow = functionBody(
   source,
   "function DocumentRow({",
-  "export function ResearchDocumentsView()",
+  "export function ResearchDocumentsView(",
 );
-const listView = functionBody(source, "export function ResearchDocumentsView()", "\n}\n");
+const listView = functionBody(source, "export function ResearchDocumentsView(", "\n}\n");
 
 describe("research documents: collapsed header tag count stays in sync with the editor", () => {
   it("DocumentRow takes an onTagsChanged callback carrying the document id", () => {

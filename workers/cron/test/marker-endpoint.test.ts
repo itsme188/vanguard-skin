@@ -266,10 +266,12 @@ describe("POST /internal/armed-events", () => {
   it("applies a payload and reports the generation", async () => {
     const res = await post({ generation: 4, entries: [entry(77, "ACME", "2026-09-02")] });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, applied: true, generation: 4 });
+    expect(await res.json()).toEqual({ ok: true, applied: true, generation: 4, accepted: { supersededEventIds: 0, removedEventIds: 0 } });
     expect(JSON.parse(store.get("armed-events")!)).toEqual({
       generation: 4,
       entries: [entry(77, "ACME", "2026-09-02")],
+      supersededEventIds: [],
+      removedEventIds: [],
     });
   });
 
@@ -277,7 +279,7 @@ describe("POST /internal/armed-events", () => {
     await post({ generation: 4, entries: [entry(77, "ACME", "2026-09-02")] });
     const replay = await post({ generation: 4, entries: [] });
     expect(replay.status).toBe(200);
-    expect(await replay.json()).toEqual({ ok: true, applied: false, generation: 4 });
+    expect(await replay.json()).toEqual({ ok: true, applied: false, generation: 4, accepted: { supersededEventIds: 0, removedEventIds: 0 } });
     // The stored payload is untouched — a replay never empties the list.
     expect(JSON.parse(store.get("armed-events")!).entries).toHaveLength(1);
   });
@@ -289,6 +291,48 @@ describe("POST /internal/armed-events", () => {
 
     const notJson = await post("{nope");
     expect(notJson.status).toBe(400);
+    expect(store.size).toBe(0);
+  });
+
+  // The Mac drops a 400'd generation in favour of a later one, and stops and
+  // retries the SAME row on a 5xx. So a transient fault must never look like a
+  // bad body.
+  it("503s (not 400) when KV fails, so the Mac retries the same generation", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      env.CRON_KV.put = vi.fn(async () => {
+        throw new Error("KV PUT failed: 500");
+      });
+      const writeFailed = await post({ generation: 4, entries: [entry(77, "ACME", "2026-09-02")] });
+      expect(writeFailed.status).toBe(503);
+      expect(await writeFailed.json()).toEqual({ ok: false, error: "temporarily unavailable" });
+
+      env.CRON_KV.get = vi.fn(async () => {
+        throw new Error("KV GET failed: 500");
+      });
+      const readFailed = await post({ generation: 4, entries: [] });
+      expect(readFailed.status).toBe(503);
+      expect(store.size).toBe(0);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("400s a null list item and a malformed removed-id date with a readable message", async () => {
+    const nullEntry = await post({ generation: 1, entries: [null] });
+    expect(nullEntry.status).toBe(400);
+    expect(await nullEntry.json()).toEqual({
+      ok: false,
+      error: "armed-events: every entry must be an object",
+    });
+
+    const badDate = await post({
+      generation: 1,
+      entries: [],
+      removedEventIds: [{ id: 3, eventDate: "09/02/2026", removedAt: "2026-09-02T20:00:00.000Z" }],
+    });
+    expect(badDate.status).toBe(400);
+    expect(((await badDate.json()) as { error: string }).error).toMatch(/YYYY-MM-DD/);
     expect(store.size).toBe(0);
   });
 
@@ -381,7 +425,13 @@ describe("GET /internal/armed-events", () => {
     const res = await get();
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toMatch(/application\/json/);
-    expect(await res.json()).toEqual({ ok: true, generation: 0, entries: [] });
+    expect(await res.json()).toEqual({
+      ok: true,
+      generation: 0,
+      entries: [],
+      supersededEventIds: [],
+      removedEventIds: [],
+    });
   });
 
   it("returns the stored generation and entry after a POST", async () => {
@@ -393,6 +443,8 @@ describe("GET /internal/armed-events", () => {
       ok: true,
       generation: 4,
       entries: [entry(77, "ACME", "2026-09-02")],
+      supersededEventIds: [],
+      removedEventIds: [],
     });
   });
 

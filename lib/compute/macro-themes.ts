@@ -35,11 +35,50 @@ const ContributorSchema = z.object({
 export const ExposureBucket = z.enum(["low", "moderate", "high", "very-high"]);
 export type ExposureBucket = z.infer<typeof ExposureBucket>;
 
+// Relative marker across ONE week's themes (owner ruling on the QA finding
+// analysis-macro-themes--exposure-badge-always-very-high): the absolute bucket
+// saturates — every factor tilt on a diversified book clears the top
+// threshold — so the card shows the computed percentage and which theme the
+// book is most / least exposed to this week.
+export const ExposureRank = z.enum(["highest", "lowest"]);
+export type ExposureRank = z.infer<typeof ExposureRank>;
+
 export const MacroThemeSchema = MacroThemeAiSchema.extend({
+  // Still stored: the weekly briefing markdown reads it. The card no longer
+  // prints it.
   exposure_bucket: ExposureBucket,
+  // Both OPTIONAL: a row cached before these existed must keep parsing.
+  // exposure_pct is 0-100 (the theme factor's weighted exposure) and is
+  // absent when the scope has no tilt for that factor — unknown, not zero.
+  exposure_pct: z.number().optional(),
+  exposure_rank: ExposureRank.nullable().optional(),
   top_contributors: z.array(ContributorSchema).max(3),
 });
 export type MacroTheme = z.infer<typeof MacroThemeSchema>;
+
+/**
+ * Mark the week's most and least exposed themes. Input is one entry per theme
+ * (0-100, or null/undefined when the exposure is unknown); output is aligned.
+ *
+ * Compared at the WHOLE-PERCENT precision the card prints, so a marker can
+ * never contradict two figures that read the same. Themes tied at an end all
+ * carry the marker (two themes on one factor have the same exposure — picking
+ * one would be arbitrary). No marker at all when fewer than two themes have a
+ * figure or when every figure reads the same: there is nothing to rank.
+ */
+export function rankThemeExposures(
+  pcts: ReadonlyArray<number | null | undefined>,
+): Array<ExposureRank | null> {
+  const shown = pcts.map((p) =>
+    typeof p === "number" && Number.isFinite(p) ? Math.round(p) : null,
+  );
+  const known = shown.filter((p): p is number => p !== null);
+  if (known.length < 2) return shown.map(() => null);
+  const max = Math.max(...known);
+  const min = Math.min(...known);
+  if (max === min) return shown.map(() => null);
+  return shown.map((p) => (p === null ? null : p === max ? "highest" : p === min ? "lowest" : null));
+}
 
 // ---------------------------------------------------------------------------
 // Signal aggregation
@@ -60,6 +99,8 @@ export interface EventSignal {
   id: number;
   event_date: string;
   event_type: string;
+  /** The event's own name ("CPI Release"); a macro row has no symbol to go by. */
+  title: string;
   symbol: string | null;
   actual_value: string | null;
   reaction_snapshot: string | null;
@@ -108,10 +149,14 @@ export function buildMacroSignalBlob(
   });
 
   const eventRows = db.prepare(
-    `SELECT id, event_date, event_type, symbol, actual_value, reaction_snapshot
+    // superseded = 0: a superseded earnings twin is the same print under a
+    // retired row — listing it shows the print twice and crowds the canonical
+    // row out of the LIMIT.
+    `SELECT id, event_date, event_type, title, symbol, actual_value, reaction_snapshot
      FROM calendar_events
      WHERE datetime(event_date) >= datetime(?, '-7 days')
        AND enriched_at IS NOT NULL
+       AND superseded = 0
      ORDER BY event_date DESC
      LIMIT 30`
   ).all(weekOf) as EventSignal[];
@@ -147,6 +192,7 @@ import { resolveFeatureModel } from "@/lib/ai/models";
 import { resolveScope } from "@/lib/queries/accounts";
 import { getCachedMacroThemes, upsertMacroThemes } from "@/lib/queries/analysis-macro-themes";
 import { computeFactorAnalysis } from "@/lib/compute/factors";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 
 const SYSTEM_PROMPT = `You are a portfolio analyst identifying the macro themes that actually moved markets this week. Output ONLY valid JSON matching the schema. Never include prose outside the JSON array. 3-5 themes maximum. Each theme must map to one factor_label from the allowed list. Each summary is one sentence, 30-200 chars. Prefer fewer broader themes over many narrow ones — split only when the underlying drivers are independent.`;
 
@@ -235,7 +281,8 @@ export interface MacroThemesResult {
   themes: MacroTheme[];
   sourceSummary: {
     articles: Array<{ id: number; title: string }>;
-    events: Array<{ id: number; symbol: string | null; event_date: string }>;
+    // title / event_type are absent on a summary cached before 2026-10-07.
+    events: Array<{ id: number; symbol: string | null; event_date: string; title?: string; event_type?: string }>;
     alerts: Array<{ id: number; symbol: string }>;
   } | null;
   fromCache: boolean;
@@ -250,6 +297,29 @@ function bucketExposure(weight: number): ExposureBucket {
   if (weight < EXPOSURE_THRESHOLDS.moderate) return "moderate";
   if (weight < EXPOSURE_THRESHOLDS.high) return "high";
   return "very-high";
+}
+
+/**
+ * Drop cash equivalents from a factor's contributor list. A stable-value sweep
+ * fund is cash with a ticker: it led the rate theme's "top" list every week
+ * while carrying no duration worth naming (QA finding
+ * analysis-macro-themes--identical-top-exposure-across-themes-money-market-leads-regression-1).
+ * Identity comes from the one shared predicate, never a symbol list. Only the
+ * NAMES change — the factor's exposure figure is computed elsewhere and is
+ * untouched.
+ */
+export function dropCashEquivalentContributors<T extends { symbol: string }>(
+  db: Database.Database,
+  contributors: ReadonlyArray<T>,
+): T[] {
+  if (contributors.length === 0) return [];
+  const symbols = [...new Set(contributors.map((c) => c.symbol))];
+  const rows = db.prepare(
+    `SELECT symbol, security_type, fund_category FROM securities
+     WHERE symbol IN (${symbols.map(() => "?").join(",")})`,
+  ).all(...symbols) as Array<{ symbol: string; security_type: string | null; fund_category: string | null }>;
+  const cash = new Set(rows.filter((r) => isCashEquivalentSecurity(r)).map((r) => r.symbol));
+  return contributors.filter((c) => !cash.has(c.symbol));
 }
 
 export async function generateMacroThemes(
@@ -290,7 +360,13 @@ export async function generateMacroThemes(
 
   let rawText: string;
   try {
-    const result = await generateTextForFeature("analysisMacroThemes", { system: SYSTEM_PROMPT, prompt });
+    const result = await generateTextForFeature("analysisMacroThemes", {
+      system: SYSTEM_PROMPT,
+      prompt,
+      // Explicit cap: the provider's default for an unknown model id is
+      // small and thinking counts against it, which can truncate the JSON.
+      maxOutputTokens: 8000,
+    });
     rawText = result.text.trim();
   } catch (err) {
     // No model family in the text: this message can reach a log line an
@@ -313,18 +389,38 @@ export async function generateMacroThemes(
   const accountIds = resolveScope(db, opts.scope);
   const factorResult = computeFactorAnalysis(db, { accountIds });
 
-  const themes: MacroTheme[] = parsed.map((t) => {
-    const factorTilt = factorResult.tilts.find((tilt) => tilt.factor === t.factor_label) ?? null;
+  const tiltFor = (t: MacroThemeAi) =>
+    factorResult.tilts.find((tilt) => tilt.factor === t.factor_label) ?? null;
+  const ranks = rankThemeExposures(parsed.map((t) => tiltFor(t)?.exposurePct));
+
+  const themes: MacroTheme[] = parsed.map((t, i) => {
+    const factorTilt = tiltFor(t);
     const exposureWeight = factorTilt ? factorTilt.exposurePct / 100 : 0;
+    // Cash equivalents leave BEFORE the cut to three, so the next holding
+    // takes the slot. The tilt carries five names, so a list can run short
+    // when several of them are cash.
     const top = factorTilt
-      ? factorTilt.topContributors.slice(0, 3).map((c) => ({ symbol: c.symbol, weight: c.weight }))
+      ? dropCashEquivalentContributors(db, factorTilt.topContributors)
+          .slice(0, 3)
+          .map((c) => ({ symbol: c.symbol, weight: c.weight }))
       : [];
-    return { ...t, exposure_bucket: bucketExposure(exposureWeight), top_contributors: top };
+    return {
+      ...t,
+      exposure_bucket: bucketExposure(exposureWeight),
+      // No tilt for the factor → no figure (unknown is not 0%).
+      ...(factorTilt && Number.isFinite(factorTilt.exposurePct)
+        ? { exposure_pct: factorTilt.exposurePct }
+        : {}),
+      exposure_rank: ranks[i],
+      top_contributors: top,
+    };
   });
 
   const sourceSummary = {
     articles: blob.articles.slice(0, 10).map((a) => ({ id: a.id, title: a.subject })),
-    events: blob.enrichedEvents.slice(0, 10).map((e) => ({ id: e.id, symbol: e.symbol, event_date: e.event_date })),
+    events: blob.enrichedEvents.slice(0, 10).map((e) => ({
+      id: e.id, symbol: e.symbol, event_date: e.event_date, title: e.title, event_type: e.event_type,
+    })),
     alerts: blob.alerts.slice(0, 10).map((a) => ({ id: a.id, symbol: a.symbol })),
   };
 

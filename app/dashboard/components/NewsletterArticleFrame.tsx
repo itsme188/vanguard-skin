@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ScrollFade } from "./ScrollFade";
 
 /**
  * Sandboxed reader frame for newsletter article bodies.
@@ -111,9 +112,20 @@ export function buildNewsletterSrcDoc(html: string, tokens: ReaderTokens): strin
   return `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><style>${css}</style></head><body>${html}</body></html>`;
 }
 
+/**
+ * The width the frame must take so its document does not scroll sideways
+ * inside it: the content width when it overflows the frame, else null (the
+ * frame keeps filling its column). Pure — unit-tested directly.
+ */
+export function widerContentWidth(scrollWidth: number, clientWidth: number): number | null {
+  return scrollWidth > clientWidth + 1 ? scrollWidth : null;
+}
+
 export function NewsletterArticleFrame({ html }: { html: string }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [height, setHeight] = useState(320);
+  // Set when the email is wider than the column (fixed-width tables/images).
+  const [contentWidth, setContentWidth] = useState<number | null>(null);
   // Tokens snapshot once per mount — the frame appears on expand, so it
   // always picks up the theme active when the user opened the article.
   const [tokens] = useState<ReaderTokens>(() => snapshotReaderTokens());
@@ -125,6 +137,11 @@ export function NewsletterArticleFrame({ html }: { html: string }) {
     if (!doc?.documentElement) return;
     const h = Math.max(doc.documentElement.scrollHeight, doc.body?.scrollHeight ?? 0);
     if (h > 0) setHeight(h + 16);
+    // A wider-than-frame email used to scroll sideways INSIDE the iframe with
+    // no cue (headline cut mid-word). Give the frame the content's width and
+    // let the ScrollFade wrapper own the sideways scroll and its fade.
+    const w = widerContentWidth(doc.documentElement.scrollWidth, doc.documentElement.clientWidth);
+    if (w !== null) setContentWidth(w);
   }, []);
 
   // Images inside the email load after the document's load event and change
@@ -146,14 +163,21 @@ export function NewsletterArticleFrame({ html }: { html: string }) {
   }, [measure]);
 
   return (
-    <iframe
-      ref={iframeRef}
-      title="Newsletter article"
-      srcDoc={srcDoc}
-      sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-      onLoad={handleLoad}
-      className="w-full block border-0"
-      style={{ height, backgroundColor: "transparent", colorScheme: "auto" }}
-    />
+    <ScrollFade>
+      <iframe
+        ref={iframeRef}
+        title="Newsletter article"
+        srcDoc={srcDoc}
+        sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+        onLoad={handleLoad}
+        className="w-full block border-0"
+        style={{
+          height,
+          minWidth: contentWidth ?? undefined,
+          backgroundColor: "transparent",
+          colorScheme: "auto",
+        }}
+      />
+    </ScrollFade>
   );
 }

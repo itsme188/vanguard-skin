@@ -9,6 +9,8 @@ import { DrillDownPanel } from "./DrillDownPanel";
 import type { FactorHeatmapRow, FactorCoverage } from "@/lib/queries/analysis";
 import type { DrillDownFilter } from "@/lib/queries/drill-down";
 import apiFetch from "@/lib/http/apiFetch";
+import { Count } from "@/lib/privacy/components";
+import { classificationMethodLabel } from "./ClassificationCard";
 
 interface Props {
   factorHeatmap?: FactorHeatmapRow[];
@@ -69,7 +71,7 @@ export function FactorModeCard({ factorHeatmap, factorCoverage, scope }: Props) 
             Factor Coverage
             {factorCoverage && (
               <span className="text-ink-faint font-normal ml-2">
-                {factorCoverage.withFactors} of {factorCoverage.totalHoldings} holdings ({factorCoverage.coveragePct}%)
+                <Count value={factorCoverage.withFactors} /> of <Count value={factorCoverage.totalHoldings} /> holdings ({factorCoverage.coveragePct}%)
               </span>
             )}
           </h3>
@@ -85,8 +87,8 @@ export function FactorModeCard({ factorHeatmap, factorCoverage, scope }: Props) 
           <div className="flex gap-4 mt-3">
             {factorCoverage.bySource.map((s) => (
               <span key={s.source} className="text-xs text-ink-faint">
-                <span className="text-ink-dim font-mono">{s.count}</span>{" "}
-                {s.source}
+                <Count value={s.count} className="text-ink-dim font-mono" />{" "}
+                {classificationMethodLabel(s.source)}
               </span>
             ))}
           </div>

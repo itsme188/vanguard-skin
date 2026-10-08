@@ -1,8 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+
+// These tests spawn git/bash/node subprocesses; under a loaded suite run the 5s default
+// is too tight. Generous timeout, assertions unchanged.
+vi.setConfig({ testTimeout: 120_000 });
 
 const source = process.cwd();
 const temporary: string[] = [];

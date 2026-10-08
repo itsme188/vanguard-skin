@@ -44,7 +44,12 @@ import {
   shouldRunEarningsFallback,
 } from "./calendar-enrich";
 import { runEarningsFallback } from "./fallback-earnings";
-import { applyArmedEventsDelta, readArmedEventsDelta, ARMED_EVENTS_MAX_BODY_BYTES } from "./armed-events";
+import {
+  applyArmedEventsDelta,
+  readArmedEventsDelta,
+  ArmedEventsValidationError,
+  ARMED_EVENTS_MAX_BODY_BYTES,
+} from "./armed-events";
 import {
   getEarningsMarkerStatus,
   readEarningsMarkers,
@@ -587,7 +592,9 @@ export default {
     // The Mac's cloud-outbox drain posts the FULL armed-events projection here
     // whenever an arm/disarm changes it (deviation D2: the Mac never writes KV
     // directly). Read-compare-write on the generation makes a replayed or
-    // out-of-order POST a harmless no-op — see armed-events.ts.
+    // out-of-order POST a harmless no-op — see armed-events.ts. The reply
+    // carries `accepted` (how many replaced / removed ids the stored record
+    // holds): the Mac marks a row that carries ids delivered only on that.
     if (request.method === "POST" && url.pathname === "/internal/armed-events") {
       if (Number(request.headers.get("content-length") ?? 0) > ARMED_EVENTS_MAX_BODY_BYTES) {
         return Response.json({ ok: false, error: "payload too large" }, { status: 413 });
@@ -602,10 +609,15 @@ export default {
         const r = await applyArmedEventsDelta(env.CRON_KV, body);
         return Response.json({ ok: true, ...r });
       } catch (err) {
-        return Response.json(
-          { ok: false, error: err instanceof Error ? err.message : "bad body" },
-          { status: 400 },
-        );
+        // 400 ONLY for a body that can never be accepted. The Mac drops a
+        // 400'd generation in favour of a later one, so a transient fault (a
+        // KV read or write failing) must NOT look like one: 503 makes the
+        // drain stop and retry this same row, in order.
+        if (err instanceof ArmedEventsValidationError) {
+          return Response.json({ ok: false, error: err.message }, { status: 400 });
+        }
+        console.error("[armed-events] apply failed:", err);
+        return Response.json({ ok: false, error: "temporarily unavailable" }, { status: 503 });
       }
     }
 
@@ -619,6 +631,8 @@ export default {
         ok: true,
         generation: delta?.generation ?? 0,
         entries: delta?.entries ?? [],
+        supersededEventIds: delta?.supersededEventIds ?? [],
+        removedEventIds: delta?.removedEventIds ?? [],
       });
     }
 

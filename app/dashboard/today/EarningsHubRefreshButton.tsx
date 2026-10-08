@@ -311,7 +311,7 @@ export function EarningsHubRefreshButton({ weekOf }: Props) {
         type="button"
         onClick={refresh}
         disabled={syncing}
-        className="text-ink-dim hover:text-gold disabled:opacity-50"
+        className="text-ink-dim hover:text-gold disabled:opacity-50 relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2"
       >
         {syncing ? "Syncing…" : "↻ Refresh from Finnhub"}
       </button>

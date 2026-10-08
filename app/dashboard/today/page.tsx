@@ -4,7 +4,7 @@ import { db } from "@/lib/db";
 import Link from "next/link";
 import { getAccountByName } from "@/lib/queries/accounts";
 import { getPortfolioTotals } from "@/lib/queries/dashboard";
-import { getEventsByWeek, getTodayReleases } from "@/lib/queries/calendar";
+import { dedupeWeekEarnings, getEventsByWeek, getTodayReleases } from "@/lib/queries/calendar";
 import { withDisplayTimes } from "@/lib/calendar/display-earnings-time";
 import { getCurrentMonday, resolveWeekOfParam } from "@/lib/calendar/date-utils";
 import {
@@ -59,7 +59,12 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
     // to the current week) so past enriched weeks and future conflict weeks
     // are browsable — the Calendar Living Record's only week-level UI.
     const weekOf = resolveWeekOfParam(weekOfParam);
-    const events = withDisplayTimes(db, getEventsByWeek(db, weekOf));
+    // One card per earnings print — the same twin the Earnings Hub shows.
+    const events = dedupeWeekEarnings(
+      db,
+      weekOf,
+      withDisplayTimes(db, getEventsByWeek(db, weekOf)),
+    );
     return <WeekAheadView events={events} weekOf={weekOf} />;
   }
 
@@ -138,8 +143,11 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
             <SnapshotAge asOfDate={vanguardSnapshotDate} label="Vanguard" alwaysShow />
           )}
           {overallQuality && (
-            <span className={`text-[11px] font-mono rounded px-2 py-0.5 ${overallQuality.className}`}>
-              {overallQuality.label}
+            <span
+              className={`text-[11px] font-mono rounded px-2 py-0.5 ${overallQuality.className}`}
+              title={`Latest close price across IBKR holdings${latestPriceDate ? `: ${latestPriceDate.split("T")[0]}` : ""}`}
+            >
+              IBKR prices · {overallQuality.label}
               {latestPriceDate && ` · ${fmtShortDate(latestPriceDate)}`}
             </span>
           )}
@@ -174,7 +182,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
           </span>
         )}
         <span className="text-[12px] text-ink-faint ml-auto">
-          {portfolio.accountCount} {portfolio.accountCount === 1 ? "account" : "accounts"}
+          <Count value={portfolio.accountCount} /> {portfolio.accountCount === 1 ? "account" : "accounts"}
           {portfolio.latestDate && ` · as of ${fmtShortDate(portfolio.latestDate)}`}
         </span>
       </div>

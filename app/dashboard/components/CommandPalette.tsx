@@ -45,6 +45,11 @@ export function CommandPalette() {
         // Claim the key so a modal underneath (document-level Escape handler)
         // does not also close. Capture phase on window runs before document.
         e.preventDefault();
+        // preventDefault alone never stopped a bubble-phase window listener
+        // (NotesAmbient, ChatDrawer): one Escape closed the palette AND the
+        // overlay underneath it. Stop the event here so only the topmost
+        // overlay reacts.
+        e.stopPropagation();
         setOpen(false);
       }
     }
@@ -238,7 +243,7 @@ export function CommandPalette() {
                     : "hover:bg-raised/50"
                 }`}
               >
-                <div className="font-mono text-sm font-medium text-gold-ink shrink-0 w-16">
+                <div className="font-mono text-sm font-medium text-gold-ink shrink-0 min-w-16 max-w-[45%] break-all">
                   {result.title}
                 </div>
                 <div className="text-xs text-ink-faint truncate flex-1">

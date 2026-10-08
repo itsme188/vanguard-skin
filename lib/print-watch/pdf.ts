@@ -66,10 +66,6 @@ export class PdfEncryptedError extends Error {
   }
 }
 
-export function isPdf(buf: Buffer): boolean {
-  return buf.subarray(0, 5).toString("latin1") === "%PDF-";
-}
-
 /**
  * The one check that costs nothing and runs BEFORE the bytes are written or
  * poppler is spawned: size.

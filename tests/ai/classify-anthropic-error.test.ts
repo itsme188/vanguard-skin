@@ -281,3 +281,21 @@ describe("model-capability 400s", () => {
     expect(classifyAnthropicErrorMessage("Failed to parse JSON: {")).toBeNull();
   });
 });
+
+describe("content error message hides the API parameter path (QA B50)", () => {
+  it("strips a leading dotted parameter path before quoting", () => {
+    const payload = {
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: "messages.0.content.0.pdf.source.base64.data: The PDF specified was not valid.",
+      },
+    };
+    const err = new APIError(400, payload, `400 ${JSON.stringify(payload)}`, new Headers());
+    const result = classifyAnthropicError(err);
+    expect(result!.kind).toBe("content");
+    expect(result!.userMessage).toContain("The PDF specified was not valid.");
+    expect(result!.userMessage).not.toContain("messages.0");
+    expect(result!.userMessage).not.toContain("base64");
+  });
+});

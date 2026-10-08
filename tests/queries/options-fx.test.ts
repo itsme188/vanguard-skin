@@ -215,7 +215,7 @@ describe("getOptionsPnL closed trades — v2 dollar convention + conventionPendi
 });
 
 /**
- * getOptionPositions / getExpiringOptions per-pair "latest" holdings —
+ * getOptionPositions (and the since-deleted getExpiringOptions) per-pair "latest" holdings —
  * holdings-latest-sweep Task 1. Both queries previously keyed "latest" off
  * a fully GLOBAL MAX(as_of_date) subquery (no account/security correlation
  * at all) with no quantity filter — worse than a per-account MAX: any

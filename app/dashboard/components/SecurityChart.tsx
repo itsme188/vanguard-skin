@@ -5,8 +5,8 @@ import type { OhlcvBar } from "@/lib/tws/types";
 import { computeSMA, computeEMA } from "@/lib/chart/indicators";
 import { formatChartPrice } from "@/lib/chart/price-formatter";
 import { markerTypeLabel } from "@/lib/chart/marker-label";
-import { Money, Count } from "@/lib/privacy/components";
-import { rendersAsZero } from "@/lib/format";
+import { Count } from "@/lib/privacy/components";
+import { formatNumber, formatUSDPrecise, rendersAsZero } from "@/lib/format";
 import { usePrivacy } from "@/lib/privacy/context";
 import { AddLevelPopover } from "./AddLevelPopover";
 import { ScrollFade } from "./ScrollFade";
@@ -100,13 +100,29 @@ export function chartEmptyStateMessage({
   lastBarDate,
   rangeLabel,
   symbol,
+  intradayLabel = null,
+  dailyLastBarDate = null,
 }: {
   visibleBarCount: number;
   lastBarDate: string | null;
   rangeLabel: string;
   symbol: string;
+  /** "5m" / "1m" when an intraday interval is selected, else null. Intraday
+   *  bars are live-fetched and never cached, so an empty intraday view says
+   *  nothing about the daily cache (deep-QA: charts-intraday--empty-state-
+   *  copy-denies-cached-daily-bars). */
+  intradayLabel?: string | null;
+  /** Latest bar date of the last DAILY fetch — the intraday response carries
+   *  no lastBarDate of its own. */
+  dailyLastBarDate?: string | null;
 }): string | null {
   if (visibleBarCount > 0) return null;
+  if (intradayLabel) {
+    const base = `No ${intradayLabel} intraday bars for ${symbol} — intraday needs a live TWS connection.`;
+    return dailyLastBarDate
+      ? `${base} Daily bars are cached through ${dailyLastBarDate}.`
+      : base;
+  }
   if (lastBarDate) {
     return `No bars in the last ${rangeLabel} — cached history ends ${lastBarDate}.`;
   }
@@ -124,12 +140,350 @@ export function chartEmptyStateMessage({
 export function chartFooterStalenessText({
   barCount,
   lastDate,
+  intraday = false,
+  dailyLastBarDate = null,
 }: {
   barCount: number;
   lastDate: string | null;
+  /** True on the 5m/1m intervals — an empty intraday view must not read as
+   *  "No data" while daily bars are cached. */
+  intraday?: boolean;
+  dailyLastBarDate?: string | null;
 }): string {
+  if (intraday && barCount === 0) {
+    return dailyLastBarDate
+      ? `No intraday bars · daily bars cached through ${dailyLastBarDate}`
+      : "No intraday bars";
+  }
   const base = barCount > 0 ? `${barCount} bars` : "No data";
   return lastDate ? `${base} · through ${lastDate}` : base;
+}
+
+/**
+ * Price label for the chart's own axis ticks, last-price pill, level badges
+ * and crosshair label (the chart-level priceFormatter).
+ *
+ * - Public market data: never masked in privacy mode (deep-QA:
+ *   charts-privacy--masks-public-price-axis-and-last-price-badge).
+ * - A negative price cannot exist for a listed security. LightweightCharts
+ *   builds ticks across the WHOLE pane, including the band the scale margins
+ *   reserve under the candles for the volume histogram, so it extrapolates
+ *   below zero on any wide-range chart. Those ticks get no label (deep-QA:
+ *   charts-price-axis--negative-dollar-ticks-*).
+ * - USD rounds through Intl like the page header does, so a stored half-cent
+ *   close cannot read one cent apart on the same screen — `toFixed` rounds
+ *   the binary float instead (deep-QA: charts-header--half-cent-price-rounds-
+ *   differently-from-chart-badge). The chart keeps its no-grouping style.
+ */
+const usdChartLabelFormatter = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+  useGrouping: false,
+});
+
+export function chartAxisPriceLabel(
+  currency: string | null | undefined,
+  price: number,
+): string {
+  if (!Number.isFinite(price) || price < 0) return "";
+  const code = (currency ?? "").trim().toUpperCase();
+  if (code === "" || code === "USD") {
+    return `$${usdChartLabelFormatter.format(price)}`;
+  }
+  return formatChartPrice(currency, price);
+}
+
+/** Traded volume is public market data — never masked. */
+function chartVolumeLabel(v: number): string {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+  return `${v}`;
+}
+
+/** Whole calendar days from ISO date a to ISO date b (UTC-anchored, so the
+ *  viewer's timezone can never shift a date). */
+function isoDayDiff(a: string, b: string): number {
+  const [ay, am, ad] = a.split("-").map(Number);
+  const [by, bm, bd] = b.split("-").map(Number);
+  return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86_400_000);
+}
+
+/** Longest gap between two consecutive daily bars that still counts as "the
+ *  market was closed" (a Friday-to-Tuesday long weekend is 4 days). A wider
+ *  gap is a hole in the cache, and a trade inside it is not drawn. */
+const MAX_CLOSED_MARKET_GAP_DAYS = 5;
+
+export interface PlacedMarker<T> {
+  txn: T;
+  /** The daily bar the marker is drawn on. */
+  barDate: string;
+  /** True when the trade date had no bar and the marker sits on the previous
+   *  trading day's bar — the label then carries the real trade date. */
+  snapped: boolean;
+}
+
+export interface MarkerPlacement<T> {
+  placed: PlacedMarker<T>[];
+  hiddenBeforeFirstBar: number;
+  hiddenAfterLastBar: number;
+  hiddenNoBar: number;
+}
+
+/**
+ * Map each trade to the daily bar its marker is drawn on. Trade dates and
+ * daily bar dates are both ET calendar dates (YYYY-MM-DD), so this is pure
+ * string work — no Date parsing in the viewer's timezone.
+ *
+ * LightweightCharts draws a marker whose time has no bar on the NEAREST
+ * later bar, or on the final bar when none is later. That is how every trade
+ * dated after a stale cache's last bar piled onto that bar, each one drawn
+ * months before it happened (deep-QA: charts-txn-markers--post-last-bar-
+ * markers-stack-right-edge). So the mapping is decided here instead:
+ *
+ * - a bar exists on the trade date: drawn there;
+ * - before the first bar or after the last bar: not drawn, counted;
+ * - no bar that day but bars on both sides within a closed-market gap (a
+ *   weekend or holiday): drawn on the PREVIOUS bar, flagged `snapped` — the
+ *   last close known on that date, never a later one;
+ * - inside a wider hole in the cache: not drawn, counted.
+ *
+ * `barDates` must be ascending.
+ */
+export function placeTransactionMarkers<T extends { date: string }>(
+  transactions: readonly T[],
+  barDates: readonly string[],
+): MarkerPlacement<T> {
+  const out: MarkerPlacement<T> = {
+    placed: [],
+    hiddenBeforeFirstBar: 0,
+    hiddenAfterLastBar: 0,
+    hiddenNoBar: 0,
+  };
+  if (barDates.length === 0) return out;
+  const first = barDates[0];
+  const last = barDates[barDates.length - 1];
+  for (const txn of transactions) {
+    const date = txn.date.slice(0, 10);
+    if (date < first) {
+      out.hiddenBeforeFirstBar++;
+      continue;
+    }
+    if (date > last) {
+      out.hiddenAfterLastBar++;
+      continue;
+    }
+    // Lower bound: first bar on or after the trade date (exists: date <= last).
+    let lo = 0;
+    let hi = barDates.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (barDates[mid] < date) lo = mid + 1;
+      else hi = mid;
+    }
+    if (barDates[lo] === date) {
+      out.placed.push({ txn, barDate: date, snapped: false });
+      continue;
+    }
+    // date > first, so a previous bar exists.
+    const prev = barDates[lo - 1];
+    if (isoDayDiff(prev, barDates[lo]) <= MAX_CLOSED_MARKET_GAP_DAYS) {
+      out.placed.push({ txn, barDate: prev, snapped: true });
+    } else {
+      out.hiddenNoBar++;
+    }
+  }
+  return out;
+}
+
+/** Every fill of one transaction type on one trade date: ONE chart marker. */
+export interface MarkerGroup<T> {
+  barDate: string;
+  snapped: boolean;
+  /** Never empty; in the order the trades were given. */
+  fills: T[];
+}
+
+/**
+ * One marker per (trade date, type). Two fills of the same type on one date
+ * each drew their own label at the same x, and the texts overprinted into
+ * unreadable glyphs (deep-QA: charts-txn-markers--same-date-trades-overprint-
+ * quantity-labels; ruling: one marker, summed quantity, fill count).
+ *
+ * Grouped by the TRADE date, not the bar: a weekend-dated row drawn on
+ * Friday's bar stays apart from a real Friday trade, so its label keeps its
+ * own date. Trades on adjacent bars stay separate markers.
+ */
+export function groupPlacedMarkers<T extends { date: string; type: string }>(
+  placed: readonly PlacedMarker<T>[],
+): MarkerGroup<T>[] {
+  const groups = new Map<string, MarkerGroup<T>>();
+  for (const { txn, barDate, snapped } of placed) {
+    const key = `${txn.date.slice(0, 10)}|${txn.type}`;
+    const group = groups.get(key);
+    if (group) group.fills.push(txn);
+    else groups.set(key, { barDate, snapped, fills: [txn] });
+  }
+  return [...groups.values()];
+}
+
+/** Sum of share counts without binary-float noise (0.1 + 0.2). */
+function sumQuantities(quantities: readonly number[]): number {
+  return Math.round(quantities.reduce((a, q) => a + q, 0) * 1e6) / 1e6;
+}
+
+/**
+ * Hover readout for a bar whose marker stands for several fills: the split
+ * the summed label hides ("SELL 50 + 100"). Null when no marker on the bar
+ * aggregates, when a quantity is missing, and in privacy mode — share counts
+ * are portfolio-derived.
+ */
+export function markerFillsText(
+  groups: readonly MarkerGroup<TransactionMarker>[],
+  privateMode: boolean,
+): string | null {
+  if (privateMode) return null;
+  const parts: string[] = [];
+  for (const g of groups) {
+    if (g.fills.length < 2 || g.fills.some((f) => f.quantity == null)) continue;
+    parts.push(
+      `${markerTypeLabel(g.fills[0].type)} ${g.fills.map((f) => f.quantity).join(" + ")}`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** What the footer needs to disclose about trades the chart did not draw,
+ *  plus what the time-scale fit needs to keep edge labels readable. */
+export interface MarkerSummary {
+  hiddenAfterLastBar: number;
+  hiddenNoBar: number;
+  /** Bar date -> per-fill split of an aggregated marker (see markerFillsText). */
+  fillsByBar: Record<string, string>;
+  /** Longest label (characters) on the first / last plotted bar; 0 = none. */
+  firstBarLabelChars: number;
+  lastBarLabelChars: number;
+}
+
+const NO_MARKERS: MarkerSummary = {
+  hiddenAfterLastBar: 0,
+  hiddenNoBar: 0,
+  fillsByBar: {},
+  firstBarLabelChars: 0,
+  lastBarLabelChars: 0,
+};
+
+/** Why some trades are not on the chart, for the footer. Null when all are. */
+export function hiddenTradesReason(
+  summary: Pick<MarkerSummary, "hiddenAfterLastBar" | "hiddenNoBar">,
+): string | null {
+  const after = summary.hiddenAfterLastBar > 0;
+  const noBar = summary.hiddenNoBar > 0;
+  if (after && noBar) return "dated after the last bar or on days with no bar";
+  if (after) return "dated after the last bar";
+  if (noBar) return "dated on days with no bar";
+  return null;
+}
+
+/**
+ * Extra bars of room to leave at each end of the time scale so a marker
+ * label on the first or last bar is not cut by the plot edge. Marker labels
+ * are centred on their bar, and fitContent() leaves only half a bar of room
+ * (deep-QA: charts-txn-markers--first-visible-bar-trade-label-clipped-at-
+ * left-plot-edge). Returns fractional bar counts; 0 when no room is needed.
+ */
+export function markerEdgePaddingBars({
+  plotWidth,
+  barCount,
+  firstBarLabelChars,
+  lastBarLabelChars,
+}: {
+  plotWidth: number;
+  barCount: number;
+  firstBarLabelChars: number;
+  lastBarLabelChars: number;
+}): { left: number; right: number } {
+  const none = { left: 0, right: 0 };
+  if (!(plotWidth > 0) || barCount <= 0) return none;
+  // 11px monospace is about 6.6px a character; 4px breathing room.
+  const halfLabel = (chars: number) => (chars > 0 ? (chars * 6.6) / 2 + 4 : 0);
+  const hl = halfLabel(firstBarLabelChars);
+  const hr = halfLabel(lastBarLabelChars);
+  if (hl === 0 && hr === 0) return none;
+  // Need (0.5 + pad) * spacing >= halfLabel on each side, where
+  // spacing = plotWidth / (barCount + left + right). Two passes settle it.
+  let left = 0;
+  let right = 0;
+  for (let i = 0; i < 4; i++) {
+    const spacing = plotWidth / (barCount + left + right);
+    left = Math.max(0, hl / spacing - 0.5);
+    right = Math.max(0, hr / spacing - 0.5);
+  }
+  // A label wider than a third of the plot cannot be rescued by padding.
+  const cap = Math.max(1, barCount);
+  return { left: Math.min(left, cap), right: Math.min(right, cap) };
+}
+
+/**
+ * Suggested levels the chart should draw: the ones no active level already
+ * shows. Uses the SAME tolerance as the Levels panel list (the larger of
+ * 0.5% or 0.25, against a static active level), so the chart and the list
+ * under it always agree on which suggestions exist — plus an exact-label
+ * match against any active line, so two axis badges can never print the same
+ * price (deep-QA: security-detail-chart--accepted-suggestion-duplicate-line-
+ * label-regression-1).
+ */
+export function dedupeSuggestedLevels<S extends { price: number }>(
+  suggested: readonly S[],
+  active: readonly { price: number; isStatic: boolean }[],
+  currency: string | null | undefined,
+): S[] {
+  return suggested.filter((sug) => {
+    const tol = Math.max(0.25, sug.price * 0.005);
+    const label = chartAxisPriceLabel(currency, sug.price);
+    return !active.some(
+      (a) =>
+        (a.isStatic && Math.abs(a.price - sug.price) <= tol) ||
+        chartAxisPriceLabel(currency, a.price) === label,
+    );
+  });
+}
+
+/**
+ * Widen an autoscale price range so it contains `price`. The amber true-
+ * last-price line is a price LINE, which the series autoscale ignores; on a
+ * short range whose few bars sit away from the latest price the line and its
+ * axis pill fell off the plot while the header still showed that price
+ * (deep-QA: charts-short-ranges--last-price-line-dropped-while-header-shows-
+ * price).
+ */
+export function extendPriceRangeToInclude(
+  range: { minValue: number; maxValue: number },
+  price: number | null,
+): { minValue: number; maxValue: number } {
+  if (price == null || !Number.isFinite(price)) return range;
+  return {
+    minValue: Math.min(range.minValue, price),
+    maxValue: Math.max(range.maxValue, price),
+  };
+}
+
+/**
+ * Why a moving average cannot be drawn, or null when it can. An average
+ * needs at least `period` bars; with fewer the toggle used to light up and
+ * draw nothing (deep-QA: charts-indicators--sma-200-toggle-active-on-short-
+ * history-draws-nothing-no-reason).
+ */
+export function indicatorUnavailableReason({
+  label,
+  period,
+  loadedBars,
+}: {
+  label: string;
+  period: number;
+  loadedBars: number;
+}): string | null {
+  if (loadedBars >= period) return null;
+  return `${label} needs ${period} daily bars — ${loadedBars} loaded.`;
 }
 
 // Terminal Pro theme — dark Bloomberg-adjacent. Amber current-price, bright
@@ -168,10 +522,10 @@ const C = {
 
 // Indicator definitions
 const INDICATORS = [
-  { key: "ema9", label: "EMA 9", color: C.ema9, fn: (bars: OhlcvBar[]) => computeEMA(bars, 9) },
-  { key: "ema21", label: "EMA 21", color: C.ema21, fn: (bars: OhlcvBar[]) => computeEMA(bars, 21) },
-  { key: "sma50", label: "SMA 50", color: C.sma50, fn: (bars: OhlcvBar[]) => computeSMA(bars, 50) },
-  { key: "sma200", label: "SMA 200", color: C.sma200, fn: (bars: OhlcvBar[]) => computeSMA(bars, 200) },
+  { key: "ema9", label: "EMA 9", period: 9, color: C.ema9, fn: (bars: OhlcvBar[]) => computeEMA(bars, 9) },
+  { key: "ema21", label: "EMA 21", period: 21, color: C.ema21, fn: (bars: OhlcvBar[]) => computeEMA(bars, 21) },
+  { key: "sma50", label: "SMA 50", period: 50, color: C.sma50, fn: (bars: OhlcvBar[]) => computeSMA(bars, 50) },
+  { key: "sma200", label: "SMA 200", period: 200, color: C.sma200, fn: (bars: OhlcvBar[]) => computeSMA(bars, 200) },
 ] as const;
 
 type IndicatorKey = (typeof INDICATORS)[number]["key"];
@@ -216,7 +570,7 @@ export function SecurityChart({
   const [lastDate, setLastDate] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [legend, setLegend] = useState<
-    (OhlcvBar & { indicators?: Record<string, number> }) | null
+    (OhlcvBar & { indicators?: Record<string, number>; fills?: string }) | null
   >(null);
 
   // Toggle states. Transaction markers default ON in single-chart view but
@@ -229,6 +583,36 @@ export function SecurityChart({
   // indistinguishable from "no levels set" unless we say so. Self-heals on
   // the 30s poll, at which point the hint clears.
   const [levelsUnavailable, setLevelsUnavailable] = useState(false);
+  // Last DAILY fetch: how many bars are loaded (an average needs `period` of
+  // them) and where the daily cache ends (the intraday empty state must not
+  // deny it). Intraday fetches leave this alone.
+  const [dailyLoaded, setDailyLoaded] = useState<{ count: number; lastDate: string | null }>({
+    count: 0,
+    lastDate: null,
+  });
+  // Reason shown when the user clicks an average that cannot be drawn.
+  const [indicatorNote, setIndicatorNote] = useState<string | null>(null);
+  // Trades the marker overlay did not draw (see placeTransactionMarkers) and
+  // which edge bars carry a label. The ref is what the time-scale fit reads
+  // (it runs in the same tick as the marker update); the state feeds the
+  // footer disclosure.
+  const [markerSummary, setMarkerSummary] = useState<MarkerSummary>(NO_MARKERS);
+  const markerSummaryRef = useRef<MarkerSummary>(NO_MARKERS);
+  const reportMarkers = useCallback((s: MarkerSummary) => {
+    markerSummaryRef.current = s;
+    setMarkerSummary(s);
+  }, []);
+  // Active-level prices the suggested overlay must not repeat. A string key
+  // so the 30s levels poll only re-runs the suggested effect on a real change.
+  const [activeLevelKey, setActiveLevelKey] = useState("");
+  const activeLevelKeyRef = useRef(activeLevelKey);
+  activeLevelKeyRef.current = activeLevelKey;
+  // Redraws the suggested lines from the last fetched set (no refetch). Set
+  // by the suggested-levels effect while the overlay is on, else null.
+  const redrawSuggestedRef = useRef<(() => void) | null>(null);
+  // Price of the amber true-last-price override line, read by the candle
+  // series' autoscaleInfoProvider. Null when the built-in line is in use.
+  const overridePriceRef = useRef<number | null>(null);
 
   // Click-to-add-level popover. Null when no level is being added.
   const [addPopover, setAddPopover] = useState<{
@@ -296,6 +680,10 @@ export function SecurityChart({
         if (data.warning) setWarning(data.warning);
         setBarCount(data.bars.length);
         setLastDate(data.lastBarDate);
+        if ((barSizeOverride ?? "1 day") === "1 day") {
+          setDailyLoaded({ count: data.bars.length, lastDate: data.lastBarDate });
+          setIndicatorNote(null);
+        }
         currentBarsRef.current = data.bars;
         currentTransactionsRef.current = data.transactions ?? [];
         setLatestPriceRow(data.latestPrice ?? null);
@@ -330,6 +718,7 @@ export function SecurityChart({
     let volumeSeries: ISeriesApi<"Histogram">;
     let resizeObserver: ResizeObserver;
     let disposed = false;
+    let lastObservedWidth = -1;
 
     async function init() {
       const lc = await import("lightweight-charts");
@@ -337,10 +726,8 @@ export function SecurityChart({
 
       chart = lc.createChart(chartContainerRef.current, {
         localization: {
-          priceFormatter: (p: number) =>
-            isPrivateRef.current
-              ? "\u2022\u2022\u2022"
-              : formatChartPrice(currencyRef.current, p),
+          // Public market data — never masked (see chartAxisPriceLabel).
+          priceFormatter: (p: number) => chartAxisPriceLabel(currencyRef.current, p),
         },
         layout: {
           background: { color: C.background },
@@ -384,18 +771,24 @@ export function SecurityChart({
         priceLineColor: C.currentPrice,
         priceLineStyle: 0, // solid
         priceLineWidth: 2,
+        // Keep the amber true-last-price line on the plot at every range.
+        autoscaleInfoProvider: (
+          original: () => import("lightweight-charts").AutoscaleInfo | null,
+        ) => {
+          const info = original();
+          if (!info || !info.priceRange) return info;
+          return {
+            ...info,
+            priceRange: extendPriceRangeToInclude(info.priceRange, overridePriceRef.current),
+          };
+        },
       });
 
       volumeSeries = chart.addSeries(lc.HistogramSeries, {
         priceFormat: {
           type: "custom",
           minMove: 1,
-          formatter: (v: number) => {
-            if (isPrivateRef.current) return "\u2022\u2022\u2022";
-            if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
-            if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
-            return `${v}`;
-          },
+          formatter: chartVolumeLabel,
         },
         priceScaleId: "volume",
         // The volume scale is hidden, but without these the last-value pill
@@ -433,6 +826,8 @@ export function SecurityChart({
             open: cd.open, high: cd.high!, low: cd.low!, close: cd.close!,
             volume: vd?.value ?? null,
             indicators: Object.keys(indicators).length > 0 ? indicators : undefined,
+            // Per-fill split of an aggregated trade marker on this bar.
+            fills: markerSummaryRef.current.fillsByBar[String(param.time)],
           });
         }
       });
@@ -448,6 +843,10 @@ export function SecurityChart({
         if (!series) return;
         const price = series.coordinateToPrice(param.point.y);
         if (typeof price !== "number" || !Number.isFinite(price)) return;
+        // The band reserved under the candles for volume extrapolates below
+        // zero; a click there must not open an add-level form at a negative
+        // price.
+        if (price <= 0) return;
         setAddPopover({ x: param.point.x, y: param.point.y, price });
       });
 
@@ -462,7 +861,23 @@ export function SecurityChart({
         // disposed the instance — LWC then throws "Object is disposed".
         if (disposed) return;
         const { width, height } = entries[0].contentRect;
+        // A width change alone keeps the OLD bar spacing: widening leaves a
+        // blank band on the left, narrowing silently drops the left-hand
+        // bars while the footer still counts them (deep-QA: charts--stale-
+        // bar-spacing-after-rail-resize-blank-left-band, and the twin-panel
+        // row). Re-apply the logical range that was visible so the same bars
+        // re-space to the new width (a manual zoom survives); with no range
+        // yet, fit.
+        const widthChanged = width !== lastObservedWidth;
+        const timeScale = chart.timeScale();
+        const rangeBefore =
+          widthChanged && lastObservedWidth > 0 ? timeScale.getVisibleLogicalRange() : null;
         chart.applyOptions({ width, height });
+        if (widthChanged && width > 0) {
+          if (rangeBefore) timeScale.setVisibleLogicalRange(rangeBefore);
+          else if (candleSeries.data().length > 0) fitChartContent(chart, candleSeries, markerSummaryRef.current);
+        }
+        lastObservedWidth = width;
       });
       resizeObserver.observe(chartContainerRef.current!);
 
@@ -475,8 +890,8 @@ export function SecurityChart({
         // fetched for SMA lookback — fetchChartData set the raw length.
         setBarCount(visibleBars.length);
         applyBarsToChart(lc, candleSeries, volumeSeries, visibleBars);
-        markersPluginRef.current = updateMarkers(lc, candleSeries, data.transactions ?? [], showMarkersRef.current, null, isPrivateRef.current);
-        chart.timeScale().fitContent();
+        markersPluginRef.current = updateMarkers(lc, candleSeries, data.transactions ?? [], showMarkersRef.current, null, isPrivateRef.current, reportMarkers);
+        fitChartContent(chart, candleSeries, markerSummaryRef.current);
       }
     }
 
@@ -527,6 +942,8 @@ export function SecurityChart({
     // lastValueVisible is the SEPARATE built-in last-value axis pill — it
     // inherits the amber priceLineColor and would keep asserting the stale
     // bar close on the axis even with the line hidden.
+    // Set before applyOptions: that call re-runs the autoscale, which reads it.
+    overridePriceRef.current = override ? latestPriceRow.price : null;
     series.applyOptions({ priceLineVisible: !override, lastValueVisible: !override });
     if (override) {
       lastPriceLineRef.current = series.createPriceLine({
@@ -587,54 +1004,32 @@ export function SecurityChart({
       // on unmount, and touching the old markers plugin then throws.
       const series = candleSeriesRef.current;
       if (!series) return;
-      markersPluginRef.current = updateMarkers(lc, series, currentTransactionsRef.current, showMarkers, markersPluginRef.current, isPrivateRef.current);
+      markersPluginRef.current = updateMarkers(lc, series, currentTransactionsRef.current, showMarkers, markersPluginRef.current, isPrivateRef.current, reportMarkers);
     })();
-  }, [showMarkers]);
+  }, [showMarkers, reportMarkers]);
 
-  // Privacy toggle: force chart to re-read its formatters (axis labels) + re-render markers.
-  // LightweightCharts only calls priceFormatter/volume formatter when data changes, so we
-  // nudge it with applyOptions and explicitly re-render the marker text.
+  // Privacy toggle: re-render the marker text, which drops the share counts
+  // (portfolio-derived). The price axis, last-price pill, level badges and
+  // volume are public market data and are NOT masked, so no formatter needs a
+  // nudge here.
   useEffect(() => {
-    const chart = chartRef.current;
-    const volume = volumeSeriesRef.current;
-    if (!chart || !volume) return;
-
-    chart.applyOptions({
-      localization: {
-        priceFormatter: (p: number) =>
-          isPrivate ? "\u2022\u2022\u2022" : formatChartPrice(currencyRef.current, p),
-      },
-    });
-    volume.applyOptions({
-      priceFormat: {
-        type: "custom",
-        minMove: 1,
-        formatter: (v: number) => {
-          if (isPrivate) return "\u2022\u2022\u2022";
-          if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
-          if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
-          return `${v}`;
-        },
-      },
-    });
-
-    if (candleSeriesRef.current) {
-      (async () => {
-        const lc = await import("lightweight-charts");
-        // Re-check after the await — see the markers effect above.
-        const series = candleSeriesRef.current;
-        if (!series) return;
-        markersPluginRef.current = updateMarkers(
-          lc,
-          series,
-          currentTransactionsRef.current,
-          showMarkers,
-          markersPluginRef.current,
-          isPrivate,
-        );
-      })();
-    }
-  }, [isPrivate, showMarkers]);
+    if (!candleSeriesRef.current) return;
+    (async () => {
+      const lc = await import("lightweight-charts");
+      // Re-check after the await — see the markers effect above.
+      const series = candleSeriesRef.current;
+      if (!series) return;
+      markersPluginRef.current = updateMarkers(
+        lc,
+        series,
+        currentTransactionsRef.current,
+        showMarkers,
+        markersPluginRef.current,
+        isPrivate,
+        reportMarkers,
+      );
+    })();
+  }, [isPrivate, showMarkers, reportMarkers]);
 
   // Render active security_levels as horizontal price lines on the chart.
   // Polls on mount + every 30s so manual edits in LevelsPanel show up without a page reload.
@@ -672,6 +1067,7 @@ export function SecurityChart({
           stop: C.resistanceLine,
         };
 
+        const activeForDedupe: { price: number; isStatic: boolean }[] = [];
         for (const lvl of json.levels) {
           // effective_price: echoes static price OR current MA value. Falls back to
           // lvl.price if the server couldn't compute (insufficient bars).
@@ -682,17 +1078,29 @@ export function SecurityChart({
             color: lineColor,
             lineWidth: 2,
             lineStyle: 0, // solid — strong/committed S/R
-            axisLabelVisible: true,
+            // No axis pill: level pills were painted over the price-axis
+            // ticks and made the scale unreadable in exactly the band the
+            // levels sit in (deep-QA: charts-price-axis--level-badges-
+            // collide-ticks-unreadable; ruling: keep the line, drop the
+            // pill). The Levels panel lists each price.
+            axisLabelVisible: false,
             // No title — the verbose per-line label clutters the right axis
             // and redundantly echoes what LevelsPanel already shows below.
             // Color + solid-vs-dotted distinguishes active from suggested;
             // the panel row carries type/touches/narrative context.
             title: "",
-            axisLabelColor: lineColor,
-            axisLabelTextColor: "#0a0a0a",
           });
           priceLinesRef.current.push(line);
+          if (typeof displayPrice === "number" && Number.isFinite(displayPrice)) {
+            activeForDedupe.push({ price: displayPrice, isStatic: lvl.price_source === "static" });
+          }
         }
+        setActiveLevelKey(
+          activeForDedupe
+            .map((a) => `${a.isStatic ? "s" : "d"}${a.price}`)
+            .sort()
+            .join("|"),
+        );
       } catch {
         // Network error — say so instead of rendering a level-less chart
         // that looks identical to "no levels set". The poll retries.
@@ -750,38 +1158,48 @@ export function SecurityChart({
     }
 
     let cancelled = false;
+    let fetched: { price: number; type: string }[] = [];
+
+    // Never draw a suggestion an active level already shows — an accepted
+    // suggestion stays in /api/suggested-levels, and drawing it again printed
+    // the same price twice on the axis. Also called (via redrawSuggestedRef)
+    // whenever the active levels change, e.g. right after an ACCEPT.
+    const draw = () => {
+      const s = candleSeriesRef.current;
+      if (!s || cancelled) return;
+      clear();
+      const active = activeLevelKeyRef.current
+        .split("|")
+        .filter(Boolean)
+        .map((k) => ({ isStatic: k[0] === "s", price: Number(k.slice(1)) }));
+      for (const lvl of dedupeSuggestedLevels(fetched, active, currencyRef.current)) {
+        // Suggested levels share hue with active S/R (green/red) but are
+        // dotted + faded so they read as "proposed, not yet committed."
+        // No axis pill, same as the active lines above.
+        const isRes = lvl.type === "resistance";
+        const fadedColor = isRes ? "#ef444480" : "#22c55e80";
+        const line = s.createPriceLine({
+          price: lvl.price,
+          color: fadedColor,
+          lineWidth: 1,
+          lineStyle: 1, // dotted — visually distinct from user-accepted levels (solid)
+          axisLabelVisible: false,
+          title: "", // LevelsPanel below carries confidence/touches context
+        });
+        suggestedLinesRef.current.push(line);
+      }
+    };
+    redrawSuggestedRef.current = draw;
 
     async function loadSuggested() {
-      const s = candleSeriesRef.current;
-      if (!s) return;
+      if (!candleSeriesRef.current) return;
       try {
         const res = await fetch(`/api/suggested-levels?securityId=${securityId}`);
         if (!res.ok) return;
         const data = await res.json();
         if (cancelled) return;
-
-        clear();
-
-        for (const lvl of data.levels ?? []) {
-          // Suggested levels share hue with active S/R (green/red) but are
-          // dotted + faded so they read as "proposed, not yet committed."
-          // The axis pill uses the full-strength color for readability — only
-          // the line itself is dimmed, not the label.
-          const isRes = lvl.type === "resistance";
-          const fullColor = isRes ? "#ef4444" : "#22c55e";
-          const fadedColor = isRes ? "#ef444480" : "#22c55e80";
-          const line = s.createPriceLine({
-            price: lvl.price,
-            color: fadedColor,
-            lineWidth: 1,
-            lineStyle: 1, // dotted — visually distinct from user-accepted levels (solid)
-            axisLabelVisible: true,
-            title: "", // LevelsPanel below carries confidence/touches context
-            axisLabelColor: fullColor,
-            axisLabelTextColor: "#0a0a0a",
-          });
-          suggestedLinesRef.current.push(line);
-        }
+        fetched = Array.isArray(data.levels) ? data.levels : [];
+        draw();
       } catch {
         /* silent */
       }
@@ -793,10 +1211,17 @@ export function SecurityChart({
 
     return () => {
       cancelled = true;
+      redrawSuggestedRef.current = null;
       clearInterval(interval);
       clear();
     };
   }, [securityId, showSuggested, seriesReady]);
+
+  // Active levels changed (an ACCEPT, an edit, the 30s poll finding a new
+  // one): re-filter the suggested lines already fetched.
+  useEffect(() => {
+    redrawSuggestedRef.current?.();
+  }, [activeLevelKey]);
 
   const handleDurationChange = useCallback(
     async (label: string) => {
@@ -845,9 +1270,9 @@ export function SecurityChart({
                   cutoff.setMonth(cutoff.getMonth() - selected.months);
                   return t.date >= cutoff.toISOString().slice(0, 10);
                 });
-            markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, filteredTxns, true, markersPluginRef.current, isPrivateRef.current);
+            markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, filteredTxns, true, markersPluginRef.current, isPrivateRef.current, reportMarkers);
           }
-          chartRef.current?.timeScale().fitContent();
+          if (chartRef.current) fitChartContent(chartRef.current, candleSeriesRef.current, markerSummaryRef.current);
         }
       } else if (candleSeriesRef.current && volumeSeriesRef.current) {
         // Zero bars in the selected window (e.g. cached daily bars are all
@@ -857,7 +1282,7 @@ export function SecurityChart({
         clearChartSeries(candleSeriesRef.current, volumeSeriesRef.current, chartRef.current, indicatorMapRef.current, markersPluginRef);
       }
     },
-    [fetchChartData, activeIndicators, showMarkers],
+    [fetchChartData, activeIndicators, showMarkers, reportMarkers],
   );
 
   const handleTimeframeChange = useCallback(
@@ -914,8 +1339,8 @@ export function SecurityChart({
           if (candleSeriesRef.current && volumeSeriesRef.current) {
             applyBarsToChart(lc, candleSeriesRef.current, volumeSeriesRef.current, visibleBars);
             updateIndicators(lc, chartRef.current!, data.bars, activeIndicators, indicatorMapRef.current, visibleStart);
-            if (showMarkers) markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, data.transactions ?? [], true, markersPluginRef.current, isPrivateRef.current);
-            chartRef.current?.timeScale().fitContent();
+            if (showMarkers) markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, data.transactions ?? [], true, markersPluginRef.current, isPrivateRef.current, reportMarkers);
+            if (chartRef.current) fitChartContent(chartRef.current, candleSeriesRef.current, markerSummaryRef.current);
           }
         } else if (candleSeriesRef.current && volumeSeriesRef.current) {
           // Zero VISIBLE bars for the daily fetch — clear the stale
@@ -926,7 +1351,7 @@ export function SecurityChart({
         }
       }
     },
-    [fetchChartData, activeDuration, activeIndicators, showMarkers],
+    [fetchChartData, activeDuration, activeIndicators, showMarkers, reportMarkers],
   );
 
   const handleRefresh = useCallback(async () => {
@@ -964,8 +1389,8 @@ export function SecurityChart({
         if (candleSeriesRef.current && volumeSeriesRef.current) {
           applyBarsToChart(lc, candleSeriesRef.current, volumeSeriesRef.current, visibleBars);
           updateIndicators(lc, chartRef.current!, data.bars, activeIndicators, indicatorMapRef.current, visibleStart);
-          if (showMarkers) markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, data.transactions ?? [], true, markersPluginRef.current, isPrivateRef.current);
-          chartRef.current?.timeScale().fitContent();
+          if (showMarkers) markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, data.transactions ?? [], true, markersPluginRef.current, isPrivateRef.current, reportMarkers);
+          if (chartRef.current) fitChartContent(chartRef.current, candleSeriesRef.current, markerSummaryRef.current);
         }
       });
     } else if (candleSeriesRef.current && volumeSeriesRef.current) {
@@ -975,9 +1400,21 @@ export function SecurityChart({
       // candles).
       clearChartSeries(candleSeriesRef.current, volumeSeriesRef.current, chartRef.current, indicatorMapRef.current, markersPluginRef);
     }
-  }, [activeDuration, activeTimeframe, isIntraday, fetchChartData, activeIndicators, showMarkers]);
+  }, [activeDuration, activeTimeframe, isIntraday, fetchChartData, activeIndicators, showMarkers, reportMarkers]);
+
+  const indicatorReason = (ind: (typeof INDICATORS)[number]) =>
+    indicatorUnavailableReason({ label: ind.label, period: ind.period, loadedBars: dailyLoaded.count });
 
   const toggleIndicator = (key: IndicatorKey) => {
+    // An average with too few bars would light up and draw nothing: say why
+    // instead of switching it on. Switching one OFF always works.
+    const ind = INDICATORS.find((i) => i.key === key)!;
+    const reason = indicatorReason(ind);
+    if (reason && !activeIndicators.has(key)) {
+      setIndicatorNote(reason);
+      return;
+    }
+    setIndicatorNote(null);
     setActiveIndicators((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
@@ -986,72 +1423,31 @@ export function SecurityChart({
     });
   };
 
+  // Trades left off the chart are disclosed only while the overlay is on and
+  // daily bars are plotted (intraday has no trade markers at all).
+  const hiddenTradesVisible =
+    showMarkers && !isIntraday && barCount > 0 && hiddenTradesReason(markerSummary) != null;
+
   return (
     <div className="flex flex-col h-full">
-      {/* Toolbar — ScrollFade wraps the overflow-x-auto scroller and adds a
-          right-edge gradient (opacity-driven, native-scrollbar-only affordance
-          was missable) that mirrors AccountsView's holdings-table pattern. */}
-      <ScrollFade className="border-b border-edge">
-        <div className="flex items-center gap-2 px-3 py-1.5 min-w-0">
+      {/* Toolbar — symbol + controls ONLY. The crosshair legend has its own
+          row below: sharing this row pushed Txns / S/R / Refresh off the
+          panel on hover and at 1280 with the chat rail open. From md up the
+          control groups wrap onto a second line instead of overflowing;
+          phones keep the single scrolling row (ScrollFade adds the right-edge
+          cue), where a five-line toolbar would eat the chart. */}
+      <ScrollFade className="border-b border-edge shrink-0">
+        <div className="flex items-center gap-x-2 gap-y-1.5 px-3 py-1.5 min-w-0 md:flex-wrap">
         {/* chart-legend: inside the dark MarketDataPanel this scope re-maps
             --ink/--ink-faint/--up/--down to dark-theme values (globals.css)
             so the symbol + OHLC crosshair legend stay legible. */}
-        <div className="chart-legend flex items-center gap-2 shrink-0">
-          {!compact && <span className="font-mono font-semibold text-ink text-lg">{symbol}</span>}
-          {!compact && legend && (
-            <div className="flex items-center gap-3 text-xs font-mono">
-              {/* O/H/L hidden on phones — too cramped with indicators.
-                  Close + optional delta-to-open + active indicators always show. */}
-              <span className="hidden md:inline-flex items-center gap-1">
-                <span className="text-ink-faint">O</span>
-                <ChartMoney value={legend.open} currency={currency} className="text-ink" />
-              </span>
-              <span className="hidden md:inline-flex items-center gap-1">
-                <span className="text-ink-faint">H</span>
-                <ChartMoney value={legend.high} currency={currency} className="text-ink" />
-              </span>
-              <span className="hidden md:inline-flex items-center gap-1">
-                <span className="text-ink-faint">L</span>
-                <ChartMoney value={legend.low} currency={currency} className="text-ink" />
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <span className="text-ink-faint">C</span>
-                <ChartMoney
-                  value={legend.close}
-                  currency={currency}
-                  className={legend.close >= legend.open ? "text-up" : "text-down"}
-                />
-              </span>
-              {/* Mobile-only: signed delta from open (replaces O/H/L for context). */}
-              <span className="inline-flex md:hidden items-baseline">
-                <ChartMoney
-                  value={legend.close - legend.open}
-                  currency={currency}
-                  signed
-                  className={legend.close >= legend.open ? "text-up" : "text-down"}
-                />
-              </span>
-              {legend.volume != null && (
-                <span className="hidden md:inline-flex items-center gap-1">
-                  <span className="text-ink-faint">Vol</span>
-                  <Count value={legend.volume} className="text-ink" />
-                </span>
-              )}
-              {legend.indicators && Object.entries(legend.indicators).map(([key, value]) => {
-                const label = INDICATORS.find((i) => i.key === key)?.label ?? key;
-                const color = INDICATORS.find((i) => i.key === key)?.color ?? "#C9A44E";
-                return (
-                  <span key={key} className="flex items-baseline gap-1">
-                    <span className="text-ink-faint" style={{ color }}>{label}</span>
-                    <ChartMoney value={value} currency={currency} className="text-ink" />
-                  </span>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        {!compact && (
+          <div className="chart-legend flex items-center gap-2 shrink-0">
+            <span className="font-mono font-semibold text-ink text-lg">{symbol}</span>
+          </div>
+        )}
 
-        <div className="flex items-center gap-2 shrink-0 ml-auto">
+        <div className="flex items-center gap-x-2 gap-y-1.5 shrink-0 ml-auto md:shrink md:min-w-0 md:flex-wrap md:justify-end">
           {/* Timeframe buttons */}
           <div className="flex gap-0.5 bg-raised rounded-lg p-0.5">
             {TIMEFRAMES.map((tf) => (
@@ -1087,16 +1483,24 @@ export function SecurityChart({
           {/* Indicator toggles (daily only) */}
           {!isIntraday && (
             <div className="flex gap-0.5 bg-raised rounded-lg p-0.5">
-              {INDICATORS.map((ind) => (
+              {INDICATORS.map((ind) => {
+                // Not `disabled`: a disabled button swallows the click that
+                // shows the reason, and its tooltip is hover-only.
+                const unavailable =
+                  !activeIndicators.has(ind.key) ? indicatorReason(ind) : null;
+                return (
                 <button
                   key={ind.key}
                   onClick={() => toggleIndicator(ind.key)}
+                  aria-disabled={unavailable ? true : undefined}
                   className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 px-2 py-1 text-xs font-medium rounded-md transition-colors inline-flex items-center gap-1 ${
                     activeIndicators.has(ind.key)
                       ? "bg-panel text-gold-ink"
-                      : "text-ink-faint hover:text-ink-dim"
+                      : unavailable
+                        ? "text-ink-faint line-through decoration-1"
+                        : "text-ink-faint hover:text-ink-dim"
                   }`}
-                  title={ind.label}
+                  title={unavailable ?? ind.label}
                 >
                   {activeIndicators.has(ind.key) && (
                     // Series-color swatch preserves the color association with
@@ -1114,7 +1518,8 @@ export function SecurityChart({
                   )}
                   {ind.label}
                 </button>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -1155,20 +1560,96 @@ export function SecurityChart({
         </div>
       </ScrollFade>
 
+      {/* Crosshair legend — its own row with a RESERVED height, so hovering
+          the plot never moves or resizes the toolbar above it. Single line,
+          clipped rather than wrapped for the same reason. Compact panels
+          have no legend. Prices and volume here are public market data. */}
+      {!compact && (
+        <div className="chart-legend shrink-0 h-6 px-3 flex items-center gap-3 text-xs font-mono whitespace-nowrap overflow-hidden border-b border-edge">
+          {legend && (
+            <>
+              {/* O/H/L hidden on phones — too cramped with indicators.
+                  Close + optional delta-to-open + active indicators always show. */}
+              <span className="hidden md:inline-flex items-center gap-1">
+                <span className="text-ink-faint">O</span>
+                <ChartMoney value={legend.open} currency={currency} className="text-ink" />
+              </span>
+              <span className="hidden md:inline-flex items-center gap-1">
+                <span className="text-ink-faint">H</span>
+                <ChartMoney value={legend.high} currency={currency} className="text-ink" />
+              </span>
+              <span className="hidden md:inline-flex items-center gap-1">
+                <span className="text-ink-faint">L</span>
+                <ChartMoney value={legend.low} currency={currency} className="text-ink" />
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="text-ink-faint">C</span>
+                <ChartMoney
+                  value={legend.close}
+                  currency={currency}
+                  className={legend.close >= legend.open ? "text-up" : "text-down"}
+                />
+              </span>
+              {/* Mobile-only: signed delta from open (replaces O/H/L for context). */}
+              <span className="inline-flex md:hidden items-baseline">
+                <ChartMoney
+                  value={legend.close - legend.open}
+                  currency={currency}
+                  signed
+                  className={legend.close >= legend.open ? "text-up" : "text-down"}
+                />
+              </span>
+              {legend.volume != null && (
+                <span className="hidden md:inline-flex items-center gap-1">
+                  <span className="text-ink-faint">Vol</span>
+                  <span className="text-ink">{formatNumber(legend.volume)}</span>
+                </span>
+              )}
+              {/* Toolbar order, not the order the toggles were clicked in. */}
+              {INDICATORS.filter((ind) => legend.indicators?.[ind.key] != null).map((ind) => (
+                <span key={ind.key} className="flex items-baseline gap-1">
+                  <span className="text-ink-faint" style={{ color: ind.color }}>{ind.label}</span>
+                  <ChartMoney value={legend.indicators![ind.key]} currency={currency} className="text-ink" />
+                </span>
+              ))}
+              {/* The chart library has no marker tooltip: the fills behind a
+                  summed trade marker read out here. Share counts — never
+                  shown in privacy mode (the map is empty then; the flag
+                  covers a toggle while a bar is still hovered). */}
+              {!isPrivate && legend.fills && (
+                <span className="flex items-baseline gap-1">
+                  <span className="text-ink-faint">Fills</span>
+                  <span className="text-ink">{legend.fills}</span>
+                </span>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {/* Status bar */}
       {(warning || error) && (
-        <div className={`px-4 py-1.5 text-xs font-medium ${error ? "bg-down/20 text-down" : "bg-gold/20 text-gold"}`}>
+        <div className={`shrink-0 px-4 py-1.5 text-xs font-medium ${error ? "bg-down/20 text-down" : "bg-gold/20 text-gold"}`}>
           {error || warning}
         </div>
       )}
       {!warning && !error && levelsUnavailable && (
-        <div className="px-4 py-1.5 text-xs font-medium bg-gold/20 text-gold">
+        <div className="shrink-0 px-4 py-1.5 text-xs font-medium bg-gold/20 text-gold">
           Price-level overlays unavailable — the levels fetch failed; retrying automatically.
+        </div>
+      )}
+      {!warning && !error && !levelsUnavailable && indicatorNote && !isIntraday && (
+        <div className="shrink-0 px-4 py-1.5 text-xs font-medium bg-gold/20 text-gold">
+          {indicatorNote}
         </div>
       )}
 
       {/* Chart container */}
-      <div className="flex-1 relative min-h-[300px]">
+      {/* Compact panels live in a FIXED-height box (MultiChart): the chart
+          area is the one row allowed to give way, so a wrapped toolbar or a
+          two-line banner shrinks the plot instead of crushing the footer
+          (deep-QA: mobile-charts-2x2--bars-footer-crushed-blank-strip). */}
+      <div className={`flex-1 relative ${compact ? "min-h-[160px]" : "min-h-[300px]"}`}>
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-panel/80 z-10">
             <div className="text-ink-faint text-sm">Loading chart data...</div>
@@ -1191,6 +1672,8 @@ export function SecurityChart({
                   DURATIONS.find((d) => d.label === activeDuration)?.months ?? 12,
                 ),
                 symbol,
+                intradayLabel: isIntraday ? activeTimeframe : null,
+                dailyLastBarDate: dailyLoaded.lastDate,
               })}
             </p>
           </div>
@@ -1221,13 +1704,17 @@ export function SecurityChart({
           MultiChart.tsx, mirroring how it already reserves 32px for its own
           per-panel picker header. */}
       {compact ? (
-        <div className="chart-chrome px-3 py-1 border-t border-edge text-xs text-ink-faint truncate">
-          {chartFooterStalenessText({ barCount, lastDate })}
+        // shrink-0: `truncate` sets overflow hidden, which lets a flex item
+        // shrink to nothing — this line was painted as a 9px blank strip.
+        <div className="chart-chrome shrink-0 px-3 py-1 border-t border-edge text-xs text-ink-faint truncate">
+          {chartFooterStalenessText({ barCount, lastDate, intraday: isIntraday, dailyLastBarDate: dailyLoaded.lastDate })}
+          {hiddenTradesVisible && <HiddenTradesNote summary={markerSummary} />}
         </div>
       ) : (
-        <div className="chart-chrome px-4 py-1.5 border-t border-edge flex items-center justify-between text-xs text-ink-faint gap-3 flex-wrap">
+        <div className="chart-chrome shrink-0 px-4 py-1.5 border-t border-edge flex items-center justify-between text-xs text-ink-faint gap-3 flex-wrap">
           <div className="flex items-center gap-3 flex-wrap">
-            <span>{chartFooterStalenessText({ barCount, lastDate })}</span>
+            <span>{chartFooterStalenessText({ barCount, lastDate, intraday: isIntraday, dailyLastBarDate: dailyLoaded.lastDate })}</span>
+            {hiddenTradesVisible && <HiddenTradesNote summary={markerSummary} />}
             {/* Level-type color key — maps chart overlay colors to what they mean. */}
             <div className="hidden sm:flex items-center gap-2 text-[10px] opacity-70">
               <LegendDot color="#ffb84d" label="last price" />
@@ -1257,15 +1744,31 @@ function LegendDot({ color, label }: { color: string; label: string }) {
 }
 
 /**
- * OHLC-legend / indicator price cell — currency-aware sibling of <Money>.
- * The crosshair legend reads raw NATIVE bar values (never FX-converted, same
- * frame as the candles themselves), so it needs the same native-currency
- * labeling as the chart's own axis/pill.
+ * "Trades not plotted: N (reason)" — the footer disclosure for markers the
+ * chart refused to draw on the wrong bar. The count is portfolio-derived, so
+ * it goes through <Count> (masked in privacy mode); the wording never
+ * singularises, so it cannot reveal that the count is one.
+ */
+function HiddenTradesNote({ summary }: { summary: MarkerSummary }) {
+  const reason = hiddenTradesReason(summary);
+  if (!reason) return null;
+  return (
+    <span>
+      {" · "}Trades not plotted:{" "}
+      <Count value={summary.hiddenAfterLastBar + summary.hiddenNoBar} /> ({reason})
+    </span>
+  );
+}
+
+/**
+ * OHLC-legend / indicator price cell. The crosshair legend reads raw NATIVE
+ * bar values (never FX-converted, same frame as the candles themselves), so
+ * it needs the same native-currency labeling as the chart's own axis/pill.
  *
- * USD (and blank/null currency) delegates straight to the untouched <Money>
- * component — byte-identical output to before this component existed. Any
- * other currency renders via formatChartPrice with the same privacy-mask and
- * signed-prefix semantics <Money> uses.
+ * A bar's open/high/low/close and a moving average of them are PUBLIC market
+ * data, so this renders plain in privacy mode — it used to delegate to
+ * <Money>, which masked the whole readout. USD keeps <Money precise>'s exact
+ * format (formatUSDPrecise); any other currency goes through formatChartPrice.
  */
 function ChartMoney({
   value,
@@ -1279,30 +1782,10 @@ function ChartMoney({
   signed?: boolean;
 }) {
   const code = (currency ?? "").trim().toUpperCase();
-  if (code === "" || code === "USD") {
-    return <Money value={value} precise signed={signed} className={className} />;
-  }
-  return (
-    <NativeChartMoney value={value} currency={currency} className={className} signed={signed} />
-  );
-}
-
-function NativeChartMoney({
-  value,
-  currency,
-  className,
-  signed,
-}: {
-  value: number;
-  currency: string | null | undefined;
-  className?: string;
-  signed: boolean;
-}) {
-  const { isPrivate } = usePrivacy();
-  if (isPrivate) {
-    return <span className={className}>{"•••"}</span>;
-  }
-  const formatted = formatChartPrice(currency, Math.abs(value));
+  const formatted =
+    code === "" || code === "USD"
+      ? formatUSDPrecise(Math.abs(value))
+      : formatChartPrice(currency, Math.abs(value));
   // Same negative-zero guard as <Money> — sign decided after rounding, never
   // "−₩0" / "+₩0" for a tiny value that rounds to zero at render precision.
   const sign = rendersAsZero(formatted)
@@ -1441,10 +1924,72 @@ function updateIndicators(
   }
 }
 
-function markerText(t: TransactionMarker, privateMode: boolean): string {
+/**
+ * Fit every plotted bar into the plot, leaving room at an end whose bar
+ * carries a marker label (see markerEdgePaddingBars).
+ */
+function fitChartContent(
+  chart: IChartApi,
+  candleSeries: ISeriesApi<"Candlestick"> | null,
+  summary: MarkerSummary,
+) {
+  const timeScale = chart.timeScale();
+  timeScale.fitContent();
+  const barCount = candleSeries ? candleSeries.data().length : 0;
+  const pad = markerEdgePaddingBars({
+    plotWidth: timeScale.width(),
+    barCount,
+    firstBarLabelChars: summary.firstBarLabelChars,
+    lastBarLabelChars: summary.lastBarLabelChars,
+  });
+  if (pad.left > 0 || pad.right > 0) {
+    timeScale.setVisibleLogicalRange({
+      from: -0.5 - pad.left,
+      to: barCount - 0.5 + pad.right,
+    });
+  }
+}
+
+/**
+ * Marker label. Share counts are portfolio-derived and are dropped in
+ * privacy mode. A marker drawn on the previous trading day's bar (the trade
+ * date had no bar) carries its real trade date, so it never reads as a trade
+ * made on the bar it sits on.
+ */
+export function markerText(
+  t: TransactionMarker,
+  privateMode: boolean,
+  snapped = false,
+): string {
   const label = markerTypeLabel(t.type);
-  if (privateMode) return label;
-  return `${label}${t.quantity != null ? ` ${t.quantity}` : ""}`;
+  const base = privateMode
+    ? label
+    : `${label}${t.quantity != null ? ` ${t.quantity}` : ""}`;
+  return snapped ? `${base} · ${t.date.slice(5, 10)}` : base;
+}
+
+/**
+ * Label of one grouped marker. A single fill reads exactly as markerText
+ * does. Several fills read as the summed quantity and the fill count
+ * ("SELL 150 ×2"); the sum is left out when any fill has no quantity, and
+ * privacy mode drops both numbers — the count is portfolio-derived too.
+ */
+export function groupedMarkerText(
+  group: MarkerGroup<TransactionMarker>,
+  privateMode: boolean,
+): string {
+  const first = group.fills[0];
+  if (group.fills.length === 1) return markerText(first, privateMode, group.snapped);
+  const label = markerTypeLabel(first.type);
+  let base = label;
+  if (!privateMode) {
+    const quantities = group.fills.map((f) => f.quantity);
+    const total = quantities.every((q): q is number => q != null)
+      ? ` ${sumQuantities(quantities)}`
+      : "";
+    base = `${label}${total} ×${group.fills.length}`;
+  }
+  return group.snapped ? `${base} · ${first.date.slice(5, 10)}` : base;
 }
 
 function updateMarkers(
@@ -1455,6 +2000,7 @@ function updateMarkers(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   existing: any,
   privateMode = false,
+  report: (summary: MarkerSummary) => void = () => {},
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): any {
   // When there is nothing to show, DETACH the old plugin rather than just
@@ -1470,22 +2016,34 @@ function updateMarkers(
 
   if (!show || transactions.length === 0) {
     detachExisting();
+    report(NO_MARKERS);
     return null;
   }
 
-  // Only mark trades that fall within the loaded bars: LightweightCharts
-  // clamps markers older than the first bar onto the left edge with clipped
-  // text, stacking into a garbled column (deep-QA finding — e.g. 1Y range
-  // with 2Y of transactions). Deriving from the series covers every caller
-  // (mount, refresh, duration change). Dates are ISO strings, so string
-  // comparison against the bar time is safe.
+  // Each trade is mapped to a bar by placeTransactionMarkers — never left to
+  // LightweightCharts, which pins a marker with no bar of its own onto the
+  // nearest later bar or the final one (trades older than the first bar
+  // stacked on the left edge; trades newer than a stale cache's last bar
+  // stacked on the right edge, months misdated). Deriving the bar dates from
+  // the series covers every caller (mount, refresh, duration change).
+  // Intraday bars carry numeric times and get no trade markers.
   const bars = candleSeries.data();
-  const firstBarTime = bars.length > 0 ? String(bars[0].time) : null;
-  const visible = firstBarTime
-    ? transactions.filter((t) => t.date >= firstBarTime)
-    : transactions;
-  if (visible.length === 0) {
+  const barDates: string[] = [];
+  for (const b of bars) {
+    if (typeof b.time === "string") barDates.push(b.time);
+  }
+  const placement = placeTransactionMarkers(transactions, barDates);
+  const summaryBase = {
+    hiddenAfterLastBar: placement.hiddenAfterLastBar,
+    hiddenNoBar: placement.hiddenNoBar,
+  };
+  if (barDates.length !== bars.length || placement.placed.length === 0) {
     detachExisting();
+    report(
+      barDates.length !== bars.length
+        ? NO_MARKERS
+        : { ...summaryBase, fillsByBar: {}, firstBarLabelChars: 0, lastBarLabelChars: 0 },
+    );
     return null;
   }
 
@@ -1493,14 +2051,39 @@ function updateMarkers(
     t === "BUY" || t === "BUY_TO_OPEN" || t === "BUY_TO_CLOSE";
 
   type MarkerType = import("lightweight-charts").SeriesMarker<import("lightweight-charts").Time>;
-  const markers: MarkerType[] = visible.map((t) => ({
-    time: t.date as import("lightweight-charts").Time,
-    position: isBuy(t.type) ? ("belowBar" as const) : ("aboveBar" as const),
-    shape: isBuy(t.type) ? ("arrowUp" as const) : ("arrowDown" as const),
-    color: isBuy(t.type) ? C.upColor : C.downColor,
-    text: markerText(t, privateMode),
-    size: 1,
-  }));
+  const firstBar = barDates[0];
+  const lastBar = barDates[barDates.length - 1];
+  let firstBarLabelChars = 0;
+  let lastBarLabelChars = 0;
+  // One marker per (trade date, type) — see groupPlacedMarkers.
+  const groups = groupPlacedMarkers(placement.placed);
+  const groupsByBar = new Map<string, MarkerGroup<TransactionMarker>[]>();
+  for (const g of groups) {
+    const onBar = groupsByBar.get(g.barDate);
+    if (onBar) onBar.push(g);
+    else groupsByBar.set(g.barDate, [g]);
+  }
+  const fillsByBar: Record<string, string> = {};
+  for (const [barDate, onBar] of groupsByBar) {
+    const fills = markerFillsText(onBar, privateMode);
+    if (fills) fillsByBar[barDate] = fills;
+  }
+  const markers: MarkerType[] = groups.map((group) => {
+    const { barDate } = group;
+    const t = group.fills[0];
+    const text = groupedMarkerText(group, privateMode);
+    if (barDate === firstBar) firstBarLabelChars = Math.max(firstBarLabelChars, text.length);
+    if (barDate === lastBar) lastBarLabelChars = Math.max(lastBarLabelChars, text.length);
+    return {
+      time: barDate as import("lightweight-charts").Time,
+      position: isBuy(t.type) ? ("belowBar" as const) : ("aboveBar" as const),
+      shape: isBuy(t.type) ? ("arrowUp" as const) : ("arrowDown" as const),
+      color: isBuy(t.type) ? C.upColor : C.downColor,
+      text,
+      size: 1,
+    };
+  });
+  report({ ...summaryBase, fillsByBar, firstBarLabelChars, lastBarLabelChars });
 
   // Reuse the attached plugin when one exists — one plugin per series, ever.
   if (existing) {

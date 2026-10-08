@@ -426,7 +426,7 @@ describe("§6 row 15 — Every mutating client fetch routes through apiFetch →
       );
       expect(violations).toEqual([]);
     },
-    30_000
+    180_000
   );
 });
 

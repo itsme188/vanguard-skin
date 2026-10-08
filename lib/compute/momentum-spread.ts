@@ -102,7 +102,7 @@ function isStale(latestDate: string): boolean {
 }
 
 const TIME_PHRASE: Record<MomentumWindow, string> = {
-  "1d": "today",
+  "1d": "on the latest session",
   "5d": "this week",
   "30d": "over 30d",
 };

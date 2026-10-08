@@ -14,7 +14,6 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { runMigrations } from "@/lib/db/migrate";
 import {
-  isPdf,
   checkPdfBytes,
   checkPdfText,
   resolvePdftotextPath,
@@ -68,11 +67,6 @@ function fakeSpawn(script: { stdout?: string; stderr?: string; code?: number; ha
 }
 
 describe("pdf.ts — byte and text checks", () => {
-  it("isPdf sniffs the %PDF- signature", () => {
-    expect(isPdf(Buffer.from("%PDF-1.7\n"))).toBe(true);
-    expect(isPdf(Buffer.from("<html>"))).toBe(false);
-  });
-
   it("refuses an oversize PDF with its own message", () => {
     expect(checkPdfBytes(Buffer.alloc(PDF_MAX_BYTES + 1, 0x20))).toEqual({
       ok: false,

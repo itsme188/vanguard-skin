@@ -51,6 +51,13 @@ import type { ReadRow } from "@/lib/print-watch/first-pass-types";
  * so every client of this route gets the same guarantee regardless of what
  * slipped past storage-time sanitisation.
  *
+ * `eventDate` (additive, 2026-10-07) is the print's own event date, so the
+ * Hub's "Live prints outside this week" block can say which day a print
+ * belongs to. It rides on the `getWatchStatus` row (the print row is already
+ * in hand there) and is the print row's copy of the date: after a calendar
+ * date correction it lags until the watcher next reconciles the print.
+ * Nothing else in the payload moved.
+ *
  * `outputs` (slice E, Task 7) is the one place that says whether this row's
  * "Print sheet" and "Send recap now" buttons are live and, when they are not,
  * the domain sentence explaining why. It is derived in
@@ -102,6 +109,12 @@ export async function GET() {
         printId: row.printId,
         eventId: row.eventId,
         symbol: row.symbol,
+        // Additive: the day this print belongs to (YYYY-MM-DD), so a live print
+        // outside the visible week can be placed in time. `getWatchStatus`
+        // already holds the print row, so this is passed through — no second
+        // read per print on every poll. It is the print row's OWN date, which
+        // can lag a calendar date correction until the next reconciliation.
+        eventDate: row.eventDate,
         state: row.state,
         sources: row.sources,
         coverage: row.coverage,

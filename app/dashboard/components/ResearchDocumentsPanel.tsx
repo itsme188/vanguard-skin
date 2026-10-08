@@ -45,7 +45,7 @@ export function ResearchDocumentsPanel({
       title={`Research Documents · ${documents.length}`}
       action={
         <Link
-          href={`/dashboard/research?view=documents`}
+          href={`/dashboard/research?view=documents&symbol=${encodeURIComponent(symbol)}`}
           className="text-xs font-medium text-blue hover:brightness-110 transition-colors"
         >
           View all →

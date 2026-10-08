@@ -57,6 +57,23 @@ export function isEmptyEnrichmentResult(result: ProcessedResult): boolean {
 // so existing importers keep working.
 export { MAX_ENRICH_ATTEMPTS };
 
+/** Stored length cap for `excluded_reason`. */
+export const MAX_EXCLUDED_REASON = 280;
+
+/**
+ * Cap an exclusion reason at a word boundary and mark the cut with an
+ * ellipsis, so a long reason never reads as a sentence that stops mid-word.
+ * The result, ellipsis included, is at most `max` characters.
+ */
+export function truncateExcludedReason(text: string, max = MAX_EXCLUDED_REASON): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) return trimmed;
+  const slice = trimmed.slice(0, max - 1);
+  const lastSpace = slice.search(/\s\S*$/);
+  const cut = lastSpace > 0 ? slice.slice(0, lastSpace) : slice;
+  return `${cut.trimEnd()}\u2026`;
+}
+
 export interface ProcessArticlesResult {
   processed: number;
   /** Articles tried this pass that did not end up enriched. */
@@ -325,7 +342,7 @@ export async function processUnprocessedArticles(
       } else if (!result.is_portfolio_relevant && article.allow_off_topic !== 1) {
         const reason =
           result.portfolio_relevance && result.portfolio_relevance.trim().length > 0
-            ? result.portfolio_relevance.slice(0, 280)
+            ? truncateExcludedReason(result.portfolio_relevance)
             : "Claude judged article off-topic";
         markOffTopic.run(reason, article.id);
       }

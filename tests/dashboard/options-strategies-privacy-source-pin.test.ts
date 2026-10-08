@@ -72,16 +72,21 @@ describe("OptionsStrategies withholds figures when a leg is unpriced", () => {
   });
 
   it("checks pricingIncomplete BEFORE the null-means-Unlimited branch in every cell", () => {
-    const cells = src.match(/\{s\.pricingIncomplete (?:\?|&&) \(\s*<span className="text-ink-faint">Premium unknown<\/span>/g) ?? [];
+    const cells = src.match(/\{s\.pricingIncomplete (?:\?|&&) \(\s*<span className="text-ink-faint">Not available<\/span>/g) ?? [];
     expect(cells.length).toBe(3);
-    expect(src).toMatch(/Premium unknown<\/span>\s*\)\s*:\s*s\.maxProfit != null/);
-    expect(src).toMatch(/Premium unknown<\/span>\s*\)\s*:\s*s\.maxLoss != null/);
+    expect(src).toMatch(/Not available<\/span>\s*\)\s*:\s*s\.maxProfit != null/);
+    expect(src).toMatch(/Not available<\/span>\s*\)\s*:\s*s\.maxLoss != null/);
     // Breakevens are [] when pricing is incomplete, so the map renders nothing.
-    expect(src).toMatch(/Premium unknown<\/span>\s*\)\}\s*\{s\.breakevens\.map/);
+    expect(src).toMatch(/Not available<\/span>\s*\)\}\s*\{s\.breakevens\.map/);
   });
 
-  it("explains the missing price under the description", () => {
-    expect(src).toMatch(/One or more legs have no price yet/);
+  // The note is worded from the engine's reason (missing price / zero mark /
+  // below intrinsic) — "no price yet" was false for the last two. The wording
+  // itself is pinned in tests/compute/options-strategy-marks-and-sizing.test.ts.
+  it("explains WHY the figures are withheld under the description, from the engine's reason", () => {
+    expect(src).toMatch(/\{pricingIncompleteNote\(s\.pricingIncompleteReason\)\}/);
+    expect(src).toMatch(/pricingIncompleteReason\?:\s*PricingIncompleteReason \| null/);
+    expect(src).not.toMatch(/One or more legs have no price yet/);
   });
 });
 
@@ -91,5 +96,13 @@ describe("OptionsStrategies shared helpers", () => {
     expect(src).toMatch(/import\s*\{[^}]*\bMoney\b[^}]*\}\s*from\s*["']@\/lib\/privacy\/components["']/);
     expect(src).not.toMatch(/(^|[^.\w])fetch\(/m);
     expect(src).not.toMatch(/formatDollar/);
+  });
+});
+
+describe("OptionsStrategies empty state copy", () => {
+  it("does not claim every detected strategy needs two option legs", () => {
+    expect(src).toContain("stock plus one option leg");
+    expect(src).toContain("matched multi-leg spreads");
+    expect(src).not.toContain("require ≥2 option legs");
   });
 });

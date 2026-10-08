@@ -26,7 +26,9 @@ export const ARMED_EVENTS_KIND = "armed-events";
  * for nothing. This is what stops the payload growing without bound as
  * never-disarmed worksheets accumulate.
  */
-const LIVE_LOOKBACK_DAYS = 14;
+export const LIVE_LOOKBACK_DAYS = 14;
+/** Worker top-level id-list cap; parity-pinned to workers/cron/src/armed-events.ts. */
+export const ARMED_EVENTS_MAX_ID_LIST = 2000;
 /** Tombstones are carried while event_date >= today - TOMBSTONE_LOOKBACK_DAYS (D7). */
 const TOMBSTONE_LOOKBACK_DAYS = 2;
 /** ...and, independently, while the removal itself is younger than this (D7). */
@@ -53,6 +55,15 @@ export interface ArmedEventProjection {
 export interface ArmedEventsPayload {
   generation: number;
   entries: ArmedEventProjection[];
+  supersededEventIds: number[];
+  removedEventIds: RemovedEventId[];
+}
+
+export interface RemovedEventId {
+  id: number;
+  eventDate: string;
+  /** ISO instant the deletion was first written. */
+  removedAt: string;
 }
 
 /** The exact key set the projection may carry — asserted by the data-flow
@@ -111,6 +122,137 @@ export function readPreviousArmedEntries(db: Database.Database): ArmedEventProje
   } catch {
     return [];
   }
+}
+
+/** Superseded ids from the newest payload. Older two-key payloads read as []. */
+export function readPreviousSupersededEventIds(db: Database.Database): number[] {
+  const row = db
+    .prepare(
+      `SELECT payload_json FROM cloud_outbox WHERE kind = ? ORDER BY generation DESC LIMIT 1`,
+    )
+    .get(ARMED_EVENTS_KIND) as { payload_json: string } | undefined;
+  if (!row) return [];
+  try {
+    const parsed = JSON.parse(row.payload_json) as { supersededEventIds?: unknown };
+    return Array.isArray(parsed.supersededEventIds)
+      ? parsed.supersededEventIds.filter((id): id is number => Number.isInteger(id))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Deleted earnings ids from the newest payload. Older payloads read as []. */
+export function readPreviousRemovedEventIds(db: Database.Database): RemovedEventId[] {
+  const row = db
+    .prepare(
+      `SELECT payload_json FROM cloud_outbox WHERE kind = ? ORDER BY generation DESC LIMIT 1`,
+    )
+    .get(ARMED_EVENTS_KIND) as { payload_json: string } | undefined;
+  if (!row) return [];
+  try {
+    const parsed = JSON.parse(row.payload_json) as { removedEventIds?: unknown };
+    return Array.isArray(parsed.removedEventIds)
+      ? parsed.removedEventIds.filter((item): item is RemovedEventId => {
+          const r = item as Partial<RemovedEventId>;
+          return (
+            Number.isInteger(r.id) &&
+            typeof r.eventDate === "string" &&
+            typeof r.removedAt === "string"
+          );
+        })
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Whole days between two YYYY-MM-DD dates, sign dropped. An unreadable date
+ *  ranks last (it can never be a row the cloud is about to act on). */
+function dayDistance(a: string, b: string): number {
+  const ms = Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`);
+  return Number.isFinite(ms) ? Math.abs(ms) / 86_400_000 : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Keep at most ARMED_EVENTS_MAX_ID_LIST rows, the ones NEAREST today first.
+ * The Worker only ever acts on prints around today, so when the list is over
+ * the cap a far-future id is the one to lose — keeping the latest calendar
+ * dates would let next quarter's rows crowd out yesterday's. Ties go to the
+ * later date, then the higher id, so the cut is deterministic.
+ */
+function capNearestToToday<T extends { id: number; eventDate: string }>(
+  list: T[],
+  today: string,
+  label: string,
+): T[] {
+  if (list.length <= ARMED_EVENTS_MAX_ID_LIST) return list;
+  const kept = [...list]
+    .sort(
+      (a, b) =>
+        dayDistance(a.eventDate, today) - dayDistance(b.eventDate, today) ||
+        b.eventDate.localeCompare(a.eventDate) ||
+        b.id - a.id,
+    )
+    .slice(0, ARMED_EVENTS_MAX_ID_LIST);
+  console.warn(`[armed-events] dropped ${list.length - kept.length} ${label} over cap`);
+  return kept.sort((a, b) => a.id - b.id);
+}
+
+/**
+ * Earnings rows the Worker must treat as replaced even when they are not armed.
+ * The window is intentionally lower-bounded only so the payload cannot grow
+ * without limit, while a future replacement still reaches the cloud.
+ */
+export function buildSupersededEventIds(
+  db: Database.Database,
+  opts: { today: string },
+): number[] {
+  const cutoff = addDays(opts.today, -LIVE_LOOKBACK_DAYS);
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT id, event_date AS eventDate
+         FROM calendar_events
+        WHERE event_type = 'earnings'
+          AND COALESCE(superseded, 0) <> 0
+          AND event_date >= ?
+        ORDER BY id ASC`,
+    )
+    .all(cutoff) as Array<{ id: number; eventDate: string }>;
+  return capNearestToToday(rows, opts.today, "superseded event ids").map((r) => r.id);
+}
+
+/**
+ * Deleted earnings ids the Worker must suppress one-way. There is no table
+ * tonight, so these are carried from the previous payload just like D7 armed
+ * tombstones. `calendar_events.id` is AUTOINCREMENT, so a removed id cannot
+ * later refer to a recreated row.
+ */
+export function buildRemovedEventIds(
+  db: Database.Database,
+  opts: { today: string; nowMs?: number; removedEvents?: Array<{ id: number; eventDate: string }> },
+): RemovedEventId[] {
+  const nowMs = opts.nowMs ?? Date.now();
+  const now = new Date(nowMs).toISOString();
+  const cutoff = addDays(opts.today, -LIVE_LOOKBACK_DAYS);
+  const byId = new Map<number, RemovedEventId>();
+  for (const prev of readPreviousRemovedEventIds(db)) {
+    byId.set(prev.id, prev);
+  }
+  for (const removed of opts.removedEvents ?? []) {
+    if (!Number.isInteger(removed.id) || removed.id <= 0) continue;
+    // The Worker rejects the WHOLE payload on a date that is not YYYY-MM-DD,
+    // so a malformed stored date must never reach the list.
+    if (typeof removed.eventDate !== "string" || !ISO_DATE_RE.test(removed.eventDate)) continue;
+    byId.set(removed.id, byId.get(removed.id) ?? { ...removed, removedAt: now });
+  }
+  const retained = [...byId.values()].filter((r) => {
+    const fresh = nowMs - Date.parse(r.removedAt) < TOMBSTONE_RETENTION_MS;
+    return r.eventDate >= cutoff || fresh;
+  });
+  return capNearestToToday(retained, opts.today, "removed event ids");
 }
 
 /**
@@ -180,4 +322,12 @@ export function sameProjection(a: ArmedEventProjection[], b: ArmedEventProjectio
       }),
     );
   return norm(a) === norm(b);
+}
+
+export function sameSupersededEventIds(a: number[], b: number[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+export function sameRemovedEventIds(a: RemovedEventId[], b: RemovedEventId[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }

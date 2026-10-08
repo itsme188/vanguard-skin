@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import type {
   PriceFreshness,
   AccountCoverage,
@@ -13,6 +13,7 @@ import type {
 import { Money } from "@/lib/privacy/components";
 import { formatUSDPrecise } from "@/lib/format";
 import { ScrollFade } from "./ScrollFade";
+import { SymbolLink } from "./SymbolLink";
 import { EmptySection } from "./EmptySection";
 
 interface DataHealthResponse {
@@ -100,10 +101,33 @@ function SummaryCard({
  * above for the price-staleness table. Extracted into a constant so the
  * heading copy, footer copy, and slice can't drift out of sync.
  */
+/**
+ * Why the Account Coverage rows do not add up to the Price Coverage headline:
+ * the headline counts distinct securities, the rows count positions (one per
+ * account holding a security).
+ */
+export function accountCoverageGrainNote(heldInMultipleAccounts: number): string {
+  const base = "Each row counts positions: a security held in two accounts is one position in each.";
+  if (!Number.isFinite(heldInMultipleAccounts) || heldInMultipleAccounts <= 0) {
+    return `${base} The Price Coverage headline counts each security once.`;
+  }
+  const subject =
+    heldInMultipleAccounts === 1
+      ? "1 security is held in more than one account"
+      : `${heldInMultipleAccounts} securities are held in more than one account`;
+  return `${base} ${subject}, so the rows add up to more than the Price Coverage headline, which counts each security once.`;
+}
+
 const RECONCILIATION_ROW_LIMIT = 30;
 const DISCREPANCY_ROW_LIMIT = 20;
 
-export function DataHealthView() {
+/**
+ * `integritySection` is rendered by the page (server side, from the same
+ * confidence read the header badge uses) and placed here, above the coverage
+ * panels: it is what explains a capped badge, and every coverage figure below
+ * can read healthy while it is failing.
+ */
+export function DataHealthView({ integritySection }: { integritySection?: ReactNode }) {
   const [data, setData] = useState<DataHealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -129,8 +153,12 @@ export function DataHealthView() {
 
   if (error || !data) {
     return (
-      <div className="rounded-xl border border-down/30 bg-down-tint p-6 text-center">
-        <p className="text-down text-sm">{error ?? "Failed to load data health"}</p>
+      <div className="space-y-6">
+        <div className="rounded-xl border border-down/30 bg-down-tint p-6 text-center">
+          <p className="text-down text-sm">{error ?? "Failed to load data health"}</p>
+        </div>
+        {/* The integrity checks come from a separate read: still show them. */}
+        {integritySection}
       </div>
     );
   }
@@ -140,6 +168,22 @@ export function DataHealthView() {
   const reconFlags = reconciliation.filter(
     (r) => r.diffPct !== null && Math.abs(r.diffPct) > 2,
   );
+
+  // "0 flags" is only a clean result when every snapshot was compared.
+  const reconCardSub = [
+    reconFlags.length > 0 ? `${reconFlags.length} snapshots >2% off` : null,
+    summary.totalReconciliationUnchecked > 0
+      ? `${summary.totalReconciliationUnchecked} not compared`
+      : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
+  const reconCardColor =
+    summary.totalReconciliationFlags > 0
+      ? "down"
+      : summary.totalReconciliationUnchecked > 0
+        ? "gold"
+        : "up";
 
   const fxFlagged = fxRateHealth.filter((r) => r.flags.length > 0);
 
@@ -158,7 +202,7 @@ export function DataHealthView() {
         <SummaryCard
           label="Price Coverage"
           value={`${summary.overallCoveragePct}%`}
-          sub={`${summary.securitiesWithPrices}/${summary.totalSecurities} securities`}
+          sub={`${summary.securitiesWithPrices}/${summary.totalSecurities} distinct securities`}
           color={summary.overallCoveragePct >= 90 ? "up" : summary.overallCoveragePct >= 70 ? "gold" : "down"}
         />
         <SummaryCard
@@ -183,8 +227,8 @@ export function DataHealthView() {
         <SummaryCard
           label="Recon Flags"
           value={summary.totalReconciliationFlags}
-          sub={reconFlags.length > 0 ? `${reconFlags.length} snapshots >2% off` : undefined}
-          color={summary.totalReconciliationFlags === 0 ? "up" : "down"}
+          sub={reconCardSub || undefined}
+          color={reconCardColor}
         />
         <SummaryCard
           label="FX Flags"
@@ -194,10 +238,18 @@ export function DataHealthView() {
         />
       </div>
 
+      {integritySection}
+
       {/* Account Coverage */}
       <section className="rounded-xl border border-edge bg-panel">
         <div className="px-5 py-3 border-b border-edge">
           <h3 className="text-sm font-medium text-ink">Account Coverage</h3>
+          {/* The headline counts each security once; these rows count it once
+              per account that holds it. Say so, or the rows read as a
+              contradiction of the headline. */}
+          <p className="text-xs text-ink-dim mt-0.5">
+            {accountCoverageGrainNote(summary.securitiesHeldInMultipleAccounts)}
+          </p>
         </div>
         <div className="p-5 space-y-3">
           {accountCoverage.map((ac) => (
@@ -205,7 +257,7 @@ export function DataHealthView() {
               <div className="flex items-center justify-between text-sm">
                 <span className="text-ink">{ac.accountName}</span>
                 <span className="text-ink-dim font-mono tabular-nums">
-                  {ac.pricedHoldings}/{ac.totalHoldings} priced
+                  {ac.pricedHoldings}/{ac.totalHoldings} positions priced
                   {ac.totalHoldings > 0 && (
                     <span className="ml-2 text-ink-faint">
                       ({ac.coveragePct}%)
@@ -413,7 +465,13 @@ export function DataHealthView() {
               <tbody>
                 {discrepancies.slice(0, DISCREPANCY_ROW_LIMIT).map((d, i) => (
                   <tr key={i} className="border-b border-edge/50">
-                    <td className="px-5 py-2 font-mono text-ink">{d.symbol}</td>
+                    <td className="px-5 py-2">
+                      <SymbolLink
+                        securityId={d.securityId}
+                        symbol={d.symbol}
+                        className="text-blue font-mono"
+                      />
+                    </td>
                     <td className="px-3 py-2 text-ink-dim font-mono tabular-nums">{d.date}</td>
                     <td className="px-3 py-2 text-right text-ink-dim font-mono tabular-nums">
                       {formatUSDPrecise(d.priceA)}
@@ -495,7 +553,7 @@ export function DataHealthView() {
                             {r.diffPct.toFixed(1)}%
                           </span>
                         ) : (
-                          <span className="text-ink-faint">—</span>
+                          <span className="text-xs text-ink-faint">not compared</span>
                         )}
                       </td>
                       <td className="px-5 py-2 text-right text-xs text-ink-faint font-mono tabular-nums">
@@ -509,6 +567,13 @@ export function DataHealthView() {
               </tbody>
             </table>
           </ScrollFade>
+          {summary.totalReconciliationUnchecked > 0 && (
+            <div className="px-5 py-2 border-t border-edge text-xs text-ink-faint">
+              {summary.totalReconciliationUnchecked} of{" "}
+              {summary.totalReconciliationSnapshots} statement snapshots were
+              never compared — no computed value exists on the statement date.
+            </div>
+          )}
           {reconciliation.length > RECONCILIATION_ROW_LIMIT && (
             <div className="px-5 py-2 border-t border-edge text-xs text-ink-faint">
               Showing the {RECONCILIATION_ROW_LIMIT} newest rows —{" "}

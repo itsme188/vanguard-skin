@@ -122,6 +122,7 @@ function addSale(
     isLongTerm?: boolean;
     txnType?: string;
     premiumRollover?: boolean;
+    isShort?: boolean;
   }
 ) {
   const costBasis = opts.quantity * opts.acquisitionPrice;
@@ -134,8 +135,8 @@ function addSale(
 
   const lot = db
     .prepare(
-      `INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis)
-       VALUES (?, ?, ?, ?, ?, 0, ?)`
+      `INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis, is_short)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?)`
     )
     .run(
       opts.accountId,
@@ -143,7 +144,8 @@ function addSale(
       opts.acquisitionDate,
       opts.acquisitionPrice,
       opts.quantity,
-      costBasis
+      costBasis,
+      opts.isShort ? 1 : 0
     );
 
   const txn = db
@@ -379,6 +381,29 @@ describe("generateTaxReport — account scoping", () => {
     expect(ibkr.longTermTotal.proceeds).toBe(0);
   });
 
+  it("counts the engine-made closes left out, for the same year and account scope", () => {
+    const db = createTestDb();
+    seedMultiAccountYear(db);
+
+    // The one RECONCILE_CLOSE sale sits in IBKR, in YEAR.
+    expect(generateTaxReport(db, YEAR).excludedEngineCloses).toBe(1);
+    expect(generateTaxReport(db, YEAR, { accountName: "IBKR" }).excludedEngineCloses).toBe(1);
+    expect(generateTaxReport(db, YEAR, { accountName: "Taxable" }).excludedEngineCloses).toBe(0);
+    expect(generateTaxReport(db, YEAR + 1).excludedEngineCloses).toBe(0);
+    // The premium-rollover row is left out too, but it is not an engine close.
+    addSale(db, {
+      accountId: 3,
+      securityId: 2,
+      acquisitionDate: "2022-01-08",
+      saleDate: "2022-09-08",
+      quantity: 2,
+      acquisitionPrice: 100,
+      salePrice: 105,
+      txnType: "RECONCILE_CLOSE",
+    });
+    expect(generateTaxReport(db, YEAR, { accountName: "IBKR" }).excludedEngineCloses).toBe(2);
+  });
+
   /**
    * CONSERVATION IDENTITY (money-moving engine rule): a per-account export
    * must be a strict SUBSET of the all-accounts export — identical rows,
@@ -451,6 +476,97 @@ describe("generateTaxReport — account scoping", () => {
     expect(summed.longGainLoss).toBeCloseTo(all.longTermTotal.gainLoss, 6);
     expect(summed.excludedNonUsd).toBe(all.excludedNonUsdSales);
     expect(summed.washWarnings).toBe(all.washSaleWarnings.length);
+  });
+
+  it("CONSERVATION: account-scoped query filtering preserves rows and totals across wash-sale, short, bond, and non-USD rows", () => {
+    const db = createTestDb();
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, currency) VALUES
+        (4, 'USBOND1', 'Synthetic Treasury', 'Bond', 'USD'),
+        (5, 'ACME  260320C00100000', 'ACME Call', 'Option', 'USD')`
+    ).run();
+
+    // Account 1: a wash-sale-coded loss, an option contract sale, and a bond redemption.
+    addSale(db, {
+      accountId: 1,
+      securityId: 1,
+      acquisitionDate: "2022-01-10",
+      saleDate: "2022-02-10",
+      quantity: 4,
+      acquisitionPrice: 100,
+      salePrice: 80,
+    });
+    addPurchase(db, { accountId: 1, securityId: 1, date: "2022-02-20", quantity: 4, price: 82 });
+    addSale(db, {
+      accountId: 1,
+      securityId: 5,
+      acquisitionDate: "2022-03-01",
+      saleDate: "2022-03-15",
+      quantity: 1,
+      acquisitionPrice: 10,
+      salePrice: 14,
+    });
+    addSale(db, {
+      accountId: 1,
+      securityId: 4,
+      acquisitionDate: "2021-01-01",
+      saleDate: "2022-07-01",
+      quantity: 10,
+      acquisitionPrice: 99,
+      salePrice: 100,
+      txnType: "REDEMPTION",
+      isLongTerm: true,
+    });
+
+    // Account 3: a short round trip and a foreign-currency sale.
+    addSale(db, {
+      accountId: 3,
+      securityId: 2,
+      acquisitionDate: "2022-04-01",
+      saleDate: "2022-04-20",
+      quantity: 3,
+      acquisitionPrice: 70,
+      salePrice: 60,
+      isShort: true,
+    });
+    addSale(db, {
+      accountId: 3,
+      securityId: 3,
+      acquisitionDate: "2022-05-01",
+      saleDate: "2022-05-20",
+      quantity: 2,
+      acquisitionPrice: 200,
+      salePrice: 260,
+    });
+
+    const all = generateTaxReport(db, YEAR);
+    const scoped = ["Taxable", "IBKR"].map((accountName) =>
+      generateTaxReport(db, YEAR, { accountName })
+    );
+    const scopedRows = scoped.flatMap(allRows);
+
+    expect(scopedRows).toHaveLength(allRows(all).length);
+    for (const row of scopedRows) expect(allRows(all)).toContainEqual(row);
+    expect(all.washSaleWarnings).toHaveLength(1);
+    expect(scoped.reduce((sum, r) => sum + r.washSaleWarnings.length, 0)).toBe(1);
+    expect(allRows(all).some((r) => r.description.includes("contract ACME"))).toBe(true);
+
+    const sums = scoped.reduce(
+      (acc, r) => ({
+        stGain: acc.stGain + r.shortTermTotal.gainLoss,
+        ltGain: acc.ltGain + r.longTermTotal.gainLoss,
+        stProceeds: acc.stProceeds + r.shortTermTotal.proceeds,
+        ltProceeds: acc.ltProceeds + r.longTermTotal.proceeds,
+        excludedNonUsd: acc.excludedNonUsd + r.excludedNonUsdSales,
+      }),
+      { stGain: 0, ltGain: 0, stProceeds: 0, ltProceeds: 0, excludedNonUsd: 0 }
+    );
+
+    expect(sums.stGain).toBeCloseTo(all.shortTermTotal.gainLoss, 6);
+    expect(sums.ltGain).toBeCloseTo(all.longTermTotal.gainLoss, 6);
+    expect(sums.stProceeds).toBeCloseTo(all.shortTermTotal.proceeds, 6);
+    expect(sums.ltProceeds).toBeCloseTo(all.longTermTotal.proceeds, 6);
+    expect(sums.excludedNonUsd).toBe(all.excludedNonUsdSales);
   });
 });
 

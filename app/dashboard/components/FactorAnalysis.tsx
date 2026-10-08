@@ -2,11 +2,12 @@
 
 import { useState, useEffect, type ReactNode } from "react";
 import type { FactorAnalysisResult, FactorTilt } from "@/lib/compute/factors";
-import { Pct } from "@/lib/privacy/components";
+import { Pct, PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import {
   DEFAULT_BENCHMARK_BY_SCOPE,
   BENCHMARK_OPTIONS,
+  getDefaultBenchmark,
 } from "@/lib/analysis/benchmarks";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
 import { DrillDownPanel } from "./analysis/DrillDownPanel";
@@ -57,6 +58,22 @@ function toneToMetricColor(tone: InterpretTone): "up" | "down" | "neutral" {
   if (tone === "good") return "up";
   if (tone === "bad") return "down";
   return "neutral";
+}
+
+/**
+ * The written summary is generated against the scope's default benchmark
+ * (`narrativeBenchmarkForScope` in lib/compute/analysis-narratives.ts reads
+ * the same `getDefaultBenchmark`). When the picker is moved off that default
+ * the tiles describe a different regression than the prose, so say so.
+ * Returns null when the two agree.
+ */
+export function narrativeBenchmarkNote(
+  scope: string | undefined,
+  pickerBenchmark: string,
+): string | null {
+  const narrativeBenchmark = getDefaultBenchmark(scope ?? "all");
+  if (narrativeBenchmark === pickerBenchmark) return null;
+  return `The written summary for this card is generated against ${narrativeBenchmark}, this scope's default benchmark. The tiles below use ${pickerBenchmark}, so the summary's beta, alpha and R² readings describe a different regression.`;
 }
 
 // ─── Tilt bar colors ─────────────────────────────────────────────
@@ -135,6 +152,8 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
     );
   }
 
+  const benchmarkNote = narrativeBenchmarkNote(scope, benchmark);
+
   return (
     <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -156,6 +175,9 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
       </div>
 
       <NarrativeBlock scope={scope ?? "all"} surfaceKey="factor-analysis" />
+      {benchmarkNote && (
+        <p className="text-xs text-ink-faint -mt-3">{benchmarkNote}</p>
+      )}
 
       {/* ── Market regression ── */}
       {reg && (
@@ -181,7 +203,7 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
           {reg.rSquared < LOW_R2_THRESHOLD && (
             <p className="text-xs bg-warn/15 text-warn rounded-md px-3 py-2 mb-3">
               ⚠ Low explanatory power — R² of{" "}
-              {(reg.rSquared * 100).toFixed(1)}% means {benchmark} explains
+              <Pct value={reg.rSquared * 100} digits={1} /> means {benchmark} explains
               almost none of this portfolio&apos;s daily variance over the
               window. Treat beta and alpha here as noise, not signal; common
               causes are stale prices in the valuation series or external
@@ -200,7 +222,9 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
                   label="Beta"
                   value={
                     <>
-                      {formatBeta(reg.beta)}
+                      {/* The portfolio's own regression output, like the
+                          alpha, R² and tracking error beside it. */}
+                      <PrivateText>{formatBeta(reg.beta)}</PrivateText>
                       <WeekOverWeekBadge
                         value={delta?.marketRegression.beta ?? null}
                         kind="neutral"
@@ -209,6 +233,7 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
                     </>
                   }
                   hint={betaInterp.text}
+                  privateHint
                   color={
                     // Below the publish gate (r² floor / pair count) the beta
                     // is noise — never paint it off its magnitude bucket.
@@ -235,6 +260,7 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
                     </>
                   }
                   hint={alphaInterp.text}
+                  privateHint
                   color={toneToMetricColor(alphaInterp.tone)}
                 />
                 <MetricCell
@@ -251,17 +277,19 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
                     </>
                   }
                   hint={interpretR2(reg.rSquared).text}
+                  privateHint
                   color="neutral"
                 />
                 <MetricCell
                   label="Tracking Error"
                   value={<Pct value={reg.trackingError * 100} digits={2} signed />}
                   hint={interpretTrackingError(reg.trackingError).text}
+                  privateHint
                   color="neutral"
                 />
                 <MetricCell
                   label="Correlation"
-                  value={reg.correlation.toFixed(2)}
+                  value={<PrivateText>{reg.correlation.toFixed(2)}</PrivateText>}
                   hint={`${reg.dataPoints} daily observations`}
                   color="neutral"
                 />
@@ -312,11 +340,18 @@ function MetricCell({
   label,
   value,
   hint,
+  privateHint = false,
   color,
 }: {
   label: string;
   value: ReactNode;
   hint: string;
+  /**
+   * The hint restates a masked figure in words (an interpretation sentence),
+   * so it masks with the value. A plain caption (an observation count) does
+   * not set this.
+   */
+  privateHint?: boolean;
   color: "up" | "down" | "neutral" | "amber" | "blue";
 }) {
   const colorClass =
@@ -338,7 +373,9 @@ function MetricCell({
       <div className={`text-lg font-mono tabular-nums font-semibold ${colorClass}`}>
         {value}
       </div>
-      <div className="text-[10px] text-ink-faint mt-0.5">{hint}</div>
+      <div className="text-[10px] text-ink-faint mt-0.5">
+        {privateHint ? <PrivateText>{hint}</PrivateText> : hint}
+      </div>
     </div>
   );
 }

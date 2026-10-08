@@ -38,6 +38,7 @@ export interface DataGaps {
 }
 
 export interface CrossSourceDiscrepancy {
+  securityId: number;
   symbol: string;
   date: string;
   sourceA: string;
@@ -60,6 +61,7 @@ export interface SnapshotReconciliation {
 }
 
 export interface SectorDisagreement {
+  securityId: number;
   symbol: string;
   sector: string | null;
   fund_category: string;
@@ -75,9 +77,20 @@ export interface DataHealthSummary {
   maxStaleDays: number | null;
   worstStaleSymbol: string | null;
   overallCoveragePct: number;
+  /** Held securities that sit in more than one account. `totalSecurities` is
+   * DISTINCT securities; the Account Coverage rows count positions (one per
+   * account holding a security), so the rows add up to more than the headline
+   * by the extra accounts these securities sit in. */
+  securitiesHeldInMultipleAccounts: number;
   totalGaps: number;
   totalDiscrepancies: number;
   totalReconciliationFlags: number;
+  /** Statement snapshots in the reconciliation list with no comparison at all
+   * (`diffPct === null`: no computed value on that date, or a zero statement
+   * total). Never folded into "0 flags". */
+  totalReconciliationUnchecked: number;
+  /** Every row of the reconciliation list: flags + unchecked + clean. */
+  totalReconciliationSnapshots: number;
   totalFxFlags: number;
 }
 
@@ -327,6 +340,7 @@ export function getCrossSourceDiscrepancies(
     .prepare(
       `
       SELECT
+        s.id AS securityId,
         s.symbol,
         p.date,
         p.source AS sourceA,
@@ -558,33 +572,93 @@ function impliedSectorFromFundCategoryLabel(raw: string): string | null {
 }
 
 /**
- * Stocks whose GICS `sector` tag disagrees with the sector implied by their
- * `fund_category` ("US Sector Equity (X)" shape) and have NOT been verified
- * by the sweep (`scripts/verify-sector-tags.ts`). Verified rows are legit
- * divergences (e.g. GOOG: GICS Communication Services vs a Technology fund
- * category) and stay suppressed via `sector_verified_at`.
+ * The sector check's two outcomes for one pass over the same rows: stocks with
+ * a "US Sector Equity (X)" fund category whose X maps to a GICS sector and
+ * that the sweep (`scripts/verify-sector-tags.ts`) has NOT verified.
+ *
+ *  - `disagreements`: the stock HAS a sector tag and it differs from X.
+ *  - `missingSector`: the stock has no sector tag (NULL / blank). Nothing
+ *    disagrees — the tag is absent — and the panel's remedy (verify a
+ *    disagreement) does not apply, so these are reported separately.
+ *
+ * One classifier feeds both exported readers so the two lists are disjoint
+ * and can never lose a row between them.
+ *
+ * Universe: stocks the portfolio touches — CURRENTLY held (latest
+ * per-(account, security) row, shorts included) or on the active watchlist.
+ * The check used to read the whole securities table, so the panel filled with
+ * names long sold or never owned (QA finding
+ * data-health-sector-disagreements--all-rows-unheld-and-untagged-regression-3).
+ * A sold position (latest quantity 0) is out unless it is being watched.
  */
-export function getSectorDisagreements(db: Database.Database): SectorDisagreement[] {
+function classifySectorCheck(db: Database.Database): {
+  disagreements: SectorDisagreement[];
+  missingSector: SectorDisagreement[];
+} {
   const rows = db
     .prepare(
-      `SELECT symbol, sector, fund_category, industry
+      `SELECT id AS securityId, symbol, sector, fund_category, industry
        FROM securities
        WHERE LOWER(security_type) IN ('stock','common stock')
          AND fund_category LIKE 'US Sector Equity (%'
          AND sector_verified_at IS NULL
+         AND (
+           EXISTS (
+             SELECT 1 FROM holdings h
+             WHERE h.security_id = securities.id AND ${latestHoldingsPredicate()}
+           )
+           OR EXISTS (
+             SELECT 1 FROM watchlist w
+             WHERE w.security_id = securities.id AND w.is_active = 1
+           )
+         )
        ORDER BY symbol`
     )
-    .all() as { symbol: string; sector: string | null; fund_category: string; industry: string | null }[];
-  const out: SectorDisagreement[] = [];
+    .all() as {
+      securityId: number;
+      symbol: string;
+      sector: string | null;
+      fund_category: string;
+      industry: string | null;
+    }[];
+  const disagreements: SectorDisagreement[] = [];
+  const missingSector: SectorDisagreement[] = [];
   for (const r of rows) {
     const m = SECTOR_SHAPE.exec(r.fund_category);
     if (!m) continue;
     const implied = impliedSectorFromFundCategoryLabel(m[1]);
     if (!implied) continue;             // "Semiconductors" etc — finer than GICS, not a disagreement
+    if (r.sector === null || r.sector.trim() === "") {
+      missingSector.push({ ...r, impliedSector: implied });
+      continue;
+    }
     if (r.sector === implied) continue; // agrees
-    out.push({ ...r, impliedSector: implied });
+    disagreements.push({ ...r, impliedSector: implied });
   }
-  return out;
+  return { disagreements, missingSector };
+}
+
+/**
+ * Held or watched stocks whose GICS `sector` tag disagrees with the sector
+ * implied by their `fund_category` ("US Sector Equity (X)" shape) and have NOT been verified
+ * by the sweep (`scripts/verify-sector-tags.ts`). Verified rows are legit
+ * divergences (e.g. GOOG: GICS Communication Services vs a Technology fund
+ * category) and stay suppressed via `sector_verified_at`.
+ *
+ * A stock with NO sector tag is not a disagreement and is not listed here —
+ * see `getSectorCheckMissingSector`.
+ */
+export function getSectorDisagreements(db: Database.Database): SectorDisagreement[] {
+  return classifySectorCheck(db).disagreements;
+}
+
+/**
+ * The rows the sector check covers that have no sector tag at all (NULL or
+ * blank). Same universe and window as `getSectorDisagreements`; the count a
+ * surface shows for these is this list's length.
+ */
+export function getSectorCheckMissingSector(db: Database.Database): SectorDisagreement[] {
+  return classifySectorCheck(db).missingSector;
 }
 
 /**
@@ -592,10 +666,15 @@ export function getSectorDisagreements(db: Database.Database): SectorDisagreemen
  *
  * Universe = CURRENTLY-held securities (latest per-(account,security) row,
  * shorts included) and "priced" = a price row within the last 7 days — the
- * same semantics as getAccountCoverage below, so the headline KPI can never
- * contradict the page's own detail panels. Any-date holdings + any-age
- * prices previously pinned the headline near 100% while three current
- * holdings carried month-old prices.
+ * same held rows and the same window as getAccountCoverage. Any-date
+ * holdings + any-age prices previously pinned the headline near 100% while
+ * three current holdings carried month-old prices.
+ *
+ * GRAIN: the headline is DE-DUPLICATED across accounts — it counts distinct
+ * securities. getAccountCoverage counts positions (a security held in two
+ * accounts is one row in each), so its rows add up to more than the headline
+ * whenever `securitiesHeldInMultipleAccounts` is above zero. The two are the
+ * same rows at two grains, not two definitions; the page labels each.
  */
 export function getDataHealthSummary(
   db: Database.Database,
@@ -652,6 +731,22 @@ export function getDataHealthSummary(
       worstSymbol: string | null;
     };
 
+  // Same held rows as heldCte, grouped instead of de-duplicated.
+  const multiAccount = db
+    .prepare(
+      `
+      SELECT COUNT(*) AS cnt FROM (
+        SELECT h.security_id FROM holdings h
+        JOIN securities hs ON hs.id = h.security_id
+        WHERE ${latestHoldingsPredicate()}
+          AND ${liveOptionExpirationSql("hs")}
+        GROUP BY h.security_id
+        HAVING COUNT(DISTINCT h.account_id) > 1
+      )
+      `,
+    )
+    .get() as { cnt: number };
+
   const gaps = getDataGaps(db);
   const totalGaps =
     gaps.securitiesNoPrices.length +
@@ -665,6 +760,9 @@ export function getDataHealthSummary(
   const reconFlags = reconciliation.filter(
     (r) => r.diffPct !== null && Math.abs(r.diffPct) > 2,
   ).length;
+  // A snapshot with no comparison is not a clean result. Counted off the same
+  // list the panel renders, so the card and the rows cannot disagree.
+  const reconUnchecked = reconciliation.filter((r) => r.diffPct === null).length;
 
   const fxRateHealth = getFxRateHealth(db, today);
   const fxFlags = fxRateHealth.filter((r) => r.flags.length > 0).length;
@@ -680,9 +778,12 @@ export function getDataHealthSummary(
       secCounts.total > 0
         ? Math.round((secCounts.withPrices / secCounts.total) * 100)
         : 100,
+    securitiesHeldInMultipleAccounts: multiAccount.cnt,
     totalGaps,
     totalDiscrepancies,
     totalReconciliationFlags: reconFlags,
+    totalReconciliationUnchecked: reconUnchecked,
+    totalReconciliationSnapshots: reconciliation.length,
     totalFxFlags: fxFlags,
   };
 }

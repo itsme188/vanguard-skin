@@ -175,7 +175,11 @@ describe("getOrGenerateNarrative", () => {
 
     expect(result).not.toBeNull();
     expect(result).not.toContain("1619");
-    expect(result).toMatch(/19\.3%/);
+    // 2026-10-07: the stand-in is the templated fact sentence (touch count and
+    // dates from the level's metadata). It no longer restates a distance —
+    // the old "19.3%" was on the level's denominator and disagreed with the
+    // card's own -16.2% chip.
+    expect(result).toBe("Support touched once, on 2024-09-11.");
 
     const row = db
       .prepare(
@@ -189,13 +193,21 @@ describe("getOrGenerateNarrative", () => {
 
   it("stores a plausible model narrative verbatim (no false-positive gating)", async () => {
     const { generateObjectForFeature } = await import("@/lib/ai/generate");
+    // 2026-10-07: a distance is judged on the chip's denominator —
+    // (591.33 - 495.6) / 591.33 = 16.2%, the figure the card's chip prints.
     const goodNarrative =
-      "Single touch on 2024-09-11 offers minimal support confirmation; price currently 19.3% above this historical level.";
+      "Single touch on 2024-09-11 offers minimal support confirmation; price currently 16.2% above this historical level.";
     (generateObjectForFeature as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce({
       object: { narrative: goodNarrative },
     });
 
-    const level = { ...SAMPLE_LEVEL, price: 495.6, lastTouchDate: "2024-09-11", touches: 1 };
+    const level = {
+      ...SAMPLE_LEVEL,
+      price: 495.6,
+      firstTouchDate: "2024-09-11",
+      lastTouchDate: "2024-09-11",
+      touches: 1,
+    };
     const result = await getOrGenerateNarrative(db, {
       securityId: 1,
       symbol: "META",

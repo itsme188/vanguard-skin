@@ -415,6 +415,26 @@ describe("interpretR2", () => {
   it("0.5-0.8 is a moderate fit", () => {
     expect(interpretR2(0.65).tone).toBe("neutral");
   });
+
+  // The tile that owns the number shares the alpha/beta tiers: below
+  // LOW_R2_THRESHOLD the banner says "noise" and alpha/beta say "not
+  // interpretable", so the R² caption must not say "indicative only".
+  it("below LOW_R2_THRESHOLD says the fit is too weak to read, matching the alpha/beta noise tier", () => {
+    for (const r2 of [0, 0.017, 0.088, LOW_R2_THRESHOLD - 0.0001]) {
+      const r = interpretR2(r2);
+      expect(r.tone).toBe("neutral");
+      expect(r.text).toContain("not interpretable at this R²");
+      expect(r.text.toLowerCase()).not.toContain("indicative");
+      expect(r.text.toLowerCase()).not.toContain("loose fit");
+    }
+    expect(interpretAlpha(0.3, 0.05).text).toContain("not interpretable at this R²");
+    expect(interpretBeta(1.5, "the market", 0.05).text).toContain("not interpretable at this R²");
+  });
+
+  it("exactly at LOW_R2_THRESHOLD stays the loose-fit tier, as alpha/beta do", () => {
+    expect(interpretR2(LOW_R2_THRESHOLD).text).toMatch(/^Loose fit/);
+    expect(interpretR2(0.3).text).toMatch(/^Loose fit/);
+  });
 });
 
 // ─── Tracking error ──────────────────────────────────────────────
@@ -571,6 +591,21 @@ describe("interpretTwrVsXirr", () => {
   it("XIRR lagging TWR by >= 1pp — timing detracted (bad)", () => {
     const r = interpretTwrVsXirr(0.11, 0.08);
     expect(r?.tone).toBe("bad");
+  });
+
+  // The card's headline TWR is the PERIOD TOTAL; the comparison is between
+  // the two ANNUALIZED figures. A YTD book can show a period-total TWR far
+  // below the annualized MWR while the annualized TWR sits above it.
+  it("every verdict names the annualized basis it compares on", () => {
+    const lags = interpretTwrVsXirr(0.26, 0.24);
+    expect(lags?.tone).toBe("bad");
+    expect(lags?.text).toMatch(/^On an annualized basis, money-weighted lags time-weighted/);
+    expect(interpretTwrVsXirr(0.08, 0.11)?.text).toMatch(
+      /^On an annualized basis, money-weighted leads time-weighted/,
+    );
+    expect(interpretTwrVsXirr(0.1, 0.105)?.text).toMatch(
+      /^On an annualized basis, money-weighted ≈ time-weighted/,
+    );
   });
 });
 

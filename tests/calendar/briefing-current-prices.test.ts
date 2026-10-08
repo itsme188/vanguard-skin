@@ -77,61 +77,61 @@ describe("buildCurrentPrices", () => {
   });
 
   it("includes prices for held stocks", () => {
-    const aapl = seedStock("AAPL");
+    const aapl = seedStock("ZZZ");
     seedHolding(aapl, 1, 100);
-    seedPrice(aapl, 150);
+    seedPrice(aapl, 70);
 
     const out = buildCurrentPrices(db, {
-      holdings: [{ symbol: "AAPL" }],
+      holdings: [{ symbol: "ZZZ" }],
       expiringOptions: [],
       portfolioEarnings: [],
       wshEarnings: [],
     });
 
-    expect(out.get("AAPL")).toEqual({ close: 150, date: "2026-04-27" });
+    expect(out.get("ZZZ")).toEqual({ close: 70, date: "2026-04-27" });
   });
 
-  it("includes underlyings of options the user holds even when the stock isn't held — the TER LEAP case", () => {
-    // User holds a Jan '28 $200 TER call but no TER stock. Without this,
-    // the briefing model has no price for TER and fabricates one.
-    const ter = seedStock("TER");
-    seedPrice(ter, 400.0);
-    const terCall = seedOption("TER  280121C00200000", "TER", 200, "2028-01-21");
+  it("includes underlyings of options the user holds even when the stock isn't held — the AAA LEAP case", () => {
+    // User holds a Jan '28 $120 AAA call but no AAA stock. Without this,
+    // the briefing model has no price for AAA and fabricates one.
+    const ter = seedStock("AAA");
+    seedPrice(ter, 275.0);
+    const terCall = seedOption("AAA  280121C00120000", "AAA", 120, "2028-01-21");
     seedHolding(terCall, 1, 1);
 
     const out = buildCurrentPrices(db, {
-      holdings: [], // intentionally empty: no TER stock holding
+      holdings: [], // intentionally empty: no AAA stock holding
       expiringOptions: [], // option doesn't expire this week
       portfolioEarnings: [],
       wshEarnings: [],
     });
 
-    // The function must discover TER via the option-underlyings sub-query.
-    expect(out.has("TER")).toBe(true);
-    expect(out.get("TER")?.close).toBe(400.0);
+    // The function must discover AAA via the option-underlyings sub-query.
+    expect(out.has("AAA")).toBe(true);
+    expect(out.get("AAA")?.close).toBe(275.0);
   });
 
   it("picks the most recent price when multiple are available", () => {
-    const hood = seedStock("HOOD");
+    const hood = seedStock("BBB");
     seedHolding(hood, 1, 100);
-    seedPrice(hood, 80.0, "2026-04-20");
-    seedPrice(hood, 84.5, "2026-04-27");
-    seedPrice(hood, 82.0, "2026-04-23");
+    seedPrice(hood, 61.0, "2026-04-20");
+    seedPrice(hood, 66.5, "2026-04-27");
+    seedPrice(hood, 63.5, "2026-04-23");
 
     const out = buildCurrentPrices(db, {
-      holdings: [{ symbol: "HOOD" }],
+      holdings: [{ symbol: "BBB" }],
       expiringOptions: [],
       portfolioEarnings: [],
       wshEarnings: [],
     });
 
-    expect(out.get("HOOD")).toEqual({ close: 84.5, date: "2026-04-27" });
+    expect(out.get("BBB")).toEqual({ close: 66.5, date: "2026-04-27" });
   });
 
   it("does not include options themselves — only the stock/ETF/etc. underlying gets priced", () => {
-    const ter = seedStock("TER");
-    seedPrice(ter, 400.0);
-    const terCall = seedOption("TER  280121C00200000", "TER", 200, "2028-01-21");
+    const ter = seedStock("AAA");
+    seedPrice(ter, 275.0);
+    const terCall = seedOption("AAA  280121C00120000", "AAA", 120, "2028-01-21");
     seedHolding(terCall, 1, 1);
 
     const out = buildCurrentPrices(db, {
@@ -142,23 +142,23 @@ describe("buildCurrentPrices", () => {
     });
 
     // The OCC-format option symbol should not appear (no price expected for the option itself).
-    expect(out.has("TER  280121C00200000")).toBe(false);
-    // The underlying TER should appear.
-    expect(out.has("TER")).toBe(true);
+    expect(out.has("AAA  280121C00120000")).toBe(false);
+    // The underlying AAA should appear.
+    expect(out.has("AAA")).toBe(true);
   });
 
   it("includes earnings tickers (so an event-driven name has a price)", () => {
-    const xom = seedStock("XOM");
-    seedPrice(xom, 100.5);
+    const xom = seedStock("CCC");
+    seedPrice(xom, 45.25);
 
     const earnings: CalendarEvent = {
       id: 1,
       source: "finnhub",
       event_type: "earnings",
       event_date: "2026-05-01",
-      title: "XOM earnings",
-      symbol: "XOM",
-      source_key: "finnhub:XOM:2026-05-01",
+      title: "CCC earnings",
+      symbol: "CCC",
+      source_key: "finnhub:CCC:2026-05-01",
     } as CalendarEvent;
 
     const out = buildCurrentPrices(db, {
@@ -168,7 +168,7 @@ describe("buildCurrentPrices", () => {
       wshEarnings: [],
     });
 
-    expect(out.get("XOM")?.close).toBe(100.5);
+    expect(out.get("CCC")?.close).toBe(45.25);
   });
 
   // ── per-(account, security) "latest" keying ──────────────────────
@@ -179,28 +179,28 @@ describe("buildCurrentPrices", () => {
   // never discovered — and Opus, handed no price, fabricated one.
 
   it("discovers an option underlying whose leg lags behind a newer row for another security in the same account", () => {
-    const ter = seedStock("TER");
-    seedPrice(ter, 400.0);
-    const terCall = seedOption("TER  280121C00200000", "TER", 200, "2028-01-21");
+    const ter = seedStock("AAA");
+    seedPrice(ter, 275.0);
+    const terCall = seedOption("AAA  280121C00120000", "AAA", 120, "2028-01-21");
     seedHolding(terCall, 1, 1, "2026-03-31"); // monthly statement row
-    const aapl = seedStock("AAPL");
+    const aapl = seedStock("ZZZ");
     seedHolding(aapl, 1, 100, "2026-04-27"); // newer daily row, same account
 
     const out = buildCurrentPrices(db, {
-      holdings: [], // TER stock is not held — discovery is via the option
+      holdings: [], // AAA stock is not held — discovery is via the option
       expiringOptions: [],
       portfolioEarnings: [],
       wshEarnings: [],
     });
 
-    expect(out.has("TER")).toBe(true);
-    expect(out.get("TER")?.close).toBe(400.0);
+    expect(out.has("AAA")).toBe(true);
+    expect(out.get("AAA")?.close).toBe(275.0);
   });
 
   it("does not discover an underlying whose option leg is a quantity=0 tombstone", () => {
-    const ter = seedStock("TER");
-    seedPrice(ter, 400.0);
-    const terCall = seedOption("TER  280121C00200000", "TER", 200, "2028-01-21");
+    const ter = seedStock("AAA");
+    seedPrice(ter, 275.0);
+    const terCall = seedOption("AAA  280121C00120000", "AAA", 120, "2028-01-21");
     seedHolding(terCall, 1, 1, "2026-03-31");
     seedHolding(terCall, 1, 0, "2026-04-27"); // closed-position tombstone
 
@@ -211,7 +211,7 @@ describe("buildCurrentPrices", () => {
       wshEarnings: [],
     });
 
-    expect(out.has("TER")).toBe(false);
+    expect(out.has("AAA")).toBe(false);
   });
 });
 
@@ -222,13 +222,13 @@ describe("formatCurrentPricesBlock", () => {
 
   it("formats prices alphabetically with dollar precision", () => {
     const m = new Map([
-      ["TER", { close: 400.8, date: "2026-04-27" }],
-      ["AAPL", { close: 150, date: "2026-04-27" }],
-      ["GOOG", { close: 300, date: "2026-04-27" }],
+      ["AAA", { close: 275.8, date: "2026-04-27" }],
+      ["ZZZ", { close: 70, date: "2026-04-27" }],
+      ["GGG", { close: 90, date: "2026-04-27" }],
     ]);
     const out = formatCurrentPricesBlock(m);
     expect(out).toBe(
-      "- AAPL: $150.00 (2026-04-27)\n- GOOG: $300.00 (2026-04-27)\n- TER: $400.80 (2026-04-27)"
+      "- AAA: $275.80 (2026-04-27)\n- GGG: $90.00 (2026-04-27)\n- ZZZ: $70.00 (2026-04-27)"
     );
   });
 });
@@ -240,9 +240,9 @@ describe("buildCurrentPrices FX conversion", () => {
         "INSERT INTO securities (symbol, name, security_type, asset_class, multiplier, currency) VALUES ('000001', 'Synthetic KRW Corp', 'stock', 'equity', 1, 'KRW')"
       )
       .run().lastInsertRowid as number;
-    seedHolding(krw, 1, 10);
-    seedPrice(krw, 1_500_000);
-    upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.0006531, asOf: "2026-07-03", source: "test" });
+    seedHolding(krw, 1, 12);
+    seedPrice(krw, 2_400_000);
+    upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.0007, asOf: "2026-07-03", source: "test" });
 
     const out = buildCurrentPrices(db, {
       holdings: [{ symbol: "000001" }],
@@ -252,8 +252,8 @@ describe("buildCurrentPrices FX conversion", () => {
     });
 
     // Opus reads "000001 closed at $X" verbatim — native won here means the
-    // model narrates a $1.5M/share stock.
-    expect(out.get("000001")!.close).toBeCloseTo(1_500_000 * 0.0006531, 4);
+    // model narrates a $2.4M/share stock.
+    expect(out.get("000001")!.close).toBeCloseTo(2_400_000 * 0.0007, 4);
     expect(out.get("000001")!.close).toBeLessThan(2_000);
   });
 });

@@ -5,12 +5,29 @@ import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { tabs } from "./nav-tabs";
+import { ThemeToggle } from "./ThemeToggle";
+import type { DataConfidence } from "@/lib/queries/data-confidence";
 
 // Swipe-to-close threshold: how far the user must drag left before we
 // commit the dismiss on touchend. 50px feels right — far enough to
 // distinguish from accidental finger jitter, short enough to not require
 // a full-arm swipe.
 const SWIPE_CLOSE_THRESHOLD = 50;
+
+/**
+ * One-line summary for the drawer's Data health row. The header badge is
+ * hidden below md, so a phone user would otherwise never see a capped score
+ * (qa:mobile-header--data-confidence-badge-hidden-below-md-no-mobile-surface).
+ * Score and cap state only; the cap reason names portfolio detail and stays on
+ * the Data Health page.
+ */
+export function dataHealthRowLabel(
+  confidence: Pick<DataConfidence, "overallScore" | "capReason"> | null,
+): string {
+  if (!confidence) return "Data health";
+  const score = `${confidence.overallScore}%`;
+  return confidence.capReason ? `Data health · ${score} (capped)` : `Data health · ${score}`;
+}
 
 /**
  * Hamburger + slide-in drawer for mobile navigation.
@@ -29,13 +46,41 @@ export function MobileNavDrawer() {
   const [dragX, setDragX] = useState(0); // negative = finger pulled left from start
   const touchStartXRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
+  const navRef = useRef<HTMLElement>(null);
+  const hamburgerRef = useRef<HTMLButtonElement>(null);
+  const [confidence, setConfidence] = useState<Pick<DataConfidence, "overallScore" | "capReason"> | null>(null);
   const pathname = usePathname();
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  const close = useCallback(() => setOpen(false), []);
+  // Fetch the score each time the drawer opens (cheap read, never on a poll).
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    fetch("/api/data-confidence", { signal: controller.signal })
+      .then((res) => res.json())
+      .then((json) => {
+        if (json?.success && typeof json.data?.overallScore === "number") {
+          setConfidence({ overallScore: json.data.overallScore, capReason: json.data.capReason ?? null });
+        }
+      })
+      .catch(() => {
+        // Unreachable score: the row still links to the page, just without a figure.
+      });
+    return () => controller.abort();
+  }, [open]);
+
+  const close = useCallback(() => {
+    // The drawer turns aria-hidden/inert on close; if focus is still inside
+    // (the X button, a link) the browser blocks it. Hand focus to the
+    // hamburger first. A no-op when focus is elsewhere (route-change close).
+    if (navRef.current?.contains(document.activeElement)) {
+      hamburgerRef.current?.focus();
+    }
+    setOpen(false);
+  }, []);
 
   useEffect(() => {
     close();
@@ -87,6 +132,7 @@ export function MobileNavDrawer() {
         />
       )}
       <nav
+        ref={navRef}
         className={`fixed top-0 left-0 h-full w-64 z-[70] border-r border-edge shadow-2xl transform transition-transform duration-300 ease-in-out md:hidden ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
@@ -110,6 +156,7 @@ export function MobileNavDrawer() {
         role="dialog"
         aria-label="Navigation menu"
         aria-hidden={!open}
+        inert={!open}
       >
         <div
           className="flex items-center justify-between px-4 py-4 border-b border-edge"
@@ -120,7 +167,7 @@ export function MobileNavDrawer() {
           </span>
           <button
             onClick={close}
-            className="text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised"
+            className="relative text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised pointer-coarse:after:absolute pointer-coarse:after:-inset-3 pointer-coarse:after:content-['']"
             aria-label="Close navigation"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
@@ -153,6 +200,26 @@ export function MobileNavDrawer() {
             );
           })}
         </div>
+
+        <div className="border-t border-edge py-2">
+          <Link
+            href="/dashboard/data-health"
+            onClick={close}
+            className={`flex items-center px-4 py-3 text-sm font-medium transition-colors border-l-2 ${
+              pathname.startsWith("/dashboard/data-health")
+                ? "text-gold-ink bg-gold/5 border-gold"
+                : confidence?.capReason
+                  ? "text-down hover:bg-raised/50 border-transparent"
+                  : "text-ink-dim hover:text-ink hover:bg-raised/50 border-transparent"
+            }`}
+          >
+            {dataHealthRowLabel(confidence)}
+          </Link>
+          <div className="flex items-center justify-between px-4 text-sm font-medium text-ink-dim">
+            <span>Dark theme</span>
+            <ThemeToggle />
+          </div>
+        </div>
       </nav>
     </>
   );
@@ -160,8 +227,9 @@ export function MobileNavDrawer() {
   return (
     <>
       <button
+        ref={hamburgerRef}
         onClick={() => setOpen(true)}
-        className="md:hidden p-1.5 -ml-1 rounded-md text-ink-faint hover:text-ink transition-colors"
+        className="relative md:hidden p-1.5 -ml-1 rounded-md text-ink-faint hover:text-ink transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
         aria-label="Open navigation menu"
         aria-expanded={open}
       >

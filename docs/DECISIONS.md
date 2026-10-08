@@ -573,3 +573,53 @@ Data and docs only; no code changed. Real figures are in the gate reports in the
 
 **Review.** Independent review that ran the code found the first build snapshotted the purchase row's amount, not the lot's basis, so a real basis change could leave the marker in place. That came from the controller's brief, not the builder. Fixed and re-reviewed; browser-checked on a sandbox copy.
 
+## 2026-10-07 (evening) — Overnight Claude + Codex sprint, first landing
+
+Forty-seven commits on branch `claude/sprint-2026-10-07` (`49af56e1` to `06cd4a3a`). This entry records the authority the owner gave, what the two agents decided under it, and what was left for the owner. Direction-only; no figure appears here.
+
+**The authority the owner gave**
+- **Approval scope, in the owner's words (about 18:58 Eastern time, ET):**
+
+  > "give you the authority to make decisions on your own for the stuff we have in the backlog. For the next 12 or so hours, I want you and Codex to pair code a sprint, fixing and closing as many issues as you could. Start with the stuff that normally would not require a decision from me, and when you finish all that, move up to ones that, until now, required a decision. Go ahead with your recommended decision, which is what I normally choose anyway. If you feel like you're unsure, then get a second opinion from Codex. If you feel like it'll significantly change the direction of the app, then skip those decisions and cue them up for me in the morning. … The goal is to not get stuck, skip and move on if you get stuck, and let's get the app back to par, clean, working, not full of bugs."
+
+- **Approved earlier the same evening:** the cloud Worker's replaced-entry gap is fixed by option 2 (ship the replaced-entry ids through the armed-events delta), with two design calls: the Worker's marking is one-way, and a replacement entry created after the nightly snapshot gets no cloud recap.
+- **Four authority answers (asked once, about 19:03 ET):**
+  1. **Shipping.** Merge, push and deploy each reviewed wave with `npm run deploy`. No deploy between 01:30 and 04:30 ET (the nightly QA chain runs then).
+  2. **Live data.** Rehearsed repairs are allowed (backup, rehearsal on a copy, identical second run). Claude's own limit on top: tax-lot and ledger repairs stay held for the owner.
+  3. **Cloudflare Worker.** May be deployed after review. Worker first, then the Mac.
+  4. **Nightly QA.** Tonight's fix step is paused; the sweep still runs. Done as `49af56e1` (`qa/deep-qa-config.json`, fixer off). It must be turned back on at the sprint's closeout.
+- **Held for the owner by the game plan, never built tonight:** anything that changes the app's direction, anything that needs an owner document, and historical production-data repairs.
+
+**Decisions taken under that authority (for the owner to confirm or reverse)**
+- **Price levels: "alerted today" and the Mac's once-a-day guard use the Eastern day** (`9dbff37a`). They used the UTC day, so an evening alert stopped counting as today in the Eastern evening. One function serves the chip, the reactivate result and the scanner's guard, so all three moved together. Codex disagreed on one point: the Worker keeps its own 24-hour guard, so the two sides can now disagree (see Queued).
+- **Research: the held-name relevance guard also protects short positions and the underlyings of live options** (`10a7f157`). An article about such a name was being filtered as off-topic. Cost: more articles can reach the digest's input. Codex agreed. Its review also found the guard missed option rows that store no underlying; fixed in `cd3ac4e2`.
+- **Option sectors: an AI miss is remembered and asked again after 30 days** (`10a7f157`). The miss cost one AI question on every sync. The 30 days is the builder's number. Codex agreed: a permanent "never ask" would freeze a miss after the data improves.
+- **Earnings prepare steps: a row that hit the attempt cap without ever storing a fingerprint revives once** (`06f30efb`). Before, it could never revive. The reset stores the real fingerprint, so a second revival needs a real change of inputs; a done row is never re-run on this rule. Codex agreed.
+- **Worker replaced-entry fix: option 2 with one-way marking, and deleted entries carried the same way** (`074b7d4a`, `877a7489`). Option 2 and one-way marking are the owner's ruling. The second commit extends it: an entry replaced by deletion could never be listed, so the payload also carries removed entries and the Worker treats them like replaced ones. That came from the independent review of the first commit. Codex built both; the extension was not put to Codex as a decision.
+- **Analysis: the credit rating view is hidden until a holding carries a rating** (`5f5ba9ef`). This is the ruled option; no rating is derived for Treasuries. Codex's review of the range raised no objection to the choice.
+- **Earnings email viewer: a click into the email hands focus back to the dialog, so Escape works** (`c457ae35`). Cost: keyboard scrolling and copy inside the email frame. This was the written recommendation. Not put to Codex as a decision; its review found no defect in the masked body or the focus handling.
+- **Bogeys: an empty bogey write never erases stored figures** (`027864ce`). A bogey row with every field empty is not stored and does not count as coverage. The builder first made an empty write over an existing row delete it; the orchestrator overrode that, and the stored figures are left alone. Not put to Codex.
+- **Data-confidence popover under privacy mode: account names and dates stay readable; counts, tickers and amounts mask** (`5f1063e4`). Privacy mode had blanked the whole popover, guidance included. Not put to Codex.
+- **Trade reviews count round trips everywhere, and a saved review whose count differs from the ledger says so** (`9d9d89b5`). The month picker counted closing legs while the card counted round trips. A mismatched saved review shows both numbers and offers Regenerate; saved prose is never rewritten. Not put to Codex.
+- **Chat: `query_holdings` returns shorts, with signed values** (`bd3e6fc4`, `06cd4a3a`). Codex built the first half (rank by gross exposure so the row cap no longer drops every short). The independent review of that unit found the tool still returned no shorts; the second commit fixed it. Not put to Codex as a decision.
+- **Accounts: a second reconciliation checkpoint for the same account and date is refused unless the request is an explicit Replace naming that row** (`3777bfc1`). The write was a silent replace. Codex's review confirmed the guard and found the route accepted invalid values; fixed in `125b7103`.
+- **Notes: the editor can change a note's type and its security** (`a561c67d`, `d7e8be0a`). The save route ignored both fields. Not put to Codex.
+
+**Queued for the owner**
+- **Worker level-scan guard.** Claude moved the Mac to the Eastern day and left the Worker's 24-hour guard alone. Codex wants the Worker aligned: put `triggered_at` in the snapshot, skip when the last fire was on the current Eastern day, and expire the cloud marker at Eastern midnight. Its concrete failure: a level that crosses again on the next Eastern day, but within 24 hours of the Worker's last alert, can be held back in the cloud while the Mac would allow it. Codex judged it not unsafe for the night while the Mac is the sender.
+- **Equity curve 30% spread test.** Claude wanted it dropped (a deposit can trip it) and sparse runs captioned. Codex called that a direction change: a caption does not replace a check for bad daily data. The test was restored as it was (`0fc4c440`); the range-scoped caption and the sparse-run caption stay.
+- **The measured consequence of one-way marking.** A company whose entry is replaced by a new, unarmed row after the nightly snapshot gets no cloud email until the next snapshot. This was approved in principle. The reviewer measured that confirming a date by hand on print day triggers it.
+- **Greeks rows priced at the assumed default volatility still feed the tile totals.** They are marked on the card, not removed (`84307305`). Not put to Codex.
+- **Early-close market days.** The live or stale label and the market snapshot treat every trading day as closing at the normal time. Codex's review confirmed this as a low defect. Claude held it: the fix needs a verified exchange calendar, and none is stored.
+- **Data-confidence Holdings score is weakest-link.** One cash or bond row carried from an older statement sets the whole dimension. The popover now names the stale positions; scoring was left alone (`5f1063e4`). Not put to Codex.
+- **`data_quality` still counts tombstones in its all-rows basis.** The holdings counts no longer include closed positions; the value math and the label were not changed (`17e9c5b6`). Not put to Codex.
+- **The significant-moves engine evaluates closed positions.** The card's states were fixed; the engine was not. A fix changes the engine and its Worker mirror together. Not put to Codex.
+- **Sector-classify freshness has no timestamp to show.** The trust strip's cell was really the date factor ratings last changed and is relabelled so (`3bb735a0`). Showing when sectors were last classified needs a stored time. Not put to Codex.
+
+**Method**
+- Work was split into units with disjoint file sets. Claude sub-agents and Codex built them side by side in one sibling worktree. Builders never wrote git; the orchestrator read each diff, re-ran its tests and committed by path.
+- Codex reviewed Claude's committed work, read-only, without running the suite. An agent that ran the code reviewed each unit Codex built. Review findings were fixed before landing (`0fc4c440`, `cd3ac4e2`, `125b7103`, `877a7489`, `06cd4a3a`).
+- Second opinions followed one rule: Claude recommends; if Codex agrees, build; if either calls it a direction change, or the two stay split, it goes to the owner with both views.
+- **Most units were NOT checked in a browser by their builders.** Their evidence is tests and source checks. Treat any screen change in this landing as unverified on screen until a browser pass says otherwise.
+- One process lesson: two git commands run at once in the shared worktree collided on the index lock and dropped a commit, which was redone. Git commands in a shared worktree run one at a time.
+

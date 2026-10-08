@@ -3,6 +3,7 @@ import { getBogeysForEvent } from "@/lib/queries/earnings-bogeys";
 import {
   saveBogeyWithRecompile,
   deleteBogeyWithRecompile,
+  bogeyHasContent,
 } from "@/lib/mutations/earnings-bogeys";
 import { parseExtraMetrics, detectExtraMetricConflicts } from "@/lib/print-watch/extra-metrics";
 
@@ -72,6 +73,19 @@ interface ManualBogeyBody {
   extra_metrics_json?: string | null;
 }
 
+/** The figure fields of a manual save, with the name the modal shows for each. */
+const NUMERIC_FIELDS = [
+  ["eps_consensus", "EPS consensus"],
+  ["eps_whisper", "EPS whisper"],
+  ["revenue_consensus_usd", "Revenue consensus"],
+  ["revenue_whisper_usd", "Revenue whisper"],
+  ["expected_move_pct", "Expected move"],
+] as const;
+
+/** Shown by the modal as-is, so it is written for the desk, not for a log. */
+const NOTHING_TO_SAVE =
+  "Nothing to save — enter at least one bogey, guidance or note.";
+
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as ManualBogeyBody;
   if (typeof body.event_id !== "number" || !Number.isInteger(body.event_id)) {
@@ -79,6 +93,35 @@ export async function POST(request: Request) {
       { success: false, error: "Body field 'event_id' must be an integer." },
       { status: 400 },
     );
+  }
+
+  // A figure that arrives as anything but a finite number is refused by name.
+  // Coercing it to "no value" stored a row with none of the numbers the desk
+  // typed and still answered 200 (qa: unparseable-values-silently-dropped).
+  for (const [key, label] of NUMERIC_FIELDS) {
+    const v: unknown = body[key];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== "number" || !Number.isFinite(v)) {
+      return Response.json(
+        { success: false, error: `${label} must be a number.` },
+        { status: 400 },
+      );
+    }
+    if (key === "expected_move_pct" && v <= 0) {
+      return Response.json(
+        { success: false, error: `${label} must be a percent above zero.` },
+        { status: 400 },
+      );
+    }
+  }
+  for (const key of ["source_label", "guidance_notes", "notes"] as const) {
+    const v: unknown = body[key];
+    if (v !== undefined && v !== null && typeof v !== "string") {
+      return Response.json(
+        { success: false, error: `Body field '${key}' must be a string.` },
+        { status: 400 },
+      );
+    }
   }
 
   let extraMetricsJson: string | null = null;
@@ -98,24 +141,29 @@ export async function POST(request: Request) {
     extraMetricsJson = body.extra_metrics_json.trim() === "" ? null : body.extra_metrics_json;
   }
 
-  const { result, recompile } = saveBogeyWithRecompile(db, {
+  const input = {
     event_id: body.event_id,
-    source: "manual",
+    source: "manual" as const,
     source_label: body.source_label ?? null,
     eps_consensus: body.eps_consensus ?? null,
     eps_whisper: body.eps_whisper ?? null,
     revenue_consensus_usd: body.revenue_consensus_usd ?? null,
     revenue_whisper_usd: body.revenue_whisper_usd ?? null,
-    expected_move_pct:
-      typeof body.expected_move_pct === "number" &&
-      Number.isFinite(body.expected_move_pct) &&
-      body.expected_move_pct > 0
-        ? body.expected_move_pct
-        : null,
+    expected_move_pct: body.expected_move_pct ?? null,
     guidance_notes: body.guidance_notes ?? null,
     notes: body.notes ?? null,
     extra_metrics_json: extraMetricsJson,
-  });
+  };
+
+  // An all-empty save is refused, never stored: an empty row flips the hub
+  // chip to "edit" and counts as coverage on every surface that asks whether
+  // the event has bogeys (owner ruling; qa: empty-manual-bogey-saved-flips-chip).
+  // The check is the mutation's own predicate, so the two cannot disagree.
+  if (!bogeyHasContent(input)) {
+    return Response.json({ success: false, error: NOTHING_TO_SAVE }, { status: 400 });
+  }
+
+  const { result, recompile } = saveBogeyWithRecompile(db, input);
 
   return Response.json({ success: true, ...result, ...(recompile ? { recompiled: recompile } : {}) });
 }

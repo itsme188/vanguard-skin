@@ -24,6 +24,7 @@ import { computeFactorAnalysis } from "@/lib/compute/factors";
 import { computeRiskMetrics, computePositionRisk } from "@/lib/compute/risk";
 import { getFactorHeatmap } from "@/lib/queries/analysis";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
+import { getDefaultBenchmark } from "@/lib/analysis/benchmarks";
 import type { DefenseAnalysis, HedgeBadge, PairClassification } from "@/lib/compute/hedging";
 
 // ─── Surface registry ────────────────────────────────────────────────────────
@@ -64,7 +65,7 @@ const SYSTEM_PROMPT = `You are a portfolio analyst writing concise narrative pro
 
 const SURFACE_PROMPTS: Record<NarrativeSurface, string> = {
   "factor-analysis":
-    "Summarize the user's portfolio factor exposure in 2-3 sentences. Highlight the dominant tilts (Growth vs Value, AI exposure, Rate sensitivity, Cyclicality, etc.) and what they imply about the user's effective bet on the market regime. Avoid specific dollar amounts. Use plain English, no jargon.",
+    "Summarize the user's portfolio factor exposure in 2-3 sentences. Highlight the dominant tilts (Growth vs Value, AI exposure, Rate sensitivity, Cyclicality, etc.) and what they imply about the user's effective bet on the market regime. Avoid specific dollar amounts. Use plain English, no jargon. The marketRegression figures are measured against the benchmark named in the `benchmark` field: whenever you mention beta, alpha, R-squared, tracking error or correlation, name that benchmark (for example 'beta versus VTI').",
   "risk-metrics":
     "Summarize the portfolio's risk metrics in 2-3 sentences: drawdown profile, volatility, Sharpe, Herfindahl concentration. Note whether risk is concentrated in a few names or diversified. Avoid specific dollar amounts.",
   "position-risk":
@@ -280,6 +281,18 @@ export function buildDefenseFingerprintInputs(
 
 // ─── Per-surface context builder ─────────────────────────────────────────────
 
+/**
+ * The benchmark the factor-analysis narrative is regressed against: the same
+ * per-scope default the Quantitative Factor Analysis card opens on
+ * (`getDefaultBenchmark`). The prose used to be generated against SPY for
+ * every scope while the tiles under it opened on VTI or QQQ, so it could
+ * state "beta near 1" above a tile reading far lower. The symbol is part of
+ * the prompt payload, so it is also part of the fingerprint.
+ */
+export function narrativeBenchmarkForScope(scope: string): string {
+  return getDefaultBenchmark(scope);
+}
+
 interface SurfaceInputs {
   /** The JSON blob rendered into the prompt. */
   context: string;
@@ -315,9 +328,11 @@ function buildSurfaceInputs(
   };
 
   if (surface === "factor-analysis") {
-    const result = computeFactorAnalysis(db, { accountIds });
+    const benchmark = narrativeBenchmarkForScope(scope);
+    const result = computeFactorAnalysis(db, { accountIds, benchmarkSymbol: benchmark });
     if (!result) return empty;
-    return { context: JSON.stringify(result, null, 2), fingerprintInput: result };
+    const payload = { benchmark, ...result };
+    return { context: JSON.stringify(payload, null, 2), fingerprintInput: payload };
   }
 
   if (surface === "risk-metrics") {

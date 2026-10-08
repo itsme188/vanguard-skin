@@ -22,15 +22,19 @@ import { Pct } from "@/lib/privacy/components";
 /**
  * One row of Block 3, mirrored from `lib/compute/factors.ts::FactorShareEntry`.
  * Re-declared here (like `RegressionData` below) to keep the client/server
- * boundary clean — `sharePct` / `deltaPp` are 0..100 (already percent units).
+ * boundary clean — `sharePct` / `deltaPp` are already percent units, negative
+ * for a short. `deltaPp === null` means the held position has no price, so its
+ * contribution is unknown; `sharePct === null` alone means the bucket total is
+ * not positive, so a share of it is not stated.
  */
 export interface FactorShareEntry {
   factor: FactorColumn;
   value: string;
-  securityContribution: number;
+  positionSide: "long" | "short";
+  securityContribution: number | null;
   bucketTotalExposure: number;
-  sharePct: number;
-  deltaPp: number;
+  sharePct: number | null;
+  deltaPp: number | null;
 }
 
 /**
@@ -84,7 +88,10 @@ interface ApiResponse {
  *   via `/api/security/[id]/regression`).
  * Block 3 — Portfolio-share contribution. Computed server-side via
  *   `computeSecurityFactorShare` and passed in as `factorShare` (no client
- *   fetch — it's a fast pure read over the factor heatmap).
+ *   fetch — it's a fast pure read over the factor heatmap). `positionHeld`
+ *   and `siblingHeldSymbols` are optional (from
+ *   `computeSecurityFactorShareView`): when the page passes them, an empty
+ *   list is explained as "not held" or "no active exposure" rather than both.
  *
  * v1 hardcodes benchmark to SPY. The plan's open question on a benchmark
  * `<select>` picker is intentionally deferred per spec.
@@ -93,10 +100,14 @@ export function FactorProfileSection({
   securityId,
   factors,
   factorShare,
+  positionHeld,
+  siblingHeldSymbols,
 }: {
   securityId: number;
   factors: FactorProfileFactors | null;
   factorShare: FactorShareEntry[];
+  positionHeld?: boolean;
+  siblingHeldSymbols?: string[];
 }) {
   const [regression, setRegression] = useState<RegressionData | null>(null);
   const [betaVerdict, setBetaVerdict] = useState<BetaVerdict | null>(null);
@@ -259,9 +270,18 @@ export function FactorProfileSection({
           beta/vol, which are public market-data statistics and aren't masked. */}
       <div style={{ padding: "16px 20px" }}>
         <BlockLabel>Portfolio-share contribution</BlockLabel>
-        {factorShare.length === 0 ? (
+        {positionHeld === false ? (
           <p style={emptyTextStyle}>
-            (not held, or no active factor exposures to attribute)
+            Not held — no portfolio share to attribute.
+            {siblingHeldSymbols && siblingHeldSymbols.length > 0
+              ? ` The position is held as ${siblingHeldSymbols.join(", ")}.`
+              : ""}
+          </p>
+        ) : factorShare.length === 0 ? (
+          <p style={emptyTextStyle}>
+            {positionHeld
+              ? "(no active factor exposures to attribute)"
+              : "(not held, or no active factor exposures to attribute)"}
           </p>
         ) : (
           <div
@@ -292,11 +312,40 @@ export function FactorProfileSection({
                 <TerminalTag color={getFactorColor(entry.value)} size="xs">
                   {entry.value}
                 </TerminalTag>
-                <span style={emptyTextStyle}>
-                  ~<Pct value={entry.sharePct} digits={0} /> of portfolio{" "}
-                  {FACTOR_LABELS[entry.factor]} · selling cuts the bucket ~
-                  <Pct value={entry.deltaPp} digits={1} />
-                </span>
+                {/* Figures are magnitudes: the wording carries the direction
+                    (a short offsets the bucket and covering adds it back), so
+                    a negative "cut" never reaches the reader. */}
+                {entry.deltaPp === null ? (
+                  <span style={emptyTextStyle}>
+                    contribution unknown (no price)
+                  </span>
+                ) : entry.positionSide === "short" ? (
+                  <span style={emptyTextStyle}>
+                    {entry.sharePct === null ? (
+                      "short position · "
+                    ) : (
+                      <>
+                        short position offsets ~
+                        <Pct value={Math.abs(entry.sharePct)} digits={0} /> of
+                        portfolio {FACTOR_LABELS[entry.factor]} ·{" "}
+                      </>
+                    )}
+                    covering adds ~
+                    <Pct value={Math.abs(entry.deltaPp)} digits={1} /> to the
+                    bucket
+                  </span>
+                ) : (
+                  <span style={emptyTextStyle}>
+                    {entry.sharePct === null ? null : (
+                      <>
+                        ~<Pct value={Math.abs(entry.sharePct)} digits={0} /> of
+                        portfolio {FACTOR_LABELS[entry.factor]} ·{" "}
+                      </>
+                    )}
+                    selling cuts the bucket ~
+                    <Pct value={Math.abs(entry.deltaPp)} digits={1} />
+                  </span>
+                )}
               </div>
             ))}
           </div>

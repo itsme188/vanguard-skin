@@ -395,6 +395,35 @@ function findEnclosingParenSpan(
 const JOIN_ALIAS_ON_RE = /^\s*([A-Za-z_]\w*\s+)?ON\b/;
 const JOIN_EXTENSION_CHARS = 250;
 
+// Clause keywords that end a JOIN's ON clause at paren depth 0.
+const ON_CLAUSE_END_RE =
+  /^(?:WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|UNION|WINDOW|(?:(?:LEFT|RIGHT|INNER|CROSS|FULL|NATURAL|OUTER)\s+)*JOIN)\b/i;
+
+/**
+ * Length of the syntactic ON clause at the start of `s` (the 250-char slice
+ * after a derived table's closing paren): stops at the first top-level clause
+ * keyword, `;`, or unbalanced `)`, so a later unrelated clause in a big query
+ * cannot supply a per-pair marker. Never longer than `s`.
+ */
+function onClauseLength(s: string): number {
+  let depth = 0;
+  let seenOn = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "(") depth++;
+    else if (c === ")") {
+      if (depth === 0) return i;
+      depth--;
+    } else if (c === ";" && depth === 0) return i;
+    else if (depth === 0 && /[A-Za-z]/.test(c) && (i === 0 || /\W/.test(s[i - 1]))) {
+      const rest = s.slice(i);
+      if (!seenOn && /^ON\b/i.test(rest)) seenOn = true;
+      else if (seenOn && ON_CLAUSE_END_RE.test(rest)) return i;
+    }
+  }
+  return s.length;
+}
+
 /**
  * Fix round 1 (CRITICAL): the text a per-pair marker check is allowed to
  * look at for ONE specific MAX(as_of_date) match — never the whole
@@ -435,7 +464,7 @@ function buildMarkerWindow(text: string, matchIndex: number, matchLength: number
   let { start, end } = span;
   const after = text.slice(end, end + 50);
   if (JOIN_ALIAS_ON_RE.test(after)) {
-    end = Math.min(text.length, end + JOIN_EXTENSION_CHARS);
+    end = Math.min(text.length, end + onClauseLength(text.slice(end, end + JOIN_EXTENSION_CHARS)));
   }
   return text.slice(start, end);
 }
@@ -554,7 +583,7 @@ const ALLOWLIST: AllowlistEntry[] = [
     file: "lib/queries/analysis.ts",
     anchor: "MAX(h.as_of_date) AS latest_date\n        FROM latest_holdings h",
     justification:
-      "getPortfolioTrustState's holdingsRow query — MAX(h.as_of_date) aggregates over the latest_holdings CTE, which is itself built by LATEST_HOLDINGS_CTE calling latestHoldingsPredicate({keyBy:'account_security'}); this is a freshness stat over already-filtered rows (FROM latest_holdings, not FROM holdings), not a second filter.",
+      "getAnalysisDataCoverage's holdingsRow query — MAX(h.as_of_date) aggregates over the latest_holdings CTE, which is itself built by LATEST_HOLDINGS_CTE calling latestHoldingsPredicate({keyBy:'account_security'}); this is a freshness stat over already-filtered rows (FROM latest_holdings, not FROM holdings), not a second filter.",
   },
   {
     file: "lib/queries/data-health.ts",

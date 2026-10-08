@@ -1,10 +1,14 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { getChangedFiles } from "../../scripts/lib/git-changed";
 import { currentEvidence, focusedSelection, projectRoot, runLogged, snapshot, verify } from "../../scripts/lib/verification";
+
+// These tests spawn git/bash/node subprocesses; under a loaded suite run the 5s default
+// is too tight. Generous timeout, assertions unchanged.
+vi.setConfig({ testTimeout: 120_000 });
 
 const roots: string[] = [];
 function repo() {

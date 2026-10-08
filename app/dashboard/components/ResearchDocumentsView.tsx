@@ -2,6 +2,7 @@
 
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import type {
   ResearchDocumentSummary,
   ResearchDocumentType,
@@ -10,6 +11,7 @@ import type {
 } from "@/lib/queries/research-documents";
 import { documentMatchesSearch } from "./research-documents-search";
 import { Chip } from "./Chip";
+import { SymbolLink } from "./SymbolLink";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { useToast } from "./Toast";
 import apiFetch from "@/lib/http/apiFetch";
@@ -17,6 +19,98 @@ import apiFetch from "@/lib/http/apiFetch";
 interface DocumentListResponse {
   documents: ResearchDocumentSummary[];
   total: number;
+  /** symbol -> security id, for the mentioned symbols that are known securities. */
+  symbolMap?: Record<string, number>;
+}
+
+/** How often the list is re-read while a document's full text is still extracting. */
+const PENDING_LIST_POLL_MS = 10_000;
+
+/** Symbols shown on a collapsed card before the "+N" label takes over. */
+const COLLAPSED_SYMBOL_LIMIT = 6;
+
+/** A collapsed card shows the first few symbols; an expanded one shows them all. */
+export function visibleDocumentSymbols(
+  symbols: string[],
+  showAll: boolean,
+): { shown: string[]; hidden: number } {
+  const shown = showAll ? symbols : symbols.slice(0, COLLAPSED_SYMBOL_LIMIT);
+  return { shown, hidden: symbols.length - shown.length };
+}
+
+/**
+ * The card header reads the LIST row; the open panel reads the DETAIL fetch.
+ * The two refresh on different timers, so while the list still says
+ * "extracting" a fresher detail read wins. A list row that has left
+ * "extracting" is final.
+ */
+export function effectiveProcessingState(
+  listState: ResearchDocumentProcessingState,
+  detailState: ResearchDocumentProcessingState | undefined,
+): ResearchDocumentProcessingState {
+  if (listState === "pending_body" && detailState) return detailState;
+  return listState;
+}
+
+// Mirrors RESEARCH_TAG_MAX_LENGTH / RESEARCH_TAG_MAX_COUNT in
+// lib/research-documents/extract.ts (that module pulls in the server-side AI
+// client, so a client component cannot import from it). A test pins the pair.
+export const DOCUMENT_TAG_MAX_LENGTH = 40;
+export const DOCUMENT_TAG_MAX_COUNT = 15;
+
+export interface TagAddPlan {
+  /** The full tag list to save. */
+  next: string[];
+  /** Entries that are new to the document. */
+  added: string[];
+  /** Entries longer than the limit: not sent. */
+  tooLong: string[];
+  /** Entries that would push the document past the tag cap: not sent. */
+  overCap: string[];
+}
+
+/**
+ * Turn what was typed into the tags to save. A comma separates tags (as in
+ * the Notes composer). An entry the server would drop is held back and named,
+ * so the input never clears on a tag that was not stored.
+ */
+export function planTagAdd(existing: string[], input: string): TagAddPlan {
+  const plan: TagAddPlan = { next: [...existing], added: [], tooLong: [], overCap: [] };
+  const seen = new Set(existing);
+  for (const piece of input.split(",")) {
+    const tag = piece.toLowerCase().replace(/\s+/g, " ").trim();
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    if (tag.length > DOCUMENT_TAG_MAX_LENGTH) {
+      plan.tooLong.push(tag);
+    } else if (plan.next.length >= DOCUMENT_TAG_MAX_COUNT) {
+      plan.overCap.push(tag);
+    } else {
+      plan.next.push(tag);
+      plan.added.push(tag);
+    }
+  }
+  return plan;
+}
+
+/** The sentence explaining held-back entries, or null when all were accepted. */
+export function tagAddProblem(plan: TagAddPlan): string | null {
+  const parts: string[] = [];
+  if (plan.tooLong.length > 0) {
+    parts.push(
+      `A tag can be at most ${DOCUMENT_TAG_MAX_LENGTH} characters. Not added: ${plan.tooLong
+        .map((t) => `"${t.slice(0, DOCUMENT_TAG_MAX_LENGTH)}…"`)
+        .join(", ")}.`,
+    );
+  }
+  if (plan.overCap.length > 0) {
+    parts.push(
+      `A document can carry at most ${DOCUMENT_TAG_MAX_COUNT} tags. Not added: ${plan.overCap
+        .map((t) => `"${t}"`)
+        .join(", ")}. Remove a tag first.`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" ") : null;
 }
 
 const DOC_TYPE_LABELS: Record<ResearchDocumentType, string> = {
@@ -112,7 +206,10 @@ function UploadZone({ onUploadComplete }: UploadZoneProps) {
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           const baseMsg = body.error ?? `Upload failed (HTTP ${res.status})`;
-          const snippet = typeof body.snippet === "string" ? body.snippet : null;
+          // Only a snippet with content: an empty one rendered a labelled
+          // empty "Model output snippet:" block.
+          const snippet =
+            typeof body.snippet === "string" && body.snippet.trim() ? body.snippet : null;
           setError(
             snippet
               ? `${baseMsg}\n\nModel output snippet:\n${snippet}`
@@ -317,9 +414,9 @@ function TagEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const commit = useCallback(
-    async (next: string[]) => {
+    async (next: string[], heldBack: string | null = null) => {
       setSaving(true);
-      setSaveError(null);
+      setSaveError(heldBack);
       try {
         const res = await apiFetch(`/api/research/documents/${docId}`, {
           method: "PATCH",
@@ -331,6 +428,13 @@ function TagEditor({
           const normalized: string[] = Array.isArray(data.tags) ? data.tags : [];
           setTags(normalized);
           onTagsChanged(normalized);
+          // The server has the last word on what a tag may contain. If it kept
+          // fewer tags than were sent, say so instead of looking like success.
+          if (normalized.length < next.length && !heldBack) {
+            setSaveError(
+              "Not every tag was saved. A tag keeps only letters, numbers, spaces and & + - . /",
+            );
+          }
         } else {
           setSaveError(`Couldn't save tags (server returned ${res.status}).`);
         }
@@ -344,11 +448,16 @@ function TagEditor({
   );
 
   function addTag() {
-    const raw = input.trim();
-    if (!raw) return;
-    const next = [...new Set([...tags, raw.toLowerCase()])];
-    setInput("");
-    commit(next);
+    if (!input.trim()) return;
+    const plan = planTagAdd(tags, input);
+    const problem = tagAddProblem(plan);
+    // Held-back entries stay in the box so they can be shortened, not retyped.
+    setInput([...plan.tooLong, ...plan.overCap].join(", "));
+    if (plan.added.length === 0) {
+      setSaveError(problem ?? "That tag is already on this document.");
+      return;
+    }
+    commit(plan.next, problem);
   }
 
   function removeTag(t: string) {
@@ -370,7 +479,9 @@ function TagEditor({
             <button
               onClick={() => removeTag(t)}
               disabled={saving}
-              className="text-ink-faint hover:text-down transition-colors"
+              // Touch target: the glyph is ~7px wide. ±4px vertical keeps the
+              // extension inside the 26px pitch of wrapped tag rows.
+              className="relative text-ink-faint hover:text-down transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-1 pointer-coarse:after:-inset-x-2.5"
               aria-label={`Remove tag ${t}`}
             >
               ×
@@ -401,10 +512,13 @@ function TagEditor({
 
 function DocumentRow({
   doc,
+  symbolMap,
   onDeleted,
   onTagsChanged,
 }: {
   doc: ResearchDocumentSummary;
+  /** symbol -> security id; a symbol missing here renders as plain text. */
+  symbolMap: Record<string, number>;
   onDeleted: () => void;
   /** Lifts a saved tag edit back to the list so the collapsed header chips
    * and the "+N tags" count stop contradicting the open editor. */
@@ -419,6 +533,16 @@ function DocumentRow({
 
   const symbols = parseSymbols(doc.mentioned_symbols);
   const rowTags = parseSymbols(doc.tags);
+  const hasChips = symbols.length > 0 || rowTags.length > 0;
+  // Expanding the card resolves the "+N" label into the full symbol list.
+  const { shown: shownSymbols, hidden: hiddenSymbols } = visibleDocumentSymbols(
+    symbols,
+    expanded,
+  );
+  const processingState = effectiveProcessingState(
+    doc.processing_state,
+    detail?.processing_state,
+  );
 
   async function fetchDetail() {
     const res = await fetch(`/api/research/documents/${doc.id}`);
@@ -458,6 +582,16 @@ function DocumentRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded, detail?.processing_state, detail?.id]);
 
+  // The list poll saw extraction finish while this row's loaded detail still
+  // says "extracting" (the loop above only runs while expanded): re-read it,
+  // so reopening the card does not show a stale "still extracting" panel.
+  useEffect(() => {
+    if (doc.processing_state === "pending_body") return;
+    if (detail?.processing_state !== "pending_body") return;
+    fetchDetail();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.processing_state, detail?.processing_state]);
+
   function handleDelete(e: React.MouseEvent) {
     e.stopPropagation();
     setConfirmingDelete(true);
@@ -489,90 +623,116 @@ function DocumentRow({
 
   return (
     <div className="rounded-xl bg-panel border border-edge overflow-hidden">
-      <button
-        onClick={toggleExpanded}
-        className="w-full text-left px-4 py-3 hover:bg-raised transition-colors"
-      >
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap mb-1">
-              <span className="text-sm font-medium text-ink truncate">
-                {doc.title}
-              </span>
-              {doc.sentiment && (
-                <Chip tone={SENTIMENT_TONE[doc.sentiment]} size="xs">
-                  {doc.sentiment}
-                </Chip>
+      {/* The header tint covers the toggle button AND the chip row below it.
+          The chips sit OUTSIDE the button because a symbol chip is a link, and
+          a link may not be nested inside a button. */}
+      <div className="hover:bg-raised transition-colors">
+        <button
+          onClick={toggleExpanded}
+          aria-expanded={expanded}
+          className={`w-full text-left px-4 pt-3 ${hasChips ? "pb-2" : "pb-3"}`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap mb-1">
+                <span className="text-sm font-medium text-ink truncate">
+                  {doc.title}
+                </span>
+                {doc.sentiment && (
+                  <Chip tone={SENTIMENT_TONE[doc.sentiment]} size="xs">
+                    {doc.sentiment}
+                  </Chip>
+                )}
+              </div>
+              <div className="flex items-center gap-2 flex-wrap text-[11px] text-ink-faint">
+                {/* Separators only BETWEEN present fields — a missing source/author
+                    used to leak a leading "·" ("· Other"). */}
+                {[
+                  doc.source,
+                  doc.author,
+                  doc.document_type
+                    ? (DOC_TYPE_LABELS[doc.document_type] ?? doc.document_type)
+                    : null,
+                  doc.publication_date,
+                ]
+                  .filter((part): part is string => !!part)
+                  .map((part, i) => (
+                    <span key={`${i}-${part}`}>
+                      {i > 0 && "· "}
+                      {part}
+                    </span>
+                  ))}
+              </div>
+              {processingState === "pending_body" && (
+                <div className="flex items-center gap-1.5 mt-1.5 text-[11px] font-medium text-gold-ink">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-gold animate-pulse" />
+                  Extracting full text…
+                </div>
+              )}
+              {processingState === "failed" && (
+                <div className="mt-1.5 text-[11px] font-medium text-down">
+                  Full-text extraction failed
+                </div>
               )}
             </div>
-            <div className="flex items-center gap-2 flex-wrap text-[11px] text-ink-faint">
-              {/* Separators only BETWEEN present fields — a missing source/author
-                  used to leak a leading "·" ("· Other"). */}
-              {[
-                doc.source,
-                doc.author,
-                doc.document_type
-                  ? (DOC_TYPE_LABELS[doc.document_type] ?? doc.document_type)
-                  : null,
-                doc.publication_date,
-              ]
-                .filter((part): part is string => !!part)
-                .map((part, i) => (
-                  <span key={`${i}-${part}`}>
-                    {i > 0 && "· "}
-                    {part}
-                  </span>
-                ))}
+            <div className="shrink-0 flex items-center gap-2">
+              <span className="text-[10px] text-ink-faint">
+                {expanded ? "▾" : "▸"}
+              </span>
             </div>
-            {doc.processing_state === "pending_body" && (
-              <div className="flex items-center gap-1.5 mt-1.5 text-[11px] font-medium text-gold-ink">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-gold animate-pulse" />
-                Extracting full text…
-              </div>
+          </div>
+        </button>
+        {hasChips && (
+          // A click on the row's empty space still toggles the card, as it did
+          // when the chips were inside the button; a click on a link does not.
+          <div
+            onClick={(e) => {
+              if ((e.target as HTMLElement).closest("a")) return;
+              toggleExpanded();
+            }}
+            className="flex flex-wrap gap-1 px-4 pb-3"
+          >
+            {shownSymbols.map((s) => {
+              const securityId = symbolMap[s.toUpperCase()];
+              const chipClass =
+                "px-1.5 py-0.5 rounded bg-raised text-ink-dim text-[11px] font-mono font-medium";
+              return securityId ? (
+                <SymbolLink
+                  key={`sym-${s}`}
+                  securityId={securityId}
+                  symbol={s}
+                  className={chipClass}
+                />
+              ) : (
+                <span key={`sym-${s}`} className={chipClass}>
+                  {s}
+                </span>
+              );
+            })}
+            {hiddenSymbols > 0 && (
+              <span
+                className="text-[11px] text-ink-faint"
+                title="Open the document to see every symbol"
+              >
+                +{hiddenSymbols}
+              </span>
             )}
-            {doc.processing_state === "failed" && (
-              <div className="mt-1.5 text-[11px] font-medium text-down">
-                Full-text extraction failed
-              </div>
-            )}
-            {(symbols.length > 0 || rowTags.length > 0) && (
-              <div className="flex flex-wrap gap-1 mt-2">
-                {symbols.slice(0, 6).map((s) => (
-                  <span
-                    key={`sym-${s}`}
-                    className="px-1.5 py-0.5 rounded bg-raised text-ink-dim text-[11px] font-mono font-medium"
-                  >
-                    {s}
-                  </span>
-                ))}
-                {symbols.length > 6 && (
-                  <span className="text-[11px] text-ink-faint">
-                    +{symbols.length - 6}
-                  </span>
-                )}
-                {rowTags.slice(0, 5).map((t) => (
-                  <span
-                    key={`tag-${t}`}
-                    className="px-1.5 py-0.5 rounded-full bg-gold/15 text-gold-ink text-[11px] font-medium"
-                  >
-                    {t}
-                  </span>
-                ))}
-                {rowTags.length > 5 && (
-                  <span className="text-[10px] text-ink-faint">
-                    +{rowTags.length - 5} tags
-                  </span>
-                )}
-              </div>
+            {rowTags.slice(0, 5).map((t) => (
+              <span
+                key={`tag-${t}`}
+                className="px-1.5 py-0.5 rounded-full bg-gold/15 text-gold-ink text-[11px] font-medium"
+              >
+                {t}
+              </span>
+            ))}
+            {rowTags.length > 5 && (
+              <span className="text-[10px] text-ink-faint">
+                +{rowTags.length - 5} tags
+              </span>
             )}
           </div>
-          <div className="shrink-0 flex items-center gap-2">
-            <span className="text-[10px] text-ink-faint">
-              {expanded ? "▾" : "▸"}
-            </span>
-          </div>
-        </div>
-      </button>
+        )}
+      </div>
       {expanded && (
         <div className="border-t border-edge px-4 py-3 bg-canvas/50">
           {loadingDetail ? (
@@ -647,8 +807,9 @@ function DocumentRow({
               ) : detail.processing_state === "failed" ? (
                 <div className="pt-2 border-t border-edge">
                   <div className="text-[11px] text-down">
-                    Full-text extraction failed. Metadata is preserved — you
-                    can re-upload the PDF to retry, or delete this entry.
+                    Full-text extraction failed. Metadata is preserved. To
+                    retry, delete this entry and upload the PDF again (the
+                    same file is not accepted twice).
                   </div>
                 </div>
               ) : detail.raw_text ? (
@@ -686,7 +847,8 @@ function DocumentRow({
                 </span>
                 <button
                   onClick={handleDelete}
-                  className="text-[10px] text-ink-faint hover:text-down transition-colors"
+                  aria-label={`Delete document ${doc.title}`}
+                  className="relative text-[10px] text-ink-faint hover:text-down transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
                 >
                   Delete
                 </button>
@@ -795,16 +957,43 @@ function InboxForwardCard({ onIngested }: { onIngested: () => void }) {
   );
 }
 
-export function ResearchDocumentsView() {
+/** The `?symbol=` link value as the Symbol box holds it: trimmed, upper-case. */
+export function initialDocumentSymbol(raw: string | null | undefined): string {
+  return (raw ?? "").trim().toUpperCase();
+}
+
+export function ResearchDocumentsView({
+  initialSymbol,
+}: {
+  /** `?symbol=` from the URL (a security page's "View all" link). It seeds
+   *  the Symbol box, which is the one symbol filter this list has. */
+  initialSymbol?: string | null;
+} = {}) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [documents, setDocuments] = useState<ResearchDocumentSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [documentType, setDocumentType] = useState<ResearchDocumentType | "">("");
-  const [symbol, setSymbol] = useState("");
+  const [symbol, setSymbol] = useState(() => initialDocumentSymbol(initialSymbol));
+  const [symbolMap, setSymbolMap] = useState<Record<string, number>>({});
 
-  const fetchDocuments = useCallback(async () => {
-    setLoading(true);
+  // Clearing the chip empties the Symbol box and takes `symbol` out of the
+  // URL, so a reload does not bring the filter back.
+  const clearSymbol = useCallback(() => {
+    setSymbol("");
+    if (searchParams.get("symbol") === null) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("symbol");
+    const qs = params.toString();
+    router.replace(qs ? `?${qs}` : "?");
+  }, [router, searchParams]);
+
+  // `quiet` = a background re-read (the pending-extraction poll): it must not
+  // flip the list back to its loading state.
+  const fetchDocuments = useCallback(async (opts?: { quiet?: boolean }) => {
+    if (!opts?.quiet) setLoading(true);
     try {
       // When there's a search query, hit the chat-tool search endpoint via a
       // lightweight client call pattern — but we don't have a dedicated GET
@@ -824,15 +1013,33 @@ export function ResearchDocumentsView() {
         }
         setDocuments(filtered);
         setTotal(data.total);
+        setSymbolMap(data.symbolMap ?? {});
       }
+    } catch (err) {
+      // A failed background re-read keeps the list on screen; the next tick
+      // tries again. A foreground read fails as it did before.
+      if (!opts?.quiet) throw err;
     } finally {
-      setLoading(false);
+      if (!opts?.quiet) setLoading(false);
     }
   }, [documentType, symbol, search]);
 
   useEffect(() => {
     fetchDocuments();
   }, [fetchDocuments]);
+
+  // A collapsed card's "Extracting full text…" badge reads the LIST row, and
+  // nothing re-read the list: the badge pulsed forever after the server had
+  // finished. Re-read the list while any row is still extracting, whether or
+  // not a card is open, and stop once none is.
+  const anyPendingBody = documents.some((d) => d.processing_state === "pending_body");
+  useEffect(() => {
+    if (!anyPendingBody) return;
+    const interval = setInterval(() => {
+      fetchDocuments({ quiet: true });
+    }, PENDING_LIST_POLL_MS);
+    return () => clearInterval(interval);
+  }, [anyPendingBody, fetchDocuments]);
 
   // A row saved new tags: patch just that row in place (immutably) instead of
   // refetching the whole list, so the collapsed header agrees with the open
@@ -861,6 +1068,23 @@ export function ResearchDocumentsView() {
         />
       </div>
 
+      {symbol && (
+        <div role="status" className="flex items-center gap-2 flex-wrap text-xs text-ink-dim">
+          <Chip tone="info" size="sm">
+            Symbol: {symbol}
+            <button
+              type="button"
+              onClick={clearSymbol}
+              aria-label={`Clear the ${symbol} symbol filter`}
+              className="relative ml-1.5 hover:brightness-125 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2.5"
+            >
+              ×
+            </button>
+          </Chip>
+          <span>Only documents that mention this symbol are listed.</span>
+        </div>
+      )}
+
       {loading && documents.length === 0 ? (
         <div className="text-sm text-ink-faint text-center py-8">Loading…</div>
       ) : documents.length === 0 ? (
@@ -878,6 +1102,7 @@ export function ResearchDocumentsView() {
             <DocumentRow
               key={doc.id}
               doc={doc}
+              symbolMap={symbolMap}
               onDeleted={fetchDocuments}
               onTagsChanged={handleTagsChanged}
             />
