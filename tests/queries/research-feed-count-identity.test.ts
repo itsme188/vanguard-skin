@@ -110,6 +110,41 @@ describe("main feed: count equals list", () => {
   });
 });
 
+describe("main feed under the symbol filter (?symbol= resolves to securityId)", () => {
+  it("count equals list for a security, alone and combined with a search or a source", () => {
+    const sec = (symbol: string) =>
+      db
+        .prepare("INSERT INTO securities (symbol, name, security_type) VALUES (?, ?, 'Stock')")
+        .run(symbol, `${symbol} Corp`).lastInsertRowid as number;
+    const aaa = sec("AAA");
+    const zzz = sec("ZZZ");
+    const link = db.prepare(
+      "INSERT INTO research_article_securities (article_id, security_id) VALUES (?, ?)",
+    );
+    const idOf = (subject: string) =>
+      (db.prepare("SELECT id FROM research_articles WHERE subject = ?").get(subject) as { id: number }).id;
+    // Two processed rows, one filtered processed row, one unprocessed row.
+    for (const subject of ["alpha one", "alpha off topic", "beta one", "alpha queued"]) {
+      link.run(idOf(subject), aaa);
+    }
+    link.run(idOf("alpha two"), zzz);
+
+    const bySecurity = { processedOnly: true, securityId: aaa };
+    const list = getRecentArticles(db, { ...bySecurity, limit: ALL });
+    // The unprocessed row is not in the feed; the filtered processed row is.
+    expect(list.map((r) => r.subject).sort()).toEqual(["alpha off topic", "alpha one", "beta one"]);
+    expect(countRecentArticles(db, bySecurity)).toBe(list.length);
+
+    for (const extra of [{ search: "alpha" }, { sourceId: inactive }, { search: "zzz-no-match" }]) {
+      const filter = { ...bySecurity, ...extra };
+      expect(countRecentArticles(db, filter)).toBe(
+        getRecentArticles(db, { ...filter, limit: ALL }).length,
+      );
+    }
+    expect(countRecentArticles(db, { processedOnly: true, securityId: zzz })).toBe(1);
+  });
+});
+
 describe("main feed carries the filtered marker's data", () => {
   it("a filtered processed article stays in the list and carries is_relevant + excluded_category", () => {
     const list = getRecentArticles(db, { processedOnly: true, limit: ALL });

@@ -251,6 +251,24 @@ export function alertsAfterRestore<
   return alerts.map((a) => (a.id === id ? { ...a, user_response: "pending" } : a));
 }
 
+/** The `?symbol=` scope as the lists compare it: trimmed, upper-case, or null. */
+export function parseSymbolScope(raw: string | null | undefined): string | null {
+  const symbol = (raw ?? "").trim().toUpperCase();
+  return symbol ? symbol : null;
+}
+
+/**
+ * Whether a row belongs to the `?symbol=` scope. No scope matches every row.
+ * The match is the whole symbol, case-insensitive: "AA" never matches "AAPL".
+ */
+export function matchesSymbolScope(
+  rowSymbol: string | null | undefined,
+  scope: string | null,
+): boolean {
+  if (!scope) return true;
+  return (rowSymbol ?? "").trim().toUpperCase() === scope;
+}
+
 type StreamItem =
   | { kind: "alert"; recencyAt: string; alert: EnrichedAlert }
   | { kind: "review"; recencyAt: string; level: PendingLevel };
@@ -279,6 +297,11 @@ function AlertsPageInner() {
   // four of the nine tabs and silently fell back to Pending for the rest).
   const viewParam = searchParams.get("view");
   const initialFilter: StreamFilter = parseAlertsViewParam(viewParam);
+
+  // `?symbol=X` (links from a security's page) narrows the lists on screen to
+  // that symbol. The URL is the only place it lives: the chip's clear button
+  // removes the param. It never changes a fetch, a badge or a mutation.
+  const symbolScope = parseSymbolScope(searchParams.get("symbol"));
 
   const [filter, setFilter] = useState<StreamFilter>(initialFilter);
   const [alerts, setAlerts] = useState<EnrichedAlert[]>([]);
@@ -323,6 +346,13 @@ function AlertsPageInner() {
 
   // When the user toggles a filter pill we drop ?view=review from the URL
   // (it was only meaningful as an entry hint).
+  function clearSymbolScope() {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("symbol");
+    const qs = params.toString();
+    router.replace(qs ? `?${qs}` : "?");
+  }
+
   function selectFilter(next: StreamFilter) {
     setFilter(next);
     if (searchParams.get("view")) {
@@ -849,8 +879,26 @@ function AlertsPageInner() {
     return items;
   }, [filter, alerts, reviewLevels]);
 
+  // The same stream narrowed to `?symbol=`. Display only: every count badge
+  // and "Approve all" keep reading the full lists above.
+  const scopedItems = useMemo<StreamItem[]>(
+    () =>
+      streamItems.filter((it) =>
+        matchesSymbolScope(it.kind === "alert" ? it.alert.symbol : it.level.symbol, symbolScope),
+      ),
+    [streamItems, symbolScope],
+  );
+  const scopedArmedLevels = useMemo(
+    () => armedLevels.filter((l) => matchesSymbolScope(l.symbol, symbolScope)),
+    [armedLevels, symbolScope],
+  );
+  const scopedConflicts = useMemo(
+    () => conflicts.filter((c) => matchesSymbolScope(c.symbol, symbolScope)),
+    [conflicts, symbolScope],
+  );
+
   const sortedItems = useMemo<StreamItem[]>(() => {
-    if (!sort.field) return streamItems;
+    if (!sort.field) return scopedItems;
     const field = sort.field;
     const getValue = (it: StreamItem): unknown => {
       if (field === "recency") return it.recencyAt;
@@ -872,8 +920,8 @@ function AlertsPageInner() {
       }
       return null;
     };
-    return [...streamItems].sort((a, b) => compareValues(getValue(a), getValue(b), sort.dir));
-  }, [streamItems, sort]);
+    return [...scopedItems].sort((a, b) => compareValues(getValue(a), getValue(b), sort.dir));
+  }, [scopedItems, sort]);
 
   const reviewCount = reviewLevels.length;
   const armedCount = armedLevels.length;
@@ -884,6 +932,19 @@ function AlertsPageInner() {
   const isConflicts = filter === "conflicts";
   const isEmails = filter === "emails";
   const totalPending = pendingAlertCount + reviewCount;
+  // What the open tab holds before and after the symbol scope, for the chip.
+  const tabTotal = isArmed ? armedLevels.length : isConflicts ? conflicts.length : streamItems.length;
+  const tabShown = isArmed
+    ? scopedArmedLevels.length
+    : isConflicts
+      ? scopedConflicts.length
+      : scopedItems.length;
+  const scopedEmpty = symbolScope ? (
+    <p className="text-[11px] text-ink-dim py-6 text-center">
+      Nothing on this tab is for {symbolScope}. Clear the symbol filter above to see everything
+      here.
+    </p>
+  ) : null;
 
   return (
     <div className="space-y-5">
@@ -1016,6 +1077,36 @@ function AlertsPageInner() {
         </div>
       )}
 
+      {symbolScope && (
+        <div
+          role="status"
+          className="flex items-center gap-2 flex-wrap text-[11px] text-ink-dim"
+        >
+          <Chip tone="info" size="sm">
+            Symbol: {symbolScope}
+            <button
+              type="button"
+              onClick={clearSymbolScope}
+              aria-label={`Clear the ${symbolScope} symbol filter`}
+              className="relative ml-1.5 hover:brightness-125 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2.5"
+            >
+              ×
+            </button>
+          </Chip>
+          {isEmails ? (
+            <span>
+              The Emails tab is not narrowed by this filter. Use its own symbol box below.
+            </span>
+          ) : loading && tabTotal === 0 ? null : (
+            <span>
+              Showing <Count value={tabShown} /> of <Count value={tabTotal} /> on this tab. The
+              tab counts above still count every symbol
+              {reviewCount > 0 ? ", and Approve all still approves every pending level" : ""}.
+            </span>
+          )}
+        </div>
+      )}
+
       {!isArmed && !isConflicts && !isEmails && sortedItems.length > 1 && (
         <SortPicker options={SORT_OPTIONS} sort={sort} onSort={setSort} />
       )}
@@ -1033,21 +1124,27 @@ function AlertsPageInner() {
           <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
         ) : conflicts.length === 0 ? (
           <EmptyState filter={filter} />
+        ) : scopedConflicts.length === 0 ? (
+          scopedEmpty
         ) : (
-          <ConflictsList conflicts={conflicts} onConfirmed={refresh} />
+          <ConflictsList conflicts={scopedConflicts} onConfirmed={refresh} />
         )
       ) : isArmed ? (
         loading && armedLevels.length === 0 ? (
           <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
         ) : armedLevels.length === 0 ? (
           <EmptyState filter={filter} />
+        ) : scopedArmedLevels.length === 0 ? (
+          scopedEmpty
         ) : (
-          <ArmedLevelsList levels={armedLevels} />
+          <ArmedLevelsList levels={scopedArmedLevels} />
         )
       ) : loading && sortedItems.length === 0 ? (
         <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
-      ) : sortedItems.length === 0 ? (
+      ) : streamItems.length === 0 ? (
         <EmptyState filter={filter} />
+      ) : sortedItems.length === 0 ? (
+        scopedEmpty
       ) : isPending ? (
         <SplitPendingStream
           items={sortedItems}

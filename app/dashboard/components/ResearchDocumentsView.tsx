@@ -2,6 +2,7 @@
 
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import type {
   ResearchDocumentSummary,
   ResearchDocumentType,
@@ -956,14 +957,38 @@ function InboxForwardCard({ onIngested }: { onIngested: () => void }) {
   );
 }
 
-export function ResearchDocumentsView() {
+/** The `?symbol=` link value as the Symbol box holds it: trimmed, upper-case. */
+export function initialDocumentSymbol(raw: string | null | undefined): string {
+  return (raw ?? "").trim().toUpperCase();
+}
+
+export function ResearchDocumentsView({
+  initialSymbol,
+}: {
+  /** `?symbol=` from the URL (a security page's "View all" link). It seeds
+   *  the Symbol box, which is the one symbol filter this list has. */
+  initialSymbol?: string | null;
+} = {}) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [documents, setDocuments] = useState<ResearchDocumentSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [documentType, setDocumentType] = useState<ResearchDocumentType | "">("");
-  const [symbol, setSymbol] = useState("");
+  const [symbol, setSymbol] = useState(() => initialDocumentSymbol(initialSymbol));
   const [symbolMap, setSymbolMap] = useState<Record<string, number>>({});
+
+  // Clearing the chip empties the Symbol box and takes `symbol` out of the
+  // URL, so a reload does not bring the filter back.
+  const clearSymbol = useCallback(() => {
+    setSymbol("");
+    if (searchParams.get("symbol") === null) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("symbol");
+    const qs = params.toString();
+    router.replace(qs ? `?${qs}` : "?");
+  }, [router, searchParams]);
 
   // `quiet` = a background re-read (the pending-extraction poll): it must not
   // flip the list back to its loading state.
@@ -1042,6 +1067,23 @@ export function ResearchDocumentsView() {
           onSymbolChange={setSymbol}
         />
       </div>
+
+      {symbol && (
+        <div role="status" className="flex items-center gap-2 flex-wrap text-xs text-ink-dim">
+          <Chip tone="info" size="sm">
+            Symbol: {symbol}
+            <button
+              type="button"
+              onClick={clearSymbol}
+              aria-label={`Clear the ${symbol} symbol filter`}
+              className="relative ml-1.5 hover:brightness-125 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2.5"
+            >
+              ×
+            </button>
+          </Chip>
+          <span>Only documents that mention this symbol are listed.</span>
+        </div>
+      )}
 
       {loading && documents.length === 0 ? (
         <div className="text-sm text-ink-faint text-center py-8">Loading…</div>

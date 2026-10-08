@@ -1,8 +1,9 @@
 "use client";
 
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import type {
   ResearchArticle,
   ResearchSource,
@@ -41,6 +42,25 @@ interface Props {
   /** Full-set per-category counts for the Filtered list's section headers —
    *  never derived from initialFilteredArticles, which is page-capped. */
   initialFilteredCategoryCounts: FilteredArticleCategoryCount[];
+  /** How many articles the main feed holds under the filter `initialArticles`
+   *  was read with (same predicate, no limit). Null when the page did not count. */
+  initialTotal?: number | null;
+  /** `?symbol=` from the URL, resolved by the page. Null = no symbol filter. */
+  symbolFilter?: FeedSymbolFilter | null;
+  /** The raw `?article=` value, or null. */
+  linkedArticleParam?: string | null;
+  /** The row `?article=` names, or null when there is no such article. */
+  linkedArticle?: ResearchArticle | null;
+}
+
+/**
+ * The feed's symbol filter. It is the route's existing `securityId` filter
+ * (articles linked to that security), so the list and its count stay on one
+ * predicate. `securityId` is null when no security carries the symbol.
+ */
+export interface FeedSymbolFilter {
+  symbol: string;
+  securityId: number | null;
 }
 
 /** Matches the server's default `limit` for the filtered=1 endpoint. */
@@ -48,6 +68,12 @@ const FILTERED_PAGE_SIZE = 100;
 
 /** Matches the server's default `limit` for the main feed; Load more adds one page. */
 const FEED_PAGE_SIZE = 50;
+
+/** The most rows the articles route returns in one request (its MAX_LIMIT). */
+export const FEED_MAX_LIMIT = 500;
+
+/** Shown in place of Load more once the list has reached FEED_MAX_LIMIT. */
+export const FEED_CAP_NOTICE = `This list shows the newest ${FEED_MAX_LIMIT} articles at most. To reach an older article, search for it or pick a source.`;
 
 // ── Sentiment helpers ────────────────────────────────────────────────
 
@@ -195,7 +221,7 @@ export function feedTotalForSource(sources: ResearchSource[], sourceId: number |
 
 /**
  * The line above the main feed: how much of the set is on screen, and which
- * search the list reflects. `total` is null when it is not known (a search).
+ * search the list reflects. `total` is null when the server sent no count.
  * `hasMore` says whether Load more would fetch older articles.
  */
 export function describeFeedWindow(input: {
@@ -206,8 +232,19 @@ export function describeFeedWindow(input: {
 }): { text: string; hasMore: boolean } {
   const { shown, total, pageLimit, search } = input;
   const n = shown.toLocaleString("en-US");
+  if (search && total != null) {
+    // The server counted the matches: say exactly how many there are.
+    const allMatches = Math.max(total, shown);
+    const hasMore = shown < allMatches;
+    return {
+      text: hasMore
+        ? `Showing the newest ${n} of ${allMatches.toLocaleString("en-US")} matches for "${search}"`
+        : `${n} match${shown === 1 ? "" : "es"} for "${search}"`,
+      hasMore,
+    };
+  }
   if (search) {
-    // The list was cut at the page limit, so older matches may exist.
+    // No count: the list was cut at the page limit, so older matches may exist.
     const hasMore = shown >= pageLimit;
     return {
       text: hasMore
@@ -227,6 +264,63 @@ export function describeFeedWindow(input: {
   };
 }
 
+/**
+ * The status line when a manual sync finishes. An account-level AI failure
+ * (the sync route's `accountFailureMessage`) is appended and made sticky, so
+ * "Done" never hides that articles were left unanalysed.
+ */
+export function syncCompletionFeedback(
+  totalFetched: number,
+  accountFailureMessage: unknown,
+): SyncFeedback {
+  const done =
+    totalFetched > 0
+      ? `Done — ${totalFetched} new article${totalFetched !== 1 ? "s" : ""}`
+      : "Up to date — no new articles";
+  const failure = typeof accountFailureMessage === "string" ? accountFailureMessage.trim() : "";
+  return failure ? errorFeedback(`${done}. ${failure}`) : progressFeedback(done);
+}
+
+/** What `?article=<id>` asks the feed to do. */
+export type LinkedArticleRequest =
+  | { kind: "none" }
+  /** Open this article: in the list if it is loaded, else pinned above it. */
+  | { kind: "open"; id: number }
+  /** The article cannot be shown in the feed; say why. */
+  | { kind: "notice"; text: string };
+
+/**
+ * Decide what a deep link to one article does. The feed's own rule applies:
+ * it lists analysed articles only (processed_at set), filtered ones included
+ * (those carry the Filtered marker on their card).
+ */
+export function resolveLinkedArticle(
+  param: string | null | undefined,
+  article: Pick<ResearchArticle, "id" | "processed_at" | "is_relevant"> | null | undefined,
+): LinkedArticleRequest {
+  const raw = (param ?? "").trim();
+  if (!raw) return { kind: "none" };
+  if (!/^\d+$/.test(raw)) {
+    return { kind: "notice", text: "The link to one article is not valid, so no article was opened." };
+  }
+  if (!article) {
+    return {
+      kind: "notice",
+      text: `Article ${raw} was not found. It may have been deleted.`,
+    };
+  }
+  if (article.processed_at == null) {
+    return {
+      kind: "notice",
+      text:
+        article.is_relevant === 0
+          ? "The linked article was filtered out before AI analysis, so it is not in this list. It is in the Filtered tab."
+          : "The linked article has not been analysed by AI yet, so it is not in this list. It appears after the next feed sync has analysed it.",
+    };
+  }
+  return { kind: "open", id: article.id };
+}
+
 /** Shown while the search box holds a single character (the search needs two). */
 export const SEARCH_TOO_SHORT_HINT =
   "Type at least 2 characters to search. The list below has not changed.";
@@ -240,8 +334,17 @@ export function ResearchFeedsView({
   initialFilteredArticles,
   initialFilteredCount,
   initialFilteredCategoryCounts,
+  initialTotal = null,
+  symbolFilter = null,
+  linkedArticleParam = null,
+  linkedArticle = null,
 }: Props) {
   const isMobile = useIsMobile();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  // The exact size of the set the list on screen was read from (the route's
+  // `total`: same filter as the list, no limit). Null until a count is known.
+  const [feedTotal, setFeedTotal] = useState<number | null>(initialTotal);
   const [articles, setArticles] = useState(initialArticles);
   const [symbolMap, setSymbolMap] = useState<Record<string, number>>(initialSymbolMap);
   const [currentSources, setCurrentSources] = useState(sources);
@@ -460,8 +563,12 @@ export function ResearchFeedsView({
       const typed = overrides?.search !== undefined ? overrides.search : searchQuery;
       const q = typed.length === 1 ? appliedSearch : typed;
       const limit = overrides?.limit ?? articleLimit;
+      // A symbol no security carries matches nothing: keep the empty list
+      // instead of re-reading the feed without the filter.
+      if (symbolFilter && symbolFilter.securityId === null) return;
       if (sid) params.set("sourceId", String(sid));
       if (q) params.set("search", q);
+      if (symbolFilter?.securityId) params.set("securityId", String(symbolFilter.securityId));
       params.set("limit", String(limit));
 
       const res = await fetch(`/api/research/articles?${params}`);
@@ -472,11 +579,12 @@ export function ResearchFeedsView({
         throw new Error(data.error ?? `Articles fetch failed (${res.status})`);
       }
       setArticles(data.data);
+      setFeedTotal(typeof data.total === "number" ? data.total : null);
       if (data.symbolMap) setSymbolMap(data.symbolMap);
       setAppliedSearch(q);
       setArticleLimit(limit);
     },
-    [sourceFilter, searchQuery, appliedSearch, articleLimit]
+    [sourceFilter, searchQuery, appliedSearch, articleLimit, symbolFilter]
   );
 
   // Re-read the per-source feed counts (the "N of M" total and the dropdown
@@ -567,6 +675,9 @@ export function ResearchFeedsView({
 
       const decoder = new TextDecoder();
       let buffer = "";
+      // Plain words from the AI pass when it stopped on an account-level
+      // failure; repeated on the closing line.
+      let accountFailure: string | null = null;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -588,13 +699,23 @@ export function ResearchFeedsView({
           } else if (data.phase === "process" && data.status === "started") {
             setProgress("Processing with AI...");
           } else if (data.phase === "process" && data.status === "done") {
-            setProgress(`Processed ${data.processed} article${data.processed !== 1 ? "s" : ""}`);
+            const processedLine = `Processed ${data.processed} article${data.processed !== 1 ? "s" : ""}`;
+            if (typeof data.accountFailureMessage === "string" && data.accountFailureMessage.trim()) {
+              // Sticky from here on, in case the stream ends before "complete".
+              accountFailure = data.accountFailureMessage.trim();
+              setSyncFeedback(errorFeedback(`${processedLine}. ${accountFailure}`));
+            } else {
+              setProgress(processedLine);
+            }
           } else if (data.phase === "complete") {
-            setProgress(
-              data.totalFetched > 0
-                ? `Done — ${data.totalFetched} new article${data.totalFetched !== 1 ? "s" : ""}`
-                : "Up to date — no new articles"
+            const outcome = syncCompletionFeedback(
+              data.totalFetched,
+              data.accountFailureMessage ?? accountFailure,
             );
+            // The failure line replaces the earlier one; plain progress goes
+            // through setProgress so it cannot bury a standing error.
+            if (outcome.tone === "error") setSyncFeedback(outcome);
+            else setProgress(outcome.text);
           } else if (data.phase === "error") {
             // An in-stream failure is as real as a non-ok status — make it
             // sticky too, not a line that fades in five seconds.
@@ -716,10 +837,47 @@ export function ResearchFeedsView({
 
   const feedWindow = describeFeedWindow({
     shown: articles.length,
-    total: appliedSearch ? null : feedTotalForSource(currentSources, sourceFilter),
+    // The route's own count when it sent one (exact under a search or a symbol
+    // too); otherwise the per-source counts, which know neither.
+    total: feedTotal ?? (appliedSearch || symbolFilter ? null : feedTotalForSource(currentSources, sourceFilter)),
     pageLimit: articleLimit,
     search: appliedSearch,
   });
+
+  // Take one param out of the URL. The page re-reads it: for `symbol` the
+  // page re-keys this view, so the list reloads without the filter.
+  const removeUrlParam = useCallback(
+    (name: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete(name);
+      const qs = params.toString();
+      router.replace(qs ? `?${qs}` : "?");
+    },
+    [router, searchParams],
+  );
+
+  // `?article=<id>`: open that one article once, scrolled into view. If it is
+  // not among the loaded rows it renders as a pinned card above the list.
+  const linkedRequest = useMemo(
+    () => resolveLinkedArticle(linkedArticleParam, linkedArticle),
+    [linkedArticleParam, linkedArticle],
+  );
+  const linkedId = linkedRequest.kind === "open" ? linkedRequest.id : null;
+  const pinnedArticle =
+    linkedId !== null && linkedArticle && !articles.some((a) => a.id === linkedId)
+      ? linkedArticle
+      : null;
+  const linkedOpenedRef = useRef(false);
+  useEffect(() => {
+    if (linkedId === null || linkedOpenedRef.current) return;
+    linkedOpenedRef.current = true;
+    void handleExpand(linkedId);
+    requestAnimationFrame(() => {
+      document.getElementById(`feed-article-${linkedId}`)?.scrollIntoView({ block: "start" });
+    });
+    // Once on mount: handleExpand toggles, so a re-run would close the card.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkedId]);
 
   return (
     <div className="space-y-5">
@@ -858,6 +1016,43 @@ export function ResearchFeedsView({
         </div>
       )}
 
+      {symbolFilter && (
+        <div role="status" className="flex items-center gap-2 flex-wrap text-xs text-ink-dim">
+          <Chip tone="info" size="sm">
+            Symbol: {symbolFilter.symbol}
+            <button
+              type="button"
+              onClick={() => removeUrlParam("symbol")}
+              aria-label={`Clear the ${symbolFilter.symbol} symbol filter`}
+              className="relative ml-1.5 hover:brightness-125 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2.5"
+            >
+              ×
+            </button>
+          </Chip>
+          <span>
+            {viewMode === "filtered"
+              ? "The Filtered tab is not narrowed by this symbol; All articles is."
+              : "Only articles linked to this symbol are listed."}
+          </span>
+        </div>
+      )}
+
+      {linkedRequest.kind === "notice" && (
+        <div
+          role="status"
+          className="px-4 py-2.5 rounded-lg bg-raised border border-edge text-sm text-ink-dim flex items-center justify-between gap-3"
+        >
+          <span>{linkedRequest.text}</span>
+          <button
+            type="button"
+            onClick={() => removeUrlParam("article")}
+            className="shrink-0 text-xs text-ink-dim hover:text-ink transition-colors"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       <DigestEmailViewer open={previewOpen} onClose={() => setPreviewOpen(false)} />
 
       {/* D5 — filtered/all toggle. Hidden when there's nothing to audit so
@@ -922,6 +1117,35 @@ export function ResearchFeedsView({
         </p>
       )}
 
+      {/* The article a `?article=` link names, when it is older than the loaded
+          rows (or outside the current search/source/symbol). Kept apart from
+          the list so the "N of M" line stays true. */}
+      {viewMode === "all" && pinnedArticle && (
+        <div className="max-w-3xl mx-auto">
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <p className="text-xs text-ink-dim">Linked article (not among the articles listed below)</p>
+            <button
+              type="button"
+              onClick={() => removeUrlParam("article")}
+              className="shrink-0 text-xs text-ink-dim hover:text-ink transition-colors"
+            >
+              Dismiss
+            </button>
+          </div>
+          <div className="border-b border-edge/50">
+            <ArticleCard
+              article={pinnedArticle}
+              symbolMap={symbolMap}
+              expanded={expandedId === pinnedArticle.id}
+              expandedText={expandedId === pinnedArticle.id ? expandedText : null}
+              expandedHtml={expandedId === pinnedArticle.id ? expandedHtml : null}
+              loading={expandedId === pinnedArticle.id && loadingExpand}
+              onToggle={() => handleExpand(pinnedArticle.id)}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Articles — reader layout */}
       {viewMode === "filtered" ? (
         <>
@@ -959,6 +1183,15 @@ export function ResearchFeedsView({
             Try a different search term or clear the filter.
           </p>
         </div>
+      ) : articles.length === 0 && symbolFilter ? (
+        <div className="rounded-xl border border-edge bg-panel p-10 text-center max-w-2xl mx-auto">
+          <p className="text-ink-dim">
+            {symbolFilter.securityId === null
+              ? `No security with the symbol ${symbolFilter.symbol} is on file, so no article is linked to it.`
+              : `No articles are linked to ${symbolFilter.symbol}.`}
+          </p>
+          <p className="text-ink-faint text-sm mt-1">Clear the symbol filter above to see every article.</p>
+        </div>
       ) : articles.length === 0 ? (
         <div className="rounded-xl border border-edge bg-panel p-10 text-center max-w-2xl mx-auto">
           <p className="text-ink-dim">No articles yet.</p>
@@ -986,14 +1219,20 @@ export function ResearchFeedsView({
           </div>
           {feedWindow.hasMore && (
             <div className="flex justify-center pt-4">
-              <button
-                type="button"
-                onClick={handleLoadMoreArticles}
-                disabled={loadingMoreArticles}
-                className="px-4 py-2 rounded-md text-xs font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors disabled:opacity-50"
-              >
-                {loadingMoreArticles ? "Loading…" : "Load more"}
-              </button>
+              {articleLimit >= FEED_MAX_LIMIT ? (
+                // The route reads at most FEED_MAX_LIMIT rows: a longer
+                // request would return the same list again.
+                <p role="status" className="text-xs text-ink-dim text-center">{FEED_CAP_NOTICE}</p>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleLoadMoreArticles}
+                  disabled={loadingMoreArticles}
+                  className="px-4 py-2 rounded-md text-xs font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors disabled:opacity-50"
+                >
+                  {loadingMoreArticles ? "Loading…" : "Load more"}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -1058,6 +1297,7 @@ function ArticleCard({
     // into horizontal scroll at mobile widths.
     <article
       ref={cardRef}
+      id={`feed-article-${article.id}`}
       className={`py-6 first:pt-0 break-words scroll-mt-20 ${expanded ? "" : "cursor-pointer group"}`}
     >
       {/* Collapsed view — click to expand */}

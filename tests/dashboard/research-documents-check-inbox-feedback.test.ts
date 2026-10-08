@@ -65,7 +65,7 @@ function functionBody(src: string, declaration: string, endMarker: string): stri
 const inboxCard = functionBody(
   source,
   "function InboxForwardCard({",
-  "export function ResearchDocumentsView()",
+  "export function ResearchDocumentsView(",
 );
 
 describe("InboxForwardCard ('Check inbox') surfaces a silent 400 inline, not just via toast", () => {

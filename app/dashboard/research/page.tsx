@@ -11,12 +11,16 @@ import {
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
 import {
   getRecentArticles,
+  countRecentArticles,
+  getArticleById,
   getResearchSources,
   getSymbolSecurityMap,
   getFilteredArticles,
   getFilteredArticleCount,
   getFilteredArticleCategoryCounts,
 } from "@/lib/queries/research";
+import type { ResearchArticle } from "@/lib/queries/research";
+import { getSecurityBySymbolCI } from "@/lib/queries/securities";
 import { coerceNoteType } from "@/lib/notes/coerce";
 import { NotesView } from "../components/NotesView";
 import { ResearchFeedsView } from "../components/ResearchFeedsView";
@@ -30,6 +34,10 @@ interface PageProps {
     security_id?: string;
     security?: string;
     view?: string;
+    /** Feeds and Documents: narrow the list to one ticker (links from a security's page). */
+    symbol?: string;
+    /** Feeds: open this one article (`?view=feeds&article=<id>`). */
+    article?: string;
   }>;
 }
 
@@ -121,12 +129,69 @@ export default async function ResearchPage({ searchParams }: PageProps) {
   let filteredArticles: Awaited<ReturnType<typeof getFilteredArticles>> = [];
   let filteredCount = 0;
   let filteredCategoryCounts: Awaited<ReturnType<typeof getFilteredArticleCategoryCounts>> = [];
+  let feedTotal: number | null = null;
+  // ?symbol= is user-editable: trim and upper-case it, and treat blank as absent.
+  const symbolParam = (params.symbol ?? "").trim().toUpperCase();
+  let feedSymbolFilter: { symbol: string; securityId: number | null } | null = null;
+  const articleParam = (params.article ?? "").trim() || null;
+  let linkedArticle: ResearchArticle | null = null;
 
   if (view === "feeds") {
     try {
-      feedArticles = getRecentArticles(db, { processedOnly: true, limit: 50 });
+      // The symbol filter is the feed's existing security filter: articles
+      // linked to that security. A symbol no security carries matches nothing.
+      if (symbolParam) {
+        feedSymbolFilter = {
+          symbol: symbolParam,
+          securityId: getSecurityBySymbolCI(db, symbolParam)?.id ?? null,
+        };
+      }
+      if (feedSymbolFilter && feedSymbolFilter.securityId === null) {
+        feedTotal = 0;
+      } else {
+        // List and count read ONE filter object, so "N of M" cannot drift.
+        const feedFilter = {
+          processedOnly: true,
+          securityId: feedSymbolFilter?.securityId ?? undefined,
+        };
+        feedArticles = getRecentArticles(db, { ...feedFilter, limit: 50 });
+        feedTotal = countRecentArticles(db, feedFilter);
+      }
+      // ?article=<id>: the one row, whether or not it is among the newest 50.
+      // Only the card's fields cross to the client, never the stored body.
+      if (articleParam && /^\d+$/.test(articleParam)) {
+        const row = getArticleById(db, Number(articleParam));
+        if (row) {
+          linkedArticle = {
+            id: row.id,
+            source_id: row.source_id,
+            source_name: row.source_name,
+            gmail_message_id: row.gmail_message_id,
+            received_at: row.received_at,
+            subject: row.subject,
+            sender: row.sender,
+            summary: row.summary,
+            key_themes: row.key_themes,
+            sentiment: row.sentiment,
+            sentiment_score: row.sentiment_score,
+            mentioned_symbols: row.mentioned_symbols,
+            portfolio_relevance: row.portfolio_relevance,
+            processed_at: row.processed_at,
+            created_at: row.created_at,
+            source_url: row.source_url,
+            website_url: row.website_url ?? null,
+            is_relevant: row.is_relevant,
+            excluded_category: row.excluded_category,
+          };
+        }
+      }
       feedSources = getResearchSources(db);
-      feedSymbolMap = getSymbolSecurityMap(db, feedArticles.map((a) => a.id));
+      feedSymbolMap = getSymbolSecurityMap(
+        db,
+        linkedArticle
+          ? [...feedArticles.map((a) => a.id), linkedArticle.id]
+          : feedArticles.map((a) => a.id),
+      );
       filteredArticles = getFilteredArticles(db, { limit: 100 });
       filteredCount = getFilteredArticleCount(db);
       // Full-set aggregate for the section headers — never derive header
@@ -154,10 +219,17 @@ export default async function ResearchPage({ searchParams }: PageProps) {
       </div>
 
       {view === "documents" ? (
-        <ResearchDocumentsView />
+        <ResearchDocumentsView key={symbolParam} initialSymbol={symbolParam} />
       ) : view === "feeds" ? (
         <ResearchFeedsView
+          // Re-keyed on the symbol: clearing the chip changes the URL, and the
+          // view must restart from the list this render read.
+          key={symbolParam}
           initialArticles={feedArticles}
+          initialTotal={feedTotal}
+          symbolFilter={feedSymbolFilter}
+          linkedArticleParam={articleParam}
+          linkedArticle={linkedArticle}
           sources={feedSources}
           initialSymbolMap={feedSymbolMap}
           initialFilteredArticles={filteredArticles}

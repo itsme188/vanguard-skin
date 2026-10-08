@@ -39,7 +39,7 @@ const source = readFileSync(
 const uploadZone = sliceBetween(source, "function UploadZone(", "// ─── Filters bar");
 const tagEditor = sliceBetween(source, "function TagEditor({", "function DocumentRow({");
 const documentRow = sliceBetween(source, "function DocumentRow({", "// ─── Main view");
-const listView = source.slice(anchorIndex(source, "export function ResearchDocumentsView()"));
+const listView = source.slice(anchorIndex(source, "export function ResearchDocumentsView("));
 
 describe("stuck 'Extracting full text…' badge", () => {
   it("the list is re-read on a timer while any row is still extracting, open card or not", () => {

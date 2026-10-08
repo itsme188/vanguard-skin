@@ -168,8 +168,12 @@ describe("the N of M line and Load more", () => {
     // A new source or search starts again at one page.
     expect(view).toContain("await refreshArticles({ sourceId: id, limit: FEED_PAGE_SIZE });");
     expect(view).toContain("await refreshArticles({ search: query, limit: FEED_PAGE_SIZE });");
-    // The total is only claimed when no search narrows the list.
-    expect(view).toContain("total: appliedSearch ? null : feedTotalForSource(currentSources, sourceFilter),");
+    // The total is the route's own count (exact under a search too); the
+    // per-source counts are the fallback only when no search or symbol narrows.
+    expect(view).toContain(
+      "total: feedTotal ?? (appliedSearch || symbolFilter ? null : feedTotalForSource(currentSources, sourceFilter)),",
+    );
+    expect(view).toContain('setFeedTotal(typeof data.total === "number" ? data.total : null);');
   });
 });
 
