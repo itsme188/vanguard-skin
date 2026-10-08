@@ -2,7 +2,11 @@
 
 import { useState, useEffect } from "react";
 import { Count, PrivateText } from "@/lib/privacy/components";
-import { buildTaxReportFilename, washSaleReplacementPhrase } from "@/lib/compute/tax-report";
+import {
+  buildTaxReportFilename,
+  securityFilterNotAppliedCopy,
+  washSaleReplacementPhrase,
+} from "@/lib/compute/tax-report";
 
 interface TaxReportSummary {
   year: number;
@@ -113,10 +117,21 @@ export function taxReportCardTitle(year: number, accountName?: string | null): s
   return accountName ? `Tax Report — ${year} · ${accountName}` : `Tax Report — ${year}`;
 }
 
-export function filingBannerHeading(accountName?: string | null): string {
-  return accountName
+//
+// `unappliedSecuritySymbol` is the second dimension (QA:
+// tax-lots--account-filter-ignored-by-tax-report-card-and-exports-regression-1):
+// the page's ?security= filter is NOT applied to this card or its downloads,
+// and the banner names that the same way it names the account narrowing.
+export function filingBannerHeading(
+  accountName?: string | null,
+  unappliedSecuritySymbol?: string | null
+): string {
+  const base = accountName
     ? `Export not ready for filing — PARTIAL EXPORT: ${accountName} only`
     : "Export not ready for filing";
+  return unappliedSecuritySymbol
+    ? `${base} — security filter ${unappliedSecuritySymbol} not applied`
+    : base;
 }
 
 // PR #59 review Finding A (stale-fetch race): a minimal cancellation token
@@ -223,11 +238,19 @@ export function TaxReportCard({
   year,
   accountName,
   refreshEventName,
+  unappliedSecuritySymbol,
 }: {
   year: number;
   /** Tax Lots ?account= filter. Undefined/empty = all accounts. */
   accountName?: string;
   refreshEventName?: string;
+  /**
+   * Symbol of the page's ?security= filter, when one is active. Never sent to
+   * /api/tax-report: the report and both exports stay whole-account, and the
+   * card says so. It is true of whichever report is on screen (a kept
+   * last-good one included), so reading the live prop here is safe.
+   */
+  unappliedSecuritySymbol?: string;
 }) {
   const [report, setReport] = useState<TaxReportSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -430,6 +453,15 @@ export function TaxReportCard({
         )}
       </div>
 
+      {/* Always shown while the page is filtered to one security, whether or
+          not the filing banner below is: the CSV/TXF buttons sit right above
+          this line and download the whole scope. */}
+      {unappliedSecuritySymbol && (
+        <p className="px-5 pt-3 text-xs text-warn">
+          {securityFilterNotAppliedCopy(unappliedSecuritySymbol, scopeAccountName)}
+        </p>
+      )}
+
       {/* PR #59 review Finding B: the report on screen may be stale — the
           MOST RECENT refetch (e.g. after switching accounts) failed and we
           kept showing the last-good data rather than blanking the card.
@@ -453,7 +485,7 @@ export function TaxReportCard({
         <div className="px-5 pt-4">
           <div className="border border-amber-400/20 bg-amber-400/5 rounded-lg p-3">
             <h4 className="text-xs font-medium text-warn">
-              &#x26A0; {filingBannerHeading(scopeAccountName)}
+              &#x26A0; {filingBannerHeading(scopeAccountName, unappliedSecuritySymbol)}
             </h4>
             <p className="text-[10px] text-ink-faint mt-1">{FILING_WARNING_COPY}</p>
             {report.hasTaxAdvantagedAccounts === false && (
@@ -542,9 +574,9 @@ export function TaxReportCard({
 
         {(report.excludedNonUsdSales ?? 0) > 0 && (
           <p className="text-[10px] text-ink-faint italic">
-            USD totals exclude {report.excludedNonUsdSales} non-USD sale
-            {report.excludedNonUsdSales === 1 ? "" : "s"} (realized figures are
-            native per security; the CSV/TXF exports keep the raw rows).
+            USD totals exclude non-USD sales: <Count value={report.excludedNonUsdSales} />{" "}
+            (realized figures are native per security; the CSV/TXF exports keep
+            the raw rows).
           </p>
         )}
 

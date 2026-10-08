@@ -11,6 +11,7 @@ import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
+import { isOptionSecurityType } from "@/lib/compute/option-elasticity";
 
 type OpenField =
   | "account_name"
@@ -84,12 +85,39 @@ function GainCell({ value, currency = "USD" }: { value: number | null; currency?
   );
 }
 
+/**
+ * The unit of an open lot's Cost/Share figure, when it is not "per share of
+ * what the Qty column counts" (QA:
+ * tax-lots-open-lots--qty-times-cost-share-never-equals-cost-basis-options-100x-treasuries-1-100).
+ * An option's price is per underlying share while Qty counts contracts; a
+ * bond's price is per 100 of face while Qty is face value. Both follow the
+ * market convention and `marketValue()` in lib/valuation.ts; this only NAMES
+ * the unit so the row no longer reads as Qty x Cost/Share = Cost Basis. Label
+ * only: no figure is changed or derived. Null = plain per-share row.
+ */
+export function costPerShareUnitLabel(
+  lot: Pick<TaxLotWithSecurity, "security_type" | "multiplier">
+): string | null {
+  const type = (lot.security_type ?? "").trim().toLowerCase();
+  if (type === "bond") return "per 100 face";
+  if (isOptionSecurityType(lot.security_type)) {
+    const multiplier = lot.multiplier;
+    return typeof multiplier === "number" && Number.isFinite(multiplier) && multiplier > 1
+      ? `\u00d7 ${multiplier} per contract`
+      : "per underlying share";
+  }
+  return null;
+}
+
 export function OpenLotsTable({
   lots,
   showAccount = true,
+  pendingOnly = false,
 }: {
   lots: TaxLotWithSecurity[];
   showAccount?: boolean;
+  /** The page narrowed `lots` to pending-statement lots (`?pending=1`). */
+  pendingOnly?: boolean;
 }) {
   const { sort, setSort } = useSortParam<OpenField>("openLots", null, "desc");
 
@@ -112,7 +140,7 @@ export function OpenLotsTable({
   return (
     <div>
       <h4 className="text-xs font-medium text-ink-faint mb-2">
-        Open Lots
+        Open Lots{pendingOnly ? ` \u2014 ${PENDING_STATEMENT_CHIP_LABEL} only` : ""}
         <span className="ml-1.5 text-ink-faint/60">({lots.length})</span>
       </h4>
       <div className="rounded-xl border border-edge overflow-hidden">
@@ -168,6 +196,7 @@ export function OpenLotsTable({
             <tbody>
               {rows.map((lot) => {
                 const qtyDigits = Number.isInteger(lot.quantity_remaining) ? 0 : 4;
+                const costUnit = costPerShareUnitLabel(lot);
                 return (
                   <tr
                     key={lot.id}
@@ -194,6 +223,11 @@ export function OpenLotsTable({
                     </td>
                     <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                       <Money value={lot.acquisition_price} precise />
+                      {costUnit && (
+                        <span className="block font-sans text-[11px] text-ink-faint whitespace-nowrap">
+                          {costUnit}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                       <Money value={lot.adjusted_cost_basis} precise />

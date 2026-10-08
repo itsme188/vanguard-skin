@@ -1,8 +1,13 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 import type { TaxLotSummary, AccountTaxSummary } from "@/lib/queries/tax-lots";
 import type { TaxLotStalenessMarker } from "@/lib/compute/tax-convention";
 import { Count, Money } from "@/lib/privacy/components";
-import { PENDING_STATEMENT_TITLE } from "./pending-statement-copy";
+import {
+  PENDING_STATEMENT_EXPLANATION,
+  PENDING_STATEMENT_FILTER_OFF_LABEL,
+  PENDING_STATEMENT_FILTER_ON_LABEL,
+} from "./pending-statement-copy";
 
 /**
  * QA finding: tax-lots--headline-tiles-stale-until-recompute-no-marker.
@@ -154,29 +159,56 @@ function GainCard({
  * so their paper gain is not unrealized; their realized figure is unknown
  * until the statement. The Unrealized tile above excludes them, and this line
  * says so. Renders nothing when no position is pending.
+ *
+ * The explanation is visible text, never a `title` (hover does not exist on a
+ * phone). `filter` adds the "show pending only" link that narrows the Open
+ * Lots table to these lots; the page owns the URL (`?pending=1`).
  */
+export interface PendingStatementFilter {
+  /** Where the link goes: the same page with the filter flipped. */
+  href: string;
+  /** True while the Open Lots table is already narrowed to pending lots. */
+  active: boolean;
+}
+
 export function PendingStatementLine({
   positions,
   basis,
+  filter,
 }: {
   positions: number;
   basis: number;
+  filter?: PendingStatementFilter;
 }) {
   if (!positions || positions <= 0) return null;
   return (
-    <p className="text-xs text-ink-faint mt-2" title={PENDING_STATEMENT_TITLE}>
-      <Count value={positions} /> position{positions !== 1 ? "s" : ""} closed per live data —
-      awaiting statement (<Money value={basis} /> cost basis, excluded from Unrealized).
-    </p>
+    <div className="text-xs text-ink-faint mt-2">
+      <p>
+        <Count value={positions} /> position{positions !== 1 ? "s" : ""} closed per live data —
+        awaiting statement (<Money value={basis} /> cost basis, excluded from Unrealized).{" "}
+        {PENDING_STATEMENT_EXPLANATION}
+      </p>
+      {filter && (
+        <Link
+          href={filter.href}
+          scroll={false}
+          className="inline-flex items-center min-h-11 text-sm font-medium text-gold-ink underline underline-offset-2"
+        >
+          {filter.active ? PENDING_STATEMENT_FILTER_OFF_LABEL : PENDING_STATEMENT_FILTER_ON_LABEL}
+        </Link>
+      )}
+    </div>
   );
 }
 
 export function TaxLotSummaryCards({
   summary,
   year,
+  pendingFilter,
 }: {
   summary: TaxLotSummary;
   year: number;
+  pendingFilter?: PendingStatementFilter;
 }) {
   return (
     <div>
@@ -186,8 +218,9 @@ export function TaxLotSummaryCards({
           value={summary.totalUnrealizedGain}
           sublabel={
             <>
-              <Count value={summary.totalOpenLots} /> open lot
-              {summary.totalOpenLots !== 1 ? "s" : ""}
+              {/* Noun first and always plural: under Hide amounts a
+                  "lot" / "lots" switch would say whether the count is one. */}
+              Open lots: <Count value={summary.totalOpenLots} />
             </>
           }
         />
@@ -221,12 +254,12 @@ export function TaxLotSummaryCards({
       <PendingStatementLine
         positions={summary.pendingStatementPositions}
         basis={summary.pendingStatementBasis}
+        filter={pendingFilter}
       />
       {summary.excludedNonUsdSales > 0 && (
         <p className="text-xs text-ink-faint mt-2">
-          USD totals exclude {summary.excludedNonUsdSales} non-USD sale
-          {summary.excludedNonUsdSales !== 1 ? "s" : ""} — shown in native
-          currency in Closed Sales below.
+          USD totals exclude non-USD sales: <Count value={summary.excludedNonUsdSales} />{" "}
+          — shown in native currency in Closed Sales below.
         </p>
       )}
     </div>
@@ -289,7 +322,7 @@ export function AccountSummaryCards({
                   </>
                 )}
                 {acct.excludedNonUsdSales > 0 && (
-                  <> · excludes {acct.excludedNonUsdSales} non-USD</>
+                  <> · excludes <Count value={acct.excludedNonUsdSales} /> non-USD</>
                 )}
               </div>
             </div>

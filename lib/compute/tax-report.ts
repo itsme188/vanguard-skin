@@ -605,6 +605,27 @@ export function buildTaxReportFilename(
   return filingReady ? `${base}.${kind}` : `${base}-NOT-FOR-FILING.${kind}`;
 }
 
+/**
+ * The Tax Lots `?security=` filter narrows the tiles and the two tables only.
+ * The Tax Report card and its CSV/TXF exports are never scoped to one
+ * security: broker reconciliation is per (account, tax year), so a
+ * per-security Form 8949 file would have nothing to reconcile against. These
+ * two lines say so wherever the filter is on screen (QA:
+ * tax-lots--account-filter-ignored-by-tax-report-card-and-exports-regression-1,
+ * option 2: disclose, do not scope). Copy only; no report figure reads them.
+ */
+export function securityFilterNotAppliedCopy(
+  symbol: string,
+  accountName?: string | null
+): string {
+  const scope = accountName ? `every security in ${accountName}` : "every security in all accounts";
+  return `Security filter ${symbol} is not applied here \u2014 this report and its CSV/TXF exports cover ${scope}.`;
+}
+
+/** Caption beside the "Filtered: SYMBOL" chip; same fact, from the chip's side. */
+export const SECURITY_FILTER_CHIP_CAPTION =
+  "Tiles and tables only \u2014 the Tax Report and its exports are not filtered by security.";
+
 // ─── TXF Export (TurboTax Tax Exchange Format) ──────────────────
 
 /**

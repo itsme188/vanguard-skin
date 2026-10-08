@@ -16,6 +16,12 @@ export interface TaxLotWithSecurity {
   symbol: string;
   security_name: string | null;
   security_type: string | null;
+  /**
+   * The contract multiplier (`COALESCE(s.multiplier, 1)`). Display only: it
+   * names the unit of `acquisition_price` on an option row ("× 100 per
+   * contract"). No figure is derived from it here.
+   */
+  multiplier?: number;
   expiration_date: string | null;
   acquisition_date: string;
   acquisition_price: number;
@@ -207,7 +213,7 @@ function openLotRows(
       `SELECT
         tl.id, tl.account_id, a.name AS account_name, tl.is_short,
         tl.security_id, s.symbol, s.name AS security_name,
-        s.security_type, s.expiration_date,
+        s.security_type, COALESCE(s.multiplier, 1) AS multiplier, s.expiration_date,
         tl.acquisition_date, tl.acquisition_price,
         tl.quantity_acquired, tl.quantity_remaining,
         tl.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis, tl.is_from_opening_snapshot,
