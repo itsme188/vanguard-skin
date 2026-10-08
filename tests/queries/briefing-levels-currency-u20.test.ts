@@ -42,7 +42,7 @@ describe("briefing-level reads carry the security's currency", () => {
       "INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('JPY', 0.01, '2026-04-20', 'ibkr_ledger')"
     ).run();
     seedPrice(zzz, 1530);
-    upsertLevel(db, { security_id: zzz, level_type: "support", price: 1500, source: "manual" });
+    upsertLevel(db, { security_id: zzz, level_type: "support", price: 1500, source: "user" });
 
     const rows = getLevelsNearPrice(db);
     expect(rows).toHaveLength(1);
@@ -55,13 +55,13 @@ describe("briefing-level reads carry the security's currency", () => {
   it("getLevelsNearPrice reports USD for a US security", () => {
     const aaa = seedSec("AAA");
     seedPrice(aaa, 102);
-    upsertLevel(db, { security_id: aaa, level_type: "support", price: 100, source: "manual" });
+    upsertLevel(db, { security_id: aaa, level_type: "support", price: 100, source: "user" });
     expect(getLevelsNearPrice(db)[0].currency).toBe("USD");
   });
 
   it("getLevelsTriggeredInWindow returns the native currency", () => {
     const zzz = seedSec("ZZZ", "JPY");
-    const lvl = upsertLevel(db, { security_id: zzz, level_type: "support", price: 1500, source: "manual" });
+    const lvl = upsertLevel(db, { security_id: zzz, level_type: "support", price: 1500, source: "user" });
     triggerLevel(db, { levelId: lvl, securityId: zzz, triggeredPrice: 1490 });
 
     const rows = getLevelsTriggeredInWindow(db, 7);

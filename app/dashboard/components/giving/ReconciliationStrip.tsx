@@ -100,7 +100,7 @@ export function ReconciliationStrip({ report }: { report: ReconciliationReport }
                       {zeroAmount && armed && (
                         <p role="alert" className="basis-full text-xs text-warn">
                           This transfer leg has no recorded value. Click again to link it and stamp the
-                          donation&apos;s recorded fair value.
+                          donation&apos;s recorded fair market value.
                         </p>
                       )}
                       <button

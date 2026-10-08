@@ -74,7 +74,7 @@ describe("buildSuggestionContext — threads the security's currency", () => {
         "INSERT INTO securities (symbol, name, security_type, asset_class, multiplier, currency) VALUES ('ZZZ', 'ZZZ Corp', 'stock', 'equity', 1, 'JPY')"
       )
       .run().lastInsertRowid as number;
-    const lvl = upsertLevel(db, { security_id: zzz, level_type: "support", price: 1500, source: "manual" });
+    const lvl = upsertLevel(db, { security_id: zzz, level_type: "support", price: 1500, source: "user" });
     const { alertId } = triggerLevel(db, { levelId: lvl, securityId: zzz, triggeredPrice: 1490 });
 
     const built = buildSuggestionContext(db, alertId as number);
