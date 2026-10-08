@@ -53,8 +53,11 @@ export interface TaxLotSaleWithDetails {
   acquisition_price: number;
   sale_price: number;
   proceeds: number;
+  proceeds_usd: number;
   cost_basis_allocated: number;
+  cost_basis_allocated_usd: number;
   realized_gain_loss: number;
+  realized_gain_loss_usd: number;
   is_long_term: number;
   holding_period_days: number;
   currency: string;
@@ -289,15 +292,24 @@ export function getExpiredOptionLotsAwaitingClose(
 export function getClosedTaxLotSales(
   db: Database.Database,
   year?: number,
-  opts?: { filingOnly?: boolean }
+  opts?: { filingOnly?: boolean; accountName?: string }
 ): TaxLotSaleWithDetails[] {
+  const hasFxRates =
+    (db
+      .prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'fx_rates'")
+      .get() as { hit?: number } | undefined) != null;
+  const fxFactor = hasFxRates ? "COALESCE(fx.usd_per_unit, 1)" : "1";
+  const fxJoin = hasFxRates ? "LEFT JOIN fx_rates fx ON fx.currency = s.currency" : "";
   const baseSql = `SELECT
         tls.id, a.name AS account_name, tl.account_id, tl.security_id, tl.is_short,
         s.symbol, s.name AS security_name, s.security_type,
         tl.acquisition_date, tls.sale_date,
         tls.quantity_sold, tl.acquisition_price,
         tls.sale_price, tls.proceeds,
+        tls.proceeds * ${fxFactor} AS proceeds_usd,
         tls.cost_basis_allocated, tls.realized_gain_loss,
+        tls.cost_basis_allocated * ${fxFactor} AS cost_basis_allocated_usd,
+        tls.realized_gain_loss * ${fxFactor} AS realized_gain_loss_usd,
         tls.is_long_term, tls.holding_period_days,
         COALESCE(s.currency, 'USD') AS currency,
         (t.type = 'RECONCILE_CLOSE') AS is_synthetic_close,
@@ -306,7 +318,8 @@ export function getClosedTaxLotSales(
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN accounts a ON a.id = tl.account_id
       JOIN securities s ON s.id = tl.security_id
-      JOIN transactions t ON t.id = tls.sale_transaction_id`;
+      JOIN transactions t ON t.id = tls.sale_transaction_id
+      ${fxJoin}`;
 
   // filingOnly (Task 6 dependency): exclude premium-rollover closes (option
   // premium that moved to the underlying leg — not a separate disposition,
@@ -317,6 +330,10 @@ export function getClosedTaxLotSales(
   if (year) {
     conditions.push("tls.sale_date >= ? AND tls.sale_date <= ?");
     params.push(`${year}-01-01`, `${year}-12-31`);
+  }
+  if (opts?.accountName) {
+    conditions.push("a.name = ?");
+    params.push(opts.accountName);
   }
   if (opts?.filingOnly) {
     conditions.push("tls.premium_rollover = 0 AND t.type != 'RECONCILE_CLOSE'");

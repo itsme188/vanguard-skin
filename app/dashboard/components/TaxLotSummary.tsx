@@ -184,7 +184,12 @@ export function TaxLotSummaryCards({
         <GainCard
           label="Unrealized"
           value={summary.totalUnrealizedGain}
-          sublabel={`${summary.totalOpenLots} open lot${summary.totalOpenLots !== 1 ? "s" : ""}`}
+          sublabel={
+            <>
+              <Count value={summary.totalOpenLots} /> open lot
+              {summary.totalOpenLots !== 1 ? "s" : ""}
+            </>
+          }
         />
         <GainCard
           label={`${year} Realized`}

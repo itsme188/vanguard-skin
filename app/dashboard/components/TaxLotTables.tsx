@@ -309,17 +309,28 @@ export function ClosedSalesTable({
   const rows = useMemo(() => {
     if (!sort.field) return sales;
     const field = sort.field;
+    const sortValue = (sale: TaxLotSaleWithDetails): string | number | boolean | null => {
+      if (field === "proceeds") return sale.proceeds_usd;
+      if (field === "cost_basis_allocated") return sale.cost_basis_allocated_usd;
+      if (field === "realized_gain_loss") return sale.realized_gain_loss_usd;
+      return sale[field as keyof TaxLotSaleWithDetails] as string | number | boolean | null;
+    };
     return [...sales].sort((a, b) =>
       compareValues(
-        a[field as keyof TaxLotSaleWithDetails],
-        b[field as keyof TaxLotSaleWithDetails],
+        sortValue(a),
+        sortValue(b),
         sort.dir,
       ),
     );
   }, [sales, sort]);
 
   if (sales.length === 0) {
-    return null;
+    return (
+      <EmptySection
+        title="Closed Sales"
+        reason="No closed sales for this scope and year."
+      />
+    );
   }
 
   return (

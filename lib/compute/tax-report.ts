@@ -125,6 +125,15 @@ export interface TaxReportOptions {
   accountName?: string | null;
 }
 
+function formatForm8949Description(sale: TaxLotSaleWithDetails): string {
+  const type = (sale.security_type ?? "").trim().toLowerCase();
+  if (type === "option") {
+    const contracts = formatExportShares(sale.quantity_sold);
+    return `${contracts} contract${contracts === "1" ? "" : "s"} ${sale.symbol}`;
+  }
+  return `${formatExportShares(sale.quantity_sold)} sh ${sale.symbol}`;
+}
+
 /**
  * detectWashSales flags same-security purchases within a 30-day window of a
  * loss sale — a heuristic scan, not a broker-confirmed determination. This
@@ -322,9 +331,7 @@ export function generateTaxReport(
 
   // filingOnly: exclude premium-rollover option closes and engine-synthesized
   // RECONCILE_CLOSE rows from anything destined for a filing surface (Task 5).
-  const allSales = getClosedTaxLotSales(db, year, { filingOnly: true });
-  const scopedSales =
-    accountName == null ? allSales : allSales.filter((s) => s.account_name === accountName);
+  const scopedSales = getClosedTaxLotSales(db, year, { filingOnly: true, accountName });
   const sales = scopedSales.filter((s) => isTaxableAccountId(s.account_id));
   const excludedRetirementAccounts = [
     ...new Set(scopedSales.filter((s) => !isTaxableAccountId(s.account_id)).map((s) => s.account_name)),
@@ -358,7 +365,7 @@ export function generateTaxReport(
       // formatExportShares, never the raw float: a quantity that has been
       // through split / partial-sale arithmetic arrives as 99.99999999999997.
       // The CSV and the TXF P-record both render from this one string.
-      description: `${formatExportShares(sale.quantity_sold)} sh ${sale.symbol}`,
+      description: formatForm8949Description(sale),
       dateAcquired: sale.is_short === 1 ? toMMDDYYYY(sale.sale_date) : toMMDDYYYY(sale.acquisition_date),
       dateSold: toMMDDYYYY(sale.sale_date),
       proceeds: sale.proceeds,
@@ -415,22 +422,9 @@ export function generateTaxReport(
   // account name that matches nothing yields an empty universe, which the
   // length guard below fails closed.
   const state = getTaxConventionState(db);
-  const accountIds = (
-    db
-      .prepare(
-        `SELECT DISTINCT tl.account_id FROM tax_lot_sales tls
-           JOIN tax_lots tl ON tl.id = tls.tax_lot_id
-           ${accountName == null ? "" : "JOIN accounts a ON a.id = tl.account_id"}
-          WHERE tls.sale_date >= ? AND tls.sale_date <= ?
-            ${accountName == null ? "" : "AND a.name = ?"}`
-      )
-      .all(
-        ...(accountName == null
-          ? [`${year}-01-01`, `${year}-12-31`]
-          : [`${year}-01-01`, `${year}-12-31`, accountName])
-      ) as { account_id: number }[]
-  )
+  const accountIds = getClosedTaxLotSales(db, year, { accountName })
     .map((r) => r.account_id)
+    .filter((id, index, ids) => ids.indexOf(id) === index)
     // A retirement account's rows are not in this report, so its
     // broker-acceptance stamp can neither gate nor unlock the year.
     .filter((id) => isTaxableAccountId(id));

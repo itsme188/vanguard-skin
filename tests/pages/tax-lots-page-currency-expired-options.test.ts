@@ -54,6 +54,34 @@ describe("Tax Lots page source pins — currency conversions and expired options
     expect(block).not.toContain("text-ink-faint/60");
   });
 
+  it("Closed Sales stays visible as an EmptySection when the scoped year has no sales", () => {
+    const src = tableSrc();
+    const start = anchorIndex(src, "export function ClosedSalesTable");
+    const block = src.slice(start);
+    expect(block).toContain("<EmptySection");
+    expect(block).toContain('title="Closed Sales"');
+    expect(block).toContain("No closed sales for this scope and year.");
+    expect(block).not.toContain("if (sales.length === 0) {\n    return null;");
+  });
+
+  it("Closed Sales sorts non-USD proceeds and gain/loss by USD-converted sort keys", () => {
+    const src = tableSrc();
+    const start = anchorIndex(src, "export function ClosedSalesTable");
+    const block = src.slice(start);
+    expect(block).toContain('if (field === "proceeds") return sale.proceeds_usd;');
+    expect(block).toContain('if (field === "cost_basis_allocated") return sale.cost_basis_allocated_usd;');
+    expect(block).toContain('if (field === "realized_gain_loss") return sale.realized_gain_loss_usd;');
+  });
+
+  it("summary open-lot counts use the privacy Count component", () => {
+    const src = readFileSync(
+      path.join(process.cwd(), "app/dashboard/components/TaxLotSummary.tsx"),
+      "utf8"
+    );
+    const block = sliceBetween(src, 'label="Unrealized"', 'label={`${year} Realized`}');
+    expect(block).toContain("<Count value={summary.totalOpenLots} />");
+  });
+
   it("security detail names expired option lots awaiting a closing entry", () => {
     const src = securityPageSrc();
     const block = sliceBetween(src, "expiredOptionLotsAwaitingClose", "{/* Closed Sales */}");

@@ -6,6 +6,8 @@ import {
   resolveDownloadFilename,
   resolveTaxReportCardStatus,
   createFetchGuard,
+  TAX_REPORT_EMPTY_COPY,
+  ENGINE_ESTIMATED_EXCLUDED_COPY,
 } from "@/app/dashboard/components/TaxReportCard";
 
 /**
@@ -165,6 +167,27 @@ describe("TaxReportCard scope wiring (source pin)", () => {
 
     expect(src).toMatch(/taxReportCardTitle\(report\.year,\s*scopeAccountName\)/);
     expect(src).not.toMatch(/taxReportCardTitle\(year,/);
+  });
+
+  it("renders an explicit empty state for a zero-sale scoped report instead of returning null", () => {
+    expect(TAX_REPORT_EMPTY_COPY).toContain("No taxable sales");
+    expect(src).not.toMatch(/if \(totalSales === 0\) return null/);
+    expect(src).toContain("{totalSales === 0 && (");
+    expect(src).toContain("{TAX_REPORT_EMPTY_COPY}");
+  });
+
+  it("discloses that filing rows exclude engine-estimated reconciliation closes", () => {
+    expect(ENGINE_ESTIMATED_EXCLUDED_COPY).toContain("engine-estimated");
+    expect(ENGINE_ESTIMATED_EXCLUDED_COPY).toContain("economic realized tiles");
+    expect(src).toContain("{ENGINE_ESTIMATED_EXCLUDED_COPY}");
+  });
+
+  it("masks portfolio-derived report counts through Count under privacy mode", () => {
+    expect(src).toContain("import { Count, PrivateText }");
+    expect(src).toMatch(/<Count value=\{report\.shortTermRows\?\.length \?\? 0\}/);
+    expect(src).toMatch(/<Count value=\{report\.longTermRows\?\.length \?\? 0\}/);
+    expect(src).toMatch(/<Count value=\{totalSales\}/);
+    expect(src).toMatch(/<Count value=\{report\.washSaleWarnings\.length\}/);
   });
 });
 

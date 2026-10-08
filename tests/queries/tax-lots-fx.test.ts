@@ -318,6 +318,10 @@ describe("tax-lots FX conversion", () => {
       expect(usdSale?.currency).toBe("USD");
       // row values stay native (never fabricate an FX vintage on tax rows)
       expect(krwSale?.realized_gain_loss).toBe(-3_980_000);
+      // Sort keys are display-only USD conversions so non-USD rows do not
+      // rank by raw native magnitude in the Closed Sales table.
+      expect(krwSale?.realized_gain_loss_usd).toBeCloseTo(-3_980_000 * 0.0006648, 6);
+      expect(usdSale?.realized_gain_loss_usd).toBe(usdSale?.realized_gain_loss);
     });
 
     it("filingOnly excludes Forex conversion sales while the operational reader keeps them classified", () => {

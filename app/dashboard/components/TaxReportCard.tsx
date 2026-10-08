@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { PrivateText } from "@/lib/privacy/components";
+import { Count, PrivateText } from "@/lib/privacy/components";
 import { buildTaxReportFilename, washSaleReplacementPhrase } from "@/lib/compute/tax-report";
 
 interface TaxReportSummary {
@@ -73,6 +73,10 @@ export const RETIREMENT_ACCOUNT_COPY =
 // stamped, IRA sales are still in these totals and the banner must say so.
 export const NO_RETIREMENT_STAMP_COPY =
   "No account is marked as a retirement account yet — sales in an IRA are included until it is stamped.";
+export const TAX_REPORT_EMPTY_COPY =
+  "No taxable sales for this scope and year.";
+export const ENGINE_ESTIMATED_EXCLUDED_COPY =
+  "Tax Report rows exclude engine-estimated reconciliation closes; those stay in the economic realized tiles above.";
 
 /**
  * One line naming the retirement accounts whose sales were dropped from an
@@ -357,8 +361,6 @@ export function TaxReportCard({
 
   const totalSales =
     (report.shortTermRows?.length ?? 0) + (report.longTermRows?.length ?? 0);
-  if (totalSales === 0) return null;
-
   const totalGainLoss = report.shortTermTotal.gainLoss + report.longTermTotal.gainLoss;
   const hasWashSales = report.washSaleWarnings.length > 0;
   // PR #59 review minor: this was computed three times (title x2 + banner
@@ -387,22 +389,24 @@ export function TaxReportCard({
             {taxReportCardTitle(report.year, scopeAccountName)}
           </h3>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => handleDownload("csv")}
-            disabled={downloading}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 text-gold-ink hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50"
-          >
-            {downloading ? "Generating..." : "CSV"}
-          </button>
-          <button
-            onClick={() => handleDownload("txf")}
-            disabled={downloadingTxf}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 text-gold-ink hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50"
-          >
-            {downloadingTxf ? "Generating..." : "TXF (TurboTax)"}
-          </button>
-        </div>
+        {totalSales > 0 && (
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleDownload("csv")}
+              disabled={downloading}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 text-gold-ink hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50"
+            >
+              {downloading ? "Generating..." : "CSV"}
+            </button>
+            <button
+              onClick={() => handleDownload("txf")}
+              disabled={downloadingTxf}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 text-gold-ink hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50"
+            >
+              {downloadingTxf ? "Generating..." : "TXF (TurboTax)"}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* PR #59 review Finding B: the report on screen may be stale — the
@@ -439,60 +443,73 @@ export function TaxReportCard({
       )}
 
       <div className="p-5 space-y-4">
+        {totalSales === 0 && (
+          <p className="text-xs text-ink-dim">{TAX_REPORT_EMPTY_COPY}</p>
+        )}
+
         {/* Wash-sale methodology disclosure — always shown, independent of
             whether any wash sale was actually detected below. */}
         <p className="text-[10px] text-ink-faint">{report.washSaleAdvisory}</p>
+        <p className="text-[10px] text-ink-faint italic">{ENGINE_ESTIMATED_EXCLUDED_COPY}</p>
 
         {/* Summary grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
-            <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">{SHORT_TERM_LABEL}</div>
-            <div className={`text-base font-mono tabular-nums font-semibold ${report.shortTermTotal.gainLoss >= 0 ? "text-up" : "text-down"}`}>
-              <PrivateText>{formatMoney(report.shortTermTotal.gainLoss)}</PrivateText>
-            </div>
-            <div className="text-[10px] text-ink-faint mt-0.5">{report.shortTermRows?.length ?? 0} sales</div>
-            {shouldShowWashSaleAddBack(report.shortTermTotal.adjustments) && (
-              <div className="text-[10px] text-ink-faint mt-0.5">
-                Wash-sale add-back: <PrivateText>{formatMoney(report.shortTermTotal.adjustments)}</PrivateText>
+        {totalSales > 0 && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
+              <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">{SHORT_TERM_LABEL}</div>
+              <div className={`text-base font-mono tabular-nums font-semibold ${report.shortTermTotal.gainLoss >= 0 ? "text-up" : "text-down"}`}>
+                <PrivateText>{formatMoney(report.shortTermTotal.gainLoss)}</PrivateText>
               </div>
-            )}
-          </div>
-
-          <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
-            <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">{LONG_TERM_LABEL}</div>
-            <div className={`text-base font-mono tabular-nums font-semibold ${report.longTermTotal.gainLoss >= 0 ? "text-up" : "text-down"}`}>
-              <PrivateText>{formatMoney(report.longTermTotal.gainLoss)}</PrivateText>
-            </div>
-            <div className="text-[10px] text-ink-faint mt-0.5">{report.longTermRows?.length ?? 0} sales</div>
-            {shouldShowWashSaleAddBack(report.longTermTotal.adjustments) && (
               <div className="text-[10px] text-ink-faint mt-0.5">
-                Wash-sale add-back: <PrivateText>{formatMoney(report.longTermTotal.adjustments)}</PrivateText>
+                <Count value={report.shortTermRows?.length ?? 0} /> sales
               </div>
-            )}
-          </div>
-
-          <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
-            <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">Net Gain/Loss</div>
-            <div className={`text-base font-mono tabular-nums font-semibold ${totalGainLoss >= 0 ? "text-up" : "text-down"}`}>
-              <PrivateText>{formatMoney(totalGainLoss)}</PrivateText>
-            </div>
-            <div className="text-[10px] text-ink-faint mt-0.5">{totalSales} total sales</div>
-          </div>
-
-          <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
-            <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">Wash Sales</div>
-            <div className={`text-base font-mono tabular-nums font-semibold ${hasWashSales ? "text-warn" : "text-ink"}`}>
-              {report.washSaleWarnings.length}
-            </div>
-            <div className="text-[10px] text-ink-faint mt-0.5">
-              {washSalesCaption(
-                report.shortTermTotal.adjustments,
-                report.longTermTotal.adjustments,
-                report.washSaleWarnings.length
+              {shouldShowWashSaleAddBack(report.shortTermTotal.adjustments) && (
+                <div className="text-[10px] text-ink-faint mt-0.5">
+                  Wash-sale add-back: <PrivateText>{formatMoney(report.shortTermTotal.adjustments)}</PrivateText>
+                </div>
               )}
             </div>
+
+            <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
+              <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">{LONG_TERM_LABEL}</div>
+              <div className={`text-base font-mono tabular-nums font-semibold ${report.longTermTotal.gainLoss >= 0 ? "text-up" : "text-down"}`}>
+                <PrivateText>{formatMoney(report.longTermTotal.gainLoss)}</PrivateText>
+              </div>
+              <div className="text-[10px] text-ink-faint mt-0.5">
+                <Count value={report.longTermRows?.length ?? 0} /> sales
+              </div>
+              {shouldShowWashSaleAddBack(report.longTermTotal.adjustments) && (
+                <div className="text-[10px] text-ink-faint mt-0.5">
+                  Wash-sale add-back: <PrivateText>{formatMoney(report.longTermTotal.adjustments)}</PrivateText>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
+              <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">Net Gain/Loss</div>
+              <div className={`text-base font-mono tabular-nums font-semibold ${totalGainLoss >= 0 ? "text-up" : "text-down"}`}>
+                <PrivateText>{formatMoney(totalGainLoss)}</PrivateText>
+              </div>
+              <div className="text-[10px] text-ink-faint mt-0.5">
+                <Count value={totalSales} /> total sales
+              </div>
+            </div>
+
+            <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
+              <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">Wash Sales</div>
+              <div className={`text-base font-mono tabular-nums font-semibold ${hasWashSales ? "text-warn" : "text-ink"}`}>
+                <Count value={report.washSaleWarnings.length} />
+              </div>
+              <div className="text-[10px] text-ink-faint mt-0.5">
+                {washSalesCaption(
+                  report.shortTermTotal.adjustments,
+                  report.longTermTotal.adjustments,
+                  report.washSaleWarnings.length
+                )}
+              </div>
+            </div>
           </div>
-        </div>
+        )}
 
         {retirementNote && (
           <p className="text-[10px] text-ink-faint italic">{retirementNote}</p>
