@@ -31,12 +31,17 @@ interface SecurityRow {
   symbol: string;
   security_name: string | null;  // SELECT aliases s.name AS security_name
   security_type: string | null;
+  currency: string | null;
 }
 
 export interface SuggestionContext {
   symbol: string;
   securityName: string | null;
   securityType: string | null;
+  /** The security's trading currency. `levelPrice` and `triggeredPrice` are
+   *  both in it (native, never converted); missing means USD. Optional so
+   *  existing callers/tests that don't set it keep working. */
+  currency?: string | null;
   levelType: string;
   /**
    * The threshold the alert fired AGAINST — the recorded `threshold_price`,
@@ -61,6 +66,31 @@ export interface SuggestionContext {
   held: Array<{ account: string; quantity: number }>;
   onWatchlist: boolean;
   watchlistGroup: string | null;
+}
+
+/**
+ * Price label for the prompt. Levels and fire prices are stored in the
+ * security's NATIVE currency, so only a USD security gets a "$" (unchanged
+ * "$123.45" text). Anything else is written as "<amount> <ISO code>" — the
+ * code rather than a symbol, so the model cannot read yen as dollars. The
+ * value is never converted.
+ */
+function promptPrice(currency: string | null | undefined, value: number): string {
+  const code = (currency ?? "").trim().toUpperCase();
+  if (code === "" || code === "USD") return `$${value.toFixed(2)}`;
+  let digits = 2;
+  try {
+    digits =
+      new Intl.NumberFormat("en-US", { style: "currency", currency: code }).resolvedOptions()
+        .maximumFractionDigits ?? 2;
+  } catch {
+    // Not a well-formed ISO code: keep two decimals and print the code as stored.
+  }
+  const amount = value.toLocaleString("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+  return `${amount} ${code}`;
 }
 
 /**
@@ -117,12 +147,16 @@ export function buildSuggestionPrompt(ctx: SuggestionContext): string {
         : ` (creation snapshot for ${maMatch[2]}-day ${maMatch[1].toUpperCase()}; fire-time threshold not recorded)`
     : "";
 
+  const currencyCode = (ctx.currency ?? "").trim().toUpperCase();
+  const foreignCurrency = currencyCode !== "" && currencyCode !== "USD" ? currencyCode : null;
+
   return [
     `A price level you set was just crossed. Write a ONE-SENTENCE recommendation for what to consider doing (or why to wait). Be analytical like a colleague, not a coach. No hype language. No preamble. Just the recommendation.`,
     ``,
     `Security: ${ctx.symbol}${ctx.securityName ? ` (${ctx.securityName})` : ""}`,
-    `Level: ${ctx.levelType.replace(/_/g, " ")} at $${ctx.levelPrice.toFixed(2)}${levelSourceNote}`,
-    `Price when the alert fired: $${ctx.triggeredPrice.toFixed(2)}`,
+    `Level: ${ctx.levelType.replace(/_/g, " ")} at ${promptPrice(ctx.currency, ctx.levelPrice)}${levelSourceNote}`,
+    `Price when the alert fired: ${promptPrice(ctx.currency, ctx.triggeredPrice)}`,
+    foreignCurrency ? `Prices are in ${foreignCurrency}, not US dollars.` : "",
     ctx.levelPriceBasis !== "recorded" && maMatch
       ? "Do not claim the fallback threshold was the value crossed when this alert fired."
       : "",
@@ -203,7 +237,7 @@ export function buildSuggestionContext(
          sl.security_id AS level_security_id,
          sl.level_type, sl.price AS level_price, sl.price_source, sl.direction,
          sl.source, sl.source_author, sl.thesis, sl.timeframe, sl.action_hint,
-         s.symbol, s.name AS security_name, s.security_type
+         s.symbol, s.name AS security_name, s.security_type, s.currency
        FROM level_alerts a
        JOIN security_levels sl ON sl.id = a.level_id
        JOIN securities s ON s.id = a.security_id
@@ -230,6 +264,7 @@ export function buildSuggestionContext(
     symbol: row.symbol,
     securityName: row.security_name,
     securityType: row.security_type,
+    currency: row.currency,
     levelType: row.level_type,
     levelPrice: thresholdPrice,
     levelPriceSource: row.price_source,

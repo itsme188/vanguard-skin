@@ -6,6 +6,10 @@ export interface LevelTriggeredThisWeek {
   alert_id: number;
   symbol: string;
   security_name: string | null;
+  /** The security's trading currency. `level_price` and the price it is shown
+   *  with are both in THIS currency (native, never converted) — label them
+   *  with `formatLevelPrice(currency, …)`, never a hardcoded "$". */
+  currency: string;
   triggered_at: string;
   triggered_price: number;
   level_type: string;
@@ -23,6 +27,12 @@ export interface LevelNearPrice {
   security_id: number;
   symbol: string;
   security_name: string | null;
+  /** The security's trading currency. `level_price` and `current_price` are
+   *  both in THIS currency (native, never converted) — label them with
+   *  `formatLevelPrice(currency, …)`, never a hardcoded "$". The query always
+   *  sets it; optional only so hand-built rows without it still compile
+   *  (missing reads as USD, the app-wide convention). */
+  currency?: string | null;
   level_type: string;
   level_price: number;
   current_price: number;
@@ -52,6 +62,7 @@ export function getLevelsTriggeredInWindow(
          a.id AS alert_id,
          s.symbol,
          s.name AS security_name,
+         COALESCE(s.currency, 'USD') AS currency,
          a.triggered_at,
          a.triggered_price,
          sl.level_type,
@@ -90,6 +101,7 @@ export function getLevelsNearPrice(
          s.id AS security_id,
          s.symbol,
          s.name AS security_name,
+         COALESCE(s.currency, 'USD') AS currency,
          sl.level_type,
          sl.price AS level_price,
          p.close_price AS current_price,

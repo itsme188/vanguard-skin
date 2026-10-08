@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { LevelNearPrice } from "@/lib/queries/briefing-levels";
-import { formatPercent, formatUSDPrecise } from "@/lib/format";
+import { formatPercent } from "@/lib/format";
+import { formatLevelPrice } from "@/lib/chart/price-formatter";
 
 /**
  * Overview card surfacing active levels within ~5% of the current price.
@@ -45,7 +46,9 @@ export function NearbyLevelsCard({ levels }: { levels: LevelNearPrice[] }) {
                   rendered unmasked under privacy mode per the privacy-masks-portfolio-only
                   rule, matching /dashboard/alerts (QA: today-alerts-nearby-levels--privacy-
                   masks-public-level-prices-inbox-shows-clear). */}
-              <span className="text-ink font-mono">@ {formatUSDPrecise(l.level_price)}</span>
+              {/* The level is stored in the security's native currency: the label
+                  follows it (USD output is unchanged), the value is never converted. */}
+              <span className="text-ink font-mono">@ {formatLevelPrice(l.currency, l.level_price)}</span>
               {l.source_author && (
                 <span className="text-ink-faint italic">— {l.source_author}</span>
               )}
