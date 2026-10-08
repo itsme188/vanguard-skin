@@ -216,6 +216,27 @@ export function unappliedNoteEdits(body: NoteUpdateBody, saved: unknown): string
   return missing;
 }
 
+export const EARNINGS_NOTE_NEEDS_SECURITY =
+  "An earnings note needs a security. Pick one, then save.";
+
+/**
+ * Why this draft may not be saved, or null. The Earnings tab files notes
+ * under per-security headers, so an earnings note with no security would
+ * save and then appear nowhere on that tab. /api/notes refuses the same
+ * thing with a 400; this says so before the request is made.
+ *
+ * `note` is the saved note being edited. An older earnings note that never
+ * had a security keeps an editable text: the edit changes neither field.
+ */
+export function noteDraftBlocker(
+  draft: Pick<NoteDraft, "type" | "symbol">,
+  note?: Pick<NoteWithContext, "note_type" | "security_id"> | null,
+): string | null {
+  if (draft.type !== "earnings" || draft.symbol !== "") return null;
+  if (note && note.note_type === "earnings" && note.security_id == null) return null;
+  return EARNINGS_NOTE_NEEDS_SECURITY;
+}
+
 // A bare 9-character CUSIP (a Treasury bill stored under its CUSIP) and a
 // raw OCC option string are identifiers, not securities a note is filed
 // under. All-digit symbols are deliberately NOT matched: Tokyo and Seoul
@@ -425,6 +446,12 @@ export function NotesView({
     e.preventDefault();
     if (!formContent.trim()) return;
 
+    const blocker = noteDraftBlocker({ type: formType, symbol: formSymbol });
+    if (blocker) {
+      setSaveError(blocker);
+      return;
+    }
+
     setIsSaving(true);
     setSaveError(null);
 
@@ -510,6 +537,11 @@ export function NotesView({
 
   async function handleUpdate(note: NoteWithContext) {
     if (!editDraft || isSavingEdit) return;
+    const blocker = noteDraftBlocker(editDraft, note);
+    if (blocker) {
+      toast(blocker, "error");
+      return;
+    }
     const body = buildNoteUpdateBody(note, editDraft, securities);
     if (!body) return;
 
@@ -707,9 +739,13 @@ export function NotesView({
             // gate in handleCreate already prevents the leak from
             // reaching the API; this just removes the latent state.
             if (next === "journal") setFormSymbol("");
+            setSaveError(null);
           }}
           symbol={formSymbol}
-          onSymbolChange={setFormSymbol}
+          onSymbolChange={(next) => {
+            setFormSymbol(next);
+            setSaveError(null);
+          }}
           date={formDate}
           onDateChange={setFormDate}
           sentiment={formSentiment}

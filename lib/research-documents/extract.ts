@@ -109,6 +109,50 @@ export class ResearchPdfExtractionError extends Error {
 export const RESEARCH_PDF_NO_READABLE_OUTPUT_MESSAGE =
   "Claude could not read this PDF: it returned no summary. Try a text-based report rather than a scanned or image-only file.";
 
+/**
+ * Shown when the model, asked to copy a document out, answers with a refusal
+ * instead of the text. No snippet goes with it: the "output" is the refusal.
+ */
+export const RESEARCH_FULL_TEXT_REFUSED_MESSAGE =
+  "Claude declined to copy out the full text of this document, so no full text was stored.";
+
+/**
+ * Stored as the body when a forwarded PDF's full text was refused: the
+ * document and its summary are kept, and the full-text panel says why it is
+ * empty instead of showing the refusal.
+ */
+export const RESEARCH_FULL_TEXT_REFUSED_PLACEHOLDER =
+  "[Full text not stored: Claude declined to copy this document out. The summary and key points are unaffected.]";
+
+// A refusal opens with a first-person "cannot" and, in the same breath, names
+// the copying it will not do. Both must hold, and the opening must be the
+// start of the answer: a real document may say either thing somewhere.
+const REFUSAL_OPENING_WINDOW = 60;
+const REFUSAL_REASON_WINDOW = 250;
+const REFUSAL_INABILITY_RE =
+  /\bI(?:['\u2019]m| am)? (?:not able to|unable to|cannot|can['\u2019]t|can not|won['\u2019]t be able to|will not be able to)\b/i;
+const REFUSAL_COPY_TERM_RE =
+  /\b(?:reproduc\w*|transcri\w*|verbatim|copyright\w*|(?:full|complete|entire)\s+(?:verbatim\s+)?(?:text|article|document|report|body|content|transcript))\b/i;
+
+/**
+ * True when text returned as a document's body is the model declining to
+ * copy the document out ("I'm not able to reproduce the complete verbatim
+ * text of this article..."). Stored as the body, that answer was shown as the
+ * document's full text and indexed for chat search.
+ *
+ * Checks the model's OUTPUT only. Deliberately narrow: a wrongly flagged
+ * real document loses its full text, so first-person prose alone ("I cannot
+ * recommend the shares") and a copyright notice alone both pass.
+ */
+export function isRefusalShapedExtraction(text: string): boolean {
+  const opening = text.replace(/^\s*```(?:[a-z]+)?\s*/i, "").trimStart();
+  const match = REFUSAL_INABILITY_RE.exec(opening.slice(0, REFUSAL_OPENING_WINDOW + 40));
+  if (!match || match.index > REFUSAL_OPENING_WINDOW) return false;
+  return REFUSAL_COPY_TERM_RE.test(
+    opening.slice(match.index, match.index + REFUSAL_REASON_WINDOW),
+  );
+}
+
 // ─── Prompts ─────────────────────────────────────────────────────
 
 const METADATA_PROMPT = `You are reading a research PDF. It may be any of:
@@ -211,6 +255,15 @@ export async function extractResearchRawText(
       raw.slice(0, 200),
     );
   }
+  if (isRefusalShapedExtraction(unfenced)) {
+    // The upload route marks the document's full text as failed; the
+    // metadata call is separate and its summary stands.
+    throw new ResearchPdfExtractionError(
+      RESEARCH_FULL_TEXT_REFUSED_MESSAGE,
+      "",
+      "unusable_output",
+    );
+  }
   return unfenced;
 }
 
@@ -223,7 +276,18 @@ export async function extractResearchPdf(
 ): Promise<ExtractedResearchDocument> {
   const [metadata, rawText] = await Promise.all([
     extractResearchMetadata(pdfBytes),
-    extractResearchRawText(pdfBytes),
+    // This caller has no "full text failed" state to fall back on, and a
+    // refused body must not cost the whole document: keep the metadata and
+    // say plainly why there is no full text.
+    extractResearchRawText(pdfBytes).catch((err) => {
+      if (
+        err instanceof ResearchPdfExtractionError &&
+        err.message === RESEARCH_FULL_TEXT_REFUSED_MESSAGE
+      ) {
+        return RESEARCH_FULL_TEXT_REFUSED_PLACEHOLDER;
+      }
+      throw err;
+    }),
   ]);
   return { ...metadata, raw_text: rawText };
 }
@@ -524,6 +588,15 @@ export function parseClaudeResponse(
     throw new ResearchPdfExtractionError(
       "raw_text was empty after the delimiter — nothing to index.",
       raw.slice(Math.max(0, beginIdx - 100), beginIdx + 200),
+    );
+  }
+  if (isRefusalShapedExtraction(rawText)) {
+    // Thrown, not stored: for a forwarded link the inbox then fetches the
+    // page itself and keeps that text (lib/research-inbox/ingest.ts).
+    throw new ResearchPdfExtractionError(
+      RESEARCH_FULL_TEXT_REFUSED_MESSAGE,
+      "",
+      "unusable_output",
     );
   }
 

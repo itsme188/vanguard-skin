@@ -9,6 +9,10 @@ import { todayET } from "@/lib/calendar/date-utils";
 const VALID_TYPES = NOTE_TYPES;
 const VALID_SENTIMENTS = NOTE_SENTIMENTS;
 
+// The Earnings tab files notes under per-security headers, so an earnings
+// note with no security would be saved and then shown nowhere on that tab.
+const EARNINGS_NEEDS_SECURITY = "An earnings note needs a security. Pick one, then save.";
+
 export async function GET(request: NextRequest) {
   try {
     const params = request.nextUrl.searchParams;
@@ -82,6 +86,13 @@ export async function POST(request: NextRequest) {
       resolvedSecurityId = getSecurityIdBySymbol(db, symbol);
     }
 
+    if (note_type === "earnings" && !resolvedSecurityId) {
+      return NextResponse.json(
+        { success: false, error: EARNINGS_NEEDS_SECURITY },
+        { status: 400 }
+      );
+    }
+
     const note = createNote(db, {
       note_type,
       content,
@@ -149,6 +160,27 @@ export async function PUT(request: NextRequest) {
           { success: false, error: "Security not found" },
           { status: 404 }
         );
+      }
+    }
+
+    // An edit may not move a note INTO "earnings, no security". An older
+    // row already in that state keeps an editable text (nothing it sends
+    // changes either column), and may still be moved out of it.
+    if (noteType !== undefined || security_id !== undefined) {
+      const current = db
+        .prepare("SELECT note_type, security_id FROM notes WHERE id = ?")
+        .get(id) as { note_type: string; security_id: number | null } | undefined;
+      if (current) {
+        const nextType = noteType ?? current.note_type;
+        const nextSecurityId = security_id !== undefined ? security_id : current.security_id;
+        const changed =
+          nextType !== current.note_type || nextSecurityId !== current.security_id;
+        if (changed && nextType === "earnings" && nextSecurityId == null) {
+          return NextResponse.json(
+            { success: false, error: EARNINGS_NEEDS_SECURITY },
+            { status: 400 }
+          );
+        }
       }
     }
 

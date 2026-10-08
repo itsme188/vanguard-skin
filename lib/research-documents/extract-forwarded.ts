@@ -19,6 +19,7 @@ import {
   normalizeMetadata,
   parseClaudeResponse,
   ResearchPdfExtractionError,
+  RESEARCH_PDF_NO_READABLE_OUTPUT_MESSAGE,
   type ExtractedResearchDocument,
 } from "./extract";
 
@@ -105,9 +106,16 @@ function defaultDeps(): ForwardedExtractDeps {
       );
       const last = textBlocks[textBlocks.length - 1];
       if (!last) {
+        // Same plain sentence as lib/research-documents/extract.ts: the old
+        // copy was an internal diagnostic with a JSON snippet.
+        console.error(
+          "Forwarded-article extraction: model returned no text block; content types:",
+          response.content.map((b) => b.type),
+        );
         throw new ResearchPdfExtractionError(
-          "Claude response contained no text block",
-          JSON.stringify(response.content).slice(0, 200),
+          RESEARCH_PDF_NO_READABLE_OUTPUT_MESSAGE,
+          "",
+          "unusable_output",
         );
       }
       return last.text;
