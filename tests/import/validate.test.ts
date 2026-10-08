@@ -867,3 +867,32 @@ describe("validateParsedResult: present-but-unparseable price and fees", () => {
     expect(validatedResult.transactions).toHaveLength(1);
   });
 });
+
+describe("validateParsedResult: holdings cost basis and market value", () => {
+  const header =
+    "account,as_of_date,symbol,security_name,security_type,quantity,cost_basis,market_value";
+
+  it("warns on and clears a non-numeric cost_basis or market_value, keeping the row", () => {
+    const csv = [
+      header,
+      "IBKR,2025-06-30,AAA,A Inc,Stock,10,not-a-number,1000",
+      "IBKR,2025-06-30,BBB,B Inc,Stock,10,900,also-garbage",
+      "IBKR,2025-06-30,CCC,C Inc,Stock,10,900,1000",
+    ].join("\n");
+    const { skippedRows, warnings, validatedResult } = validateParsedResult(
+      parseCanonicalCsv(csv, "holdings.csv"),
+    );
+    expect(skippedRows).toHaveLength(0);
+    expect(validatedResult.holdings).toHaveLength(3);
+    const [a, b, c] = validatedResult.holdings;
+    expect(a.costBasis).toBeUndefined();
+    expect(a.marketValue).toBe(1000);
+    expect(b.costBasis).toBe(900);
+    expect(b.marketValue).toBeUndefined();
+    expect(c.costBasis).toBe(900);
+    expect(c.marketValue).toBe(1000);
+    expect(warnings.filter((w) => w.includes("(AAA)") && w.includes("cost_basis"))).toHaveLength(1);
+    expect(warnings.filter((w) => w.includes("(BBB)") && w.includes("market_value"))).toHaveLength(1);
+    expect(warnings.filter((w) => w.includes("(CCC)"))).toHaveLength(0);
+  });
+});

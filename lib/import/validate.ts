@@ -334,6 +334,21 @@ export function validateParsedResult(
       );
     }
 
+    // Optional figures: a present-but-unparseable cell reaches here as NaN.
+    // Non-critical, so clear it and keep the row.
+    if (h.costBasis != null && !Number.isFinite(h.costBasis)) {
+      warnings.push(
+        `Holding #${i + 1} (${h.symbol}): non-numeric cost_basis — cleared`,
+      );
+      h.costBasis = undefined;
+    }
+    if (h.marketValue != null && !Number.isFinite(h.marketValue)) {
+      warnings.push(
+        `Holding #${i + 1} (${h.symbol}): non-numeric market_value — cleared`,
+      );
+      h.marketValue = undefined;
+    }
+
     const hAccountReason = unknownAccountReason(h.accountName);
     if (hAccountReason) {
       skippedRows.push({
