@@ -331,6 +331,68 @@ function scanReconcileDeltaHits(db: Database.Database): IntegrityHit[] {
   }));
 }
 
+// ── Grouping for a reader ─────────────────────────────────────────────
+//
+// Every hit's `key` starts with the check that produced it. The Data Health
+// page lists hits under the check's plain name (the list can run to dozens),
+// so the mapping lives beside the scanners that mint the keys.
+
+export type IntegrityCheckId =
+  | "type-contradiction"
+  | "cash-residual"
+  | "lot-drift"
+  | "reconcile-delta"
+  | "other";
+
+/** Display order = the order runIntegrityChecks runs the scans. */
+export const INTEGRITY_CHECK_ORDER: readonly IntegrityCheckId[] = [
+  "type-contradiction",
+  "cash-residual",
+  "lot-drift",
+  "reconcile-delta",
+  "other",
+];
+
+export const INTEGRITY_CHECK_LABELS: Record<IntegrityCheckId, string> = {
+  "type-contradiction": "Security type contradicts its trades",
+  "cash-residual": "Cash movement no transaction explains",
+  "lot-drift": "Position does not match its tax lots",
+  "reconcile-delta": "Corporate action share count does not reconcile",
+  other: "Other",
+};
+
+export function integrityCheckIdOf(key: string): IntegrityCheckId {
+  const prefix = key.split(":")[0];
+  return prefix === "type-contradiction" ||
+    prefix === "cash-residual" ||
+    prefix === "lot-drift" ||
+    prefix === "reconcile-delta"
+    ? prefix
+    : "other";
+}
+
+/**
+ * Hits grouped by check, groups in scan order, hits in the order given (the
+ * lot-drift scan is already worst-first). Empty groups are left out. No hit is
+ * dropped: an unrecognised key lands in "other".
+ */
+export function groupIntegrityHits(
+  hits: readonly IntegrityHit[],
+): Array<{ check: IntegrityCheckId; label: string; hits: IntegrityHit[] }> {
+  const byCheck = new Map<IntegrityCheckId, IntegrityHit[]>();
+  for (const hit of hits) {
+    const check = integrityCheckIdOf(hit.key);
+    const list = byCheck.get(check);
+    if (list) list.push(hit);
+    else byCheck.set(check, [hit]);
+  }
+  return INTEGRITY_CHECK_ORDER.filter((c) => byCheck.has(c)).map((check) => ({
+    check,
+    label: INTEGRITY_CHECK_LABELS[check],
+    hits: byCheck.get(check)!,
+  }));
+}
+
 // ── Entry point ──────────────────────────────────────────────────────
 
 export function runIntegrityChecks(db: Database.Database): {

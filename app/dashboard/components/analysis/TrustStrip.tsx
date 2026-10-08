@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from "react";
 import type { AnalysisTrustState } from "@/lib/queries/analysis-trust-state";
-import { TrustStripDrawer, type DrawerPanel } from "./TrustStripDrawer";
+import { TrustStripDrawer, stalePricesSummary, type DrawerPanel } from "./TrustStripDrawer";
 import { PrivateText } from "@/lib/privacy/components";
 import { formatEnrichedAtET } from "@/lib/format";
 
@@ -115,14 +115,17 @@ export function TrustStrip({ scope }: TrustStripProps) {
     );
   }
 
-  const { factorCoverage, lastClassification, crossCheckedThru, stalePrices, bondDuration } = state;
+  const { factorCoverage, lastClassification, crossCheckedThru, stalePrices, neverPriced, bondDuration } = state;
 
   const coveragePct = Math.round(factorCoverage.percentage * 100);
   const coverageTone: Tone =
     coveragePct >= 90 ? "good" : coveragePct >= 60 ? "warn" : "bad";
 
+  // A never-priced holding counts toward the tone like a stale one: either
+  // way the price cannot be trusted.
+  const untrustedPrices = stalePrices.count + neverPriced.count;
   const staleTone: Tone =
-    stalePrices.count === 0 ? "good" : stalePrices.count <= 3 ? "warn" : "bad";
+    untrustedPrices === 0 ? "good" : untrustedPrices <= 3 ? "warn" : "bad";
 
   const bondCovTone: Tone =
     bondDuration.totalBonds === 0
@@ -180,14 +183,17 @@ export function TrustStrip({ scope }: TrustStripProps) {
         <Cell
           label="Stale prices"
           value={
-            stalePrices.count === 0
+            untrustedPrices === 0
               ? "All fresh"
-              : <PrivateText>{`${stalePrices.count} stale`}</PrivateText>
+              : <PrivateText>{stalePricesSummary(stalePrices.count, neverPriced.count)}</PrivateText>
           }
           tone={staleTone}
           hint={
-            stalePrices.symbols.length > 0
-              ? `Stale: ${stalePrices.symbols.join(", ")}`
+            untrustedPrices > 0
+              ? [
+                  neverPriced.symbols.length > 0 ? `Never priced: ${neverPriced.symbols.join(", ")}` : null,
+                  stalePrices.symbols.length > 0 ? `Stale: ${stalePrices.symbols.join(", ")}` : null,
+                ].filter(Boolean).join(" · ")
               : "All prices up to date"
           }
           onClick={() => togglePanel("stalePrices")}

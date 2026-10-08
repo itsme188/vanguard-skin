@@ -150,6 +150,33 @@ function LastClassifyContent({ state }: { state: AnalysisTrustState }) {
   );
 }
 
+/**
+ * The strip cell's text for the two price counts. They stay two counts: a
+ * stale price is old, a never-priced holding has no price at all, and adding
+ * them would change what "stale" has always meant on this strip.
+ */
+export function stalePricesSummary(staleCount: number, neverPricedCount: number): string {
+  if (staleCount === 0 && neverPricedCount === 0) return "All fresh";
+  if (neverPricedCount === 0) return `${staleCount} stale`;
+  if (staleCount === 0) return `${neverPricedCount} never priced`;
+  return `${staleCount} stale · ${neverPricedCount} never priced`;
+}
+
+function SymbolChips({ symbols }: { symbols: string[] }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {symbols.map((sym) => (
+        <span
+          key={sym}
+          className="px-2 py-0.5 rounded bg-raised border border-edge text-xs font-mono text-ink-dim"
+        >
+          {sym}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function StalePricesContent({
   state,
   onClose,
@@ -159,7 +186,7 @@ function StalePricesContent({
 }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
-  const { stalePrices } = state;
+  const { stalePrices, neverPriced } = state;
 
   async function handleRefresh() {
     setBusy(true);
@@ -190,28 +217,39 @@ function StalePricesContent({
 
   return (
     <div className="space-y-4">
-      {stalePrices.count === 0 ? (
+      {stalePrices.count === 0 && neverPriced.count === 0 ? (
         <p className="text-sm text-up">All prices are fresh (within 4 days).</p>
       ) : (
         <>
-          <div className="flex items-baseline gap-2">
-            <span className="text-2xl font-bold text-down">
-              <PrivateText>{String(stalePrices.count)}</PrivateText>
-            </span>
-            <span className="text-sm text-ink-faint">
-              {stalePrices.count === 1 ? "security" : "securities"} with prices older than 4 days
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {stalePrices.symbols.map((sym) => (
-              <span
-                key={sym}
-                className="px-2 py-0.5 rounded bg-raised border border-edge text-xs font-mono text-ink-dim"
-              >
-                {sym}
-              </span>
-            ))}
-          </div>
+          {/* Never priced first: a holding with no price at all is the
+              strongest case of a price not to trust. Its own count — never
+              folded into the stale count below. */}
+          {neverPriced.count > 0 && (
+            <section className="space-y-2" aria-label="Never priced">
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold text-down">
+                  <PrivateText>{String(neverPriced.count)}</PrivateText>
+                </span>
+                <span className="text-sm text-ink-faint">
+                  never priced — held {neverPriced.count === 1 ? "security" : "securities"} with no price on record
+                </span>
+              </div>
+              <SymbolChips symbols={neverPriced.symbols} />
+            </section>
+          )}
+          {stalePrices.count > 0 && (
+            <section className="space-y-2" aria-label="Stale prices">
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold text-down">
+                  <PrivateText>{String(stalePrices.count)}</PrivateText>
+                </span>
+                <span className="text-sm text-ink-faint">
+                  {stalePrices.count === 1 ? "security" : "securities"} with prices older than 4 days
+                </span>
+              </div>
+              <SymbolChips symbols={stalePrices.symbols} />
+            </section>
+          )}
           <button
             onClick={handleRefresh}
             disabled={busy}

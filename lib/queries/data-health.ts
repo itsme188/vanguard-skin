@@ -77,6 +77,11 @@ export interface DataHealthSummary {
   maxStaleDays: number | null;
   worstStaleSymbol: string | null;
   overallCoveragePct: number;
+  /** Held securities that sit in more than one account. `totalSecurities` is
+   * DISTINCT securities; the Account Coverage rows count positions (one per
+   * account holding a security), so the rows add up to more than the headline
+   * by the extra accounts these securities sit in. */
+  securitiesHeldInMultipleAccounts: number;
   totalGaps: number;
   totalDiscrepancies: number;
   totalReconciliationFlags: number;
@@ -578,6 +583,13 @@ function impliedSectorFromFundCategoryLabel(raw: string): string | null {
  *
  * One classifier feeds both exported readers so the two lists are disjoint
  * and can never lose a row between them.
+ *
+ * Universe: stocks the portfolio touches — CURRENTLY held (latest
+ * per-(account, security) row, shorts included) or on the active watchlist.
+ * The check used to read the whole securities table, so the panel filled with
+ * names long sold or never owned (QA finding
+ * data-health-sector-disagreements--all-rows-unheld-and-untagged-regression-3).
+ * A sold position (latest quantity 0) is out unless it is being watched.
  */
 function classifySectorCheck(db: Database.Database): {
   disagreements: SectorDisagreement[];
@@ -590,6 +602,16 @@ function classifySectorCheck(db: Database.Database): {
        WHERE LOWER(security_type) IN ('stock','common stock')
          AND fund_category LIKE 'US Sector Equity (%'
          AND sector_verified_at IS NULL
+         AND (
+           EXISTS (
+             SELECT 1 FROM holdings h
+             WHERE h.security_id = securities.id AND ${latestHoldingsPredicate()}
+           )
+           OR EXISTS (
+             SELECT 1 FROM watchlist w
+             WHERE w.security_id = securities.id AND w.is_active = 1
+           )
+         )
        ORDER BY symbol`
     )
     .all() as {
@@ -617,8 +639,8 @@ function classifySectorCheck(db: Database.Database): {
 }
 
 /**
- * Stocks whose GICS `sector` tag disagrees with the sector implied by their
- * `fund_category` ("US Sector Equity (X)" shape) and have NOT been verified
+ * Held or watched stocks whose GICS `sector` tag disagrees with the sector
+ * implied by their `fund_category` ("US Sector Equity (X)" shape) and have NOT been verified
  * by the sweep (`scripts/verify-sector-tags.ts`). Verified rows are legit
  * divergences (e.g. GOOG: GICS Communication Services vs a Technology fund
  * category) and stay suppressed via `sector_verified_at`.
@@ -644,10 +666,15 @@ export function getSectorCheckMissingSector(db: Database.Database): SectorDisagr
  *
  * Universe = CURRENTLY-held securities (latest per-(account,security) row,
  * shorts included) and "priced" = a price row within the last 7 days — the
- * same semantics as getAccountCoverage below, so the headline KPI can never
- * contradict the page's own detail panels. Any-date holdings + any-age
- * prices previously pinned the headline near 100% while three current
- * holdings carried month-old prices.
+ * same held rows and the same window as getAccountCoverage. Any-date
+ * holdings + any-age prices previously pinned the headline near 100% while
+ * three current holdings carried month-old prices.
+ *
+ * GRAIN: the headline is DE-DUPLICATED across accounts — it counts distinct
+ * securities. getAccountCoverage counts positions (a security held in two
+ * accounts is one row in each), so its rows add up to more than the headline
+ * whenever `securitiesHeldInMultipleAccounts` is above zero. The two are the
+ * same rows at two grains, not two definitions; the page labels each.
  */
 export function getDataHealthSummary(
   db: Database.Database,
@@ -704,6 +731,22 @@ export function getDataHealthSummary(
       worstSymbol: string | null;
     };
 
+  // Same held rows as heldCte, grouped instead of de-duplicated.
+  const multiAccount = db
+    .prepare(
+      `
+      SELECT COUNT(*) AS cnt FROM (
+        SELECT h.security_id FROM holdings h
+        JOIN securities hs ON hs.id = h.security_id
+        WHERE ${latestHoldingsPredicate()}
+          AND ${liveOptionExpirationSql("hs")}
+        GROUP BY h.security_id
+        HAVING COUNT(DISTINCT h.account_id) > 1
+      )
+      `,
+    )
+    .get() as { cnt: number };
+
   const gaps = getDataGaps(db);
   const totalGaps =
     gaps.securitiesNoPrices.length +
@@ -735,6 +778,7 @@ export function getDataHealthSummary(
       secCounts.total > 0
         ? Math.round((secCounts.withPrices / secCounts.total) * 100)
         : 100,
+    securitiesHeldInMultipleAccounts: multiAccount.cnt,
     totalGaps,
     totalDiscrepancies,
     totalReconciliationFlags: reconFlags,

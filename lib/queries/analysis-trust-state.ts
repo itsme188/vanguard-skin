@@ -48,6 +48,10 @@ export interface AnalysisTrustState {
   crossCheckedThru: string | null; // populated by Slice D; renamed from performanceReconciledThru (Task 13)
   perAccountReconciliation: PerAccountReconciliation[];
   stalePrices: { count: number; symbols: string[] };
+  /** Held securities with NO price row at all. Counted apart from
+   *  `stalePrices` (a stale price is old; this is absent), so neither count
+   *  changes meaning. Same holdings universe as `stalePrices`. */
+  neverPriced: { count: number; symbols: string[] };
   bondDuration: {
     totalBonds: number;
     withDuration: number;
@@ -238,6 +242,30 @@ export function getAnalysisTrustState(
     )
     .all(...params, STALE_PRICE_DAYS) as { symbol: string }[];
 
+  // ── Never priced ─────────────────────────────────────────────────────
+  // The stale query above starts from price rows, so a held security with
+  // none can never appear in it — and a missing price is the strongest case
+  // of a price not to trust (QA finding
+  // analysis-trust-strip-stale-prices--drawer-omits-never-priced-held-options).
+  // Same `latest` universe; the anti-join keeps the two lists disjoint.
+  const neverPricedRows = db
+    .prepare(
+      `
+    WITH latest AS (
+      SELECT h.security_id FROM holdings h
+      WHERE ${latestHoldingsPredicate({ accountFilter })}
+      GROUP BY h.security_id
+    )
+    SELECT s.symbol
+    FROM latest l
+    JOIN securities s ON s.id = l.security_id
+    LEFT JOIN prices p ON p.security_id = l.security_id
+    WHERE p.security_id IS NULL
+    ORDER BY s.symbol
+  `
+    )
+    .all(...params) as { symbol: string }[];
+
   // ── Bond duration coverage ───────────────────────────────────────────
   const bondRow = db
     .prepare(
@@ -367,6 +395,10 @@ export function getAnalysisTrustState(
     stalePrices: {
       count: staleRows.length,
       symbols: staleRows.map((r) => r.symbol),
+    },
+    neverPriced: {
+      count: neverPricedRows.length,
+      symbols: neverPricedRows.map((r) => r.symbol),
     },
     bondDuration: {
       totalBonds: bondRow.total_bonds,

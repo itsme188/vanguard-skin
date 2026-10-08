@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import type {
   PriceFreshness,
   AccountCoverage,
@@ -101,10 +101,33 @@ function SummaryCard({
  * above for the price-staleness table. Extracted into a constant so the
  * heading copy, footer copy, and slice can't drift out of sync.
  */
+/**
+ * Why the Account Coverage rows do not add up to the Price Coverage headline:
+ * the headline counts distinct securities, the rows count positions (one per
+ * account holding a security).
+ */
+export function accountCoverageGrainNote(heldInMultipleAccounts: number): string {
+  const base = "Each row counts positions: a security held in two accounts is one position in each.";
+  if (!Number.isFinite(heldInMultipleAccounts) || heldInMultipleAccounts <= 0) {
+    return `${base} The Price Coverage headline counts each security once.`;
+  }
+  const subject =
+    heldInMultipleAccounts === 1
+      ? "1 security is held in more than one account"
+      : `${heldInMultipleAccounts} securities are held in more than one account`;
+  return `${base} ${subject}, so the rows add up to more than the Price Coverage headline, which counts each security once.`;
+}
+
 const RECONCILIATION_ROW_LIMIT = 30;
 const DISCREPANCY_ROW_LIMIT = 20;
 
-export function DataHealthView() {
+/**
+ * `integritySection` is rendered by the page (server side, from the same
+ * confidence read the header badge uses) and placed here, above the coverage
+ * panels: it is what explains a capped badge, and every coverage figure below
+ * can read healthy while it is failing.
+ */
+export function DataHealthView({ integritySection }: { integritySection?: ReactNode }) {
   const [data, setData] = useState<DataHealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -130,8 +153,12 @@ export function DataHealthView() {
 
   if (error || !data) {
     return (
-      <div className="rounded-xl border border-down/30 bg-down-tint p-6 text-center">
-        <p className="text-down text-sm">{error ?? "Failed to load data health"}</p>
+      <div className="space-y-6">
+        <div className="rounded-xl border border-down/30 bg-down-tint p-6 text-center">
+          <p className="text-down text-sm">{error ?? "Failed to load data health"}</p>
+        </div>
+        {/* The integrity checks come from a separate read: still show them. */}
+        {integritySection}
       </div>
     );
   }
@@ -175,7 +202,7 @@ export function DataHealthView() {
         <SummaryCard
           label="Price Coverage"
           value={`${summary.overallCoveragePct}%`}
-          sub={`${summary.securitiesWithPrices}/${summary.totalSecurities} securities`}
+          sub={`${summary.securitiesWithPrices}/${summary.totalSecurities} distinct securities`}
           color={summary.overallCoveragePct >= 90 ? "up" : summary.overallCoveragePct >= 70 ? "gold" : "down"}
         />
         <SummaryCard
@@ -211,10 +238,18 @@ export function DataHealthView() {
         />
       </div>
 
+      {integritySection}
+
       {/* Account Coverage */}
       <section className="rounded-xl border border-edge bg-panel">
         <div className="px-5 py-3 border-b border-edge">
           <h3 className="text-sm font-medium text-ink">Account Coverage</h3>
+          {/* The headline counts each security once; these rows count it once
+              per account that holds it. Say so, or the rows read as a
+              contradiction of the headline. */}
+          <p className="text-xs text-ink-dim mt-0.5">
+            {accountCoverageGrainNote(summary.securitiesHeldInMultipleAccounts)}
+          </p>
         </div>
         <div className="p-5 space-y-3">
           {accountCoverage.map((ac) => (
@@ -222,7 +257,7 @@ export function DataHealthView() {
               <div className="flex items-center justify-between text-sm">
                 <span className="text-ink">{ac.accountName}</span>
                 <span className="text-ink-dim font-mono tabular-nums">
-                  {ac.pricedHoldings}/{ac.totalHoldings} priced
+                  {ac.pricedHoldings}/{ac.totalHoldings} positions priced
                   {ac.totalHoldings > 0 && (
                     <span className="ml-2 text-ink-faint">
                       ({ac.coveragePct}%)

@@ -175,6 +175,12 @@ describe("Sector disagreements — a missing sector is not a disagreement", () =
     db.prepare(
       "UPDATE securities SET sector_verified_at = datetime('now') WHERE symbol = 'HHH'",
     ).run();
+    // The check covers held or watched stocks only (2026-10-07): put every
+    // fixture row in the book so these cases stay about the tag comparison.
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
+       SELECT 1, id, '2026-04-30', 10, 't:hold:' || id FROM securities`,
+    ).run();
   }
 
   it("the disagreements list holds only rows that HAVE a sector", () => {

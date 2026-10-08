@@ -192,6 +192,7 @@ import { resolveFeatureModel } from "@/lib/ai/models";
 import { resolveScope } from "@/lib/queries/accounts";
 import { getCachedMacroThemes, upsertMacroThemes } from "@/lib/queries/analysis-macro-themes";
 import { computeFactorAnalysis } from "@/lib/compute/factors";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 
 const SYSTEM_PROMPT = `You are a portfolio analyst identifying the macro themes that actually moved markets this week. Output ONLY valid JSON matching the schema. Never include prose outside the JSON array. 3-5 themes maximum. Each theme must map to one factor_label from the allowed list. Each summary is one sentence, 30-200 chars. Prefer fewer broader themes over many narrow ones — split only when the underlying drivers are independent.`;
 
@@ -298,6 +299,29 @@ function bucketExposure(weight: number): ExposureBucket {
   return "very-high";
 }
 
+/**
+ * Drop cash equivalents from a factor's contributor list. A stable-value sweep
+ * fund is cash with a ticker: it led the rate theme's "top" list every week
+ * while carrying no duration worth naming (QA finding
+ * analysis-macro-themes--identical-top-exposure-across-themes-money-market-leads-regression-1).
+ * Identity comes from the one shared predicate, never a symbol list. Only the
+ * NAMES change — the factor's exposure figure is computed elsewhere and is
+ * untouched.
+ */
+export function dropCashEquivalentContributors<T extends { symbol: string }>(
+  db: Database.Database,
+  contributors: ReadonlyArray<T>,
+): T[] {
+  if (contributors.length === 0) return [];
+  const symbols = [...new Set(contributors.map((c) => c.symbol))];
+  const rows = db.prepare(
+    `SELECT symbol, security_type, fund_category FROM securities
+     WHERE symbol IN (${symbols.map(() => "?").join(",")})`,
+  ).all(...symbols) as Array<{ symbol: string; security_type: string | null; fund_category: string | null }>;
+  const cash = new Set(rows.filter((r) => isCashEquivalentSecurity(r)).map((r) => r.symbol));
+  return contributors.filter((c) => !cash.has(c.symbol));
+}
+
 export async function generateMacroThemes(
   db: Database.Database,
   opts: GenerateMacroThemesOpts
@@ -336,7 +360,13 @@ export async function generateMacroThemes(
 
   let rawText: string;
   try {
-    const result = await generateTextForFeature("analysisMacroThemes", { system: SYSTEM_PROMPT, prompt });
+    const result = await generateTextForFeature("analysisMacroThemes", {
+      system: SYSTEM_PROMPT,
+      prompt,
+      // Explicit cap: the provider's default for an unknown model id is
+      // small and thinking counts against it, which can truncate the JSON.
+      maxOutputTokens: 8000,
+    });
     rawText = result.text.trim();
   } catch (err) {
     // No model family in the text: this message can reach a log line an
@@ -366,8 +396,13 @@ export async function generateMacroThemes(
   const themes: MacroTheme[] = parsed.map((t, i) => {
     const factorTilt = tiltFor(t);
     const exposureWeight = factorTilt ? factorTilt.exposurePct / 100 : 0;
+    // Cash equivalents leave BEFORE the cut to three, so the next holding
+    // takes the slot. The tilt carries five names, so a list can run short
+    // when several of them are cash.
     const top = factorTilt
-      ? factorTilt.topContributors.slice(0, 3).map((c) => ({ symbol: c.symbol, weight: c.weight }))
+      ? dropCashEquivalentContributors(db, factorTilt.topContributors)
+          .slice(0, 3)
+          .map((c) => ({ symbol: c.symbol, weight: c.weight }))
       : [];
     return {
       ...t,
