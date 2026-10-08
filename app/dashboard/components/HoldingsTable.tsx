@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { AccountHoldingRow, HoldingWithSecurity } from "@/lib/queries/holdings";
-import { displaySecurityName, unrealizedGainRatio } from "@/lib/format";
+import { unrealizedGainRatio } from "@/lib/format";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
 import { SymbolLink } from "./SymbolLink";
@@ -11,6 +11,7 @@ import {
   GainPercentCell,
   HoldingsFooterDisclosures,
   StaleAsOfChip,
+  holdingDisplayName,
   holdingsSortValue,
   summarizeHoldingsFooter,
   summarizeStaleRows,
@@ -179,7 +180,9 @@ export function HoldingsTable({
     const q = filter.trim().toLowerCase();
     if (!q) return holdings;
     return holdings.filter((h) =>
-      [h.symbol, h.security_name, h.underlying_symbol].some((v) => v?.toLowerCase().includes(q)),
+      [h.symbol, h.security_name, holdingDisplayName(h), h.underlying_symbol].some((v) =>
+        v?.toLowerCase().includes(q),
+      ),
     );
   }, [holdings, filter]);
 
@@ -324,9 +327,9 @@ export function HoldingsTable({
                   </td>
                   <td
                     className="hidden md:table-cell px-4 py-3 text-ink-dim truncate max-w-[200px]"
-                    title={displaySecurityName(holding.security_name)}
+                    title={holdingDisplayName(holding)}
                   >
-                    {displaySecurityName(holding.security_name)}
+                    {holdingDisplayName(holding)}
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink whitespace-nowrap">
                     <Shares value={holding.quantity} digits={qtyDigits} />

@@ -9,6 +9,7 @@ import { Chip } from "./Chip";
 import { Count, Money, Pct, QuantityUnit, Shares } from "@/lib/privacy/components";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 import { hasKnownBasis } from "@/lib/compute/known-basis";
+import { parseOptionSymbol } from "@/lib/import/occ-symbol";
 import type { AllHoldingsRow } from "@/lib/queries/holdings";
 
 export type { AllHoldingsRow };
@@ -33,6 +34,36 @@ type Field =
 // cell — this table's stored-zero-is-unknown em-dash needs the same
 // guidance, not a silent dash with no explanation.
 export const NO_COST_BASIS_TOOLTIP = "Import a Vanguard cost basis CSV to populate";
+
+// A stored name that already describes a contract: it carries a date, or the
+// word call / put beside a number (a strike). A company or fund name does
+// neither ("... TRUST SERIES 1" has a number but no call / put).
+const CONTRACT_NAME_RE =
+  /\d{1,2}\/\d{1,2}\/\d{2,4}|\d{4}-\d{2}-\d{2}|\b(?:call|put)\b.*\d|\d.*\b(?:call|put)\b/i;
+
+/**
+ * The Name a holdings row shows. The broker sync stores the UNDERLYING's
+ * name on an option ("... ETF" on a call), so the Name column read as a
+ * holding of the fund itself. An option whose stored name does not describe
+ * a contract shows the contract read off its symbol instead, in the same
+ * shape the statement-sourced rows carry ("ZZZ 10/09/26 190.00 Call").
+ * Display only: the stored name is not changed, and an option whose symbol
+ * cannot be read keeps what is stored.
+ */
+export function holdingDisplayName(row: {
+  symbol: string;
+  security_name: string | null;
+  security_type: string | null;
+}): string {
+  const stored = displaySecurityName(row.security_name);
+  if (row.security_type?.toLowerCase() !== "option") return stored;
+  if (row.security_name != null && CONTRACT_NAME_RE.test(row.security_name)) return stored;
+  const parsed = parseOptionSymbol(row.symbol);
+  if (!parsed) return stored;
+  const [y, m, d] = parsed.expirationDate.split("-");
+  const right = parsed.optionType === "CALL" ? "Call" : "Put";
+  return `${parsed.underlying} ${m}/${d}/${y.slice(-2)} ${parsed.strike.toFixed(2)} ${right}`;
+}
 
 /**
  * The value a holdings row sorts by. An unknown figure must sort as unknown
@@ -201,12 +232,13 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
 
   // Filter on symbol, security_name, or account_name — three fields a user
   // might type when scanning a 100+-position list. Normalize to lowercase
-  // so "HOOD" and "hood" both match.
+  // so "HOOD" and "hood" both match. The name on screen can differ from the
+  // stored one (holdingDisplayName), so both are searched.
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
     if (!q) return holdings;
     return holdings.filter((h) =>
-      [h.symbol, h.security_name, h.account_name]
+      [h.symbol, h.security_name, holdingDisplayName(h), h.account_name]
         .some((v) => v?.toLowerCase().includes(q))
     );
   }, [holdings, filter]);
@@ -270,7 +302,7 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
         {isFiltered && (
           <>
             <span className="text-[11px] text-ink-faint font-mono">
-              {filtered.length} of {holdings.length}
+              <Count value={filtered.length} /> of <Count value={holdings.length} />
             </span>
             <button
               onClick={() => setFilter("")}
@@ -328,7 +360,7 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
               <tr>
                 <td colSpan={9} className="px-4 py-8 text-center text-xs text-ink-faint">
                   No positions match &ldquo;{filter.trim()}&rdquo; &mdash; clear the
-                  filter to see all {holdings.length}.
+                  filter to see all <Count value={holdings.length} />.
                 </td>
               </tr>
             )}
@@ -344,9 +376,9 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                   </td>
                   <td
                     className="px-4 py-3 text-ink-dim text-xs max-w-[200px] truncate"
-                    title={displaySecurityName(h.security_name)}
+                    title={holdingDisplayName(h)}
                   >
-                    {displaySecurityName(h.security_name)}
+                    {holdingDisplayName(h)}
                   </td>
                   <td className="px-4 py-3 text-ink-dim text-xs">{h.account_name}</td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink whitespace-nowrap">
@@ -393,9 +425,9 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
           <tfoot>
             <tr className="border-t-2 border-edge bg-panel/50">
               <td className="px-4 py-3 font-medium text-ink text-xs" colSpan={4}>
-                {isFiltered
-                  ? `Filtered (${filtered.length} position${filtered.length === 1 ? "" : "s"})`
-                  : `Total (${holdings.length} positions)`}
+                {/* Same wording for one position or many, so Hide amounts
+                    cannot leak "exactly one" through the grammar. */}
+                {isFiltered ? "Filtered" : "Total"} (positions: <Count value={filtered.length} />)
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums font-medium text-ink-dim">
                 {footer.totalCostBasis === null ? (

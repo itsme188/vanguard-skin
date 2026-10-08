@@ -32,9 +32,17 @@ const GOLD_CHIP =
   "bg-gold/20 text-[color:color-mix(in_srgb,var(--gold-ink)_80%,black)] [[data-theme=dark]_&]:text-gold-ink";
 const BLUE_CHIP = "bg-blue/20 text-blue";
 
+// Option legs take the colour of the equity leg with the same cash
+// direction (decision 2026-10-07): a buy pays cash out like BUY, a sell
+// takes cash in like SELL, whether it opens or closes. Expired and
+// Reinvestment stay neutral.
 const TYPE_STYLES: Record<string, string> = {
   BUY: UP_CHIP,
   SELL: DOWN_CHIP,
+  BUY_TO_OPEN: UP_CHIP,
+  BUY_TO_CLOSE: UP_CHIP,
+  SELL_TO_OPEN: DOWN_CHIP,
+  SELL_TO_CLOSE: DOWN_CHIP,
   DIVIDEND: GOLD_CHIP,
   INTEREST: BLUE_CHIP,
   FEE: DOWN_CHIP,
@@ -45,6 +53,11 @@ const TYPE_STYLES: Record<string, string> = {
   DEPOSIT: UP_CHIP,
   WITHDRAWAL: DOWN_CHIP,
 };
+
+/** The Type chip's colour classes; a type with no colour of its own is neutral. */
+export function transactionTypeChipClass(type: string): string {
+  return TYPE_STYLES[type] ?? "bg-raised text-ink-dim";
+}
 
 type Field = TransactionSortField;
 
@@ -193,7 +206,7 @@ export function TransactionHistory({
                 <td className="hidden md:table-cell px-4 py-3">
                   <span
                     className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                      TYPE_STYLES[txn.type] ?? "bg-raised text-ink-dim"
+                      transactionTypeChipClass(txn.type)
                     }`}
                   >
                     {transactionTypeLabel(txn.type)}
@@ -209,7 +222,7 @@ export function TransactionHistory({
                   </div>
                   <span
                     className={`md:hidden mt-1 inline-block text-[10px] font-medium px-1.5 py-0.5 rounded ${
-                      TYPE_STYLES[txn.type] ?? "bg-raised text-ink-dim"
+                      transactionTypeChipClass(txn.type)
                     }`}
                   >
                     {transactionTypeLabel(txn.type)}
