@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { displaySecurityName, unrealizedGainRatio } from "@/lib/format";
 import { SymbolLink } from "./SymbolLink";
 import { ScrollFade } from "./ScrollFade";
@@ -292,18 +292,37 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
 
   const isFiltered = filter.trim().length > 0;
 
+  // The table is wider than its container whenever the chat rail is open at
+  // 1280px (and on tablets and phones), which puts Value / Gain / Alloc past
+  // the right edge behind a 32px fade. The button below is the explicit cue:
+  // CSS shows it only while ScrollFade marks its wrapper `is-scrollable`
+  // (columns remain to the right), and a press pans to them.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const showMoreColumns = () => {
+    const scroller = containerRef.current?.querySelector(".scroll-fade > .overflow-x-auto");
+    scroller?.scrollTo({ left: scroller.scrollWidth, behavior: "smooth" });
+  };
+
   return (
-    <div className="rounded-xl border border-edge overflow-hidden">
+    <div ref={containerRef} className="group/holdings rounded-xl border border-edge overflow-hidden">
       <div className="flex items-center gap-3 px-4 py-2 border-b border-edge bg-panel/40">
         <input
           type="text"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter by symbol, name, or account…"
-          className="flex-1 bg-transparent text-xs text-ink placeholder:text-ink-faint outline-none"
+          className="flex-1 min-w-0 bg-transparent text-xs text-ink placeholder:text-ink-faint outline-none"
           spellCheck={false}
           autoComplete="off"
         />
+        <button
+          type="button"
+          onClick={showMoreColumns}
+          title="Scroll right to Value, Gain and Alloc"
+          className="relative hidden group-has-[.scroll-fade.is-scrollable]/holdings:inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] font-medium text-blue hover:underline pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-1"
+        >
+          More columns <span aria-hidden="true">&rarr;</span>
+        </button>
         {isFiltered && (
           <>
             <span className="text-[11px] text-ink-faint font-mono">
