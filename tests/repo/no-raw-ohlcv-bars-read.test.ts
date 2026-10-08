@@ -73,12 +73,6 @@ const ALLOWLIST: AllowEntry[] = [
     justification:
       "Cross-source discrepancy check: its job is to REPORT bad bars. A zero close must stay visible and count as a 100% disagreement (pinned in tests/queries/data-health.test.ts).",
   },
-  {
-    file: "lib/tws/benchmark.ts",
-    anchor: "close AS close_price FROM ohlcv_bars",
-    justification:
-      "Benchmark fallback copies CLOSES only and already drops non-positive closes with an inline `close > 0`. Safe against the known defect shape (low = 0 AND close = 0) but a hand-rolled copy — swap it for PRICED_BAR_SQL when lib/tws is next touched, then delete this entry.",
-  },
 ];
 
 // ─── Scanner ──────────────────────────────────────────────────────────────
