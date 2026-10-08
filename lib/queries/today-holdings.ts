@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "../valuation";
-import { resolveTradingDayPair } from "../digest/anomalies";
+import { resolveTradingDayPair, type TradingDayPair } from "../digest/anomalies";
 import { latestHoldingsPredicate } from "./latest-holdings";
 import { liveOptionExpirationSql } from "../compute/option-expiry";
 import { todayET } from "../calendar/date-utils";
@@ -100,8 +100,12 @@ interface TodayHoldingRow extends TodayHolding {
 export function getIbkrTodayHoldings(
   db: Database.Database,
   accountId: number,
+  // A caller that also LABELS the move (the Today heading names the session)
+  // resolves the pair once and passes it, so label and figure cannot come
+  // from two different reads. Omitted: resolved here, as before.
+  movePair?: TradingDayPair | null,
 ): TodayHolding[] {
-  const pair = resolveTradingDayPair(db);
+  const pair = movePair === undefined ? resolveTradingDayPair(db) : movePair;
   // Sentinel dates match no rows → move columns fall through to null.
   const pairLatest = pair?.latest ?? "";
   const pairPrior = pair?.prior ?? "";

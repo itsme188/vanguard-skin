@@ -439,3 +439,13 @@ describe("short positions: today_pct is signed by position direction", () => {
   });
 });
 
+
+describe("getIbkrTodayHoldings measures on the pair it is given", () => {
+  it("the Today page resolves the pair once and passes it, so the heading and the figure share it", () => {
+    const { readFileSync } = require("node:fs") as typeof import("node:fs");
+    const page = readFileSync("app/dashboard/today/page.tsx", "utf8");
+    expect(page.match(/resolveTradingDayPair\(db\)/g)).toHaveLength(1);
+    expect(page).toContain("getIbkrTodayHoldings(db, ibkrAccount.id, movePair)");
+    expect(page).toContain("ibkrSnapshotHeading(movePair?.latest ?? null, todayET())");
+  });
+});

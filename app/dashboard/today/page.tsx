@@ -81,10 +81,14 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
   let holdings: TodayHolding[] = [];
   let latestPriceDate: string | null = null;
 
+  // Resolved ONCE: the holdings query measures the move on this pair and the
+  // heading below names its later date, so the two cannot disagree.
+  const movePair = ibkrAccount ? resolveTradingDayPair(db) : null;
+
   if (ibkrAccount) {
     // Trading-day-pair move computation lives in lib/queries/today-holdings —
     // never a bare rn=1/rn=2 pairing (weekend phantom rows read as 0.00%).
-    holdings = getIbkrTodayHoldings(db, ibkrAccount.id);
+    holdings = getIbkrTodayHoldings(db, ibkrAccount.id, movePair);
 
     latestPriceDate =
       holdings
@@ -103,10 +107,8 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
   // 2026-09-13) — with shorts in the row set, a hedged book's net exposure can
   // be tiny or negative. See summarizeIbkrDayMove for the full rationale.
   const { count: movedCount, todayGain, todayPct } = summarizeIbkrDayMove(holdings);
-  // The move is measured on the SAME trading-day pair getIbkrTodayHoldings
-  // resolves. Its later date is the session the figure belongs to, and the
-  // heading says "today" only when that session is today's Eastern date.
-  const movePair = ibkrAccount ? resolveTradingDayPair(db) : null;
+  // The heading names the later date of the one pair the figure was measured
+  // on, and says "today" only when that session is today's Eastern date.
   const ibkrHeading = ibkrSnapshotHeading(movePair?.latest ?? null, todayET());
 
   // ── Today's calendar releases (with release_time set) ─────────────
