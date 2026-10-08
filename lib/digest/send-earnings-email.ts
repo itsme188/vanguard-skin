@@ -2054,7 +2054,7 @@ export function renderRecapPrompt(ctx: RecapContext): string {
 
   const reactionBlock = ctx.reactionSnapshotMarkdown
     ? `\n## Market reaction (T+2h, captured automatically)\n${ctx.reactionSnapshotMarkdown}\n`
-    : `\n## Market reaction\nReaction snapshot not yet captured. Say so in one line. Do NOT use web_search to find a price or a move, and do not quote an after-hours price from any source: a later price would post-date this email.\n`;
+    : `\n## Market reaction\nReaction snapshot not yet captured. Say so in one line. Do NOT use web_search to find a price or a move, and do not quote an after-hours price or a stock move from any source, a sell-side headline included: a later figure would post-date this email.\n`;
 
   const positionsBlock = renderPositionsBlock(ctx);
   const userNotesBlock = renderUserNotesBlock(ctx);

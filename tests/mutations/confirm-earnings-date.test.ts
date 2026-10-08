@@ -281,6 +281,39 @@ describe("confirmEarningsDate far-future guard", () => {
     expect(row).toEqual({ superseded: 0, event_time: "16:05", release_time: "16:05" });
   });
 
+  // Review finding: the Hub's add form stores a slot word in event_time, so a
+  // typed time usually lives in release_time alone.
+  it("keeps a typed time stored in release_time alone, on a same-slot confirm", () => {
+    seedManual("2026-06-12", "amc", "17:00");
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: "2026-06-12", confirmedTime: "amc", today: "2026-06-08" });
+    expect(manualRow()).toEqual({ event_time: "AMC", release_time: "17:00" });
+  });
+
+  it("moves a release_time-only typed time when the other slot is picked", () => {
+    seedManual("2026-06-12", "AMC", "17:00");
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: "2026-06-12", confirmedTime: "bmo", today: "2026-06-08" });
+    expect(manualRow()).toEqual({ event_time: "BMO", release_time: "08:00" });
+  });
+
+  it("a slot's default time is not a typed time: the cascade still decides it", () => {
+    seedManual("2026-06-12", "AMC", "16:15");
+    upsertSymbolReleaseTime(db, { symbol: "NVDA", releaseTime: "16:20", source: "user" });
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: "2026-06-12", confirmedTime: "amc", today: "2026-06-08" });
+    expect(manualRow()).toEqual({ event_time: "AMC", release_time: "16:20" });
+  });
+
+  it("a confirm that names no time keeps a typed morning time", () => {
+    seedManual("2026-06-12", "07:30", "07:30");
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: "2026-06-12", today: "2026-06-08" });
+    expect(manualRow()).toEqual({ event_time: "07:30", release_time: "07:30" });
+  });
+
+  it("a single-digit hour counts as a typed time", () => {
+    seedManual("2026-06-12", "9:30", "9:30");
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: "2026-06-12", confirmedTime: "bmo", today: "2026-06-08" });
+    expect(manualRow()).toEqual({ event_time: "9:30", release_time: "9:30" });
+  });
+
   it("stores a picked slot upper-case on a first insert", () => {
     confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: "2026-06-12", confirmedTime: "bmo", today: "2026-06-08" });
     expect(manualRow()).toEqual({ event_time: "BMO", release_time: "08:00" });

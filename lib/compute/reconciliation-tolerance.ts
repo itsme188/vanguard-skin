@@ -15,7 +15,7 @@ export function reconciliationBand(
   difference: number | null,
   statementValue: number,
 ): ReconciliationBand | null {
-  if (difference === null) return null;
+  if (difference == null || Number.isNaN(difference)) return null;
   const abs = Math.abs(difference);
   if (abs < RECON_MATCH_TOLERANCE) return "match";
   // No usable statement value: every difference counts as a large share, so

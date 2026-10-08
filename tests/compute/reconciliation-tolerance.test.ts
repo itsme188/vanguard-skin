@@ -4,6 +4,7 @@ import { reconciliationBand } from "@/lib/compute/reconciliation-tolerance";
 describe("reconciliationBand", () => {
   it("has no band without a difference", () => {
     expect(reconciliationBand(null, 50_000)).toBeNull();
+    expect(reconciliationBand(Number.NaN, 50_000)).toBeNull();
   });
 
   it("under one cent is a match, either sign", () => {
@@ -25,6 +26,12 @@ describe("reconciliationBand", () => {
   it("over half a percent but not over the floor is close, not off", () => {
     // 50 on 2,000 is 2.5%, but only 50 dollars.
     expect(reconciliationBand(50, 2_000)).toBe("close");
+  });
+
+  it("exactly at the floor, or exactly at half a percent, is still close", () => {
+    expect(reconciliationBand(100, 10_000)).toBe("close");
+    expect(reconciliationBand(500, 100_000)).toBe("close");
+    expect(reconciliationBand(500.01, 100_000)).toBe("off");
   });
 
   it("over both the floor and half a percent is off", () => {

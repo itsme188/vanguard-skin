@@ -151,7 +151,8 @@ interface DonationTarget {
 }
 
 /**
- * The script's whole work, importable (used by scripts/finish-donations.ts):
+ * The script's whole work, importable. A caller must check the acknowledgement
+ * itself (assertWriteAcknowledged); a repo test fails on a caller that does not:
  * plan (and with apply=true, write + recompute) lot assignments for every
  * confirmed, unreversed, lot-less stock donation. Returns counts for the
  * caller's summary. Takes a VACUUM INTO backup itself before writing.

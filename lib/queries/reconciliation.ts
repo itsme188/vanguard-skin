@@ -288,7 +288,7 @@ const DIFFERENCE_BANDS: Record<ReconciliationBand, CheckpointDifferenceBand> = {
   close: {
     band: "close",
     glyph: "~",
-    label: `Close: ${pct(RECON_NEUTRAL_PCT)} to ${pct(RECON_RED_PCT)} of the statement value, or under $${RECON_FLOOR_DOLLARS}`,
+    label: `Close: ${pct(RECON_NEUTRAL_PCT)} to ${pct(RECON_RED_PCT)} of the statement value, or $${RECON_FLOOR_DOLLARS} or less`,
   },
   off: {
     band: "off",

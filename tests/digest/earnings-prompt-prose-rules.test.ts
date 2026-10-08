@@ -141,6 +141,7 @@ describe("recap prompt — no reaction is captured yet", () => {
     const prompt = renderRecapPrompt(makeRecapContext());
     expect(prompt).toContain("Reaction snapshot not yet captured.");
     expect(prompt).toMatch(/Do NOT use web_search to find a price or a move/);
+    expect(prompt).toMatch(/do not quote an after-hours price or a stock move from any source/);
     expect(prompt).not.toContain("If you can determine after-hours / immediate reaction from web_search");
   });
 
