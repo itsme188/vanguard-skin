@@ -246,4 +246,49 @@ describe("confirmEarningsDate far-future guard", () => {
     expect(run(addDays(today, 401)).ok).toBe(false);
     expect(manualCount()).toBe(1);
   });
+
+  function seedManual(date: string, eventTime: string | null, releaseTime: string | null): void {
+    db.prepare(
+      `INSERT INTO calendar_events
+         (source, event_type, event_date, event_time, release_time, title, symbol, source_key, week_of)
+       VALUES ('manual', 'earnings', ?, ?, ?, 'NVDA earnings', 'NVDA', ?, '2026-06-08')`,
+    ).run(date, eventTime, releaseTime, `manual:NVDA:${date}:earnings`);
+  }
+  const manualRow = () =>
+    db
+      .prepare("SELECT event_time, release_time FROM calendar_events WHERE source='manual' AND symbol='NVDA'")
+      .get() as { event_time: string | null; release_time: string | null };
+
+  it("confirming with the same slot keeps a typed clock time", () => {
+    seedManual("2026-06-12", "16:05", "16:05");
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: "2026-06-12", confirmedTime: "amc", today: "2026-06-08" });
+    expect(manualRow()).toEqual({ event_time: "16:05", release_time: "16:05" });
+  });
+
+  it("picking the other slot moves a typed time to that slot's default", () => {
+    seedManual("2026-06-12", "07:30", "07:30");
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: "2026-06-12", confirmedTime: "amc", today: "2026-06-08" });
+    expect(manualRow()).toEqual({ event_time: "AMC", release_time: "16:15" });
+  });
+
+  it("un-hiding a hidden hand-entered row keeps its typed time on a same-slot confirm", () => {
+    seedManual("2026-06-12", "16:05", "16:05");
+    db.prepare("UPDATE calendar_events SET superseded = 1 WHERE source = 'manual'").run();
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: "2026-06-12", confirmedTime: "amc", today: "2026-06-08" });
+    const row = db
+      .prepare("SELECT superseded, event_time, release_time FROM calendar_events WHERE source='manual' AND symbol='NVDA'")
+      .get() as { superseded: number; event_time: string | null; release_time: string | null };
+    expect(row).toEqual({ superseded: 0, event_time: "16:05", release_time: "16:05" });
+  });
+
+  it("stores a picked slot upper-case on a first insert", () => {
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: "2026-06-12", confirmedTime: "bmo", today: "2026-06-08" });
+    expect(manualRow()).toEqual({ event_time: "BMO", release_time: "08:00" });
+  });
+
+  it("an absent time still stores no slot", () => {
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: "2026-06-12", today: "2026-06-08" });
+    expect(manualRow().event_time).toBeNull();
+    expect(manualRow().release_time).toBe("16:15");
+  });
 });

@@ -26,6 +26,13 @@ function toCascadeEventTime(time: string | null | undefined): string {
   return time?.trim().toLowerCase() === "bmo" ? "BMO" : "AMC";
 }
 
+/** The slot a stored clock time falls in: before noon is BMO, otherwise AMC. */
+function slotOfClock(time: string | null | undefined): "BMO" | "AMC" | null {
+  const m = time ? /^(\d{2}):\d{2}/.exec(time) : null;
+  if (!m) return null;
+  return Number(m[1]) < 12 ? "BMO" : "AMC";
+}
+
 /**
  * Record a user-confirmed earnings date as the authoritative, locked value.
  *
@@ -76,11 +83,26 @@ export function confirmEarningsDate(
   db.transaction(() => {
     const before = db
       .prepare(
-        `SELECT COALESCE(superseded, 0) AS superseded
+        `SELECT COALESCE(superseded, 0) AS superseded, event_time, release_time
            FROM calendar_events
           WHERE source_key = ?`,
       )
-      .get(sourceKey) as { superseded: number } | undefined;
+      .get(sourceKey) as
+      | { superseded: number; event_time: string | null; release_time: string | null }
+      | undefined;
+
+    // A clock time the user typed on this row survives a confirm that picks the
+    // same slot. Picking the other slot is a deliberate change of time.
+    const typedClock =
+      before && /^\d{2}:\d{2}$/.test(before.event_time ?? "") ? before.event_time : null;
+    const pickedSlot = cascadeEventTime === "BMO" || cascadeEventTime === "AMC" ? cascadeEventTime : null;
+    const keepTyped = typedClock !== null && pickedSlot !== null && slotOfClock(typedClock) === pickedSlot;
+    const eventTimeToStore = keepTyped
+      ? typedClock
+      : input.confirmedTime == null
+        ? null
+        : cascadeEventTime;
+    const releaseTimeToStore = keepTyped ? (before?.release_time ?? typedClock) : releaseTime;
 
     db.prepare(
       `INSERT INTO calendar_events
@@ -96,8 +118,8 @@ export function confirmEarningsDate(
          superseded = 0`,
     ).run(
       input.confirmedDate,
-      input.confirmedTime ?? null,
-      releaseTime,
+      eventTimeToStore,
+      releaseTimeToStore,
       `${symbol} earnings`,
       symbol,
       securityId,
