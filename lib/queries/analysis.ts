@@ -46,6 +46,13 @@ export interface AllocationEntry {
   position_count: number;
 }
 
+function canonicalWeightDenominator(
+  db: Database.Database,
+  accountIds?: number[]
+): number {
+  return concentrationGrossValue(getConcentrationUniverse(db, accountIds));
+}
+
 export interface ConcentrationMetrics {
   /**
    * Herfindahl over GROSS weights (decision 2026-09-22): each position's
@@ -386,23 +393,23 @@ export function getAllocationByDimension(
     }>;
 
   const optionExposures = getOptionExposureMap(db, accountIds);
-  const byGroup = new Map<string, { mv: number; exposure: number; count: number }>();
-  let total = 0;
+  const byGroup = new Map<string, { mv: number; gross: number; exposure: number; count: number }>();
+  const total = canonicalWeightDenominator(db, accountIds);
   for (const row of rows) {
-    total += row.mv;
     const exposure = exposureForHolding(row, optionExposures);
-    const entry = byGroup.get(row.group_name) ?? { mv: 0, exposure: 0, count: 0 };
+    const entry = byGroup.get(row.group_name) ?? { mv: 0, gross: 0, exposure: 0, count: 0 };
     entry.mv += row.mv;
+    entry.gross += Math.abs(row.mv);
     entry.exposure += exposure;
     entry.count += 1;
     byGroup.set(row.group_name, entry);
   }
 
   return [...byGroup.entries()]
-    .map(([group_name, { mv, exposure, count }]) => ({
+    .map(([group_name, { mv, gross, exposure, count }]) => ({
       group_name,
       total_market_value: mv,
-      percentage: total !== 0 ? (mv * 100) / total : 0,
+      percentage: total !== 0 ? (gross * 100) / total : 0,
       net_exposure: exposure,
       exposure_pct: total !== 0 ? (exposure * 100) / total : 0,
       position_count: count,
@@ -472,11 +479,10 @@ function getSectorAllocationWithLookThrough(
 
   const weights = getEtfSectorWeights(db);
   const optionExposures = getOptionExposureMap(db, accountIds);
-  const bySector = new Map<string, { value: number; exposure: number; count: number }>();
-  let total = 0;
+  const bySector = new Map<string, { value: number; gross: number; exposure: number; count: number }>();
+  const total = canonicalWeightDenominator(db, accountIds);
 
   for (const r of rows) {
-    total += r.mv;
     const rowExposure = exposureForHolding(r, optionExposures);
     const parts = explodeHoldingBySector(
       r.symbol,
@@ -487,8 +493,9 @@ function getSectorAllocationWithLookThrough(
     );
     for (const part of parts) {
       const sector = normalizeSector(part.sector) ?? part.sector;
-      const entry = bySector.get(sector) ?? { value: 0, exposure: 0, count: 0 };
+      const entry = bySector.get(sector) ?? { value: 0, gross: 0, exposure: 0, count: 0 };
       entry.value += part.value;
+      entry.gross += Math.abs(part.value);
       entry.exposure += r.mv !== 0 ? rowExposure * (part.value / r.mv) : 0;
       entry.count += 1;
       bySector.set(sector, entry);
@@ -496,10 +503,10 @@ function getSectorAllocationWithLookThrough(
   }
 
   return [...bySector.entries()]
-    .map(([group_name, { value, exposure, count }]) => ({
+    .map(([group_name, { value, gross, exposure, count }]) => ({
       group_name,
       total_market_value: value,
-      percentage: total !== 0 ? (value * 100) / total : 0,
+      percentage: total !== 0 ? (gross * 100) / total : 0,
       net_exposure: exposure,
       exposure_pct: total !== 0 ? (exposure * 100) / total : 0,
       position_count: count,
@@ -860,14 +867,14 @@ export function getFactorHeatmap(
       factor_source: string | null;
     }>;
 
-  const totalValue = rows.reduce((sum, r) => sum + r.market_value, 0);
+  const totalValue = canonicalWeightDenominator(db, accountIds);
 
   return rows.map((r) => ({
     symbol: r.symbol,
     name: r.name,
     security_type: r.security_type,
     market_value: r.market_value,
-    weight_pct: totalValue > 0 ? (r.market_value / totalValue) * 100 : 0,
+    weight_pct: totalValue > 0 ? (Math.abs(r.market_value) / totalValue) * 100 : 0,
     is_option: r.underlying_symbol !== null,
     interest_rate_sensitive: r.interest_rate_sensitive,
     growth_vs_value: r.growth_vs_value,

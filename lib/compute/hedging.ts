@@ -1,6 +1,10 @@
 import type Database from "better-sqlite3";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
+import {
+  concentrationGrossValue,
+  getConcentrationUniverse,
+} from "@/lib/queries/concentration-universe";
 import { computePortfolioGreeks, type GreeksDiagnostic } from "@/lib/compute/options-greeks";
 import { optionExposureFallback } from "@/lib/compute/exposure";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
@@ -1026,6 +1030,10 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     for (const c of proxy.creditedTo) protectiveNotional += c.credited;
   }
 
+  const bookWeightDenominator = concentrationGrossValue(
+    getConcentrationUniverse(db, scopedAccountIds)
+  );
+
   const summary: DefenseSummary = {
     longExposure: totalLongExposure,
     shortExposure,
@@ -1050,7 +1058,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     rankedExposures.push({
       underlying: pair.underlying,
       netExposure: pair.netExposure,
-      pctOfBook: totalLongExposure > 0 ? Math.abs(pair.netExposure) / totalLongExposure : null,
+      pctOfBook: bookWeightDenominator > 0 ? Math.abs(pair.netExposure) / bookWeightDenominator : null,
       tier1CoveragePct: pair.coveragePct,
       sectorProxyCoveragePct: pair.sector
         ? sectorCoverage.find((s) => s.sector === pair.sector)?.coveragePct ?? null
@@ -1066,7 +1074,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     rankedExposures.push({
       underlying: bet.underlying,
       netExposure: bet.exposure,
-      pctOfBook: totalLongExposure > 0 ? Math.abs(bet.exposure) / totalLongExposure : null,
+      pctOfBook: bookWeightDenominator > 0 ? Math.abs(bet.exposure) / bookWeightDenominator : null,
       tier1CoveragePct: null,
       sectorProxyCoveragePct: sector ? sectorCoverage.find((s) => s.sector === sector)?.coveragePct ?? null : null,
       // Standalone bets are, by definition, never paired with an offsetting
