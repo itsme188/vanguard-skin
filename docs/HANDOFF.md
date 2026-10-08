@@ -17,7 +17,7 @@
 | #101 | `claude/land1-2026-10-07` | `main` | 76 | about 300 |
 | #102 | `claude/land2-2026-10-07` | the #101 branch | 26 | 53 |
 | #103 | `claude/land3-2026-10-07` | the #102 branch | 10 | 11 |
-| #104 | `claude/land4-2026-10-07` | the #103 branch | 6 | none (to-do units and these docs) |
+| #104 | `claude/land4-2026-10-07` | the #103 branch | 10 | none stamped (to-do units, interim label fixes, these docs) |
 
 **Why they are not merged:** the permission system blocked Claude from merging to `main` and from writing to the live database. Both are owner actions. Do not route around the block (no piecemeal merge, no merge through another tool).
 
