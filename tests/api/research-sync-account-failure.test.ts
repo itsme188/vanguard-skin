@@ -150,7 +150,11 @@ describe("POST /api/research/sync: account-level AI failure", () => {
   });
 
   it("a result with no deferred count reads as none deferred", async () => {
-    hoisted.processUnprocessedArticles.mockResolvedValue({ processed: 1, failed: 0 });
+    // An older result shape with no `deferred` field (the type now requires it).
+    hoisted.processUnprocessedArticles.mockResolvedValue({
+      processed: 1,
+      failed: 0,
+    } as unknown as ProcessArticlesResult);
 
     const done = processDone(await runSync());
 
