@@ -870,3 +870,21 @@ Six read-only agents mapped the 2026-10-08 rulings to files. The mapping showed 
 **Ruled by the owner after the review**
 - **Confirming a different date from the conflict popover moves the existing hand-entered row to that date.** Today it writes a new hand-entered row on the new date and leaves the old one showing, so the symbol has two hand-entered rows and a typed time is not carried. Build owed (wave 2): one row, moved, with its typed time kept under the same-slot rule.
 - **The evening digest sender moves onto the shared window rule** (`resolveDigestSince`). Its own copy falls back to a UTC slice when no digest was ever sent; the shared rule uses the Eastern yesterday. Approved for wave 2 although it is on the send path.
+
+## 2026-10-08 (night) — Second overnight Claude + Codex sprint: the authority
+
+**Approval scope, in the owner's words (about 19:40 Eastern time):**
+
+> "starting now, I want you to go on a fully autonomous sprint together with Codex overnight again. So that includes everything that you planned and more. Don't be afraid to make decisions. Use Codex as a second opinion if you're not sure, but I trust you, and I want to get the app clear. Same thing as last night, but try to go further and make more decisions."
+
+**How Claude reads it.** "Same thing as last night" carries over the four authority answers recorded in the 2026-10-07 evening entry:
+1. **Shipping.** Merge, push and deploy each reviewed wave with `npm run deploy`. No deploy between 01:30 and 04:30 Eastern.
+2. **Live data.** Rehearsed repairs are allowed (backup, rehearsal on a copy, identical second run). Claude's own limit stays: tax-lot and ledger repairs are held for the owner.
+3. **Cloudflare Worker.** May be deployed after review, Worker first, then the Mac.
+4. **Nightly QA.** Tonight's fix step is paused (`qa/deep-qa-config.json`, fixer off); the sweep still runs. It must be turned back on at closeout.
+
+**"Go further and make more decisions."** Claude decides open questions on its written recommendation, with a Codex second opinion where it is unsure, including questions that last night were queued as a direction change. Still held for the owner: anything that needs an owner document, historical production-data repairs to the ledger or tax lots, a database migration that rebuilds a table, and the protected areas (import pipeline, chat wiring) beyond tool and query code.
+
+**If the permission system blocks a merge to `main`, a deploy or a live write,** the work ends as stacked pull requests and an owner decision record, as it did last night. It is not routed around.
+
+Decisions taken under this authority are listed in the closeout entry for the sprint.
