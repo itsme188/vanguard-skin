@@ -20,6 +20,11 @@ import apiFetch from "@/lib/http/apiFetch";
 import { PrivateText } from "@/lib/privacy/components";
 import { describeNoteSaveFailure } from "@/lib/notes/save-failure-copy";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
+import {
+  NotesDraftRecovery,
+  mergeDraftIntoComposer,
+  clearAmbientDraftIfSaved,
+} from "./NotesDraftRecovery";
 
 // ─── Props ───────────────────────────────────────────────────────
 
@@ -501,6 +506,11 @@ export function NotesView({
         return;
       }
 
+      // The save is confirmed. If it carried the whole draft the ambient
+      // overlay left in this browser, that draft is now a note: drop the
+      // stored copy so the recovery row goes away.
+      clearAmbientDraftIfSaved(formContent.trim());
+
       // Reset form — all stateful fields, not just the visible ones.
       // `formSymbol` was previously missed here: a residual symbol from a
       // prior Earnings/Trade-Thesis save would carry forward into the next
@@ -725,6 +735,18 @@ export function NotesView({
           </button>
         )}
       </div>
+
+      {/* ─── Unsaved ambient draft ───────────────────────────────── */}
+      {/* The ambient overlay is keyboard-only, so a draft it stored cannot be
+          reached on a phone. This row hands it to the composer below; nothing
+          is saved until Save Note is pressed. */}
+      <NotesDraftRecovery
+        onOpenInEditor={(text) => {
+          setFormContent((prev) => mergeDraftIntoComposer(prev, text));
+          setSaveError(null);
+          textareaRef.current?.focus();
+        }}
+      />
 
       {/* ─── Quick-add form ──────────────────────────────────────── */}
       <form onSubmit={handleCreate} className="bg-panel border border-edge rounded-xl p-4 space-y-3">

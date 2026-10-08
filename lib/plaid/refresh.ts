@@ -230,18 +230,63 @@ export function writePlaidHoldings(
   return { accountsSynced, holdingsWritten, pricesWritten, staleRemoved, securitiesCreated };
 }
 
+/** Why a Plaid sync cannot run right now. */
+export type PlaidRefreshBlocker =
+  | "not_configured"
+  | "not_connected"
+  | "no_account_mapped"
+  | "sync_in_progress";
+
+/**
+ * The one gate in front of a Plaid sync, in the order the refresh checks it.
+ * `refreshVanguardHoldingsFromPlaid` returns null for exactly these cases, and
+ * the manual sync route reads the same function to say WHICH one it was.
+ */
+export function plaidRefreshBlocker(
+  db: Database.Database,
+  cfg: PlaidClientConfig | null = loadPlaidConfig(),
+  conn: Pick<ReturnType<typeof getPlaidConnection>, "accessToken" | "accountMap"> = getPlaidConnection(db),
+): PlaidRefreshBlocker | null {
+  if (!cfg) return "not_configured";
+  if (!conn.accessToken) return "not_connected";
+  if (Object.keys(conn.accountMap).length === 0) return "no_account_mapped";
+  if (isSyncing()) return "sync_in_progress";
+  return null;
+}
+
+/**
+ * What the manual sync route tells the user when the refresh returned null.
+ * A null blocker means the cause cleared between the attempt and this read
+ * (another sync finished in between).
+ */
+export function plaidSyncUnavailableMessage(blocker: PlaidRefreshBlocker | null): string {
+  switch (blocker) {
+    case "not_configured":
+      return "Plaid credentials are not set — add PLAID_CLIENT_ID and PLAID_SECRET to .env.local or settings.json, then restart the app.";
+    case "not_connected":
+      return "Plaid is not connected — open Settings → Vanguard Live (Plaid) to connect.";
+    case "no_account_mapped":
+      return "No Vanguard account is mapped to a local account — open Settings → Vanguard Live (Plaid) and save the account mapping.";
+    case "sync_in_progress":
+      return "Another sync is already running — try again when it finishes.";
+    default:
+      return "The sync did not run because another sync was finishing — try again.";
+  }
+}
+
 export async function refreshVanguardHoldingsFromPlaid(
   db: Database.Database,
   opts: { cfg?: PlaidClientConfig | null; force?: boolean; now?: Date } = {},
 ): Promise<PlaidRefreshResult | null> {
   const cfg = opts.cfg !== undefined ? opts.cfg : loadPlaidConfig();
-  if (!cfg) return null;
   const conn = getPlaidConnection(db);
-  if (!conn.accessToken || Object.keys(conn.accountMap).length === 0) return null;
-  if (isSyncing()) {
+  const blocker = plaidRefreshBlocker(db, cfg, conn);
+  if (blocker === "sync_in_progress") {
     console.log("[plaid] refresh skipped — a sync is already in progress");
-    return null;
   }
+  // The second and third tests only narrow the types; the blocker already
+  // returned for both.
+  if (blocker || !cfg || !conn.accessToken) return null;
 
   const today = todayET(opts.now);
   if (!opts.force && isMarketClosed(today)) {
