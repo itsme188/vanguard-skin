@@ -860,3 +860,13 @@ Six read-only agents mapped the 2026-10-08 rulings to files. The mapping showed 
 
 **Order of work**
 - Three waves, each on its own branch and pull request: small and safe first; then Analysis and calendar logic; then the Mac-and-Worker and migration items.
+
+## 2026-10-08 (evening) — Wave 1 of the ruled builds merged; two rulings from its review
+
+**Landed.** The owner merged pull request #106 (merge `4f6aa65a`): the eight wave 1 builds, built by parallel builders from a plan reviewed once by Codex, then reviewed by an agent that ran the code. The finished one-off `scripts/finish-donations.ts` was deleted with the owner's approval. Not deployed at the time of writing.
+
+**What the review changed.** A typed earnings time usually sits in `release_time` with a slot word in `event_time`, because the Hub's add form sends the slot; the plan had only protected a clock in `event_time`. The keep rule reads both shapes and never treats a slot's default time as typed. Lesson: before writing a rule about a stored value, check which shape the app's own form writes.
+
+**Ruled by the owner after the review**
+- **Confirming a different date from the conflict popover moves the existing hand-entered row to that date.** Today it writes a new hand-entered row on the new date and leaves the old one showing, so the symbol has two hand-entered rows and a typed time is not carried. Build owed (wave 2): one row, moved, with its typed time kept under the same-slot rule.
+- **The evening digest sender moves onto the shared window rule** (`resolveDigestSince`). Its own copy falls back to a UTC slice when no digest was ever sent; the shared rule uses the Eastern yesterday. Approved for wave 2 although it is on the send path.
