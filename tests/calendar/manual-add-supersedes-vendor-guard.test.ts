@@ -217,9 +217,11 @@ describe("checkManualAddWouldSupersedeVendor — parity with reconcileEarningsDa
     reconcileEarningsDates(db, { today: TODAY });
 
     expect(stateOf(vendorId).superseded).toBe(1);
+    // The add is locked by its source; a refresh never marks it confirmed
+    // (ruling 2026-09-14).
     expect(stateOf(manualId)).toMatchObject({
       superseded: 0,
-      date_status: "user_confirmed",
+      date_status: null,
     });
     expect(stateOf(bystanderId).superseded).toBe(0);
   });

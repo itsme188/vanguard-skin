@@ -340,7 +340,8 @@ describe("reconcileEarningsDates — manual future row vs reported quarter (qa:t
     // The user's future event survives as its own cluster, not superseded,
     // and carries NO migrated enrichment from last quarter.
     expect(row(manual).superseded).toBe(0);
-    expect(row(manual).date_status).toBe("user_confirmed");
+    // Hand-entered, never confirmed: locked by its source, no stamp (ruling 2026-09-14).
+    expect(row(manual).date_status).toBeNull();
     const man = db
       .prepare("SELECT actual_value, reaction_snapshot FROM calendar_events WHERE id = ?")
       .get(manual) as { actual_value: string | null; reaction_snapshot: string | null };
@@ -367,7 +368,8 @@ describe("reconcileEarningsDates — manual future row vs reported quarter (qa:t
     reconcileEarningsDates(db, { today: TODAY });
 
     expect(row(manual).superseded).toBe(0);
-    expect(row(manual).date_status).toBe("user_confirmed");
+    // Hand-entered, never confirmed: locked by its source, no stamp (ruling 2026-09-14).
+    expect(row(manual).date_status).toBeNull();
     expect(row(finn).superseded).toBe(1);
   });
 
@@ -449,7 +451,8 @@ describe("reconcileEarningsDates — manual future row vs reported quarter (qa:t
     // The typed row survives as its own user-confirmed event and never
     // inherits the desk's acceptance stamp for a print it isn't.
     expect(row(manual).superseded).toBe(0);
-    expect(row(manual).date_status).toBe("user_confirmed");
+    // Hand-entered, never confirmed: locked by its source, no stamp (ruling 2026-09-14).
+    expect(row(manual).date_status).toBeNull();
     expect(
       (
         db.prepare("SELECT manual_actuals_at FROM calendar_events WHERE id = ?").get(manual) as {
@@ -525,7 +528,8 @@ describe("reconcileEarningsDates — manual future row vs reported quarter (qa:t
     reconcileEarningsDates(db, { today: SEP_TODAY });
 
     expect(row(accepted).superseded).toBe(0);
-    expect(row(accepted).date_status).toBe("user_confirmed");
+    // Hand-entered, never confirmed: locked by its source, no stamp (ruling 2026-09-14).
+    expect(row(accepted).date_status).toBeNull();
     expect(row(vendor).superseded).toBe(1);
     expect(recapEmailEventId(db)).toBe(accepted);
   });
@@ -537,7 +541,8 @@ describe("reconcileEarningsDates — manual future row vs reported quarter (qa:t
     reconcileEarningsDates(db, { today: SEP_TODAY });
 
     expect(row(correction).superseded).toBe(0);
-    expect(row(correction).date_status).toBe("user_confirmed");
+    // Hand-entered, never confirmed: locked by its source, no stamp (ruling 2026-09-14).
+    expect(row(correction).date_status).toBeNull();
     expect(row(vendor).superseded).toBe(1);
     // Audit follows the print onto the corrected row.
     expect(recapEmailEventId(db)).toBe(correction);
@@ -586,7 +591,8 @@ describe("reconcileEarningsDates — manual future row vs reported quarter (qa:t
     reconcileEarningsDates(db, { today: SEP_TODAY });
 
     expect(row(correction).superseded).toBe(0);
-    expect(row(correction).date_status).toBe("user_confirmed");
+    // Hand-entered, never confirmed: locked by its source, no stamp (ruling 2026-09-14).
+    expect(row(correction).date_status).toBeNull();
     expect(row(vendor).superseded).toBe(1);
     expect(recapEmailEventId(db)).toBe(correction);
     expect(bogeyEventIds()).toEqual([correction, correction]);
@@ -614,7 +620,8 @@ describe("reconcileEarningsDates — manual future row vs reported quarter (qa:t
 
     // The correction owns the print and its audit trail.
     expect(row(correction).superseded).toBe(0);
-    expect(row(correction).date_status).toBe("user_confirmed");
+    // Hand-entered, never confirmed: locked by its source, no stamp (ruling 2026-09-14).
+    expect(row(correction).date_status).toBeNull();
     expect(row(vendor).superseded).toBe(1);
     expect(recapEmailEventId(db)).toBe(correction);
     expect(bogeyEventIds()).toEqual([correction, correction]);
@@ -622,7 +629,8 @@ describe("reconcileEarningsDates — manual future row vs reported quarter (qa:t
     // The future add survives as its own live event, stripped of figures it
     // never earned.
     expect(row(futureAdd).superseded).toBe(0);
-    expect(row(futureAdd).date_status).toBe("user_confirmed");
+    // Hand-entered, never confirmed: locked by its source, no stamp (ruling 2026-09-14).
+    expect(row(futureAdd).date_status).toBeNull();
     const stripped = db
       .prepare("SELECT actual_value, enriched_at FROM calendar_events WHERE id = ?")
       .get(futureAdd) as { actual_value: string | null; enriched_at: string | null };

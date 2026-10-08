@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { addDays, MAX_EARNINGS_DAYS_AHEAD, todayET } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
 import { EARNINGS_DATE_CORRECTED_EVENT } from "./EarningsHubDateCorrectionNote";
+import { Chip } from "../components/Chip";
 
 interface Props {
   symbol: string;
@@ -12,6 +13,17 @@ interface Props {
   releaseTime: string | null;
   dateStatus: "confirmed" | "conflict" | "single" | "user_confirmed" | null | undefined;
   dateConflictWith: string | null | undefined; // "finnhub:YYYY-MM-DD"
+  /**
+   * The row's `calendar_events.source`. A hand-entered (`manual`) row with no
+   * date status still gets a chip; see `earningsDateChipKind`.
+   */
+  source?: string | null;
+  /**
+   * When set, the chip is wrapped in a span with this class. The wrapper is
+   * rendered only when a chip is, so a server-component caller needs no gate
+   * of its own (and cannot disagree with `earningsDateChipKind`).
+   */
+  wrapperClassName?: string;
   /**
    * Called after a successful confirm, alongside router.refresh(). Client
    * components holding the conflict list in fetch-state (the Alerts inbox
@@ -28,6 +40,33 @@ interface Props {
    */
   popoverAlign?: "left" | "right";
 }
+
+export type EarningsDateChipKind =
+  | "confirmed"
+  | "single"
+  | "user_confirmed"
+  | "conflict"
+  | "hand_entered";
+
+/**
+ * Which chip a row gets. A stored date status always decides. With none, a
+ * hand-entered row gets the neutral "hand_entered" chip so its date, slot and
+ * release time stay editable; any other row gets no chip, as before.
+ *
+ * The calendar sync never writes `user_confirmed` (owner ruling 2026-09-14),
+ * so an unconfirmed hand-entered row has an empty status. "hand_entered" is a
+ * DISPLAY kind only: it is never stored and never claims a confirmation.
+ */
+export function earningsDateChipKind(
+  source: string | null | undefined,
+  dateStatus: Props["dateStatus"],
+): EarningsDateChipKind | null {
+  if (dateStatus) return dateStatus;
+  return source === "manual" ? "hand_entered" : null;
+}
+
+export const HAND_ENTERED_LABEL = "Entered by you";
+export const HAND_ENTERED_LINE = "You entered this date by hand";
 
 function fmtShort(d: string): string {
   const [y, m, day] = d.split("-").map(Number);
@@ -185,7 +224,9 @@ function ReleaseTimeEditor({
  * - user_confirmed  → "🔒" (you locked the IBKR-definitive date)
  * - conflict        → "⚠ confirm" → popover: pick Nasdaq / Finnhub / your own
  *                     date → POST /api/earnings/confirm-date → locked forever.
- * - null            → nothing (row not reconciled yet)
+ * - null            → "Entered by you" on a hand-entered row (same fix-date
+ *                     popover; says nothing about a confirmation), else
+ *                     nothing (row not reconciled yet)
  *
  * Every non-null status is tappable (feedback #7, 2026-08-03): the three
  * passive statuses open a "Date is wrong?" popover — date (pre-filled) +
@@ -194,15 +235,22 @@ function ReleaseTimeEditor({
  * vendor-row adoption, bogeys migration, refusal on captured actuals). The
  * refusal message renders inline verbatim; the popover stays open on failure.
  */
-export function EarningsDateChip({
+export function EarningsDateChip(props: Props) {
+  const kind = earningsDateChipKind(props.source, props.dateStatus);
+  if (!kind) return null;
+  const chip = <EarningsDateChipInner {...props} kind={kind} />;
+  return props.wrapperClassName ? <span className={props.wrapperClassName}>{chip}</span> : chip;
+}
+
+function EarningsDateChipInner({
   symbol,
   eventDate,
   releaseTime,
-  dateStatus,
+  kind,
   dateConflictWith,
   onConfirmed,
   popoverAlign = "left",
-}: Props) {
+}: Props & { kind: EarningsDateChipKind }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -415,9 +463,7 @@ export function EarningsDateChip({
     }
   }
 
-  if (!dateStatus) return null;
-
-  if (dateStatus !== "conflict") {
+  if (kind !== "conflict") {
     // Same bounds as the conflict popover's custom-date input below (the
     // server refuses a date more than MAX_EARNINGS_DAYS_AHEAD days out).
     const todayIso = todayET();
@@ -437,7 +483,13 @@ export function EarningsDateChip({
         cls: "text-ink-dim",
         line: "You confirmed this date (locked)",
       },
-    }[dateStatus];
+      // No stored status: neutral <Chip>, no lock, no "confirmed".
+      hand_entered: {
+        label: HAND_ENTERED_LABEL,
+        cls: "",
+        line: HAND_ENTERED_LINE,
+      },
+    }[kind];
 
     return (
       <span ref={wrapRef} className="relative inline-flex">
@@ -451,7 +503,13 @@ export function EarningsDateChip({
           className={`text-[10px] font-mono cursor-pointer disabled:opacity-50 ${passive.cls} relative pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']`}
           title={`${passive.line} — tap to fix a wrong date/slot`}
         >
-          {passive.label}
+          {kind === "hand_entered" ? (
+            <Chip tone="neutral" size="xs">
+              {passive.label}
+            </Chip>
+          ) : (
+            passive.label
+          )}
         </button>
         {open && (
           // z-[55]: must paint above the fixed chat rail (z-50) — same
