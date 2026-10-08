@@ -30,7 +30,7 @@ describe("describeUploadOutcome — names where a match landed", () => {
       text({ symbolsExtracted: 1, eventsMatched: 1, results: [{ symbol: "QQQQ", eventId: 99, bogeyId: 7 }] }),
     ).toEqual([
       "1/1 matched",
-      "bogeys saved for QQQQ (outside the week shown)",
+      "bogeys saved for QQQQ (not in the week shown under that symbol)",
     ]);
   });
 
@@ -41,7 +41,7 @@ describe("describeUploadOutcome — names where a match landed", () => {
         eventsMatched: 1,
         results: [{ symbol: "QQQQ", eventId: 99, bogeyId: 7, eventDate: "2026-09-07" }],
       }),
-    ).toEqual(["1/1 matched", "bogeys saved for QQQQ (Sep 7, outside the week shown)"]);
+    ).toEqual(["1/1 matched", "bogeys saved for QQQQ (Sep 7, not in the week shown under that symbol)"]);
   });
 
   it("a row shown under another id but the same symbol is not called off-week", () => {

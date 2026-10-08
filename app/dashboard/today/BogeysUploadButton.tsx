@@ -66,7 +66,7 @@ export function describeUploadOutcome(result: UploadResponse, fileName: string):
   ];
   const matched = (result.results ?? []).filter((r) => r.eventId != null);
   const name = (r: { symbol: string; eventDate?: string | null; offWeek?: boolean }) => {
-    const detail = [shortDate(r.eventDate), r.offWeek ? "outside the week shown" : null]
+    const detail = [shortDate(r.eventDate), r.offWeek ? "not in the week shown under that symbol" : null]
       .filter(Boolean)
       .join(", ");
     return detail ? `${r.symbol} (${detail})` : r.symbol;

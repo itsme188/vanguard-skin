@@ -59,4 +59,19 @@ describe("getDefaultChartSecurityId bar age", () => {
 
     expect(getDefaultChartSecurityId(db)).toBe(large);
   });
+
+  it("with no fresh bars anywhere, a holding that has bars beats a larger one with none (never an empty chart)", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+    const bigNoBars = sec(db, "ZZNB");
+    holding(db, bigNoBars, 1000);
+    price(db, bigNoBars, "2026-10-07", 200);
+
+    const smallStaleBars = sec(db, "ZZSB");
+    holding(db, smallStaleBars, 10);
+    price(db, smallStaleBars, "2026-10-07", 50);
+    bar(db, smallStaleBars, "2026-01-01");
+
+    expect(getDefaultChartSecurityId(db)).toBe(smallStaleBars);
+  });
 });

@@ -278,11 +278,19 @@ export function getDefaultChartSecurityId(
                   AND b.bar_size = '1 day'
                   AND ${PRICED_BAR_SQL}
                   AND b.bar_date >= date(book_latest.latest_price_date, '-' || ? || ' days')
-              ) THEN 1 ELSE 0 END) AS has_fresh_bars
+              ) THEN 1 ELSE 0 END) AS has_fresh_bars,
+              -- When no holding has fresh bars, one with any priced bar still
+              -- draws a chart; a larger holding with none would open empty.
+              MAX(CASE WHEN EXISTS (
+                SELECT 1 FROM ohlcv_bars b
+                WHERE b.security_id = c.id
+                  AND b.bar_size = '1 day'
+                  AND ${PRICED_BAR_SQL}
+              ) THEN 1 ELSE 0 END) AS has_bars
          FROM candidates c
          CROSS JOIN book_latest
         GROUP BY c.id
-       ORDER BY has_fresh_bars DESC, value DESC
+       ORDER BY has_fresh_bars DESC, has_bars DESC, value DESC
        LIMIT 1`,
     )
     .get(DEFAULT_CHART_MAX_BAR_AGE_DAYS) as { id: number; value: number; has_fresh_bars: number } | undefined;
