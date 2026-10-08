@@ -31,6 +31,8 @@ const ALLOWLIST: AllowEntry[] = [
   { file: "lib/queries/earnings-cockpit.ts", fn: "getSymbolStatusDetailed", effect: "display" },
   { file: "lib/digest/todays-reporters.ts", fn: "getSymbolStatus", effect: "display" },
   { file: "app/dashboard/today/EarningsHub.tsx", fn: "getSymbolStatus", effect: "display" },
+  // The POS chip reads ARMED from the row's own event coverage (hubRowStatus).
+  { file: "app/dashboard/today/EarningsHub.tsx", fn: "coveredForEvents", effect: "display" },
   { file: "lib/digest/call-transcripts.ts", fn: "getSymbolStatus", effect: "symbol-armed" },
   { file: "lib/transcripts/same-day.ts", fn: "getSymbolStatus", effect: "symbol-armed" },
   // Task 6: updateCalendarEvent writes the outbox row only when the edited event is armed.

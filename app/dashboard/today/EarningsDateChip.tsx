@@ -41,7 +41,46 @@ function fmtShort(d: string): string {
 
 export interface ReleaseTimeState {
   resolved: { time: string; source: string } | null;
-  override: { source: string; release_time: string } | null;
+  override: StandingOverride | null;
+}
+
+/** The symbol's standing release-time row, as GET /api/earnings/release-time returns it. */
+export interface StandingOverride {
+  source: string;
+  release_time: string;
+  note?: string | null;
+  verified_for_date?: string | null;
+}
+
+/**
+ * The editor writes ONE standing time per ticker, so a Save on one row also
+ * re-times the ticker's other upcoming rows. Said in the editor before the
+ * Save (decision 2026-10-07).
+ */
+export function symbolWideNote(symbol: string): string {
+  const prints = symbol.trim() ? `every ${symbol.trim().toUpperCase()} print` : "every print of this ticker";
+  return `One standing time for ${prints}, not only this row.`;
+}
+
+/**
+ * The standing override a Save would replace: its time, who set it, the date
+ * it was verified for and its note. Null when the ticker has none. The store
+ * keeps one row per ticker and a Save overwrites the note and the verified
+ * date with it, so the line says so.
+ */
+export function standingOverrideLine(override: StandingOverride | null | undefined): string | null {
+  if (!override) return null;
+  const who =
+    override.source === "user"
+      ? "set by you"
+      : override.source === "web_verified"
+        ? "web-verified"
+        : override.source;
+  const parts = [override.release_time, who];
+  if (override.verified_for_date) parts.push(`verified for ${override.verified_for_date}`);
+  const note = override.note?.trim();
+  if (note) parts.push(`“${note}”`);
+  return `Standing: ${parts.join(" · ")}. Save replaces it${note ? ", note included" : ""}.`;
 }
 
 /** The time the "Reports at" line shows: the resolved time, else the row's own. */
@@ -77,6 +116,7 @@ const TOUCH_EXTENSION =
  * to the parent's loadReleaseTime/saveReleaseTime — no fetch logic here.
  */
 function ReleaseTimeEditor({
+  symbol,
   rt,
   releaseTime,
   rtEdit,
@@ -85,6 +125,7 @@ function ReleaseTimeEditor({
   rtMsg,
   onSave,
 }: {
+  symbol: string;
   rt: ReleaseTimeState | null;
   releaseTime: string | null;
   rtEdit: string;
@@ -100,6 +141,10 @@ function ReleaseTimeEditor({
         <span className="font-mono">{reportsAtTime(rt, releaseTime) ?? "—"}</span>
         {rt?.resolved && <span className="text-ink-faint"> · {rt.resolved.source}</span>}
       </p>
+      <p className="text-[10px] text-ink-dim mb-1">{symbolWideNote(symbol)}</p>
+      {standingOverrideLine(rt?.override) && (
+        <p className="text-[10px] text-ink-dim mb-1">{standingOverrideLine(rt?.override)}</p>
+      )}
       <div className="flex items-center gap-1">
         <input
           type="time"
@@ -453,6 +498,7 @@ export function EarningsDateChip({
               </button>
             </div>
             <ReleaseTimeEditor
+              symbol={symbol}
               rt={rt}
               releaseTime={releaseTime}
               rtEdit={rtEdit}
@@ -589,6 +635,7 @@ export function EarningsDateChip({
             </div>
           </div>
           <ReleaseTimeEditor
+            symbol={symbol}
             rt={rt}
             releaseTime={releaseTime}
             rtEdit={rtEdit}

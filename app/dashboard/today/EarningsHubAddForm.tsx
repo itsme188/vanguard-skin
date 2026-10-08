@@ -19,6 +19,10 @@ export type Slot = "BMO" | "AMC";
 /** The slot a freshly opened form shows. */
 export const DEFAULT_SLOT: Slot = "AMC";
 
+// The server's MAX_TICKER_LENGTH (lib/calendar/manual-event-input.ts), which a
+// client file may not value-import; a test pins the two together.
+export const TICKER_INPUT_MAX_LENGTH = 12;
+
 /**
  * Copy for a non-blocking notice shown after a successful save whose date
  * falls outside the week the hub currently displays ([weekOf, weekOf+6]).
@@ -291,7 +295,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
             setSlot(DEFAULT_SLOT);
             setOpen(true);
           }}
-          className="relative text-[14px] font-medium text-gold-ink hover:text-gold pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+          className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2 text-[14px] font-medium text-gold-ink hover:text-gold"
         >
           + Add ticker
         </button>
@@ -314,7 +318,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
         placeholder="TICKER"
         autoFocus
         className="font-mono uppercase bg-raised border border-edge rounded px-2 py-1 w-20 text-ink focus:outline-none focus:border-gold"
-        maxLength={10}
+        maxLength={TICKER_INPUT_MAX_LENGTH}
       />
       <input
         type="date"
@@ -354,7 +358,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
           resetGuards();
         }}
         disabled={submitting}
-        className="text-ink-faint hover:text-ink-dim"
+        className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2 text-ink-faint hover:text-ink-dim"
       >
         Cancel
       </button>

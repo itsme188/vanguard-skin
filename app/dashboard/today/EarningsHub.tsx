@@ -24,7 +24,11 @@ import {
   withDisplayTimes,
   type EarningsDisplayTime,
 } from "@/lib/calendar/display-earnings-time";
-import { getSymbolStatus, type SymbolStatus } from "@/lib/queries/briefing-symbols";
+import {
+  coveredForEvents,
+  getSymbolStatus,
+  type SymbolStatus,
+} from "@/lib/queries/briefing-symbols";
 import { buildCockpitPayload } from "@/lib/queries/earnings-cockpit";
 import { decorateCockpitIntel } from "@/lib/queries/earnings-intel";
 import { getCurrentMonday, addDays, mondayOf, todayET, formatWeekRange } from "@/lib/calendar/date-utils";
@@ -122,6 +126,47 @@ export function whenCell(row: {
   return fmtSlot(event.event_time, event.release_time, event.display_time);
 }
 
+/**
+ * A slot and a clock time on opposite sides of the session: a before-open
+ * slot with a time at or after the 09:30 open, or an after-close slot with a
+ * morning time. Returns the sentence for the warning mark, or null. The cell
+ * is flagged, never corrected: the slot is the field the desk trusts and the
+ * stored time is often a call time, so neither is re-derived from the other
+ * (decision 2026-10-07). Reads the same slot whenCell prints.
+ */
+export function slotTimeContradiction(row: {
+  event_time: string | null;
+  release_time: string | null;
+  raw_json: string | null;
+  display_time: EarningsDisplayTime;
+}): string | null {
+  // An estimate or "time unknown" cell prints no stored time to contradict.
+  if (row.display_time.label && row.display_time.kind !== "stored") return null;
+  const time = row.release_time?.trim() ?? "";
+  if (!/^\d{2}:\d{2}$/.test(time)) return null;
+  const marker = row.event_time?.trim().toUpperCase() ?? "";
+  const slot = marker ? marker : (deriveEarningsSlot(row)?.toUpperCase() ?? "");
+  if (slot === "BMO" && time >= "09:30") {
+    return `Slot says before the open (BMO) but the release time ${time} is after the open. The slot or the time is wrong; fix it from the date chip on this row.`;
+  }
+  if (slot === "AMC" && time < "12:00") {
+    return `Slot says after the close (AMC) but the release time ${time} is before midday. The slot or the time is wrong; fix it from the date chip on this row.`;
+  }
+  return null;
+}
+
+/**
+ * The POS chip of one hub row. Held and watchlist are facts about the symbol.
+ * ARMED is a fact about ONE print: the symbol-level status marks every row of
+ * a symbol once any of its events is armed, so a row beside its own "arm"
+ * button read ARMED. Here a row reads ARMED only when its own event (or a
+ * same-day twin of it) is armed (decision 2026-10-07). Display only.
+ */
+export function hubRowStatus(status: SymbolStatus, eventArmed: boolean): SymbolStatus {
+  if (status === "held" || status === "watchlist") return status;
+  return eventArmed ? "armed" : "neither";
+}
+
 /** The estimate/unknown label for the chips, or null when the time is the stored one. */
 function estimateLabel(display: EarningsDisplayTime): string | null {
   return display.kind === "stored" ? null : display.label;
@@ -209,9 +254,20 @@ export function EarningsHub() {
   // disagree.
   const ignoredManualTwins = getEmailIgnoredManualTwins(db);
 
+  // Which rows' own print is armed. coveredForEvents also returns held and
+  // watchlist rows; hubRowStatus only consults it for rows that are neither,
+  // where covered can only mean the event's armed cluster.
+  const armedCluster = coveredForEvents(
+    db,
+    events.map((e) => ({ symbol: e.symbol, eventId: e.id })),
+  );
+
   const enriched: EnrichedRow[] = events.map((e) => ({
     ...e,
-    status: e.symbol ? (statusMap[e.symbol.toUpperCase()] ?? "neither") : "neither",
+    status: hubRowStatus(
+      e.symbol ? (statusMap[e.symbol.toUpperCase()] ?? "neither") : "neither",
+      armedCluster.has(e.id),
+    ),
     previewSent: sentPhases[e.id]?.preview ?? false,
     recapSent: sentPhases[e.id]?.recap ?? false,
     previewSkipped: skipMap[e.id]?.preview ?? false,
@@ -262,12 +318,14 @@ export function EarningsHub() {
           <span className="text-ink-faint">{events.length} {events.length === 1 ? "event" : "events"}</span>
           {heldCount > 0 && <span className="text-up">· {heldCount} held</span>}
           {watchCount > 0 && <span className="text-gold-ink">· {watchCount} watchlist</span>}
+          {/* Its own slot behind a rule: joined to the count with a dot it
+              read as a status of this week's emails. */}
           <Link
             href="/dashboard/alerts?view=emails"
-            className="relative text-ink-faint hover:text-ink pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+            className="relative ml-1 pl-3 border-l border-edge text-ink-faint hover:text-ink pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
             title="Archive of every sent earnings preview and recap email"
           >
-            · All sent →
+            Email archive →
           </Link>
         </div>
       </div>
@@ -449,6 +507,7 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
     >
       <span className="font-mono text-ink-faint" style={{ fontSize: "11px" }}>
         {slot}
+        <SlotTimeFlag event={event} />
       </span>
       <span
         className={`font-mono uppercase rounded px-1.5 py-0.5 inline-block w-fit ${statusChipClass(event.status)}`}
@@ -591,6 +650,19 @@ function NumCell({
   );
 }
 
+/** The warning mark beside a WHEN cell whose slot and time disagree.
+ *  Top-level (never nested in a row body — the remount trap). */
+function SlotTimeFlag({ event }: { event: EnrichedRow }) {
+  const reason = slotTimeContradiction(event);
+  if (!reason) return null;
+  return (
+    <span className="text-gold-ink cursor-help" title={reason} aria-label={reason} role="img">
+      {" "}
+      ⚠
+    </span>
+  );
+}
+
 /** The "pre-release" warn chip for an actual saved before its print window
  *  opened. Top-level (never nested in a row body — the remount trap). */
 function PreReleaseChip({ manualActualsAt }: { manualActualsAt: string | null }) {
@@ -650,6 +722,7 @@ function MobileCard({ event }: { event: EnrichedRow }) {
         )}
         <span className="font-mono ml-auto text-ink-faint" style={{ fontSize: "11px" }}>
           {slot}
+          <SlotTimeFlag event={event} />
         </span>
       </div>
       <div className="flex items-baseline gap-3 flex-wrap font-mono tabular-nums" style={{ fontSize: "13px" }}>
