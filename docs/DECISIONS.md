@@ -748,3 +748,35 @@ This entry continues the evening entry above and uses the same authority. It cov
 - **Not seen in a browser:** the "Entered by you" chip (the copy had no hand-entered row in the current week).
 - **Not run on live data:** all six new repair scripts. Three were rehearsed on a copy (apply, then an identical second run changed nothing).
 
+## 2026-10-08 — Owner rulings on the overnight sprint's queued questions
+
+The owner ruled in session on the questions queued by the 2026-10-07 sprint (the numbered list in the handoff and ids q11 to q25 in the to-do). Direction-only; no figure appears here. Nothing below is built yet unless it says so.
+
+**Confirmed as built**
+- **Giving link stamp (q13): keep.** Confirming a zero-amount gift pair writes the leg's amount from the gift's recorded fair value, on an acknowledged click, under the repair script's guards.
+- **AI cards generate only on a click (q24): keep.** The cards are empty until clicked; the Sunday briefing still generates themes.
+- **The rest of the sprint's decision list in the two 2026-10-07 entries (evening and night): confirmed as built.** Anything that looks wrong in use is a normal bug report.
+- **Still open: the phone chat layout.** The owner will look at it on the phone before ruling. Chat is a protected area.
+
+**Ruled, build owed**
+- **Hand-entered earnings chip wording (q22): "Entered by you" in both places.** The week view's "added by hand" changes to match the Hub chip.
+- **Digest preview window (q11): extract the window rule from the send module**, with no behaviour change and a test pinning the sender's window, so the preview reads the same rule.
+- **Digest preview AI call (q12): gate it behind a click.** The preview opens on the non-AI view; synthesis runs only when asked for.
+- **Level prices in emails (q16): label the native currency, never convert.** The Mac composers and the Worker mirror change together, parity-tested; Worker deployed first.
+- **`scripts/finish-donations.ts` (q21): close the path.** It refuses to write without the same acknowledgement the assignment script needs.
+- **Confirming a date from a conflict popover (q23): keep a typed clock time.** Confirming changes the date only; the slot is stored in its normal upper-case form.
+- **A confirmed vendor row and a hand-entered row on the same date (q18): the hand-entered row wins.** The result must not depend on row order.
+- **Plaid daily sync (q14): scoped purges only.** Scope the expired-option and matured-bond purges to the synced account, prove by test that statement rows are untouched, then wire them in. No classification on that path, so the morning job makes no AI call.
+- **A lot closed in a live feed (q15): pending statement, no value.** Extend the 2026-10-02 design to live-flat options and shorts: shown as pending a statement and not valued; no saved close is written and tax inputs are not touched until a statement confirms.
+- **Macro themes prompt (q25): rank the inputs.** Keep the size cap; fill it in priority order: calendar events and alerts first, then articles ranked by relevance to what is held.
+- **Worker level-scan guard: align it to the Eastern day.** Carry the last-fired time in the snapshot, skip only when the last fire was on the current Eastern day, and expire the cloud marker at Eastern midnight.
+- **Equity curve spread check: keep it and make it flow-aware.** Measure the jump after removing that day's deposits and withdrawals, so real money movement does not trip it.
+- **Calendar doubles outside the reconciler window (q17): hide at write, same date only.** When a sync writes a feed row and a hand-entered row already holds that exact symbol and date, the feed row is stored already hidden. A feed row on a different date is left for the reconciler.
+- **Diagnostics with a short in the book (q19): name each card's basis.** No figure moves; each card says what its percent is of. Concentration stays on gross weights (2026-09-22 ruling).
+- **International-exposure labels (q20): equalise the score, then relabel.** First the scenario recipes read both labels through one mapping that gives today's score, pinned by a test, so no scenario figure moves. Then the held label patch applies.
+
+**Data repair approved**
+- **The one old hand-entered and feed earnings pair: rehearse, then apply.** The dry run on 2026-10-08 listed one pair on a past print: the hand-entered row stays and the feed copy is hidden, not deleted. Order: backup, apply on a copy, an identical second run changes nothing, then live.
+
+**Not ruled today**
+- The 28 findings Codex called a direction change (grouped in the to-do); the owner chose to rule on these next, before any build.
