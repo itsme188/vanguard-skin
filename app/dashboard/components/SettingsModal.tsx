@@ -54,6 +54,15 @@ const SECTIONS = [
     ],
   },
   {
+    // Gmail OAuth reads newsletters IN. Outbound mail stays Resend (above).
+    title: "Gmail Newsletters (inbound, Google OAuth)",
+    fields: [
+      { key: "googleClientId", label: "Google OAuth Client ID", sensitive: false },
+      { key: "googleClientSecret", label: "Google OAuth Client Secret", sensitive: true },
+      { key: "googleRefreshToken", label: "Google OAuth Refresh Token", sensitive: true },
+    ],
+  },
+  {
     title: "EDGAR",
     fields: [
       { key: "edgarContactEmail", label: "Contact Email", sensitive: false },

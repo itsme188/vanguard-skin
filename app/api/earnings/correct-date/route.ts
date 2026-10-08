@@ -1,6 +1,8 @@
 import { db } from "@/lib/db";
 import { correctEarningsEventDate } from "@/lib/mutations/calendar";
 import { attemptPostCommitDrain } from "@/lib/earnings/cloud-outbox";
+import { todayET } from "@/lib/calendar/date-utils";
+import { manualEventDateError, tickerShapeError } from "@/lib/calendar/manual-event-input";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +22,10 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  * 404 when no earnings row exists for (symbol, wrongDate): the lib would
  * happily mint a fresh manual row with nothing to correct — the route refuses
  * instead so a typo'd date can't quietly create a phantom event.
+ *
+ * 400 when the symbol cannot be a ticker, or when correctDate is not a real
+ * day from 2000 to two years ahead: this route mints a manual row at that
+ * date, and a typo'd year would store one no screen shows.
  */
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
@@ -44,6 +50,10 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+  const symbolError = tickerShapeError(body.symbol);
+  if (symbolError) return Response.json({ success: false, error: symbolError }, { status: 400 });
+  const dateError = manualEventDateError(body.correctDate, todayET(), "corrected date");
+  if (dateError) return Response.json({ success: false, error: dateError }, { status: 400 });
   let slot: "BMO" | "AMC" | undefined;
   if (body.slot != null) {
     const s = String(body.slot).toUpperCase();

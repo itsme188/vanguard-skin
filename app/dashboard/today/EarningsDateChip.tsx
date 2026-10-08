@@ -488,10 +488,15 @@ export function EarningsDateChip({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol, confirmedDate: date, confirmedTime: time }),
       });
-      if (!res.ok) {
+      // The route answers { success, data } / { success: false, error }: a 2xx
+      // without success: true is still a failure.
+      const body = (await res.json().catch(() => null)) as {
+        success?: boolean;
+        error?: string;
+      } | null;
+      if (!res.ok || body?.success !== true) {
         // Keep the popover open — closing on a rejected confirm makes the
         // chip look resolved when the conflict is still live.
-        const body = await res.json().catch(() => null);
         setConfirmError(`Confirm failed: ${body?.error ?? `server returned ${res.status}`}.`);
         return;
       }

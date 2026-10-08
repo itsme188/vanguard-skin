@@ -11,14 +11,41 @@ import {
   deleteCalendarEvent,
   deleteAndSuppressCalendarEvent,
 } from "@/lib/mutations/calendar";
-import { mondayOf, addDays } from "@/lib/calendar/date-utils";
+import { mondayOf, addDays, todayET } from "@/lib/calendar/date-utils";
 import { getSecurityIdForSymbol } from "@/lib/queries/briefing-symbols";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
+import {
+  manualEventDateError,
+  normalizeTicker,
+  tickerShapeError,
+} from "@/lib/calendar/manual-event-input";
 import { attemptPostCommitDrain } from "@/lib/earnings/cloud-outbox";
 import { checkManualAddWouldSupersedeVendor } from "@/lib/calendar/reconcile-earnings-dates";
 import { checkManualSlotAgainstKnownTime } from "@/lib/earnings/wire-times";
 import { fixDateOrigin, liftEarningsSuppression } from "@/lib/calendar/fix-date-suppression";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * The security a typed symbol belongs to: the symbol itself first
+ * (case-insensitive, stock or ETF), then a share-class sibling, so GOOGL
+ * typed with only GOOG on file still links to that company's page. Null when
+ * the app has never seen the name; the event is saved all the same.
+ */
+function resolveEventSecurityId(symbol: string): number | null {
+  const own = getSecurityIdForSymbol(db, symbol);
+  if (own !== null) return own;
+  for (const sibling of issuerSiblings(symbol)) {
+    const id = getSecurityIdForSymbol(db, sibling);
+    if (id !== null) return id;
+  }
+  return null;
+}
+
+/** 400 for typed input that cannot be saved. Nothing was written. */
+function invalidInput(code: "invalid_symbol" | "invalid_date", error: string): Response {
+  return Response.json({ success: false, error, code }, { status: 400 });
+}
 
 /**
  * GET /api/calendar/events?start=YYYY-MM-DD&end=YYYY-MM-DD&weekOf=YYYY-MM-DD
@@ -93,6 +120,12 @@ export async function GET(request: Request) {
  * returns its own 409, so one add can be refused twice in sequence — slot
  * first, then supersede — each with its own reason. Answering one warning
  * never silently answers the other.
+ *
+ * Typed-input checks run before every guard and neither flag skips them: the
+ * symbol must have the shape of a ticker (400 `invalid_symbol`; a well-formed
+ * name the app has never seen is still saved, with `securityMatched: false`),
+ * and the date must be a real day from 2000 to two years ahead (400
+ * `invalid_date`).
  */
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
@@ -117,9 +150,13 @@ export async function POST(request: Request) {
   if (body.event_time !== undefined && body.event_time !== null && typeof body.event_time !== "string") {
     return Response.json({ error: "Body field 'event_time' must be a string when provided." }, { status: 400 });
   }
+  const symbolError = tickerShapeError(body.symbol);
+  if (symbolError) return invalidInput("invalid_symbol", symbolError);
+  const dateError = manualEventDateError(body.event_date, todayET());
+  if (dateError) return invalidInput("invalid_date", dateError);
 
   try {
-    const symbol = body.symbol.trim().toUpperCase();
+    const symbol = normalizeTicker(body.symbol);
     const eventType = body.event_type ?? "earnings";
 
     // Slot vs known time — only for an earnings add that names a BMO/AMC slot
@@ -173,6 +210,7 @@ export async function POST(request: Request) {
       }
     }
 
+    const securityId = resolveEventSecurityId(symbol);
     const id = insertCalendarEvent(db, {
       symbol,
       event_date: body.event_date,
@@ -182,14 +220,14 @@ export async function POST(request: Request) {
       expected_impact: body.expected_impact ?? "high",
       consensus_estimate: body.consensus_estimate ?? null,
       description: body.description ?? null,
-      security_id: getSecurityIdForSymbol(db, symbol),
+      security_id: securityId,
       week_of: mondayOf(body.event_date),
     });
     // v2 slice A: a fresh manual row is never armed, so this normally sends
     // nothing — it is the catch-up for any generation still unsent. The whole
     // wait is capped (2s); the 15-minute sweep is the backstop.
     await attemptPostCommitDrain(db);
-    return Response.json({ success: true, id: id.id });
+    return Response.json({ success: true, id: id.id, securityMatched: securityId !== null });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     // SQLITE_CONSTRAINT_UNIQUE → 409
@@ -222,6 +260,9 @@ export async function POST(request: Request) {
  * dry run excludes the row's own CURRENT occurrence (excludeEventId) so its
  * pre-move position can't manufacture a false before/after diff. `force:
  * true` skips the check, same envelope and error code as POST.
+ *
+ * A new `symbol` or `event_date` passes the same typed-input checks as POST
+ * (400 `invalid_symbol` / `invalid_date`), after the 404/403 checks.
  */
 export async function PATCH(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
@@ -253,6 +294,21 @@ export async function PATCH(request: Request) {
       { error: `Cannot edit a ${existing.source}-sourced event via this endpoint. Only manual rows are user-editable.` },
       { status: 403 },
     );
+  }
+
+  if (body.symbol !== undefined) {
+    const symbolError =
+      typeof body.symbol === "string"
+        ? tickerShapeError(body.symbol)
+        : "Body field 'symbol' must be a string when provided.";
+    if (symbolError) return invalidInput("invalid_symbol", symbolError);
+  }
+  if (body.event_date !== undefined && body.event_date !== existing.event_date) {
+    const dateError =
+      typeof body.event_date === "string"
+        ? manualEventDateError(body.event_date, todayET())
+        : "Body field 'event_date' must be YYYY-MM-DD.";
+    if (dateError) return invalidInput("invalid_date", dateError);
   }
 
   if (
