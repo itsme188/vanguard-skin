@@ -6,7 +6,8 @@ import { getAccountByName } from "@/lib/queries/accounts";
 import { getPortfolioTotals } from "@/lib/queries/dashboard";
 import { dedupeWeekEarnings, getEventsByWeek, getTodayReleases } from "@/lib/queries/calendar";
 import { withDisplayTimes } from "@/lib/calendar/display-earnings-time";
-import { getCurrentMonday, resolveWeekOfParam } from "@/lib/calendar/date-utils";
+import { getCurrentMonday, resolveWeekOfParam, todayET } from "@/lib/calendar/date-utils";
+import { resolveTradingDayPair } from "@/lib/digest/anomalies";
 import {
   getIbkrTodayHoldings,
   summarizeIbkrDayMove,
@@ -19,6 +20,7 @@ import { EarningsHub } from "./EarningsHub";
 import { WeekAheadView } from "./WeekAheadView";
 import { IbkrRefreshButton } from "./IbkrRefreshButton";
 import { SnapshotAge } from "../components/SnapshotAge";
+import { ibkrSnapshotHeading, olderVanguardBasisNote } from "./basis-labels";
 
 function fmtShortDate(iso: string): string {
   const [, month, day] = iso.split("T")[0].split("-");
@@ -101,6 +103,11 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
   // 2026-09-13) — with shorts in the row set, a hedged book's net exposure can
   // be tiny or negative. See summarizeIbkrDayMove for the full rationale.
   const { count: movedCount, todayGain, todayPct } = summarizeIbkrDayMove(holdings);
+  // The move is measured on the SAME trading-day pair getIbkrTodayHoldings
+  // resolves. Its later date is the session the figure belongs to, and the
+  // heading says "today" only when that session is today's Eastern date.
+  const movePair = ibkrAccount ? resolveTradingDayPair(db) : null;
+  const ibkrHeading = ibkrSnapshotHeading(movePair?.latest ?? null, todayET());
 
   // ── Today's calendar releases (with release_time set) ─────────────
   // ET-anchored inside the query (calendar event_date is an ET market date, so
@@ -129,6 +136,9 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
     )
     .get() as { earliest: string | null } | undefined;
   const vanguardSnapshotDate = vanguardAsOf?.earliest ?? null;
+  // The strip's total can sit on a newer date than the Vanguard holdings in
+  // it. Say so beside the as-of date; the total itself is unchanged.
+  const vanguardBasisNote = olderVanguardBasisNote(vanguardSnapshotDate, portfolio.latestDate, todayET());
 
   const overallDaysOld = latestPriceDate ? daysAgo(latestPriceDate) : null;
   const overallSource = holdings.find((h) => h.price_date === latestPriceDate)?.price_source ?? null;
@@ -190,6 +200,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
         <span className="text-[12px] text-ink-faint ml-auto">
           <Count value={portfolio.accountCount} /> {portfolio.accountCount === 1 ? "account" : "accounts"}
           {portfolio.latestDate && ` · as of ${fmtShortDate(portfolio.latestDate)}`}
+          {vanguardBasisNote && ` · ${vanguardBasisNote}`}
         </span>
       </div>
 
@@ -224,7 +235,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
           </p>
         ) : (
           <div className="flex items-baseline gap-3 flex-wrap text-[13px]">
-            <h2 className="text-sm font-medium text-ink whitespace-nowrap!">IBKR today</h2>
+            <h2 className="text-sm font-medium text-ink whitespace-nowrap!">{ibkrHeading}</h2>
             <span className="text-ink-dim font-mono tabular-nums">
               <Count value={holdings.length} /> names
             </span>

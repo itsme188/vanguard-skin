@@ -7,6 +7,7 @@
  */
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { addDays, defaultDateWithinWeek, mondayOf } from "@/lib/calendar/date-utils";
 import apiFetch, { type ApiFetch } from "@/lib/http/apiFetch";
@@ -39,6 +40,23 @@ export function outOfWeekSaveNote(date: string, weekOf: string): string | null {
   // ACTUALLY file under (POST /api/calendar/events stores
   // week_of: mondayOf(body.event_date)), so the note points somewhere real.
   return `Saved to the week of ${mondayOf(date)} — not the week shown here.`;
+}
+
+/**
+ * Where the row from an out-of-week save can be seen: the week-ahead view for
+ * the week it filed under (same URL shape as WeekAheadView's own week links).
+ * Null when the date is within the shown week — the row is already in view.
+ */
+export function outOfWeekSaveLink(
+  date: string,
+  weekOf: string,
+): { href: string; label: string } | null {
+  if (outOfWeekSaveNote(date, weekOf) === null) return null;
+  const monday = mondayOf(date);
+  return {
+    href: `/dashboard/today?view=week-ahead&weekOf=${monday}`,
+    label: `View week of ${monday}`,
+  };
 }
 
 /**
@@ -195,6 +213,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [outOfWeekNote, setOutOfWeekNote] = useState<string | null>(null);
+  const [outOfWeekLink, setOutOfWeekLink] = useState<{ href: string; label: string } | null>(null);
   // Set only by a 409 would_supersede_vendor: the add was REFUSED and nothing
   // was written, so the form stays open with the typed values and asks. Same
   // shape as the alerts inbox's arm-refusal confirm.
@@ -249,6 +268,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
       // Reset + close + reload server component; the cockpit is a client
       // poller and needs its own signal to pick up the new reporter now.
       setOutOfWeekNote(outOfWeekSaveNote(date, weekOf));
+      setOutOfWeekLink(outOfWeekSaveLink(date, weekOf));
       setAcks(NO_ACKS);
       setSymbol("");
       setOpen(false);
@@ -301,6 +321,14 @@ export function EarningsHubAddForm({ weekOf }: Props) {
         </button>
         {outOfWeekNote && (
           <span className="text-[11px] text-ink-faint italic">{outOfWeekNote}</span>
+        )}
+        {outOfWeekNote && outOfWeekLink && (
+          <Link
+            href={outOfWeekLink.href}
+            className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2 text-[12px] font-medium text-gold-ink underline underline-offset-2 hover:text-gold whitespace-nowrap"
+          >
+            {outOfWeekLink.label}
+          </Link>
         )}
       </div>
     );
