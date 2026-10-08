@@ -798,7 +798,7 @@ describe("validateParsedResult: canonical monthly snapshots", () => {
     expect(warnings.join("\n")).not.toContain("month_end_date");
   });
 
-  it("leaves null, missing, and non-numeric canonical twr behavior unchanged", () => {
+  it("keeps a blank canonical twr and excludes a non-numeric one by name", () => {
     const { skippedRows, validatedResult } = validateSnapshotRows(
       [
         "Vanguard Taxable,2026-08-31,100000,,,,,,,,",
@@ -806,9 +806,11 @@ describe("validateParsedResult: canonical monthly snapshots", () => {
       ].join("\n"),
     );
 
-    expect(skippedRows).toHaveLength(0);
-    expect(validatedResult.snapshots).toHaveLength(2);
-    expect(validatedResult.snapshots.map((s) => s.twr)).toEqual([undefined, NaN]);
+    expect(skippedRows).toHaveLength(1);
+    expect(skippedRows[0].index).toBe(1);
+    expect(skippedRows[0].reason).toContain("Invalid twr");
+    expect(validatedResult.snapshots).toHaveLength(1);
+    expect(validatedResult.snapshots[0].twr).toBeUndefined();
   });
 
   it("does not apply the canonical decimal twr exclusion to IBKR activity snapshots", () => {
@@ -894,5 +896,32 @@ describe("validateParsedResult: holdings cost basis and market value", () => {
     expect(warnings.filter((w) => w.includes("(AAA)") && w.includes("cost_basis"))).toHaveLength(1);
     expect(warnings.filter((w) => w.includes("(BBB)") && w.includes("market_value"))).toHaveLength(1);
     expect(warnings.filter((w) => w.includes("(CCC)"))).toHaveLength(0);
+  });
+});
+
+describe("validateParsedResult: snapshot optional numeric cells", () => {
+  const header =
+    "account,month_end_date,total_value,starting_value,deposits_withdrawals,dividends,interest,commissions,fees,investment_gain,twr";
+
+  it("excludes a snapshot whose optional figure is present but unparseable, by name", () => {
+    const rows = [
+      "Vanguard Taxable,2026-01-31,100000,,,,,,,,5%",
+      "Vanguard Taxable,2026-02-28,100000,,,,,,,,abc",
+      "Vanguard Taxable,2026-03-31,100000,,,,,,,,5.0",
+      "Vanguard Taxable,2026-04-30,100000,,,12.5,,,,,0.05",
+      "Vanguard Taxable,2026-05-31,100000,,,n/a,,,,,",
+    ].join("\n");
+    const { skippedRows, validatedResult } = validateParsedResult(
+      parseCanonicalCsv(`${header}\n${rows}`, "snapshots.csv"),
+    );
+    expect(skippedRows).toHaveLength(4);
+    expect(skippedRows.map((r) => r.index)).toEqual([0, 1, 2, 4]);
+    expect(skippedRows[0].reason).toContain("Invalid twr");
+    expect(skippedRows[1].reason).toContain("Invalid twr");
+    expect(skippedRows[2].reason).toContain("twr is a decimal");
+    expect(skippedRows[3].reason).toContain("Invalid dividends");
+    expect(validatedResult.snapshots).toHaveLength(1);
+    expect(validatedResult.snapshots[0].monthEndDate).toBe("2026-04-30");
+    expect(validatedResult.snapshots[0].dividends).toBe(12.5);
   });
 });

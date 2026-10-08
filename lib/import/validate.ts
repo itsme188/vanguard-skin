@@ -150,6 +150,23 @@ export interface ValidationReport {
   validatedResult: ParsedImportResult;
 }
 
+/** Optional numeric snapshot fields paired with their CSV column names. */
+const SNAPSHOT_OPTIONAL_NUMERIC_FIELDS: ReadonlyArray<
+  readonly [
+    "twr" | "startingValue" | "depositsWithdrawals" | "dividends" | "interest" | "commissions" | "fees" | "investmentGain",
+    string,
+  ]
+> = [
+  ["twr", "twr"],
+  ["startingValue", "starting_value"],
+  ["depositsWithdrawals", "deposits_withdrawals"],
+  ["dividends", "dividends"],
+  ["interest", "interest"],
+  ["commissions", "commissions"],
+  ["fees", "fees"],
+  ["investmentGain", "investment_gain"],
+];
+
 // ── Main validator ──────────────────────────────────────────────────
 
 export interface ValidateParsedResultOptions {
@@ -454,6 +471,20 @@ export function validateParsedResult(
         reason: `Invalid total value: ${s.totalValue}`,
       });
       skip = true;
+    }
+
+    // Optional figures: present-but-unparseable cells arrive as NaN. Exclude
+    // the row by column name rather than let a garbage figure commit.
+    for (const [field, column] of SNAPSHOT_OPTIONAL_NUMERIC_FIELDS) {
+      const value = s[field];
+      if (value != null && !Number.isFinite(value)) {
+        skippedRows.push({
+          category: "snapshot",
+          index: i,
+          reason: `Invalid ${column}: not a number (check for comma separators or non-numeric text)`,
+        });
+        skip = true;
+      }
     }
 
     if (!skip && isCanonicalSnapshotImport(parsed, s)) {
