@@ -49,6 +49,18 @@ export function classificationMethodLabel(source: string | null | undefined): st
   return CLASSIFICATION_METHOD_LABELS[key] ?? key.replace(/[_-]+/g, " ");
 }
 
+/**
+ * What this card's "classified" means, next to the two other figures on the
+ * page it gets read against. The card counts SECURITIES that have a recorded
+ * category / geography / size / style pass. The Sector breakdown reads the
+ * sector field, which has its own source. Portfolio Tilts weigh by VALUE and
+ * call a holding with no size or style "Unclassified" even when it is
+ * classified here (a bond has a category and a geography, never a size).
+ * Three measures, so the copy names each one; no figure changes.
+ */
+export const CLASSIFICATION_MEASURE_NOTE =
+  "Classified here means a category, geography, size and style pass is on record for the security. Sector comes from a separate source, so the Sector breakdown can place a name this card lists as unclassified. Bonds, cash funds and some other holdings are classified with no size or style, and Portfolio Tilts counts those by value as Unclassified, so the tilts can show an Unclassified share while this card reads 100%.";
+
 function wireCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -131,6 +143,10 @@ export function ClassificationDetails({ coverage }: { coverage: ClassificationCo
       <h4 className="text-xs font-medium text-ink-faint uppercase mb-2">
         Unclassified Securities (<Count value={coverage.unclassified_securities.length} />)
       </h4>
+      <p className="text-xs text-ink-faint mb-2">
+        No category, geography, size or style is on record for these yet. Sector is tracked
+        separately, so they can already appear in a sector row of the Breakdown.
+      </p>
       <div className="max-h-60 overflow-y-auto">
         <table className="w-full text-xs">
           <thead>
@@ -233,7 +249,7 @@ export function ClassificationCard({ concentration, coverage }: Props) {
             value={`${coverage.coverage_pct}%`}
             description={
               <>
-                <Count value={coverage.classified} /> of <Count value={coverage.total} /> securities classified
+                <Count value={coverage.classified} /> of <Count value={coverage.total} /> securities classified (category, geography, size and style; not sector). Counted per security, not by value.
               </>
             }
             color={coverage.coverage_pct > 90 ? "text-up" : coverage.coverage_pct > 70 ? "text-gold" : "text-down"}
@@ -306,6 +322,8 @@ export function ClassificationCard({ concentration, coverage }: Props) {
             </span>
           ))}
         </div>
+
+        <p className="mt-3 text-xs text-ink-faint">{CLASSIFICATION_MEASURE_NOTE}</p>
 
         {showCoverage && <ClassificationDetails coverage={coverage} />}
       </div>
