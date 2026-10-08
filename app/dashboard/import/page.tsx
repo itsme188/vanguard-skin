@@ -6,6 +6,9 @@ import { ImportFlow } from "../components/ImportFlow";
 import { ImportHistory } from "../components/ImportHistory";
 import { CanonicalCsvGuide } from "../components/CanonicalCsvGuide";
 
+// Browser-tab title (qa:page-head--same-tab-title-every-route-...).
+export const metadata = { title: "Import" };
+
 export default function ImportPage() {
   let batches;
   try {

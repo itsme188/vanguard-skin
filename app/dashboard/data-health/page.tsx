@@ -119,6 +119,9 @@ function readConfidence(): DataConfidence | null {
   }
 }
 
+// Browser-tab title (qa:page-head--same-tab-title-every-route-...).
+export const metadata = { title: "Data Health" };
+
 export default function DataHealthPage() {
   const confidence = readConfidence();
   const sectorGaps = getSectorEtfGaps(db);

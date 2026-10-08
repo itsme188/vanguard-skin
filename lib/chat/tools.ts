@@ -11,6 +11,7 @@ import {
 } from "@/lib/queries/chat-tools";
 import { getNotesFiltered, getSecurityIdBySymbol } from "@/lib/queries/notes";
 import { createNote } from "@/lib/mutations/notes";
+import { todayET } from "@/lib/calendar/date-utils";
 import type { NoteType, NoteSentiment } from "@/lib/types";
 import { computeTwr } from "@/lib/compute/twr";
 import { computeXirr } from "@/lib/compute/xirr";
@@ -1127,10 +1128,19 @@ export async function executeTool(
       }
 
       case "create_note": {
-        const today = new Date().toISOString().slice(0, 10);
+        const today = todayET();
         let securityId: number | null = null;
         if (input.symbol) {
           securityId = getSecurityIdBySymbol(db, input.symbol as string);
+        }
+        // Same refusal as POST /api/notes: the Earnings tab files notes under
+        // per-security headers, so one with no security would be shown nowhere.
+        if (input.note_type === "earnings" && !securityId) {
+          rawResult = {
+            error:
+              "An earnings note needs a security. Nothing was saved. Pass the symbol of a security on file, then save.",
+          };
+          break;
         }
         const note = createNote(db, {
           note_type: input.note_type as NoteType,

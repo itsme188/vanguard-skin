@@ -213,6 +213,11 @@ const ACTION_LINK_CLASS =
 const ACTION_BUTTON_CLASS =
   "px-3 py-1.5 rounded-lg border border-edge text-xs font-medium text-ink hover:bg-raised transition-colors";
 
+// Browser-tab title (qa:page-head--same-tab-title-every-route-...).
+// No symbol here on purpose: a tab title is readable over the shoulder even
+// in privacy mode.
+export const metadata = { title: "Security" };
+
 export default async function SecurityDetailPage(props: {
   params: Promise<{ id: string }>;
 }) {
@@ -231,7 +236,7 @@ export default async function SecurityDetailPage(props: {
 
   if (!detail) notFound();
 
-  const { security, price, kpis, positions, openTaxLots, expiredOptionLotsAwaitingClose, closedSales, closedSalesTotal, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, researchMentions } = detail;
+  const { security, price, kpis, positions, openTaxLots, expiredOptionLotsAwaitingClose, closedSales, closedSalesTotal, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, tradeGradesExcluded, researchMentions, researchMentionsTotal } = detail;
 
   // Per-account reconciliation: a position's quantity should equal the sum of
   // that account's open tax lots. Statement import and computeTaxLots are
@@ -772,7 +777,7 @@ export default async function SecurityDetailPage(props: {
       )}
 
       {/* Trade Grades (from AI reviews) */}
-      {tradeGrades.length > 0 && (
+      {(tradeGrades.length > 0 || tradeGradesExcluded > 0) && (
         <Section
           title={`AI Trade Grades · ${tradeGrades.length}`}
           action={
@@ -781,12 +786,21 @@ export default async function SecurityDetailPage(props: {
             </Link>
           }
         >
+          {/* A stored trip dated entry-after-exit is a pairing artefact: it is
+              left out of the cards and counted here instead. */}
+          {tradeGradesExcluded > 0 && (
+            <p className="px-5 py-3 text-xs text-ink-dim">
+              <Count value={tradeGradesExcluded} />{" "}
+              {tradeGradesExcluded === 1 ? "trip" : "trips"} excluded — pairing under review
+            </p>
+          )}
           {tradeGrades.some((grade) => grade.pairings_stale) && (
             <p className="mb-3 text-xs text-gold-ink">
               Some saved grades use outdated or unresolved trade pairings. Dates, metrics and
               assessments may be wrong; resolve the lot history and regenerate those reviews.
             </p>
           )}
+          {tradeGrades.length > 0 && (
           <ScrollFade>
             <table className="w-full">
               <thead>
@@ -825,6 +839,7 @@ export default async function SecurityDetailPage(props: {
               </tbody>
             </table>
           </ScrollFade>
+          )}
           {(() => {
             const visible = tradeGrades.filter(
               (tg) => tg.assessment || tg.what_went_well || tg.what_went_wrong
@@ -998,7 +1013,11 @@ export default async function SecurityDetailPage(props: {
 
       {/* Research Mentions — client component handles filtering URL-fragment
           false positives, inline expansion, and click-through to article. */}
-      <ResearchMentionsSection ticker={security.symbol} mentions={researchMentions} />
+      <ResearchMentionsSection
+        ticker={security.symbol}
+        mentions={researchMentions}
+        totalCount={researchMentionsTotal}
+      />
 
 
       {/* Upcoming Events */}

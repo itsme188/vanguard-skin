@@ -5,12 +5,10 @@ import { useEffect } from "react";
 // Step 0 findings:
 // - SymbolLink requires both `securityId` + `symbol` props; sourceSummary alerts only carry
 //   `symbol` (no securityId), so SymbolLink cannot be used here.
-// - `/dashboard/research?articleId=N` is NOT a recognized URL filter; ResearchFeedsView
-//   manages article expansion via internal component state. Deep-linking to a specific
-//   article from outside the page is not yet implemented.
-// Decision: articles link to /dashboard/research (no filter) with the title as tooltip;
-//   alert symbols render as plain text. Both can be upgraded if/when the Research page
-//   gains URL-based article deep-linking and SymbolLink gains a symbol-only variant.
+// - The Research page reads `?view=feeds&article=<id>` and opens that one article, so
+//   each cited article links straight to it (title as tooltip).
+// Decision: alert symbols render as plain text; they can be upgraded if/when
+//   SymbolLink gains a symbol-only variant.
 
 interface SourceSummary {
   articles: Array<{ id: number; title: string }>;
@@ -104,9 +102,9 @@ export function MacroThemeReceiptDrawer({
             <ul className="space-y-1.5">
               {sourceSummary.articles.map((a) => (
                 <li key={a.id} className="text-xs text-ink-dim">
-                  {/* No articleId URL filter on Research page yet; link to the feeds view */}
+                  {/* The Research page opens one article from ?article=<id> */}
                   <a
-                    href="/dashboard/research?view=feeds"
+                    href={`/dashboard/research?view=feeds&article=${a.id}`}
                     title={a.title}
                     className="hover:text-ink line-clamp-2"
                   >

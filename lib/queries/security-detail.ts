@@ -25,7 +25,11 @@ import { getSecurityById } from "@/lib/queries/securities";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import { getTranscriptsForSecurity } from "@/lib/queries/transcripts";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
-import { getArticlesForSecurity, type ResearchMention } from "@/lib/queries/research";
+import {
+  countArticlesForSecurity,
+  getArticlesForSecurity,
+  type ResearchMention,
+} from "@/lib/queries/research";
 import { getLatestDailyBar, get52WeekRange, getOhlcvBars } from "@/lib/queries/ohlcv";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
@@ -128,7 +132,17 @@ export interface SecurityDetailData {
   factors: SecurityFactor | null;
   transcripts: EarningsTranscript[];
   tradeGrades: TradeGradeEntry[];
+  /**
+   * Stored round trips left out of `tradeGrades` because their entry date is
+   * after their exit date (a pairing artefact, not a trade that happened).
+   */
+  tradeGradesExcluded: number;
   researchMentions: ResearchMention[];
+  /**
+   * Every processed, relevant mention on file for this security, not just the
+   * handful in `researchMentions`. Null when the count could not be read.
+   */
+  researchMentionsTotal: number | null;
   /**
    * USD per unit of the security's native currency (1 for USD/unknown).
    * `price`, `kpis` and `week52` stay NATIVE — the chart price-line and ATR/52wk
@@ -564,6 +578,12 @@ interface TradeGradeRow {
   review_period: string;
 }
 
+export interface TradeGradesResult {
+  cards: TradeGradeEntry[];
+  /** Stored round trips dropped because entry_date > exit_date. */
+  excludedReversed: number;
+}
+
 /**
  * Get AI trade grades for a specific security from trade_roundtrips.
  * Returns the most recent grades (up to 10 CARDS, not 10 rows).
@@ -599,12 +619,18 @@ interface TradeGradeRow {
  *
  * ORDER BY exit_date DESC / LIMIT 10 semantics are preserved but applied AFTER
  * grouping: 10 cards, newest exit first.
+ *
+ * A stored row whose entry DATE is after its exit DATE is a pairing artefact
+ * (the two legs were matched backwards), so it is left out of the cards and
+ * counted in `excludedReversed`. The test is on the dates, never on
+ * `holding_days < 0`: a legacy stored short can carry a negative day count
+ * with its dates in order. Stored rows and AI prose are never rewritten.
  */
-export function getTradeGradesBySecurity(
+export function getTradeGradesWithExclusions(
   db: Database.Database,
   securityId: number
-): TradeGradeEntry[] {
-  const rows = db
+): TradeGradesResult {
+  const allRows = db
     .prepare(
       `SELECT
         tr.review_id, tr.grade, tr.entry_date, tr.exit_date,
@@ -617,6 +643,13 @@ export function getTradeGradesBySecurity(
       ORDER BY tr.exit_date DESC, tr.id ASC`
     )
     .all(securityId) as TradeGradeRow[];
+
+  // Compare the calendar dates only, so a stored timestamp on one side cannot
+  // make a same-day trip look reversed.
+  const rows = allRows.filter(
+    (row) => !(row.entry_date.slice(0, 10) > row.exit_date.slice(0, 10))
+  );
+  const excludedReversed = allRows.length - rows.length;
 
   const staleReviews = getStaleTradeReviewIds(db, rows.map((row) => row.review_id));
 
@@ -673,7 +706,15 @@ export function getTradeGradesBySecurity(
     cards.push(entry);
     if (cards.length === 10) break;
   }
-  return cards;
+  return { cards, excludedReversed };
+}
+
+/** The cards alone, for callers that do not show the excluded count. */
+export function getTradeGradesBySecurity(
+  db: Database.Database,
+  securityId: number
+): TradeGradeEntry[] {
+  return getTradeGradesWithExclusions(db, securityId).cards;
 }
 
 // ─── Hub display helpers (pure) ────────────────────────────────
@@ -1011,12 +1052,15 @@ export function getSecurityDetail(
   const notes = getNotesForSecurity(db, securityId);
   const factors = getFactorsForSecurity(db, securityId);
   const transcripts = getTranscriptsForSecurity(db, securityId);
-  const tradeGrades = getTradeGradesBySecurity(db, securityId);
+  const { cards: tradeGrades, excludedReversed: tradeGradesExcluded } =
+    getTradeGradesWithExclusions(db, securityId);
 
   // Research feed mentions
   let researchMentions: ResearchMention[] = [];
+  let researchMentionsTotal: number | null = null;
   try {
     researchMentions = getArticlesForSecurity(db, securityId, 5);
+    researchMentionsTotal = countArticlesForSecurity(db, securityId);
   } catch {
     // Table may not exist yet (pre-migration 019)
   }
@@ -1058,7 +1102,9 @@ export function getSecurityDetail(
     factors,
     transcripts,
     tradeGrades,
+    tradeGradesExcluded,
     researchMentions,
+    researchMentionsTotal,
     usdPerUnit: getUsdPerUnit(db, security.currency ?? "USD"),
   };
 }

@@ -237,7 +237,7 @@ export function DataConfidenceIndicator() {
               )}
             </div>
             <Link
-              href="/dashboard/data-health"
+              href="/dashboard/data-health#integrity"
               className="text-[10px] text-blue hover:underline"
               onClick={() => setShowPopover(false)}
             >
