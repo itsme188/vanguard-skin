@@ -192,6 +192,22 @@ describe("Analysis cost_basis fallback FX (Task 7a, Gap 2)", () => {
     expect(coverage.holdingsTotal).toBeLessThan(20_000);
   });
 
+  it("getAnalysisDataCoverage: TWS snapshot cash_value does not create a false holdings gap", () => {
+    const acctId = seedAccount(db, "IBKR");
+    const stock = seedSecurity(db, "STOCKX");
+    seedHolding(db, acctId, stock, 10, 1000);
+    seedPrice(db, stock, 100);
+    db.prepare(
+      `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, cash_value, source)
+       VALUES (?, '2026-07-31', 1250, 250, 'tws')`
+    ).run(acctId);
+
+    const coverage = getAnalysisDataCoverage(db, [acctId]);
+    expect(coverage.holdingsTotal).toBe(1000);
+    expect(coverage.snapshotTotal).toBe(1000);
+    expect(coverage.coveragePct).toBe(100);
+  });
+
   it("getFactorHeatmap: market_value is USD", () => {
     const acctId = seedAccount(db, "IBKR");
     seedKrwNoPriceHolding(acctId);

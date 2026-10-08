@@ -31,9 +31,12 @@ import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { computePositionRisk, type PositionRisk } from "@/lib/compute/risk";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
+import { normalizeSector } from "@/lib/securities/normalize-sector";
 import {
   classificationGroupSql,
-  dimensionInheritsFromUnderlying,
   underlyingInheritJoinSql,
 } from "@/lib/queries/analysis";
 import {
@@ -104,8 +107,7 @@ type Row = {
  */
 export function getHoldingsInBucket(
   db: Database.Database,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  scope: string,
+  _scope: string,
   filter: DrillDownFilter,
   accountIds?: number[]
 ): DrillDownRow[] {
@@ -115,9 +117,9 @@ export function getHoldingsInBucket(
   const accountParams: number[] = accountIds?.length ? [...accountIds] : [];
 
   let extraWhere = "";
-  let underlyingJoin = "";
   const orderBy = "market_value DESC";
   const filterParams: (string | number)[] = [];
+  let sectorLookThroughBucket: string | null = null;
   // kind:"risk" only — the ranked positions this call is a projection of.
   // Left null by every other kind.
   let rankedPositions: PositionRisk[] | null = null;
@@ -136,25 +138,18 @@ export function getHoldingsInBucket(
     //     instead of hiding under 'Unknown'.
     // The inheritance CASE reads `s_u`, so the matching join is added below
     // for exactly the dimensions that need it.
-    // "sector" resolves through classificationBucketSql's SECTOR_OWN_BUCKET_SQL
-    // — the sector→fund_category fallback, SQL-twin of explodeHoldingBySector
-    // (lib/compute/explode-sector.ts) — NOT the ETF look-through split
-    // (getSectorAllocationWithLookThrough / getEtfSectorWeights), which is a
-    // separate path this query still doesn't replicate: a fund with cached
-    // look-through weights can appear in the breakdown under a real GICS
-    // sector it has no OWN sector/fund_category value for at all, and drilling
-    // into that sector will not surface the fund row here. What this DOES fix
-    // is a bond/fund's OWN NULL-sector fallback to fund_category — e.g. a
-    // Treasury (sector NULL, fund_category 'US Treasury') bucketed by the
-    // breakdown as "US Treasury" via that fallback, but the previous plain
-    // `s.sector = ?` filter (a NULL sector matches nothing) opened the
-    // drill-down panel on 0 holdings for a row the breakdown said held several
-    // [qa:analysis-sector-drilldown--us-treasury-row-8-positions-opens-empty-panel].
-    extraWhere = `AND ${classificationGroupSql(filter.dimension)} = ?`;
-    underlyingJoin = dimensionInheritsFromUnderlying(filter.dimension)
-      ? underlyingInheritJoinSql()
-      : "";
-    filterParams.push(filter.bucket);
+    // "sector" is the Analysis breakdown path, so it must follow the same
+    // ETF/fund look-through basis as getSectorAllocationWithLookThrough. We
+    // therefore fetch the whole scope and split/filter in JS via
+    // explodeHoldingBySector below, which also preserves the older own-sector
+    // fallback for bonds/funds such as NULL sector + fund_category
+    // "US Treasury" [qa:analysis-sector-drilldown--us-treasury-row-8-positions-opens-empty-panel].
+    if (filter.dimension === "sector") {
+      sectorLookThroughBucket = normalizeSector(filter.bucket) ?? filter.bucket;
+    } else {
+      extraWhere = `AND ${classificationGroupSql(filter.dimension)} = ?`;
+      filterParams.push(filter.bucket);
+    }
   } else if (filter.kind === "sector") {
     // Distinct from the classification path above: this kind is fed only by
     // FactorAnalysis.tsx's sector-TILT bucket click, whose labels come from
@@ -169,7 +164,7 @@ export function getHoldingsInBucket(
     if (!FACTOR_COLUMNS.includes(filter.factor)) {
       throw new Error(`unknown factor: ${filter.factor}`);
     }
-    extraWhere = `AND sf.${filter.factor} = ?`;
+    extraWhere = `AND COALESCE(sf.${filter.factor}, sf_u.${filter.factor}) = ?`;
     filterParams.push(filter.bucket);
   } else if (filter.kind === "risk") {
     // The universe is decided by computePositionRisk — the SAME call the
@@ -202,7 +197,7 @@ export function getHoldingsInBucket(
     filterParams.push(...rankedPositions.map((p) => p.securityId));
   }
 
-  const factorSelect = FACTOR_COLUMNS.map((f) => `sf.${f} AS f_${f}`).join(",\n           ");
+  const factorSelect = FACTOR_COLUMNS.map((f) => `COALESCE(sf.${f}, sf_u.${f}) AS f_${f}`).join(",\n           ");
 
   const sql = `
     WITH holdings_cte AS (
@@ -218,11 +213,11 @@ export function getHoldingsInBucket(
         ${factorSelect}
       FROM holdings h
       JOIN securities s ON s.id = h.security_id
-      -- s_u (an option's underlying) only when the bucket expression above
-      -- references it. securities.symbol is UNIQUE, so the join is 1:1 and
-      -- cannot fan a holding row out into a double-counted market_value.
-      ${underlyingJoin}
+      -- s_u (an option's underlying) is 1:1 by securities.symbol and supports
+      -- both classification and factor inheritance.
+      ${underlyingInheritJoinSql()}
       LEFT JOIN security_factors sf ON sf.security_id = s.id
+      LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id
       LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
       LEFT JOIN (
         SELECT p.security_id, p.close_price
@@ -233,6 +228,7 @@ export function getHoldingsInBucket(
       ) lp ON lp.security_id = s.id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE ${latestHoldingsPredicate({ accountFilter })}
+        AND ${liveOptionExpirationSql("s")}
         ${extraWhere}
       -- Aggregate per SECURITY, not per (account, security) row: a name held
       -- in several accounts must appear once with its value summed, or it
@@ -275,13 +271,34 @@ export function getHoldingsInBucket(
        ) lp ON lp.security_id = s.id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE ${latestHoldingsPredicate({ accountFilter })}
-         AND COALESCE(lp.close_price, 0) > 0`
+         AND ${liveOptionExpirationSql("s")}`
     )
     .get(...accountParams) as { total: number | null };
 
   const total = totalRow.total ?? 0;
 
-  const mapped = rows.map((r) => ({
+  const sectorWeights = sectorLookThroughBucket ? getEtfSectorWeights(db) : null;
+  const visibleRows = sectorLookThroughBucket
+    ? rows.flatMap((r) => {
+        const parts = explodeHoldingBySector(
+          r.symbol,
+          r.security_type,
+          r.market_value,
+          sectorWeights!,
+          r.sector ?? r.fund_category
+        );
+        const matching = parts.filter(
+          (part) => (normalizeSector(part.sector) ?? part.sector) === sectorLookThroughBucket
+        );
+        return matching.map((part) => ({
+          ...r,
+          market_value: part.value,
+          sector: normalizeSector(part.sector) ?? part.sector,
+        }));
+      })
+    : rows;
+
+  const mapped = visibleRows.map((r) => ({
     symbol: r.symbol,
     securityName: r.security_name,
     securityId: r.security_id,

@@ -370,6 +370,8 @@ describe("getFactorCoverage", () => {
     expect(coverage.totalHoldings).toBe(2);
     expect(coverage.withFactors).toBe(2); // both covered
     expect(coverage.coveragePct).toBe(100);
+    expect(coverage.bySource.reduce((sum, row) => sum + row.count, 0)).toBe(coverage.withFactors);
+    expect(coverage.bySource).toContainEqual({ source: "csv_import", count: 2 });
   });
 
   it("returns 0% coverage when no factors exist", () => {

@@ -16,6 +16,7 @@ import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { getOptionExposureMap, exposureForHolding } from "@/lib/compute/exposure";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
+import { normalizeSector } from "@/lib/securities/normalize-sector";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -416,8 +417,9 @@ export function getAllocationByDimension(
  * fall back to `sector ?? fund_category` (the pre-look-through COALESCE
  * semantics); sectorless bonds bucket as Fixed Income.
  *
- * position_count attributes each position once, to its dominant sector, so
- * counts still sum to the number of positions.
+ * position_count is the count of distinct securities contributing value to
+ * that sector bucket. A look-through fund can therefore count once in each
+ * sector it contributes to, matching the sector drill-down row list.
  */
 function getSectorAllocationWithLookThrough(
   db: Database.Database,
@@ -483,19 +485,14 @@ function getSectorAllocationWithLookThrough(
       weights,
       r.sector ?? r.fund_category
     );
-    // Dominant sector carries the position count; every part carries value.
-    // Exposure splits across parts by each part's MV share (delta = 1 for
-    // funds, so the proportions match; options are single-part anyway).
-    let dominant = parts[0];
     for (const part of parts) {
-      if (Math.abs(part.value) > Math.abs(dominant.value)) dominant = part;
-      const entry = bySector.get(part.sector) ?? { value: 0, exposure: 0, count: 0 };
+      const sector = normalizeSector(part.sector) ?? part.sector;
+      const entry = bySector.get(sector) ?? { value: 0, exposure: 0, count: 0 };
       entry.value += part.value;
       entry.exposure += r.mv !== 0 ? rowExposure * (part.value / r.mv) : 0;
-      bySector.set(part.sector, entry);
+      entry.count += 1;
+      bySector.set(sector, entry);
     }
-    const dom = bySector.get(dominant.sector)!;
-    dom.count += 1;
   }
 
   return [...bySector.entries()]
@@ -714,6 +711,7 @@ export function getAnalysisDataCoverage(
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+        AND ${liveOptionExpirationSql("s")}
         ${accountFilter}`
     )
     .get(...accountParams) as { total: number; latest_date: string | null };
@@ -721,7 +719,10 @@ export function getAnalysisDataCoverage(
   // Snapshot-derived total (latest per account)
   const snapshotRow = db
     .prepare(
-      `SELECT COALESCE(SUM(ms.total_value), 0) AS total
+      `SELECT COALESCE(SUM(CASE
+          WHEN ms.cash_value IS NOT NULL THEN ms.total_value - ms.cash_value
+          ELSE ms.total_value
+        END), 0) AS total
        FROM monthly_snapshots ms
        WHERE ms.month_end_date = (
          SELECT MAX(ms2.month_end_date) FROM monthly_snapshots ms2
@@ -794,6 +795,7 @@ export function getFactorHeatmap(
 ): FactorHeatmapRow[] {
   const conditions = [
     "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+    liveOptionExpirationSql("s"),
   ];
   const params: (string | number)[] = [];
 
@@ -889,6 +891,7 @@ export function getFactorCoverage(
 ): FactorCoverage {
   const conditions = [
     "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+    liveOptionExpirationSql("s"),
   ];
   const params: (string | number)[] = [];
 
@@ -912,32 +915,31 @@ export function getFactorCoverage(
     )
     .get(...params) as { total: number; with_factors: number };
 
-  // bySource must mirror the scope of the main query above — otherwise this
-  // subquery reports global `security_factors` counts while the top-line
-  // coverage number is scoped to `accountIds`, which breaks the bar chart
-  // on the Factor Exposure view whenever a single-account scope is picked.
+  // bySource must mirror the header grain: one counted source per HELD
+  // security, with options inheriting their underlying's factor source when
+  // they have no direct factor row.
   const bySource = db
     .prepare(
       `WITH ${LATEST_HOLDINGS_CTE},
-         scoped_security_ids AS (
-           SELECT DISTINCT s.id AS security_id
+         scoped_security_sources AS (
+           SELECT DISTINCT
+             s.id AS security_id,
+             COALESCE(sf.factor_source, sf_u.factor_source, 'none') AS source,
+             CASE WHEN sf.security_id IS NOT NULL OR sf_u.security_id IS NOT NULL THEN 1 ELSE 0 END AS has_factors
            FROM latest_holdings h
            JOIN securities s ON s.id = h.security_id
-           WHERE ${conditions.join(" AND ")}
-           UNION
-           SELECT DISTINCT s_u.id AS security_id
-           FROM latest_holdings h
-           JOIN securities s ON s.id = h.security_id
-           JOIN securities s_u ON s_u.symbol = s.underlying_symbol
+           LEFT JOIN security_factors sf ON sf.security_id = s.id
+           LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
+           LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id
            WHERE ${conditions.join(" AND ")}
          )
-       SELECT COALESCE(sf.factor_source, 'none') AS source, COUNT(*) AS count
-       FROM security_factors sf
-       WHERE sf.security_id IN (SELECT security_id FROM scoped_security_ids)
-       GROUP BY sf.factor_source
+       SELECT source, COUNT(*) AS count
+       FROM scoped_security_sources
+       WHERE has_factors = 1
+       GROUP BY source
        ORDER BY count DESC`
     )
-    .all(...params, ...params) as Array<{ source: string; count: number }>;
+    .all(...params) as Array<{ source: string; count: number }>;
 
   return {
     totalHoldings: row.total,
