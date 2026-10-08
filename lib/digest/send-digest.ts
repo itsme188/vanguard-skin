@@ -1,13 +1,12 @@
 import type Database from "better-sqlite3";
-import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
 import { fetchNewArticles, backfillSourceUrls } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
 import {
   generateDigestSinceAdaptive,
-  getLastDigestSentAt,
   setLastDigestSentAt,
 } from "@/lib/digest/daily-digest";
+import { resolveDigestSince, defaultDigestSince } from "@/lib/digest/digest-window";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
 import { syncPortfolio } from "@/lib/tws/positions";
@@ -83,18 +82,7 @@ export async function sendDigestEmail(
   // articles cutoff — silently producing zero matches and a "No processed
   // articles" skip. Same race produced 3 weekdays of mystery skips
   // (Apr 22 / 23 / 24 2026).
-  const sinceSnapshot = (() => {
-    // ET-anchored: a UTC slice reads tomorrow from 20:00 ET, which emptied
-    // an evening "today" digest and skipped a day on the 24h fallback.
-    if (opts.mode === "today") return todayET();
-    if (opts.mode === "since_last") {
-      const lastSent = getLastDigestSentAt(db);
-      const fallback = addDays(todayET(), -1);
-      return lastSent || fallback;
-    }
-    if (opts.mode === "since_date" && opts.sinceDate) return opts.sinceDate;
-    return null; // legacy generateDailyDigest path
-  })();
+  const sinceSnapshot = resolveDigestSince(db, { mode: opts.mode, sinceDate: opts.sinceDate });
 
   let twsSynced = false;
   try {
@@ -120,7 +108,7 @@ export async function sendDigestEmail(
 
   const digest = sinceSnapshot !== null
     ? await generateDigestSinceAdaptive(db, sinceSnapshot, { includeAnomalies: false, edition: "morning" })
-    : await generateDigestSinceAdaptive(db, addDays(todayET(), -1), { includeAnomalies: false, edition: "morning" });
+    : await generateDigestSinceAdaptive(db, defaultDigestSince(), { includeAnomalies: false, edition: "morning" });
 
   if (!digest) {
     return {
