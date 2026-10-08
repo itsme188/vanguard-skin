@@ -87,6 +87,33 @@ function nonShockableBucket(pos: ScenarioResult["positionImpacts"][number]): str
   return sector;
 }
 
+// Custom-scenario input bounds (owner ruling 2026-10-07, QA option 1): a rate
+// move past +/-1000 bp or a sector override past +/-50% is refused, with the
+// input named. Nothing is clamped or replaced by another figure.
+export const CUSTOM_RATE_MOVE_LIMIT_BP = 1000;
+export const CUSTOM_SECTOR_MOVE_LIMIT_PCT = 50;
+
+export function customScenarioInputProblems(
+  rateMoveBp: number,
+  sectorOverrides: { sector: string; move: number }[],
+): string[] {
+  const problems: string[] = [];
+  if (!Number.isFinite(rateMoveBp) || Math.abs(rateMoveBp) > CUSTOM_RATE_MOVE_LIMIT_BP) {
+    problems.push(
+      `Rate move must be between -${CUSTOM_RATE_MOVE_LIMIT_BP} and +${CUSTOM_RATE_MOVE_LIMIT_BP} basis points.`,
+    );
+  }
+  for (const o of sectorOverrides) {
+    if (!o.sector) continue;
+    if (!Number.isFinite(o.move) || Math.abs(o.move) > CUSTOM_SECTOR_MOVE_LIMIT_PCT) {
+      problems.push(
+        `${o.sector} override must be between -${CUSTOM_SECTOR_MOVE_LIMIT_PCT}% and +${CUSTOM_SECTOR_MOVE_LIMIT_PCT}%.`,
+      );
+    }
+  }
+  return problems;
+}
+
 export function ScenarioModelingCard({ scope }: { scope?: string }) {
   const [scenarios, setScenarios] = useState<ScenarioResult[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -111,6 +138,8 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
     { sector: string; move: number }[]
   >([]);
 
+  const customInputProblems = customScenarioInputProblems(customRateMove, customSectorOverrides);
+
   // useCallback must be declared before any early returns (React hooks rules)
   const handleComputeCustom = useCallback(async () => {
     setCustomLoading(true);
@@ -119,6 +148,11 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
     // user has since left and must be dropped.
     const requestToken = requestTokenRef.current;
     try {
+      const inputProblems = customScenarioInputProblems(customRateMove, customSectorOverrides);
+      if (inputProblems.length > 0) {
+        setCustomError(inputProblems.join(" "));
+        return;
+      }
       const sectorMoves: Record<string, number> = {};
       const seenSectors = new Set<string>();
       const duplicateSectors = new Set<string>();
@@ -615,6 +649,8 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
               </label>
               <input
                 type="number"
+                min={-CUSTOM_RATE_MOVE_LIMIT_BP}
+                max={CUSTOM_RATE_MOVE_LIMIT_BP}
                 value={customRateMove}
                 onChange={(e) => setCustomRateMove(Number(e.target.value))}
                 placeholder="0"
@@ -691,6 +727,8 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                   </select>
                   <input
                     type="number"
+                    min={-CUSTOM_SECTOR_MOVE_LIMIT_PCT}
+                    max={CUSTOM_SECTOR_MOVE_LIMIT_PCT}
                     value={override.move}
                     onChange={(e) => {
                       const updated = [...customSectorOverrides];
@@ -718,9 +756,14 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
             </div>
 
             {/* Compute button */}
+            {customInputProblems.map((problem) => (
+              <p key={problem} className="text-xs text-down">
+                ⚠ {problem} Nothing is computed until it is in range.
+              </p>
+            ))}
             <button
               onClick={handleComputeCustom}
-              disabled={customLoading}
+              disabled={customLoading || customInputProblems.length > 0}
               className="px-4 py-1.5 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 disabled:opacity-50 transition-[filter,scale] active:scale-[0.96] focus-ring"
             >
               {customLoading ? "Computing..." : "Compute Scenario"}

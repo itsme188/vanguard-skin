@@ -365,7 +365,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                 subNode={
                   annualizedTwr !== null ? (
                     <>
-                      ≈ <Pct value={annualizedTwr * 100} digits={0} signed /> annualized
+                      ≈ <Pct value={annualizedTwr * 100} digits={2} signed /> annualized
                     </>
                   ) : null
                 }
@@ -553,14 +553,32 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                   riskStart !== null &&
                   riskEnd !== null &&
                   (riskStart !== curveStart || riskEnd !== curveEnd);
-                return notice ? (
+                // The END side: the curve keeps every daily point the book
+                // has, so it can run past the Period window card's End (the
+                // last month-end anchor the TWR chain reaches). Say so rather
+                // than leave two end dates for one window on the same page.
+                const windowEnd = twrResult?.endDate ?? null;
+                const runsPastWindow = curveEnd !== null && windowEnd !== null && curveEnd > windowEnd;
+                return notice || runsPastWindow ? (
                   <p className="text-xs text-ink-faint -mt-2">
-                    Equity curve: {notice.charAt(0).toLowerCase() + notice.slice(1)}
-                    {curveWindowDiffers && (
+                    {notice && (
                       <>
-                        . It plots only days that also have a {BENCHMARK_SYMBOL} close; the daily
-                        valuations behind Max drawdown &amp; Sharpe run {fmtDate(riskStart ?? undefined)} –{" "}
-                        {fmtDate(riskEnd ?? undefined)}
+                        Equity curve: {notice.charAt(0).toLowerCase() + notice.slice(1)}
+                        {curveWindowDiffers && (
+                          <>
+                            . It plots only days that also have a {BENCHMARK_SYMBOL} close; the daily
+                            valuations behind Max drawdown &amp; Sharpe run {fmtDate(riskStart ?? undefined)} –{" "}
+                            {fmtDate(riskEnd ?? undefined)}
+                          </>
+                        )}
+                      </>
+                    )}
+                    {runsPastWindow && (
+                      <>
+                        {notice ? ". The " : "Equity curve: the "}
+                        daily history runs to {fmtDate(curveEnd ?? undefined)}, past the Period
+                        window’s {fmtDate(windowEnd ?? undefined)} month-end anchor — the TWR above
+                        stops at that anchor
                       </>
                     )}
                   </p>
