@@ -7,7 +7,7 @@ import {
   resolveTaxReportCardStatus,
   createFetchGuard,
   TAX_REPORT_EMPTY_COPY,
-  ENGINE_ESTIMATED_EXCLUDED_COPY,
+  engineEstimatedExcludedCopy,
 } from "@/app/dashboard/components/TaxReportCard";
 
 /**
@@ -176,10 +176,19 @@ describe("TaxReportCard scope wiring (source pin)", () => {
     expect(src).toContain("{TAX_REPORT_EMPTY_COPY}");
   });
 
-  it("discloses that filing rows exclude engine-estimated reconciliation closes", () => {
-    expect(ENGINE_ESTIMATED_EXCLUDED_COPY).toContain("engine-estimated");
-    expect(ENGINE_ESTIMATED_EXCLUDED_COPY).toContain("economic realized tiles");
-    expect(src).toContain("{ENGINE_ESTIMATED_EXCLUDED_COPY}");
+  it("discloses engine-estimated reconciliation closes only when the scope has some, with the count", () => {
+    for (const n of [1, 3]) {
+      expect(engineEstimatedExcludedCopy(n)).toContain("engine-estimated");
+      expect(engineEstimatedExcludedCopy(n)).toContain("economic realized tiles");
+    }
+    expect(engineEstimatedExcludedCopy(1)).toContain("close is left out");
+    expect(engineEstimatedExcludedCopy(3)).toContain("closes are left out");
+    // Shown only above zero, and the count is the report's own field (never a
+    // second query in the component), masked through <Count>.
+    expect(src).toContain("const excludedEngineCloses = report.excludedEngineCloses ?? 0;");
+    expect(src).toMatch(
+      /\{excludedEngineCloses > 0 && \(\s*<p[^>]*>\s*<Count value=\{excludedEngineCloses\} \/> \{engineEstimatedExcludedCopy\(excludedEngineCloses\)\}/
+    );
   });
 
   it("masks portfolio-derived report counts through Count under privacy mode", () => {

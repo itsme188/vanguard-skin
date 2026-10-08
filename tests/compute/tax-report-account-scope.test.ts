@@ -381,6 +381,29 @@ describe("generateTaxReport — account scoping", () => {
     expect(ibkr.longTermTotal.proceeds).toBe(0);
   });
 
+  it("counts the engine-made closes left out, for the same year and account scope", () => {
+    const db = createTestDb();
+    seedMultiAccountYear(db);
+
+    // The one RECONCILE_CLOSE sale sits in IBKR, in YEAR.
+    expect(generateTaxReport(db, YEAR).excludedEngineCloses).toBe(1);
+    expect(generateTaxReport(db, YEAR, { accountName: "IBKR" }).excludedEngineCloses).toBe(1);
+    expect(generateTaxReport(db, YEAR, { accountName: "Taxable" }).excludedEngineCloses).toBe(0);
+    expect(generateTaxReport(db, YEAR + 1).excludedEngineCloses).toBe(0);
+    // The premium-rollover row is left out too, but it is not an engine close.
+    addSale(db, {
+      accountId: 3,
+      securityId: 2,
+      acquisitionDate: "2022-01-08",
+      saleDate: "2022-09-08",
+      quantity: 2,
+      acquisitionPrice: 100,
+      salePrice: 105,
+      txnType: "RECONCILE_CLOSE",
+    });
+    expect(generateTaxReport(db, YEAR, { accountName: "IBKR" }).excludedEngineCloses).toBe(2);
+  });
+
   /**
    * CONSERVATION IDENTITY (money-moving engine rule): a per-account export
    * must be a strict SUBSET of the all-accounts export — identical rows,

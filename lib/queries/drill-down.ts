@@ -26,18 +26,19 @@
 
 import type Database from "better-sqlite3";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
-import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { computePositionRisk, type PositionRisk } from "@/lib/compute/risk";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
-import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import {
   classificationGroupSql,
   underlyingInheritJoinSql,
+  explodeHoldingByNormalizedSector,
+  HOLDING_VALUE_USD_SQL,
+  UNMATURED_SECURITY_SQL,
 } from "@/lib/queries/analysis";
 import {
   isDrillableDimension,
@@ -141,7 +142,7 @@ export function getHoldingsInBucket(
     // "sector" is the Analysis breakdown path, so it must follow the same
     // ETF/fund look-through basis as getSectorAllocationWithLookThrough. We
     // therefore fetch the whole scope and split/filter in JS via
-    // explodeHoldingBySector below, which also preserves the older own-sector
+    // explodeHoldingByNormalizedSector below, which also preserves the older own-sector
     // fallback for bonds/funds such as NULL sector + fund_category
     // "US Treasury" [qa:analysis-sector-drilldown--us-treasury-row-8-positions-opens-empty-panel].
     if (filter.dimension === "sector") {
@@ -164,7 +165,10 @@ export function getHoldingsInBucket(
     if (!FACTOR_COLUMNS.includes(filter.factor)) {
       throw new Error(`unknown factor: ${filter.factor}`);
     }
-    extraWhere = `AND COALESCE(sf.${filter.factor}, sf_u.${filter.factor}) = ?`;
+    // Same expression the breakdown groups by, 'Unknown' fallback included:
+    // without it the 'Unknown' row (no factor on the security or its
+    // underlying) could never match a NULL and opened an empty panel.
+    extraWhere = `AND COALESCE(sf.${filter.factor}, sf_u.${filter.factor}, 'Unknown') = ?`;
     filterParams.push(filter.bucket);
   } else if (filter.kind === "risk") {
     // The universe is decided by computePositionRisk — the SAME call the
@@ -208,7 +212,7 @@ export function getHoldingsInBucket(
         s.security_type,
         s.fund_category,
         s.sector,
-        SUM(${adjustedMarketValueSQL("h.quantity", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) AS market_value,
+        SUM(${HOLDING_VALUE_USD_SQL}) AS market_value,
         sb.beta AS beta,
         ${factorSelect}
       FROM holdings h
@@ -229,6 +233,7 @@ export function getHoldingsInBucket(
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE ${latestHoldingsPredicate({ accountFilter })}
         AND ${liveOptionExpirationSql("s")}
+        AND ${UNMATURED_SECURITY_SQL}
         ${extraWhere}
       -- Aggregate per SECURITY, not per (account, security) row: a name held
       -- in several accounts must appear once with its value summed, or it
@@ -241,12 +246,12 @@ export function getHoldingsInBucket(
       -- No close_price > 0 filter: the breakdown row this panel is opened
       -- from (getAllocationByDimension / getSectorAllocationWithLookThrough
       -- in lib/queries/analysis.ts) counts every latest-holdings row
-      -- regardless of price presence or sign, falling back to $0 when
-      -- unpriced. Filtering here made the panel show FEWER holdings than
-      -- the row's own "N positions" count. COALESCE(lp.close_price, 0)
-      -- above keeps an unpriced security's market_value at 0 instead of
-      -- NULL (rather than replicating analysis.ts's cost_basis fallback,
-      -- which this query has never carried).
+      -- regardless of price presence or sign. Filtering here made the panel
+      -- show FEWER holdings than the row's own "N positions" count. The
+      -- value is analysis.ts's own HOLDING_VALUE_USD_SQL (imported, not
+      -- copied), so an unpriced holding takes the same cost-basis fallback
+      -- in the panel as in the row, and a matured bond leaves both
+      -- (UNMATURED_SECURITY_SQL).
       GROUP BY s.id
     )
     SELECT * FROM holdings_cte
@@ -259,7 +264,7 @@ export function getHoldingsInBucket(
   // visible scope, not just the filtered subset.
   const totalRow = db
     .prepare(
-      `SELECT SUM(${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) AS total
+      `SELECT SUM(${HOLDING_VALUE_USD_SQL}) AS total
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        LEFT JOIN (
@@ -271,7 +276,8 @@ export function getHoldingsInBucket(
        ) lp ON lp.security_id = s.id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE ${latestHoldingsPredicate({ accountFilter })}
-         AND ${liveOptionExpirationSql("s")}`
+         AND ${liveOptionExpirationSql("s")}
+         AND ${UNMATURED_SECURITY_SQL}`
     )
     .get(...accountParams) as { total: number | null };
 
@@ -280,21 +286,18 @@ export function getHoldingsInBucket(
   const sectorWeights = sectorLookThroughBucket ? getEtfSectorWeights(db) : null;
   const visibleRows = sectorLookThroughBucket
     ? rows.flatMap((r) => {
-        const parts = explodeHoldingBySector(
+        // Parts arrive merged by normalised sector, so a fund with two
+        // vendor names for one sector is ONE row here (and one in the count).
+        const parts = explodeHoldingByNormalizedSector(
           r.symbol,
           r.security_type,
           r.market_value,
           sectorWeights!,
           r.sector ?? r.fund_category
         );
-        const matching = parts.filter(
-          (part) => (normalizeSector(part.sector) ?? part.sector) === sectorLookThroughBucket
-        );
-        return matching.map((part) => ({
-          ...r,
-          market_value: part.value,
-          sector: normalizeSector(part.sector) ?? part.sector,
-        }));
+        return parts
+          .filter((part) => part.sector === sectorLookThroughBucket)
+          .map((part) => ({ ...r, market_value: part.value, sector: part.sector }));
       })
     : rows;
 

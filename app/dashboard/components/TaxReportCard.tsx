@@ -30,6 +30,8 @@ interface TaxReportSummary {
   excludedRetirementAccounts?: string[];
   /** False = no account is stamped non-taxable yet, so IRA sales are still included. */
   hasTaxAdvantagedAccounts?: boolean;
+  /** Engine-made closes in this year and account scope that the rows leave out. */
+  excludedEngineCloses?: number;
 }
 
 function formatMoney(value: number): string {
@@ -75,8 +77,16 @@ export const NO_RETIREMENT_STAMP_COPY =
   "No account is marked as a retirement account yet — sales in an IRA are included until it is stamped.";
 export const TAX_REPORT_EMPTY_COPY =
   "No taxable sales for this scope and year.";
-export const ENGINE_ESTIMATED_EXCLUDED_COPY =
-  "Tax Report rows exclude engine-estimated reconciliation closes; those stay in the economic realized tiles above.";
+/**
+ * The words after the count in the "engine closes left out" line. The line is
+ * shown only when the scope has at least one such close; the count itself
+ * renders through `<Count>` so it masks under privacy mode.
+ */
+export function engineEstimatedExcludedCopy(count: number): string {
+  return count === 1
+    ? "engine-estimated reconciliation close is left out of the Tax Report rows; it stays in the economic realized tiles above."
+    : "engine-estimated reconciliation closes are left out of the Tax Report rows; they stay in the economic realized tiles above.";
+}
 
 /**
  * One line naming the retirement accounts whose sales were dropped from an
@@ -362,6 +372,7 @@ export function TaxReportCard({
   const totalSales =
     (report.shortTermRows?.length ?? 0) + (report.longTermRows?.length ?? 0);
   const totalGainLoss = report.shortTermTotal.gainLoss + report.longTermTotal.gainLoss;
+  const excludedEngineCloses = report.excludedEngineCloses ?? 0;
   const hasWashSales = report.washSaleWarnings.length > 0;
   // PR #59 review minor: this was computed three times (title x2 + banner
   // heading) — derive once and reuse.
@@ -450,7 +461,11 @@ export function TaxReportCard({
         {/* Wash-sale methodology disclosure — always shown, independent of
             whether any wash sale was actually detected below. */}
         <p className="text-[10px] text-ink-faint">{report.washSaleAdvisory}</p>
-        <p className="text-[10px] text-ink-faint italic">{ENGINE_ESTIMATED_EXCLUDED_COPY}</p>
+        {excludedEngineCloses > 0 && (
+          <p className="text-[10px] text-ink-faint italic">
+            <Count value={excludedEngineCloses} /> {engineEstimatedExcludedCopy(excludedEngineCloses)}
+          </p>
+        )}
 
         {/* Summary grid */}
         {totalSales > 0 && (

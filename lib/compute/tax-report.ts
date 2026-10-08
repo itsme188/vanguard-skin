@@ -114,6 +114,13 @@ export interface TaxReportResult {
    * banner has to say so — the accepted ruling's interim disclosure.
    */
   hasTaxAdvantagedAccounts: boolean;
+  /**
+   * Engine-made closes (RECONCILE_CLOSE sales) in this report's year and
+   * account scope that the rows above leave out. The card shows its
+   * "left out" line only when this is above zero, with this count. Counted
+   * from the same unfiltered reader call that feeds `filingReady`.
+   */
+  excludedEngineCloses: number;
 }
 
 export interface TaxReportOptions {
@@ -331,7 +338,8 @@ export function generateTaxReport(
 
   // filingOnly: exclude premium-rollover option closes and engine-synthesized
   // RECONCILE_CLOSE rows from anything destined for a filing surface (Task 5).
-  const scopedSales = getClosedTaxLotSales(db, year, { filingOnly: true, accountName });
+  const readerAccount = accountName ?? undefined;
+  const scopedSales = getClosedTaxLotSales(db, year, { filingOnly: true, accountName: readerAccount });
   const sales = scopedSales.filter((s) => isTaxableAccountId(s.account_id));
   const excludedRetirementAccounts = [
     ...new Set(scopedSales.filter((s) => !isTaxableAccountId(s.account_id)).map((s) => s.account_name)),
@@ -422,7 +430,9 @@ export function generateTaxReport(
   // account name that matches nothing yields an empty universe, which the
   // length guard below fails closed.
   const state = getTaxConventionState(db);
-  const accountIds = getClosedTaxLotSales(db, year, { accountName })
+  const allScopedSales = getClosedTaxLotSales(db, year, { accountName: readerAccount });
+  const excludedEngineCloses = allScopedSales.filter((r) => r.is_synthetic_close).length;
+  const accountIds = allScopedSales
     .map((r) => r.account_id)
     .filter((id, index, ids) => ids.indexOf(id) === index)
     // A retirement account's rows are not in this report, so its
@@ -447,6 +457,7 @@ export function generateTaxReport(
     retirementAccount: false,
     excludedRetirementAccounts,
     hasTaxAdvantagedAccounts,
+    excludedEngineCloses,
   };
 }
 
@@ -469,6 +480,9 @@ function emptyRetirementReport(year: number, accountName: string): TaxReportResu
     excludedRetirementAccounts: [accountName],
     // Reaching this branch means at least one account is stamped.
     hasTaxAdvantagedAccounts: true,
+    // No rows are shown for this scope at all, so there is no row count for
+    // an engine close to be missing from.
+    excludedEngineCloses: 0,
   };
 }
 
