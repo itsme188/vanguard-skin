@@ -259,6 +259,7 @@ Detail: `docs/reference/ui-structure.md`
 - `npmRebuild: false` in `electron-builder.yml` must stay — it protects the working better-sqlite3 binary.
 - Packaged-app server logs: `~/Library/Logs/Vanguard Dashboard/server.log` — first place to look for packaged-app issues.
 - **Never run `wrangler dev` in the main checkout before a deploy (2026-09-03):** Next's output tracer copies `workers/cron/.wrangler/state/**` (local KV blobs) into `.next/standalone` when that directory exists; run the local Worker only from a sibling worktree and add the path to the bundle gate's leak list when next touched.
+- **`npx wrangler deploy` leaves an empty `workers/cron/.wrangler/` folder (2026-10-08):** the Mac deploy's pre-flight refuses to build while it exists. When deploying the Worker first and the Mac second, remove that folder in between.
 - **Never run git branch/worktree cleanup while `electron:deploy` is building (2026-09-02):** Next's output tracer copies `.git/**` refs for a few routes; deleting a branch mid-build logs `Failed to copy traced files … ENOENT` for each vanished ref. Harmless behind the bundle gate, but it muddies the deploy log — finish the deploy, then clean up.
 
 Detail (signing, notarization, entitlements, tray icons, settings): `docs/reference/electron-build.md`

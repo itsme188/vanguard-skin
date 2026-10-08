@@ -1,6 +1,6 @@
 # Session Handoff — for Codex review
 
-**Waiting on:** USER (each is also a `decision` record in the coordination register): `merge-pr-101-and-deploy` (merge the three stacked pull requests in order, then deploy; steps in section 0); `small-repairs-after-sprint-merge` (run three rehearsed repairs after the merge, with a backup first; commands in section 0); the numbered owner questions in section 3. Carried from before the sprint and still open: `giving-mark-lots-verified`, `broker-realized-gain-reports`, `tax-preparer-short-term-gift`, `confirm-gift-month-convention`, `confirm-builder-rulings-2026-10-07`, `github-support-history-purge`. CODEX: nothing assigned; a review of the three pull requests is welcome, especially the items in section 3. CLAUDE: nothing until the owner merges.
+**Waiting on:** USER (each is also a `decision` record in the coordination register): `merge-pr-101-and-deploy` (DONE 2026-10-08, see section 0a); `small-repairs-after-sprint-merge` (run three rehearsed repairs after the merge, with a backup first; commands in section 0); the numbered owner questions in section 3. Carried from before the sprint and still open: `giving-mark-lots-verified`, `broker-realized-gain-reports`, `tax-preparer-short-term-gift`, `confirm-gift-month-convention`, `confirm-builder-rulings-2026-10-07`, `github-support-history-purge`. CODEX: nothing assigned; a review of the three pull requests is welcome, especially the items in section 3. CLAUDE: nothing until the owner merges.
 
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
@@ -8,7 +8,19 @@
 
 **Session dates:** 2026-10-07 evening into the night (about 19:00 to 23:30 Eastern time). An unattended sprint: Claude orchestrated, Claude sub-agents and Codex built, each side reviewed the other. The owner gave standing authority at the start (quoted in `docs/DECISIONS.md`, 2026-10-07 evening) and was not present after that.
 
-## 0. State right now, and the owner's steps in order
+## 0a. Update, 2026-10-08 morning: everything below is MERGED and DEPLOYED
+
+- The owner merged #101, #102, #103 and #104, plus the nightly fixer's #105 (four import-preview warnings). #102 first needed one conflict resolved in a test list, because two review fixes had reached the later branches by cherry-pick; Claude merged `main` up through the three branches (no file content changed) and pointed them at `main`.
+- `main` was verified before deploy: type-check clean, full suite 14,468 passed, Worker suite 647 passed. `bash scripts/verify.sh full --base main` passed after the deploy.
+- The Worker was deployed first, then the Mac app (commit `ed12c5c9`; bundle check and post-verify passed).
+- The nightly fixer is back on (`qa/deep-qa-config.json`, commit `ed12c5c9`).
+- The three rehearsed repairs were run live after a backup (`data/vanguard-pre-small-repairs-2026-10-08.db`); an identical second run changed nothing.
+- The QA ledger rows for #101 to #105 are marked merged.
+- The sprint worktrees and branches are removed. The held patches and the sprint's working notes are in gitignored `docs/private/sprint-2026-10-07/` (the Giving split-display patch and the international-exposure scale patch are under `held/`).
+- **Gotcha found while deploying:** `npx wrangler deploy` leaves an empty `workers/cron/.wrangler/` folder, and the Mac deploy's pre-flight refuses to build while it exists. Remove it between the two deploys.
+- **Still open for the owner:** the decisions queued in section 0 below and in `docs/DECISIONS.md` (2026-10-07 night), and the items not yet seen in a browser. Steps 1 to 5 below are done; they are kept for the record.
+
+## 0. State at the end of the sprint night (superseded by 0a)
 
 **Three stacked pull requests (PRs) are open. None is merged. Nothing is deployed, neither the Cloudflare Worker nor the Mac app. `main` is untouched at `2daccfef`.**
 
