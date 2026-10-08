@@ -347,6 +347,16 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
               <div className="mt-1 text-[10px] text-ink-faint">
                 Est. value: <PrivateText className="font-mono">{formatMoney(result.estimatedPortfolioValue, { signed: false })}</PrivateText>
               </div>
+              {/* Funds a sector shock could not look through: named, never hidden.
+                  Symbols are public data; no portfolio figure is printed here. */}
+              {result.fundsWithoutSectorWeights && result.fundsWithoutSectorWeights.length > 0 && (
+                <div className="mt-1 text-[10px] text-ink-faint whitespace-normal break-words">
+                  <span className="font-mono">{result.fundsWithoutSectorWeights.join(", ")}</span>{" "}
+                  {result.fundsWithoutSectorWeights.length === 1 ? "has" : "have"} no sector weights on file: a
+                  sector shock applies only the market move to{" "}
+                  {result.fundsWithoutSectorWeights.length === 1 ? "it" : "them"}.
+                </div>
+              )}
               {!isExpanded && result.optionsUnmodelled.count > 0 && (
                 <div className="mt-1 text-[10px] text-ink-faint">
                   <Count value={result.optionsUnmodelled.count} />{" "}

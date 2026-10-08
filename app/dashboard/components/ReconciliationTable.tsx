@@ -17,6 +17,7 @@ import { EmptyState } from "./EmptyState";
 import { ScrollFade } from "./ScrollFade";
 import { Money } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
+import { todayET } from "@/lib/calendar/date-utils";
 
 interface Account {
   id: number;
@@ -45,7 +46,10 @@ export function ReconciliationTable({
   // The saved checkpoint a refused save would replace; set only by a 409.
   const [replaceTarget, setReplaceTarget] = useState<ExistingCheckpointSummary | null>(null);
 
-  const formBlocker = checkpointFormBlocker(formData);
+  // The Eastern day: the latest date a statement can carry. The route refuses
+  // a later one with the same message.
+  const today = todayET();
+  const formBlocker = checkpointFormBlocker(formData, today);
   const isFormValid = formBlocker === null;
 
   function handleSubmit(e: React.FormEvent) {
@@ -203,6 +207,7 @@ export function ReconciliationTable({
                 value={formData.checkpointDate}
                 onChange={(e) => setFormData({ ...formData, checkpointDate: e.target.value })}
                 required
+                max={today}
                 className="w-full rounded-lg bg-raised border border-edge px-3 py-2 text-sm text-ink font-mono"
               />
             </div>
