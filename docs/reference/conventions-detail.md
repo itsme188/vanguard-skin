@@ -244,6 +244,7 @@ Spec: `docs/superpowers/specs/2026-08-23-number-trust-durable-fixes-design.md` (
 - **The recompute cannot be cancelled once it starts** and reports no progress: `computeTaxLots` is synchronous inside one transaction. Cancel works at the confirm step only.
 - **One predicate decides an implausible basis:** `isDonatedLotBasisImplausible` (`lib/queries/giving-view.ts`). True when the lot's basis per share is strictly under 1% of the gift's fair market value per share; exactly 1% is plausible; a gift with no usable value or share count is never flagged; a lot with no shares, a non-numeric basis, or a zero or negative basis is flagged. The row flag and the year total both read `GivingDonation.basisImplausible`; never re-derive the rule. A gift is left out of Gain avoided when any one of its lots is flagged, and `GivingYear.gainAvoidedRowsLeftOut` feeds the header.
 - **A flagged lot can be marked verified (2026-10-07):** `donatedLotBasisState` (`lib/queries/giving-view.ts`) is the single reader for `plausible` / `implausible` / `verified` / `verified-stale`; chips, the left-out flag, the year total and the left-out count all use it. The marker (`lot_basis_verifications`, keyed by acquisition transaction, `lib/mutations/lot-basis-verifications.ts`) snapshots the LOT's `cost_basis` and `quantity_acquired`, the same figures the 1% rule reads; any later difference reads `verified-stale` and excludes the row again. Marking changes no tax input and never recomputes; it is refused while `isTaxConventionPending`. Never add a second place that decides whether a flagged row counts.
+- **Linking a zero-amount gift leg stamps it (2026-10-07):** `linkDonationLegs` (`lib/mutations/donation-links.ts`) writes the gift's recorded fair value onto an in-kind OUT leg whose amount is zero or empty, inside the same rehearsed, acknowledged transaction. It uses the repair script's guards: the gift must carry a usable fair value, and the leg's quantity and security must match the gift. The write only lands on a leg that is still zero. A supplied amount that is not a positive number is refused. Test: `tests/api/donation-links-u6.test.ts`.
 - **Repair:** `scripts/repair-donated-lot-basis.ts` (config from gitignored `data/repair-configs/`, `REPAIR_DB_PATH` and `REPAIR_CONFIG_PATH` overrides, dry run by default). It updates the lot's acquisition transaction in place and never recomputes. It refuses a lot with sales against it unless the config row carries `acknowledgeSalesAffected: true`, and a lot on or after the account's first monthly snapshot unless it carries `acknowledgeValuedHistory: true`.
 
 ### Security type casing
@@ -314,6 +315,12 @@ options (×multiplier), and uses `LOWER()` for case-insensitive type matching.
 
 Bond unrealized gain: apply the par-adjustment to **BOTH** current value AND cost basis.
 
+### Cash-equivalent identity: one predicate and its SQL twin (2026-10-07)
+
+- `isCashEquivalentSecurity` (`lib/compute/cash-equivalents.ts`) is the JS rule. `cashEquivalentSecuritySql(alias)` in the same file is its SQL twin, with the same case-insensitive, exact-match vocabulary. `tests/compute/cash-equivalents-sql-u12.test.ts` runs both over a grid and fails if they disagree. Change both together.
+- **Live-sync sites use the type signal only:** `cashEquivalentSecurityTypeSql(alias)`. The fund category can be AI-assigned, and a fund labelled cash-equivalent by category must still get a contract id and prices (`lib/tws/contracts.ts`, `lib/tws/auto-refresh.ts`).
+- Never write a new `money_market` string list. Data health, factor classification and cost-basis reconciliation read the full twin. Lists not yet moved are in `docs/plans/TODO.md`.
+
 ### Foreign-currency valuation (single source, 2026-07-02)
 
 `prices.close_price` and `holdings.cost_basis` are stored in the security's **native currency**
@@ -383,6 +390,11 @@ show a foreign holding as a currency-scaled phantom. Spec:
 Holdings-derived prices (`marketValue/quantity` in `commitImport` step 4b) inherit the parser
 `sourceType` via `holdingDerivedPriceSource()` — **never hardcode `"canonical"`** (else every
 Vanguard PDF drops to priority 4 and a stale manual price wins). Test: `tests/import/engine.test.ts`.
+
+### Priced bars: the benchmark fallback and the Charts default (2026-10-07)
+
+- **The benchmark cache fallback** (`lib/tws/benchmark.ts`) reads bars through `PRICED_BAR_SQL`. A symbol that has any priced bar is filled from bars only; statement-basis prices are never spliced into it. A symbol with no priced bar falls back to `prices` as before. Test: `tests/tws/benchmark-u10.test.ts`.
+- **The Charts default** (`getDefaultChartSecurityId`, `lib/queries/ohlcv.ts`) ranks held, chartable, non-option securities by fresh bars first, then any priced bars, then value. "Fresh" means the newest priced daily bar is within `DEFAULT_CHART_MAX_BAR_AGE_DAYS` of the book's latest price date. It is a preference, never an exclusion: the default does not open empty when a holding with a chart exists. Test: `tests/queries/ohlcv-default-bar-age-u10.test.ts`.
 
 ### TWS snapshot price date is ET-anchored + trading-day-guarded
 
@@ -628,6 +640,7 @@ One helper, `lib/compute/bond-duration.ts`, used by both scenario engines (they 
 
 - **Currency conversions are Section 988 items, never Form 8949 rows.** One predicate, exported from `lib/queries/tax-lots.ts` as SQL (`CURRENCY_CONVERSION_SECURITY_SQL`) and JS (`isCurrencyConversionSecurityType`), a plain case-insensitive match on the security type that imports nothing from the broker library. The Tax Lots page shows them in their own block; the open-lot count, the gain tiles, both 8949 exports, the chat portfolio summary and `scripts/reconcile-tax-report-vs-broker.ts` all exclude them through it. Per-lot chat rows keep them, labelled. The engine and the stored rows do not change. Never classify them through `lib/tws/security-type-map.ts`: that mapper builds live broker contracts.
 - **An option past expiry is not an open lot on screen.** Open Lots, the Unrealized tile, the chat summary and the data-health universes drop it by the shared live-option rule and count it under "expired contracts awaiting a closing entry" (distinct contracts). The lot stays open in the ledger until its real outcome is imported; nothing synthesizes a close.
+- **The Recompute preview groups by the year of the sale (2026-10-07).** The first press calls `rehearseTaxLotRecompute` (`lib/compute/tax-lot-recompute-summary.ts`), which runs the engine inside a transaction that always rolls back and writes nothing. Each row is one tax year, and a tax year is the year of the sale: realized gain, lot sales and engine closes are all dated that way. Open lots have not been sold, so they are one total under no year. Only an explicit confirm calls `applyTaxLotRecompute`, which returns the same numbers. Test: `tests/api/tax-lots-recompute-summary.test.ts`.
 
 ## F. Classification: sectors, factors, look-throughs
 
@@ -1261,6 +1274,17 @@ For `price_source != 'static'`, the effective price is computed from `ohlcv_bars
 `resolveLevelPrice()` (`lib/alerts/resolve-level-price.ts`). It returns `null` when bars are
 insufficient — it **never** falls back to the creation-time snapshot (which drifts). Callers filter
 null; the UI renders "insufficient history". `findCrossedLevels` already does this.
+
+### A level price is native currency: labelled, never converted (2026-10-07)
+
+A level's price and the price it is compared with are both in the security's own trading currency.
+Distance is native against native. Level rows read for briefings and for the suggestion prompt carry
+`currency` (`lib/queries/briefing-levels.ts`; the prompt in `lib/alerts/generate-suggestion.ts` names
+it); a missing currency reads as USD. Label a level price with `formatLevelPrice(currency, …)` (`lib/chart/price-formatter.ts`),
+never a hardcoded dollar sign, and never multiply it by an FX rate. Tests:
+`tests/queries/briefing-levels-currency-u20.test.ts`, `tests/alerts/suggestion-prompt-currency-u20.test.ts`.
+**Still open:** the weekly briefing and daily digest email composers print a dollar sign (owner
+question in `docs/plans/TODO.md`).
 
 ### Levels-and-alerts dedup
 
