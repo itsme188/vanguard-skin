@@ -628,10 +628,11 @@ Forty-seven commits on branch `claude/sprint-2026-10-07` (`49af56e1` to `06cd4a3
 This entry continues the evening entry above and uses the same authority. It covers everything built after that entry was written. Direction-only; no figure appears here.
 
 **Where the work sits**
-- Three stacked pull requests (PRs) are open. None is merged. Merge order: #101, #102, #103.
+- Four stacked pull requests (PRs) are open. None is merged. Merge order: #101, #102, #103, #104.
   - **#101**: the first landing, 76 commits, about 300 QA (quality assurance) findings. The evening entry describes its first 47 commits; the first group below covers the other 29.
   - **#102**: 26 commits, 53 findings (`91f9a646` to `6fe18aa0`).
   - **#103**: 10 commits, 11 findings (`3c9a0f34` to `d01046c5`).
+  - **#104**: the last wave and these docs (`3a444f9f` onward). The research sync names which account-level failure stopped a pass (attempt counting unchanged). An active, approved, expired level shows "Expired — no longer watched" in place of Pause, from the scanner's own rule. A factor narrative names its benchmark only when the stored fingerprint proves it; a drifted one names none, because that would need a stored column. The suggested-level prompt asks only for the rationale. The bogey upload returns the matched event's date. The archived recap banner reads its time from the stored snapshot.
 - **Claude could not merge to `main` or apply live repairs.** The permission system blocked both, so both are owner actions. Nothing is deployed, neither the Cloudflare Worker nor the Mac app.
 - **The nightly fixer pause is not on `main`.** It is committed on the sprint branches only, so tonight's fix step may still run. It must be turned back on after the merge.
 - **QA ledger:** 457 findings open at the start of the session, 95 open now. Rows fixed tonight are stamped `pr-open` against the three pull requests. The 95 that remain are held classes (direction, send path, tax engine, data repair); Codex also judged 14 of them already fixed by code and waiting for the nightly sweep to confirm.

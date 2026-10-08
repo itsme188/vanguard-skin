@@ -17,12 +17,13 @@
 | #101 | `claude/land1-2026-10-07` | `main` | 76 | about 300 |
 | #102 | `claude/land2-2026-10-07` | the #101 branch | 26 | 53 |
 | #103 | `claude/land3-2026-10-07` | the #102 branch | 10 | 11 |
+| #104 | `claude/land4-2026-10-07` | the #103 branch | 6 | none (to-do units and these docs) |
 
 **Why they are not merged:** the permission system blocked Claude from merging to `main` and from writing to the live database. Both are owner actions. Do not route around the block (no piecemeal merge, no merge through another tool).
 
 **Owner steps, in this order:**
 
-1. **Merge #101, then #102, then #103.** They are stacked; this order keeps each diff clean.
+1. **Merge #101, then #102, then #103, then #104.** They are stacked; this order keeps each diff clean.
 2. **Deploy the Worker FIRST:** `cd workers/cron && npx wrangler deploy`. The Worker must be able to read the two new payload lists before the Mac sends them.
 3. **Deploy the Mac app:** `npm run deploy` from the main checkout. No deploy between 01:30 and 04:30 Eastern time; the nightly QA chain runs then.
 4. **Turn the nightly fixer back on:** in `qa/deep-qa-config.json` set `fixer.enabled` back to `true`, and commit it. The pause was committed on the sprint branches only (`49af56e1`), so the merge brings the pause to `main`. It was never on `main` during the night, so the fixer may have run on the night of the sprint.
@@ -140,7 +141,7 @@ Notes on the evidence:
 
 ## 4. Uncommitted changes and live-process state
 
-- **Sprint worktree** `/Users/Yitzi/code/vanguard-skin-sprint` (branch `claude/sprint-2026-10-07`, tip `d01046c5`, the same commit as the #103 branch): the six doc files of this handoff are edited and uncommitted until the orchestrator commits them. They will need to reach a pull request branch. When this was written the worktree also held one uncommitted unit that is not in any pull request: the bogey upload route and its button (`app/api/earnings/bogeys/upload/route.ts`, `app/dashboard/today/BogeysUploadButton.tsx`) with two new test files. It was not reviewed or verified as part of this handoff; check `git status` there before removing the worktree.
+- **Sprint worktree** `/Users/Yitzi/code/vanguard-skin-sprint` (branch `claude/sprint-2026-10-07`): its tip is the #104 branch tip. Everything built in the sprint is in one of the four pull requests; nothing is left uncommitted. #104 holds the last wave: the research sync cause, the expired-level row, the narrative benchmark caption, the level prompt, the bogey upload date, the archive banner time, and these docs. Codex reviewed the Claude-built units (no findings); an agent that ran the code reviewed the Codex-built units and its one defect was fixed.
 - **Other worktrees:** `/Users/Yitzi/code/vanguard-skin-sprint-verify` (detached at `d01046c5`, has its own `node_modules` clone and a copy of `.env.local`); `/Users/Yitzi/code/vanguard-skin-land1` (branch `claude/land1-2026-10-07`); `/Users/Yitzi/code/vanguard-skin-qa-fix` (the nightly fixer's; leave alone).
 - **Main checkout:** `main` at `2daccfef`, equal to `origin/main`. The QA ledger there (gitignored) is stamped `pr-open`; backups of the ledger from before each stamp sit beside it.
 - **Processes:** no sandbox or dev server running. A builder may still be working on the bogey upload unit named above. The live app still runs the build from before the sprint.
