@@ -180,6 +180,26 @@ intent is stated by every caller, never defaulted.
 2026-08-02 evening: the Worker mirror `workers/cron/src/enrich-actuals.ts` carries the same regex, so
 corrected rows capture actuals while the Mac sleeps.
 
+### A hand-entered row locks by its source; a sync never confirms it (2026-10-07)
+
+Builds the owner's 2026-09-14 ruling. In `lib/calendar/reconcile-earnings-dates.ts`:
+
+- **The lock reads `source = 'manual'`.** A hand-entered row wins its cluster on every pass whether or
+  not it carries a confirmation.
+- **Only the confirm-date route writes `user_confirmed`** (`lib/mutations/confirm-earnings-date.ts`).
+  The reconciler keeps a confirmation a row already carries and writes none otherwise
+  (`lockedStatusFor`). Before this, one refresh marked every hand-entered row as confirmed by the user.
+- **A hidden hand-entered row keeps a real confirmation.** Hiding a row clears every other status;
+  a confirmed hand-entered row that is later restored comes back still confirmed.
+- **The Hub chip decides from source and status** (`app/dashboard/today/EarningsDateChip.tsx`): an
+  unconfirmed hand-entered row shows "Entered by you" and opens the date, slot and time editor. Do not
+  key an edit entry point on `user_confirmed` alone; that status is no longer on every manual row.
+
+Tests: `tests/calendar/reconcile-manual-rows-a14.test.ts`,
+`tests/dashboard/earnings-date-chip-hand-entered.test.tsx`. The chip was not seen in a browser.
+**Open:** a feed twin outside the reconciler's window, and a confirmed vendor row against a
+hand-entered row on the same date (owner questions in `docs/plans/TODO.md`).
+
 ### Slot floors, not the stored release time (`154eb81`, 2026-08-28)
 
 `lib/earnings/earnings-slot.ts::deriveEarningsSlot` is the single BMO/AMC slot resolver — literal
@@ -1012,4 +1032,6 @@ the bug flips.
 ## Transcripts: fiscal keys and the stated-quarter guard (2026-10-07)
 
 The same-day transcript step requests the print's FISCAL quarter and caches a vendor call only when the call itself states that quarter; a filing is matched to its print by filing date. Detail and the full rules: `docs/reference/data-integrity.md` §13b.
+
+**Vendor daily limit (2026-10-07).** The transcript vendor's free tier allows a fixed number of requests a day (`ALPHA_VANTAGE_DAILY_REQUEST_LIMIT`, `lib/transcripts/fetch.ts`). The count lives in the `settings` table under a key made of the vendor and the Eastern date (`todayET()`), so it starts at zero each Eastern day. It is bumped BEFORE each vendor call, so a failed call still counts. At the limit no vendor call is made that day; filing lookups are unchanged. Test: `tests/transcripts/fetch-quota-u13.test.ts`.
 

@@ -98,6 +98,13 @@ export interface ScenarioResult {
   optionsUnmodelled: { count: number; valueShare: number; unpricedCount: number };
   /** Individual bonds whose rate leg is zero because no duration could be derived. */
   bondsUnmodelled: { count: number; valueShare: number };
+  /**
+   * Custom scenarios only. Held equity funds a sector shock could not look
+   * through because no sector weights are cached for them: they took the
+   * market move alone. Symbols, sorted. Empty when the scenario names no
+   * sector or every such fund has weights. Reporting only; no figure reads it.
+   */
+  fundsWithoutSectorWeights?: string[];
   /** Set when the scenario's primaryFactor matches an active macro theme's factor_label. */
   liveNowReason?: string;
 }
@@ -352,6 +359,29 @@ ${OPTION_PRICING_JOINS_SQL}
     };
   });
 
+  // Disclosure only: which held funds the sector shock above could not look
+  // through. Read after the figures are final, so it cannot move one.
+  const sectorMoves = scenario.sectorMoves ?? {};
+  const missingWeights = new Set<string>();
+  if (Object.keys(sectorMoves).length > 0) {
+    for (const pos of positions) {
+      // The same two tests explodeHoldingBySector applies before it looks through.
+      if (!["etf", "mutual fund"].includes((pos.security_type ?? "").toLowerCase())) continue;
+      if ((etfWeights.get(pos.symbol)?.length ?? 0) > 0) continue;
+      // Cash and bond funds carry no equity move at all, so nothing was skipped.
+      if (
+        isCashEquivalentSecurity({ security_type: pos.security_type, fund_category: pos.fund_category }) ||
+        isFixedIncomeFund(pos)
+      ) {
+        continue;
+      }
+      // A fund whose own sector is shocked took that sector's move as one bucket.
+      if (pos.sector && sectorMoves[pos.sector] != null) continue;
+      missingWeights.add(pos.symbol);
+    }
+  }
+  const fundsWithoutSectorWeights = [...missingWeights].sort();
+
   const estimatedChange = positionImpacts.reduce((s, p) => s + p.estimatedChange, 0);
   const estimatedPortfolioValue = currentPortfolioValue + estimatedChange;
   const estimatedChangePercent =
@@ -378,6 +408,7 @@ ${OPTION_PRICING_JOINS_SQL}
     biggestWinners,
     optionsUnmodelled: summarizeUnmodelledOptions(positionImpacts),
     bondsUnmodelled: summarizeUnmodelledBonds(positionImpacts),
+    fundsWithoutSectorWeights,
   };
 }
 

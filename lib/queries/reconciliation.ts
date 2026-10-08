@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { todayET } from "@/lib/calendar/date-utils";
 
 export interface ReconciliationCheckpoint {
   id: number;
@@ -77,6 +78,9 @@ export class CheckpointInputError extends Error {
   }
 }
 
+/** A statement cannot be dated after today; "today" is the Eastern day. */
+export const CHECKPOINT_FUTURE_DATE_MESSAGE = "Statement date cannot be in the future.";
+
 /** True for a `YYYY-MM-DD` string that names a real calendar day. */
 function isRealIsoDate(value: unknown): value is string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -102,6 +106,10 @@ export function checkpointInputProblem(
   }
   if (!isRealIsoDate(checkpointDate)) {
     return "Statement date must be a real date in YYYY-MM-DD form";
+  }
+  // Both sides are YYYY-MM-DD, so the string compare is a date compare.
+  if (checkpointDate > todayET()) {
+    return CHECKPOINT_FUTURE_DATE_MESSAGE;
   }
   if (typeof statementValue !== "number" || !Number.isFinite(statementValue)) {
     return "Statement value must be a number";
@@ -224,14 +232,21 @@ export function parseCheckpointConflict(body: unknown): ExistingCheckpointSummar
   };
 }
 
-/** Why the Add Checkpoint form cannot be saved yet, or null when it can. */
-export function checkpointFormBlocker(form: {
-  accountId: string;
-  checkpointDate: string;
-  statementValue: string;
-}): string | null {
+/**
+ * Why the Add Checkpoint form cannot be saved yet, or null when it can.
+ * `today` is the Eastern day the date input's `max` is set to.
+ */
+export function checkpointFormBlocker(
+  form: {
+    accountId: string;
+    checkpointDate: string;
+    statementValue: string;
+  },
+  today: string = todayET()
+): string | null {
   if (form.accountId === "") return "Choose an account";
   if (form.checkpointDate === "") return "Enter the statement date";
+  if (form.checkpointDate > today) return CHECKPOINT_FUTURE_DATE_MESSAGE;
   if (form.statementValue.trim() === "") return "Enter the statement value";
   const value = parseFloat(form.statementValue);
   if (isNaN(value)) return "Statement value must be a number";

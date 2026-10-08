@@ -623,3 +623,128 @@ Forty-seven commits on branch `claude/sprint-2026-10-07` (`49af56e1` to `06cd4a3
 - **Most units were NOT checked in a browser by their builders.** Their evidence is tests and source checks. Treat any screen change in this landing as unverified on screen until a browser pass says otherwise.
 - One process lesson: two git commands run at once in the shared worktree collided on the index lock and dropped a commit, which was redone. Git commands in a shared worktree run one at a time.
 
+## 2026-10-07 (night) — Overnight sprint, the rest of the night: three pull requests, nothing merged
+
+This entry continues the evening entry above and uses the same authority. It covers everything built after that entry was written. Direction-only; no figure appears here.
+
+**Where the work sits**
+- Four stacked pull requests (PRs) are open. None is merged. Merge order: #101, #102, #103, #104.
+  - **#101**: the first landing, 76 commits, about 300 QA (quality assurance) findings. The evening entry describes its first 47 commits; the first group below covers the other 29.
+  - **#102**: 26 commits, 53 findings (`91f9a646` to `6fe18aa0`).
+  - **#103**: 10 commits, 11 findings (`3c9a0f34` to `d01046c5`).
+  - **#104**: the last wave and these docs (`3a444f9f` onward). The research sync names which account-level failure stopped a pass (attempt counting unchanged). An active, approved, expired level shows "Expired — no longer watched" in place of Pause, from the scanner's own rule. A factor narrative names its benchmark only when the stored fingerprint proves it; a drifted one names none, because that would need a stored column. The suggested-level prompt asks only for the rationale. The bogey upload returns the matched event's date. The archived recap banner reads its time from the stored snapshot. **Interim honesty fixes** for five findings whose real fix is the owner's decision (labels and one refusal only; the findings stay open): the IBKR line names the session it shows; the portfolio strip says when Vanguard holdings are older than the headline date; an out-of-week ticker links to its week; a sector shock names the funds it could not look through; a reconciliation checkpoint dated in the future is refused. The "Entered by you" chip was seen and clicked in a browser at the end of the night.
+- **Claude could not merge to `main` or apply live repairs.** The permission system blocked both, so both are owner actions. Nothing is deployed, neither the Cloudflare Worker nor the Mac app.
+- **The nightly fixer pause is not on `main`.** It is committed on the sprint branches only, so tonight's fix step may still run. It must be turned back on after the merge.
+- **QA ledger:** 457 findings open at the start of the session, 95 open now. Rows fixed tonight are stamped `pr-open` against the three pull requests. The 95 that remain are held classes (direction, send path, tax engine, data repair); Codex also judged 14 of them already fixed by code and waiting for the nightly sweep to confirm.
+
+**Decisions taken (for the owner to confirm or reverse).** Each was the written recommendation unless it says otherwise.
+
+*In #101, after the evening entry was written*
+- **Accounts: option trade chips take the buy and sell colours; an option row shows its contract, not its underlying's name** (`66e3fde6`). The name is a display fallback built from the symbol; stored names are unchanged.
+- **Analysis: the curve caption says where the return window ends; the custom scenario form refuses absurd inputs** (`06aff422`). The curve itself is unchanged.
+- **Navigation and Import: the phone's Research tab opens Feeds; the phone drawer gets a theme row and a data-health link; pages get their own tab titles; Undo says how to restore and sits beside the file name** (`6f0cd1e4`, titles finished in `637971a0`).
+- **Charts: same-day trades share one marker; level lines lose their axis pill; expired contracts leave the picker** (`9e56e2d6`). Reason: each was hiding or covering real information.
+- **Notes and documents: an earnings note needs a security; an AI refusal is never stored as a document's text** (`8f1427cc`). Cost: a refused forwarded link takes the existing page-fetch fallback, one more automatic extraction call. The one stored refusal row is not repaired.
+- **Week-ahead and bogeys: a past event with no actual says so; a date conflict can be settled on the card; a typed actual far from consensus asks "Save anyway?"** (`336b6da7`). Two of these use the browser's own confirm prompt, not the app dialog.
+- **Analysis and Data Health: AI narrative cards and the macro themes card generate only on a click; cash-equivalent funds leave a theme's top holdings; never-priced holdings are counted separately; Data Health lists the integrity checks behind the badge** (`1b80a775`). **Visible change:** the cards are empty until clicked, and scenario "live now" badges read the themes cache, so fewer show until themes exist for the week. The Sunday briefing still generates them.
+- **Measured, not changed:** the macro themes prompt is cut at a fixed length well below a full week's input, so only about a quarter of the week's articles reach the model and no calendar event or alert does. A test pins the measurement.
+
+*Second-opinion round with Codex (in #102).* Codex answered 38 questions: agree on 9, direction change on 28, already overtaken on 1. The agreed ones were built.
+- **Tax lots: a short sale's day count reads "short sale, covered", not "short"** (`03e26905`). Label only; the stored sign and the long-term decision are untouched.
+- **Equity curve: the horizontal axis is time** (`80938e67`). Points were spaced evenly by index, so years of monthly points looked flat beside months of daily points. No value changes.
+- **Options: a share hedges one protective put, not two** (`609d28e0`, fixed further in `513a95f9`). Puts take shares once, highest strike first.
+- **Accounts: the holdings footer's gain percent divides by gross basis** (`3f1e190a`). A short's negative basis was shrinking the denominator.
+- **Valuation: a closed position's leftover row no longer keeps a day from reading live** (`2f300ceb`). Value math is unchanged; stored rows correct on the next valuation recompute. This builds the change that question (q7) of the evening entry asked about; the owner can still reverse it.
+- **Trade grades: a stored grade whose entry is after its exit is left out, with a count** (`637971a0`). Stored rows and prose are unchanged.
+- **Greeks rows priced at the assumed volatility stay in the tile totals, marked.** Codex agreed; no build. Question (q4) of the evening entry stays the owner's to confirm.
+- **Built, then reverted: "one weight per security across Diagnostics"** (`40205f9f`, reverted by `7b9b2238`). See Held.
+
+*Levels, security page and the Earnings Hub (in #102)*
+- **A level can be edited** (`91f9a646`). An edit keeps the review status, active flag and last-fired record, so it cannot approve or re-arm a level; a price change on an armed level goes through the existing arm guard.
+- **The security page explains what it cannot show** (`91f9a646`): an unknown basis quotes what the open lots carry without adopting it; a short position over long open lots says the two disagree; an expired option still on a snapshot says it awaits a statement; an option's page shows its underlying's transcripts; the two 52-week ranges come from one reader.
+- **Earnings Hub: ARMED marks only the armed print; a slot that contradicts its time is flagged; the header link reads "Email archive"; the time editor says a time applies to every print of the symbol and that Save replaces the note** (`227535a7`). Display only; no gate or push rule changed. Keeping the note on Save is not built.
+- **Chat panel layout on a phone** (`c88e73ae`). Chat is a protected area. The chat wiring is byte-identical, pinned by a hash test; only layout and focus handling changed. The owner should confirm this one in particular.
+- **Owner-ruled, built by Codex:** cash-deploy proposals add up to the cash asked for and a what-if oversell is refused out loud (`d10381b7`, `513a95f9`); Recompute shows what would change before it changes anything (`472f1369`).
+
+*Tax lots page*
+- **The security filter is disclosed on the Tax Report card, not applied to it** (`ea3d3708`). The report and its exports stay whole-account; a filtered tax report would be easy to file by mistake.
+- **Open-lot Cost/Share carries its unit** (per contract multiplier, per 100 face). Label only.
+- **The pending-statement explanation is visible text, with a link that narrows only the Open Lots table.**
+- **The Recompute preview groups by the year of the sale; open lots sit under no year; the preview has a Cancel** (`c8750818`, `062e25cd`). One basis per row, so a lot bought in one year and sold in the next appears once.
+- **Lot counts are masked and the pending line keeps one noun** (`b44788b2`), so a masked count cannot leak through a plural.
+
+*Digest preview* (`d86b45d7`)
+- **Preview only; the send path is untouched.** The Structured tab announces its AI wait, the tab the reader chose is kept, a synthesis fallback shows a banner, and the empty state names its window in Eastern time.
+
+*Plaid and notes* (`6249d3bf`, `c8750818`)
+- **The Plaid sync says why it did not run; closing Plaid Link without an error is not an error.**
+- **No purge and no classification were added to the Plaid path.** The two purges are unscoped deletes. A "what must not change" test showed they removed statement rows, so they were not wired into the daily sync. See Queued.
+- **A draft left in the notes overlay can be recovered or discarded from the Notes page.**
+
+*Trade review and chat* (`2a021219`, `b44788b2`)
+- **A trade whose exit is older than the broker can supply is graded without a price range**, not re-requested on every run. Each security is requested at most once per generation.
+- **Escape leaves the chat open while a dialog is open.**
+
+*Calendar: hand-entered rows and the chip* (`d2b34568`)
+- **A sync never marks a hand-entered earnings row as confirmed.** This builds the owner's 2026-09-14 ruling. The lock reads the row's source, so an unconfirmed row still wins. Only the confirm-date route writes a confirmation. A hidden hand-entered row keeps a real confirmation.
+- **Such a row gets an "Entered by you" chip that opens the date editor.** This finding was not ruled. It was built because the first fix removed the only way to reach the editor for those rows, so the two had to land together.
+
+*Today* (`a07df472`, `d01046c5`)
+- **The releases block says how many more are hidden and links to the calendar.**
+- **A bogey upload names where its match landed; an empty bogey cell is a plain dash under privacy.** A real figure stays masked.
+
+*Analysis labels* (`b43397d2`)
+- **Labels only; no number, weight, denominator or query changed.** The coverage card says what it measures, which is why it can disagree with the tilts. The drill-down title masks its count. The Defense "Protects" column reads as words.
+
+*Accounts* (`076ad644`)
+- **The holdings table says when columns are hidden to the right**, with a button that scrolls to them.
+
+*Levels currency* (`3c9a0f34`)
+- **A level price on a non-USD security carries its own currency.** The price is native and is labelled, never converted; distance compares native with native. The suggestion prompt names the currency. The email composers were left alone (see Queued).
+
+*Giving link stamp* (`eee42788`)
+- **Confirming a zero-amount gift pair stamps the leg from the gift's recorded fair value**, under the same guards as the repair script, inside the rehearsed transaction. **This writes a transaction amount on an acknowledged click; the owner should confirm it.**
+- **The lot-assignment scripts need an acknowledgement to write.**
+
+*Cash-equivalent lists* (`b0e6dbf2`)
+- **Five hand-rolled money-market lists now read the one predicate.** A SQL twin sits beside it and is parity-tested. The two live-sync sites use the type signal only, so a fund labelled cash-equivalent by category still gets a contract id and prices.
+
+*Bars* (`2835890e`, `d01046c5`)
+- **The benchmark fallback reads priced bars only** and never splices statement prices into a series that has bars.
+- **The Charts default prefers a holding with fresh bars, then one with any bars**, so it never opens empty when a chart exists.
+
+*Transcript quota* (`6fe18aa0`)
+- **The transcript vendor's daily request limit is counted per Eastern day in the settings table** and checked before each call. A failed call still counts.
+
+**Held (not in any pull request)**
+- **Giving: split-adjusted display.** Two attempts; still wrong for a manual-mode split dated before the gift and for a lot opened by a trade that both opens and closes. A reviewer running the real engine caught both; the builder's hand-seeded test had passed. The same patch carries "suggest highest-gain skips implausible lots". Held patch saved outside the repo.
+- **"One weight per security across Diagnostics".** Built and reverted. With a short in the book the shared gross denominator leaked into factor tilts, each position's share of volatility and the Defense share of book, none of it declared. A long-only book was unchanged.
+- **International-exposure scale.** The write-time half would store a different label from the one stored today, and the scenario recipes score those two labels differently, so new classifications would silently change scenario figures. Held patch saved outside the repo.
+- **Held classes, by rule:** anything in the import pipeline or the chat route (protected), every automatic-email composer and send path, the tax-lot engine, and stored-data repairs. Codex's triage of the remaining open rows gives the reason for each.
+
+**Queued for the owner**
+1. **Digest preview window.** It does not mirror the sender. Fixing it needs the window rule extracted from the send module with no behaviour change. May that extraction go ahead?
+2. **Digest Preview fires an AI call with no warning on the button.** Gate it behind a click, or relabel the button?
+3. **Plaid daily sync.** It runs no expired-option or matured-bond purge and no classification. Should the purges be scoped per account and then wired in? Should classification run there, at the cost of an AI call in the morning job?
+4. **Live-closed option lots.** A lot closed in a live feed stays open with a market value until a statement arrives. Should the 2026-10-02 statement-only design extend to live-flat options and shorts?
+5. **Level prices in the weekly briefing and daily digest emails still print a dollar sign for a non-USD security.** The rows now carry the currency. May the composers (and the Worker mirror, not yet checked) change?
+6. **Calendar doubles outside the reconciler window.** Refreshing an old week mints the feed twin again, and a feed row far ahead is outside the window. A fix would hide rows an email finder could pick up. How should those be handled?
+7. **Same-date confirmed vendor row against a hand-entered row.** The winner depends on row order today. Which should win?
+8. **Diagnostics denominators.** Which denominator should each card use when the book holds a short?
+9. **`scripts/finish-donations.ts` bypasses the new acknowledgement** on the assignment script. Close that path?
+10. **The two chips for a hand-entered row use two wordings** ("Entered by you" on the Hub, "added by hand" on the week view). Pick one.
+11. **The 28 direction-change findings from Codex's second-opinion round** each need a ruling. They are listed in `docs/plans/TODO.md`.
+12. **Three rehearsed repairs** are ready to run after the merge (commands in `docs/HANDOFF.md`). Three more scripts are report-only for now; one of them would change which of two rows is canonical for one old print.
+
+**Method and lessons**
+- Builders (Claude agents and Codex) worked on disjoint files in one shared worktree and never wrote git. The orchestrator committed by pathspec. Codex reviewed Claude's work; a Claude agent that ran the code reviewed Codex's work. Every blocking review finding was fixed before a branch was pushed.
+- **A reviewer that runs the real engine catches what a hand-seeded test passes.** The Giving split display passed its builder's test twice and was wrong both times.
+- **A "what must not change" test is worth writing before wiring a delete into a schedule.** It caught the unscoped purge before the daily Plaid sync could run it.
+- **A ruled fix can remove a door.** Stopping the sync from stamping hand-entered rows removed the only edit entry point for them. Check what a status was being used for before clearing it.
+
+**Verification at the last tip (`d01046c5`)**
+- Type-check clean. Full suite 14,351 passed, 0 failed. Worker suite 647 passed.
+- Browser checks on a sandbox copy at desktop and phone width passed with no console errors.
+- **Not seen in a browser:** the "Entered by you" chip (the copy had no hand-entered row in the current week).
+- **Not run on live data:** all six new repair scripts. Three were rehearsed on a copy (apply, then an identical second run changed nothing).
+

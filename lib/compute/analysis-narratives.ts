@@ -57,6 +57,12 @@ export interface NarrativeResult {
   generatedAt: string;
   /** sha256 of the inputs this prose was rendered from; null for legacy rows. */
   inputFingerprint: string | null;
+  /**
+   * The benchmark this prose was written against, when that is known: set on a
+   * fresh factor-analysis generation, null on a cache read (the row stores no
+   * benchmark; see `provenNarrativeBenchmark`) and for every other surface.
+   */
+  benchmark: string | null;
 }
 
 // ─── Prompts ─────────────────────────────────────────────────────────────────
@@ -293,6 +299,45 @@ export function narrativeBenchmarkForScope(scope: string): string {
   return getDefaultBenchmark(scope);
 }
 
+/** What an empty surface hashes. One builder, so `provenNarrativeBenchmark`
+ *  can recognise prose that was written over an empty book. */
+function emptyFingerprintInput(surface: NarrativeSurface): { empty: NarrativeSurface } {
+  return { empty: surface };
+}
+
+/**
+ * The benchmark a CACHED narrative was written against, or null when that
+ * cannot be shown.
+ *
+ * `analysis_narratives` has no benchmark column. The benchmark is part of the
+ * factor prompt payload, though, so it is part of the stored fingerprint: a
+ * stored fingerprint equal to the one computed from today's inputs proves the
+ * prose was written against today's benchmark for this scope. Without that
+ * proof (drifted, a legacy NULL, a failed compute) the answer is null, never a
+ * guess: a row written before the benchmark joined the payload was regressed
+ * against SPY whatever the scope. Null too for prose written over an empty
+ * book (no regression was run) and for every surface but factor-analysis.
+ *
+ * Pure: no database read, no write, no model call.
+ */
+export function provenNarrativeBenchmark(
+  scope: string,
+  surfaceKey: string,
+  storedFingerprint: string | null | undefined,
+  currentFingerprint: string | null | undefined
+): string | null {
+  if (surfaceKey !== "factor-analysis") return null;
+  if (storedFingerprint == null || currentFingerprint == null) return null;
+  if (storedFingerprint !== currentFingerprint) return null;
+  if (
+    storedFingerprint ===
+    fingerprintNarrativeInputs(surfaceKey, emptyFingerprintInput(surfaceKey))
+  ) {
+    return null;
+  }
+  return narrativeBenchmarkForScope(scope);
+}
+
 interface SurfaceInputs {
   /** The JSON blob rendered into the prompt. */
   context: string;
@@ -324,7 +369,7 @@ function buildSurfaceInputs(
   // an empty book must agree, and the first real data must read as drift.
   const empty: SurfaceInputs = {
     context: emptyMessage,
-    fingerprintInput: { empty: surface },
+    fingerprintInput: emptyFingerprintInput(surface),
   };
 
   if (surface === "factor-analysis") {
@@ -441,6 +486,7 @@ export async function generateNarrative(
         fromCache: true,
         generatedAt: cached.generatedAt,
         inputFingerprint: cached.inputFingerprint,
+        benchmark: null,
       };
     }
   }
@@ -513,5 +559,12 @@ export async function generateNarrative(
     fromCache: false,
     generatedAt: new Date().toISOString(),
     inputFingerprint,
+    // Just rendered from these inputs, so stored and current are the same.
+    benchmark: provenNarrativeBenchmark(
+      opts.scope,
+      surface,
+      inputFingerprint,
+      inputFingerprint
+    ),
   };
 }

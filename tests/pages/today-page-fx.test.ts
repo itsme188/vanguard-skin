@@ -151,7 +151,10 @@ function collectStrings(node: unknown, out: string[]): void {
 
 /**
  * The one-line IBKR snapshot row: the INNERMOST element that carries both the
- * "IBKR today" heading text and at least one <Money> descendant. Anchoring on
+ * IBKR heading text and at least one <Money> descendant. The heading reads
+ * "IBKR today" only when the move's session is today's Eastern date; this
+ * fixture's fixed pair dates are in the past, so it names the session
+ * ("IBKR Jul 1 session" — see app/dashboard/today/basis-labels.ts). Anchoring on
  * the heading (rather than on element order) keeps the finder pinned to this
  * surface even as siblings move around it.
  */
@@ -165,7 +168,7 @@ function findSnapshotRow(root: unknown): ElementLike | null {
   for (const el of all) {
     const strings: string[] = [];
     collectStrings(el.props?.children, strings);
-    if (!strings.some((s) => s.includes("IBKR today"))) continue;
+    if (!strings.some((s) => /^IBKR (today|last session|.+ session)$/.test(s))) continue;
 
     const descendants: ElementLike[] = [];
     collectDescendants(el.props?.children, descendants);

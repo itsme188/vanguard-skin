@@ -33,6 +33,9 @@ import type { LevelReviewStatus } from "@/lib/types";
 export interface LevelActionVisibilityInput {
   is_active: number;
   review_status: LevelReviewStatus;
+  /** Server-stamped scanner fact from GET /api/levels. Older callers that do
+   *  not have it fall back to the pre-existing active+approved rule. */
+  scanner_watching?: boolean;
 }
 
 export interface LevelActionVisibility {
@@ -42,7 +45,8 @@ export interface LevelActionVisibility {
   unarmedReview: boolean;
   /** Pause is available on an active row the scanner watches
    *  (auto_approved) — a reversible way to stop watching it without deleting
-   *  it. Not offered on a pending or rejected row: there is nothing to pause. */
+   *  it. Not offered on a pending, rejected or expired row: there is nothing
+   *  to pause. */
   showPause: boolean;
   /** Reactivate is available on every inactive row, regardless of review
    *  status. Re-activating a rejected or pending row does not arm it (the
@@ -59,10 +63,24 @@ export function levelActionVisibility(l: LevelActionVisibilityInput): LevelActio
   const unarmedReview = l.is_active === 1 && l.review_status !== "auto_approved";
   return {
     unarmedReview,
-    showPause: l.is_active === 1 && !unarmedReview,
+    // Pause is for a row the scanner watches. The server's stamp can only
+    // take it away (an expired row); it never grants it to a row that is
+    // paused or not approved.
+    showPause: l.is_active === 1 && !unarmedReview && l.scanner_watching !== false,
     showReactivate: l.is_active !== 1,
     showRequeue: unarmedReview && l.review_status === "rejected",
   };
+}
+
+export function levelNotWatchedExplanation(l: LevelActionVisibilityInput): string | null {
+  if (
+    l.is_active === 1 &&
+    l.review_status === "auto_approved" &&
+    l.scanner_watching === false
+  ) {
+    return "Expired — no longer watched";
+  }
+  return null;
 }
 
 /** Guidance text for the "Rejected" / "Pending Review" chip's title —

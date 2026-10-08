@@ -798,3 +798,36 @@ describe("the network guard itself", () => {
     unstubbedRequests.length = 0; // expected here; afterEach fails any other test that leaks
   });
 });
+
+describe("the reported cause is the failure the pass deferred, not an earlier one charged to its article", () => {
+  it("bad key on one article, an answer, then two out-of-credit failures: the cause is billing", async () => {
+    const { db, sourceId } = makeDb();
+    const [a, b, c, d] = queue(db, sourceId, 4);
+    respondBySubject({
+      [a.subject]: ANTHROPIC_FAILURES.auth401,
+      [c.subject]: ANTHROPIC_FAILURES.billing402,
+      [d.subject]: ANTHROPIC_FAILURES.billing402,
+    });
+
+    const result = await runPass(db);
+
+    expect(result).toEqual({ processed: 1, failed: 3, deferred: 2 });
+    // The first failure was answered around (rule 2), so it was the article's.
+    expect(row(db, a.id).enrich_attempts).toBe(1);
+    expectEnriched(db, b.id);
+    expect(row(db, c.id).enrich_attempts).toBe(0);
+    expect(row(db, d.id).enrich_attempts).toBe(0);
+    expect(result.firstAccountFailureKind).toBe("billing");
+  });
+
+  it("a pass with no deferred failure reports no cause", async () => {
+    const { db, sourceId } = makeDb();
+    const [a] = queue(db, sourceId, 2);
+    respondBySubject({ [a.subject]: ANTHROPIC_FAILURES.auth401 });
+
+    const result = await runPass(db);
+
+    expect(result.deferred).toBe(0);
+    expect(result.firstAccountFailureKind).toBeUndefined();
+  });
+});

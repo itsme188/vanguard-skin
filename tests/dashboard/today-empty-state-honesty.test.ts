@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { describeUploadOutcome, locateInShownWeek } from "@/app/dashboard/today/BogeysUploadButton";
+import { describeUploadOutcome, locateInShownWeek, placeByServerDate } from "@/app/dashboard/today/BogeysUploadButton";
 import { hiddenReleaseCount } from "@/app/dashboard/components/TodayReleases";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
 
@@ -34,14 +34,22 @@ describe("describeUploadOutcome — names where a match landed", () => {
     ]);
   });
 
+  // The route now supplies the date (TODO f11), so the week verdict for a dated
+  // result comes from `placeByServerDate` against the week shown, in exact
+  // words; the on-screen guess ("under that symbol") no longer touches it.
   it("names the off-week date too when the route supplies it", () => {
     expect(
-      text({
-        symbolsExtracted: 1,
-        eventsMatched: 1,
-        results: [{ symbol: "QQQQ", eventId: 99, bogeyId: 7, eventDate: "2026-09-07" }],
-      }),
-    ).toEqual(["1/1 matched", "bogeys saved for QQQQ (Sep 7, not in the week shown under that symbol)"]);
+      text(
+        placeByServerDate(
+          {
+            symbolsExtracted: 1,
+            eventsMatched: 1,
+            results: [{ symbol: "QQQQ", eventId: 99, bogeyId: 7, eventDate: "2026-09-07" }],
+          },
+          "2026-08-31",
+        ),
+      ),
+    ).toEqual(["1/1 matched", "bogeys saved for QQQQ (Sep 7, not in the week shown)"]);
   });
 
   it("a row shown under another id but the same symbol is not called off-week", () => {
