@@ -33,7 +33,9 @@ const navItems: NavItem[] = [
   },
   {
     name: "Research",
-    href: "/dashboard/research",
+    // Opens the Feeds view explicitly: the bare URL lands on Notes, which is the
+    // next slot's page (qa:mobile-bottom-nav--research-tab-opens-notes-view-same-as-notes-tab).
+    href: "/dashboard/research?view=feeds",
     // Research highlights when on /dashboard/research and not in the Notes sub-view.
     activeUnlessSearchParam: { key: "view", value: "notes" },
     icon: (

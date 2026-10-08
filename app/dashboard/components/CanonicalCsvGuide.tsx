@@ -35,6 +35,7 @@ const FORMATS: FormatSpec[] = [
       { name: "notes", required: false, description: "Free-text notes" },
     ],
     constraints: [
+      "HEADER IS POSITIONAL. Copy the header row exactly as shown, in this order: the importer recognises a Transactions file by its first five columns (account,trade_date,settlement_date,type,symbol), so a reordered or shortened header is rejected as an unknown format. 'Req' marks the columns that need a value on every row; settlement_date is not required to have a value, but it must still be present as the third column (leave it empty).",
       "Transaction types (UPPERCASE): BUY, SELL, DIVIDEND, REINVESTMENT, INTEREST, TAX_WITHHELD, TRANSFER, TRANSFER_IN, TRANSFER_OUT, DEPOSIT, WITHDRAWAL, FEE, COMMISSION, BUY_TO_OPEN, SELL_TO_CLOSE, SELL_TO_OPEN, BUY_TO_CLOSE, BUY_TO_COVER, EXERCISED, ASSIGNED, EXPIRED, REDEMPTION, CORPORATE_ACTION, SPINOFF, MERGER, SPLIT",
       "QUANTITY IS ALWAYS POSITIVE. The type field (BUY/SELL/SELL_TO_CLOSE/EXERCISED/REDEMPTION/etc.) carries direction. Never emit a negative quantity. Sold 100 RSP → quantity=100, type=SELL.",
       "Account names must match the dashboard exactly. Use these mappings: 'Individual brokerage account' or 'Vanguard Individual Brokerage' → 'Vanguard Taxable'. 'Vanguard Roth IRA' is verbatim. 'IBKR' is verbatim.",

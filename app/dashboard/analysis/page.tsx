@@ -28,6 +28,7 @@ import { SignificantMovesCard } from "../components/SignificantMovesCard";
 import { MomentumPulse } from "../components/MomentumPulse";
 import { computeMomentumPulse } from "@/lib/compute/momentum-spread";
 import Link from "next/link";
+import type { Metadata } from "next";
 
 interface PageProps {
   searchParams: Promise<{
@@ -112,6 +113,21 @@ function taxLotsHref(scope: AccountScope): string {
   return row
     ? `/dashboard/tax-lots?account=${encodeURIComponent(row.name)}`
     : "/dashboard/tax-lots";
+}
+
+const VIEW_TITLES: Record<string, string> = {
+  workspace: "Analysis",
+  diagnostics: "Analysis · Diagnostics",
+  performance: "Analysis · Performance",
+  "trade-reviews": "Analysis · Trade Reviews",
+  defense: "Analysis · Defense",
+  giving: "Analysis · Giving",
+};
+
+// Per-sub-view tab title (qa:page-head--same-tab-title-every-route-...).
+export async function generateMetadata({ searchParams }: PageProps): Promise<Metadata> {
+  const { view } = resolveAnalysisView(await searchParams);
+  return { title: VIEW_TITLES[view] ?? "Analysis" };
 }
 
 export default async function AnalysisPage({ searchParams }: PageProps) {

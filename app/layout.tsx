@@ -15,7 +15,8 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Portfolio Desk",
+  // Pages export `metadata = { title: "Accounts" }` and get "Accounts · Portfolio Desk".
+  title: { default: "Portfolio Desk", template: "%s · Portfolio Desk" },
   description: "Local-first portfolio dashboard",
 };
 

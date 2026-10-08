@@ -243,7 +243,7 @@ export function SettingsModal() {
       {/* Gear button in header */}
       <button
         onClick={() => setOpen(true)}
-        className="relative text-ink-faint hover:text-ink-dim transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
+        className="relative text-ink-faint hover:text-ink-dim transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-3.5 pointer-coarse:after:content-['']"
         title="Settings"
         aria-label="Settings"
       >

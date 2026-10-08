@@ -5,12 +5,29 @@ import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { tabs } from "./nav-tabs";
+import { ThemeToggle } from "./ThemeToggle";
+import type { DataConfidence } from "@/lib/queries/data-confidence";
 
 // Swipe-to-close threshold: how far the user must drag left before we
 // commit the dismiss on touchend. 50px feels right — far enough to
 // distinguish from accidental finger jitter, short enough to not require
 // a full-arm swipe.
 const SWIPE_CLOSE_THRESHOLD = 50;
+
+/**
+ * One-line summary for the drawer's Data health row. The header badge is
+ * hidden below md, so a phone user would otherwise never see a capped score
+ * (qa:mobile-header--data-confidence-badge-hidden-below-md-no-mobile-surface).
+ * Score and cap state only; the cap reason names portfolio detail and stays on
+ * the Data Health page.
+ */
+export function dataHealthRowLabel(
+  confidence: Pick<DataConfidence, "overallScore" | "capReason"> | null,
+): string {
+  if (!confidence) return "Data health";
+  const score = `${confidence.overallScore}%`;
+  return confidence.capReason ? `Data health · ${score} (capped)` : `Data health · ${score}`;
+}
 
 /**
  * Hamburger + slide-in drawer for mobile navigation.
@@ -31,11 +48,29 @@ export function MobileNavDrawer() {
   const touchStartYRef = useRef<number | null>(null);
   const navRef = useRef<HTMLElement>(null);
   const hamburgerRef = useRef<HTMLButtonElement>(null);
+  const [confidence, setConfidence] = useState<Pick<DataConfidence, "overallScore" | "capReason"> | null>(null);
   const pathname = usePathname();
 
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // Fetch the score each time the drawer opens (cheap read, never on a poll).
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    fetch("/api/data-confidence", { signal: controller.signal })
+      .then((res) => res.json())
+      .then((json) => {
+        if (json?.success && typeof json.data?.overallScore === "number") {
+          setConfidence({ overallScore: json.data.overallScore, capReason: json.data.capReason ?? null });
+        }
+      })
+      .catch(() => {
+        // Unreachable score: the row still links to the page, just without a figure.
+      });
+    return () => controller.abort();
+  }, [open]);
 
   const close = useCallback(() => {
     // The drawer turns aria-hidden/inert on close; if focus is still inside
@@ -164,6 +199,26 @@ export function MobileNavDrawer() {
               </Link>
             );
           })}
+        </div>
+
+        <div className="border-t border-edge py-2">
+          <Link
+            href="/dashboard/data-health"
+            onClick={close}
+            className={`flex items-center px-4 py-3 text-sm font-medium transition-colors border-l-2 ${
+              pathname.startsWith("/dashboard/data-health")
+                ? "text-gold-ink bg-gold/5 border-gold"
+                : confidence?.capReason
+                  ? "text-down hover:bg-raised/50 border-transparent"
+                  : "text-ink-dim hover:text-ink hover:bg-raised/50 border-transparent"
+            }`}
+          >
+            {dataHealthRowLabel(confidence)}
+          </Link>
+          <div className="flex items-center justify-between px-4 text-sm font-medium text-ink-dim">
+            <span>Dark theme</span>
+            <ThemeToggle />
+          </div>
         </div>
       </nav>
     </>
