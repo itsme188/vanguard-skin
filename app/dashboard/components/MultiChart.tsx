@@ -92,22 +92,25 @@ export function MultiChart({
   const gridCols = layout === "1" ? "grid-cols-1" : "grid-cols-2";
   // Panel height must fit the compact SecurityChart's laid-out content or
   // the overflow-hidden panel silently clips the bottom — the date axis
-  // first, then the staleness footer. Budget (2026-08-28, corrected):
-  //   toolbar                       47
-  //   "TWS not connected" banner    28
-  //   chart area floor  min-h-[300px]  300
+  // first, then the staleness footer. Fixed rows of a 2x2 panel:
+  //   per-panel picker header       32  (reserved via the wrapper's
+  //                                     h-[calc(100%-32px)])
+  //   toolbar, one line             47
   //   compact staleness footer      25  (SecurityChart.tsx: text-xs = 16px
   //                                     line box + py-1 = 8px + 1px border-t)
   //   ------------------------------------
-  //   compact chart                400
-  //   per-panel picker header       32  (reserved via the wrapper's
-  //                                     h-[calc(100%-32px)])
-  //   ------------------------------------
-  //   2x2 panel                    432
-  // The earlier 416px budget counted that footer as 9px — it is 25px, so the
-  // panel was 16px short and clipped the very line it was meant to reserve
-  // for. (Before the footer existed the 350px budget was ~57px short: the
-  // recurring "2x2 clips the date axis" QA finding.) 1x2 at 628px has slack.
+  //   fixed rows                   104  -> 328 of the 432 left for the plot
+  // Two rows are NOT fixed: from md up the toolbar wraps onto a second line
+  // in a narrow panel (about 34px more), and a status banner ("TWS not
+  // connected", 28px) shows only sometimes. The plot is the one row that
+  // gives way for them: the compact chart area is flex-1 with a 160px floor
+  // (SecurityChart.tsx min-h-[160px]) and the footer is shrink-0, so the
+  // footer is never the row that gets clipped. A two-line toolbar plus a
+  // banner still leaves the plot about 266px, well above the floor; the
+  // floor itself is only reached at 432 - 104 - 160 = 168px of toolbar and
+  // banner. (History: 350px and 416px budgets, sized when the chart area
+  // had a fixed 300px floor, clipped the date axis and then the footer.)
+  // 1x2 at 628px has more slack still.
   const chartHeight = layout === "4" ? "h-[432px]" : "h-[628px]";
 
   return (

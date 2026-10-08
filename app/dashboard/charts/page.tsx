@@ -9,6 +9,7 @@ import {
 } from "@/lib/queries/ohlcv";
 import { getSecurityById } from "@/lib/queries/securities";
 import { getActiveWatchlistSecurityIds } from "@/lib/queries/watchlist";
+import { isOptionLive } from "@/lib/compute/option-expiry";
 import { ChartsView, type UnavailableChartRequest } from "../components/ChartsView";
 import { classifyChartRequest } from "./last-symbol";
 
@@ -21,7 +22,17 @@ export default async function ChartsPage({ searchParams }: PageProps) {
   const hasExplicitId = params.id !== undefined;
   const selectedId = params.id ? parseInt(params.id, 10) : null;
 
-  const securities = getChartableSecurities(db);
+  // Option contracts past expiration (ET calendar, the shared expiry helper)
+  // are left off the picker: IBKR serves no history for an expired contract,
+  // so listing one only promised bars a TWS connect would never load. A
+  // contract with no stored expiration is kept. A direct link to an expired
+  // contract is named as such below.
+  const isExpiredOption = (s: { id: number; security_type: string | null }) =>
+    s.security_type?.toLowerCase() === "option" &&
+    !isOptionLive(getSecurityById(db, s.id)?.expiration_date);
+  const securities = getChartableSecurities(db).filter(
+    (s) => !isExpiredOption(s),
+  );
 
   // Old fallback: alphabetically-first stock/ETF (skip bonds/treasuries,
   // which have no OHLCV data). Kept as the last resort only — see
@@ -68,7 +79,11 @@ export default async function ChartsPage({ searchParams }: PageProps) {
           securityId: asked.id,
           symbol: asked.symbol,
           reason:
-            asked.ib_con_id == null ? "no_contract" : "mutual_fund",
+            asked.ib_con_id == null
+              ? "no_contract"
+              : isExpiredOption(asked)
+                ? "expired_option"
+                : "mutual_fund",
         }
       : { securityId: null, symbol: null, reason: "not_found" };
   }

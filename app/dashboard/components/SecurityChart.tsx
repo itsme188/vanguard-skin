@@ -295,11 +295,70 @@ export function placeTransactionMarkers<T extends { date: string }>(
   return out;
 }
 
+/** Every fill of one transaction type on one trade date: ONE chart marker. */
+export interface MarkerGroup<T> {
+  barDate: string;
+  snapped: boolean;
+  /** Never empty; in the order the trades were given. */
+  fills: T[];
+}
+
+/**
+ * One marker per (trade date, type). Two fills of the same type on one date
+ * each drew their own label at the same x, and the texts overprinted into
+ * unreadable glyphs (deep-QA: charts-txn-markers--same-date-trades-overprint-
+ * quantity-labels; ruling: one marker, summed quantity, fill count).
+ *
+ * Grouped by the TRADE date, not the bar: a weekend-dated row drawn on
+ * Friday's bar stays apart from a real Friday trade, so its label keeps its
+ * own date. Trades on adjacent bars stay separate markers.
+ */
+export function groupPlacedMarkers<T extends { date: string; type: string }>(
+  placed: readonly PlacedMarker<T>[],
+): MarkerGroup<T>[] {
+  const groups = new Map<string, MarkerGroup<T>>();
+  for (const { txn, barDate, snapped } of placed) {
+    const key = `${txn.date.slice(0, 10)}|${txn.type}`;
+    const group = groups.get(key);
+    if (group) group.fills.push(txn);
+    else groups.set(key, { barDate, snapped, fills: [txn] });
+  }
+  return [...groups.values()];
+}
+
+/** Sum of share counts without binary-float noise (0.1 + 0.2). */
+function sumQuantities(quantities: readonly number[]): number {
+  return Math.round(quantities.reduce((a, q) => a + q, 0) * 1e6) / 1e6;
+}
+
+/**
+ * Hover readout for a bar whose marker stands for several fills: the split
+ * the summed label hides ("SELL 50 + 100"). Null when no marker on the bar
+ * aggregates, when a quantity is missing, and in privacy mode — share counts
+ * are portfolio-derived.
+ */
+export function markerFillsText(
+  groups: readonly MarkerGroup<TransactionMarker>[],
+  privateMode: boolean,
+): string | null {
+  if (privateMode) return null;
+  const parts: string[] = [];
+  for (const g of groups) {
+    if (g.fills.length < 2 || g.fills.some((f) => f.quantity == null)) continue;
+    parts.push(
+      `${markerTypeLabel(g.fills[0].type)} ${g.fills.map((f) => f.quantity).join(" + ")}`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 /** What the footer needs to disclose about trades the chart did not draw,
  *  plus what the time-scale fit needs to keep edge labels readable. */
 export interface MarkerSummary {
   hiddenAfterLastBar: number;
   hiddenNoBar: number;
+  /** Bar date -> per-fill split of an aggregated marker (see markerFillsText). */
+  fillsByBar: Record<string, string>;
   /** Longest label (characters) on the first / last plotted bar; 0 = none. */
   firstBarLabelChars: number;
   lastBarLabelChars: number;
@@ -308,6 +367,7 @@ export interface MarkerSummary {
 const NO_MARKERS: MarkerSummary = {
   hiddenAfterLastBar: 0,
   hiddenNoBar: 0,
+  fillsByBar: {},
   firstBarLabelChars: 0,
   lastBarLabelChars: 0,
 };
@@ -510,7 +570,7 @@ export function SecurityChart({
   const [lastDate, setLastDate] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [legend, setLegend] = useState<
-    (OhlcvBar & { indicators?: Record<string, number> }) | null
+    (OhlcvBar & { indicators?: Record<string, number>; fills?: string }) | null
   >(null);
 
   // Toggle states. Transaction markers default ON in single-chart view but
@@ -766,6 +826,8 @@ export function SecurityChart({
             open: cd.open, high: cd.high!, low: cd.low!, close: cd.close!,
             volume: vd?.value ?? null,
             indicators: Object.keys(indicators).length > 0 ? indicators : undefined,
+            // Per-fill split of an aggregated trade marker on this bar.
+            fills: markerSummaryRef.current.fillsByBar[String(param.time)],
           });
         }
       });
@@ -1016,14 +1078,17 @@ export function SecurityChart({
             color: lineColor,
             lineWidth: 2,
             lineStyle: 0, // solid — strong/committed S/R
-            axisLabelVisible: true,
+            // No axis pill: level pills were painted over the price-axis
+            // ticks and made the scale unreadable in exactly the band the
+            // levels sit in (deep-QA: charts-price-axis--level-badges-
+            // collide-ticks-unreadable; ruling: keep the line, drop the
+            // pill). The Levels panel lists each price.
+            axisLabelVisible: false,
             // No title — the verbose per-line label clutters the right axis
             // and redundantly echoes what LevelsPanel already shows below.
             // Color + solid-vs-dotted distinguishes active from suggested;
             // the panel row carries type/touches/narrative context.
             title: "",
-            axisLabelColor: lineColor,
-            axisLabelTextColor: "#0a0a0a",
           });
           priceLinesRef.current.push(line);
           if (typeof displayPrice === "number" && Number.isFinite(displayPrice)) {
@@ -1110,20 +1175,16 @@ export function SecurityChart({
       for (const lvl of dedupeSuggestedLevels(fetched, active, currencyRef.current)) {
         // Suggested levels share hue with active S/R (green/red) but are
         // dotted + faded so they read as "proposed, not yet committed."
-        // The axis pill uses the full-strength color for readability — only
-        // the line itself is dimmed, not the label.
+        // No axis pill, same as the active lines above.
         const isRes = lvl.type === "resistance";
-        const fullColor = isRes ? "#ef4444" : "#22c55e";
         const fadedColor = isRes ? "#ef444480" : "#22c55e80";
         const line = s.createPriceLine({
           price: lvl.price,
           color: fadedColor,
           lineWidth: 1,
           lineStyle: 1, // dotted — visually distinct from user-accepted levels (solid)
-          axisLabelVisible: true,
+          axisLabelVisible: false,
           title: "", // LevelsPanel below carries confidence/touches context
-          axisLabelColor: fullColor,
-          axisLabelTextColor: "#0a0a0a",
         });
         suggestedLinesRef.current.push(line);
       }
@@ -1551,6 +1612,16 @@ export function SecurityChart({
                   <ChartMoney value={legend.indicators![ind.key]} currency={currency} className="text-ink" />
                 </span>
               ))}
+              {/* The chart library has no marker tooltip: the fills behind a
+                  summed trade marker read out here. Share counts — never
+                  shown in privacy mode (the map is empty then; the flag
+                  covers a toggle while a bar is still hovered). */}
+              {!isPrivate && legend.fills && (
+                <span className="flex items-baseline gap-1">
+                  <span className="text-ink-faint">Fills</span>
+                  <span className="text-ink">{legend.fills}</span>
+                </span>
+              )}
             </>
           )}
         </div>
@@ -1897,6 +1968,30 @@ export function markerText(
   return snapped ? `${base} · ${t.date.slice(5, 10)}` : base;
 }
 
+/**
+ * Label of one grouped marker. A single fill reads exactly as markerText
+ * does. Several fills read as the summed quantity and the fill count
+ * ("SELL 150 ×2"); the sum is left out when any fill has no quantity, and
+ * privacy mode drops both numbers — the count is portfolio-derived too.
+ */
+export function groupedMarkerText(
+  group: MarkerGroup<TransactionMarker>,
+  privateMode: boolean,
+): string {
+  const first = group.fills[0];
+  if (group.fills.length === 1) return markerText(first, privateMode, group.snapped);
+  const label = markerTypeLabel(first.type);
+  let base = label;
+  if (!privateMode) {
+    const quantities = group.fills.map((f) => f.quantity);
+    const total = quantities.every((q): q is number => q != null)
+      ? ` ${sumQuantities(quantities)}`
+      : "";
+    base = `${label}${total} ×${group.fills.length}`;
+  }
+  return group.snapped ? `${base} · ${first.date.slice(5, 10)}` : base;
+}
+
 function updateMarkers(
   lc: LightweightChartsModule,
   candleSeries: ISeriesApi<"Candlestick">,
@@ -1947,7 +2042,7 @@ function updateMarkers(
     report(
       barDates.length !== bars.length
         ? NO_MARKERS
-        : { ...summaryBase, firstBarLabelChars: 0, lastBarLabelChars: 0 },
+        : { ...summaryBase, fillsByBar: {}, firstBarLabelChars: 0, lastBarLabelChars: 0 },
     );
     return null;
   }
@@ -1960,8 +2055,23 @@ function updateMarkers(
   const lastBar = barDates[barDates.length - 1];
   let firstBarLabelChars = 0;
   let lastBarLabelChars = 0;
-  const markers: MarkerType[] = placement.placed.map(({ txn: t, barDate, snapped }) => {
-    const text = markerText(t, privateMode, snapped);
+  // One marker per (trade date, type) — see groupPlacedMarkers.
+  const groups = groupPlacedMarkers(placement.placed);
+  const groupsByBar = new Map<string, MarkerGroup<TransactionMarker>[]>();
+  for (const g of groups) {
+    const onBar = groupsByBar.get(g.barDate);
+    if (onBar) onBar.push(g);
+    else groupsByBar.set(g.barDate, [g]);
+  }
+  const fillsByBar: Record<string, string> = {};
+  for (const [barDate, onBar] of groupsByBar) {
+    const fills = markerFillsText(onBar, privateMode);
+    if (fills) fillsByBar[barDate] = fills;
+  }
+  const markers: MarkerType[] = groups.map((group) => {
+    const { barDate } = group;
+    const t = group.fills[0];
+    const text = groupedMarkerText(group, privateMode);
     if (barDate === firstBar) firstBarLabelChars = Math.max(firstBarLabelChars, text.length);
     if (barDate === lastBar) lastBarLabelChars = Math.max(lastBarLabelChars, text.length);
     return {
@@ -1973,7 +2083,7 @@ function updateMarkers(
       size: 1,
     };
   });
-  report({ ...summaryBase, firstBarLabelChars, lastBarLabelChars });
+  report({ ...summaryBase, fillsByBar, firstBarLabelChars, lastBarLabelChars });
 
   // Reuse the attached plugin when one exists — one plugin per series, ever.
   if (existing) {

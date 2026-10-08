@@ -28,7 +28,7 @@ export interface UnavailableChartRequest {
   /** null when no security matches the id at all. */
   securityId: number | null;
   symbol: string | null;
-  reason: "no_contract" | "mutual_fund" | "not_found";
+  reason: "no_contract" | "mutual_fund" | "expired_option" | "not_found";
 }
 
 /** Empty-state copy for a chart request the page cannot serve. */
@@ -45,12 +45,18 @@ export function unavailableChartCopy(req: UnavailableChartRequest): {
       hubHref: null,
     };
   }
+  // An expired contract is left off the picker (page.tsx); a direct link to
+  // one never promises bars after a TWS connect — IBKR serves no history for
+  // an expired contract.
+  const why =
+    req.reason === "mutual_fund"
+      ? `${req.symbol} is a mutual fund, and mutual funds have no traded price history to chart.`
+      : req.reason === "expired_option"
+        ? `${req.symbol} is an expired option contract, and no price history is available for an expired contract.`
+        : `${req.symbol} has no IBKR contract id yet, so there is no price history to chart.`;
   return {
     title: `No chart for ${req.symbol}`,
-    reason:
-      req.reason === "mutual_fund"
-        ? `${req.symbol} is a mutual fund, and mutual funds have no traded price history to chart. Pick a security above.`
-        : `${req.symbol} has no IBKR contract id yet, so there is no price history to chart. Pick a security above.`,
+    reason: `${why} Pick a security above.`,
     hubHref: `/dashboard/security/${req.securityId}`,
   };
 }
