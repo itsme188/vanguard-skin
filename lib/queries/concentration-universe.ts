@@ -114,12 +114,6 @@ export function getConcentrationUniverse(
     ...(accountIds ?? []),
     maturityCutoff,
   ];
-  if (options?.asOfDate && !/^\d{4}-\d{2}-\d{2}$/.test(options.asOfDate)) {
-    throw new Error(
-      `getConcentrationUniverse: asOfDate must match YYYY-MM-DD, got ${JSON.stringify(options.asOfDate)}`
-    );
-  }
-  const latestPriceBound = options?.asOfDate ? `WHERE date <= '${options.asOfDate}'` : "";
 
   const rows = db
     .prepare(
@@ -132,7 +126,7 @@ export function getConcentrationUniverse(
          SELECT p.security_id, p.close_price
          FROM prices p
          INNER JOIN (
-           SELECT security_id, MAX(date) AS max_date FROM prices ${latestPriceBound} GROUP BY security_id
+           SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id
          ) lp ON p.security_id = lp.security_id AND p.date = lp.max_date
        ),
        per_account_positions AS (

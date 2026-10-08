@@ -572,12 +572,11 @@ export function computeConcentration(
  *    position is measured against.
  *  - SHORTS are excluded (`includeShorts: false`) and so are UNPRICED
  *    positions (`COALESCE(lp.close_price, 0) > 0`). These stay as DELIBERATE
- *    divergences from the row universe: a risk contribution needs a return
- *    series, which needs stored prices, and the weight x vol x correlation
- *    decomposition is not defined for a negative row here. The visible weight
- *    denominator is still the canonical Diagnostics book denominator from
- *    getConcentrationUniverse, so a security's displayed weight matches the
- *    Concentration, Breakdown and Heatmap cards.
+ *    divergences from the concentration universe, not defects: a risk
+ *    contribution needs a return series, which needs stored prices, and the
+ *    weight x vol x correlation decomposition is not defined for a negative
+ *    weight here. The drawer's caption discloses both, and
+ *    tests/queries/drill-down-risk-ranking.test.ts pins them.
  */
 export function computePositionRisk(
   db: Database.Database,
@@ -662,14 +661,37 @@ export function computePositionRisk(
     return { positions: [], correlations: [], portfolioVol: null };
   }
 
-  // Weight denominator = the Diagnostics page's canonical gross book value,
-  // not the risk row subset. Plain long-only books are unchanged; shorts,
-  // unpriced cost-basis fallbacks and cash funds now move every card together.
-  const canonicalValue = concentrationGrossValue(
-    getConcentrationUniverse(db, accountIds, { asOfDate: options?.asOfDate })
-  );
+  // Weight denominator = the WHOLE portfolio's value under the same
+  // predicate, NOT the top-N subset — subset-normalized weights sum to
+  // 100% and presented a 4% position as 16% (the card contradicted its
+  // own drawer). The internal portfolio-return proxy divides by
+  // coverageWeight, so it is invariant to this denominator change.
+  const totalRow = db
+    .prepare(
+      `WITH latest_holdings AS (
+         SELECT h.security_id, SUM(h.quantity) AS total_qty
+         FROM holdings h
+         WHERE ${predicate}
+         GROUP BY h.security_id
+       ),
+       latest_prices AS (
+         SELECT security_id, close_price
+         FROM prices
+         WHERE (security_id, date) IN (
+           SELECT security_id, MAX(date) FROM prices ${latestPriceBound} GROUP BY security_id
+         )
+       )
+       SELECT SUM(${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) AS total
+       FROM latest_holdings lh
+       JOIN securities s ON s.id = lh.security_id
+       LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
+       WHERE COALESCE(lp.close_price, 0) > 0
+         AND (s.maturity_date IS NULL OR s.maturity_date >= ?)`
+    )
+    .get(...accountParams, maturityCutoff) as { total: number | null };
   const subsetValue = positions.reduce((s, p) => s + p.market_value, 0);
-  const totalValue = canonicalValue > 0 ? canonicalValue : subsetValue;
+  const totalValue = totalRow?.total && totalRow.total > 0 ? totalRow.total : subsetValue;
   const securityIds = positions.map((p) => p.security_id);
 
   // 2. Fetch daily prices for all top positions (last 1 year)

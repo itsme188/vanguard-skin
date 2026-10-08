@@ -47,13 +47,6 @@ export interface AllocationEntry {
   position_count: number;
 }
 
-function canonicalWeightDenominator(
-  db: Database.Database,
-  accountIds?: number[]
-): number {
-  return concentrationGrossValue(getConcentrationUniverse(db, accountIds));
-}
-
 export interface ConcentrationMetrics {
   /**
    * Herfindahl over GROSS weights (decision 2026-09-22): each position's
@@ -453,28 +446,24 @@ export function getAllocationByDimension(
   const optionExposures = getOptionExposureMap(db, accountIds);
   // position_count is DISTINCT securities per bucket: a name held in two
   // accounts is one position, exactly as the drill-down panel lists it.
-  const byGroup = new Map<
-    string,
-    { mv: number; gross: number; exposure: number; securities: Set<number> }
-  >();
-  const total = canonicalWeightDenominator(db, accountIds);
+  const byGroup = new Map<string, { mv: number; exposure: number; securities: Set<number> }>();
+  let total = 0;
   for (const row of rows) {
+    total += row.mv;
     const exposure = exposureForHolding(row, optionExposures);
     const entry =
-      byGroup.get(row.group_name) ??
-      { mv: 0, gross: 0, exposure: 0, securities: new Set<number>() };
+      byGroup.get(row.group_name) ?? { mv: 0, exposure: 0, securities: new Set<number>() };
     entry.mv += row.mv;
-    entry.gross += Math.abs(row.mv);
     entry.exposure += exposure;
     entry.securities.add(row.security_id);
     byGroup.set(row.group_name, entry);
   }
 
   return [...byGroup.entries()]
-    .map(([group_name, { mv, gross, exposure, securities }]) => ({
+    .map(([group_name, { mv, exposure, securities }]) => ({
       group_name,
       total_market_value: mv,
-      percentage: total !== 0 ? (gross * 100) / total : 0,
+      percentage: total !== 0 ? (mv * 100) / total : 0,
       net_exposure: exposure,
       exposure_pct: total !== 0 ? (exposure * 100) / total : 0,
       position_count: securities.size,
@@ -542,11 +531,12 @@ function getSectorAllocationWithLookThrough(
   const optionExposures = getOptionExposureMap(db, accountIds);
   const bySector = new Map<
     string,
-    { value: number; gross: number; exposure: number; securities: Set<number> }
+    { value: number; exposure: number; securities: Set<number> }
   >();
-  const total = canonicalWeightDenominator(db, accountIds);
+  let total = 0;
 
   for (const r of rows) {
+    total += r.mv;
     const rowExposure = exposureForHolding(r, optionExposures);
     const parts = explodeHoldingByNormalizedSector(
       r.symbol,
@@ -557,10 +547,8 @@ function getSectorAllocationWithLookThrough(
     );
     for (const part of parts) {
       const entry =
-        bySector.get(part.sector) ??
-        { value: 0, gross: 0, exposure: 0, securities: new Set<number>() };
+        bySector.get(part.sector) ?? { value: 0, exposure: 0, securities: new Set<number>() };
       entry.value += part.value;
-      entry.gross += Math.abs(part.value);
       entry.exposure += r.mv !== 0 ? rowExposure * (part.value / r.mv) : 0;
       entry.securities.add(r.security_id);
       bySector.set(part.sector, entry);
@@ -568,10 +556,10 @@ function getSectorAllocationWithLookThrough(
   }
 
   return [...bySector.entries()]
-    .map(([group_name, { value, gross, exposure, securities }]) => ({
+    .map(([group_name, { value, exposure, securities }]) => ({
       group_name,
       total_market_value: value,
-      percentage: total !== 0 ? (gross * 100) / total : 0,
+      percentage: total !== 0 ? (value * 100) / total : 0,
       net_exposure: exposure,
       exposure_pct: total !== 0 ? (exposure * 100) / total : 0,
       position_count: securities.size,
@@ -980,14 +968,14 @@ export function getFactorHeatmap(
       factor_source: string | null;
     }>;
 
-  const totalValue = canonicalWeightDenominator(db, accountIds);
+  const totalValue = rows.reduce((sum, r) => sum + r.market_value, 0);
 
   return rows.map((r) => ({
     symbol: r.symbol,
     name: r.name,
     security_type: r.security_type,
     market_value: r.market_value,
-    weight_pct: totalValue > 0 ? (Math.abs(r.market_value) / totalValue) * 100 : 0,
+    weight_pct: totalValue > 0 ? (r.market_value / totalValue) * 100 : 0,
     is_option: r.underlying_symbol !== null,
     interest_rate_sensitive: r.interest_rate_sensitive,
     growth_vs_value: r.growth_vs_value,
