@@ -823,3 +823,40 @@ The owner ruled in session on the direction findings from the sprint's second-op
 **Not ruled**
 - The levels "show inactive" finding: the two Codex passes disagree on whether it is already fixed. It needs a look on screen first.
 - About 29 lower-priority findings still wait on a decision (`qa/findings/DECISIONS-PENDING.md`).
+
+## 2026-10-08 — Design choices found while mapping the ruled builds to code
+
+Six read-only agents mapped the 2026-10-08 rulings to files. The mapping showed that several rulings rested on a premise the code does not match, or needed one more choice. The owner ruled on each in session. Direction-only.
+
+**Rulings narrowed or changed**
+- **Completed sessions only: Significant Moves and the evening email flags only.** The day-pair function is shared with the IBKR line on Today and the chat market snapshot; those two keep the intraday move. The rule is applied by the callers that want it, not inside the shared function.
+- **A live-closed option or short as pending: held for a written design.** For a stock the next statement closes the lot; for an option or a short nothing in the engine does, so the lot would read open and valued again once the statement lands. The design must say what ends the pending state and how a short's basis reads. Not in the build plan.
+- **Recap scoreboard: the vendor's actual is kept in a new column.** Accepting worksheet figures overwrites the vendor actual today, so there was nothing to footnote. A migration (shown to the owner first) preserves it. The cloud recap gets the basis label only; the snapshot is not extended.
+- **International-exposure labels: the relabel stays held.** The held patch stores a label the scenario recipes score higher than today's, so "no scenario figure moves" and "relabel" cannot both hold for new names. Only the safety is built: both labels read through one mapping at today's score, pinned by a test.
+- **Plaid purges: the synced account and live-sourced rows only.** An existing test requires statement rows in the synced account to stay untouched, an expired option and a matured bill included. Those rows stay stored; the read side already hides them.
+- **Reconciliation chip bands.** Green: matches to the cent. Neutral: under a tenth of a percent of the statement value. Amber: a tenth to half a percent, or over half a percent but under the flat floor. Red: over both the flat floor and half a percent.
+- **A real slot beats a default time: the duplicate check only.** The seven read-time pickers that also prefer one vendor, two of them in the Worker, are left alone; they only matter before a reconcile pass or outside its window.
+- **Confirming a date from the conflict popover.** The same slot keeps a typed clock time. Picking the other slot is deliberate and moves the time to that slot's default. Slots are stored upper-case; the few stored lower-case rows are left as they are.
+- **Fixed performance periods: one, three and five years all end at the last statement anchor** and cover the full span; the headline names the end date. Year to date keeps running to today. The chat tool's one-year window follows the same rule.
+- **Deep in-the-money calls as core: only a real delta counts.** A delta computed from the assumed default volatility never makes a call core; the row says why.
+- **Holdings confidence by value: the definitions.** Weight is absolute market value, so a short counts by its size. A holding with no price weighs by cost basis; with neither it counts as fully stale at a small fixed weight. An account with no holdings does not affect the score.
+
+**What the mapping found already built**
+- Sector rows held only through funds: the breakdown and its drill-down already use the fund split and count contributing funds (built 2026-10-07). The finding was last checked on an older build; re-verify before building anything. Only the separate sector-tilt drill-down is unsplit, by an earlier deliberate choice.
+- Performance already opens on year to date.
+- The Significant Moves card already prints the two days compared and the evaluated count.
+- The email viewer already stamps a reaction captured after sending; the "actual changed after sending" half is missing, and only a hand-entered actual records when it changed.
+- The digest preview already opens on a non-AI view and the paid call is a separate request; the modal fires it on open.
+- Levels "show inactive": in current source a rejected level cannot be paused or approved from the panel. A rejected level that was already paused shows only "inactive", with its rejected status hidden.
+
+**Facts the builds must respect**
+- The macro basis incident's actual came from FRED's own series, not from the AI lookup, so the size check carries the weight and the consensus prompt must be told each release's basis. The Worker also produces macro actuals, so the check is built on both sides.
+- The weekly sync overwrites a calendar row's title and raw data, so a refusal reason and a FRED-derived month each need a stored column the sync never touches (one migration).
+- The Portfolio strip is itself a per-account blend labelled with its newest date; "chat reads the strip's total" means chat reuses the strip's function.
+- The chat market-snapshot tool is not limited to the chat's selected account; rows that carry account, quantity and value need an account filter in the tool, outside the protected chat wiring.
+- A feed row stored hidden at write skips the fold that copies the vendor's consensus to the hand-entered row, and nothing outside the reconciler window un-hides it when the hand-entered row is deleted; the build handles both.
+- An armed row after its print has no print object because a finished print dated before today is dropped from the status feed on purpose; the read-only record needs its own scoped read, not a wider feed.
+- Level currency also reaches the push notifications on both sides, and the number formatter uses the runtime's default locale, so the locale is pinned.
+
+**Order of work**
+- Three waves, each on its own branch and pull request: small and safe first; then Analysis and calendar logic; then the Mac-and-Worker and migration items.
