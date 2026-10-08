@@ -47,6 +47,12 @@ function isUniqueConstraintError(error: unknown): boolean {
   );
 }
 
+function parseOptionalAmount(raw: unknown): { ok: true; value: number | null } | { ok: false } {
+  if (raw == null) return { ok: true, value: null };
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return { ok: false };
+  return { ok: true, value: raw };
+}
+
 interface LinkBody {
   acknowledgeLedgerRecompute?: boolean;
   outTransactionId?: number;
@@ -77,6 +83,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   const outTransactionId = body.outTransactionId;
+  const parsedAmount = parseOptionalAmount(body.amountForOutLeg);
+  if (!parsedAmount.ok) {
+    return Response.json({ success: false, error: "amountForOutLeg must be a positive number" }, { status: 400 });
+  }
   // Owner ruling 2026-10-06: this route ends in a whole-ledger recompute. An
   // unacknowledged request is REHEARSED (run, then rolled back) so every
   // validation error surfaces first; a clean rehearsal is answered with the
@@ -88,7 +98,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         donationId,
         outTransactionId,
         artifactTransactionId: body.artifactTransactionId ?? null,
-        amountForOutLeg: body.amountForOutLeg ?? null,
+        amountForOutLeg: parsedAmount.value,
       });
     });
   } catch (error) {

@@ -27,7 +27,8 @@ export function ReconciliationStrip({ report }: { report: ReconciliationReport }
   const flow = useLedgerRecomputeFlow();
   const [confirmingId, setConfirmingId] = useState<number | null>(null);
   // Two-step confirm for a zero-amount OUT leg: the first click arms this id
-  // and shows the warning inline, the second click actually links.
+  // and shows the warning inline, the second click links and stamps the
+  // donation's recorded fair value under the API's invariant guards.
   const [armedZeroId, setArmedZeroId] = useState<number | null>(null);
 
   const hasAnything =
@@ -98,8 +99,8 @@ export function ReconciliationStrip({ report }: { report: ReconciliationReport }
                       </div>
                       {zeroAmount && armed && (
                         <p role="alert" className="basis-full text-xs text-warn">
-                          This transfer leg has no recorded value, so the donation&apos;s fair market value
-                          will be missing after linking. Click again to link it anyway.
+                          This transfer leg has no recorded value. Click again to link it and stamp the
+                          donation&apos;s recorded fair value.
                         </p>
                       )}
                       <button

@@ -172,6 +172,31 @@ export function linkDonationLegs(
       );
     }
 
+    let outLegAmount = amountForOutLeg ?? null;
+    const autoStampOutLeg = outLegAmount == null && (outTxn.amount == null || Math.abs(outTxn.amount) < EPS);
+    if (autoStampOutLeg) {
+      if (typeof donation.fmv_usd !== "number" || !Number.isFinite(donation.fmv_usd) || donation.fmv_usd <= 0) {
+        throw new DonationLinkError(
+          `donation ${donationId}: this transfer leg has no recorded value, and the donation has no usable fair value to stamp`
+        );
+      }
+      if (outTxn.quantity == null || donation.quantity == null || Math.abs(outTxn.quantity - donation.quantity) > EPS) {
+        throw new DonationLinkError(
+          `donation ${donationId}: this transfer leg has no recorded value, and its quantity does not match the donation`
+        );
+      }
+      if (
+        outTxn.security_id != null &&
+        donation.security_id != null &&
+        outTxn.security_id !== donation.security_id
+      ) {
+        throw new DonationLinkError(
+          `donation ${donationId}: this transfer leg has no recorded value, and its security does not match the donation`
+        );
+      }
+      outLegAmount = donation.fmv_usd;
+    }
+
     db.prepare("INSERT INTO donation_leg_links (donation_id, transaction_id, role) VALUES (?, ?, 'out')").run(
       donationId,
       outTransactionId
@@ -187,8 +212,11 @@ export function linkDonationLegs(
       );
     }
 
-    if (amountForOutLeg != null) {
-      db.prepare("UPDATE transactions SET amount = ? WHERE id = ?").run(amountForOutLeg, outTransactionId);
+    if (outLegAmount != null) {
+      const sql = autoStampOutLeg
+        ? "UPDATE transactions SET amount = ? WHERE id = ? AND COALESCE(amount, 0) = 0"
+        : "UPDATE transactions SET amount = ? WHERE id = ?";
+      db.prepare(sql).run(outLegAmount, outTransactionId);
     }
 
     bumpTaxGenerationIfPresent(db);
