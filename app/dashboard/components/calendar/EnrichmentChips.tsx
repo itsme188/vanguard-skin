@@ -42,6 +42,8 @@ function fmtDelta(pct: number | null | undefined): string {
 export interface ReactionPair {
   label: string;
   pct: number | null;
+  /** The event's own stock, shown as a dash because its move was not captured. */
+  notCaptured?: boolean;
 }
 
 /**
@@ -50,15 +52,26 @@ export interface ReactionPair {
  * event's own stock when the snapshot captured one (earnings rows), so a
  * week-view card can read "AMZN +9.09% / SPY +0.11%"; macro snapshots have
  * no symbol reaction and degrade to SPY / QQQ.
+ *
+ * `eventSymbol` is the ticker of an earnings row. When the snapshot holds no
+ * leg for it, the stock's own slot is still shown, as a dash, ahead of SPY
+ * ("AAA — / SPY +0.19%") — otherwise SPY's move sits where every sibling card
+ * shows the stock's and reads as the stock's own.
  */
 export function reactionSummaryPairs(
   snapshot: ReactionSnapshot | null,
-  opts: { preferEventSymbol?: boolean } = {},
+  opts: { preferEventSymbol?: boolean; eventSymbol?: string | null } = {},
 ): ReactionPair[] {
   if (!snapshot) return [];
   if (opts.preferEventSymbol && snapshot.symbol) {
     return [
       { label: snapshot.symbol.symbol, pct: snapshot.symbol.delta_pct ?? null },
+      { label: "SPY", pct: snapshot.spy?.delta_pct ?? null },
+    ];
+  }
+  if (opts.preferEventSymbol && opts.eventSymbol) {
+    return [
+      { label: opts.eventSymbol, pct: null, notCaptured: true },
       { label: "SPY", pct: snapshot.spy?.delta_pct ?? null },
     ];
   }
@@ -78,6 +91,7 @@ export function EnrichmentRowSummary({
   snapshot = null,
   snapshotRaw = null,
   preferEventSymbol = false,
+  eventSymbol = null,
 }: {
   actual: string | null;
   /** Already-parsed snapshot (client callers). */
@@ -89,6 +103,8 @@ export function EnrichmentRowSummary({
    */
   snapshotRaw?: string | null;
   preferEventSymbol?: boolean;
+  /** Ticker of an earnings row — see reactionSummaryPairs. */
+  eventSymbol?: string | null;
 }) {
   const snap = snapshot ?? parseReactionSnapshot(snapshotRaw);
   // `actual` can be a Finnhub-shaped string whose only recognizable token
@@ -99,7 +115,7 @@ export function EnrichmentRowSummary({
   // nothing (never an empty chip) and never leaves a stray "·" separator
   // dangling with no figure in front of it.
   const formatted = actual ? formatFinnhubFigureCompact(actual) : null;
-  const pairs = reactionSummaryPairs(snap, { preferEventSymbol });
+  const pairs = reactionSummaryPairs(snap, { preferEventSymbol, eventSymbol });
   if (!formatted && pairs.length === 0) return null;
   return (
     // Wraps (never one fixed line): week-ahead day columns get as narrow as
@@ -118,7 +134,10 @@ export function EnrichmentRowSummary({
           {pairs.map((p, i) => (
             <span key={p.label} className="flex items-center gap-1.5">
               {i > 0 && <span className="text-ink-faint">/</span>}
-              <span className={deltaClass(p.pct)}>
+              <span
+                className={deltaClass(p.pct)}
+                title={p.notCaptured ? `${p.label}'s own move was not captured` : undefined}
+              >
                 {p.label} {fmtDelta(p.pct)}
               </span>
             </span>

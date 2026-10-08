@@ -4,7 +4,11 @@ import { addDays, formatWeekRange, todayET, getCurrentMonday, mondayOf } from "@
 import { formatFinnhubFigure, parseFinnhubFigure, formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { formatCompactUSD } from "@/lib/format";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
-import { earningsTimeLabel, isFredScheduleRow } from "@/lib/calendar/release-times";
+import {
+  earningsTimeLabel,
+  FRED_SOURCE_KEY_PREFIX,
+  isFredScheduleRow,
+} from "@/lib/calendar/release-times";
 import type { EarningsDisplayTime } from "@/lib/calendar/display-earnings-time";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { epsDelta } from "@/lib/earnings/eps-delta";
@@ -13,7 +17,11 @@ import {
   EnrichmentRowSummary,
   PreReleaseActualChips,
 } from "../components/calendar/EnrichmentChips";
-import { EarningsConflictMarker } from "../components/calendar/EarningsConflictMarker";
+import {
+  EarningsConflictActions,
+  EarningsConflictMarker,
+} from "../components/calendar/EarningsConflictMarker";
+import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 import { EarningsDeleteButton } from "./EarningsDeleteButton";
 import { preReleaseClearsAtMs } from "./pre-release-clear";
 import {
@@ -235,10 +243,35 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
               <DayCard key={day.date} day={day} todayIso={todayIso} />
             ))}
           </div>
-          {weekendDays.length > 0 && <WeekendNote days={weekendDays} />}
+          {weekendDays.length > 0 && <WeekendNote days={weekendDays} todayIso={todayIso} />}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The title a week card prints. A hand-entered earnings row is stored as
+ * "<SYM> earnings (Manual entry)", which names the source where every vendor
+ * row names the market slot; when the row's own slot is known (event_time or
+ * raw_json only, via deriveEarningsSlot) the slot is printed instead. Display
+ * only — the stored title is never rewritten.
+ *
+ * Same rule as slotAwareTitle in components/TodayReleases.tsx. That file is a
+ * client module and this view is a Server Component, which may not call a
+ * client module's function, so the rule is repeated here and
+ * tests/dashboard/week-ahead-cards-c07.test.ts pins the two to the same answers.
+ */
+export function weekAheadTitle(
+  event: Pick<CalendarEvent, "title" | "event_time" | "raw_json" | "event_type">,
+): string {
+  const title = event.title;
+  if (!title || event.event_type !== "earnings" || !/\(Manual entry\)\s*$/.test(title)) return title;
+  const slot = deriveEarningsSlot({ event_time: event.event_time, raw_json: event.raw_json });
+  if (!slot) return title;
+  return title.replace(
+    /\(Manual entry\)\s*$/,
+    slot === "bmo" ? "(Before Market Open)" : "(After Market Close)",
   );
 }
 
@@ -258,6 +291,46 @@ export function weekAheadRemovable(event: Pick<CalendarEvent, "source" | "event_
   return event.source === "manual" && event.event_type === "earnings";
 }
 
+/**
+ * Whether this view offers the Confirm / Use other date buttons on a row: a
+ * date-conflicted earnings row with a ticker. The Hub shows only the current
+ * week, so a conflict in any other week could be seen here and not resolved.
+ */
+export function conflictResolvableHere(
+  event: Pick<
+    CalendarEvent,
+    "event_type" | "symbol" | "date_status" | "event_date" | "date_conflict_with"
+  >,
+  todayIso: string,
+): boolean {
+  if (event.event_type !== "earnings" || !event.symbol || event.date_status !== "conflict") {
+    return false;
+  }
+  // A date already behind us cannot be confirmed (the server refuses it), so
+  // a row with no date left to pick gets no buttons — same rule as
+  // conflictResolveOptions, which decides the buttons themselves.
+  const otherDate = (event.date_conflict_with ?? "").split(":")[1] ?? "";
+  return (
+    event.event_date >= todayIso || (/^\d{4}-\d{2}-\d{2}$/.test(otherDate) && otherDate >= todayIso)
+  );
+}
+
+/** The date-conflict buttons for a resolvable row; nothing for any other row. */
+function ConflictActions({ event, todayIso }: { event: DisplayedEvent; todayIso: string }) {
+  if (!conflictResolvableHere(event, todayIso)) return null;
+  return (
+    <EarningsConflictActions
+      dateStatus={event.date_status}
+      dateConflictWith={event.date_conflict_with}
+      symbol={event.symbol}
+      eventDate={event.event_date}
+      eventTime={event.event_time}
+      rawJson={event.raw_json}
+      releaseTime={event.release_time}
+    />
+  );
+}
+
 /** The remove control for a hand-entered row; nothing for any other row. */
 function RemoveRow({ event }: { event: DisplayedEvent }) {
   if (!weekAheadRemovable(event)) return null;
@@ -275,8 +348,10 @@ function RemoveRow({ event }: { event: DisplayedEvent }) {
  */
 function WeekendNote({
   days,
+  todayIso,
 }: {
   days: { label: string; date: string; events: DisplayedEvent[] }[];
+  todayIso: string;
 }) {
   return (
     <p className="text-[13px] text-ink-dim flex flex-wrap items-baseline gap-x-2 gap-y-1">
@@ -295,14 +370,14 @@ function WeekendNote({
                 <Link
                   href={`/dashboard/security/${e.security_id}`}
                   className="font-mono font-medium text-ink hover:text-gold"
-                  title={e.title ?? undefined}
+                  title={weekAheadTitle(e) ?? undefined}
                 >
                   {name}
                 </Link>
               ) : (
                 <span
                   className={e.symbol ? "font-mono font-medium text-ink" : "text-ink"}
-                  title={e.symbol ? (e.title ?? undefined) : undefined}
+                  title={e.symbol ? (weekAheadTitle(e) ?? undefined) : undefined}
                 >
                   {name}
                 </span>
@@ -311,7 +386,9 @@ function WeekendNote({
                 dateStatus={e.date_status}
                 dateConflictWith={e.date_conflict_with}
                 wrap
+                resolveHere={conflictResolvableHere(e, todayIso)}
               />
+              <ConflictActions event={e} todayIso={todayIso} />
               <RemoveRow event={e} />
             </span>
           );
@@ -528,6 +605,33 @@ export function releasedFigureGates(
   };
 }
 
+/** What a past card says when its release came and went with nothing captured. */
+export const NO_ACTUAL_RECORDED_LABEL = "no actual recorded";
+
+/**
+ * Whether a card carries the muted "no actual recorded" tag (owner-approved
+ * 2026-10-07): the event's date is behind us, nothing is stored as its
+ * actual, and the row comes from a source that normally records one — a
+ * FRED-scheduled or hardcoded macro release (`fred:` / `nonfred:` source
+ * keys) or a vendor earnings row (Finnhub, Nasdaq). Without it a release that
+ * was never captured looks exactly like one that has not happened yet.
+ *
+ * Never a hand-entered row: nothing promises an actual for one. Today's own
+ * rows are not past. Reads the STORED actual, so a figure that is on file but
+ * withheld as implausible is not called "not recorded".
+ */
+export function showsNoActualRecorded(
+  event: Pick<CalendarEvent, "source" | "source_key" | "event_type" | "event_date" | "actual_value">,
+  todayIso: string,
+): boolean {
+  if (!event.event_date || event.event_date >= todayIso) return false;
+  if (event.actual_value != null && event.actual_value.trim() !== "") return false;
+  if (event.source === "manual") return false;
+  if (event.event_type === "earnings") return event.source === "finnhub" || event.source === "nasdaq";
+  const key = typeof event.source_key === "string" ? event.source_key : "";
+  return key.startsWith(FRED_SOURCE_KEY_PREFIX) || key.startsWith("nonfred:");
+}
+
 /** Layout classes of the "actual …" chip — the JSX literal in EventRow must match. */
 const ACTUAL_CHIP_LAYOUT = "text-[11px] font-mono rounded px-1.5 py-0.5 ml-auto max-w-full break-words";
 
@@ -565,7 +669,10 @@ export function macroCardExpandable(
   );
 }
 
-function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string }) {
+function EventRow({ event: storedEvent, todayIso }: { event: DisplayedEvent; todayIso: string }) {
+  // A hand-entered earnings row prints its market slot, not "(Manual entry)".
+  // Display only: every other read below is untouched by the title.
+  const event: DisplayedEvent = { ...storedEvent, title: weekAheadTitle(storedEvent) };
   // "time unknown" for an earnings row with no clock time — never a blank and
   // never a default (user ruling 2026-10-05). Single-sourced with Today's
   // releases in lib/calendar/release-times.ts.
@@ -607,12 +714,13 @@ function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string
             'conflict', migration 057): without this the row is
             indistinguishable from a settled one, and the competing vendor
             date can be EARLIER than the one shown here — a real risk of
-            missing a print. Read-only; the confirm flow lives in
-            EarningsDateChip on the Earnings Hub. */}
+            missing a print. The chip is read-only; the Confirm / Use other
+            date buttons sit under the card (never inside the link). */}
         <EarningsConflictMarker
           dateStatus={event.date_status}
           dateConflictWith={event.date_conflict_with}
           wrap
+          resolveHere={conflictResolvableHere(event, todayIso)}
         />
         {/* The row flex-wraps, so a long actual value drops to its own
             line — never clipped to "actual…". Day columns can be as
@@ -663,6 +771,9 @@ function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string
           Cons: {consensusDisplay}
         </p>
       )}
+      {showsNoActualRecorded(event, todayIso) && (
+        <p className="text-[11px] text-ink-faint italic mt-1.5">{NO_ACTUAL_RECORDED_LABEL}</p>
+      )}
       {/* Captured market reaction (public data, unmasked) — the week view is
           the Calendar Living Record's only week-level browse path, so enriched
           past weeks surface their reactions here. Earnings rows lead with the
@@ -673,17 +784,22 @@ function EventRow({ event, todayIso }: { event: DisplayedEvent; todayIso: string
             actual={null}
             snapshotRaw={event.reaction_snapshot}
             preferEventSymbol
+            eventSymbol={event.event_type === "earnings" ? symbol : null}
           />
         </div>
       )}
     </>
   );
-  // The remove control sits under the card, never inside the link.
-  const removeRow = weekAheadRemovable(event) ? (
-    <div className="mt-1 flex justify-end">
-      <RemoveRow event={event} />
-    </div>
-  ) : null;
+  // The remove control and the date-conflict buttons sit under the card,
+  // never inside the link.
+  const resolvable = conflictResolvableHere(event, todayIso);
+  const removeRow =
+    weekAheadRemovable(event) || resolvable ? (
+      <div className="mt-1 flex flex-wrap items-center justify-end gap-x-2 gap-y-1">
+        <ConflictActions event={event} todayIso={todayIso} />
+        <RemoveRow event={event} />
+      </div>
+    ) : null;
 
   if (linked) {
     return (
