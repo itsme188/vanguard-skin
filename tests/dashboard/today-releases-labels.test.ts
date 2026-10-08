@@ -30,7 +30,7 @@ describe("pendingOrReleasedText", () => {
 });
 
 describe("slotAwareTitle", () => {
-  const base = { event_type: "earnings", raw_json: null };
+  const base = { event_type: "earnings" as const, raw_json: null };
   it("replaces (Manual entry) with the slot label", () => {
     expect(slotAwareTitle({ ...base, title: "AAA earnings (Manual entry)", event_time: "BMO" })).toBe("AAA earnings (Before Market Open)");
     expect(slotAwareTitle({ ...base, title: "AAA earnings (Manual entry)", event_time: "AMC" })).toBe("AAA earnings (After Market Close)");
@@ -40,7 +40,7 @@ describe("slotAwareTitle", () => {
   });
   it("only touches earnings titles that carry the token", () => {
     expect(slotAwareTitle({ ...base, title: "AAA earnings (After Market Close)", event_time: "BMO" })).toBe("AAA earnings (After Market Close)");
-    expect(slotAwareTitle({ event_type: "macro", raw_json: null, title: "CPI (Manual entry)", event_time: "BMO" })).toBe("CPI (Manual entry)");
+    expect(slotAwareTitle({ event_type: "cpi", raw_json: null, title: "CPI (Manual entry)", event_time: "BMO" })).toBe("CPI (Manual entry)");
   });
 });
 
