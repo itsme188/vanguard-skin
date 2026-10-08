@@ -60,6 +60,15 @@ export function RecomputeButton({
       >
         {isLoading ? "Computing..." : summary ? "Confirm recompute" : label}
       </button>
+      {summary && !isLoading && (
+        <button
+          type="button"
+          onClick={() => setSummary(null)}
+          className="ml-2 px-4 py-2 rounded-lg border border-edge text-sm font-medium text-ink-dim hover:text-ink hover:border-edge-strong focus-ring"
+        >
+          Cancel
+        </button>
+      )}
       {summary && (
         <div className="max-w-xl rounded-lg border border-edge bg-panel p-3 text-xs text-ink-dim">
           <div className="font-medium text-ink">Recompute preview</div>
