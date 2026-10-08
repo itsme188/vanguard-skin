@@ -34,6 +34,8 @@ import { getIbApi } from "@/lib/tws/client";
 import { fetchHistoricalPrices } from "@/lib/tws/historical";
 import { fetchBenchmarkPrices } from "@/lib/tws/benchmark";
 import type { TradeReview } from "@/lib/types";
+import { PRICED_BAR_SQL } from "@/lib/queries/ohlcv";
+import { todayET } from "@/lib/calendar/date-utils";
 
 /** Use the "large" model slot for months with many trades — defaults to Sonnet to avoid Opus timeouts */
 const SONNET_TRADE_THRESHOLD = 20;
@@ -314,7 +316,21 @@ export async function generateTradeReview(
   // Step 3: Build market context string + optional Vital Knowledge
   options?.onProgress?.("Building analysis context...", 3, totalSteps);
 
-  const marketContexts = getMarketContext(db, groupedTrades, params.accountId);
+  // A price range read from a history that stops short of the exit is not the
+  // period's range. Such a trade is graded without one (the prompt then says
+  // price history is unavailable) rather than on a high the stock later beat.
+  const marketContexts = getMarketContext(db, groupedTrades, params.accountId).map(
+    (ctx, i) =>
+      ctx.stockContext &&
+      !priceCoverageReachesExit(
+        db,
+        groupedTrades[i].securityId,
+        groupedTrades[i].earliestEntryDate,
+        groupedTrades[i].exitDate
+      )
+        ? { ...ctx, stockContext: null }
+        : ctx
+  );
   let marketContextStr = formatMarketContext(marketContexts, groupedTrades);
 
   // Append Vital Knowledge newsletter context — anchored to trade period, not today
@@ -613,6 +629,45 @@ function formatPeriodLabel(periodStart: string, periodEnd: string): string {
 const MIN_PRICE_POINTS = 5;
 
 /**
+ * How close to a trade's exit date its cached prices must reach, in calendar
+ * days. A weekend plus a market holiday is 4.
+ */
+export const MAX_EXIT_PRICE_GAP_DAYS = 5;
+
+/**
+ * Do the cached daily prices for this trade window reach its exit? The count
+ * alone (MIN_PRICE_POINTS) is not enough: a history that stalled mid-period
+ * has plenty of points and still ends before the move that followed, so its
+ * "period high" is only the high of the part that was cached. Reads the same
+ * two tables as the price context (`prices` and priced daily `ohlcv_bars`).
+ */
+export function priceCoverageReachesExit(
+  db: Database.Database,
+  securityId: number,
+  entryDate: string,
+  exitDate: string
+): boolean {
+  const row = db
+    .prepare(
+      `SELECT MAX(d) AS latest FROM (
+         SELECT date AS d FROM prices WHERE security_id = ? AND date >= ? AND date <= ?
+         UNION ALL
+         SELECT bar_date AS d FROM ohlcv_bars
+           WHERE security_id = ? AND bar_date >= ? AND bar_date <= ? AND bar_size = '1 day'
+             AND ${PRICED_BAR_SQL}
+       )`
+    )
+    .get(securityId, entryDate, exitDate, securityId, entryDate, exitDate) as {
+    latest: string | null;
+  };
+  if (!row.latest) return false;
+  const gapDays =
+    (new Date(`${exitDate}T00:00:00Z`).getTime() - new Date(`${row.latest}T00:00:00Z`).getTime()) /
+    (24 * 3600 * 1000);
+  return gapDays <= MAX_EXIT_PRICE_GAP_DAYS;
+}
+
+/**
  * Check price coverage for trade securities and SPY benchmark.
  * If TWS is connected and data is insufficient, fetch from TWS.
  * Silently skips if TWS is not available — review proceeds with whatever data exists.
@@ -658,6 +713,14 @@ async function backfillPriceData(
       securitiesToFetch.push(trade.securityId);
     }
   }
+  // Enough points is not enough: a security is also fetched when any of its
+  // trades has a history that stops short of the exit.
+  for (const trade of groupedTrades) {
+    if (securitiesToFetch.includes(trade.securityId)) continue;
+    if (!priceCoverageReachesExit(db, trade.securityId, trade.earliestEntryDate, trade.exitDate)) {
+      securitiesToFetch.push(trade.securityId);
+    }
+  }
 
   // Check SPY benchmark coverage
   let needBenchmark = false;
@@ -697,9 +760,12 @@ async function backfillPriceData(
     return;
   }
 
-  // Compute duration string from date range (cap at 2Y — IB's max for daily bars)
+  // Compute duration string from date range (cap at 2Y — IB's max for daily bars).
+  // The fetch ends today, so the window is measured back from today to the
+  // earliest entry — the length of the trade period alone would stop short of
+  // an older period's start.
   const daysNeeded = Math.ceil(
-    (new Date(overallEnd).getTime() - new Date(overallStart).getTime()) /
+    (new Date(todayET()).getTime() - new Date(overallStart).getTime()) /
       (24 * 3600 * 1000)
   );
   const durationStr = daysNeeded > 365 ? "2 Y" : `${Math.max(30, daysNeeded + 10)} D`;

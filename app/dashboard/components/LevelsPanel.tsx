@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import type {
   SecurityLevel,
@@ -824,6 +824,15 @@ export function LevelsPanel({
   // behind a "More options" disclosure to keep tap targets large. Desktop
   // always shows the full form.
   const [showAdvanced, setShowAdvanced] = useState(false);
+  // The row being edited. While set, the form above the list is prefilled
+  // from it and saves with PATCH (action "edit") instead of adding a level.
+  const [editing, setEditing] = useState<EnrichedLevel | null>(null);
+  // The form sits above the list; bring it into view when a row far down the
+  // list is opened for editing.
+  const formRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    if (editing) formRef.current?.scrollIntoView({ block: "nearest" });
+  }, [editing]);
   // The one confirmation this panel is waiting on (delete, or overriding an
   // arm refusal), shown in the app's ConfirmDialog. Null when none is open.
   const [confirmPrompt, setConfirmPrompt] = useState<{
@@ -964,6 +973,123 @@ export function LevelsPanel({
       await refresh();
     } catch {
       toast(networkFailureMessage("add the level"), "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Edit: the add form, prefilled from the row. Every field the form takes
+  // can be changed; the server keeps the rest of the row as it is.
+  function startEdit(l: EnrichedLevel) {
+    setEditing(l);
+    setLevelType(l.level_type);
+    setPriceSource(l.price_source);
+    setPrice(l.price_source === "static" ? String(l.price) : "");
+    setDirection(l.direction ?? "");
+    setActionHint(l.action_hint ?? "");
+    setSourceAuthor(l.source_author ?? "");
+    setThesis(l.thesis ?? "");
+    setTimeframe(l.timeframe ?? "");
+    setExpiresAt(l.expires_at ?? "");
+    setShowAdvanced(true);
+    setAdding(true);
+  }
+
+  // Closes the form and puts it back to the add defaults, so the next
+  // "+ Add Level" does not open on the edited row's values.
+  function closeEdit() {
+    setEditing(null);
+    setLevelType("entry");
+    setPriceSource("static");
+    setPrice("");
+    setDirection("");
+    setActionHint("");
+    setSourceAuthor("Me");
+    setThesis("");
+    setTimeframe("");
+    setExpiresAt("");
+    setAdding(false);
+  }
+
+  // `confirmed` names the arm refusal the user just overrode (null on the
+  // first try), as in handleReactivate below.
+  async function saveLevelEdit(target: EnrichedLevel, confirmed: ArmRefusalCode | null = null) {
+    // A moving-average level keeps its stored reference price; the field is
+    // disabled for it.
+    const priceNum = priceSource === "static" ? parseFloat(price) : target.price;
+    if (priceSource === "static" && (!priceNum || Number.isNaN(priceNum))) return;
+
+    setLoading(true);
+    try {
+      const res = await apiFetch("/api/levels", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: target.id,
+          action: "edit",
+          force: confirmed !== null,
+          level_type: levelType,
+          price: priceNum,
+          price_source: priceSource,
+          direction: direction || null,
+          action_hint: actionHint || null,
+          source_author: sourceAuthor || null,
+          thesis: thesis || null,
+          timeframe: timeframe || null,
+          expires_at: expiresAt || null,
+        }),
+      });
+      const raw = (await res.clone().json().catch(() => null)) as
+        | {
+            code?: unknown;
+            currentPrice?: unknown;
+            effectivePrice?: unknown;
+            alertedToday?: unknown;
+            armed?: unknown;
+          }
+        | null;
+      const result = { ...(await readMutationResult(res)), code: raw?.code };
+      const alertedToday = raw?.alertedToday === true;
+      const current =
+        typeof raw?.currentPrice === "number" ? formatLevelPrice(currency, raw.currentPrice) : "the current price";
+      const effective =
+        typeof raw?.effectivePrice === "number" ? formatLevelPrice(currency, raw.effectivePrice) : "the edited level";
+      if (result.ok) {
+        if (confirmed === "beyond_scan_range") {
+          toast("Level saved, but it is outside the scanner's range, so it will not alert.", "info");
+        } else if (confirmed === "would_fire_immediately" && alertedToday) {
+          toast("Level saved. It already alerted today, so the next alert can come tomorrow.", "success");
+        } else if (confirmed === "would_fire_immediately") {
+          toast("Level saved. The price is already past it, so it will alert on the next scan.", "success");
+        } else {
+          toast(`${symbol} level saved`, "success");
+        }
+        closeEdit();
+        await refresh();
+      } else if (result.status === 409 && result.code === "would_fire_immediately") {
+        const consequence = alertedToday
+          ? "It already alerted today, so it can next alert tomorrow."
+          : "Saving will fire an alert on the next scan.";
+        setConfirmPrompt({
+          title: "Save this change?",
+          message: `Price ${current} is already past the edited level (${effective}). ${consequence} Save anyway?`,
+          confirmLabel: "Save anyway",
+          onConfirm: () => saveLevelEdit(target, "would_fire_immediately"),
+          onCancel: () => toast("Nothing was saved. The level is unchanged.", "info"),
+        });
+      } else if (result.status === 409 && result.code === "beyond_scan_range") {
+        setConfirmPrompt({
+          title: "Save this change?",
+          message: `The edited level (${effective}) is outside the scanner's range at the current price ${current}, so every scan would skip it and it could not alert. This usually means a mis-scaled price. Save anyway?`,
+          confirmLabel: "Save anyway",
+          onConfirm: () => saveLevelEdit(target, "beyond_scan_range"),
+          onCancel: () => toast("Nothing was saved. The level is unchanged.", "info"),
+        });
+      } else {
+        toast(`Couldn't save the level: ${result.message}`, "error");
+      }
+    } catch {
+      toast(networkFailureMessage("save the level"), "error");
     } finally {
       setLoading(false);
     }
@@ -1178,7 +1304,7 @@ export function LevelsPanel({
             </span>
           </label>
           <button
-            onClick={() => setAdding((v) => !v)}
+            onClick={() => (editing ? closeEdit() : setAdding((v) => !v))}
             className={
               embedded
                 ? "relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
@@ -1226,9 +1352,23 @@ export function LevelsPanel({
 
       {adding && (
         <form
-          onSubmit={handleAdd}
+          ref={formRef}
+          onSubmit={(e) => {
+            if (!editing) return handleAdd(e);
+            e.preventDefault();
+            return saveLevelEdit(editing);
+          }}
           className="mb-4 p-4 rounded-lg border border-edge bg-raised space-y-3"
         >
+          {editing && (
+            <p className="text-xs text-ink-dim">
+              Editing the {LEVEL_TYPE_LABEL[editing.level_type]} level at{" "}
+              {editing.price_source === "static"
+                ? formatLevelPrice(currency, editing.price)
+                : priceSourceLabel(editing.price_source)}
+              . Its status and alert history are kept.
+            </p>
+          )}
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <Field label="Type">
               <select
@@ -1255,8 +1395,10 @@ export function LevelsPanel({
             <Field label={priceSource === "static" ? "Price" : "Price (optional)"}>
               <input
                 type="number"
-                step="0.01"
-                min="0.01"
+                // A stored level can carry more than two decimals; the browser
+                // must not refuse an unchanged price on edit.
+                step={editing ? "any" : "0.01"}
+                min={editing ? undefined : "0.01"}
                 value={price}
                 onChange={(e) => setPrice(e.target.value)}
                 required={priceSource === "static"}
@@ -1350,7 +1492,8 @@ export function LevelsPanel({
               <input
                 type="date"
                 value={expiresAt}
-                min={todayET()}
+                // An edit may keep the row's own (possibly past) expiry.
+                min={editing && expiresAt === (editing.expires_at ?? "") ? undefined : todayET()}
                 onChange={(e) => setExpiresAt(e.target.value)}
                 className="w-full bg-canvas border border-edge rounded px-2 py-1 text-xs"
                 title="Optional. After this date the level is ignored by the scan. Separate from Timeframe, which is informational only. Must be today or later — a past date would be created already expired and could never fire."
@@ -1372,7 +1515,7 @@ export function LevelsPanel({
               disabled={loading || (priceSource === "static" && !price)}
               className="px-4 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold hover:bg-gold/30 disabled:opacity-50"
             >
-              {loading ? "Saving..." : `Add ${symbol} level`}
+              {loading ? "Saving..." : editing ? "Save changes" : `Add ${symbol} level`}
             </button>
           </div>
         </form>
@@ -1867,6 +2010,26 @@ export function LevelsPanel({
                           Re-queue
                         </button>
                       )}
+                      <button
+                        onClick={() => startEdit(l)}
+                        title="Edit this level"
+                        className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1"
+                        style={{
+                          background: "transparent",
+                          border: "1px solid #333",
+                          color: "#888",
+                          fontFamily: "var(--font-mono), monospace",
+                          fontSize: "11px",
+                          fontWeight: 600,
+                          letterSpacing: "0.2em",
+                          textTransform: "uppercase",
+                          padding: "5px 10px",
+                          borderRadius: "2px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Edit
+                      </button>
                       {showPause ? (
                         <button
                           onClick={() => handleDeactivate(l.id)}
@@ -2072,6 +2235,13 @@ export function LevelsPanel({
                     Re-queue
                   </button>
                 )}
+                <button
+                  onClick={() => startEdit(l)}
+                  className="text-[10px] text-ink-faint hover:text-ink"
+                  title="Edit this level"
+                >
+                  Edit
+                </button>
                 {showPause ? (
                   <button
                     onClick={() => handleDeactivate(l.id)}

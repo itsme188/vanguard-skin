@@ -18,6 +18,7 @@ import {
   reactivateLevel,
   deleteLevel,
 } from "@/lib/mutations/security-levels";
+import { editLevel } from "@/lib/levels/edit-level";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
 import { todayET } from "@/lib/calendar/date-utils";
 
@@ -195,6 +196,46 @@ export async function PATCH(request: NextRequest) {
         // armed: the scanner watches it now (false for a rejected, pending or
         // expired level). alertedToday: it already fired in the scanner's
         // current dedupe day, so the next alert cannot come before tomorrow.
+        armed: result.armed,
+        alertedToday: result.alertedToday,
+      });
+    } else if (action === "edit") {
+      // The row's Edit control. Only the add form's fields can change; the
+      // row's review status, active flag and provenance are kept, and an edit
+      // that changes what the scanner tests asks the shared arm guard first
+      // (lib/levels/edit-level.ts).
+      const result = editLevel(db, id, body, { force: body.force === true });
+      if (!result.ok) {
+        if (result.code === "not_found") {
+          return NextResponse.json({ success: false, error: "Level not found" }, { status: 404 });
+        }
+        if (result.code === "invalid") {
+          return NextResponse.json({ success: false, error: result.message }, { status: 400 });
+        }
+        // No currency glyph, as in the reactivate refusal above.
+        const current = result.currentPrice.toFixed(2);
+        const effective = result.effectivePrice.toFixed(2);
+        const error =
+          result.code === "beyond_scan_range"
+            ? `The edited level ${effective} is outside the scanner's range at the current price ${current}, so every scan would skip it and it could never alert. Nothing was saved.`
+            : result.alertedToday
+              ? `Price ${current} is already past the edited level (${effective}). It already alerted today, so it can next alert tomorrow. Nothing was saved.`
+              : `Price ${current} is already past the edited level (${effective}), so saving will fire an alert on the next scan. Nothing was saved.`;
+        return NextResponse.json(
+          {
+            success: false,
+            error,
+            code: result.code,
+            currentPrice: result.currentPrice,
+            effectivePrice: result.effectivePrice,
+            alertedToday: result.alertedToday,
+          },
+          { status: 409 }
+        );
+      }
+      return NextResponse.json({
+        success: true,
+        level: getLevelById(db, id),
         armed: result.armed,
         alertedToday: result.alertedToday,
       });
