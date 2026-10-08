@@ -11,7 +11,7 @@
   },
   "maxConcurrentAgents": 1,
   "fixer": {
-    "enabled": false,
+    "enabled": true,
     "dryRun": false,
     "maxFixesPerNight": 4,
     "autoMergeSeverities": ["low"],
