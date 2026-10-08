@@ -32,6 +32,10 @@ type Role = "engine" | "include-with-disclosure" | "exclude";
 
 const CONSUMERS: Record<string, { role: Role; why: string }> = {
   "lib/compute/tax-lots.ts": { role: "engine", why: "computeTaxLots wipes and re-mints them" },
+  "lib/compute/tax-report.ts": {
+    role: "exclude",
+    why: "Form 8949 rows drop them (filingOnly reader); it counts the dropped ones so the card can say how many were left out",
+  },
   "lib/compute/trade-roundtrips.ts": {
     role: "include-with-disclosure",
     why: "carries isSyntheticClose on round trips; user-trade counts drop them",

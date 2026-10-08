@@ -17,6 +17,7 @@ import { getOptionExposureMap, exposureForHolding } from "@/lib/compute/exposure
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -85,6 +86,21 @@ export interface AnalysisDataCoverage {
   coveragePct: number;
   missingAccounts: string[];
   holdingsDate: string | null;
+  /**
+   * True when at least one account in scope is measured OUTSIDE cash: its
+   * latest snapshot states a cash balance, so that balance is taken off the
+   * snapshot side and cash-equivalent holdings (money-market / sweep funds)
+   * are left off the holdings side. Both totals above are then "invested
+   * value", not whole-account value.
+   */
+  cashExcluded: boolean;
+  /**
+   * `accounts.name` of every account in scope whose latest snapshot does NOT
+   * state a cash balance (statement snapshots store NULL). Those accounts are
+   * measured on whole value, so a gap there may be cash rather than missing
+   * holdings — the banner must say so and never guess.
+   */
+  unknownCashAccounts: string[];
 }
 
 // ─── Latest holdings CTE (reused across queries) ────────────────
@@ -111,6 +127,54 @@ const LATEST_HOLDINGS_CTE = `
     ON p.security_id = lp.security_id AND p.date = lp.max_date
   )
 `;
+
+/**
+ * One holdings row's value in USD — the ONE expression the allocation
+ * breakdown, the data-coverage figure and the drill-down panel
+ * (lib/queries/drill-down.ts) all read, so a row and the panel it opens can
+ * never value a holding two ways. Priced: adjusted market value. Unpriced
+ * with a positive cost basis: the cost basis. Otherwise 0.
+ * Needs aliases `h` (holdings), `s` (securities), `lp` (latest price) and
+ * `fx` (fx_rates) in scope.
+ */
+export const HOLDING_VALUE_USD_SQL = `CASE
+          WHEN lp.close_price IS NOT NULL
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
+            THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
+          ELSE 0
+        END`;
+
+/**
+ * A bond past its maturity date is no longer a position. Shared with the
+ * drill-down so a matured bond leaves the row and its panel together.
+ * Needs alias `s` (securities) in scope.
+ */
+export const UNMATURED_SECURITY_SQL =
+  "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))";
+
+/**
+ * Split one holding across sectors (explodeHoldingBySector) and MERGE the
+ * parts by normalised sector. A fund whose weight rows carry two vendor names
+ * for one sector ("Information Technology" and "Technology") is one part of
+ * that sector, not two — the row counts it once and the panel lists it once.
+ * A stored raw vendor alias on a plain holding lands in the normalised bucket
+ * the same way (project rule: never bucket a raw vendor string).
+ */
+export function explodeHoldingByNormalizedSector(
+  symbol: string,
+  securityType: string | null,
+  marketValue: number,
+  weights: Parameters<typeof explodeHoldingBySector>[3],
+  ownSector?: string | null
+): Array<{ sector: string; value: number }> {
+  const merged = new Map<string, number>();
+  for (const part of explodeHoldingBySector(symbol, securityType, marketValue, weights, ownSector)) {
+    const sector = normalizeSector(part.sector) ?? part.sector;
+    merged.set(sector, (merged.get(sector) ?? 0) + part.value);
+  }
+  return [...merged.entries()].map(([sector, value]) => ({ sector, value }));
+}
 
 // ─── Query functions ─────────────────────────────────────────────
 
@@ -340,7 +404,7 @@ export function getAllocationByDimension(
     }`;
 
   const conditions = [
-    "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+    UNMATURED_SECURITY_SQL,
     // An option past its ET expiration day is no longer a position.
     liveOptionExpirationSql("s"),
   ];
@@ -362,13 +426,7 @@ export function getAllocationByDimension(
         s.id AS security_id,
         s.security_type,
         s.option_type,
-        CASE
-          WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
-            THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
-          ELSE 0
-        END AS mv
+        ${HOLDING_VALUE_USD_SQL} AS mv
       FROM latest_holdings h
       JOIN accounts a ON a.id = h.account_id
       JOIN securities s ON s.id = h.security_id
@@ -386,26 +444,29 @@ export function getAllocationByDimension(
     }>;
 
   const optionExposures = getOptionExposureMap(db, accountIds);
-  const byGroup = new Map<string, { mv: number; exposure: number; count: number }>();
+  // position_count is DISTINCT securities per bucket: a name held in two
+  // accounts is one position, exactly as the drill-down panel lists it.
+  const byGroup = new Map<string, { mv: number; exposure: number; securities: Set<number> }>();
   let total = 0;
   for (const row of rows) {
     total += row.mv;
     const exposure = exposureForHolding(row, optionExposures);
-    const entry = byGroup.get(row.group_name) ?? { mv: 0, exposure: 0, count: 0 };
+    const entry =
+      byGroup.get(row.group_name) ?? { mv: 0, exposure: 0, securities: new Set<number>() };
     entry.mv += row.mv;
     entry.exposure += exposure;
-    entry.count += 1;
+    entry.securities.add(row.security_id);
     byGroup.set(row.group_name, entry);
   }
 
   return [...byGroup.entries()]
-    .map(([group_name, { mv, exposure, count }]) => ({
+    .map(([group_name, { mv, exposure, securities }]) => ({
       group_name,
       total_market_value: mv,
       percentage: total !== 0 ? (mv * 100) / total : 0,
       net_exposure: exposure,
       exposure_pct: total !== 0 ? (exposure * 100) / total : 0,
-      position_count: count,
+      position_count: securities.size,
     }))
     .sort((a, b) => b.total_market_value - a.total_market_value);
 }
@@ -417,16 +478,18 @@ export function getAllocationByDimension(
  * fall back to `sector ?? fund_category` (the pre-look-through COALESCE
  * semantics); sectorless bonds bucket as Fixed Income.
  *
- * position_count is the count of distinct securities contributing value to
- * that sector bucket. A look-through fund can therefore count once in each
- * sector it contributes to, matching the sector drill-down row list.
+ * position_count is the count of DISTINCT securities with a part in that
+ * sector bucket: a name held in two accounts counts once, and a fund's parts
+ * are merged by normalised sector first (explodeHoldingByNormalizedSector).
+ * A look-through fund still counts once in each sector it contributes to,
+ * matching the sector drill-down row list.
  */
 function getSectorAllocationWithLookThrough(
   db: Database.Database,
   accountIds?: number[]
 ): AllocationEntry[] {
   const conditions = [
-    "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+    UNMATURED_SECURITY_SQL,
     // An option past its ET expiration day is no longer a position.
     liveOptionExpirationSql("s"),
   ];
@@ -446,13 +509,7 @@ function getSectorAllocationWithLookThrough(
         s.option_type,
         s.sector,
         s.fund_category,
-        CASE
-          WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
-            THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
-          ELSE 0
-        END AS mv
+        ${HOLDING_VALUE_USD_SQL} AS mv
       FROM latest_holdings h
       JOIN accounts a ON a.id = h.account_id
       JOIN securities s ON s.id = h.security_id
@@ -472,13 +529,16 @@ function getSectorAllocationWithLookThrough(
 
   const weights = getEtfSectorWeights(db);
   const optionExposures = getOptionExposureMap(db, accountIds);
-  const bySector = new Map<string, { value: number; exposure: number; count: number }>();
+  const bySector = new Map<
+    string,
+    { value: number; exposure: number; securities: Set<number> }
+  >();
   let total = 0;
 
   for (const r of rows) {
     total += r.mv;
     const rowExposure = exposureForHolding(r, optionExposures);
-    const parts = explodeHoldingBySector(
+    const parts = explodeHoldingByNormalizedSector(
       r.symbol,
       r.security_type,
       r.mv,
@@ -486,23 +546,23 @@ function getSectorAllocationWithLookThrough(
       r.sector ?? r.fund_category
     );
     for (const part of parts) {
-      const sector = normalizeSector(part.sector) ?? part.sector;
-      const entry = bySector.get(sector) ?? { value: 0, exposure: 0, count: 0 };
+      const entry =
+        bySector.get(part.sector) ?? { value: 0, exposure: 0, securities: new Set<number>() };
       entry.value += part.value;
       entry.exposure += r.mv !== 0 ? rowExposure * (part.value / r.mv) : 0;
-      entry.count += 1;
-      bySector.set(sector, entry);
+      entry.securities.add(r.security_id);
+      bySector.set(part.sector, entry);
     }
   }
 
   return [...bySector.entries()]
-    .map(([group_name, { value, exposure, count }]) => ({
+    .map(([group_name, { value, exposure, securities }]) => ({
       group_name,
       total_market_value: value,
       percentage: total !== 0 ? (value * 100) / total : 0,
       net_exposure: exposure,
       exposure_pct: total !== 0 ? (exposure * 100) / total : 0,
-      position_count: count,
+      position_count: securities.size,
     }))
     .sort((a, b) => b.total_market_value - a.total_market_value) as AllocationEntry[];
 }
@@ -691,46 +751,95 @@ export function getAnalysisDataCoverage(
       : "";
   const accountParams = accountIds ?? [];
 
-  // Holdings-derived total
-  const holdingsRow = db
+  // ONE basis per account (the two sides must agree on what "cash" is):
+  //   • latest snapshot STATES a cash balance (Plaid / TWS) → invested value
+  //     on both sides: snapshot total minus cash, and holdings minus
+  //     cash-equivalent funds. A Plaid snapshot folds the sweep fund into its
+  //     cash balance while the statement's sweep row stays a live holding —
+  //     taking cash off the snapshot only let that sweep row stand in for a
+  //     genuinely missing position of the same size.
+  //   • latest snapshot has NO cash balance (statements store NULL) → we do
+  //     not guess: whole value on both sides, every holding counted, and the
+  //     account is named in `unknownCashAccounts` so the banner can say the
+  //     gap may be cash.
+  // Cash-equivalent identity is isCashEquivalentSecurity — never a symbol list.
+  // Grouped by (account, identity) so the cash-equivalent test runs in JS on
+  // the shared predicate while the sums and the freshness date stay in SQL.
+  const holdingRows = db
     .prepare(
       `WITH ${LATEST_HOLDINGS_CTE}
       SELECT
-        COALESCE(SUM(
-          CASE
-            WHEN lp.close_price IS NOT NULL
-              THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-            WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
-              THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
-            ELSE 0
-          END
-        ), 0) AS total,
+        h.account_id,
+        s.security_type,
+        s.fund_category,
+        COALESCE(SUM(${HOLDING_VALUE_USD_SQL}), 0) AS mv,
         MAX(h.as_of_date) AS latest_date
       FROM latest_holdings h
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
-      WHERE (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+      WHERE ${UNMATURED_SECURITY_SQL}
         AND ${liveOptionExpirationSql("s")}
-        ${accountFilter}`
+        ${accountFilter}
+      GROUP BY h.account_id, s.security_type, s.fund_category`
     )
-    .get(...accountParams) as { total: number; latest_date: string | null };
+    .all(...accountParams) as Array<{
+      account_id: number;
+      security_type: string | null;
+      fund_category: string | null;
+      mv: number;
+      latest_date: string | null;
+    }>;
 
-  // Snapshot-derived total (latest per account)
-  const snapshotRow = db
+  // Latest snapshot rows per account.
+  const snapshotRows = db
     .prepare(
-      `SELECT COALESCE(SUM(CASE
-          WHEN ms.cash_value IS NOT NULL THEN ms.total_value - ms.cash_value
-          ELSE ms.total_value
-        END), 0) AS total
+      `SELECT ms.account_id, a.name AS account_name, ms.total_value, ms.cash_value
        FROM monthly_snapshots ms
+       JOIN accounts a ON a.id = ms.account_id
        WHERE ms.month_end_date = (
          SELECT MAX(ms2.month_end_date) FROM monthly_snapshots ms2
          WHERE ms2.account_id = ms.account_id
        )
-       ${accountFilterSnap}`
+       ${accountFilterSnap}
+       ORDER BY a.name`
     )
-    .get(...accountParams) as { total: number };
+    .all(...accountParams) as Array<{
+      account_id: number;
+      account_name: string;
+      total_value: number | null;
+      cash_value: number | null;
+    }>;
+
+  // An account is on the ex-cash basis only when EVERY latest snapshot row it
+  // has states a cash balance.
+  const cashStated = new Map<number, boolean>();
+  const unknownCashAccounts: string[] = [];
+  for (const row of snapshotRows) {
+    const stated = row.cash_value != null;
+    cashStated.set(row.account_id, (cashStated.get(row.account_id) ?? true) && stated);
+    if (!stated && !unknownCashAccounts.includes(row.account_name)) {
+      unknownCashAccounts.push(row.account_name);
+    }
+  }
+  const exCash = (accountId: number): boolean => cashStated.get(accountId) === true;
+
+  let snapshotTotal = 0;
+  for (const row of snapshotRows) {
+    const totalValue = row.total_value ?? 0;
+    snapshotTotal += exCash(row.account_id) ? totalValue - (row.cash_value ?? 0) : totalValue;
+  }
+
+  let holdingsTotal = 0;
+  // Freshness of every in-scope holding, cash-equivalent funds included.
+  let holdingsDate: string | null = null;
+  for (const row of holdingRows) {
+    if (row.latest_date != null && (holdingsDate == null || row.latest_date > holdingsDate)) {
+      holdingsDate = row.latest_date;
+    }
+    if (exCash(row.account_id) && isCashEquivalentSecurity(row)) continue;
+    holdingsTotal += row.mv;
+  }
 
   // Accounts with snapshots but no holdings
   const missingAccounts = db
@@ -742,9 +851,6 @@ export function getAnalysisDataCoverage(
     )
     .all(...accountParams) as Array<{ name: string }>;
 
-  const holdingsTotal = holdingsRow.total;
-  const snapshotTotal = snapshotRow.total;
-
   return {
     holdingsTotal,
     snapshotTotal,
@@ -753,7 +859,9 @@ export function getAnalysisDataCoverage(
         ? Math.round((holdingsTotal / snapshotTotal) * 1000) / 10
         : 100,
     missingAccounts: missingAccounts.map((a) => a.name),
-    holdingsDate: holdingsRow.latest_date,
+    holdingsDate,
+    cashExcluded: [...cashStated.values()].some((stated) => stated),
+    unknownCashAccounts,
   };
 }
 

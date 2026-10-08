@@ -195,6 +195,47 @@ interface AnalysisViewProps {
 
 // ─── Component ───────────────────────────────────────────────────
 
+/** What the coverage banner's percentage is a percentage OF. */
+export function coveragePercentBasis(
+  coverage: Pick<AnalysisDataCoverage, "cashExcluded" | "unknownCashAccounts">
+): string {
+  if (!coverage.cashExcluded) return "of the snapshot value";
+  return coverage.unknownCashAccounts.length > 0
+    ? "of the snapshot value, outside cash where the snapshot states it"
+    : "of the snapshot value outside cash";
+}
+
+/**
+ * The sentences after the coverage banner's figures. The banner never says
+ * the gap IS missing holdings when cash could explain it: an account measured
+ * outside cash says so, and an account whose snapshot states no cash balance
+ * is named, with "may be cash" rather than a guess.
+ */
+export function coverageBannerNotes(
+  coverage: Pick<AnalysisDataCoverage, "cashExcluded" | "unknownCashAccounts" | "missingAccounts">
+): string[] {
+  const notes: string[] = [];
+  if (coverage.cashExcluded) {
+    notes.push(
+      "Where a snapshot states its cash balance, cash and cash-equivalent funds are left out of both figures."
+    );
+  }
+  if (coverage.unknownCashAccounts.length > 0) {
+    notes.push(
+      `${coverage.unknownCashAccounts.join(", ")}: the latest snapshot does not state a cash balance, so the whole account value is counted and part of the gap may be cash, not missing holdings.`
+    );
+  }
+  if (coverage.missingAccounts.length > 0) {
+    notes.push(`${coverage.missingAccounts.join(", ")}: no holdings on file.`);
+  }
+  notes.push(
+    coverage.unknownCashAccounts.length > 0
+      ? "If the gap is not cash, import holdings files or re-import statements."
+      : "Import holdings files or re-import statements to close the gap."
+  );
+  return notes;
+}
+
 export function AnalysisView({
   allocation,
   exposureSummary,
@@ -276,12 +317,12 @@ export function AnalysisView({
       {/* Data coverage warning */}
       {dataCoverage.coveragePct < 90 && (
         <div role="alert" className="bg-gold/5 border border-gold/20 rounded-lg px-4 py-3 text-sm text-gold-ink">
-          Analysis covers <PrivateText>{formatMoney(dataCoverage.holdingsTotal)}</PrivateText> of{" "}
-          <PrivateText>{formatMoney(dataCoverage.snapshotTotal)}</PrivateText> (<PrivateText>{dataCoverage.coveragePct}%</PrivateText> of portfolio).
-          {dataCoverage.missingAccounts.length > 0 && (
-            <> {dataCoverage.missingAccounts.join(", ")} missing holdings data.</>
-          )}
-          {" "}Import holdings files or re-import statements for complete analysis.
+          Holdings on file add up to <PrivateText>{formatMoney(dataCoverage.holdingsTotal)}</PrivateText> against{" "}
+          <PrivateText>{formatMoney(dataCoverage.snapshotTotal)}</PrivateText> in the latest account snapshots (<PrivateText>{dataCoverage.coveragePct}%</PrivateText>{" "}
+          {coveragePercentBasis(dataCoverage)}).
+          {coverageBannerNotes(dataCoverage).map((note) => (
+            <span key={note}> {note}</span>
+          ))}
         </div>
       )}
 
