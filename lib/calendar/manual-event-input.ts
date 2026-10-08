@@ -9,7 +9,7 @@ import { addDays } from "@/lib/calendar/date-utils";
 /** Longest ticker the app stores for a listed security (e.g. 402340.KS). */
 export const MAX_TICKER_LENGTH = 12;
 
-// Letters and digits, optionally joined by single dots or dashes:
+// Letters and digits, optionally joined by single dots, dashes or slashes:
 // AAPL, BRK.B, BF-B, 402340.KS. No spaces, no other punctuation, and a
 // separator is never first, last or doubled.
 const TICKER_SHAPE_RE = /^[A-Z0-9]+(?:[./-][A-Z0-9]+)*$/;
@@ -29,7 +29,7 @@ export function tickerShapeError(raw: string): string | null {
   if (symbol.length <= MAX_TICKER_LENGTH && TICKER_SHAPE_RE.test(symbol)) return null;
   const shown = raw.trim().slice(0, 24);
   return (
-    `"${shown}" is not a ticker symbol. Use letters and digits only, with a dot or a dash ` +
+    `"${shown}" is not a ticker symbol. Use letters and digits only, with a dot, a dash or a slash ` +
     `for a share class (for example BRK.B), up to ${MAX_TICKER_LENGTH} characters. Nothing was saved.`
   );
 }

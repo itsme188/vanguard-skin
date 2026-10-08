@@ -582,6 +582,24 @@ const acceptedOf = (d: {
 });
 
 /**
+ * Are the stored entries the same record as the body's parsed entries? Same
+ * length, same order, and every allowlisted key strictly equal (an absent key
+ * equals only an absent key). Key order is the one thing ignored. The stored
+ * side is read as it lies in KV, unparsed, so a stored value the parser would
+ * have rewritten counts as a difference.
+ */
+function sameEntries(stored: readonly unknown[], parsed: readonly ArmedEventEntry[]): boolean {
+  if (stored.length !== parsed.length) return false;
+  return parsed.every((entry, i) => {
+    const held = stored[i];
+    if (held === null || typeof held !== "object" || Array.isArray(held)) return false;
+    const a = held as Record<string, unknown>;
+    const b = entry as unknown as Record<string, unknown>;
+    return ARMED_EVENT_ENTRY_KEYS.every((key) => a[key] === b[key]);
+  });
+}
+
+/**
  * Read-compare-write: applies only when `body.generation` is strictly greater
  * than the generation already stored. A replayed or out-of-order POST is a
  * no-op that reports the generation that stands — and, either way, `accepted`
@@ -591,7 +609,13 @@ const acceptedOf = (d: {
  * build from before the id lists (it has neither list key) and the body is
  * that SAME generation carrying ids. The old build took the POST and dropped
  * the lists, so the generation it holds is incomplete; the same generation
- * completes it. Never for a lower generation, never when the body has no ids,
+ * completes it — by ADDING the two lists to the record. The stored `entries`
+ * are never replaced: the lists are added only when the body's entries equal
+ * the stored ones (`sameEntries`), which is what proves the body is the same
+ * record. A restored Mac database can reach the same generation number with
+ * different content; that body changes nothing and is answered like any
+ * already-held generation (accepted counts zero), so the Mac keeps the row
+ * undelivered. Never for a lower generation, never when the body has no ids,
  * and never once the record carries the list keys.
  */
 export async function applyArmedEventsDelta(
@@ -620,13 +644,25 @@ export async function applyArmedEventsDelta(
   const removedEventIds = parseRemovedEventIds(b.removedEventIds);
   const { delta: current, hasIdLists } = await readStoredArmedEvents(kv);
   const held = current?.generation ?? 0;
-  const completesOldBuildRecord =
-    current != null &&
-    !hasIdLists &&
-    b.generation === held &&
-    supersededEventIds.length + removedEventIds.length > 0;
-  if (b.generation <= held && !completesOldBuildRecord) {
-    return { applied: false, generation: held, accepted: acceptedOf(current) };
+  if (b.generation <= held) {
+    const completesOldBuildRecord =
+      current != null &&
+      !hasIdLists &&
+      b.generation === held &&
+      supersededEventIds.length + removedEventIds.length > 0 &&
+      sameEntries(current.entries, entries);
+    if (!completesOldBuildRecord) {
+      return { applied: false, generation: held, accepted: acceptedOf(current) };
+    }
+    // The stored entries are written back exactly as they stand.
+    const completed = {
+      generation: held,
+      entries: current.entries,
+      supersededEventIds,
+      removedEventIds,
+    };
+    await kv.put(ARMED_EVENTS_KV_KEY, JSON.stringify(completed));
+    return { applied: true, generation: held, accepted: acceptedOf(completed) };
   }
   const stored = { generation: b.generation, entries, supersededEventIds, removedEventIds };
   await kv.put(ARMED_EVENTS_KV_KEY, JSON.stringify(stored));
