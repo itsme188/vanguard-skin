@@ -927,3 +927,23 @@ describe("scenario subjects", () => {
     });
   });
 });
+
+describe("international_exposure scenario scores are pinned (owner ruling 2026-10-08)", () => {
+  const scores = FACTOR_SHOCK_SENSITIVITIES.international_exposure;
+
+  it("the stored label 'International' scores exactly as 'High' does", () => {
+    expect(scores.International).toBe(1.0);
+    expect(scores.International).toBe(scores.High);
+  });
+
+  it("'Very High' stays a separate, higher tier", () => {
+    expect(scores["Very High"]).toBe(1.3);
+    expect(scores["Very High"]).toBeGreaterThan(scores.International);
+  });
+
+  it("no label is silently unmapped: every scored label is a finite number", () => {
+    for (const [label, value] of Object.entries(scores)) {
+      expect(Number.isFinite(value), label).toBe(true);
+    }
+  });
+});
