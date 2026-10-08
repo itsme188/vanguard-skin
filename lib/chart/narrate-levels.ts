@@ -20,7 +20,7 @@ export const NARRATIVE_SCHEMA = jsonSchema<{ narrative: string }>({
     narrative: {
       type: "string",
       description:
-        "ONE sentence, max 25 words, describing why this price level matters. No boilerplate. No hedging. Lead with the concrete reason (e.g., 'Tested as support 4 times since December, coinciding with the 50-day SMA').",
+        "ONE sentence, max 25 words: the rationale only, meaning why this level matters. The card prints the level's price, side, distance, touch count and touch dates itself, so restate none of them and state no figure. No boilerplate. No hedging. Lead with the concrete reason (e.g., 'Buyers stepped in on each retest and the latest bounce held a higher low').",
     },
   },
   required: ["narrative"],
@@ -46,6 +46,11 @@ export interface LevelNarrativeInput {
  * its sentence, which the card rendered next to the correct chip (qa:
  * security-detail-levels--suggestion-narrative-contradicts-chip). Never
  * re-scale it here.
+ *
+ * The data lines are context for the model, not text to repeat: the closing
+ * instruction asks for the rationale only. The facts shown on the card are
+ * composed from the level row (`composeLevelNarrative` in
+ * lib/levels/narrative-guard.ts), never from the reply.
  */
 function buildPrompt(input: LevelNarrativeInput): string {
   const { symbol, currentPrice, level, recentBars } = input;
@@ -64,7 +69,7 @@ Confidence: ${level.confidence}
 Recent price action (last 20 sessions):
 ${tail}
 
-Write exactly one sentence — max 25 words — that explains why this level is worth watching. Focus on what the pivot data shows. No generic advice, no caveats.`;
+Write exactly one sentence — max 25 words — giving the rationale only: why this level matters, from what the pivot data and the recent price action show. The card already prints the level's price, whether it is support or resistance, its distance from the current price, the touch count and the touch dates next to your sentence. Do not restate any of them, and state no price, percentage, count or date. No generic advice, no caveats.`;
 }
 
 /**

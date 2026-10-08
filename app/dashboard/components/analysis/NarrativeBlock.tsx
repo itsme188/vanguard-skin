@@ -63,6 +63,15 @@ function driftDetail(surfaceKey: Props["surfaceKey"]): string {
     : "the numbers on this card no longer match";
 }
 
+/**
+ * The benchmark the route says this prose was written against. The route sends
+ * null when it cannot show one; anything but a non-empty string reads as that.
+ */
+function readBenchmark(data: { benchmark?: unknown } | null | undefined): string | null {
+  const b = data?.benchmark;
+  return typeof b === "string" && b.trim() ? b.trim() : null;
+}
+
 export type NarrativeRenderState = "loading" | "hidden" | "cold-failure" | "cold-empty" | "narrative";
 
 /**
@@ -136,6 +145,9 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
   const [drifted, setDrifted] = useState(false);
   // The cache read came back empty for this scope and card.
   const [notGenerated, setNotGenerated] = useState(false);
+  // The benchmark the shown prose was written against (factor card only),
+  // from the route. Null when the route cannot show one: then no caption.
+  const [benchmark, setBenchmark] = useState<string | null>(null);
 
   // POST is the generate path (#35 task 5): GET is a cache-read that returns
   // { notGenerated: true } on a miss and NEVER generates. handleRefresh runs
@@ -157,6 +169,7 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
       if (res.ok && data.success) {
         setText(data.narrativeMd);
         setGeneratedAt(data.generatedAt ?? null);
+        setBenchmark(readBenchmark(data));
         // Regenerated against the current book — the banner has to clear, or
         // the user refreshes forever chasing a warning that never goes away.
         setDrifted(data.drifted === true);
@@ -189,6 +202,7 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
     setText(null);
     setGeneratedAt(null);
     setNotGenerated(false);
+    setBenchmark(null);
     fetch(`/api/analysis/narrative?scope=${scope}&surface=${surfaceKey}`)
       .then((r) => r.json())
       .then((data) => {
@@ -197,6 +211,7 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
           setText(data.narrativeMd);
           setGeneratedAt(data.generatedAt ?? null);
           setDrifted(data.drifted === true);
+          setBenchmark(readBenchmark(data));
         } else if (data.success && data.notGenerated) {
           // Cache is empty. Stop here: no AI call without a click. The
           // cold-empty state offers the Generate button.
@@ -306,6 +321,10 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
           <span className="text-xs text-ink-faint">
             Generated {generatedLabel}
           </span>
+        )}
+        {/* A ticker is public market data, so it is not masked. */}
+        {benchmark && (
+          <span className="text-xs text-ink-faint">Written against {benchmark}</span>
         )}
         <button
           type="button"

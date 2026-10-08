@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import {
   generateNarrative,
   computeNarrativeFingerprint,
+  provenNarrativeBenchmark,
   NARRATIVE_SURFACES,
 } from "@/lib/compute/analysis-narratives";
 import {
@@ -34,6 +35,11 @@ export const dynamic = "force-dynamic";
  * banners it. It deliberately does NOT auto-regenerate: staying read-only is
  * the whole point of this route, and a paid model call must be an explicit
  * POST the user asked for.
+ *
+ * `benchmark` is the benchmark the STORED prose was written against, or null
+ * when that cannot be shown (`provenNarrativeBenchmark`: the row has no
+ * benchmark column, so a matching fingerprint is the only proof). The card
+ * prints it so prose is not read as describing whatever the picker shows.
  */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
@@ -79,6 +85,7 @@ export async function GET(req: NextRequest) {
       fromCache: true,
       generatedAt: cached.generatedAt,
       drifted: isNarrativeDrifted(cached, currentFingerprint),
+      benchmark: storedBenchmark(scope, surface, cached.inputFingerprint, currentFingerprint),
     });
   }
 
@@ -91,7 +98,25 @@ export async function GET(req: NextRequest) {
     generatedAt: null,
     notGenerated: true,
     drifted: false,
+    benchmark: null,
   });
+}
+
+/**
+ * Pure (no read, no write, no model call). Any failure reads as "not known":
+ * a benchmark is never named on evidence that could not be gathered.
+ */
+function storedBenchmark(
+  scope: string,
+  surface: string,
+  storedFingerprint: string | null | undefined,
+  currentFingerprint: string | null
+): string | null {
+  try {
+    return provenNarrativeBenchmark(scope, surface, storedFingerprint, currentFingerprint);
+  } catch {
+    return null;
+  }
 }
 
 // Per-process rate limiter; OK for the single-server Electron deployment. If
@@ -151,7 +176,12 @@ export async function POST(req: NextRequest) {
     });
     // forceRegen above means `r` was just rendered from the inputs whose
     // fingerprint it stored — fresh by construction.
-    return NextResponse.json({ success: true, ...r, drifted: false });
+    return NextResponse.json({
+      success: true,
+      ...r,
+      drifted: false,
+      benchmark: r.benchmark ?? null,
+    });
   } catch (e) {
     // Roll back the stamp: a transient AI failure must not burn the 24h
     // window — only the double-click guard above is the stamp's real job.
