@@ -1126,3 +1126,11 @@ Six commits. One Codex review (approved, no findings), one review that called th
 - The cloud twin rule cannot hear about a hand-entered row deleted more than fourteen days back or not yet drained from the outbox; the suppression then lasts until the next snapshot.
 
 **Closeout.** The nightly fixer is back on (`qa/deep-qa-config.json`). The handoff is rewritten. The sixth, seventh and eighth waves deploy together after 04:30 Eastern, Worker first.
+
+## 2026-10-09 (about 03:45) — Second overnight sprint, a small ninth wave before the deploy
+
+One commit, found by the final browser check of the finished build. One Codex review, the full suite, and a browser comparison on the sandbox.
+
+**Decision taken. The owner should confirm or reverse it.** The Analysis trust strip judges a bond's duration with the same estimator as the Fixed Income card (`estimateBondRateLeg`): stored, estimated (with what it was derived from) or not modelled (with the reason). Only a bond that cannot be modelled counts as a gap. Before, the card showed an estimated duration for bonds the strip's drawer still listed as having none. On the sandbox copy the two agree bond for bond in every scope.
+
+**Codex's one finding, kept as it is, for the owner to confirm.** The strip still counts a bond the card leaves out: one with no price, or a short one. The two answer different questions. The card lists what it can value; the strip is a coverage readout, and a held bond with no price is the kind of gap it should show. For every bond the card shows, the two agree.
