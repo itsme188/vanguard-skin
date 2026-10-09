@@ -32,12 +32,6 @@ const DARK_PREFIX = "[[data-theme=dark]_&]:";
 
 /** Failing pairs that stay, each with the reason. Key: "<file> | <bg> <text>". */
 const ALLOWLIST: Record<string, string> = {
-  "app/dashboard/components/ConfirmDialog.tsx | bg-down/90 text-white":
-    "Solid destructive button, not a tint: 4.44:1 in the dark theme only. Reported to the owner; no Chip tone is a solid fill.",
-  "app/dashboard/today/EarningsDeleteButton.tsx | bg-down/90 text-white":
-    "Same solid destructive button as ConfirmDialog (4.44:1, dark theme only). Reported to the owner.",
-  "app/dashboard/components/FactorHeatmap.tsx | bg-violet-500/15 text-violet-400":
-    "The OPT marker is violet and the Chip table has no violet tone (2.05:1 in the light theme). Reported to the owner: needs a tone decision.",
   "app/dashboard/components/DataConfidenceIndicator.tsx | bg-down/20 text-down":
     "A code comment describing the old pair, not a class string.",
 };

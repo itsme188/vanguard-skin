@@ -1,5 +1,6 @@
 "use client";
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { Suspense } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -124,7 +125,7 @@ function MobileBottomNavInner() {
                 className="flex flex-col items-center gap-0.5 -mt-3"
                 aria-label="Open chat"
               >
-                <span className="flex items-center justify-center w-12 h-12 rounded-full bg-gold text-canvas shadow-lg shadow-gold/20">
+                <span className={`flex items-center justify-center w-12 h-12 rounded-full ${GOLD_FILL_CLASSES} shadow-lg shadow-gold/20`}>
                   {item.icon}
                 </span>
                 <span className="text-[10px] font-medium text-gold-ink">

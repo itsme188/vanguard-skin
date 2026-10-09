@@ -1,5 +1,6 @@
 "use client";
 
+import { DANGER_FILL_CLASSES, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useRef, type ReactNode } from "react";
 
 interface ConfirmDialogProps {
@@ -85,8 +86,8 @@ export function ConfirmDialog({
           disabled={confirmDisabled}
           className={`px-4 py-2 rounded-lg text-sm font-medium transition-[filter,background-color,scale] active:scale-[0.96] focus-ring disabled:opacity-50 disabled:cursor-not-allowed ${
             variant === "danger"
-              ? "bg-down/90 text-white hover:bg-down"
-              : "bg-gold text-canvas hover:brightness-110"
+              ? `${DANGER_FILL_CLASSES} hover:brightness-90`
+              : `${GOLD_FILL_CLASSES} hover:brightness-110`
           }`}
         >
           {confirmLabel}

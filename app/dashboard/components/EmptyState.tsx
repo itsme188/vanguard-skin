@@ -1,3 +1,4 @@
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
@@ -19,7 +20,7 @@ export function EmptyState({ icon, title, description, action }: EmptyStateProps
       {action && (
         <Link
           href={action.href}
-          className="mt-4 px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring"
+          className={`mt-4 px-4 py-2 rounded-lg ${GOLD_FILL_CLASSES} text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring`}
         >
           {action.label}
         </Link>

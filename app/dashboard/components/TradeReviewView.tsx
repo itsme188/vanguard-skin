@@ -1,7 +1,8 @@
 "use client";
 
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
-import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
+import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
+import { GRADE_BAR_FILL, GRADE_BAR_TEXT } from "@/app/dashboard/components/trade-grade-bar";
 import { useState, useCallback, type ReactNode } from "react";
 import type { TradeReview } from "@/lib/types";
 import { MarkdownMessage } from "./MarkdownMessage";
@@ -77,14 +78,6 @@ const GRADE_STYLES: Record<string, string> = {
   C: `bg-gold/25 ${CHIP_TONE_TEXT.gold} border-gold/40`,
   D: `${CHIP_TONE_CLASSES.down} border-down/30`,
   F: `bg-down/25 ${CHIP_TONE_TEXT.down} border-down/40`,
-};
-
-const GRADE_COLORS: Record<string, string> = {
-  A: "bg-up",
-  B: "bg-up/60",
-  C: "bg-gold",
-  D: "bg-down/60",
-  F: "bg-down",
 };
 
 /**
@@ -579,7 +572,7 @@ export function TradeReviewView({
               if (period) handleGenerate(period.periodStart, period.periodEnd);
             }}
             disabled={generating || !selectedPeriod}
-            className="px-4 py-1.5 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-[filter,scale] active:scale-[0.96] focus-ring whitespace-nowrap"
+            className={`px-4 py-1.5 rounded-lg ${GOLD_FILL_CLASSES} text-sm font-medium hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-[filter,scale] active:scale-[0.96] focus-ring whitespace-nowrap`}
           >
             {generating ? "Generating..." : "Generate Review"}
           </button>
@@ -639,7 +632,7 @@ export function TradeReviewView({
           <div className="flex gap-3 pt-1">
             <button
               onClick={handleSubmitAnswers}
-              className="px-4 py-1.5 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring"
+              className={`px-4 py-1.5 rounded-lg ${GOLD_FILL_CLASSES} text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring`}
             >
               Submit & Generate
             </button>
@@ -819,7 +812,7 @@ function ReviewCard({
           )}
           <span
             aria-hidden
-            className={`ml-auto transition-colors ${isExpanded ? "text-gold" : "text-ink-faint"}`}
+            className={`ml-auto transition-colors ${isExpanded ? "text-gold-ink" : "text-ink-faint"}`}
             style={{ letterSpacing: "0.1em" }}
           >
             •••
@@ -906,7 +899,7 @@ function ReviewDetail({
           the narrative's dollar figures are from the understated era. */}
       {narrativeStale && (
         <div className="px-5 py-3 bg-gold/5 border-l-2 border-gold flex items-start gap-2">
-          <span aria-hidden className="text-gold text-sm leading-5">⚠</span>
+          <span aria-hidden className="text-gold-ink text-sm leading-5">⚠</span>
           <p className="text-xs text-ink-dim leading-5">
             <span className="text-gold-ink font-medium">
               Dollar figures in this narrative are outdated.
@@ -933,7 +926,7 @@ function ReviewDetail({
           honest caveat rather than hiding the numbers. */}
       {conventionPending && (
         <div className="px-5 py-3 bg-gold/5 border-l-2 border-gold flex items-start gap-2">
-          <span aria-hidden className="text-gold text-sm leading-5">⚠</span>
+          <span aria-hidden className="text-gold-ink text-sm leading-5">⚠</span>
           <p className="text-xs text-ink-dim leading-5">
             <span className="text-gold-ink font-medium">
               Trade P&L figures are pending a recompute.
@@ -978,13 +971,13 @@ function ReviewDetail({
                 gradeCounts[g] ? (
                   <div
                     key={g}
-                    className={`${GRADE_COLORS[g]} flex items-center justify-center`}
+                    className={`${GRADE_BAR_FILL[g]} flex items-center justify-center`}
                     style={{
                       width: `${(gradeCounts[g] / groupedTrades.length) * 100}%`,
                     }}
                     title={`${g}: ${gradeCounts[g]}`}
                   >
-                    <span className="text-[8px] font-bold text-canvas/80">
+                    <span className={`text-[8px] font-bold ${GRADE_BAR_TEXT[g]}`}>
                       {g}
                     </span>
                   </div>
@@ -1103,9 +1096,8 @@ function GroupedTradeCards({
       {groupedTrades.map((trade, idx) => {
         const isGain = trade.totalPnl >= 0;
         const pnlColor = isGain ? "text-up" : "text-down";
-        // Use literal opacity classes so Tailwind's JIT picks them up;
-        // dynamic `${pnlColor}/70` would build a string the scanner can't see.
-        const pnlMutedColor = isGain ? "text-up/70" : "text-down/70";
+        // The checked small-text inks: the old 70% fade measured 2.8 to 3.3:1.
+        const pnlMutedColor = isGain ? CHIP_TONE_TEXT.up : CHIP_TONE_TEXT.down;
         const returnPctValue = trade.returnPct;
         const tradeKey =
           trade.saleTransactionId != null
@@ -1174,7 +1166,7 @@ function GroupedTradeCards({
                 </div>
                 <span
                   aria-hidden
-                  className={`text-xs transition-colors ${isExpanded ? "text-gold" : "text-ink-faint"}`}
+                  className={`text-xs transition-colors ${isExpanded ? "text-gold-ink" : "text-ink-faint"}`}
                   style={{ letterSpacing: "0.1em" }}
                 >
                   •••
@@ -1204,12 +1196,12 @@ function GroupedTradeCards({
                   </div>
                 )}
                 {trade.whatWorked && (
-                  <p className="text-xs text-up/80">
+                  <p className={`text-xs ${CHIP_TONE_TEXT.up}`}>
                     ✓ <PrivateText>{trade.whatWorked}</PrivateText>
                   </p>
                 )}
                 {trade.whatDidnt && (
-                  <p className="text-xs text-down/80">
+                  <p className={`text-xs ${CHIP_TONE_TEXT.down}`}>
                     ✗ <PrivateText>{trade.whatDidnt}</PrivateText>
                   </p>
                 )}

@@ -1,6 +1,6 @@
 "use client";
 
-import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
+import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { emptyEnrichmentLabel } from "@/lib/research/empty-enrichment";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
@@ -963,7 +963,7 @@ export function ResearchFeedsView({
             disabled={syncing}
             aria-busy={syncing || bgSyncing}
             title={syncing ? "Syncing…" : bgSyncing ? "Background refresh running — click to sync now" : "Sync Feeds"}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed"
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium ${GOLD_FILL_CLASSES} hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed`}
           >
             {syncing || bgSyncing ? (
               <div className="w-3.5 h-3.5 border-2 border-canvas border-t-transparent rounded-full animate-spin" />
@@ -1396,7 +1396,7 @@ function ArticleCard({
 
         {/* Portfolio relevance */}
         {article.portfolio_relevance && (
-          <p className={`text-[17px] leading-[1.7] text-gold/80 mb-3 pl-3 border-l-2 ${border}`}>
+          <p className={`text-[17px] leading-[1.7] ${CHIP_TONE_TEXT.gold} mb-3 pl-3 border-l-2 ${border}`}>
             <PrivateText>{article.portfolio_relevance}</PrivateText>
           </p>
         )}

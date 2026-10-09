@@ -134,7 +134,7 @@ export function AccountSummaryCards({
             {hasEstimate && (
               <div className="mt-3 pt-2.5 border-t border-edge/50">
                 <div className="flex items-baseline justify-between">
-                  <span className="text-lg font-mono tabular-nums text-gold/80">
+                  <span className="text-lg font-mono tabular-nums text-gold-ink">
                     ~<Money value={account.estimatedValue} />
                   </span>
                   <span className="text-[11px] font-mono font-medium text-gold-ink">

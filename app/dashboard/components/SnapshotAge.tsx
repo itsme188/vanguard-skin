@@ -1,3 +1,4 @@
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import {
   LIVE_HOLDING_SOURCE_PREFIXES,
@@ -81,7 +82,7 @@ export function computeSnapshotAgeMeta(asOfDate: string, now: Date = new Date())
 const TONE_CLASS: Record<SnapshotAgeMeta["tone"], string> = {
   "ink-faint": "text-ink-faint",
   "ink-dim": "text-ink-dim",
-  warn: "text-down/80",
+  warn: CHIP_TONE_TEXT.down,
 };
 
 /**

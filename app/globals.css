@@ -583,12 +583,18 @@ textarea:focus-visible,
   z-index: 200;
   padding: 8px 16px;
   background: var(--color-gold);
-  color: var(--color-canvas);
+  /* Near-black on gold in both themes: light gold with the cream canvas
+   * colour measured 3.10:1 at 14px; ink is 6.08:1. The dark theme keeps its
+   * canvas colour below (11.52:1), so it renders as before. */
+  color: var(--color-ink);
   font-size: 14px;
   font-weight: 500;
   border-radius: 8px;
   text-decoration: none;
   transition: top 0.15s ease;
+}
+[data-theme="dark"] .skip-link {
+  color: var(--color-canvas);
 }
 
 .skip-link:focus {

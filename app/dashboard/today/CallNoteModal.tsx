@@ -1,5 +1,6 @@
 "use client";
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
@@ -192,7 +193,7 @@ export function CallNoteModal({ eventId, symbol, open, onClose, onSaved }: Props
             type="button"
             onClick={save}
             disabled={saving || loading}
-            className="relative rounded-lg bg-gold px-3 py-1.5 text-[13px] font-medium text-canvas disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+            className={`relative rounded-lg ${GOLD_FILL_CLASSES} px-3 py-1.5 text-[13px] font-medium disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']`}
           >
             {saving ? "Saving…" : "Save note"}
           </button>

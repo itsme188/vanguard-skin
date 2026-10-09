@@ -72,6 +72,8 @@ const PALETTE: Record<string, string> = {
   "blue-500": "3b82f6",
   "violet-400": "a78bfa",
   "violet-500": "8b5cf6",
+  "violet-600": "7c3aed",
+  "violet-700": "6d28d9",
   "amber-300": "fcd34d",
   "amber-400": "fbbf24",
   "orange-400": "fb923c",
@@ -100,7 +102,7 @@ const SURFACE_NAMES = new Set([
 ]);
 
 /** A colour and how opaque it is (1 = solid). */
-type Paint = { rgb: Rgb; alpha: number };
+export type Paint = { rgb: Rgb; alpha: number };
 
 function namedColour(theme: Theme, name: string): Rgb | null {
   if (PALETTE[name]) return hex(PALETTE[name]);
@@ -108,7 +110,7 @@ function namedColour(theme: Theme, name: string): Rgb | null {
 }
 
 /** The part after `bg-` or `text-`, as a paint. Null when it is not a colour. */
-function paint(theme: Theme, value: string): Paint | null {
+export function paint(theme: Theme, value: string): Paint | null {
   let body = value;
   let alpha = 1;
   const slash = body.match(/^(.*)\/(\d+)$/);
@@ -156,9 +158,9 @@ function splitVariants(cls: string): string[] {
   return parts;
 }
 
-type Scope = "base" | "dark" | "light" | "state";
+export type Scope = "base" | "dark" | "light" | "state";
 
-function classify(cls: string): { scope: Scope; utility: string } {
+export function classify(cls: string): { scope: Scope; utility: string } {
   const parts = splitVariants(cls);
   const utility = parts.pop() ?? "";
   let scope: Scope = "base";

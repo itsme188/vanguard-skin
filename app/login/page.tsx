@@ -20,6 +20,7 @@
  * exempt from that wrapper.
  */
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useState, type FormEvent } from "react";
 import { safeNextPath } from "@/lib/auth/safe-next";
 import type { LoginResponse } from "@/app/api/auth/login/route";
@@ -107,7 +108,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={submitting || password.length === 0}
-            className="w-full py-2 text-sm font-medium rounded bg-gold text-canvas hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className={`w-full py-2 text-sm font-medium rounded ${GOLD_FILL_CLASSES} hover:opacity-90 disabled:opacity-50 transition-opacity`}
           >
             {submitting ? "Signing in…" : "Sign in"}
           </button>

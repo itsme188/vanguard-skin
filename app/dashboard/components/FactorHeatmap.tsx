@@ -120,7 +120,7 @@ export function FactorHeatmap({ rows, onCellClick }: FactorHeatmapProps) {
   function sortIndicator(col: SortColumn) {
     if (sortColumn !== col) return null;
     return (
-      <span className="ml-0.5 text-gold">
+      <span className="ml-0.5 text-gold-ink">
         {sortDirection === "desc" ? "▼" : "▲"}
       </span>
     );
@@ -176,7 +176,7 @@ export function FactorHeatmap({ rows, onCellClick }: FactorHeatmapProps) {
                       {row.symbol}
                     </span>
                     {row.is_option && (
-                      <span className="text-[9px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-400 font-medium">
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-700 [[data-theme=dark]_&]:text-violet-400 font-medium">
                         OPT
                       </span>
                     )}
@@ -223,7 +223,7 @@ export function FactorHeatmap({ rows, onCellClick }: FactorHeatmapProps) {
                         <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-canvas border border-edge rounded shadow-lg text-[10px] text-ink whitespace-nowrap z-20">
                           {row.symbol}: {FACTOR_LABELS[col]} = {value}
                           {row.is_option && (
-                            <span className="text-violet-400 ml-1">(from underlying)</span>
+                            <span className="text-violet-700 [[data-theme=dark]_&]:text-violet-400 ml-1">(from underlying)</span>
                           )}
                         </div>
                       )}

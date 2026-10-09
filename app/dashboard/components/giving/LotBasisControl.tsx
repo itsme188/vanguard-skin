@@ -1,5 +1,6 @@
 "use client";
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type { GivingFlaggedLot, GivingLotGift } from "@/lib/queries/giving-view";
@@ -282,7 +283,7 @@ export function BasisVerifiedDialog({
           <button
             type="submit"
             disabled={busy || noteEmpty}
-            className="px-4 py-2 rounded-lg text-sm font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring disabled:opacity-50 disabled:cursor-not-allowed"
+            className={`px-4 py-2 rounded-lg text-sm font-medium ${GOLD_FILL_CLASSES} hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring disabled:opacity-50 disabled:cursor-not-allowed`}
           >
             {busy ? "Saving…" : "Save"}
           </button>

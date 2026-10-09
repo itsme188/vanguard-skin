@@ -235,7 +235,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
             <span className="text-xs text-ink-faint">
               Top-10 basket vol:{" "}
               <Pct value={data.portfolioVol * 100} digits={1} className="font-mono text-ink" />
-              <span className="ml-1 text-[10px] text-ink-faint/70">
+              <span className="ml-1 text-[10px] text-ink-faint">
                 (price-based · 1Y · top 10 positions)
               </span>
             </span>

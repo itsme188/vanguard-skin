@@ -1,6 +1,6 @@
 "use client";
 
-import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
+import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -296,7 +296,7 @@ function UploadZone({ onUploadComplete }: UploadZoneProps) {
           <button
             onClick={() => inputRef.current?.click()}
             disabled={uploading}
-            className="px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed focus-ring"
+            className={`px-4 py-2 rounded-lg ${GOLD_FILL_CLASSES} text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed focus-ring`}
           >
             {uploading ? "Processing…" : "Choose PDF"}
           </button>
@@ -821,7 +821,7 @@ function DocumentRow({
                   >
                     <span>{showFullText ? "▾" : "▸"}</span>
                     {showFullText ? "Hide" : "Show"} full text
-                    <span className="text-ink-faint/70 normal-case tracking-normal">
+                    <span className="text-ink-faint normal-case tracking-normal">
                       · {detail.raw_text.length.toLocaleString()} chars
                     </span>
                   </button>
