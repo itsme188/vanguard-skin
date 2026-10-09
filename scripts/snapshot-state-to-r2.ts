@@ -32,7 +32,7 @@ import {
 import { getModelCatalog } from "@/lib/ai/model-catalog";
 import { bogeyHasContentSql } from "@/lib/mutations/earnings-bogeys";
 import { getBriefingHoldings } from "@/lib/calendar/briefing";
-import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
+import { getEarningsHeldSymbols, getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
 import {
   applyClusterManualActuals,
   type ClusterActualsRow,
@@ -54,7 +54,7 @@ const CALENDAR_LOOKAHEAD_DAYS = 7;
 const SNAPSHOT_RETENTION_DAYS = 7;
 
 interface Snapshot {
-  schemaVersion: 13;
+  schemaVersion: 14;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -231,6 +231,13 @@ interface Snapshot {
     source: string;
     event_type: string;
   }>;
+  // v14 — the symbols the Mac's EARNINGS coverage calls held: long or short,
+  // stock or the underlying of a live option, with share-class siblings. Read
+  // by the Worker's earnings readers only (preview, recap, wrap, the "held"
+  // chip, the print push). `heldSymbols` above keeps its meaning (long stock)
+  // for the digest, the evening email, the briefing and newsletter relevance.
+  // Symbols only: no quantity, no direction, no option terms.
+  earningsHeldSymbols: string[];
 }
 
 /**
@@ -706,7 +713,7 @@ function buildSnapshot(db: Database.Database): Snapshot {
     );
 
     return {
-      schemaVersion: 13,
+      schemaVersion: 14,
       snapshotDate: todayET(),
       generatedAt: new Date().toISOString(),
       heldSymbols: getHeldStockSymbols(db),
@@ -775,6 +782,10 @@ function buildSnapshot(db: Database.Database): Snapshot {
       armedEvents: buildArmedEventsEntries(db, { today: todayET() }),
       // v13 — every live hand-entered earnings row, for the manual-twin rule.
       manualEarningsRows: getManualEarningsRowsForSnapshot(db),
+      // v14 — the earnings coverage's own held set, from the reader the Mac's
+      // coverage and push gates use (getSymbolStatusDetailed). Never a second
+      // query here: tests/scripts/snapshot-earnings-held-symbols.test.ts.
+      earningsHeldSymbols: getEarningsHeldSymbols(db, { today: todayET() }),
     };
   })();
 }
@@ -816,6 +827,7 @@ async function main() {
   console.log(
     `[snapshot] uploaded ${key} (v${snapshot.schemaVersion}) in ${uploadMs}ms — ` +
       `${snapshot.heldSymbols.length} symbols, ` +
+      `${snapshot.earningsHeldSymbols.length} earnings-held symbols, ` +
       `${snapshot.calendarEvents.length} events, ` +
       `${snapshot.researchSources.length} sources, ` +
       `${snapshot.recentArticlesMeta.length} article-meta, ` +

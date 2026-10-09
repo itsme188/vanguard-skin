@@ -24,7 +24,8 @@
  *        the Mac primary sweep still uses the full [105,135] band)
  *      - Recap window: enriched_at IS NOT NULL AND
  *        now ≤ enriched_at + 4h
- *   3. Filter to held|watchlist (snapshot.heldSymbols) + earningsSettings
+ *   3. Filter to held|watchlist (the earnings held set, earnings-held.ts:
+ *      snapshot.earningsHeldSymbols, or heldSymbols before v14) + earningsSettings
  *      (master toggle + muted symbols).
  *   4. Skip events Mac already audited (snapshot.earningsEmails) OR with
  *      mac-sent-* / cloud-sent-* / mac-running-* markers in KV. The same two

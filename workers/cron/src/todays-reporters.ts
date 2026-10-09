@@ -4,7 +4,8 @@
  * Builds the same deterministic block the Mac's
  * lib/digest/todays-reporters.ts composes, but from the R2 state snapshot:
  * calendarEvents (today's earnings, superseded skipped, finnhub-preferred
- * dedup), heldSymbols/watchlistSymbols (v8) for position chips, and
+ * dedup), the earnings held set (earnings-held.ts) and watchlistSymbols (v8)
+ * for position chips, and
  * earningsIntel (v9) for the implied-move column. ZERO subrequests — all
  * snapshot data. Pre-v8/v9 snapshots degrade (chips/impl render "—"),
  * never throw.
@@ -18,6 +19,7 @@
 import { resolveExpectedMove } from "./expected-move";
 import type { ArmedEventsDelta, Snapshot, CalendarEventRow } from "./state";
 import { issuerSiblings } from "./fallback-earnings";
+import { earningsHeldSet } from "./earnings-held";
 import { effectiveCalendarEvents } from "./armed-events";
 import {
   renderTodaysReportersBlock,
@@ -125,7 +127,9 @@ export function buildTodaysReportersBlock(
     }
 
     // Family-aware position sets (B20 rule: never symbol-string-equal).
-    const held = new Set((snapshot.heldSymbols ?? []).map((s) => s.toUpperCase()));
+    // The Mac's chip reads getSymbolStatus, whose "held" counts a short and
+    // an option-only name: the same set, from the snapshot (earnings-held.ts).
+    const held = earningsHeldSet(snapshot);
     const watch = new Set((snapshot.watchlistSymbols ?? []).map((s) => s.toUpperCase()));
     const inFamily = (sym: string, set: Set<string>) =>
       issuerSiblings(sym).some((s) => set.has(s.toUpperCase()));

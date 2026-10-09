@@ -223,8 +223,11 @@ export interface SnapshotBogey {
  *   v13 — adds manualEarningsRows (every live hand-entered earnings row, five
  *        columns) so the manual-twin email rule is not limited to the
  *        calendar window
+ *   v14 — adds earningsHeldSymbols (the Mac's earnings-coverage held set:
+ *        option-only and short-only names included), read through
+ *        earnings-held.ts by the earnings readers only
  *
- * All v2–v13 fields are optional for back-compat with older snapshots; the
+ * All v2–v14 fields are optional for back-compat with older snapshots; the
  * fallback gracefully degrades when these are missing.
  */
 /**
@@ -330,7 +333,9 @@ export interface Snapshot {
   // is deployed before the first v12 snapshot is written.
   // v13 (2026-10-09) adds `manualEarningsRows`. Optional, and nothing gates on
   // the number: a v12 snapshot simply lacks the field. Same deploy order.
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
+  // v14 (2026-10-09) adds `earningsHeldSymbols`. Optional, and nothing gates
+  // on the number: a v13 snapshot simply lacks the field. Same deploy order.
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -411,6 +416,13 @@ export interface Snapshot {
   // Optional/additive: a ≤v12 snapshot lacks it and the rule runs over the
   // calendar window alone, as before.
   manualEarningsRows?: ManualEarningsSnapshotRow[];
+  // v14 — the symbols the Mac's EARNINGS coverage calls held: long or short,
+  // stock or the underlying of a live option, share-class siblings included.
+  // Symbols only. Read through `earningsHeldSet` (earnings-held.ts) and by
+  // the earnings readers only; `heldSymbols` (long stock) keeps its meaning
+  // for every other reader. Optional/additive: a ≤v13 snapshot lacks it and
+  // the earnings readers fall back to `heldSymbols`, as before.
+  earningsHeldSymbols?: string[];
 }
 
 /** The five columns the manual-twin rule reads; nothing else is shipped. */

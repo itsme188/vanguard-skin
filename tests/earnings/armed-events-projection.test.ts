@@ -676,10 +676,11 @@ describe("snapshot slice — scripts/snapshot-state-to-r2.ts structure (D9)", ()
     expect(source).toMatch(/function buildSnapshot\([^)]*\)[^{]*\{\s*return db\.transaction\(/);
   });
 
-  it("ships v13 (v11's armed watermark, armed list and vendor EPS column are kept)", () => {
+  it("ships v14 (v11's armed watermark, armed list and vendor EPS column are kept)", () => {
     // v12 (2026-10-08) added currency + triggered_at to the level rows; v13
-    // (2026-10-09) added manualEarningsRows. The v11 fields below are unchanged.
-    expect(source).toContain("schemaVersion: 13");
+    // (2026-10-09) added manualEarningsRows; v14 (2026-10-09) added
+    // earningsHeldSymbols. The v11 fields below are unchanged.
+    expect(source).toContain("schemaVersion: 14");
     expect(source).toContain("armedGeneration: readArmedGeneration(db)");
     expect(source).toContain("armedEvents: buildArmedEventsEntries(db,");
     expect(source).toContain("b.eps_consensus_vendor");

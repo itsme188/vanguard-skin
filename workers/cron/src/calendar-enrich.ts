@@ -44,6 +44,7 @@ import { captureReactionFromYahoo } from "./yahoo";
 import { fetchActualForEventCloud, type WorkerEnrichActualResult } from "./enrich-actuals";
 import { ACTUAL_REFUSED_PREFIX, isReferencePeriod, macroActualProblem } from "./macro-figure";
 import { issuerSiblings } from "./fallback-earnings";
+import { earningsHeldSet } from "./earnings-held";
 import { effectiveCalendarEvents, readArmedEventsDelta } from "./armed-events";
 import { readPrintPushMarker, writePrintPushMarker } from "./earnings-markers";
 import { composePrintPushMessage } from "./print-push-message";
@@ -501,7 +502,11 @@ export async function runCloudFallback(
         try {
           const sym = cand.symbol.toUpperCase();
           const family = issuerSiblings(sym).map((s) => s.toUpperCase());
-          const heldSet = new Set((snapshot.heldSymbols ?? []).map((s) => s.toUpperCase()));
+          // "Held" as the Mac's push gate reads it (getSymbolStatus): a short
+          // and an option-only name count. From the snapshot's v14 field, or
+          // `heldSymbols` on an older snapshot (earnings-held.ts). The gate
+          // itself is unchanged: held / watchlist / read-through.
+          const heldSet = earningsHeldSet(snapshot);
           const watchSet = new Set((snapshot.watchlistSymbols ?? []).map((s) => s.toUpperCase()));
           const muted = new Set(
             (snapshot.earningsSettings?.mutedSymbols ?? []).map((s) => s.toUpperCase()),

@@ -217,6 +217,24 @@ cloud digest had been composing on a 7/13 snapshot). Tracked via the gitignored
 | v11 (2026-09-03) | `armedEvents` + `armedGeneration` (the KV-delta watermark) and `eps_consensus_vendor` on `earningsBogeys` rows — read by `armed-events.ts::effectiveCalendarEvents`. Snapshots ≤ v10 ignore the delta and degrade to held + watchlist (see §15) |
 | v12 (2026-10-08) | `currency` and `triggered_at` on `securityLevels` rows — read by `level-scan.ts` (currency label on the cloud push; once-per-Eastern-day guard). Both optional: a v11 row reads as USD and never blocks. **Deploy the Worker before the first v12 snapshot is written** |
 | v13 (2026-10-09) | `manualEarningsRows`: every live hand-entered earnings row (id, symbol, date, source, type), with no date window, read by `fallback-earnings.ts` as extra input to the two-hand-entered-entries rule so the cloud ignores the same later entry the Mac ignores. Optional: a v12 snapshot reads as today (calendar window only). **Deploy the Worker before the first v13 snapshot is written** |
+| v14 (2026-10-09) | `earningsHeldSymbols`: the symbols the Mac's earnings coverage calls held (long or short, stock or the underlying of a live option, share-class siblings included). Symbols only. Read through `earnings-held.ts::earningsHeldSet` by the Worker's earnings readers only. Optional: a v13 snapshot reads as before (`heldSymbols`, long stock). **Deploy the Worker before the first v14 snapshot is written** |
+
+**Two held lists (since v14, owner ruling 2026-10-09).** The snapshot carries two lists with two meanings, and neither replaces the other.
+
+| List | Meaning | Built by (Mac) | Read by (Worker) |
+|---|---|---|---|
+| `heldSymbols` | Long stock only (quantity above zero, type stock) | `getHeldStockSymbols` | Digest article context (`fallback-digest.ts`), evening roster, bucket order and prompt (`fallback-evening.ts`, `synthesis-budget.ts`), the pre-v7 briefing list (`fallback-briefing.ts`), newsletter relevance (`newsletter-fetch.ts`) |
+| `earningsHeldSymbols` | What the Mac's earnings coverage calls held: long or short, stock or the underlying of a live option, share-class siblings included | `getEarningsHeldSymbols`, which asks `getSymbolStatusDetailed` (the reader behind `coveredForEvents` and the three push gates) and writes no rule of its own | `earnings-held.ts::earningsHeldSet`, called by `armed-events.ts::isCoveredInCloud` (preview, recap, the after-close wrap cluster), `todays-reporters.ts` (the "held" chip) and `calendar-enrich.ts` (the print push and its read-through targets) |
+
+Rules:
+- **Fallback.** `earningsHeldSet` uses `earningsHeldSymbols` when the field is a list, empty or not, and `heldSymbols` when the field is absent (a snapshot older than v14). An empty list means no held names; it does not fall back.
+- **The push gate is unchanged**: held / watchlist / read-through. Only what "held" means in it changed, to what the Mac's own gate already counts (`getSymbolStatus`).
+- **Privacy.** The field is symbols only: no quantity, no direction, no option terms, never an option contract symbol.
+- **The option expiry is decided on the Mac**, on the snapshot's Eastern day, through `liveOptionExpirationSql`. The Worker compares no expiry. A name whose only option expires after the snapshot was written stays covered until the next snapshot, the same way a stock sold after the snapshot does.
+- **The Mac's reader is blind to security type for a direct holding**, so a held fund, ETF or bond symbol is in the list. No earnings event carries such a symbol; the one place it can show is a read-through target, where the Mac also calls it held.
+- **Not mirrored (unchanged):** the Mac's watchlist test accepts any security type; `watchlistSymbols` is stock only.
+- **Wording.** The cloud email's Positions block already prints direction and option terms per row (`presence-position.ts`, a mirror of `lib/digest/presence-only-position.ts`): "short ZZS (account)", "long ZZO $50 calls exp … (account)". It never prints a count or a cost.
+- Guards: `workers/cron/test/earnings-held.test.ts`, the v14 cases in `workers/cron/test/calendar-enrich.test.ts`, and `tests/scripts/snapshot-earnings-held-symbols.test.ts` (runs the real snapshot builder and the real Worker readers against the Mac's reader).
 
 ## 9. Mac-side scheduling (launchd + pmset)
 

@@ -71,8 +71,8 @@ function seedEvent(o: {
 const snapshot = (): WorkerSnapshot => buildSnapshot(db) as unknown as WorkerSnapshot;
 
 describe("snapshot manualEarningsRows", () => {
-  it("is version 13", () => {
-    expect(snapshot().schemaVersion).toBe(13);
+  it("is version 14 (13 added this field; 14 added earningsHeldSymbols)", () => {
+    expect(snapshot().schemaVersion).toBe(14);
   });
 
   it("carries every live hand-entered earnings row, in or out of the calendar window", () => {

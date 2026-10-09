@@ -446,6 +446,93 @@ describe("runCloudFallback push-at-print hook", () => {
 
     expect(sendPushover).toHaveBeenCalledTimes(1);
   });
+
+  // Snapshot v14: the gate's "held" is the Mac's earnings held set
+  // (earnings-held.ts). The Mac's push gate reads getSymbolStatus, whose
+  // "held" counts a name held only short or only through a live option; the
+  // reporter in these tests (AAPL) stands for such a name. The gate itself is
+  // unchanged: held / watchlist / read-through.
+  function withEarningsHeld(snap: Snapshot, symbols: string[]): Snapshot {
+    (snap as unknown as { earningsHeldSymbols: string[] }).earningsHeldSymbols = symbols;
+    return snap;
+  }
+
+  it("v14: pushes for a name in earningsHeldSymbols that heldSymbols does not list (option-only or short-only)", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      withEarningsHeld(makePushSnapshot({ heldSymbols: [], watchlistSymbols: [] }), ["AAPL"]),
+    );
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).toHaveBeenCalledTimes(1);
+    const [, msg] = (sendPushover as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(msg.title).toBe("AAPL reported");
+    // The push says nothing about the position: no direction, no count.
+    expect(`${msg.title} ${msg.message}`).not.toMatch(/\b(long|short|shares|contracts|calls|puts)\b/i);
+  });
+
+  it("v14: a name in heldSymbols only does not push once the field is present", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      withEarningsHeld(makePushSnapshot({ heldSymbols: ["AAPL"], watchlistSymbols: [] }), []),
+    );
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).not.toHaveBeenCalled();
+  });
+
+  it("v14: a muted option-only or short-only name stays silent", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      withEarningsHeld(
+        makePushSnapshot({ heldSymbols: [], watchlistSymbols: [], mutedSymbols: ["AAPL"] }),
+        ["AAPL"],
+      ),
+    );
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).not.toHaveBeenCalled();
+  });
+
+  it("v14: a read-through TARGET held only through an option or only short counts as held", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      withEarningsHeld(
+        makePushSnapshot({
+          heldSymbols: [],
+          watchlistSymbols: [],
+          readThroughPairs: [{ reporter: "AAPL", target: "ZZO", weight: 1.0, hypothesis: "same cycle" }],
+        }),
+        ["ZZO"],
+      ),
+    );
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).toHaveBeenCalledTimes(1);
+    const [, msg] = (sendPushover as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(msg.title).toBe("AAPL reported — read-through");
+    expect(msg.message).toContain("→ ZZO (held): same cycle");
+  });
+
+  it("pre-v14 snapshot (no field): the gate reads heldSymbols exactly as before", async () => {
+    const env = makeEnv();
+    const snap = makePushSnapshot({ heldSymbols: ["AAPL"], watchlistSymbols: [], schemaVersion: 13 });
+    expect("earningsHeldSymbols" in snap).toBe(false);
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("shouldRunCalendarEnrich gate (B8: 18:59 upper bound for AMC reactions)", () => {

@@ -38,6 +38,7 @@
  */
 import type { ArmedEventEntry, ArmedEventsDelta, CalendarEventRow, Snapshot } from "./state";
 import { issuerSiblings } from "./fallback-earnings";
+import { earningsHeldSet } from "./earnings-held";
 
 export const ARMED_EVENTS_KV_KEY = "armed-events";
 
@@ -305,6 +306,11 @@ function supersedeRelistedSnapshotRows(
  * Cloud coverage for one event: armed (an event fact, per slice A) OR the
  * classic family-aware held/watchlist test. Armed is checked first and by
  * EVENT ID — arming is a property of the print, not of the symbol.
+ *
+ * "Held" is the earnings-coverage held set (`earningsHeldSet`): since
+ * snapshot v14 it includes a name held only short or only through a live
+ * option, as the Mac's `coveredForEvents` does; an older snapshot reads
+ * `heldSymbols` as before.
  */
 export function isCoveredInCloud(
   snapshot: Snapshot,
@@ -313,7 +319,7 @@ export function isCoveredInCloud(
 ): boolean {
   if (eff.armedEventIds.has(event.id)) return true;
   if (!event.symbol) return false;
-  const held = new Set((snapshot.heldSymbols ?? []).map((s) => s.toUpperCase()));
+  const held = earningsHeldSet(snapshot);
   const watch = new Set((snapshot.watchlistSymbols ?? []).map((s) => s.toUpperCase()));
   return issuerSiblings(event.symbol).some(
     (s) => held.has(s.toUpperCase()) || watch.has(s.toUpperCase()),

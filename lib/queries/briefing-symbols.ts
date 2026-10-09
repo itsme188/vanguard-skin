@@ -184,6 +184,67 @@ export function getSymbolStatusDetailed(
   return buildOut(held, watched);
 }
 
+/** How many symbols one status query is asked about (bound parameters). */
+const EARNINGS_HELD_CHUNK = 400;
+
+/**
+ * Every symbol the earnings coverage calls HELD, as a plain list: the cloud
+ * snapshot's `earningsHeldSymbols` (scripts/snapshot-state-to-r2.ts).
+ *
+ * The decision is NOT made here. This function only lists which symbols to
+ * ask about and keeps the ones `getSymbolStatusDetailed` answers `held` for:
+ * the same reader `coveredForEvents` and the three push gates use. So a name
+ * held only through a live option (its underlying), or held only short,
+ * is in; a name whose only option has expired is out; a share-class sibling
+ * of a held name is in.
+ *
+ * Symbols asked about: the symbol of every security that has a holdings row,
+ * the underlying of every option that has one, and the share-class siblings
+ * of each. No other symbol can be held: the reader matches a holding by its
+ * own symbol or its underlying, through the family. An option's own contract
+ * symbol is never asked about: no event carries one.
+ *
+ * Symbols only. No quantity, no direction, no option terms.
+ */
+export function getEarningsHeldSymbols(
+  db: Database.Database,
+  opts: { today?: string } = {},
+): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT UPPER(s.symbol) AS symbol,
+              UPPER(s.underlying_symbol) AS underlying,
+              LOWER(COALESCE(s.security_type, '')) AS type
+         FROM securities s
+        WHERE EXISTS (SELECT 1 FROM holdings h WHERE h.security_id = s.id)`,
+    )
+    .all() as { symbol: string | null; underlying: string | null; type: string }[];
+
+  const asked = new Set<string>();
+  const ask = (symbol: string | null): void => {
+    if (!symbol || !symbol.trim()) return;
+    for (const member of issuerSiblings(symbol)) asked.add(member.toUpperCase());
+  };
+  for (const r of rows) {
+    if (r.type === "option") ask(r.underlying);
+    else ask(r.symbol);
+  }
+
+  const candidates = Array.from(asked);
+  const held: string[] = [];
+  for (let i = 0; i < candidates.length; i += EARNINGS_HELD_CHUNK) {
+    const detailed = getSymbolStatusDetailed(
+      db,
+      candidates.slice(i, i + EARNINGS_HELD_CHUNK),
+      opts,
+    );
+    for (const [symbol, v] of Object.entries(detailed)) {
+      if (v.reasons.held) held.push(symbol);
+    }
+  }
+  return held.sort();
+}
+
 /**
  * Classify a batch of symbols as held / watchlist / armed / neither in one
  * round trip. Used by the EarningsHub block on `/dashboard/today` to render
