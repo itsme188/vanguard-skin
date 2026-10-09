@@ -291,7 +291,7 @@ describe("one rule, not two (source pins)", () => {
 
   it("the snapshot builder takes the field from getEarningsHeldSymbols and still takes heldSymbols from getHeldStockSymbols", () => {
     const src = read("scripts/snapshot-state-to-r2.ts");
-    expect(src).toContain("earningsHeldSymbols: getEarningsHeldSymbols(db, { today: todayET() })");
+    expect(src).toContain("return getEarningsHeldSymbols(db, { today: todayET() });");
     expect(src).toContain("heldSymbols: getHeldStockSymbols(db)");
     expect(src).toContain("schemaVersion: 14");
   });

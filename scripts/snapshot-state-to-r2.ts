@@ -236,8 +236,11 @@ interface Snapshot {
   // by the Worker's earnings readers only (preview, recap, wrap, the "held"
   // chip, the print push). `heldSymbols` above keeps its meaning (long stock)
   // for the digest, the evening email, the briefing and newsletter relevance.
-  // Symbols only: no quantity, no direction, no option terms.
-  earningsHeldSymbols: string[];
+  // Symbols only: no quantity, no direction, no option terms. ABSENT when
+  // the helper threw: the Worker then falls back to `heldSymbols`, which is
+  // the pre-v14 behaviour. Never an empty list by mistake (an empty list
+  // means "no held names" to the Worker).
+  earningsHeldSymbols?: string[];
 }
 
 /**
@@ -785,7 +788,19 @@ function buildSnapshot(db: Database.Database): Snapshot {
       // v14 — the earnings coverage's own held set, from the reader the Mac's
       // coverage and push gates use (getSymbolStatusDetailed). Never a second
       // query here: tests/scripts/snapshot-earnings-held-symbols.test.ts.
-      earningsHeldSymbols: getEarningsHeldSymbols(db, { today: todayET() }),
+      // A failure here must not cost the whole snapshot (every cloud fallback
+      // reads it): the field is left out and the failure is logged.
+      earningsHeldSymbols: (() => {
+        try {
+          return getEarningsHeldSymbols(db, { today: todayET() });
+        } catch (err) {
+          console.error(
+            "[snapshot] earningsHeldSymbols could not be built; the field is left out and the cloud falls back to heldSymbols:",
+            err,
+          );
+          return undefined;
+        }
+      })(),
     };
   })();
 }
@@ -827,7 +842,7 @@ async function main() {
   console.log(
     `[snapshot] uploaded ${key} (v${snapshot.schemaVersion}) in ${uploadMs}ms — ` +
       `${snapshot.heldSymbols.length} symbols, ` +
-      `${snapshot.earningsHeldSymbols.length} earnings-held symbols, ` +
+      `${snapshot.earningsHeldSymbols?.length ?? "NO (helper failed)"} earnings-held symbols, ` +
       `${snapshot.calendarEvents.length} events, ` +
       `${snapshot.researchSources.length} sources, ` +
       `${snapshot.recentArticlesMeta.length} article-meta, ` +

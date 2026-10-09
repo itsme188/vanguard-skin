@@ -229,7 +229,9 @@ cloud digest had been composing on a 7/13 snapshot). Tracked via the gitignored
 Rules:
 - **Fallback.** `earningsHeldSet` uses `earningsHeldSymbols` when the field is a list, empty or not, and `heldSymbols` when the field is absent (a snapshot older than v14). An empty list means no held names; it does not fall back.
 - **The push gate is unchanged**: held / watchlist / read-through. Only what "held" means in it changed, to what the Mac's own gate already counts (`getSymbolStatus`).
-- **Privacy.** The field is symbols only: no quantity, no direction, no option terms, never an option contract symbol.
+- **Privacy.** The field is symbols only: no quantity, no direction, no option terms, and never the contract symbol of a row typed option. A row that is an option but is typed as something else is treated as a direct holding, so its own symbol is listed (the same row is already in the snapshot's holdings).
+- **The "held" chip is inside the cloud digest email.** The Today's reporters table in the digest (`fallback-digest.ts` calls `buildTodaysReportersBlock`) reads the earnings list, so an option-only or short-only reporter shows `held` there, as on the Mac. Everything else in the digest still reads `heldSymbols`.
+- **A helper failure leaves the field out.** The snapshot builder catches an error from `getEarningsHeldSymbols`, logs it and writes no field; the Worker then falls back to `heldSymbols`. It never writes an empty list by mistake.
 - **The option expiry is decided on the Mac**, on the snapshot's Eastern day, through `liveOptionExpirationSql`. The Worker compares no expiry. A name whose only option expires after the snapshot was written stays covered until the next snapshot, the same way a stock sold after the snapshot does.
 - **The Mac's reader is blind to security type for a direct holding**, so a held fund, ETF or bond symbol is in the list. No earnings event carries such a symbol; the one place it can show is a read-through target, where the Mac also calls it held.
 - **Not mirrored (unchanged):** the Mac's watchlist test accepts any security type; `watchlistSymbols` is stock only.
