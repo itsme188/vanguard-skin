@@ -72,7 +72,7 @@ function accountRow(symbol: string, f: { cost: number | null; value: number | nu
 const wrap = (node: ReactNode) => renderToStaticMarkup(<PrivacyProvider>{node}</PrivacyProvider>);
 const footerOf = (html: string) => sliceBetween(html, "<tfoot", "</tfoot>");
 const cells = (footer: string) =>
-  [...footer.matchAll(/<td[^>]*>(.*?)<\/td>/gs)].map((m) =>
+  [...footer.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) =>
     m[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
   );
 

@@ -69,9 +69,9 @@ describe("/api/search level title currency", () => {
   it("keeps the dollar label for a dollar security and for one seeded with no currency", async () => {
     const usd = seedSecurity("ZZB", "USD");
     upsertLevel(hoisted.db, {
-      security_id: usd, level_type: "take_profit", price: 1250, thesis: "dollar shelf marker",
+      security_id: usd, level_type: "scale_in", price: 1250, thesis: "dollar shelf marker",
     });
-    expect(await levelTitle("dollar shelf")).toBe("ZZB take profit $1,250.00");
+    expect(await levelTitle("dollar shelf")).toBe("ZZB scale in $1,250.00");
 
     // No currency given: the column's own default applies.
     const blank = seedSecurity("ZZC");
