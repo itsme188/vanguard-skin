@@ -36,6 +36,12 @@ import {
 } from "@/lib/earnings/pre-print-floor";
 import { recordWireObservation } from "@/lib/earnings/wire-times";
 import { todayET, addDays } from "./date-utils";
+import {
+  admitCapturedReaction,
+  DEFAULT_REACTION_WINDOW_MIN,
+  isReactionWindowElapsed,
+  REACTION_RECAPTURE_HORIZON_MS,
+} from "./reaction-validity";
 
 // Macro releases (FRED/FOMC/nonfred): data is typically published within
 // minutes of release, and the reaction window is the immediate 2-hour
@@ -53,14 +59,18 @@ const MIN_AGE_MS = 5 * 60 * 1000;      // 5 minutes
 const RETRY_PACING_MS = 10 * 60 * 1000;
 // After this long past release, an actual-bearing earnings row counts as
 // complete even without a reaction snapshot (bars target T+120; +30 slack).
-const REACTION_SETTLE_MS = 150 * 60 * 1000;
+const REACTION_SETTLE_MS = REACTION_RECAPTURE_HORIZON_MS;
 
-// Reaction bars target t_post = release+120m (TWS fetch window ends at
-// +125m) — any capture attempt before ~T+115m is a guaranteed-empty
-// TWS/Yahoo round. Earnings rows retry every tick (migration 062) so they
-// come back; macro rows are single-shot and are NEVER gated (their
-// immediate partial capture is by design).
-export const REACTION_READY_MS = 115 * 60 * 1000;
+// A reaction is the move to release + 120 minutes. Until that instant has
+// passed there is nothing to measure, so NO row — earnings or macro — is
+// captured before it (owner ruling 2026-10-08; the rule itself lives in
+// lib/calendar/reaction-validity.ts and is shared with the renderers).
+// History: this was T+115m and earnings-only (the matcher accepts a bar up to
+// 10 minutes short of its target), and macro rows were never gated.
+// Earnings rows retry every tick (migration 062) so they come back on their
+// own; a row already marked done (every macro row is, on its first pass) is
+// picked up by the reaction-only follow-up below.
+export const REACTION_READY_MS = DEFAULT_REACTION_WINDOW_MIN * 60 * 1000;
 
 function maxAgeFor(event: { source: string; event_type: string }): number {
   if (event.source === "finnhub" || event.event_type === "earnings") {
@@ -346,7 +356,6 @@ export async function runEnrichment(
   // from the tail; any dropped normal candidate re-enters on the next
   // 15-min tick via the ordinary window filter.
   if (candidates.length > limit) candidates.splice(limit);
-  if (candidates.length === 0) return [];
 
   const update = updateEnrichment(db);
   const results: EnrichmentResult[] = [];
@@ -360,7 +369,8 @@ export async function runEnrichment(
         ? { actual: null, consensus: null } // already captured on a prior attempt
         : await fetchActualForEvent(db, event);
 
-      // Reaction snapshot — only attempt when TWS is available.
+      // Reaction snapshot — never before the window has elapsed (the gate
+      // is inside captureReactionForRow).
       let reaction: ReactionSnapshot | null = null;
       if (event.release_time) {
         const releaseInstant = composeReleaseInstant(
@@ -368,75 +378,13 @@ export async function runEnrichment(
           event.release_time,
         );
         if (releaseInstant) {
-          let sectorEtf: string | null = null;
-          if (event.event_type === "earnings") {
-            const resolved = resolveSectorForEarnings(db, event.security_id);
-            sectorEtf = resolved.etf;
-            // Log gap when an earnings symbol has no mappable sector.
-            if (!sectorEtf && event.symbol) {
-              logSectorGap(db, event.symbol, resolved.sector);
-            }
-          } else {
-            sectorEtf = resolveSectorEtf(event.event_type, null);
-          }
-          const eventSymbol =
-            event.event_type === "earnings" ? event.symbol : null;
-
-          // Earnings rows retry every tick, so a capture attempt before bars
-          // can plausibly exist is a guaranteed-empty TWS/Yahoo round —
-          // skip it and let a later tick (past T+115m) do the work. Macro
-          // rows are single-shot and are NEVER gated (see REACTION_READY_MS).
-          const captureAgeMs =
-            (opts.now ?? new Date()).getTime() - releaseInstant.getTime();
-          const reactionReady =
-            !isEarnings || captureAgeMs >= REACTION_READY_MS;
-
-          // Earnings rows anchor t_pre to the prior regular-session close
-          // (2026-08-04) — see captureReactionFromTws. Macro rows keep pure
-          // release-window semantics (earnings stays null).
-          const earningsAnchor =
-            isEarnings
-              ? (() => {
-                  const closeInstant = composeReleaseInstant(event.event_date, "16:00");
-                  return closeInstant
-                    ? { closeMs: closeInstant.getTime(), eventDate: event.event_date }
-                    : null;
-                })()
-              : null;
-
-          // Prefer TWS — superior intraday TRADES bars, no upstream rate limit.
-          if (opts.tws && reactionReady) {
-            reaction = await captureReactionFromTws(
-              opts.tws,
-              releaseInstant,
-              sectorEtf,
-              { pacingMs: opts.pacingMs, eventSymbol, earnings: earningsAnchor },
-            );
-          }
-
-          // Fall back to Yahoo when TWS is unavailable OR returned null
-          // (TWS contractDetails timeout, no matching bars, etc.). Same
-          // module the Worker cloud-fallback uses, so the resulting JSON
-          // shape is identical (source: "yahoo"). Best-effort — never
-          // let a Yahoo failure abort enrichment.
-          if (!reaction && reactionReady) {
-            try {
-              reaction = await captureReactionFromYahoo(
-                releaseInstant,
-                sectorEtf,
-                {
-                  pacingMs: opts.pacingMs,
-                  eventSymbol,
-                  earningsCloseMs: earningsAnchor?.closeMs ?? null,
-                },
-              );
-            } catch (err) {
-              console.warn(
-                `[enrichment] Yahoo fallback failed for event ${event.id}:`,
-                err,
-              );
-            }
-          }
+          reaction = await captureReactionForRow(
+            db,
+            event,
+            releaseInstant,
+            opts,
+            (opts.now ?? new Date()).getTime(),
+          );
         }
       }
 
@@ -546,6 +494,192 @@ export async function runEnrichment(
     }
   }
 
+  // Reaction-only follow-up — windowed sweep only, within what is left of
+  // this pass's limit.
+  if (opts.eventId == null) {
+    const followUps = await runReactionFollowUp(
+      db,
+      opts,
+      Math.max(0, limit - candidates.length),
+      new Set(candidates.map((c) => c.id)),
+    );
+    results.push(...followUps);
+  }
+
+  return results;
+}
+
+/**
+ * Capture one row's reaction, or null when it may not be measured yet.
+ *
+ * The gate is in two places on purpose: the time check up front saves a
+ * guaranteed-useless TWS/Yahoo round, and admitCapturedReaction is the last
+ * word on what may be stored (it also drops a dead-quote leg and stamps
+ * `captured_at`). Shared by the main pass and the reaction-only follow-up.
+ */
+async function captureReactionForRow(
+  db: Database.Database,
+  event: Pick<EnrichmentCandidate, "id" | "source" | "event_type" | "event_date" | "symbol" | "security_id">,
+  releaseInstant: Date,
+  opts: EnrichOptions,
+  nowMs: number,
+): Promise<ReactionSnapshot | null> {
+  const isEarnings = event.source === "finnhub" || event.event_type === "earnings";
+
+  let sectorEtf: string | null = null;
+  if (event.event_type === "earnings") {
+    const resolved = resolveSectorForEarnings(db, event.security_id);
+    sectorEtf = resolved.etf;
+    // Log gap when an earnings symbol has no mappable sector.
+    if (!sectorEtf && event.symbol) {
+      logSectorGap(db, event.symbol, resolved.sector);
+    }
+  } else {
+    sectorEtf = resolveSectorEtf(event.event_type, null);
+  }
+
+  if (!isReactionWindowElapsed(releaseInstant.getTime(), nowMs)) return null;
+
+  const eventSymbol = event.event_type === "earnings" ? event.symbol : null;
+
+  // Earnings rows anchor t_pre to the prior regular-session close
+  // (2026-08-04) — see captureReactionFromTws. Macro rows keep pure
+  // release-window semantics (earnings stays null).
+  const earningsAnchor = isEarnings
+    ? (() => {
+        const closeInstant = composeReleaseInstant(event.event_date, "16:00");
+        return closeInstant
+          ? { closeMs: closeInstant.getTime(), eventDate: event.event_date }
+          : null;
+      })()
+    : null;
+
+  let reaction: ReactionSnapshot | null = null;
+
+  // Prefer TWS — superior intraday TRADES bars, no upstream rate limit.
+  if (opts.tws) {
+    reaction = await captureReactionFromTws(opts.tws, releaseInstant, sectorEtf, {
+      pacingMs: opts.pacingMs,
+      eventSymbol,
+      earnings: earningsAnchor,
+    });
+  }
+
+  // Fall back to Yahoo when TWS is unavailable OR returned null
+  // (TWS contractDetails timeout, no matching bars, etc.). Same
+  // module the Worker cloud-fallback uses, so the resulting JSON
+  // shape is identical (source: "yahoo"). Best-effort — never
+  // let a Yahoo failure abort enrichment.
+  if (!reaction) {
+    try {
+      reaction = await captureReactionFromYahoo(releaseInstant, sectorEtf, {
+        pacingMs: opts.pacingMs,
+        eventSymbol,
+        earningsCloseMs: earningsAnchor?.closeMs ?? null,
+      });
+    } catch (err) {
+      console.warn(
+        `[enrichment] Yahoo fallback failed for event ${event.id}:`,
+        err,
+      );
+    }
+  }
+
+  return admitCapturedReaction(reaction, nowMs);
+}
+
+interface ReactionFollowUpRow {
+  id: number;
+  source: string;
+  source_key: string;
+  event_type: string;
+  event_date: string;
+  release_time: string;
+  symbol: string | null;
+  security_id: number | null;
+  enrichment_attempted_at: string | null;
+}
+
+/**
+ * Reaction-only follow-up (2026-10-08).
+ *
+ * The main pass only sees rows with `enriched_at IS NULL`. A row can be
+ * marked done before its reaction window has ended — every macro row is
+ * (single-shot, minutes after release), and an earnings row is when a cloud
+ * actual stamps it early — and with the capture gate nothing was stored for
+ * it then. This pass gives such a row its reaction once the window HAS
+ * ended: release + 120m up to release + 150m (REACTION_SETTLE_MS, the same
+ * "the capture window has settled" deadline earnings rows use), which is two
+ * 15-minute ticks.
+ *
+ * It writes reaction_snapshot (only where it is still NULL) and the retry
+ * pacing stamp. It never fetches an actual, never touches actual_value,
+ * consensus_value or enriched_at, and never sends anything.
+ */
+async function runReactionFollowUp(
+  db: Database.Database,
+  opts: EnrichOptions,
+  budget: number,
+  alreadyHandled: Set<number>,
+): Promise<EnrichmentResult[]> {
+  if (budget <= 0) return [];
+  const now = opts.now ?? new Date();
+  const nowMs = now.getTime();
+  const today = todayET(now);
+
+  const rows = db
+    .prepare(
+      `SELECT id, source, source_key, event_type, event_date, release_time,
+              symbol, security_id, enrichment_attempted_at
+       FROM calendar_events
+       WHERE enriched_at IS NOT NULL
+         AND reaction_snapshot IS NULL
+         AND release_time IS NOT NULL
+         AND COALESCE(superseded, 0) = 0
+         AND event_date BETWEEN ? AND ?
+       ORDER BY event_date DESC, release_time DESC`,
+    )
+    .all(addDays(today, -1), today) as ReactionFollowUpRow[];
+
+  const setReaction = db.prepare(
+    `UPDATE calendar_events
+     SET reaction_snapshot = COALESCE(reaction_snapshot, ?),
+         enrichment_attempted_at = datetime('now')
+     WHERE id = ?`,
+  );
+
+  const results: EnrichmentResult[] = [];
+  let attempts = 0;
+  for (const row of rows) {
+    if (attempts >= budget) break;
+    if (alreadyHandled.has(row.id)) continue;
+    const releaseInstant = composeReleaseInstant(row.event_date, row.release_time);
+    if (!releaseInstant) continue;
+    const ageMs = nowMs - releaseInstant.getTime();
+    if (!isReactionWindowElapsed(releaseInstant.getTime(), nowMs) || ageMs > REACTION_SETTLE_MS) continue;
+    if (row.enrichment_attempted_at) {
+      const attemptedMs = Date.parse(row.enrichment_attempted_at.replace(" ", "T") + "Z");
+      if (Number.isFinite(attemptedMs) && nowMs - attemptedMs < RETRY_PACING_MS) continue;
+    }
+
+    attempts += 1;
+    try {
+      const reaction = await captureReactionForRow(db, row, releaseInstant, opts, nowMs);
+      setReaction.run(reaction ? JSON.stringify(reaction) : null, row.id);
+      if (reaction) {
+        results.push({
+          eventId: row.id,
+          source_key: row.source_key,
+          actual: null,
+          reaction,
+          enriched: true,
+          reason: "reaction_follow_up",
+        });
+      }
+    } catch (err) {
+      console.warn(`[enrichment] reaction follow-up failed for event ${row.id}:`, err);
+    }
+  }
   return results;
 }
 
@@ -580,6 +714,23 @@ async function runTwsReactionUpgrade(
     ];
   }
 
+  // The same gate as every other capture road: a re-capture before the
+  // window has elapsed would overwrite with a figure that is not a
+  // measurement. Nothing is fetched and what is stored is kept.
+  const upgradeNowMs = (opts.now ?? new Date()).getTime();
+  if (!isReactionWindowElapsed(releaseInstant.getTime(), upgradeNowMs)) {
+    return [
+      {
+        eventId: row.id,
+        source_key: row.source_key,
+        actual: null,
+        reaction: null,
+        enriched: false,
+        reason: "reaction_window_not_elapsed",
+      },
+    ];
+  }
+
   let sectorEtf: string | null = null;
   if (row.event_type === "earnings") {
     const resolved = resolveSectorForEarnings(db, row.security_id);
@@ -601,15 +752,18 @@ async function runTwsReactionUpgrade(
         })()
       : null;
 
-  const reaction = await captureReactionFromTws(
-    opts.tws,
-    releaseInstant,
-    sectorEtf,
-    {
-      pacingMs: opts.pacingMs,
-      eventSymbol: row.event_type === "earnings" ? row.symbol : null,
-      earnings: upgradeAnchor,
-    },
+  const reaction = admitCapturedReaction(
+    await captureReactionFromTws(
+      opts.tws,
+      releaseInstant,
+      sectorEtf,
+      {
+        pacingMs: opts.pacingMs,
+        eventSymbol: row.event_type === "earnings" ? row.symbol : null,
+        earnings: upgradeAnchor,
+      },
+    ),
+    upgradeNowMs,
   );
 
   if (!reaction) {

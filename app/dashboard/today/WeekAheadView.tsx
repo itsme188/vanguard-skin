@@ -785,6 +785,7 @@ function EventRow({ event: storedEvent, todayIso }: { event: DisplayedEvent; tod
             snapshotRaw={event.reaction_snapshot}
             preferEventSymbol
             eventSymbol={event.event_type === "earnings" ? symbol : null}
+            enrichedAt={event.enriched_at}
           />
         </div>
       )}

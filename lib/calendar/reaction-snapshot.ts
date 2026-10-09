@@ -15,6 +15,7 @@ import type { IBApiNext } from "@stoqey/ib";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isUsableReactionLeg } from "./reaction-snapshot-core";
 import type { BenchmarkReaction, ReactionSnapshot } from "./reaction-snapshot-core";
+import { REACTION_BAR_TOLERANCE_MS } from "./reaction-validity";
 
 // ── Types ───────────────────────────────────────────────────────────
 // BenchmarkReaction/ReactionSnapshot + the pure parse/date-match helpers
@@ -92,7 +93,7 @@ export function resolveSectorEtf(
 // ── Shared bar matcher ──────────────────────────────────────────────
 
 /** Window (ms) within which a bar is considered "close enough" to the target. */
-const BAR_TOLERANCE_MS = 10 * 60 * 1000; // 10 minutes
+const BAR_TOLERANCE_MS = REACTION_BAR_TOLERANCE_MS; // 10 minutes
 
 /**
  * Pick the bar nearest a target timestamp, respecting a tolerance.
