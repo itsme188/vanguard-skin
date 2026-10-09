@@ -147,9 +147,11 @@ describe("generateMacroThemes — every theme is checked against the input it ci
     expect(result.themes).toHaveLength(1);
   });
 
-  it("an article with no kind named is read as an article citation", async () => {
+  // Codex review: ids overlap across articles, events and alerts, so a
+  // citation with no kind is not guessed to be an article.
+  it("drops a theme whose citation names no source kind", async () => {
     const { cited_kind: _omit, ...noKind } = GOOD;
-    const { result } = await run([noKind]);
+    const { result } = await run([GOOD, noKind]);
     expect(result.themes).toHaveLength(1);
     expect(result.themes[0].cited_kind).toBe("article");
   });

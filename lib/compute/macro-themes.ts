@@ -555,7 +555,10 @@ export function verifyThemeCitation(theme: MacroThemeAi, sent: MacroPromptSent):
       ? Number(theme.cited_id.trim())
       : null;
   if (idNum === null || !Number.isInteger(idNum)) return { ok: false, reason: "names no source" };
-  const kind = CitedKind.safeParse(rawKind === "" ? "article" : rawKind);
+  // A citation must say what it cites: ids overlap across articles, events and
+  // alerts, so a missing kind could match the wrong class of source.
+  if (rawKind === "") return { ok: false, reason: "names no source kind" };
+  const kind = CitedKind.safeParse(rawKind);
   if (!kind.success) return { ok: false, reason: `unknown source kind "${rawKind}"` };
 
   const item = sent.byRef.get(`${kind.data}:${idNum}`);
