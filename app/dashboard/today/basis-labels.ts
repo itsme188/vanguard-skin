@@ -64,3 +64,24 @@ export function olderVanguardBasisNote(
   if (vanguard >= headline) return null;
   return `Vanguard holdings through ${shortDate(vanguard, today)}`;
 }
+
+/**
+ * Words beside the Portfolio strip's delta chip: which statement the change is
+ * measured against. Each account's baseline is its previous statement snapshot,
+ * which is not always the prior month-end, so the chip names the date(s).
+ * One shared date reads "vs Aug 31 statement"; differing dates read
+ * "vs statements of Aug 29 to Aug 31". With no baseline date the old wording stays.
+ */
+export function portfolioBaselineLabel(
+  earliest: string | null | undefined,
+  latest: string | null | undefined,
+  today: string,
+): string {
+  const first = datePart(earliest);
+  const last = datePart(latest);
+  if (first === null && last === null) return "vs prior month";
+  if (first === null || last === null || first === last) {
+    return `vs ${shortDate((first ?? last) as string, today)} statement`;
+  }
+  return `vs statements of ${shortDate(first, today)} to ${shortDate(last, today)}`;
+}

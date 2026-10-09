@@ -20,7 +20,12 @@ import { EarningsHub } from "./EarningsHub";
 import { WeekAheadView } from "./WeekAheadView";
 import { IbkrRefreshButton } from "./IbkrRefreshButton";
 import { SnapshotAge } from "../components/SnapshotAge";
-import { ibkrSessionWord, ibkrSnapshotHeading, olderVanguardBasisNote } from "./basis-labels";
+import {
+  ibkrSessionWord,
+  ibkrSnapshotHeading,
+  olderVanguardBasisNote,
+  portfolioBaselineLabel,
+} from "./basis-labels";
 
 function fmtShortDate(iso: string): string {
   const [, month, day] = iso.split("T")[0].split("-");
@@ -204,7 +209,9 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
             }`}
           >
             {portfolio.totalChange >= 0 ? "▲" : "▼"} <Money value={Math.abs(portfolio.totalChange)} />{" "}
-            <span className="text-ink-faint">vs prior month</span>
+            <span className="text-ink-faint">
+              {portfolioBaselineLabel(portfolio.previousDateEarliest, portfolio.previousDateLatest, todayET())}
+            </span>
           </span>
         )}
         <span className="text-[12px] text-ink-faint ml-auto">

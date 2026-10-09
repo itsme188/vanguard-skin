@@ -4,6 +4,7 @@ import {
   ibkrSessionWord,
   ibkrSnapshotHeading,
   olderVanguardBasisNote,
+  portfolioBaselineLabel,
 } from "@/app/dashboard/today/basis-labels";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
 
@@ -91,5 +92,24 @@ describe("Today page wiring (source pins)", () => {
     const strip = page.slice(anchorIndex(page, "as of ${fmtShortDate(portfolio.latestDate)}"));
     expect(strip.slice(0, 200)).toContain("{vanguardBasisNote && ` · ${vanguardBasisNote}`}");
     expect(page).toContain("olderVanguardBasisNote(vanguardSnapshotDate, portfolio.latestDate, todayET())");
+  });
+});
+
+describe("portfolioBaselineLabel", () => {
+  const today = "2025-09-17";
+  it("names the one statement date", () => {
+    expect(portfolioBaselineLabel("2025-08-31", "2025-08-31", today)).toBe("vs Aug 31 statement");
+  });
+  it("names the range when the baselines differ", () => {
+    expect(portfolioBaselineLabel("2025-08-29", "2025-08-31", today)).toBe("vs statements of Aug 29 to Aug 31");
+  });
+  it("falls back to the old wording with no baseline", () => {
+    expect(portfolioBaselineLabel(null, null, today)).toBe("vs prior month");
+  });
+  it("adds the year when it differs from today's", () => {
+    expect(portfolioBaselineLabel("2024-12-31", "2024-12-31", today)).toBe("vs Dec 31, 2024 statement");
+  });
+  it("does not shift a day for a month-end", () => {
+    expect(portfolioBaselineLabel("2025-01-01", "2025-01-01", today)).toBe("vs Jan 1 statement");
   });
 });
