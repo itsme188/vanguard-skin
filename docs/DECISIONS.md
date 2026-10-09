@@ -1149,3 +1149,23 @@ One commit, found by the final browser check of the finished build. One Codex re
    - the cloud fallback's earnings coverage includes a name held only through options or only short, as the Mac's does.
 
 **Still open for the owner** (not asked today): the 2026-10-07 builder rulings, the gift-month convention, the iPhone chat layout, the written design for a live-closed option or short as pending, the scope resolver's "no match means every account" reading, and the real-looking constants in two repair scripts.
+
+## 2026-10-09 (midday) — PR #107 landed; the three held items the owner approved are built
+
+**PR #107 landed** on `main` after being brought up to date: type-check clean on both sides, full suite 17,111 passed, Worker suite 986 passed, production build, the three migrations applied on a sandbox copy of the live database (integrity check ok, no foreign-key violation, every new column empty), and a browser pass over Today, the week-ahead cards, every Alerts tab, the email viewer, a security page, Data Health and Analysis at desktop and phone width with no error. Not seen with data: a refused macro actual, a data-period line, a vendor footnote, the "Detected ... at ..." lead-in (no row on the copy carries one).
+
+**Built under the owner's ruling of this morning (item 4):**
+1. **Chat component, three changes.** The Send button takes the checked solid-gold pair; the selected scope pill takes the checked small-text gold; the message list scrolls its own container, so the first Tab on a page reaches "Skip to main content". The chat wiring is unchanged (the `useChat` pin passes as it was); the logic hash pin moved only for the new ref and the scroll line. The guard's exception for the file is removed. Measured in a browser in both themes and at phone width.
+2. **Vanguard account numbers are out of the import parsers.** They live in `vanguard-accounts.json` beside the database (gitignored), read only by `lib/import/vanguard-account-names.ts`. A mapped account keeps its name and its source keys, checked against the private file with the real numbers. An unmapped account still imports under the old fallback name and now adds a preview warning showing only its last four digits. A repo guard fails on an account number under `lib/import/`. **The numbers are still in git history**; the purge stays a separate owner step.
+3. **The cloud's earnings coverage counts a name held only through options or only short.** Snapshot version 14 adds `earningsHeldSymbols`, built by the reader the Mac's coverage and its three push gates use. The Worker's earnings readers take "held" from it through one function and fall back to `heldSymbols` when the field is absent. `heldSymbols` keeps its meaning for the digest's article context, the evening email, the briefing and newsletter relevance.
+
+**What the owner should know about item 3** (each only when the Mac missed its own send):
+- Cloud previews, recaps and print pushes can now go out for such a name, and the cloud digest's Today's reporters table shows `held` on it.
+- Such a name now counts toward the after-close cluster of three that holds individual cloud recaps for the morning debrief, so a night that used to send two cloud recaps can send none. The Mac follows the same rule.
+- The Mac's push gates already counted these names, so the cloud's push gate now does too; the gate itself (held / watchlist / read-through) is unchanged.
+- The option expiry is decided on the snapshot's day: a name whose only option expires while the Mac sleeps for days stays covered until the next snapshot.
+- The Mac's reader is blind to security type for a direct holding, so a held fund or ETF reads as held; the one visible effect is a read-through target.
+
+**Decided by Claude after the review, for the owner to confirm.** If building the new list fails, the snapshot is still written with the field left out, and the cloud falls back to the old list. The alternative (abort the snapshot) would have stalled every cloud fallback on one helper bug.
+
+**Deploy order.** Worker first, then the Mac. The 02:00 snapshot runs from the main checkout, so version 14 starts with the first snapshot after the merge, whatever the Mac app runs; an older Worker ignores the field, so no order breaks anything.
