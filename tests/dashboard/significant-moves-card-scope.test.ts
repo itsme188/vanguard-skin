@@ -100,6 +100,61 @@ describe("loadCoverage follows the scope", () => {
   });
 });
 
+describe("loadCoverage counts the universe the engine checks (isMoverSecurityType)", () => {
+  function typed(symbol: string, securityType: string | null): number {
+    const id = security(symbol, { move: 10 });
+    db.prepare("UPDATE securities SET security_type = ? WHERE id = ?").run(securityType, id);
+    return id;
+  }
+
+  it("an option, a bond and an untyped row are in neither count", () => {
+    const before = loadCoverage(db, PAIR, [vanguard]);
+    // Each has a cached beta and both closes: only its type keeps it out.
+    hold(vanguard, typed("ZZOPT", "option"));
+    hold(vanguard, typed("ZZBND", "bond"));
+    hold(vanguard, typed("ZZNUL", null));
+    hold(vanguard, typed("ZZODD", "warrant-like"));
+    expect(loadCoverage(db, PAIR, [vanguard])).toEqual(before);
+
+    // The engine names none of them either.
+    const symbols = computeAnomalies(db, { accountIds: [vanguard] }).map((f) => f.symbol);
+    expect(symbols).toEqual(["ZZA"]);
+  });
+
+  it("the missing-beta and missing-closes counts leave them out too", () => {
+    const optionNoBeta = typed("ZZOPT", "Option");
+    db.prepare("DELETE FROM security_betas WHERE security_id = ?").run(optionNoBeta);
+    hold(vanguard, optionNoBeta);
+    const bondNoClose = typed("ZZBND", "Bond");
+    db.prepare("DELETE FROM prices WHERE security_id = ? AND date = ?").run(bondNoClose, PAIR.latest);
+    hold(vanguard, bondNoClose);
+    expect(loadCoverage(db, PAIR, [vanguard])).toEqual({
+      total: 2,
+      evaluated: 2,
+      missingBeta: 0,
+      missingCloses: 0,
+    });
+  });
+
+  it("every equity-like type the engine keeps is counted, in any letter case", () => {
+    hold(vanguard, typed("ZZETF", "ETF"));
+    hold(vanguard, typed("ZZMF", "Mutual Fund"));
+    hold(vanguard, typed("ZZCS", "Common Stock"));
+    const coverage = loadCoverage(db, PAIR, [vanguard]);
+    expect(coverage.total).toBe(5);
+    expect(coverage.evaluated).toBe(5);
+    const flagged = computeAnomalies(db, { accountIds: [vanguard] }).map((f) => f.symbol).sort();
+    expect(flagged).toEqual(["ZZA", "ZZCS", "ZZETF", "ZZMF"]);
+  });
+
+  it("one security held in two accounts is still one holding", () => {
+    const shared = typed("ZZSH", "stock");
+    hold(vanguard, shared);
+    hold(ibkr, shared);
+    expect(loadCoverage(db, PAIR, [vanguard, ibkr]).total).toBe(5);
+  });
+});
+
 describe("scopeAccountIds", () => {
   it("passes a resolved scope through untouched", () => {
     expect(scopeAccountIds(db, [ibkr])).toEqual([ibkr]);

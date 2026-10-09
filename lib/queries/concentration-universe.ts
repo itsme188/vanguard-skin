@@ -92,10 +92,12 @@ export function getConcentrationUniverse(
   accountIds?: number[],
   options?: ConcentrationUniverseOptions
 ): ConcentrationPosition[] {
-  const accountFilter =
-    accountIds && accountIds.length > 0
-      ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
-      : "";
+  // `undefined` is every account; a defined empty list is NO accounts (it
+  // must never widen to the whole book).
+  if (accountIds && accountIds.length === 0) return [];
+  const accountFilter = accountIds
+    ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
+    : "";
 
   const predicate = latestHoldingsPredicate({
     keyBy: "account_security",

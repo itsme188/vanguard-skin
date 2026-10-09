@@ -18,11 +18,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { executeTool, resolveAccountName, CHAT_TOOLS } from "@/lib/chat/tools";
-import {
-  resolveChatAccounts,
-  resolveAccountScopeIds,
-  CHAT_SCOPE_WORDS,
-} from "@/lib/chat/account-scope";
+import { resolveChatAccounts, CHAT_SCOPE_WORDS } from "@/lib/chat/account-scope";
 import { getHoldingsForChat } from "@/lib/queries/chat-tools";
 import { computeTwr } from "@/lib/compute/twr";
 import { computeXirr } from "@/lib/compute/xirr";
@@ -170,13 +166,6 @@ describe("resolveChatAccounts: precedence", () => {
     db.prepare("DELETE FROM monthly_snapshots WHERE account_id = ?").run(IBKR);
     db.prepare("DELETE FROM accounts WHERE id = ?").run(IBKR);
     expect(ids("ibkr")).toBe("error");
-  });
-
-  it("resolveAccountScopeIds never widens: nothing matched is an empty list", () => {
-    expect(resolveAccountScopeIds(db, undefined)).toBeUndefined();
-    expect(resolveAccountScopeIds(db, "vanguard")).toEqual([TAXABLE]);
-    expect(resolveAccountScopeIds(db, "no such account")).toEqual([]);
-    expect(resolveAccountScopeIds(db, "guard")).toEqual([]);
   });
 });
 

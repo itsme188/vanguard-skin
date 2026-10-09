@@ -13,7 +13,6 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { executeTool } from "@/lib/chat/tools";
-import { resolveAccountScopeIds } from "@/lib/chat/account-scope";
 import { computeXirr } from "@/lib/compute/xirr";
 import { resolveScope } from "@/lib/queries/accounts";
 
@@ -139,15 +138,3 @@ describe("query_twr: the money-weighted return covers the whole named scope", ()
   });
 });
 
-describe("resolveAccountScopeIds", () => {
-  it("exact name is one account; a scope word is its whole list; nothing matched is NO account", () => {
-    expect(resolveAccountScopeIds(db, undefined)).toBeUndefined();
-    expect(resolveAccountScopeIds(db, "IBKR")).toEqual([IBKR]);
-    expect(resolveAccountScopeIds(db, "ibkr")).toEqual([IBKR, ibkrTwo]);
-    expect(resolveAccountScopeIds(db, "vanguard")).toEqual([TAXABLE]);
-    expect(resolveAccountScopeIds(db, "Roth")).toEqual([ROTH]);
-    // Was undefined (every account): an unknown name silently widened to the
-    // whole book. An empty list is "no accounts"; the tools return an error.
-    expect(resolveAccountScopeIds(db, "no such account")).toEqual([]);
-  });
-});

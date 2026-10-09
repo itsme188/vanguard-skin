@@ -73,10 +73,12 @@ export function fetchNetFlowsByDate(
     .get();
   if (!hasTable) return [];
 
-  const accountFilter =
-    accountIds && accountIds.length > 0
-      ? `AND account_id IN (${accountIds.map(() => "?").join(",")})`
-      : "";
+  // `undefined` is every account; a defined empty list is NO accounts (it
+  // must never widen to the whole book).
+  if (accountIds && accountIds.length === 0) return [];
+  const accountFilter = accountIds
+    ? `AND account_id IN (${accountIds.map(() => "?").join(",")})`
+    : "";
 
   const inKindFilter = opts.excludeInKind ? `AND NOT (${IN_KIND_LEG_SQL})` : "";
 
@@ -245,10 +247,12 @@ export function fetchAnchorSourceSeamDates(
     .get();
   if (!hasTable) return [];
 
-  const accountFilter =
-    accountIds && accountIds.length > 0
-      ? `AND account_id IN (${accountIds.map(() => "?").join(",")})`
-      : "";
+  // `undefined` is every account; a defined empty list is NO accounts (it
+  // must never widen to the whole book).
+  if (accountIds && accountIds.length === 0) return [];
+  const accountFilter = accountIds
+    ? `AND account_id IN (${accountIds.map(() => "?").join(",")})`
+    : "";
 
   const rows = db
     .prepare(

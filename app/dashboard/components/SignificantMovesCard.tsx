@@ -21,6 +21,7 @@ import type Database from "better-sqlite3";
 import { db } from "@/lib/db";
 import {
   computeAnomalies,
+  isMoverSecurityType,
   latestCompletedSession,
   resolveTradingDayPair,
 } from "@/lib/digest/anomalies";
@@ -88,7 +89,7 @@ const THRESHOLD_HINT =
   "A name is flagged when its daily move is at least 3% AND at least 2 standard deviations beyond that stock's own normal day-to-day noise (after adjusting for SPY). Needs cached betas, a residual volatility, and two consecutive closes.";
 
 export interface MovesCoverage {
-  /** Long holdings in the scope's accounts. */
+  /** Equity-like long holdings in the scope's accounts: the names the engine checks. */
   total: number;
   /** Of those, how many have a cached beta AND a close on both pair dates. */
   evaluated: number;
@@ -98,26 +99,32 @@ export interface MovesCoverage {
   missingCloses: number;
 }
 
+/**
+ * Coverage of the universe the engine checks. The engine skips any holding
+ * that is not an equity-like type (`isMoverSecurityType`: no option, bond,
+ * untyped or unrecognized row) or has no symbol to print, so those are in
+ * neither "evaluated" nor "of M" here, nor in the two missing-input counts.
+ */
 export function loadCoverage(
   db: Database.Database,
   pair: { latest: string; prior: string },
   accountIds: readonly number[],
 ): MovesCoverage {
-  if (accountIds.length === 0) return { total: 0, evaluated: 0, missingBeta: 0, missingCloses: 0 };
+  const coverage: MovesCoverage = { total: 0, evaluated: 0, missingBeta: 0, missingCloses: 0 };
+  if (accountIds.length === 0) return coverage;
   const placeholders = accountIds.map(() => "?").join(",");
-  const closesOk = `p_latest.close_price IS NOT NULL
-            AND p_prior.close_price IS NOT NULL
-            AND p_prior.close_price != 0`;
-  return db
+  // One row per security: beta and the two closes are per security, so a
+  // name held in two accounts of the scope is still one holding.
+  const rows = db
     .prepare(
-      `SELECT
-         COUNT(DISTINCT s.id) AS total,
-         COUNT(DISTINCT CASE
-           WHEN sb.beta IS NOT NULL
-            AND ${closesOk}
-           THEN s.id END) AS evaluated,
-         COUNT(DISTINCT CASE WHEN sb.beta IS NULL THEN s.id END) AS missingBeta,
-         COUNT(DISTINCT CASE WHEN NOT (${closesOk}) THEN s.id END) AS missingCloses
+      `SELECT DISTINCT
+              s.id AS security_id,
+              s.symbol,
+              s.security_type,
+              sb.beta IS NOT NULL AS has_beta,
+              (p_latest.close_price IS NOT NULL
+                AND p_prior.close_price IS NOT NULL
+                AND p_prior.close_price != 0) AS has_closes
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        LEFT JOIN security_betas sb
@@ -128,7 +135,24 @@ export function loadCoverage(
          AND UPPER(s.symbol) != 'SPY'
          AND ${latestHoldingsPredicate({ includeShorts: false })}`,
     )
-    .get(pair.latest, pair.prior, ...accountIds) as MovesCoverage;
+    .all(pair.latest, pair.prior, ...accountIds) as {
+    security_id: number;
+    symbol: string | null;
+    security_type: string | null;
+    has_beta: number;
+    has_closes: number;
+  }[];
+
+  for (const row of rows) {
+    // The engine's own two universe skips, in its order.
+    if (!isMoverSecurityType(row.security_type)) continue;
+    if (!row.symbol) continue;
+    coverage.total += 1;
+    if (row.has_beta && row.has_closes) coverage.evaluated += 1;
+    if (!row.has_beta) coverage.missingBeta += 1;
+    if (!row.has_closes) coverage.missingCloses += 1;
+  }
+  return coverage;
 }
 
 // The completed-session rule lives in the engine module; re-exported here for
