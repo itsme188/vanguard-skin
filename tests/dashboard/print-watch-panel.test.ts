@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   ladderText,
   promoteSummary,
+  promoteBasisWarning,
   needsReverify,
   canAcceptLine,
   acceptableRivals,
@@ -668,6 +669,58 @@ describe("promoteSummary", () => {
     expect(summary?.basisLabel).toBe("gaap");
     expect(summary?.epsValue).toBe(-0.12);
     expect(summary?.label).toBe("Promote EPS+Rev (gaap -$0.12 · $4.34B)");
+  });
+});
+
+// ── promoteBasisWarning (unit 18) ───────────────────────────────────────
+//
+// The sheet's consensus is on the ADJUSTED basis (the bogey's EPS consensus
+// sits on `eps_adj_q`). When the adjusted line is not accepted, Promote falls
+// to the GAAP figure and the recap would set a GAAP number beside an adjusted
+// consensus. The desk is asked first.
+
+describe("promoteBasisWarning", () => {
+  const revenue = () =>
+    makeLine({
+      metric_id: "revenue_q",
+      state: "accepted",
+      value: 4_000_000_000,
+      contract: makeContract({ metric_id: "revenue_q", label: "Revenue", unit: "usd" }),
+    });
+  const gaap = () =>
+    makeLine({
+      metric_id: "eps_gaap_q",
+      state: "accepted",
+      value: 0.75,
+      contract: makeContract({ metric_id: "eps_gaap_q", label: "EPS (GAAP)", basis: "gaap" }),
+    });
+
+  it("is null when the adjusted line is the one being promoted", () => {
+    const lines = [makeLine({ metric_id: "eps_adj_q", state: "accepted", value: 0.9 }), gaap(), revenue()];
+    expect(promoteBasisWarning(lines)).toBeNull();
+  });
+
+  it("is null when there is nothing to promote at all", () => {
+    expect(promoteBasisWarning([makeLine({ state: "agreed", value: 0.9 }), revenue()])).toBeNull();
+  });
+
+  it("warns, naming the unaccepted adjusted figure, when Promote would fall to GAAP", () => {
+    // Exactly what an un-accept leaves behind: state 'pending', value kept.
+    const lines = [makeLine({ metric_id: "eps_adj_q", state: "pending", value: 0.9 }), gaap(), revenue()];
+    const warning = promoteBasisWarning(lines);
+    expect(warning).not.toBeNull();
+    expect(warning).toContain("GAAP");
+    expect(warning).toContain("$0.75");
+    expect(warning).toContain("$0.90");
+    expect(warning).toMatch(/adjusted/i);
+  });
+
+  it("still warns when the sheet read no adjusted figure, without inventing one", () => {
+    const lines = [makeLine({ metric_id: "eps_adj_q", state: "pending", value: null }), gaap(), revenue()];
+    const warning = promoteBasisWarning(lines);
+    expect(warning).not.toBeNull();
+    expect(warning).toContain("$0.75");
+    expect(warning).toMatch(/no adjusted EPS/i);
   });
 });
 

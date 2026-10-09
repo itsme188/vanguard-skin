@@ -441,6 +441,31 @@ export function promoteSummary(lines: PrintWatchLine[]): PromoteSummary | null {
   };
 }
 
+/**
+ * The question to put to the desk before a promote that would use the GAAP
+ * EPS figure, or null when there is nothing to ask.
+ *
+ * The sheet's EPS consensus sits on the ADJUSTED line, so a promote that falls
+ * back to GAAP (the adjusted line is not accepted — often an un-accept nobody
+ * re-did) puts a GAAP figure beside an adjusted consensus on the recap
+ * scoreboard. The server allows that promote; this only makes sure it is a
+ * choice. Built on `promoteSummary`, so it can never disagree with the button.
+ */
+export function promoteBasisWarning(lines: PrintWatchLine[]): string | null {
+  const summary = promoteSummary(lines);
+  if (!summary || summary.basisLabel !== "gaap") return null;
+  const adj = lines.find((l) => l.metric_id === "eps_adj_q");
+  const adjusted =
+    adj && adj.value !== null
+      ? `The adjusted EPS line (${formatEpsValue(adj.value)}) is not accepted`
+      : "No adjusted EPS figure is accepted on this sheet";
+  return (
+    `${adjusted}, so this promote would use the GAAP figure (${formatEpsValue(summary.epsValue)}). ` +
+    "The consensus on this sheet is on the adjusted basis, so the recap would compare GAAP with adjusted.\n\n" +
+    "Promote the GAAP figure anyway?"
+  );
+}
+
 /** Component-wise divergence check shared by value and value_high: null on
  *  both sides is agreement (point-kind lines never carry a high end),
  *  null on exactly one side is a divergence in its own right (a range

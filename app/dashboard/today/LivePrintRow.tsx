@@ -46,6 +46,7 @@ import {
   ladderText,
   lineSourceLabel,
   printStateLabel,
+  promoteBasisWarning,
   promoteSummary,
   recordHeaderText,
   recordLineStatus,
@@ -212,6 +213,14 @@ export default function LivePrintRow({
 
   async function promote() {
     if (promoting || !summary) return;
+    // Asked BEFORE the request: the server accepts a GAAP promote, so this is
+    // the only place the desk is told the basis changed under it.
+    const basisWarning = promoteBasisWarning(print.lines);
+    if (basisWarning && !window.confirm(basisWarning)) {
+      setActionNote(null);
+      setActionError("Promote cancelled — accept the adjusted EPS line first, or promote again to use GAAP.");
+      return;
+    }
     setPromoting(true);
     setActionNote(null);
     try {
@@ -400,12 +409,12 @@ export default function LivePrintRow({
             className={`relative text-[12px] font-mono border border-edge rounded px-2 py-1 cursor-pointer hover:bg-raised pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 ${
               uploading ? "opacity-60 pointer-events-none" : ""
             }`}
-            title={noEventId ? "This print has no event reference from the server — cannot upload." : "Drop or choose the release document (HTML/text)"}
+            title={noEventId ? "This print has no event reference from the server — cannot upload." : "Drop or choose the release document (HTML, text or PDF)"}
           >
             {uploading ? "Uploading… (may take up to 30s)" : "⇪ Drop release"}
             <input
               type="file"
-              accept=".html,.htm,.txt,text/html,text/plain"
+              accept=".html,.htm,.txt,.pdf,text/html,text/plain,application/pdf"
               className="hidden"
               disabled={uploading || noEventId}
               onChange={(e) => {

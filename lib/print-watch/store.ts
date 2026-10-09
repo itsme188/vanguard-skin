@@ -87,6 +87,23 @@ export function listTodaysExpiredPrints(db: Database.Database, todayEt: string):
     .all(todayEt) as PrintRow[];
 }
 
+/**
+ * Which of these event ids still have a `calendar_events` row.
+ *
+ * A print keys to its event with NO cascade (migration 085: evidence must
+ * outlive the event), so a hand delete leaves the print behind. The status
+ * read uses this to leave such a print off the panel — its accept, drop and go
+ * controls all key on an event id that no longer exists. READ ONLY: the print
+ * row is never deleted and its state is not touched here.
+ */
+export function existingEventIds(db: Database.Database, eventIds: number[]): Set<number> {
+  if (eventIds.length === 0) return new Set();
+  const rows = db
+    .prepare(`SELECT id FROM calendar_events WHERE id IN (SELECT value FROM json_each(?))`)
+    .all(JSON.stringify(eventIds)) as Array<{ id: number }>;
+  return new Set(rows.map((r) => r.id));
+}
+
 export function listDocuments(db: Database.Database, printId: number): DocumentRow[] {
   return db
     .prepare(`SELECT * FROM print_watch_documents WHERE print_id = ? ORDER BY id`)
