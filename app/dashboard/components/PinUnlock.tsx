@@ -17,6 +17,7 @@
  *   - session gone (401) -> PIN can't help; force full password at /login
  */
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useCallback, useEffect, useRef, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -132,7 +133,7 @@ export function PinUnlock() {
           <button
             type="submit"
             disabled={submitting || pin.length < 4}
-            className="w-full py-2 text-sm font-medium rounded bg-gold text-canvas hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className={`w-full py-2 text-sm font-medium rounded ${GOLD_FILL_CLASSES} hover:opacity-90 disabled:opacity-50 transition-opacity`}
           >
             {submitting ? "Unlocking…" : "Unlock"}
           </button>

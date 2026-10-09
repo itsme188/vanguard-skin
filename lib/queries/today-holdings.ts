@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { easternDaySql } from "../db/eastern-day-sql";
 import { adjustedMarketValueSQL } from "../valuation";
 import { resolveTradingDayPair, type TradingDayPair } from "../digest/anomalies";
 import { latestHoldingsPredicate } from "./latest-holdings";
@@ -297,7 +298,7 @@ export function getIbkrTodayHoldings(
        LEFT JOIN (${sessionBookSql}) hs ON hs.security_id = h.security_id
        WHERE h.account_id = ?
          AND ${latestHoldingsPredicate({ accountFilter: "" })}
-         AND (s.maturity_date IS NULL OR s.maturity_date >= date('now')
+         AND (s.maturity_date IS NULL OR s.maturity_date >= ${easternDaySql(today)}
               OR LOWER(s.security_type) = 'bond')
          AND ${liveOptionExpirationSql("s", today)}
        ORDER BY ABS(COALESCE(today_gain, 0)) DESC`,

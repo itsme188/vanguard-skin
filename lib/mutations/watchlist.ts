@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { todayET } from "@/lib/calendar/date-utils";
 
 interface AddToWatchlistParams {
   securityId: number;
@@ -17,8 +18,8 @@ export function addToWatchlist(
   params: AddToWatchlistParams
 ): void {
   db.prepare(
-    `INSERT INTO watchlist (security_id, price_target_low, price_target_high, thesis, group_name)
-     VALUES (?, ?, ?, ?, COALESCE(?, 'default'))
+    `INSERT INTO watchlist (security_id, price_target_low, price_target_high, thesis, group_name, added_date)
+     VALUES (?, ?, ?, ?, COALESCE(?, 'default'), ?)
      ON CONFLICT(security_id) DO UPDATE SET
        is_active = 1,
        price_target_low = COALESCE(excluded.price_target_low, watchlist.price_target_low),
@@ -30,7 +31,11 @@ export function addToWatchlist(
     params.priceTargetLow ?? null,
     params.priceTargetHigh ?? null,
     params.thesis ?? null,
-    params.groupName ?? null
+    params.groupName ?? null,
+    // The day a name was added is the Eastern day (insert only; a re-add
+    // keeps the original day). The column default is SQLite's date('now'),
+    // the UTC day: tomorrow after 20:00 Eastern.
+    todayET()
   );
 }
 

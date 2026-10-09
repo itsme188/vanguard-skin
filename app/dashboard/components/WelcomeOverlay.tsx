@@ -1,7 +1,7 @@
 "use client";
 
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
-import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
+import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useElectron } from "@/lib/hooks/useElectron";
@@ -93,7 +93,7 @@ export function WelcomeOverlay() {
         {/* Get Started */}
         <button
           onClick={handleGetStarted}
-          className="w-full py-2.5 text-sm font-medium rounded-lg bg-gold text-canvas hover:bg-gold/90 transition-colors"
+          className={`w-full py-2.5 text-sm font-medium rounded-lg ${GOLD_FILL_CLASSES} hover:bg-gold/90 transition-colors`}
         >
           Get Started
         </button>

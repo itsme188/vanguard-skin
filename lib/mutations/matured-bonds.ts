@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { liveOriginHoldingSql } from "@/lib/db/holding-sources";
+import { todayET } from "@/lib/calendar/date-utils";
 
 export interface PurgeMaturedBondHoldingsOptions {
   accountId?: number;
@@ -33,10 +34,13 @@ export function purgeMaturedBondHoldings(
            SELECT id FROM securities
            WHERE LOWER(security_type) = 'bond'
              AND maturity_date IS NOT NULL
-             AND date(maturity_date) < date('now', ?)
+             AND date(maturity_date) < date(?, ?)
          )`,
       )
-      .run(`-${graceDays} day`);
+      // The grace day counts from the Eastern day, bound: SQLite's
+      // date('now') is the UTC day, which after 20:00 Eastern is already
+      // tomorrow and shortened the one-day grace to none.
+      .run(todayET(), `-${graceDays} day`);
     return result.changes;
   }
 
@@ -45,9 +49,7 @@ export function purgeMaturedBondHoldings(
        SELECT id FROM securities
        WHERE LOWER(security_type) = 'bond'
          AND maturity_date IS NOT NULL
-         AND date(maturity_date) < ${
-           options.today ? "date(@today, @grace)" : "date('now', @grace)"
-         }
+         AND date(maturity_date) < date(@today, @grace)
      )`,
   ];
   if (options.accountId != null) predicates.push("account_id = @accountId");
@@ -61,7 +63,7 @@ export function purgeMaturedBondHoldings(
     .run({
       accountId: options.accountId,
       grace: `-${graceDays} day`,
-      today: options.today,
+      today: options.today ?? todayET(),
     });
   return result.changes;
 }

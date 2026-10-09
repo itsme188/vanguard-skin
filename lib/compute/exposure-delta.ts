@@ -13,6 +13,7 @@ import type Database from "better-sqlite3";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { marketValue } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 
@@ -90,10 +91,8 @@ function loadCurrentHoldings(
   db: Database.Database,
   accountIds: number[] | undefined
 ): HoldingRow[] {
-  const accountFilter = accountIds?.length
-    ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
-    : "";
-  const params: number[] = accountIds?.length ? [...accountIds] : [];
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const { sql: accountFilter, params } = accountScopeAndSql(accountIds);
 
   const rows = db
     .prepare(

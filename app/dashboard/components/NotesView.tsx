@@ -1,5 +1,6 @@
 "use client";
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useState, useRef, useEffect, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -780,7 +781,7 @@ export function NotesView({
           <button
             type="submit"
             disabled={!formContent.trim() || isSaving}
-            className="px-4 py-1.5 bg-gold text-canvas rounded-lg text-sm font-medium hover:bg-gold/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className={`px-4 py-1.5 ${GOLD_FILL_CLASSES} rounded-lg text-sm font-medium hover:bg-gold/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors`}
           >
             {isSaving ? "Saving..." : "Save Note"}
           </button>
@@ -1461,7 +1462,7 @@ function NoteCard({
               type="button"
               onClick={() => edit.onSave(note)}
               disabled={!draft.content.trim() || edit.saving}
-              className="px-3 py-1 bg-gold text-canvas rounded text-xs font-medium hover:bg-gold/90 disabled:opacity-40 disabled:cursor-not-allowed"
+              className={`px-3 py-1 ${GOLD_FILL_CLASSES} rounded text-xs font-medium hover:bg-gold/90 disabled:opacity-40 disabled:cursor-not-allowed`}
             >
               {edit.saving ? "Saving..." : "Save"}
             </button>

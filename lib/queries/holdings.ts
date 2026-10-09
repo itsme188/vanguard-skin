@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
 import type { Holding } from "@/lib/types";
 import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
@@ -109,7 +110,7 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
     JOIN accounts a ON a.id = h.account_id
     JOIN securities s ON s.id = h.security_id${VALUED_HOLDINGS_JOINS_SQL}
     WHERE ${latestHoldingsPredicate()}
-      AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+      AND ${unmaturedSecuritySql("s", today)}
       -- An expired option contract that escaped purgeExpiredOptionHoldings
       -- (no-TWS import path, or the 1-day purge grace period) must not
       -- surface here as a live position — same ET-anchored cutoff
@@ -196,7 +197,7 @@ export function getHoldingsByAccount(
     // per-pair "latest" keying (2026-08-30 landing-review nit). The explicit
     // asOfDate branch above deliberately keeps it — a point-in-time snapshot
     // legitimately shows a bond that had not matured on that date.
-    sql += " AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))";
+    sql += ` AND ${unmaturedSecuritySql("s", today)}`;
     // Same parity for options: an expired contract that escaped
     // purgeExpiredOptionHoldings (no-TWS import path, or the 1-day purge
     // grace period) must not surface as a live position under per-pair
@@ -242,7 +243,7 @@ export function getValuedHoldingsByAccount(
     JOIN accounts a ON a.id = h.account_id${VALUED_HOLDINGS_JOINS_SQL}
     WHERE h.account_id = ?
       AND ${latestHoldingsPredicate({ accountFilter: "" })}
-      AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+      AND ${unmaturedSecuritySql("s", today)}
       AND ${liveOptionExpirationSql("s", today)}
     ORDER BY current_value DESC NULLS LAST, s.symbol
   `;

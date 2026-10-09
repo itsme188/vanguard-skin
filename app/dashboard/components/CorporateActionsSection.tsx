@@ -1,10 +1,10 @@
 "use client";
 
+import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Section } from "./Section";
 import { Chip, CHIP_TONE_CLASSES } from "./Chip";
-import { CHIP_TONE_TEXT } from "./chip-tone-text";
 import { Shares } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
 import { useConfirmPrompt } from "./useConfirmPrompt";
@@ -211,7 +211,7 @@ export function CorporateActionsSection({
           <button
             type="submit"
             disabled={submitting}
-            className="px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50"
+            className={`px-4 py-2 rounded-lg ${GOLD_FILL_CLASSES} text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50`}
           >
             {submitting ? "Applying..." : "Apply Corporate Action"}
           </button>
@@ -262,7 +262,7 @@ export function CorporateActionsSection({
               {action.source !== "import" && (
                 <button
                   onClick={() => handleUndo(action.id)}
-                  className="text-xs text-down/70 hover:text-down transition-colors"
+                  className={`text-xs ${CHIP_TONE_TEXT.down} hover:underline`}
                   title="Undo this corporate action"
                 >
                   Undo

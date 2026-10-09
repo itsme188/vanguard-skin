@@ -1,5 +1,6 @@
 "use client";
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Count } from "@/lib/privacy/components";
 import type { LedgerCensus, LedgerRecomputeReport } from "@/lib/compute/donation-recompute-contract";
@@ -282,7 +283,7 @@ export function LedgerRecomputeDialog({ flow }: { flow: LedgerRecomputeFlow }) {
             <button
               type="button"
               onClick={proceed}
-              className="px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring"
+              className={`px-4 py-2 rounded-lg ${GOLD_FILL_CLASSES} text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring`}
             >
               Save and recompute
             </button>
@@ -299,7 +300,7 @@ export function LedgerRecomputeDialog({ flow }: { flow: LedgerRecomputeFlow }) {
           <button
             type="button"
             onClick={close}
-            className="px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring"
+            className={`px-4 py-2 rounded-lg ${GOLD_FILL_CLASSES} text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring`}
           >
             Close
           </button>

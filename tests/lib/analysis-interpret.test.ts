@@ -1,3 +1,4 @@
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { describe, it, expect } from "vitest";
 import {
   interpretSharpe,
@@ -637,8 +638,9 @@ describe("interpretProtectionRatio", () => {
 
 describe("toneClass", () => {
   it("maps tones to subtle text classes", () => {
-    expect(toneClass("good")).toBe("text-up/80");
-    expect(toneClass("bad")).toBe("text-down/80");
+    // The checked small-text inks (the 80% fade measured under 4.5:1).
+    expect(toneClass("good")).toBe(CHIP_TONE_TEXT.up);
+    expect(toneClass("bad")).toBe(CHIP_TONE_TEXT.down);
     expect(toneClass("neutral")).toBe("text-ink-faint");
   });
 });

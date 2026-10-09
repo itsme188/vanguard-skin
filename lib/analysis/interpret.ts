@@ -20,10 +20,22 @@ export interface Interpretation {
   tone: InterpretTone;
 }
 
-/** Subtle tone → text class mapping (existing muted-tint idiom). */
+/**
+ * Tone → text class for the one-line captions (12px, so the small-text
+ * 4.5:1 floor applies).
+ *
+ * The old 80% fade measured 3.3:1 (green) and 3.6:1 (red) in the light
+ * theme and 3.6:1 (red) in the dark one. These are the checked small-text
+ * inks, the same strings as `CHIP_TONE_TEXT.up` / `.down`
+ * (app/dashboard/components/chip-tone-text.ts). They are written out here
+ * so this module stays free of React;
+ * tests/repo/no-faded-small-status-text.test.ts fails if the two drift.
+ */
 export function toneClass(tone: InterpretTone): string {
-  if (tone === "good") return "text-up/80";
-  if (tone === "bad") return "text-down/80";
+  if (tone === "good")
+    return "text-[color:color-mix(in_srgb,var(--up)_80%,black)] [[data-theme=dark]_&]:text-up";
+  if (tone === "bad")
+    return "text-[color:color-mix(in_srgb,var(--down)_80%,black)] [[data-theme=dark]_&]:text-[color:color-mix(in_srgb,var(--down)_80%,white)]";
   return "text-ink-faint";
 }
 

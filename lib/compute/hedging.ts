@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
+import { unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { computePortfolioGreeks, type GreeksDiagnostic } from "@/lib/compute/options-greeks";
 import { optionExposureFallback } from "@/lib/compute/exposure";
@@ -789,10 +791,10 @@ export interface DefenseAnalysis {
  */
 export function computeDefenseAnalysis(db: Database.Database, accountIds?: number[]): DefenseAnalysis {
   const diagnostics: DefenseDiagnostic[] = [];
-  const scopedAccountIds = accountIds && accountIds.length > 0 ? accountIds : undefined;
-  const accountFilter = scopedAccountIds
-    ? `AND h.account_id IN (${scopedAccountIds.map(() => "?").join(",")})`
-    : "";
+  // `undefined` is every account; a defined empty list is NO accounts (no
+  // holdings row, and no Greeks pass below).
+  const scopedAccountIds = accountIds;
+  const { sql: accountFilter, params: accountParams } = accountScopeAndSql(scopedAccountIds);
 
   // ─── Note 1: SQL pull — holdings universe (shares + options, shorts
   // included), FX-adjusted, maturity/expiry filtered. ─────────────────
@@ -821,11 +823,11 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     JOIN securities s ON s.id = h.security_id
     LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
     LEFT JOIN fx_rates fx ON fx.currency = s.currency
-    WHERE (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+    WHERE ${unmaturedSecuritySql("s")}
       AND ${liveOptionExpirationSql("s")}
       AND LOWER(s.security_type) IN ('stock', 'etf', 'common stock', 'option', 'mutual fund')
   `;
-  const allRawRows = db.prepare(sql).all(...(scopedAccountIds ?? [])) as DefenseHoldingRow[];
+  const allRawRows = db.prepare(sql).all(...accountParams) as DefenseHoldingRow[];
 
   // Cash-equivalent sweep funds (stable $1.00 NAV) are cash, not market
   // exposure — exclude them here, before any aggregation, so they never

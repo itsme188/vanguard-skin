@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { DARK_MODULE_DIM_TEXT } from "./dark-module-text";
 
 /**
  * Shared section + table primitives for the Terminal aesthetic on the
@@ -220,7 +221,7 @@ export function KpiCell({
           style={{
             fontFamily: "var(--font-mono), monospace",
             fontSize: "11px",
-            color: "#777",
+            color: DARK_MODULE_DIM_TEXT,
             fontVariantNumeric: "tabular-nums",
             marginTop: "3px",
             whiteSpace: "nowrap",
@@ -239,6 +240,26 @@ export function KpiCell({
  * Small inline "pill" used for grade letters, term markers (LT/ST), etc.
  * Rendered as a filled square block — no rounded pills.
  */
+/**
+ * Text colour for a filled tag: near-black, unless white reads better on
+ * that fill. Only the dark fills flip (the grey "No" factor pill, #64748B:
+ * near-black 4.16:1, white 4.76:1); every bright fill keeps near-black.
+ * A colour that is not a 6-digit hex keeps near-black.
+ */
+export function tagTextColor(fill: string): "#0a0a0a" | "#ffffff" {
+  const m = fill.match(/^#([0-9a-fA-F]{6})$/);
+  if (!m) return "#0a0a0a";
+  const channel = (i: number) => {
+    const s = parseInt(m[1].slice(i, i + 2), 16) / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  const fillLum = 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
+  // #0a0a0a has a relative luminance of about 0.003.
+  const onDark = (fillLum + 0.05) / (0.003 + 0.05);
+  const onWhite = 1.05 / (fillLum + 0.05);
+  return onWhite > onDark ? "#ffffff" : "#0a0a0a";
+}
+
 export function TerminalTag({
   children,
   color,
@@ -275,7 +296,7 @@ export function TerminalTag({
       style={{
         display: "inline-block",
         background: color,
-        color: "#0a0a0a",
+        color: tagTextColor(color),
         fontFamily: "var(--font-mono), monospace",
         fontSize: size === "xs" ? "10px" : "11px",
         letterSpacing: "0.14em",

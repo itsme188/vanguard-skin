@@ -1,5 +1,7 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
+
 /**
  * Full-width chat launcher for the mobile Today view. Dispatches "open-chat"
  * (handled by ChatDrawer), which always OPENS the chat overlay/rail and
@@ -31,7 +33,7 @@ export function OpenChatButton() {
         Ask Claude about your portfolio
       </span>
       {/* Keyboard hint — meaningless on touch, hidden there */}
-      <span className="pointer-coarse:hidden text-[11px] font-mono text-gold/70">Cmd+J</span>
+      <span className={`pointer-coarse:hidden text-[11px] font-mono ${CHIP_TONE_TEXT.gold}`}>Cmd+J</span>
     </button>
   );
 }

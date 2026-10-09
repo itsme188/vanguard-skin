@@ -141,7 +141,7 @@ export function OpenLotsTable({
     <div>
       <h4 className="text-xs font-medium text-ink-faint mb-2">
         Open Lots{pendingOnly ? ` \u2014 ${PENDING_STATEMENT_CHIP_LABEL} only` : ""}
-        <span className="ml-1.5 text-ink-faint/60">(<Count value={lots.length} />)</span>
+        <span className="ml-1.5 text-ink-faint">(<Count value={lots.length} />)</span>
       </h4>
       <div className="rounded-xl border border-edge overflow-hidden">
         <ScrollFade>
@@ -379,7 +379,7 @@ export function ClosedSalesTable({
     <div>
       <h4 className="text-xs font-medium text-ink-faint mb-2">
         Closed Sales
-        <span className="ml-1.5 text-ink-faint/60">(<Count value={sales.length} />)</span>
+        <span className="ml-1.5 text-ink-faint">(<Count value={sales.length} />)</span>
       </h4>
       <div className="rounded-xl border border-edge overflow-hidden">
         <ScrollFade>

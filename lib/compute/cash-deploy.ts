@@ -14,6 +14,7 @@
 import type Database from "better-sqlite3";
 import { getBenchmarkSectorMap } from "@/lib/queries/benchmark-compositions";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { getDefaultBenchmark } from "@/lib/analysis/benchmarks";
 import { computeExposureDelta, type ExposureDelta } from "./exposure-delta";
 import { explodeHoldingBySector } from "./explode-sector";
@@ -181,10 +182,8 @@ function loadCurrentHoldings(
   accountIds: number[] | undefined,
   benchmarkMap: Map<string, number>
 ): CurrentHoldingSummary {
-  const accountFilter = accountIds?.length
-    ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
-    : "";
-  const params: number[] = accountIds?.length ? [...accountIds] : [];
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const { sql: accountFilter, params } = accountScopeAndSql(accountIds);
 
   const rows = db
     .prepare(

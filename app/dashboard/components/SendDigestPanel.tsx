@@ -1,5 +1,6 @@
 "use client";
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState, useEffect, useCallback } from "react";
 import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
@@ -252,7 +253,7 @@ export function SendDigestPanel({ onClose, digestWindow, onDigestWindowChange }:
         <button
           onClick={handleSend}
           disabled={sending || !recipient.trim() || missingDate}
-          className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-sm font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed"
+          className={`inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-sm font-medium ${GOLD_FILL_CLASSES} hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed`}
         >
           {sending ? (
             <div className="w-3.5 h-3.5 border-2 border-canvas border-t-transparent rounded-full animate-spin" />

@@ -600,7 +600,7 @@ function EarningsDateChipInner({
     const passive = {
       confirmed: {
         label: "✓ 2 src",
-        cls: "text-up/80",
+        cls: CHIP_TONE_TEXT.up,
         line: "Confirmed by Finnhub + Nasdaq",
       },
       single: {

@@ -196,7 +196,7 @@ export function TabDropdown({ tab, isActive }: Props) {
           aria-haspopup="menu"
           aria-expanded={open}
           className={`relative pr-3 pl-0.5 py-2.5 text-xs transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-[''] ${
-            open ? "text-gold" : isActive ? "text-gold" : "text-ink-faint hover:text-ink-dim"
+            open ? "text-gold-ink" : isActive ? "text-gold-ink" : "text-ink-faint hover:text-ink-dim"
           }`}
         >
           <span aria-hidden style={{ letterSpacing: "0.1em" }}>•••</span>

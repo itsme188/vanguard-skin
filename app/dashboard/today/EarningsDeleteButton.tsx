@@ -1,6 +1,6 @@
 "use client";
 
-import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
+import { CHIP_TONE_TEXT, DANGER_FILL_CLASSES, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "../components/Toast";
@@ -225,7 +225,7 @@ export function EarningsDeleteButton({
               type="button"
               onClick={() => void remove(true)}
               disabled={deleting}
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-gold text-canvas hover:brightness-110 focus-ring disabled:opacity-50"
+              className={`px-4 py-2 rounded-lg text-sm font-medium ${GOLD_FILL_CLASSES} hover:brightness-110 focus-ring disabled:opacity-50`}
             >
               {copy.restoreLabel}
             </button>
@@ -233,7 +233,7 @@ export function EarningsDeleteButton({
               type="button"
               onClick={() => void remove(false)}
               disabled={deleting}
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-down/90 text-white hover:bg-down focus-ring disabled:opacity-50"
+              className={`px-4 py-2 rounded-lg text-sm font-medium ${DANGER_FILL_CLASSES} hover:brightness-90 focus-ring disabled:opacity-50`}
             >
               {copy.removeOnlyLabel}
             </button>

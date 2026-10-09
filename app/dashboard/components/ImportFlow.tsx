@@ -1,7 +1,7 @@
 "use client";
 
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
-import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
+import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
@@ -145,7 +145,7 @@ function SkippedRowsDetails({
       <div className="px-3 pb-2 space-y-1">
         {groups.slice(0, 20).map((row, j) => (
           <p key={j} className="text-xs text-ink-dim font-mono">
-            <span className="text-gold/70">{row.category}[{row.index}]</span>
+            <span className={CHIP_TONE_TEXT.gold}>{row.category}[{row.index}]</span>
             {row.symbol && <span className="text-ink-faint"> {row.symbol}</span>}
             {" — "}{row.reasons.join("; ")}
           </p>
@@ -641,7 +641,7 @@ export function ImportFlow() {
                       </p>
                       <div className="space-y-0.5 mt-0.5">
                         {result.preview.donations.identityConflicts.map((c, j) => (
-                          <p key={j} className="text-xs text-gold/80 font-mono">
+                          <p key={j} className={`text-xs ${CHIP_TONE_TEXT.gold} font-mono`}>
                             <PrivateText>{c.sourceKey} — {c.field}</PrivateText>
                           </p>
                         ))}
@@ -657,7 +657,7 @@ export function ImportFlow() {
                       </p>
                       <div className="space-y-0.5 mt-0.5">
                         {result.preview.donations.absentPriorRows.map((key, j) => (
-                          <p key={j} className="text-xs text-gold/80 font-mono">
+                          <p key={j} className={`text-xs ${CHIP_TONE_TEXT.gold} font-mono`}>
                             <PrivateText>{key}</PrivateText>
                           </p>
                         ))}
@@ -683,7 +683,7 @@ export function ImportFlow() {
                   </summary>
                   <div className="mt-1 space-y-0.5">
                     {result.warnings.map((w, j) => (
-                      <p key={j} className="text-xs text-gold/80">
+                      <p key={j} className={`text-xs ${CHIP_TONE_TEXT.gold}`}>
                         <FigureMaskedText text={w} />
                       </p>
                     ))}
@@ -698,7 +698,7 @@ export function ImportFlow() {
           <button
             onClick={handleImport}
             disabled={importableCount === 0}
-            className="px-5 py-2.5 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100 disabled:active:scale-100"
+            className={`px-5 py-2.5 rounded-lg ${GOLD_FILL_CLASSES} font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100 disabled:active:scale-100`}
           >
             {importButtonLabel(importableCount, state.results.length)}
           </button>

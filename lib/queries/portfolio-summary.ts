@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { formatUSD, formatNumber } from "@/lib/format";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
@@ -167,7 +168,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
         LEFT JOIN fx_rates fx ON fx.currency = s.currency
         WHERE ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
-        AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+        AND ${unmaturedSecuritySql("s")}
         ${holdingsFilter}
       )
       SELECT a.name AS account_name, s.symbol, s.name AS security_name,
@@ -192,7 +193,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
        LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
-       AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+       AND ${unmaturedSecuritySql("s")}
        ${holdingsFilter}
        ORDER BY market_value DESC`
     )
@@ -235,7 +236,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         LEFT JOIN fx_rates fx ON fx.currency = s.currency
         WHERE lp.close_price IS NOT NULL
           AND ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
-          AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+          AND ${unmaturedSecuritySql("s")}
           ${holdingsFilter}
       )
       SELECT group_name, SUM(mv) AS total_market_value,
@@ -275,7 +276,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         LEFT JOIN fx_rates fx ON fx.currency = s.currency
         WHERE lp.close_price IS NOT NULL
           AND ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
-          AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+          AND ${unmaturedSecuritySql("s")}
           ${holdingsFilter}
       )
       SELECT group_name, SUM(mv) AS total_market_value,

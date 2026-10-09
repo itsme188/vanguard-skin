@@ -1,6 +1,6 @@
 "use client";
 
-import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
+import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { ResearchSource } from "@/lib/queries/research";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -686,7 +686,7 @@ export function ManageSourcesModal({
                               {s.sender_email}
                             </div>
                           ) : (
-                            <div className="text-xs text-down/80">
+                            <div className={`text-xs ${CHIP_TONE_TEXT.down}`}>
                               No email configured — use Discover or edit to add one
                             </div>
                           )}
@@ -866,7 +866,7 @@ export function ManageSourcesModal({
               <button
                 onClick={handleAddManual}
                 disabled={adding || !manualName.trim() || !manualEmail.trim()}
-                className="px-3 py-1.5 rounded-md text-sm font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed"
+                className={`px-3 py-1.5 rounded-md text-sm font-medium ${GOLD_FILL_CLASSES} hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed`}
               >
                 Add Source
               </button>
@@ -949,7 +949,7 @@ export function ManageSourcesModal({
                           <button
                             onClick={() => handleAddDiscovered(sender)}
                             disabled={adding}
-                            className="shrink-0 px-2.5 py-1 rounded-md text-xs font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50"
+                            className={`shrink-0 px-2.5 py-1 rounded-md text-xs font-medium ${GOLD_FILL_CLASSES} hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50`}
                           >
                             Add
                           </button>
