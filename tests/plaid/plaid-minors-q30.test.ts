@@ -104,7 +104,11 @@ describe("PlaidSection carries no message a click can never show", () => {
     expect(handler).toContain("Synced ${holdingsWritten} holding");
     expect(handler).toContain("across ${accountsSynced} account");
     expect(handler).toContain("New securities created:");
-    expect(handler).toContain('data.error || "Sync failed."');
+    // A failed sync names itself and carries the server's own reason, read
+    // through the shared result reader (a 500 with no JSON is still a line).
+    expect(handler).toContain("readMutationResult<SyncResponse>(res)");
+    expect(handler).toContain("Vanguard sync failed: ${result.message}");
+    expect(handler).toContain('networkFailureMessage("sync Vanguard")');
   });
 });
 

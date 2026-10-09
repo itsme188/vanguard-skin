@@ -1,7 +1,7 @@
 "use client";
 
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
-import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
+import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES, GOLD_OUTLINE_HOVER } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
@@ -139,7 +139,7 @@ function SkippedRowsDetails({
   const groups = groupExcludedRows(rows);
   return (
     <details open={open} className="mt-3 rounded-lg border border-gold/20 bg-gold/5">
-      <summary className="px-3 py-2 text-xs font-medium text-gold-ink cursor-pointer hover:bg-gold/10 transition-colors">
+      <summary className={`px-3 py-2 text-xs font-medium text-gold-ink cursor-pointer ${GOLD_OUTLINE_HOVER} transition-colors`}>
         {summary}
       </summary>
       <div className="px-3 pb-2 space-y-1">
@@ -678,7 +678,7 @@ export function ImportFlow() {
               {/* Warnings */}
               {result.warnings && result.warnings.length > 0 && (
                 <details className="mt-2">
-                  <summary className="text-xs text-gold-ink cursor-pointer hover:text-gold/80">
+                  <summary className="text-xs text-gold-ink cursor-pointer hover:underline">
                     {result.warnings.length} warning{result.warnings.length !== 1 ? "s" : ""}
                   </summary>
                   <div className="mt-1 space-y-0.5">
@@ -821,7 +821,7 @@ export function ImportFlow() {
                   unresolved symbol or a ratio collision) */}
               {result.warnings && result.warnings.length > 0 && (
                 <details className="mt-2">
-                  <summary className="text-xs text-gold-ink cursor-pointer hover:text-gold/80">
+                  <summary className="text-xs text-gold-ink cursor-pointer hover:underline">
                     {result.warnings.length} warning{result.warnings.length !== 1 ? "s" : ""}
                   </summary>
                   <div className="mt-1 space-y-0.5">

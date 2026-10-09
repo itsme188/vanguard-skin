@@ -41,6 +41,38 @@ import { todayET } from "@/lib/calendar/date-utils";
  */
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const COLUMN_PATTERN = /^(?:[A-Za-z_][A-Za-z0-9_]*\.)?[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * SQL expression for a stored expiration in dashed `YYYY-MM-DD` text form.
+ * Legacy rows store the compact `YYYYMMDD` spelling (stored rows are NOT
+ * normalized); the dashed form is rebuilt for those and anything else passes
+ * through unchanged. `column` is a bare or alias-qualified column name
+ * (`expiration_date`, `s.expiration_date`), validated and inlined.
+ *
+ * Use this (or one of the two fragments built on it) for EVERY SQL comparison
+ * of an option expiration. A raw string compare reads the compact form as
+ * later than every dashed day of its year (`'20261004' >= '2026-10-06'` is
+ * true, `'1'` sorts after `'-'`), and SQLite's `date()` / `julianday()` read
+ * it as NULL.
+ */
+export function optionExpirationDashedSql(column = "expiration_date"): string {
+  if (!COLUMN_PATTERN.test(column)) {
+    throw new Error(`optionExpirationDashedSql: not a column name: ${JSON.stringify(column)}`);
+  }
+  return `CASE WHEN ${column} GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' THEN substr(${column},1,4) || '-' || substr(${column},5,2) || '-' || substr(${column},7,2) ELSE ${column} END`;
+}
+
+/**
+ * The stored expiration as a SQLite day: `date()` over
+ * {@link optionExpirationDashedSql}. A value `date()` still cannot read stays
+ * NULL, so a comparison against it is never true (the purge never deletes
+ * such a row). Shared by the expired-holdings purge
+ * (lib/mutations/expired-options.ts) and its one-shot preview script.
+ */
+export function optionExpirationDaySql(column = "expiration_date"): string {
+  return `date(${optionExpirationDashedSql(column)})`;
+}
 
 /**
  * SQL fragment for a `WHERE`/`AND` clause against a `securities` row aliased
@@ -65,7 +97,7 @@ export function liveOptionExpirationSql(alias = "s", today: string = todayET()):
   // NOT normalized). A raw string compare of '20261004' >= '2026-10-06' is
   // TRUE ('1' sorts after '-'), which kept an expired legacy-format contract
   // live — so rebuild the dashed form before comparing.
-  return `(${e} IS NULL OR (CASE WHEN ${e} GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' THEN substr(${e},1,4) || '-' || substr(${e},5,2) || '-' || substr(${e},7,2) ELSE ${e} END) >= '${today}')`;
+  return `(${e} IS NULL OR (${optionExpirationDashedSql(e)}) >= '${today}')`;
 }
 
 const COMPACT_DATE_PATTERN = /^(\d{4})(\d{2})(\d{2})$/;
@@ -111,14 +143,29 @@ export function isOptionLive(
  * midnight but before the ET day rolls over, this floors to -1 and prints
  * "(expired)" for a contract the Greeks card (16:00-ET-close rule,
  * `isOptionLive`) still shows as live.
+ *
+ * `expirationDate` is STORED data and this runs during a page render, so it
+ * never throws on it: the legacy compact `YYYYMMDD` spelling is read exactly
+ * as the dashed one (via {@link normalizeOptionExpiration}), and a missing or
+ * unreadable value (empty, free text, a day that is not on the calendar)
+ * returns `null`, which the caller shows as "no day count". `today` is the
+ * caller's own argument, so a malformed one is still a thrown bug.
  */
-export function daysToExpiry(expirationDate: string, today: string = todayET()): number {
-  if (!DATE_PATTERN.test(expirationDate)) {
-    throw new Error(`daysToExpiry: expirationDate must match YYYY-MM-DD, got ${JSON.stringify(expirationDate)}`);
-  }
+export function daysToExpiry(
+  expirationDate: string | null | undefined,
+  today: string = todayET()
+): number | null {
   if (!DATE_PATTERN.test(today)) {
     throw new Error(`daysToExpiry: today must match YYYY-MM-DD, got ${JSON.stringify(today)}`);
   }
+  if (!expirationDate) return null;
+  const dashed = normalizeOptionExpiration(expirationDate);
+  if (!DATE_PATTERN.test(dashed)) return null;
+  const expiry = new Date(dashed);
+  const expiryMs = expiry.getTime();
+  // An impossible day either fails to parse (month 13) or rolls forward
+  // (Feb 30 reads as Mar 2); neither is a date anyone stored on purpose.
+  if (!Number.isFinite(expiryMs) || expiry.getUTCDate() !== Number(dashed.slice(8, 10))) return null;
   const MS_PER_DAY = 24 * 60 * 60 * 1000;
-  return Math.round((new Date(expirationDate).getTime() - new Date(today).getTime()) / MS_PER_DAY);
+  return Math.round((expiryMs - new Date(today).getTime()) / MS_PER_DAY);
 }

@@ -377,7 +377,7 @@ export function DataHealthView({ integritySection }: { integritySection?: ReactN
           <div className="p-5 space-y-4">
             {gaps.securitiesNoPrices.length > 0 && (
               <details>
-                <summary className="text-sm text-down cursor-pointer hover:text-down/80">
+                <summary className="text-sm text-down cursor-pointer hover:underline">
                   {gaps.securitiesNoPrices.length} {gaps.securitiesNoPrices.length === 1 ? "security" : "securities"} with no prices
                 </summary>
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -395,7 +395,7 @@ export function DataHealthView({ integritySection }: { integritySection?: ReactN
             )}
             {gaps.securitiesNoTransactions.length > 0 && (
               <details>
-                <summary className="text-sm text-gold-ink cursor-pointer hover:text-gold/80">
+                <summary className="text-sm text-gold-ink cursor-pointer hover:underline">
                   {gaps.securitiesNoTransactions.length} {gaps.securitiesNoTransactions.length === 1 ? "security" : "securities"} with no transactions
                 </summary>
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -413,7 +413,9 @@ export function DataHealthView({ integritySection }: { integritySection?: ReactN
             )}
             {gaps.staleHoldings.length > 0 && (
               <details>
-                <summary className="text-sm text-[#f97316] cursor-pointer hover:text-[#f97316]/80">
+                {/* Same orange treatment as the 15-to-45-day band of StaleBadge
+                    above: darkened on a light page, plain on a dark one. */}
+                <summary className="text-sm text-[color:color-mix(in_srgb,#f97316_60%,black)] [[data-theme=dark]_&]:text-[#f97316] cursor-pointer hover:underline">
                   {gaps.staleHoldings.length} stale holdings (&gt;90 days)
                 </summary>
                 <div className="mt-2 space-y-1">

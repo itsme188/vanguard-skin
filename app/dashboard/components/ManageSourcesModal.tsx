@@ -1,6 +1,6 @@
 "use client";
 
-import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
+import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES, GOLD_OUTLINE_HOVER } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { ResearchSource } from "@/lib/queries/research";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -814,7 +814,7 @@ export function ManageSourcesModal({
             <button
               onClick={handleDiscover}
               disabled={discovering}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border border-gold/40 text-gold-ink hover:bg-gold/10 transition-colors disabled:opacity-50"
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border border-gold/40 text-gold-ink ${GOLD_OUTLINE_HOVER} transition-colors disabled:opacity-50`}
             >
               {discovering ? (
                 <div className="w-3.5 h-3.5 border-2 border-gold border-t-transparent rounded-full animate-spin" />

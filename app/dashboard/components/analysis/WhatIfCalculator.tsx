@@ -8,6 +8,7 @@ import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors"
 import type { ExposureDelta, HypotheticalLeg } from "@/lib/compute/exposure-delta";
 import { ScrollFade } from "../ScrollFade";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 
 const MATERIAL_DELTA_PCT = 0.005; // 0.5pp threshold for sector + factor rows
 
@@ -67,11 +68,16 @@ export function WhatIfCalculator({ scope }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scope, legs: cleanLegs }),
       });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error ?? "Request failed");
-      setDelta(data.data as ExposureDelta);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to compute");
+      const result = await readMutationResult<{ data?: ExposureDelta }>(res);
+      if (!result.ok || !result.data.data) {
+        setError(
+          `Couldn't work out the what-if: ${result.ok ? "the server sent no result." : result.message}`,
+        );
+        return;
+      }
+      setDelta(result.data.data);
+    } catch {
+      setError(networkFailureMessage("work out the what-if"));
     } finally {
       setLoading(false);
     }

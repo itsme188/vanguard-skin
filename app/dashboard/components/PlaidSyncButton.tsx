@@ -12,6 +12,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "./Toast";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 
 interface PlaidSyncResponse {
   success: boolean;
@@ -29,21 +30,22 @@ export function PlaidSyncButton() {
     setIsLoading(true);
     try {
       const res = await apiFetch("/api/plaid/sync", { method: "POST" });
-      const data = (await res.json()) as PlaidSyncResponse;
-      if (data.success) {
-        if (data.skippedReason === "market_closed") {
-          toast("Vanguard sync skipped — the market is closed.", "info");
-        } else if (data.skippedReason === "already_synced_today") {
-          toast("Vanguard already synced today — nothing new to pull.", "info");
-        } else {
-          toast(`Vanguard synced — ${data.holdingsWritten ?? 0} holdings updated`, "success");
-          router.refresh();
-        }
+      const result = await readMutationResult<PlaidSyncResponse>(res);
+      if (!result.ok) {
+        toast(`Vanguard sync failed: ${result.message}`, "error");
+        return;
+      }
+      const data = result.data;
+      if (data.skippedReason === "market_closed") {
+        toast("Vanguard sync skipped — the market is closed.", "info");
+      } else if (data.skippedReason === "already_synced_today") {
+        toast("Vanguard already synced today — nothing new to pull.", "info");
       } else {
-        toast(`Vanguard sync failed: ${data.error}`, "error");
+        toast(`Vanguard synced — ${data.holdingsWritten ?? 0} holdings updated`, "success");
+        router.refresh();
       }
     } catch {
-      toast("Failed to connect to server", "error");
+      toast(networkFailureMessage("sync Vanguard"), "error");
     } finally {
       setIsLoading(false);
     }

@@ -115,7 +115,7 @@ export function makeNewsletterRescanStep(
         .prepare(
           `SELECT a.id, rs.name AS source_name, a.subject, a.received_at, a.raw_text
              FROM research_articles a JOIN research_sources rs ON rs.id = a.source_id
-            WHERE a.received_at >= datetime('now', ?) AND a.raw_text IS NOT NULL AND length(a.raw_text) > 200
+            WHERE datetime(a.received_at) >= datetime('now', ?) AND a.raw_text IS NOT NULL AND length(a.raw_text) > 200
             ORDER BY a.received_at DESC, a.id DESC`,
         )
         .all(`-${RESCAN_WINDOW_DAYS} days`) as ArticleRow[];

@@ -10,6 +10,7 @@ import { DrillDownPanel } from "./DrillDownPanel";
 import type { FactorHeatmapRow, FactorCoverage } from "@/lib/queries/analysis";
 import type { DrillDownFilter } from "@/lib/queries/drill-down";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { Count } from "@/lib/privacy/components";
 import { classificationMethodLabel } from "./ClassificationCard";
 
@@ -29,26 +30,33 @@ export function FactorModeCard({ factorHeatmap, factorCoverage, scope }: Props) 
     setFactorClassifyLoading(true);
     try {
       const res = await apiFetch("/api/compute/classify-factors", { method: "POST" });
-      const data = await res.json();
-      if (data.success) {
-        const note = data.errors?.length > 0 ? ` · ${data.errors.length} batch error(s)` : "";
-        if (data.classified === 0 && data.skipped === 0 && !data.errors?.length) {
-          // No-op runs need a WHY, not a bare zero — "Classified 0" reads as a broken button.
-          toast(
-            "Nothing to classify — every held security and option underlying already has factor classifications. Options inherit factors from their underlying.",
-            "info"
-          );
-        } else {
-          const created = data.underlyingsCreated > 0 ? ` · ${data.underlyingsCreated} option underlying(s) added` : "";
-          toast(`Classified ${data.classified} securities` + (data.skipped > 0 ? ` (${data.skipped} skipped)` : "") + created + note,
-            data.errors?.length > 0 ? "info" : "success");
-        }
-        router.refresh();
-      } else {
-        toast(`Factor classification failed: ${data.error}`, "error");
+      const result = await readMutationResult<{
+        classified: number;
+        skipped: number;
+        underlyingsCreated: number;
+        errors?: string[];
+      }>(res);
+      if (!result.ok) {
+        toast(`Factor classification failed: ${result.message}`, "error");
+        return;
       }
+      const data = result.data;
+      const errorCount = Array.isArray(data.errors) ? data.errors.length : 0;
+      const note = errorCount > 0 ? ` · ${errorCount} batch error(s)` : "";
+      if (data.classified === 0 && data.skipped === 0 && errorCount === 0) {
+        // No-op runs need a WHY, not a bare zero — "Classified 0" reads as a broken button.
+        toast(
+          "Nothing to classify — every held security and option underlying already has factor classifications. Options inherit factors from their underlying.",
+          "info"
+        );
+      } else {
+        const created = data.underlyingsCreated > 0 ? ` · ${data.underlyingsCreated} option underlying(s) added` : "";
+        toast(`Classified ${data.classified} securities` + (data.skipped > 0 ? ` (${data.skipped} skipped)` : "") + created + note,
+          errorCount > 0 ? "info" : "success");
+      }
+      router.refresh();
     } catch {
-      toast("Failed to connect to server", "error");
+      toast(networkFailureMessage("run the factor classification"), "error");
     } finally {
       setFactorClassifyLoading(false);
     }

@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { todayET } from "@/lib/calendar/date-utils";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { optionExpirationDashedSql } from "@/lib/compute/option-expiry";
 
 export interface ExpiringOption {
   securityId: number;
@@ -40,6 +41,11 @@ export function getExpiringOptions(
   const params: (string | number)[] = [today, today, today, daysWindow];
   if (options?.accountIds?.length) params.push(...options.accountIds);
 
+  // The dashed form of the stored expiration. A legacy compact `YYYYMMDD`
+  // row compared raw passed the `>= today` test whatever its date, and its
+  // julianday() was NULL, which dropped a LIVE compact contract from the list.
+  const expiration = optionExpirationDashedSql("s.expiration_date");
+
   const rows = db.prepare(`
     SELECT
       s.id AS securityId,
@@ -47,8 +53,8 @@ export function getExpiringOptions(
       s.underlying_symbol AS underlying,
       UPPER(s.option_type) AS optionType,
       s.strike_price AS strike,
-      s.expiration_date AS expiration,
-      CAST(julianday(s.expiration_date) - julianday(?) AS INTEGER) AS daysToExpiry,
+      ${expiration} AS expiration,
+      CAST(julianday(${expiration}) - julianday(?) AS INTEGER) AS daysToExpiry,
       h.quantity,
       h.account_id AS accountId,
       a.name AS accountName
@@ -57,10 +63,10 @@ export function getExpiringOptions(
     JOIN accounts a ON a.id = h.account_id
     WHERE LOWER(s.security_type) = 'option'
       AND s.expiration_date IS NOT NULL
-      AND s.expiration_date >= ?
-      AND CAST(julianday(s.expiration_date) - julianday(?) AS INTEGER) <= ?
+      AND (${expiration}) >= ?
+      AND CAST(julianday(${expiration}) - julianday(?) AS INTEGER) <= ?
       AND ${latestHoldingsPredicate({ accountFilter })}
-    ORDER BY s.expiration_date ASC, s.symbol ASC
+    ORDER BY ${expiration} ASC, s.symbol ASC
   `).all(...params) as ExpiringOption[];
 
   return rows;

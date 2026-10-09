@@ -213,7 +213,7 @@ export function BogeysUploadButton({ weekOf, shownEvents }: Props) {
           fileInputRef.current?.click();
         }}
         disabled={uploading}
-        className="text-gold-ink hover:text-gold/80 font-medium disabled:opacity-50 relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2"
+        className="text-gold-ink enabled:hover:underline font-medium disabled:opacity-50 relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2"
       >
         {uploading ? "Uploading…" : "+ Upload bogeys PDF/screenshot"}
       </button>

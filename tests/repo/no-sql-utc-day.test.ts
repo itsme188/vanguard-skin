@@ -123,14 +123,14 @@ const ALLOWED: Allowed[] = [
   },
   {
     file: "lib/queries/briefing-levels.ts",
-    anchor: "WHERE a.triggered_at >= datetime('now', ?)",
+    anchor: "WHERE datetime(a.triggered_at) >= datetime('now', ?)",
     kind: "instant-window",
     cls: "elapsed-time",
-    why: "Alerts fired in the last N x 24 hours; triggered_at is the fire instant.",
+    why: "Alerts fired in the last N x 24 hours; triggered_at is the fire instant, stored as ISO with T and Z, so both sides go through datetime().",
   },
   {
     file: "lib/queries/research.ts",
-    anchor: "AND a.received_at >= datetime('now', '-' || ? || ' hours')",
+    anchor: "AND datetime(a.received_at) >= datetime('now', '-' || ? || ' hours')",
     kind: "instant-window",
     cls: "elapsed-time",
     why: "Digest source window in hours against the received instant.",
@@ -138,28 +138,28 @@ const ALLOWED: Allowed[] = [
   },
   {
     file: "lib/queries/press-releases.ts",
-    anchor: "published_at >= datetime('now', ?)",
+    anchor: "datetime(published_at) >= datetime('now', ?)",
     kind: "instant-window",
     cls: "elapsed-time",
-    why: "Releases published in the last N x 24 hours; published_at is an instant.",
+    why: "Releases published in the last N x 24 hours; published_at is an instant stored as ISO with T and Z, so both sides go through datetime().",
   },
   {
     file: "lib/alerts/extract-newsletter-levels.ts",
-    anchor: "AND a.received_at >= datetime('now', '-${sinceDays} days')",
+    anchor: "AND datetime(a.received_at) >= datetime('now', '-${sinceDays} days')",
     kind: "instant-window",
     cls: "elapsed-time",
     why: "Extraction scan window over the received instant; rows are stamped once scanned.",
   },
   {
     file: "lib/earnings/extract-newsletter-bogeys.ts",
-    anchor: "AND a.received_at >= datetime('now', '-${sinceDays} days')",
+    anchor: "AND datetime(a.received_at) >= datetime('now', '-${sinceDays} days')",
     kind: "instant-window",
     cls: "elapsed-time",
     why: "Bogey scan window over the received instant; rows are stamped once scanned.",
   },
   {
     file: "lib/earnings/prepare-steps/newsletter-rescan.ts",
-    anchor: "WHERE a.received_at >= datetime('now', ?) AND a.raw_text IS NOT NULL",
+    anchor: "WHERE datetime(a.received_at) >= datetime('now', ?) AND a.raw_text IS NOT NULL",
     kind: "instant-window",
     cls: "elapsed-time",
     why: "Rescan lookback over the received instant.",
@@ -387,5 +387,107 @@ describe("SQL never reads the UTC clock as a calendar day", () => {
       (h) => `${h.file}:${h.line} ${h.text}`,
     );
     expect(disguised).toEqual([]);
+  });
+});
+
+// ── Both sides of an instant window in ONE text form ────────────────────
+//
+// `datetime('now', …)` is the space form (`2026-10-02 15:00:00`). A column
+// stored as an ISO string (`2026-10-02T09:00:00.000Z`) compared with it as
+// bare text sorts after every space-form string of the same day (`T` > space),
+// so `col >= datetime('now', '-7 days')` lets in up to a day of rows from
+// before the cutoff, and `col < datetime('now', …)` misses the same rows.
+// The rule (CLAUDE.md, "Data layer"): `datetime()` on BOTH sides. This scan
+// reads whole files (comment lines blanked), so an operator and the clock on
+// separate lines are still seen.
+
+interface BareAllowed {
+  file: string;
+  /** The bare operand as written, e.g. `a.received_at`. */
+  operand: string;
+  /** Which writer proves the column is always SQLite's space form. */
+  why: string;
+}
+
+/** Empty on purpose: every site was wrapped on 2026-10-09. Add an entry only
+ *  with the writer that proves the column can never hold an ISO `T` string. */
+const BARE_ALLOWED: BareAllowed[] = [];
+
+const IDENT = String.raw`(?:[A-Za-z_][A-Za-z0-9_]*\.)?[A-Za-z_][A-Za-z0-9_]*`;
+/** `col >= datetime('now'…`: a bare identifier directly left of the operator. */
+const BARE_LEFT = new RegExp(
+  String.raw`(?<![\w.)'"\]])(${IDENT})\s*[<>]=?\s*datetime\(\s*'now'`,
+  "g",
+);
+/** `datetime('now'…) > col`: a bare identifier (not a function call) on the right. */
+const BARE_RIGHT = new RegExp(
+  String.raw`datetime\(\s*'now'[^)]*\)\s*[<>]=?\s*(${IDENT})\b(?!\s*\()`,
+  "g",
+);
+
+function bareOperands(source: string): string[] {
+  const out: string[] = [];
+  for (const re of [BARE_LEFT, BARE_RIGHT]) {
+    re.lastIndex = 0;
+    for (const m of source.matchAll(re)) out.push(m[1]);
+  }
+  return out;
+}
+
+function scanBare(): Array<{ file: string; operand: string }> {
+  const found: Array<{ file: string; operand: string }> = [];
+  for (const dir of SCAN_DIRS) {
+    for (const full of listFiles(path.join(REPO_ROOT, dir))) {
+      const file = path.relative(REPO_ROOT, full).split(path.sep).join("/");
+      const code = fs
+        .readFileSync(full, "utf8")
+        .split("\n")
+        .map((line) => (isCommentLine(line) ? "" : line.replace(/\s\/\/\s.*$/, "")))
+        .join("\n");
+      for (const operand of bareOperands(code)) found.push({ file, operand });
+    }
+  }
+  return found;
+}
+
+const BARE_HITS = scanBare();
+
+describe("an instant window compares both sides in one text form", () => {
+  it("the scanner tells a bare column from a wrapped one", () => {
+    expect(bareOperands("WHERE a.received_at >= datetime('now', '-2 days')")).toEqual(["a.received_at"]);
+    expect(bareOperands("WHERE published_at >= datetime('now', ?)")).toEqual(["published_at"]);
+    expect(bareOperands("AND sent_at < datetime('now')")).toEqual(["sent_at"]);
+    expect(bareOperands("AND a.t <=\n   datetime( 'now', ?)")).toEqual(["a.t"]);
+    expect(bareOperands("WHERE datetime('now') > a.expires")).toEqual(["a.expires"]);
+    expect(bareOperands("WHERE datetime('now', '-5 minutes') >= claimed_at")).toEqual(["claimed_at"]);
+
+    expect(bareOperands("WHERE datetime(a.received_at) >= datetime('now', '-2 days')")).toEqual([]);
+    expect(bareOperands("WHERE datetime('now') > datetime(a.expires)")).toEqual([]);
+    expect(bareOperands("WHERE ? >= datetime('now', ?)")).toEqual([]);
+    expect(bareOperands("SET updated_at = datetime('now')")).toEqual([]);
+    expect(bareOperands("VALUES (?, datetime('now'))")).toEqual([]);
+  });
+
+  it("no stored column is compared bare with datetime('now'…)", () => {
+    const unlisted = BARE_HITS
+      .filter((h) => !BARE_ALLOWED.some((a) => a.file === h.file && a.operand === h.operand))
+      .map((h) => `${h.file}: ${h.operand}`);
+    expect(
+      unlisted,
+      "A stored timestamp is compared as bare text with datetime('now'…). An ISO string with a " +
+        "T sorts after SQLite's space form, so the window is off by up to a day. Wrap the " +
+        "column: datetime(col) >= datetime('now', …).",
+    ).toEqual([]);
+  });
+
+  it("no allowlist entry is stale, and each names its writer", () => {
+    const found = BARE_HITS;
+    for (const entry of BARE_ALLOWED) {
+      expect(
+        found.some((h) => h.file === entry.file && h.operand === entry.operand),
+        `${entry.file}: ${entry.operand} is listed but no longer present`,
+      ).toBe(true);
+      expect(entry.why.length, `${entry.file}: ${entry.operand}`).toBeGreaterThan(20);
+    }
   });
 });

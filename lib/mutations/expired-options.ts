@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { liveOriginHoldingSql } from "@/lib/db/holding-sources";
 import { todayET } from "@/lib/calendar/date-utils";
+import { optionExpirationDaySql } from "@/lib/compute/option-expiry";
 
 /**
  * The stored expiration as a SQLite day. Legacy rows carry the compact
@@ -9,7 +10,7 @@ import { todayET } from "@/lib/calendar/date-utils";
  * `liveOptionExpirationSql` (lib/compute/option-expiry.ts) does for readers.
  * Anything else that `date()` cannot read stays NULL and is never deleted.
  */
-const EXPIRATION_DAY_SQL = `date(CASE WHEN expiration_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' THEN substr(expiration_date,1,4) || '-' || substr(expiration_date,5,2) || '-' || substr(expiration_date,7,2) ELSE expiration_date END)`;
+const EXPIRATION_DAY_SQL = optionExpirationDaySql("expiration_date");
 
 export interface PurgeExpiredOptionHoldingsOptions {
   accountId?: number;

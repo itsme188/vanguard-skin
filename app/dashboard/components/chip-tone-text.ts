@@ -54,3 +54,14 @@ export const GOLD_FILL_CLASSES = `bg-gold ${GOLD_FILL_TEXT}`;
  */
 export const DANGER_FILL_CLASSES =
   "bg-down text-white [[data-theme=dark]_&]:bg-[color:color-mix(in_srgb,var(--down)_80%,black)]";
+
+/**
+ * The hover state of a small gold outline button or disclosure (gold-ink
+ * text, no fill at rest). The 10% gold tint alone drops the resting
+ * `text-gold-ink` to 4.34:1 in the light theme, so the text takes the gold
+ * chip's checked ink for as long as the tint is there: 6.03:1 light, 9.18:1
+ * dark (the dark theme keeps its one gold). Pinned in
+ * tests/repo/no-faded-small-status-text.test.ts.
+ */
+export const GOLD_OUTLINE_HOVER =
+  "hover:bg-gold/10 hover:text-[color:color-mix(in_srgb,var(--gold-ink)_80%,black)] [[data-theme=dark]_&]:hover:text-gold-ink";

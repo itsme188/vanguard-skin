@@ -1083,3 +1083,46 @@ Eight commits. One Codex review (no production finding; one gap in a guard test,
 - Two builders sharing a file meant one unit's commit carried a few lines of the other's unfinished work, and for a moment the branch did not build on its own. Commit by file only when one builder owns the file, or wait for both.
 - A builder asked to list risky sites for a decision changed them instead. Each change was sound, but the brief should have said "stop and report" as the first line, not the last.
 - Colour inside an always-dark panel must be checked separately from the page theme. One measured pass found a regression from the wave before it and twelve older misses.
+
+## 2026-10-09 (about 02:40) — Second overnight sprint, seventh and last wave
+
+Three commits. One Codex review (two findings, both fixed before the merge), the full suite, and a browser check in both themes (no duplicate id, no rendering warning in eight hard reloads, no hovered element under the contrast floor).
+
+**Decisions taken. The owner should confirm or reverse each.**
+1. **Time windows compare like with like.** Two windows compared a timestamp stored with a `T` against SQLite's space-separated clock, which let in rows from earlier the same day: press releases for the earnings email prompt, and levels fired inside the weekly briefing window. Both sides now go through `datetime()`. The only effect is that rows outside the window are no longer included. Five more windows on a column already stored in the space form were wrapped the same way and select the same rows. Checked read-only on the live book: no stored value in the three affected tables is unreadable by `datetime()`, so no row disappears.
+2. **A compact option expiry (`YYYYMMDD`) is read correctly everywhere**: the expirations list (a live contract in that form was missing from it), the Greeks (it was never expired), the days-to-expiry helper (it threw, which would have crashed that security's page), the one-off purge script, and **the weekly briefing's expiring-options list**. The last one adds a row to an email where it applies; an option that really expires this week belongs in that list. No security on the live book carries the compact form, so nothing changes today.
+3. **Giving element ids are built from the year, the gift and the lot.** Two year sections shared one id, and the verify dialog's generated ids intermittently differed between server and client.
+4. **A hover never lowers small text under the contrast floor.** Seventy-three hover states faded text or brightened a tint under it; they now underline, take the small-text gold, or dim the fill slightly.
+
+**Guards added tonight** (each fails the suite on a new instance and lists every allowed one with its reason): a UTC day cut in JavaScript; a calendar-day comparison on SQLite's UTC clock; a bare column compared with the current instant; a hand-written option-expiry comparison; a native browser prompt; small coloured text on a tint under 4.5 to 1; faded small text, small plain gold and hand-written solid gold; a dim grey in a dark-panel file; a fade applied to small text; a hover that lowers small text under the floor.
+
+**Still open from this wave.**
+- The security page prints a compact expiry as stored (`20261016`), not prettified.
+- `scripts/verify-a1-current-prices.ts` and `scripts/verify-a2-combined-positions.ts` compare an expiry by hand (one-off read-only scripts).
+- Two Levels panel controls inside the dark chart panel have no hover feedback.
+- The selected chat scope pill and the chat Send button remain under the floor in the light theme (protected component; the one-line changes are in the sixth-wave entry).
+
+## 2026-10-09 (about 03:20) — Second overnight sprint, eighth wave and closeout
+
+Six commits. One Codex review (approved, no findings), one review that called the real route behind each converted request ("ready"; its small items fixed before the merge), the full suite, and a read-only audit of the Worker against the night's Mac changes.
+
+**Decisions taken. The owner should confirm or reverse each.**
+1. **A failed request says so, and a failed load is not shown as an empty list.** Twenty-six client requests now read their reply through the shared reader, which treats a reply as a failure unless the server says success. A reviewer called each route and fed the real reply in: every success reads as a success and every named refusal still offers its acknowledgement. Two cards (Fixed Income, Options Greeks) showed "No positions" when their load failed; five loads in all now say the load failed. A repo scan fails on a new bare gate, a new empty catch or a newly printed exception, and lists every remaining site with its reason.
+2. **The cloud fallback reads every live hand-entered earnings row for the two-entries rule** (snapshot version 13, the optional field `manualEarningsRows`). Before, it saw only rows inside the snapshot's calendar window, so with the Mac asleep it could send a preview and recap the Mac refuses. It honours a row the Mac has since deleted or replaced. **Deploy the Worker before the first version 13 snapshot.**
+3. **Cloud evening movers leave out a name whose last two bar dates are not the market's pair** (a fund whose price is not posted yet was compared across different days).
+4. A cloud recap road reads a timestamp in either stored form. No current writer stores the other form, so nothing changes today; it is the one change in this wave that is not purely conservative.
+
+**Found by the Worker audit and left for the owner** (each would add sends or change email content, and each needs the Mac to have missed its own send):
+- In the cloud, earnings coverage counts long stock only. A name held only through options, or only short, gets no cloud preview, print push or recap. The Mac counts both. This may be intended; it is not written down anywhere.
+- The cloud's morning digest keeps snapshot articles by the UTC date they arrived, so mail received between 19:00 and 20:00 Eastern in summer is dropped from it.
+- The cloud's evening email can cover articles a cloud-sent morning digest already covered.
+- The snapshot loader's comment says "within seven days" but no age check exists; a very old snapshot would still drive cloud level alerts and coverage.
+
+**Correction to an earlier entry.** The fifth-wave entry says five UTC fallback dates sit inside four import parser files. The guard's list has six in five files (`lib/import/parsers/ibkr-activity.ts` as well).
+
+**Still open from this wave.**
+- Handlers left on a hand-written reply check because their route answers without the success flag (`{ ok: true }` or a bare object): email recipients, earnings row skip, research documents, settings, and others listed in `tests/repo/honest-mutating-handlers.test.ts`. Converting one without changing its route would show a success as a failure.
+- The Alerts page has no error slot: a failed first load leaves empty lists with no failure line. The Levels panel's suggested-levels load fails silently.
+- The cloud twin rule cannot hear about a hand-entered row deleted more than fourteen days back or not yet drained from the outbox; the suppression then lasts until the next snapshot.
+
+**Closeout.** The nightly fixer is back on (`qa/deep-qa-config.json`). The handoff is rewritten. The sixth, seventh and eighth waves deploy together after 04:30 Eastern, Worker first.

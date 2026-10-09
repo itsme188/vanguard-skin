@@ -21,7 +21,7 @@ export function SymbolLink({
       // ~35px, and a positioned ::after wins hit-testing over in-flow
       // content — ±8px would let each row's link steal taps from the
       // rows above/below it.
-      className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-1.5 pointer-coarse:after:-inset-x-0.5 hover:text-gold hover:underline underline-offset-2 transition-colors ${className ?? ""}`}
+      className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-1.5 pointer-coarse:after:-inset-x-0.5 hover:text-gold-ink hover:underline underline-offset-2 transition-colors ${className ?? ""}`}
       title={`View ${symbol} details`}
     >
       {symbol}

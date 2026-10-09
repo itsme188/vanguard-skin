@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "./Toast";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { Count, Money } from "@/lib/privacy/components";
 import type { TaxLotRecomputeSummary } from "@/lib/compute/tax-lot-recompute-summary";
 import { RecomputeOpenLotScope } from "./RecomputeOpenLotScope";
@@ -30,22 +31,27 @@ export function RecomputeButton({
         headers: { "Content-Type": "application/json" },
         body: summary ? JSON.stringify({ confirmRecompute: true }) : undefined,
       });
-      const data = await res.json();
-      if (data.success) {
-        if (data.data?.requiresConfirmation) {
-          setSummary(data.data.summary as TaxLotRecomputeSummary);
-          toast(`${label} preview ready`, "success");
-        } else {
-          setSummary(null);
-          toast(`${label} complete`, "success");
-          if (completionEventName) window.dispatchEvent(new CustomEvent(completionEventName));
-          router.refresh();
-        }
+      const result = await readMutationResult<{
+        data?: { requiresConfirmation?: boolean; summary?: TaxLotRecomputeSummary };
+      }>(res);
+      if (!result.ok) {
+        // A refused or failed run changed nothing; a preview already on
+        // screen stays as it was.
+        toast(`${label} failed: ${result.message}`, "error");
+        return;
+      }
+      const data = result.data;
+      if (data.data?.requiresConfirmation) {
+        setSummary(data.data.summary as TaxLotRecomputeSummary);
+        toast(`${label} preview ready`, "success");
       } else {
-        toast(`${label} failed: ${data.error}`, "error");
+        setSummary(null);
+        toast(`${label} complete`, "success");
+        if (completionEventName) window.dispatchEvent(new CustomEvent(completionEventName));
+        router.refresh();
       }
     } catch {
-      toast("Failed to connect to server", "error");
+      toast(networkFailureMessage(`run ${label}`), "error");
     } finally {
       setIsLoading(false);
     }

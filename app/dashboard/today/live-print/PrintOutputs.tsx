@@ -20,6 +20,7 @@
 import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage } from "@/lib/ui/mutation-result";
 import type { PrintOutputsWire } from "../hub-live/types";
 
 /** The promote control's finished shape — built by `LivePrintRow`, which owns
@@ -99,8 +100,8 @@ export default function PrintOutputs({
         }`,
       );
       await onChanged();
-    } catch (err) {
-      setNote(err instanceof Error ? err.message : "Could not reach the server.");
+    } catch {
+      setNote(networkFailureMessage("print the sheet"));
     } finally {
       setBusy(null);
     }
@@ -130,8 +131,10 @@ export default function PrintOutputs({
       const detail = data.data?.reason ?? data.data?.note;
       setNote(detail === undefined ? outcome : `${outcome} — ${String(detail)}`);
       await onChanged();
-    } catch (err) {
-      setNote(err instanceof Error ? err.message : "Could not reach the server.");
+    } catch {
+      // Whether the recap went out is not known from here: the request may
+      // have reached the server before the connection dropped.
+      setNote(`${networkFailureMessage("send the recap")} Check the recap status before sending again.`);
     } finally {
       setBusy(null);
     }

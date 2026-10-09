@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { liveOptionExpirationSql, isOptionLive, daysToExpiry } from "@/lib/compute/option-expiry";
 
@@ -101,7 +101,7 @@ describe("daysToExpiry", () => {
   it("agrees with isOptionLive's cutoff: live iff daysToExpiry >= 0", () => {
     const today = "2026-08-21";
     for (const expiration of ["2026-08-19", "2026-08-20", "2026-08-21", "2026-08-22", "2026-08-25"]) {
-      expect(daysToExpiry(expiration, today) >= 0).toBe(isOptionLive(expiration, today));
+      expect((daysToExpiry(expiration, today) as number) >= 0).toBe(isOptionLive(expiration, today));
     }
   });
 
@@ -129,8 +129,44 @@ describe("daysToExpiry", () => {
     expect(Number.isInteger(dte)).toBe(true);
   });
 
-  it("throws on a malformed expirationDate or today instead of silently miscomputing", () => {
-    expect(() => daysToExpiry("09/15/2026", "2026-09-15")).toThrow(/YYYY-MM-DD/);
+  it("still throws on a malformed `today` (a caller bug, never stored data)", () => {
     expect(() => daysToExpiry("2026-09-15", "not-a-date")).toThrow(/YYYY-MM-DD/);
+  });
+
+  it("reads the legacy compact YYYYMMDD spelling exactly as the dashed one", () => {
+    for (const today of ["2026-09-10", "2026-09-15", "2026-09-20"]) {
+      expect(daysToExpiry("20260915", today)).toBe(daysToExpiry("2026-09-15", today));
+    }
+    expect(daysToExpiry("20260915", "2026-09-15")).toBe(0);
+    expect(daysToExpiry("20260920", "2026-09-15")).toBe(5);
+    expect(daysToExpiry("20260914", "2026-09-15")).toBe(-1);
+    expect(daysToExpiry("20260915", "2026-09-15")! >= 0).toBe(isOptionLive("20260915", "2026-09-15"));
+  });
+
+  it("returns null, never throws, for a missing or unreadable stored expiration (it runs during a page render)", () => {
+    for (const bad of [null, undefined, "", "   ", "09/15/2026", "garbage", "2026-9-5", "202609", "2026-13-45", "20261345", "2026-02-30", "2026-09-15T00:00:00Z"]) {
+      expect(() => daysToExpiry(bad, "2026-09-15"), String(bad)).not.toThrow();
+      expect(daysToExpiry(bad, "2026-09-15"), String(bad)).toBeNull();
+    }
+  });
+});
+
+describe("daysToExpiry with the default today, at 21:00 Eastern (already tomorrow in UTC)", () => {
+  // 2026-09-16T01:00Z is 21:00 EDT on 2026-09-15.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-16T01:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each([
+    ["expiring today", "2026-09-15", "20260915", 0],
+    ["expired yesterday", "2026-09-14", "20260914", -1],
+    ["expiring tomorrow", "2026-09-16", "20260916", 1],
+  ])("%s: dashed and compact agree", (_label, dashed, compact, expected) => {
+    expect(daysToExpiry(dashed)).toBe(expected);
+    expect(daysToExpiry(compact)).toBe(expected);
   });
 });

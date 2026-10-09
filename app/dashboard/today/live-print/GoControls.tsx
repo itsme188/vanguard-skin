@@ -24,6 +24,7 @@
 
 import { useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage } from "@/lib/ui/mutation-result";
 import { etClock, fileToBase64 } from "./helpers";
 import type { GoRequestWire } from "../hub-live/types";
 
@@ -114,8 +115,8 @@ export default function GoControls({
       );
       await onChanged();
       return true;
-    } catch (err) {
-      onError(err instanceof Error ? err.message : "Go failed.");
+    } catch {
+      onError(networkFailureMessage("press go"));
       return false;
     } finally {
       setPending(null);
@@ -182,8 +183,8 @@ export default function GoControls({
           : base,
       );
       await onChanged();
-    } catch (err) {
-      onError(err instanceof Error ? err.message : "Extend failed.");
+    } catch {
+      onError(networkFailureMessage("extend the window"));
     } finally {
       setPending(null);
     }

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage } from "@/lib/ui/mutation-result";
 
 /**
  * The first UI for /api/print-watch/sources (M-F16). Slice B shipped the route
@@ -96,8 +97,8 @@ export default function IrPageField({
       }
       onNote(describe(data.data?.cleared));
       setHasStored(data.data?.cleared === true ? false : true);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : "Could not reach the server.");
+    } catch {
+      onError(networkFailureMessage("save the IR page"));
     } finally {
       setBusy(false);
     }
@@ -167,7 +168,7 @@ export default function IrPageField({
                 ? "Type a page address, or use “clear the stored page”."
                 : "Save this IR page"
         }
-        className="border border-edge rounded px-2 py-1 text-ink-dim hover:text-gold disabled:opacity-50"
+        className="border border-edge rounded px-2 py-1 text-ink-dim hover:text-gold-ink disabled:opacity-50"
       >
         Save
       </button>
@@ -192,7 +193,7 @@ export default function IrPageField({
           onClick={() => setAttempt((n) => n + 1)}
           disabled={busy}
           title="Read the stored IR page for this symbol again"
-          className="border border-edge rounded px-2 py-1 text-ink-dim hover:text-gold disabled:opacity-50"
+          className="border border-edge rounded px-2 py-1 text-ink-dim hover:text-gold-ink disabled:opacity-50"
         >
           retry the read
         </button>

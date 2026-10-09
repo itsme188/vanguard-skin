@@ -244,7 +244,7 @@ describe("Auto-Classify completion line names both populations", () => {
 
   it("the card passes its held-unclassified count, withheld in privacy mode", () => {
     const src = readFileSync("app/dashboard/components/analysis/ClassificationCard.tsx", "utf8");
-    const at = anchorIndex(src, "classifyRunSummary(\n              data,");
+    const at = anchorIndex(src, "classifyRunSummary(\n            data,");
     expect(src.slice(at, at + 200)).toContain("isPrivate ? null : coverage.unclassified_securities.length");
   });
 });

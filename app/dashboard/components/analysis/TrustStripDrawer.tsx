@@ -13,6 +13,8 @@ import { Chip, type ChipTone } from "@/app/dashboard/components/Chip";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { formatEnrichedAtET } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 
 export type DrawerPanel =
   | "factorCoverage"
@@ -49,27 +51,34 @@ function FactorCoverageContent({
     setResult(null);
     try {
       const res = await apiFetch("/api/compute/classify-factors", { method: "POST" });
-      const json = await res.json();
-      if (json.success) {
-        // Keep the drawer open — closing immediately hides the outcome and a
-        // no-op run reads as a dead button.
-        if (json.classified === 0 && json.skipped === 0 && !json.errors?.length) {
-          setResult(
-            json.candidates === 0
-              ? "Nothing needed classification — the remaining symbols are options that inherit factors from underlyings that are already classified, or expired positions awaiting cleanup."
-              : "Claude returned no usable classifications for the candidates. Try again — if it persists, check the AI Gateway dashboard."
-          );
-        } else {
-          const created = json.underlyingsCreated > 0 ? `, ${json.underlyingsCreated} option underlying(s) added` : "";
-          const errs = json.errors?.length ? `, ${json.errors.length} batch error(s)` : "";
-          setResult(`Classified ${json.classified} securities (${json.skipped} skipped${created}${errs}).`);
-        }
-        onRefresh();
-      } else {
-        setResult(`Error: ${json.error}`);
+      const result = await readMutationResult<{
+        classified: number;
+        skipped: number;
+        candidates: number;
+        underlyingsCreated: number;
+        errors?: string[];
+      }>(res);
+      if (!result.ok) {
+        setResult(`Classification failed: ${result.message}`);
+        return;
       }
+      const json = result.data;
+      // Keep the drawer open — closing immediately hides the outcome and a
+      // no-op run reads as a dead button.
+      if (json.classified === 0 && json.skipped === 0 && !json.errors?.length) {
+        setResult(
+          json.candidates === 0
+            ? "Nothing needed classification — the remaining symbols are options that inherit factors from underlyings that are already classified, or expired positions awaiting cleanup."
+            : "Claude returned no usable classifications for the candidates. Try again — if it persists, check the AI Gateway dashboard."
+        );
+      } else {
+        const created = json.underlyingsCreated > 0 ? `, ${json.underlyingsCreated} option underlying(s) added` : "";
+        const errs = json.errors?.length ? `, ${json.errors.length} batch error(s)` : "";
+        setResult(`Classified ${json.classified} securities (${json.skipped} skipped${created}${errs}).`);
+      }
+      onRefresh();
     } catch {
-      setResult("Network error — classification failed.");
+      setResult(networkFailureMessage("run the classification"));
     } finally {
       setBusy(false);
     }
@@ -199,19 +208,19 @@ function StalePricesContent({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ level: "quick" }),
       });
-      const json = await res.json();
-      if (res.ok) {
-        // Keep the drawer open so the user sees this — the sync itself takes
-        // a minute or two and silently no-ops if neither TWS nor the IBKR
-        // Web API is reachable.
-        setResult(
-          "Quick refresh started — prices update in ~1-2 minutes when TWS (or the IBKR Web API fallback) is reachable. If TWS is closed and no fallback is configured, prices stay as-is."
-        );
-      } else {
-        setResult(`Error: ${json.error ?? "Failed to trigger refresh"}`);
+      const result = await readMutationResult(res);
+      if (!result.ok) {
+        setResult(joinSentences(`Refresh not started: ${result.message}`, "Prices are unchanged."));
+        return;
       }
+      // Keep the drawer open so the user sees this — the sync itself takes
+      // a minute or two and silently no-ops if neither TWS nor the IBKR
+      // Web API is reachable.
+      setResult(
+        "Quick refresh started — prices update in ~1-2 minutes when TWS (or the IBKR Web API fallback) is reachable. If TWS is closed and no fallback is configured, prices stay as-is."
+      );
     } catch {
-      setResult("Network error — could not trigger refresh.");
+      setResult(`${networkFailureMessage("start the refresh")} Prices are unchanged.`);
     } finally {
       setBusy(false);
     }

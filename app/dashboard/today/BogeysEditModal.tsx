@@ -15,6 +15,7 @@ import { formatBogeyFields, formatBogeyFieldLine } from "@/lib/earnings/format-b
 import { PrivateText } from "@/lib/privacy/components";
 import type { EarningsBogey } from "@/lib/queries/earnings-bogeys";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useConfirmPrompt } from "../components/useConfirmPrompt";
 import {
   isUuidV4,
@@ -421,8 +422,12 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
           setActualsManualAt(actualsData.manual_actuals_at ?? null);
         }
       })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Network error");
+      .catch(() => {
+        // No cause is claimed: this covers a lost connection and a reply
+        // that could not be read.
+        if (!cancelled) {
+          setError("Could not load this event's bogeys and actuals. Close the editor and open it again.");
+        }
       });
     return () => {
       cancelled = true;
@@ -662,8 +667,8 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
         return;
       }
       onClose();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
+    } catch {
+      setError(`${networkFailureMessage("save the bogeys")} Nothing is known to have been saved.`);
     } finally {
       setSaving(false);
     }
@@ -694,7 +699,13 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
           force,
         }),
       });
-      const data = (await res.json()) as { error?: string; code?: string; success?: boolean };
+      // A reply that is not JSON (a bare 500) is still a failure with a
+      // status, not a lost connection.
+      const data = ((await res.json().catch(() => null)) ?? {}) as {
+        error?: string;
+        code?: string;
+        success?: boolean;
+      };
       if (!res.ok || !data.success) {
         // Pre-print floor: this print's release time is still in the
         // future. Offer a confirm-retry with force:true rather than a bare
@@ -718,8 +729,8 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
       }
       router.refresh();
       onClose();
-    } catch (err) {
-      setActualsError(err instanceof Error ? err.message : "Network error");
+    } catch {
+      setActualsError(`${networkFailureMessage("save the actuals")} Nothing is known to have been saved.`);
     } finally {
       setSavingActuals(false);
     }
@@ -1115,7 +1126,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                   <button
                     type="button"
                     onClick={addExtraRow}
-                    className="relative text-[11px] text-ink-dim hover:text-gold border border-edge rounded px-2 py-0.5 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                    className="relative text-[11px] text-ink-dim hover:text-gold-ink border border-edge rounded px-2 py-0.5 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
                   >
                     + add metric
                   </button>
@@ -1177,7 +1188,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                       <button
                         type="button"
                         onClick={() => void copyId(row.id)}
-                        className="relative text-[11px] text-ink-dim hover:text-gold underline pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                        className="relative text-[11px] text-ink-dim hover:text-gold-ink underline pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
                       >
                         {copiedId === row.id ? "copied" : "copy id"}
                       </button>

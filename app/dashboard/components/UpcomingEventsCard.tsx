@@ -66,7 +66,7 @@ export function UpcomingEventsCard() {
           <h3 className="text-sm font-medium text-ink">Upcoming Events</h3>
           <Link
             href="/dashboard/calendar"
-            className="text-xs text-gold-ink hover:text-gold/80 transition-colors"
+            className="text-xs text-gold-ink hover:underline transition-colors"
           >
             Calendar &rarr;
           </Link>
@@ -91,7 +91,7 @@ export function UpcomingEventsCard() {
         <h3 className="text-sm font-medium text-ink">Upcoming Events</h3>
         <Link
           href="/dashboard/calendar"
-          className="text-xs text-gold-ink hover:text-gold/80 transition-colors"
+          className="text-xs text-gold-ink hover:underline transition-colors"
         >
           View All &rarr;
         </Link>

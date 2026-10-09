@@ -78,6 +78,20 @@ function processedToMeta(p: ProcessedArticle, idx: number): RecentArticleMeta {
 interface Last2Closes {
   prior: number;
   today: number;
+  /**
+   * The Eastern calendar day of each of the two bars, from the bar's own
+   * timestamp in the same response. null when the response gave none.
+   * `restrictToSpySession` reads these; a hand-built map may leave them out.
+   */
+  priorDate?: string | null;
+  todayDate?: string | null;
+}
+
+/** Eastern calendar day of a bar timestamp (epoch seconds), or null. */
+function barDateET(epochSeconds: unknown): string | null {
+  if (typeof epochSeconds !== "number" || !Number.isFinite(epochSeconds)) return null;
+  const d = new Date(epochSeconds * 1000);
+  return Number.isNaN(d.getTime()) ? null : todayET(d);
 }
 
 // Chunk size for the multi-symbol spark request. 50 symbols keeps each request
@@ -92,7 +106,8 @@ const YAHOO_SPARK_CHUNK = 50;
  * Fetch the two most recent daily closes for MANY symbols using Yahoo's
  * multi-symbol `spark` endpoint, in ceil(N/50) requests. Returns a Map keyed by
  * symbol; a symbol Yahoo omits or returns <2 closes for is simply absent
- * (caller skips it). Never throws — a failed chunk contributes nothing, so a
+ * (caller skips it). Each entry also carries the Eastern day of its two bars;
+ * the caller checks them against SPY's (`restrictToSpySession`). Never throws — a failed chunk contributes nothing, so a
  * Yahoo outage degrades to "no anomaly block" rather than a failed email.
  */
 export async function fetchLast2ClosesBatch(
@@ -114,19 +129,29 @@ export async function fetchLast2ClosesBatch(
 
       // Spark returns a flat object keyed by the requested symbol:
       //   { "SPY": { timestamp: [...], close: [n, n, ...] }, "AAPL": {...} }
+      // `timestamp` (epoch seconds) and `close` are parallel arrays: bar i is
+      // (timestamp[i], close[i]). A null close is a bar with no price.
       const data = (await res.json()) as Record<
         string,
-        { close?: Array<number | null> } | undefined
+        { timestamp?: Array<number | null>; close?: Array<number | null> } | undefined
       >;
 
       for (const sym of chunk) {
-        const closes = (data[sym]?.close ?? []).filter(
-          (c): c is number => c != null,
-        );
-        if (closes.length < 2) continue;
+        const timestamps = data[sym]?.timestamp ?? [];
+        // Keep each priced bar WITH its own timestamp, so dropping a null
+        // close can never shift a price onto another bar's day.
+        const bars: Array<{ close: number; date: string | null }> = [];
+        (data[sym]?.close ?? []).forEach((c, i) => {
+          if (c != null) bars.push({ close: c, date: barDateET(timestamps[i]) });
+        });
+        if (bars.length < 2) continue;
+        const prior = bars[bars.length - 2];
+        const today = bars[bars.length - 1];
         out.set(sym, {
-          prior: closes[closes.length - 2],
-          today: closes[closes.length - 1],
+          prior: prior.close,
+          today: today.close,
+          priorDate: prior.date,
+          todayDate: today.date,
         });
       }
     } catch (err) {
@@ -135,6 +160,35 @@ export async function fetchLast2ClosesBatch(
     }
   }
 
+  return out;
+}
+
+/**
+ * Keep only the symbols whose two bars fall on SPY's two trading days.
+ *
+ * Mac rule (lib/digest/anomalies.ts::resolveTradingDayPair): ONE trading-day
+ * pair comes from SPY, the market clock, and every name is compared on those
+ * exact two dates; a name missing either date is omitted. Each symbol's own
+ * "last two closes" are not that: a fund whose price for today is not posted
+ * yet returns yesterday's move, which was then set against SPY's move today.
+ *
+ * A symbol whose pair differs from SPY's, or cannot be dated, is OMITTED,
+ * never flagged. SPY itself without two bars on two different Eastern days
+ * means no pair at all: the result is empty and the caller prints no block.
+ * This can only remove a mover line.
+ */
+export function restrictToSpySession(
+  closesMap: Map<string, Last2Closes>,
+): Map<string, Last2Closes> {
+  const out = new Map<string, Last2Closes>();
+  const spy = closesMap.get("SPY");
+  if (!spy || !spy.priorDate || !spy.todayDate) return out;
+  if (!(spy.priorDate < spy.todayDate)) return out;
+  for (const [sym, closes] of closesMap) {
+    if (closes.priorDate === spy.priorDate && closes.todayDate === spy.todayDate) {
+      out.set(sym, closes);
+    }
+  }
   return out;
 }
 
@@ -240,7 +294,8 @@ async function computeAnomaliesFromSnapshot(
 
   const symbols = [...new Set(vanguardHoldings.map((h) => h.symbol))];
   const allSymbols = ["SPY", ...symbols.filter((s) => s !== "SPY")];
-  const closesMap = await fetchLast2ClosesBatch(allSymbols);
+  // Every name on SPY's two trading days, or not at all.
+  const closesMap = restrictToSpySession(await fetchLast2ClosesBatch(allSymbols));
 
   return evaluateAnomalies(vanguardHoldings, securityBetas, closesMap);
 }

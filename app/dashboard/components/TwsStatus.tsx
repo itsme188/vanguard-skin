@@ -618,7 +618,7 @@ function TwsPanel({
                 }
               }}
               disabled={syncState.status === "syncing" || loading !== null}
-              className="w-full px-3 py-1.5 text-xs font-medium rounded-lg bg-blue/20 text-blue hover:bg-blue/30 disabled:opacity-50 transition-colors"
+              className="w-full px-3 py-1.5 text-xs font-medium rounded-lg bg-blue/20 text-blue hover:brightness-95 disabled:opacity-50 transition-colors"
               title="Run full sync: positions → enrich → prices → valuations → benchmarks"
             >
               {syncState.status === "syncing" ? "Syncing..." : "Re-sync All"}
@@ -636,7 +636,7 @@ function TwsPanel({
               <button
                 onClick={() => handleFetchPrices("snapshot")}
                 disabled={loading !== null}
-                className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue/20 text-blue hover:bg-blue/30 disabled:opacity-50 transition-colors"
+                className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue/20 text-blue hover:brightness-95 disabled:opacity-50 transition-colors"
                 title="Get current prices via market data snapshots (~2 min)"
               >
                 {snapshotLabel}
@@ -662,7 +662,7 @@ function TwsPanel({
                 <button
                   onClick={streaming.start}
                   disabled={loading !== null}
-                  className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue/20 text-blue hover:bg-blue/30 disabled:opacity-50 transition-colors"
+                  className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue/20 text-blue hover:brightness-95 disabled:opacity-50 transition-colors"
                   title="Stream live delayed quotes for all holdings"
                 >
                   Stream Live
