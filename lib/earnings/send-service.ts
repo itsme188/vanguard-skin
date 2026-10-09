@@ -166,10 +166,13 @@ function rowRefusalOutcome(
       `. Nothing was sent.`;
   } else {
     const follows = getEmailIgnoredManualTwins(db).get(candidate.eventId);
+    // Says what the row is, which entry email follows, and the way out: the
+    // send path never edits a calendar row, so the user has to.
     reason =
-      `${candidate.symbol} has two hand-entered earnings entries and email follows the earlier one` +
-      (follows ? ` (reports ${follows.emailRowDate})` : "") +
-      `. Nothing was sent for this later entry.`;
+      `This is the later of two hand-entered earnings entries for ${candidate.symbol}. ` +
+      `Emails follow the earlier one` +
+      (follows ? ` (${follows.emailRowDate})` : "") +
+      `. To email this entry, remove or re-date the earlier one. Nothing was sent.`;
   }
   console.warn(
     `[send-service] ${candidate.phase} ${candidate.eventId} (${candidate.symbol}, ${mode}): refused ${when}, ${code}`,
@@ -626,9 +629,11 @@ export async function sendEarningsCandidate(
   // transaction and refuses a missing or superseded entry in EVERY mode: the finders
   // filter those out, but a candidate list can be minutes old, and the nudge
   // and the manual route never went through a finder at all. The later of two
-  // hand-entered rows is refused on the automatic road only; `nudge` and
-  // `manual` are a person pressing a button on that very row.
-  const refuseIgnoredManualTwin = opts.mode === "sweep";
+  // hand-entered rows is refused in EVERY mode as well (ruling 2026-10-08):
+  // for email the earlier date counts everywhere, so a press on the later row
+  // (`nudge`, `manual`) gets the same answer the sweep gets, with the way out
+  // spelled out in the refusal, instead of an email no other path would send.
+  const refuseIgnoredManualTwin = true;
   const claim = claimEarningsEmailSlot(db, eventId, phase, recipient, {
     mode: opts.mode === "manual" ? "manual" : "automatic",
     refuseIgnoredManualTwin,

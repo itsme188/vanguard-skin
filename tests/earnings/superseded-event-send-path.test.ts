@@ -669,44 +669,134 @@ describe("the slot claim itself (what the morning debrief and the retired wrap c
   });
 });
 
+// Ruling 2026-10-08 (orchestrator, after a second opinion; the owner can
+// reverse it): a person pressing send on the later twin is refused too. Before
+// this, `manual` and `nudge` sent an email for a row every other path ignores.
 describe("sendEarningsCandidate, handed the later of two live hand-entered rows", () => {
-  function seedTwins(): number {
+  const LATER_TWIN_REASON =
+    "This is the later of two hand-entered earnings entries for ZZA. Emails follow the earlier one (2026-06-10). " +
+    "To email this entry, remove or re-date the earlier one. Nothing was sent.";
+
+  function seedTwins(): { earlier: number; later: number } {
     seedHeld("ZZA");
-    seedEvent({ source: "manual", symbol: "ZZA" });
-    return seedEvent({ source: "manual", symbol: "ZZA", eventDate: "2026-06-12", reported: true });
+    const earlier = seedEvent({ source: "manual", symbol: "ZZA" });
+    const later = seedEvent({ source: "manual", symbol: "ZZA", eventDate: "2026-06-12", reported: true });
+    return { earlier, later };
   }
 
-  it("the automatic road refuses it, with its own reason and the earlier date", async () => {
-    const later = seedTwins();
-    const sendEmail = transport();
-    const res = await sendEarningsCandidate(
-      db,
-      { eventId: later, symbol: "ZZA", phase: "recap" },
-      { mode: "sweep", recipient: RECIPIENT, seams: { sendEmail } },
-    );
-    expect(res).toMatchObject({
-      outcome: "refused",
-      code: "ignored_manual_twin",
-      reason:
-        "ZZA has two hand-entered earnings entries and email follows the earlier one (reports 2026-06-10). Nothing was sent for this later entry.",
-    });
-    expect(sendEmail).not.toHaveBeenCalled();
-    expect(emailRows()).toEqual([]);
-  });
+  function calendarRows(): unknown[] {
+    return db.prepare(`SELECT * FROM calendar_events ORDER BY id`).all();
+  }
 
-  for (const mode of ["nudge", "manual"] as const) {
-    it(`a person pressing send on that very row (mode ${mode}) is not blocked`, async () => {
-      const later = seedTwins();
+  for (const mode of ["sweep", "nudge", "manual"] as const) {
+    it(`mode ${mode}: refused with a 409, the earlier date and what to do; nothing claimed, sent or changed`, async () => {
+      const { later } = seedTwins();
+      const calendarBefore = calendarRows();
       const sendEmail = transport();
       const res = await sendEarningsCandidate(
         db,
         { eventId: later, symbol: "ZZA", phase: "recap" },
         { mode, recipient: RECIPIENT, seams: { sendEmail } },
       );
+      expect(res).toEqual({
+        outcome: "refused",
+        code: "ignored_manual_twin",
+        status: 409,
+        reason: LATER_TWIN_REASON,
+      });
+      expect(sendEmail).not.toHaveBeenCalled();
+      expect(emailRows()).toEqual([]);
+      expect(calendarRows()).toEqual(calendarBefore);
+    });
+
+    it(`mode ${mode}: the EARLIER twin still sends`, async () => {
+      const { earlier } = seedTwins();
+      const sendEmail = transport();
+      const res = await sendEarningsCandidate(
+        db,
+        { eventId: earlier, symbol: "ZZA", phase: "preview" },
+        { mode, recipient: RECIPIENT, seams: { sendEmail } },
+      );
+      expect(res.outcome).toBe("sent");
+      expect(sendEmail).toHaveBeenCalledTimes(1);
+      expect(emailRows()).toEqual([{ event_id: earlier, phase: "preview", error: null }]);
+    });
+  }
+
+  for (const mode of ["nudge", "manual"] as const) {
+    it(`mode ${mode}: a single hand-entered row is unaffected`, async () => {
+      seedHeld("ZZA");
+      const only = seedEvent({ source: "manual", symbol: "ZZA", eventDate: "2026-06-12", reported: true });
+      const sendEmail = transport();
+      const res = await sendEarningsCandidate(
+        db,
+        { eventId: only, symbol: "ZZA", phase: "recap" },
+        { mode, recipient: RECIPIENT, seams: { sendEmail } },
+      );
+      expect(res.outcome).toBe("sent");
+      expect(sendEmail).toHaveBeenCalledTimes(1);
+    });
+
+    // A feed twin is a different rule (the reconciler hides the FEED row behind
+    // the hand-entered one). The later hand-entered row beside an earlier,
+    // still-live feed row is not an "ignored twin" and must keep sending.
+    it(`mode ${mode}: a hand-entered row with an earlier FEED twin is unaffected`, async () => {
+      seedHeld("ZZA");
+      seedEvent({ source: "finnhub", symbol: "ZZA" });
+      const manual = seedEvent({ source: "manual", symbol: "ZZA", eventDate: "2026-06-12", reported: true });
+      expect(getEmailIgnoredManualTwins(db).size).toBe(0);
+      const sendEmail = transport();
+      const res = await sendEarningsCandidate(
+        db,
+        { eventId: manual, symbol: "ZZA", phase: "recap" },
+        { mode, recipient: RECIPIENT, seams: { sendEmail } },
+      );
       expect(res.outcome).toBe("sent");
       expect(sendEmail).toHaveBeenCalledTimes(1);
     });
   }
+
+  it("a manual resend of an email already delivered on the later twin is refused and the delivered row is untouched", async () => {
+    const { later } = seedTwins();
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_output_md, error)
+       VALUES (?, 'recap', ?, '2026-06-12 21:40:00', '# prose', NULL)`,
+    ).run(later, RECIPIENT);
+    const before = db.prepare(`SELECT * FROM earnings_emails`).all();
+    const sendEmail = transport();
+    const res = await sendEarningsCandidate(
+      db,
+      { eventId: later, symbol: "ZZA", phase: "recap" },
+      { mode: "manual", recipient: RECIPIENT, seams: { sendEmail } },
+    );
+    expect(res).toMatchObject({ outcome: "refused", code: "ignored_manual_twin", status: 409 });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT * FROM earnings_emails`).all()).toEqual(before);
+  });
+
+  it("the manual route's entry point raises the same words as a 409, without the retry code", async () => {
+    const { later } = seedTwins();
+    const err = await sendEarningsRecap(db, later, { recipient: RECIPIENT }).catch((e) => e);
+    expect(err).toBeInstanceOf(EarningsEmailError);
+    expect(err).toMatchObject({ status: 409, message: LATER_TWIN_REASON });
+    expect((err as EarningsEmailError).code).toBeUndefined();
+    expect(emailRows()).toEqual([]);
+  });
+
+  it("removing the earlier entry is the way out: the same press then sends", async () => {
+    // The test deletes the row as the user would through the calendar; the
+    // send path itself never edits or deletes a calendar row.
+    const { earlier, later } = seedTwins();
+    db.prepare(`DELETE FROM calendar_events WHERE id = ?`).run(earlier);
+    const sendEmail = transport();
+    const res = await sendEarningsCandidate(
+      db,
+      { eventId: later, symbol: "ZZA", phase: "recap" },
+      { mode: "manual", recipient: RECIPIENT, seams: { sendEmail } },
+    );
+    expect(res.outcome).toBe("sent");
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ── The morning debrief: one stapled email for several names ─────────────
