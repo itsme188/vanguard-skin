@@ -507,6 +507,11 @@ export function getAllocationBreakdown(
 
 /**
  * Query tax lots for open/closed positions with detailed gain/loss info.
+ *
+ * status "open" returns open lots, "closed" returns closed sales, and "all"
+ * returns BOTH (open lots first, then closed sales). `year` filters the closed
+ * sales only. `limit` applies to each query separately, so "all" can return up
+ * to `limit` open lots plus up to `limit` closed sales.
  */
 export function getTaxLotsForChat(
   db: Database.Database,
@@ -516,7 +521,7 @@ export function getTaxLotsForChat(
 
   const today = todayET();
 
-  if (status === "closed" || (status === "all" && year)) {
+  const queryClosedSales = (): TaxLotResult[] => {
     // Closed sales
     const conditions: string[] = [];
     const params: (string | number)[] = [];
@@ -574,8 +579,9 @@ export function getTaxLotsForChat(
       is_long_term: Boolean(r.is_long_term),
       status_note: taxLotStatusNote(r, today),
     })) as TaxLotResult[];
-  }
+  };
 
+  const queryOpenLots = (): TaxLotResult[] => {
   // Open lots
   const conditions: string[] = ["tl.quantity_remaining > 0"];
   const params: (string | number)[] = [];
@@ -690,6 +696,11 @@ export function getTaxLotsForChat(
           status_note: statusNote,
         };
   }) as TaxLotResult[];
+  };
+
+  if (status === "closed") return queryClosedSales();
+  if (status === "all") return [...queryOpenLots(), ...queryClosedSales()];
+  return queryOpenLots();
 }
 
 /** How chat describes an open short lot (pinned by tests). */
