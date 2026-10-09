@@ -118,26 +118,6 @@ export function accountCoverageGrainNote(heldInMultipleAccounts: number): string
   return `${base} ${subject}, so the rows add up to more than the Price Coverage headline, which counts each security once.`;
 }
 
-/**
- * Plain wording for a confidence level — the same words the header badge uses
- * (DataConfidenceIndicator's LEVEL_CONFIG), so the page and the badge agree.
- */
-export function dataConfidenceLevelLabel(
-  level: "high" | "medium" | "low" | "stale" | "unverified",
-): string {
-  switch (level) {
-    case "high":
-      return "Data reliable";
-    case "medium":
-      return "Some data stale";
-    case "low":
-      return "Data unreliable";
-    case "stale":
-      return "Data very stale";
-    case "unverified":
-      return "Verification incomplete";
-  }
-}
 
 const RECONCILIATION_ROW_LIMIT = 30;
 const DISCREPANCY_ROW_LIMIT = 20;

@@ -6,7 +6,8 @@ import {
   getSectorCheckMissingSector,
   getSectorDisagreements,
 } from "@/lib/queries/data-health";
-import { DataHealthView, dataConfidenceLevelLabel } from "../components/DataHealthView";
+import { DataHealthView } from "../components/DataHealthView";
+import { dataConfidenceLevelLabel } from "@/lib/ui/data-confidence-level";
 import { ScrollFade } from "../components/ScrollFade";
 import { SymbolLink } from "../components/SymbolLink";
 import { Count, PrivateText } from "@/lib/privacy/components";

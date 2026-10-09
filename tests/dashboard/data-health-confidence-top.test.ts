@@ -8,7 +8,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { anchorIndex, sliceBetween } from "@/tests/helpers/source-anchor";
-import { dataConfidenceLevelLabel } from "@/app/dashboard/components/DataHealthView";
+import { dataConfidenceLevelLabel } from "@/lib/ui/data-confidence-level";
 
 const PAGE = readFileSync("app/dashboard/data-health/page.tsx", "utf8");
 
@@ -62,3 +62,18 @@ describe("dataConfidenceLevelLabel", () => {
     expect(dataConfidenceLevelLabel("unverified")).toBe("Verification incomplete");
   });
 });
+
+// Browser pass 2026-10-08: the page crashed because a server component called
+// a function exported from a "use client" file. No Vitest test can render the
+// page, so pin the import boundary itself.
+describe("server page never imports a function from a client file", () => {
+  it("the Data Health page takes the level wording from a plain module", async () => {
+    const { readFileSync } = await import("node:fs");
+    const page = readFileSync("app/dashboard/data-health/page.tsx", "utf8");
+    const helper = readFileSync("lib/ui/data-confidence-level.ts", "utf8");
+    expect(page).toContain('from "@/lib/ui/data-confidence-level"');
+    expect(page).not.toMatch(/import \{[^}]*dataConfidenceLevelLabel[^}]*\} from "\.\.\/components\/DataHealthView"/);
+    expect(/^\s*["']use client["']/m.test(helper)).toBe(false);
+  });
+});
+
