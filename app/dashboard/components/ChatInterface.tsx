@@ -8,6 +8,7 @@ import { MarkdownMessage } from "./MarkdownMessage";
 import { QuickActionChips } from "./QuickActionChips";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { useToast } from "./Toast";
+import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "./chip-tone-text";
 import { PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import { getQuickActions } from "@/lib/chat/quick-actions";
@@ -372,6 +373,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   const { isPrivate } = usePrivacy();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
 
   // Compute page context and quick actions from pathname
   const pageContext = useMemo(() => getPageContext(pathname), [pathname]);
@@ -502,7 +504,11 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
 
   // Auto-scroll on new content
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    // Scroll the container itself, never an element into view: that moves the
+    // browser's sequential-focus starting point into the chat, so the first
+    // Tab skipped the "Skip to main content" link.
+    const list = messagesScrollRef.current;
+    list?.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
   // focus-chat-input: dispatched by ChatDrawer when Cmd+J fires on the
@@ -606,6 +612,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
 
       {/* Messages area */}
       <div
+        ref={messagesScrollRef}
         className="flex-1 overflow-y-auto space-y-4 pb-4"
         aria-live="polite"
         aria-label="Chat messages"
@@ -655,14 +662,14 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
                     aria-pressed={scope === opt.value}
                     className={`px-4 py-1.5 rounded-full text-xs border transition-[color,border-color] focus-ring ${
                       scope === opt.value
-                        ? "border-gold text-gold-ink"
+                        ? `border-gold ${CHIP_TONE_TEXT.gold}`
                         : "border-edge text-ink-dim hover:text-ink hover:border-edge-strong"
                     }`}
                     style={
                       scope === opt.value
                         ? {
                             // color deliberately NOT set inline — it would
-                            // override the text-gold-ink contrast token.
+                            // override the checked gold text token.
                             background: "rgba(201,164,78,0.2)",
                             borderColor: "#c9a44e",
                           }
@@ -778,7 +785,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
             disabled={isStreaming || !inputText.trim()}
             aria-label={isStreaming ? "Streaming response" : "Send message"}
             title={!inputText.trim() ? "Type a message first" : undefined}
-            className="px-5 py-3 rounded-xl bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-40 disabled:hover:brightness-100 disabled:cursor-not-allowed focus-ring"
+            className={`px-5 py-3 rounded-xl ${GOLD_FILL_CLASSES} font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-40 disabled:hover:brightness-100 disabled:cursor-not-allowed focus-ring`}
           >
             {isStreaming ? "..." : "Send"}
           </button>

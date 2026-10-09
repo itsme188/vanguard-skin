@@ -57,11 +57,14 @@ const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn } = useMemo(() => {
     stop,
   } = useChat({ transport });`;
 
+// Re-pinned 2026-10-09 for the owner-approved skip-link fix: the only lines inside
+// this region that moved are the new `messagesScrollRef` declaration and the
+// body of the auto-scroll effect (container scrollTo instead of scrollIntoView).
 // sha256 of everything from `export function ChatInterface(` up to the
 // component's `return (` at that same commit: every hook, effect, handler and
 // state declaration of the component that owns useChat.
 const COMPONENT_LOGIC_SHA256_AT_HEAD =
-  "eecc61765bb4c418000e6f1a3a589653e984728851b5c149b81f601447bf882b";
+  "082a23d976b76f449e968f0107d68daadaf526da44a61cd881ba3ebe5e80c81b";
 
 const RETURN_ANCHOR = '\n  return (\n    <div className="flex flex-col';
 

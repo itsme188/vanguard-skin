@@ -276,10 +276,7 @@ describe("app/: small gold text uses text-gold-ink", () => {
 // ─── 3. Solid gold fill ─────────────────────────────────────────
 
 /** Files that keep a hand-written `bg-gold text-canvas`, with the reason. */
-const SOLID_GOLD_ALLOWLIST: Record<string, string> = {
-  "app/dashboard/components/ChatInterface.tsx":
-    "Protected file (the chat send button). Reported to the owner: it should take GOLD_FILL_CLASSES.",
-};
+const SOLID_GOLD_ALLOWLIST: Record<string, string> = {};
 
 describe("solid gold fill", () => {
   it("the old pair fails in the light theme only", () => {
@@ -560,7 +557,7 @@ describe("app/: a hover never drops small text under 4.5:1", () => {
     }
   });
 
-  it("the protected chat file carries no hover fade (it could not be fixed here)", () => {
+  it("the chat file carries no hover fade", () => {
     const chat = SOURCES.get("app/dashboard/components/ChatInterface.tsx") ?? "";
     expect(chat.length).toBeGreaterThan(0);
     expect(hoverFailures(chat, FLOOR)).toEqual([]);
