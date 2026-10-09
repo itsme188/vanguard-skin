@@ -53,7 +53,6 @@ function makeEnv(): EnrichRunEnv & { store: Map<string, string> } {
     ARCHIVE: {} as R2Bucket,
     CRON_SHARED_SECRET: "secret",
     MESH_HOSTNAME: "http://mesh.local",
-    PRIMARY_TIMEOUT_MS: "300000",
     CLOUD_ENRICH_ENABLED: "true",
     FRED_API_KEY: "fred-key",
     FINNHUB_API_KEY: "finnhub-key",

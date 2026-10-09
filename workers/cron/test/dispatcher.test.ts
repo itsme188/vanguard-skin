@@ -37,7 +37,6 @@ function makeEnv(overrides: Record<string, string> = {}): any {
     EXPECTED_MINUTE_EVENING_MON_THU: "0",
     EXPECTED_HOUR_EVENING_FRI: "17",
     EXPECTED_MINUTE_EVENING_FRI: "30",
-    PRIMARY_TIMEOUT_MS: "300000",
     ...overrides,
   };
 }

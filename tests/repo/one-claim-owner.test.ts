@@ -1,8 +1,9 @@
 /**
  * Spec §8, E line: "one claim owner across sweep, nudge, manual route".
  *
- * After slice E exactly four modules may CALL `claimEarningsEmailSlot`, and
- * exactly two may reach the mailer, and each exception is JUSTIFIED in the
+ * Exactly three modules may CALL `claimEarningsEmailSlot`, and exactly one may
+ * reach the mailer (the retired wrap sender, once the fourth caller and the
+ * second mailer user, was deleted), and each exception is JUSTIFIED in the
  * tables below rather than merely listed. Anything else that wants to send an
  * earnings email calls `sendEarningsCandidate`; anything that wants to send ONE
  * email covering several claimed events calls `deliverClaimedBatch`.
@@ -85,20 +86,12 @@ const CLAIM_CALLERS: Exemption[] = [
     file: "lib/earnings/debrief-send.ts",
     why: "batch: ONE stapled email covers N events, so it must claim them all before composing. It delivers through deliverClaimedBatch (Task 5b), so the lifecycle is still single-sourced.",
   },
-  {
-    file: "lib/earnings/wrap-send.ts",
-    why: "RETIRED code — not invoked since 2026-08-02. It keeps the primitives so the module still type-checks; its header comment says it is OUTSIDE the send lifecycle and must adopt deliverClaimedBatch before any revival. Delete this entry when the module is deleted.",
-  },
 ];
 
 const MAILER_USERS: Exemption[] = [
   {
     file: "lib/earnings/send-service.ts",
     why: "deliverClaimedBatch is the one provider call for every earnings email — it is the module this whole guard exists to protect.",
-  },
-  {
-    file: "lib/earnings/wrap-send.ts",
-    why: "RETIRED — see the claim table above. It stays on this list until the module is deleted or ported onto deliverClaimedBatch.",
   },
 ];
 
@@ -332,10 +325,10 @@ describe("one claim owner", () => {
     }
   });
 
-  it("wrap-send says in its own header that it is outside the lifecycle", () => {
-    const src = fs.readFileSync(path.join(REPO_ROOT, "lib/earnings/wrap-send.ts"), "utf8");
-    expect(src).toContain("deliverClaimedBatch");
-    expect(src.slice(0, 2000)).toMatch(/retired|outside the (send )?lifecycle/i);
+  it("the retired wrap sender is gone, not parked outside the lifecycle", () => {
+    // It claimed slots and called the mailer directly. Nothing had called it
+    // since 2026-08-02; a revival must be written against deliverClaimedBatch.
+    expect(fs.existsSync(path.join(REPO_ROOT, "lib/earnings/wrap-send.ts"))).toBe(false);
   });
 
   // ─── Self-tests: the detectors' own behaviour, on planted source ─────────

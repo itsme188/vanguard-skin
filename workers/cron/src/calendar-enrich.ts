@@ -160,10 +160,6 @@ export interface EnrichRunEnv {
   // Task 25) but still read below as the Pushover deep-link base fallback
   // when PUSHOVER_LINK_BASE is unset — do not remove.
   MESH_HOSTNAME: string;
-  // PRIMARY_TIMEOUT_MS: fully unused now that callEnrichPrimary is retired.
-  // Left in place per convention (env cleanup is a deploy-time step, not a
-  // code change) — safe to drop from wrangler.toml in a later pass.
-  PRIMARY_TIMEOUT_MS: string;
   CLOUD_ENRICH_ENABLED?: string;
   FRED_API_KEY?: string;
   FINNHUB_API_KEY?: string;
