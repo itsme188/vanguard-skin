@@ -23,5 +23,10 @@ export function csrfMatches(headerToken: string, cookieToken: string, sessionSec
     return false;
   }
 
-  return timingSafeEqual(headerBuf, cookieBuf) && timingSafeEqual(headerBuf, secretBuf);
+  // Both comparisons always run (no `&&`): a wrong cookie and a wrong
+  // session secret cost the same work, so the time taken says nothing about
+  // WHICH of the two failed.
+  const headerEqualsCookie = timingSafeEqual(headerBuf, cookieBuf);
+  const headerEqualsSecret = timingSafeEqual(headerBuf, secretBuf);
+  return headerEqualsCookie && headerEqualsSecret;
 }

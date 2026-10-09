@@ -6,9 +6,9 @@
  *      /api/plaid/link-token, then open Plaid Link.
  *   2. Vanguard's OAuth redirect back into this same page (Link's
  *      `oauth_state_id` query param is present): resume the SAME Link
- *      session using the token stashed in localStorage before the
- *      redirect + `receivedRedirectUri` — Plaid does NOT let you mint a
- *      new token for the resume leg.
+ *      session using the token stashed before the redirect +
+ *      `receivedRedirectUri` — Plaid does NOT let you mint a new token
+ *      for the resume leg.
  *
  * Deliberately reads `window.location.search` inside useEffect instead
  * of `useSearchParams()` — the latter forces the page into a <Suspense>
@@ -21,8 +21,10 @@
  * session is a reauth (skip token exchange) or a fresh connect (exchange
  * the public token) can't be re-derived from the resume URL's query
  * string. It's captured at mint time instead: the link token AND the
- * reauth flag are stashed together as one JSON payload in localStorage,
- * and the resume leg reads BOTH back from that payload.
+ * reauth flag are stashed together as one JSON payload, and the resume
+ * leg reads BOTH back from that payload. The stash is one entry PER TAB
+ * (`lib/plaid/link-storage.ts`), so two tabs on this page cannot resume
+ * with each other's token.
  *
  * Opened via `target="_blank"` from Settings → Vanguard Live (Plaid), so
  * it renders inside the normal dashboard shell (header/nav) in its own
@@ -31,6 +33,7 @@
 
 import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { createPlaidLinkStore, type StoredLinkPayload } from "@/lib/plaid/link-storage";
 
 declare global {
   interface Window {
@@ -41,7 +44,6 @@ declare global {
 }
 
 const LINK_SCRIPT_SRC = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
-const LINK_STORAGE_KEY = "vgs:plaidLink";
 
 type ConnectState =
   | { kind: "loading" }
@@ -51,23 +53,9 @@ type ConnectState =
   | { kind: "cancelled"; message: string }
   | { kind: "error"; message: string };
 
-// Persisted across the Vanguard OAuth redirect: the Link token to resume
-// with, plus whether this session is a reauth (update mode — skip the
-// exchange call) or a fresh connect (exchange the public token).
-type StoredLinkPayload = { token: string; reauth: boolean };
-
-function parseStoredLink(raw: string | null): StoredLinkPayload | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<StoredLinkPayload> | null;
-    if (parsed && typeof parsed.token === "string" && parsed.token.length > 0 && typeof parsed.reauth === "boolean") {
-      return { token: parsed.token, reauth: parsed.reauth };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
+// Persisted across the Vanguard OAuth redirect (the Link token to resume
+// with, plus whether the session is a reauth): `StoredLinkPayload`, kept per
+// tab by `createPlaidLinkStore`.
 
 function loadPlaidScript(): Promise<void> {
   if (window.Plaid) return Promise.resolve();
@@ -107,6 +95,7 @@ export default function PlaidLinkPage() {
 
   useEffect(() => {
     let cancelled = false;
+    const linkStore = createPlaidLinkStore({ local: window.localStorage, session: window.sessionStorage });
 
     async function exchangeAndReport(publicToken: string) {
       try {
@@ -121,7 +110,7 @@ export default function PlaidLinkPage() {
           error?: string;
         };
         if (cancelled) return;
-        localStorage.removeItem(LINK_STORAGE_KEY);
+        linkStore.clear();
         if (!data.success) {
           setState({ kind: "error", message: data.error || "Exchange failed." });
           return;
@@ -133,7 +122,7 @@ export default function PlaidLinkPage() {
         });
       } catch (err) {
         if (cancelled) return;
-        localStorage.removeItem(LINK_STORAGE_KEY);
+        linkStore.clear();
         setState({
           kind: "error",
           message: err instanceof Error ? `Exchange failed: ${err.message}` : "Exchange failed.",
@@ -151,7 +140,7 @@ export default function PlaidLinkPage() {
     // successful sync (no change needed there), so a failed sync here
     // correctly leaves the reauth-required banner up.
     async function reauthSuccessAndSync() {
-      localStorage.removeItem(LINK_STORAGE_KEY);
+      linkStore.clear();
       if (cancelled) return;
       setState({ kind: "syncing" });
       try {
@@ -187,7 +176,7 @@ export default function PlaidLinkPage() {
 
     function handleExit(err: { error_message?: string; display_message?: string } | null | undefined) {
       if (cancelled) return;
-      localStorage.removeItem(LINK_STORAGE_KEY);
+      linkStore.clear();
       if (!err) {
         // The owner closed Link themselves: a cancellation, not a failure.
         setState({ kind: "cancelled", message: "Link closed before connecting — nothing was changed." });
@@ -217,7 +206,7 @@ export default function PlaidLinkPage() {
           // session with the token + reauth flag we stashed before leaving
           // the page. Do NOT re-derive reauth from this URL's query string
           // — Plaid's redirect_uri never carries `?mode=reauth`.
-          const stored = parseStoredLink(localStorage.getItem(LINK_STORAGE_KEY));
+          const stored = linkStore.load();
           if (!stored) {
             throw new Error(
               "Missing Link session — the token stored before the redirect wasn't found. Close this tab and reconnect from Settings.",
@@ -250,10 +239,7 @@ export default function PlaidLinkPage() {
         if (!data.success || !data.linkToken) {
           throw new Error(data.error || `Failed to create a link token (HTTP ${res.status}).`);
         }
-        localStorage.setItem(
-          LINK_STORAGE_KEY,
-          JSON.stringify({ token: data.linkToken, reauth: isReauth } satisfies StoredLinkPayload),
-        );
+        linkStore.save({ token: data.linkToken, reauth: isReauth } satisfies StoredLinkPayload);
         if (cancelled) return;
         setState({ kind: "opening" });
         window.Plaid.create({

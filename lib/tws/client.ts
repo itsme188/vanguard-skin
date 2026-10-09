@@ -76,11 +76,21 @@ const ALLOWED_TWS_PORTS = new Set([7496, 7497]);
  *   - port: 7496 (live) or 7497 (paper).
  */
 export function assertAllowedTwsTarget(host: string, port: number): void {
+  // The route passes a JSON body value straight in, so the declared types are
+  // a hope, not a fact. Refuse a wrong type in plain words instead of letting
+  // `.toLowerCase()` throw an engine TypeError at the caller.
+  if (typeof host !== "string") {
+    throw new Error("TWS connect target not allowed: host must be text");
+  }
+  if (typeof port !== "number") {
+    throw new Error("TWS connect target not allowed: port must be a number");
+  }
+
   const allowedHosts = new Set(["127.0.0.1", "localhost"]);
   const configuredHost = process.env.TWS_HOST;
   if (configuredHost) allowedHosts.add(configuredHost.toLowerCase());
 
-  const normalizedHost = (host ?? "").toLowerCase();
+  const normalizedHost = host.toLowerCase();
   if (!allowedHosts.has(normalizedHost)) {
     throw new Error(`TWS connect target not allowed: host "${host}" is not in the allowlist`);
   }
