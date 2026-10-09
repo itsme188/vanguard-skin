@@ -20,6 +20,7 @@ import {
   type TwinDonor,
 } from "@/lib/calendar/reconcile-earnings-dates";
 import { isLiveClaim } from "@/lib/earnings/email-states";
+import { getSuppressedEventTuples, suppressionKey } from "@/lib/calendar/event-suppressions";
 
 // ─── Result types ─────────────────────────────────────────────────
 
@@ -417,9 +418,8 @@ export function saveBriefing(
 //
 // ─── Sync-event suppressions (migration 070) ──────────────────────
 
-function suppressionKey(symbol: string, eventDate: string, eventType: string): string {
-  return `${symbol.trim().toUpperCase()}|${eventDate}|${eventType}`;
-}
+// The reader (`getSuppressedEventTuples`, `suppressionKey`) lives in
+// lib/calendar/event-suppressions.ts so the reconciler can share it.
 
 /**
  * Record a (symbol, event_date, event_type) tuple the sync upsert must skip.
@@ -439,23 +439,6 @@ export function suppressCalendarEvent(
     params.event_type ?? "earnings",
     params.reason ?? null,
   );
-}
-
-/**
- * All suppressed tuples as `SYMBOL|date|type` keys. Returns an empty set when
- * the table doesn't exist (minimal hand-built test DBs) — same tolerance
- * pattern as the flow-adjusted risk lookup on a missing transactions table.
- */
-function getSuppressedEventTuples(db: Database.Database): Set<string> {
-  try {
-    const rows = db
-      .prepare("SELECT symbol, event_date, event_type FROM calendar_event_suppressions")
-      .all() as { symbol: string; event_date: string; event_type: string }[];
-    return new Set(rows.map((r) => suppressionKey(r.symbol, r.event_date, r.event_type)));
-  } catch (err) {
-    if (err instanceof Error && /no such table/i.test(err.message)) return new Set();
-    throw err;
-  }
 }
 
 /**

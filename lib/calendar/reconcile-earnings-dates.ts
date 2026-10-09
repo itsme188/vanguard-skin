@@ -6,6 +6,7 @@ import { deliveredSql, notLiveClaimSql } from "@/lib/earnings/email-states";
 import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
+import { getSuppressedEventTuples, suppressionKey } from "@/lib/calendar/event-suppressions";
 
 // ── Earnings date cross-check reconciliation ────────────────────────
 //
@@ -33,6 +34,11 @@ import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 // HAND-ENTERED rows for one name are never resolved against each other — both
 // stay visible and the user deletes one. See `keptManualTwins`. Every row a
 // pass does hide is reported in `ReconcileResult.superseded`.
+//
+// A feed row on a (symbol, date) the user REMOVED from the calendar never wins
+// any rung: the cluster resolves over its other rows, and with no other row
+// nothing shows. A hand-entered row on that date is exempt. See
+// `createRemovedDateTest`.
 
 const GATHER_BACK_DAYS = 21;
 const GATHER_FWD_DAYS = 30;
@@ -554,6 +560,87 @@ function lockedStatusFor(row: EarningsRow): "user_confirmed" | null {
   return row.date_status === "user_confirmed" ? "user_confirmed" : null;
 }
 
+/** Is this a feed row sitting on a (symbol, date) the user removed? */
+type RemovedDateTest = (r: EarningsRow) => boolean;
+
+/**
+ * Build the test for "this row sits on a date the user removed"
+ * (`calendar_event_suppressions`, written when a feed earnings row is removed
+ * with its remove button or replaced by "Fix date").
+ *
+ * The feed upsert already refuses to write such a tuple, but a row that was in
+ * the table before the removal stays there: the other vendor's row when two
+ * vendors agreed on the date. The delete path hides it after its own scoped
+ * pass (`resuppressSuppressedTuples`, lib/mutations/calendar.ts); before this
+ * test existed the whole-book pass at the end of every calendar sync knew
+ * nothing about removals and showed it again.
+ *
+ * Exact symbol and exact date, as the removal was recorded: a share-class
+ * sibling on the same date is a different tuple and is not matched.
+ *
+ * `source = 'manual'` is exempt, by source alone (a hand-entered row locks by
+ * its source): "Fix date" on the same day mints a hand-entered row on the very
+ * date it removes, and that row is the user's answer. The removal only ever
+ * spoke about the feed rows. Same predicate as `resuppressSuppressedTuples`.
+ *
+ * Reads the table once; call it once per pass or dry run.
+ */
+function createRemovedDateTest(db: Database.Database): RemovedDateTest {
+  const removed = getSuppressedEventTuples(db);
+  if (removed.size === 0) return () => false;
+  return (r) =>
+    r.source !== "manual" &&
+    r.symbol != null &&
+    removed.has(suppressionKey(r.symbol, r.event_date, "earnings"));
+}
+
+/**
+ * `resolveCluster` over the rows that may win: every row except a feed row on
+ * a removed date. The winner, its status and any conflict marker are exactly
+ * what they would be if those rows were not in the table. null when no row of
+ * the group may win; the group then shows nothing.
+ *
+ * The group itself is NOT narrowed first (clustering and the reported /
+ * hand-entered split still see every row), so a row on a removed date still
+ * loses to the winner like any other row of its print and its records follow
+ * the print.
+ */
+function resolveClusterHonouringRemovals(
+  rows: EarningsRow[],
+  today: string,
+  onRemovedDate: RemovedDateTest,
+): Resolution | null {
+  const mayWin = rows.filter((r) => !onRemovedDate(r));
+  if (mayWin.length === 0) return null;
+  return resolveCluster(mayWin.length === rows.length ? rows : mayWin, today);
+}
+
+/**
+ * Should a losing row on a removed date be hidden WITHOUT being folded into
+ * the winner? Only in one case: the hidden row shows a print that already
+ * happened (a past date with reported figures) and the winner is a feed row
+ * dated today or later. Folding would copy a reported result onto a row for a
+ * print still ahead, and that row would then read as reported and be recapped
+ * under a date that has not happened.
+ *
+ * A hand-entered or user-confirmed winner is never held back from: the split
+ * above already decided that row is the print. A past-dated feed winner is
+ * the same quarter's print and takes the figures as before.
+ */
+function holdsBackRemovedPrint(loser: EarningsRow, canonical: EarningsRow, today: string): boolean {
+  return (
+    loser.event_date < today &&
+    hasActual(loser) &&
+    !isManualRow(canonical) &&
+    canonical.event_date >= today
+  );
+}
+
+/** Why a feed row on a removed date stops showing. */
+function removedDateReason(row: EarningsRow): string {
+  return `you removed ${row.symbol ?? "this company"} on ${row.event_date}; that date stays off the calendar`;
+}
+
 /** Vendor pipeline names as a person would say them. */
 const VENDOR_DISPLAY_NAMES: Record<string, string> = {
   finnhub: "Finnhub",
@@ -791,10 +878,20 @@ export function repointDependentsBeforeDelete(
   // also come from splitReportedFromManualCluster (a second manual row beside
   // an already-reported print), so both fan out here and the doomed row's
   // audit goes with the NEAREST resulting print.
-  const canonicals = clusterByProximity(survivors)
-    .flatMap((group) => splitReportedFromManualCluster(group, opts.today).groups)
-    .flatMap((sub) => {
-      const res = resolveCluster(sub, opts.today);
+  //
+  // A row on a date the user removed never wins, so the audit goes to a row
+  // that will show. Only when NO surviving row may win (the usual shape: the
+  // user removes one of two vendors that agree on a date, and the other
+  // vendor's row on that same date is all that is left) does it fall back to
+  // the rows on removed dates: the audit is then kept on a hidden row, which
+  // is better than letting it cascade away with the delete.
+  const subGroups = clusterByProximity(survivors).flatMap(
+    (group) => splitReportedFromManualCluster(group, opts.today).groups,
+  );
+  const canonicalsUnder = (test: RemovedDateTest): EarningsRow[] =>
+    subGroups.flatMap((sub) => {
+      const res = resolveClusterHonouringRemovals(sub, opts.today, test);
+      if (!res) return [];
       // Hand-entered twins stay visible beside the canonical, so each is a
       // row the doomed one's audit could land on.
       return [
@@ -802,6 +899,8 @@ export function repointDependentsBeforeDelete(
         ...keptManualTwins(sub, res, opts.today),
       ];
     });
+  let canonicals = canonicalsUnder(createRemovedDateTest(db));
+  if (canonicals.length === 0) canonicals = canonicalsUnder(() => false);
   const target = canonicals.sort(
     (a, b) =>
       daysBetween(a.event_date, doomed.event_date) -
@@ -838,11 +937,17 @@ const HYPOTHETICAL_ROW_ID = Number.MAX_SAFE_INTEGER;
 
 /** Resolve a family's rows exactly as `reconcileEarningsDates` does, returning
  *  the ids it would leave canonical (every other row it would supersede). */
-function canonicalIdsFor(familyRows: EarningsRow[], today: string): Set<number> {
+function canonicalIdsFor(
+  familyRows: EarningsRow[],
+  today: string,
+  onRemovedDate: RemovedDateTest,
+): Set<number> {
   const canonical = new Set<number>();
   for (const proximityCluster of clusterByProximity(familyRows)) {
     for (const cluster of splitReportedFromManualCluster(proximityCluster, today).groups) {
-      const res = resolveCluster(cluster, today);
+      const res = resolveClusterHonouringRemovals(cluster, today, onRemovedDate);
+      // No row of the group may win: the pass leaves nothing showing.
+      if (!res) continue;
       canonical.add(res.canonicalId);
       for (const twin of keptManualTwins(cluster, res, today)) canonical.add(twin.id);
     }
@@ -976,12 +1081,17 @@ export function checkManualAddWouldSupersedeVendor(
     created_at: today,
   };
 
-  const before = canonicalIdsFor(familyRows, today);
+  // A feed row on a date the user removed is never canonical, before or
+  // after, so the add is never blamed for hiding a row the next pass hides
+  // anyway.
+  const onRemovedDate = createRemovedDateTest(db);
+  const before = canonicalIdsFor(familyRows, today, onRemovedDate);
   const after = canonicalIdsFor(
     [...familyRows, hypothetical].sort(
       (a, b) => a.event_date.localeCompare(b.event_date) || a.id - b.id,
     ),
     today,
+    onRemovedDate,
   );
 
   const displaced = familyRows
@@ -1506,6 +1616,13 @@ export function reconcileEarningsDates(
 
   const foldIntoCanonical = createTwinFolder(db);
   const carryFinnhubData = createFinnhubDataCarrier(db);
+  const onRemovedDate = createRemovedDateTest(db);
+  // Hide a feed row on a removed date and nothing else: no figures carried,
+  // no records moved. The same write the delete path's
+  // `resuppressSuppressedTuples` makes.
+  const hideOnly = db.prepare(
+    "UPDATE calendar_events SET superseded = 1, date_status = NULL, date_conflict_with = NULL WHERE id = ?",
+  );
 
   const result: ReconcileResult = {
     confirmed: 0,
@@ -1528,7 +1645,31 @@ export function reconcileEarningsDates(
       for (const proximityCluster of clusterByProximity(familyRows)) {
       const split = splitReportedFromManualCluster(proximityCluster, today);
       for (const cluster of split.groups) {
-        const res = resolveCluster(cluster, today);
+        const res = resolveClusterHonouringRemovals(cluster, today, onRemovedDate);
+        /** Report a row this pass hid that was showing before it. */
+        const reportHidden = (r: EarningsRow, reason: string): void => {
+          const pre = passRowById.get(r.id);
+          if (!pre || pre.superseded) return;
+          anyChanged = true;
+          result.superseded.push({
+            eventId: r.id,
+            sourceKey: pre.source_key,
+            symbol: r.symbol,
+            title: pre.title,
+            eventDate: r.event_date,
+            source: r.source,
+            reason,
+          });
+        };
+        if (!res) {
+          // Every row of the group is a feed row on a date the user removed:
+          // nothing wins, nothing shows, and the group counts under no status.
+          for (const r of cluster) {
+            reportHidden(r, removedDateReason(r));
+            hideOnly.run(r.id);
+          }
+          continue;
+        }
         const canonicalRow = cluster.find((r) => r.id === res.canonicalId)!;
         // A locked cluster keeps whatever confirmation its canonical row
         // already carried; the pass never adds one (see lockedStatusFor).
@@ -1572,18 +1713,11 @@ export function reconcileEarningsDates(
           .filter((r) => r.id !== res.canonicalId && !keptIds.has(r.id))
           .sort((a, b) => (b.enriched_at ?? "").localeCompare(a.enriched_at ?? ""));
         for (const r of superseded) {
-          const pre = passRowById.get(r.id);
-          if (pre && !pre.superseded) {
-            anyChanged = true;
-            result.superseded.push({
-              eventId: r.id,
-              sourceKey: pre.source_key,
-              symbol: r.symbol,
-              title: pre.title,
-              eventDate: r.event_date,
-              source: r.source,
-              reason: supersedeReason(r, canonicalRow, res),
-            });
+          const removed = onRemovedDate(r);
+          reportHidden(r, removed ? removedDateReason(r) : supersedeReason(r, canonicalRow, res));
+          if (removed && holdsBackRemovedPrint(r, canonicalRow, today)) {
+            hideOnly.run(r.id);
+            continue;
           }
           // Fold FIRST, then accumulate: `anyChanged ||= fold(...)` would
           // short-circuit and skip the fold (pre-refactor the same shape
