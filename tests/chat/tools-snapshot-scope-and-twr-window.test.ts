@@ -211,3 +211,16 @@ describe("query_twr: the window is the Performance view's window", () => {
     expect(all.data.window.end_date).toBe(today);
   });
 });
+
+describe("query_twr: totalInvested is explained in plain words", () => {
+  it("the tool description and the result both define totalInvested", async () => {
+    const { CHAT_TOOLS } = await import("@/lib/chat/tools");
+    const tool = CHAT_TOOLS.find((t) => t.name === "query_twr")!;
+    expect(tool.description).toContain("totalInvested");
+    const result = (await executeTool(db, "query_twr", { period: "ytd" })) as {
+      data: { field_notes?: { totalInvested?: string } };
+    };
+    expect(result.data.field_notes?.totalInvested).toMatch(/deposits/i);
+    expect(result.data.field_notes?.totalInvested).toMatch(/not the (portfolio|opening)/i);
+  });
+});

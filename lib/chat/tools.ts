@@ -12,7 +12,8 @@ import {
 import { getNotesFiltered, getSecurityIdBySymbol } from "@/lib/queries/notes";
 import { createNote } from "@/lib/mutations/notes";
 import { todayET } from "@/lib/calendar/date-utils";
-import type { NoteType, NoteSentiment } from "@/lib/types";
+import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
+import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
 import { computeTwr } from "@/lib/compute/twr";
 import { computeXirr } from "@/lib/compute/xirr";
 import { annotateToolResult } from "@/lib/chat/validate";
@@ -345,7 +346,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_twr",
     description:
-      "Compute Time-Weighted Return (TWR) and XIRR for the portfolio or individual accounts over a specified period. A fixed period (1y / 3y / 5y) is the FULL span ending at the last statement, not at today; ytd and inception run to today. The result's `window` gives the exact `start_date` and `end_date` measured: always state them with the figure (for example 'the year to Sep 30'), and never describe a fixed-period figure as running through today when `ends_at_last_statement` is true. TWR uses chain-linked Modified Dietz (measures portfolio manager skill). XIRR uses Newton-Raphson (measures investor's actual experience, accounting for timing of deposits/withdrawals). Returns both metrics, cumulative return, annualized return, and per-account breakdown. Account names are matched case-insensitively (e.g., 'roth' matches 'Vanguard Roth IRA'). Use when asked about portfolio performance, returns, how the portfolio has done, YTD/annual returns, investment performance comparison between accounts, or whether the portfolio is beating expectations.",
+      "Compute Time-Weighted Return (TWR) and XIRR for the portfolio or individual accounts over a specified period. A fixed period (1y / 3y / 5y) is the FULL span ending at the last statement, not at today; ytd and inception run to today. The result's `window` gives the exact `start_date` and `end_date` measured: always state them with the figure (for example 'the year to Sep 30'), and never describe a fixed-period figure as running through today when `ends_at_last_statement` is true. TWR uses chain-linked Modified Dietz (measures portfolio manager skill). XIRR uses Newton-Raphson (measures investor's actual experience, accounting for timing of deposits/withdrawals). Returns both metrics, cumulative return, annualized return, and per-account breakdown. In the XIRR result, `totalInvested` is the sum of money the investor put IN during the window (cash deposits and in-kind transfers in); it does not include the opening portfolio value and is not net of withdrawals (those are `totalWithdrawn`). Never present it as the portfolio's cost basis or as a total amount invested over time; the result's `field_notes` repeats this. Account names are matched case-insensitively (e.g., 'roth' matches 'Vanguard Roth IRA'). Use when asked about portfolio performance, returns, how the portfolio has done, YTD/annual returns, investment performance comparison between accounts, or whether the portfolio is beating expectations.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -454,7 +455,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       properties: {
         note_type: {
           type: "string",
-          enum: ["journal", "earnings", "trade_thesis"],
+          enum: [...NOTE_TYPES],
           description:
             "Filter by note type. Omit for all types.",
         },
@@ -491,7 +492,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       properties: {
         note_type: {
           type: "string",
-          enum: ["journal", "earnings", "trade_thesis"],
+          enum: [...NOTE_TYPES],
           description: "Type of note to create.",
         },
         content: {
@@ -510,7 +511,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         },
         sentiment: {
           type: "string",
-          enum: ["bullish", "bearish", "neutral", "cautious", "confident"],
+          enum: [...NOTE_SENTIMENTS],
           description: "Optional sentiment tag.",
         },
         tags: {
@@ -973,6 +974,10 @@ function resolveAccountId(
  * Returns the query result wrapped with data quality annotations.
  * On error, returns { error: "..." } instead of throwing.
  */
+function asString(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
+}
+
 export async function executeTool(
   db: Database.Database,
   toolName: string,
@@ -1105,6 +1110,10 @@ export async function executeTool(
           },
           twr: twrResult,
           xirr: xirrResult,
+          field_notes: {
+            totalInvested:
+              "Total deposits: the money the investor added during this window (cash deposits and in-kind transfers in). It is not the portfolio's opening value, not its cost basis, and not net of withdrawals (see totalWithdrawn).",
+          },
         };
         break;
       }
@@ -1168,7 +1177,7 @@ export async function executeTool(
           if (id) securityId = id;
         }
         rawResult = getNotesFiltered(db, {
-          note_type: input.note_type as NoteType | undefined,
+          note_type: coerceNoteType(asString(input.note_type)),
           security_id: securityId,
           search: input.search as string | undefined,
           start_date: input.start_date as string | undefined,
@@ -1180,13 +1189,28 @@ export async function executeTool(
 
       case "create_note": {
         const today = todayET();
+        const noteType = coerceNoteType(asString(input.note_type));
+        if (!noteType) {
+          rawResult = {
+            error: `Unknown note type. Nothing was saved. Use one of: ${NOTE_TYPES.join(", ")}.`,
+          };
+          break;
+        }
+        const rawSentiment = asString(input.sentiment);
+        const sentiment = coerceNoteSentiment(rawSentiment);
+        if (rawSentiment && !sentiment) {
+          rawResult = {
+            error: `Unknown sentiment. Nothing was saved. Use one of: ${NOTE_SENTIMENTS.join(", ")}, or leave it out.`,
+          };
+          break;
+        }
         let securityId: number | null = null;
         if (input.symbol) {
           securityId = getSecurityIdBySymbol(db, input.symbol as string);
         }
         // Same refusal as POST /api/notes: the Earnings tab files notes under
         // per-security headers, so one with no security would be shown nowhere.
-        if (input.note_type === "earnings" && !securityId) {
+        if (noteType === "earnings" && !securityId) {
           rawResult = {
             error:
               "An earnings note needs a security. Nothing was saved. Pass the symbol of a security on file, then save.",
@@ -1194,11 +1218,11 @@ export async function executeTool(
           break;
         }
         const note = createNote(db, {
-          note_type: input.note_type as NoteType,
+          note_type: noteType,
           content: input.content as string,
           security_id: securityId,
           event_date: (input.event_date as string) || today,
-          sentiment: (input.sentiment as NoteSentiment) || null,
+          sentiment: sentiment ?? null,
           tags: (input.tags as string[]) || null,
         });
         rawResult = { saved: true, note };
