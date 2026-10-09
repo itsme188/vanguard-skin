@@ -226,7 +226,7 @@ export function TrustStrip({ scope }: TrustStripProps) {
               : <PrivateText>{`${bondDuration.withDuration}/${bondDuration.totalBonds}`}</PrivateText>
           }
           tone={bondCovTone}
-          hint="Held bonds that have a duration figure"
+          hint="Held bonds with a duration, stored or estimated. Only a bond that cannot be modelled counts as a gap."
           onClick={() => togglePanel("bondDuration")}
           active={activePanel === "bondDuration"}
         />

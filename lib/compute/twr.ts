@@ -66,8 +66,8 @@ export interface TwrOptions {
   // Multi-account scope (e.g. a named scope that resolves to 2+ accounts).
   // A single-id array behaves identically to `accountId`. Ignored when
   // `accountId` is also given. Never collapse a multi-id scope to one id —
-  // that silently drops accounts from the aggregate (resolveScopeToSingleId
-  // violation).
+  // that silently drops accounts from the aggregate (the first-id helper
+  // that did so has been deleted).
   accountIds?: number[];
 }
 

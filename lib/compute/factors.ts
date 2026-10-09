@@ -464,8 +464,8 @@ export function computeMacroFactorTilts(
   options?: FactorOptions
 ): FactorMacroTilt[] {
   const accountIds = normalizeAccountIds(options);
-  // getFactorHeatmap reads an empty list as the whole book; a defined empty
-  // scope is no accounts, so it has no rows.
+  // A defined empty scope is no accounts, so it has no rows. getFactorHeatmap
+  // now returns none for an empty list itself; this guard only skips the call.
   const heatmap = accountIds && accountIds.length === 0 ? [] : getFactorHeatmap(db, accountIds);
 
   return FACTOR_COLUMNS.map((factor) => {

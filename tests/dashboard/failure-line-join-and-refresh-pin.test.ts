@@ -26,6 +26,8 @@ const JOINED_FILES = [
   "app/dashboard/components/DigestCatchup.tsx",
   "app/dashboard/components/analysis/TrustStripDrawer.tsx",
   "app/dashboard/plaid-link/page.tsx",
+  "app/dashboard/components/ResearchFeedsView.tsx",
+  "app/dashboard/today/EarningsDeleteButton.tsx",
   "app/dashboard/today/FirstPassRead.tsx",
 ];
 
