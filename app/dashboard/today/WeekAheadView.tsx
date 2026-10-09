@@ -536,7 +536,8 @@ export function actualChipClass(
         CalendarEvent,
         "consensus_value" | "manual_actuals_at" | "event_date" | "event_time" | "release_time" | "raw_json"
       >
-    >,
+    > &
+    Pick<DisplayedEvent, "display_time">,
   now: Date = new Date(),
 ): string {
   // Owner ruling 2026-10-06 (display-only): an actual saved before the
@@ -553,6 +554,9 @@ export function actualChipClass(
         release_time: event.release_time ?? null,
         raw_json: event.raw_json ?? null,
         actual_value: event.actual_value,
+        // The usual side of a slot-less row (display only), so the colour
+        // and the "pre-release" chip beside it clear at the same moment.
+        display_time: event.display_time,
       },
       now,
     )
