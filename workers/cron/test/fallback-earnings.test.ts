@@ -520,6 +520,127 @@ describe("runEarningsFallback v5 context (notes + bogeys)", () => {
     expect(html).toContain("your curated bogeys");
   });
 
+  // Wording follow-up (2026-10-08): the heading, the cloud-context note and the
+  // footer say "curated" only when at least one PRINTED entry is not the
+  // vendor's. With a curated entry every string is byte-identical to before.
+  const CURATED_HEADING = "Bogeys (your curated consensus + whisper — preferred over Finnhub)";
+  const CURATED_LEAD = "Whisper numbers are the bar that matters — beat-the-whisper is the meaningful event. Most recent set first.";
+  const CURATED_NOTE = "This fallback DOES include your curated bogeys (consensus + whisper) (mirrored in the nightly snapshot). ";
+  const CURATED_NOTE_WITH_NOTES =
+    "This fallback DOES include your curated bogeys (consensus + whisper) and your prior thesis notes (mirrored in the nightly snapshot). ";
+  const CURATED_FOOTER = " your curated bogeys ARE included above. Analyst recs";
+  const CURATED_FOOTER_WITH_NOTES = " your curated bogeys + your prior notes ARE included above. Analyst recs";
+  const VENDOR_HEADING = "Bogeys (vendor consensus only — no curated bogeys on file)";
+  const VENDOR_LEAD =
+    "These are the vendor consensus figures (Finnhub). No curated bogeys or whisper numbers are on file for this event.";
+  const VENDOR_NOTE =
+    "This fallback DOES include the vendor consensus (no curated bogeys are on file) (mirrored in the nightly snapshot). ";
+  const VENDOR_NOTE_WITH_NOTES =
+    "This fallback DOES include the vendor consensus (no curated bogeys are on file) and your prior thesis notes (mirrored in the nightly snapshot). ";
+  const VENDOR_FOOTER = " The vendor consensus is shown above; no curated bogeys are on file. Analyst recs";
+  const VENDOR_FOOTER_WITH_NOTES =
+    " The vendor consensus is shown above (no curated bogeys are on file) and your prior notes ARE included above. Analyst recs";
+
+  const vendorRow = {
+    ...printBase,
+    id: 3,
+    source: "finnhub",
+    source_label: "Sell-side consensus (Finnhub)",
+    eps_consensus_vendor: 1.05,
+    revenue_consensus_usd: 90_000_000_000,
+    notes: "Vendor consensus (Finnhub) — EPS basis unspecified; shown labelled, never the adjusted-EPS bogey.",
+  };
+  const curatedRow = {
+    ...printBase,
+    id: 4,
+    source: "pdf_upload",
+    source_label: "TMT Sheet",
+    eps_consensus: 1.5,
+    uploaded_at: "2026-06-13 12:00:00",
+  };
+  const aNote = {
+    id: 7,
+    note_type: "trade_thesis",
+    content: "Services margin is the swing factor.",
+    event_date: "2026-06-10",
+    sentiment: "bullish",
+    tags: "thesis",
+    symbol: "AAPL",
+    underlying_symbol: null,
+  };
+
+  async function htmlWith(rows: unknown[], notes: unknown[] = []): Promise<string> {
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).schemaVersion = 5;
+    (snap as unknown as Snapshot).earningsBogeys = rows as Snapshot["earningsBogeys"];
+    (snap as unknown as Snapshot).notes = notes as Snapshot["notes"];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+    expect((await runEarningsFallback(makeEnv(), { now: previewWindowNow() })).sent).toBe(1);
+    return htmlOfLastSend();
+  }
+
+  const ALL_CURATED = [CURATED_HEADING, CURATED_LEAD, "your curated bogeys"];
+  const ALL_VENDOR = [VENDOR_HEADING, VENDOR_LEAD, "no curated bogeys are on file"];
+
+  it("only the vendor's row: heading, note and footer say vendor consensus, never curated", async () => {
+    const html = await htmlWith([vendorRow]);
+    expect(html).toContain("[1] Sell-side consensus (Finnhub)");
+    expect(html).toContain(VENDOR_HEADING);
+    expect(html).toContain(VENDOR_LEAD);
+    expect(html).toContain(VENDOR_NOTE);
+    expect(html).toContain(VENDOR_FOOTER);
+    for (const s of ALL_CURATED) expect(html).not.toContain(s);
+    expect(html).not.toContain("beat-the-whisper");
+  });
+
+  it("only the vendor's row, with prior notes: the notes are still claimed, the bogeys are not", async () => {
+    const html = await htmlWith([vendorRow], [aNote]);
+    expect(html).toContain(VENDOR_NOTE_WITH_NOTES);
+    expect(html).toContain(VENDOR_FOOTER_WITH_NOTES);
+    for (const s of ALL_CURATED) expect(html).not.toContain(s);
+  });
+
+  it("a vendor row beside a curated row: every string is the curated one, byte for byte", async () => {
+    const html = await htmlWith([vendorRow, curatedRow]);
+    expect(html).toContain("[1] Sell-side consensus (Finnhub)");
+    expect(html).toContain("[2] TMT Sheet");
+    expect(html).toContain(CURATED_HEADING);
+    expect(html).toContain(CURATED_LEAD);
+    expect(html).toContain(CURATED_NOTE);
+    expect(html).toContain(CURATED_FOOTER);
+    for (const s of ALL_VENDOR) expect(html).not.toContain(s);
+  });
+
+  it("a curated row alone, with and without notes: every string byte for byte as before", async () => {
+    const html = await htmlWith([curatedRow]);
+    expect(html).toContain(CURATED_HEADING);
+    expect(html).toContain(CURATED_LEAD);
+    expect(html).toContain(CURATED_NOTE);
+    expect(html).toContain(CURATED_FOOTER);
+    for (const s of ALL_VENDOR) expect(html).not.toContain(s);
+
+    const withNotes = await htmlWith([curatedRow], [aNote]);
+    expect(withNotes).toContain(CURATED_NOTE_WITH_NOTES);
+    expect(withNotes).toContain(CURATED_FOOTER_WITH_NOTES);
+    for (const s of ALL_VENDOR) expect(withNotes).not.toContain(s);
+  });
+
+  it("the claim follows the PRINTED entries: a curated row that prints nothing does not make it curated", async () => {
+    const html = await htmlWith([
+      vendorRow,
+      { ...printBase, id: 5, source: "manual", source_label: "Segment with no figure", segment_breakdown_json: '{"Cloud":{}}' },
+    ]);
+    expect(html).toContain(VENDOR_HEADING);
+    expect(html).toContain(VENDOR_FOOTER);
+    expect(html).not.toContain("Segment with no figure");
+    for (const s of ALL_CURATED) expect(html).not.toContain(s);
+  });
+
+  it("no printed entry: no bogey claim of either kind", async () => {
+    const html = await htmlWith([]);
+    for (const s of [...ALL_CURATED, ...ALL_VENDOR, "vendor consensus"]) expect(html).not.toContain(s);
+  });
+
   it("renders fine when notes/bogeys are absent (back-compat with v2 snapshot)", async () => {
     const env = makeEnv();
     (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(

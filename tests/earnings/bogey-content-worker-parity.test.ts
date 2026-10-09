@@ -29,6 +29,11 @@ import {
   SNAPSHOT_BOGEY_CONTENT_COLUMNS,
 } from "@/workers/cron/src/bogey-content";
 import { bogeysPrintedInPrompt } from "@/lib/earnings/bogey-prompt-entries";
+import { bogeyClaim, VENDOR_BOGEY_SOURCE } from "@/lib/earnings/bogey-claim";
+import {
+  snapshotBogeyClaim,
+  VENDOR_BOGEY_SOURCE as WORKER_VENDOR_BOGEY_SOURCE,
+} from "@/workers/cron/src/bogey-claim";
 
 /** Content columns the snapshot row does not carry. Adding one here is a
  *  decision: such a row counts on the Mac and reads as empty in the cloud. */
@@ -220,5 +225,79 @@ describe("end to end: Mac send reader, snapshot select and Worker count the same
     seedRow("invalid", { extra_metrics_json: '[{"label":"Bookings","value":"100"}]' });
     expect(macPrinted()).toEqual([]);
     expect(workerPrinted()).toEqual([]);
+  });
+
+  /**
+   * Wording follow-up (2026-10-08): what each side may SAY about its printed
+   * entries. "curated" only when a printed entry is not the vendor's; every
+   * printed entry the vendor's reads "vendor_only"; nothing printed is "none".
+   *
+   *   Mac:    bogeyClaim            lib/earnings/bogey-claim.ts
+   *   Worker: snapshotBogeyClaim    workers/cron/src/bogey-claim.ts
+   *
+   * Each side reads the claim off its own printed list, so the two agree
+   * wherever the printed lists agree. The one documented difference carries
+   * over: a curated row whose only printed content is extra_metrics_json is
+   * not in the cloud email, so beside a vendor row the cloud says vendor-only.
+   */
+  function seedSourced(source: string, label: string, cols: Record<string, unknown>): number {
+    const names = Object.keys(cols);
+    return Number(
+      db
+        .prepare(
+          `INSERT INTO earnings_bogeys (event_id, source, source_label, uploaded_at${names.map((n) => `, ${n}`).join("")})
+           VALUES (?, ?, ?, datetime('now')${names.map(() => ", ?").join("")})`,
+        )
+        .run(eventId, source, label, ...Object.values(cols)).lastInsertRowid,
+    );
+  }
+  const macClaim = () =>
+    bogeyClaim(bogeysPrintedInPrompt(getBogeysWithContentForEvent(db, eventId)).map((e) => e.bogey));
+  const workerClaim = () =>
+    snapshotBogeyClaim(
+      snapshotBogeysPrinted(
+        getEarningsBogeysForSnapshot(db, "2026-04-01", "2026-05-31").filter(
+          (b) => b.event_id === eventId && snapshotBogeyHasContent(b),
+        ),
+      ).map((e) => e.bogey),
+    );
+
+  it("the vendor source is the same token on both sides", () => {
+    expect(WORKER_VENDOR_BOGEY_SOURCE).toBe(VENDOR_BOGEY_SOURCE);
+    expect(VENDOR_BOGEY_SOURCE).toBe("finnhub");
+  });
+
+  const VENDOR = { eps_consensus_vendor: 1.05, revenue_consensus_usd: 100_000_000, notes: "Vendor consensus" };
+  type Seed = [source: string, cols: Record<string, unknown>];
+  it.each([
+    ["no rows", [], "none", "none"],
+    ["only an empty row", [["manual", {}]], "none", "none"],
+    ["only the vendor row", [["finnhub", VENDOR]], "vendor_only", "vendor_only"],
+    ["the vendor row and an empty curated row", [["finnhub", VENDOR], ["newsletter", {}]], "vendor_only", "vendor_only"],
+    [
+      "the vendor row and a curated row that holds something nobody prints",
+      [["finnhub", VENDOR], ["manual", { segment_breakdown_json: '{"Cloud":{}}' }]],
+      "vendor_only",
+      "vendor_only",
+    ],
+    ["the vendor row and a curated row", [["finnhub", VENDOR], ["pdf_upload", { eps_consensus: 1.02 }]], "curated", "curated"],
+    ["only a curated row", [["manual", { eps_whisper: 1.08 }]], "curated", "curated"],
+    ["a notes-only curated row beside the vendor row", [["finnhub", VENDOR], ["manual", { notes: "watch margins" }]], "curated", "curated"],
+    [
+      "a hand-entered row filling only the vendor column (the source decides)",
+      [["manual", { eps_consensus_vendor: 1.05 }]],
+      "curated",
+      "curated",
+    ],
+    [
+      "the vendor row and an extras-only curated row (the documented difference)",
+      [["finnhub", VENDOR], ["manual", { extra_metrics_json: EXTRAS }]],
+      "curated",
+      "vendor_only",
+    ],
+  ] as Array<[string, Seed[], string, string]>)("claim for %s", (_name, seeds, onMac, inCloud) => {
+    seeds.forEach(([source, cols], i) => seedSourced(source, `row ${i}`, cols));
+    expect(macClaim()).toBe(onMac);
+    expect(workerClaim()).toBe(inCloud);
   });
 });

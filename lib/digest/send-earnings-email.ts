@@ -30,6 +30,7 @@ import {
   bogeyPrintsVendorEps,
   bogeysPrintedInPrompt,
 } from "@/lib/earnings/bogey-prompt-entries";
+import { bogeyClaim } from "@/lib/earnings/bogey-claim";
 import { resolveExpectedMove } from "@/lib/earnings/expected-move";
 import { getReadThroughsForTargets } from "@/lib/queries/read-through-pairs";
 import {
@@ -2524,9 +2525,19 @@ function renderBogeysBlock(ctx: PreviewContext): string {
   const vendorClause = entries.some((e) => bogeyPrintsVendorEps(e.bogey))
     ? `A "vendor EPS consensus" figure is the data vendor's figure on an unspecified basis, not a curated bogey: quote it as the vendor's, and an entry that carries only vendor figures is never the primary consensus reference when a curated entry is listed.\n\n`
     : "";
-  return `\n## Bogeys (user-curated — preferred over Finnhub consensus, most recent first)
+  // The heading and lead-in say "curated" only when a printed entry is not the
+  // vendor's, read off the same `entries` listed below (lib/earnings/bogey-claim.ts),
+  // so the claim and the content cannot disagree. With one curated entry the
+  // text is byte-identical to before.
+  const lead =
+    bogeyClaim(entries.map((e) => e.bogey)) === "vendor_only"
+      ? `## Bogeys (vendor consensus only — no user-curated bogeys on file)
 
-These are bogeys the user pulled from preferred sources (TMT Breakout, sell-side notes) and uploaded for THIS event. **Treat the most recent entry as the primary consensus reference.** Whisper numbers, when present, are the directional bar that matters — beat-the-whisper is the meaningful event, not beat-consensus. Cite the source label inline when discussing them.
+These are the data vendor's (Finnhub) consensus figures for THIS event. The user has uploaded no curated bogeys and no whisper numbers, so do not describe these figures as curated, as a whisper, or as the user's preferred reference. Cite the source label inline when discussing them.`
+      : `## Bogeys (user-curated — preferred over Finnhub consensus, most recent first)
+
+These are bogeys the user pulled from preferred sources (TMT Breakout, sell-side notes) and uploaded for THIS event. **Treat the most recent entry as the primary consensus reference.** Whisper numbers, when present, are the directional bar that matters — beat-the-whisper is the meaningful event, not beat-consensus. Cite the source label inline when discussing them.`;
+  return `\n${lead}
 
 ${vendorClause}${lines.join("\n\n---\n\n")}
 `;
