@@ -38,7 +38,7 @@ merely validates the value of.
 
 ## 2. Verified capabilities (probed live against the real account this session)
 
-All read-only; confirmed returning the **personal** account (net liq ≈ $484k, matches
+All read-only; confirmed returning the **personal** account (net liq matches
 the IBKR statement lineage):
 
 - **`get_account_summary`** — net liq, equity-with-loan, buying power, gross position
@@ -48,7 +48,7 @@ the IBKR statement lineage):
 - **`get_account_positions`** — per position: qty, `market_price`, `market_value`,
   **`average_price` (= per-share cost basis)**, `unrealized_pnl`, `asset_class`,
   `contract_id`, OCC-format option descriptions, **shorts** (negative qty), and
-  zero-qty closed rows. ✓ live (e.g. SPY 100 sh, avg 473.31, +$28.3k unrealized).
+  zero-qty closed rows. ✓ live (e.g. a long ETF position with its average price and unrealized P&L).
 - **`get_account_trades`** — period windows (TODAY … YEAR_TO_DATE, completed
   quarters). **DAYS_90 returned 1,019 trades** with `trade_id`, `symbol`,
   `company_name`, `sec_type`, `side`, `size`, `price`, `order_type`, `tif`,

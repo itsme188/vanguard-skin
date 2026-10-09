@@ -2,11 +2,11 @@
 
 **Date:** 2026-07-01
 **Status:** Approved (design), pending implementation plan
-**Origin:** Deep-QA sweep 2026-07-01, HIGH finding — `402340.KS` (Korea Exchange listing) priced in KRW but rendered as USD, creating a $17.3M phantom position that poisons Today, Security Detail, and every Analysis surface (allocation reads $19.3M vs the real ~$2.1M, scenario impacts ~13× inflated, factor alpha +204%).
+**Origin:** Deep-QA sweep 2026-07-01, HIGH finding — `402340.KS` (Korea Exchange listing) priced in KRW but rendered as USD, creating a phantom position several times the size of the whole portfolio that poisons Today, Security Detail, and every Analysis surface (allocation total, scenario impacts and factor alpha all grossly inflated).
 
 ## Problem
 
-`402340.KS` is held in IBKR, priced at ₩1,731,000/share, 10 shares, cost basis ₩16,329,792. The app stores the KRW price verbatim in `prices.close_price` (`source='tws'`) and computes market value as `quantity × close_price × multiplier` with **no currency awareness and no FX conversion**, then renders it with a hardcoded `$`. Result: ₩17.31M shows as **$17.3M** (~8× the whole portfolio).
+`402340.KS` is held in IBKR and priced in KRW (about ₩1.7M per share at the time). The app stores the KRW price verbatim in `prices.close_price` (`source='tws'`) and computes market value as `quantity × close_price × multiplier` with **no currency awareness and no FX conversion**, then renders it with a hardcoded `$`. Result: the position's KRW value shows as **dollars** (several times the whole portfolio).
 
 ### Root cause (verified via code map)
 
@@ -21,7 +21,7 @@
 
 ### Key insight — the broker figures are already correct
 
-IBKR reports account NetLiq in USD base currency, so the account's `monthly_snapshots.total_value` ($484,374 for IBKR on 2026-07-01) is **correct** — it already nets the KRW asset against the borrowed-KRW margin loan that funded it. Both broker paths also hand us a **USD market value per position** (TWS `Position.marketValue`; IBKR Web API `mktValue`) and a **per-currency ledger with an explicit `exchangeRate`** (IBKR `getLedger`) — all currently discarded. The corruption is **only** in the app's per-holding recomputation, which is why NetLiq-anchored totals stay right while holdings-summed Analysis surfaces read $19.3M.
+IBKR reports account NetLiq in USD base currency, so the account's `monthly_snapshots.total_value` (IBKR on 2026-07-01) is **correct** — it already nets the KRW asset against the borrowed-KRW margin loan that funded it. Both broker paths also hand us a **USD market value per position** (TWS `Position.marketValue`; IBKR Web API `mktValue`) and a **per-currency ledger with an explicit `exchangeRate`** (IBKR `getLedger`) — all currently discarded. The corruption is **only** in the app's per-holding recomputation, which is why NetLiq-anchored totals stay right while holdings-summed Analysis surfaces read the inflated figure.
 
 ## Scope
 
@@ -82,7 +82,7 @@ Unchanged — conversion is upstream, so `<Money>` / `formatUSD` keep emitting `
 
 - **Unit** (`tests/valuation` / compute): `marketValue` + `adjustedMarketValueSQL` with a KRW security + `fx_rates` row → correct USD; a USD security → identical to today (regression guard that the USD path is byte-unchanged).
 - **Ingestion**: a broker payload with `currency:'KRW'` + exchangeRate persists both the security currency and the `fx_rates` row; a USD payload leaves `currency='USD'` and writes no `fx_rates` row.
-- **Integration** (`:memory:` DB seeded with the real 402340 figures + a KRW rate): Analysis allocation total ≈ $2.1M (not $19.3M); 402340 market value ≈ $12.7K; IBKR account total unchanged.
+- **Integration** (`:memory:` DB seeded with the real 402340 figures + a KRW rate): Analysis allocation total back at the real portfolio level (not the inflated figure); 402340 market value at its true USD figure; IBKR account total unchanged.
 - **Full suite**: `npx vitest run` (2828 currently green) must stay green before completion.
 
 ## Validation gate (first implementation step)

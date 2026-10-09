@@ -10,10 +10,10 @@ Poisoned rows (live DB, account_id=1) vs the canonical CSV (`~/Desktop/Trading -
 
 | month_end_date | DB (wrong) | CSV (statement-verified correct) |
 |---|---|---|
-| 2022-12-31 | total 362408.31, starting 391746.97, deposits 118593.14, twr −0.312 | total 328285.46, starting 351126.94, deposits 0.0, twr −0.065052, investment_gain −22841.48 |
-| 2023-12-31 | total 580250.40, starting 362408.31, deposits 124523.94, twr NULL | total 526157.97, starting 502253.87, deposits 0.0, twr 0.047594, investment_gain 23904.10 |
-| 2024-12-31 | total 896634.19 (correct), starting 526157.97, deposits 255000.0, twr NULL | total 896634.19, starting 939820.98, deposits 0.0, twr −0.045952, investment_gain −43186.79 |
-| 2025-12-31 | total 1290023.49 (correct), starting 896634.19, deposits 10000.0, twr NULL | total 1290023.49, starting 1344716.44, deposits −20000.0, twr −0.025799, investment_gain −34692.95 |
+| 2022-12-31 | total, starting value and deposits all carry annual-summary figures; twr a large negative | the statement's monthly total and starting value, zero deposits, a small negative twr |
+| 2023-12-31 | total, starting value and deposits all carry annual-summary figures; twr NULL | the statement's monthly total and starting value, zero deposits, a small positive twr |
+| 2024-12-31 | total correct; starting value is the prior year-end and deposits the annual sum; twr NULL | same total, the prior month-end as starting value, zero deposits, a small negative twr |
+| 2025-12-31 | total correct; starting value is the prior year-end and deposits the annual net; twr NULL | same total, the prior month-end as starting value, the month's own net flow, a small negative twr |
 
 The Roth (account 2) December rows are healthy (batch 36, clean chain) — do not touch them.
 
