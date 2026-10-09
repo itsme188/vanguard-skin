@@ -1835,6 +1835,10 @@ levels on DIA/VOO/other tracked-not-held index ETFs fire.
 Update **all three** whenever you add/edit a transaction-type example — a stray comma / missing
 signed-amount rule each silently corrupted months of imports.
 
+### Vanguard account numbers are private (2026-10-09)
+
+The map from a Vanguard account number to its account name lives in `vanguard-accounts.json` next to the database (`resolveDbDir()`), never in the repo. Shape: `{ "00000001": "Vanguard Taxable" }`. `lib/import/vanguard-account-names.ts` is its one reader; the two direct-export parsers call `resolveVanguardAccountName`, and an unmapped number imports as `Vanguard <number>` with one preview warning showing only the last four digits. The name feeds `sourceKey`, so never rename a mapped account. Never write an account number into a committed file; `tests/repo/no-account-number-in-import-parsers.test.ts` guards `lib/import/`.
+
 ### Canonical-CSV amount is the SIGNED CASH EFFECT (statement-import era, 2026-04+)
 
 - Negative: BUY / BUY_TO_OPEN / BUY_TO_CLOSE / BUY_TO_COVER, TAX_WITHHELD, FEE, COMMISSION,

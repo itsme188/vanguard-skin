@@ -1,5 +1,11 @@
 import Papa from "papaparse";
 import type { ParsedImportResult, ParsedHolding, ParsedSecurity } from "../types";
+import {
+  loadVanguardAccountMap,
+  resolveVanguardAccountName,
+  unmappedAccountWarning,
+  type AccountMapSource,
+} from "../vanguard-account-names";
 
 interface VanguardCostBasisRow {
   symbol: string;
@@ -22,12 +28,6 @@ const ACCOUNT_MAP: Record<string, string> = {
   "Roth IRA": "Vanguard Roth IRA",
 };
 
-// Map Vanguard account numbers to our account names (for direct-export format)
-const ACCOUNT_NUMBER_MAP: Record<string, string> = {
-  "76501494": "Vanguard Taxable",
-  "34133612": "Vanguard Roth IRA",
-};
-
 // Vanguard direct-export uses " - " for null values
 function parseVanguardNum(val: string | undefined): number {
   if (!val || val.trim() === "-" || val.trim() === "") return NaN;
@@ -39,7 +39,11 @@ function isDirectExportFormat(content: string): boolean {
   return lines.some((l) => l.startsWith("Account,Symbol/CUSIP,Description,Position type"));
 }
 
-function parseDirectExport(content: string, filename: string): ParsedImportResult {
+function parseDirectExport(
+  content: string,
+  filename: string,
+  accountMap?: AccountMapSource,
+): ParsedImportResult {
   // Skip preamble lines — find the header row
   const lines = content.split("\n");
   let headerIdx = -1;
@@ -69,6 +73,9 @@ function parseDirectExport(content: string, filename: string): ParsedImportResul
   const today = new Date().toISOString().slice(0, 10);
   const securitiesMap = new Map<string, ParsedSecurity>();
   const errors: string[] = [];
+  const warnings: string[] = [];
+  const accounts = accountMap ?? loadVanguardAccountMap();
+  const warnedUnmapped = new Set<string>();
 
   // Aggregate per (account, symbol) since this format has per-lot rows
   const holdingAgg = new Map<string, { accountName: string; symbol: string; name: string; quantity: number; totalCost: number; marketValue: number }>();
@@ -86,7 +93,14 @@ function parseDirectExport(content: string, filename: string): ParsedImportResul
     const marketValueCol = Object.keys(row).find((k) => k.startsWith("Market value"));
     const marketValue = marketValueCol ? parseVanguardNum(row[marketValueCol]) : NaN;
 
-    const accountName = ACCOUNT_NUMBER_MAP[acctNum] || `Vanguard ${acctNum}`;
+    const accountName = (() => {
+      const r = resolveVanguardAccountName(acctNum, accounts);
+      if (!r.mapped && !warnedUnmapped.has(acctNum)) {
+        warnedUnmapped.add(acctNum);
+        warnings.push(unmappedAccountWarning(acctNum));
+      }
+      return r.accountName;
+    })();
     const key = `${accountName}:${symbolCusip}`;
 
     const existing = holdingAgg.get(key);
@@ -134,17 +148,18 @@ function parseDirectExport(content: string, filename: string): ParsedImportResul
     snapshots: [],
     corporateActions: [],
     errors,
-    warnings: [],
+    warnings,
   };
 }
 
 export function parseVanguardCostBasis(
   content: string,
-  filename: string
+  filename: string,
+  accountMap?: AccountMapSource
 ): ParsedImportResult {
   // Detect which format we're dealing with
   if (isDirectExportFormat(content)) {
-    return parseDirectExport(content, filename);
+    return parseDirectExport(content, filename, accountMap);
   }
 
   // Original format: symbol,name,type,account,cost_basis_method,...

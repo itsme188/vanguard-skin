@@ -6,17 +6,17 @@ import type {
   ParsedSecurity,
   ParsedPrice,
 } from "../types";
+import {
+  loadVanguardAccountMap,
+  resolveVanguardAccountName,
+  unmappedAccountWarning,
+  type AccountMapSource,
+} from "../vanguard-account-names";
 
 // Vanguard direct-export CSV: combined holdings + transactions in one file.
 // Section 1 (holdings): Account Number, Investment Name, Symbol, Shares, Share Price, Total Value
 // Blank rows separate the sections.
 // Section 2 (transactions): Account Number, Trade Date, Settlement Date, Transaction Type, ...
-
-// Map Vanguard account numbers to our account names
-const ACCOUNT_NUMBER_MAP: Record<string, string> = {
-  "76501494": "Vanguard Taxable",
-  "34133612": "Vanguard Roth IRA",
-};
 
 // Map Vanguard transaction types to our uppercase types
 // Map Vanguard transaction types to our uppercase types.
@@ -84,7 +84,8 @@ function parseOptionMetadata(symbol: string): Partial<ParsedSecurity> | null {
 
 export function parseVanguardExport(
   content: string,
-  filename: string
+  filename: string,
+  accountMap?: AccountMapSource
 ): ParsedImportResult {
   const holdings: ParsedHolding[] = [];
   const transactions: ParsedTransaction[] = [];
@@ -92,6 +93,16 @@ export function parseVanguardExport(
   const pricesMap = new Map<string, ParsedPrice>();
   const errors: string[] = [];
   const warnings: string[] = [];
+  const accounts = accountMap ?? loadVanguardAccountMap();
+  const warnedUnmapped = new Set<string>();
+  const nameFor = (acctNum: string): string => {
+    const r = resolveVanguardAccountName(acctNum, accounts);
+    if (!r.mapped && !warnedUnmapped.has(acctNum)) {
+      warnedUnmapped.add(acctNum);
+      warnings.push(unmappedAccountWarning(acctNum));
+    }
+    return r.accountName;
+  };
 
   // Split file into sections separated by blank rows
   const lines = content.split("\n");
@@ -138,7 +149,7 @@ export function parseVanguardExport(
 
     if (!acctNum || isNaN(shares)) continue;
 
-    const accountName = ACCOUNT_NUMBER_MAP[acctNum] || `Vanguard ${acctNum}`;
+    const accountName = nameFor(acctNum);
     // Vanguard's "Investment Name" can be missing a Symbol for restricted /
     // OTC / Treasury rows. Fall back to a cleaned-up name slice rather than a
     // "CUSIP:"-prefixed placeholder — the prefix lied about what the value was
@@ -206,7 +217,7 @@ export function parseVanguardExport(
 
       if (!acctNum || !tradeDate || !txnType) continue;
 
-      const accountName = ACCOUNT_NUMBER_MAP[acctNum] || `Vanguard ${acctNum}`;
+      const accountName = nameFor(acctNum);
       const mappedType = TXN_TYPE_MAP[txnType];
       if (mappedType === undefined) {
         warnings.push(`Unknown transaction type: "${txnType}" on ${tradeDate}`);

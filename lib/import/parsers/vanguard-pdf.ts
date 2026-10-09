@@ -57,7 +57,7 @@ export interface ClaudePdfTransaction {
 
 export interface ClaudePdfResponse {
   account_type: string; // "Individual brokerage account" | "Roth IRA brokerage account"
-  account_number_masked: string; // e.g. "XXXX1494"
+  account_number_masked: string; // e.g. "XXXX1234"
   statement_date: string; // YYYY-MM-DD
   total_value: number;
   prior_value: number | null;
