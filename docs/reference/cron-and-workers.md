@@ -213,6 +213,7 @@ cloud digest had been composing on a 7/13 snapshot). Tracked via the gitignored
 | v6 | `modelCatalog` — Worker reads the AI model catalog from here |
 | v8 (2026-07-05) | `watchlistSymbols` (additive; older snapshots degrade Worker pushes to held-only) |
 | v11 (2026-09-03) | `armedEvents` + `armedGeneration` (the KV-delta watermark) and `eps_consensus_vendor` on `earningsBogeys` rows — read by `armed-events.ts::effectiveCalendarEvents`. Snapshots ≤ v10 ignore the delta and degrade to held + watchlist (see §15) |
+| v12 (2026-10-08) | `currency` and `triggered_at` on `securityLevels` rows — read by `level-scan.ts` (currency label on the cloud push; once-per-Eastern-day guard). Both optional: a v11 row reads as USD and never blocks. **Deploy the Worker before the first v12 snapshot is written** |
 
 ## 9. Mac-side scheduling (launchd + pmset)
 
@@ -299,8 +300,33 @@ drains.
 `workers/cron/src/pushover.ts` is the Worker analogue of the Mac push module.
 `workers/cron/src/level-scan.ts::runLevelScan` reads `securityLevels` from the R2 v4 snapshot
 (**static-only** — MA-based levels stay Mac-only), fetches the latest 1-min price from Yahoo per
-symbol, fires Pushover directly, and writes a `cloud-fired-level-{id}` KV marker (24h TTL) on each
-new cross.
+symbol, fires Pushover directly, and writes a `cloud-fired-level-{id}` KV marker on each new cross.
+
+**Once per level per Eastern day (2026-10-08).** The Mac's guard (`hasAlertToday`) counts by the
+Eastern day; the Worker's now does too. A crossed level is held back only when its last fire was on
+the CURRENT Eastern day. The last fire has two sources: the snapshot row's `triggered_at` (v12, the
+Mac's own record, read with `etDateOfStoredUtc` in `dst.ts`, which accepts both stored forms: ISO
+with `T`/`Z` and SQLite `YYYY-MM-DD HH:MM:SS` in UTC) and the Worker's own KV marker (its `firedAt`,
+or `triggeredAt` on a marker written before this change). A fire on an earlier Eastern day never
+blocks, so a level that crosses again the next morning alerts even inside 24 hours. A marker that
+cannot be read holds the level back.
+
+**The marker is also the audit record, kept 7 days (`CLOUD_FIRED_MARKER_TTL_SECONDS`).** Its
+lifetime does not encode the guard. The Worker fires exactly when the Mac is down, often overnight
+or for a trip, so the record stays until the Mac reconciles and deletes it. There is one marker per
+level. When a level fires again before the Mac has reconciled an earlier day's marker, the new
+marker carries the earlier records in `earlier` (oldest first, at most 7, none older than 7 days),
+and the Mac files one inbox row per record, deduped per Eastern day. (A key per level per day was
+considered; the `GET`/`DELETE /internal/cloud-fired-levels` routes in `index.ts` match only
+`cloud-fired-level-{id}`, so that needs a route change first.) The expiry check on
+`expires_at` also uses the Eastern date. The Mac-side reconcile dedups "already alerted that day"
+on the Eastern day as well.
+
+**Level prices are labelled in the security's currency, never converted (2026-10-08).** v12 rows
+carry `currency`; the push formats with `workers/cron/src/level-price.ts`, a hand mirror of
+`lib/alerts/outbound-level-price.ts` (locale pinned to `en-US`; parity-pinned by
+`workers/cron/test/level-price-parity.test.ts` and `tests/alerts/outbound-level-price.test.ts` over
+`tests/fixtures/level-price-parity.json`). A dollar level reads exactly as before.
 
 Gates Mon–Fri 09:30–16:00 ET via `shouldRunLevelScan()`; pre-checks the `mac-recent-scan` KV marker
 (90 min TTL) to skip scans while the Mac is alive.

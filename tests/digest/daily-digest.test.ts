@@ -85,6 +85,57 @@ describe("daily-digest — formatTriggeredAlertsSection", () => {
   });
 });
 
+describe("daily-digest — formatTriggeredAlertsSection: a level price keeps its own currency", () => {
+  const since = () => new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  it("a dollar level reads exactly as before", () => {
+    const secId = seedSecurity("ZZA");
+    const levelId = upsertLevel(db, {
+      security_id: secId,
+      level_type: "scale_in",
+      price: 1180,
+      source_author: "Desk Note",
+    });
+    triggerLevel(db, { levelId, securityId: secId, triggeredPrice: 1179.5 });
+
+    const block = formatTriggeredAlertsSection(db, since());
+    expect(block).toContain("- **ZZA** scale in $1180.00 hit $1179.50 \u2014 Desk Note");
+  });
+
+  it("a yen level is labelled in yen, both figures unchanged, no dollar sign", () => {
+    const secId = seedSecurity("ZZJ");
+    db.prepare("UPDATE securities SET currency = 'JPY' WHERE id = ?").run(secId);
+    const levelId = upsertLevel(db, {
+      security_id: secId,
+      level_type: "support",
+      price: 976000,
+    });
+    triggerLevel(db, { levelId, securityId: secId, triggeredPrice: 975500 });
+
+    const block = formatTriggeredAlertsSection(db, since());
+    const line = block.split("\n").find((l) => l.includes("**ZZJ**"))!;
+    expect(line).toBe("- **ZZJ** support \u00a5976,000 hit \u00a5975,500");
+    expect(line).not.toContain("$");
+  });
+
+  it("a moving-average level still names the average, and labels the hit price", () => {
+    const secId = seedSecurity("ZZE");
+    db.prepare("UPDATE securities SET currency = 'EUR' WHERE id = ?").run(secId);
+    const levelId = upsertLevel(db, {
+      security_id: secId,
+      level_type: "support",
+      price: 40,
+      price_source: "sma_50",
+    });
+    triggerLevel(db, { levelId, securityId: secId, triggeredPrice: 39.5 });
+
+    const line = formatTriggeredAlertsSection(db, since())
+      .split("\n")
+      .find((l) => l.includes("**ZZE**"))!;
+    expect(line).toBe("- **ZZE** support SMA 50 hit \u20ac39.50");
+  });
+});
+
 describe("daily-digest — generateDigestSince", () => {
   it("returns non-null when alerts fired but zero articles (regression)", () => {
     const secId = seedSecurity("SPY");

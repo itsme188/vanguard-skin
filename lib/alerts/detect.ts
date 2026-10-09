@@ -83,9 +83,13 @@ export function detectAndFireAlerts(db: Database.Database): {
       // Fire-and-forget Pushover notification. Never blocks detection and
       // never throws — sendLevelAlertPush returns a result object on any
       // failure path (missing env vars, network error, API rejection).
+      // The currency rides along so the push labels the price in the
+      // security's own currency (native, never converted).
       const sec = db
-        .prepare("SELECT symbol FROM securities WHERE id = ?")
-        .get(level.security_id) as { symbol: string } | undefined;
+        .prepare(
+          "SELECT symbol, COALESCE(currency, 'USD') AS currency FROM securities WHERE id = ?"
+        )
+        .get(level.security_id) as { symbol: string; currency: string } | undefined;
       if (sec) {
         void sendLevelAlertPush({
           symbol: sec.symbol,
@@ -95,6 +99,7 @@ export function detectAndFireAlerts(db: Database.Database): {
           heldQuantity: holdings.reduce((sum, h) => sum + h.quantity, 0),
           securityId: level.security_id,
           armedCrossedAt: level.armed_crossed_at,
+          currency: sec.currency,
         }).catch(() => {
           // Extra safety net — sendLevelAlertPush already catches, but keep
           // this in case a future refactor removes the internal try/catch.

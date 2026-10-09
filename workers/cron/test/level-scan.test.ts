@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { isLevelCrossed, runLevelScan } from "../src/level-scan";
+import { isLevelCrossed, runLevelScan, CLOUD_FIRED_MARKER_TTL_SECONDS } from "../src/level-scan";
 import type { Snapshot, SecurityLevelRow } from "../src/state";
 
 function lvl(overrides: Partial<SecurityLevelRow> = {}): SecurityLevelRow {
@@ -156,21 +156,23 @@ describe("runLevelScan — gating", () => {
     expect(result.results[0].reason).toBe("no_snapshot");
   });
 
-  it("filters expired levels before scanning", async () => {
+  it("filters expired levels before scanning, on the Eastern date", async () => {
     const { env } = makeEnv();
-    const today = new Date().toISOString().slice(0, 10);
-    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-    const expired = lvl({ id: 1, expires_at: yesterday });
-    const live = lvl({ id: 2, expires_at: today });
+    // 21:30 Eastern on 2026-10-07; the UTC date is already 2026-10-08.
+    const now = new Date("2026-10-08T01:30:00Z");
+    const expired = lvl({ id: 1, expires_at: "2026-10-06" });
+    // Expires today in Eastern terms. A UTC date compare called it expired.
+    const live = lvl({ id: 2, expires_at: "2026-10-07" });
     let priceFetches = 0;
     const result = await runLevelScan(env, {
       loadSnapshot: async () => makeSnapshot([expired, live]),
       fetchPrice: async () => {
         priceFetches++;
-        return { price: 100, tMs: Date.now() };
+        return { price: 100, tMs: now.getTime() };
       },
       sendPush: async () => ({ sent: true }),
       pacingMs: 0,
+      now,
     });
     // Both expired+live point at AAPL — but expired is filtered before fetch,
     // so we still fetch AAPL once for the live level. scanned should be 1 (only live).
@@ -303,5 +305,240 @@ describe("runLevelScan — fan-out", () => {
     });
     expect(result.fired).toBe(2);
     expect(result.scanned).toBe(2);
+  });
+});
+
+/**
+ * Once-a-day guard (ruling 2026-10-08). The Mac allows one alert per level per
+ * EASTERN day. The Worker used a KV marker that lived a rolling 24 hours, so a
+ * level that crossed again the next morning was held back in the cloud while
+ * the Mac would have alerted. The guard now reads the last fire from the
+ * snapshot row (`triggered_at`) or from its own KV marker and blocks only when
+ * that fire was on the current Eastern day.
+ */
+describe("runLevelScan — once per Eastern day", () => {
+  const LEVEL_ID = 77;
+
+  async function scanAt(
+    now: Date,
+    level: SecurityLevelRow,
+    seed: Record<string, string> = {},
+    snapshotOverrides: Partial<Snapshot> = {},
+  ) {
+    const kv = makeKV(seed);
+    const puts: Array<{ key: string; value: string; opts?: { expirationTtl?: number } }> = [];
+    kv.put = (async (key: string, value: string, opts?: { expirationTtl?: number }) => {
+      puts.push({ key, value, opts });
+      kv.store.set(key, value);
+    }) as any;
+    const env: any = { CRON_KV: kv, ARCHIVE: {}, PUSHOVER_APP_TOKEN: "t", PUSHOVER_USER_KEY: "u" };
+    const sent: any[] = [];
+    const result = await runLevelScan(env, {
+      loadSnapshot: async () => ({ ...makeSnapshot([level]), ...snapshotOverrides }),
+      fetchPrice: async () => ({ price: 149.5, tMs: now.getTime() }),
+      sendPush: async (_env, args) => {
+        sent.push(args);
+        return { sent: true };
+      },
+      pacingMs: 0,
+      now,
+    });
+    return { result, sent, puts, kv };
+  }
+
+  function marker(fields: Record<string, unknown>): Record<string, string> {
+    return {
+      [`cloud-fired-level-${LEVEL_ID}`]: JSON.stringify({
+        levelId: LEVEL_ID,
+        securityId: 10,
+        symbol: "AAPL",
+        levelType: "support",
+        levelPrice: 150,
+        triggeredPrice: 149.5,
+        sourceAuthor: "Me",
+        ...fields,
+      }),
+    };
+  }
+
+  // 10:00 Eastern (EDT) on Thursday 2026-10-08.
+  const MORNING = new Date("2026-10-08T14:00:00Z");
+
+  it("snapshot says the level fired earlier on the same Eastern day: held back", async () => {
+    const level = lvl({ id: LEVEL_ID, triggered_at: "2026-10-08T13:35:00.000Z" });
+    const { result, sent, puts } = await scanAt(MORNING, level);
+    expect(result.fired).toBe(0);
+    expect(result.deduped).toBe(1);
+    expect(sent).toHaveLength(0);
+    expect(puts).toHaveLength(0);
+  });
+
+  it("reads the SQLite 'YYYY-MM-DD HH:MM:SS' (UTC) form of triggered_at the same way", async () => {
+    const sameDay = lvl({ id: LEVEL_ID, triggered_at: "2026-10-08 13:35:00" });
+    expect((await scanAt(MORNING, sameDay)).result.deduped).toBe(1);
+    // 00:30 UTC on the 8th is 20:30 Eastern on the 7th: an earlier Eastern day.
+    const eveningBefore = lvl({ id: LEVEL_ID, triggered_at: "2026-10-08 00:30:00" });
+    expect((await scanAt(MORNING, eveningBefore)).result.fired).toBe(1);
+  });
+
+  it("fired yesterday afternoon, crosses again this morning (under 24 hours): fires", async () => {
+    // 15:00 Eastern on the 7th, 19 hours before the scan.
+    const level = lvl({ id: LEVEL_ID, triggered_at: "2026-10-07T19:00:00.000Z" });
+    const { result, sent } = await scanAt(MORNING, level);
+    expect(result.fired).toBe(1);
+    expect(result.deduped).toBe(0);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("a fire at 20:30 Eastern shares the UTC date with the next morning but not the Eastern day: fires", async () => {
+    const level = lvl({ id: LEVEL_ID, triggered_at: "2026-10-08T00:30:00.000Z" });
+    const { result } = await scanAt(MORNING, level);
+    expect(result.fired).toBe(1);
+  });
+
+  it("a KV marker from the same Eastern day holds the level back", async () => {
+    const level = lvl({ id: LEVEL_ID });
+    const { result, sent } = await scanAt(
+      MORNING,
+      level,
+      marker({ triggeredAt: "2026-10-08T13:40:00.000Z", firedAt: "2026-10-08T13:45:00.000Z" }),
+    );
+    expect(result.fired).toBe(0);
+    expect(result.deduped).toBe(1);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("a marker left from yesterday (the old 24-hour kind, no firedAt) no longer blocks", async () => {
+    const level = lvl({ id: LEVEL_ID });
+    const { result, sent, kv } = await scanAt(
+      MORNING,
+      level,
+      marker({ triggeredAt: "2026-10-07T19:00:00.000Z" }),
+    );
+    expect(result.fired).toBe(1);
+    expect(sent).toHaveLength(1);
+    // The marker is replaced by today's fire.
+    const stored = JSON.parse(kv.store.get(`cloud-fired-level-${LEVEL_ID}`)!);
+    expect(stored.firedAt).toBe(MORNING.toISOString());
+  });
+
+  it("the marker's own fire time decides, not a stale quote time", async () => {
+    // The quote's timestamp is yesterday (a thinly traded name), but the
+    // Worker alerted today: the level must not alert again every 15 minutes.
+    const level = lvl({ id: LEVEL_ID });
+    const { result } = await scanAt(
+      MORNING,
+      level,
+      marker({ triggeredAt: "2026-10-07T19:59:00.000Z", firedAt: "2026-10-08T13:45:00.000Z" }),
+    );
+    expect(result.fired).toBe(0);
+    expect(result.deduped).toBe(1);
+  });
+
+  // The marker lives 7 days, so an unreadable one must not silence the level
+  // for a week: it costs at most one extra alert, and the fire overwrites it.
+  it("a marker that cannot be read does not hold the level back, and the fire replaces it", async () => {
+    const level = lvl({ id: LEVEL_ID });
+    const { result, puts } = await scanAt(MORNING, level, {
+      [`cloud-fired-level-${LEVEL_ID}`]: "not json",
+    });
+    expect(result.fired).toBe(1);
+    expect(result.deduped).toBe(0);
+    expect(puts).toHaveLength(1);
+    expect(() => JSON.parse(String(puts[0].value))).not.toThrow();
+  });
+
+  it("the marker is kept 7 days for the Mac to reconcile; its lifetime is not the guard", async () => {
+    expect(CLOUD_FIRED_MARKER_TTL_SECONDS).toBe(7 * 24 * 60 * 60);
+    const level = lvl({ id: LEVEL_ID });
+    const { puts } = await scanAt(MORNING, level);
+    expect(puts).toHaveLength(1);
+    expect(puts[0].opts?.expirationTtl).toBe(CLOUD_FIRED_MARKER_TTL_SECONDS);
+    expect(JSON.parse(puts[0].value).earlier).toBeUndefined();
+  });
+
+  it("a second cross on the same Eastern day is held, hours later and after the UTC date has rolled", async () => {
+    const level = lvl({ id: LEVEL_ID });
+    const first = await scanAt(MORNING, level);
+    expect(first.result.fired).toBe(1);
+    const seed = Object.fromEntries(first.kv.store);
+    // 15:45 Eastern the same day.
+    const afternoon = await scanAt(new Date("2026-10-08T19:45:00Z"), level, seed);
+    expect(afternoon.result.fired).toBe(0);
+    expect(afternoon.result.deduped).toBe(1);
+    expect(afternoon.puts).toHaveLength(0);
+    // 21:30 Eastern the same day: the UTC date is already the 9th.
+    const evening = await scanAt(new Date("2026-10-09T01:30:00Z"), level, seed);
+    expect(evening.result.fired).toBe(0);
+    expect(evening.result.deduped).toBe(1);
+  });
+
+  it("a marker from two days ago does not block, and is left in place while the level is not crossed", async () => {
+    const old = marker({ triggeredAt: "2026-10-06T18:00:00.000Z", firedAt: "2026-10-06T18:00:05.000Z" });
+    const kv = makeKV(old);
+    const env: any = { CRON_KV: kv, ARCHIVE: {}, PUSHOVER_APP_TOKEN: "t", PUSHOVER_USER_KEY: "u" };
+    const result = await runLevelScan(env, {
+      loadSnapshot: async () => makeSnapshot([lvl({ id: LEVEL_ID })]),
+      fetchPrice: async () => ({ price: 155, tMs: MORNING.getTime() }), // above the support: no cross
+      sendPush: async () => ({ sent: true }),
+      pacingMs: 0,
+      now: MORNING,
+    });
+    expect(result.fired).toBe(0);
+    // Still there, unchanged, under the key the Mac's reconcile lists.
+    expect(kv.store.get(`cloud-fired-level-${LEVEL_ID}`)).toBe(old[`cloud-fired-level-${LEVEL_ID}`]);
+    const listed = await kv.list({ prefix: "cloud-fired-level-" });
+    expect(listed.keys.map((k) => k.name)).toEqual([`cloud-fired-level-${LEVEL_ID}`]);
+  });
+
+  it("when the level fires again, the unreconciled record from two days ago rides along in the new marker", async () => {
+    const level = lvl({ id: LEVEL_ID });
+    const { result, kv, puts } = await scanAt(
+      MORNING,
+      level,
+      marker({ triggeredAt: "2026-10-06T18:00:00.000Z", firedAt: "2026-10-06T18:00:05.000Z", triggeredPrice: 148 }),
+    );
+    expect(result.fired).toBe(1);
+    expect(puts[0].opts?.expirationTtl).toBe(CLOUD_FIRED_MARKER_TTL_SECONDS);
+    const stored = JSON.parse(kv.store.get(`cloud-fired-level-${LEVEL_ID}`)!);
+    expect(stored.firedAt).toBe(MORNING.toISOString());
+    expect(stored.earlier).toEqual([
+      expect.objectContaining({ firedAt: "2026-10-06T18:00:05.000Z", triggeredPrice: 148, levelId: LEVEL_ID }),
+    ]);
+    expect(stored.earlier[0].earlier).toBeUndefined();
+  });
+
+  it("carried records accumulate oldest first, and one older than the 7-day lifetime is dropped", async () => {
+    const level = lvl({ id: LEVEL_ID });
+    const seed = marker({
+      triggeredAt: "2026-10-07T18:00:00.000Z",
+      firedAt: "2026-10-07T18:00:05.000Z",
+      earlier: [
+        { levelId: LEVEL_ID, securityId: 10, triggeredAt: "2026-09-29T18:00:00.000Z", firedAt: "2026-09-29T18:00:05.000Z", triggeredPrice: 147 },
+        { levelId: LEVEL_ID, securityId: 10, triggeredAt: "2026-10-06T18:00:00.000Z", firedAt: "2026-10-06T18:00:05.000Z", triggeredPrice: 148 },
+      ],
+    });
+    const { kv } = await scanAt(MORNING, level, seed);
+    const stored = JSON.parse(kv.store.get(`cloud-fired-level-${LEVEL_ID}`)!);
+    expect(stored.earlier.map((r: { firedAt: string }) => r.firedAt)).toEqual([
+      "2026-10-06T18:00:05.000Z",
+      "2026-10-07T18:00:05.000Z",
+    ]);
+  });
+
+  it("a version-11 snapshot row (no currency, no triggered_at) still scans and fires in dollars", async () => {
+    const level = lvl({ id: LEVEL_ID });
+    expect("currency" in level).toBe(false);
+    expect("triggered_at" in level).toBe(false);
+    const { result, sent } = await scanAt(MORNING, level, {}, { schemaVersion: 11 });
+    expect(result.fired).toBe(1);
+    expect(sent[0].currency ?? null).toBeNull();
+  });
+
+  it("a version-12 row carries its currency to the push and to the KV record", async () => {
+    const level = lvl({ id: LEVEL_ID, symbol: "ZZJ", currency: "JPY", price: 150, triggered_at: null });
+    const { sent, puts } = await scanAt(MORNING, level, {}, { schemaVersion: 12 });
+    expect(sent[0]).toMatchObject({ symbol: "ZZJ", currency: "JPY", triggeredPrice: 149.5 });
+    expect(JSON.parse(puts[0].value)).toMatchObject({ currency: "JPY", levelPrice: 150 });
   });
 });

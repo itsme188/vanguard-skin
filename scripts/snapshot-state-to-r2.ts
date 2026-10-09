@@ -53,7 +53,7 @@ const CALENDAR_LOOKAHEAD_DAYS = 7;
 const SNAPSHOT_RETENTION_DAYS = 7;
 
 interface Snapshot {
-  schemaVersion: 11;
+  schemaVersion: 12;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -113,6 +113,14 @@ interface Snapshot {
     // "was already past this level when armed" instead of a fresh cross.
     // Optional/nullable so older Workers ignore it gracefully.
     armed_crossed_at: string | null;
+    // v12 (2026-10-08). The security's trading currency: the level price is
+    // in THIS currency (native, never converted) and the cloud push labels it.
+    currency: string;
+    // v12. The level's last fire (security_levels.triggered_at, a UTC instant
+    // stored either as ISO with T and Z or as SQLite 'YYYY-MM-DD HH:MM:SS').
+    // The Worker's once-a-day guard skips a level whose last fire was on the
+    // current Eastern day, the day the Mac's own guard counts by.
+    triggered_at: string | null;
   }>;
   // v5 additions — user thesis notes (security-linked, last 90d) + curated
   // earnings bogeys (consensus + whisper) so the cloud earnings email carries
@@ -618,7 +626,9 @@ function buildSnapshot(db: Database.Database): Snapshot {
       .prepare(
         `SELECT sl.id, sl.security_id, s.symbol, sl.level_type, sl.price,
                 sl.direction, sl.source, sl.source_author, sl.expires_at,
-                sl.armed_crossed_at
+                sl.armed_crossed_at,
+                COALESCE(s.currency, 'USD') AS currency,
+                sl.triggered_at
            FROM security_levels sl
            JOIN securities s ON s.id = sl.security_id
            WHERE sl.is_active = 1
@@ -637,6 +647,8 @@ function buildSnapshot(db: Database.Database): Snapshot {
         source_author: string | null;
         expires_at: string | null;
         armed_crossed_at: string | null;
+        currency: string;
+        triggered_at: string | null;
       }>;
 
     // v9 — earnings intelligence. `earningsIntelStartDate` mirrors the
@@ -651,7 +663,7 @@ function buildSnapshot(db: Database.Database): Snapshot {
     );
 
     return {
-      schemaVersion: 11,
+      schemaVersion: 12,
       snapshotDate: todayET(),
       generatedAt: new Date().toISOString(),
       heldSymbols: getHeldStockSymbols(db),

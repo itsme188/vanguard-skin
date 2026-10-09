@@ -11,6 +11,7 @@ import {
   getCurrentETDayOfWeek,
   todayET,
   formatEtTimestamp,
+  etDateOfStoredUtc,
 } from "../src/dst";
 
 afterEach(() => vi.useRealTimers());
@@ -124,5 +125,27 @@ describe("formatEtTimestamp", () => {
 
   it("returns unparseable input unchanged", () => {
     expect(formatEtTimestamp("not a timestamp")).toBe("not a timestamp");
+  });
+});
+
+describe("etDateOfStoredUtc", () => {
+  it("reads an ISO stamp (T and Z) as an Eastern date", () => {
+    // 00:30 UTC = 20:30 EDT the day before.
+    expect(etDateOfStoredUtc("2026-07-16T00:30:00.000Z")).toBe("2026-07-15");
+    // 00:30 UTC = 19:30 EST the day before.
+    expect(etDateOfStoredUtc("2026-01-16T00:30:00.000Z")).toBe("2026-01-15");
+    expect(etDateOfStoredUtc("2026-01-15T17:00:00.000Z")).toBe("2026-01-15");
+  });
+
+  it("reads SQLite 'YYYY-MM-DD HH:MM:SS' as UTC, same answer as the ISO form", () => {
+    expect(etDateOfStoredUtc("2026-07-16 00:30:00")).toBe("2026-07-15");
+    expect(etDateOfStoredUtc("2026-07-16 04:30:00")).toBe("2026-07-16");
+  });
+
+  it("returns null for a missing or unreadable value", () => {
+    expect(etDateOfStoredUtc(null)).toBeNull();
+    expect(etDateOfStoredUtc(undefined)).toBeNull();
+    expect(etDateOfStoredUtc("")).toBeNull();
+    expect(etDateOfStoredUtc("not a time")).toBeNull();
   });
 });

@@ -1,0 +1,20 @@
+{
+  "note": "Outbound level-price labels. Read by tests/alerts/outbound-level-price.test.ts (Mac) and workers/cron/test/level-price-parity.test.ts (Worker). Invented prices only. The space after an ISO code is a plain space.",
+  "cases": [
+    { "currency": "USD", "value": 91.32, "plain": "$91.32", "grouped": "$91.32" },
+    { "currency": "USD", "value": 1234.5, "plain": "$1234.50", "grouped": "$1,234.50" },
+    { "currency": null, "value": 1234.5, "plain": "$1234.50", "grouped": "$1,234.50" },
+    { "currency": "", "value": 50, "plain": "$50.00", "grouped": "$50.00" },
+    { "currency": " usd ", "value": 50, "plain": "$50.00", "grouped": "$50.00" },
+    { "currency": "JPY", "value": 976000, "plain": "¥976,000", "grouped": "¥976,000" },
+    { "currency": "JPY", "value": 3450.5, "plain": "¥3,450.5", "grouped": "¥3,450.5" },
+    { "currency": "GBP", "value": 12.5, "plain": "£12.50", "grouped": "£12.50" },
+    { "currency": "EUR", "value": 1234.5, "plain": "€1,234.50", "grouped": "€1,234.50" },
+    { "currency": "eur", "value": 1234.5, "plain": "€1,234.50", "grouped": "€1,234.50" },
+    { "currency": "KRW", "value": 976000, "plain": "₩976,000", "grouped": "₩976,000" },
+    { "currency": "CAD", "value": 45.1, "plain": "CA$45.10", "grouped": "CA$45.10" },
+    { "currency": "CHF", "value": 88.25, "plain": "CHF 88.25", "grouped": "CHF 88.25" },
+    { "currency": "ZZZ", "value": 976000, "plain": "ZZZ 976,000.00", "grouped": "ZZZ 976,000.00" },
+    { "currency": "ZZ", "value": 12, "plain": "ZZ 12.00", "grouped": "ZZ 12.00" }
+  ]
+}

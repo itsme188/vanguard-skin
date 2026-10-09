@@ -25,6 +25,7 @@ import {
   buildSelfAdmissionAddendum,
 } from "@/lib/calendar/briefing-self-admission";
 import { isUsableReactionLeg, type BenchmarkReaction } from "@/lib/calendar/reaction-snapshot-core";
+import { formatOutboundLevelPrice } from "@/lib/alerts/outbound-level-price";
 
 // Preferred weekend-reading sources — full raw_text is sent to the model.
 // ids correspond to research_sources.id. Keep aligned with DB; wrong ids
@@ -369,7 +370,7 @@ function buildPrompt(p: PromptInput): string {
           .map((l, i) => {
             const who = l.source_author || l.source;
             const thesis = l.thesis ? ` — "${l.thesis}"` : "";
-            return `${i + 1}. **${l.symbol}** ${l.level_type.replace("_", " ")} at $${l.level_price.toFixed(2)} hit on ${l.triggered_at.slice(0, 10)} (price: $${l.triggered_price.toFixed(2)}). Source: ${who}${thesis}. User response: ${l.user_response}.`;
+            return `${i + 1}. **${l.symbol}** ${l.level_type.replace("_", " ")} at ${formatOutboundLevelPrice(l.currency, l.level_price)} hit on ${l.triggered_at.slice(0, 10)} (price: ${formatOutboundLevelPrice(l.currency, l.triggered_price)}). Source: ${who}${thesis}. User response: ${l.user_response}.`;
           })
           .join("\n")}\n`
       : "";
@@ -382,7 +383,7 @@ function buildPrompt(p: PromptInput): string {
             const thesis = l.thesis ? ` — "${l.thesis}"` : "";
             const distance = `${(l.distance_pct * 100).toFixed(1)}% ${l.distance_pct >= 0 ? "above" : "below"}`;
             const action = l.action_hint ? ` [action hint: ${l.action_hint.replace("_", " ")}]` : "";
-            return `${i + 1}. **${l.symbol}** ${l.level_type.replace("_", " ")} at $${l.level_price.toFixed(2)} — currently $${l.current_price.toFixed(2)} (${distance}). ${who}${thesis}${action}`;
+            return `${i + 1}. **${l.symbol}** ${l.level_type.replace("_", " ")} at ${formatOutboundLevelPrice(l.currency, l.level_price)} — currently ${formatOutboundLevelPrice(l.currency, l.current_price)} (${distance}). ${who}${thesis}${action}`;
           })
           .join("\n")}\n`
       : "";

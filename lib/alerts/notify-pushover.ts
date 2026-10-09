@@ -8,6 +8,8 @@
  * Free tier: 10,000 msgs/mo/app. Alerts are sparse enough to never hit this.
  */
 
+import { formatOutboundLevelPrice } from "@/lib/alerts/outbound-level-price";
+
 export interface PushoverMessage {
   title: string;
   message: string;
@@ -95,9 +97,14 @@ export async function sendLevelAlertPush(args: {
    * this isn't a fresh cross instead of presenting it as one.
    */
   armedCrossedAt?: string | null;
+  /**
+   * The security's trading currency. The triggered price is in THIS currency
+   * (native, never converted) and is labelled with it. Missing reads as USD,
+   * the app-wide convention, and a dollar price reads as it always has.
+   */
+  currency?: string | null;
 }): Promise<PushoverResult> {
-  const fmtPrice = (n: number) =>
-    `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtPrice = (n: number) => formatOutboundLevelPrice(args.currency, n, "grouped");
   const base = args.baseUrl ?? process.env.PUSHOVER_LINK_BASE ?? "http://localhost:3099";
   const parts = [`Triggered @ ${fmtPrice(args.triggeredPrice)}`];
   if (args.armedCrossedAt) parts.push("was already past this level when it was armed");

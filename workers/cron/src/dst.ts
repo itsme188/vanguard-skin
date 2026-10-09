@@ -47,6 +47,32 @@ export function todayET(now: Date = new Date()): string {
   return fmt.format(now); // en-CA yields YYYY-MM-DD
 }
 
+const ET_DATE_FORMAT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: ET_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/**
+ * The Eastern calendar date (YYYY-MM-DD) of a stored UTC timestamp, or null
+ * for a missing or unreadable value.
+ *
+ * Mirrors the Mac's `lastFiredDateET` (lib/levels/last-fired-date.ts) over
+ * `parseStoredTimestamp` (lib/format.ts). The Mac stores the same instant in
+ * two forms: ISO with T and Z ("2026-10-08T13:35:00.000Z") and SQLite
+ * `datetime('now')` ("2026-10-08 13:35:00", UTC with no zone marker). Both
+ * must read as UTC; a bare `new Date()` on the second form would not.
+ */
+export function etDateOfStoredUtc(stored: string | null | undefined): string | null {
+  if (!stored) return null;
+  const hasZone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(stored);
+  const iso = hasZone ? stored : `${stored.trim().replace(" ", "T")}Z`;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return ET_DATE_FORMAT.format(d);
+}
+
 /**
  * Formats an arbitrary UTC timestamp (as stored in Mac `computed_at` columns,
  * e.g. "2026-07-14 06:00:00" — UTC, space-separated, no zone suffix, written
