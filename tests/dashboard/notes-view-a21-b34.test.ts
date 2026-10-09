@@ -252,11 +252,18 @@ describe("security picker leaves out rows that are not securities", () => {
     expect(notePickerSecurities(list, { id: 2, symbol: "AAA" })).toHaveLength(1);
   });
 
-  it("both the composer and the editor pass the filtered list", () => {
+  // D8 (2026-10-08): the composer and the editor hand the picker the FULL
+  // tiered list; the two-tier picker filters it (held + watch by default,
+  // garbage hidden, search over the rest).
+  it("both the composer and the editor pass the full list to the two-tier picker", () => {
     const form = sliceBetween(src, "<form onSubmit={handleCreate}", "</form>");
-    expect(form).toContain("securities={notePickerSecurities(securities)}");
+    expect(form).toContain("securities={securities}");
     const card = src.slice(anchorIndex(src, "function NoteCard("));
-    expect(card).toContain("securities={notePickerSecurities(edit.securities, {");
+    expect(card).toContain("securities={edit.securities}");
+    expect(card).toContain("keepSecurity={{ id: note.security_id, symbol: note.symbol }}");
+    const picker = src.slice(anchorIndex(src, "function SecurityPicker("));
+    expect(picker).toContain("defaultPickerSecurities(tiered, keep)");
+    expect(picker).toContain('aria-label="Search all securities"');
   });
 });
 
