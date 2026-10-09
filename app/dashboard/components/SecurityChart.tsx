@@ -1635,17 +1635,17 @@ export function SecurityChart({
 
       {/* Status bar */}
       {(warning || error) && (
-        <div className={`shrink-0 px-4 py-1.5 text-xs font-medium ${error ? CHIP_TONE_CLASSES.down : CHIP_TONE_CLASSES.gold}`}>
+        <div className={`shrink-0 px-4 py-1.5 text-xs font-medium ${error ? `chart-status-down ${CHIP_TONE_CLASSES.down}` : `chart-status-gold ${CHIP_TONE_CLASSES.gold}`}`}>
           {error || warning}
         </div>
       )}
       {!warning && !error && levelsUnavailable && (
-        <div className={`shrink-0 px-4 py-1.5 text-xs font-medium ${CHIP_TONE_CLASSES.gold}`}>
+        <div className={`chart-status-gold shrink-0 px-4 py-1.5 text-xs font-medium ${CHIP_TONE_CLASSES.gold}`}>
           Price-level overlays unavailable — the levels fetch failed; retrying automatically.
         </div>
       )}
       {!warning && !error && !levelsUnavailable && indicatorNote && !isIntraday && (
-        <div className={`shrink-0 px-4 py-1.5 text-xs font-medium ${CHIP_TONE_CLASSES.gold}`}>
+        <div className={`chart-status-gold shrink-0 px-4 py-1.5 text-xs font-medium ${CHIP_TONE_CLASSES.gold}`}>
           {indicatorNote}
         </div>
       )}
