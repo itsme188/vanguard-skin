@@ -19,6 +19,57 @@ interface DigestPreviewResponse {
    * Structured layout is the per-source fallback. Absent/null = no fallback.
    */
   synthesisFallback?: string | null;
+  /**
+   * Optional: the article cap of each layout, if the route reports it. The
+   * caps live in server modules a client component must not import, so the
+   * caption shows a number only when the response carries one.
+   */
+  caps?: { structured?: number; bySource?: number; byCompany?: number } | null;
+}
+
+/**
+ * May the paid Structured generation start now? Only on a reader's click, never
+ * twice for one open, never while one is running. A failure clears "attempted"
+ * so the same click retries.
+ */
+export function shouldStartStructuredGeneration(state: {
+  hasStructured: boolean;
+  generating: boolean;
+  attempted: boolean;
+}): boolean {
+  return !state.hasStructured && !state.generating && !state.attempted;
+}
+
+export type StructuredPane = "html" | "generating" | "failed" | "offer" | "none";
+
+/** What the Structured tab shows. The tab is the trigger, never a dead control. */
+export function structuredPaneState(state: {
+  hasStructured: boolean;
+  generating: boolean;
+  failed: boolean;
+  attempted: boolean;
+}): StructuredPane {
+  if (state.hasStructured) return "html";
+  if (state.generating) return "generating";
+  if (state.failed) return "failed";
+  if (!state.attempted) return "offer";
+  return "none";
+}
+
+/**
+ * The GET cannot see alert-only windows, so its "empty" is not final. Until the
+ * Structured view has been generated once this open, the empty state says so
+ * and offers the click; after that the POST's answer is authoritative.
+ */
+export function emptyMayHideStructured(state: { attempted: boolean; generating: boolean }): boolean {
+  return !state.attempted && !state.generating;
+}
+
+/** The caption beside "Since ..." naming the active tab's article cap, or "" when unknown. */
+export function capCaption(layout: Layout, caps: DigestPreviewResponse["caps"]): string {
+  const n = layout === "structured" ? caps?.structured : layout === "by_source" ? caps?.bySource : caps?.byCompany;
+  if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) return "";
+  return `up to ${n} articles`;
 }
 
 /**
@@ -65,6 +116,12 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
   // renderings). genLoading covers the extra POST round-trip.
   const [genLoading, setGenLoading] = useState(false);
   const [genFailed, setGenFailed] = useState(false);
+  // True once a generation succeeded this open (even with no content): the
+  // paid call is not repeated on a re-click. A failure clears it for a retry.
+  const [attempted, setAttempted] = useState(false);
+  // Guards a stale response after the modal closed or the window changed.
+  const sessionRef = useRef(0);
+  const generatingRef = useRef(false);
   const [layout, setLayout] = useState<Layout>("structured");
   // True once the reader clicks a layout tab; the generation finishing must
   // not move them off it. A ref: the POST continuation reads the latest value.
@@ -74,23 +131,29 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
     setLayout(next);
   };
 
+  const previewUrl = () => {
+    const qs = since ? `?since=${encodeURIComponent(since)}` : "";
+    return `/api/digest/preview${qs}`;
+  };
+
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    const session = ++sessionRef.current;
+    generatingRef.current = false;
     setLoading(true);
     setGenLoading(false);
     setGenFailed(false);
+    setAttempted(false);
     userPickedLayout.current = false;
     setError(null);
     setData(null);
 
-    const qs = since ? `?since=${encodeURIComponent(since)}` : "";
-    const url = `/api/digest/preview${qs}`;
-
     (async () => {
       try {
-        // 1) GET — instant paint of by-publication / by-company (no AI, no write).
-        const getRes = await fetch(url);
+        // GET only: by-publication / by-company (no AI, no write). The paid
+        // Structured synthesis runs on the reader's click, never on open.
+        const getRes = await fetch(previewUrl());
         if (!getRes.ok) {
           const body = (await getRes.json().catch(() => ({}))) as { error?: string };
           throw new Error(body.error ?? `HTTP ${getRes.status}`);
@@ -102,39 +165,66 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
           if (getData.bySourceHtml) setLayout("by_source");
           else if (getData.byCompanyHtml) setLayout("by_company");
         }
-        setLoading(false);
-
-        // 2) POST — generate the structured (synthesis) layout. Routed through
-        //    apiFetch (#35 task 9-12) since it's a mutating call. This is
-        //    authoritative for `empty` (it accounts for alert-only windows the
-        //    GET can miss).
-        setGenLoading(true);
-        const postRes = await apiFetch(url, { method: "POST" });
-        if (!postRes.ok) {
-          // keep the deterministic views; structured stays unavailable
-          if (!cancelled) setGenFailed(true);
-          return;
-        }
-        const postData = (await postRes.json()) as DigestPreviewResponse;
-        if (cancelled) return;
-        setData(postData);
-        setLayout((current) =>
-          layoutAfterGeneration(current, userPickedLayout.current, Boolean(postData.structuredHtml)),
-        );
       } catch (err: unknown) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load digest.");
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-          setGenLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     })();
 
     return () => {
       cancelled = true;
+      sessionRef.current++;
     };
+    // previewUrl closes over `since`, which is a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, since]);
+
+  // The paid AI call: one POST, started only by a click on the Structured tab
+  // or its generate/retry control. Routed through apiFetch (mutating call).
+  const generateStructured = async () => {
+    if (
+      !shouldStartStructuredGeneration({
+        hasStructured: Boolean(data?.structuredHtml),
+        generating: generatingRef.current,
+        attempted,
+      })
+    ) {
+      return;
+    }
+    const session = sessionRef.current;
+    generatingRef.current = true;
+    setGenLoading(true);
+    setGenFailed(false);
+    try {
+      const postRes = await apiFetch(previewUrl(), { method: "POST" });
+      if (session !== sessionRef.current) return;
+      if (!postRes.ok) {
+        // keep the deterministic views; the click can try again
+        setGenFailed(true);
+        return;
+      }
+      const postData = (await postRes.json()) as DigestPreviewResponse;
+      if (session !== sessionRef.current) return;
+      setData(postData);
+      setAttempted(true);
+      setLayout((current) =>
+        layoutAfterGeneration(current, userPickedLayout.current, Boolean(postData.structuredHtml)),
+      );
+    } catch {
+      if (session === sessionRef.current) setGenFailed(true);
+    } finally {
+      if (session === sessionRef.current) {
+        generatingRef.current = false;
+        setGenLoading(false);
+      }
+    }
+  };
+
+  const openStructured = () => {
+    pickLayout("structured");
+    void generateStructured();
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -154,6 +244,13 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
   const otherAvailable = Boolean(data?.structuredHtml || data?.bySourceHtml || data?.byCompanyHtml);
   // The POST is one AI call that can take about a minute; say so while it runs.
   const structuredGenerating = genLoading && !data?.structuredHtml;
+  const structuredPane = structuredPaneState({
+    hasStructured: Boolean(data?.structuredHtml),
+    generating: structuredGenerating,
+    failed: genFailed,
+    attempted,
+  });
+  const capText = data ? capCaption(layout, data.caps) : "";
 
   return createPortal(
     <div
@@ -178,6 +275,7 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
             {data && !data.empty && (
               <p className="text-[11px] text-ink-faint font-mono mt-0.5 truncate">
                 Since {formatSince(data.since)}
+                {capText ? ` · ${capText}` : ""}
               </p>
             )}
           </div>
@@ -185,8 +283,8 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
             <div className="flex rounded-md border border-edge overflow-hidden text-[11px]">
               <button
                 type="button"
-                onClick={() => pickLayout("structured")}
-                disabled={!data?.structuredHtml && !structuredGenerating}
+                onClick={openStructured}
+                disabled={!data}
                 aria-busy={structuredGenerating}
                 aria-label={structuredGenerating ? "Structured (generating)" : undefined}
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1 ${
@@ -248,6 +346,35 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
           {data?.empty && (
             <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
               {emptyWindowMessage(data.since)}
+              {emptyMayHideStructured({ attempted, generating: genLoading }) && (
+                <div className="mt-3 text-[13px]">
+                  The Structured view may still have content for this window (for example alerts only).
+                  <button
+                    type="button"
+                    onClick={openStructured}
+                    className="block mx-auto mt-3 text-[12px] text-gold-ink hover:text-gold/80"
+                  >
+                    Generate the Structured view (one AI call)
+                  </button>
+                </div>
+              )}
+              {data.empty && genLoading && (
+                <div role="status" className="mt-3 text-[13px]">
+                  Generating the Structured view (one AI call, about a minute)…
+                </div>
+              )}
+              {genFailed && (
+                <div role="status" className="mt-3 text-[13px] text-warn">
+                  The Structured view could not be generated this time.
+                  <button
+                    type="button"
+                    onClick={openStructured}
+                    className="block mx-auto mt-2 text-[12px] text-gold-ink hover:text-gold/80"
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
             </div>
           )}
           {data && !data.empty && structuredGenerating && layout !== "structured" && (
@@ -258,6 +385,9 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
           {data && !data.empty && genFailed && !data.structuredHtml && (
             <div role="status" className="px-5 py-2 text-[12px] text-warn border-b border-edge">
               The Structured view could not be generated this time. The other layouts are unaffected.
+              <button type="button" onClick={openStructured} className="ml-2 text-gold-ink hover:text-gold/80">
+                Try again
+              </button>
             </div>
           )}
           {data && !data.empty && layout === "structured" && data.structuredHtml && data.synthesisFallback && (
@@ -274,12 +404,36 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
               sandbox={EMAIL_FRAME_SANDBOX}
             />
           )}
-          {data && !data.empty && !activeHtml && layout === "structured" && genLoading && (
+          {data && !data.empty && !activeHtml && layout === "structured" && structuredPane === "generating" && (
             <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
               Generating structured view (one AI call, about a minute)…
             </div>
           )}
-          {data && !data.empty && !activeHtml && !(layout === "structured" && genLoading) && (
+          {data && !data.empty && !activeHtml && layout === "structured" && structuredPane === "offer" && (
+            <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
+              The Structured view is the AI-written layout the email sends. It runs one AI call, about a minute.
+              <button
+                type="button"
+                onClick={openStructured}
+                className="block mx-auto mt-3 text-[12px] text-gold-ink hover:text-gold/80"
+              >
+                Generate the Structured view (one AI call)
+              </button>
+            </div>
+          )}
+          {data && !data.empty && !activeHtml && layout === "structured" && structuredPane === "failed" && (
+            <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
+              The Structured view could not be generated this time.
+              <button
+                type="button"
+                onClick={openStructured}
+                className="block mx-auto mt-3 text-[12px] text-gold-ink hover:text-gold/80"
+              >
+                Try again
+              </button>
+            </div>
+          )}
+          {data && !data.empty && !activeHtml && (layout !== "structured" || structuredPane === "none") && (
             <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
               {layout === "structured" ? "Structured" : layout === "by_source" ? "By-publication" : "By-company"} view unavailable.
               {otherAvailable && (

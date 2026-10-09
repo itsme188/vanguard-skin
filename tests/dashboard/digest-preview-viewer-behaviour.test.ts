@@ -3,6 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   layoutAfterGeneration,
+  shouldStartStructuredGeneration,
+  structuredPaneState,
+  emptyMayHideStructured,
+  capCaption,
   emptyWindowMessage,
   formatSince,
 } from "@/app/dashboard/components/DigestEmailViewer";
@@ -32,22 +36,24 @@ describe("digest preview: generation finishing never moves a reader off a tab th
 
   it("every tab click records the choice, and the POST result goes through the helper", () => {
     expect(SRC).not.toMatch(/onClick=\{\(\) => setLayout\(/);
-    expect(SRC.match(/onClick=\{\(\) => pickLayout\(/g)?.length).toBe(4);
-    const post = sliceBetween(SRC, 'apiFetch(url, { method: "POST" })', "} catch (err");
+    expect(SRC.match(/onClick=\{\(\) => pickLayout\(/g)?.length).toBe(3);
+    expect(SRC).toContain("onClick={openStructured}");
+    const post = sliceBetween(SRC, 'apiFetch(previewUrl(), { method: "POST" })', "} catch {");
     expect(post).toContain("layoutAfterGeneration(current, userPickedLayout.current");
     expect(post).not.toContain('setLayout("structured")');
   });
 
   it("a new open forgets the previous choice", () => {
-    const effect = sliceBetween(SRC, "if (!open) return;", "const qs =");
+    const effect = sliceBetween(SRC, "if (!open) return;", "(async () => {");
     expect(effect).toContain("userPickedLayout.current = false");
   });
 });
 
 describe("digest preview: the wait for the Structured layout is announced", () => {
-  it("the Structured tab is usable and marked busy while generating, not merely disabled", () => {
-    const tab = sliceBetween(SRC, 'onClick={() => pickLayout("structured")}', "</button>");
-    expect(tab).toContain("disabled={!data?.structuredHtml && !structuredGenerating}");
+  it("the Structured tab is the trigger (never dead once the GET landed) and marked busy while generating", () => {
+    const tab = sliceBetween(SRC, "onClick={openStructured}", "</button>");
+    expect(tab).toContain("disabled={!data}");
+    expect(tab).not.toContain("disabled={!data?.structuredHtml");
     expect(tab).toContain("aria-busy={structuredGenerating}");
     expect(tab).toContain("animate-spin");
   });
@@ -65,8 +71,21 @@ describe("digest preview: the wait for the Structured layout is announced", () =
     expect(SRC.slice(at, at + 400)).toContain("per-source fallback layout");
   });
 
-  it("the AI call still fires once per open, from the open effect only", () => {
+  it("the open effect never fires the AI call; the POST lives only in the click handler", () => {
     expect(SRC.match(/method: "POST"/g)?.length).toBe(1);
+    const effect = sliceBetween(SRC, "useEffect(() => {\n    if (!open) return;\n    let cancelled", "}, [open, since]);");
+    expect(effect).not.toContain("POST");
+    expect(effect).not.toContain("apiFetch");
+    const gen = sliceBetween(SRC, "const generateStructured = async", "const openStructured");
+    expect(gen).toContain('method: "POST"');
+    expect(gen).toContain("shouldStartStructuredGeneration(");
+  });
+
+  it("the offer, the failure and the empty state each carry the click", () => {
+    expect(SRC).toContain("Generate the Structured view (one AI call)");
+    expect(SRC).toContain("Try again");
+    const at = anchorIndex(SRC, "{data?.empty && (");
+    expect(SRC.slice(at, at + 700)).toContain("emptyMayHideStructured(");
   });
 
   it("email HTML still renders only in the sandboxed frame", () => {
@@ -95,5 +114,57 @@ describe("digest preview: the empty state names the window it evaluated", () => 
   it("the empty state renders through the helper", () => {
     const at = anchorIndex(SRC, "{data?.empty && (");
     expect(SRC.slice(at, at + 300)).toContain("{emptyWindowMessage(data.since)}");
+  });
+});
+
+describe("digest preview: the paid call starts only on a click, once", () => {
+  const idle = { hasStructured: false, generating: false, attempted: false };
+
+  it("starts from a clean open", () => {
+    expect(shouldStartStructuredGeneration(idle)).toBe(true);
+  });
+
+  it("does not start twice: running, done, or already present", () => {
+    expect(shouldStartStructuredGeneration({ ...idle, generating: true })).toBe(false);
+    expect(shouldStartStructuredGeneration({ ...idle, attempted: true })).toBe(false);
+    expect(shouldStartStructuredGeneration({ ...idle, hasStructured: true })).toBe(false);
+  });
+
+  it("a failure (attempted stays false) can be retried", () => {
+    expect(shouldStartStructuredGeneration({ ...idle, attempted: false })).toBe(true);
+  });
+
+  it("the Structured tab offers, waits, fails honestly, shows, or says none", () => {
+    const base = { hasStructured: false, generating: false, failed: false, attempted: false };
+    expect(structuredPaneState(base)).toBe("offer");
+    expect(structuredPaneState({ ...base, generating: true })).toBe("generating");
+    expect(structuredPaneState({ ...base, failed: true })).toBe("failed");
+    expect(structuredPaneState({ ...base, attempted: true })).toBe("none");
+    expect(structuredPaneState({ ...base, hasStructured: true, attempted: true })).toBe("html");
+  });
+
+  it("an empty GET is not final until the Structured view was tried", () => {
+    expect(emptyMayHideStructured({ attempted: false, generating: false })).toBe(true);
+    expect(emptyMayHideStructured({ attempted: false, generating: true })).toBe(false);
+    expect(emptyMayHideStructured({ attempted: true, generating: false })).toBe(false);
+  });
+});
+
+describe("digest preview: each tab names its own cap only when the response carries it", () => {
+  it("shows no number when the route sends no caps", () => {
+    expect(capCaption("structured", undefined)).toBe("");
+    expect(capCaption("by_source", null)).toBe("");
+    expect(capCaption("by_company", {})).toBe("");
+  });
+
+  it("names the active tab's own cap", () => {
+    const caps = { structured: 40, bySource: 30, byCompany: 25 };
+    expect(capCaption("structured", caps)).toBe("up to 40 articles");
+    expect(capCaption("by_source", caps)).toBe("up to 30 articles");
+    expect(capCaption("by_company", caps)).toBe("up to 25 articles");
+  });
+
+  it("the client never imports the server digest modules", () => {
+    expect(SRC).not.toMatch(/from "@\/lib\/digest\//);
   });
 });
