@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState } from "react";
 import type { CalendarEvent } from "@/lib/types";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -188,7 +189,7 @@ export async function confirmConflictDate(
 }
 
 const ACTION_BUTTON_CLASS =
-  "relative text-[11px] font-mono px-1.5 py-0.5 rounded text-gold-ink bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer max-w-full break-words text-left pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5";
+  `relative text-[11px] font-mono px-1.5 py-0.5 rounded ${CHIP_TONE_TEXT.gold} bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer max-w-full break-words text-left pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5`;
 
 /**
  * Confirm / use-the-other-date buttons for a date-conflicted earnings row

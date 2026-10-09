@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useEffect, useState } from "react";
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
@@ -15,15 +16,15 @@ import { EmptySection } from "./EmptySection";
 import { MarkdownMessage } from "./MarkdownMessage";
 
 const SOURCE_BADGE_CLASSES: Record<string, string> = {
-  edgar_8k: "bg-gold/20 text-gold-ink",
+  edgar_8k: CHIP_TONE_CLASSES.gold,
   motley_fool: "bg-blue/20 text-blue",
-  api_ninjas: "bg-up/20 text-up",
-  alpha_vantage: "bg-up/20 text-up",
+  api_ninjas: CHIP_TONE_CLASSES.up,
+  alpha_vantage: CHIP_TONE_CLASSES.up,
 };
 
 const SENTIMENT_STYLES: Record<string, string> = {
-  bullish: "bg-up/20 text-up",
-  bearish: "bg-down/20 text-down",
+  bullish: CHIP_TONE_CLASSES.up,
+  bearish: CHIP_TONE_CLASSES.down,
   neutral: "bg-muted text-ink-dim",
 };
 

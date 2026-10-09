@@ -6,6 +6,8 @@
  * new row surfaces in the deduped query immediately.
  */
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -437,7 +439,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
       <button
         type="submit"
         disabled={submitting}
-        className="bg-gold/20 text-gold-ink border border-gold/40 hover:bg-gold/30 disabled:opacity-50 rounded px-2.5 py-1 font-medium"
+        className={`${CHIP_TONE_CLASSES.gold} border border-gold/40 hover:bg-gold/30 disabled:opacity-50 rounded px-2.5 py-1 font-medium`}
       >
         {submitting ? "…" : "Add"}
       </button>
@@ -455,7 +457,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
       </button>
       {error && <span className="text-[11px] text-down w-full">{error}</span>}
       {weekendAsk && (
-        <div className="w-full rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] text-gold-ink">
+        <div className={`w-full rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] ${CHIP_TONE_TEXT.gold}`}>
           {weekendAsk}
           <div className="mt-1.5 flex items-center gap-2">
             <button
@@ -478,7 +480,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
         </div>
       )}
       {slotRefusal && (
-        <div className="w-full rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] text-gold-ink">
+        <div className={`w-full rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] ${CHIP_TONE_TEXT.gold}`}>
           {slotRefusal.message}
           <div className="mt-1.5 flex items-center gap-2">
             <button
@@ -505,7 +507,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
         // out on the light theme's panel; gold-ink is the house pair for
         // readable small gold text in BOTH themes (see the same confirm on
         // app/dashboard/alerts/page.tsx).
-        <div className="w-full rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] text-gold-ink">
+        <div className={`w-full rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] ${CHIP_TONE_TEXT.gold}`}>
           {supersede.message}
           <div className="mt-1.5 flex items-center gap-2">
             <button

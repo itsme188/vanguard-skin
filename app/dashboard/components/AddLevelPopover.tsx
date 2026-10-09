@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useEffect, useRef, useState } from "react";
 import { useToast } from "./Toast";
@@ -155,7 +156,7 @@ export function AddLevelPopover({
           disabled={submitting !== null}
           className={`px-3 py-2 text-xs font-medium rounded border transition-colors ${
             suggestedType === "support"
-              ? "border-up/50 bg-up/20 text-up hover:bg-up/30"
+              ? `border-up/50 ${CHIP_TONE_CLASSES.up} hover:bg-up/30`
               : "border-edge bg-raised text-ink-dim hover:text-ink hover:border-edge-strong"
           } disabled:opacity-40`}
         >
@@ -166,7 +167,7 @@ export function AddLevelPopover({
           disabled={submitting !== null}
           className={`px-3 py-2 text-xs font-medium rounded border transition-colors ${
             suggestedType === "resistance"
-              ? "border-down/50 bg-down/20 text-down hover:bg-down/30"
+              ? `border-down/50 ${CHIP_TONE_CLASSES.down} hover:bg-down/30`
               : "border-edge bg-raised text-ink-dim hover:text-ink hover:border-edge-strong"
           } disabled:opacity-40`}
         >

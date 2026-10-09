@@ -5,13 +5,16 @@
  */
 import { describe, it, expect } from "vitest";
 import { statusChipClass, statusChipLabel } from "@/app/dashboard/today/status-chip";
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 
 describe("statusChipClass", () => {
   it("held", () => {
-    expect(statusChipClass("held")).toBe("text-up bg-up/15 border border-up/30");
+    // The text takes the checked Chip green (plain text-up was 3.82:1 on
+    // its 15% tint in the light theme); tint and border are unchanged.
+    expect(statusChipClass("held")).toBe(`${CHIP_TONE_TEXT.up} bg-up/15 border border-up/30`);
   });
   it("watchlist", () => {
-    expect(statusChipClass("watchlist")).toBe("text-gold-ink bg-gold/15 border border-gold/30");
+    expect(statusChipClass("watchlist")).toBe(`${CHIP_TONE_TEXT.gold} bg-gold/15 border border-gold/30`);
   });
   it("armed — the existing muted-chip pair (text-ink-dim on bg-raised), not a new tone", () => {
     expect(statusChipClass("armed")).toContain("border-edge-strong");

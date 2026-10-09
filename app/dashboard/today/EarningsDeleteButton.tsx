@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "../components/Toast";
@@ -194,7 +195,7 @@ export function EarningsDeleteButton({
         type="button"
         onClick={() => void handleClick()}
         disabled={deleting}
-        className="relative text-[10px] font-mono px-1.5 py-0.5 rounded text-down bg-down/15 hover:bg-down/25 disabled:opacity-50 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+        className={`relative text-[10px] font-mono px-1.5 py-0.5 rounded ${CHIP_TONE_TEXT.down} bg-down/15 hover:bg-down/25 disabled:opacity-50 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5`}
         title={
           isManual
             ? `Remove this manually-added earnings event${label}`

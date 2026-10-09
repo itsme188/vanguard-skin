@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { ResearchSource } from "@/lib/queries/research";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -703,7 +704,7 @@ export function ManageSourcesModal({
                             aria-label={`${s.name}: off-topic articles ${s.allow_off_topic === 1 ? "allowed" : "blocked"}`}
                             className={`text-[10px] font-medium px-1.5 py-0.5 rounded border transition-colors ${
                               s.allow_off_topic === 1
-                                ? "border-gold/40 text-gold-ink bg-gold/10"
+                                ? `border-gold/40 ${CHIP_TONE_TEXT.gold} bg-gold/10`
                                 : "border-edge text-ink-faint hover:text-ink-dim"
                             }`}
                             title={
@@ -900,7 +901,7 @@ export function ManageSourcesModal({
                     Scanning Gmail...
                   </div>
                 ) : discoverError ? (
-                  <div className="px-3 py-2.5 rounded-lg bg-down/10 border border-down/30 text-sm text-down">
+                  <div className={`px-3 py-2.5 rounded-lg bg-down/10 border border-down/30 text-sm ${CHIP_TONE_TEXT.down}`}>
                     {discoverError}
                   </div>
                 ) : discovered.length === 0 ? (

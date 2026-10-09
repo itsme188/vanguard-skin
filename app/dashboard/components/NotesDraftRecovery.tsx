@@ -18,6 +18,7 @@
  *     PrivateText wrapper and is never logged.
  */
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useState, useSyncExternalStore } from "react";
 import { PrivateText } from "@/lib/privacy/components";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -192,7 +193,7 @@ export function NotesDraftRecovery({
         <button
           type="button"
           onClick={handleOpen}
-          className={`${ROW_BUTTON} bg-gold/20 text-gold-ink hover:brightness-110`}
+          className={`${ROW_BUTTON} ${CHIP_TONE_CLASSES.gold} hover:brightness-110`}
         >
           Open in editor
         </button>

@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { formatCompactUSD } from "@/lib/format";
@@ -374,7 +375,7 @@ export function AnalysisView({
                 aria-pressed={opt.value === currentScope}
                 className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors whitespace-nowrap focus-ring ${
                   opt.value === currentScope
-                    ? "bg-gold/15 text-gold-ink"
+                    ? `bg-gold/15 ${CHIP_TONE_TEXT.gold}`
                     : "text-ink-faint hover:text-ink hover:bg-panel"
                 }`}
               >
@@ -393,7 +394,7 @@ export function AnalysisView({
               aria-pressed={dim === currentDimension}
               className={`px-3 py-1.5 text-sm rounded-full border transition-colors focus-ring ${
                 dim === currentDimension
-                  ? "bg-gold/10 border-gold text-gold-ink"
+                  ? `bg-gold/10 border-gold ${CHIP_TONE_TEXT.gold}`
                   : "bg-panel border-edge text-ink-dim hover:text-ink hover:border-edge-strong"
               }`}
             >

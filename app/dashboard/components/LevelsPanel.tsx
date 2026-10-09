@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import type {
@@ -49,7 +50,7 @@ import {
 } from "@/lib/levels/scan-range";
 import { todayET } from "@/lib/calendar/date-utils";
 import { useToast } from "./Toast";
-import { Chip } from "./Chip";
+import { Chip, CHIP_TONE_CLASSES } from "./Chip";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SortPicker } from "./SortPicker";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
@@ -1336,7 +1337,7 @@ export function LevelsPanel({
             className={
               embedded
                 ? "relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
-                : "px-3 py-1.5 text-xs font-medium rounded-lg border border-gold/30 bg-gold/10 text-gold hover:bg-gold/20 transition-colors"
+                : `px-3 py-1.5 text-xs font-medium rounded-lg border border-gold/30 bg-gold/10 ${CHIP_TONE_TEXT.gold} hover:bg-gold/20 transition-colors`
             }
             style={
               embedded
@@ -1541,7 +1542,7 @@ export function LevelsPanel({
             <button
               type="submit"
               disabled={loading || (priceSource === "static" && !price)}
-              className="px-4 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold hover:bg-gold/30 disabled:opacity-50"
+              className={`px-4 py-1.5 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 disabled:opacity-50`}
             >
               {loading ? "Saving..." : editing ? "Save changes" : `Add ${symbol} level`}
             </button>
@@ -1576,7 +1577,7 @@ export function LevelsPanel({
                 onClick={() => setAuthorFilter(p)}
                 className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
                   authorFilter === p
-                    ? "bg-gold/20 text-gold"
+                    ? CHIP_TONE_CLASSES.gold
                     : "bg-raised text-ink-dim hover:text-ink"
                 }`}
               >

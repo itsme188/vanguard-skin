@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -69,7 +70,7 @@ export function WatchlistButton({
       disabled={loading}
       className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors disabled:opacity-50 ${
         watched
-          ? "bg-gold/10 text-gold border-gold/30 hover:bg-gold/20"
+          ? `bg-gold/10 ${CHIP_TONE_TEXT.gold} border-gold/30 hover:bg-gold/20`
           : "border-edge text-ink-dim hover:text-ink hover:border-ink-faint"
       }`}
       title={watched ? "Remove from watchlist" : "Add to watchlist"}

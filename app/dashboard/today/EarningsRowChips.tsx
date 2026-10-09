@@ -1,5 +1,7 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { usePreReleaseActive } from "./use-pre-release-clear";
 import { useRouter } from "next/navigation";
@@ -218,7 +220,7 @@ function RecapGenerateDialog({
               <button
                 type="button"
                 onClick={onRetry}
-                className="text-[13px] px-3 py-1.5 rounded text-gold-ink bg-gold/15 hover:bg-gold/25 cursor-pointer active:scale-[0.96] transition-transform"
+                className={`text-[13px] px-3 py-1.5 rounded ${CHIP_TONE_TEXT.gold} bg-gold/15 hover:bg-gold/25 cursor-pointer active:scale-[0.96] transition-transform`}
               >
                 Try again
               </button>
@@ -573,9 +575,9 @@ export function EarningsRowChips({
           disabled={sheetBusy}
           className={`relative text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap disabled:opacity-50 cursor-pointer active:scale-[0.96] transition-transform pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 ${
             worksheetPrinted
-              ? "text-up bg-up/15 hover:bg-up/25"
+              ? `${CHIP_TONE_TEXT.up} bg-up/15 hover:bg-up/25`
               : worksheetArmed
-                ? "text-gold-ink bg-gold/20 hover:bg-gold/30"
+                ? `${CHIP_TONE_CLASSES.gold} hover:bg-gold/30`
                 : "text-ink-faint bg-raised hover:bg-muted"
           }`}
           title={
@@ -594,7 +596,7 @@ export function EarningsRowChips({
             type="button"
             onClick={generateRecap}
             disabled={generating}
-            className="relative text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap text-gold-ink bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer active:scale-[0.96] transition-transform pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+            className={`relative text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap ${CHIP_TONE_TEXT.gold} bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer active:scale-[0.96] transition-transform pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5`}
             title="Compose a fresh recap email right now (runs enrichment + AI, about a minute — you can cancel) instead of waiting for the next sweep"
           >
             {generating ? "…" : "gen recap"}
@@ -666,7 +668,7 @@ function PhaseChip({ eventId, phase, sent, skipped, missed = false, onView }: Ph
       <button
         type="button"
         onClick={onView}
-        className="relative text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap text-up bg-up/15 hover:bg-up/25 cursor-pointer active:scale-[0.96] transition-transform pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+        className={`relative text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap ${CHIP_TONE_TEXT.up} bg-up/15 hover:bg-up/25 cursor-pointer active:scale-[0.96] transition-transform pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5`}
         title={`${phase} email sent — click to read it`}
       >
         ✓ {label}
@@ -745,7 +747,7 @@ function PhaseChip({ eventId, phase, sent, skipped, missed = false, onView }: Ph
           type="button"
           onClick={toggleSkip}
           disabled={pending}
-          className="pointer-coarse:hidden absolute inset-0 flex items-center justify-center text-[10px] font-mono rounded text-down bg-down/15 hover:bg-down/25 opacity-0 group-hover:opacity-100 disabled:opacity-50 transition-opacity cursor-pointer"
+          className={`pointer-coarse:hidden absolute inset-0 flex items-center justify-center text-[10px] font-mono rounded ${CHIP_TONE_TEXT.down} bg-down/15 hover:bg-down/25 opacity-0 group-hover:opacity-100 disabled:opacity-50 transition-opacity cursor-pointer`}
           title={`Skip ${phase} for this event`}
           aria-label={`Skip ${phase} email for this event`}
         >
@@ -760,7 +762,7 @@ function PhaseChip({ eventId, phase, sent, skipped, missed = false, onView }: Ph
         type="button"
         onClick={toggleSkip}
         disabled={pending}
-        className="relative hidden pointer-coarse:inline-flex items-center justify-center text-[10px] font-mono px-1 py-0.5 rounded text-down bg-down/20 disabled:opacity-50 active:scale-[0.96] transition-transform after:absolute after:content-[''] after:-inset-y-2 after:-inset-x-0.5"
+        className={`relative hidden pointer-coarse:inline-flex items-center justify-center text-[10px] font-mono px-1 py-0.5 rounded ${CHIP_TONE_CLASSES.down} disabled:opacity-50 active:scale-[0.96] transition-transform after:absolute after:content-[''] after:-inset-y-2 after:-inset-x-0.5`}
         title={`Skip ${phase} for this event`}
         aria-label={`Skip ${phase} email for this event`}
       >

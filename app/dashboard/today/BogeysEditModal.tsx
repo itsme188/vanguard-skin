@@ -1,5 +1,7 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
@@ -1006,7 +1008,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
               <button
                 type="submit"
                 disabled={savingActuals}
-                className="relative text-[14px] font-medium bg-up/15 text-up border border-up/40 hover:bg-up/25 disabled:opacity-50 rounded px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                className={`relative text-[14px] font-medium bg-up/15 ${CHIP_TONE_TEXT.up} border border-up/40 hover:bg-up/25 disabled:opacity-50 rounded px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']`}
               >
                 {savingActuals ? "Saving…" : "Save actuals"}
               </button>
@@ -1129,7 +1131,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                   EMPTY for a reason — say it, and refuse the save until the
                   desk decides (review I-1). */}
               {hydrationErrors.length > 0 && (
-                <div className="mt-2 rounded border border-down/40 bg-down/10 px-2 py-1.5 text-[12px] text-down">
+                <div className={`mt-2 rounded border border-down/40 bg-down/10 px-2 py-1.5 text-[12px] ${CHIP_TONE_TEXT.down}`}>
                   <p>
                     This sheet&rsquo;s stored extra metrics could not be read, so none are loaded
                     below. Saving would erase them.
@@ -1290,7 +1292,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
               <button
                 type="submit"
                 disabled={saving}
-                className="relative text-[14px] font-medium bg-gold/20 text-gold-ink border border-gold/40 hover:bg-gold/30 disabled:opacity-50 rounded px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                className={`relative text-[14px] font-medium ${CHIP_TONE_CLASSES.gold} border border-gold/40 hover:bg-gold/30 disabled:opacity-50 rounded px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']`}
               >
                 {saving ? "Saving…" : "Save"}
               </button>

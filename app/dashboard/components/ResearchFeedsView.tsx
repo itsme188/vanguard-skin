@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { emptyEnrichmentLabel } from "@/lib/research/empty-enrichment";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
@@ -13,7 +14,7 @@ import type {
 } from "@/lib/queries/research";
 import { trimEmailFooter, htmlHidesStoredText } from "@/lib/gmail/sanitize";
 import { sanitizeModelSummary, sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
-import { Chip } from "./Chip";
+import { Chip, CHIP_TONE_CLASSES } from "./Chip";
 import { ScrollFade } from "./ScrollFade";
 import { ManageSourcesModal } from "./ManageSourcesModal";
 import { NewsletterArticleFrame } from "./NewsletterArticleFrame";
@@ -80,10 +81,10 @@ export const FEED_CAP_NOTICE = `This list shows the newest ${FEED_MAX_LIMIT} art
 // ── Sentiment helpers ────────────────────────────────────────────────
 
 const sentimentColors: Record<string, string> = {
-  bullish: "bg-up/20 text-up",
-  bearish: "bg-down/20 text-down",
+  bullish: CHIP_TONE_CLASSES.up,
+  bearish: CHIP_TONE_CLASSES.down,
   neutral: "bg-raised text-ink-dim",
-  mixed: "bg-gold/20 text-gold-ink",
+  mixed: CHIP_TONE_CLASSES.gold,
 };
 
 const sentimentBorder: Record<string, string> = {
@@ -935,7 +936,7 @@ export function ResearchFeedsView({
             onClick={() => setSearchOpen(!searchOpen)}
             className={`sm:hidden inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border transition-colors ${
               searchOpen || searchQuery
-                ? "bg-gold/10 border-gold/30 text-gold-ink"
+                ? `bg-gold/10 border-gold/30 ${CHIP_TONE_TEXT.gold}`
                 : "border-edge text-ink-dim hover:text-ink hover:bg-raised"
             }`}
             title="Search articles"
@@ -988,7 +989,7 @@ export function ResearchFeedsView({
             onClick={() => setSendOpen(!sendOpen)}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border transition-colors ${
               sendOpen
-                ? "bg-gold/10 border-gold/30 text-gold-ink"
+                ? `bg-gold/10 border-gold/30 ${CHIP_TONE_TEXT.gold}`
                 : "border-edge text-ink-dim hover:text-ink hover:bg-raised"
             }`}
             title="Send email"
@@ -1013,7 +1014,7 @@ export function ResearchFeedsView({
           role={syncFeedback.tone === "error" ? "alert" : "status"}
           className={
             syncFeedback.tone === "error"
-              ? "px-4 py-2.5 rounded-lg bg-down/10 border border-down/30 text-sm text-down"
+              ? `px-4 py-2.5 rounded-lg bg-down/10 border border-down/30 text-sm ${CHIP_TONE_TEXT.down}`
               : "px-4 py-2.5 rounded-lg bg-raised border border-edge text-sm text-ink-dim"
           }
         >
@@ -1087,7 +1088,7 @@ export function ResearchFeedsView({
             onClick={() => setViewMode("filtered")}
             className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
               viewMode === "filtered"
-                ? "bg-gold/15 border-gold/40 text-gold-ink"
+                ? `bg-gold/15 border-gold/40 ${CHIP_TONE_TEXT.gold}`
                 : "border-edge text-ink-dim hover:text-ink hover:bg-raised"
             }`}
             title="Articles flipped to is_relevant=0 by the D1/D2 short-circuit or D3 portfolio-relevance gate"
@@ -1095,7 +1096,7 @@ export function ResearchFeedsView({
             Filtered
             <span
               className={`inline-flex items-center justify-center min-w-[1.25rem] px-1.5 rounded-full text-[10px] font-mono ${
-                viewMode === "filtered" ? "bg-gold/20 text-gold-ink" : "bg-raised text-ink-faint"
+                viewMode === "filtered" ? CHIP_TONE_CLASSES.gold : "bg-raised text-ink-faint"
               }`}
             >
               {computeFilteredBadgeCount(viewMode, filteredCount, filteredCategoryCounts)}

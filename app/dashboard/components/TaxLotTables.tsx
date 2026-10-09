@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import type { TaxLotWithSecurity, TaxLotSaleWithDetails } from "@/lib/queries/tax-lots";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { Count, Money, PrivateText, Shares } from "@/lib/privacy/components";
-import { Chip } from "./Chip";
+import { Chip, CHIP_TONE_CLASSES } from "./Chip";
 import { EmptySection } from "./EmptySection";
 import { PENDING_STATEMENT_CHIP_LABEL, PENDING_STATEMENT_TITLE } from "./pending-statement-copy";
 import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
@@ -500,7 +500,7 @@ export function ClosedSalesTable({
                         className={`text-xs px-2 py-0.5 rounded font-medium ${
                           sale.is_long_term
                             ? "bg-blue/20 text-blue"
-                            : "bg-gold/20 text-gold-ink"
+                            : CHIP_TONE_CLASSES.gold
                         }`}
                       >
                         {sale.is_long_term ? "Long" : "Short"}

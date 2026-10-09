@@ -1,3 +1,4 @@
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { actualChipClass } from "@/app/dashboard/today/WeekAheadView";
@@ -22,13 +23,16 @@ function earningsEvent(consensus: string | null, actual: string | null): ChipEve
 describe("actualChipClass (WeekAheadView EventRow)", () => {
   it("colors an EPS beat up", () => {
     const cls = actualChipClass(earningsEvent("EPS 0.41", "EPS 0.45"));
-    expect(cls).toContain("text-up");
-    expect(cls).not.toContain("text-down");
+    expect(cls).toContain(CHIP_TONE_TEXT.up);
+    expect(cls).toContain("bg-up/");
+    expect(cls).not.toContain("bg-down/");
   });
 
   it("colors an EPS miss down", () => {
     const cls = actualChipClass(earningsEvent("EPS 0.41", "EPS 0.30"));
-    expect(cls).toContain("text-down");
+    // The checked Chip red (plain text-down was under 4.5:1 on its tint).
+    expect(cls).toContain(CHIP_TONE_TEXT.down);
+    expect(cls).toContain("bg-down/");
     expect(cls).not.toContain("text-up");
   });
 
@@ -81,7 +85,9 @@ describe("actualChipClass (WeekAheadView EventRow)", () => {
       consensus_value: "EPS 0.60",
       actual_value: "EPS 0.56",
     });
-    expect(cls).toContain("text-down");
+    // The checked Chip red (plain text-down was under 4.5:1 on its tint).
+    expect(cls).toContain(CHIP_TONE_TEXT.down);
+    expect(cls).toContain("bg-down/");
     expect(cls).not.toContain("text-up");
   });
 });

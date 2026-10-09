@@ -172,7 +172,8 @@ describe("TradeReviewView banner wiring", () => {
 
   it("styles the banner off the error flag, not off the copy starting with 'Error'", () => {
     expect(src).not.toMatch(/generateMsg\.startsWith\(\s*"Error"\s*\)/);
-    expect(src).toMatch(/generateFailed\s*\n?\s*\?\s*"border-down/);
+    // A quote or a backtick: the failure arm interpolates the checked Chip red.
+    expect(src).toMatch(/generateFailed\s*\n?\s*\?\s*["`]border-down/);
   });
 
   it("clears a stale banner when the account changes", () => {

@@ -17,6 +17,7 @@
  *     for, so the PIN flow is demonstrable without waiting for an idle timeout.
  */
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useState } from "react";
 import { useElectron } from "@/lib/hooks/useElectron";
 import apiFetch from "@/lib/http/apiFetch";
@@ -178,7 +179,7 @@ export function SecuritySection() {
             <button
               onClick={handleChangePassword}
               disabled={pwStatus === "pending" || !current || !next || !confirm}
-              className="px-4 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold-ink hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              className={`px-4 py-1.5 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors`}
             >
               {pwStatus === "pending" ? "Changing…" : "Change password"}
             </button>
@@ -238,7 +239,7 @@ export function SecuritySection() {
           <button
             onClick={handleSetPin}
             disabled={pinStatus === "pending" || !pin || !pinConfirm}
-            className="px-4 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold-ink hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className={`px-4 py-1.5 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors`}
           >
             {pinStatus === "pending" ? "Saving…" : "Set PIN"}
           </button>

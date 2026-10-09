@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { PERCENT_BASIS } from "@/lib/analysis/percent-bases";
 import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
@@ -303,7 +304,7 @@ export function ClassificationCard({ concentration, coverage }: Props) {
             <button
               onClick={runAutoClassify}
               disabled={classifyLoading}
-              className="px-3 py-1 text-xs bg-gold/10 text-gold-ink border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-ring"
+              className={`px-3 py-1 text-xs bg-gold/10 ${CHIP_TONE_TEXT.gold} border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-ring`}
             >
               {classifyLoading ? "Classifying..." : "Auto-Classify"}
             </button>
