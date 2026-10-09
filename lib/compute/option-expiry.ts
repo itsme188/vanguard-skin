@@ -143,14 +143,29 @@ export function isOptionLive(
  * midnight but before the ET day rolls over, this floors to -1 and prints
  * "(expired)" for a contract the Greeks card (16:00-ET-close rule,
  * `isOptionLive`) still shows as live.
+ *
+ * `expirationDate` is STORED data and this runs during a page render, so it
+ * never throws on it: the legacy compact `YYYYMMDD` spelling is read exactly
+ * as the dashed one (via {@link normalizeOptionExpiration}), and a missing or
+ * unreadable value (empty, free text, a day that is not on the calendar)
+ * returns `null`, which the caller shows as "no day count". `today` is the
+ * caller's own argument, so a malformed one is still a thrown bug.
  */
-export function daysToExpiry(expirationDate: string, today: string = todayET()): number {
-  if (!DATE_PATTERN.test(expirationDate)) {
-    throw new Error(`daysToExpiry: expirationDate must match YYYY-MM-DD, got ${JSON.stringify(expirationDate)}`);
-  }
+export function daysToExpiry(
+  expirationDate: string | null | undefined,
+  today: string = todayET()
+): number | null {
   if (!DATE_PATTERN.test(today)) {
     throw new Error(`daysToExpiry: today must match YYYY-MM-DD, got ${JSON.stringify(today)}`);
   }
+  if (!expirationDate) return null;
+  const dashed = normalizeOptionExpiration(expirationDate);
+  if (!DATE_PATTERN.test(dashed)) return null;
+  const expiry = new Date(dashed);
+  const expiryMs = expiry.getTime();
+  // An impossible day either fails to parse (month 13) or rolls forward
+  // (Feb 30 reads as Mar 2); neither is a date anyone stored on purpose.
+  if (!Number.isFinite(expiryMs) || expiry.getUTCDate() !== Number(dashed.slice(8, 10))) return null;
   const MS_PER_DAY = 24 * 60 * 60 * 1000;
-  return Math.round((new Date(expirationDate).getTime() - new Date(today).getTime()) / MS_PER_DAY);
+  return Math.round((expiryMs - new Date(today).getTime()) / MS_PER_DAY);
 }

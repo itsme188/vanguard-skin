@@ -175,7 +175,7 @@ describe("level_alerts.triggered_at (stored ISO with T and Z)", () => {
         security_id: securityId,
         level_type: "support",
         price: 48,
-        direction: "below",
+        direction: "bearish",
       });
       const res = triggerLevel(db, {
         levelId,
@@ -201,7 +201,7 @@ describe("level_alerts.triggered_at (stored ISO with T and Z)", () => {
       security_id: securityId,
       level_type: "support",
       price: 48,
-      direction: "below",
+      direction: "bearish",
     });
     triggerLevel(db, { levelId, securityId, triggeredPrice: 47.5, thresholdPrice: 48 });
     expect(getLevelsTriggeredInWindow(db, 7).map((r) => r.symbol)).toEqual(["ZZD"]);

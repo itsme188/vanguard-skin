@@ -458,6 +458,8 @@ export default async function SecurityDetailPage(props: {
                   <span className="text-xs text-ink-faint ml-1.5">
                     {(() => {
                       const dte = daysToExpiry(security.expiration_date);
+                      // Unreadable stored date: show it as stored, with no day count.
+                      if (dte === null) return null;
                       return dte < 0 ? "(expired)" : `(${dte}d)`;
                     })()}
                   </span>

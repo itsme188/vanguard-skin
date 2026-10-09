@@ -41,14 +41,6 @@ interface Allowed {
 
 const ALLOWED: Allowed[] = [
   {
-    file: "lib/calendar/briefing.ts",
-    anchor: "AND s.expiration_date BETWEEN ? AND ?",
-    why:
-      "Weekly briefing email, options expiring this week (IBKR rows excluded). A compact row is " +
-      "never selected today; normalising would ADD rows to an outbound email, so it waits for an " +
-      "owner ruling (reported 2026-10-09).",
-  },
-  {
     file: "scripts/verify-a1-current-prices.ts",
     anchor: "AND s.expiration_date BETWEEN '2026-04-27' AND '2026-05-03'",
     why: "One-off, read-only verification script for a past week with literal dates; prints rows for the operator.",

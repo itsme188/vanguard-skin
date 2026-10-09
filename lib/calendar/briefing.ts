@@ -18,6 +18,7 @@ import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { optionExpirationDashedSql } from "@/lib/compute/option-expiry";
 import { mondayOf } from "@/lib/calendar/date-utils";
 import { partitionBriefingEvents } from "@/lib/calendar/briefing-partition";
 import {
@@ -480,9 +481,13 @@ export function getBriefingExpiringOptions(
   startDate: string,
   endDate: string
 ): ExpiringOption[] {
+  // Stored expirations come dashed or legacy compact (YYYYMMDD); compare,
+  // order and return the dashed form so a compact row is neither dropped
+  // from the week nor printed in a second date style.
+  const expiration = optionExpirationDashedSql("s.expiration_date");
   return db
     .prepare(
-      `SELECT s.symbol, s.underlying_symbol, s.expiration_date,
+      `SELECT s.symbol, s.underlying_symbol, ${expiration} AS expiration_date,
               s.option_type, s.strike_price,
               h.quantity, a.name AS account_name
        FROM holdings h
@@ -490,14 +495,15 @@ export function getBriefingExpiringOptions(
        JOIN accounts a ON a.id = h.account_id
        WHERE LOWER(s.security_type) = 'option'
          AND ${BRIEFING_EXCLUDE_IBKR_SQL}
-         AND s.expiration_date BETWEEN ? AND ?
+         AND (${expiration}) BETWEEN ? AND ?
          AND ${latestHoldingsPredicate()}
-       ORDER BY s.expiration_date, s.underlying_symbol`
+       ORDER BY ${expiration}, s.underlying_symbol`
     )
     .all(startDate, endDate) as ExpiringOption[];
 }
 
-function formatOptionForPrompt(o: ExpiringOption, index: number): string {
+/** Exported for unit test (module-private otherwise). */
+export function formatOptionForPrompt(o: ExpiringOption, index: number): string {
   // Direction-only (2026-08-02): no contract count — count × public premium
   // reconstructs $ exposure in a cc'd email. Strike/expiry stay (public).
   const side = (o.quantity ?? 0) > 0 ? "LONG" : "SHORT";

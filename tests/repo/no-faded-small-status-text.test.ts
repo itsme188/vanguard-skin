@@ -471,7 +471,7 @@ describe("app/: a hover never drops small text under 4.5:1", () => {
     hoverFailures(src, FLOOR).map((c) => ({ ...c, id: `${file} | ${c.hover}`, where: `${file}:${c.line}` })),
   );
   const fades = [...SOURCES].flatMap(([file, src]) =>
-    fadedHoverText(src).map((c) => ({ id: `${file} | ${c.hover}`, where: `${file}:${c.line}` })),
+    fadedHoverText(src).map((c) => ({ id: `${file} | ${c.hover}`, where: `${file}:${c.line}`, hover: c.hover })),
   );
 
   it("the forms that were replaced really do fail (the bound is real)", () => {
