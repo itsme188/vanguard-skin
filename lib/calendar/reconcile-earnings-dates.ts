@@ -4,6 +4,7 @@ import { mergeEarningsEventState } from "@/lib/earnings/event-merge";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 import { deliveredSql, notLiveClaimSql } from "@/lib/earnings/email-states";
 import { mondayOf, todayET } from "@/lib/calendar/date-utils";
+import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 
 // ── Earnings date cross-check reconciliation ────────────────────────
 //
@@ -14,7 +15,8 @@ import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 // earnings-email candidate finder) shows exactly one row per event.
 //
 // Resolution priority (see docs/superpowers/specs/2026-06-08-earnings-date-crosscheck-design.md):
-//   1. a user_confirmed / manual row → locked canonical (never reverted)
+//   1. a user_confirmed / manual row → locked canonical (never reverted);
+//      on ONE date a hand-entered row beats a vendor row the user confirmed
 //      (a hand-entered row locks by its SOURCE; the pass never writes
 //      `user_confirmed` on a row that does not already carry it — see
 //      `lockedStatusFor`)
@@ -22,6 +24,9 @@ import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 //   3. both sources agree → confirmed
 //   4. both future, dates differ → conflict (Nasdaq provisional, awaits the user)
 //   5. only one source → single
+// Wherever rows of ONE date compete (rungs 2, 3 and 5), a row carrying an
+// explicit before-open / after-close slot beats a row carrying only a vendor
+// default (owner ruling 2026-10-08) — see `pickSameDateWinner`.
 //
 // One exemption to "exactly one row per event" (owner ruling 2026-10-06): two
 // HAND-ENTERED rows for one name are never resolved against each other — both
@@ -80,6 +85,13 @@ interface EarningsRow {
   source: string;
   symbol: string | null;
   event_date: string;
+  /**
+   * Read ONLY to tell whether the row carries a real before-open /
+   * after-close slot (`hasRealSlot`). Vendor rows store null here and keep
+   * the slot in `raw_json.entry.hour`; hand-entered rows store the slot word
+   * or a clock.
+   */
+  event_time: string | null;
   raw_json: string | null;
   actual_value: string | null;
   date_status: string | null;
@@ -177,10 +189,18 @@ const PRINT_EVIDENCE_SQL = `(
 )`;
 
 /** The columns every resolution step reads. Shared by both gather queries. */
-const EARNINGS_ROW_COLUMNS = `id, source, symbol, event_date, raw_json, actual_value, date_status,
+const EARNINGS_ROW_COLUMNS = `id, source, symbol, event_date, event_time, raw_json, actual_value, date_status,
         consensus_estimate, consensus_value, reaction_snapshot, enriched_at,
         manual_actuals_at, created_at, ${PRINT_EVIDENCE_SQL} AS print_evidence,
         COALESCE(superseded, 0) AS superseded`;
+
+/**
+ * The order every gather hands rows to the resolution steps in. Same-date rows
+ * are tie-broken by id so "the first row" means the same thing on every pass
+ * and on every machine (the gathers used to sort by date alone, leaving
+ * same-date order to the query planner).
+ */
+const EARNINGS_ROW_ORDER = "ORDER BY event_date ASC, id ASC";
 
 /**
  * Greedy proximity clustering of ONE issuer family's rows (already sorted by
@@ -360,22 +380,73 @@ function splitReportedFromManualCluster(
   };
 }
 
+/**
+ * Does this row say WHEN in the day the print lands — an explicit before-open
+ * or after-close slot — as opposed to carrying only a vendor's default time?
+ *
+ * Read through the one shared slot resolver, with no release-time fallback:
+ * `release_time` cannot tell the two apart (Finnhub stores no hour and the
+ * row gets the after-close default; an explicit after-close row gets the
+ * same clock). "During market hours" and an unknown hour are not a slot.
+ */
+function hasRealSlot(r: EarningsRow): boolean {
+  return deriveEarningsSlot({ event_time: r.event_time, raw_json: r.raw_json }) !== null;
+}
+
+/**
+ * Among rows that all sit on ONE date, pick the row the duplicate check keeps
+ * (owner ruling 2026-10-08, "two vendors, one print: a real slot beats a
+ * default time"). `incumbent` is the row the older rule kept and must be one
+ * of `sameDateRows`; `sameDateRows` is in gather order (id ASC).
+ *
+ * The incumbent keeps the print unless it carries no real slot and another
+ * row on the date does. So when both rows carry a slot, or neither does, the
+ * answer is exactly what it was before the ruling. Among several slotted
+ * challengers the order is Finnhub, then Nasdaq, then lowest id.
+ *
+ * The loser is hidden through the ordinary fold on the next pass; its slot
+ * is never edited in place.
+ */
+function pickSameDateWinner(incumbent: EarningsRow, sameDateRows: EarningsRow[]): EarningsRow {
+  if (hasRealSlot(incumbent)) return incumbent;
+  const slotted = sameDateRows.filter(
+    (r) => r.id !== incumbent.id && r.event_date === incumbent.event_date && hasRealSlot(r),
+  );
+  return (
+    slotted.find((r) => r.source === "finnhub") ??
+    slotted.find((r) => r.source === "nasdaq") ??
+    slotted[0] ??
+    incumbent
+  );
+}
+
 /** Resolve one cluster of rows (all referring to the same reporting event). */
 function resolveCluster(rows: EarningsRow[], today: string): Resolution {
-  // 1. A user-confirmed / manual row is authoritative and locked.
-  const manual = rows.find(
-    (r) => r.source === "manual" || r.date_status === "user_confirmed",
-  );
-  if (manual) {
-    return { canonicalId: manual.id, status: "user_confirmed", conflictWith: null };
+  // 1. A user-confirmed / manual row is authoritative and locked. The first
+  // locked row in gather order (date, then id) wins — except that on its own
+  // date a HAND-ENTERED row beats a vendor row the user confirmed, whatever
+  // order the two were written in (owner ruling 2026-10-08).
+  const firstLocked = rows.find(isManualRow);
+  if (firstLocked) {
+    const locked =
+      firstLocked.source === "manual"
+        ? firstLocked
+        : (rows.find((r) => r.source === "manual" && r.event_date === firstLocked.event_date) ??
+          firstLocked);
+    return { canonicalId: locked.id, status: "user_confirmed", conflictWith: null };
   }
 
   // 2. A past date with reported actuals demonstrably happened — it wins.
+  // Several rows can report the same latest date (both vendors, after the
+  // print): the first in gather order keeps it unless a twin on that date
+  // carries the real slot, so a pair the slot rule resolved before the print
+  // does not flip back the moment both rows show actuals.
   const occurred = rows
     .filter((r) => r.event_date < today && hasActual(r))
-    .sort((a, b) => b.event_date.localeCompare(a.event_date));
+    .sort((a, b) => b.event_date.localeCompare(a.event_date) || a.id - b.id);
   if (occurred.length > 0) {
-    return { canonicalId: occurred[0].id, status: "confirmed", conflictWith: null };
+    const winner = pickSameDateWinner(occurred[0], occurred);
+    return { canonicalId: winner.id, status: "confirmed", conflictWith: null };
   }
 
   // Rows arrive date-sorted ASC, so find-first picks the OLDEST claim per
@@ -389,12 +460,15 @@ function resolveCluster(rows: EarningsRow[], today: string): Resolution {
   // 3 & 4. Both calendars present.
   if (finnhubRows.length > 0 && nasdaqRows.length > 0) {
     // Agreement-first: ANY finnhub/nasdaq pair sharing a date is a
-    // confirmation. Keep Finnhub canonical (richer raw_json/history that
-    // the earnings-email composer already relies on); supersede the rest.
+    // confirmation. Finnhub stays canonical (richer raw_json/history that
+    // the earnings-email composer already relies on) UNLESS it carries only
+    // a default time and a row on that date carries a real slot; supersede
+    // the rest.
     for (const n of nasdaqRows) {
       const agreeing = finnhubRows.find((f) => f.event_date === n.event_date);
       if (agreeing) {
-        return { canonicalId: agreeing.id, status: "confirmed", conflictWith: null };
+        const winner = pickSameDateWinner(agreeing, rows);
+        return { canonicalId: winner.id, status: "confirmed", conflictWith: null };
       }
     }
     // Genuine disagreement → Nasdaq provisional, flagged for the user to
@@ -407,8 +481,10 @@ function resolveCluster(rows: EarningsRow[], today: string): Resolution {
     };
   }
 
-  // 5. Single source.
-  const only = finnhubRows[0] ?? nasdaqRows[0] ?? rows[0];
+  // 5. Single source. The oldest claim keeps the cluster, as before; a slot
+  // only decides between rows on that claim's own date (share-class siblings
+  // listed by one vendor), never between dates.
+  const only = pickSameDateWinner(finnhubRows[0] ?? nasdaqRows[0] ?? rows[0], rows);
   return { canonicalId: only.id, status: "single", conflictWith: null };
 }
 
@@ -687,7 +763,7 @@ export function repointDependentsBeforeDelete(
         `SELECT ${EARNINGS_ROW_COLUMNS}
            FROM calendar_events
           WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
-          ORDER BY event_date ASC`,
+          ${EARNINGS_ROW_ORDER}`,
       )
       .all(lo, hi) as EarningsRow[]
   ).filter((r) => familyKey(r.symbol) === key);
@@ -749,7 +825,7 @@ export interface VendorSupersessionCheck {
 
 /** The id the hypothetical row carries during the dry run. Sorts LAST among
  *  same-date rows, matching where a freshly INSERTed row's rowid puts it in the
- *  reconciler's `ORDER BY event_date ASC` gather. */
+ *  reconciler's `ORDER BY event_date ASC, id ASC` gather. */
 const HYPOTHETICAL_ROW_ID = Number.MAX_SAFE_INTEGER;
 
 /** Resolve a family's rows exactly as `reconcileEarningsDates` does, returning
@@ -861,7 +937,7 @@ export function checkManualAddWouldSupersedeVendor(
         `SELECT ${EARNINGS_ROW_COLUMNS}
            FROM calendar_events
           WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
-          ORDER BY event_date ASC`,
+          ${EARNINGS_ROW_ORDER}`,
       )
       .all(lo, hi) as GatheredRow[]
   ).filter((r) => familyKey(r.symbol) === key && r.id !== opts.excludeEventId);
@@ -872,6 +948,9 @@ export function checkManualAddWouldSupersedeVendor(
     source: "manual",
     symbol,
     event_date: newDate,
+    // The hypothetical row is hand-entered, so it locks at rung 1 and its
+    // slot is never weighed against a vendor's.
+    event_time: null,
     raw_json: null,
     actual_value: null,
     date_status: null,
@@ -1061,7 +1140,7 @@ export function reconcileEarningsDates(
       `SELECT ${EARNINGS_ROW_COLUMNS}, title, source_key
        FROM calendar_events
        WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
-       ORDER BY event_date ASC`,
+       ${EARNINGS_ROW_ORDER}`,
     )
     .all(start, end) as PassRow[];
 
