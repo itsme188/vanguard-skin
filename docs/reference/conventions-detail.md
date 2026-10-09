@@ -57,6 +57,17 @@ Contents:
   via `datetime('now')` are space-separated (`"2026-04-22 22:53:41"`); ISO-Z filters from
   `toISOString()` use `'T'`. A raw compare mis-sorts (space 32 < `'T'` 84) → silent zero rows. Wrap
   both sides in `datetime()`.
+  - **The other direction lets rows IN (2026-10-09).** A column stored with a `T` compared bare
+    against `datetime('now', '-N days')` sorts after every space-form string of the same day, so
+    rows from earlier on the cutoff's own day were included. Two windows did this: press releases
+    for the earnings email prompt (`lib/queries/press-releases.ts`) and levels fired inside the
+    weekly briefing window (`lib/queries/briefing-levels.ts`). Both sides now go through
+    `datetime()`. Five more windows on a column already stored in the space form were wrapped the
+    same way and select the same rows.
+  - **Guard.** `tests/repo/no-sql-utc-day.test.ts` ("an instant window compares both sides in one
+    text form") fails on any stored column compared bare with `datetime('now'…)` under `app/`,
+    `lib/` and `scripts/`. Its allowlist is empty. Behaviour is pinned per stored format in
+    `tests/queries/elapsed-time-window-stored-formats.test.ts`.
 
 ### Per-(account, security) latest-holdings CTE pattern
 
@@ -144,12 +155,85 @@ is a module-scoped, token-gated lock (single Next process, no DB row needed); a 
   `new Date().toISOString().slice(0,10)` for a user-facing today (that's UTC). Every outbound-email
   date string passes `timeZone:"America/New_York"` to `toLocaleDateString`; the Worker briefing
   `weekOf` uses `briefingWeekOf()`. **The Mac travels, the Worker is UTC.**
+- **The JavaScript rule is guarded (2026-10-09).** `tests/repo/no-utc-day-slice.test.ts` scans
+  `app/` and `lib/` for a `.toISOString()` cut to a day. The same expression is correct when the
+  Date was built from a date-only value (plain calendar arithmetic), and the two cannot be told
+  apart by pattern, so the guard works per occurrence: every one must be listed with its file, the
+  statement, the enclosing function, a class and a reason. The classes are `date-arithmetic` (may
+  not read the wall clock), `deliberate-utc` (a vendor parameter or a stored key) and
+  `import-pipeline` (the protected import parsers, which still take a UTC fallback date; listed
+  for the owner, not edited). A new occurrence fails; so does a stale entry. `tests/`, `workers/`
+  and `scripts/` are out of its scope. The sweep that came with it moved the remaining "today"
+  values: chart range cut-offs, the risk and factors week-ago comparison, chat tool default
+  windows, the level narrative cache day and the regression lookback. Pins:
+  `tests/queries/utc-sweep-eastern-day.test.ts`, `tests/dashboard/utc-sweep-eastern-day-pin.test.ts`.
+- **A calendar-day comparison in SQL uses the Eastern day too (2026-10-09).** SQLite's clock is
+  UTC, so `date('now')` is already tomorrow from 20:00 Eastern. Compared with a date-only column
+  (a maturity date, an option expiry, an event date, a holdings date, a level expiry) it moved
+  "today" four to five hours early every evening.
+  - **The single source is `lib/db/eastern-day-sql.ts`.** Bind `todayET()` as a parameter where
+    that is easy. Where a fragment is shared between statements with their own parameter lists,
+    use `easternDaySql()` (the Eastern day as a validated, quoted literal; for an offset write
+    `date(${easternDaySql()}, '-1 day')`) or `unmaturedSecuritySql(alias)` (true for a security
+    with no maturity date or one that matures today or later).
+  - **What changed, evening only.** Each effect makes the evening match the daytime. The
+    expired-option and matured-bond purges keep their one-day grace (nothing is ever deleted
+    earlier than before). A name held only through an option that expires today keeps its
+    earnings coverage until midnight Eastern. A bond maturing today, the portfolio strip, the
+    stale-price list and the notes window read the same in the evening as in the day. The one
+    daytime change: the chat's bond maturity note counted one day short and now says "today",
+    "1 day" or "N days".
+  - **What stays on the UTC clock.** Elapsed time between two instants (a lease, a cooldown,
+    "received in the last N hours"), a written stamp and a column default are correct in UTC.
+  - **Guard.** `tests/repo/no-sql-utc-day.test.ts` scans `app/`, `lib/` (migrations included)
+    and `scripts/`. It lists, one by one, every day form (`date('now'…)`, `julianday('now'…)`,
+    `strftime(…'now'…)`, `CURRENT_DATE`), every instant window (`datetime('now', <offset>)` or
+    `datetime('now')` on either side of an inequality or a `BETWEEN`) and every day cut of a
+    stored instant (`date(x_at)`, `substr(x_at, 1, 10)`). Classes: `elapsed-time`,
+    `migration-default`, `ruled-left`, `operator-script`. Only two day forms remain, both column
+    defaults inside migrations whose writers bind the Eastern day. The `ruled-left` entries are
+    the earnings reconciler's preview-repoint and print-evidence day cuts, whose one-day bands
+    were sized for a UTC send time against an Eastern event date. The same file also fails on a
+    bare column compared with `datetime('now'…)` (section A). Behaviour pin:
+    `tests/queries/sql-clock-eastern-day.test.ts`.
+- **The broker sync and the streaming flush stamp the Eastern day (2026-10-09).** `syncPortfolio`
+  (`lib/tws/positions.ts`) and the streaming price flush (`lib/tws/streaming.ts`) date their rows
+  with `todayET()`. They used the UTC day, so an evening sync wrote tomorrow's date while the
+  snapshot writer (`lib/tws/snapshot.ts`) and the Web API writer already wrote the Eastern day.
+  All three now agree. The one-time deploy history is in `docs/reference/auto-refresh.md`.
 - **Option expiry "today" is ET-anchored** (`2b2d310`, 2026-08-28): `computePortfolioGreeks` /
   `getExpiringOptions` (`lib/compute/options-expirations.ts`) take an injectable `today` defaulting
   to `todayET()` — never derive it from `toISOString()`, which reads a day early overnight and shows
   runway as -1d. The unused copy of `getExpiringOptions` in `lib/queries/options.ts` was deleted on
   2026-10-07; the name now lives in two places with different signatures, the one above and the
   briefing's own in `lib/calendar/briefing.ts`.
+- **A stored option expiry has one reader (2026-10-09).** `securities.expiration_date` has two
+  spellings: dashed `YYYY-MM-DD` and the legacy compact `YYYYMMDD` (stored rows are not
+  normalised). Compared as raw text the compact form sorts after every dashed day of its year, so
+  an expired contract stayed "live" until the year changed; SQLite's `date()` and `julianday()`
+  read it as NULL, so the purge never removed it. `lib/compute/option-expiry.ts` is the one
+  reader:
+  - SQL: `optionExpirationDashedSql(column)` (the dashed text form), `optionExpirationDaySql(column)`
+    (`date()` over it; a value it still cannot read stays NULL, so the purge never deletes such a
+    row), `liveOptionExpirationSql(alias, today)` (not an option, or expires today Eastern or
+    later).
+  - JS: `normalizeOptionExpiration`, `isOptionLive` (a missing expiry is "unknown, keep it"),
+    `daysToExpiry` (whole calendar days; **null** for a missing or unreadable value, and it never
+    throws on stored data, because the security page calls it during render).
+  - Readers moved onto it on 2026-10-09: earnings coverage for a name held through an option,
+    factor classification, the fund-type sweep, the expired-holdings purge
+    (`lib/mutations/expired-options.ts`) and its one-off script, the expirations list (a live
+    compact-form contract was missing from it), the Greeks (it was never expired) and the weekly
+    briefing's expiring-options list (`lib/calendar/briefing.ts`; this one can add a row to an
+    email, and an option that really expires that week belongs there).
+  - Guard: `tests/repo/no-handrolled-option-expiry-compare.test.ts` fails, under `app/`, `lib/`
+    and `scripts/`, on `expiration_date` on either side of `<`, `>`, `<=`, `>=` or `BETWEEN`, on
+    `date(` / `julianday(` / `strftime(` applied straight to it, and on the JS name
+    `expirationDate` on either side of such an operator. Equality, `IS NULL` and `ORDER BY` are
+    not flagged. Two one-off read-only verification scripts are allowlisted. Behaviour pins:
+    `tests/compute/option-expiry.test.ts`, `tests/compute/compact-option-expiry-readers.test.ts`,
+    `tests/queries/legacy-compact-option-expiry.test.ts`.
+  - Still open: the security page prints a compact expiry as stored, not prettified.
 - **"Alerted today" for a price level is the Eastern day** (2026-10-07): see section J.
 
 ---
@@ -449,10 +533,71 @@ untouched — split-invariant total dollars). VGT repaired live 2026-08-05 (back
 ### Account scoping rule
 
 Pages with a scope selector — **EVERY query must accept/respect `accountIds`; no global queries**.
-Resolve via `resolveScopeToSingleId()` / `resolveScope()` (`lib/queries/accounts.ts`).
+Resolve via `resolveScope()` (`lib/queries/accounts.ts`). The single-id helper
+(`resolveScopeToSingleId`) was deleted on 2026-10-08; a few code comments still name it as the
+thing not to do.
 
 **Scopes are disjoint**: `vanguard` excludes any "roth" account, so `all = vanguard + roth + ibkr`
 partitions the portfolio.
+
+### An empty account list means no accounts (2026-10-09)
+
+One rule for every reader that takes a resolved account list:
+
+- `undefined` means EVERY account: no filter;
+- a DEFINED EMPTY list means NO accounts: the filter matches no row. It must never widen to the
+  whole book;
+- a non-empty list is `<column> IN (?, ?, …)`.
+
+Before the sprint many readers wrote `accountIds?.length ? "AND … IN (…)" : ""`, which read an
+empty list as "everything". That is harmless in a read and dangerous in a write.
+
+- **The shared helper is `lib/queries/account-scope-sql.ts`**: `accountScopeCondition(accountIds,
+  column)` returns the bare predicate (`null` for every account, `"0"` for an empty list) and
+  `accountScopeAndSql(accountIds, column)` the `AND …` fragment with its bind values. The module
+  imports nothing, so query and compute modules can use it without an import cycle, and it takes
+  the column name. It sits beside two older helpers with the same rule: `accountIdsFilterSql`
+  (`lib/compute/factors.ts`) and `accountScopeClause` (`lib/queries/options.ts`).
+- **Readers on the rule:** the factor and Greeks engines; risk metrics, the concentration
+  universe, the factor heatmap, flows and seam dates; the daily-valuations series, period
+  attribution, in-kind flows, the income summary and expiring options; allocation,
+  classification and data coverage, the trust strip, the drill-down, both scenario engines,
+  exposure, cash deploy, the defense view and the cash-flow audit. The Performance view used to
+  rely on the old reading for its all-accounts curve; it now passes its scope straight through.
+- **The one writer:** `removeOrphanedReconTombstones` (`lib/mutations/closed-equity.ts`) deletes.
+  Handed an empty list it now deletes nothing.
+- **No figure moved.** No caller passes an empty list today, and a digest over every reader,
+  captured before the change, still matches for every real scope.
+- **OPEN owner question: `resolveScope` itself is unchanged.** A named scope that matches no
+  account returns `undefined`, which every reader takes as "every account". It cannot happen on a
+  book that has an account for each scope word. Changing it touches every scope route, so it
+  waits for a ruling. Until then, a caller that must not widen checks for it itself (the chat
+  resolver does, below).
+- Tests: `tests/compute/empty-account-scope-holdings-readers.test.ts`,
+  `tests/compute/empty-account-scope-series-readers.test.ts`,
+  `tests/compute/risk-empty-account-scope.test.ts`,
+  `tests/mutations/closed-equity-orphans-empty-scope.test.ts`.
+
+### Chat account names resolve through one function (2026-10-08)
+
+A chat tool's `account_name` comes from the model. `resolveChatAccounts`
+(`lib/chat/account-scope.ts`) reads it in this order:
+
+1. an exact account name, as written, is that one account;
+2. a scope word (`vanguard`, `roth`, `ibkr`, `all`) is that scope's whole list, read through
+   `resolveScope`, so `vanguard` excludes the Roth; a scope word that names no account is an
+   error, never "every account";
+3. an exact name in any letter case, then any other text only when it is part of exactly ONE
+   account's name;
+4. anything else is an error that lists the valid names and words.
+
+No name, or the word `all`, is every account. It never takes the first match: before, the word
+"vanguard" answered with the Roth account. The return tool (`query_twr`: one time-weighted and
+one money-weighted return over the scope) and the options Greeks tool answer a whole scope. The eight tools that read one account at a time return an error for a
+scope of two or more accounts; the system prompt tells the model to call such a tool once per
+account and combine the answers. Widening those tools needs `accountIds` on their query
+functions. Tests: `tests/chat/tools-account-name-resolution.test.ts`,
+`tests/chat/tools-one-account-scope-error.test.ts`, `tests/chat/tools-twr-xirr-scope.test.ts`.
 
 ### Multi-account compute scope — `accountIds[]`, never first-id
 
@@ -462,10 +607,13 @@ partitions the portfolio.
 `cc317ff` 2026-06-11.
 
 Pull the valuation series from `getDailyValuationsForAccounts` (sum per-date BEFORE
-drawdown/vol/Sharpe). **Never collapse a multi-account scope to `accountIds[0]`.** Some
-`/api/compute/*` routes (risk, position-risk, options-greeks, options-expirations) stay on
-`resolveScopeToSingleId` deliberately. `GET /api/compute/xirr` and `GET /api/compute/fixed-income`
-read the whole scope through `resolveScope` (2026-10-08).
+drawdown/vol/Sharpe). **Never collapse a multi-account scope to `accountIds[0]`.** Every
+`/api/compute/*` route that takes a scope resolves it through `resolveScope` and reads the whole
+list: xirr and fixed-income since 2026-10-08, factors and options-strategies since the third wave
+of that night (option strategies are still DETECTED account by account,
+`detectStrategiesPerAccount` in `lib/queries/options.ts`: shares in one account never cover a call
+written in another). The one route that can only read a single account, cost-basis
+reconciliation, answers 400 for a multi-account scope; it never picks one.
 
 **Coverage-jump guard (single-sourced 2026-07-03 `0ce68b5`)**: per-account daily-valuation coverage
 STARTS on different dates (IBKR 3/27, Vanguard + Roth 4/06) — a summed series "gains" an appearing
@@ -1257,9 +1405,19 @@ time).
 
 `computeAnomalies` (`lib/digest/anomalies.ts`, shared by the evening email + Today
 `SignificantMovesCard`) resolves ONE `(latest, prior)` pair from SPY via `resolveTradingDayPair()`
-(phantom-row filtered, `nextTradingDay(prior) === latest`), compares every held name on those two
-dates, and OMITS a security missing either close. **Never per-security `MAX(date)` pairing.** Guards
-in `tests/digest/anomalies.test.ts`.
+(phantom-row filtered, `nextTradingDay(prior) === latest`), compares every held equity-like name
+on those two dates, and OMITS a security missing either close. **Never per-security `MAX(date)`
+pairing.** Guards in `tests/digest/anomalies.test.ts`.
+
+**Only equity-like types can be a mover (2026-10-08).** `isMoverSecurityType`
+(`lib/digest/anomalies.ts`) keeps stock, common stock, ETF and mutual fund: the list the cloud's
+universe keeps. An option or a bond is never named a mover, and an unknown or missing type fails
+closed (the type mapper alone defaults an unknown type to the stock class, and a mistyped option
+is a known corruption class). Before, the Mac had no type filter and the cloud did, so the two
+emails could differ. The Significant Moves card uses the same function, and its coverage line
+counts only the positions the engine checks. Tests:
+`tests/digest/anomalies-universe-type-parity.test.ts` (pinned against the real snapshot reader),
+`tests/dashboard/significant-moves-card-scope.test.ts`.
 
 ### Anomaly trigger is a hybrid two-gate
 
@@ -1284,7 +1442,7 @@ needed, just a publish gate. `refresh-vanguard-betas.ts` applies decisions in on
 
 ### Earnings bogeys and the armed-events payload (2026-10-07)
 
-- **"Has bogeys" has one rule:** `bogeyHasContent` and its SQL twin `bogeyHasContentSql` (`lib/mutations/earnings-bogeys.ts`). A bogey row (the consensus figures a print is judged against) with every content column empty is not coverage. An empty write stores nothing and never erases figures already stored; the manual route refuses it; the Hub chip ignores a stored empty row. A zero is a real figure. Any new reader that counts or selects bogey rows uses the SQL twin. The send paths moved onto it on 2026-10-08 (`getBogeysWithContentForEvent`, `lib/queries/earnings-bogeys.ts`; the Worker applies the same rule again on arrival, `snapshotBogeyHasContent`). On top of it, a row counts for a composer only when that composer PRINTS something from it (`lib/earnings/bogey-prompt-entries.ts`, Worker `workers/cron/src/bogey-content.ts`). `getBogeysForEvent` stays unfiltered on purpose, so the edit modal can list and delete an empty row. Detail: `docs/reference/earnings-pipeline.md` §14.
+- **"Has bogeys" has one rule:** `bogeyHasContent` and its SQL twin `bogeyHasContentSql` (`lib/mutations/earnings-bogeys.ts`). A bogey row (the consensus figures a print is judged against) with every content column empty is not coverage. An empty write stores nothing and never erases figures already stored; the manual route refuses it; the Hub chip ignores a stored empty row. A zero is a real figure. Any new reader that counts or selects bogey rows uses the SQL twin. The send paths moved onto it on 2026-10-08 (`getBogeysWithContentForEvent`, `lib/queries/earnings-bogeys.ts`; the Worker applies the same rule again on arrival, `snapshotBogeyHasContent`). On top of it, a row counts for a composer only when that composer PRINTS something from it (`lib/earnings/bogey-prompt-entries.ts`, Worker `workers/cron/src/bogey-content.ts`). `getBogeysForEvent` stays unfiltered on purpose, so the edit modal can list and delete an empty row. What the email SAYS about the entries is read off the same printed list (third wave, 2026-10-08): `bogeyClaim` (`lib/earnings/bogey-claim.ts`, Worker mirror `workers/cron/src/bogey-claim.ts`) answers `curated`, `vendor_only` or `none`, so a vendor-only entry is never called the owner's curated bogeys. Detail: `docs/reference/earnings-pipeline.md` §14.
 - **The armed-events payload carries two more lists:** `supersededEventIds` (earnings rows replaced on the Mac) and `removedEventIds` (earnings rows deleted on the Mac, each `{ id, eventDate, removedAt }`). The Worker marks a matching snapshot row replaced, one way only: it never clears the mark, deletes a row or invents one. Both sides are parity-pinned (`workers/cron/test/armed-events-parity.test.ts`); deploy the Worker first. Detail: `docs/reference/cron-and-workers.md`.
 
 ---
@@ -1488,6 +1646,27 @@ user activity or as a fill).
 Tests: `tests/queries/integrity-checks-statement-positions.test.ts`,
 `tests/queries/integrity-checks-lot-rollback.test.ts`.
 
+### The duplicate-ledger warning: a question, never a cap (2026-10-08)
+
+The lot scan above has one known limit: duplicate rows dated AFTER the newest statement look
+exactly like a real purchase whose sale is not imported yet. `scanPossibleDuplicateLedgerHits`
+(`lib/queries/integrity-checks.ts`) asks the question for that window only.
+
+- **A hit** is two or more transactions that agree on account, security, trade date, type,
+  quantity and amount in whole cents, AND show one of the two marks a duplicated import leaves:
+  one carries the importer's ordinal suffix (`:#2` or higher on `source_key`), or they came from
+  different import batches (a row with no batch counts as its own origin).
+- **Not a hit:** identical rows in one batch with no suffix (no importer writes that shape); rows
+  with no security or no quantity (dividends, interest, fees, cash movements); engine-owned
+  closes.
+- **Window:** rows dated after the account's newest statement-grade holdings row. An account with
+  no statement book gets the last 45 days.
+- **Severity is always "warning".** Two identical fills on one day are real at a broker, so the
+  wording is a question ("check for a duplicate import"). It never caps the confidence score and
+  is never critical. There is no dismiss switch: the note goes when the data is fixed, or when
+  the next statement moves the window past the rows, after which the lot comparison judges them.
+- Read-only. Test: `tests/queries/integrity-checks-duplicate-ledger.test.ts`.
+
 ### Reconciliation checkpoints: bands and the missing-valuation fallback (2026-10-08)
 
 - **The Difference chip uses a tolerance that scales with the account.** One helper,
@@ -1605,6 +1784,15 @@ through). Mirror the whitelist in any new scan query.
 
 `findCrossedLevels` skips securities whose latest price row is >4 calendar days old (tolerates
 Fri→Mon + long-weekend Mondays; longer gaps mean TWS was offline and prices are suspect).
+
+The window is single-sourced in `lib/levels/scan-range.ts`: `LEVEL_PRICE_MAX_AGE_DAYS`, the SQL
+fragment `levelPriceIsFreshSql` and its JS twin. Since 2026-10-09 the fragment counts back from
+the EASTERN day, bound as the named parameter `LEVEL_SCAN_TODAY_PARAM` (`@armedToday`), the same
+parameter the expiry test binds (`armedTodayParam()` in `lib/queries/security-levels.ts`). It
+used SQLite's `date('now')`, which made the window a day stricter after 20:00 Eastern: a level
+whose last price was four Eastern days old was scanned in the day and skipped in the evening. A
+statement that embeds the fragment and does not bind the parameter fails loudly. Test:
+`tests/levels/scan-freshness.test.ts`.
 
 ### Levels plausibility guard (2026-07-12)
 
@@ -1805,7 +1993,8 @@ Worker fallback re-introduced exact `$` into the cc'd email).
 `/20` tint minimum.
 
 **Never** inline `bg-{color}/10 text-{color}` or `-tint`/`-glow` tokens for chip text (a
-low-contrast pattern). See `memory/feedback_design_readability.md`.
+low-contrast pattern). See `memory/feedback_design_readability.md`. Since 2026-10-09 this is
+enforced: see "One colour table for small coloured text" below.
 
 **A chip is one line unless `wrap` is passed (2026-10-08).** The base carries `whitespace-nowrap`:
 a two-word chip that wrapped at phone width painted as a blob. A caller with a long label in a
@@ -1829,6 +2018,100 @@ sit in (its buttons would submit the form) and out of a link or a narrow inline 
 stop at its wrapper so an answer does not also trigger the row behind it. Never add a native
 `confirm()` or `alert()`. The conflict marker, the bogeys modal and the live print row were moved
 over and are pinned (`tests/dashboard/today-week-tidy-u16.test.ts`).
+
+**It is now the only way to ask (third wave, 2026-10-08).** The last five native prompts moved
+over: removing an earnings row, undoing an import, clearing a notes draft, rotating the service
+credential and undoing a corporate action. In Import History only the presentation of the Undo
+question changed (same warning text, same undo logic); the import flow is on the do-not-change
+list, so that one is flagged for the owner. `tests/repo/no-native-browser-dialogs.test.ts` fails
+on a `confirm(`, `alert(` or `prompt(` call, bare or qualified with `window.`, `globalThis.` or
+`self.`, in any file under `app/` and in any `lib/` component. A file that declares its own
+function with one of those names may call it bare; a qualified call is never allowed. A hook
+result named `prompt` is used as `prompt.ask(...)`, never called, so it is not a hit.
+
+**`ConfirmDialog` wraps a long unbroken name.** Its title and message carry
+`[overflow-wrap:anywhere]`, so a long file name or symbol no longer pushes the dialog wider than
+a phone screen.
+
+### One colour table for small coloured text (2026-10-09)
+
+Small green, red and gold text was hand-written in about sixty files, and many pairs sat under
+4.5:1 in one theme or both. The colours now come from one checked table. Only colour classes
+changed; no layout, size or wording moved.
+
+**The table.**
+
+- `CHIP_TONE_CLASSES` (`app/dashboard/components/Chip.tsx`): tint and text for each chip tone.
+  Use it for any coloured text on its own tint, chip or not.
+- `CHIP_TONE_TEXT` (`app/dashboard/components/chip-tone-text.ts`): the text half of each tone,
+  derived from the table, for an element that keeps its own tint strength or sits on a plain
+  surface. This is also the full-strength ink that replaces a faded status colour.
+- `GOLD_FILL_CLASSES` (same file): a SOLID gold fill with its checked text. The light theme takes
+  near-black text; the dark theme renders exactly as before.
+- `DANGER_FILL_CLASSES` (same file): a solid red destructive button with white text, with a fill
+  that passes in both themes.
+- `GOLD_OUTLINE_HOVER` (same file): the hover state of a small gold outline button or
+  disclosure. The text takes the gold chip's ink for as long as the hover tint is there.
+- `DARK_MODULE_DIM_TEXT` (`app/dashboard/components/dark-module-text.ts`): the dimmest grey
+  allowed for small text inside the always-dark modules.
+- `factorTagTextColor` (`lib/factor-tag-text.ts`): the text colour for a factor tag on a themed
+  surface. It mixes the tag's hue toward black (light theme) or white (dark theme) until it
+  reaches 4.5:1 on its own tint. The colour map itself is untouched; the dark Factor Profile card
+  still fills with it. Test: `tests/dashboard/factor-tag-text.test.ts`.
+
+**Five scans in three repo test files enforce it.** Each fails on a new miss and on an allowlist
+entry that no longer matches.
+
+1. `tests/repo/no-handrolled-failing-tint-pairs.test.ts`: any tint-and-text pair written in one
+   class string under `app/` that measures under 4.5:1 in either theme, on the canvas, a panel or
+   a raised surface. It cannot see a tint on a parent with the text on a child, or a pair split
+   across two strings, and it does not read text size.
+2. `tests/repo/no-faded-small-status-text.test.ts`, resting state: faded status text on a plain
+   surface (`text-up/80`, `text-down/70` and the like), small plain `text-gold` (each file that
+   still uses it is listed with its count and reason: large text, icons, glyphs), and a
+   hand-written `bg-gold` with `text-canvas`. The same file pins the solid red fill, the grades
+   bar letters and the factor tag text.
+3. The same file, hover state: a hover that leaves small text under 4.5:1, measured as the
+   hovered text on the hovered fill in each theme, and any hover that fades small coloured text
+   whatever the figure.
+4. `tests/repo/no-dim-grey-on-dark-module.test.ts`, inline greys: an inline grey under 4.5:1 in a
+   file that paints a dark-module surface or uses the terminal parts. The class scans cannot see
+   an inline hex.
+5. The same file, fades: a resting-state fade (an opacity class) on an element that sets a small
+   text size. The chart footer legend was the case: only the swatch is faded now, not the label.
+
+`tests/dashboard/chip-contrast-nowrap.test.tsx` still pins the table itself.
+
+**A hover never lowers small text under the floor.** Seventy-three hover states faded text or
+brightened a tint under it. A hover now underlines, takes the small-text gold, or dims the fill
+slightly. The old `text-gold-ink hover:text-gold` idiom is retired.
+
+**Text inside the always-dark chart panel needs the dark-panel opt-in.** `MarketDataPanel`'s root
+carries `.dark-module-chart` and stays near-black under both page themes. A theme token inside it
+still resolves for the PAGE theme, so on a light page the light theme's dark ink lands on
+near-black: the chart status strip measured about 2:1 after the colour sweep, and only a browser
+saw it. Elements inside the panel opt in with a class that an unlayered rule in `app/globals.css`
+recolours: `chart-chrome` (dim chrome text), `chart-status-gold` and `chart-status-down` (status
+strips and the Levels sort picker's active pill). On a light surface outside the panel these
+classes do nothing. Check the panel on a light page separately from the page theme; a source scan
+cannot see this. Test: `tests/dashboard/chart-status-strip-dark-module.test.ts`.
+
+**A colour constant must be imported where it is used.** One component used the table without
+importing it and would have crashed its section. Source-scan tests cannot see that; the
+type-check and a browser can.
+
+**Not changed (protected chat component, `ChatInterface.tsx`).** The Send button and the selected
+scope pill are still under the floor in the light theme. The one-line changes are written out in
+`docs/DECISIONS.md`, 2026-10-09 (about 02:15), waiting for the owner.
+
+### Giving element ids come from `giving-ids.ts` (2026-10-09)
+
+`app/dashboard/components/giving/giving-ids.ts` builds every element id on the Giving page from
+stored data: `reverseDateInputId(year)` for a year section's reverse confirm, and
+`lotBasisFieldIds(donationId, acquisitionTransactionId)` for the "Mark basis verified" dialog.
+Two year sections used to share one fixed id, so a label could point at another section's input,
+and the dialog's `useId` ids intermittently differed between server and client. Never use `useId`
+or a fixed id on that page. Test: `tests/dashboard/giving-stable-ids.test.tsx`.
 
 ### Hover-reveal affordances are touch tap-traps
 
@@ -1892,10 +2175,14 @@ Text ≤17px needs 4.5:1 (WCAG AA / HIG); 18px+ or ≥14px-bold needs 3:1.
   with no specificity games. **Use the var-remap pattern for any future mixed-color dark-module
   chrome.**
 - **App-wide small-text sweep completed 2026-07-20** (`cd93b5a`, 152 swaps) — remaining bare
-  `text-gold` is intentional (large text, hover states via the `text-gold-ink hover:text-gold` idiom,
-  icons/glyphs, opacity variants, dark-module contexts).
+  `text-gold` is intentional (large text, icons/glyphs, dark-module contexts). Since 2026-10-09
+  each file that keeps it is listed with its count in
+  `tests/repo/no-faded-small-status-text.test.ts`; the `text-gold-ink hover:text-gold` hover idiom
+  and the faded opacity variants on small text are retired (see "One colour table for small
+  coloured text" above).
 - **LevelsPanel renders EMBEDDED inside MarketDataPanel** (it inherits the dark background) — its
-  gold must stay `text-gold`; never "sweep" it.
+  gold must stay `text-gold`; never "sweep" it. Its sort picker opts in to the dark panel with
+  `chart-chrome` and `chart-status-gold` (2026-10-09).
 - An inline `style={{color}}` beats any class — grep for inline colors when a token swap doesn't take
   (it bit ChatInterface scope pills, `5806f21`).
 - `globals.css` also carries a global `prefers-reduced-motion` quiet rule — JS-driven animations

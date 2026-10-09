@@ -465,6 +465,17 @@ These Mac-side modules have Worker counterparts that are parity-pinned. Change B
   both rules. One documented difference: the snapshot does not carry `extra_metrics_json`, so an
   extras-only row is an entry on the Mac and not in the cloud. Detail:
   `docs/reference/earnings-pipeline.md` §14.
+- `lib/earnings/bogey-claim.ts::bogeyClaim` ⇄ `workers/cron/src/bogey-claim.ts::snapshotBogeyClaim`
+  (third wave, 2026-10-08) — what an earnings email may SAY about the bogey entries it prints:
+  `curated`, `vendor_only` or `none`, read off the same printed list the block renders. When the
+  only printed entry is the vendor consensus, the cloud heading, note and footer say "no curated
+  bogeys are shown here". The Worker file has no imports; the same parity test pins both. Change
+  both together and deploy the Worker.
+- `lib/digest/anomalies.ts::isMoverSecurityType` follows the Worker's mover universe (2026-10-08).
+  The cloud snapshot keeps stock, ETF and mutual fund rows; the Mac's evening movers had no type
+  filter, so the two emails could differ and an option or bond could appear as a mover on the
+  Mac. The Mac now keeps the same types and fails closed on an unknown one.
+  `tests/digest/anomalies-universe-type-parity.test.ts` pins it against the real snapshot reader.
 - `lib/calendar/briefing-html.ts` ⇄ `workers/cron/src/html.ts` — the shared markdown renderer.
   Since 2026-10-08 both decide "fill-in boxes or dashes" from the scoreboard HEADING wording
   (`usesFillInBoxes`): a recap page prints dashes, every other page keeps its boxes. The headings

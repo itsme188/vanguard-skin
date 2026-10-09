@@ -515,3 +515,36 @@ UI copy (`PerformanceView.tsx`, `TrustStripDrawer.tsx`, `TrustStrip.tsx`) is pin
 `tests/dashboard/twr-reconcile-labels.test.ts` to disclose the band, never bare "reconciled." Detail:
 `docs/reference/conventions-detail.md`'s TWR cross-check contract; API surface:
 `docs/reference/api-patterns.md`'s `/api/analysis/trust-state`.
+
+---
+
+## 19. The repository is public: what the 2026-10-09 sweep covered, and what is still open
+
+- **Committed documents and tests carry no real-looking portfolio figures.** On 2026-10-09 the
+  committed documents were rewritten to direction-only wording (balances, flows, position sizes
+  and lot figures removed; real tickers with real-looking sizes swapped for synthetic names), and
+  the committed tests and fixtures had real-looking position data replaced with invented data,
+  with every dependent expected value recomputed. No test was removed or skipped. Public market
+  data, clearly synthetic examples and plain counts were left. The judgement was by shape:
+  nothing under the real-data folders was opened.
+- **The rule going forward.** A committed document is direction-only. A committed test uses
+  invented positions and figures. Real-figure notes go to gitignored `docs/private/`; repair
+  constants go to gitignored `data/repair-configs/`. A landing review scans test diffs for long
+  or comma-grouped numbers (CLAUDE.md, "Test fixtures never carry a real figure").
+- **OPEN owner item: real-looking data still in committed SOURCE files.** The sweep found these
+  and did not edit them, because they sit in the protected import pipeline or are live constants.
+  No figure is repeated here; the file list is in `docs/DECISIONS.md`, 2026-10-09 (after
+  midnight).
+  - An account identifier used as a lookup key in two import parsers, with a comment example in
+    a third that matches part of it. This is the most serious one. The fix (move the mapping to
+    a gitignored config or the settings table) is an edit inside the import pipeline and needs
+    the owner's go-ahead.
+  - Repair constants held as live values in two repair scripts, against the rule above; their
+    tests mirror them.
+  - Comment examples with real-looking fills or amounts in two import parsers and two repair
+    scripts.
+  - The fixture-regeneration script rebuilds the mock statement fixture from a real statement,
+    which would put real figures back into the committed fixture.
+  - Git history still holds every original figure from the rewritten documents and tests.
+  - One archived to-do file is a long narrative of real-data repairs; a pattern sweep will not
+    have caught every prose mention.
