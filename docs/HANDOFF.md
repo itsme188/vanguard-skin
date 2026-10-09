@@ -66,7 +66,7 @@ Notes on the evidence:
 - **Not seen in a browser** (the sandbox had no earnings rows this week): every Earnings Hub dialog and popover, the bogeys modal, reconciliation chips, the armed row's read-only record, a "not modelled" duration, the digest catch-up banner, the corporate-action undo dialog, the rotate-credential dialog (packaged app only).
 - **Not verified against live behaviour:** any email actually sent; a broker sync in the evening after the date change; a Plaid reconnect after the per-tab change.
 
-**Deploy record:** the Worker and the Mac app were each deployed for the last time after 04:30 Eastern on 2026-10-09 from the commit that carries this file, Worker first (the eighth wave changes the Worker and adds snapshot version 13). Before that the Mac app was deployed five times overnight, the last at 01:13 Eastern. No deploy ran between 01:30 and 04:30 Eastern. The deploy log is under the coordination folder's `logs/`.
+**Deploy record:** the Worker and the Mac app were each deployed for the last time on 2026-10-09 from `ae14c017`, the Worker at 04:31 Eastern and the Mac app at 04:35 Eastern (installed build id matches, signature verified, the login page answers; checked again at 09:40 Eastern), Worker first (the eighth wave changes the Worker and adds snapshot version 13). Before that the Mac app was deployed five times overnight, the last at 01:13 Eastern. No deploy ran between 01:30 and 04:30 Eastern. The deploy log is under the coordination folder's `logs/`.
 
 ## 3. Open concerns, rejected approaches, user decisions
 
@@ -105,6 +105,7 @@ Notes on the evidence:
 - **Worktrees:** `/Users/Yitzi/code/vanguard-skin-migrations` (branch `claude/held-migrations-2026-10-08`, PR #107) stays until the owner decides; `/Users/Yitzi/code/vanguard-skin-qa-fix` is the nightly fixer's and stays. All sprint worktrees and branches are removed.
 - **Processes:** no sandbox or dev server is running. The installed app runs the last build.
 - **Coordination register:** the sprint tasks are released; `held-migrations-2026-10-08` stays open for PR #107.
+- **Nightly fixer:** back on (`qa/deep-qa-config.json`). It opened PR #108 and PR #109 on the morning of 2026-10-09, after the sprint closed. Neither is reviewed or merged; each needs the usual read-only review and the fixture privacy scan before landing.
 - **Session-local files:** builder briefs, review outputs, Codex transcripts and browser screenshots (which show real figures) are in the session's scratch folder outside the repo and do not survive the session. The progress log, the triage report and Codex's second opinion are in gitignored `docs/private/sprint-2026-10-08/`.
 
 ## 5. Agent

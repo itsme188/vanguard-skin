@@ -1134,3 +1134,18 @@ One commit, found by the final browser check of the finished build. One Codex re
 **Decision taken. The owner should confirm or reverse it.** The Analysis trust strip judges a bond's duration with the same estimator as the Fixed Income card (`estimateBondRateLeg`): stored, estimated (with what it was derived from) or not modelled (with the reason). Only a bond that cannot be modelled counts as a gap. Before, the card showed an estimated duration for bonds the strip's drawer still listed as having none. On the sandbox copy the two agree bond for bond in every scope.
 
 **Codex's one finding, kept as it is, for the owner to confirm.** The strip still counts a bond the card leaves out: one with no price, or a short one. The two answer different questions. The card lists what it can value; the strip is a coverage readout, and a held bond with no price is the kind of gap it should show. For every bond the card shows, the two agree.
+
+## 2026-10-09 (morning) — Owner rulings on the second overnight sprint; PRs #108 and #109 landed
+
+**Landed first.** Nightly-fixer PRs #108 and #109 (five fixes) merged to `main` after one read-only review that ran the code and a browser pass on a sandbox copy at phone and desktop width. Full suite 16,772 passed. Their follow-ups are in the to-do list.
+
+**Owner rulings (answers to the session's questions, 2026-10-09):**
+1. **PR #107 is approved:** the three additive migrations (096 vendor earnings actual, 097 macro refusal reason and reference period, 098 detection price on a suggested-level narrative) and the code that uses them. To land after it is brought up to date with `main` and re-verified.
+2. **The visible colour changes in the light theme are kept:** darker badge text from the one checked table, and near-black text on solid gold buttons.
+3. **Every other decision the sprint took is confirmed as built:** the entries above dated 2026-10-08 (night) through 2026-10-09 (about 03:45), including the refusal of a manual or nudge Send on the later of two hand-entered earnings entries, the Eastern-day alignment in JavaScript and SQL, the chat account-name resolution, the mover universe, the Fixed Income card's estimator, and the statement-based lot integrity scan. Any one of them can still be reversed later on its own.
+4. **Three held items are to be built:**
+   - the three one-line edits inside the protected chat component (Send button contrast, scope pill contrast, the first Tab reaching the skip link); no chat wiring change;
+   - the account identifier moves out of the two import parser files into a gitignored config, with a synthetic fixture in tests (an edit inside the protected import pipeline, approved for this purpose only; the git-history purge stays a separate step);
+   - the cloud fallback's earnings coverage includes a name held only through options or only short, as the Mac's does.
+
+**Still open for the owner** (not asked today): the 2026-10-07 builder rulings, the gift-month convention, the iPhone chat layout, the written design for a live-closed option or short as pending, the scope resolver's "no match means every account" reading, and the real-looking constants in two repair scripts.

@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { getRecentArticles, countRecentArticles } from "@/lib/queries/research";
 import { formatTriggeredAlertsSection, formatArticleCountLine } from "./daily-digest";
+import { digestWindowStartInstant } from "@/lib/digest/digest-window";
 import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 
 export interface ArticleLike {
@@ -296,7 +297,7 @@ export function generateDigestByCompanySince(
   sinceDate: string,
 ): string | null {
   const windowFilter = {
-    startDate: sinceDate,
+    startDate: digestWindowStartInstant(sinceDate),
     processedOnly: true,
     relevantOnly: true,
   } as const;

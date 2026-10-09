@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
-import { CURRENCY_CONVERSION_SECURITY_SQL } from "@/lib/queries/tax-lots";
+import { CURRENCY_CONVERSION_SECURITY_SQL, USD_ONLY } from "@/lib/queries/tax-lots";
 
 /**
  * One row per TAX YEAR, and a tax year is always the year of the sale (the
@@ -9,11 +9,20 @@ import { CURRENCY_CONVERSION_SECURITY_SQL } from "@/lib/queries/tax-lots";
  * realized gain by `tax_lot_sales.sale_date`, lot sales by the same date,
  * engine closes by their trade date. A lot bought in one year and sold in the
  * next appears only under the sale year.
+ *
+ * The realized figure is on the Tax Lots page's basis (USD sales only,
+ * currency-conversion rows left out), so the preview agrees with the page's
+ * Realized tile. Stored gains on a non-USD security are native currency and
+ * are never summed; `nonUsdSalesExcluded*` counts them so the omission shows.
  */
 export interface TaxLotRecomputeYearSummary {
   taxYear: number;
   realizedGainBefore: number;
   realizedGainAfter: number;
+  /** Non-USD sales dated in this year left out of the realized figure (before the recompute). */
+  nonUsdSalesExcludedBefore: number;
+  /** Same count after the recompute. */
+  nonUsdSalesExcludedAfter: number;
   /** Sale-to-lot matches (`tax_lot_sales` rows) dated in this year that the recompute adds. */
   lotSalesAdded: number;
   /** Sale-to-lot matches dated in this year that the recompute removes. */
@@ -59,6 +68,7 @@ export interface TaxLotRecomputeSummary {
 
 interface LedgerSnapshot {
   realizedByYear: Map<number, number>;
+  nonUsdSalesByYear: Map<number, number>;
   lotSalesByYear: Map<number, Map<string, number>>;
   openLots: Map<string, number>;
   expiredOptionOpenLots: number;
@@ -110,9 +120,12 @@ function snapshotLedger(db: Database.Database): LedgerSnapshot {
     .prepare(
       `SELECT tls.sale_date, tls.realized_gain_loss, tls.quantity_sold, tls.proceeds,
               tls.cost_basis_allocated, tl.acquisition_transaction_id, tl.account_id,
-              tl.security_id, tl.acquisition_date, tl.is_short
+              tl.security_id, tl.acquisition_date, tl.is_short,
+              (${USD_ONLY}) AS usd,
+              (${CURRENCY_CONVERSION_SECURITY_SQL}) AS currency_conversion
        FROM tax_lot_sales tls
-       JOIN tax_lots tl ON tl.id = tls.tax_lot_id`
+       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+       LEFT JOIN securities s ON s.id = tl.security_id`
     )
     .all() as Array<{
       sale_date: string;
@@ -125,13 +138,24 @@ function snapshotLedger(db: Database.Database): LedgerSnapshot {
       security_id: number;
       acquisition_date: string;
       is_short: number;
+      usd: number;
+      currency_conversion: number;
     }>;
   const realizedByYear = new Map<number, number>();
+  const nonUsdSalesByYear = new Map<number, number>();
   const lotSalesByYear = new Map<number, Map<string, number>>();
   for (const row of saleRows) {
     const year = yearOf(row.sale_date);
     if (year == null) continue;
-    realizedByYear.set(year, (realizedByYear.get(year) ?? 0) + row.realized_gain_loss);
+    // The page's basis: USD sales only, currency conversions left out. The
+    // lot-sales keys below stay over every sale so the diff sees every match.
+    if (!row.currency_conversion) {
+      if (row.usd) {
+        realizedByYear.set(year, (realizedByYear.get(year) ?? 0) + row.realized_gain_loss);
+      } else {
+        nonUsdSalesByYear.set(year, (nonUsdSalesByYear.get(year) ?? 0) + 1);
+      }
+    }
     addKey(
       byYearMap(lotSalesByYear, year),
       [
@@ -228,6 +252,7 @@ function snapshotLedger(db: Database.Database): LedgerSnapshot {
 
   return {
     realizedByYear,
+    nonUsdSalesByYear,
     lotSalesByYear,
     openLots,
     expiredOptionOpenLots,
@@ -264,6 +289,8 @@ function summarize(before: LedgerSnapshot, after: LedgerSnapshot): TaxLotRecompu
           taxYear,
           realizedGainBefore: (before.realizedByYear.get(taxYear) ?? 0),
           realizedGainAfter: (after.realizedByYear.get(taxYear) ?? 0),
+          nonUsdSalesExcludedBefore: before.nonUsdSalesByYear.get(taxYear) ?? 0,
+          nonUsdSalesExcludedAfter: after.nonUsdSalesByYear.get(taxYear) ?? 0,
           lotSalesAdded: unmatched(afterSales, beforeSales),
           lotSalesRemoved: unmatched(beforeSales, afterSales),
           engineClosesAdded: unmatched(afterCloses, beforeCloses),

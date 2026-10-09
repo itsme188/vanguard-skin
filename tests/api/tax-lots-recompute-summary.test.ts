@@ -149,6 +149,8 @@ describe("tax-lot recompute summary: one basis per tax year (the sale year)", ()
         taxYear: 2026,
         realizedGainBefore: 0,
         realizedGainAfter: 300,
+        nonUsdSalesExcludedBefore: 0,
+        nonUsdSalesExcludedAfter: 0,
         lotSalesAdded: 1,
         lotSalesRemoved: 0,
         engineClosesAdded: 0,

@@ -3,6 +3,7 @@ import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { getRecentArticles, countRecentArticles } from "@/lib/queries/research";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { bucketByCompany } from "@/lib/digest/group-by-company";
+import { digestWindowStartInstant } from "@/lib/digest/digest-window";
 import { splitDigestOpening } from "./synthesis-editorial";
 import { synthesize, SynthesisEmptyError } from "@/lib/digest/synthesize";
 import { computeAnomalies, formatVanguardAnomaliesBlock } from "@/lib/digest/anomalies";
@@ -60,7 +61,7 @@ export function formatTriggeredAlertsSection(
         ORDER BY la.triggered_at DESC
         LIMIT 20`
     )
-    .all(sinceDate) as RecentAlertRow[];
+    .all(digestWindowStartInstant(sinceDate)) as RecentAlertRow[];
 
   if (rows.length === 0) return "";
 
@@ -130,7 +131,7 @@ export const DIGEST_ARTICLE_CAP = 30;
 
 export function generateDigestSince(db: Database.Database, sinceDate: string): string | null {
   const windowFilter = {
-    startDate: sinceDate,
+    startDate: digestWindowStartInstant(sinceDate),
     processedOnly: true,
     relevantOnly: true,
   } as const;
@@ -439,7 +440,7 @@ export async function generateDigestSinceAdaptive(
   const edition = opts.edition ?? "morning";
 
   const windowFilter = {
-    startDate: sinceDate,
+    startDate: digestWindowStartInstant(sinceDate),
     processedOnly: true,
     relevantOnly: true,
   } as const;
