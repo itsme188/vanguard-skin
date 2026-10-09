@@ -133,7 +133,18 @@ function AccountValueLines({ cashLine }: { cashLine: AccountCashLine | null }) {
               {cashLine.liveSourceCaption}
             </p>
           )}
-          {sweepSymbols.length > 0 && (
+          {sweepSymbols.length > 0 && cashLine.isLiveSource && (
+            // A live-anchor day's Cash is the broker's intraday total minus
+            // priced positions, so it does not contain the statement fund rows
+            // listed above; saying it "counts" them would contradict the
+            // figures (copy-only ruling, D9b).
+            <p data-account-value="sweep-note" className="mt-0.5 text-xs text-ink-dim">
+              The Cash figure is the account total minus positions. The money-market fund rows
+              listed above (<span className="font-mono">{sweepSymbols.join(", ")}</span>) are from
+              the last statement and are not in Positions.
+            </p>
+          )}
+          {sweepSymbols.length > 0 && !cashLine.isLiveSource && (
             <p data-account-value="sweep-note" className="mt-0.5 text-xs text-ink-dim">
               Money-market funds listed above (
               <span className="font-mono">{sweepSymbols.join(", ")}</span>) are counted in Cash,

@@ -18,6 +18,7 @@ import type {
 // render in the security's NATIVE currency and need a matching label, e.g.
 // "₩976,000" rather than "$976,000" for a KRW security).
 import { formatLevelPrice } from "@/lib/chart/price-formatter";
+import { detectionPrefix } from "@/lib/levels/narrative-detection-prefix";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 // What a suggested-level card says is one composed string: a templated fact
 // sentence written from the same metadata the chip prints (touch count, touch
@@ -239,6 +240,10 @@ interface SuggestedLevel {
   narrative?: string | null;
   /** Set by POST /api/suggested-levels when generating this narrative failed. */
   narrativeUnavailable?: boolean;
+  /** When the narrative was written and the price then (NATIVE currency); the
+   *  card prefixes the prose "Detected <day> at <price>:" when both are present. */
+  narrativeDetectedDay?: string | null;
+  narrativeDetectedPrice?: number | null;
 }
 
 interface SuggestedLevelsResponse {
@@ -539,6 +544,13 @@ function SuggestedLevels({
                         color: "#bbb",
                       }}
                     >
+                      {sug.narrative != null && (() => {
+                        const lead = detectionPrefix(
+                          { day: sug.narrativeDetectedDay, price: sug.narrativeDetectedPrice },
+                          currency,
+                        );
+                        return lead ? <span style={{ color: "#888" }}>{lead}{" "}</span> : null;
+                      })()}
                       {displayNarrative(sug)}
                     </p>
                     {narrativeUnavailable(sug) && (
