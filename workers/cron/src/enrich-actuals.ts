@@ -139,7 +139,16 @@ function formatCount(ones: number): string {
     return `${sign}${m.toFixed(2).replace(/\.?0+$/, "")}M`;
   }
   if (abs >= 1_000) return `${sign}${Math.round(abs / 1_000).toLocaleString("en-US")}K`;
-  return `${sign}${Math.round(abs).toLocaleString("en-US")}`;
+  // The sign belongs to the ROUNDED figure: -0.2 prints as "0", never "-0".
+  const whole = Math.round(abs);
+  return `${whole === 0 ? "" : sign}${whole.toLocaleString("en-US")}`;
+}
+
+/** "-0.4%" / "0.0%" at one decimal. The sign belongs to the ROUNDED figure:
+ *  a value that rounds to zero prints "0.0%", never "-0.0%". */
+function formatPct1(pct: number): string {
+  const text = pct.toFixed(1);
+  return `${Number(text) === 0 ? text.replace("-", "") : text}%`;
 }
 
 export function formatFredValue(
@@ -150,16 +159,16 @@ export function formatFredValue(
   const scale = cfg.unitScale ?? 1;
   switch (cfg.formatAs) {
     case "pct":
-      return `${value.toFixed(1)}%`;
+      return formatPct1(value);
     case "pct_yoy": {
       if (priorYearValue == null || priorYearValue === 0) return null;
       const yoy = ((value - priorYearValue) / priorYearValue) * 100;
-      return `${yoy.toFixed(1)}%`;
+      return formatPct1(yoy);
     }
     case "pct_mom": {
       if (priorValue == null || priorValue === 0) return null;
       const mom = ((value - priorValue) / priorValue) * 100;
-      return `${mom.toFixed(1)}%`;
+      return formatPct1(mom);
     }
     case "delta_k": {
       // Payroll-style prints are quoted as the period change ("+172K
@@ -167,7 +176,9 @@ export function formatFredValue(
       // — null, never the (meaningless) level.
       if (priorValue == null) return null;
       const delta = (value - priorValue) * scale;
-      return `${delta >= 0 ? "+" : ""}${formatCount(delta)}`;
+      // A change that rounds to zero prints as the zero change, "+0".
+      const change = formatCount(delta);
+      return change.startsWith("-") ? change : `+${change}`;
     }
     case "level_count":
       // Level-quoted prints: claims "229K", existing home sales "4.17M".
@@ -181,12 +192,13 @@ export function formatFredValue(
         const b = Math.round(abs / 100_000_000) / 10;
         return `${sign}$${b.toFixed(1).replace(/\.0$/, "")}B`;
       }
-      return `${sign}$${formatCount(abs)}`;
+      const amount = formatCount(abs);
+      return `${amount === "0" ? "" : sign}$${amount}`;
     }
     case "qoq_saar": {
       if (priorValue == null || priorValue === 0) return null;
       const qoq = Math.pow(value / priorValue, 4) - 1;
-      return `${(qoq * 100).toFixed(1)}%`;
+      return formatPct1(qoq * 100);
     }
   }
 }

@@ -1,0 +1,23 @@
+{
+  "note": "Synthetic observations. One list answered by BOTH formatFredValue copies (lib/calendar/enrich-actuals.ts and workers/cron/src/enrich-actuals.ts): a figure that rounds to zero at the printed precision prints as zero, never as negative zero. A figure that does not round to zero keeps its sign.",
+  "cases": [
+    { "name": "pct: small negative rounds to zero", "formatAs": "pct", "value": -0.04, "expected": "0.0%" },
+    { "name": "pct: small positive rounds to zero", "formatAs": "pct", "value": 0.04, "expected": "0.0%" },
+    { "name": "pct: exact zero", "formatAs": "pct", "value": 0, "expected": "0.0%" },
+    { "name": "pct: a real negative keeps its sign", "formatAs": "pct", "value": -0.14, "expected": "-0.1%" },
+    { "name": "pct_mom: small fall rounds to zero", "formatAs": "pct_mom", "value": 99.97, "priorValue": 100, "expected": "0.0%" },
+    { "name": "pct_mom: a real fall keeps its sign", "formatAs": "pct_mom", "value": 99.6, "priorValue": 100, "expected": "-0.4%" },
+    { "name": "pct_yoy: small fall rounds to zero", "formatAs": "pct_yoy", "value": 199.95, "priorYearValue": 200, "expected": "0.0%" },
+    { "name": "pct_yoy: a real fall keeps its sign", "formatAs": "pct_yoy", "value": 198, "priorYearValue": 200, "expected": "-1.0%" },
+    { "name": "qoq_saar: small fall rounds to zero", "formatAs": "qoq_saar", "value": 99.999, "priorValue": 100, "expected": "0.0%" },
+    { "name": "qoq_saar: a real fall keeps its sign", "formatAs": "qoq_saar", "value": 99.5, "priorValue": 100, "expected": "-2.0%" },
+    { "name": "delta_k: a fall under half a unit prints as the zero change", "formatAs": "delta_k", "unitScale": 1, "value": 99.8, "priorValue": 100.2, "expected": "+0" },
+    { "name": "delta_k: no change", "formatAs": "delta_k", "unitScale": 1000, "value": 100, "priorValue": 100, "expected": "+0" },
+    { "name": "delta_k: a real fall keeps its sign", "formatAs": "delta_k", "unitScale": 1000, "value": 100, "priorValue": 150, "expected": "-50K" },
+    { "name": "delta_k: a small real fall keeps its sign", "formatAs": "delta_k", "unitScale": 1, "value": 100, "priorValue": 140, "expected": "-40" },
+    { "name": "level_count: under half a unit below zero prints as zero", "formatAs": "level_count", "unitScale": 1, "value": -0.2, "expected": "0" },
+    { "name": "level_count: a real negative keeps its sign", "formatAs": "level_count", "unitScale": 1, "value": -40, "expected": "-40" },
+    { "name": "usd_millions: under half a dollar below zero prints as zero", "formatAs": "usd_millions", "value": -0.0000002, "expected": "$0" },
+    { "name": "usd_millions: a real deficit keeps its sign", "formatAs": "usd_millions", "value": -50000, "expected": "-$50B" }
+  ]
+}
